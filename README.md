@@ -32,31 +32,31 @@ Workable also gives applications a path to expose the same authored work through
 
 ### Using Workable
 
-- [Getting Started](docs/getting-started.md): package split, work author setup, host setup, and queueing work.
-- [Work Registration](docs/work-registration.md): define work in feature assemblies, generate definitions from sources, queue startup work, target named systems, and isolate catalogs.
-- [Work Queueing](docs/work-queueing.md): queue work by name or id, pass input, set queue options, and await completion.
-- [Work Configuration](docs/work-configuration.md): configuration sources, override order, and runtime reconfiguration rules.
-  - [Start](docs/work-configuration-start.md): automatic start behavior and when queue calls return.
-  - [Idempotency](docs/work-configuration-idempotency.md): duplicate prevention by `WorkSubjectId`.
-  - [Recurrence](docs/work-configuration-recurrence.md): repeated execution and recurrence circuit behavior.
-  - [Transient Retry](docs/work-configuration-transient-retry.md): transient exception classification and retry behavior.
-  - [Logging](docs/work-configuration-logging.md): worker-scoped logging behavior.
-  - [Retention](docs/work-configuration-retention.md): automatic purge timing for completed and canceled workers.
-  - [Concurrency](docs/work-configuration-concurrency.md): capacity limits by definition, subject, or concurrency key.
-  - [Invocation](docs/work-configuration-invocation.md): channels allowed to start a work definition.
-  - [Interactions](docs/work-configuration-interactions.md): non-obvious behavior when configuration types are combined.
-- [Work Querying](docs/work-querying.md): build admin views, status summaries, and definition browsers.
-- [Work Observability](docs/work-observability.md): subscribe to work events.
-- [Work Profiling](docs/work-profiling.md): capture per-worker execution profile trees.
-- [Workable HTTP API](docs/work-http-api.md): expose registered work through HTTP endpoints.
-- [Workable MCP](docs/work-mcp.md): expose registered work and read-only query tools through an MCP server.
-- [Sample Host](samples/Workable.SampleHost/README.md): run HTTP and MCP adapters together in one ASP.NET Core app.
+- [Getting Started](https://github.com/aliendomain/workable/blob/main/docs/getting-started.md): package split, work author setup, host setup, and queueing work.
+- [Work Registration](https://github.com/aliendomain/workable/blob/main/docs/work-registration.md): define work in feature assemblies, generate definitions from sources, queue startup work, target named systems, and isolate catalogs.
+- [Work Queueing](https://github.com/aliendomain/workable/blob/main/docs/work-queueing.md): queue work by name or id, pass input, set queue options, and await completion.
+- [Work Configuration](https://github.com/aliendomain/workable/blob/main/docs/work-configuration.md): configuration sources, override order, and runtime reconfiguration rules.
+  - [Start](https://github.com/aliendomain/workable/blob/main/docs/work-configuration-start.md): automatic start behavior and when queue calls return.
+  - [Idempotency](https://github.com/aliendomain/workable/blob/main/docs/work-configuration-idempotency.md): duplicate prevention by `WorkSubjectId`.
+  - [Recurrence](https://github.com/aliendomain/workable/blob/main/docs/work-configuration-recurrence.md): repeated execution and recurrence circuit behavior.
+  - [Transient Retry](https://github.com/aliendomain/workable/blob/main/docs/work-configuration-transient-retry.md): transient exception classification and retry behavior.
+  - [Logging](https://github.com/aliendomain/workable/blob/main/docs/work-configuration-logging.md): worker-scoped logging behavior.
+  - [Retention](https://github.com/aliendomain/workable/blob/main/docs/work-configuration-retention.md): automatic purge timing for completed and canceled workers.
+  - [Concurrency](https://github.com/aliendomain/workable/blob/main/docs/work-configuration-concurrency.md): capacity limits by definition, subject, or concurrency key.
+  - [Invocation](https://github.com/aliendomain/workable/blob/main/docs/work-configuration-invocation.md): channels allowed to start a work definition.
+  - [Interactions](https://github.com/aliendomain/workable/blob/main/docs/work-configuration-interactions.md): non-obvious behavior when configuration types are combined.
+- [Work Querying](https://github.com/aliendomain/workable/blob/main/docs/work-querying.md): build admin views, status summaries, and definition browsers.
+- [Work Observability](https://github.com/aliendomain/workable/blob/main/docs/work-observability.md): subscribe to work events.
+- [Work Profiling](https://github.com/aliendomain/workable/blob/main/docs/work-profiling.md): capture per-worker execution profile trees.
+- [Workable HTTP API](https://github.com/aliendomain/workable/blob/main/docs/work-http-api.md): expose registered work through HTTP endpoints.
+- [Workable MCP](https://github.com/aliendomain/workable/blob/main/docs/work-mcp.md): expose registered work and read-only query tools through an MCP server.
+- [Sample Host](https://github.com/aliendomain/workable/blob/main/samples/Workable.SampleHost/README.md): run HTTP and MCP adapters together in one ASP.NET Core app.
 
 ### Under The Hood
 
 These docs explain what happens inside Workable after work is registered or queued.
 
-- [Core API Surface](docs/core-api-surface.md): understand systems, queues, workers, actions, queries, events, and public contracts.
-- [Project Structure](docs/project-structure.md): source layout, package boundary, and namespace convention.
-- [Work Lifecycle](docs/work-lifecycle.md): queue acceptance, execution, worker handles, and lifecycle diagrams.
-- [Execution Engine](docs/execution-engine.md): dispatcher, execution strategies, concurrency coordination, event stream, and retention behavior.
+- [Core API Surface](https://github.com/aliendomain/workable/blob/main/docs/core-api-surface.md): understand systems, queues, workers, actions, queries, events, and public contracts.
+- [Project Structure](https://github.com/aliendomain/workable/blob/main/docs/project-structure.md): source layout, package boundary, and namespace convention.
+- [Work Lifecycle](https://github.com/aliendomain/workable/blob/main/docs/work-lifecycle.md): queue acceptance, execution, worker handles, and lifecycle diagrams.
+- [Execution Engine](https://github.com/aliendomain/workable/blob/main/docs/execution-engine.md): dispatcher, execution strategies, concurrency coordination, event stream, and retention behavior.
