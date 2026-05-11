@@ -200,13 +200,7 @@ internal sealed class WorkerRecord(
             outcome = this.ToOutcomeLocked(transition);
         }
 
-        try
-        {
-            cancellation?.Cancel();
-        }
-        catch (ObjectDisposedException)
-        {
-        }
+        CancelIfAvailable(cancellation);
 
         return outcome;
     }
@@ -237,13 +231,7 @@ internal sealed class WorkerRecord(
             outcome = this.ToOutcomeLocked(transition);
         }
 
-        try
-        {
-            cancellation?.Cancel();
-        }
-        catch (ObjectDisposedException)
-        {
-        }
+        CancelIfAvailable(cancellation);
 
         return outcome;
     }
@@ -957,15 +945,27 @@ internal sealed class WorkerRecord(
             outcome = this.ToOutcomeLocked(transition);
         }
 
+        CancelIfAvailable(cancellation);
+
+        return outcome;
+    }
+
+    private static bool CancelIfAvailable(CancellationTokenSource? cancellation)
+    {
+        if (cancellation is null)
+        {
+            return false;
+        }
+
         try
         {
-            cancellation?.Cancel();
+            cancellation.Cancel();
+            return true;
         }
         catch (ObjectDisposedException)
         {
+            return false;
         }
-
-        return outcome;
     }
 
     private WorkActionOutcome? CheckRevision(WorkAction action, long expectedRevision)
