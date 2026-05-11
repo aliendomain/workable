@@ -4,7 +4,7 @@
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
-    <Description>MCP server adapter for exposing Workable work definitions, query operations, and worker actions.</Description>
+    <Description>Expose Workable definitions, query tools, and worker action tools through an ASP.NET Core MCP server adapter.</Description>
   </PropertyGroup>
 
   <ItemGroup>

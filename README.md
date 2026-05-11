@@ -1,12 +1,32 @@
 # Workable
 
-Workable helps .NET applications turn background jobs, operational tasks, recurring work, and user-triggered actions into first-class work the host can queue, observe, control, and configure.
+Workable is a .NET work orchestration library for applications that need more than "run this in the background." It turns background jobs, operational tasks, recurring work, and user-triggered actions into first-class work the host can queue, observe, control, and configure.
 
-Most applications eventually grow work that does not fit cleanly inside the immediate request or command that started it. Sending email, refreshing caches, synchronizing data, running maintenance tasks, retrying transient failures, and coordinating long-running operations all need more structure than "start a task and hope it finishes." Workable gives that work explicit identity, state, configuration, outcomes, and events.
+Most applications eventually grow work that does not fit cleanly inside the request, controller action, message handler, or command that started it. Sending email, refreshing caches, synchronizing data, running maintenance tasks, retrying transient failures, and coordinating long-running operations all need identity, state, cancellation, status, events, and a way to be found later. Workable gives that work a consistent runtime model instead of leaving each feature to invent its own.
 
-Feature assemblies can declare their own work with `Workable.Sdk`. Libraries that need to use a hosted system can depend on `Workable.Abstractions` and accept `IWorkSystem` from the host. The host application owns the actual Workable systems, decides which work belongs in each system, and controls how workers start, retry, recur, respect concurrency, and stay available for inspection.
+Workable is useful when you want feature code to define work near the feature that needs it, while the host application keeps control of execution. Feature assemblies can declare their own work with `Workable.Sdk`. Libraries that need to use a hosted system can depend on `Workable.Abstractions` and accept `IWorkSystem` from the host. The host application owns the actual Workable systems, decides which work belongs in each system, and controls how workers start, retry, recur, respect concurrency, and stay available for inspection.
 
 That split lets teams add work near the feature that needs it without forcing every feature library to know how the application hosts work. At runtime, the host gets a consistent surface for queueing work, awaiting completion, pausing, canceling, reconfiguring workers, and subscribing to work events.
+
+Workable also gives applications a path to expose the same authored work through more than one channel. Direct .NET callers, HTTP endpoints, and MCP clients can all queue or inspect the same work definitions while preserving origin information, structured outcomes, worker history, and invocation rules.
+
+## Why Use Workable?
+
+- Define work once and invoke it through .NET, HTTP, or MCP when those channels are enabled.
+- Keep feature libraries independent from the host runtime while still letting them contribute work.
+- Queue fire-and-forget work without losing the ability to query, observe, cancel, pause, retry, or purge it.
+- Attach runtime behavior such as recurrence, transient retry, idempotency, concurrency, retention, logging, profiling, initialization, and start policy.
+- Use structured inputs, outputs, messages, worker snapshots, event payloads, and status summaries instead of ad hoc task tracking.
+- Preserve who or what started work through origin metadata for HTTP, MCP, and direct .NET calls.
+
+## Packages
+
+- `Workable.Sdk`: contracts and registration helpers for assemblies that author work.
+- `Workable.Abstractions`: contracts for libraries that consume an already-hosted work system.
+- `Workable`: in-process host and runtime for Workable systems.
+- `Workable.AspNetCore`: ASP.NET Core origin enrichment for direct .NET queue calls.
+- `Workable.HttpApi`: standard HTTP endpoints for queueing, querying, and controlling work.
+- `Workable.Mcp`: MCP server adapter for authored work, query tools, and worker action tools.
 
 ## Documentation
 

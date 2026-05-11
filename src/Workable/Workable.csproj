@@ -4,7 +4,7 @@
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
-    <Description>In-process Workable host and runtime for queueing, executing, observing, and controlling work.</Description>
+    <Description>Host in-process Workable systems for queueing, executing, observing, controlling, configuring, retrying, and recurring work.</Description>
   </PropertyGroup>
 
   <ItemGroup>

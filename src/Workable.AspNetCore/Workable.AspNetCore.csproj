@@ -4,7 +4,7 @@
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
-    <Description>ASP.NET Core integration helpers for Workable origin enrichment.</Description>
+    <Description>Enrich direct .NET Workable queue calls in ASP.NET Core apps with authenticated HTTP user and request origin metadata.</Description>
   </PropertyGroup>
 
   <ItemGroup>

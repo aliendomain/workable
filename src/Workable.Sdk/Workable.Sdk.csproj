@@ -4,7 +4,7 @@
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
-    <Description>SDK contracts and registration helpers for authoring Workable work definitions and executors.</Description>
+    <Description>Author Workable work definitions, typed executors, metadata, configuration attributes, and startup contributions without depending on the host runtime.</Description>
   </PropertyGroup>
 
   <ItemGroup>

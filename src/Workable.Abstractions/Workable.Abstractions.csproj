@@ -4,7 +4,7 @@
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
-    <Description>Core Workable abstractions for consuming a hosted work system without hosting Workable.</Description>
+    <Description>Consume a hosted Workable system from libraries that need to queue, query, observe, or control work without hosting the runtime.</Description>
   </PropertyGroup>
 
   <ItemGroup>

@@ -4,7 +4,7 @@
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
-    <Description>HTTP API endpoints for queueing, querying, and controlling Workable workers.</Description>
+    <Description>Expose standard ASP.NET Core HTTP endpoints for queueing Workable definitions, querying workers, and sending worker actions.</Description>
   </PropertyGroup>
 
   <ItemGroup>
