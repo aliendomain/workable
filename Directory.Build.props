@@ -1,0 +1,11 @@
+<Project>
+  <PropertyGroup>
+    <Authors>AlienDomain</Authors>
+    <Company>AlienDomain</Company>
+    <RepositoryUrl>https://github.com/aliendomain/workable</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageTags>work;workflow;background-jobs;recurrence;queueing;dotnet</PackageTags>
+    <Version>0.1.0</Version>
+    <ContinuousIntegrationBuild Condition="'$(GITHUB_ACTIONS)' == 'true'">true</ContinuousIntegrationBuild>
+  </PropertyGroup>
+</Project>

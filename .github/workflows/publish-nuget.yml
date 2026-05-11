@@ -1,0 +1,61 @@
+name: Publish NuGet
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: NuGet package version to publish.
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    name: Pack and publish
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Restore
+        run: dotnet restore ./Workable.slnx --disable-parallel -p:RestoreBuildInParallel=false
+
+      - name: Build
+        run: dotnet build ./Workable.slnx --configuration Release --no-restore -maxcpucount:1 -p:UseSharedCompilation=false
+
+      - name: Test
+        run: dotnet test ./tests/Workable.Tests/Workable.Tests.csproj --configuration Release --no-build --logger "trx;LogFileName=test-results.trx" --blame-hang --blame-hang-timeout 5s --blame-hang-dump-type none
+
+      - name: Pack
+        run: |
+          dotnet pack ./src/Workable.Sdk/Workable.Sdk.csproj --configuration Release --no-build --output ./artifacts/packages -p:PackageVersion=${{ inputs.version }} -p:BuildInParallel=false
+          dotnet pack ./src/Workable.Abstractions/Workable.Abstractions.csproj --configuration Release --no-build --output ./artifacts/packages -p:PackageVersion=${{ inputs.version }} -p:BuildInParallel=false
+          dotnet pack ./src/Workable/Workable.csproj --configuration Release --no-build --output ./artifacts/packages -p:PackageVersion=${{ inputs.version }} -p:BuildInParallel=false
+          dotnet pack ./src/Workable.AspNetCore/Workable.AspNetCore.csproj --configuration Release --no-build --output ./artifacts/packages -p:PackageVersion=${{ inputs.version }} -p:BuildInParallel=false
+          dotnet pack ./src/Workable.HttpApi/Workable.HttpApi.csproj --configuration Release --no-build --output ./artifacts/packages -p:PackageVersion=${{ inputs.version }} -p:BuildInParallel=false
+          dotnet pack ./src/Workable.Mcp/Workable.Mcp.csproj --configuration Release --no-build --output ./artifacts/packages -p:PackageVersion=${{ inputs.version }} -p:BuildInParallel=false
+
+      - name: Upload packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: nuget-packages
+          path: ./artifacts/packages/*.nupkg
+          if-no-files-found: error
+
+      - name: NuGet trusted publishing login
+        id: nuget-login
+        uses: NuGet/login@v1
+        with:
+          user: ${{ vars.NUGET_USER }}
+
+      - name: Publish packages
+        run: dotnet nuget push "./artifacts/packages/*.nupkg" --source https://api.nuget.org/v3/index.json --api-key "${{ steps.nuget-login.outputs.NUGET_API_KEY }}" --skip-duplicate

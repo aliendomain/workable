@@ -4,6 +4,7 @@
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
+    <Description>MCP server adapter for exposing Workable work definitions, query operations, and worker actions.</Description>
   </PropertyGroup>
 
   <ItemGroup>
