@@ -1,0 +1,53 @@
+using Microsoft.Extensions.Logging;
+
+namespace Workable;
+
+internal sealed class WorkExceptionClassifierChain(
+    IReadOnlyList<WorkExceptionClassifier> systemClassifiers,
+    IReadOnlyList<WorkExceptionClassifier> globalClassifiers,
+    ILogger? logger)
+{
+    public WorkExceptionClassification Classify(RegisteredWork work, Exception exception)
+    {
+        ArgumentNullException.ThrowIfNull(work);
+        ArgumentNullException.ThrowIfNull(exception);
+
+        var workClassification = Classify(work.ExceptionClassifiers, exception);
+        if (workClassification != WorkExceptionClassification.Unknown)
+        {
+            return workClassification;
+        }
+
+        var systemClassification = Classify(systemClassifiers, exception);
+        if (systemClassification != WorkExceptionClassification.Unknown)
+        {
+            return systemClassification;
+        }
+
+        return Classify(globalClassifiers, exception);
+    }
+
+    private WorkExceptionClassification Classify(IReadOnlyList<WorkExceptionClassifier> classifiers, Exception exception)
+    {
+        foreach (var classifier in classifiers)
+        {
+            WorkExceptionClassification classification;
+            try
+            {
+                classification = classifier(exception);
+            }
+            catch (Exception classifierException)
+            {
+                logger?.LogWarning(classifierException, "A Workable exception classifier failed while classifying an execution exception.");
+                continue;
+            }
+
+            if (classification != WorkExceptionClassification.Unknown)
+            {
+                return classification;
+            }
+        }
+
+        return WorkExceptionClassification.Unknown;
+    }
+}

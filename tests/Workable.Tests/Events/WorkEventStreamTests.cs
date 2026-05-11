@@ -1,0 +1,372 @@
+using Microsoft.Extensions.DependencyInjection;
+using Workable;
+
+namespace Workable.Tests;
+
+[Trait("Category", "EventStream")]
+public sealed class WorkEventStreamTests
+{
+    [Fact]
+    public async Task SubscriptionReceivesEventsPublishedAfterSubscribe()
+    {
+        var stream = new WorkEventStream();
+        await using var subscription = stream.Subscribe();
+        await using var reader = subscription.Read().GetAsyncEnumerator();
+        var workEvent = CreateEvent(eventType: "worker.queued");
+
+        stream.Publish(workEvent);
+
+        Assert.Equal(workEvent, await ReadNext(reader));
+    }
+
+    [Fact]
+    public async Task EventsPublishedBeforeSubscribeAreNotReplayed()
+    {
+        var stream = new WorkEventStream();
+        stream.Publish(CreateEvent(eventType: "worker.queued"));
+
+        await using var subscription = stream.Subscribe();
+
+        await AssertNoEvent(subscription);
+    }
+
+    [Fact]
+    public async Task PublishWithoutSubscribersDoesNotRetainEventsForFutureSubscribers()
+    {
+        var stream = new WorkEventStream();
+
+        stream.Publish(CreateEvent(eventType: "worker.queued"));
+        stream.Publish(CreateEvent(eventType: "worker.started"));
+
+        Assert.Equal(0, stream.ActiveSubscriptionCount);
+
+        await using var subscription = stream.Subscribe();
+
+        await AssertNoEvent(subscription);
+    }
+
+    [Fact]
+    public async Task EventsAreBroadcastToEveryActiveSubscription()
+    {
+        var stream = new WorkEventStream();
+        await using var first = stream.Subscribe();
+        await using var second = stream.Subscribe();
+        await using var firstReader = first.Read().GetAsyncEnumerator();
+        await using var secondReader = second.Read().GetAsyncEnumerator();
+        var workEvent = CreateEvent(eventType: "worker.completed");
+
+        stream.Publish(workEvent);
+
+        Assert.Equal(workEvent, await ReadNext(firstReader));
+        Assert.Equal(workEvent, await ReadNext(secondReader));
+    }
+
+    [Fact]
+    public async Task FiltersByWorker()
+    {
+        var stream = new WorkEventStream();
+        var acceptedWorkerId = WorkerId.New();
+        await using var subscription = stream.Subscribe(new WorkEventFilter(WorkerId: acceptedWorkerId));
+        await using var reader = subscription.Read().GetAsyncEnumerator();
+        var ignored = CreateEvent(workerId: WorkerId.New(), eventType: "worker.queued");
+        var accepted = CreateEvent(workerId: acceptedWorkerId, eventType: "worker.started");
+
+        stream.Publish(ignored);
+        stream.Publish(accepted);
+
+        Assert.Equal(accepted, await ReadNext(reader));
+    }
+
+    [Fact]
+    public async Task FiltersByDefinition()
+    {
+        var stream = new WorkEventStream();
+        var acceptedDefinitionId = WorkDefinitionId.New();
+        await using var subscription = stream.Subscribe(new WorkEventFilter(DefinitionId: acceptedDefinitionId));
+        await using var reader = subscription.Read().GetAsyncEnumerator();
+        var ignored = CreateEvent(definitionId: WorkDefinitionId.New(), eventType: "worker.queued");
+        var accepted = CreateEvent(definitionId: acceptedDefinitionId, eventType: "worker.queued");
+
+        stream.Publish(ignored);
+        stream.Publish(accepted);
+
+        Assert.Equal(accepted, await ReadNext(reader));
+    }
+
+    [Fact]
+    public async Task FiltersByEventTypeIgnoringCase()
+    {
+        var stream = new WorkEventStream();
+        await using var subscription = stream.Subscribe(new WorkEventFilter(EventType: "WORKER.COMPLETED"));
+        await using var reader = subscription.Read().GetAsyncEnumerator();
+        var ignored = CreateEvent(eventType: "worker.started");
+        var accepted = CreateEvent(eventType: "worker.completed");
+
+        stream.Publish(ignored);
+        stream.Publish(accepted);
+
+        Assert.Equal(accepted, await ReadNext(reader));
+    }
+
+    [Fact]
+    public async Task FilterRequiresAllSpecifiedValuesToMatch()
+    {
+        var stream = new WorkEventStream();
+        var acceptedWorkerId = WorkerId.New();
+        var acceptedDefinitionId = WorkDefinitionId.New();
+        await using var subscription = stream.Subscribe(new WorkEventFilter(
+            WorkerId: acceptedWorkerId,
+            DefinitionId: acceptedDefinitionId,
+            EventType: "worker.completed"));
+        await using var reader = subscription.Read().GetAsyncEnumerator();
+        var ignoredByDefinition = CreateEvent(acceptedWorkerId, WorkDefinitionId.New(), eventType: "worker.completed");
+        var ignoredByType = CreateEvent(acceptedWorkerId, acceptedDefinitionId, eventType: "worker.failed");
+        var accepted = CreateEvent(acceptedWorkerId, acceptedDefinitionId, eventType: "worker.completed");
+
+        stream.Publish(ignoredByDefinition);
+        stream.Publish(ignoredByType);
+        stream.Publish(accepted);
+
+        Assert.Equal(accepted, await ReadNext(reader));
+    }
+
+    [Fact]
+    public async Task FiltersByIdentifier()
+    {
+        var stream = new WorkEventStream();
+        var identifier = new WorkIdentifier("invoice", "inv-100");
+        await using var subscription = stream.Subscribe(new WorkEventFilter(Identifier: identifier));
+        await using var reader = subscription.Read().GetAsyncEnumerator();
+        var ignored = CreateEvent(eventType: "worker.queued");
+        var accepted = CreateEvent(eventType: "worker.started", identifiers: new HashSet<WorkIdentifier> { identifier });
+
+        stream.Publish(ignored);
+        stream.Publish(accepted);
+
+        Assert.Equal(accepted, await ReadNext(reader));
+    }
+
+    [Fact]
+    public async Task DisposedSubscriptionStopsReceivingEventsAndIsRemoved()
+    {
+        var stream = new WorkEventStream();
+        var subscription = stream.Subscribe();
+
+        Assert.Equal(1, stream.ActiveSubscriptionCount);
+
+        await subscription.DisposeAsync();
+        stream.Publish(CreateEvent(eventType: "worker.queued"));
+
+        Assert.Equal(0, stream.ActiveSubscriptionCount);
+        await AssertCompleted(subscription);
+    }
+
+    [Fact]
+    public async Task CancelledReadRemovesSubscription()
+    {
+        var stream = new WorkEventStream();
+        await using var subscription = stream.Subscribe();
+
+        Assert.Equal(1, stream.ActiveSubscriptionCount);
+
+        await AssertNoEvent(subscription);
+
+        Assert.Equal(0, stream.ActiveSubscriptionCount);
+    }
+
+    [Fact]
+    public async Task DisposingStreamCompletesActiveReadersAndRemovesSubscriptions()
+    {
+        var stream = new WorkEventStream();
+        await using var subscription = stream.Subscribe();
+        await using var reader = subscription.Read().GetAsyncEnumerator();
+
+        await stream.DisposeAsync();
+
+        Assert.False(await reader.MoveNextAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(5)));
+        Assert.Equal(0, stream.ActiveSubscriptionCount);
+    }
+
+    [Fact]
+    public async Task DisposedStreamRejectsNewSubscriptions()
+    {
+        var stream = new WorkEventStream();
+
+        await stream.DisposeAsync();
+
+        Assert.Throws<ObjectDisposedException>(() => stream.Subscribe());
+    }
+
+    [Fact]
+    public async Task SubscriptionCapacityIsRequiredToBePositive()
+    {
+        var stream = new WorkEventStream();
+
+        await using var _ = stream;
+        Assert.Throws<ArgumentOutOfRangeException>(() => stream.Subscribe(options: new WorkEventSubscriptionOptions(Capacity: 0)));
+    }
+
+    [Fact]
+    public async Task BoundedSubscriptionsDropOldestByDefault()
+    {
+        var stream = new WorkEventStream();
+        await using var subscription = stream.Subscribe(options: new WorkEventSubscriptionOptions(Capacity: 2));
+        using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        await using var reader = subscription.Read(cancellation.Token).GetAsyncEnumerator();
+        var first = CreateEvent(eventType: "worker.queued");
+        var second = CreateEvent(eventType: "worker.started");
+        var third = CreateEvent(eventType: "worker.completed");
+
+        stream.Publish(first);
+        stream.Publish(second);
+        stream.Publish(third);
+
+        Assert.Equal(second, await ReadNext(reader));
+        Assert.Equal(third, await ReadNext(reader));
+
+        cancellation.CancelAfter(TimeSpan.FromMilliseconds(50));
+        await Assert.ThrowsAsync<OperationCanceledException>(async () => await reader.MoveNextAsync().AsTask());
+    }
+
+    [Fact]
+    public async Task BoundedSubscriptionsCanDropNewest()
+    {
+        var stream = new WorkEventStream();
+        await using var subscription = stream.Subscribe(options: new WorkEventSubscriptionOptions(
+            Capacity: 2,
+            OverflowBehavior: WorkEventOverflowBehavior.DropNewest));
+        using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        await using var reader = subscription.Read(cancellation.Token).GetAsyncEnumerator();
+        var first = CreateEvent(eventType: "worker.queued");
+        var second = CreateEvent(eventType: "worker.started");
+        var third = CreateEvent(eventType: "worker.completed");
+
+        stream.Publish(first);
+        stream.Publish(second);
+        stream.Publish(third);
+
+        Assert.Equal(first, await ReadNext(reader));
+        Assert.Equal(third, await ReadNext(reader));
+
+        cancellation.CancelAfter(TimeSpan.FromMilliseconds(50));
+        await Assert.ThrowsAsync<OperationCanceledException>(async () => await reader.MoveNextAsync().AsTask());
+    }
+
+    [Fact]
+    public async Task BoundedSubscriptionsCanDropWrites()
+    {
+        var stream = new WorkEventStream();
+        await using var subscription = stream.Subscribe(options: new WorkEventSubscriptionOptions(
+            Capacity: 2,
+            OverflowBehavior: WorkEventOverflowBehavior.DropWrite));
+        using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        await using var reader = subscription.Read(cancellation.Token).GetAsyncEnumerator();
+        var first = CreateEvent(eventType: "worker.queued");
+        var second = CreateEvent(eventType: "worker.started");
+        var third = CreateEvent(eventType: "worker.completed");
+
+        stream.Publish(first);
+        stream.Publish(second);
+        stream.Publish(third);
+
+        Assert.Equal(first, await ReadNext(reader));
+        Assert.Equal(second, await ReadNext(reader));
+
+        cancellation.CancelAfter(TimeSpan.FromMilliseconds(50));
+        await Assert.ThrowsAsync<OperationCanceledException>(async () => await reader.MoveNextAsync().AsTask());
+    }
+
+    [Fact]
+    public async Task SlowSubscriberDoesNotPreventOtherSubscribersFromReceivingEvents()
+    {
+        var stream = new WorkEventStream();
+        await using var slow = stream.Subscribe(options: new WorkEventSubscriptionOptions(Capacity: 1));
+        await using var fast = stream.Subscribe(options: new WorkEventSubscriptionOptions(Capacity: 4));
+        await using var fastReader = fast.Read().GetAsyncEnumerator();
+        var first = CreateEvent(eventType: "worker.queued");
+        var second = CreateEvent(eventType: "worker.started");
+        var third = CreateEvent(eventType: "worker.completed");
+
+        stream.Publish(first);
+        stream.Publish(second);
+        stream.Publish(third);
+
+        Assert.Equal(first, await ReadNext(fastReader));
+        Assert.Equal(second, await ReadNext(fastReader));
+        Assert.Equal(third, await ReadNext(fastReader));
+
+        await slow.DisposeAsync();
+    }
+
+    [Fact]
+    public async Task SystemEventsExposeSubscriptions()
+    {
+        var definition = WorkDefinition.Create("observe-queue", "Publishes a queued event.",
+            defaultOptions: WorkerOptionFixtures.DoNotStart());
+        var system = new ServiceCollection()
+            .AddWorkableSystem(builder => builder.AddWork(definition, SuccessfulWork))
+            .BuildServiceProvider()
+            .GetRequiredService<IWorkSystemRegistry>()
+            .Default;
+
+        await system.Start();
+
+        await using var subscription = system.Events.Subscribe(new WorkEventFilter(DefinitionId: definition.Id, EventType: "worker.queued"));
+        await using var reader = subscription.Read().GetAsyncEnumerator();
+
+        var handle = await system.Queue.Enqueue("observe-queue");
+        var workEvent = await ReadNext(reader);
+
+        Assert.True(handle.QueueOutcome.IsAccepted);
+        Assert.Equal(handle.WorkerId, workEvent.WorkerId);
+        Assert.Equal(definition.Id, workEvent.DefinitionId);
+        Assert.Equal("worker.queued", workEvent.EventType);
+    }
+
+    private static Task<WorkExecutionResult> SuccessfulWork(
+        IWorkExecutionContext context,
+        WorkInput? input,
+        CancellationToken cancellationToken)
+        => Task.FromResult(WorkExecutionResult.Success());
+
+    private static async Task<WorkEvent> ReadNext(IAsyncEnumerator<WorkEvent> reader)
+    {
+        var hasEvent = await reader.MoveNextAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.True(hasEvent);
+        return reader.Current;
+    }
+
+    private static async Task AssertNoEvent(IWorkEventSubscription subscription)
+    {
+        using var cancellation = new CancellationTokenSource(TimeSpan.FromMilliseconds(50));
+        await using var reader = subscription.Read(cancellation.Token).GetAsyncEnumerator();
+
+        await Assert.ThrowsAsync<OperationCanceledException>(async () => await reader.MoveNextAsync().AsTask());
+    }
+
+    private static async Task AssertCompleted(IWorkEventSubscription subscription)
+    {
+        await using var reader = subscription.Read().GetAsyncEnumerator();
+
+        Assert.False(await reader.MoveNextAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(5)));
+    }
+
+    private static WorkEvent CreateEvent(
+        WorkerId? workerId = null,
+        WorkDefinitionId? definitionId = null,
+        WorkSystemId? workSystemId = null,
+        IReadOnlySet<WorkIdentifier>? identifiers = null,
+        string eventType = "worker.queued")
+        => new(
+            DateTimeOffset.UtcNow,
+            workSystemId ?? WorkSystemId.New(),
+            workerId ?? WorkerId.New(),
+            definitionId ?? WorkDefinitionId.New(),
+            null,
+            null,
+            identifiers ?? new HashSet<WorkIdentifier>(),
+            null,
+            eventType,
+            null,
+            []);
+}

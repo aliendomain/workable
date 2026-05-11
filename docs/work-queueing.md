@@ -1,0 +1,289 @@
+# Work Queueing
+
+## Intent
+
+Queueing creates a worker for a registered work definition. `IWorkSystem.Queue` accepts work, validates the request, returns an immediate queue outcome, and provides a handle that can be awaited for completion.
+
+## Queue By Name
+
+Queue by work definition name when the caller knows the registered name.
+
+```csharp
+IWorkerHandle handle = await workSystem.Queue.Enqueue(
+    "email.welcome.send",
+    cancellationToken: cancellationToken);
+```
+
+The name is matched case-insensitively within the system catalog.
+
+## Queue By Definition Id
+
+Queue by `WorkDefinitionId` when the caller already has a definition from the catalog or query API.
+
+```csharp
+WorkDefinition definition = workSystem.Catalog.Definitions
+    .Single(definition => definition.Name == "email.welcome.send");
+
+IWorkerHandle handle = await workSystem.Queue.Enqueue(
+    definition.Id,
+    cancellationToken: cancellationToken);
+```
+
+## Work Input
+
+`WorkInput` carries serialized input data plus optional identity and grouping metadata.
+
+```csharp
+var input = WorkInput.FromValue(
+    new SendWelcomeEmail("user-123"),
+    subjectId: new WorkSubjectId("user", "user-123"));
+
+IWorkerHandle handle = await workSystem.Queue.Enqueue(
+    "email.welcome.send",
+    input,
+    cancellationToken: cancellationToken);
+```
+
+When queueing from C#, typed input can be passed directly to `IWorkQueue`. Workable serializes it into `WorkInput`.
+
+```csharp
+IWorkerHandle handle = await workSystem.Queue.Enqueue(
+    "email.welcome.send",
+    new SendWelcomeEmailArgs("user-123"),
+    cancellationToken: cancellationToken);
+```
+
+Typed input can also be queued by definition id.
+
+```csharp
+IWorkerHandle handle = await workSystem.Queue.Enqueue(
+    definition.Id,
+    new SendWelcomeEmailArgs("user-123"),
+    cancellationToken: cancellationToken);
+```
+
+Use `WorkInput.Empty` when the work does not need input data.
+
+```csharp
+await workSystem.Queue.Enqueue("cache.refresh", WorkInput.Empty, cancellationToken: cancellationToken);
+```
+
+## Subject Id
+
+`WorkSubjectId` identifies the business subject of the worker. It can be used for query, correlation, event filtering, and idempotency.
+
+```csharp
+var input = WorkInput.Empty
+    .WithSubject(new WorkSubjectId("order", "order-456"));
+```
+
+Supplying a subject does not reject duplicates by itself. Duplicate prevention is controlled by idempotency configuration.
+
+## Concurrency Key
+
+`WorkConcurrencyKey` groups workers when concurrency is configured with `PerConcurrencyKey`.
+
+```csharp
+var input = WorkInput.Empty
+    .WithConcurrencyKey(new WorkConcurrencyKey("tenant", "tenant-123"));
+```
+
+Supplying a concurrency key does not limit execution by itself. Capacity limits are controlled by concurrency configuration.
+
+## Work Identifiers
+
+`WorkIdentifier` adds arbitrary relationships that can be queried and used for event filtering.
+
+```csharp
+var input = WorkInput.Empty
+    .WithIdentifier(new WorkIdentifier("customer", "customer-123"))
+    .WithIdentifier(new WorkIdentifier("invoice", "invoice-789"));
+```
+
+Identifiers supplied with input are available on `WorkerSummary`, `WorkerSnapshot`, and `WorkEvent`.
+
+## Queue Options
+
+`WorkerOptions` can override execution options for the queued worker.
+
+```csharp
+var options = new WorkerOptions(
+    ProfilingEnabled: true);
+
+IWorkerHandle handle = await workSystem.Queue.Enqueue(
+    "email.welcome.send",
+    input: WorkInput.Empty,
+    options: options,
+    cancellationToken: cancellationToken);
+```
+
+When profiling is enabled, Workable captures a per-worker execution tree. The tree includes Workable's executor call scope and any profile scopes, timings, or info entries added through `IWorkExecutionContext.Profile` or injected `IWorkProfiler` services during execution. The captured profile is exposed on `WorkerSnapshot.Profile`.
+
+`WorkerOptions.Configuration` can override runtime configuration for the queued worker.
+
+```csharp
+var options = new WorkerOptions(
+    Configuration: WorkConfiguration.Default with
+    {
+        Start = WorkStartConfiguration.DoNotStart,
+    });
+
+IWorkerHandle handle = await workSystem.Queue.Enqueue(
+    "email.welcome.send",
+    options: options,
+    cancellationToken: cancellationToken);
+```
+
+Configuration supplied through queue options is merged over the definition defaults.
+
+## .NET Origin
+
+Direct .NET queue calls record a `WorkOrigin` with `WorkInvocationChannel.DotNet`. By default, the actor is unknown.
+
+Hosts can provide an origin provider for direct .NET calls:
+
+```csharp
+services.AddWorkableSystem(builder =>
+{
+    builder.UseDotNetOriginProvider<MyDotNetOriginProvider>();
+});
+
+public sealed class MyDotNetOriginProvider : IDotNetWorkOriginProvider
+{
+    public WorkOrigin CreateOrigin(string description)
+        => WorkOrigin.Create(
+            WorkInvocationChannel.DotNet,
+            new WorkActor(Id: "current-user-id"),
+            description);
+}
+```
+
+ASP.NET Core hosts can use `Workable.AspNetCore` to record actor information from `HttpContext.User` for direct .NET queue calls made inside their own controllers or minimal API routes. This does not expose Workable HTTP API endpoints.
+
+```csharp
+services.AddWorkableSystem(builder =>
+{
+    builder.StartWithHost();
+});
+
+services.AddWorkableAspNetCoreOrigins();
+```
+
+`Workable.HttpApi` also registers this ASP.NET Core origin provider when `AddWorkableHttpApi` is used.
+
+## Queue Outcome
+
+`Enqueue` returns an `IWorkerHandle`. The handle always includes a `WorkQueueOutcome`.
+
+```csharp
+IWorkerHandle handle = await workSystem.Queue.Enqueue("email.welcome.send");
+
+if (!handle.QueueOutcome.IsAccepted)
+{
+    IReadOnlyList<WorkMessage> messages = handle.QueueOutcome.Messages;
+    return;
+}
+
+WorkerId workerId = handle.WorkerId!.Value;
+```
+
+Queue outcome statuses are:
+
+- `Accepted`: a worker was created.
+- `Invalid`: validation rejected the request.
+- `NotFound`: no matching work definition was found.
+
+Validation failures are returned as structured `WorkMessage` values. If the system is stopping, queueing returns `Invalid` with message code `workable.system.stopping`.
+
+## Await Completion
+
+Use `WaitForCompletion` when the caller needs the final result.
+
+```csharp
+IWorkerHandle handle = await workSystem.Queue.Enqueue("email.welcome.send");
+WorkCompletion completion = await handle.WaitForCompletion(cancellationToken);
+
+if (completion.IsCompletedSuccessfully)
+{
+    WorkOutput? output = completion.Output;
+}
+```
+
+`WorkCompletion` includes completion status, the final worker snapshot when one exists, output, and messages.
+
+When the work returns typed output, the handle can deserialize the completed output for the caller.
+
+```csharp
+IWorkerHandle handle = await workSystem.Queue.Enqueue(
+    "email.welcome.send",
+    new SendWelcomeEmailArgs("user-123"),
+    cancellationToken: cancellationToken);
+
+WorkCompletion<SendWelcomeEmailResult> completion =
+    await handle.WaitForCompletion<SendWelcomeEmailResult>(cancellationToken);
+
+if (completion.IsCompletedSuccessfully)
+{
+    string messageId = completion.Output!.MessageId;
+}
+```
+
+Typed completions preserve the raw serialized `WorkOutput` on `RawOutput`, along with status, messages, and the final worker snapshot.
+
+## Fire And Forget
+
+A caller can discard the handle after queueing. Accepted workers continue independently of the caller.
+
+```csharp
+await workSystem.Queue.Enqueue("email.welcome.send", input);
+```
+
+Use `WorkerId`, query filters, or event filters when the worker needs to be found later.
+
+## Queue Cancellation
+
+The cancellation token passed to `Enqueue` applies to queue acceptance and configured queue wait behavior. It does not become the execution cancellation token for the worker after the worker has been accepted.
+
+```csharp
+using var queueTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+
+IWorkerHandle handle = await workSystem.Queue.Enqueue(
+    "email.welcome.send",
+    cancellationToken: queueTimeout.Token);
+```
+
+Use worker actions to control an accepted worker.
+
+```csharp
+WorkerSnapshot? worker = await workSystem.Query.GetWorker(handle.WorkerId!.Value);
+
+if (worker is not null)
+{
+    await workSystem.Workers.Execute(worker.Version, WorkAction.Cancel, cancellationToken);
+}
+```
+
+## Start Configuration
+
+Start configuration controls whether queueing starts the worker automatically and when `Enqueue` returns.
+
+```csharp
+var options = new WorkerOptions(
+    Configuration: WorkConfiguration.Default with
+    {
+        Start = WorkStartConfiguration.DoNotStart,
+    });
+
+IWorkerHandle handle = await workSystem.Queue.Enqueue(
+    "email.welcome.send",
+    options: options,
+    cancellationToken: cancellationToken);
+```
+
+See [Start Configuration](work-configuration-start.md) for the available policies and behavior.
+
+## Configuration
+
+Queueing applies definition configuration, contributed configuration, and queue options before accepting the worker. Workable has configuration options for start behavior, idempotency, recurrence, transient retry, logging, retention, and concurrency.
+
+See [Work Configuration](work-configuration.md) for the configuration surface and the per-feature configuration documents.

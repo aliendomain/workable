@@ -1,0 +1,38 @@
+<Solution>
+  <Folder Name="/Solution Items/">
+    <File Path=".editorconfig" />
+    <File Path="README.md" />
+  </Folder>
+  <Folder Name="/Docs/">
+    <File Path="docs/core-api-surface.md" />
+    <File Path="docs/execution-engine.md" />
+    <File Path="docs/getting-started.md" />
+    <File Path="docs/project-structure.md" />
+    <File Path="docs/work-configuration-concurrency.md" />
+    <File Path="docs/work-configuration-idempotency.md" />
+    <File Path="docs/work-configuration-invocation.md" />
+    <File Path="docs/work-configuration-interactions.md" />
+    <File Path="docs/work-configuration-logging.md" />
+    <File Path="docs/work-configuration-recurrence.md" />
+    <File Path="docs/work-configuration-retention.md" />
+    <File Path="docs/work-configuration-start.md" />
+    <File Path="docs/work-configuration-transient-retry.md" />
+    <File Path="docs/work-configuration.md" />
+    <File Path="docs/work-http-api.md" />
+    <File Path="docs/work-lifecycle.md" />
+    <File Path="docs/work-mcp.md" />
+    <File Path="docs/work-observability.md" />
+    <File Path="docs/work-profiling.md" />
+    <File Path="docs/work-queueing.md" />
+    <File Path="docs/work-querying.md" />
+    <File Path="docs/work-registration.md" />
+  </Folder>
+  <Project Path="src/Workable.Sdk/Workable.Sdk.csproj" />
+  <Project Path="src/Workable.Abstractions/Workable.Abstractions.csproj" />
+  <Project Path="src/Workable/Workable.csproj" />
+  <Project Path="src/Workable.AspNetCore/Workable.AspNetCore.csproj" />
+  <Project Path="src/Workable.HttpApi/Workable.HttpApi.csproj" />
+  <Project Path="src/Workable.Mcp/Workable.Mcp.csproj" />
+  <Project Path="samples/Workable.SampleHost/Workable.SampleHost.csproj" />
+  <Project Path="tests/Workable.Tests/Workable.Tests.csproj" />
+</Solution>
