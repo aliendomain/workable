@@ -517,7 +517,9 @@ internal sealed class WorkerRecord(
                 return WorkActionOutcome.Invalid(WorkAction.Start, this.ToSnapshotLocked(), configurationErrors);
             }
 
-            var concurrencyInputErrors = ValidateConcurrencyInput(configuration.Concurrency, this.Input);
+            var concurrencyInputErrors = WorkConfigurationValidator.ValidateConcurrencyInput(
+                concurrency: configuration.Concurrency,
+                input: this.Input);
             if (concurrencyInputErrors.Count > 0)
             {
                 return WorkActionOutcome.Invalid(WorkAction.Start, this.ToSnapshotLocked(), concurrencyInputErrors);
@@ -1157,31 +1159,6 @@ internal sealed class WorkerRecord(
         }
 
         return metadata;
-    }
-
-    private static IReadOnlyList<WorkMessage> ValidateConcurrencyInput(
-        WorkConcurrencyConfiguration concurrency,
-        WorkInput? input)
-    {
-        if (!concurrency.IsEnabled)
-        {
-            return [];
-        }
-
-        return concurrency.Scope switch
-        {
-            WorkConcurrencyScope.PerSubject when input?.SubjectId is null =>
-                [WorkMessage.Error(
-                    "workable.concurrency.subject_required",
-                    "Concurrency scoped by subject requires a work subject id.",
-                    "input.subjectId")],
-            WorkConcurrencyScope.PerConcurrencyKey when input?.ConcurrencyKey is null =>
-                [WorkMessage.Error(
-                    "workable.concurrency.key_required",
-                    "Concurrency scoped by concurrency key requires a work concurrency key.",
-                    "input.concurrencyKey")],
-            _ => [],
-        };
     }
 
     private readonly record struct CheckedWorkerTransition(

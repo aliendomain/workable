@@ -233,6 +233,40 @@ public sealed class WorkConcurrencyConfigurationTests
             message.Target == "input.concurrencyKey");
     }
 
+    [Fact]
+    public void ConcurrencyInputValidationIsSharedAndRejectsMissingSubject()
+    {
+        var messages = WorkConfigurationValidator.ValidateConcurrencyInput(
+            concurrency: WorkConcurrencyConfiguration.Default with
+            {
+                IsEnabled = true,
+                MaximumCapacity = 1,
+                Scope = WorkConcurrencyScope.PerSubject,
+            },
+            input: WorkInput.Empty);
+
+        var message = Assert.Single(messages);
+        Assert.Equal("workable.concurrency.subject_required", message.Code);
+        Assert.Equal("input.subjectId", message.Target);
+    }
+
+    [Fact]
+    public void ConcurrencyInputValidationIsSharedAndRejectsMissingConcurrencyKey()
+    {
+        var messages = WorkConfigurationValidator.ValidateConcurrencyInput(
+            concurrency: WorkConcurrencyConfiguration.Default with
+            {
+                IsEnabled = true,
+                MaximumCapacity = 1,
+                Scope = WorkConcurrencyScope.PerConcurrencyKey,
+            },
+            input: WorkInput.Empty);
+
+        var message = Assert.Single(messages);
+        Assert.Equal("workable.concurrency.key_required", message.Code);
+        Assert.Equal("input.concurrencyKey", message.Target);
+    }
+
     private static WorkConcurrencyConfiguration FullConcurrencyConfiguration()
         => new()
         {
