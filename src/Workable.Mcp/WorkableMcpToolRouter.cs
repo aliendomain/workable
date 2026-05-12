@@ -7,6 +7,9 @@ namespace Workable;
 
 public sealed class WorkableMcpToolRouter(IWorkSystemRegistry registry)
 {
+    private const string WorkToolNamePrefix = "workable_work_";
+    private const string WorkToolNameBase = "workable_work";
+
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
     {
         WriteIndented = false,
@@ -75,8 +78,11 @@ public sealed class WorkableMcpToolRouter(IWorkSystemRegistry registry)
             return systemError;
         }
 
-        if (options.IncludeWorkTools &&
-            TryGetWorkToolName(system, toolName, options.ToolCatalog, out var workName))
+        var workTools = options.IncludeWorkTools
+            ? CreateWorkTools(system, options.ToolCatalog)
+            : [];
+
+        if (TryGetWorkToolName(workTools, toolName, out var workName))
         {
             var invocation = origin is null
                 ? await system.InvokeMcpTool(workName, arguments, options.Invocation, cancellationToken)
@@ -127,7 +133,7 @@ public sealed class WorkableMcpToolRouter(IWorkSystemRegistry registry)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(workName);
 
-        var builder = new StringBuilder("workable_work_");
+        var builder = new StringBuilder(WorkToolNamePrefix);
         var previousWasSeparator = false;
         foreach (var character in workName)
         {
@@ -146,7 +152,7 @@ public sealed class WorkableMcpToolRouter(IWorkSystemRegistry registry)
         }
 
         var toolName = builder.ToString().TrimEnd('_');
-        return LimitToolName(toolName.Length == "workable_work".Length ? "workable_work" : toolName);
+        return LimitToolName(toolName.Length == WorkToolNameBase.Length ? WorkToolNameBase : toolName);
     }
 
     private static IReadOnlyList<WorkableMcpServerToolDescriptor> CreateWorkTools(
@@ -349,12 +355,11 @@ public sealed class WorkableMcpToolRouter(IWorkSystemRegistry registry)
     }
 
     private static bool TryGetWorkToolName(
-        IWorkSystem system,
+        IReadOnlyList<WorkableMcpServerToolDescriptor> descriptors,
         string toolName,
-        WorkableMcpToolCatalogOptions catalogOptions,
         out string workName)
     {
-        var descriptor = CreateWorkTools(system, catalogOptions)
+        var descriptor = descriptors
             .Where(descriptor => string.Equals(descriptor.ToolName, toolName, StringComparison.Ordinal))
             .FirstOrDefault();
         if (descriptor is not null)
@@ -398,18 +403,18 @@ public sealed class WorkableMcpToolRouter(IWorkSystemRegistry registry)
     private bool TryResolveSystem(
         string? systemName,
         [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out IWorkSystem? system,
-        out WorkableMcpToolResult error)
+        [System.Diagnostics.CodeAnalysis.NotNullWhen(false)] out WorkableMcpToolResult? error)
     {
         if (string.IsNullOrWhiteSpace(systemName))
         {
             system = registry.Default;
-            error = null!;
+            error = null;
             return true;
         }
 
         if (registry.TryGet(systemName, out system))
         {
-            error = null!;
+            error = null;
             return true;
         }
 
