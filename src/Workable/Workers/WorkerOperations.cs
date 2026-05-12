@@ -1309,6 +1309,7 @@ internal sealed class WorkerOperations : IWorkerOperations, IWorkQuery, IDisposa
             }
             catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
             {
+                return;
             }
         }
 
@@ -1333,6 +1334,7 @@ internal sealed class WorkerOperations : IWorkerOperations, IWorkQuery, IDisposa
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
+                return;
             }
         }
     }

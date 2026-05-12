@@ -29,19 +29,11 @@ internal sealed class WorkExceptionClassifierChain(
     }
 
     private WorkExceptionClassification Classify(IReadOnlyList<WorkExceptionClassifier> classifiers, Exception exception)
-    {
-        foreach (var classifier in classifiers)
-        {
-            var classification = this.ClassifySafely(classifier, exception);
-
-            if (classification != WorkExceptionClassification.Unknown)
-            {
-                return classification;
-            }
-        }
-
-        return WorkExceptionClassification.Unknown;
-    }
+        => classifiers
+            .Select(classifier => this.ClassifySafely(classifier, exception))
+            .FirstOrDefault(
+                classification => classification != WorkExceptionClassification.Unknown,
+                WorkExceptionClassification.Unknown);
 
     private WorkExceptionClassification ClassifySafely(WorkExceptionClassifier classifier, Exception exception)
     {
