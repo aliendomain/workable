@@ -99,7 +99,9 @@ internal sealed class WorkerOperations : IWorkerOperations, IWorkQuery, IDisposa
             return WorkerHandle.Rejected(WorkQueueOutcome.Invalid(registeredWork.Definition.Id, configurationErrors));
         }
 
-        var concurrencyInputErrors = ValidateConcurrencyInput(input, configuration.Concurrency);
+        var concurrencyInputErrors = WorkConfigurationValidator.ValidateConcurrencyInput(
+            concurrency: configuration.Concurrency,
+            input: input);
         if (concurrencyInputErrors.Count > 0)
         {
             return WorkerHandle.Rejected(WorkQueueOutcome.Invalid(registeredWork.Definition.Id, concurrencyInputErrors));
@@ -773,31 +775,6 @@ internal sealed class WorkerOperations : IWorkerOperations, IWorkQuery, IDisposa
                 "workable.idempotency.duplicate_subject",
                 $"A worker already exists for work subject '{requiredSubjectId}'.",
                 "input.subjectId")];
-    }
-
-    private static IReadOnlyList<WorkMessage> ValidateConcurrencyInput(
-        WorkInput? input,
-        WorkConcurrencyConfiguration concurrency)
-    {
-        if (!concurrency.IsEnabled)
-        {
-            return [];
-        }
-
-        return concurrency.Scope switch
-        {
-            WorkConcurrencyScope.PerSubject when input?.SubjectId is null =>
-                [WorkMessage.Error(
-                    "workable.concurrency.subject_required",
-                    "Concurrency scoped by subject requires a work subject id.",
-                    "input.subjectId")],
-            WorkConcurrencyScope.PerConcurrencyKey when input?.ConcurrencyKey is null =>
-                [WorkMessage.Error(
-                    "workable.concurrency.key_required",
-                    "Concurrency scoped by concurrency key requires a work concurrency key.",
-                    "input.concurrencyKey")],
-            _ => [],
-        };
     }
 
     private IReadOnlyList<WorkerSnapshot> GetSubjectWorkersLocked(WorkSubjectId subjectId)
