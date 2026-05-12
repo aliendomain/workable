@@ -6,6 +6,8 @@ namespace Workable.Tests;
 [Trait("Category", "Concurrency")]
 public sealed class WorkConcurrencyConfigurationTests
 {
+    private const int TestMaximumCapacity = 7;
+
     [Fact]
     public void DefaultsMatchConfiguredValuesAndAreDisabled()
     {
@@ -91,7 +93,7 @@ public sealed class WorkConcurrencyConfigurationTests
                     MaximumCapacity = 1,
                 },
             });
-        var system = CreateSystem(definition, SuccessfulWork);
+        var system = CreateSystem(definition, ExecuteSuccessfulWork);
 
         await system.Start();
 
@@ -111,7 +113,7 @@ public sealed class WorkConcurrencyConfigurationTests
     public async Task QueueOptionsWithInvalidConfigurationReturnInvalidOutcome()
     {
         var definition = WorkDefinition.Create("invalid-concurrency-queue", "Queue override is invalid.");
-        var system = CreateSystem(definition, SuccessfulWork);
+        var system = CreateSystem(definition, ExecuteSuccessfulWork);
 
         await system.Start();
 
@@ -139,7 +141,7 @@ public sealed class WorkConcurrencyConfigurationTests
     {
         var definition = WorkDefinition.Create("runtime-concurrency", "Can change concurrency configuration while queued.",
             defaultOptions: WorkerOptionFixtures.DoNotStart());
-        var system = CreateSystem(definition, SuccessfulWork);
+        var system = CreateSystem(definition, ExecuteSuccessfulWork);
 
         await system.Start();
 
@@ -159,7 +161,7 @@ public sealed class WorkConcurrencyConfigurationTests
     {
         var definition = WorkDefinition.Create("runtime-invalid-concurrency", "Rejects invalid concurrency config while queued.",
             defaultOptions: WorkerOptionFixtures.DoNotStart());
-        var system = CreateSystem(definition, SuccessfulWork);
+        var system = CreateSystem(definition, ExecuteSuccessfulWork);
 
         await system.Start();
 
@@ -184,7 +186,7 @@ public sealed class WorkConcurrencyConfigurationTests
     {
         var definition = WorkDefinition.Create("runtime-missing-subject", "Rejects subject-scoped concurrency without input subject.",
             defaultOptions: WorkerOptionFixtures.DoNotStart());
-        var system = CreateSystem(definition, SuccessfulWork);
+        var system = CreateSystem(definition, ExecuteSuccessfulWork);
 
         await system.Start();
 
@@ -211,7 +213,7 @@ public sealed class WorkConcurrencyConfigurationTests
     {
         var definition = WorkDefinition.Create("runtime-missing-key", "Rejects key-scoped concurrency without input key.",
             defaultOptions: WorkerOptionFixtures.DoNotStart());
-        var system = CreateSystem(definition, SuccessfulWork);
+        var system = CreateSystem(definition, ExecuteSuccessfulWork);
 
         await system.Start();
 
@@ -271,7 +273,7 @@ public sealed class WorkConcurrencyConfigurationTests
         => new()
         {
             IsEnabled = true,
-            MaximumCapacity = 7,
+            MaximumCapacity = TestMaximumCapacity,
             Scope = WorkConcurrencyScope.PerDefinition,
             BlockingMode = WorkConcurrencyBlockingMode.WhileExecuting,
             LimitReachedBehavior = WorkConcurrencyLimitReachedBehavior.DeferStart,
@@ -308,12 +310,12 @@ public sealed class WorkConcurrencyConfigurationTests
         Assert.Equal(expected.OverrideBehavior, actual.OverrideBehavior);
     }
 
-    private static Task<WorkExecutionResult> SuccessfulWork(IWorkExecutionContext context, WorkInput? input, CancellationToken cancellationToken)
+    private static Task<WorkExecutionResult> ExecuteSuccessfulWork(IWorkExecutionContext context, WorkInput? input, CancellationToken cancellationToken)
         => Task.FromResult(WorkExecutionResult.Success());
 
     [WorkConcurrency(
         isEnabled: true,
-        maximumCapacity: 7,
+        maximumCapacity: TestMaximumCapacity,
         scope: WorkConcurrencyScope.PerDefinition,
         blockingMode: WorkConcurrencyBlockingMode.WhileExecuting,
         limitReachedBehavior: WorkConcurrencyLimitReachedBehavior.DeferStart,
