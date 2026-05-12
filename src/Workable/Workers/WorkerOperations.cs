@@ -589,6 +589,7 @@ internal sealed class WorkerOperations : IWorkerOperations, IWorkQuery, IDisposa
         }
         catch (TimeoutException)
         {
+            return;
         }
     }
 
@@ -918,6 +919,7 @@ internal sealed class WorkerOperations : IWorkerOperations, IWorkQuery, IDisposa
             }
             catch (OperationCanceledException)
             {
+                return;
             }
         }
 
