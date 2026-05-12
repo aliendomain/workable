@@ -150,6 +150,25 @@ public sealed class WorkExceptionClassificationTests
         Assert.Contains("Transient: True", log.Message);
     }
 
+    [Fact]
+    public async Task ThrowingClassifierIsLoggedAndNextClassifierCanClassify()
+    {
+        var (completion, logs) = await RunThrowingWork(
+            configureServices: services => services.AddWorkable(builder =>
+            {
+                builder.ClassifyExceptions(_ => throw new InvalidOperationException("Classifier failed."));
+                builder.ClassifyExceptions(_ => WorkExceptionClassification.Transient);
+            }),
+            configureSystem: null,
+            configureWork: null);
+
+        AssertExceptionClassification(completion, WorkExceptionClassification.Transient, expectedTransient: true);
+        Assert.Contains(logs, log =>
+            log.Level == LogLevel.Warning &&
+            log.Exception is InvalidOperationException &&
+            log.Message.Contains("classifier failed", StringComparison.OrdinalIgnoreCase));
+    }
+
     private static async Task<(WorkCompletion Completion, IReadOnlyList<LogEntry> Logs)> RunThrowingWork(
         Action<IServiceCollection>? configureServices,
         Action<IWorkSystemBuilder>? configureSystem,

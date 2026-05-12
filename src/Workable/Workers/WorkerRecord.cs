@@ -171,7 +171,7 @@ internal sealed class WorkerRecord(
             completionToSignal = this.completion;
         }
 
-        _ = CompleteWhenExecutionFinishes(task, completionToSignal);
+        CompleteWhenExecutionFinishes(task, completionToSignal);
     }
 
     public WorkActionOutcome RequestPause(long expectedRevision)
@@ -783,18 +783,38 @@ internal sealed class WorkerRecord(
     private static TaskCompletionSource CreateSignalSource()
         => new(TaskCreationOptions.RunContinuationsAsynchronously);
 
-    private static async Task CompleteWhenExecutionFinishes(
+    private static void CompleteWhenExecutionFinishes(
         Task<WorkCompletion> execution,
         TaskCompletionSource<WorkCompletion> completion)
     {
-        try
-        {
-            completion.TrySetResult(await execution);
-        }
-        catch (Exception ex)
-        {
-            completion.TrySetException(ex);
-        }
+        _ = execution.ContinueWith(
+            static (completedExecution, state) =>
+            {
+                var completion = (TaskCompletionSource<WorkCompletion>)state!;
+                if (completedExecution.IsCompletedSuccessfully)
+                {
+                    completion.TrySetResult(completedExecution.Result);
+                    return;
+                }
+
+                if (completedExecution.IsCanceled)
+                {
+                    completion.TrySetCanceled();
+                    return;
+                }
+
+                if (completedExecution.Exception is { } exception)
+                {
+                    completion.TrySetException(exception.InnerExceptions);
+                    return;
+                }
+
+                completion.TrySetException(new InvalidOperationException("Worker execution finished without a completion result."));
+            },
+            completion,
+            CancellationToken.None,
+            TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
     }
 
     private void SetCompletionLocked(WorkCompletionStatus status)
