@@ -1,3 +1,4 @@
+using System.Reflection;
 using Microsoft.Extensions.Logging;
 
 namespace Workable;
@@ -31,16 +32,7 @@ internal sealed class WorkExceptionClassifierChain(
     {
         foreach (var classifier in classifiers)
         {
-            WorkExceptionClassification classification;
-            try
-            {
-                classification = classifier(exception);
-            }
-            catch (Exception classifierException)
-            {
-                logger?.LogWarning(classifierException, "A Workable exception classifier failed while classifying an execution exception.");
-                continue;
-            }
+            var classification = this.ClassifySafely(classifier, exception);
 
             if (classification != WorkExceptionClassification.Unknown)
             {
@@ -49,5 +41,20 @@ internal sealed class WorkExceptionClassifierChain(
         }
 
         return WorkExceptionClassification.Unknown;
+    }
+
+    private WorkExceptionClassification ClassifySafely(WorkExceptionClassifier classifier, Exception exception)
+    {
+        try
+        {
+            return (WorkExceptionClassification)classifier.DynamicInvoke(exception)!;
+        }
+        catch (TargetInvocationException classifierException)
+        {
+            logger?.LogWarning(
+                classifierException.InnerException ?? classifierException,
+                "A Workable exception classifier failed while classifying an execution exception.");
+            return WorkExceptionClassification.Unknown;
+        }
     }
 }
