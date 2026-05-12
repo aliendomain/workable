@@ -26,6 +26,31 @@ internal static class WorkConfigurationValidator
         return messages;
     }
 
+    public static IReadOnlyList<WorkMessage> ValidateConcurrencyInput(
+        WorkConcurrencyConfiguration concurrency,
+        WorkInput? input)
+    {
+        if (!concurrency.IsEnabled)
+        {
+            return [];
+        }
+
+        return concurrency.Scope switch
+        {
+            WorkConcurrencyScope.PerSubject when input?.SubjectId is null =>
+                [ConcurrencyInputError(
+                    "workable.concurrency.subject_required",
+                    "Concurrency scoped by subject requires a work subject id.",
+                    "input.subjectId")],
+            WorkConcurrencyScope.PerConcurrencyKey when input?.ConcurrencyKey is null =>
+                [ConcurrencyInputError(
+                    "workable.concurrency.key_required",
+                    "Concurrency scoped by concurrency key requires a work concurrency key.",
+                    "input.concurrencyKey")],
+            _ => [],
+        };
+    }
+
     private static void ValidateRecurrence(WorkRecurrenceConfiguration recurrence, List<WorkMessage> messages)
     {
         if (recurrence.IsEnabled && recurrence.Interval <= TimeSpan.Zero)
@@ -161,4 +186,10 @@ internal static class WorkConfigurationValidator
                 "configuration.invocation.allowedChannels"));
         }
     }
+
+    private static WorkMessage ConcurrencyInputError(
+        string code,
+        string message,
+        string path)
+        => WorkMessage.Error(code, message, path);
 }
