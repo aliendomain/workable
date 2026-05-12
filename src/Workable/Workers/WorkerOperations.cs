@@ -1303,14 +1303,7 @@ internal sealed class WorkerOperations : IWorkerOperations, IWorkQuery, IDisposa
                 return;
             }
 
-            try
-            {
-                await task.WaitAsync(cancellationToken);
-            }
-            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
-            {
-                return;
-            }
+            await WaitForDispatcherCompletion(task, cancellationToken);
         }
 
         public void Dispose()
@@ -1325,16 +1318,36 @@ internal sealed class WorkerOperations : IWorkerOperations, IWorkQuery, IDisposa
 
         private async Task Run(CancellationToken cancellationToken)
         {
-            try
+            await foreach (var worker in this.scheduledWorkers.Reader.ReadAllAsync(cancellationToken))
             {
-                await foreach (var worker in this.scheduledWorkers.Reader.ReadAllAsync(cancellationToken))
+                await dispatch(worker, cancellationToken);
+            }
+        }
+
+        private static async Task WaitForDispatcherCompletion(Task task, CancellationToken cancellationToken)
+        {
+            if (!task.IsCompleted)
+            {
+                var cancellation = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+                using var registration = cancellationToken.UnsafeRegister(
+                    static state =>
+                    {
+                        if (state is TaskCompletionSource cancellation)
+                        {
+                            cancellation.TrySetResult();
+                        }
+                    },
+                    cancellation);
+
+                if (await Task.WhenAny(task, cancellation.Task) != task)
                 {
-                    await dispatch(worker, cancellationToken);
+                    cancellationToken.ThrowIfCancellationRequested();
                 }
             }
-            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+
+            if (task.IsFaulted)
             {
-                return;
+                await task;
             }
         }
     }
