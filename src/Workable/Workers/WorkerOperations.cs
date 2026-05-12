@@ -1266,7 +1266,7 @@ internal sealed class WorkerOperations : IWorkerOperations, IWorkQuery, IDisposa
 
         private readonly Lock sync = new();
         private CancellationTokenSource? cancellation;
-        private Task? dispatchTask;
+        private Task<DispatcherCompletion>? dispatchTask;
 
         public void Start(CancellationToken cancellationToken)
         {
@@ -1291,7 +1291,7 @@ internal sealed class WorkerOperations : IWorkerOperations, IWorkQuery, IDisposa
 
         public async Task Stop(CancellationToken cancellationToken)
         {
-            Task? task;
+            Task<DispatcherCompletion>? task;
             lock (this.sync)
             {
                 this.cancellation?.Cancel();
@@ -1316,15 +1316,26 @@ internal sealed class WorkerOperations : IWorkerOperations, IWorkQuery, IDisposa
             }
         }
 
-        private async Task Run(CancellationToken cancellationToken)
+        private async Task<DispatcherCompletion> Run(CancellationToken cancellationToken)
         {
-            await foreach (var worker in this.scheduledWorkers.Reader.ReadAllAsync(cancellationToken))
+            try
             {
-                await dispatch(worker, cancellationToken);
+                await foreach (var worker in this.scheduledWorkers.Reader.ReadAllAsync(cancellationToken))
+                {
+                    await dispatch(worker, cancellationToken);
+                }
+
+                return DispatcherCompletion.Completed;
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                return DispatcherCompletion.ShutdownCanceled;
             }
         }
 
-        private static async Task WaitForDispatcherCompletion(Task task, CancellationToken cancellationToken)
+        private static async Task<DispatcherCompletion> WaitForDispatcherCompletion(
+            Task<DispatcherCompletion> task,
+            CancellationToken cancellationToken)
         {
             if (!task.IsCompleted)
             {
@@ -1345,10 +1356,13 @@ internal sealed class WorkerOperations : IWorkerOperations, IWorkQuery, IDisposa
                 }
             }
 
-            if (task.IsFaulted)
-            {
-                await task;
-            }
+            return await task;
+        }
+
+        private enum DispatcherCompletion
+        {
+            Completed,
+            ShutdownCanceled,
         }
     }
 }
