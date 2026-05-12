@@ -354,13 +354,13 @@ public sealed class WorkableMcpToolRouter(IWorkSystemRegistry registry)
         WorkableMcpToolCatalogOptions catalogOptions,
         out string workName)
     {
-        foreach (var descriptor in CreateWorkTools(system, catalogOptions))
+        var descriptor = CreateWorkTools(system, catalogOptions)
+            .Where(descriptor => string.Equals(descriptor.ToolName, toolName, StringComparison.Ordinal))
+            .FirstOrDefault();
+        if (descriptor is not null)
         {
-            if (string.Equals(descriptor.ToolName, toolName, StringComparison.Ordinal))
-            {
-                workName = descriptor.WorkName ?? string.Empty;
-                return true;
-            }
+            workName = descriptor.WorkName ?? string.Empty;
+            return true;
         }
 
         workName = string.Empty;
@@ -470,18 +470,19 @@ public sealed class WorkableMcpToolRouter(IWorkSystemRegistry registry)
             return null;
         }
 
-        var parsed = new HashSet<WorkerState>();
-        foreach (var state in states.EnumerateArray())
-        {
-            if (state.ValueKind == JsonValueKind.String &&
-                Enum.TryParse<WorkerState>(state.GetString(), ignoreCase: true, out var workerState))
-            {
-                parsed.Add(workerState);
-            }
-        }
+        var parsed = states.EnumerateArray()
+            .Where(static state => state.ValueKind == JsonValueKind.String)
+            .Select(static state => TryParseWorkerState(state.GetString()))
+            .OfType<WorkerState>()
+            .ToHashSet();
 
         return parsed.Count == 0 ? null : parsed;
     }
+
+    private static WorkerState? TryParseWorkerState(string? value)
+        => Enum.TryParse<WorkerState>(value, ignoreCase: true, out var workerState)
+            ? workerState
+            : null;
 
     private static Guid ReadRequiredGuid(JsonElement? arguments, string propertyName)
         => ReadGuid(arguments, propertyName) ?? throw new ArgumentException($"Required MCP argument '{propertyName}' is missing or invalid.");
