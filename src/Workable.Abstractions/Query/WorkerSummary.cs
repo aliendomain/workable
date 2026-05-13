@@ -16,4 +16,10 @@ public sealed record WorkerSummary(
     DateTimeOffset UpdatedAt)
 {
     public WorkerVersion Version => new(this.Id, this.Revision);
+
+    public TimeSpan? QueueDuration { get; init; }
+
+    public TimeSpan TotalExecutionDuration { get; init; }
+
+    public DateTimeOffset? NextRunAt { get; init; }
 }

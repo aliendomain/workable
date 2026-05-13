@@ -23,9 +23,11 @@ public sealed class AutomaticStartTests
 
         var workers = (await system.Query.QueryWorkers(new WorkerQuery())).Workers;
         var worker = Assert.Single(workers);
+        var snapshot = await system.Query.GetWorker(worker.Id)
+            ?? throw new InvalidOperationException("Expected worker snapshot.");
         Assert.Equal("automatic.start", worker.DefinitionName);
         Assert.Equal(WorkerState.Completed, worker.State);
-        Assert.Contains("automatically started", worker.Origin.Description);
+        Assert.Contains("automatically started", snapshot.Origin.Description);
     }
 
     [Fact]

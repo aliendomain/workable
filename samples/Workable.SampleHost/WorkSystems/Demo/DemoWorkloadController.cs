@@ -1,0 +1,407 @@
+using System.Collections.Concurrent;
+using Workable.SampleHost.Fulfillment;
+using Workable.SampleHost.Operations;
+
+namespace Workable.SampleHost.Demo;
+
+public sealed class DemoWorkloadController(
+    IWorkSystemRegistry registry,
+    ILogger<DemoWorkloadController> logger) : IAsyncDisposable
+{
+    private static readonly TimeSpan DefaultQueueInterval = TimeSpan.FromMilliseconds(85);
+    private static readonly TimeSpan MinimumQueueInterval = TimeSpan.FromMilliseconds(10);
+    private static readonly TimeSpan MaximumQueueInterval = TimeSpan.FromSeconds(10);
+
+    private readonly Lock sync = new();
+    private readonly ConcurrentDictionary<WorkerId, byte> activeDemoWorkers = [];
+    private CancellationTokenSource? cancellation;
+    private Task? runTask;
+    private TimeSpan queueInterval = DefaultQueueInterval;
+    private int sequence;
+
+    public bool IsRunning
+    {
+        get
+        {
+            lock (this.sync)
+            {
+                return this.runTask is { IsCompleted: false };
+            }
+        }
+    }
+
+    public DemoWorkloadStatus Status()
+        => new(this.IsRunning, this.sequence, this.activeDemoWorkers.Count, this.QueueIntervalMilliseconds);
+
+    public int QueueIntervalMilliseconds
+    {
+        get
+        {
+            lock (this.sync)
+            {
+                return (int)this.queueInterval.TotalMilliseconds;
+            }
+        }
+    }
+
+    public DemoWorkloadStatus Start()
+    {
+        lock (this.sync)
+        {
+            if (this.runTask is { IsCompleted: false })
+            {
+                return new DemoWorkloadStatus(true, this.sequence, this.activeDemoWorkers.Count, (int)this.queueInterval.TotalMilliseconds);
+            }
+
+            this.cancellation?.Dispose();
+            this.cancellation = new CancellationTokenSource();
+            this.runTask = Task.Run(() => this.Run(this.cancellation.Token), CancellationToken.None);
+            return new DemoWorkloadStatus(true, this.sequence, this.activeDemoWorkers.Count, (int)this.queueInterval.TotalMilliseconds);
+        }
+    }
+
+    public DemoWorkloadStatus SetQueueInterval(int milliseconds)
+    {
+        var requested = TimeSpan.FromMilliseconds(milliseconds);
+        var interval = requested < MinimumQueueInterval
+            ? MinimumQueueInterval
+            : requested > MaximumQueueInterval
+                ? MaximumQueueInterval
+                : requested;
+
+        lock (this.sync)
+        {
+            this.queueInterval = interval;
+        }
+
+        return this.Status();
+    }
+
+    public async Task<DemoWorkloadStatus> Stop(CancellationToken cancellationToken)
+    {
+        Task? task;
+        lock (this.sync)
+        {
+            this.cancellation?.Cancel();
+            task = this.runTask;
+        }
+
+        if (task is not null)
+        {
+            try
+            {
+                await task.WaitAsync(cancellationToken);
+            }
+            catch (OperationCanceledException) when (this.cancellation?.IsCancellationRequested == true)
+            {
+            }
+        }
+
+        await this.CancelTrackedWorkers(cancellationToken);
+        this.activeDemoWorkers.Clear();
+        return this.Status();
+    }
+
+    public async Task<DemoWorkloadStatus> Toggle(CancellationToken cancellationToken)
+        => this.IsRunning ? await this.Stop(cancellationToken) : this.Start();
+
+    public async ValueTask DisposeAsync()
+    {
+        this.cancellation?.Cancel();
+        if (this.runTask is not null)
+        {
+            try
+            {
+                await this.runTask;
+            }
+            catch (OperationCanceledException)
+            {
+            }
+            catch (Exception exception)
+            {
+                logger.LogWarning(exception, "Sample workload generator stopped unexpectedly.");
+            }
+        }
+
+        this.cancellation?.Dispose();
+    }
+
+    private async Task Run(CancellationToken cancellationToken)
+    {
+        await this.QueueRecurringWorkers(cancellationToken);
+
+        while (true)
+        {
+            await Task.Delay(this.GetQueueInterval(), cancellationToken);
+            await this.QueueNext(cancellationToken);
+            await this.RemoveFinishedTrackedWorkers(cancellationToken);
+        }
+    }
+
+    private TimeSpan GetQueueInterval()
+    {
+        lock (this.sync)
+        {
+            return this.queueInterval;
+        }
+    }
+
+    private async Task QueueRecurringWorkers(CancellationToken cancellationToken)
+    {
+        await this.QueueDefault(
+            "sample.demo.recurring",
+            new DemoTimedInput("operations recurring pulse", 1_200, DiscoveredIdentifierType: "demo-cycle", DiscoveredIdentifierValue: "operations"),
+            new DemoRelationshipKeys(
+                Subject: new WorkSubjectId("demo-recurring", "operations"),
+                Identifier: new WorkIdentifier("sample-workload", "home-toggle")),
+            cancellationToken);
+
+        await this.QueueFulfillment(
+            "fulfillment.demo.recurring",
+            new DemoTimedInput("fulfillment recurring pulse", 1_400, DiscoveredIdentifierType: "demo-cycle", DiscoveredIdentifierValue: "fulfillment"),
+            new DemoRelationshipKeys(
+                Subject: new WorkSubjectId("demo-recurring", "fulfillment"),
+                Identifier: new WorkIdentifier("sample-workload", "home-toggle")),
+            cancellationToken);
+    }
+
+    private async Task QueueNext(CancellationToken cancellationToken)
+    {
+        var current = Interlocked.Increment(ref this.sequence);
+        var lane = current % 10;
+
+        if (current % 2 == 0)
+        {
+            await this.QueueOperationsWork(lane, current, cancellationToken);
+            return;
+        }
+
+        await this.QueueFulfillmentWork(lane, current, cancellationToken);
+    }
+
+    private Task QueueOperationsWork(int lane, int sequenceNumber, CancellationToken cancellationToken)
+        => lane switch
+        {
+            0 => this.QueueDefault("sample.demo.long", DemoInput("operations long running", sequenceNumber, 10_000), Subject("demo-long", "operations"), cancellationToken),
+            1 => this.QueueDefault("sample.demo.throttled", DemoInput("operations throttled", sequenceNumber, 6_000), Concurrency("demo-throttle", "operations"), cancellationToken),
+            2 => this.QueueDefault("qa.validation.flaky", new FlakyValidationInput($"validation-{sequenceNumber}", ShouldFail(sequenceNumber, 4), WarningCount: 2), Identifier("validation", sequenceNumber), cancellationToken),
+            3 => this.QueueDefault("sample.delay", new SampleDelayInput(8_500), Subject("delay", sequenceNumber), cancellationToken),
+            4 => this.QueueDefault("billing.invoice.generate", OperationsPayloads.Invoice(sequenceNumber), Subject("invoice", $"INV-DEMO-{sequenceNumber:D4}"), cancellationToken),
+            5 => this.QueueDefault("analytics.report.export", OperationsPayloads.Report(sequenceNumber), Identifier("report", sequenceNumber), cancellationToken),
+            6 => this.QueueDefault("data.import.csv", OperationsPayloads.Import(sequenceNumber), Concurrency("import-feed", "customers"), cancellationToken),
+            _ => this.QueueDefault("sample.demo.quick", DemoInput("operations quick", sequenceNumber, Random.Shared.Next(500, 2_500)), Mixed(sequenceNumber, "operations"), cancellationToken),
+        };
+
+    private Task QueueFulfillmentWork(int lane, int sequenceNumber, CancellationToken cancellationToken)
+        => lane switch
+        {
+            0 => this.QueueFulfillment("fulfillment.demo.long", DemoInput("fulfillment long running", sequenceNumber, 10_000), Subject("demo-long", "fulfillment"), cancellationToken),
+            1 => this.QueueFulfillment("fulfillment.demo.throttled", DemoInput("fulfillment throttled", sequenceNumber, 7_500), Concurrency("demo-throttle", "fulfillment"), cancellationToken),
+            2 => this.QueueFulfillment("fulfillment.exception.route", new FulfillmentExceptionInput($"EX-{sequenceNumber:D4}", FulfillmentExceptionType.CarrierDelay, "Synthetic sample exception.", Escalate: sequenceNumber % 4 == 0), Identifier("exception", sequenceNumber), cancellationToken),
+            3 => this.QueueFulfillment("shipping.rate.shop", FulfillmentPayloads.RateShop(sequenceNumber), Concurrency("carrier-market", "western"), cancellationToken),
+            4 => this.QueueFulfillment("shipping.label.purchase", FulfillmentPayloads.Label(sequenceNumber), Subject("order", $"ORD-{sequenceNumber:D5}"), cancellationToken),
+            5 => this.QueueFulfillment("warehouse.slotting.recommend", FulfillmentPayloads.Slotting(sequenceNumber), Identifier("sku", $"SKU-{sequenceNumber:D5}"), cancellationToken),
+            6 => this.QueueFulfillment("procurement.reorder.submit", FulfillmentPayloads.Reorder(sequenceNumber), Subject("vendor", $"VEND-{sequenceNumber % 5:D2}"), cancellationToken),
+            _ => this.QueueFulfillment("fulfillment.demo.quick", DemoInput("fulfillment quick", sequenceNumber, Random.Shared.Next(500, 2_500)), Mixed(sequenceNumber, "fulfillment"), cancellationToken),
+        };
+
+    private async Task QueueDefault<TInput>(
+        string workName,
+        TInput payload,
+        DemoRelationshipKeys keys,
+        CancellationToken cancellationToken)
+        => await this.Queue(registry.Default, workName, payload, keys, cancellationToken);
+
+    private async Task QueueFulfillment<TInput>(
+        string workName,
+        TInput payload,
+        DemoRelationshipKeys keys,
+        CancellationToken cancellationToken)
+    {
+        if (!registry.TryGet("fulfillment", out var system))
+        {
+            return;
+        }
+
+        await this.Queue(system, workName, payload, keys, cancellationToken);
+    }
+
+    private async Task Queue<TInput>(
+        IWorkSystem system,
+        string workName,
+        TInput payload,
+        DemoRelationshipKeys keys,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var input = WorkInput.FromValue(
+                payload,
+                subjectId: keys.Subject,
+                concurrencyKey: keys.ConcurrencyKey,
+                identifiers: keys.Identifier is null
+                    ? [new WorkIdentifier("sample-workload", "home-toggle")]
+                    : [new WorkIdentifier("sample-workload", "home-toggle"), keys.Identifier.Value]);
+            var handle = await system.Queue.Enqueue(workName, input, cancellationToken: cancellationToken);
+            if (handle.WorkerId is { } workerId)
+            {
+                this.activeDemoWorkers[workerId] = 0;
+            }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception exception)
+        {
+            logger.LogWarning(exception, "Failed to queue sample workload item {WorkName}.", workName);
+        }
+    }
+
+    private async Task CancelTrackedWorkers(CancellationToken cancellationToken)
+    {
+        foreach (var workerId in this.activeDemoWorkers.Keys)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            foreach (var system in registry.Systems)
+            {
+                var worker = await system.Query.GetWorker(workerId, cancellationToken);
+                if (worker is null)
+                {
+                    continue;
+                }
+
+                if (ShouldCancelWhenStoppingDemoWorkload(worker.State))
+                {
+                    await system.Workers.Execute(new WorkerVersion(worker.Id, worker.Revision), WorkAction.Cancel, cancellationToken);
+                }
+
+                break;
+            }
+        }
+
+        await this.RemoveFinishedTrackedWorkers(cancellationToken);
+    }
+
+    private async Task RemoveFinishedTrackedWorkers(CancellationToken cancellationToken)
+    {
+        foreach (var workerId in this.activeDemoWorkers.Keys)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            foreach (var system in registry.Systems)
+            {
+                var worker = await system.Query.GetWorker(workerId, cancellationToken);
+                if (worker is null)
+                {
+                    continue;
+                }
+
+                if (worker.State is WorkerState.Completed or WorkerState.Canceled)
+                {
+                    this.activeDemoWorkers.TryRemove(workerId, out _);
+                }
+
+                break;
+            }
+        }
+    }
+
+    private static DemoTimedInput DemoInput(string scenario, int sequenceNumber, int delayMilliseconds)
+        => new(
+            $"{scenario} #{sequenceNumber}",
+            delayMilliseconds,
+            ShouldFail: ShouldFail(sequenceNumber, 13),
+            DiscoveredIdentifierType: "demo-sequence",
+            DiscoveredIdentifierValue: sequenceNumber.ToString());
+
+    private static bool ShouldFail(int sequenceNumber, int every)
+        => every > 0 && sequenceNumber % every == 0;
+
+    private static bool ShouldCancelWhenStoppingDemoWorkload(WorkerState state)
+        => state is WorkerState.Queued or WorkerState.Running or WorkerState.Waiting or WorkerState.Retrying;
+
+    private static DemoRelationshipKeys Subject(string type, object value)
+        => new(Subject: new WorkSubjectId(type, value.ToString() ?? string.Empty));
+
+    private static DemoRelationshipKeys Concurrency(string type, object value)
+        => new(ConcurrencyKey: new WorkConcurrencyKey(type, value.ToString() ?? string.Empty));
+
+    private static DemoRelationshipKeys Identifier(string type, object value)
+        => new(Identifier: new WorkIdentifier(type, value.ToString() ?? string.Empty));
+
+    private static DemoRelationshipKeys Mixed(int sequenceNumber, string systemName)
+        => new(
+            Subject: new WorkSubjectId("demo-mixed", systemName),
+            ConcurrencyKey: new WorkConcurrencyKey("demo-lane", (sequenceNumber % 3).ToString()),
+            Identifier: new WorkIdentifier("sample-sequence", sequenceNumber.ToString()));
+}
+
+public sealed record DemoWorkloadStatus(
+    bool IsRunning,
+    int QueuedCount,
+    int TrackedWorkerCount,
+    int QueueIntervalMilliseconds);
+
+public sealed record DemoWorkloadIntervalRequest(int Milliseconds);
+
+internal sealed record DemoRelationshipKeys(
+    WorkSubjectId? Subject = null,
+    WorkConcurrencyKey? ConcurrencyKey = null,
+    WorkIdentifier? Identifier = null);
+
+internal static class OperationsPayloads
+{
+    public static InvoiceGenerateInput Invoice(int sequence)
+        => new(
+            new CustomerReference($"CUST-{sequence:D4}", $"Sample Customer {sequence}", $"customer{sequence}@example.test"),
+            [
+                new InvoiceLineInput("Sample subscription", 1, 29.99m),
+                new InvoiceLineInput("Usage", Random.Shared.Next(1, 8), 4.25m),
+            ],
+            CurrencyCode.USD,
+            0.0825m,
+            DateOnly.FromDateTime(DateTime.UtcNow.AddDays(30)),
+            SendReceipt: sequence % 2 == 0);
+
+    public static ReportExportInput Report(int sequence)
+        => new(
+            (ReportFormat)(sequence % 3),
+            new DateRange(DateOnly.FromDateTime(DateTime.UtcNow.AddDays(-7)), DateOnly.FromDateTime(DateTime.UtcNow)),
+            ["revenue", "orders", "conversion"],
+            IncludeCharts: sequence % 2 == 0);
+
+    public static DataImportInput Import(int sequence)
+        => new(
+            new Uri($"https://example.test/imports/sample-{sequence}.csv"),
+            ImportMode.Upsert,
+            "sample_customers",
+            ColumnMap: new Dictionary<string, string>
+            {
+                ["email_address"] = "email",
+                ["created_date"] = "createdAt",
+            });
+}
+
+internal static class FulfillmentPayloads
+{
+    public static CarrierRateShopInput RateShop(int sequence)
+        => new(Address("Warehouse"), Address($"Customer {sequence}"), new PackageDimensions(48, 12, 8, 4), ["ups", "fedex", "usps"]);
+
+    public static ShipmentLabelInput Label(int sequence)
+        => new($"ORD-{sequence:D5}", Address($"Customer {sequence}"), new PackageDimensions(32, 10, 6, 4), ShippingServiceLevel.Ground);
+
+    public static WarehouseSlottingInput Slotting(int sequence)
+        => new($"SKU-{sequence:D5}", Random.Shared.Next(5, 250), Math.Round((decimal)Random.Shared.NextDouble() * 5 + 0.5m, 2), ["A", "B", "C"]);
+
+    public static VendorReorderInput Reorder(int sequence)
+        => new(
+            $"VEND-{sequence % 5:D2}",
+            [
+                new ReorderLineInput($"SKU-{sequence:D5}", Random.Shared.Next(10, 150), Math.Round((decimal)Random.Shared.NextDouble() * 20 + 2, 2)),
+                new ReorderLineInput($"SKU-{sequence + 1:D5}", Random.Shared.Next(10, 150), Math.Round((decimal)Random.Shared.NextDouble() * 20 + 2, 2)),
+            ],
+            Expedite: sequence % 3 == 0);
+
+    private static Address Address(string name)
+        => new(name, "100 Sample Way", "Seattle", "WA", "98101", "US");
+}

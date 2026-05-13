@@ -9,11 +9,18 @@ using Microsoft.Extensions.Logging;
 namespace Workable;
 internal sealed class WorkerOperations : IWorkerOperations, IWorkQuery, IDisposable
 {
+    private const int OverviewWorkerListSize = 5;
+    private const int OverviewIterationListSize = 5;
+    private const int OverviewCommonKeyTypeCount = 10;
+
     private readonly WorkSystemCatalog catalog;
+    private readonly Func<WorkSystemState> getSystemState;
+    private readonly string? workSystemName;
     private readonly WorkerEventPublisher workerEvents;
     private readonly IWorkerExecutionStrategy executionStrategy;
     private readonly ConcurrentDictionary<WorkerId, WorkerRecord> workers = [];
     private readonly WorkerIndex index = new();
+    private readonly WorkerIterationIndex iterationIndex = new();
     private readonly Lock lifecycleSync = new();
     private readonly Lock subjectSync = new();
     private readonly List<CancellationTokenSource> retiredSystemExecutionLifetimes = [];
@@ -23,10 +30,11 @@ internal sealed class WorkerOperations : IWorkerOperations, IWorkQuery, IDisposa
     private readonly IDotNetWorkOriginProvider dotNetOriginProvider;
     private readonly TimeSpan shutdownGracePeriod;
     private CancellationTokenSource systemExecutionLifetime = new();
-    private volatile bool acceptingWork = true;
+    private volatile bool acceptingWork;
 
     internal WorkerOperations(
         WorkSystemCatalog catalog,
+        Func<WorkSystemState> getSystemState,
         WorkSystemId workSystemId,
         string? workSystemName,
         IServiceProvider rootServices,
@@ -37,9 +45,11 @@ internal sealed class WorkerOperations : IWorkerOperations, IWorkQuery, IDisposa
         TimeSpan shutdownGracePeriod)
     {
         this.catalog = catalog;
+        this.getSystemState = getSystemState;
+        this.workSystemName = workSystemName;
         this.dotNetOriginProvider = dotNetOriginProvider;
         this.shutdownGracePeriod = shutdownGracePeriod;
-        this.workerEvents = new WorkerEventPublisher(workSystemId, events, this.index.Synchronize);
+        this.workerEvents = new WorkerEventPublisher(workSystemId, events, this.SynchronizeWorkerIfTracked);
         var logger = rootServices.GetService<ILoggerFactory>()?.CreateLogger("Workable.WorkerExecution");
         var invoker = new WorkerExecutionInvoker(
             workSystemId,
@@ -58,7 +68,8 @@ internal sealed class WorkerOperations : IWorkerOperations, IWorkQuery, IDisposa
             completionRecorder);
         var transientRetry = new TransientRetryWorkerExecutionStrategy(
             attemptRunner,
-            completionRecorder);
+            completionRecorder,
+            this.workerEvents);
         var recurring = new RecurringWorkerExecutionStrategy(
             attemptRunner,
             completionRecorder,
@@ -78,14 +89,9 @@ internal sealed class WorkerOperations : IWorkerOperations, IWorkQuery, IDisposa
     {
         cancellationToken.ThrowIfCancellationRequested();
 
-        if (!this.acceptingWork)
+        if (!this.TryAcceptWork(registeredWork.Definition.Id, out var rejection))
         {
-            return WorkerHandle.Rejected(WorkQueueOutcome.Invalid(
-                registeredWork.Definition.Id,
-                [WorkMessage.Warning(
-                    "workable.system.stopping",
-                    "Workable is stopping and is not accepting new work.",
-                    "system")]));
+            return WorkerHandle.Rejected(rejection);
         }
 
         var workerId = WorkerId.New();
@@ -146,6 +152,7 @@ internal sealed class WorkerOperations : IWorkerOperations, IWorkQuery, IDisposa
                             createdAt: now,
                             updatedAt: now);
 
+                        queued.IterationRecorded = this.RegisterIterationIfTracked;
                         this.workers.TryAdd(workerId, queued);
                         this.index.Register(queued);
                         return queued;
@@ -181,6 +188,7 @@ internal sealed class WorkerOperations : IWorkerOperations, IWorkQuery, IDisposa
                     createdAt: now,
                     updatedAt: now);
 
+                record.IterationRecorded = this.RegisterIterationIfTracked;
                 this.workers.TryAdd(workerId, record);
                 this.index.Register(record);
                 shouldScheduleStart = shouldStart;
@@ -206,6 +214,67 @@ internal sealed class WorkerOperations : IWorkerOperations, IWorkQuery, IDisposa
         return handle;
     }
 
+    private bool TryAcceptWork(
+        WorkDefinitionId definitionId,
+        [NotNullWhen(false)] out WorkQueueOutcome? rejection)
+    {
+        lock (this.lifecycleSync)
+        {
+            var systemState = this.getSystemState();
+            if (systemState is WorkSystemState.Stopping)
+            {
+                rejection = WorkQueueOutcome.Invalid(
+                    definitionId,
+                    [WorkMessage.Warning(
+                        "workable.system.stopping",
+                        "Workable is stopping and is not accepting new work.",
+                        "system")]);
+                return false;
+            }
+
+            if (systemState is not WorkSystemState.Started)
+            {
+                rejection = WorkQueueOutcome.Invalid(
+                    definitionId,
+                    [WorkMessage.Warning(
+                        "workable.system.not_started",
+                        $"Workable is '{systemState}' and is not accepting new work.",
+                        "system")]);
+                return false;
+            }
+
+            if (!this.acceptingWork)
+            {
+                rejection = WorkQueueOutcome.Invalid(
+                    definitionId,
+                    [WorkMessage.Warning(
+                        "workable.system.stopping",
+                        "Workable is stopping and is not accepting new work.",
+                        "system")]);
+                return false;
+            }
+        }
+
+        rejection = null;
+        return true;
+    }
+
+    private void RegisterIterationIfTracked(WorkerRecord worker, WorkerIterationSnapshot iteration)
+    {
+        if (this.workers.ContainsKey(worker.Id))
+        {
+            this.iterationIndex.Register(worker, iteration);
+        }
+    }
+
+    private void SynchronizeWorkerIfTracked(WorkerRecord worker)
+    {
+        if (this.workers.ContainsKey(worker.Id))
+        {
+            this.index.Synchronize(worker);
+        }
+    }
+
     internal void StartDispatching()
     {
         lock (this.lifecycleSync)
@@ -223,23 +292,34 @@ internal sealed class WorkerOperations : IWorkerOperations, IWorkQuery, IDisposa
         this.retention.Start();
     }
 
-    internal async Task StopDispatching(CancellationToken cancellationToken)
+    internal Task<WorkSystemStopResult> StopDispatching(CancellationToken cancellationToken)
+        => this.StopDispatching(
+            WorkOrigin.Create(WorkInvocationChannel.DotNet, description: "Stop Workable system through .NET."),
+            cancellationToken);
+
+    internal async Task<WorkSystemStopResult> StopDispatching(
+        WorkOrigin origin,
+        CancellationToken cancellationToken)
     {
+        ArgumentNullException.ThrowIfNull(origin);
+
         lock (this.lifecycleSync)
         {
             this.acceptingWork = false;
         }
 
         await this.dispatcher.Stop(cancellationToken);
-        var canceledWorkers = this.CancelActive();
+        var canceledWorkers = this.CancelActive(origin);
         await this.WaitForCanceledWorkers(canceledWorkers, cancellationToken);
-        this.ForceCancelRemaining(canceledWorkers);
+        var forceCanceledWorkers = this.ForceCancelRemaining(canceledWorkers, origin);
         lock (this.lifecycleSync)
         {
             this.systemExecutionLifetime.Cancel();
         }
 
         await this.retention.Stop(cancellationToken);
+        this.ClearWorkerMemory();
+        return new WorkSystemStopResult(forceCanceledWorkers);
     }
 
     public Task<WorkerSnapshot?> Get(WorkerId workerId, CancellationToken cancellationToken = default)
@@ -285,9 +365,52 @@ internal sealed class WorkerOperations : IWorkerOperations, IWorkQuery, IDisposa
     {
         ArgumentNullException.ThrowIfNull(origin);
 
+        return Task.FromResult(this.ApplyAction(worker, action, origin));
+    }
+
+    public Task<WorkerBulkActionOutcome> ExecuteAll(
+        WorkAction action,
+        WorkerBulkActionFilter? filter = null,
+        CancellationToken cancellationToken = default)
+        => this.ExecuteAll(
+            action,
+            filter,
+            this.dotNetOriginProvider.CreateOrigin($"Apply worker action '{action}' to multiple workers through .NET."),
+            cancellationToken);
+
+    internal Task<WorkerBulkActionOutcome> ExecuteAll(
+        WorkAction action,
+        WorkerBulkActionFilter? filter,
+        WorkOrigin origin,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(origin);
+
+        filter ??= WorkerBulkActionFilter.All;
+        var candidates = this.GetBulkActionCandidates(filter);
+        var outcomes = new List<WorkActionOutcome>(candidates.Count);
+        foreach (var candidate in candidates)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var version = candidate.ToSummary().Version;
+            outcomes.Add(this.ApplyAction(version, action, origin));
+        }
+
+        return Task.FromResult(new WorkerBulkActionOutcome(
+            action,
+            filter,
+            candidates.Count,
+            outcomes));
+    }
+
+    private WorkActionOutcome ApplyAction(
+        WorkerVersion worker,
+        WorkAction action,
+        WorkOrigin origin)
+    {
         if (!this.workers.TryGetValue(worker.WorkerId, out var record))
         {
-            return Task.FromResult(WorkActionOutcome.NotFound(action, worker.WorkerId));
+            return WorkActionOutcome.NotFound(action, worker.WorkerId);
         }
 
         var outcome = action switch
@@ -308,7 +431,7 @@ internal sealed class WorkerOperations : IWorkerOperations, IWorkQuery, IDisposa
         }
 
         this.workerEvents.ActionApplied(record, outcome, origin);
-        return Task.FromResult(outcome);
+        return outcome;
     }
 
     public Task<WorkActionOutcome> Reconfigure(
@@ -367,19 +490,31 @@ internal sealed class WorkerOperations : IWorkerOperations, IWorkQuery, IDisposa
     public Task<WorkerSnapshot?> GetWorker(WorkerId workerId, CancellationToken cancellationToken = default)
         => this.Get(workerId, cancellationToken);
 
+    public Task<WorkerIterationSnapshot?> GetWorkerIteration(
+        WorkerIterationReference iteration,
+        CancellationToken cancellationToken = default)
+        => Task.FromResult(this.iterationIndex.Get(iteration));
+
     public Task<WorkerQueryResult> QueryWorkers(WorkerQuery query, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(query);
 
         var candidates = this.GetCandidateWorkers(query);
         var filtered = candidates
-            .Where(worker => Matches(worker, query))
-            .Select(worker => worker.ToSummary());
+            .Select(worker => new
+            {
+                Record = worker,
+                Overview = worker.ToOverviewItem(),
+            })
+            .Where(worker => Matches(worker.Overview, query) && Matches(worker.Record, query.Configuration))
+            .Select(worker => worker.Overview);
 
         filtered = Sort(filtered, query.Sort, query.Direction);
 
         var normalizedSkip = Math.Max(0, query.Skip);
-        var normalizedTake = query.Take <= 0 ? 100 : query.Take;
+        var normalizedTake = query.Take <= 0
+            ? WorkerQuery.DefaultTake
+            : Math.Min(query.Take, WorkerQuery.MaximumTake);
         var materialized = filtered.ToList();
         var page = materialized
             .Skip(normalizedSkip)
@@ -387,6 +522,41 @@ internal sealed class WorkerOperations : IWorkerOperations, IWorkQuery, IDisposa
             .ToArray();
 
         return Task.FromResult(new WorkerQueryResult(page, materialized.Count, normalizedSkip, normalizedTake));
+    }
+
+    public Task<WorkerIterationQueryResult> QueryWorkerIterations(
+        WorkerIterationQuery query,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(query);
+
+        var normalizedQuery = query;
+        if (!string.IsNullOrWhiteSpace(query.DefinitionName) &&
+            this.catalog.TryGet(query.DefinitionName, out var definition))
+        {
+            normalizedQuery = query with
+            {
+                DefinitionId = definition.Id,
+            };
+        }
+
+        var iterations = this.iterationIndex.Find(normalizedQuery)
+            .Where(iteration => Matches(iteration, normalizedQuery))
+            .Select(iteration => iteration.ToOverviewItem());
+
+        iterations = Sort(iterations, query.Sort, query.Direction);
+
+        var normalizedSkip = Math.Max(0, query.Skip);
+        var normalizedTake = query.Take <= 0
+            ? WorkerIterationQuery.DefaultTake
+            : Math.Min(query.Take, WorkerIterationQuery.MaximumTake);
+        var materialized = iterations.ToList();
+        var page = materialized
+            .Skip(normalizedSkip)
+            .Take(normalizedTake)
+            .ToArray();
+
+        return Task.FromResult(new WorkerIterationQueryResult(page, materialized.Count, normalizedSkip, normalizedTake));
     }
 
     public Task<WorkInfo?> GetWorkInfo(WorkDefinitionId definitionId, CancellationToken cancellationToken = default)
@@ -424,25 +594,335 @@ internal sealed class WorkerOperations : IWorkerOperations, IWorkQuery, IDisposa
         return Task.FromResult<IReadOnlyList<WorkDefinition>>([.. definitions.OrderBy(definition => definition.Category).ThenBy(definition => definition.Name)]);
     }
 
+    public Task<WorkerKeyQueryResult> QueryWorkerKeys(
+        WorkerKeyQuery query,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(query);
+
+        var normalizedSkip = Math.Max(0, query.Skip);
+        var normalizedTake = NormalizeWorkKeyTake(query.Take);
+        var matches = this.index.WorkKeys()
+            .Where(key => Matches(key, query))
+            .OrderBy(key => key.Kind)
+            .ThenBy(key => key.Type, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(key => key.Value, StringComparer.OrdinalIgnoreCase)
+            .Select(key => new WorkerKeyDescriptor(
+                key.Kind,
+                key.Type,
+                key.Value,
+                this.GetOverviewItems(key.WorkerIds, query.States)))
+            .Where(key => key.Workers.Count > 0)
+            .ToList();
+        var page = matches
+            .Skip(normalizedSkip)
+            .Take(normalizedTake)
+            .ToArray();
+
+        return Task.FromResult(new WorkerKeyQueryResult(page, matches.Count, normalizedSkip, normalizedTake));
+    }
+
+    public Task<WorkerKeyTypeQueryResult> QueryWorkerKeyTypes(
+        WorkerKeyTypeQuery? query = null,
+        CancellationToken cancellationToken = default)
+    {
+        query ??= new WorkerKeyTypeQuery();
+        var normalizedSkip = Math.Max(0, query.Skip);
+        var normalizedTake = NormalizeWorkKeyTake(query.Take);
+        var matches = this.index.WorkKeys()
+            .Where(key => Matches(key, query))
+            .GroupBy(key => key.Type.ToUpperInvariant())
+            .Select(group =>
+            {
+                var first = group.First();
+                var workers = this.GetOverviewItems(group.SelectMany(key => key.WorkerIds).Distinct(), query.States);
+                return new WorkerKeyTypeDescriptor(
+                    first.Type,
+                    workers.Count,
+                    CountWorkersByKind(group, query.States),
+                    workers);
+            })
+            .Where(keyType => keyType.Workers.Count > 0)
+            .OrderByDescending(keyType => keyType.WorkerCount)
+            .ThenBy(keyType => keyType.Type, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        var page = matches
+            .Skip(normalizedSkip)
+            .Take(normalizedTake)
+            .ToArray();
+
+        return Task.FromResult(new WorkerKeyTypeQueryResult(page, matches.Count, normalizedSkip, normalizedTake));
+    }
+
+    public Task<WorkIterationKeyQueryResult> QueryWorkIterationKeys(
+        WorkIterationKeyQuery query,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(query);
+
+        var normalizedSkip = Math.Max(0, query.Skip);
+        var normalizedTake = NormalizeWorkIterationKeyTake(query.Take);
+        var matches = this.iterationIndex.WorkKeys()
+            .Where(key => Matches(key, query))
+            .OrderBy(key => key.Kind)
+            .ThenBy(key => key.Type, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(key => key.Value, StringComparer.OrdinalIgnoreCase)
+            .Select(key => new WorkIterationKeyDescriptor(
+                key.Kind,
+                key.Type,
+                key.Value,
+                this.iterationIndex.GetOverviewItems(key.IterationReferences, query.Statuses)))
+            .Where(key => key.Iterations.Count > 0)
+            .ToList();
+        var page = matches
+            .Skip(normalizedSkip)
+            .Take(normalizedTake)
+            .ToArray();
+
+        return Task.FromResult(new WorkIterationKeyQueryResult(page, matches.Count, normalizedSkip, normalizedTake));
+    }
+
+    public Task<WorkIterationKeyTypeQueryResult> QueryWorkIterationKeyTypes(
+        WorkIterationKeyTypeQuery? query = null,
+        CancellationToken cancellationToken = default)
+        => Task.FromResult(this.CreateWorkIterationKeyTypes(query));
+
+    private WorkIterationKeyTypeQueryResult CreateWorkIterationKeyTypes(WorkIterationKeyTypeQuery? query)
+    {
+        query ??= new WorkIterationKeyTypeQuery();
+        var normalizedSkip = Math.Max(0, query.Skip);
+        var normalizedTake = NormalizeWorkIterationKeyTake(query.Take);
+        var matches = this.iterationIndex.WorkKeys()
+            .Where(key => Matches(key, query))
+            .GroupBy(key => key.Type.ToUpperInvariant())
+            .Select(group =>
+            {
+                var first = group.First();
+                var iterations = this.iterationIndex.GetOverviewItems(
+                    group.SelectMany(key => key.IterationReferences).Distinct(),
+                    query.Statuses);
+                return new WorkIterationKeyTypeDescriptor(
+                    first.Type,
+                    iterations.Count,
+                    CountIterationsByKind(group, query.Statuses),
+                    iterations);
+            })
+            .Where(keyType => keyType.Iterations.Count > 0)
+            .OrderByDescending(keyType => keyType.IterationCount)
+            .ThenBy(keyType => keyType.Type, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        var page = matches
+            .Skip(normalizedSkip)
+            .Take(normalizedTake)
+            .ToArray();
+
+        return new WorkIterationKeyTypeQueryResult(page, matches.Count, normalizedSkip, normalizedTake);
+    }
+
     public Task<WorkerStatusSummary> GetWorkerStatusSummary(
         WorkerQuery? query = null,
         CancellationToken cancellationToken = default)
     {
-        query ??= new WorkerQuery(Take: int.MaxValue);
-        var summaries = this.GetCandidateWorkers(query)
-            .Where(worker => Matches(worker, query))
-            .Select(worker => worker.ToSummary())
+        if (query is null || IsWholeSystemStatusSummary(query))
+        {
+            return Task.FromResult(CreateStatusSummary(this.index.CountByState()));
+        }
+
+        query ??= new WorkerQuery();
+        var workers = this.GetCandidateWorkers(query)
+            .Select(worker => new
+            {
+                Record = worker,
+                Overview = worker.ToOverviewItem(),
+            })
+            .Where(worker => Matches(worker.Overview, query) && Matches(worker.Record, query.Configuration))
+            .Select(worker => worker.Overview)
             .ToList();
-        var counts = summaries
+        var counts = workers
             .GroupBy(worker => worker.State)
             .ToDictionary(group => group.Key, group => group.Count());
-        var final = summaries.Count(worker => WorkerStateMachine.IsFinal(worker.State));
+        var active = workers.Count(worker => IsActiveForSummary(worker.State));
+        var final = workers.Count(worker => WorkerStateMachine.IsFinal(worker.State));
         return Task.FromResult(new WorkerStatusSummary(
-            summaries.Count,
-            summaries.Count - final,
+            workers.Count,
+            active,
             final,
             counts));
     }
+
+    private static WorkerStatusSummary CreateStatusSummary(IReadOnlyDictionary<WorkerState, int> counts)
+    {
+        var total = counts.Values.Sum();
+        var final = counts
+            .Where(count => WorkerStateMachine.IsFinal(count.Key))
+            .Sum(count => count.Value);
+        var active = counts
+            .Where(count => IsActiveForSummary(count.Key))
+            .Sum(count => count.Value);
+        return new WorkerStatusSummary(
+            total,
+            active,
+            final,
+            counts);
+    }
+
+    private static bool IsActiveForSummary(WorkerState state)
+        => !WorkerStateMachine.IsFinal(state) && state != WorkerState.Failed;
+
+    private static bool IsWholeSystemStatusSummary(WorkerQuery query)
+        => query.DefinitionId is null &&
+            string.IsNullOrWhiteSpace(query.DefinitionName) &&
+            query.SubjectId is null &&
+            query.ConcurrencyKey is null &&
+            query.Identifier is null &&
+            query.States is null &&
+            query.Configuration is null &&
+            query.CreatedFrom is null &&
+            query.CreatedTo is null &&
+            query.UpdatedFrom is null &&
+            query.UpdatedTo is null;
+
+    public Task<WorkSystemOverview> GetSystemOverview(CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+
+        var workerCounts = this.CreateOverviewWorkerCounts();
+        var iterationCounts = this.CreateOverviewIterationCounts();
+
+        return Task.FromResult(new WorkSystemOverview(
+            this.workSystemName,
+            this.getSystemState(),
+            this.index.ActiveOrQueuedDefinitionCount(),
+            workerCounts.ActiveWorkerCount,
+            workerCounts.FinalWorkerCount,
+            workerCounts.FailedWorkerCount,
+            workerCounts.WorkerCountByState,
+            iterationCounts.CurrentIterationCount,
+            iterationCounts.CompletedIterationCount,
+            iterationCounts.FailedIterationCount,
+            iterationCounts.CanceledIterationCount,
+            iterationCounts.IterationCountByStatus,
+            this.CreateOverviewCommonKeyTypes(),
+            this.CreateOverviewFailedWorkers(),
+            this.CreateOverviewFailedIterations(),
+            this.CreateOverviewCompletedIterations()));
+    }
+
+    public Task<WorkSystemOverviewCounts> GetSystemOverviewCounts(CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+
+        var workerCounts = this.CreateOverviewWorkerCounts();
+        var iterationCounts = this.CreateOverviewIterationCounts();
+        return Task.FromResult(new WorkSystemOverviewCounts(
+            this.workSystemName,
+            this.getSystemState(),
+            this.index.ActiveOrQueuedDefinitionCount(),
+            workerCounts.ActiveWorkerCount,
+            workerCounts.FinalWorkerCount,
+            workerCounts.FailedWorkerCount,
+            iterationCounts.CurrentIterationCount,
+            iterationCounts.CompletedIterationCount,
+            iterationCounts.FailedIterationCount,
+            iterationCounts.CanceledIterationCount));
+    }
+
+    public Task<WorkSystemWorkerCounts> GetSystemOverviewWorkerCounts(CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        return Task.FromResult(this.CreateOverviewWorkerCounts());
+    }
+
+    public Task<WorkSystemIterationCounts> GetSystemOverviewIterationCounts(CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        return Task.FromResult(this.CreateOverviewIterationCounts());
+    }
+
+    public Task<IReadOnlyList<WorkIterationKeyTypeFacet>> GetSystemOverviewCommonKeyTypes(CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        return Task.FromResult<IReadOnlyList<WorkIterationKeyTypeFacet>>(this.CreateOverviewCommonKeyTypes());
+    }
+
+    public Task<WorkSystemFailedWorkersOverview> GetSystemOverviewFailedWorkers(CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var counts = this.CreateOverviewWorkerCounts();
+        return Task.FromResult(new WorkSystemFailedWorkersOverview(
+            counts.ActiveWorkerCount,
+            counts.FinalWorkerCount,
+            counts.FailedWorkerCount,
+            counts.WorkerCountByState,
+            this.CreateOverviewFailedWorkers()));
+    }
+
+    public Task<IReadOnlyList<WorkerIterationOverviewItem>> GetSystemOverviewFailedIterations(CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        return Task.FromResult<IReadOnlyList<WorkerIterationOverviewItem>>(this.CreateOverviewFailedIterations());
+    }
+
+    public Task<IReadOnlyList<WorkerIterationOverviewItem>> GetSystemOverviewCompletedIterations(CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        return Task.FromResult<IReadOnlyList<WorkerIterationOverviewItem>>(this.CreateOverviewCompletedIterations());
+    }
+
+    private WorkSystemWorkerCounts CreateOverviewWorkerCounts()
+    {
+        var counts = this.index.CountByState();
+        var final = counts
+            .Where(count => WorkerStateMachine.IsFinal(count.Key))
+            .Sum(count => count.Value);
+        var active = counts
+            .Where(count => IsActiveForSummary(count.Key))
+            .Sum(count => count.Value);
+        return new WorkSystemWorkerCounts(
+            active,
+            final,
+            counts.GetValueOrDefault(WorkerState.Failed),
+            counts);
+    }
+
+    private WorkSystemIterationCounts CreateOverviewIterationCounts()
+    {
+        var counts = this.iterationIndex.CountByStatus();
+        return new WorkSystemIterationCounts(
+            counts.GetValueOrDefault(WorkCompletionStatus.Executing),
+            counts.GetValueOrDefault(WorkCompletionStatus.Completed),
+            counts.GetValueOrDefault(WorkCompletionStatus.Failed),
+            counts.GetValueOrDefault(WorkCompletionStatus.Canceled),
+            counts);
+    }
+
+    private IReadOnlyList<WorkIterationKeyTypeFacet> CreateOverviewCommonKeyTypes()
+        => [.. this.CreateWorkIterationKeyTypes(new WorkIterationKeyTypeQuery(Take: OverviewCommonKeyTypeCount))
+            .Types
+            .Select(keyType => new WorkIterationKeyTypeFacet(
+                keyType.Type,
+                keyType.IterationCount,
+                keyType.IterationCountByKind))];
+
+    private IReadOnlyList<WorkerOverviewItem> CreateOverviewFailedWorkers()
+        => [.. this.GetOverviewItems(this.index.ByState(WorkerState.Failed))
+            .Take(OverviewWorkerListSize)];
+
+    private IReadOnlyList<WorkerIterationOverviewItem> CreateOverviewFailedIterations()
+        => this.iterationIndex.RecentByStatus(WorkCompletionStatus.Failed, OverviewIterationListSize);
+
+    private IReadOnlyList<WorkerIterationOverviewItem> CreateOverviewCompletedIterations()
+        => this.iterationIndex.RecentByStatus(WorkCompletionStatus.Completed, OverviewIterationListSize);
+
+    private IReadOnlyList<WorkerOverviewItem> GetOverviewItems(
+        IEnumerable<WorkerId> workerIds,
+        IReadOnlySet<WorkerState>? states = null)
+        => [.. workerIds
+            .Select(workerId => this.workers.TryGetValue(workerId, out var worker) ? worker : null)
+            .OfType<WorkerRecord>()
+            .Select(worker => worker.ToOverviewItem())
+            .Where(worker => states is null || states.Contains(worker.State))
+            .OrderByDescending(worker => worker.UpdatedAt)];
 
     private IEnumerable<WorkerRecord> GetCandidateWorkers(WorkerQuery query)
     {
@@ -462,6 +942,29 @@ internal sealed class WorkerOperations : IWorkerOperations, IWorkQuery, IDisposa
                 .OfType<WorkerRecord>();
     }
 
+    private IReadOnlyList<WorkerRecord> GetBulkActionCandidates(WorkerBulkActionFilter filter)
+    {
+        if (string.IsNullOrWhiteSpace(filter.Category))
+        {
+            return [.. this.workers.Values];
+        }
+
+        var definitionIds = this.catalog
+            .ListByCategory(filter.Category, filter.IncludeSubcategories)
+            .Select(definition => definition.Id)
+            .ToHashSet();
+        if (definitionIds.Count == 0)
+        {
+            return [];
+        }
+
+        return [.. definitionIds
+            .SelectMany(definitionId => this.index.ByDefinition(definitionId))
+            .Distinct()
+            .Select(workerId => this.workers.TryGetValue(workerId, out var worker) ? worker : null)
+            .OfType<WorkerRecord>()];
+    }
+
     private WorkInfo CreateWorkInfo(WorkDefinition definition)
     {
         var summaries = this.index.ByDefinition(definition.Id)
@@ -478,9 +981,9 @@ internal sealed class WorkerOperations : IWorkerOperations, IWorkQuery, IDisposa
         var canceled = summaries.Count(worker => worker.State == WorkerState.Canceled);
         return new WorkerRollup(
             summaries.Count,
-            summaries.Count(worker => !WorkerStateMachine.IsFinal(worker.State)),
+            summaries.Count(worker => IsActiveForSummary(worker.State)),
             summaries.Count(worker => worker.State == WorkerState.Queued),
-            summaries.Count(worker => worker.State is WorkerState.Running or WorkerState.Pausing or WorkerState.Canceling),
+            summaries.Count(worker => worker.State is WorkerState.Running or WorkerState.Retrying or WorkerState.Pausing or WorkerState.Canceling),
             summaries.Count(worker => worker.State == WorkerState.Waiting),
             summaries.Count(worker => worker.State == WorkerState.Paused),
             summaries.Count(worker => worker.State == WorkerState.Failed),
@@ -509,20 +1012,37 @@ internal sealed class WorkerOperations : IWorkerOperations, IWorkQuery, IDisposa
         return rollup.Active > 0 ? WorkDefinitionStatus.Healthy : WorkDefinitionStatus.Unknown;
     }
 
-    private static bool Matches(WorkerRecord worker, WorkerQuery query)
-    {
-        var summary = worker.ToSummary();
-        return (query.DefinitionId is null || summary.DefinitionId == query.DefinitionId) &&
-            (string.IsNullOrWhiteSpace(query.DefinitionName) || string.Equals(summary.DefinitionName, query.DefinitionName, StringComparison.OrdinalIgnoreCase)) &&
-            (query.SubjectId is null || summary.SubjectId == query.SubjectId) &&
-            (query.ConcurrencyKey is null || summary.ConcurrencyKey == query.ConcurrencyKey) &&
-            (query.Identifier is null || summary.Identifiers.Contains(query.Identifier.Value)) &&
-            (query.States is null || query.States.Contains(summary.State)) &&
-            (query.CreatedFrom is null || summary.CreatedAt >= query.CreatedFrom) &&
-            (query.CreatedTo is null || summary.CreatedAt <= query.CreatedTo) &&
-            (query.UpdatedFrom is null || summary.UpdatedAt >= query.UpdatedFrom) &&
-            (query.UpdatedTo is null || summary.UpdatedAt <= query.UpdatedTo);
-    }
+    private static bool Matches(WorkerOverviewItem worker, WorkerQuery query)
+        => (query.DefinitionId is null || worker.DefinitionId == query.DefinitionId) &&
+            (string.IsNullOrWhiteSpace(query.DefinitionName) || string.Equals(worker.DefinitionName, query.DefinitionName, StringComparison.OrdinalIgnoreCase)) &&
+            (query.SubjectId is null || worker.SubjectId == query.SubjectId) &&
+            (query.ConcurrencyKey is null || worker.ConcurrencyKey == query.ConcurrencyKey) &&
+            (query.Identifier is null || worker.Identifiers.Contains(query.Identifier.Value)) &&
+            (query.States is null || query.States.Contains(worker.State)) &&
+            (query.CreatedFrom is null || worker.CreatedAt >= query.CreatedFrom) &&
+            (query.CreatedTo is null || worker.CreatedAt <= query.CreatedTo) &&
+            (query.UpdatedFrom is null || worker.UpdatedAt >= query.UpdatedFrom) &&
+            (query.UpdatedTo is null || worker.UpdatedAt <= query.UpdatedTo);
+
+    private static bool Matches(WorkerRecord worker, WorkerConfigurationQuery? query)
+        => query is null ||
+            (query.RecurrenceEnabled is null || worker.Configuration.Recurrence.IsEnabled == query.RecurrenceEnabled) &&
+            (query.ConcurrencyEnabled is null || worker.Configuration.Concurrency.IsEnabled == query.ConcurrencyEnabled) &&
+            (query.ProfilingEnabled is null || worker.Options.ProfilingEnabled == query.ProfilingEnabled);
+
+    private static bool Matches(WorkerIterationIndex.IndexedWorkerIteration iteration, WorkerIterationQuery query)
+        => (query.WorkerId is null || iteration.WorkerId == query.WorkerId) &&
+            (query.DefinitionId is null || iteration.DefinitionId == query.DefinitionId) &&
+            (string.IsNullOrWhiteSpace(query.DefinitionName) || string.Equals(iteration.DefinitionName, query.DefinitionName, StringComparison.OrdinalIgnoreCase)) &&
+            (string.IsNullOrWhiteSpace(query.Category) || CategoryMatches(iteration.Category, query.Category, includeSubcategories: true)) &&
+            (query.SubjectId is null || iteration.SubjectId == query.SubjectId) &&
+            (query.ConcurrencyKey is null || iteration.ConcurrencyKey == query.ConcurrencyKey) &&
+            (query.Identifier is null || iteration.Identifiers.Contains(query.Identifier.Value)) &&
+            (query.Statuses is null || query.Statuses.Contains(iteration.Status)) &&
+            (query.StartedFrom is null || iteration.StartedAt >= query.StartedFrom) &&
+            (query.StartedTo is null || iteration.StartedAt <= query.StartedTo) &&
+            (query.CompletedFrom is null || iteration.CompletedAt >= query.CompletedFrom) &&
+            (query.CompletedTo is null || iteration.CompletedAt <= query.CompletedTo);
 
     private static bool Matches(WorkDefinition definition, WorkDefinitionQuery query)
         => (query.Id is null || definition.Id == query.Id) &&
@@ -532,14 +1052,121 @@ internal sealed class WorkerOperations : IWorkerOperations, IWorkQuery, IDisposa
                 definition.Name.Contains(query.Search, StringComparison.OrdinalIgnoreCase) ||
                 (definition.Description?.Contains(query.Search, StringComparison.OrdinalIgnoreCase) ?? false));
 
+    private static bool Matches(WorkerIndex.IndexedWorkKey key, WorkerKeyQuery query)
+        => (query.Kind is null || key.Kind == query.Kind) &&
+            (string.IsNullOrWhiteSpace(query.Type) || string.Equals(key.Type, query.Type, StringComparison.OrdinalIgnoreCase)) &&
+            (string.IsNullOrWhiteSpace(query.Value) || string.Equals(key.Value, query.Value, StringComparison.OrdinalIgnoreCase)) &&
+            MatchesWorkKeySearch(key.Type, key.Value, query.Search, includeValue: true);
+
+    private static bool Matches(WorkerIndex.IndexedWorkKey key, WorkerKeyTypeQuery query)
+        => (query.Kind is null || key.Kind == query.Kind) &&
+            (string.IsNullOrWhiteSpace(query.Type) || string.Equals(key.Type, query.Type, StringComparison.OrdinalIgnoreCase)) &&
+            MatchesWorkKeySearch(key.Type, key.Value, query.Search, includeValue: false);
+
+    private static bool Matches(WorkerIterationIndex.IndexedWorkIterationKey key, WorkIterationKeyQuery query)
+        => (query.Kind is null || key.Kind == query.Kind) &&
+            (string.IsNullOrWhiteSpace(query.Type) || string.Equals(key.Type, query.Type, StringComparison.OrdinalIgnoreCase)) &&
+            (string.IsNullOrWhiteSpace(query.Value) || string.Equals(key.Value, query.Value, StringComparison.OrdinalIgnoreCase)) &&
+            MatchesWorkKeySearch(key.Type, key.Value, query.Search, includeValue: true);
+
+    private static bool Matches(WorkerIterationIndex.IndexedWorkIterationKey key, WorkIterationKeyTypeQuery query)
+        => (query.Kind is null || key.Kind == query.Kind) &&
+            (string.IsNullOrWhiteSpace(query.Type) || string.Equals(key.Type, query.Type, StringComparison.OrdinalIgnoreCase)) &&
+            MatchesWorkKeySearch(key.Type, key.Value, query.Search, includeValue: false);
+
+    private IReadOnlyDictionary<WorkKeyKind, int> CountWorkersByKind(
+        IEnumerable<WorkerIndex.IndexedWorkKey> keys,
+        IReadOnlySet<WorkerState>? states)
+        => keys
+            .GroupBy(key => key.Kind)
+            .Select(group => new
+            {
+                Kind = group.Key,
+                Count = this.GetOverviewItems(group.SelectMany(key => key.WorkerIds).Distinct(), states).Count,
+            })
+            .Where(count => count.Count > 0)
+            .ToDictionary(count => count.Kind, count => count.Count);
+
+    private IReadOnlyDictionary<WorkKeyKind, int> CountIterationsByKind(
+        IEnumerable<WorkerIterationIndex.IndexedWorkIterationKey> keys,
+        IReadOnlySet<WorkCompletionStatus>? statuses)
+        => keys
+            .GroupBy(key => key.Kind)
+            .Select(group => new
+            {
+                Kind = group.Key,
+                Count = this.iterationIndex.GetOverviewItems(
+                    group.SelectMany(key => key.IterationReferences).Distinct(),
+                    statuses).Count,
+            })
+            .Where(count => count.Count > 0)
+            .ToDictionary(count => count.Kind, count => count.Count);
+
+    private static bool MatchesWorkKeySearch(
+        string type,
+        string value,
+        string? search,
+        bool includeValue)
+    {
+        if (string.IsNullOrWhiteSpace(search))
+        {
+            return true;
+        }
+
+        var terms = SearchTerms(search);
+        if (terms.Count == 0)
+        {
+            return true;
+        }
+
+        return terms.All(term =>
+            type.Contains(term, StringComparison.OrdinalIgnoreCase) ||
+            (includeValue && value.Contains(term, StringComparison.OrdinalIgnoreCase)));
+    }
+
+    private static IReadOnlyList<string> SearchTerms(string search)
+    {
+        var terms = new List<string>();
+        foreach (var term in search.Split(
+            [' ', '\t', '\r', '\n', '.', ',', ':', ';', '-', '_', '/', '\\', '#', '=', '&', '?'],
+            StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            if (IsIgnoredWorkKeySearchTerm(term))
+            {
+                continue;
+            }
+
+            terms.Add(term);
+        }
+
+        return terms;
+    }
+
+    private static bool IsIgnoredWorkKeySearchTerm(string term)
+        => term.Equals("all", StringComparison.OrdinalIgnoreCase) ||
+            term.Equals("for", StringComparison.OrdinalIgnoreCase) ||
+            term.Equals("id", StringComparison.OrdinalIgnoreCase) ||
+            term.Equals("key", StringComparison.OrdinalIgnoreCase) ||
+            term.Equals("keys", StringComparison.OrdinalIgnoreCase) ||
+            term.Equals("the", StringComparison.OrdinalIgnoreCase) ||
+            term.Equals("work", StringComparison.OrdinalIgnoreCase) ||
+            term.Equals("worker", StringComparison.OrdinalIgnoreCase) ||
+            term.Equals("workers", StringComparison.OrdinalIgnoreCase);
+
+    private static int NormalizeWorkKeyTake(int take)
+        => take <= 0 ? WorkerKeyQuery.DefaultTake : Math.Min(take, WorkerKeyQuery.MaximumTake);
+
+    private static int NormalizeWorkIterationKeyTake(int take)
+        => take <= 0 ? WorkIterationKeyQuery.DefaultTake : Math.Min(take, WorkIterationKeyQuery.MaximumTake);
+
     private static bool CategoryMatches(string actual, string expected, bool includeSubcategories)
         => includeSubcategories
             ? actual.Equals(expected, StringComparison.OrdinalIgnoreCase) ||
                 actual.StartsWith($"{expected}:", StringComparison.OrdinalIgnoreCase)
             : actual.Equals(expected, StringComparison.OrdinalIgnoreCase);
 
-    private static IEnumerable<WorkerSummary> Sort(
-        IEnumerable<WorkerSummary> workers,
+    private static IEnumerable<WorkerOverviewItem> Sort(
+        IEnumerable<WorkerOverviewItem> workers,
         WorkerQuerySort sort,
         WorkQuerySortDirection direction)
     {
@@ -553,23 +1180,51 @@ internal sealed class WorkerOperations : IWorkerOperations, IWorkQuery, IDisposa
         };
     }
 
-    private IReadOnlyList<WorkerRecord> CancelActive()
+    private static IEnumerable<WorkerIterationOverviewItem> Sort(
+        IEnumerable<WorkerIterationOverviewItem> iterations,
+        WorkerIterationQuerySort sort,
+        WorkQuerySortDirection direction)
+    {
+        var ascending = direction == WorkQuerySortDirection.Ascending;
+        return sort switch
+        {
+            WorkerIterationQuerySort.StartedAt => ascending ? iterations.OrderBy(iteration => iteration.StartedAt) : iterations.OrderByDescending(iteration => iteration.StartedAt),
+            WorkerIterationQuerySort.ExecutionDuration => ascending ? iterations.OrderBy(iteration => iteration.ExecutionDuration) : iterations.OrderByDescending(iteration => iteration.ExecutionDuration),
+            WorkerIterationQuerySort.DefinitionName => ascending ? iterations.OrderBy(iteration => iteration.DefinitionName) : iterations.OrderByDescending(iteration => iteration.DefinitionName),
+            WorkerIterationQuerySort.Status => ascending ? iterations.OrderBy(iteration => iteration.Status) : iterations.OrderByDescending(iteration => iteration.Status),
+            _ => ascending ? iterations.OrderBy(iteration => iteration.CompletedAt) : iterations.OrderByDescending(iteration => iteration.CompletedAt),
+        };
+    }
+
+    private IReadOnlyList<WorkerRecord> CancelActive(WorkOrigin origin)
     {
         var canceledWorkers = new List<WorkerRecord>();
-        foreach (var worker in this.workers.Values.Where(worker => !worker.IsFinal))
+        foreach (var worker in this.workers.Values.Where(worker => ShouldCancelForSystemStop(worker.State)))
         {
             var outcome = worker.RequestCancelForSystemStop();
             if (outcome.IsAccepted)
             {
                 canceledWorkers.Add(worker);
                 this.HandleAcceptedWorkerChange(worker, WorkAction.Cancel);
-                var origin = WorkOrigin.Create(WorkInvocationChannel.DotNet, description: "Cancel worker during Workable system stop.");
                 worker.RecordActionHistory(outcome, origin);
                 this.workerEvents.ActionApplied(worker, outcome, origin);
             }
         }
 
         return canceledWorkers;
+    }
+
+    private static bool ShouldCancelForSystemStop(WorkerState state)
+        => state is WorkerState.Queued or WorkerState.Running or WorkerState.Waiting or WorkerState.Retrying;
+
+    private void ClearWorkerMemory()
+    {
+        this.workers.Clear();
+        this.index.Clear();
+        this.iterationIndex.Clear();
+        this.concurrency.Clear();
+        this.dispatcher.ClearScheduledWork();
+        this.retention.Clear();
     }
 
     private async Task WaitForCanceledWorkers(
@@ -595,8 +1250,11 @@ internal sealed class WorkerOperations : IWorkerOperations, IWorkQuery, IDisposa
         }
     }
 
-    private void ForceCancelRemaining(IReadOnlyList<WorkerRecord> canceledWorkers)
+    private IReadOnlyList<WorkerSnapshot> ForceCancelRemaining(
+        IReadOnlyList<WorkerRecord> canceledWorkers,
+        WorkOrigin origin)
     {
+        var forceCanceledWorkers = new List<WorkerSnapshot>();
         foreach (var worker in canceledWorkers.Where(worker => !worker.IsFinal))
         {
             var outcome = worker.ForceCancelForSystemStop();
@@ -606,11 +1264,16 @@ internal sealed class WorkerOperations : IWorkerOperations, IWorkQuery, IDisposa
             }
 
             this.HandleAcceptedWorkerChange(worker, WorkAction.Cancel);
-            var origin = WorkOrigin.Create(WorkInvocationChannel.DotNet, description: "Force-cancel worker after Workable system shutdown grace period elapsed.");
             worker.RecordActionHistory(outcome, origin);
             this.workerEvents.ActionApplied(worker, outcome, origin);
             this.workerEvents.CompletionRecorded(worker, WorkCompletionStatus.Canceled);
+            if (outcome.Worker is { } snapshot)
+            {
+                forceCanceledWorkers.Add(snapshot);
+            }
         }
+
+        return forceCanceledWorkers;
     }
 
     public void Dispose()
@@ -743,6 +1406,7 @@ internal sealed class WorkerOperations : IWorkerOperations, IWorkQuery, IDisposa
         this.workers.TryRemove(worker.Id, out _);
         this.concurrency.Forget(worker);
         this.index.Forget(worker);
+        this.iterationIndex.Forget(worker);
         this.ScheduleConcurrencyDrain(worker.Work.Definition.Id);
         return outcome;
     }
@@ -841,6 +1505,14 @@ internal sealed class WorkerOperations : IWorkerOperations, IWorkQuery, IDisposa
             if (task is not null)
             {
                 await task.WaitAsync(cancellationToken);
+            }
+        }
+
+        public void Clear()
+        {
+            lock (this.sync)
+            {
+                this.scheduledPurges.Clear();
             }
         }
 
@@ -1013,6 +1685,9 @@ internal sealed class WorkerOperations : IWorkerOperations, IWorkQuery, IDisposa
                 manager.Forget(worker);
             }
         }
+
+        public void Clear()
+            => this.managers.Clear();
 
         private WorkDefinitionConcurrencyManager GetManager(WorkDefinitionId definitionId)
             => this.managers.GetOrAdd(definitionId, static id => new WorkDefinitionConcurrencyManager(id));
@@ -1288,6 +1963,14 @@ internal sealed class WorkerOperations : IWorkerOperations, IWorkQuery, IDisposa
 
         public void Schedule(WorkerRecord worker)
             => this.scheduledWorkers.Writer.TryWrite(worker);
+
+        public void ClearScheduledWork()
+        {
+            while (this.scheduledWorkers.Reader.TryRead(out _))
+            {
+                continue;
+            }
+        }
 
         public async Task Stop(CancellationToken cancellationToken)
         {

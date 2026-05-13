@@ -16,6 +16,7 @@ internal static class WorkerEventPayloads
         WorkCompletionStatus? completionStatus = null,
         WorkerIterationSnapshot? iteration = null,
         TimeSpan? recurrenceInterval = null,
+        TimeSpan? retryDelay = null,
         WorkerLogEntry? log = null)
     {
         return JsonSerializer.SerializeToElement(
@@ -30,6 +31,7 @@ internal static class WorkerEventPayloads
                 completionStatus,
                 iteration,
                 recurrenceInterval,
+                retryDelay,
                 log is null ? null : WorkerLogPayload.From(log)),
             WorkEventJson.Options);
     }
@@ -45,6 +47,7 @@ internal static class WorkerEventPayloads
         WorkCompletionStatus? CompletionStatus = null,
         WorkerIterationSnapshot? Iteration = null,
         TimeSpan? RecurrenceInterval = null,
+        TimeSpan? RetryDelay = null,
         WorkerLogPayload? Log = null);
 
     private sealed record WorkerLogPayload(

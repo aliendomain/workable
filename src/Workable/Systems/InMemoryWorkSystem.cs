@@ -35,7 +35,7 @@ internal sealed class InMemoryWorkSystem : IWorkSystem, IOriginAwareWorkSystem
         var dotNetOriginProvider = registration.DotNetOriginProviderFactory?.Invoke(rootServices)
             ?? rootServices.GetService<IDotNetWorkOriginProvider>()
             ?? new DefaultDotNetWorkOriginProvider();
-        this.workers = new WorkerOperations(this.catalog, this.Id, this.Name, rootServices, this.events, dotNetOriginProvider, registration.ExceptionClassifiers, globalExceptionClassifiers, registration.ShutdownGracePeriod);
+        this.workers = new WorkerOperations(this.catalog, () => this.State, this.Id, this.Name, rootServices, this.events, dotNetOriginProvider, registration.ExceptionClassifiers, globalExceptionClassifiers, registration.ShutdownGracePeriod);
         this.queue = new WorkQueue(this.catalog, this.workers, dotNetOriginProvider);
     }
 
@@ -78,12 +78,24 @@ internal sealed class InMemoryWorkSystem : IWorkSystem, IOriginAwareWorkSystem
         CancellationToken cancellationToken)
         => this.workers.Execute(worker, action, origin, cancellationToken);
 
+    Task<WorkerBulkActionOutcome> IOriginAwareWorkSystem.ExecuteAll(
+        WorkAction action,
+        WorkerBulkActionFilter? filter,
+        WorkOrigin origin,
+        CancellationToken cancellationToken)
+        => this.workers.ExecuteAll(action, filter, origin, cancellationToken);
+
     Task<WorkActionOutcome> IOriginAwareWorkSystem.Reconfigure(
         WorkerVersion worker,
         WorkerReconfiguration changes,
         WorkOrigin origin,
         CancellationToken cancellationToken)
         => this.workers.Reconfigure(worker, changes, origin, cancellationToken);
+
+    Task<WorkSystemStopResult> IOriginAwareWorkSystem.Stop(
+        WorkOrigin origin,
+        CancellationToken cancellationToken)
+        => this.Stop(origin, cancellationToken);
 
     public async Task Start(CancellationToken cancellationToken = default)
     {
@@ -126,19 +138,29 @@ internal sealed class InMemoryWorkSystem : IWorkSystem, IOriginAwareWorkSystem
         }
     }
 
-    public async Task Stop(CancellationToken cancellationToken = default)
+    public Task<WorkSystemStopResult> Stop(CancellationToken cancellationToken = default)
+        => this.Stop(
+            WorkOrigin.Create(WorkInvocationChannel.DotNet, description: "Stop Workable system through .NET."),
+            cancellationToken);
+
+    private async Task<WorkSystemStopResult> Stop(
+        WorkOrigin origin,
+        CancellationToken cancellationToken = default)
     {
+        ArgumentNullException.ThrowIfNull(origin);
+
         await this.lifecycleLock.WaitAsync(cancellationToken);
         try
         {
             if (this.State == WorkSystemState.Stopped)
             {
-                return;
+                return new WorkSystemStopResult([]);
             }
 
             this.State = WorkSystemState.Stopping;
-            await this.workers.StopDispatching(cancellationToken);
+            var result = await this.workers.StopDispatching(origin, cancellationToken);
             this.State = WorkSystemState.Stopped;
+            return result;
         }
         finally
         {

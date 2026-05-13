@@ -21,5 +21,5 @@ public interface IWorkSystem : IAsyncDisposable
 
     Task Start(CancellationToken cancellationToken = default);
 
-    Task Stop(CancellationToken cancellationToken = default);
+    Task<WorkSystemStopResult> Stop(CancellationToken cancellationToken = default);
 }

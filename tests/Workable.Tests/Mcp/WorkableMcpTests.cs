@@ -159,9 +159,37 @@ public sealed class WorkableMcpTests
             tool.Kind == WorkableMcpServerToolKind.Query &&
             tool.ToolName == "workable_get_worker_status_summary");
         Assert.Contains(tools, tool =>
+            tool.Kind == WorkableMcpServerToolKind.Query &&
+            tool.ToolName == "workable_get_worker_iteration" &&
+            tool.Description?.Contains("iteration sequence", StringComparison.OrdinalIgnoreCase) == true);
+        Assert.Contains(tools, tool =>
+            tool.Kind == WorkableMcpServerToolKind.Query &&
+            tool.ToolName == "workable_query_worker_iterations" &&
+            tool.Description?.Contains("transient retries", StringComparison.OrdinalIgnoreCase) == true);
+        Assert.Contains(tools, tool =>
+            tool.Kind == WorkableMcpServerToolKind.Query &&
+            tool.ToolName == "workable_query_worker_keys" &&
+            tool.Description?.Contains("claim id", StringComparison.OrdinalIgnoreCase) == true);
+        Assert.Contains(tools, tool =>
+            tool.Kind == WorkableMcpServerToolKind.Query &&
+            tool.ToolName == "workable_query_worker_key_types" &&
+            tool.Description?.Contains("claim work", StringComparison.OrdinalIgnoreCase) == true);
+        Assert.Contains(tools, tool =>
+            tool.Kind == WorkableMcpServerToolKind.Query &&
+            tool.ToolName == "workable_query_work_iteration_keys" &&
+            tool.Description?.Contains("actual executions", StringComparison.OrdinalIgnoreCase) == true);
+        Assert.Contains(tools, tool =>
+            tool.Kind == WorkableMcpServerToolKind.Query &&
+            tool.ToolName == "workable_query_work_iteration_key_types" &&
+            tool.Description?.Contains("claim work", StringComparison.OrdinalIgnoreCase) == true);
+        Assert.Contains(tools, tool =>
             tool.Kind == WorkableMcpServerToolKind.Action &&
             tool.ToolName == "workable_cancel_worker" &&
             tool.Description?.Contains("Permanently stop", StringComparison.OrdinalIgnoreCase) == true);
+        Assert.Contains(tools, tool =>
+            tool.Kind == WorkableMcpServerToolKind.Action &&
+            tool.ToolName == "workable_reconfigure_work_definition" &&
+            tool.Description?.Contains("future queued workers", StringComparison.OrdinalIgnoreCase) == true);
     }
 
     [Fact]
@@ -261,7 +289,7 @@ public sealed class WorkableMcpTests
         var transport = new HttpClientTransport(
             new HttpClientTransportOptions
             {
-                Endpoint = new Uri("http://localhost/mcp"),
+                Endpoint = new Uri("http://localhost/workable/mcp"),
             },
             httpClient,
             loggerFactory: null,
@@ -286,12 +314,13 @@ public sealed class WorkableMcpTests
 
         var system = host.Services.GetRequiredService<IWorkSystemRegistry>().Default;
         var workers = await system.Query.QueryWorkers(new WorkerQuery(DefinitionName: "echo.message"));
-        var worker = Assert.Single(workers.Workers);
+        var worker = await system.Query.GetWorker(Assert.Single(workers.Workers).Id)
+            ?? throw new InvalidOperationException("Expected worker.");
 
         Assert.Equal(WorkInvocationChannel.Mcp, worker.Origin.Channel);
         Assert.Equal("mcp-user-1", worker.Origin.Actor.Id);
         Assert.Equal("mcp.user@example.com", worker.Origin.Actor.Email);
-        Assert.Equal("/mcp", worker.Origin.Url);
+        Assert.Equal("/workable/mcp", worker.Origin.Url);
 
         var executionOrigin = await observedOrigin.Task.WaitAsync(TimeSpan.FromSeconds(1));
         Assert.Equal(WorkInvocationChannel.Mcp, executionOrigin.Channel);
@@ -306,7 +335,7 @@ public sealed class WorkableMcpTests
         var transport = new HttpClientTransport(
             new HttpClientTransportOptions
             {
-                Endpoint = new Uri("http://localhost/mcp/remote"),
+                Endpoint = new Uri("http://localhost/workable/systems/remote/mcp"),
             },
             httpClient,
             loggerFactory: null,
@@ -327,11 +356,12 @@ public sealed class WorkableMcpTests
         var registry = host.Services.GetRequiredService<IWorkSystemRegistry>();
         Assert.True(registry.TryGet("remote", out var remote));
         var workers = await remote.Query.QueryWorkers(new WorkerQuery(DefinitionName: "remote.echo"));
-        var worker = Assert.Single(workers.Workers);
+        var worker = await remote.Query.GetWorker(Assert.Single(workers.Workers).Id)
+            ?? throw new InvalidOperationException("Expected worker.");
 
         Assert.False(result.IsError);
         Assert.Equal(WorkInvocationChannel.Mcp, worker.Origin.Channel);
-        Assert.Equal("/mcp/remote", worker.Origin.Url);
+        Assert.Equal("/workable/systems/remote/mcp", worker.Origin.Url);
     }
 
     [Fact]
@@ -354,7 +384,7 @@ public sealed class WorkableMcpTests
         var transport = new HttpClientTransport(
             new HttpClientTransportOptions
             {
-                Endpoint = new Uri("http://localhost/mcp/remote"),
+                Endpoint = new Uri("http://localhost/workable/systems/remote/mcp"),
             },
             httpClient,
             loggerFactory: null,
@@ -377,7 +407,7 @@ public sealed class WorkableMcpTests
         Assert.Equal(WorkerState.Canceled, updated.State);
         Assert.Equal(WorkAction.Cancel, history.Action);
         Assert.Equal(WorkInvocationChannel.Mcp, history.Origin.Channel);
-        Assert.Equal("/mcp/remote", history.Origin.Url);
+        Assert.Equal("/workable/systems/remote/mcp", history.Origin.Url);
     }
 
     [Fact]
@@ -388,7 +418,7 @@ public sealed class WorkableMcpTests
         var transport = new HttpClientTransport(
             new HttpClientTransportOptions
             {
-                Endpoint = new Uri("http://localhost/mcp"),
+                Endpoint = new Uri("http://localhost/workable/mcp"),
             },
             httpClient,
             loggerFactory: null,
@@ -404,12 +434,13 @@ public sealed class WorkableMcpTests
 
         var system = host.Services.GetRequiredService<IWorkSystemRegistry>().Default;
         var workers = await system.Query.QueryWorkers(new WorkerQuery(DefinitionName: "echo.message"));
-        var worker = Assert.Single(workers.Workers);
+        var worker = await system.Query.GetWorker(Assert.Single(workers.Workers).Id)
+            ?? throw new InvalidOperationException("Expected worker.");
 
         Assert.False(result.IsError);
         Assert.Equal(WorkInvocationChannel.Mcp, worker.Origin.Channel);
         Assert.Equal(WorkActor.Unknown, worker.Origin.Actor);
-        Assert.Equal("/mcp", worker.Origin.Url);
+        Assert.Equal("/workable/mcp", worker.Origin.Url);
     }
 
     [Fact]
@@ -431,7 +462,7 @@ public sealed class WorkableMcpTests
         var transport = new HttpClientTransport(
             new HttpClientTransportOptions
             {
-                Endpoint = new Uri("http://localhost/mcp"),
+                Endpoint = new Uri("http://localhost/workable/mcp"),
             },
             httpClient,
             loggerFactory: null,
@@ -468,11 +499,14 @@ public sealed class WorkableMcpTests
         var router = provider.GetRequiredService<WorkableMcpToolRouter>();
         await system.Start();
 
-        var handle = await system.Queue.Enqueue("reports.generate", WorkInput.Empty);
+        var handle = await system.Queue.Enqueue(
+            "reports.generate",
+            WorkInput.Empty,
+            options: new WorkerOptions(ProfilingEnabled: true));
         var completion = await handle.WaitForCompletion();
         Assert.Equal(WorkCompletionStatus.Completed, completion.Status);
 
-        using var queryArguments = JsonDocument.Parse("""{"workName":"reports.generate","states":["Completed"]}""");
+        using var queryArguments = JsonDocument.Parse("""{"workName":"reports.generate","states":["Completed"],"profilingEnabled":true}""");
         var queryResult = await router.CallTool("workable_query_workers", queryArguments.RootElement);
         var statusResult = await router.CallTool("workable_get_worker_status_summary", queryArguments.RootElement);
 
@@ -481,6 +515,93 @@ public sealed class WorkableMcpTests
         Assert.Contains(handle.WorkerId!.Value.Value.ToString("D"), queryResult.Json);
         Assert.False(statusResult.IsError);
         Assert.Contains("\"Completed\":1", statusResult.Json);
+    }
+
+    [Fact]
+    public async Task McpServerQueryToolsCanObserveWorkerIterations()
+    {
+        var definition = WorkDefinition.Create("claim.review", "Reviews a claim.", category: "Claims", configuration: AllowMcp());
+        await using var provider = CreateProvider(definition, (context, input, cancellationToken) =>
+        {
+            context.AddIdentifier(new WorkIdentifier("claim-note", "CLM-123-note"));
+            return Task.FromResult(WorkExecutionResult.Success());
+        });
+        var system = provider.GetRequiredService<IWorkSystemRegistry>().Default;
+        var router = provider.GetRequiredService<WorkableMcpToolRouter>();
+        await system.Start();
+
+        var handle = await system.Queue.Enqueue(
+            "claim.review",
+            WorkInput.Empty
+                .WithSubject(new WorkSubjectId("claim", "CLM-123"))
+                .WithIdentifier(new WorkIdentifier("invoice", "INV-456")));
+        await handle.WaitForCompletion();
+
+        using var queryArguments = JsonDocument.Parse("""{"workName":"claim.review","statuses":["Completed"],"identifierType":"claim-note","identifierValue":"CLM-123-note"}""");
+        using var getArguments = JsonDocument.Parse($$"""{"workerId":"{{handle.WorkerId!.Value.Value:D}}","sequence":1}""");
+        var queryResult = await router.CallTool("workable_query_worker_iterations", queryArguments.RootElement);
+        var getResult = await router.CallTool("workable_get_worker_iteration", getArguments.RootElement);
+
+        Assert.False(queryResult.IsError);
+        Assert.Contains("\"totalCount\":1", queryResult.Json);
+        Assert.Contains("\"definitionName\":\"claim.review\"", queryResult.Json);
+        Assert.Contains("\"sequence\":1", queryResult.Json);
+        Assert.False(getResult.IsError);
+        Assert.Contains("\"found\":true", getResult.Json);
+        Assert.Contains("\"status\":\"Completed\"", getResult.Json);
+    }
+
+    [Fact]
+    public async Task McpServerQueryToolsCanSearchWorkerAndIterationKeys()
+    {
+        var definition = WorkDefinition.Create("claim.review", "Reviews a claim.", configuration: AllowMcp());
+        await using var provider = CreateProvider(definition, (context, input, cancellationToken) =>
+        {
+            context.AddIdentifier(new WorkIdentifier("claim-note", "CLM-123-note"));
+            return Task.FromResult(WorkExecutionResult.Success());
+        });
+        var system = provider.GetRequiredService<IWorkSystemRegistry>().Default;
+        var router = provider.GetRequiredService<WorkableMcpToolRouter>();
+        await system.Start();
+
+        var handle = await system.Queue.Enqueue(
+            "claim.review",
+            WorkInput.Empty
+                .WithSubject(new WorkSubjectId("claim", "CLM-123"))
+                .WithConcurrencyKey(new WorkConcurrencyKey("tenant", "west"))
+                .WithIdentifier(new WorkIdentifier("invoice", "INV-456")));
+        await handle.WaitForCompletion();
+
+        using var keysArguments = JsonDocument.Parse("""{"search":"claim id CLM-123"}""");
+        using var typesArguments = JsonDocument.Parse("""{"search":"claim work"}""");
+        var keysResult = await router.CallTool("workable_query_worker_keys", keysArguments.RootElement);
+        var typesResult = await router.CallTool("workable_query_worker_key_types", typesArguments.RootElement);
+        var iterationKeysResult = await router.CallTool("workable_query_work_iteration_keys", keysArguments.RootElement);
+        var iterationTypesResult = await router.CallTool("workable_query_work_iteration_key_types", typesArguments.RootElement);
+
+        Assert.False(keysResult.IsError);
+        Assert.Contains("\"kind\":\"Subject\"", keysResult.Json);
+        Assert.Contains("\"type\":\"claim\"", keysResult.Json);
+        Assert.Contains("\"value\":\"CLM-123\"", keysResult.Json);
+        Assert.Contains("\"workers\":[", keysResult.Json);
+        Assert.Contains("\"definitionName\":\"claim.review\"", keysResult.Json);
+        Assert.Contains("\"type\":\"claim-note\"", keysResult.Json);
+        Assert.False(typesResult.IsError);
+        Assert.Contains("\"type\":\"claim\"", typesResult.Json);
+        Assert.Contains("\"workerCount\":1", typesResult.Json);
+        Assert.Contains("\"Subject\":1", typesResult.Json);
+        Assert.Contains("\"workers\":[", typesResult.Json);
+        Assert.False(iterationKeysResult.IsError);
+        Assert.Contains("\"kind\":\"Subject\"", iterationKeysResult.Json);
+        Assert.Contains("\"type\":\"claim\"", iterationKeysResult.Json);
+        Assert.Contains("\"value\":\"CLM-123\"", iterationKeysResult.Json);
+        Assert.Contains("\"iterations\":[", iterationKeysResult.Json);
+        Assert.Contains("\"status\":\"Completed\"", iterationKeysResult.Json);
+        Assert.False(iterationTypesResult.IsError);
+        Assert.Contains("\"type\":\"claim\"", iterationTypesResult.Json);
+        Assert.Contains("\"iterationCount\":1", iterationTypesResult.Json);
+        Assert.Contains("\"Subject\":1", iterationTypesResult.Json);
+        Assert.Contains("\"iterations\":[", iterationTypesResult.Json);
     }
 
     [Fact]
@@ -501,6 +622,35 @@ public sealed class WorkableMcpTests
         Assert.False(result.IsError);
         Assert.Contains("\"found\":true", result.Json);
         Assert.Contains("\"definitionName\":\"data.import\"", result.Json);
+    }
+
+    [Fact]
+    public async Task McpServerCanReconfigureWorkDefinitionDefaults()
+    {
+        var definition = WorkDefinition.Create("mcp.definition.reconfigure", "Can change defaults.", configuration: AllowMcp());
+        await using var provider = CreateProvider(definition, SuccessfulWork);
+        var system = provider.GetRequiredService<IWorkSystemRegistry>().Default;
+        var router = provider.GetRequiredService<WorkableMcpToolRouter>();
+        await system.Start();
+
+        using var arguments = JsonDocument.Parse($$"""
+            {
+              "definitionId": "{{definition.Id.Value:D}}",
+              "revision": {{definition.Revision}},
+              "defaultOptions": {
+                "profilingEnabled": true
+              }
+            }
+            """);
+        var result = await router.CallTool("workable_reconfigure_work_definition", arguments.RootElement);
+        var handle = await system.Queue.Enqueue(definition.Id);
+        var worker = await system.Query.GetWorker(handle.WorkerId ?? throw new InvalidOperationException("Expected worker."));
+
+        Assert.False(result.IsError);
+        Assert.Contains("\"status\":\"Accepted\"", result.Json);
+        Assert.Contains("\"revision\":1", result.Json);
+        Assert.NotNull(worker);
+        Assert.True(worker.Options.ProfilingEnabled);
     }
 
     [Fact]
@@ -574,7 +724,7 @@ public sealed class WorkableMcpTests
                         });
                     }
 
-                    app.UseEndpoints(endpoints => endpoints.MapWorkableMcp("/mcp"));
+                    app.UseEndpoints(endpoints => endpoints.MapWorkableMcp());
                 });
             })
             .Build();
@@ -612,8 +762,8 @@ public sealed class WorkableMcpTests
                     app.UseRouting();
                     app.UseEndpoints(endpoints =>
                     {
-                        endpoints.MapWorkableMcp("/mcp");
-                        endpoints.MapWorkableMcp("/mcp/remote", systemName: "remote");
+                        endpoints.MapWorkableMcp();
+                        endpoints.MapWorkableMcp("/workable/systems/remote/mcp", systemName: "remote");
                     });
                 });
             })

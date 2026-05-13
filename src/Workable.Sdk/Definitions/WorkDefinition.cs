@@ -8,8 +8,11 @@ public sealed record WorkDefinition(
     WorkSchema OutputSchema,
     WorkerOptions DefaultOptions,
     WorkConfiguration Configuration,
-    WorkDefinitionMetadata? Metadata = null)
+    WorkDefinitionMetadata? Metadata = null,
+    long Revision = 0)
 {
+    public WorkDefinitionVersion Version => new(this.Id, this.Revision);
+
     public static WorkDefinition Create(
         string name,
         string? description = null,

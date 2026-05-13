@@ -10,4 +10,5 @@ internal sealed record WorkerEventPayloadDetails(
     WorkCompletionStatus? CompletionStatus = null,
     bool IncludeLatestIteration = false,
     TimeSpan? RecurrenceInterval = null,
+    TimeSpan? RetryDelay = null,
     WorkerLogEntry? Log = null);

@@ -5,6 +5,15 @@ internal sealed class WorkerExecutionCompletionRecorder(WorkerEventPublisher wor
     public WorkCompletion Complete(WorkerRecord worker, WorkExecutionResult result)
     {
         var status = worker.Complete(result);
+        if (status == WorkCompletionStatus.Completed)
+        {
+            workerEvents.IterationCompleted(worker);
+        }
+        else if (status == WorkCompletionStatus.Failed)
+        {
+            workerEvents.IterationFailed(worker);
+        }
+
         workerEvents.CompletionRecorded(worker, status);
         return worker.ToCompletion(status);
     }
@@ -23,6 +32,7 @@ internal sealed class WorkerExecutionCompletionRecorder(WorkerEventPublisher wor
     public WorkCompletion Fail(WorkerRecord worker, WorkMessage message)
     {
         worker.Fail(message);
+        workerEvents.IterationFailed(worker);
         workerEvents.Failed(worker);
         return worker.ToCompletion(WorkCompletionStatus.Failed);
     }

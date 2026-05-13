@@ -25,6 +25,7 @@
     <File Path="docs/work-profiling.md" />
     <File Path="docs/work-queueing.md" />
     <File Path="docs/work-querying.md" />
+    <File Path="docs/work-realtime.md" />
     <File Path="docs/work-registration.md" />
   </Folder>
   <Project Path="src/Workable.Sdk/Workable.Sdk.csproj" />
@@ -33,6 +34,7 @@
   <Project Path="src/Workable.AspNetCore/Workable.AspNetCore.csproj" />
   <Project Path="src/Workable.HttpApi/Workable.HttpApi.csproj" />
   <Project Path="src/Workable.Mcp/Workable.Mcp.csproj" />
+  <Project Path="src/Workable.SignalR/Workable.SignalR.csproj" />
   <Project Path="samples/Workable.SampleHost/Workable.SampleHost.csproj" />
   <Project Path="tests/Workable.Tests/Workable.Tests.csproj" />
 </Solution>

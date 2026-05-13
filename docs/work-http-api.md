@@ -36,15 +36,90 @@ Route matching is case-insensitive. Worker action route values are also parsed c
 
 `AddWorkableHttpApi` configures HTTP JSON enum handling so enum strings in request bodies can also be supplied without matching .NET enum casing exactly.
 
+## Capabilities
+
+List available Workable systems from the mapped HTTP API root.
+
+```http
+GET /workable/systems
+```
+
+The response includes each system's id, optional name, state, default-system marker, and capabilities.
+
+```json
+{
+  "systems": [
+    {
+      "id": { "value": "11111111-1111-1111-1111-111111111111" },
+      "name": null,
+      "state": "Started",
+      "isDefault": true,
+      "capabilities": {
+        "realtime": {
+          "enabled": true,
+          "transport": "signalr",
+          "hubPath": "/workable/realtime",
+          "features": ["worker-events", "system-dashboard"]
+        }
+      }
+    }
+  ]
+}
+```
+
+The `capabilities` object lets clients discover optional adapter features for each system. The `realtime` section reports whether `Workable.SignalR` is registered.
+
+```json
+{
+  "realtime": {
+    "enabled": true,
+    "transport": "signalr",
+    "hubPath": "/workable/realtime",
+    "features": ["worker-events", "system-dashboard"]
+  }
+}
+```
+
+When realtime is not registered, `enabled` is `false`.
+
+## System Lifecycle
+
+Start or stop a Workable system through the HTTP API.
+
+```http
+POST /workable/lifecycle/start
+POST /workable/lifecycle/stop
+```
+
+Named systems use the same route pattern.
+
+```http
+POST /workable/systems/email/lifecycle/start
+POST /workable/systems/email/lifecycle/stop
+```
+
+Starting a system runs the normal system startup behavior. Work definition sources are not run again after the catalog has already been built, but automatic starts and startup work sources run each time a stopped system is started.
+
+Stopping a system stops accepting new work, asks active workers to cancel, waits for the configured shutdown grace period, and then force-cancels workers that did not finish cooperatively. After shutdown work completes, Workable clears in-memory worker and iteration records for that system. The stop response includes the workers that were force-canceled after the grace period elapsed.
+
+```json
+{
+  "id": { "value": "11111111-1111-1111-1111-111111111111" },
+  "name": "email",
+  "state": "Stopped",
+  "forceCanceledWorkers": []
+}
+```
+
 ## Definition Listing
 
-The definitions endpoint returns work definitions that allow HTTP API invocation.
+The definitions endpoint returns all work definitions in the selected system.
 
 ```http
 GET /workable/definitions
 ```
 
-Definitions that do not allow `WorkInvocationChannel.HttpApi` are omitted.
+Definitions include their invocation configuration. A definition that does not allow `WorkInvocationChannel.HttpApi` still appears in discovery responses so clients can display it as unavailable through HTTP. Queueing that work through HTTP returns a validation response.
 
 Query definitions with the same filter shape as `IWorkQuery.QueryWorkDefinitions`.
 
@@ -58,11 +133,36 @@ Content-Type: application/json
 }
 ```
 
-Get work info by name or definition id.
+Reconfigure a definition's default worker options and default runtime configuration for future workers.
+
+```http
+POST /workable/definitions/11111111-1111-1111-1111-111111111111/reconfigure
+Content-Type: application/json
+
+{
+  "revision": 0,
+  "changes": {
+    "defaultOptions": {
+      "profilingEnabled": true
+    },
+    "configuration": {
+      "start": {
+        "policy": "DoNotStart"
+      }
+    }
+  }
+}
+```
+
+The definition reconfiguration route requires the current definition revision. Accepted changes advance the definition revision and affect workers queued afterward. Stale revisions return `409 Conflict`; invalid configuration returns `400 Bad Request`; unknown definitions return `404 Not Found`.
+
+## Work Info
+
+Get work info by work name or work definition id.
 
 ```http
 GET /workable/work/email.welcome.send/info
-GET /workable/definitions/11111111-1111-1111-1111-111111111111/info
+GET /workable/work/id/11111111-1111-1111-1111-111111111111/info
 ```
 
 ## Queue Work
@@ -106,7 +206,7 @@ Request completion when the caller needs the final worker output in the HTTP res
 }
 ```
 
-Queue requests can include worker options and input identity metadata.
+Queue requests can include HTTP worker options and input identity metadata.
 
 ```json
 {
@@ -133,6 +233,8 @@ Queue requests can include worker options and input identity metadata.
 }
 ```
 
+HTTP queue options use `WorkableHttpWorkerOptions`. Its `configuration` shape includes start behavior, idempotency, recurrence, transient retry, logging, retention, and concurrency. Invocation channels are not part of the HTTP queue request because they are definition-level configuration.
+
 The accepted worker remains owned by Workable and can be queried, observed, or controlled through Workable.
 
 Queue work in a named system by including the system name in the route.
@@ -150,13 +252,47 @@ Content-Type: application/json
 
 ## Query Workers
 
+Get a system overview for dashboard-style screens.
+
+```http
+GET /workable/overview
+```
+
+The overview includes system name and state, active-or-queued definition count, worker counts by state, active/final/failed worker counts, current executing iteration count, completed/failed/canceled iteration counts, iteration counts by completion status, the ten most common iteration key types, the five most recently updated failed workers, and the five most recent failed/completed iterations.
+
+Use overview slices when a client only needs to refresh part of the overview screen.
+
+```http
+GET /workable/overview/counts
+GET /workable/overview/worker-counts
+GET /workable/overview/iteration-counts
+GET /workable/overview/common-key-types
+GET /workable/overview/failed-workers
+GET /workable/overview/failed-iterations
+GET /workable/overview/completed-iterations
+```
+
+`/overview/failed-workers` returns worker counts and the recent failed worker rows together, so clients can refresh the failed-worker panel and worker-count tiles with one request.
+
+Named systems use the same route shape under `/systems/{systemName}`.
+
+```http
+GET /workable/systems/fulfillment/overview/counts
+```
+
 Get a worker snapshot.
 
 ```http
 GET /workable/workers/22222222-2222-2222-2222-222222222222
 ```
 
-Query worker summaries.
+Get one completed worker iteration by worker id and iteration sequence.
+
+```http
+GET /workable/workers/22222222-2222-2222-2222-222222222222/iterations/1
+```
+
+Query workers. The response contains lightweight `WorkerOverviewItem` rows, not full worker snapshots.
 
 ```http
 POST /workable/workers/query
@@ -165,6 +301,31 @@ Content-Type: application/json
 {
   "definitionName": "email.welcome.send",
   "states": [ "Completed", "Failed" ],
+  "configuration": {
+    "recurrenceEnabled": false,
+    "concurrencyEnabled": true,
+    "profilingEnabled": true
+  },
+  "skip": 0,
+  "take": 50
+}
+```
+
+The `configuration` filter is optional. Supported fields are `recurrenceEnabled`, `concurrencyEnabled`, and `profilingEnabled`.
+
+Query worker iterations. The response contains lightweight `WorkerIterationOverviewItem` rows.
+
+```http
+POST /workable/iterations/query
+Content-Type: application/json
+
+{
+  "definitionName": "email.welcome.send",
+  "statuses": [ "Failed", "Completed" ],
+  "identifier": {
+    "type": "claim",
+    "value": "CLM-123"
+  },
   "skip": 0,
   "take": 50
 }
@@ -187,6 +348,52 @@ Content-Type: application/json
 }
 ```
 
+Search known worker keys across subjects, concurrency keys, and identifiers.
+
+```http
+POST /workable/work-keys/query
+Content-Type: application/json
+
+{
+  "search": "claim id CLM-123",
+  "states": [ "Running" ],
+  "take": 50
+}
+```
+
+The response includes matching keys and the `WorkerOverviewItem` rows attached to each key.
+
+List known worker key types. This is useful when a caller knows it is looking for claim work or customer work but does not yet know which exact key values exist.
+
+```http
+GET /workable/work-keys/types?search=claim%20work&skip=0&take=50
+```
+
+The key type query is also available as `POST /workable/work-keys/types/query` when a request body is preferred.
+
+Key type responses are paginated and include `WorkerOverviewItem` rows attached to all matching keys of that type. Each type result counts a worker once per type, even when the same worker has that type as a subject, concurrency key, and identifier.
+
+Search known work iteration keys when the caller wants execution rows rather than worker rows.
+
+```http
+POST /workable/work-iteration-keys/query
+Content-Type: application/json
+
+{
+  "search": "claim id CLM-123",
+  "statuses": [ "Failed" ],
+  "take": 50
+}
+```
+
+List known work iteration key types.
+
+```http
+GET /workable/work-iteration-keys/types?search=claim%20work&skip=0&take=50
+```
+
+The iteration key type query is also available as `POST /workable/work-iteration-keys/types/query`. Iteration key responses are paginated and include `WorkerIterationOverviewItem` rows attached to matching keys.
+
 ## Worker Operations
 
 Worker operations require the worker id and the revision observed by the caller.
@@ -201,6 +408,45 @@ Content-Type: application/json
 ```
 
 The action route supports `Start`, `Pause`, `Cancel`, `Push`, and `Purge`.
+
+Apply a worker action to all workers in the system.
+
+```http
+POST /workable/workers/actions/cancel
+Content-Type: application/json
+
+{}
+```
+
+Bulk worker actions use the current server-side worker revision for each matched worker. The response contains one `WorkActionOutcome` per matched worker, so invalid states and conflicts are reported per worker.
+
+```json
+{
+  "action": "Cancel",
+  "filter": {
+    "category": null,
+    "includeSubcategories": true
+  },
+  "matchedWorkerCount": 0,
+  "outcomes": [],
+  "acceptedCount": 0,
+  "conflictCount": 0,
+  "invalidCount": 0,
+  "notFoundCount": 0
+}
+```
+
+Target workers by work definition category.
+
+```http
+POST /workable/workers/actions/pause
+Content-Type: application/json
+
+{
+  "category": "Billing",
+  "includeSubcategories": true
+}
+```
 
 Runtime reconfiguration uses the same revision rule.
 

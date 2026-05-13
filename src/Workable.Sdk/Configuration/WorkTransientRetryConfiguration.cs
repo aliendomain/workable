@@ -1,7 +1,12 @@
 namespace Workable;
 public sealed record WorkTransientRetryConfiguration
 {
-    public static WorkTransientRetryConfiguration Default { get; } = new();
+    public static WorkTransientRetryConfiguration Default { get; } = new()
+    {
+        Count = 3,
+    };
+
+    public static WorkTransientRetryConfiguration Disabled { get; } = new();
 
     public int Count { get; init; }
 

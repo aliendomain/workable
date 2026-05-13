@@ -18,7 +18,7 @@ internal static class WorkerStateMachine
             WorkAction.Pause => state switch
             {
                 WorkerState.Running => WorkerStateTransition.Accepted(action, state, WorkerState.Pausing, cancelsExecution: true),
-                WorkerState.Waiting => WorkerStateTransition.Accepted(action, state, WorkerState.Paused),
+                WorkerState.Waiting or WorkerState.Retrying => WorkerStateTransition.Accepted(action, state, WorkerState.Paused),
                 _ => WorkerStateTransition.Invalid(action, state, "workable.worker.not_pausable", $"Worker cannot be paused from state '{state}'."),
             },
 
@@ -28,7 +28,7 @@ internal static class WorkerStateMachine
                     ? WorkerStateTransition.Accepted(action, state, WorkerState.Canceling, cancelsExecution: true)
                     : WorkerStateTransition.Accepted(action, state, WorkerState.Canceled),
 
-            WorkAction.Push => state == WorkerState.Waiting
+            WorkAction.Push => state is WorkerState.Waiting or WorkerState.Retrying
                 ? WorkerStateTransition.Accepted(action, state, WorkerState.Queued)
                 : WorkerStateTransition.Invalid(action, state, "workable.worker.not_waiting", $"Worker cannot be pushed from state '{state}'."),
 
@@ -58,7 +58,7 @@ internal static class WorkerStateMachine
         {
             WorkerState.Pausing => new(WorkerState.Paused, WorkCompletionStatus.Paused),
             WorkerState.Running or WorkerState.Canceling => new(WorkerState.Canceled, WorkCompletionStatus.Canceled),
-            WorkerState.Waiting => new(WorkerState.Canceled, WorkCompletionStatus.Canceled),
+            WorkerState.Waiting or WorkerState.Retrying => new(WorkerState.Canceled, WorkCompletionStatus.Canceled),
             _ => new(state, CompletionStatusFor(state)),
         };
 

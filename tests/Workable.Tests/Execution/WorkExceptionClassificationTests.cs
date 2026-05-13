@@ -23,7 +23,11 @@ public sealed class WorkExceptionClassificationTests
                 systemClassifierCalled = true;
                 return WorkExceptionClassification.Transient;
             }),
-            work => work.ClassifyExceptions(_ => WorkExceptionClassification.Transient));
+            work =>
+            {
+                work.UseTransientRetry(WorkTransientRetryConfiguration.Disabled);
+                work.ClassifyExceptions(_ => WorkExceptionClassification.Transient);
+            });
 
         AssertExceptionClassification(completion, WorkExceptionClassification.Transient, expectedTransient: true);
         Assert.False(systemClassifierCalled);
@@ -46,7 +50,11 @@ public sealed class WorkExceptionClassificationTests
                 systemClassifierCalled = true;
                 return WorkExceptionClassification.Transient;
             }),
-            work => work.ClassifyExceptions(_ => WorkExceptionClassification.NonTransient));
+            work =>
+            {
+                work.UseTransientRetry(WorkTransientRetryConfiguration.Disabled);
+                work.ClassifyExceptions(_ => WorkExceptionClassification.NonTransient);
+            });
 
         AssertExceptionClassification(completion, WorkExceptionClassification.NonTransient, expectedTransient: false);
         Assert.False(systemClassifierCalled);
@@ -64,7 +72,11 @@ public sealed class WorkExceptionClassificationTests
                 return WorkExceptionClassification.NonTransient;
             })),
             system => system.ClassifyExceptions(_ => WorkExceptionClassification.Transient),
-            work => work.ClassifyExceptions(_ => WorkExceptionClassification.Unknown));
+            work =>
+            {
+                work.UseTransientRetry(WorkTransientRetryConfiguration.Disabled);
+                work.ClassifyExceptions(_ => WorkExceptionClassification.Unknown);
+            });
 
         AssertExceptionClassification(completion, WorkExceptionClassification.Transient, expectedTransient: true);
         Assert.False(globalClassifierCalled);
@@ -76,7 +88,11 @@ public sealed class WorkExceptionClassificationTests
         var (completion, _) = await RunThrowingWork(
             services => services.AddWorkable(builder => builder.ClassifyExceptions(_ => WorkExceptionClassification.Transient)),
             system => system.ClassifyExceptions(_ => WorkExceptionClassification.Unknown),
-            work => work.ClassifyExceptions(_ => WorkExceptionClassification.Unknown));
+            work =>
+            {
+                work.UseTransientRetry(WorkTransientRetryConfiguration.Disabled);
+                work.ClassifyExceptions(_ => WorkExceptionClassification.Unknown);
+            });
 
         AssertExceptionClassification(completion, WorkExceptionClassification.Transient, expectedTransient: true);
     }
@@ -87,7 +103,11 @@ public sealed class WorkExceptionClassificationTests
         var (completion, _) = await RunThrowingWork(
             services => services.AddWorkable(builder => builder.ClassifyExceptions(_ => WorkExceptionClassification.Unknown)),
             system => system.ClassifyExceptions(_ => WorkExceptionClassification.Unknown),
-            work => work.ClassifyExceptions(_ => WorkExceptionClassification.Unknown));
+            work =>
+            {
+                work.UseTransientRetry(WorkTransientRetryConfiguration.Disabled);
+                work.ClassifyExceptions(_ => WorkExceptionClassification.Unknown);
+            });
 
         AssertExceptionClassification(completion, WorkExceptionClassification.Unknown, expectedTransient: false);
     }
@@ -99,10 +119,12 @@ public sealed class WorkExceptionClassificationTests
             .AddWorkable(builder => builder.ClassifyExceptions(_ => WorkExceptionClassification.Transient))
             .AddWorkableSystem(builder => builder.AddWork(
                 WorkDefinition.Create("default-throws", "Throws."),
-                ThrowingWork))
+                ThrowingWork,
+                work => work.UseTransientRetry(WorkTransientRetryConfiguration.Disabled)))
             .AddWorkableSystem("named", builder => builder.AddWork(
                 WorkDefinition.Create("named-throws", "Throws."),
-                ThrowingWork));
+                ThrowingWork,
+                work => work.UseTransientRetry(WorkTransientRetryConfiguration.Disabled)));
         var registry = services.BuildServiceProvider().GetRequiredService<IWorkSystemRegistry>();
         Assert.True(registry.TryGet("named", out var named));
 
@@ -124,7 +146,11 @@ public sealed class WorkExceptionClassificationTests
             .AddWorkableWork(
                 WorkDefinition.Create("feature-throws", "Throws."),
                 ThrowingWork,
-                work => work.ClassifyExceptions(_ => WorkExceptionClassification.Transient));
+                work =>
+                {
+                    work.UseTransientRetry(WorkTransientRetryConfiguration.Disabled);
+                    work.ClassifyExceptions(_ => WorkExceptionClassification.Transient);
+                });
         var system = services.BuildServiceProvider().GetRequiredService<IWorkSystemRegistry>().Default;
 
         await system.Start();
@@ -140,7 +166,11 @@ public sealed class WorkExceptionClassificationTests
         var (completion, logs) = await RunThrowingWork(
             configureServices: null,
             configureSystem: null,
-            configureWork: work => work.ClassifyExceptions(_ => WorkExceptionClassification.Transient));
+            configureWork: work =>
+            {
+                work.UseTransientRetry(WorkTransientRetryConfiguration.Disabled);
+                work.ClassifyExceptions(_ => WorkExceptionClassification.Transient);
+            });
 
         AssertExceptionClassification(completion, WorkExceptionClassification.Transient, expectedTransient: true);
         var log = Assert.Single(logs);
@@ -160,7 +190,7 @@ public sealed class WorkExceptionClassificationTests
                 builder.ClassifyExceptions(_ => WorkExceptionClassification.Transient);
             }),
             configureSystem: null,
-            configureWork: null);
+            configureWork: work => work.UseTransientRetry(WorkTransientRetryConfiguration.Disabled));
 
         AssertExceptionClassification(completion, WorkExceptionClassification.Transient, expectedTransient: true);
         Assert.Contains(logs, log =>

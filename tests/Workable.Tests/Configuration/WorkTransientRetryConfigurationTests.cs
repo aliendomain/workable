@@ -11,6 +11,18 @@ public sealed class WorkTransientRetryConfigurationTests
     {
         var transientRetry = WorkTransientRetryConfiguration.Default;
 
+        Assert.Equal(3, transientRetry.Count);
+        Assert.Equal(TimeSpan.FromMilliseconds(800), transientRetry.InitialDelay);
+        Assert.Equal(TimeSpan.FromMilliseconds(500), transientRetry.Jitter);
+        Assert.Equal(TimeSpan.FromSeconds(30), transientRetry.MaximumDelay);
+        Assert.Equal(WorkRetryBackoff.Exponential, transientRetry.Backoff);
+    }
+
+    [Fact]
+    public void DisabledHasZeroRetryAttempts()
+    {
+        var transientRetry = WorkTransientRetryConfiguration.Disabled;
+
         Assert.Equal(0, transientRetry.Count);
         Assert.Equal(TimeSpan.FromMilliseconds(800), transientRetry.InitialDelay);
         Assert.Equal(TimeSpan.FromMilliseconds(500), transientRetry.Jitter);

@@ -4,6 +4,7 @@ public enum WorkerState
     Queued,
     Running,
     Waiting,
+    Retrying,
     Pausing,
     Paused,
     Canceling,

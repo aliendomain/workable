@@ -21,10 +21,40 @@ internal sealed class RecurringWorkerExecutionStrategy(
                     return worker.ToCompletion(stoppedStatus);
                 }
 
-                var attempt = await attemptRunner.Execute(
-                    worker,
-                    allowTransientRetry: worker.GetConfiguration().TransientRetry.Count > 0,
-                    cancellationToken);
+                var retryAttempts = 0;
+                WorkerExecutionAttempt attempt;
+                while (true)
+                {
+                    attempt = await attemptRunner.Execute(worker, retryAttempts, cancellationToken);
+                    if (!attempt.IsExceptionFailure)
+                    {
+                        break;
+                    }
+
+                    var transientRetry = worker.GetConfiguration().TransientRetry;
+                    if (attempt.RequiredExceptionClassification != WorkExceptionClassification.Transient ||
+                        retryAttempts >= transientRetry.Count)
+                    {
+                        attemptRunner.LogFinalException(worker, attempt, retryAttempts);
+                        break;
+                    }
+
+                    retryAttempts++;
+                    var retryDelay = TransientRetryWorkerExecutionStrategy.GetRetryDelay(transientRetry, retryAttempts);
+                    var retryResult = WorkExecutionResult.Failure([attempt.RequiredExceptionFailureMessage]);
+                    worker.CompleteRetryIteration(retryResult, retryDelay);
+                    workerEvents.IterationFailed(worker);
+                    attemptRunner.LogRetrying(worker, attempt, retryAttempts, transientRetry.Count, retryDelay);
+                    workerEvents.Retrying(worker, retryDelay);
+                    await worker.WaitForRecurrenceInterval(retryDelay, cancellationToken);
+
+                    if (!worker.TryBeginRetryIteration())
+                    {
+                        return worker.ToCompletion(WorkerStateMachine.CompletionStatusFor(worker.State));
+                    }
+
+                    workerEvents.Started(worker);
+                }
 
                 var result = attempt.IsExceptionFailure
                     ? WorkExecutionResult.Failure([attempt.RequiredExceptionFailureMessage])
@@ -46,11 +76,11 @@ internal sealed class RecurringWorkerExecutionStrategy(
 
                 if (result.HasErrors)
                 {
-                    workerEvents.RecurringIterationFailed(worker);
+                    workerEvents.IterationFailed(worker);
                 }
                 else
                 {
-                    workerEvents.RecurringIterationCompleted(worker);
+                    workerEvents.IterationCompleted(worker);
                 }
 
                 workerEvents.Waiting(worker);

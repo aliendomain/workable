@@ -8,6 +8,7 @@ using Microsoft.Extensions.Hosting;
 namespace Workable;
 internal sealed class WorkSystemCatalog : IWorkCatalog
 {
+    private readonly Lock sync = new();
     private readonly List<RegisteredWork> work = [];
     private IReadOnlyDictionary<WorkDefinitionId, RegisteredWork> workById = new Dictionary<WorkDefinitionId, RegisteredWork>();
     private IReadOnlyDictionary<string, RegisteredWork> workByName = new Dictionary<string, RegisteredWork>(StringComparer.OrdinalIgnoreCase);
@@ -66,16 +67,82 @@ internal sealed class WorkSystemCatalog : IWorkCatalog
 
     internal void AddWork(RegisteredWork registeredWork)
     {
-        if (this.IsFrozen)
+        lock (this.sync)
         {
-            throw new InvalidOperationException("Work definitions cannot be added after the catalog is frozen.");
-        }
+            if (this.IsFrozen)
+            {
+                throw new InvalidOperationException("Work definitions cannot be added after the catalog is frozen.");
+            }
 
-        this.work.Add(registeredWork);
-        this.RebuildIndexes();
+            this.work.Add(registeredWork);
+            this.RebuildIndexes();
+        }
     }
 
     internal void Freeze() => this.IsFrozen = true;
+
+    public Task<WorkDefinitionReconfigurationOutcome> Reconfigure(
+        WorkDefinitionVersion definition,
+        WorkDefinitionReconfiguration changes,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(changes);
+        cancellationToken.ThrowIfCancellationRequested();
+
+        lock (this.sync)
+        {
+            if (!this.workById.TryGetValue(definition.DefinitionId, out var registeredWork))
+            {
+                return Task.FromResult(WorkDefinitionReconfigurationOutcome.NotFound(definition.DefinitionId));
+            }
+
+            if (registeredWork.Definition.Revision != definition.Revision)
+            {
+                return Task.FromResult(WorkDefinitionReconfigurationOutcome.Conflict(registeredWork.Definition, definition.Revision));
+            }
+
+            var updatedOptions = changes.DefaultOptions ?? registeredWork.Definition.DefaultOptions;
+            var updatedConfiguration = changes.Configuration ?? registeredWork.Definition.Configuration;
+            var messages = ValidateReconfiguration(updatedOptions, updatedConfiguration);
+            if (messages.Count > 0)
+            {
+                return Task.FromResult(WorkDefinitionReconfigurationOutcome.Invalid(registeredWork.Definition, messages));
+            }
+
+            var updatedDefinition = registeredWork.Definition with
+            {
+                DefaultOptions = updatedOptions,
+                Configuration = updatedConfiguration,
+                Revision = registeredWork.Definition.Revision + 1,
+            };
+            var index = this.work.IndexOf(registeredWork);
+            if (index < 0)
+            {
+                return Task.FromResult(WorkDefinitionReconfigurationOutcome.NotFound(definition.DefinitionId));
+            }
+
+            this.work[index] = registeredWork with
+            {
+                Definition = updatedDefinition,
+            };
+            this.RebuildIndexes();
+            return Task.FromResult(WorkDefinitionReconfigurationOutcome.Accepted(updatedDefinition));
+        }
+    }
+
+    private static IReadOnlyList<WorkMessage> ValidateReconfiguration(
+        WorkerOptions options,
+        WorkConfiguration configuration)
+    {
+        var messages = new List<WorkMessage>();
+        messages.AddRange(WorkConfigurationValidator.Validate(configuration));
+        if (options.Configuration is { } optionConfiguration)
+        {
+            messages.AddRange(WorkConfigurationValidator.Validate(optionConfiguration));
+        }
+
+        return messages;
+    }
 
     private void RebuildIndexes()
     {

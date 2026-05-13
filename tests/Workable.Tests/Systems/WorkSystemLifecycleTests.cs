@@ -173,6 +173,28 @@ public sealed class WorkSystemLifecycleTests
     }
 
     [Fact]
+    public async Task QueueRejectsWorkWhenSystemIsNotStarted()
+    {
+        var system = new ServiceCollection()
+            .AddWorkableSystem(builder => builder.AddWork(
+                WorkDefinition.Create("lifecycle.not-started"),
+                (context, input, cancellationToken) => Task.FromResult(WorkExecutionResult.Success())))
+            .BuildServiceProvider()
+            .GetRequiredService<IWorkSystemRegistry>()
+            .Default;
+
+        var created = await system.Queue.Enqueue("lifecycle.not-started");
+        await system.Start();
+        await system.Stop();
+        var stopped = await system.Queue.Enqueue("lifecycle.not-started");
+
+        Assert.Equal(WorkQueueStatus.Invalid, created.QueueOutcome.Status);
+        Assert.Contains(created.QueueOutcome.Messages, message => message.Code == "workable.system.not_started");
+        Assert.Equal(WorkQueueStatus.Invalid, stopped.QueueOutcome.Status);
+        Assert.Contains(stopped.QueueOutcome.Messages, message => message.Code == "workable.system.not_started");
+    }
+
+    [Fact]
     public async Task StopRequestsCancellationAndWaitsForCooperativeWork()
     {
         var tracker = new ShutdownTracker();
@@ -197,6 +219,62 @@ public sealed class WorkSystemLifecycleTests
     }
 
     [Fact]
+    public async Task StopClearsWorkerMemoryAfterShutdown()
+    {
+        var system = new ServiceCollection()
+            .AddWorkableSystem(builder =>
+            {
+                builder.AddWork(WorkDefinition.Create("shutdown.completed"), (context, input, cancellationToken) =>
+                    Task.FromResult(WorkExecutionResult.Success()));
+                builder.AddWork(WorkDefinition.Create("shutdown.failed"), (context, input, cancellationToken) =>
+                    Task.FromResult(WorkExecutionResult.Failure(
+                        [WorkMessage.Error("shutdown.failed", "The worker failed before shutdown.")])));
+                builder.AddWork(
+                    WorkDefinition.Create(
+                        "shutdown.queued",
+                        configuration: WorkConfiguration.Default with
+                        {
+                            Start = WorkStartConfiguration.DoNotStart,
+                        }),
+                    (context, input, cancellationToken) => Task.FromResult(WorkExecutionResult.Success()));
+            })
+            .BuildServiceProvider()
+            .GetRequiredService<IWorkSystemRegistry>()
+            .Default;
+
+        await system.Start();
+        var completed = await system.Queue.Enqueue("shutdown.completed");
+        await completed.WaitForCompletion();
+        var handle = await system.Queue.Enqueue(
+            "shutdown.failed",
+            WorkInput.Empty.WithIdentifier(new WorkIdentifier("shutdown-test", "failed")));
+        var failed = await handle.WaitForCompletion();
+        var queued = await system.Queue.Enqueue("shutdown.queued");
+
+        await system.Stop();
+        var completedWorker = await system.Query.GetWorker(completed.WorkerId ?? throw new InvalidOperationException("Expected completed worker id."));
+        var failedWorker = await system.Query.GetWorker(handle.WorkerId ?? throw new InvalidOperationException("Expected failed worker id."));
+        var queuedWorker = await system.Query.GetWorker(queued.WorkerId ?? throw new InvalidOperationException("Expected queued worker id."));
+        var overview = await system.Query.GetSystemOverview();
+        var query = await system.Query.QueryWorkers(new WorkerQuery());
+        var keys = await system.Query.QueryWorkerKeys(new WorkerKeyQuery(Search: "shutdown-test"));
+
+        Assert.Equal(WorkCompletionStatus.Failed, failed.Status);
+        Assert.Null(completedWorker);
+        Assert.Null(failedWorker);
+        Assert.Null(queuedWorker);
+        Assert.Empty(query.Workers);
+        Assert.Empty(keys.Keys);
+        Assert.Equal(0, overview.ActiveWorkerCount);
+        Assert.Equal(0, overview.FinalWorkerCount);
+        Assert.Equal(0, overview.FailedWorkerCount);
+        Assert.Empty(overview.WorkerCountByState);
+        Assert.Empty(overview.FailedWorkers);
+        Assert.Empty(overview.FailedIterations);
+        Assert.Empty(overview.CompletedIterations);
+    }
+
+    [Fact]
     public async Task StopForceCancelsWorkAfterGracePeriod()
     {
         var tracker = new ShutdownTracker();
@@ -213,9 +291,11 @@ public sealed class WorkSystemLifecycleTests
         var handle = await system.Queue.Enqueue("shutdown.ignores-cancel");
         await tracker.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
 
-        await system.Stop();
+        var stop = await system.Stop();
         var completion = await handle.WaitForCompletion();
 
+        var forceCanceled = Assert.Single(stop.ForceCanceledWorkers);
+        Assert.Equal(handle.WorkerId, forceCanceled.Id);
         Assert.Equal(WorkCompletionStatus.Canceled, completion.Status);
         Assert.Equal(WorkerState.Canceled, completion.Worker?.State);
         Assert.Contains(completion.Messages, message => message.Code == "workable.worker.shutdown_forced");
