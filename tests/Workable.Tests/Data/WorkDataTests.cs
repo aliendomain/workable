@@ -74,6 +74,20 @@ public sealed class WorkDataTests
     }
 
     [Fact]
+    public void WorkIdentityTypesShareWorkKeyShapeWithoutSharingSemantics()
+    {
+        IWorkKey subject = new WorkSubjectId("customer", "customer-123");
+        IWorkKey concurrencyKey = new WorkConcurrencyKey("tenant", "tenant-456");
+        IWorkKey identifier = new WorkIdentifier("invoice", "invoice-789");
+
+        Assert.Equal("customer", subject.Type);
+        Assert.Equal("customer-123", subject.Value);
+        Assert.IsType<WorkSubjectId>(subject);
+        Assert.IsType<WorkConcurrencyKey>(concurrencyKey);
+        Assert.IsType<WorkIdentifier>(identifier);
+    }
+
+    [Fact]
     public void WorkOutputEmptyHasNoJsonPayload()
     {
         Assert.Null(WorkOutput.Empty.Json);
@@ -128,6 +142,23 @@ public sealed class WorkDataTests
     {
         Assert.Null(WorkSchema.None.JsonSchema);
         Assert.Equal("application/schema+json", WorkSchema.None.ContentType);
+        Assert.Null(WorkSchema.None.SchemaDialect);
+    }
+
+    [Fact]
+    public void WorkSchemaFromTypeUsesModernDialectAndWebJsonNaming()
+    {
+        var schema = WorkSchema.FromType<SamplePayload>();
+
+        Assert.Equal(WorkSchema.JsonSchemaDialect202012, schema.SchemaDialect);
+        Assert.NotNull(schema.JsonSchema);
+
+        using var document = JsonDocument.Parse(schema.JsonSchema);
+        var root = document.RootElement;
+
+        Assert.Equal(WorkSchema.JsonSchemaDialect202012, root.GetProperty("$schema").GetString());
+        Assert.True(root.GetProperty("properties").TryGetProperty("message", out _));
+        Assert.False(root.GetProperty("properties").TryGetProperty("Message", out _));
     }
 
     private sealed record SamplePayload(string Message);

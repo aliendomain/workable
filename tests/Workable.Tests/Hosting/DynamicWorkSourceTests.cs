@@ -156,15 +156,43 @@ public sealed class DynamicWorkSourceTests
             .BuildServiceProvider();
         var tracker = provider.GetRequiredService<DynamicSourceTracker>();
         var system = provider.GetRequiredService<IWorkSystemRegistry>().Default;
+        await using var completedSubscription = system.Events.Subscribe(new WorkEventFilter(EventType: "worker.completed"));
+        await using var completedReader = completedSubscription.Read().GetAsyncEnumerator();
 
         await system.Start();
         await tracker.StartupWorkCompleted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await ReadNext(completedReader);
 
         var workers = (await system.Query.QueryWorkers(new WorkerQuery())).Workers;
         var worker = Assert.Single(workers, worker => worker.DefinitionName == "runtime.generated");
+        var snapshot = await system.Query.GetWorker(worker.Id)
+            ?? throw new InvalidOperationException("Expected worker snapshot.");
         Assert.Equal(WorkerState.Completed, worker.State);
-        Assert.Equal(WorkInvocationChannel.DotNet, worker.Origin.Channel);
-        Assert.Contains(nameof(RuntimeStartupSource), worker.Origin.Description);
+        Assert.Equal(WorkInvocationChannel.DotNet, snapshot.Origin.Channel);
+        Assert.Contains(nameof(RuntimeStartupSource), snapshot.Origin.Description);
+    }
+
+    [Fact]
+    public async Task RestartRunsStartupWorkSourcesWithoutRedefiningRuntimeWork()
+    {
+        var provider = new ServiceCollection()
+            .AddSingleton<DynamicSourceTracker>()
+            .AddWorkableSystem(builder => builder
+                .AddWorkDefinitionSource<RuntimeDefinitionSource>()
+                .AddStartupWorkSource<RuntimeStartupSource>())
+            .BuildServiceProvider();
+        var tracker = provider.GetRequiredService<DynamicSourceTracker>();
+        var system = provider.GetRequiredService<IWorkSystemRegistry>().Default;
+
+        await system.Start();
+        await system.Stop();
+        await system.Start();
+
+        var workers = await system.Query.QueryWorkers(new WorkerQuery(DefinitionName: "runtime.generated", Take: 10));
+
+        Assert.Equal(1, tracker.DefinitionSourceRuns);
+        Assert.Equal(2, tracker.StartupSourceRuns);
+        Assert.Equal(1, workers.TotalCount);
     }
 
     [Fact]
@@ -292,6 +320,13 @@ public sealed class DynamicWorkSourceTests
 
     private static Task<WorkExecutionResult> SuccessfulWork(IWorkExecutionContext context, WorkInput? input, CancellationToken cancellationToken)
         => Task.FromResult(WorkExecutionResult.Success());
+
+    private static async Task<WorkEvent> ReadNext(IAsyncEnumerator<WorkEvent> reader)
+    {
+        var hasEvent = await reader.MoveNextAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.True(hasEvent);
+        return reader.Current;
+    }
 
     private sealed record EchoInput(string Message);
 

@@ -2,7 +2,8 @@ namespace Workable;
 
 public sealed class WorkableHttpWorkService(
     IWorkSystemRegistry registry,
-    IDotNetWorkOriginProvider dotNetOriginProvider)
+    IDotNetWorkOriginProvider dotNetOriginProvider,
+    IEnumerable<IWorkRealtimeCapabilityProvider> realtimeCapabilityProviders)
 {
     public bool TryGetSystem(string? systemName, [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out IWorkSystem? system)
     {
@@ -17,6 +18,30 @@ public sealed class WorkableHttpWorkService(
 
     public IReadOnlyList<WorkDefinition> GetDefinitions()
         => GetDefinitions(registry.Default);
+
+    public WorkableHttpSystems GetSystems()
+    {
+        var defaultSystemId = registry.Default.Id;
+        var systems = registry.Systems
+            .OrderBy(system => system.Name is null ? 0 : 1)
+            .ThenBy(system => system.Name, StringComparer.OrdinalIgnoreCase)
+            .Select(system => new WorkableHttpSystemInfo(
+                system.Id,
+                system.Name,
+                system.State,
+                system.Id == defaultSystemId,
+                this.CreateCapabilities(system)))
+            .ToList();
+
+        return new WorkableHttpSystems(systems);
+    }
+
+    private WorkableHttpCapabilities CreateCapabilities(IWorkSystem system)
+    {
+        var realtime = realtimeCapabilityProviders.FirstOrDefault()?.GetCapability(system)
+            ?? WorkRealtimeCapability.Disabled;
+        return new WorkableHttpCapabilities(realtime);
+    }
 
     public Task<WorkableHttpWorkResult> Queue(
         string name,
@@ -79,10 +104,69 @@ public sealed class WorkableHttpWorkService(
         CancellationToken cancellationToken = default)
         => registry.Default.Query.QueryWorkDefinitions(query ?? new WorkDefinitionQuery(), cancellationToken);
 
+    public Task<WorkerKeyQueryResult> QueryWorkerKeys(
+        WorkerKeyQuery? query = null,
+        CancellationToken cancellationToken = default)
+        => registry.Default.Query.QueryWorkerKeys(query ?? new WorkerKeyQuery(), cancellationToken);
+
+    public Task<WorkerKeyTypeQueryResult> QueryWorkerKeyTypes(
+        WorkerKeyTypeQuery? query = null,
+        CancellationToken cancellationToken = default)
+        => registry.Default.Query.QueryWorkerKeyTypes(query, cancellationToken);
+
+    public Task<WorkIterationKeyQueryResult> QueryWorkIterationKeys(
+        WorkIterationKeyQuery? query = null,
+        CancellationToken cancellationToken = default)
+        => registry.Default.Query.QueryWorkIterationKeys(query ?? new WorkIterationKeyQuery(), cancellationToken);
+
+    public Task<WorkIterationKeyTypeQueryResult> QueryWorkIterationKeyTypes(
+        WorkIterationKeyTypeQuery? query = null,
+        CancellationToken cancellationToken = default)
+        => registry.Default.Query.QueryWorkIterationKeyTypes(query, cancellationToken);
+
     public Task<WorkerStatusSummary> GetWorkerStatusSummary(
         WorkerQuery? query = null,
         CancellationToken cancellationToken = default)
         => registry.Default.Query.GetWorkerStatusSummary(query, cancellationToken);
+
+    public Task<WorkDefinitionReconfigurationOutcome> ReconfigureDefinition(
+        WorkDefinitionId definitionId,
+        WorkableHttpDefinitionReconfigurationRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+
+        return registry.Default.Catalog.Reconfigure(
+            new WorkDefinitionVersion(definitionId, request.Revision),
+            request.Changes,
+            cancellationToken);
+    }
+
+    internal static async Task<WorkableHttpSystemLifecycleResult> Start(
+        IWorkSystem system,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(system);
+
+        await system.Start(cancellationToken);
+        return new WorkableHttpSystemLifecycleResult(system.Id, system.Name, system.State);
+    }
+
+    internal static async Task<WorkableHttpSystemStopResult> Stop(
+        IWorkSystem system,
+        WorkOrigin origin,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(system);
+        ArgumentNullException.ThrowIfNull(origin);
+
+        var result = await RequiredOriginAwareSystem(system).Stop(origin, cancellationToken);
+        return new WorkableHttpSystemStopResult(
+            system.Id,
+            system.Name,
+            system.State,
+            result.ForceCanceledWorkers);
+    }
 
     public Task<WorkActionOutcome> Execute(
         WorkerId workerId,
@@ -121,6 +205,23 @@ public sealed class WorkableHttpWorkService(
         return RequiredOriginAwareSystem(system).Execute(new WorkerVersion(workerId, request.Revision), action, origin, cancellationToken);
     }
 
+    internal static Task<WorkerBulkActionOutcome> ExecuteAll(
+        IWorkSystem system,
+        WorkAction action,
+        WorkableHttpWorkerBulkActionRequest? request,
+        WorkOrigin origin,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(system);
+        ArgumentNullException.ThrowIfNull(origin);
+
+        return RequiredOriginAwareSystem(system).ExecuteAll(
+            action,
+            request?.ToFilter(),
+            origin,
+            cancellationToken);
+    }
+
     public Task<WorkActionOutcome> Reconfigure(
         WorkerId workerId,
         WorkableHttpWorkerReconfigurationRequest request,
@@ -155,12 +256,26 @@ public sealed class WorkableHttpWorkService(
         return RequiredOriginAwareSystem(system).Reconfigure(new WorkerVersion(workerId, request.Revision), request.Changes, origin, cancellationToken);
     }
 
+    internal static Task<WorkDefinitionReconfigurationOutcome> ReconfigureDefinition(
+        IWorkSystem system,
+        WorkDefinitionId definitionId,
+        WorkableHttpDefinitionReconfigurationRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(system);
+        ArgumentNullException.ThrowIfNull(request);
+
+        return system.Catalog.Reconfigure(
+            new WorkDefinitionVersion(definitionId, request.Revision),
+            request.Changes,
+            cancellationToken);
+    }
+
     internal static IReadOnlyList<WorkDefinition> GetDefinitions(IWorkSystem system)
     {
         ArgumentNullException.ThrowIfNull(system);
 
         return [.. system.Catalog.Definitions
-            .Where(definition => definition.Configuration.Invocation.Allows(WorkInvocationChannel.HttpApi))
             .OrderBy(definition => definition.Category, StringComparer.OrdinalIgnoreCase)
             .ThenBy(definition => definition.Name, StringComparer.OrdinalIgnoreCase)];
     }
@@ -213,7 +328,7 @@ public sealed class WorkableHttpWorkService(
                 outcome.Messages);
         }
 
-        var handle = await RequiredOriginAwareSystem(system).Enqueue(name, CreateInput(request), request?.Options, origin, cancellationToken);
+        var handle = await RequiredOriginAwareSystem(system).Enqueue(name, CreateInput(request), request?.Options?.ToWorkerOptions(), origin, cancellationToken);
         return await CreateQueueResult(handle, request, cancellationToken);
     }
 
@@ -264,7 +379,7 @@ public sealed class WorkableHttpWorkService(
                 outcome.Messages);
         }
 
-        var handle = await RequiredOriginAwareSystem(system).Enqueue(definitionId, CreateInput(request), request?.Options, origin, cancellationToken);
+        var handle = await RequiredOriginAwareSystem(system).Enqueue(definitionId, CreateInput(request), request?.Options?.ToWorkerOptions(), origin, cancellationToken);
         return await CreateQueueResult(handle, request, cancellationToken);
     }
 

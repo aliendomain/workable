@@ -24,7 +24,7 @@ public sealed class WorkQueryTests
     }
 
     [Fact]
-    public async Task QueryWorkersReturnsSummariesFilteredByDefinitionSubjectConcurrencyKeyAndIdentifier()
+    public async Task QueryWorkersReturnsOverviewItemsFilteredByDefinitionSubjectConcurrencyKeyAndIdentifier()
     {
         var subject = new WorkSubjectId("customer", "123");
         var key = new WorkConcurrencyKey("tenant", "tenant-a");
@@ -52,8 +52,10 @@ public sealed class WorkQueryTests
         var onlyWorker = Assert.Single(result.Workers);
         Assert.Equal(RequiredWorkerId(accepted), onlyWorker.Id);
         Assert.Equal("invoice.sync", onlyWorker.DefinitionName);
-        Assert.Equal("Finance:Invoices", onlyWorker.DefinitionCategory);
+        Assert.Equal(subject, onlyWorker.SubjectId);
+        Assert.Equal(key, onlyWorker.ConcurrencyKey);
         Assert.Contains(identifier, onlyWorker.Identifiers);
+        Assert.Equal("Finance:Invoices", onlyWorker.Category);
     }
 
     [Fact]
@@ -79,6 +81,497 @@ public sealed class WorkQueryTests
         var onlyWorker = Assert.Single(result.Workers);
         Assert.Equal(RequiredWorkerId(handle), onlyWorker.Id);
         Assert.Contains(discovered, onlyWorker.Identifiers);
+    }
+
+    [Fact]
+    public async Task WorkerSnapshotExposesCurrentAndLastIterationSequences()
+    {
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        await using var system = CreateSystem(
+            WorkDefinition.Create("iteration.sequence", "Exposes current iteration sequence."),
+            async (_, _, cancellationToken) =>
+            {
+                entered.TrySetResult();
+                await release.Task.WaitAsync(cancellationToken);
+                return WorkExecutionResult.Success(WorkOutput.FromValue(new { ok = true }));
+            });
+
+        await system.Start();
+
+        var handle = await system.Queue.Enqueue("iteration.sequence", WorkInput.Empty);
+        var workerId = RequiredWorkerId(handle);
+        await entered.Task.WaitAsync(TimeSpan.FromSeconds(1));
+        var running = await system.Query.GetWorker(workerId)
+            ?? throw new InvalidOperationException("Expected running worker.");
+
+        release.TrySetResult();
+        await handle.WaitForCompletion();
+        var completed = await system.Query.GetWorker(workerId)
+            ?? throw new InvalidOperationException("Expected completed worker.");
+
+        Assert.Equal(1, running.CurrentIterationSequence);
+        Assert.Null(running.LastIterationSequence);
+        Assert.Null(completed.CurrentIterationSequence);
+        Assert.Equal(1, completed.LastIterationSequence);
+        Assert.Equal(1, completed.LastIteration?.Sequence);
+    }
+
+    [Fact]
+    public async Task QueryWorkerIterationsCanFilterExecutingIteration()
+    {
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        await using var system = CreateSystem(
+            WorkDefinition.Create("iteration.executing", "Keeps an iteration executing."),
+            async (_, _, cancellationToken) =>
+            {
+                entered.TrySetResult();
+                await release.Task.WaitAsync(cancellationToken);
+                return WorkExecutionResult.Success();
+            });
+
+        await system.Start();
+
+        var handle = await system.Queue.Enqueue("iteration.executing", WorkInput.Empty);
+        var workerId = RequiredWorkerId(handle);
+        await entered.Task.WaitAsync(TimeSpan.FromSeconds(1));
+
+        try
+        {
+            var snapshot = await system.Query.GetWorkerIteration(new WorkerIterationReference(workerId, 1));
+            var executing = await system.Query.QueryWorkerIterations(new WorkerIterationQuery(
+                Statuses: new HashSet<WorkCompletionStatus> { WorkCompletionStatus.Executing }));
+            var overview = await system.Query.GetSystemOverview();
+
+            Assert.NotNull(snapshot);
+            Assert.Equal(WorkCompletionStatus.Executing, snapshot.Status);
+            var item = Assert.Single(executing.Iterations);
+            Assert.Equal(workerId, item.WorkerId);
+            Assert.Equal(WorkCompletionStatus.Executing, item.Status);
+            Assert.Equal(1, overview.CurrentIterationCount);
+            Assert.Equal(1, overview.IterationCountByStatus[WorkCompletionStatus.Executing]);
+        }
+        finally
+        {
+            release.TrySetResult();
+            await handle.WaitForCompletion();
+        }
+    }
+
+    [Fact]
+    public async Task QueryWorkerIterationsReturnsFullSnapshotsAndOverviewItems()
+    {
+        var subject = new WorkSubjectId("claim", "CLM-123");
+        var concurrencyKey = new WorkConcurrencyKey("tenant", "west");
+        var queuedIdentifier = new WorkIdentifier("invoice", "INV-456");
+        var discoveredIdentifier = new WorkIdentifier("claim-note", "CLM-123-note");
+        var definition = WorkDefinition.Create("iteration.query", "Can query iterations.", category: "Claims");
+        await using var system = CreateSystem(
+            definition,
+            (context, input, cancellationToken) =>
+            {
+                context.AddIdentifier(discoveredIdentifier);
+                return Task.FromResult(WorkExecutionResult.Success(WorkOutput.FromValue(new { processed = true })));
+            });
+
+        await system.Start();
+
+        var handle = await system.Queue.Enqueue(
+            "iteration.query",
+            WorkInput.Empty
+                .WithSubject(subject)
+                .WithConcurrencyKey(concurrencyKey)
+                .WithIdentifier(queuedIdentifier));
+        await handle.WaitForCompletion();
+        var workerId = RequiredWorkerId(handle);
+        var snapshot = await system.Query.GetWorkerIteration(new WorkerIterationReference(workerId, 1));
+        var bySubject = await system.Query.QueryWorkerIterations(new WorkerIterationQuery(SubjectId: subject));
+        var byConcurrencyKey = await system.Query.QueryWorkerIterations(new WorkerIterationQuery(ConcurrencyKey: concurrencyKey));
+        var byQueuedIdentifier = await system.Query.QueryWorkerIterations(new WorkerIterationQuery(Identifier: queuedIdentifier));
+        var byDiscoveredIdentifier = await system.Query.QueryWorkerIterations(new WorkerIterationQuery(Identifier: discoveredIdentifier));
+        var byDefinitionNameAndStatus = await system.Query.QueryWorkerIterations(new WorkerIterationQuery(
+            DefinitionName: "iteration.query",
+            Category: "Claims",
+            Statuses: new HashSet<WorkCompletionStatus> { WorkCompletionStatus.Completed }));
+
+        Assert.NotNull(snapshot);
+        Assert.Equal(1, snapshot.Sequence);
+        Assert.Equal(WorkCompletionStatus.Completed, snapshot.Status);
+        Assert.Contains("processed", snapshot.Output?.Json);
+        var item = Assert.Single(byDefinitionNameAndStatus.Iterations);
+        Assert.Equal(workerId, item.WorkerId);
+        Assert.Equal(definition.Id, item.DefinitionId);
+        Assert.Equal("iteration.query", item.DefinitionName);
+        Assert.Equal("Claims", item.Category);
+        Assert.Equal(WorkerState.Completed, item.WorkerState);
+        Assert.Equal(WorkCompletionStatus.Completed, item.Status);
+        Assert.Equal(subject, item.SubjectId);
+        Assert.Equal(concurrencyKey, item.ConcurrencyKey);
+        Assert.Contains(queuedIdentifier, item.Identifiers);
+        Assert.Contains(discoveredIdentifier, item.Identifiers);
+        Assert.Equal(workerId, Assert.Single(bySubject.Iterations).WorkerId);
+        Assert.Equal(workerId, Assert.Single(byConcurrencyKey.Iterations).WorkerId);
+        Assert.Equal(workerId, Assert.Single(byQueuedIdentifier.Iterations).WorkerId);
+        Assert.Equal(workerId, Assert.Single(byDiscoveredIdentifier.Iterations).WorkerId);
+    }
+
+    [Fact]
+    public async Task QueryWorkerIterationsCanFindTransientRetryAttempts()
+    {
+        var attempts = 0;
+        var definition = WorkDefinition.Create("iteration.retry", "Retries transient failures.");
+        await using var system = new ServiceCollection()
+            .AddWorkableSystem(builder => builder.AddWork(
+                definition,
+                (context, input, cancellationToken) =>
+                {
+                    attempts++;
+                    if (attempts == 1)
+                    {
+                        throw new TimeoutException("Try again.");
+                    }
+
+                    return Task.FromResult(WorkExecutionResult.Success());
+                },
+                configuration => configuration
+                    .RetryTransientFailures(
+                        count: 1,
+                        initialDelay: TimeSpan.FromMilliseconds(1),
+                        jitter: TimeSpan.Zero)
+                    .ClassifyExceptions(exception => exception is TimeoutException
+                        ? WorkExceptionClassification.Transient
+                        : WorkExceptionClassification.Unknown)))
+            .BuildServiceProvider()
+            .GetRequiredService<IWorkSystemRegistry>()
+            .Default;
+
+        await system.Start();
+
+        var handle = await system.Queue.Enqueue("iteration.retry");
+        await handle.WaitForCompletion();
+        var workerId = RequiredWorkerId(handle);
+        var failed = await system.Query.QueryWorkerIterations(new WorkerIterationQuery(
+            WorkerId: workerId,
+            Statuses: new HashSet<WorkCompletionStatus> { WorkCompletionStatus.Failed }));
+        var completed = await system.Query.QueryWorkerIterations(new WorkerIterationQuery(
+            WorkerId: workerId,
+            Statuses: new HashSet<WorkCompletionStatus> { WorkCompletionStatus.Completed }));
+        var worker = await system.Query.GetWorker(workerId)
+            ?? throw new InvalidOperationException("Expected worker.");
+
+        Assert.Equal(2, attempts);
+        Assert.Equal(2, worker.LastIterationSequence);
+        Assert.Equal(1, Assert.Single(failed.Iterations).Sequence);
+        Assert.Equal(2, Assert.Single(completed.Iterations).Sequence);
+        Assert.Equal([WorkCompletionStatus.Failed, WorkCompletionStatus.Completed], worker.Iterations.Select(iteration => iteration.Status));
+    }
+
+    [Fact]
+    public async Task PurgingWorkerRemovesIndexedIterations()
+    {
+        await using var system = CreateSystem(
+            WorkDefinition.Create("iteration.purge", "Purges iterations with the worker."),
+            SuccessfulWork);
+        await system.Start();
+
+        var handle = await system.Queue.Enqueue("iteration.purge");
+        await handle.WaitForCompletion();
+        var workerId = RequiredWorkerId(handle);
+        var beforePurge = await system.Query.QueryWorkerIterations(new WorkerIterationQuery(WorkerId: workerId));
+        var worker = await system.Query.GetWorker(workerId)
+            ?? throw new InvalidOperationException("Expected worker.");
+
+        await system.Workers.Execute(worker.Version, WorkAction.Purge);
+        var afterPurge = await system.Query.QueryWorkerIterations(new WorkerIterationQuery(WorkerId: workerId));
+
+        Assert.Single(beforePurge.Iterations);
+        Assert.Empty(afterPurge.Iterations);
+        Assert.Null(await system.Query.GetWorkerIteration(new WorkerIterationReference(workerId, 1)));
+    }
+
+    [Fact]
+    public async Task QueryWorkerKeysSearchesSubjectsConcurrencyKeysAndIdentifiers()
+    {
+        var subject = new WorkSubjectId("claim", "CLM-123");
+        var concurrencyKey = new WorkConcurrencyKey("tenant", "west");
+        var queuedIdentifier = new WorkIdentifier("invoice", "INV-456");
+        var discoveredIdentifier = new WorkIdentifier("claim-note", "CLM-123-note");
+        await using var system = CreateSystem(
+            WorkDefinition.Create("keyed.work", "Adds searchable keys."),
+            (context, input, cancellationToken) =>
+            {
+                context.AddIdentifier(discoveredIdentifier);
+                return Task.FromResult(WorkExecutionResult.Success());
+            });
+
+        await system.Start();
+
+        var first = await system.Queue.Enqueue(
+            "keyed.work",
+            WorkInput.Empty
+                .WithSubject(subject)
+                .WithConcurrencyKey(concurrencyKey)
+                .WithIdentifier(queuedIdentifier));
+        await first.WaitForCompletion();
+        var second = await system.Queue.Enqueue(
+            "keyed.work",
+            WorkInput.Empty.WithSubject(subject));
+        await second.WaitForCompletion();
+
+        var claimKeys = await system.Query.QueryWorkerKeys(new WorkerKeyQuery(Search: "claim id CLM-123"));
+        var subjectKeys = await system.Query.QueryWorkerKeys(new WorkerKeyQuery(Kind: WorkKeyKind.Subject, Type: "claim"));
+        var types = await system.Query.QueryWorkerKeyTypes(new WorkerKeyTypeQuery(Search: "claim work"));
+
+        Assert.Contains(claimKeys.Keys, key =>
+            key.Kind == WorkKeyKind.Subject &&
+            key.Type == "claim" &&
+            key.Value == "CLM-123" &&
+            key.Workers.Select(worker => worker.Id).ToHashSet().SetEquals([RequiredWorkerId(first), RequiredWorkerId(second)]));
+        Assert.Contains(claimKeys.Keys, key => key.Kind == WorkKeyKind.Identifier && key.Type == "claim-note" && key.Value == "CLM-123-note");
+        var subjectKey = Assert.Single(subjectKeys.Keys);
+        Assert.Equal("CLM-123", subjectKey.Value);
+        Assert.Contains(types.Types, type =>
+            type.Type == "claim" &&
+            type.WorkerCount == 2 &&
+            type.WorkerCountByKind[WorkKeyKind.Subject] == 2 &&
+            type.Workers.Select(worker => worker.Id).ToHashSet().SetEquals([RequiredWorkerId(first), RequiredWorkerId(second)]));
+        Assert.Contains(types.Types, type =>
+            type.Type == "claim-note" &&
+            type.WorkerCount == 2 &&
+            type.WorkerCountByKind[WorkKeyKind.Identifier] == 2);
+    }
+
+    [Fact]
+    public async Task QueryWorkerKeyTypesGroupsByTypeAcrossAllKeyKinds()
+    {
+        await using var system = CreateSystem(
+            WorkDefinition.Create("key.type.grouping", "Adds keys with shared types."),
+            SuccessfulWork);
+        await system.Start();
+
+        var first = await system.Queue.Enqueue(
+            "key.type.grouping",
+            WorkInput.Empty
+                .WithSubject(new WorkSubjectId("claim", "CLM-1"))
+                .WithConcurrencyKey(new WorkConcurrencyKey("claim", "CLM-1"))
+                .WithIdentifier(new WorkIdentifier("claim", "CLM-1")));
+        await first.WaitForCompletion();
+        var second = await system.Queue.Enqueue(
+            "key.type.grouping",
+            WorkInput.Empty.WithIdentifier(new WorkIdentifier("claim", "CLM-2")));
+        await second.WaitForCompletion();
+
+        var types = await system.Query.QueryWorkerKeyTypes(new WorkerKeyTypeQuery(Type: "claim"));
+        var pagedTypes = await system.Query.QueryWorkerKeyTypes(new WorkerKeyTypeQuery(Take: 1));
+        var keys = await system.Query.QueryWorkerKeys(new WorkerKeyQuery(Type: "claim"));
+
+        var type = Assert.Single(types.Types);
+        Assert.Equal("claim", type.Type);
+        Assert.Equal(2, type.WorkerCount);
+        Assert.Equal(1, type.WorkerCountByKind[WorkKeyKind.Subject]);
+        Assert.Equal(1, type.WorkerCountByKind[WorkKeyKind.ConcurrencyKey]);
+        Assert.Equal(2, type.WorkerCountByKind[WorkKeyKind.Identifier]);
+        Assert.Equal(2, type.Workers.Count);
+        Assert.Equal(4, keys.Keys.Count);
+        Assert.Single(pagedTypes.Types);
+        Assert.Equal(1, pagedTypes.Take);
+        Assert.Equal(1, pagedTypes.TotalCount);
+    }
+
+    [Fact]
+    public async Task QueryWorkerKeysCapsOversizedTakeAtSafeMaximum()
+    {
+        var definition = WorkDefinition.Create(
+            "key.take.cap",
+            configuration: WorkConfiguration.Default with
+            {
+                Start = WorkStartConfiguration.DoNotStart,
+            });
+        await using var system = CreateSystem(definition, SuccessfulWork);
+
+        await system.Start();
+
+        for (var index = 0; index < WorkerKeyQuery.MaximumTake + 5; index++)
+        {
+            await system.Queue.Enqueue(
+                "key.take.cap",
+                WorkInput.Empty.WithIdentifier(new WorkIdentifier("batch", index.ToString())));
+        }
+
+        var result = await system.Query.QueryWorkerKeys(new WorkerKeyQuery(Take: WorkerKeyQuery.MaximumTake + 5));
+
+        Assert.Equal(WorkerKeyQuery.MaximumTake, result.Take);
+        Assert.Equal(WorkerKeyQuery.MaximumTake, result.Keys.Count);
+        Assert.Equal(WorkerKeyQuery.MaximumTake + 5, result.TotalCount);
+    }
+
+    [Fact]
+    public async Task QueryWorkerKeysCanFilterResolvedWorkersByState()
+    {
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        await using var system = CreateSystem(
+            WorkDefinition.Create("key.running", "Keeps a keyed worker running."),
+            async (context, input, cancellationToken) =>
+            {
+                entered.TrySetResult();
+                await release.Task.WaitAsync(cancellationToken);
+                return WorkExecutionResult.Success();
+            });
+
+        await system.Start();
+
+        var handle = await system.Queue.Enqueue(
+            "key.running",
+            WorkInput.Empty.WithSubject(new WorkSubjectId("claim", "CLM-777")));
+        await entered.Task.WaitAsync(TimeSpan.FromSeconds(1));
+
+        try
+        {
+            var running = await system.Query.QueryWorkerKeys(new WorkerKeyQuery(
+                Search: "claim id CLM-777",
+                States: new HashSet<WorkerState> { WorkerState.Running }));
+            var completed = await system.Query.QueryWorkerKeys(new WorkerKeyQuery(
+                Search: "claim id CLM-777",
+                States: new HashSet<WorkerState> { WorkerState.Completed }));
+
+            var key = Assert.Single(running.Keys);
+            var worker = Assert.Single(key.Workers);
+            Assert.Equal(RequiredWorkerId(handle), worker.Id);
+            Assert.Equal(WorkerState.Running, worker.State);
+            Assert.Empty(completed.Keys);
+        }
+        finally
+        {
+            release.TrySetResult();
+            await handle.WaitForCompletion();
+        }
+    }
+
+    [Fact]
+    public async Task QueryWorkIterationKeysSearchesSubjectsConcurrencyKeysAndIdentifiers()
+    {
+        var attempts = 0;
+        var subject = new WorkSubjectId("claim", "CLM-123");
+        var concurrencyKey = new WorkConcurrencyKey("tenant", "west");
+        var queuedIdentifier = new WorkIdentifier("invoice", "INV-456");
+        var discoveredIdentifier = new WorkIdentifier("claim-note", "CLM-123-note");
+        var definition = WorkDefinition.Create("iteration.keyed.work", "Adds searchable iteration keys.");
+        await using var system = new ServiceCollection()
+            .AddWorkableSystem(builder => builder.AddWork(
+                definition,
+                (context, input, cancellationToken) =>
+                {
+                    context.AddIdentifier(discoveredIdentifier);
+                    attempts++;
+                    if (attempts == 1)
+                    {
+                        throw new TimeoutException("Try again.");
+                    }
+
+                    return Task.FromResult(WorkExecutionResult.Success());
+                },
+                configuration => configuration
+                    .RetryTransientFailures(
+                        count: 1,
+                        initialDelay: TimeSpan.FromMilliseconds(1),
+                        jitter: TimeSpan.Zero)
+                    .ClassifyExceptions(exception => exception is TimeoutException
+                        ? WorkExceptionClassification.Transient
+                        : WorkExceptionClassification.Unknown)))
+            .BuildServiceProvider()
+            .GetRequiredService<IWorkSystemRegistry>()
+            .Default;
+        await system.Start();
+
+        var handle = await system.Queue.Enqueue(
+            "iteration.keyed.work",
+            WorkInput.Empty
+                .WithSubject(subject)
+                .WithConcurrencyKey(concurrencyKey)
+                .WithIdentifier(queuedIdentifier));
+        await handle.WaitForCompletion();
+
+        var claimKeys = await system.Query.QueryWorkIterationKeys(new WorkIterationKeyQuery(Search: "claim id CLM-123"));
+        var subjectKeys = await system.Query.QueryWorkIterationKeys(new WorkIterationKeyQuery(Kind: WorkKeyKind.Subject, Type: "claim"));
+        var completedKeys = await system.Query.QueryWorkIterationKeys(new WorkIterationKeyQuery(
+            Kind: WorkKeyKind.Subject,
+            Type: "claim",
+            Statuses: new HashSet<WorkCompletionStatus> { WorkCompletionStatus.Completed }));
+
+        Assert.Contains(claimKeys.Keys, key =>
+            key.Kind == WorkKeyKind.Subject &&
+            key.Type == "claim" &&
+            key.Value == "CLM-123" &&
+            key.Iterations.Count == 2 &&
+            key.Iterations.Select(iteration => iteration.Status).ToHashSet().SetEquals(
+                [WorkCompletionStatus.Completed, WorkCompletionStatus.Failed]));
+        Assert.Contains(claimKeys.Keys, key => key.Kind == WorkKeyKind.Identifier && key.Type == "claim-note" && key.Value == "CLM-123-note");
+        var subjectKey = Assert.Single(subjectKeys.Keys);
+        Assert.Equal("CLM-123", subjectKey.Value);
+        Assert.Equal(2, subjectKey.Iterations.Count);
+        var completedSubjectKey = Assert.Single(completedKeys.Keys);
+        var completedIteration = Assert.Single(completedSubjectKey.Iterations);
+        Assert.Equal(WorkCompletionStatus.Completed, completedIteration.Status);
+    }
+
+    [Fact]
+    public async Task QueryWorkIterationKeyTypesGroupsByTypeAcrossAllKeyKinds()
+    {
+        await using var system = CreateSystem(
+            WorkDefinition.Create("iteration.key.type.grouping", "Adds iteration keys with shared types."),
+            SuccessfulWork);
+        await system.Start();
+
+        await (await system.Queue.Enqueue(
+            "iteration.key.type.grouping",
+            WorkInput.Empty
+                .WithSubject(new WorkSubjectId("claim", "CLM-1"))
+                .WithConcurrencyKey(new WorkConcurrencyKey("claim", "CLM-1"))
+                .WithIdentifier(new WorkIdentifier("claim", "CLM-1")))).WaitForCompletion();
+        await (await system.Queue.Enqueue(
+            "iteration.key.type.grouping",
+            WorkInput.Empty.WithIdentifier(new WorkIdentifier("claim", "CLM-2")))).WaitForCompletion();
+
+        var types = await system.Query.QueryWorkIterationKeyTypes(new WorkIterationKeyTypeQuery(Type: "claim"));
+        var pagedTypes = await system.Query.QueryWorkIterationKeyTypes(new WorkIterationKeyTypeQuery(Take: 1));
+        var keys = await system.Query.QueryWorkIterationKeys(new WorkIterationKeyQuery(Type: "claim"));
+
+        var type = Assert.Single(types.Types);
+        Assert.Equal("claim", type.Type);
+        Assert.Equal(2, type.IterationCount);
+        Assert.Equal(1, type.IterationCountByKind[WorkKeyKind.Subject]);
+        Assert.Equal(1, type.IterationCountByKind[WorkKeyKind.ConcurrencyKey]);
+        Assert.Equal(2, type.IterationCountByKind[WorkKeyKind.Identifier]);
+        Assert.Equal(2, type.Iterations.Count);
+        Assert.Equal(4, keys.Keys.Count);
+        Assert.Single(pagedTypes.Types);
+        Assert.Equal(1, pagedTypes.Take);
+        Assert.Equal(1, pagedTypes.TotalCount);
+    }
+
+    [Fact]
+    public async Task QueryWorkIterationKeysCapsOversizedTakeAtSafeMaximum()
+    {
+        await using var system = CreateSystem(
+            WorkDefinition.Create("iteration.key.take.cap", "Adds many iteration keys."),
+            SuccessfulWork);
+
+        await system.Start();
+
+        for (var index = 0; index < WorkIterationKeyQuery.MaximumTake + 5; index++)
+        {
+            await (await system.Queue.Enqueue(
+                "iteration.key.take.cap",
+                WorkInput.Empty.WithIdentifier(new WorkIdentifier("batch", index.ToString())))).WaitForCompletion();
+        }
+
+        var result = await system.Query.QueryWorkIterationKeys(new WorkIterationKeyQuery(Take: WorkIterationKeyQuery.MaximumTake + 5));
+
+        Assert.Equal(WorkIterationKeyQuery.MaximumTake, result.Take);
+        Assert.Equal(WorkIterationKeyQuery.MaximumTake, result.Keys.Count);
+        Assert.Equal(WorkIterationKeyQuery.MaximumTake + 5, result.TotalCount);
     }
 
     [Fact]
@@ -115,6 +608,141 @@ public sealed class WorkQueryTests
     }
 
     [Fact]
+    public async Task QueryWorkersCanFilterByConfiguration()
+    {
+        await using var system = new ServiceCollection()
+            .AddWorkableSystem(builder =>
+            {
+                builder.AddWork(
+                    WorkDefinition.Create(
+                        "query.config.recurrence",
+                        configuration: WorkConfiguration.Default with
+                        {
+                            Start = WorkStartConfiguration.DoNotStart,
+                            Recurrence = WorkRecurrenceConfiguration.Every(TimeSpan.FromMinutes(5)),
+                        }),
+                    SuccessfulWork);
+                builder.AddWork(
+                    WorkDefinition.Create(
+                        "query.config.concurrency",
+                        configuration: WorkConfiguration.Default with
+                        {
+                            Start = WorkStartConfiguration.DoNotStart,
+                            Concurrency = WorkConcurrencyConfiguration.Default with
+                            {
+                                IsEnabled = true,
+                                MaximumCapacity = 1,
+                            },
+                        }),
+                    SuccessfulWork);
+                builder.AddWork(
+                    WorkDefinition.Create(
+                        "query.config.profiling",
+                        defaultOptions: new WorkerOptions(
+                            ProfilingEnabled: true,
+                            Configuration: WorkConfiguration.Default with
+                            {
+                                Start = WorkStartConfiguration.DoNotStart,
+                            })),
+                    SuccessfulWork);
+            })
+            .BuildServiceProvider()
+            .GetRequiredService<IWorkSystemRegistry>()
+            .Default;
+        await system.Start();
+
+        var recurrence = await system.Queue.Enqueue("query.config.recurrence");
+        var concurrency = await system.Queue.Enqueue("query.config.concurrency");
+        var profiling = await system.Queue.Enqueue("query.config.profiling");
+
+        var recurringWorkers = await system.Query.QueryWorkers(new WorkerQuery(
+            Configuration: new WorkerConfigurationQuery(RecurrenceEnabled: true)));
+        var concurrencyWorkers = await system.Query.QueryWorkers(new WorkerQuery(
+            Configuration: new WorkerConfigurationQuery(ConcurrencyEnabled: true)));
+        var profilingWorkers = await system.Query.QueryWorkers(new WorkerQuery(
+            Configuration: new WorkerConfigurationQuery(ProfilingEnabled: true)));
+        var nonProfilingWorkers = await system.Query.QueryWorkers(new WorkerQuery(
+            Configuration: new WorkerConfigurationQuery(ProfilingEnabled: false)));
+
+        Assert.Equal(RequiredWorkerId(recurrence), Assert.Single(recurringWorkers.Workers).Id);
+        Assert.Equal(RequiredWorkerId(concurrency), Assert.Single(concurrencyWorkers.Workers).Id);
+        Assert.Equal(RequiredWorkerId(profiling), Assert.Single(profilingWorkers.Workers).Id);
+        Assert.DoesNotContain(nonProfilingWorkers.Workers, worker => worker.Id == RequiredWorkerId(profiling));
+        Assert.Equal(2, nonProfilingWorkers.TotalCount);
+    }
+
+    [Fact]
+    public async Task QueryWorkersConfigurationIndexUpdatesAfterReconfiguration()
+    {
+        var definition = WorkDefinition.Create(
+            "query.config.reconfigure",
+            defaultOptions: WorkerOptionFixtures.DoNotStart());
+        await using var system = CreateSystem(definition, SuccessfulWork);
+        await system.Start();
+
+        var handle = await system.Queue.Enqueue("query.config.reconfigure");
+        var worker = await system.Query.GetWorker(RequiredWorkerId(handle))
+            ?? throw new InvalidOperationException("Expected worker.");
+        var before = await system.Query.QueryWorkers(new WorkerQuery(
+            Configuration: new WorkerConfigurationQuery(
+                RecurrenceEnabled: false,
+                ConcurrencyEnabled: false,
+                ProfilingEnabled: false)));
+
+        var outcome = await system.Workers.Reconfigure(
+            worker.Version,
+            new WorkerReconfiguration(
+                ProfilingEnabled: true,
+                Recurrence: WorkRecurrenceConfiguration.Every(TimeSpan.FromMinutes(1)),
+                Concurrency: WorkConcurrencyConfiguration.Default with
+                {
+                    IsEnabled = true,
+                    MaximumCapacity = 1,
+                }));
+        var afterEnabled = await system.Query.QueryWorkers(new WorkerQuery(
+            Configuration: new WorkerConfigurationQuery(
+                RecurrenceEnabled: true,
+                ConcurrencyEnabled: true,
+                ProfilingEnabled: true)));
+        var afterDisabled = await system.Query.QueryWorkers(new WorkerQuery(
+            Configuration: new WorkerConfigurationQuery(
+                RecurrenceEnabled: false,
+                ConcurrencyEnabled: false,
+                ProfilingEnabled: false)));
+
+        Assert.True(outcome.IsAccepted);
+        Assert.Equal(RequiredWorkerId(handle), Assert.Single(before.Workers).Id);
+        Assert.Equal(RequiredWorkerId(handle), Assert.Single(afterEnabled.Workers).Id);
+        Assert.Empty(afterDisabled.Workers);
+    }
+
+    [Fact]
+    public async Task QueryWorkersCapsOversizedTakeAtSafeMaximum()
+    {
+        var definition = WorkDefinition.Create(
+            "query.take.cap",
+            "Caps oversized query pages.",
+            configuration: WorkConfiguration.Default with
+            {
+                Start = WorkStartConfiguration.DoNotStart,
+            });
+        await using var system = CreateSystem(definition, SuccessfulWork);
+
+        await system.Start();
+
+        for (var index = 0; index < WorkerQuery.MaximumTake + 5; index++)
+        {
+            await system.Queue.Enqueue("query.take.cap", WorkInput.Empty);
+        }
+
+        var result = await system.Query.QueryWorkers(new WorkerQuery(Take: WorkerQuery.MaximumTake + 5));
+
+        Assert.Equal(WorkerQuery.MaximumTake, result.Take);
+        Assert.Equal(WorkerQuery.MaximumTake, result.Workers.Count);
+        Assert.Equal(WorkerQuery.MaximumTake + 5, result.TotalCount);
+    }
+
+    [Fact]
     public async Task GetWorkInfoReturnsDefinitionStatusAndWorkerRollup()
     {
         var definition = WorkDefinition.Create("rollup.work", "Reports worker counts.",
@@ -131,6 +759,36 @@ public sealed class WorkQueryTests
         Assert.Equal("Operations:Rollups", info.Definition.Category);
         Assert.Equal(1, info.Workers.Total);
         Assert.True(info.Status is WorkDefinitionStatus.Healthy or WorkDefinitionStatus.Inactive);
+    }
+
+    [Fact]
+    public async Task WorkerSummariesDoNotCountFailedWorkersAsActive()
+    {
+        await using var system = new ServiceCollection()
+            .AddWorkableSystem(builder =>
+            {
+                builder.AddWork(
+                    WorkDefinition.Create("summary.failed"),
+                    (context, input, cancellationToken) => Task.FromResult(WorkExecutionResult.Failure([WorkMessage.Error("summary.failed", "Failed.")])));
+            })
+            .BuildServiceProvider()
+            .GetRequiredService<IWorkSystemRegistry>()
+            .Default;
+
+        await system.Start();
+        await (await system.Queue.Enqueue("summary.failed")).WaitForCompletion();
+
+        var summary = await system.Query.GetWorkerStatusSummary();
+        var info = await system.Query.GetWorkInfo("summary.failed")
+            ?? throw new InvalidOperationException("Expected work info.");
+
+        Assert.Equal(1, summary.Total);
+        Assert.Equal(0, summary.Active);
+        Assert.Equal(0, summary.Final);
+        Assert.Equal(1, summary.Counts[WorkerState.Failed]);
+        Assert.Equal(1, info.Workers.Total);
+        Assert.Equal(0, info.Workers.Active);
+        Assert.Equal(1, info.Workers.Failed);
     }
 
     [Fact]
@@ -215,6 +873,230 @@ public sealed class WorkQueryTests
 
         Assert.Equal(1, summary.Total);
         Assert.Equal(1, summary.Counts.Values.Sum());
+    }
+
+    [Fact]
+    public async Task GetSystemOverviewReturnsCountsAndSlimFailedAndCompletedIterations()
+    {
+        await using var system = new ServiceCollection()
+            .AddWorkableSystem("overview", builder =>
+            {
+                builder.AddWork(WorkDefinition.Create("overview.complete", category: "Overview"), SuccessfulWork);
+                builder.AddWork(
+                    WorkDefinition.Create("overview.failed", category: "Overview"),
+                    (context, input, cancellationToken) => Task.FromResult(WorkExecutionResult.Failure([WorkMessage.Error("overview.failed", "Failed.")])));
+            })
+            .BuildServiceProvider()
+            .GetRequiredService<IWorkSystemRegistry>()
+            .Default;
+
+        await system.Start();
+        var completed = await system.Queue.Enqueue("overview.complete", WorkInput.Empty);
+        await completed.WaitForCompletion();
+        var failed = await system.Queue.Enqueue("overview.failed", WorkInput.Empty);
+        await failed.WaitForCompletion();
+
+        var overview = await system.Query.GetSystemOverview();
+
+        Assert.Equal("overview", overview.SystemName);
+        Assert.Equal(WorkSystemState.Started, overview.SystemState);
+        Assert.Equal(0, overview.DefinitionCount);
+        Assert.Equal(0, overview.ActiveWorkerCount);
+        Assert.Equal(1, overview.FinalWorkerCount);
+        Assert.Equal(1, overview.FailedWorkerCount);
+        Assert.Equal(1, overview.WorkerCountByState[WorkerState.Completed]);
+        Assert.Equal(1, overview.WorkerCountByState[WorkerState.Failed]);
+        Assert.Equal(0, overview.CurrentIterationCount);
+        Assert.Equal(1, overview.CompletedIterationCount);
+        Assert.Equal(1, overview.FailedIterationCount);
+        Assert.Equal(1, overview.IterationCountByStatus[WorkCompletionStatus.Completed]);
+        Assert.Equal(1, overview.IterationCountByStatus[WorkCompletionStatus.Failed]);
+        Assert.Empty(overview.CommonKeyTypes);
+        var failedWorker = Assert.Single(overview.FailedWorkers);
+        Assert.Equal(RequiredWorkerId(failed), failedWorker.Id);
+        Assert.Equal("overview.failed", failedWorker.DefinitionName);
+        Assert.Equal("Overview", failedWorker.Category);
+        Assert.Equal(WorkerState.Failed, failedWorker.State);
+        Assert.Equal(RequiredWorkerId(failed), Assert.Single(overview.FailedIterations).WorkerId);
+        var completedItem = Assert.Single(overview.CompletedIterations);
+        Assert.Equal(RequiredWorkerId(completed), completedItem.WorkerId);
+        Assert.Equal(1, completedItem.Sequence);
+        Assert.Equal("overview.complete", completedItem.DefinitionName);
+        Assert.Equal("Overview", completedItem.Category);
+    }
+
+    [Fact]
+    public async Task GetSystemOverviewCountsDefinitionsWithActiveOrQueuedWorkersFromIndex()
+    {
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        await using var system = new ServiceCollection()
+            .AddWorkableSystem("overview-active-definitions", builder =>
+            {
+                builder.AddWork(
+                    WorkDefinition.Create("overview.active", category: "Overview"),
+                    async (_, _, cancellationToken) =>
+                    {
+                        entered.TrySetResult();
+                        await release.Task.WaitAsync(cancellationToken);
+                        return WorkExecutionResult.Success();
+                    });
+                builder.AddWork(
+                    WorkDefinition.Create(
+                        "overview.queued",
+                        category: "Overview",
+                        configuration: WorkConfiguration.Default with
+                        {
+                            Start = WorkStartConfiguration.DoNotStart,
+                        }),
+                    SuccessfulWork);
+                builder.AddWork(WorkDefinition.Create("overview.completed", category: "Overview"), SuccessfulWork);
+                builder.AddWork(
+                    WorkDefinition.Create("overview.not-counted-failed", category: "Overview"),
+                    (context, input, cancellationToken) => Task.FromResult(WorkExecutionResult.Failure([WorkMessage.Error("overview.failed", "Failed.")])));
+            })
+            .BuildServiceProvider()
+            .GetRequiredService<IWorkSystemRegistry>()
+            .Default;
+
+        await system.Start();
+
+        var active = await system.Queue.Enqueue("overview.active");
+        await entered.Task.WaitAsync(TimeSpan.FromSeconds(1));
+        await system.Queue.Enqueue("overview.queued");
+        await (await system.Queue.Enqueue("overview.completed")).WaitForCompletion();
+        await (await system.Queue.Enqueue("overview.not-counted-failed")).WaitForCompletion();
+
+        try
+        {
+            var overview = await system.Query.GetSystemOverview();
+
+            Assert.Equal(2, overview.DefinitionCount);
+            Assert.Equal(1, overview.CurrentIterationCount);
+            Assert.Equal(1, overview.IterationCountByStatus[WorkCompletionStatus.Executing]);
+        }
+        finally
+        {
+            release.TrySetResult();
+            await active.WaitForCompletion();
+        }
+    }
+
+    [Fact]
+    public async Task GetSystemOverviewLimitsCompletedAndFailedIterationsToFiveRecentItems()
+    {
+        await using var system = new ServiceCollection()
+            .AddWorkableSystem("overview-limit", builder =>
+            {
+                builder.AddWork(WorkDefinition.Create("overview.limit.complete", category: "Overview"), SuccessfulWork);
+                builder.AddWork(
+                    WorkDefinition.Create("overview.limit.failed", category: "Overview"),
+                    (context, input, cancellationToken) => Task.FromResult(WorkExecutionResult.Failure([WorkMessage.Error("overview.failed", "Failed.")])));
+            })
+            .BuildServiceProvider()
+            .GetRequiredService<IWorkSystemRegistry>()
+            .Default;
+
+        await system.Start();
+
+        for (var index = 0; index < 6; index++)
+        {
+            await (await system.Queue.Enqueue("overview.limit.complete", WorkInput.Empty)).WaitForCompletion();
+            await (await system.Queue.Enqueue("overview.limit.failed", WorkInput.Empty)).WaitForCompletion();
+        }
+
+        var overview = await system.Query.GetSystemOverview();
+
+        Assert.Equal(6, overview.IterationCountByStatus[WorkCompletionStatus.Completed]);
+        Assert.Equal(6, overview.IterationCountByStatus[WorkCompletionStatus.Failed]);
+        Assert.Equal(5, overview.CompletedIterations.Count);
+        Assert.Equal(5, overview.FailedIterations.Count);
+        Assert.Equal(5, overview.FailedWorkers.Count);
+        Assert.All(overview.CompletedIterations, iteration => Assert.Equal(WorkCompletionStatus.Completed, iteration.Status));
+        Assert.All(overview.FailedIterations, iteration => Assert.Equal(WorkCompletionStatus.Failed, iteration.Status));
+        Assert.All(overview.FailedWorkers, worker => Assert.Equal(WorkerState.Failed, worker.State));
+    }
+
+    [Fact]
+    public async Task GetSystemOverviewReturnsTopCommonKeyTypesWithDistinctIterationCounts()
+    {
+        await using var system = CreateSystem(
+            WorkDefinition.Create("overview.keys", "Adds overview keys."),
+            SuccessfulWork);
+        await system.Start();
+
+        await (await system.Queue.Enqueue(
+            "overview.keys",
+            WorkInput.Empty
+                .WithSubject(new WorkSubjectId("claim", "CLM-1"))
+                .WithConcurrencyKey(new WorkConcurrencyKey("claim", "CLM-1"))
+                .WithIdentifier(new WorkIdentifier("claim", "CLM-1")))).WaitForCompletion();
+        await (await system.Queue.Enqueue(
+            "overview.keys",
+            WorkInput.Empty.WithIdentifier(new WorkIdentifier("claim", "CLM-2")))).WaitForCompletion();
+        await (await system.Queue.Enqueue(
+            "overview.keys",
+            WorkInput.Empty.WithIdentifier(new WorkIdentifier("customer", "CUST-1")))).WaitForCompletion();
+        for (var index = 0; index < 11; index++)
+        {
+            await (await system.Queue.Enqueue(
+                "overview.keys",
+                WorkInput.Empty.WithIdentifier(new WorkIdentifier($"secondary-{index}", index.ToString())))).WaitForCompletion();
+        }
+
+        var overview = await system.Query.GetSystemOverview();
+
+        Assert.Equal(10, overview.CommonKeyTypes.Count);
+        var claim = Assert.Single(overview.CommonKeyTypes, keyType => keyType.Type == "claim");
+        Assert.Equal(2, claim.IterationCount);
+        Assert.Equal(1, claim.IterationCountByKind[WorkKeyKind.Subject]);
+        Assert.Equal(1, claim.IterationCountByKind[WorkKeyKind.ConcurrencyKey]);
+        Assert.Equal(2, claim.IterationCountByKind[WorkKeyKind.Identifier]);
+        Assert.Contains(overview.CommonKeyTypes, keyType => keyType.Type == "customer" && keyType.IterationCount == 1);
+    }
+
+    [Fact]
+    public async Task GetSystemOverviewCountsCommonKeyTypesByIterationNotWorker()
+    {
+        var attempts = 0;
+        var definition = WorkDefinition.Create("overview.retry.keys", "Retries with the same key.");
+        await using var system = new ServiceCollection()
+            .AddWorkableSystem(builder => builder.AddWork(
+                definition,
+                (context, input, cancellationToken) =>
+                {
+                    attempts++;
+                    if (attempts == 1)
+                    {
+                        throw new TimeoutException("Try again.");
+                    }
+
+                    return Task.FromResult(WorkExecutionResult.Success());
+                },
+                configuration => configuration
+                    .RetryTransientFailures(
+                        count: 1,
+                        initialDelay: TimeSpan.FromMilliseconds(1),
+                        jitter: TimeSpan.Zero)
+                    .ClassifyExceptions(exception => exception is TimeoutException
+                        ? WorkExceptionClassification.Transient
+                        : WorkExceptionClassification.Unknown)))
+            .BuildServiceProvider()
+            .GetRequiredService<IWorkSystemRegistry>()
+            .Default;
+        await system.Start();
+
+        await (await system.Queue.Enqueue(
+            "overview.retry.keys",
+            WorkInput.Empty.WithSubject(new WorkSubjectId("claim", "CLM-1")))).WaitForCompletion();
+
+        var overview = await system.Query.GetSystemOverview();
+
+        var claim = Assert.Single(overview.CommonKeyTypes, keyType => keyType.Type == "claim");
+        Assert.Equal(2, claim.IterationCount);
+        Assert.Equal(2, claim.IterationCountByKind[WorkKeyKind.Subject]);
+        Assert.Equal(1, overview.CompletedIterationCount);
+        Assert.Equal(1, overview.FailedIterationCount);
     }
 
     private static IWorkSystem CreateSystem(

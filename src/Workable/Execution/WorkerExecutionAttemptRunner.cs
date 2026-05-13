@@ -6,42 +6,33 @@ internal sealed class WorkerExecutionAttemptRunner(
 {
     public async Task<WorkerExecutionAttempt> Execute(
         WorkerRecord worker,
-        bool allowTransientRetry,
+        int retryAttempts,
         CancellationToken cancellationToken)
     {
-        var retryAttempts = 0;
-        var transientRetry = worker.Configuration.TransientRetry;
-
-        while (true)
+        var execution = await CaptureExecution(invoker.Execute(worker, cancellationToken));
+        if (execution.Result is { } result)
         {
-            var execution = await CaptureExecution(invoker.Execute(worker, cancellationToken));
-            if (execution.Result is { } result)
-            {
-                return WorkerExecutionAttempt.Completed(result);
-            }
-
-            if (execution.WasCanceled)
-            {
-                throw new OperationCanceledException(cancellationToken);
-            }
-
-            var exception = execution.Exception ?? new InvalidOperationException("Worker execution failed without an exception.");
-            var classification = exceptionHandler.Classify(worker, exception);
-            if (!allowTransientRetry ||
-                classification != WorkExceptionClassification.Transient ||
-                retryAttempts >= transientRetry.Count)
-            {
-                exceptionHandler.LogFinalException(worker, exception, classification, retryAttempts);
-                return WorkerExecutionAttempt.ExceptionFailed(
-                    exceptionHandler.CreateExceptionFailureMessage(exception, classification, retryAttempts));
-            }
-
-            retryAttempts++;
-            var delay = TransientRetryWorkerExecutionStrategy.GetRetryDelay(transientRetry, retryAttempts);
-            exceptionHandler.LogRetrying(worker, exception, retryAttempts, transientRetry.Count, delay);
-            await Task.Delay(delay, cancellationToken);
+            return WorkerExecutionAttempt.Completed(result);
         }
+
+        if (execution.WasCanceled)
+        {
+            throw new OperationCanceledException(cancellationToken);
+        }
+
+        var exception = execution.Exception ?? new InvalidOperationException("Worker execution failed without an exception.");
+        var classification = exceptionHandler.Classify(worker, exception);
+        return WorkerExecutionAttempt.ExceptionFailed(
+            exceptionHandler.CreateExceptionFailureMessage(exception, classification, retryAttempts),
+            exception,
+            classification);
     }
+
+    public void LogRetrying(WorkerRecord worker, WorkerExecutionAttempt attempt, int retryAttempt, int retryCount, TimeSpan delay)
+        => exceptionHandler.LogRetrying(worker, attempt.RequiredException, retryAttempt, retryCount, delay);
+
+    public void LogFinalException(WorkerRecord worker, WorkerExecutionAttempt attempt, int retryAttempts)
+        => exceptionHandler.LogFinalException(worker, attempt.RequiredException, attempt.RequiredExceptionClassification, retryAttempts);
 
     private static async Task<ExecutionCapture> CaptureExecution(Task<WorkExecutionResult> execution)
     {

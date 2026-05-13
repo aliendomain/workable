@@ -23,9 +23,21 @@ public sealed record WorkerSnapshot(
 
     public IReadOnlyList<WorkerIterationSnapshot> Iterations { get; init; } = [];
 
+    public WorkerIterationSnapshot? LastIteration { get; init; }
+
+    public long? CurrentIterationSequence { get; init; }
+
+    public long? LastIterationSequence { get; init; }
+
     public IReadOnlyList<WorkerLogEntry> Logs { get; init; } = [];
 
     public IReadOnlyList<WorkerActionHistoryEntry> ActionHistory { get; init; } = [];
 
     public WorkProfileSnapshot? Profile { get; init; }
+
+    public TimeSpan? QueueDuration { get; init; }
+
+    public TimeSpan TotalExecutionDuration { get; init; }
+
+    public DateTimeOffset? NextRunAt { get; init; }
 }

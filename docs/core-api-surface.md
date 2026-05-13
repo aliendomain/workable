@@ -12,9 +12,11 @@ The core API defines the public shape of Workable for discovering work, queueing
 - `IWorkCatalog` exposes available work definitions.
 - `IWorkQueue` accepts work by explicit identity.
 - `IWorkerOperations` controls worker actions.
-- `IWorkQuery` exposes worker snapshots, worker summaries, work definition browsing, work info, and status summaries.
+- `IWorkQuery` exposes worker snapshots, worker iteration snapshots, slim worker and iteration query rows, work definition browsing, work key search, work info, status summaries, and system overviews.
 - `IWorkEventStream` creates event subscriptions.
 - `Start` and `Stop` control system lifecycle.
+- `Stop` returns the workers that were force-canceled because the shutdown grace period elapsed.
+- `Stop` clears in-memory worker and iteration records after shutdown cancellation completes.
 - `IWorkSystem` is asynchronously disposable.
 
 `IWorkSystemRegistry` exposes the default system, lookup by `WorkSystemId`, optional lookup by name, and enumeration of registered systems.
@@ -36,10 +38,12 @@ Execution context also exposes the worker's `WorkOrigin`.
 - `WorkInput` can include arbitrary `WorkIdentifier` values for query and correlation.
 - Execution can add discovered `WorkIdentifier` values through `IWorkExecutionContext`.
 - Definitions declare default worker options and default runtime configuration.
-- Queue requests may override runtime configuration for a run.
+- Definitions expose a `Revision` and `WorkDefinitionVersion` for optimistic concurrency when changing definition defaults.
+- `IWorkCatalog.Reconfigure` can replace a definition's default worker options and default runtime configuration for future workers.
+- Queue requests may override worker options and effective runtime configuration for one run.
 - Worker options can enable profiling for captured execution profile trees.
 - `IWorkDefinitionSource` can add generated definitions while the system is starting.
-- Catalogs are immutable after work definition sources complete and the system starts.
+- Catalogs do not accept new definitions after work definition sources complete and the system starts.
 - Work definition names must be unique within one system catalog.
 - A work definition can share input schema or CLR argument shape with other definitions.
 
@@ -58,11 +62,14 @@ Execution context also exposes the worker's `WorkOrigin`.
 
 - Queue work by passing a `WorkDefinitionId` or name to `IWorkQueue`.
 - `IStartupWorkSource` can return startup queue requests after the catalog is ready.
+- Starting a stopped system runs automatic starts and startup work sources again without rebuilding work definitions that were already added by work definition sources.
 - Queue input can be supplied as `WorkInput` or as a typed CLR value that Workable serializes into `WorkInput`.
 - Queueing returns an `IWorkerHandle` with immediate `WorkQueueOutcome` information.
 - Worker handles can be awaited as raw `WorkCompletion` or typed `WorkCompletion<TOutput>`.
 - Worker actions return `WorkActionOutcome`.
+- Bulk worker actions return `WorkerBulkActionOutcome` with one `WorkActionOutcome` per matched worker.
 - Worker snapshots expose durable action history for worker actions and reconfiguration attempts that reached an existing worker.
+- Worker snapshots expose `CurrentIterationSequence` and `LastIterationSequence` so callers can cheaply locate the active or most recently completed iteration.
 - Direct .NET queueing and worker operations use `IDotNetWorkOriginProvider` to create trusted `DotNet` origins.
 - Start configuration controls whether queued work starts automatically and when queue calls return control to the caller.
 - Idempotency configuration controls whether workers with the same subject are rejected.
@@ -70,12 +77,19 @@ Execution context also exposes the worker's `WorkOrigin`.
 - Worker handles can be awaited for completion and final result details.
 - Completed work results are exposed as `WorkOutput`.
 - Worker snapshots can expose captured logs and profile snapshots.
-- Worker snapshots and summaries expose the `WorkOrigin` that queued the worker.
+- Worker snapshots expose the `WorkOrigin` that queued the worker.
 - `IWorkQuery.GetWorker` returns a full `WorkerSnapshot`.
-- `IWorkQuery.QueryWorkers` returns lightweight `WorkerSummary` rows.
-- Worker queries can filter by definition, definition name, subject id, concurrency key, work identifier, state, and timestamps.
+- `IWorkQuery.QueryWorkers` returns lightweight `WorkerOverviewItem` rows.
+- `IWorkQuery.GetWorkerIteration` returns one full `WorkerIterationSnapshot` by worker id and iteration sequence.
+- `IWorkQuery.QueryWorkerIterations` returns lightweight `WorkerIterationOverviewItem` rows.
+- `IWorkQuery.QueryWorkerKeys` and `IWorkQuery.QueryWorkerKeyTypes` expose searchable subject, concurrency key, and identifier indexes with matching worker overview rows.
+- `IWorkQuery.QueryWorkIterationKeys` and `IWorkQuery.QueryWorkIterationKeyTypes` expose the same key search shape for worker iteration overview rows.
+- `IWorkQuery.GetSystemOverview` returns system state, active-or-queued definition count, worker counts by state, current executing iteration count, iteration counts by completion status, common iteration key type facets, the five most recently updated failed workers, and the five most recent failed/completed iterations.
+- `IWorkQuery` also exposes overview slice methods for counts, worker counts, iteration counts, common key types, failed workers with worker counts, failed iterations, and completed iterations.
+- Worker queries can filter by definition, definition name, subject id, concurrency key, work identifier, state, selected configuration flags, and timestamps.
 - Work definition queries can filter by id, name, category, and search text.
 - `IWorkCatalog.ListByCategory` returns definitions by category path.
+- Bulk worker actions can target all workers in a system or workers whose definitions belong to a category path.
 
 ## Event Rules
 
@@ -114,6 +128,7 @@ Execution context also exposes the worker's `WorkOrigin`.
 - A stale control revision returns a conflict outcome.
 - Concurrent state changes return a conflict outcome.
 - Worker action outcomes include the current worker snapshot when the worker exists.
+- Bulk worker actions use the current server-side worker revision for each matched worker and report validation or conflict outcomes per worker.
 - Accepted control and configuration changes advance the worker revision.
 - Runtime progress advances `StateSequence`.
 

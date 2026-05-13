@@ -2,16 +2,47 @@ namespace Workable;
 
 internal sealed class TransientRetryWorkerExecutionStrategy(
     WorkerExecutionAttemptRunner attemptRunner,
-    WorkerExecutionCompletionRecorder completionRecorder) : IWorkerExecutionStrategy
+    WorkerExecutionCompletionRecorder completionRecorder,
+    WorkerEventPublisher workerEvents) : IWorkerExecutionStrategy
 {
     public async Task<WorkCompletion> Execute(WorkerRecord worker, CancellationToken cancellationToken)
     {
         try
         {
-            var attempt = await attemptRunner.Execute(worker, allowTransientRetry: true, cancellationToken);
-            return attempt.IsExceptionFailure
-                ? completionRecorder.Fail(worker, attempt.RequiredExceptionFailureMessage)
-                : completionRecorder.Complete(worker, attempt.RequiredResult);
+            var retryAttempts = 0;
+            var transientRetry = worker.GetConfiguration().TransientRetry;
+
+            while (true)
+            {
+                var attempt = await attemptRunner.Execute(worker, retryAttempts, cancellationToken);
+                if (!attempt.IsExceptionFailure)
+                {
+                    return completionRecorder.Complete(worker, attempt.RequiredResult);
+                }
+
+                if (attempt.RequiredExceptionClassification != WorkExceptionClassification.Transient ||
+                    retryAttempts >= transientRetry.Count)
+                {
+                    attemptRunner.LogFinalException(worker, attempt, retryAttempts);
+                    return completionRecorder.Fail(worker, attempt.RequiredExceptionFailureMessage);
+                }
+
+                retryAttempts++;
+                var delay = GetRetryDelay(transientRetry, retryAttempts);
+                var result = WorkExecutionResult.Failure([attempt.RequiredExceptionFailureMessage]);
+                worker.CompleteRetryIteration(result, delay);
+                workerEvents.IterationFailed(worker);
+                attemptRunner.LogRetrying(worker, attempt, retryAttempts, transientRetry.Count, delay);
+                workerEvents.Retrying(worker, delay);
+                await worker.WaitForRecurrenceInterval(delay, cancellationToken);
+
+                if (!worker.TryBeginRetryIteration())
+                {
+                    return worker.ToCompletion(WorkerStateMachine.CompletionStatusFor(worker.State));
+                }
+
+                workerEvents.Started(worker);
+            }
         }
         catch (OperationCanceledException)
         {

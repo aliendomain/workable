@@ -8,6 +8,11 @@ public interface IWorkerOperations
         WorkAction action,
         CancellationToken cancellationToken = default);
 
+    Task<WorkerBulkActionOutcome> ExecuteAll(
+        WorkAction action,
+        WorkerBulkActionFilter? filter = null,
+        CancellationToken cancellationToken = default);
+
     Task<WorkActionOutcome> Reconfigure(
         WorkerVersion worker,
         WorkerReconfiguration changes,

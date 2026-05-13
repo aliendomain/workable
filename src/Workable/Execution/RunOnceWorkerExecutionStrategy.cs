@@ -7,7 +7,12 @@ internal sealed class RunOnceWorkerExecutionStrategy(
     {
         try
         {
-            var attempt = await attemptRunner.Execute(worker, allowTransientRetry: false, cancellationToken);
+            var attempt = await attemptRunner.Execute(worker, retryAttempts: 0, cancellationToken);
+            if (attempt.IsExceptionFailure)
+            {
+                attemptRunner.LogFinalException(worker, attempt, retryAttempts: 0);
+            }
+
             return attempt.IsExceptionFailure
                 ? completionRecorder.Fail(worker, attempt.RequiredExceptionFailureMessage)
                 : completionRecorder.Complete(worker, attempt.RequiredResult);

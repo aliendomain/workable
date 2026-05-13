@@ -12,4 +12,9 @@ public interface IWorkCatalog
     bool TryGet(WorkDefinitionId id, [NotNullWhen(true)] out WorkDefinition? definition);
 
     bool TryGet(string name, [NotNullWhen(true)] out WorkDefinition? definition);
+
+    Task<WorkDefinitionReconfigurationOutcome> Reconfigure(
+        WorkDefinitionVersion definition,
+        WorkDefinitionReconfiguration changes,
+        CancellationToken cancellationToken = default);
 }

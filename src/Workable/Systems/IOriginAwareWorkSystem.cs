@@ -22,9 +22,19 @@ internal interface IOriginAwareWorkSystem
         WorkOrigin origin,
         CancellationToken cancellationToken);
 
+    Task<WorkerBulkActionOutcome> ExecuteAll(
+        WorkAction action,
+        WorkerBulkActionFilter? filter,
+        WorkOrigin origin,
+        CancellationToken cancellationToken);
+
     Task<WorkActionOutcome> Reconfigure(
         WorkerVersion worker,
         WorkerReconfiguration changes,
+        WorkOrigin origin,
+        CancellationToken cancellationToken);
+
+    Task<WorkSystemStopResult> Stop(
         WorkOrigin origin,
         CancellationToken cancellationToken);
 }

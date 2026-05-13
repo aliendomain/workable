@@ -150,7 +150,7 @@ sequenceDiagram
 
 ## Shutdown
 
-When a system stops, it stops accepting new queue requests, stops the dispatcher, requests cancellation for non-final workers, and waits for the shutdown grace period. The default grace period is 15 seconds. If a worker does not complete after cancellation within that allowance, Workable marks the worker as canceled with a shutdown-forced message and continues shutdown.
+When a system stops, it stops accepting new queue requests, stops the dispatcher, requests cancellation for queued, running, waiting, and retrying workers, and waits for the shutdown grace period. The default grace period is 15 seconds. If a worker does not complete after cancellation within that allowance, Workable marks the worker as canceled with a shutdown-forced message and continues shutdown. Once shutdown work is complete, Workable clears in-memory worker and iteration records for the system.
 
 ```mermaid
 sequenceDiagram
@@ -190,7 +190,7 @@ sequenceDiagram
 - `WorkConcurrencyCoordinator` manages per-definition concurrency managers for work that opts into concurrency.
 - `WorkerRetentionScheduler` schedules automatic purge for completed and canceled workers.
 - `WorkerRecord` stores worker state, control revision, state sequence, input, output, options, and messages.
-- `WorkerIterationSnapshot` reports retained recurring iteration history on `WorkerSnapshot`.
+- `WorkerIterationSnapshot` reports retained iteration history on `WorkerSnapshot`, including run-once work and transient retry attempts.
 - `IWorkerExecutionStrategy` executes a worker according to a runtime strategy.
 - `ConfiguredWorkerExecutionStrategy` chooses run-once, transient retry, or recurring execution for each worker.
 - `RunOnceWorkerExecutionStrategy` executes workers that run once and then complete.

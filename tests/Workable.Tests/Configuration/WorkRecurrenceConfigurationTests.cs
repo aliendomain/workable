@@ -15,8 +15,8 @@ public sealed class WorkRecurrenceConfigurationTests
         Assert.Equal(TimeSpan.Zero, recurrence.Interval);
         Assert.True(recurrence.ContinueAfterFailure);
         Assert.Equal(3, recurrence.CircuitBreakerFailureThreshold);
-        Assert.Equal(25, recurrence.MaximumSuccessfulIterations);
-        Assert.Equal(5, recurrence.MaximumFailedIterations);
+        Assert.Equal(25, recurrence.RetainedSuccessfulIterations);
+        Assert.Equal(5, recurrence.RetainedFailedIterations);
         Assert.True(recurrence.RaiseCircuitBreakerOpenedEvent);
     }
 
@@ -233,8 +233,8 @@ public sealed class WorkRecurrenceConfigurationTests
             Interval = TimeSpan.FromSeconds(12),
             ContinueAfterFailure = false,
             CircuitBreakerFailureThreshold = 7,
-            MaximumSuccessfulIterations = 8,
-            MaximumFailedIterations = 9,
+            RetainedSuccessfulIterations = 8,
+            RetainedFailedIterations = 9,
             RaiseCircuitBreakerOpenedEvent = false,
         };
 
@@ -264,8 +264,8 @@ public sealed class WorkRecurrenceConfigurationTests
         Assert.Equal(expected.Interval, actual.Interval);
         Assert.Equal(expected.ContinueAfterFailure, actual.ContinueAfterFailure);
         Assert.Equal(expected.CircuitBreakerFailureThreshold, actual.CircuitBreakerFailureThreshold);
-        Assert.Equal(expected.MaximumSuccessfulIterations, actual.MaximumSuccessfulIterations);
-        Assert.Equal(expected.MaximumFailedIterations, actual.MaximumFailedIterations);
+        Assert.Equal(expected.RetainedSuccessfulIterations, actual.RetainedSuccessfulIterations);
+        Assert.Equal(expected.RetainedFailedIterations, actual.RetainedFailedIterations);
         Assert.Equal(expected.RaiseCircuitBreakerOpenedEvent, actual.RaiseCircuitBreakerOpenedEvent);
     }
 
@@ -283,8 +283,8 @@ public sealed class WorkRecurrenceConfigurationTests
         intervalMilliseconds: 12_000,
         continueAfterFailure: false,
         circuitBreakerFailureThreshold: 7,
-        maximumSuccessfulIterations: 8,
-        maximumFailedIterations: 9,
+        retainedSuccessfulIterations: 8,
+        retainedFailedIterations: 9,
         raiseCircuitBreakerOpenedEvent: false)]
     private sealed class FullAttributedRecurringWork : IWorkExecutor
     {

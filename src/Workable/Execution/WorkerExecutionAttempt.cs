@@ -2,7 +2,9 @@ namespace Workable;
 
 internal sealed record WorkerExecutionAttempt(
     WorkExecutionResult? Result,
-    WorkMessage? ExceptionFailureMessage)
+    WorkMessage? ExceptionFailureMessage,
+    Exception? Exception = null,
+    WorkExceptionClassification? ExceptionClassification = null)
 {
     public bool IsExceptionFailure => this.ExceptionFailureMessage is not null;
 
@@ -12,9 +14,18 @@ internal sealed record WorkerExecutionAttempt(
     public WorkMessage RequiredExceptionFailureMessage
         => this.ExceptionFailureMessage ?? throw new InvalidOperationException("Execution attempt did not include an exception failure message.");
 
+    public Exception RequiredException
+        => this.Exception ?? throw new InvalidOperationException("Execution attempt did not include an exception.");
+
+    public WorkExceptionClassification RequiredExceptionClassification
+        => this.ExceptionClassification ?? throw new InvalidOperationException("Execution attempt did not include an exception classification.");
+
     public static WorkerExecutionAttempt Completed(WorkExecutionResult result)
         => new(result, ExceptionFailureMessage: null);
 
-    public static WorkerExecutionAttempt ExceptionFailed(WorkMessage message)
-        => new(Result: null, message);
+    public static WorkerExecutionAttempt ExceptionFailed(
+        WorkMessage message,
+        Exception exception,
+        WorkExceptionClassification classification)
+        => new(Result: null, message, exception, classification);
 }

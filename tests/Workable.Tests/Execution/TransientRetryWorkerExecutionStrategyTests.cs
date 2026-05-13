@@ -40,9 +40,54 @@ public sealed class TransientRetryWorkerExecutionStrategyTests
         Assert.Equal(2, attempts);
         Assert.True(completion.IsCompletedSuccessfully);
         Assert.Equal(2, completion.Output?.ToValue<AttemptResult>()?.Attempts);
+        Assert.Equal(
+            [WorkCompletionStatus.Failed, WorkCompletionStatus.Completed],
+            RequiredWorker(completion).Iterations.Select(iteration => iteration.Status));
+        Assert.All(RequiredWorker(completion).Iterations, iteration => Assert.True(iteration.ExecutionDuration >= TimeSpan.Zero));
         var log = Assert.Single(loggerFactory.Logs);
         Assert.Equal(LogLevel.Warning, log.Level);
         Assert.Contains("Retry attempt 1 of 2", log.Message);
+    }
+
+    [Fact]
+    public async Task TransientRetryDelayExposesRetryingWorkerState()
+    {
+        var attempts = 0;
+        var system = CreateSystem(
+            new CapturingLoggerFactory(),
+            (context, input, cancellationToken) =>
+            {
+                attempts++;
+                throw new TimeoutException("Database is still unavailable.");
+            },
+            configuration => configuration
+                .RetryTransientFailures(
+                    count: 1,
+                    initialDelay: TimeSpan.FromSeconds(30),
+                    jitter: TimeSpan.Zero)
+                .ClassifyExceptions(exception => exception is TimeoutException
+                    ? WorkExceptionClassification.Transient
+                    : WorkExceptionClassification.Unknown));
+
+        await system.Start();
+
+        var handle = await system.Queue.Enqueue("retry-work");
+        var workerId = handle.WorkerId!.Value;
+        var retrying = await Eventually(async () =>
+        {
+            var worker = await system.Query.GetWorker(workerId);
+            return worker?.State == WorkerState.Retrying ? worker : null;
+        });
+
+        Assert.Equal(1, attempts);
+        Assert.NotNull(retrying.NextRunAt);
+        var iteration = Assert.Single(retrying.Iterations);
+        Assert.Equal(WorkCompletionStatus.Failed, iteration.Status);
+        Assert.Equal("workable.execution.exception", Assert.Single(iteration.Messages).Code);
+
+        await system.Workers.Execute(retrying.Version, WorkAction.Cancel);
+        var completion = await handle.WaitForCompletion();
+        Assert.Equal(WorkCompletionStatus.Canceled, completion.Status);
     }
 
     [Fact]
@@ -218,6 +263,26 @@ public sealed class TransientRetryWorkerExecutionStrategyTests
         Assert.Equal(expectedClassification.ToString(), message.Metadata?["exceptionClassification"]);
         Assert.Equal(expectedClassification == WorkExceptionClassification.Transient, message.Metadata?["isTransient"]);
         Assert.Equal(expectedRetryAttempts, message.Metadata?["transientRetryAttempts"]);
+    }
+
+    private static WorkerSnapshot RequiredWorker(WorkCompletion completion)
+        => completion.Worker ?? throw new InvalidOperationException("Expected worker snapshot.");
+
+    private static async Task<T> Eventually<T>(Func<Task<T?>> getValue)
+        where T : class
+    {
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+        while (!timeout.IsCancellationRequested)
+        {
+            if (await getValue() is { } value)
+            {
+                return value;
+            }
+
+            await Task.Delay(10, timeout.Token);
+        }
+
+        throw new TimeoutException("Condition was not reached.");
     }
 
     private sealed record AttemptResult(int Attempts);

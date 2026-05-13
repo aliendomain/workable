@@ -14,6 +14,9 @@ public static class WorkableHttpApiExtensions
         ArgumentException.ThrowIfNullOrWhiteSpace(prefix);
 
         var group = endpoints.MapGroup(prefix);
+        group.MapGet("/systems", (WorkableHttpWorkService work)
+            => Results.Ok(work.GetSystems()));
+
         MapWorkableApiRoutes(group);
         MapWorkableApiRoutes(group.MapGroup("/systems/{systemName}"));
 
@@ -22,6 +25,34 @@ public static class WorkableHttpApiExtensions
 
     private static void MapWorkableApiRoutes(RouteGroupBuilder group)
     {
+        group.MapPost("/lifecycle/start", async (
+            HttpContext httpContext,
+            WorkableHttpWorkService work,
+            CancellationToken cancellationToken) =>
+        {
+            if (!TryResolveSystem(httpContext, work, out var system, out var notFound))
+            {
+                return notFound;
+            }
+
+            var result = await WorkableHttpWorkService.Start(system, cancellationToken);
+            return Results.Ok(result);
+        });
+
+        group.MapPost("/lifecycle/stop", async (
+            HttpContext httpContext,
+            WorkableHttpWorkService work,
+            CancellationToken cancellationToken) =>
+        {
+            if (!TryResolveSystem(httpContext, work, out var system, out var notFound))
+            {
+                return notFound;
+            }
+
+            var result = await WorkableHttpWorkService.Stop(system, WorkableHttpOrigin.Create(httpContext, "Stop Workable system through HTTP API."), cancellationToken);
+            return Results.Ok(result);
+        });
+
         group.MapGet("/definitions", (
             HttpContext httpContext,
             WorkableHttpWorkService work) =>
@@ -33,6 +64,113 @@ public static class WorkableHttpApiExtensions
 
             return Results.Ok(WorkableHttpWorkService.GetDefinitions(system));
         });
+
+        group.MapGet("/overview", (
+            HttpContext httpContext,
+            WorkableHttpWorkService work,
+            CancellationToken cancellationToken) =>
+        {
+            if (!TryResolveSystem(httpContext, work, out var system, out var notFound))
+            {
+                return Task.FromResult(notFound);
+            }
+
+            return ToOk(system.Query.GetSystemOverview(cancellationToken));
+        });
+
+        group.MapGet("/overview/counts", (
+            HttpContext httpContext,
+            WorkableHttpWorkService work,
+            CancellationToken cancellationToken) =>
+        {
+            if (!TryResolveSystem(httpContext, work, out var system, out var notFound))
+            {
+                return Task.FromResult(notFound);
+            }
+
+            return ToOk(system.Query.GetSystemOverviewCounts(cancellationToken));
+        });
+
+        group.MapGet("/overview/worker-counts", (
+            HttpContext httpContext,
+            WorkableHttpWorkService work,
+            CancellationToken cancellationToken) =>
+        {
+            if (!TryResolveSystem(httpContext, work, out var system, out var notFound))
+            {
+                return Task.FromResult(notFound);
+            }
+
+            return ToOk(system.Query.GetSystemOverviewWorkerCounts(cancellationToken));
+        });
+
+        group.MapGet("/overview/iteration-counts", (
+            HttpContext httpContext,
+            WorkableHttpWorkService work,
+            CancellationToken cancellationToken) =>
+        {
+            if (!TryResolveSystem(httpContext, work, out var system, out var notFound))
+            {
+                return Task.FromResult(notFound);
+            }
+
+            return ToOk(system.Query.GetSystemOverviewIterationCounts(cancellationToken));
+        });
+
+        group.MapGet("/overview/common-key-types", (
+            HttpContext httpContext,
+            WorkableHttpWorkService work,
+            CancellationToken cancellationToken) =>
+        {
+            if (!TryResolveSystem(httpContext, work, out var system, out var notFound))
+            {
+                return Task.FromResult(notFound);
+            }
+
+            return ToOk(system.Query.GetSystemOverviewCommonKeyTypes(cancellationToken));
+        });
+
+        group.MapGet("/overview/failed-workers", (
+            HttpContext httpContext,
+            WorkableHttpWorkService work,
+            CancellationToken cancellationToken) =>
+        {
+            if (!TryResolveSystem(httpContext, work, out var system, out var notFound))
+            {
+                return Task.FromResult(notFound);
+            }
+
+            return ToOk(system.Query.GetSystemOverviewFailedWorkers(cancellationToken));
+        });
+
+        group.MapGet("/overview/failed-iterations", (
+            HttpContext httpContext,
+            WorkableHttpWorkService work,
+            CancellationToken cancellationToken) =>
+        {
+            if (!TryResolveSystem(httpContext, work, out var system, out var notFound))
+            {
+                return Task.FromResult(notFound);
+            }
+
+            return ToOk(system.Query.GetSystemOverviewFailedIterations(cancellationToken));
+        });
+
+        group.MapGet("/overview/completed-iterations", (
+            HttpContext httpContext,
+            WorkableHttpWorkService work,
+            CancellationToken cancellationToken) =>
+        {
+            if (!TryResolveSystem(httpContext, work, out var system, out var notFound))
+            {
+                return Task.FromResult(notFound);
+            }
+
+            return ToOk(system.Query.GetSystemOverviewCompletedIterations(cancellationToken));
+        });
+
+        group.MapGet("/queue-request/schema", ()
+            => Results.Ok(WorkableHttpQueueRequestDescriptor.Create()));
 
         group.MapPost("/definitions/query", (
             HttpContext httpContext,
@@ -49,6 +187,41 @@ public static class WorkableHttpApiExtensions
         });
 
         group.MapGet("/definitions/{definitionId:guid}/info", async (
+            HttpContext httpContext,
+            Guid definitionId,
+            WorkableHttpWorkService work,
+            CancellationToken cancellationToken) =>
+        {
+            if (!TryResolveSystem(httpContext, work, out var system, out var notFound))
+            {
+                return notFound;
+            }
+
+            var info = await system.Query.GetWorkInfo(new WorkDefinitionId(definitionId), cancellationToken);
+            return info is null ? Results.NotFound() : Results.Ok(info);
+        });
+
+        group.MapPost("/definitions/{definitionId:guid}/reconfigure", async (
+            HttpContext httpContext,
+            Guid definitionId,
+            WorkableHttpDefinitionReconfigurationRequest request,
+            WorkableHttpWorkService work,
+            CancellationToken cancellationToken) =>
+        {
+            if (!TryResolveSystem(httpContext, work, out var system, out var notFound))
+            {
+                return notFound;
+            }
+
+            var result = await WorkableHttpWorkService.ReconfigureDefinition(
+                system,
+                new WorkDefinitionId(definitionId),
+                request,
+                cancellationToken);
+            return ToDefinitionReconfigurationHttpResult(result);
+        });
+
+        group.MapGet("/work/id/{definitionId:guid}/info", async (
             HttpContext httpContext,
             Guid definitionId,
             WorkableHttpWorkService work,
@@ -125,9 +298,25 @@ public static class WorkableHttpApiExtensions
             return worker is null ? Results.NotFound() : Results.Ok(worker);
         });
 
+        group.MapGet("/workers/{workerId:guid}/iterations/{sequence:long}", async (
+            HttpContext httpContext,
+            Guid workerId,
+            long sequence,
+            WorkableHttpWorkService work,
+            CancellationToken cancellationToken) =>
+        {
+            if (!TryResolveSystem(httpContext, work, out var system, out var notFound))
+            {
+                return notFound;
+            }
+
+            var iteration = await system.Query.GetWorkerIteration(new WorkerIterationReference(new WorkerId(workerId), sequence), cancellationToken);
+            return iteration is null ? Results.NotFound() : Results.Ok(iteration);
+        });
+
         group.MapPost("/workers/query", (
             HttpContext httpContext,
-            WorkerQuery? query,
+            WorkableHttpWorkerQuery? query,
             WorkableHttpWorkService work,
             CancellationToken cancellationToken) =>
         {
@@ -136,7 +325,21 @@ public static class WorkableHttpApiExtensions
                 return Task.FromResult(notFound);
             }
 
-            return ToOk(system.Query.QueryWorkers(query ?? new WorkerQuery(), cancellationToken));
+            return ToOk(system.Query.QueryWorkers(query?.ToWorkerQuery() ?? new WorkerQuery(), cancellationToken));
+        });
+
+        group.MapPost("/iterations/query", (
+            HttpContext httpContext,
+            WorkableHttpWorkerIterationQuery? query,
+            WorkableHttpWorkService work,
+            CancellationToken cancellationToken) =>
+        {
+            if (!TryResolveSystem(httpContext, work, out var system, out var notFound))
+            {
+                return Task.FromResult(notFound);
+            }
+
+            return ToOk(system.Query.QueryWorkerIterations(query?.ToWorkerIterationQuery() ?? new WorkerIterationQuery(), cancellationToken));
         });
 
         group.MapGet("/workers/status-summary", (
@@ -154,7 +357,7 @@ public static class WorkableHttpApiExtensions
 
         group.MapPost("/workers/status-summary", (
             HttpContext httpContext,
-            WorkerQuery? query,
+            WorkableHttpWorkerQuery? query,
             WorkableHttpWorkService work,
             CancellationToken cancellationToken) =>
         {
@@ -163,7 +366,140 @@ public static class WorkableHttpApiExtensions
                 return Task.FromResult(notFound);
             }
 
-            return ToOk(system.Query.GetWorkerStatusSummary(query, cancellationToken));
+            return ToOk(system.Query.GetWorkerStatusSummary(query?.ToWorkerQuery(), cancellationToken));
+        });
+
+        group.MapPost("/work-keys/query", (
+            HttpContext httpContext,
+            WorkerKeyQuery? query,
+            WorkableHttpWorkService work,
+            CancellationToken cancellationToken) =>
+        {
+            if (!TryResolveSystem(httpContext, work, out var system, out var notFound))
+            {
+                return Task.FromResult(notFound);
+            }
+
+            return ToOk(system.Query.QueryWorkerKeys(query ?? new WorkerKeyQuery(), cancellationToken));
+        });
+
+        group.MapGet("/work-keys/types", (
+            HttpContext httpContext,
+            WorkKeyKind? kind,
+            string? type,
+            string? search,
+            int? skip,
+            int? take,
+            WorkableHttpWorkService work,
+            CancellationToken cancellationToken) =>
+        {
+            if (!TryResolveSystem(httpContext, work, out var system, out var notFound))
+            {
+                return Task.FromResult(notFound);
+            }
+
+            return ToOk(system.Query.QueryWorkerKeyTypes(
+                new WorkerKeyTypeQuery(
+                    Kind: kind,
+                    Search: search,
+                    Type: type,
+                    Skip: skip ?? 0,
+                    Take: take ?? WorkerKeyQuery.DefaultTake),
+                cancellationToken));
+        });
+
+        group.MapPost("/work-keys/types/query", (
+            HttpContext httpContext,
+            WorkableHttpWorkerKeyTypeQuery? query,
+            WorkableHttpWorkService work,
+            CancellationToken cancellationToken) =>
+        {
+            if (!TryResolveSystem(httpContext, work, out var system, out var notFound))
+            {
+                return Task.FromResult(notFound);
+            }
+
+            return ToOk(system.Query.QueryWorkerKeyTypes(query?.ToWorkerKeyTypeQuery(), cancellationToken));
+        });
+
+        group.MapPost("/work-iteration-keys/query", (
+            HttpContext httpContext,
+            WorkIterationKeyQuery? query,
+            WorkableHttpWorkService work,
+            CancellationToken cancellationToken) =>
+        {
+            if (!TryResolveSystem(httpContext, work, out var system, out var notFound))
+            {
+                return Task.FromResult(notFound);
+            }
+
+            return ToOk(system.Query.QueryWorkIterationKeys(query ?? new WorkIterationKeyQuery(), cancellationToken));
+        });
+
+        group.MapGet("/work-iteration-keys/types", (
+            HttpContext httpContext,
+            WorkKeyKind? kind,
+            string? type,
+            string? search,
+            int? skip,
+            int? take,
+            WorkableHttpWorkService work,
+            CancellationToken cancellationToken) =>
+        {
+            if (!TryResolveSystem(httpContext, work, out var system, out var notFound))
+            {
+                return Task.FromResult(notFound);
+            }
+
+            return ToOk(system.Query.QueryWorkIterationKeyTypes(
+                new WorkIterationKeyTypeQuery(
+                    Kind: kind,
+                    Search: search,
+                    Type: type,
+                    Skip: skip ?? 0,
+                    Take: take ?? WorkIterationKeyQuery.DefaultTake),
+                cancellationToken));
+        });
+
+        group.MapPost("/work-iteration-keys/types/query", (
+            HttpContext httpContext,
+            WorkableHttpWorkIterationKeyTypeQuery? query,
+            WorkableHttpWorkService work,
+            CancellationToken cancellationToken) =>
+        {
+            if (!TryResolveSystem(httpContext, work, out var system, out var notFound))
+            {
+                return Task.FromResult(notFound);
+            }
+
+            return ToOk(system.Query.QueryWorkIterationKeyTypes(query?.ToWorkIterationKeyTypeQuery(), cancellationToken));
+        });
+
+        group.MapPost("/workers/actions/{action}", async (
+            string action,
+            WorkableHttpWorkerBulkActionRequest? request,
+            HttpContext httpContext,
+            WorkableHttpWorkService work,
+            CancellationToken cancellationToken) =>
+        {
+            if (!WorkableHttpRouteBinding.TryParseAction(action, out var parsedAction))
+            {
+                return Results.BadRequest(new
+                {
+                    Messages = new[]
+                    {
+                        WorkMessage.Error("workable.http.action.invalid", $"Worker action '{action}' is not supported.", "action"),
+                    },
+                });
+            }
+
+            if (!TryResolveSystem(httpContext, work, out var system, out var notFound))
+            {
+                return notFound;
+            }
+
+            var result = await WorkableHttpWorkService.ExecuteAll(system, parsedAction, request, WorkableHttpOrigin.Create(httpContext, $"Apply worker action '{parsedAction}' to multiple workers through HTTP API."), cancellationToken);
+            return Results.Ok(result);
         });
 
         group.MapPost("/workers/{workerId:guid}/actions/{action}", async (
@@ -252,6 +588,15 @@ public static class WorkableHttpApiExtensions
             WorkActionStatus.Accepted => Results.Ok(result),
             WorkActionStatus.NotFound => Results.NotFound(result),
             WorkActionStatus.Conflict => Results.Conflict(result),
+            _ => Results.BadRequest(result),
+        };
+
+    private static IResult ToDefinitionReconfigurationHttpResult(WorkDefinitionReconfigurationOutcome result)
+        => result.Status switch
+        {
+            WorkDefinitionReconfigurationStatus.Accepted => Results.Ok(result),
+            WorkDefinitionReconfigurationStatus.NotFound => Results.NotFound(result),
+            WorkDefinitionReconfigurationStatus.Conflict => Results.Conflict(result),
             _ => Results.BadRequest(result),
         };
 }

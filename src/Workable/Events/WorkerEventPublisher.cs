@@ -55,10 +55,16 @@ internal sealed class WorkerEventPublisher(
         this.Publish(
             worker,
             "worker.waiting",
-            details: new WorkerEventPayloadDetails(RecurrenceInterval: recurrenceInterval));
+                details: new WorkerEventPayloadDetails(RecurrenceInterval: recurrenceInterval));
     }
 
-    public void RecurringIterationCompleted(WorkerRecord worker)
+    public void Retrying(WorkerRecord worker, TimeSpan retryDelay)
+        => this.Publish(
+            worker,
+            "worker.retrying",
+            details: new WorkerEventPayloadDetails(RetryDelay: retryDelay));
+
+    public void IterationCompleted(WorkerRecord worker)
         => this.Publish(
             worker,
             "worker.iteration.completed",
@@ -66,7 +72,7 @@ internal sealed class WorkerEventPublisher(
                 CompletionStatus: WorkCompletionStatus.Completed,
                 IncludeLatestIteration: true));
 
-    public void RecurringIterationFailed(WorkerRecord worker)
+    public void IterationFailed(WorkerRecord worker)
         => this.Publish(
             worker,
             "worker.iteration.failed",

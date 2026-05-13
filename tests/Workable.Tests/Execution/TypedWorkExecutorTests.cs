@@ -22,6 +22,8 @@ public sealed class TypedWorkExecutorTests
 
         Assert.Contains("message", definition.InputSchema.JsonSchema, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("echoed", definition.OutputSchema.JsonSchema, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(WorkSchema.JsonSchemaDialect202012, definition.InputSchema.SchemaDialect);
+        Assert.Equal(WorkSchema.JsonSchemaDialect202012, definition.OutputSchema.SchemaDialect);
         Assert.Equal(WorkCompletionStatus.Completed, completion.Status);
         Assert.Contains("\"echoed\":5", completion.Output?.Json);
         Assert.Contains(completion.Messages, message => message.Code == "typed.echo.completed" && message.Text == "HELLO");

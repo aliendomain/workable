@@ -422,8 +422,8 @@ public sealed class RecurringWorkerExecutionStrategyTests
             {
                 Interval = TimeSpan.FromMilliseconds(1),
                 CircuitBreakerFailureThreshold = 10,
-                MaximumSuccessfulIterations = 2,
-                MaximumFailedIterations = 1,
+                RetainedSuccessfulIterations = 2,
+                RetainedFailedIterations = 1,
             });
 
         await system.Start();
@@ -436,9 +436,11 @@ public sealed class RecurringWorkerExecutionStrategyTests
         var iterations = completion.Worker?.Iterations ?? [];
 
         Assert.Equal(WorkCompletionStatus.Canceled, completion.Status);
-        Assert.Equal(3, iterations.Count);
-        Assert.Equal([WorkCompletionStatus.Completed, WorkCompletionStatus.Completed, WorkCompletionStatus.Failed], iterations.Select(iteration => iteration.Status));
-        Assert.Equal([2, 4, 5], iterations.Select(iteration => iteration.Output?.ToValue<int>()));
+        Assert.Equal(4, iterations.Count);
+        Assert.Equal(
+            [WorkCompletionStatus.Completed, WorkCompletionStatus.Completed, WorkCompletionStatus.Failed, WorkCompletionStatus.Canceled],
+            iterations.Select(iteration => iteration.Status));
+        Assert.Equal([2, 4, 5, null], iterations.Select(iteration => iteration.Output?.ToValue<int>()));
     }
 
     [Fact]

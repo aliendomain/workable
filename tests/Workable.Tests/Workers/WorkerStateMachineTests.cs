@@ -5,6 +5,15 @@ namespace Workable.Tests;
 [Trait("Category", "WorkerLifecycle")]
 public sealed class WorkerStateMachineTests
 {
+    private static readonly WorkAction[] SupportedActions =
+    [
+        WorkAction.Start,
+        WorkAction.Pause,
+        WorkAction.Cancel,
+        WorkAction.Push,
+        WorkAction.Purge,
+    ];
+
     public static TheoryData<WorkerState, WorkAction, WorkActionStatus, WorkerState?, bool, bool> ActionTransitions()
     {
         var data = new TheoryData<WorkerState, WorkAction, WorkActionStatus, WorkerState?, bool, bool>();
@@ -14,6 +23,14 @@ public sealed class WorkerStateMachineTests
         }
 
         return data;
+    }
+
+    [Fact]
+    public void ActionTransitionRulesCoverEveryWorkerAction()
+    {
+        Assert.Equal(
+            Enum.GetValues<WorkAction>().Order(),
+            SupportedActions.Order());
     }
 
     [Theory]
@@ -41,6 +58,8 @@ public sealed class WorkerStateMachineTests
     [InlineData(WorkerState.Running, true, WorkerState.Failed, WorkCompletionStatus.Failed)]
     [InlineData(WorkerState.Waiting, false, WorkerState.Waiting, WorkCompletionStatus.Invalid)]
     [InlineData(WorkerState.Waiting, true, WorkerState.Waiting, WorkCompletionStatus.Invalid)]
+    [InlineData(WorkerState.Retrying, false, WorkerState.Retrying, WorkCompletionStatus.Invalid)]
+    [InlineData(WorkerState.Retrying, true, WorkerState.Retrying, WorkCompletionStatus.Invalid)]
     [InlineData(WorkerState.Pausing, false, WorkerState.Paused, WorkCompletionStatus.Paused)]
     [InlineData(WorkerState.Pausing, true, WorkerState.Paused, WorkCompletionStatus.Paused)]
     [InlineData(WorkerState.Paused, false, WorkerState.Paused, WorkCompletionStatus.Invalid)]
@@ -69,6 +88,7 @@ public sealed class WorkerStateMachineTests
     [InlineData(WorkerState.Queued, false)]
     [InlineData(WorkerState.Running, false)]
     [InlineData(WorkerState.Waiting, false)]
+    [InlineData(WorkerState.Retrying, false)]
     [InlineData(WorkerState.Pausing, false)]
     [InlineData(WorkerState.Paused, false)]
     [InlineData(WorkerState.Canceling, false)]
@@ -84,6 +104,7 @@ public sealed class WorkerStateMachineTests
     [InlineData(WorkerState.Pausing, WorkerState.Paused, WorkCompletionStatus.Paused)]
     [InlineData(WorkerState.Running, WorkerState.Canceled, WorkCompletionStatus.Canceled)]
     [InlineData(WorkerState.Canceling, WorkerState.Canceled, WorkCompletionStatus.Canceled)]
+    [InlineData(WorkerState.Retrying, WorkerState.Canceled, WorkCompletionStatus.Canceled)]
     [InlineData(WorkerState.Queued, WorkerState.Queued, WorkCompletionStatus.Invalid)]
     [InlineData(WorkerState.Completed, WorkerState.Completed, WorkCompletionStatus.Completed)]
     public void CancellationCompletionRulesAreExplicit(
@@ -99,11 +120,37 @@ public sealed class WorkerStateMachineTests
 
     private static void AddExpectedTransitions(TheoryData<WorkerState, WorkAction, WorkActionStatus, WorkerState?, bool, bool> data, WorkerState state)
     {
-        Add(data, state, WorkAction.Start, StartStatus(state), StartNextState(state));
-        Add(data, state, WorkAction.Pause, PauseStatus(state), PauseNextState(state), state == WorkerState.Running);
-        Add(data, state, WorkAction.Cancel, CancelStatus(state), CancelNextState(state), state == WorkerState.Running);
-        Add(data, state, WorkAction.Push, PushStatus(state), PushNextState(state));
-        Add(data, state, WorkAction.Purge, PurgeStatus(state), nextState: null, removesWorker: WorkerStateMachine.IsFinal(state));
+        foreach (var action in SupportedActions)
+        {
+            AddExpectedTransition(data, state, action);
+        }
+    }
+
+    private static void AddExpectedTransition(
+        TheoryData<WorkerState, WorkAction, WorkActionStatus, WorkerState?, bool, bool> data,
+        WorkerState state,
+        WorkAction action)
+    {
+        switch (action)
+        {
+            case WorkAction.Start:
+                Add(data, state, action, StartStatus(state), StartNextState(state));
+                break;
+            case WorkAction.Pause:
+                Add(data, state, action, PauseStatus(state), PauseNextState(state), state == WorkerState.Running);
+                break;
+            case WorkAction.Cancel:
+                Add(data, state, action, CancelStatus(state), CancelNextState(state), state == WorkerState.Running);
+                break;
+            case WorkAction.Push:
+                Add(data, state, action, PushStatus(state), PushNextState(state));
+                break;
+            case WorkAction.Purge:
+                Add(data, state, action, PurgeStatus(state), nextState: null, removesWorker: WorkerStateMachine.IsFinal(state));
+                break;
+            default:
+                throw new InvalidOperationException($"Worker action '{action}' is not covered by transition tests.");
+        }
     }
 
     private static void Add(
@@ -129,13 +176,13 @@ public sealed class WorkerStateMachineTests
         => state is WorkerState.Queued or WorkerState.Paused or WorkerState.Failed ? WorkerState.Running : null;
 
     private static WorkActionStatus PauseStatus(WorkerState state)
-        => ConflictOr(state, state is WorkerState.Running or WorkerState.Waiting);
+        => ConflictOr(state, state is WorkerState.Running or WorkerState.Waiting or WorkerState.Retrying);
 
     private static WorkerState? PauseNextState(WorkerState state)
         => state switch
         {
             WorkerState.Running => WorkerState.Pausing,
-            WorkerState.Waiting => WorkerState.Paused,
+            WorkerState.Waiting or WorkerState.Retrying => WorkerState.Paused,
             _ => null,
         };
 
@@ -146,15 +193,15 @@ public sealed class WorkerStateMachineTests
         => state switch
         {
             WorkerState.Running => WorkerState.Canceling,
-            WorkerState.Queued or WorkerState.Waiting or WorkerState.Paused or WorkerState.Failed => WorkerState.Canceled,
+            WorkerState.Queued or WorkerState.Waiting or WorkerState.Retrying or WorkerState.Paused or WorkerState.Failed => WorkerState.Canceled,
             _ => null,
         };
 
     private static WorkActionStatus PushStatus(WorkerState state)
-        => ConflictOr(state, state == WorkerState.Waiting);
+        => ConflictOr(state, state is WorkerState.Waiting or WorkerState.Retrying);
 
     private static WorkerState? PushNextState(WorkerState state)
-        => state == WorkerState.Waiting ? WorkerState.Queued : null;
+        => state is WorkerState.Waiting or WorkerState.Retrying ? WorkerState.Queued : null;
 
     private static WorkActionStatus PurgeStatus(WorkerState state)
         => ConflictOr(state, WorkerStateMachine.IsFinal(state));

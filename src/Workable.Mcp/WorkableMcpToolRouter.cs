@@ -18,14 +18,21 @@ public sealed class WorkableMcpToolRouter(IWorkSystemRegistry registry)
 
     private const string QueryWorkersTool = "workable_query_workers";
     private const string GetWorkerTool = "workable_get_worker";
+    private const string GetWorkerIterationTool = "workable_get_worker_iteration";
+    private const string QueryWorkerIterationsTool = "workable_query_worker_iterations";
     private const string GetWorkInfoTool = "workable_get_work_info";
     private const string QueryWorkDefinitionsTool = "workable_query_work_definitions";
+    private const string QueryWorkerKeysTool = "workable_query_worker_keys";
+    private const string QueryWorkerKeyTypesTool = "workable_query_worker_key_types";
+    private const string QueryWorkIterationKeysTool = "workable_query_work_iteration_keys";
+    private const string QueryWorkIterationKeyTypesTool = "workable_query_work_iteration_key_types";
     private const string GetWorkerStatusSummaryTool = "workable_get_worker_status_summary";
     private const string StartWorkerTool = "workable_start_worker";
     private const string PauseWorkerTool = "workable_pause_worker";
     private const string CancelWorkerTool = "workable_cancel_worker";
     private const string PushWorkerTool = "workable_push_worker";
     private const string PurgeWorkerTool = "workable_purge_worker";
+    private const string ReconfigureWorkDefinitionTool = "workable_reconfigure_work_definition";
 
     public IReadOnlyList<WorkableMcpServerToolDescriptor> GetTools(
         WorkableMcpServerOptions? options = null,
@@ -96,8 +103,14 @@ public sealed class WorkableMcpToolRouter(IWorkSystemRegistry registry)
             {
                 QueryWorkersTool => ToToolResult(await QueryWorkers(system, arguments, cancellationToken)),
                 GetWorkerTool => ToToolResult(await GetWorker(system, arguments, cancellationToken)),
+                GetWorkerIterationTool => ToToolResult(await GetWorkerIteration(system, arguments, cancellationToken)),
+                QueryWorkerIterationsTool => ToToolResult(await QueryWorkerIterations(system, arguments, cancellationToken)),
                 GetWorkInfoTool => ToToolResult(await GetWorkInfo(system, arguments, cancellationToken)),
                 QueryWorkDefinitionsTool => ToToolResult(await QueryWorkDefinitions(system, arguments, cancellationToken)),
+                QueryWorkerKeysTool => ToToolResult(await QueryWorkerKeys(system, arguments, cancellationToken)),
+                QueryWorkerKeyTypesTool => ToToolResult(await QueryWorkerKeyTypes(system, arguments, cancellationToken)),
+                QueryWorkIterationKeysTool => ToToolResult(await QueryWorkIterationKeys(system, arguments, cancellationToken)),
+                QueryWorkIterationKeyTypesTool => ToToolResult(await QueryWorkIterationKeyTypes(system, arguments, cancellationToken)),
                 GetWorkerStatusSummaryTool => ToToolResult(await GetWorkerStatusSummary(system, arguments, cancellationToken)),
                 _ => null,
             };
@@ -117,6 +130,7 @@ public sealed class WorkableMcpToolRouter(IWorkSystemRegistry registry)
                 CancelWorkerTool => ToToolResult(await ExecuteWorkerAction(system, arguments, WorkAction.Cancel, origin, cancellationToken)),
                 PushWorkerTool => ToToolResult(await ExecuteWorkerAction(system, arguments, WorkAction.Push, origin, cancellationToken)),
                 PurgeWorkerTool => ToToolResult(await ExecuteWorkerAction(system, arguments, WorkAction.Purge, origin, cancellationToken)),
+                ReconfigureWorkDefinitionTool => ToToolResult(await ReconfigureWorkDefinition(system, arguments, cancellationToken)),
                 _ => null,
             };
 
@@ -186,7 +200,7 @@ public sealed class WorkableMcpToolRouter(IWorkSystemRegistry registry)
         [
             new(
                 QueryWorkersTool,
-                "Find workers by work name, state, subject, concurrency key, identifier, time range, and paging. Use this before worker actions when you need the current worker id and revision.",
+                "Find workers by work name, state, subject, concurrency key, identifier, selected configuration flags, time range, and paging. Use this before worker actions when you need the current worker id and revision.",
                 WorkerQuerySchema,
                 null,
                 WorkableMcpServerToolKind.Query),
@@ -194,6 +208,18 @@ public sealed class WorkableMcpToolRouter(IWorkSystemRegistry registry)
                 GetWorkerTool,
                 "Get one worker snapshot by worker id, including current state, revision, output, messages, logs, profile, action history, and retained recurrence iterations.",
                 """{"type":"object","properties":{"workerId":{"type":"string"}},"required":["workerId"],"additionalProperties":false}""",
+                null,
+                WorkableMcpServerToolKind.Query),
+            new(
+                GetWorkerIterationTool,
+                "Get one worker iteration by worker id and iteration sequence, including output, messages, logs, profile, and timing.",
+                """{"type":"object","properties":{"workerId":{"type":"string"},"sequence":{"type":"integer"}},"required":["workerId","sequence"],"additionalProperties":false}""",
+                null,
+                WorkableMcpServerToolKind.Query),
+            new(
+                QueryWorkerIterationsTool,
+                "Find worker iterations by worker id, work name, status, subject, concurrency key, identifier, category, time range, and paging. Use this for recent execution history, failures, transient retries, and recurring iteration activity.",
+                WorkerIterationQuerySchema,
                 null,
                 WorkableMcpServerToolKind.Query),
             new(
@@ -206,6 +232,30 @@ public sealed class WorkableMcpToolRouter(IWorkSystemRegistry registry)
                 QueryWorkDefinitionsTool,
                 "Browse available work definitions by name, category, search text, or definition id. Use this to discover what work can be queued.",
                 WorkDefinitionQuerySchema,
+                null,
+                WorkableMcpServerToolKind.Query),
+            new(
+                QueryWorkerKeysTool,
+                "Search known worker keys across subjects, concurrency keys, and identifiers by kind, type, value, free text, and optional worker states. Use this when a user asks for workers tied to something like claim id 123, a customer, or an order, including phrases like currently running claim work. Returns matching keys with their worker overview rows.",
+                WorkKeyQuerySchema,
+                null,
+                WorkableMcpServerToolKind.Query),
+            new(
+                QueryWorkerKeyTypesTool,
+                "List known worker key types across subjects, concurrency keys, and identifiers, optionally filtered by worker state. Use this when a user asks for broad worker categories like claim work or customer work. Results are grouped by type across key kinds and include worker overview rows for workers attached to those key types.",
+                WorkKeyTypeQuerySchema,
+                null,
+                WorkableMcpServerToolKind.Query),
+            new(
+                QueryWorkIterationKeysTool,
+                "Search known work iteration keys across subjects, concurrency keys, and identifiers by kind, type, value, free text, and optional iteration statuses. Use this when a user asks for actual executions tied to something like claim id 123, failed customer work, or completed order work. Returns matching keys with their iteration overview rows.",
+                WorkIterationKeyQuerySchema,
+                null,
+                WorkableMcpServerToolKind.Query),
+            new(
+                QueryWorkIterationKeyTypesTool,
+                "List known work iteration key types across subjects, concurrency keys, and identifiers, optionally filtered by iteration status. Use this for broad execution categories like claim work, customer work, or failed order activity. Results are grouped by type across key kinds and include iteration overview rows for iterations attached to those key types.",
+                WorkIterationKeyTypeQuerySchema,
                 null,
                 WorkableMcpServerToolKind.Query),
             new(
@@ -249,6 +299,12 @@ public sealed class WorkableMcpToolRouter(IWorkSystemRegistry registry)
                 WorkerActionSchema,
                 null,
                 WorkableMcpServerToolKind.Action),
+            new(
+                ReconfigureWorkDefinitionTool,
+                "Change a work definition's default worker options and/or default configuration for future queued workers. Requires the current definition id and revision from query_work_definitions or get_work_info.",
+                WorkDefinitionReconfigurationSchema,
+                null,
+                WorkableMcpServerToolKind.Action),
         ];
 
     private static async Task<object> QueryWorkers(
@@ -270,6 +326,29 @@ public sealed class WorkableMcpToolRouter(IWorkSystemRegistry registry)
         return worker is null
             ? new { found = false, workerId = workerId.ToString("D") }
             : new { found = true, worker };
+    }
+
+    private static async Task<object> GetWorkerIteration(
+        IWorkSystem system,
+        JsonElement? arguments,
+        CancellationToken cancellationToken)
+    {
+        var workerId = new WorkerId(ReadRequiredGuid(arguments, "workerId"));
+        var sequence = ReadRequiredLong(arguments, "sequence");
+        var iteration = await system.Query.GetWorkerIteration(new WorkerIterationReference(workerId, sequence), cancellationToken);
+
+        return iteration is null
+            ? new { found = false, workerId = workerId.Value.ToString("D"), sequence }
+            : new { found = true, iteration };
+    }
+
+    private static async Task<object> QueryWorkerIterations(
+        IWorkSystem system,
+        JsonElement? arguments,
+        CancellationToken cancellationToken)
+    {
+        var query = ToWorkerIterationQuery(arguments);
+        return await system.Query.QueryWorkerIterations(query, cancellationToken);
     }
 
     private static async Task<object> GetWorkInfo(
@@ -310,6 +389,72 @@ public sealed class WorkableMcpToolRouter(IWorkSystemRegistry registry)
         return await system.Query.QueryWorkDefinitions(query, cancellationToken);
     }
 
+    private static async Task<object> QueryWorkerKeys(
+        IWorkSystem system,
+        JsonElement? arguments,
+        CancellationToken cancellationToken)
+    {
+        var query = new WorkerKeyQuery(
+            Kind: ReadOptionalEnum<WorkKeyKind>(arguments, "kind"),
+            Type: ReadString(arguments, "type"),
+            Value: ReadString(arguments, "value"),
+            Search: ReadString(arguments, "search"),
+            States: ReadStates(arguments),
+            Skip: ReadInt(arguments, "skip") ?? 0,
+            Take: ReadInt(arguments, "take") ?? WorkerKeyQuery.DefaultTake);
+
+        return await system.Query.QueryWorkerKeys(query, cancellationToken);
+    }
+
+    private static async Task<object> QueryWorkerKeyTypes(
+        IWorkSystem system,
+        JsonElement? arguments,
+        CancellationToken cancellationToken)
+    {
+        var query = new WorkerKeyTypeQuery(
+            Kind: ReadOptionalEnum<WorkKeyKind>(arguments, "kind"),
+            Search: ReadString(arguments, "search"),
+            Type: ReadString(arguments, "type"),
+            States: ReadStates(arguments),
+            Skip: ReadInt(arguments, "skip") ?? 0,
+            Take: ReadInt(arguments, "take") ?? WorkerKeyQuery.DefaultTake);
+
+        return await system.Query.QueryWorkerKeyTypes(query, cancellationToken);
+    }
+
+    private static async Task<object> QueryWorkIterationKeys(
+        IWorkSystem system,
+        JsonElement? arguments,
+        CancellationToken cancellationToken)
+    {
+        var query = new WorkIterationKeyQuery(
+            Kind: ReadOptionalEnum<WorkKeyKind>(arguments, "kind"),
+            Type: ReadString(arguments, "type"),
+            Value: ReadString(arguments, "value"),
+            Search: ReadString(arguments, "search"),
+            Statuses: ReadCompletionStatuses(arguments),
+            Skip: ReadInt(arguments, "skip") ?? 0,
+            Take: ReadInt(arguments, "take") ?? WorkIterationKeyQuery.DefaultTake);
+
+        return await system.Query.QueryWorkIterationKeys(query, cancellationToken);
+    }
+
+    private static async Task<object> QueryWorkIterationKeyTypes(
+        IWorkSystem system,
+        JsonElement? arguments,
+        CancellationToken cancellationToken)
+    {
+        var query = new WorkIterationKeyTypeQuery(
+            Kind: ReadOptionalEnum<WorkKeyKind>(arguments, "kind"),
+            Search: ReadString(arguments, "search"),
+            Type: ReadString(arguments, "type"),
+            Statuses: ReadCompletionStatuses(arguments),
+            Skip: ReadInt(arguments, "skip") ?? 0,
+            Take: ReadInt(arguments, "take") ?? WorkIterationKeyQuery.DefaultTake);
+
+        return await system.Query.QueryWorkIterationKeyTypes(query, cancellationToken);
+    }
+
     private static async Task<object> GetWorkerStatusSummary(
         IWorkSystem system,
         JsonElement? arguments,
@@ -335,6 +480,34 @@ public sealed class WorkableMcpToolRouter(IWorkSystemRegistry registry)
             : await RequiredOriginAwareSystem(system).Execute(version, action, origin, cancellationToken);
     }
 
+    private static async Task<object> ReconfigureWorkDefinition(
+        IWorkSystem system,
+        JsonElement? arguments,
+        CancellationToken cancellationToken)
+    {
+        var definitionId = new WorkDefinitionId(ReadRequiredGuid(arguments, "definitionId"));
+        var revision = ReadRequiredLong(arguments, "revision");
+        var changes = ReadDefinitionReconfiguration(arguments);
+        return await system.Catalog.Reconfigure(
+            new WorkDefinitionVersion(definitionId, revision),
+            changes,
+            cancellationToken);
+    }
+
+    private static WorkDefinitionReconfiguration ReadDefinitionReconfiguration(JsonElement? arguments)
+    {
+        if (TryGetProperty(arguments, "changes", out var changesProperty) &&
+            changesProperty.ValueKind == JsonValueKind.Object)
+        {
+            return changesProperty.Deserialize<WorkDefinitionReconfiguration>(JsonOptions)
+                ?? new WorkDefinitionReconfiguration();
+        }
+
+        return new WorkDefinitionReconfiguration(
+            DefaultOptions: ReadObject<WorkerOptions>(arguments, "defaultOptions"),
+            Configuration: ReadObject<WorkConfiguration>(arguments, "configuration"));
+    }
+
     private static WorkerQuery ToWorkerQuery(JsonElement? arguments)
     {
         return new WorkerQuery(
@@ -344,6 +517,7 @@ public sealed class WorkableMcpToolRouter(IWorkSystemRegistry registry)
             ConcurrencyKey: ReadPair(arguments, "concurrencyKeyType", "concurrencyKeyValue") is { } key ? new WorkConcurrencyKey(key.Type, key.Value) : null,
             Identifier: ReadPair(arguments, "identifierType", "identifierValue") is { } identifier ? new WorkIdentifier(identifier.Type, identifier.Value) : null,
             States: ReadStates(arguments),
+            Configuration: ReadWorkerConfigurationQuery(arguments),
             CreatedFrom: ReadDateTimeOffset(arguments, "createdFrom"),
             CreatedTo: ReadDateTimeOffset(arguments, "createdTo"),
             UpdatedFrom: ReadDateTimeOffset(arguments, "updatedFrom"),
@@ -352,6 +526,42 @@ public sealed class WorkableMcpToolRouter(IWorkSystemRegistry registry)
             Direction: ReadEnum(arguments, "direction", WorkQuerySortDirection.Descending),
             Skip: ReadInt(arguments, "skip") ?? 0,
             Take: ReadInt(arguments, "take") ?? 100);
+    }
+
+    private static WorkerConfigurationQuery? ReadWorkerConfigurationQuery(JsonElement? arguments)
+    {
+        var recurrenceEnabled = ReadBool(arguments, "recurrenceEnabled");
+        var concurrencyEnabled = ReadBool(arguments, "concurrencyEnabled");
+        var profilingEnabled = ReadBool(arguments, "profilingEnabled");
+        return recurrenceEnabled is null &&
+            concurrencyEnabled is null &&
+            profilingEnabled is null
+            ? null
+            : new WorkerConfigurationQuery(
+                RecurrenceEnabled: recurrenceEnabled,
+                ConcurrencyEnabled: concurrencyEnabled,
+                ProfilingEnabled: profilingEnabled);
+    }
+
+    private static WorkerIterationQuery ToWorkerIterationQuery(JsonElement? arguments)
+    {
+        return new WorkerIterationQuery(
+            WorkerId: ReadGuid(arguments, "workerId") is { } workerId ? new WorkerId(workerId) : null,
+            DefinitionId: ReadGuid(arguments, "definitionId") is { } definitionId ? new WorkDefinitionId(definitionId) : null,
+            DefinitionName: ReadString(arguments, "definitionName") ?? ReadString(arguments, "workName"),
+            Category: ReadString(arguments, "category"),
+            SubjectId: ReadPair(arguments, "subjectType", "subjectValue") is { } subject ? new WorkSubjectId(subject.Type, subject.Value) : null,
+            ConcurrencyKey: ReadPair(arguments, "concurrencyKeyType", "concurrencyKeyValue") is { } key ? new WorkConcurrencyKey(key.Type, key.Value) : null,
+            Identifier: ReadPair(arguments, "identifierType", "identifierValue") is { } identifier ? new WorkIdentifier(identifier.Type, identifier.Value) : null,
+            Statuses: ReadCompletionStatuses(arguments),
+            StartedFrom: ReadDateTimeOffset(arguments, "startedFrom"),
+            StartedTo: ReadDateTimeOffset(arguments, "startedTo"),
+            CompletedFrom: ReadDateTimeOffset(arguments, "completedFrom"),
+            CompletedTo: ReadDateTimeOffset(arguments, "completedTo"),
+            Sort: ReadEnum(arguments, "sort", WorkerIterationQuerySort.CompletedAt),
+            Direction: ReadEnum(arguments, "direction", WorkQuerySortDirection.Descending),
+            Skip: ReadInt(arguments, "skip") ?? 0,
+            Take: ReadInt(arguments, "take") ?? WorkerIterationQuery.DefaultTake);
     }
 
     private static bool TryGetWorkToolName(
@@ -484,9 +694,30 @@ public sealed class WorkableMcpToolRouter(IWorkSystemRegistry registry)
         return parsed.Count == 0 ? null : parsed;
     }
 
+    private static IReadOnlySet<WorkCompletionStatus>? ReadCompletionStatuses(JsonElement? arguments)
+    {
+        if (!TryGetProperty(arguments, "statuses", out var statuses) || statuses.ValueKind != JsonValueKind.Array)
+        {
+            return null;
+        }
+
+        var parsed = statuses.EnumerateArray()
+            .Where(static status => status.ValueKind == JsonValueKind.String)
+            .Select(static status => TryParseCompletionStatus(status.GetString()))
+            .OfType<WorkCompletionStatus>()
+            .ToHashSet();
+
+        return parsed.Count == 0 ? null : parsed;
+    }
+
     private static WorkerState? TryParseWorkerState(string? value)
         => Enum.TryParse<WorkerState>(value, ignoreCase: true, out var workerState)
             ? workerState
+            : null;
+
+    private static WorkCompletionStatus? TryParseCompletionStatus(string? value)
+        => Enum.TryParse<WorkCompletionStatus>(value, ignoreCase: true, out var status)
+            ? status
             : null;
 
     private static Guid ReadRequiredGuid(JsonElement? arguments, string propertyName)
@@ -515,6 +746,11 @@ public sealed class WorkableMcpToolRouter(IWorkSystemRegistry registry)
             ? property.GetBoolean()
             : null;
 
+    private static T? ReadObject<T>(JsonElement? arguments, string propertyName)
+        => TryGetProperty(arguments, propertyName, out var property) && property.ValueKind == JsonValueKind.Object
+            ? property.Deserialize<T>(JsonOptions)
+            : default;
+
     private static DateTimeOffset? ReadDateTimeOffset(JsonElement? arguments, string propertyName)
         => DateTimeOffset.TryParse(ReadString(arguments, propertyName), CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out var value)
             ? value
@@ -523,6 +759,10 @@ public sealed class WorkableMcpToolRouter(IWorkSystemRegistry registry)
     private static TEnum ReadEnum<TEnum>(JsonElement? arguments, string propertyName, TEnum defaultValue)
         where TEnum : struct
         => Enum.TryParse<TEnum>(ReadString(arguments, propertyName), ignoreCase: true, out var value) ? value : defaultValue;
+
+    private static TEnum? ReadOptionalEnum<TEnum>(JsonElement? arguments, string propertyName)
+        where TEnum : struct
+        => Enum.TryParse<TEnum>(ReadString(arguments, propertyName), ignoreCase: true, out var value) ? value : null;
 
     private static (string Type, string Value)? ReadPair(JsonElement? arguments, string typeProperty, string valueProperty)
     {
@@ -557,10 +797,55 @@ public sealed class WorkableMcpToolRouter(IWorkSystemRegistry registry)
             "identifierType": { "type": "string" },
             "identifierValue": { "type": "string" },
             "states": { "type": "array", "items": { "type": "string" } },
+            "recurrenceEnabled": {
+              "type": "boolean",
+              "description": "Filter workers by whether recurrence is enabled in their effective configuration."
+            },
+            "concurrencyEnabled": {
+              "type": "boolean",
+              "description": "Filter workers by whether concurrency is enabled in their effective configuration."
+            },
+            "profilingEnabled": {
+              "type": "boolean",
+              "description": "Filter workers by whether profiling is enabled in their worker options."
+            },
             "createdFrom": { "type": "string", "format": "date-time" },
             "createdTo": { "type": "string", "format": "date-time" },
             "updatedFrom": { "type": "string", "format": "date-time" },
             "updatedTo": { "type": "string", "format": "date-time" },
+            "sort": { "type": "string" },
+            "direction": { "type": "string" },
+            "skip": { "type": "integer" },
+            "take": { "type": "integer" }
+          },
+          "additionalProperties": false
+        }
+        """;
+
+    private const string WorkerIterationQuerySchema = """
+        {
+          "type": "object",
+          "properties": {
+            "workerId": { "type": "string" },
+            "definitionId": { "type": "string" },
+            "definitionName": { "type": "string" },
+            "workName": { "type": "string" },
+            "category": { "type": "string" },
+            "subjectType": { "type": "string" },
+            "subjectValue": { "type": "string" },
+            "concurrencyKeyType": { "type": "string" },
+            "concurrencyKeyValue": { "type": "string" },
+            "identifierType": { "type": "string" },
+            "identifierValue": { "type": "string" },
+            "statuses": {
+              "type": "array",
+              "items": { "type": "string" },
+              "description": "Optional iteration statuses such as Executing, Completed, Failed, Paused, or Canceled."
+            },
+            "startedFrom": { "type": "string", "format": "date-time" },
+            "startedTo": { "type": "string", "format": "date-time" },
+            "completedFrom": { "type": "string", "format": "date-time" },
+            "completedTo": { "type": "string", "format": "date-time" },
             "sort": { "type": "string" },
             "direction": { "type": "string" },
             "skip": { "type": "integer" },
@@ -584,6 +869,126 @@ public sealed class WorkableMcpToolRouter(IWorkSystemRegistry registry)
         }
         """;
 
+    private const string WorkKeyQuerySchema = """
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "description": "Optional key kind: Subject, ConcurrencyKey, or Identifier."
+            },
+            "type": {
+              "type": "string",
+              "description": "Exact key type, such as claim, customer, order, tenant, or invoice."
+            },
+            "value": {
+              "type": "string",
+              "description": "Exact key value, such as a claim id or customer id."
+            },
+            "search": {
+              "type": "string",
+              "description": "Contains search across key type and value. Useful for phrases like claim 123 or claim work."
+            },
+            "states": {
+              "type": "array",
+              "items": { "type": "string" },
+              "description": "Optional worker states to keep in each key result, such as Running, Waiting, Completed, Failed, or Canceled."
+            },
+            "skip": { "type": "integer" },
+            "take": { "type": "integer" }
+          },
+          "additionalProperties": false
+        }
+        """;
+
+    private const string WorkKeyTypeQuerySchema = """
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "description": "Optional key kind: Subject, ConcurrencyKey, or Identifier."
+            },
+            "search": {
+              "type": "string",
+              "description": "Contains search across key type names. Useful for broad requests like claim work or customer work."
+            },
+            "type": {
+              "type": "string",
+              "description": "Exact key type to return across key kinds, such as claim, customer, order, or tenant."
+            },
+            "states": {
+              "type": "array",
+              "items": { "type": "string" },
+              "description": "Optional worker states to keep in each key type result, such as Running, Waiting, Completed, Failed, or Canceled."
+            },
+            "skip": { "type": "integer" },
+            "take": { "type": "integer" }
+          },
+          "additionalProperties": false
+        }
+        """;
+
+    private const string WorkIterationKeyQuerySchema = """
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "description": "Optional key kind: Subject, ConcurrencyKey, or Identifier."
+            },
+            "type": {
+              "type": "string",
+              "description": "Exact key type, such as claim, customer, order, tenant, or invoice."
+            },
+            "value": {
+              "type": "string",
+              "description": "Exact key value, such as a claim id or customer id."
+            },
+            "search": {
+              "type": "string",
+              "description": "Contains search across key type and value. Useful for phrases like claim 123 or failed claim work."
+            },
+            "statuses": {
+              "type": "array",
+              "items": { "type": "string" },
+              "description": "Optional iteration statuses to keep in each key result, such as Executing, Completed, Failed, Canceled, or Paused."
+            },
+            "skip": { "type": "integer" },
+            "take": { "type": "integer" }
+          },
+          "additionalProperties": false
+        }
+        """;
+
+    private const string WorkIterationKeyTypeQuerySchema = """
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "description": "Optional key kind: Subject, ConcurrencyKey, or Identifier."
+            },
+            "search": {
+              "type": "string",
+              "description": "Contains search across key type names. Useful for broad execution requests like claim work or customer work."
+            },
+            "type": {
+              "type": "string",
+              "description": "Exact key type to return across key kinds, such as claim, customer, order, or tenant."
+            },
+            "statuses": {
+              "type": "array",
+              "items": { "type": "string" },
+              "description": "Optional iteration statuses to keep in each key type result, such as Executing, Completed, Failed, Canceled, or Paused."
+            },
+            "skip": { "type": "integer" },
+            "take": { "type": "integer" }
+          },
+          "additionalProperties": false
+        }
+        """;
+
     private const string WorkerActionSchema = """
         {
           "type": "object",
@@ -598,6 +1003,36 @@ public sealed class WorkableMcpToolRouter(IWorkSystemRegistry registry)
             }
           },
           "required": ["workerId", "revision"],
+          "additionalProperties": false
+        }
+        """;
+
+    private const string WorkDefinitionReconfigurationSchema = """
+        {
+          "type": "object",
+          "properties": {
+            "definitionId": {
+              "type": "string",
+              "description": "Work definition id from query_work_definitions or get_work_info."
+            },
+            "revision": {
+              "type": "integer",
+              "description": "Current work definition revision. Required for optimistic concurrency."
+            },
+            "defaultOptions": {
+              "type": "object",
+              "description": "Optional replacement default WorkerOptions for future workers."
+            },
+            "configuration": {
+              "type": "object",
+              "description": "Optional replacement default WorkConfiguration for future workers."
+            },
+            "changes": {
+              "type": "object",
+              "description": "Optional WorkDefinitionReconfiguration object containing defaultOptions and/or configuration."
+            }
+          },
+          "required": ["definitionId", "revision"],
           "additionalProperties": false
         }
         """;

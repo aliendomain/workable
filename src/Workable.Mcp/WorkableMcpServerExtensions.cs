@@ -41,7 +41,7 @@ public static class WorkableMcpServerExtensions
 
     public static IEndpointConventionBuilder MapWorkableMcp(
         this IEndpointRouteBuilder endpoints,
-        string pattern = "/mcp",
+        string pattern = "/workable/mcp",
         string? systemName = null)
     {
         ArgumentNullException.ThrowIfNull(endpoints);

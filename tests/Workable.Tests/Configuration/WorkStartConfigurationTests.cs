@@ -188,7 +188,7 @@ public sealed class WorkStartConfigurationTests
 
         await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => await queueTask);
 
-        var worker = Assert.Single((await system.Query.QueryWorkers(new WorkerQuery(Take: int.MaxValue))).Workers);
+        var worker = Assert.Single((await system.Query.QueryWorkers(new WorkerQuery(Take: 10))).Workers);
 
         release.SetResult();
         await Eventually(async () =>

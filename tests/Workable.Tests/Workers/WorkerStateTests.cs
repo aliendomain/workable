@@ -277,9 +277,9 @@ public sealed class WorkerStateTests
     }
 
     [Fact]
-    public async Task WorkerCanceledDuringSystemStopIsScheduledForAutomaticPurge()
+    public async Task WorkerCanceledDuringSystemStopIsClearedFromMemory()
     {
-        var definition = WorkDefinition.Create("stop-auto-purge", "Purges queued work canceled by system stop.",
+        var definition = WorkDefinition.Create("stop-clear-memory", "Clears queued work canceled by system stop.",
             configuration: WorkConfiguration.Default with
             {
                 Start = WorkStartConfiguration.DoNotStart,
@@ -293,16 +293,13 @@ public sealed class WorkerStateTests
 
         await system.Start();
 
-        var handle = await system.Queue.Enqueue("stop-auto-purge");
+        var handle = await system.Queue.Enqueue("stop-clear-memory");
         var workerId = RequiredWorkerId(handle);
 
         await system.Stop();
-        var canceled = RequiredWorker(await system.Query.GetWorker(workerId));
-        await system.Start();
+        var cleared = await system.Query.GetWorker(workerId);
 
-        await Eventually(async () => await system.Query.GetWorker(workerId) is null);
-
-        Assert.Equal(WorkerState.Canceled, canceled.State);
+        Assert.Null(cleared);
     }
 
     [Fact]

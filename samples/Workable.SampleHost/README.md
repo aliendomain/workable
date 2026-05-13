@@ -1,9 +1,10 @@
 # Workable Sample Host
 
-This sample hosts one in-process Workable system with both adapters enabled:
+This sample hosts two in-process Workable systems with the standard adapters enabled:
 
 - HTTP API at `/workable`
-- MCP server at `/mcp`
+- MCP server at `/workable/mcp`
+- SignalR realtime hub at `/workable/realtime`
 
 Run it from the repository root:
 
@@ -11,15 +12,26 @@ Run it from the repository root:
 dotnet run --project .\samples\Workable.SampleHost\Workable.SampleHost.csproj
 ```
 
-The sample registers two work definitions:
+The sample registers operation, fulfillment, and demo work definitions. Open the sample host root page in a browser to start or stop a continuous demo workload:
 
-- `sample.echo`
-- `sample.delay`
+```text
+http://localhost:61932/
+```
 
-Both work definitions allow .NET, HTTP, and MCP invocation. The MCP server exposes them with protocol-safe names:
+The demo workload queues work continuously while it is enabled. It includes short work, long work, throttled work that creates queued workers, a small fixed set of recurring workers, discovered identifiers, subjects, concurrency keys, supplied identifiers, and a small percentage of intentional failures.
+
+The sample also exposes the toggle endpoints directly:
+
+```powershell
+Invoke-RestMethod http://localhost:61932/sample-workload
+Invoke-RestMethod http://localhost:61932/sample-workload/toggle -Method Post
+```
+
+MCP exposes work definitions with protocol-safe names such as:
 
 - `workable_work_sample_echo`
 - `workable_work_sample_delay`
+- `workable_work_fulfillment_picklist_create`
 
 The MCP server also exposes Workable query tools such as `workable_query_workers` and `workable_get_worker_status_summary`.
 
@@ -43,19 +55,21 @@ dotnet run --project .\samples\Workable.SampleHost\Workable.SampleHost.csproj
 The launch profile exposes:
 
 - `http://localhost:61932/workable`
-- `http://localhost:61932/mcp`
+- `http://localhost:61932/workable/realtime`
+- `http://localhost:61932/workable/mcp`
 
 Check that the host is running:
 
 ```powershell
 Invoke-RestMethod http://localhost:61932/workable/definitions
 Invoke-RestMethod http://localhost:61932/workable/workers/status-summary
+Invoke-RestMethod http://localhost:61932/workable/systems
 ```
 
 Point an MCP client that supports HTTP transport at:
 
 ```text
-http://localhost:61932/mcp
+http://localhost:61932/workable/mcp
 ```
 
 List tools and call `workable_work_sample_echo` with:

@@ -68,8 +68,8 @@ public sealed class WorkerProfilingTests
                 Recurrence = WorkRecurrenceConfiguration.Every(TimeSpan.FromMilliseconds(1)) with
                 {
                     ContinueAfterFailure = false,
-                    MaximumSuccessfulIterations = 5,
-                    MaximumFailedIterations = 5,
+                    RetainedSuccessfulIterations = 5,
+                    RetainedFailedIterations = 5,
                 },
             });
         var system = new ServiceCollection()

@@ -1,6 +1,6 @@
 namespace Workable;
 
-public readonly record struct WorkIdentifier(string Type, string Value)
+public readonly record struct WorkIdentifier(string Type, string Value) : IWorkKey
 {
     public WorkIdentifier(string type, Guid value)
         : this(type, value.ToString("D"))
