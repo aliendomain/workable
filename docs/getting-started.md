@@ -13,6 +13,7 @@ Optional adapter packages connect Workable to the edges of an application:
 - Use `Workable.AspNetCore` when the host queues work from its own ASP.NET Core controllers or minimal API routes and wants worker origins to include the authenticated HTTP user and request path.
 - Use `Workable.HttpApi` when the host wants Workable to provide standard HTTP routes for queueing work, querying workers, and sending worker actions such as pause, cancel, push, and purge.
 - Use `Workable.Mcp` when the host wants authored work definitions, work-system query tools, and worker action tools to be available to an MCP client, such as an LLM tool host.
+- Use `Workable.SignalR` when the host wants browser clients to receive realtime worker events and dashboard summaries.
 
 The core host does not need these adapters unless it wants one of those integration points.
 
@@ -221,7 +222,7 @@ The returned worker handle gives immediate queue outcome details and can be awai
 
 Use `IWorkSystemRegistry` instead when the host has multiple systems and the caller needs to choose by name or id.
 
-The HTTP API adapter exposes the default system at the mapped prefix and named systems under `/systems/{systemName}`. The MCP adapter exposes one system per MCP endpoint; pass `systemName` to `MapWorkableMcp` when mapping an endpoint for a named system.
+The HTTP API adapter exposes the default system at the mapped prefix and named systems under `/systems/{systemName}`. The MCP adapter exposes one system per MCP endpoint; pass `systemName` to `MapWorkableMcp` when mapping an endpoint for a named system. The SignalR adapter exposes one realtime hub; pass `systemName` to hub methods when subscribing to a named system.
 
 ## Package Boundary
 
@@ -231,6 +232,6 @@ Non-host libraries reference `Workable.Abstractions` when they consume a work sy
 
 Host applications reference `Workable` when they create systems, queue work, observe events, or control workers.
 
-ASP.NET Core host applications can also reference `Workable.AspNetCore` when direct .NET queue calls should record actor information from `HttpContext.User`. Applications reference `Workable.HttpApi` only when they want Workable's built-in HTTP endpoints, and `Workable.Mcp` only when they want an MCP server surface.
+ASP.NET Core host applications can also reference `Workable.AspNetCore` when direct .NET queue calls should record actor information from `HttpContext.User`. Applications reference `Workable.HttpApi` only when they want Workable's built-in HTTP endpoints, `Workable.Mcp` only when they want an MCP server surface, and `Workable.SignalR` only when they want realtime client updates.
 
 This keeps feature libraries independent of the host runtime while still allowing the host to compose all available work into the systems it owns.

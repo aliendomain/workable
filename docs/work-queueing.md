@@ -68,6 +68,16 @@ Use `WorkInput.Empty` when the work does not need input data.
 await workSystem.Queue.Enqueue("cache.refresh", WorkInput.Empty, cancellationToken: cancellationToken);
 ```
 
+## Relationship Keys
+
+Relationship keys attach searchable business context to a worker. They can be used later by worker queries, work key search, event filters, and observability tools.
+
+All relationship keys have a `type` and `value`, but each kind has a different meaning:
+
+- `WorkSubjectId` identifies the main business subject of the worker.
+- `WorkConcurrencyKey` identifies a capacity grouping key when concurrency is configured by key.
+- `WorkIdentifier` identifies secondary or discovered relationships.
+
 ## Subject Id
 
 `WorkSubjectId` identifies the business subject of the worker. It can be used for query, correlation, event filtering, and idempotency.
@@ -92,7 +102,7 @@ Supplying a concurrency key does not limit execution by itself. Capacity limits 
 
 ## Work Identifiers
 
-`WorkIdentifier` adds arbitrary relationships that can be queried and used for event filtering.
+`WorkIdentifier` adds arbitrary relationships that can be queried and used for event filtering. Supply known identifiers when queueing work.
 
 ```csharp
 var input = WorkInput.Empty
@@ -100,11 +110,29 @@ var input = WorkInput.Empty
     .WithIdentifier(new WorkIdentifier("invoice", "invoice-789"));
 ```
 
-Identifiers supplied with input are available on `WorkerSummary`, `WorkerSnapshot`, and `WorkEvent`.
+Identifiers supplied with input are available on `WorkerSnapshot` and `WorkEvent`, and can be used by worker queries.
+
+Identifiers can also be discovered during execution.
+
+```csharp
+public sealed class SendWelcomeEmailExecutor : IWorkExecutor
+{
+    public Task<WorkExecutionResult> Execute(
+        IWorkExecutionContext context,
+        WorkInput? input,
+        CancellationToken cancellationToken)
+    {
+        context.AddIdentifier(new WorkIdentifier("email-message", "message-789"));
+        return Task.FromResult(WorkExecutionResult.Success());
+    }
+}
+```
+
+Adding the same identifier more than once is ignored.
 
 ## Queue Options
 
-`WorkerOptions` can override execution options for the queued worker.
+`WorkerOptions` can override worker options and effective runtime configuration for one queued worker.
 
 ```csharp
 var options = new WorkerOptions(
@@ -117,9 +145,9 @@ IWorkerHandle handle = await workSystem.Queue.Enqueue(
     cancellationToken: cancellationToken);
 ```
 
-When profiling is enabled, Workable captures a per-worker execution tree. The tree includes Workable's executor call scope and any profile scopes, timings, or info entries added through `IWorkExecutionContext.Profile` or injected `IWorkProfiler` services during execution. The captured profile is exposed on `WorkerSnapshot.Profile`.
+When profiling is enabled, Workable captures an execution tree for each worker iteration. The tree includes Workable's executor call scope and any profile scopes, timings, or info entries added through `IWorkExecutionContext.Profile` or injected `IWorkProfiler` services during execution. The latest profile is exposed on `WorkerSnapshot.Profile`, and retained iteration profiles are exposed on `WorkerSnapshot.Iterations`.
 
-`WorkerOptions.Configuration` can override runtime configuration for the queued worker.
+Use `WorkerOptions.Configuration` for queue-time configuration overrides.
 
 ```csharp
 var options = new WorkerOptions(

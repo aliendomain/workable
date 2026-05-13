@@ -54,9 +54,9 @@ During shutdown, `WorkerOperations` flips the system into a non-accepting state 
 
 `WorkEventStream` broadcasts events to matching active subscriptions. Each subscription owns its own bounded buffer and is removed when the subscription is disposed or its reader is canceled.
 
-`ConfiguredWorkerExecutionStrategy` chooses the execution path for each worker. Recurring workers use `RecurringWorkerExecutionStrategy`. Non-recurring workers without transient retry configured use `RunOnceWorkerExecutionStrategy`. Non-recurring workers with `Count` greater than zero use `TransientRetryWorkerExecutionStrategy`.
+`ConfiguredWorkerExecutionStrategy` chooses the execution path for each worker. Recurring workers use `RecurringWorkerExecutionStrategy`. Non-recurring workers with transient retry `Count` greater than zero use `TransientRetryWorkerExecutionStrategy`; workers with transient retry disabled use `RunOnceWorkerExecutionStrategy`.
 
-`WorkerExecutionAttemptRunner` owns a single execution attempt and optional transient retry inside that attempt. It calls `WorkerExecutionInvoker` for each attempt. `WorkerExecutionInvoker` runs configured initializers in initialization scopes, then resolves and invokes the executor in a separate execution scope. Initializers and the executor do not share scoped service instances. Recurring work therefore gets new initialization and execution scoped service providers for every iteration.
+`WorkerExecutionAttemptRunner` owns a single execution attempt. Transient retry is orchestrated by the execution strategy so each retry is a separate worker iteration. `WorkerExecutionInvoker` runs configured initializers in initialization scopes, then resolves and invokes the executor in a separate execution scope. Initializers and the executor do not share scoped service instances. Each iteration therefore gets new initialization and execution scoped service providers.
 
 `OnceLazy` initialization uses a per-definition gate. The first worker to reach the initializer runs it while competing workers wait; after it succeeds, later workers skip it. Typed initializers cannot use `OnceLazy` because they depend on worker input.
 

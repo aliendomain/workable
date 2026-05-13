@@ -57,12 +57,22 @@ ASP.NET Core applications reference `Workable.AspNetCore` when their own control
 
 - MCP-style tool descriptors for work definitions
 - work invocation through `IWorkQueue`
-- query tools for worker status, worker snapshots, work definitions, work info, and status summaries
+- query tools for worker status, worker snapshots, work definitions, work info, work keys, and status summaries
 - action tools for start, pause, cancel, push, and purge
 - schema compatibility handling for MCP tool input
 - invocation channel enforcement for `WorkInvocationChannel.Mcp`
 
 Applications reference `Workable.Mcp` when they want to expose Workable systems through an MCP transport.
+
+`src/Workable.SignalR` contains the realtime adapter surface:
+
+- SignalR hub mapping for worker event and dashboard subscriptions
+- one Workable event-stream subscription per hosted system
+- worker detail event broadcasting
+- coalesced dashboard summary broadcasting
+- HTTP realtime capability provider registration
+
+Applications reference `Workable.SignalR` when they want ASP.NET Core clients to receive realtime Workable updates.
 
 `tests/Workable.Tests` contains the contract, configuration, lifecycle, queueing, event stream, and in-memory runtime tests.
 
@@ -83,6 +93,8 @@ Source folders organize implementation concerns. Folder names do not define publ
 `Workable.HttpApi` references `Workable` and `Workable.AspNetCore`.
 
 `Workable.Mcp` references `Workable`.
+
+`Workable.SignalR` references `Workable.Abstractions`.
 
 Feature libraries reference `Workable.Sdk`.
 

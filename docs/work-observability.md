@@ -220,8 +220,8 @@ Published when a worker reconfiguration is accepted. The payload contains the re
       "interval": "00:00:00",
       "continueAfterFailure": true,
       "circuitBreakerFailureThreshold": 3,
-      "maximumSuccessfulIterations": 25,
-      "maximumFailedIterations": 5,
+      "retainedSuccessfulIterations": 25,
+      "retainedFailedIterations": 5,
       "raiseCircuitBreakerOpenedEvent": true
     }
   }
@@ -230,7 +230,7 @@ Published when a worker reconfiguration is accepted. The payload contains the re
 
 ### `worker.iteration.completed`
 
-Published after a recurring iteration completes successfully.
+Published after a worker iteration completes successfully.
 
 ```json
 {
@@ -238,20 +238,24 @@ Published after a recurring iteration completes successfully.
   "completionStatus": "Completed",
   "iteration": {
     "sequence": 1,
+    "startedAt": "2026-05-11T11:59:59Z",
+    "completedAt": "2026-05-11T12:00:00Z",
+    "executionDuration": "00:00:01",
     "occurredAt": "2026-05-11T12:00:00Z",
     "status": "Completed",
     "output": {
       "json": "{\"attempt\":1}",
       "contentType": "application/json"
     },
-    "messages": []
+    "messages": [],
+    "logs": []
   }
 }
 ```
 
 ### `worker.iteration.failed`
 
-Published after a recurring iteration fails and the recurring worker continues.
+Published after a worker iteration fails. If the failure is transient and retry is configured, this is followed by `worker.retrying`.
 
 ```json
 {
@@ -259,6 +263,9 @@ Published after a recurring iteration fails and the recurring worker continues.
   "completionStatus": "Failed",
   "iteration": {
     "sequence": 2,
+    "startedAt": "2026-05-11T12:00:59Z",
+    "completedAt": "2026-05-11T12:01:00Z",
+    "executionDuration": "00:00:01",
     "occurredAt": "2026-05-11T12:01:00Z",
     "status": "Failed",
     "messages": [
@@ -269,6 +276,20 @@ Published after a recurring iteration fails and the recurring worker continues.
       }
     ]
   }
+}
+```
+
+### `worker.retrying`
+
+Published when a worker is waiting for transient retry backoff. The worker state in the payload is `Retrying`.
+
+```json
+{
+  "worker": {
+    "state": "Retrying",
+    "nextRunAt": "2026-05-11T12:01:30Z"
+  },
+  "retryDelay": "00:00:30"
 }
 ```
 

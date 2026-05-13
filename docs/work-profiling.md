@@ -91,7 +91,7 @@ var completion = await handle.WaitForCompletion();
 var ascii = completion.Worker?.Profile?.ToAsciiTree();
 ```
 
-Recurring workers capture a profile per iteration. Each retained `WorkerIterationSnapshot` can include its own `Profile`.
+Workers capture a profile per iteration. Each retained `WorkerIterationSnapshot` can include its own `Profile`, including run-once workers that produce multiple iterations because of transient retry.
 
 ```
 var worker = await system.Query.GetWorker(workerId);
@@ -102,4 +102,4 @@ foreach (var iteration in worker?.Iterations ?? [])
 }
 ```
 
-Recurring profile retention follows the same iteration retention settings as recurrence history.
+Profile retention follows the same iteration retention settings as iteration history.

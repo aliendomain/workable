@@ -50,7 +50,7 @@ builder.AddWork<InternalOnlyWork>(
 
 Invocation is definition-level configuration. It is read from the catalog definition by adapter surfaces such as `Workable.HttpApi` and `Workable.Mcp`.
 
-Queue-time `WorkerOptions` and runtime `WorkerReconfiguration` do not change invocation channels. A worker already exists after invocation has been accepted, so changing invocation on that worker would not describe who may start the work definition.
+Queue-time `WorkerOptions` and runtime `WorkerReconfiguration` do not change invocation channels. A worker already exists after invocation has been accepted, so changing invocation on that worker would not describe who may start the work definition. The HTTP API queue DTO also omits invocation from queue-time configuration so its public request shape matches this behavior.
 
 ## Channel Behavior
 
