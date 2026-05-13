@@ -4,11 +4,13 @@ Transient retry configuration controls how Workable retries unhandled execution 
 
 When `Count` is greater than zero, Workable uses the transient retry execution strategy. A transient exception is retried until execution succeeds, cancellation is requested, a non-transient exception occurs, or the configured retry count is exhausted. Declarative `WorkExecutionResult.Failure` results are not retried.
 
+Each transient retry is a new worker iteration with a fresh execution scope. During retry backoff the worker state is `Retrying`, and `NextRunAt` indicates when the next retry iteration is scheduled.
+
 Transient retry delay uses an initial delay and a backoff strategy. With exponential backoff, each retry waits longer than the previous retry up to `MaximumDelay`. Jitter adds a random delay between zero and the configured jitter value.
 
 | Setting | Default | Behavior |
 | --- | --- | --- |
-| `Count` | `0` | Number of transient retry attempts after execution fails transiently. |
+| `Count` | `3` | Number of transient retry attempts after execution fails transiently. |
 | `InitialDelay` | `TimeSpan.FromMilliseconds(800)` | Delay before the first transient retry. Must be greater than zero when retries are enabled. |
 | `Jitter` | `TimeSpan.FromMilliseconds(500)` | Maximum random delay added to retry delay. Must not be negative. |
 | `MaximumDelay` | `TimeSpan.FromSeconds(30)` | Maximum delay produced by backoff. Must be greater than zero. |
@@ -78,11 +80,10 @@ var worker = await system.Query.GetWorker(workerId)
 var outcome = await system.Workers.Reconfigure(
     worker.Version,
     new WorkerReconfiguration(
-        TransientRetry: WorkTransientRetryConfiguration.Default with
-        {
-            Count = 0,
-        }));
+        TransientRetry: WorkTransientRetryConfiguration.Disabled));
 ```
+
+Use `WorkTransientRetryConfiguration.Disabled` when a work definition or worker should not retry transient exceptions.
 
 ## Exception Classification
 

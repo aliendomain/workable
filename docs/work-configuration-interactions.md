@@ -17,7 +17,7 @@ Use `WorkConcurrencyScope.PerSubject` or `WorkConcurrencyScope.PerConcurrencyKey
 
 ## Recurrence And Transient Retry
 
-Transient retry happens inside one recurrence iteration. If an execution attempt throws a transient exception, Workable applies the transient retry configuration before the recurrence strategy records the iteration outcome.
+Transient retry creates additional worker iterations. If an execution attempt throws a transient exception, Workable records the failed iteration, moves the worker to `Retrying` for the retry backoff, and starts another iteration when the backoff completes.
 
 When a retry succeeds, recurrence records a successful iteration. When retries are exhausted, recurrence records a failed iteration and then applies `ContinueAfterFailure` and `CircuitBreakerFailureThreshold`.
 
