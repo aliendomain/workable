@@ -47,7 +47,7 @@ public sealed class WorkConfigurationTests
 
         var handle = await system.Queue.Enqueue("context-config");
         var result = await observed.Task.WaitAsync(TimeSpan.FromSeconds(1));
-        var worker = await system.Query.GetWorker(handle.WorkerId ?? throw new InvalidOperationException("Expected worker id."));
+        var worker = await system.Query.Worker(handle.WorkerId ?? throw new InvalidOperationException("Expected worker id."));
         await system.Workers.Execute(RequiredWorker(worker).Version, WorkAction.Cancel);
         await handle.WaitForCompletion();
 

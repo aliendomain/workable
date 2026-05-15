@@ -2,28 +2,26 @@
 
 ## Intent
 
-Workable query APIs provide read-only access to worker state and registered work definitions. Use `IWorkSystem.Query` to inspect work without changing it.
+Workable query APIs provide read-only access to worker state and registered work definitions. Use the methods on `IWorkSystem.Query` to inspect work without changing it. `IWorkQueryService` is intentionally discoverable: each built-in query has its own method.
 
 ## Worker Queries
 
-Use `GetWorker` when you need full worker detail.
+Use `IWorkQueryService.Worker` when you need full worker detail.
 
 ```csharp
-WorkerSnapshot? worker = await workSystem.Query.GetWorker(workerId, cancellationToken);
+WorkerSnapshot? worker = await workSystem.Query.Worker(workerId, cancellationToken: cancellationToken);
 ```
 
 `WorkerSnapshot.ActionHistory` records worker action and reconfiguration attempts that were applied to that worker. Each entry includes the operation kind, action when applicable, outcome status, origin, revision, state sequence, messages, and requested reconfiguration changes when applicable.
 
-Use `QueryWorkers` to retrieve workers that match a `WorkerQuery`. It returns `WorkerOverviewItem` rows instead of full snapshots.
+Use `IWorkQueryService.Workers` to retrieve workers that match a `WorkerCriteria`. It returns `WorkerOverviewItem` rows instead of full snapshots.
 
 ```csharp
-var result = await workSystem.Query.QueryWorkers(
-    new WorkerQuery(
-        DefinitionName: "email.welcome.send",
-        SubjectId: new WorkSubjectId("user", "user-123"),
-        Identifier: new WorkIdentifier("order", "order-456"),
-        Take: 50),
-    cancellationToken);
+var result = await workSystem.Query.Workers(new WorkerCriteria(
+            DefinitionName: "email.welcome.send",
+            SubjectId: new WorkSubjectId("user", "user-123"),
+            Identifier: new WorkIdentifier("order", "order-456"),
+            Take: 50), cancellationToken: cancellationToken);
 
 foreach (var worker in result.Workers)
 {
@@ -41,15 +39,13 @@ Filter by worker state to retrieve workers in any lifecycle status.
 
 ```csharp
 WorkerQueryResult running =
-    await workSystem.Query.QueryWorkers(
-        new WorkerQuery(
-            States: new HashSet<WorkerState> { WorkerState.Running }),
-        cancellationToken);
+    await workSystem.Query.Workers(new WorkerCriteria(
+            States: new HashSet<WorkerState> { WorkerState.Running }), cancellationToken: cancellationToken);
 ```
 
 ### Worker Query Filters
 
-Use `WorkerQuery` relationship filters when the caller already knows the exact key to search for.
+Use `WorkerCriteria` relationship filters when the caller already knows the exact key to search for.
 
 - `SubjectId` filters by the main business subject of work, such as a user, customer, claim, order, or invoice.
 - `ConcurrencyKey` filters by a capacity grouping key, such as tenant, account, region, or external system.
@@ -59,16 +55,14 @@ All three relationship filters use a `type` and `value`. For example, `new WorkS
 
 Relationship keys are supplied when queueing work, and identifiers can also be discovered during execution. See [work-queueing.md](work-queueing.md) for the queueing-side details.
 
-Use `WorkerConfigurationQuery` to filter by selected effective worker configuration and options. These filters are indexed.
+Use `WorkerConfigurationCriteria` to filter by selected effective worker configuration and options. These filters are indexed.
 
 ```csharp
 WorkerQueryResult recurringProfiledWorkers =
-    await workSystem.Query.QueryWorkers(
-        new WorkerQuery(
-            Configuration: new WorkerConfigurationQuery(
+    await workSystem.Query.Workers(new WorkerCriteria(
+            Configuration: new WorkerConfigurationCriteria(
                 RecurrenceEnabled: true,
-                ProfilingEnabled: true)),
-        cancellationToken);
+                ProfilingEnabled: true)), cancellationToken: cancellationToken);
 ```
 
 Configuration filters currently support `RecurrenceEnabled`, `ConcurrencyEnabled`, and `ProfilingEnabled`.
@@ -77,11 +71,9 @@ Use `Category` to retrieve workers for every definition in a category path. With
 
 ```csharp
 WorkerQueryResult billingWorkers =
-    await workSystem.Query.QueryWorkers(
-        new WorkerQuery(
+    await workSystem.Query.Workers(new WorkerCriteria(
             Category: "Billing",
-            IncludeSubcategories: true),
-        cancellationToken);
+            IncludeSubcategories: true), cancellationToken: cancellationToken);
 ```
 
 ## Iteration Queries
@@ -89,31 +81,27 @@ WorkerQueryResult billingWorkers =
 Workers expose the current and last iteration sequence on `WorkerSnapshot` so callers can cheaply know which iteration is active or most recently completed.
 
 ```csharp
-WorkerSnapshot? worker = await workSystem.Query.GetWorker(workerId, cancellationToken);
+WorkerSnapshot? worker = await workSystem.Query.Worker(workerId, cancellationToken: cancellationToken);
 
 long? current = worker?.CurrentIterationSequence;
 long? last = worker?.LastIterationSequence;
 ```
 
-Use `GetWorkerIteration` when you need one full iteration snapshot by worker id and sequence.
+Use `IWorkQueryService.WorkerIteration` when you need one full iteration snapshot by worker id and sequence.
 
 ```csharp
 WorkerIterationSnapshot? iteration =
-    await workSystem.Query.GetWorkerIteration(
-        new WorkerIterationReference(workerId, sequence: 1),
-        cancellationToken);
+    await workSystem.Query.WorkerIteration(new WorkerIterationReference(workerId, sequence: 1), cancellationToken: cancellationToken);
 ```
 
-Use `QueryWorkerIterations` to retrieve lightweight iteration rows across workers.
+Use `IWorkQueryService.WorkerIterations` to retrieve lightweight iteration rows across workers.
 
 ```csharp
 WorkerIterationQueryResult iterations =
-    await workSystem.Query.QueryWorkerIterations(
-        new WorkerIterationQuery(
+    await workSystem.Query.WorkerIterations(new WorkerIterationCriteria(
             DefinitionName: "email.welcome.send",
             Statuses: new HashSet<WorkCompletionStatus> { WorkCompletionStatus.Failed },
-            Identifier: new WorkIdentifier("claim", "CLM-123")),
-        cancellationToken);
+            Identifier: new WorkIdentifier("claim", "CLM-123")), cancellationToken: cancellationToken);
 ```
 
 Iteration queries can filter by worker id, work definition id, work definition name, category, completion status, relationship keys, started time, and completed time. `WorkCompletionStatus.Executing` represents the current iteration while developer code is executing and can be used anywhere other iteration statuses can be filtered. The result rows include worker id, iteration sequence, definition identity, category, worker state, completion status, timing, and relationship keys.
@@ -122,14 +110,12 @@ Iteration queries can filter by worker id, work definition id, work definition n
 
 Use work key search when the caller does not yet know the exact relationship filter to use.
 
-`QueryWorkerKeys` searches across subjects, concurrency keys, and identifiers at the worker level. It returns matching keys and the `WorkerOverviewItem` rows attached to each key.
+`IWorkQueryService.WorkerKeys` searches across subjects, concurrency keys, and identifiers at the worker level. It returns matching keys and the `WorkerOverviewItem` rows attached to each key.
 
 ```csharp
-WorkerKeyQueryResult keys = await workSystem.Query.QueryWorkerKeys(
-    new WorkerKeyQuery(
+WorkerKeyQueryResult keys = await workSystem.Query.WorkerKeys(new WorkerKeyCriteria(
         Search: "claim id CLM-123",
-        States: new HashSet<WorkerState> { WorkerState.Running }),
-    cancellationToken);
+        States: new HashSet<WorkerState> { WorkerState.Running }), cancellationToken: cancellationToken);
 
 foreach (var key in keys.Keys)
 {
@@ -140,43 +126,35 @@ foreach (var key in keys.Keys)
 }
 ```
 
-Use `QueryWorkerKeyTypes` when the caller only knows the type of relationship they are looking for, such as claim work or customer work. It returns matching key types and the worker overview rows attached to all keys of each type across subjects, concurrency keys, and identifiers.
+Use `IWorkQueryService.WorkerKeyTypes` when the caller only knows the type of relationship they are looking for, such as claim work or customer work. It returns matching key types and the worker overview rows attached to all keys of each type across subjects, concurrency keys, and identifiers.
 
 ```csharp
-WorkerKeyTypeQueryResult types = await workSystem.Query.QueryWorkerKeyTypes(
-    new WorkerKeyTypeQuery(Search: "claim work", Skip: 0, Take: 50),
-    cancellationToken);
+WorkerKeyTypeQueryResult types = await workSystem.Query.WorkerKeyTypes(new WorkerKeyTypeCriteria(Search: "claim work", Skip: 0, Take: 50), cancellationToken: cancellationToken);
 ```
 
-`QueryWorkIterationKeys` and `QueryWorkIterationKeyTypes` use the same key concepts but return `WorkerIterationOverviewItem` rows. Use them when the caller wants actual execution rows, failed attempts, completed iterations, or recurring activity.
+`IWorkQueryService.WorkIterationKeys` and `IWorkQueryService.WorkIterationKeyTypes` use the same key concepts but return `WorkerIterationOverviewItem` rows. Use them when the caller wants actual execution rows, failed attempts, completed iterations, or recurring activity.
 
 ```csharp
 WorkIterationKeyQueryResult iterationKeys =
-    await workSystem.Query.QueryWorkIterationKeys(
-        new WorkIterationKeyQuery(
+    await workSystem.Query.WorkIterationKeys(new WorkIterationKeyCriteria(
             Search: "claim id CLM-123",
-            Statuses: new HashSet<WorkCompletionStatus> { WorkCompletionStatus.Failed }),
-        cancellationToken);
+            Statuses: new HashSet<WorkCompletionStatus> { WorkCompletionStatus.Failed }), cancellationToken: cancellationToken);
 
 WorkIterationKeyTypeQueryResult iterationTypes =
-    await workSystem.Query.QueryWorkIterationKeyTypes(
-        new WorkIterationKeyTypeQuery(Search: "claim work", Skip: 0, Take: 50),
-        cancellationToken);
+    await workSystem.Query.WorkIterationKeyTypes(new WorkIterationKeyTypeCriteria(Search: "claim work", Skip: 0, Take: 50), cancellationToken: cancellationToken);
 ```
 
 `Search` is a free-text convenience over key type and value. Exact `Kind`, `Type`, `Value`, `States`, and `Statuses` filters are available when the caller already knows part of the key shape. Key type queries are paginated and can also use exact `Type` matching.
 
 ## Work Definition Queries
 
-Use `QueryWorkDefinitions` to retrieve registered work definitions.
+Use `IWorkQueryService.WorkDefinitions` to retrieve registered work definitions.
 
 ```csharp
 IReadOnlyList<WorkDefinition> definitions =
-    await workSystem.Query.QueryWorkDefinitions(
-        new WorkDefinitionQuery(
+    (await workSystem.Query.WorkDefinitions(new WorkDefinitionCriteria(
             Category: "Email",
-            Search: "welcome"),
-        cancellationToken);
+            Search: "welcome"), cancellationToken: cancellationToken)).Definitions;
 ```
 
 `WorkDefinition.Name` is the unique queue/query name. `WorkDefinition.Category` can use colon-delimited paths such as `Email:Lifecycle`.
@@ -192,10 +170,10 @@ Category lookup is case-insensitive. With `includeSubcategories` enabled, `Email
 
 ## Work Info
 
-Use `GetWorkInfo` to retrieve one definition plus its current worker rollup.
+Use `IWorkQueryService.WorkInfo` to retrieve one definition plus its current worker rollup.
 
 ```csharp
-WorkInfo? info = await workSystem.Query.GetWorkInfo("email.welcome.send", cancellationToken);
+WorkInfo? info = await workSystem.Query.WorkInfo("email.welcome.send", cancellationToken: cancellationToken);
 
 if (info is not null)
 {
@@ -209,15 +187,13 @@ The rollup includes total, active, queued, running, waiting, paused, failed, can
 
 ## Status Summary
 
-Use `GetWorkerStatusSummary` for counts by worker state.
+Use `IWorkQueryService.WorkerStatusSummary` for counts by worker state.
 
 ```csharp
-WorkerStatusSummary summary = await workSystem.Query.GetWorkerStatusSummary(
-    new WorkerQuery(DefinitionName: "email.welcome.send"),
-    cancellationToken);
+WorkerStatusSummary summary = await workSystem.Query.WorkerStatusSummary(new WorkerCriteria(DefinitionName: "email.welcome.send"), cancellationToken: cancellationToken);
 ```
 
-Call `GetWorkerStatusSummary` without a query to summarize all workers in the system.
+Call `IWorkQueryService.WorkerStatusSummary` without criteria to summarize all workers in the system.
 
 ## Returned Structures
 
@@ -225,7 +201,7 @@ The examples below show the serialized JSON shape returned by HTTP and MCP adapt
 
 ### Worker Overview Item
 
-`QueryWorkers` returns a `WorkerQueryResult` containing `WorkerOverviewItem` rows.
+`IWorkQueryService.Workers` returns a `WorkerQueryResult` containing `WorkerOverviewItem` rows.
 
 ```json
 {
@@ -257,7 +233,7 @@ The examples below show the serialized JSON shape returned by HTTP and MCP adapt
 
 ### Worker Iteration Overview Item
 
-`QueryWorkerIterations` returns a `WorkerIterationQueryResult` containing `WorkerIterationOverviewItem` rows.
+`IWorkQueryService.WorkerIterations` returns a `WorkerIterationQueryResult` containing `WorkerIterationOverviewItem` rows.
 
 ```json
 {
@@ -286,7 +262,7 @@ The examples below show the serialized JSON shape returned by HTTP and MCP adapt
 }
 ```
 
-`GetWorkerIteration` returns the full retained `WorkerIterationSnapshot`, including output, messages, logs, and profile for that iteration.
+`IWorkQueryService.WorkerIteration` returns the full retained `WorkerIterationSnapshot`, including output, messages, logs, and profile for that iteration.
 
 ```json
 {
@@ -308,7 +284,7 @@ The examples below show the serialized JSON shape returned by HTTP and MCP adapt
 
 ### Worker Key Results
 
-`QueryWorkerKeys` returns known subject, concurrency key, and identifier values with the workers attached to each key.
+`IWorkQueryService.WorkerKeys` returns known subject, concurrency key, and identifier values with the workers attached to each key.
 
 ```json
 {
@@ -340,7 +316,7 @@ The examples below show the serialized JSON shape returned by HTTP and MCP adapt
 }
 ```
 
-`QueryWorkerKeyTypes` returns the known key types with the workers attached to all keys of that type. Key type results group by `type` first; `workerCount` counts each worker once per type even if the worker has the same type as a subject, concurrency key, and identifier.
+`IWorkQueryService.WorkerKeyTypes` returns the known key types with the workers attached to all keys of that type. Key type results group by `type` first; `workerCount` counts each worker once per type even if the worker has the same type as a subject, concurrency key, and identifier.
 
 ```json
 {
@@ -380,7 +356,7 @@ The examples below show the serialized JSON shape returned by HTTP and MCP adapt
 
 ### Iteration Key Results
 
-`QueryWorkIterationKeys` returns known subject, concurrency key, and identifier values with the worker iterations attached to each key.
+`IWorkQueryService.WorkIterationKeys` returns known subject, concurrency key, and identifier values with the worker iterations attached to each key.
 
 ```json
 {
@@ -414,7 +390,7 @@ The examples below show the serialized JSON shape returned by HTTP and MCP adapt
 }
 ```
 
-`QueryWorkIterationKeyTypes` returns the known key types with the worker iterations attached to all keys of that type. Key type results group by `type` first; `iterationCount` counts each iteration once per type even if the iteration has the same type as a subject, concurrency key, and identifier.
+`IWorkQueryService.WorkIterationKeyTypes` returns the known key types with the worker iterations attached to all keys of that type. Key type results group by `type` first; `iterationCount` counts each iteration once per type even if the iteration has the same type as a subject, concurrency key, and identifier.
 
 ```json
 {
@@ -438,7 +414,7 @@ The examples below show the serialized JSON shape returned by HTTP and MCP adapt
 
 ### Worker Snapshot
 
-`GetWorker` returns a full `WorkerSnapshot`. It includes the same worker identity, relationship, and state fields as `WorkerOverviewItem`, plus input, output, options, configuration, messages, origin, retained iterations, captured logs, durable action history, timing fields, and the latest profile snapshot when profiling is enabled.
+`IWorkQueryService.Worker` returns a full `WorkerSnapshot`. It includes the same worker identity, relationship, and state fields as `WorkerOverviewItem`, plus input, output, options, configuration, messages, origin, retained iterations, captured logs, durable action history, timing fields, and the latest profile snapshot when profiling is enabled.
 
 ```json
 {
@@ -645,7 +621,7 @@ The examples below show the serialized JSON shape returned by HTTP and MCP adapt
 
 ### Work Definition
 
-`QueryWorkDefinitions` returns `WorkDefinition` records. `GetWorkInfo` includes one `WorkDefinition` inside its response.
+`IWorkQueryService.WorkDefinitions` returns `WorkDefinition` records. `IWorkQueryService.WorkInfo` includes one `WorkDefinition` inside its response.
 
 ```json
 [
@@ -725,7 +701,7 @@ The examples below show the serialized JSON shape returned by HTTP and MCP adapt
 
 ### Work Info
 
-`GetWorkInfo` returns one definition plus its current status and worker rollup.
+`IWorkQueryService.WorkInfo` returns one definition plus its current status and worker rollup.
 
 ```json
 {
@@ -813,7 +789,7 @@ The examples below show the serialized JSON shape returned by HTTP and MCP adapt
 
 ### Worker Status Summary
 
-`GetWorkerStatusSummary` returns counts by worker state for the whole system or the supplied worker query.
+`IWorkQueryService.WorkerStatusSummary` returns counts by worker state for the whole system or the supplied worker criteria.
 
 ```json
 {
@@ -834,29 +810,27 @@ The examples below show the serialized JSON shape returned by HTTP and MCP adapt
 
 ### System Overview
 
-`GetSystemOverview` returns dashboard-oriented system state, worker state, and iteration activity. It includes active-or-queued definition count, active/final/failed worker counts, worker counts by state, current executing iteration count, completed/failed/canceled iteration counts, counts by iteration completion status, the ten most common iteration key types, the five most recently updated failed workers, and the five most recent failed/completed iterations.
+`IWorkQueryService.SystemOverview` returns dashboard-oriented system state, worker state, and iteration activity. It includes active-or-queued definition count, active/final/failed worker counts, worker counts by state, current executing iteration count, completed/failed/canceled iteration counts, counts by iteration completion status, the ten most common iteration key types, the five most recently updated failed workers, and the five most recent failed/completed iterations.
 
 Overview queries can be scoped to one category path or work definition while keeping the same return shape.
 
 ```csharp
-WorkSystemOverview billingOverview = await workSystem.Query.GetSystemOverview(
-    new WorkOverviewQuery(Category: "Billing"));
+WorkSystemOverview billingOverview = await workSystem.Query.SystemOverview(new WorkOverviewCriteria(Category: "Billing"));
 
-WorkSystemOverview definitionOverview = await workSystem.Query.GetSystemOverview(
-    new WorkOverviewQuery(DefinitionName: "billing.invoice.sync"));
+WorkSystemOverview definitionOverview = await workSystem.Query.SystemOverview(new WorkOverviewCriteria(DefinitionName: "billing.invoice.sync"));
 ```
 
 With category scoping, `IncludeSubcategories` defaults to `true`. Scoped overview counts, common key types, failed workers, and recent iterations include only workers and iterations for matching definitions.
 
 For incremental refreshes, the overview can be queried in smaller slices:
 
-- `GetSystemOverviewCounts`
-- `GetSystemOverviewWorkerCounts`
-- `GetSystemOverviewIterationCounts`
-- `GetSystemOverviewCommonKeyTypes`
-- `GetSystemOverviewFailedWorkers` returns worker counts and the recent failed worker rows.
-- `GetSystemOverviewFailedIterations`
-- `GetSystemOverviewCompletedIterations`
+- `IWorkQueryService.SystemOverviewCounts`
+- `IWorkQueryService.SystemWorkerCounts`
+- `IWorkQueryService.SystemIterationCounts`
+- `IWorkQueryService.SystemCommonKeyTypes`
+- `IWorkQueryService.SystemFailedWorkers` returns worker counts and the recent failed worker rows.
+- `IWorkQueryService.SystemFailedIterations`
+- `IWorkQueryService.SystemCompletedIterations`
 
 ```json
 {

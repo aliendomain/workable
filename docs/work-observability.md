@@ -33,7 +33,7 @@ public sealed record WorkEvent(
 
 `Origin` describes the trusted boundary that caused the event when Workable knows it. HTTP API requests record an origin with `WorkInvocationChannel.HttpApi`, actor information from `HttpContext.User`, and the request path. ASP.NET Core MCP tool calls record an origin with `WorkInvocationChannel.Mcp` and the same actor extraction when an HTTP context is available. Direct .NET queue and worker operation calls record `WorkInvocationChannel.DotNet` through `IDotNetWorkOriginProvider`; the ASP.NET Core adapter provides an implementation that can read `HttpContext.User` for direct .NET calls made inside an ASP.NET Core request. Worker lifecycle events use the worker's queue origin. Worker action and reconfiguration events use the origin of the action or reconfiguration request.
 
-`Data` is an event-time JSON payload. It always includes a `worker` summary with the worker id, revision, state sequence, definition name, category, current state, subject, concurrency key, identifiers, origin, and timestamps as they were when the event was published. Specific events add more fields so subscribers do not need to immediately call `GetWorker`.
+`Data` is an event-time JSON payload. It always includes a `worker` summary with the worker id, revision, state sequence, definition name, category, current state, subject, concurrency key, identifiers, origin, and timestamps as they were when the event was published. Specific events add more fields so subscribers do not need to immediately query `IWorkQueryService.Worker`.
 
 Common event types include:
 
@@ -405,7 +405,7 @@ if (handle.WorkerId is not { } workerId)
     return;
 }
 
-var worker = await workSystem.Query.GetWorker(workerId, cancellationToken);
+var worker = await workSystem.Query.Worker(workerId, cancellationToken: cancellationToken);
 
 if (worker is null)
 {

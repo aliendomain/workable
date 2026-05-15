@@ -103,7 +103,7 @@ public sealed class WorkInvocationConfigurationTests
                 {
                     Invocation = WorkInvocationConfiguration.Allow(WorkInvocationChannel.Mcp),
                 }));
-        var worker = await system.Query.GetWorker(handle.WorkerId ?? throw new InvalidOperationException("Expected worker id."));
+        var worker = await system.Query.Worker(handle.WorkerId ?? throw new InvalidOperationException("Expected worker id."));
 
         Assert.NotNull(worker);
         Assert.False(worker.Configuration.Invocation.Allows(WorkInvocationChannel.Mcp));

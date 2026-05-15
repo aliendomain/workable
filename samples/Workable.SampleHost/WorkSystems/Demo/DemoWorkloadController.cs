@@ -88,11 +88,11 @@ public sealed class DemoWorkloadController(
     }
 
     public async Task<DemoWorkloadStatus> Stop(CancellationToken cancellationToken)
-        => await this.Stop(cancellationToken, cancelTrackedWorkers: true);
+        => await this.Stop(cancelTrackedWorkers: true, cancellationToken);
 
     private async Task<DemoWorkloadStatus> Stop(
-        CancellationToken cancellationToken,
-        bool cancelTrackedWorkers)
+        bool cancelTrackedWorkers,
+        CancellationToken cancellationToken)
     {
         CancellationTokenSource? source;
         Task? task;
@@ -171,7 +171,7 @@ public sealed class DemoWorkloadController(
     {
         try
         {
-            await this.Stop(cancellationToken, cancelTrackedWorkers: false);
+            await this.Stop(cancelTrackedWorkers: false, cancellationToken);
         }
         catch (Exception exception)
         {
@@ -404,7 +404,7 @@ public sealed class DemoWorkloadController(
             cancellationToken.ThrowIfCancellationRequested();
             foreach (var system in registry.Systems)
             {
-                var worker = await system.Query.GetWorker(workerId, cancellationToken);
+                var worker = await system.Query.Worker(workerId, cancellationToken: cancellationToken);
                 if (worker is null)
                 {
                     continue;
@@ -429,7 +429,7 @@ public sealed class DemoWorkloadController(
             cancellationToken.ThrowIfCancellationRequested();
             foreach (var system in registry.Systems)
             {
-                var worker = await system.Query.GetWorker(workerId, cancellationToken);
+                var worker = await system.Query.Worker(workerId, cancellationToken: cancellationToken);
                 if (worker is null)
                 {
                     continue;

@@ -21,9 +21,9 @@ public sealed class AutomaticStartTests
         await system.Start();
         await tracker.Completed.Task.WaitAsync(TimeSpan.FromSeconds(5));
 
-        var workers = (await system.Query.QueryWorkers(new WorkerQuery())).Workers;
+        var workers = (await system.Query.Workers(new WorkerCriteria())).Workers;
         var worker = Assert.Single(workers);
-        var snapshot = await system.Query.GetWorker(worker.Id)
+        var snapshot = await system.Query.Worker(worker.Id)
             ?? throw new InvalidOperationException("Expected worker snapshot.");
         Assert.Equal("automatic.start", worker.DefinitionName);
         Assert.Equal(WorkerState.Completed, worker.State);
@@ -45,7 +45,7 @@ public sealed class AutomaticStartTests
         await system.Start();
         await tracker.WaitForCount(3);
 
-        var workers = (await system.Query.QueryWorkers(new WorkerQuery())).Workers;
+        var workers = (await system.Query.Workers(new WorkerCriteria())).Workers;
         Assert.Equal(3, workers.Count);
         Assert.All(workers, worker => Assert.Equal(WorkerState.Completed, worker.State));
     }

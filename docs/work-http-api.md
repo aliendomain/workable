@@ -124,7 +124,7 @@ GET /workable/definitions
 
 Definitions include their invocation configuration. A definition that does not allow `WorkInvocationChannel.HttpApi` still appears in discovery responses so clients can display it as unavailable through HTTP. Queueing that work through HTTP returns a validation response.
 
-Query definitions with the same filter shape as `IWorkQuery.QueryWorkDefinitions`.
+Filter work definitions with the same criteria shape as `IWorkQueryService.WorkDefinitions` and `WorkDefinitionCriteria`.
 
 ```http
 POST /workable/definitions/query

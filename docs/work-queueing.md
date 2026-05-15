@@ -283,7 +283,7 @@ IWorkerHandle handle = await workSystem.Queue.Enqueue(
 Use worker actions to control an accepted worker.
 
 ```csharp
-WorkerSnapshot? worker = await workSystem.Query.GetWorker(handle.WorkerId!.Value);
+WorkerSnapshot? worker = await workSystem.Query.Worker(handle.WorkerId!.Value);
 
 if (worker is not null)
 {

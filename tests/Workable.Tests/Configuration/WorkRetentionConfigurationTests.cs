@@ -92,7 +92,7 @@ public sealed class WorkRetentionConfigurationTests
                         PurgeInterval = TimeSpan.FromMinutes(4),
                     },
                 }));
-        var worker = RequiredWorker(await system.Query.GetWorker(RequiredWorkerId(handle)));
+        var worker = RequiredWorker(await system.Query.Worker(RequiredWorkerId(handle)));
 
         Assert.Equal(TimeSpan.FromMinutes(4), worker.Configuration.Retention.PurgeInterval);
     }
@@ -134,7 +134,7 @@ public sealed class WorkRetentionConfigurationTests
         await system.Start();
 
         var handle = await system.Queue.Enqueue("runtime-retention");
-        var worker = RequiredWorker(await system.Query.GetWorker(RequiredWorkerId(handle)));
+        var worker = RequiredWorker(await system.Query.Worker(RequiredWorkerId(handle)));
 
         var outcome = await system.Workers.Reconfigure(
             worker.Version,
@@ -154,7 +154,7 @@ public sealed class WorkRetentionConfigurationTests
         await system.Start();
 
         var handle = await system.Queue.Enqueue("runtime-invalid-retention");
-        var worker = RequiredWorker(await system.Query.GetWorker(RequiredWorkerId(handle)));
+        var worker = RequiredWorker(await system.Query.Worker(RequiredWorkerId(handle)));
 
         var outcome = await system.Workers.Reconfigure(
             worker.Version,

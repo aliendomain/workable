@@ -143,7 +143,7 @@ public sealed class WorkRecurrenceConfigurationTests
                 {
                     Recurrence = WorkRecurrenceConfiguration.Every(TimeSpan.FromMinutes(2)),
                 }));
-        var worker = RequiredWorker(await system.Query.GetWorker(RequiredWorkerId(handle)));
+        var worker = RequiredWorker(await system.Query.Worker(RequiredWorkerId(handle)));
 
         Assert.Equal(TimeSpan.FromMinutes(2), worker.Configuration.Recurrence.Interval);
     }
@@ -189,7 +189,7 @@ public sealed class WorkRecurrenceConfigurationTests
         await system.Start();
 
         var handle = await system.Queue.Enqueue("runtime-recurrence");
-        var worker = RequiredWorker(await system.Query.GetWorker(RequiredWorkerId(handle)));
+        var worker = RequiredWorker(await system.Query.Worker(RequiredWorkerId(handle)));
 
         var outcome = await system.Workers.Reconfigure(
             worker.Version,
@@ -210,7 +210,7 @@ public sealed class WorkRecurrenceConfigurationTests
         await system.Start();
 
         var handle = await system.Queue.Enqueue("runtime-invalid-recurrence");
-        var worker = RequiredWorker(await system.Query.GetWorker(RequiredWorkerId(handle)));
+        var worker = RequiredWorker(await system.Query.Worker(RequiredWorkerId(handle)));
 
         var outcome = await system.Workers.Reconfigure(
             worker.Version,

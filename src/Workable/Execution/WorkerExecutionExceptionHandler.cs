@@ -32,7 +32,7 @@ internal sealed class WorkerExecutionExceptionHandler(
             retryAttempts);
     }
 
-    public WorkMessage CreateExceptionFailureMessage(Exception exception, WorkExceptionClassification classification, int retryAttempts)
+    public static WorkMessage CreateExceptionFailureMessage(Exception exception, WorkExceptionClassification classification, int retryAttempts)
     {
         var isTransient = classification == WorkExceptionClassification.Transient;
         return new WorkMessage(

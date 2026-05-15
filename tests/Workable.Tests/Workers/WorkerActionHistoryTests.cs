@@ -19,14 +19,14 @@ public sealed class WorkerActionHistoryTests
         await system.Start();
 
         var handle = await system.Queue.Enqueue("history.action");
-        var worker = await system.Query.GetWorker(RequiredWorkerId(handle))
+        var worker = await system.Query.Worker(RequiredWorkerId(handle))
             ?? throw new InvalidOperationException("Expected worker.");
         await using var subscription = system.Events.Subscribe(new WorkEventFilter(WorkerId: worker.Id, EventType: "worker.cancel"));
         await using var reader = subscription.Read().GetAsyncEnumerator();
 
         var outcome = await system.Workers.Execute(worker.Version, WorkAction.Cancel);
         var actionEvent = await ReadNext(reader);
-        var updated = await system.Query.GetWorker(worker.Id)
+        var updated = await system.Query.Worker(worker.Id)
             ?? throw new InvalidOperationException("Expected worker.");
         var history = Assert.Single(updated.ActionHistory);
 
@@ -52,12 +52,12 @@ public sealed class WorkerActionHistoryTests
         await system.Start();
 
         var handle = await system.Queue.Enqueue("history.reconfigure");
-        var worker = await system.Query.GetWorker(RequiredWorkerId(handle))
+        var worker = await system.Query.Worker(RequiredWorkerId(handle))
             ?? throw new InvalidOperationException("Expected worker.");
 
         var changes = new WorkerReconfiguration(ProfilingEnabled: true);
         var outcome = await system.Workers.Reconfigure(worker.Version, changes);
-        var updated = await system.Query.GetWorker(worker.Id)
+        var updated = await system.Query.Worker(worker.Id)
             ?? throw new InvalidOperationException("Expected worker.");
         var history = Assert.Single(updated.ActionHistory);
 

@@ -67,7 +67,7 @@ public sealed class RecurringWorkerExecutionStrategyTests
         try
         {
             await Eventually(async () => attempts == 1 && await WorkerIsWaiting(system, workerId));
-            var waitingWorker = RequiredWorker(await system.Query.GetWorker(workerId));
+            var waitingWorker = RequiredWorker(await system.Query.Worker(workerId));
 
             var push = await system.Workers.Execute(waitingWorker.Version, WorkAction.Push);
 
@@ -180,7 +180,7 @@ public sealed class RecurringWorkerExecutionStrategyTests
         var handle = await system.Queue.Enqueue("recurring-work");
         var workerId = RequiredWorkerId(handle);
         await Eventually(async () => attempts == 1 && await WorkerIsWaiting(system, workerId));
-        var worker = RequiredWorker(await system.Query.GetWorker(workerId));
+        var worker = RequiredWorker(await system.Query.Worker(workerId));
 
         var reconfigure = await system.Workers.Reconfigure(
             worker.Version,
@@ -217,7 +217,7 @@ public sealed class RecurringWorkerExecutionStrategyTests
         var handle = await system.Queue.Enqueue("recurring-work");
         var workerId = RequiredWorkerId(handle);
         await started.Task.WaitAsync(TimeSpan.FromSeconds(5));
-        var worker = RequiredWorker(await system.Query.GetWorker(workerId));
+        var worker = RequiredWorker(await system.Query.Worker(workerId));
 
         var reconfigure = await system.Workers.Reconfigure(
             worker.Version,
@@ -251,7 +251,7 @@ public sealed class RecurringWorkerExecutionStrategyTests
         var handle = await system.Queue.Enqueue("recurring-work");
         var workerId = RequiredWorkerId(handle);
         await Eventually(async () => attempts == 1 && await WorkerIsWaiting(system, workerId));
-        var waitingWorker = RequiredWorker(await system.Query.GetWorker(workerId));
+        var waitingWorker = RequiredWorker(await system.Query.Worker(workerId));
 
         var pause = await system.Workers.Execute(waitingWorker.Version, WorkAction.Pause);
         var paused = await handle.WaitForCompletion();
@@ -294,7 +294,7 @@ public sealed class RecurringWorkerExecutionStrategyTests
 
         var handle = await system.Queue.Enqueue("recurring-work");
         await started.Task.WaitAsync(TimeSpan.FromSeconds(5));
-        var worker = RequiredWorker(await system.Query.GetWorker(RequiredWorkerId(handle)));
+        var worker = RequiredWorker(await system.Query.Worker(RequiredWorkerId(handle)));
 
         var pause = await system.Workers.Execute(worker.Version, WorkAction.Pause);
         var completion = await handle.WaitForCompletion();
@@ -325,7 +325,7 @@ public sealed class RecurringWorkerExecutionStrategyTests
         var handle = await system.Queue.Enqueue("recurring-work");
         var workerId = RequiredWorkerId(handle);
         await Eventually(async () => attempts == 1 && await WorkerIsWaiting(system, workerId));
-        var worker = RequiredWorker(await system.Query.GetWorker(workerId));
+        var worker = RequiredWorker(await system.Query.Worker(workerId));
 
         var cancel = await system.Workers.Execute(worker.Version, WorkAction.Cancel);
         var completion = await handle.WaitForCompletion();
@@ -533,11 +533,11 @@ public sealed class RecurringWorkerExecutionStrategyTests
         => completion.Worker ?? throw new InvalidOperationException("Expected completion worker.");
 
     private static async Task<bool> WorkerIsWaiting(IWorkSystem system, WorkerId workerId)
-        => (await system.Query.GetWorker(workerId))?.State == WorkerState.Waiting;
+        => (await system.Query.Worker(workerId))?.State == WorkerState.Waiting;
 
     private static async Task CancelIfActive(IWorkSystem system, WorkerId workerId)
     {
-        var worker = await system.Query.GetWorker(workerId);
+        var worker = await system.Query.Worker(workerId);
         if (worker is null || worker.State is WorkerState.Canceled or WorkerState.Completed)
         {
             return;

@@ -20,10 +20,10 @@ public sealed class WorkMetricsSinkTests
         metrics.IterationRecorded(currentDefinitionId, StartedIteration(now));
 
         var minuteThroughput = metrics.GetThroughput(
-            new WorkThroughputQuery(WindowSeconds: 3_600, BucketSeconds: 60),
+            new WorkThroughputCriteria(WindowSeconds: 3_600, BucketSeconds: 60),
             new HashSet<WorkDefinitionId> { oldDefinitionId });
         var secondThroughput = metrics.GetThroughput(
-            new WorkThroughputQuery(WindowSeconds: 3_600, BucketSeconds: 15),
+            new WorkThroughputCriteria(WindowSeconds: 3_600, BucketSeconds: 15),
             new HashSet<WorkDefinitionId> { oldDefinitionId });
 
         Assert.Equal(1, minuteThroughput.Buckets.Sum(bucket => bucket.Started));

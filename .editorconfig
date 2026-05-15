@@ -4,3 +4,8 @@ root = true
 # Workable uses folders to organize source files while keeping a flat public
 # namespace across SDK and runtime packages.
 dotnet_diagnostic.IDE0130.severity = none
+
+[src/Workable.HttpApi/**/*Adapter.cs]
+# HTTP adapters are intentionally instance services even when individual
+# forwarding methods do not hold adapter state.
+dotnet_diagnostic.CA1822.severity = none

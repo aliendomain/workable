@@ -179,7 +179,7 @@ internal sealed class WorkerIndex
     }
 
     public IReadOnlySet<WorkerId>? FindBestCandidates(
-        WorkerQuery query,
+        WorkerCriteria query,
         IReadOnlySet<WorkDefinitionId>? definitionIds = null)
     {
         if (definitionIds is { Count: 0 })
@@ -686,12 +686,12 @@ internal sealed class WorkerIndex
         }
     }
 
-    private IReadOnlyDictionary<WorkKeyKind, int> CountByKind(string normalizedType)
+    private Dictionary<WorkKeyKind, int> CountByKind(string normalizedType)
         => this.keyTypeKindCounts
             .Where(count => count.Key.Type == normalizedType && count.Value > 0)
             .ToDictionary(count => count.Key.Kind, count => count.Value);
 
-    private IReadOnlyDictionary<WorkKeyKind, int> CountByKind(
+    private Dictionary<WorkKeyKind, int> CountByKind(
         string normalizedType,
         IReadOnlySet<WorkDefinitionId> definitionIds)
         => this.keyTypeKindCountsByDefinition
@@ -948,7 +948,7 @@ internal sealed class WorkerIndex
         bool ProfilingEnabled,
         WorkSubjectId? SubjectId,
         WorkConcurrencyKey? ConcurrencyKey,
-        IReadOnlySet<WorkIdentifier> Identifiers)
+        HashSet<WorkIdentifier> Identifiers)
     {
         public static WorkerIndexKeys From(WorkerRecord worker)
             => new(
@@ -959,9 +959,9 @@ internal sealed class WorkerIndex
                 worker.Options.ProfilingEnabled,
                 worker.SubjectId,
                 worker.ConcurrencyKey,
-                worker.Identifiers);
+                worker.Identifiers.ToHashSet());
 
-        public IEnumerable<string> KeyTypes()
+        public HashSet<string> KeyTypes()
         {
             var types = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             if (this.SubjectId is { } subjectId)
@@ -982,7 +982,7 @@ internal sealed class WorkerIndex
             return types;
         }
 
-        public IEnumerable<(WorkKeyKind Kind, string Type)> KindTypes()
+        public HashSet<(WorkKeyKind Kind, string Type)> KindTypes()
         {
             var kindTypes = new HashSet<(WorkKeyKind Kind, string Type)>(KindTypeComparer.Instance);
             if (this.SubjectId is { } subjectId)

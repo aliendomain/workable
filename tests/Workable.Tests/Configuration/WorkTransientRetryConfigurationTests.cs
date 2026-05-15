@@ -104,7 +104,7 @@ public sealed class WorkTransientRetryConfigurationTests
                         InitialDelay = TimeSpan.FromSeconds(3),
                     },
                 }));
-        var worker = RequiredWorker(await system.Query.GetWorker(RequiredWorkerId(handle)));
+        var worker = RequiredWorker(await system.Query.Worker(RequiredWorkerId(handle)));
 
         Assert.Equal(3, worker.Configuration.TransientRetry.Count);
         Assert.Equal(TimeSpan.FromSeconds(3), worker.Configuration.TransientRetry.InitialDelay);
@@ -138,7 +138,7 @@ public sealed class WorkTransientRetryConfigurationTests
         await system.Start();
 
         var handle = await system.Queue.Enqueue("runtime-transient-retry");
-        var worker = RequiredWorker(await system.Query.GetWorker(RequiredWorkerId(handle)));
+        var worker = RequiredWorker(await system.Query.Worker(RequiredWorkerId(handle)));
 
         var outcome = await system.Workers.Reconfigure(
             worker.Version,
@@ -158,7 +158,7 @@ public sealed class WorkTransientRetryConfigurationTests
         await system.Start();
 
         var handle = await system.Queue.Enqueue("runtime-invalid-transient-retry");
-        var worker = RequiredWorker(await system.Query.GetWorker(RequiredWorkerId(handle)));
+        var worker = RequiredWorker(await system.Query.Worker(RequiredWorkerId(handle)));
 
         var outcome = await system.Workers.Reconfigure(
             worker.Version,

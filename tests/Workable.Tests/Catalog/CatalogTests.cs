@@ -187,8 +187,8 @@ public sealed class CatalogTests
             new WorkDefinitionReconfiguration(DefaultOptions: new WorkerOptions(ProfilingEnabled: true)));
 
         var byCategory = Assert.Single(system.Catalog.ListByCategory("Catalog:Refresh"));
-        var byQuery = Assert.Single(await system.Query.QueryWorkDefinitions(new WorkDefinitionQuery(Name: "definition.query.refresh")));
-        var info = await system.Query.GetWorkInfo(definition.Id);
+        var byQuery = Assert.Single(await system.Query.WorkDefinitions(new WorkDefinitionCriteria(Name: "definition.query.refresh")));
+        var info = await system.Query.WorkInfo(definition.Id);
 
         Assert.True(outcome.IsAccepted);
         Assert.Equal(1, byCategory.Revision);
@@ -308,7 +308,7 @@ public sealed class CatalogTests
 
         var first = await system.Queue.Enqueue(definition.Id);
         await first.WaitForCompletion();
-        var firstWorker = await system.Query.GetWorker(RequiredWorkerId(first));
+        var firstWorker = await system.Query.Worker(RequiredWorkerId(first));
 
         var reconfigured = await system.Catalog.Reconfigure(
             definition.Version,
@@ -319,7 +319,7 @@ public sealed class CatalogTests
                     Start = WorkStartConfiguration.DoNotStart,
                 }));
         var second = await system.Queue.Enqueue(definition.Id);
-        var secondWorker = await system.Query.GetWorker(RequiredWorkerId(second));
+        var secondWorker = await system.Query.Worker(RequiredWorkerId(second));
 
         Assert.True(reconfigured.IsAccepted);
         Assert.NotNull(firstWorker);

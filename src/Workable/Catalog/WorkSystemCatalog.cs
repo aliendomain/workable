@@ -10,8 +10,8 @@ internal sealed class WorkSystemCatalog : IWorkCatalog
 {
     private readonly Lock sync = new();
     private readonly List<RegisteredWork> work = [];
-    private IReadOnlyDictionary<WorkDefinitionId, RegisteredWork> workById = new Dictionary<WorkDefinitionId, RegisteredWork>();
-    private IReadOnlyDictionary<string, RegisteredWork> workByName = new Dictionary<string, RegisteredWork>(StringComparer.OrdinalIgnoreCase);
+    private Dictionary<WorkDefinitionId, RegisteredWork> workById = [];
+    private Dictionary<string, RegisteredWork> workByName = new(StringComparer.OrdinalIgnoreCase);
     private IReadOnlyDictionary<string, IReadOnlyList<WorkDefinition>> definitionsByCategory = new Dictionary<string, IReadOnlyList<WorkDefinition>>(StringComparer.OrdinalIgnoreCase);
     private IReadOnlyDictionary<string, IReadOnlyList<WorkDefinition>> definitionsByCategoryPath = new Dictionary<string, IReadOnlyList<WorkDefinition>>(StringComparer.OrdinalIgnoreCase);
 
@@ -130,7 +130,7 @@ internal sealed class WorkSystemCatalog : IWorkCatalog
         }
     }
 
-    private static IReadOnlyList<WorkMessage> ValidateReconfiguration(
+    private static List<WorkMessage> ValidateReconfiguration(
         WorkerOptions options,
         WorkConfiguration configuration)
     {
@@ -180,7 +180,7 @@ internal sealed class WorkSystemCatalog : IWorkCatalog
         this.definitionsByCategoryPath = BuildCategoryIndex(this.Definitions, includeSubcategories: true);
     }
 
-    private static IReadOnlyDictionary<string, IReadOnlyList<WorkDefinition>> BuildCategoryIndex(
+    private static Dictionary<string, IReadOnlyList<WorkDefinition>> BuildCategoryIndex(
         IEnumerable<WorkDefinition> definitions,
         bool includeSubcategories)
     {
@@ -211,7 +211,7 @@ internal sealed class WorkSystemCatalog : IWorkCatalog
             StringComparer.OrdinalIgnoreCase);
     }
 
-    private static IReadOnlyList<string> GetCategoryPath(string category)
+    private static List<string> GetCategoryPath(string category)
     {
         var path = new List<string>();
         var parts = category

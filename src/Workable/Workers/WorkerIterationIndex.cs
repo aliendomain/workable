@@ -47,11 +47,11 @@ internal sealed class WorkerIterationIndex
     public WorkerIterationSnapshot? Get(WorkerIterationReference reference)
         => this.iterations.TryGetValue(reference, out var iteration) ? iteration.Snapshot : null;
 
-    public IEnumerable<IndexedWorkerIteration> Find(WorkerIterationQuery query)
+    public IEnumerable<IndexedWorkerIteration> Find(WorkerIterationCriteria query)
         => this.Find(query, null);
 
     public IEnumerable<IndexedWorkerIteration> Find(
-        WorkerIterationQuery query,
+        WorkerIterationCriteria query,
         IReadOnlySet<WorkDefinitionId>? definitionIds)
     {
         var candidateReferences = this.FindBestCandidates(query, definitionIds);
@@ -291,8 +291,8 @@ internal sealed class WorkerIterationIndex
             .Select(iteration => iteration.ToOverviewItem())];
     }
 
-    private IReadOnlySet<WorkerIterationReference>? FindBestCandidates(
-        WorkerIterationQuery query,
+    private HashSet<WorkerIterationReference>? FindBestCandidates(
+        WorkerIterationCriteria query,
         IReadOnlySet<WorkDefinitionId>? definitionIds)
     {
         if (definitionIds is { Count: 0 })
@@ -813,12 +813,12 @@ internal sealed class WorkerIterationIndex
         }
     }
 
-    private IReadOnlyDictionary<WorkKeyKind, int> CountByKind(string normalizedType)
+    private Dictionary<WorkKeyKind, int> CountByKind(string normalizedType)
         => this.keyTypeKindCounts
             .Where(count => count.Key.Type == normalizedType && count.Value > 0)
             .ToDictionary(count => count.Key.Kind, count => count.Value);
 
-    private IReadOnlyDictionary<WorkKeyKind, int> CountByKind(
+    private Dictionary<WorkKeyKind, int> CountByKind(
         string normalizedType,
         IReadOnlySet<WorkDefinitionId> definitionIds)
         => this.keyTypeKindCountsByDefinition

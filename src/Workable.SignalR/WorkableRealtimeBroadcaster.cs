@@ -81,7 +81,7 @@ internal sealed class WorkableRealtimeBroadcaster(
                 continue;
             }
 
-            var overview = await system.Query.GetSystemOverview(cancellationToken: cancellationToken);
+            var overview = await system.Query.SystemOverview(cancellationToken: cancellationToken);
             await hub.Clients
                 .Group(WorkableRealtimeGroups.Dashboard(system))
                 .SendAsync(

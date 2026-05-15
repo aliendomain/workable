@@ -64,6 +64,11 @@ internal sealed class WorkableHostedService(
 
     private void LogShutdownStart(IReadOnlyList<SystemShutdownPlan> plans)
     {
+        if (!logger.IsEnabled(LogLevel.Information))
+        {
+            return;
+        }
+
         var workerCount = plans.Sum(plan => plan.Workers.Count);
         var shutdownSummary = string.Join(
             Environment.NewLine,
@@ -105,7 +110,7 @@ internal sealed class WorkableHostedService(
             .Where(result => result.Result!.ForceCanceledWorkerSummaries.Count > 0)
             .ToList();
 
-        if (forceCanceled.Count > 0)
+        if (forceCanceled.Count > 0 && logger.IsEnabled(LogLevel.Warning))
         {
             logger.LogWarning(
                 "Force-canceled {WorkerCount} worker(s): {WorkersBySystem}",
@@ -114,10 +119,13 @@ internal sealed class WorkableHostedService(
                     $"{result.Plan.SystemName}: {FormatWorkers(result.Result!.ForceCanceledWorkerSummaries)}")));
         }
 
-        logger.LogInformation(
-            "Workable shutdown complete: {SystemCount} system(s), {WorkerCount} cooperative cancellation(s).",
-            successful.Count,
-            successful.Sum(result => result.Result!.CancellationRequestedWorkers.Count));
+        if (logger.IsEnabled(LogLevel.Information))
+        {
+            logger.LogInformation(
+                "Workable shutdown complete: {SystemCount} system(s), {WorkerCount} cooperative cancellation(s).",
+                successful.Count,
+                successful.Sum(result => result.Result!.CancellationRequestedWorkers.Count));
+        }
     }
 
     private static async Task<IReadOnlyList<WorkSystemShutdownWorker>> GetShutdownWorkers(IWorkSystem system)
@@ -125,19 +133,17 @@ internal sealed class WorkableHostedService(
         var workers = new List<WorkSystemShutdownWorker>();
         while (true)
         {
-            var result = await system.Query.QueryWorkers(
-                new WorkerQuery(
+            var result = await system.Query.Workers(new WorkerCriteria(
                     States: ShutdownWorkerStates,
-                    Sort: WorkerQuerySort.CreatedAt,
-                    Direction: WorkQuerySortDirection.Ascending,
+                    Sort: WorkerCriteriaSort.CreatedAt,
+                    Direction: WorkCriteriaSortDirection.Ascending,
                     Skip: workers.Count,
-                    Take: WorkerQuery.MaximumTake),
-                CancellationToken.None);
+                    Take: WorkerCriteria.MaximumTake), cancellationToken: CancellationToken.None);
 
             workers.AddRange(result.Workers.Select(WorkSystemShutdownWorker.From));
             if (result.Workers.Count == 0 ||
                 workers.Count >= result.TotalCount ||
-                result.Workers.Count < WorkerQuery.MaximumTake)
+                result.Workers.Count < WorkerCriteria.MaximumTake)
             {
                 return workers;
             }

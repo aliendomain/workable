@@ -152,7 +152,7 @@ internal sealed class WorkerRecord(
         }
     }
 
-    public WorkActionOutcome Start(CancellationToken cancellationToken, long expectedRevision, bool advancesRevision, out CancellationToken executionToken)
+    public WorkActionOutcome Start(long expectedRevision, bool advancesRevision, out CancellationToken executionToken, CancellationToken cancellationToken)
     {
         WorkerStateTransition transition;
         lock (this.sync)
@@ -1068,11 +1068,11 @@ internal sealed class WorkerRecord(
         => transition.Status switch
         {
             WorkActionStatus.Accepted => WorkActionOutcome.Accepted(transition.Action, this.ToSnapshotLocked(), acceptedMessages),
-            WorkActionStatus.Conflict => WorkActionOutcome.Conflict(transition.Action, this.ToSnapshotLocked(), [this.ToMessage(transition)]),
-            _ => WorkActionOutcome.Invalid(transition.Action, this.ToSnapshotLocked(), [this.ToMessage(transition)]),
+            WorkActionStatus.Conflict => WorkActionOutcome.Conflict(transition.Action, this.ToSnapshotLocked(), [ToMessage(transition)]),
+            _ => WorkActionOutcome.Invalid(transition.Action, this.ToSnapshotLocked(), [ToMessage(transition)]),
         };
 
-    private WorkMessage ToMessage(WorkerStateTransition transition)
+    private static WorkMessage ToMessage(WorkerStateTransition transition)
     {
         if (transition.MessageCode is null || transition.MessageText is null)
         {
@@ -1311,7 +1311,7 @@ internal sealed class WorkerRecord(
             _ => WorkMessageSeverity.Error,
         };
 
-    private static IReadOnlyDictionary<string, object?> LogMetadata(WorkerLogEntry entry)
+    private static Dictionary<string, object?> LogMetadata(WorkerLogEntry entry)
     {
         var metadata = new Dictionary<string, object?>
         {

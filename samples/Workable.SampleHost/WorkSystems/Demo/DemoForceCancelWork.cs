@@ -9,7 +9,7 @@ public sealed class DemoForceCancelWork : IWorkExecutor<DemoForceCancelInput>
         DemoForceCancelInput input,
         CancellationToken cancellationToken)
     {
-        await Task.Delay(Timeout.InfiniteTimeSpan);
+        await Task.Delay(Timeout.InfiniteTimeSpan, CancellationToken.None);
         return WorkExecutionResult.Success();
     }
 }

@@ -74,7 +74,7 @@ var handle = await system.Queue.Enqueue(
 ## Reconfiguration
 
 ```
-var worker = await system.Query.GetWorker(workerId)
+var worker = await system.Query.Worker(workerId)
     ?? throw new InvalidOperationException("Worker was not found.");
 
 var outcome = await system.Workers.Reconfigure(

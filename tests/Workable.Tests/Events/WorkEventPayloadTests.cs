@@ -51,7 +51,7 @@ public sealed class WorkEventPayloadTests
         await system.Start();
 
         var handle = await system.Queue.Enqueue("events.action");
-        var worker = await system.Query.GetWorker(RequiredWorkerId(handle))
+        var worker = await system.Query.Worker(RequiredWorkerId(handle))
             ?? throw new InvalidOperationException("Expected worker.");
         await using var subscription = system.Events.Subscribe(new WorkEventFilter(WorkerId: worker.Id, EventType: "worker.cancel"));
         await using var reader = subscription.Read().GetAsyncEnumerator();
@@ -79,7 +79,7 @@ public sealed class WorkEventPayloadTests
         await system.Start();
 
         var handle = await system.Queue.Enqueue("events.reconfigure");
-        var worker = await system.Query.GetWorker(RequiredWorkerId(handle))
+        var worker = await system.Query.Worker(RequiredWorkerId(handle))
             ?? throw new InvalidOperationException("Expected worker.");
         await using var subscription = system.Events.Subscribe(new WorkEventFilter(WorkerId: worker.Id, EventType: "worker.reconfigured"));
         await using var reader = subscription.Read().GetAsyncEnumerator();
@@ -136,7 +136,7 @@ public sealed class WorkEventPayloadTests
         }
         finally
         {
-            var worker = await system.Query.GetWorker(workerId);
+            var worker = await system.Query.Worker(workerId);
             if (worker is not null && worker.State is not WorkerState.Completed and not WorkerState.Canceled and not WorkerState.Failed)
             {
                 await system.Workers.Execute(worker.Version, WorkAction.Cancel);

@@ -28,7 +28,7 @@ public sealed class WorkerStateTests
         var handle = await system.Queue.Enqueue("pausable");
         await running.Task;
         var workerId = RequiredWorkerId(handle);
-        var runningWorker = RequiredWorker(await system.Query.GetWorker(workerId));
+        var runningWorker = RequiredWorker(await system.Query.Worker(workerId));
 
         var pause = await system.Workers.Execute(runningWorker.Version, WorkAction.Pause);
         var paused = await handle.WaitForCompletion();
@@ -64,7 +64,7 @@ public sealed class WorkerStateTests
         var handle = await system.Queue.Enqueue("cancelable");
         await running.Task;
         var workerId = RequiredWorkerId(handle);
-        var runningWorker = RequiredWorker(await system.Query.GetWorker(workerId));
+        var runningWorker = RequiredWorker(await system.Query.Worker(workerId));
 
         var cancel = await system.Workers.Execute(runningWorker.Version, WorkAction.Cancel);
         var canceled = await handle.WaitForCompletion();
@@ -98,7 +98,7 @@ public sealed class WorkerStateTests
         var handle = await system.Queue.Enqueue("pause-token");
         await running.Task;
         var workerId = RequiredWorkerId(handle);
-        var runningWorker = RequiredWorker(await system.Query.GetWorker(workerId));
+        var runningWorker = RequiredWorker(await system.Query.Worker(workerId));
 
         var pause = await system.Workers.Execute(runningWorker.Version, WorkAction.Pause);
         await tokenCanceled.Task.WaitAsync(TimeSpan.FromSeconds(5));
@@ -128,7 +128,7 @@ public sealed class WorkerStateTests
         var handle = await system.Queue.Enqueue("cancel-token");
         await running.Task;
         var workerId = RequiredWorkerId(handle);
-        var runningWorker = RequiredWorker(await system.Query.GetWorker(workerId));
+        var runningWorker = RequiredWorker(await system.Query.Worker(workerId));
 
         var cancel = await system.Workers.Execute(runningWorker.Version, WorkAction.Cancel);
         await tokenCanceled.Task.WaitAsync(TimeSpan.FromSeconds(5));
@@ -166,7 +166,7 @@ public sealed class WorkerStateTests
         var handle = await system.Queue.Enqueue("slow-pause");
         await running.Task;
         var workerId = RequiredWorkerId(handle);
-        var runningWorker = RequiredWorker(await system.Query.GetWorker(workerId));
+        var runningWorker = RequiredWorker(await system.Query.Worker(workerId));
 
         var firstPause = await system.Workers.Execute(runningWorker.Version, WorkAction.Pause);
         var firstPauseWorker = RequiredOutcomeWorker(firstPause);
@@ -194,7 +194,7 @@ public sealed class WorkerStateTests
         var completedWorker = RequiredCompletionWorker(completed);
 
         var purge = await system.Workers.Execute(completedWorker.Version, WorkAction.Purge);
-        var snapshot = await system.Query.GetWorker(completedWorker.Id);
+        var snapshot = await system.Query.Worker(completedWorker.Id);
 
         Assert.True(purge.IsAccepted);
         Assert.Null(snapshot);
@@ -244,7 +244,7 @@ public sealed class WorkerStateTests
         var completed = await handle.WaitForCompletion();
         var completedWorker = RequiredCompletionWorker(completed);
 
-        await Eventually(async () => await system.Query.GetWorker(completedWorker.Id) is null);
+        await Eventually(async () => await system.Query.Worker(completedWorker.Id) is null);
 
         Assert.Equal(WorkCompletionStatus.Completed, completed.Status);
     }
@@ -267,10 +267,10 @@ public sealed class WorkerStateTests
         await system.Start();
 
         var handle = await system.Queue.Enqueue("canceled-auto-purge");
-        var worker = RequiredWorker(await system.Query.GetWorker(RequiredWorkerId(handle)));
+        var worker = RequiredWorker(await system.Query.Worker(RequiredWorkerId(handle)));
         var cancel = await system.Workers.Execute(worker.Version, WorkAction.Cancel);
 
-        await Eventually(async () => await system.Query.GetWorker(worker.Id) is null);
+        await Eventually(async () => await system.Query.Worker(worker.Id) is null);
 
         Assert.True(cancel.IsAccepted);
         Assert.Equal(WorkerState.Canceled, cancel.Worker?.State);
@@ -297,7 +297,7 @@ public sealed class WorkerStateTests
         var workerId = RequiredWorkerId(handle);
 
         await system.Stop();
-        var cleared = await system.Query.GetWorker(workerId);
+        var cleared = await system.Query.Worker(workerId);
 
         Assert.Null(cleared);
     }
@@ -323,7 +323,7 @@ public sealed class WorkerStateTests
         var failedWorker = RequiredCompletionWorker(failed);
 
         await Task.Delay(TimeSpan.FromMilliseconds(100));
-        var snapshot = await system.Query.GetWorker(failedWorker.Id);
+        var snapshot = await system.Query.Worker(failedWorker.Id);
 
         Assert.Equal(WorkCompletionStatus.Failed, failed.Status);
         Assert.NotNull(snapshot);
@@ -347,7 +347,7 @@ public sealed class WorkerStateTests
         var handle = await system.Queue.Enqueue("versioned");
         await running.Task;
         var workerId = RequiredWorkerId(handle);
-        var worker = RequiredWorker(await system.Query.GetWorker(workerId));
+        var worker = RequiredWorker(await system.Query.Worker(workerId));
 
         Assert.Equal(0, worker.Revision);
         Assert.Equal(1, worker.StateSequence);
@@ -383,7 +383,7 @@ public sealed class WorkerStateTests
         var handle = await system.Queue.Enqueue("completes");
         await running.Task;
         var workerId = RequiredWorkerId(handle);
-        var runningWorker = RequiredWorker(await system.Query.GetWorker(workerId));
+        var runningWorker = RequiredWorker(await system.Query.Worker(workerId));
 
         release.SetResult();
         var completed = await handle.WaitForCompletion();
@@ -408,7 +408,7 @@ public sealed class WorkerStateTests
 
         var handle = await system.Queue.Enqueue("configurable");
         var workerId = RequiredWorkerId(handle);
-        var worker = RequiredWorker(await system.Query.GetWorker(workerId));
+        var worker = RequiredWorker(await system.Query.Worker(workerId));
 
         Assert.Equal(0, worker.Revision);
 

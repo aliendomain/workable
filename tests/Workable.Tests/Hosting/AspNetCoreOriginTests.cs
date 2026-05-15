@@ -23,7 +23,7 @@ public sealed class AspNetCoreOriginTests
         response.EnsureSuccessStatusCode();
         var workerId = await response.Content.ReadFromJsonAsync<Guid>();
 
-        var worker = await system.Query.GetWorker(new WorkerId(workerId))
+        var worker = await system.Query.Worker(new WorkerId(workerId))
             ?? throw new InvalidOperationException("Expected worker.");
 
         Assert.Equal(WorkInvocationChannel.DotNet, worker.Origin.Channel);

@@ -176,7 +176,7 @@ public sealed class HostingTests
         await system.Start();
 
         var handle = await system.Queue.Enqueue("origin.work");
-        var worker = await system.Query.GetWorker(handle.WorkerId ?? throw new InvalidOperationException("Expected worker."));
+        var worker = await system.Query.Worker(handle.WorkerId ?? throw new InvalidOperationException("Expected worker."));
 
         Assert.NotNull(worker);
         Assert.Equal(WorkInvocationChannel.DotNet, worker.Origin.Channel);

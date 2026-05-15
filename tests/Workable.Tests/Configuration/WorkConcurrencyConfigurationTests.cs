@@ -104,7 +104,7 @@ public sealed class WorkConcurrencyConfigurationTests
                 {
                     Concurrency = FullConcurrencyConfiguration(),
                 }));
-        var worker = RequiredWorker(await system.Query.GetWorker(RequiredWorkerId(handle)));
+        var worker = RequiredWorker(await system.Query.Worker(RequiredWorkerId(handle)));
 
         AssertConcurrency(FullConcurrencyConfiguration(), worker.Configuration.Concurrency);
     }
@@ -146,7 +146,7 @@ public sealed class WorkConcurrencyConfigurationTests
         await system.Start();
 
         var handle = await system.Queue.Enqueue("runtime-concurrency");
-        var worker = RequiredWorker(await system.Query.GetWorker(RequiredWorkerId(handle)));
+        var worker = RequiredWorker(await system.Query.Worker(RequiredWorkerId(handle)));
 
         var outcome = await system.Workers.Reconfigure(
             worker.Version,
@@ -166,7 +166,7 @@ public sealed class WorkConcurrencyConfigurationTests
         await system.Start();
 
         var handle = await system.Queue.Enqueue("runtime-invalid-concurrency");
-        var worker = RequiredWorker(await system.Query.GetWorker(RequiredWorkerId(handle)));
+        var worker = RequiredWorker(await system.Query.Worker(RequiredWorkerId(handle)));
 
         var outcome = await system.Workers.Reconfigure(
             worker.Version,
@@ -191,7 +191,7 @@ public sealed class WorkConcurrencyConfigurationTests
         await system.Start();
 
         var handle = await system.Queue.Enqueue("runtime-missing-subject");
-        var worker = RequiredWorker(await system.Query.GetWorker(RequiredWorkerId(handle)));
+        var worker = RequiredWorker(await system.Query.Worker(RequiredWorkerId(handle)));
 
         var outcome = await system.Workers.Reconfigure(
             worker.Version,
@@ -218,7 +218,7 @@ public sealed class WorkConcurrencyConfigurationTests
         await system.Start();
 
         var handle = await system.Queue.Enqueue("runtime-missing-key");
-        var worker = RequiredWorker(await system.Query.GetWorker(RequiredWorkerId(handle)));
+        var worker = RequiredWorker(await system.Query.Worker(RequiredWorkerId(handle)));
 
         var outcome = await system.Workers.Reconfigure(
             worker.Version,

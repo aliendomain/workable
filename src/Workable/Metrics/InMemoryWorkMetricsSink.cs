@@ -55,7 +55,7 @@ internal sealed class InMemoryWorkMetricsSink : IWorkMetricsSink
     }
 
     public WorkSystemThroughput GetThroughput(
-        WorkThroughputQuery? query = null,
+        WorkThroughputCriteria? query = null,
         IReadOnlySet<WorkDefinitionId>? definitionIds = null)
     {
         var normalized = Normalize(query);
@@ -63,7 +63,7 @@ internal sealed class InMemoryWorkMetricsSink : IWorkMetricsSink
         var fromSecond = toSecond - normalized.WindowSeconds + 1;
         var requestedFirstBucketSecond = FloorToBucket(fromSecond, normalized.BucketSeconds);
         var source = this.GetQuerySource(normalized);
-        var firstBucketSecond = this.FindFirstBucketWithData(
+        var firstBucketSecond = FindFirstBucketWithData(
             requestedFirstBucketSecond,
             toSecond,
             normalized.BucketSeconds,
@@ -85,7 +85,7 @@ internal sealed class InMemoryWorkMetricsSink : IWorkMetricsSink
         for (var bucketSecond = firstBucketSecond.Value; bucketSecond <= toSecond; bucketSecond += normalized.BucketSeconds)
         {
             var bucketEnd = Math.Min(toSecond, bucketSecond + normalized.BucketSeconds - 1);
-            var aggregate = this.Aggregate(source, bucketSecond, bucketEnd, definitionIds);
+            var aggregate = Aggregate(source, bucketSecond, bucketEnd, definitionIds);
             buckets.Add(ToThroughputBucket(bucketSecond, aggregate));
         }
 
@@ -111,7 +111,7 @@ internal sealed class InMemoryWorkMetricsSink : IWorkMetricsSink
         update(this.minuteBuckets.GetSystemBucket(minute));
     }
 
-    private MetricQuerySource GetQuerySource(WorkThroughputQuery query)
+    private MetricQuerySource GetQuerySource(WorkThroughputCriteria query)
         => query.BucketSeconds >= MinuteResolutionSeconds && query.BucketSeconds % MinuteResolutionSeconds == 0
             ? new MetricQuerySource(this.minuteBuckets, MinuteResolutionSeconds)
             : new MetricQuerySource(this.secondBuckets, 1);
@@ -127,22 +127,22 @@ internal sealed class InMemoryWorkMetricsSink : IWorkMetricsSink
 
         this.secondBuckets.PruneBefore(observedSecond - SecondBucketRetentionSeconds - BucketRetentionBufferSeconds);
         this.minuteBuckets.PruneBefore(FloorToBucket(
-            observedSecond - WorkThroughputQuery.MaximumWindowSeconds - BucketRetentionBufferSeconds,
+            observedSecond - WorkThroughputCriteria.MaximumWindowSeconds - BucketRetentionBufferSeconds,
             MinuteResolutionSeconds));
     }
 
-    private static WorkThroughputQuery Normalize(WorkThroughputQuery? query)
+    private static WorkThroughputCriteria Normalize(WorkThroughputCriteria? query)
     {
         var windowSeconds = Math.Clamp(
-            query?.WindowSeconds ?? WorkThroughputQuery.DefaultWindowSeconds,
+            query?.WindowSeconds ?? WorkThroughputCriteria.DefaultWindowSeconds,
             1,
-            WorkThroughputQuery.MaximumWindowSeconds);
+            WorkThroughputCriteria.MaximumWindowSeconds);
         var bucketSeconds = Math.Clamp(
-            query?.BucketSeconds ?? WorkThroughputQuery.DefaultBucketSeconds,
+            query?.BucketSeconds ?? WorkThroughputCriteria.DefaultBucketSeconds,
             1,
             windowSeconds);
 
-        return new WorkThroughputQuery(windowSeconds, bucketSeconds);
+        return new WorkThroughputCriteria(windowSeconds, bucketSeconds);
     }
 
     private static long FloorToBucket(long second, int bucketSeconds)
@@ -151,7 +151,7 @@ internal sealed class InMemoryWorkMetricsSink : IWorkMetricsSink
     private static long PositiveMod(long value, int divisor)
         => ((value % divisor) + divisor) % divisor;
 
-    private long? FindFirstBucketWithData(
+    private static long? FindFirstBucketWithData(
         long fromBucketSecond,
         long toSecond,
         int bucketSeconds,
@@ -161,7 +161,7 @@ internal sealed class InMemoryWorkMetricsSink : IWorkMetricsSink
         for (var bucketSecond = fromBucketSecond; bucketSecond <= toSecond; bucketSecond += bucketSeconds)
         {
             var bucketEnd = Math.Min(toSecond, bucketSecond + bucketSeconds - 1);
-            if (!this.Aggregate(source, bucketSecond, bucketEnd, definitionIds).IsEmpty)
+            if (!Aggregate(source, bucketSecond, bucketEnd, definitionIds).IsEmpty)
             {
                 return bucketSecond;
             }
@@ -170,7 +170,7 @@ internal sealed class InMemoryWorkMetricsSink : IWorkMetricsSink
         return null;
     }
 
-    private WorkMetricBucketSnapshot Aggregate(
+    private static WorkMetricBucketSnapshot Aggregate(
         MetricQuerySource source,
         long bucketSecond,
         long bucketEnd,
@@ -228,7 +228,7 @@ internal sealed class InMemoryWorkMetricsSink : IWorkMetricsSink
         long toSecond,
         IReadOnlySet<WorkDefinitionId>? definitionIds)
     {
-        var aggregate = this.Aggregate(
+        var aggregate = Aggregate(
             new MetricQuerySource(this.secondBuckets, 1),
             toSecond - LiveSummaryWindowSeconds + 1,
             toSecond,

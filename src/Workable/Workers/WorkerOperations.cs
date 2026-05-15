@@ -8,7 +8,7 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 
 namespace Workable;
-internal sealed class WorkerOperations : IWorkerOperations, IWorkQuery, IDisposable
+internal sealed class WorkerOperations : IWorkerOperations, IDisposable
 {
     private const int OverviewWorkerListSize = 5;
     private const int OverviewIterationListSize = 5;
@@ -18,7 +18,7 @@ internal sealed class WorkerOperations : IWorkerOperations, IWorkQuery, IDisposa
     private readonly Func<WorkSystemState> getSystemState;
     private readonly string? workSystemName;
     private readonly WorkerEventPublisher workerEvents;
-    private readonly IWorkerExecutionStrategy executionStrategy;
+    private readonly ConfiguredWorkerExecutionStrategy executionStrategy;
     private readonly ConcurrentDictionary<WorkerId, WorkerRecord> workers = [];
     private readonly WorkerIndex index = new();
     private readonly WorkerIterationIndex iterationIndex = new(OverviewIterationListSize);
@@ -523,15 +523,69 @@ internal sealed class WorkerOperations : IWorkerOperations, IWorkQuery, IDisposa
         return Task.FromResult(outcome);
     }
 
-    public Task<WorkerSnapshot?> GetWorker(WorkerId workerId, CancellationToken cancellationToken = default)
+    internal async Task<TResult> Query<TResult>(
+        WorkQueryDefinition<TResult> definition,
+        WorkQueryScope? scope = null,
+        CancellationToken cancellationToken = default)
+        where TResult : IWorkQueryResult
+    {
+        ArgumentNullException.ThrowIfNull(definition);
+
+        object? result = definition switch
+        {
+            WorkerQueryDefinition query => await this.GetWorker(query.WorkerId, cancellationToken),
+            WorkerIterationQueryDefinition query => await this.GetWorkerIteration(query.Iteration, cancellationToken),
+            WorkersQueryDefinition query => await this.QueryWorkers(query.Criteria, cancellationToken),
+            WorkerIterationsQueryDefinition query => await this.QueryWorkerIterations(query.Criteria, cancellationToken),
+            WorkInfoByDefinitionIdQueryDefinition query => await this.GetWorkInfo(query.DefinitionId, cancellationToken),
+            WorkInfoByNameQueryDefinition query => await this.GetWorkInfo(query.WorkName, cancellationToken),
+            WorkDefinitionsQueryDefinition query => new WorkDefinitionQueryResult(await this.QueryWorkDefinitions(query.Criteria, cancellationToken)),
+            WorkerKeysQueryDefinition query => await this.QueryWorkerKeys(query.Criteria, cancellationToken),
+            WorkerKeyTypesQueryDefinition query => await this.QueryWorkerKeyTypes(query.Criteria, cancellationToken),
+            WorkIterationKeysQueryDefinition query => await this.QueryWorkIterationKeys(query.Criteria, cancellationToken),
+            WorkIterationKeyTypesQueryDefinition query => await this.QueryWorkIterationKeyTypes(query.Criteria, cancellationToken),
+            WorkerStatusSummaryQueryDefinition query => await this.GetWorkerStatusSummary(query.Criteria, cancellationToken),
+            ComponentsQueryDefinition query => await this.QueryComponents(ApplyScope(query.Criteria, scope), cancellationToken),
+            ViewQueryDefinition query => await this.GetView(query.ViewName, ApplyScope(query.Criteria, scope), cancellationToken),
+            SystemOverviewQueryDefinition query => await this.GetSystemOverview(ApplyScope(query.Criteria, scope), cancellationToken),
+            SystemThroughputQueryDefinition query => await this.GetSystemOverviewThroughput(ApplyScope(query.Criteria, scope), query.Throughput, cancellationToken),
+            SystemOverviewCountsQueryDefinition query => await this.GetSystemOverviewCounts(ApplyScope(query.Criteria, scope), cancellationToken),
+            SystemWorkerCountsQueryDefinition query => await this.GetSystemOverviewWorkerCounts(ApplyScope(query.Criteria, scope), cancellationToken),
+            SystemIterationCountsQueryDefinition query => await this.GetSystemOverviewIterationCounts(ApplyScope(query.Criteria, scope), cancellationToken),
+            SystemCommonKeyTypesQueryDefinition query => new WorkIterationKeyTypeFacetQueryResult(await this.GetSystemOverviewCommonKeyTypes(ApplyScope(query.Criteria, scope), cancellationToken)),
+            SystemFailedWorkersQueryDefinition query => await this.GetSystemOverviewFailedWorkers(ApplyScope(query.Criteria, scope), cancellationToken),
+            SystemFailedIterationsQueryDefinition query => new WorkerIterationOverviewQueryResult(await this.GetSystemOverviewFailedIterations(ApplyScope(query.Criteria, scope), cancellationToken)),
+            SystemCompletedIterationsQueryDefinition query => new WorkerIterationOverviewQueryResult(await this.GetSystemOverviewCompletedIterations(ApplyScope(query.Criteria, scope), cancellationToken)),
+            _ => throw new NotSupportedException($"Unknown work query definition '{definition.GetType().FullName}'."),
+        };
+
+        return (TResult)result!;
+    }
+
+    private static WorkOverviewCriteria? ApplyScope(WorkOverviewCriteria? criteria, WorkQueryScope? scope)
+        => scope is null
+            ? criteria
+            : scope.ToOverviewCriteria(criteria?.IncludeThroughput == true);
+
+    private static WorkComponentCriteria ApplyScope(WorkComponentCriteria criteria, WorkQueryScope? scope)
+        => scope is null
+            ? criteria
+            : criteria with { Scope = scope.ToOverviewCriteria() };
+
+    private static WorkViewCriteria ApplyScope(WorkViewCriteria criteria, WorkQueryScope? scope)
+        => scope is null
+            ? criteria
+            : criteria with { Scope = scope.ToOverviewCriteria() };
+
+    private Task<WorkerSnapshot?> GetWorker(WorkerId workerId, CancellationToken cancellationToken = default)
         => this.Get(workerId, cancellationToken);
 
-    public Task<WorkerIterationSnapshot?> GetWorkerIteration(
+    private Task<WorkerIterationSnapshot?> GetWorkerIteration(
         WorkerIterationReference iteration,
         CancellationToken cancellationToken = default)
         => Task.FromResult(this.iterationIndex.Get(iteration));
 
-    public Task<WorkerQueryResult> QueryWorkers(WorkerQuery query, CancellationToken cancellationToken = default)
+    private Task<WorkerQueryResult> QueryWorkers(WorkerCriteria query, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(query);
 
@@ -549,8 +603,8 @@ internal sealed class WorkerOperations : IWorkerOperations, IWorkQuery, IDisposa
 
         var normalizedSkip = Math.Max(0, query.Skip);
         var normalizedTake = query.Take <= 0
-            ? WorkerQuery.DefaultTake
-            : Math.Min(query.Take, WorkerQuery.MaximumTake);
+            ? WorkerCriteria.DefaultTake
+            : Math.Min(query.Take, WorkerCriteria.MaximumTake);
         var materialized = filtered.ToList();
         var page = materialized
             .Skip(normalizedSkip)
@@ -560,8 +614,8 @@ internal sealed class WorkerOperations : IWorkerOperations, IWorkQuery, IDisposa
         return Task.FromResult(new WorkerQueryResult(page, materialized.Count, normalizedSkip, normalizedTake));
     }
 
-    public Task<WorkerIterationQueryResult> QueryWorkerIterations(
-        WorkerIterationQuery query,
+    private Task<WorkerIterationQueryResult> QueryWorkerIterations(
+        WorkerIterationCriteria query,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(query);
@@ -573,8 +627,8 @@ internal sealed class WorkerOperations : IWorkerOperations, IWorkQuery, IDisposa
             {
                 var emptySkip = Math.Max(0, query.Skip);
                 var emptyTake = query.Take <= 0
-                    ? WorkerIterationQuery.DefaultTake
-                    : Math.Min(query.Take, WorkerIterationQuery.MaximumTake);
+                    ? WorkerIterationCriteria.DefaultTake
+                    : Math.Min(query.Take, WorkerIterationCriteria.MaximumTake);
                 return Task.FromResult(new WorkerIterationQueryResult([], 0, emptySkip, emptyTake));
             }
 
@@ -601,8 +655,8 @@ internal sealed class WorkerOperations : IWorkerOperations, IWorkQuery, IDisposa
 
         var normalizedSkip = Math.Max(0, query.Skip);
         var normalizedTake = query.Take <= 0
-            ? WorkerIterationQuery.DefaultTake
-            : Math.Min(query.Take, WorkerIterationQuery.MaximumTake);
+            ? WorkerIterationCriteria.DefaultTake
+            : Math.Min(query.Take, WorkerIterationCriteria.MaximumTake);
         var materialized = iterations.ToList();
         var page = materialized
             .Skip(normalizedSkip)
@@ -612,7 +666,7 @@ internal sealed class WorkerOperations : IWorkerOperations, IWorkQuery, IDisposa
         return Task.FromResult(new WorkerIterationQueryResult(page, materialized.Count, normalizedSkip, normalizedTake));
     }
 
-    public Task<WorkInfo?> GetWorkInfo(WorkDefinitionId definitionId, CancellationToken cancellationToken = default)
+    private Task<WorkInfo?> GetWorkInfo(WorkDefinitionId definitionId, CancellationToken cancellationToken = default)
     {
         if (!this.catalog.TryGet(definitionId, out var definition))
         {
@@ -622,7 +676,7 @@ internal sealed class WorkerOperations : IWorkerOperations, IWorkQuery, IDisposa
         return Task.FromResult<WorkInfo?>(this.CreateWorkInfo(definition));
     }
 
-    public Task<WorkInfo?> GetWorkInfo(string name, CancellationToken cancellationToken = default)
+    private Task<WorkInfo?> GetWorkInfo(string name, CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(name);
 
@@ -634,8 +688,8 @@ internal sealed class WorkerOperations : IWorkerOperations, IWorkQuery, IDisposa
         return Task.FromResult<WorkInfo?>(this.CreateWorkInfo(definition));
     }
 
-    public Task<IReadOnlyList<WorkDefinition>> QueryWorkDefinitions(
-        WorkDefinitionQuery query,
+    private Task<IReadOnlyList<WorkDefinition>> QueryWorkDefinitions(
+        WorkDefinitionCriteria query,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(query);
@@ -647,8 +701,8 @@ internal sealed class WorkerOperations : IWorkerOperations, IWorkQuery, IDisposa
         return Task.FromResult<IReadOnlyList<WorkDefinition>>([.. definitions.OrderBy(definition => definition.Category).ThenBy(definition => definition.Name)]);
     }
 
-    public Task<WorkerKeyQueryResult> QueryWorkerKeys(
-        WorkerKeyQuery query,
+    private Task<WorkerKeyQueryResult> QueryWorkerKeys(
+        WorkerKeyCriteria query,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(query);
@@ -675,11 +729,11 @@ internal sealed class WorkerOperations : IWorkerOperations, IWorkQuery, IDisposa
         return Task.FromResult(new WorkerKeyQueryResult(page, matches.Count, normalizedSkip, normalizedTake));
     }
 
-    public Task<WorkerKeyTypeQueryResult> QueryWorkerKeyTypes(
-        WorkerKeyTypeQuery? query = null,
+    private Task<WorkerKeyTypeQueryResult> QueryWorkerKeyTypes(
+        WorkerKeyTypeCriteria? query = null,
         CancellationToken cancellationToken = default)
     {
-        query ??= new WorkerKeyTypeQuery();
+        query ??= new WorkerKeyTypeCriteria();
         var normalizedSkip = Math.Max(0, query.Skip);
         var normalizedTake = NormalizeWorkKeyTake(query.Take);
         if (query.States is null)
@@ -723,8 +777,8 @@ internal sealed class WorkerOperations : IWorkerOperations, IWorkQuery, IDisposa
         return Task.FromResult(new WorkerKeyTypeQueryResult(page, matches.Count, normalizedSkip, normalizedTake));
     }
 
-    public Task<WorkIterationKeyQueryResult> QueryWorkIterationKeys(
-        WorkIterationKeyQuery query,
+    private Task<WorkIterationKeyQueryResult> QueryWorkIterationKeys(
+        WorkIterationKeyCriteria query,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(query);
@@ -751,14 +805,14 @@ internal sealed class WorkerOperations : IWorkerOperations, IWorkQuery, IDisposa
         return Task.FromResult(new WorkIterationKeyQueryResult(page, matches.Count, normalizedSkip, normalizedTake));
     }
 
-    public Task<WorkIterationKeyTypeQueryResult> QueryWorkIterationKeyTypes(
-        WorkIterationKeyTypeQuery? query = null,
+    private Task<WorkIterationKeyTypeQueryResult> QueryWorkIterationKeyTypes(
+        WorkIterationKeyTypeCriteria? query = null,
         CancellationToken cancellationToken = default)
         => Task.FromResult(this.CreateWorkIterationKeyTypes(query));
 
-    private WorkIterationKeyTypeQueryResult CreateWorkIterationKeyTypes(WorkIterationKeyTypeQuery? query)
+    private WorkIterationKeyTypeQueryResult CreateWorkIterationKeyTypes(WorkIterationKeyTypeCriteria? query)
     {
-        query ??= new WorkIterationKeyTypeQuery();
+        query ??= new WorkIterationKeyTypeCriteria();
         var normalizedSkip = Math.Max(0, query.Skip);
         var normalizedTake = NormalizeWorkIterationKeyTake(query.Take);
         if (query.Statuses is null)
@@ -804,8 +858,8 @@ internal sealed class WorkerOperations : IWorkerOperations, IWorkQuery, IDisposa
         return new WorkIterationKeyTypeQueryResult(page, matches.Count, normalizedSkip, normalizedTake);
     }
 
-    public Task<WorkerStatusSummary> GetWorkerStatusSummary(
-        WorkerQuery? query = null,
+    private Task<WorkerStatusSummary> GetWorkerStatusSummary(
+        WorkerCriteria? query = null,
         CancellationToken cancellationToken = default)
     {
         if (query is null || IsWholeSystemStatusSummary(query))
@@ -813,7 +867,7 @@ internal sealed class WorkerOperations : IWorkerOperations, IWorkQuery, IDisposa
             return Task.FromResult(CreateStatusSummary(this.index.CountByState()));
         }
 
-        query ??= new WorkerQuery();
+        query ??= new WorkerCriteria();
         var workers = this.GetCandidateWorkers(query)
             .Select(worker => new
             {
@@ -854,7 +908,7 @@ internal sealed class WorkerOperations : IWorkerOperations, IWorkQuery, IDisposa
     private static bool IsActiveForSummary(WorkerState state)
         => !WorkerStateMachine.IsFinal(state) && state != WorkerState.Failed;
 
-    private static bool IsWholeSystemStatusSummary(WorkerQuery query)
+    private static bool IsWholeSystemStatusSummary(WorkerCriteria query)
         => query.DefinitionId is null &&
             string.IsNullOrWhiteSpace(query.DefinitionName) &&
             string.IsNullOrWhiteSpace(query.Category) &&
@@ -868,8 +922,8 @@ internal sealed class WorkerOperations : IWorkerOperations, IWorkQuery, IDisposa
             query.UpdatedFrom is null &&
             query.UpdatedTo is null;
 
-    public Task<WorkSystemOverview> GetSystemOverview(
-        WorkOverviewQuery? query = null,
+    private Task<WorkSystemOverview> GetSystemOverview(
+        WorkOverviewCriteria? query = null,
         CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
@@ -901,8 +955,8 @@ internal sealed class WorkerOperations : IWorkerOperations, IWorkQuery, IDisposa
             this.CreateOverviewCompletedIterations(definitionIds)));
     }
 
-    public Task<WorkComponentQueryResult> QueryComponents(
-        WorkComponentQuery? query = null,
+    private Task<WorkComponentQueryResult> QueryComponents(
+        WorkComponentCriteria? query = null,
         CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
@@ -919,9 +973,9 @@ internal sealed class WorkerOperations : IWorkerOperations, IWorkQuery, IDisposa
         return Task.FromResult(new WorkComponentQueryResult(DateTimeOffset.UtcNow, components));
     }
 
-    public Task<WorkComponentQueryResult> GetView(
+    private Task<WorkComponentQueryResult> GetView(
         string name,
-        WorkViewQuery? query = null,
+        WorkViewCriteria? query = null,
         CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
@@ -937,23 +991,23 @@ internal sealed class WorkerOperations : IWorkerOperations, IWorkQuery, IDisposa
         }
 
         return this.QueryComponents(
-            new WorkComponentQuery(
+            new WorkComponentCriteria(
                 query?.Scope,
                 NormalizeComponentRequests(query?.Components)),
             cancellationToken);
     }
 
-    public Task<WorkSystemThroughput> GetSystemOverviewThroughput(
-        WorkOverviewQuery? query = null,
-        WorkThroughputQuery? throughputQuery = null,
+    private Task<WorkSystemThroughput> GetSystemOverviewThroughput(
+        WorkOverviewCriteria? query = null,
+        WorkThroughputCriteria? throughputQuery = null,
         CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
         return Task.FromResult(this.CreateOverviewThroughput(this.ResolveDefinitionScope(query), throughputQuery));
     }
 
-    public Task<WorkSystemOverviewCounts> GetSystemOverviewCounts(
-        WorkOverviewQuery? query = null,
+    private Task<WorkSystemOverviewCounts> GetSystemOverviewCounts(
+        WorkOverviewCriteria? query = null,
         CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
@@ -974,32 +1028,32 @@ internal sealed class WorkerOperations : IWorkerOperations, IWorkQuery, IDisposa
             iterationCounts.CanceledIterationCount));
     }
 
-    public Task<WorkSystemWorkerCounts> GetSystemOverviewWorkerCounts(
-        WorkOverviewQuery? query = null,
+    private Task<WorkSystemWorkerCounts> GetSystemOverviewWorkerCounts(
+        WorkOverviewCriteria? query = null,
         CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
         return Task.FromResult(this.CreateOverviewWorkerCounts(this.ResolveDefinitionScope(query)));
     }
 
-    public Task<WorkSystemIterationCounts> GetSystemOverviewIterationCounts(
-        WorkOverviewQuery? query = null,
+    private Task<WorkSystemIterationCounts> GetSystemOverviewIterationCounts(
+        WorkOverviewCriteria? query = null,
         CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
         return Task.FromResult(this.CreateOverviewIterationCounts(this.ResolveDefinitionScope(query)));
     }
 
-    public Task<IReadOnlyList<WorkIterationKeyTypeFacet>> GetSystemOverviewCommonKeyTypes(
-        WorkOverviewQuery? query = null,
+    private Task<IReadOnlyList<WorkIterationKeyTypeFacet>> GetSystemOverviewCommonKeyTypes(
+        WorkOverviewCriteria? query = null,
         CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
         return Task.FromResult<IReadOnlyList<WorkIterationKeyTypeFacet>>(this.CreateOverviewCommonKeyTypes(this.ResolveDefinitionScope(query)));
     }
 
-    public Task<WorkSystemFailedWorkersOverview> GetSystemOverviewFailedWorkers(
-        WorkOverviewQuery? query = null,
+    private Task<WorkSystemFailedWorkersOverview> GetSystemOverviewFailedWorkers(
+        WorkOverviewCriteria? query = null,
         CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
@@ -1013,16 +1067,16 @@ internal sealed class WorkerOperations : IWorkerOperations, IWorkQuery, IDisposa
             this.CreateOverviewFailedWorkers(definitionIds)));
     }
 
-    public Task<IReadOnlyList<WorkerIterationOverviewItem>> GetSystemOverviewFailedIterations(
-        WorkOverviewQuery? query = null,
+    private Task<IReadOnlyList<WorkerIterationOverviewItem>> GetSystemOverviewFailedIterations(
+        WorkOverviewCriteria? query = null,
         CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
         return Task.FromResult<IReadOnlyList<WorkerIterationOverviewItem>>(this.CreateOverviewFailedIterations(this.ResolveDefinitionScope(query)));
     }
 
-    public Task<IReadOnlyList<WorkerIterationOverviewItem>> GetSystemOverviewCompletedIterations(
-        WorkOverviewQuery? query = null,
+    private Task<IReadOnlyList<WorkerIterationOverviewItem>> GetSystemOverviewCompletedIterations(
+        WorkOverviewCriteria? query = null,
         CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
@@ -1065,12 +1119,12 @@ internal sealed class WorkerOperations : IWorkerOperations, IWorkQuery, IDisposa
 
     private WorkSystemThroughput CreateOverviewThroughput(
         IReadOnlySet<WorkDefinitionId>? definitionIds = null,
-        WorkThroughputQuery? throughputQuery = null)
+        WorkThroughputCriteria? throughputQuery = null)
         => this.metrics.GetThroughput(throughputQuery, definitionIds);
 
     private WorkComponentResult CreateComponent(
         WorkComponentRequest request,
-        WorkOverviewQuery? query,
+        WorkOverviewCriteria? query,
         IReadOnlySet<WorkDefinitionId>? definitionIds)
     {
         try
@@ -1102,7 +1156,7 @@ internal sealed class WorkerOperations : IWorkerOperations, IWorkQuery, IDisposa
         }
     }
 
-    private object CreateCatalogComponent(WorkOverviewQuery? query)
+    private object CreateCatalogComponent(WorkOverviewCriteria? query)
     {
         var catalogLevel = this.CreateOverviewCatalogLevel(query);
         return new
@@ -1132,7 +1186,7 @@ internal sealed class WorkerOperations : IWorkerOperations, IWorkQuery, IDisposa
         var workerCounts = this.CreateOverviewWorkerCounts(definitionIds);
         return new
         {
-            ActiveWorkerCount = workerCounts.ActiveWorkerCount,
+            workerCounts.ActiveWorkerCount,
             Throughput = this.CreateOverviewThroughput(definitionIds, CreateThroughputQuery(options)),
         };
     }
@@ -1165,7 +1219,7 @@ internal sealed class WorkerOperations : IWorkerOperations, IWorkQuery, IDisposa
                 new("completedIterations", "completedIterations"),
             ];
 
-    private static WorkThroughputQuery? CreateThroughputQuery(JsonElement? options)
+    private static WorkThroughputCriteria? CreateThroughputQuery(JsonElement? options)
     {
         if (options is null || options.Value.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined)
         {
@@ -1173,10 +1227,10 @@ internal sealed class WorkerOperations : IWorkerOperations, IWorkQuery, IDisposa
         }
 
         var windowSeconds = TryGetInt32(options.Value, "windowSeconds") ??
-            WorkThroughputQuery.DefaultWindowSeconds;
+            WorkThroughputCriteria.DefaultWindowSeconds;
         var bucketSeconds = TryGetInt32(options.Value, "bucketSeconds") ??
-            WorkThroughputQuery.DefaultBucketSeconds;
-        return new WorkThroughputQuery(windowSeconds, bucketSeconds);
+            WorkThroughputCriteria.DefaultBucketSeconds;
+        return new WorkThroughputCriteria(windowSeconds, bucketSeconds);
     }
 
     private static int? TryGetInt32(JsonElement options, string propertyName)
@@ -1196,9 +1250,9 @@ internal sealed class WorkerOperations : IWorkerOperations, IWorkQuery, IDisposa
     private IReadOnlyList<WorkerIterationOverviewItem> CreateOverviewCompletedIterations(IReadOnlySet<WorkDefinitionId>? definitionIds = null)
         => this.iterationIndex.RecentByStatus(WorkCompletionStatus.Completed, OverviewIterationListSize, definitionIds);
 
-    private OverviewCatalogLevel CreateOverviewCatalogLevel(WorkOverviewQuery? query)
+    private OverviewCatalogLevel CreateOverviewCatalogLevel(WorkOverviewCriteria? query)
     {
-        IReadOnlyList<string> pathSegments = string.IsNullOrWhiteSpace(query?.Category)
+        string[] pathSegments = string.IsNullOrWhiteSpace(query?.Category)
             ? []
             : SplitCategoryPath(query.Category);
         var categories = new Dictionary<string, WorkOverviewCatalogCategoryItem>(StringComparer.OrdinalIgnoreCase);
@@ -1212,7 +1266,7 @@ internal sealed class WorkerOperations : IWorkerOperations, IWorkQuery, IDisposa
                 continue;
             }
 
-            var remainingSegments = definitionSegments.Skip(pathSegments.Count).ToArray();
+            var remainingSegments = definitionSegments.Skip(pathSegments.Length).ToArray();
             if (remainingSegments.Length == 0)
             {
                 directDefinitions.Add(new WorkOverviewDefinitionItem(
@@ -1254,7 +1308,7 @@ internal sealed class WorkerOperations : IWorkerOperations, IWorkQuery, IDisposa
             .Where(worker => states is null || states.Contains(worker.State))
             .OrderByDescending(worker => worker.UpdatedAt)];
 
-    private IReadOnlySet<WorkDefinitionId>? ResolveDefinitionScope(WorkOverviewQuery? query)
+    private HashSet<WorkDefinitionId>? ResolveDefinitionScope(WorkOverviewCriteria? query)
     {
         if (query is null ||
             (query.DefinitionId is null &&
@@ -1270,7 +1324,7 @@ internal sealed class WorkerOperations : IWorkerOperations, IWorkQuery, IDisposa
             .ToHashSet();
     }
 
-    private IEnumerable<WorkDefinition> GetDefinitionScopeCandidates(WorkOverviewQuery query)
+    private IEnumerable<WorkDefinition> GetDefinitionScopeCandidates(WorkOverviewCriteria query)
     {
         if (query.DefinitionId is { } definitionId)
         {
@@ -1290,7 +1344,7 @@ internal sealed class WorkerOperations : IWorkerOperations, IWorkQuery, IDisposa
         return this.catalog.Definitions;
     }
 
-    private IEnumerable<WorkerRecord> GetCandidateWorkers(WorkerQuery query)
+    private IEnumerable<WorkerRecord> GetCandidateWorkers(WorkerCriteria query)
     {
         if (!string.IsNullOrWhiteSpace(query.DefinitionName))
         {
@@ -1354,7 +1408,7 @@ internal sealed class WorkerOperations : IWorkerOperations, IWorkQuery, IDisposa
         return new WorkInfo(definition, StatusFor(rollup), rollup);
     }
 
-    private static WorkerRollup CreateRollup(IReadOnlyList<WorkerSummary> summaries)
+    private static WorkerRollup CreateRollup(List<WorkerSummary> summaries)
     {
         var completed = summaries.Count(worker => worker.State == WorkerState.Completed);
         var canceled = summaries.Count(worker => worker.State == WorkerState.Canceled);
@@ -1391,7 +1445,7 @@ internal sealed class WorkerOperations : IWorkerOperations, IWorkQuery, IDisposa
         return rollup.Active > 0 ? WorkDefinitionStatus.Healthy : WorkDefinitionStatus.Unknown;
     }
 
-    private static bool Matches(WorkerOverviewItem worker, WorkerQuery query)
+    private static bool Matches(WorkerOverviewItem worker, WorkerCriteria query)
         => (query.DefinitionId is null || worker.DefinitionId == query.DefinitionId) &&
             (string.IsNullOrWhiteSpace(query.DefinitionName) || string.Equals(worker.DefinitionName, query.DefinitionName, StringComparison.OrdinalIgnoreCase)) &&
             (string.IsNullOrWhiteSpace(query.Category) || CategoryMatches(worker.Category, query.Category, query.IncludeSubcategories)) &&
@@ -1404,13 +1458,13 @@ internal sealed class WorkerOperations : IWorkerOperations, IWorkQuery, IDisposa
             (query.UpdatedFrom is null || worker.UpdatedAt >= query.UpdatedFrom) &&
             (query.UpdatedTo is null || worker.UpdatedAt <= query.UpdatedTo);
 
-    private static bool Matches(WorkerRecord worker, WorkerConfigurationQuery? query)
+    private static bool Matches(WorkerRecord worker, WorkerConfigurationCriteria? query)
         => query is null ||
             (query.RecurrenceEnabled is null || worker.Configuration.Recurrence.IsEnabled == query.RecurrenceEnabled) &&
             (query.ConcurrencyEnabled is null || worker.Configuration.Concurrency.IsEnabled == query.ConcurrencyEnabled) &&
             (query.ProfilingEnabled is null || worker.Options.ProfilingEnabled == query.ProfilingEnabled);
 
-    private static bool Matches(WorkerIterationIndex.IndexedWorkerIteration iteration, WorkerIterationQuery query)
+    private static bool Matches(WorkerIterationIndex.IndexedWorkerIteration iteration, WorkerIterationCriteria query)
         => (query.WorkerId is null || iteration.WorkerId == query.WorkerId) &&
             (query.DefinitionId is null || iteration.DefinitionId == query.DefinitionId) &&
             (string.IsNullOrWhiteSpace(query.DefinitionName) || string.Equals(iteration.DefinitionName, query.DefinitionName, StringComparison.OrdinalIgnoreCase)) &&
@@ -1424,7 +1478,7 @@ internal sealed class WorkerOperations : IWorkerOperations, IWorkQuery, IDisposa
             (query.CompletedFrom is null || iteration.CompletedAt >= query.CompletedFrom) &&
             (query.CompletedTo is null || iteration.CompletedAt <= query.CompletedTo);
 
-    private static bool Matches(WorkDefinition definition, WorkDefinitionQuery query)
+    private static bool Matches(WorkDefinition definition, WorkDefinitionCriteria query)
         => (query.Id is null || definition.Id == query.Id) &&
             (string.IsNullOrWhiteSpace(query.Name) || string.Equals(definition.Name, query.Name, StringComparison.OrdinalIgnoreCase)) &&
             (string.IsNullOrWhiteSpace(query.Category) || CategoryMatches(definition.Category, query.Category, query.IncludeSubcategories)) &&
@@ -1432,34 +1486,34 @@ internal sealed class WorkerOperations : IWorkerOperations, IWorkQuery, IDisposa
                 definition.Name.Contains(query.Search, StringComparison.OrdinalIgnoreCase) ||
                 (definition.Description?.Contains(query.Search, StringComparison.OrdinalIgnoreCase) ?? false));
 
-    private static bool Matches(WorkDefinition definition, WorkOverviewQuery query)
+    private static bool Matches(WorkDefinition definition, WorkOverviewCriteria query)
         => (query.DefinitionId is null || definition.Id == query.DefinitionId) &&
             (string.IsNullOrWhiteSpace(query.DefinitionName) || string.Equals(definition.Name, query.DefinitionName, StringComparison.OrdinalIgnoreCase)) &&
             (string.IsNullOrWhiteSpace(query.Category) || CategoryMatches(definition.Category, query.Category, query.IncludeSubcategories));
 
-    private static bool Matches(WorkerIndex.IndexedWorkKey key, WorkerKeyQuery query)
+    private static bool Matches(WorkerIndex.IndexedWorkKey key, WorkerKeyCriteria query)
         => (query.Kind is null || key.Kind == query.Kind) &&
             (string.IsNullOrWhiteSpace(query.Type) || string.Equals(key.Type, query.Type, StringComparison.OrdinalIgnoreCase)) &&
             (string.IsNullOrWhiteSpace(query.Value) || string.Equals(key.Value, query.Value, StringComparison.OrdinalIgnoreCase)) &&
             MatchesWorkKeySearch(key.Type, key.Value, query.Search, includeValue: true);
 
-    private static bool Matches(WorkerIndex.IndexedWorkKey key, WorkerKeyTypeQuery query)
+    private static bool Matches(WorkerIndex.IndexedWorkKey key, WorkerKeyTypeCriteria query)
         => (query.Kind is null || key.Kind == query.Kind) &&
             (string.IsNullOrWhiteSpace(query.Type) || string.Equals(key.Type, query.Type, StringComparison.OrdinalIgnoreCase)) &&
             MatchesWorkKeySearch(key.Type, key.Value, query.Search, includeValue: false);
 
-    private static bool Matches(WorkerIterationIndex.IndexedWorkIterationKey key, WorkIterationKeyQuery query)
+    private static bool Matches(WorkerIterationIndex.IndexedWorkIterationKey key, WorkIterationKeyCriteria query)
         => (query.Kind is null || key.Kind == query.Kind) &&
             (string.IsNullOrWhiteSpace(query.Type) || string.Equals(key.Type, query.Type, StringComparison.OrdinalIgnoreCase)) &&
             (string.IsNullOrWhiteSpace(query.Value) || string.Equals(key.Value, query.Value, StringComparison.OrdinalIgnoreCase)) &&
             MatchesWorkKeySearch(key.Type, key.Value, query.Search, includeValue: true);
 
-    private static bool Matches(WorkerIterationIndex.IndexedWorkIterationKey key, WorkIterationKeyTypeQuery query)
+    private static bool Matches(WorkerIterationIndex.IndexedWorkIterationKey key, WorkIterationKeyTypeCriteria query)
         => (query.Kind is null || key.Kind == query.Kind) &&
             (string.IsNullOrWhiteSpace(query.Type) || string.Equals(key.Type, query.Type, StringComparison.OrdinalIgnoreCase)) &&
             MatchesWorkKeySearch(key.Type, key.Value, query.Search, includeValue: false);
 
-    private IReadOnlyDictionary<WorkKeyKind, int> CountWorkersByKind(
+    private Dictionary<WorkKeyKind, int> CountWorkersByKind(
         IEnumerable<WorkerIndex.IndexedWorkKey> keys,
         IReadOnlySet<WorkerState>? states)
         => keys
@@ -1472,7 +1526,7 @@ internal sealed class WorkerOperations : IWorkerOperations, IWorkQuery, IDisposa
             .Where(count => count.Count > 0)
             .ToDictionary(count => count.Kind, count => count.Count);
 
-    private IReadOnlyDictionary<WorkKeyKind, int> CountIterationsByKind(
+    private Dictionary<WorkKeyKind, int> CountIterationsByKind(
         IEnumerable<WorkerIterationIndex.IndexedWorkIterationKey> keys,
         IReadOnlySet<WorkCompletionStatus>? statuses)
         => keys
@@ -1480,7 +1534,7 @@ internal sealed class WorkerOperations : IWorkerOperations, IWorkQuery, IDisposa
             .Select(group => new
             {
                 Kind = group.Key,
-                Count = this.iterationIndex.GetOverviewItems(
+                this.iterationIndex.GetOverviewItems(
                     group.SelectMany(key => key.IterationReferences).Distinct(),
                     statuses).Count,
             })
@@ -1509,7 +1563,7 @@ internal sealed class WorkerOperations : IWorkerOperations, IWorkQuery, IDisposa
             (includeValue && value.Contains(term, StringComparison.OrdinalIgnoreCase)));
     }
 
-    private static IReadOnlyList<string> SearchTerms(string search)
+    private static List<string> SearchTerms(string search)
     {
         var terms = new List<string>();
         foreach (var term in search.Split(
@@ -1539,10 +1593,10 @@ internal sealed class WorkerOperations : IWorkerOperations, IWorkQuery, IDisposa
             term.Equals("workers", StringComparison.OrdinalIgnoreCase);
 
     private static int NormalizeWorkKeyTake(int take)
-        => take <= 0 ? WorkerKeyQuery.DefaultTake : Math.Min(take, WorkerKeyQuery.MaximumTake);
+        => take <= 0 ? WorkerKeyCriteria.DefaultTake : Math.Min(take, WorkerKeyCriteria.MaximumTake);
 
     private static int NormalizeWorkIterationKeyTake(int take)
-        => take <= 0 ? WorkIterationKeyQuery.DefaultTake : Math.Min(take, WorkIterationKeyQuery.MaximumTake);
+        => take <= 0 ? WorkIterationKeyCriteria.DefaultTake : Math.Min(take, WorkIterationKeyCriteria.MaximumTake);
 
     private static bool CategoryMatches(string actual, string expected, bool includeSubcategories)
         => includeSubcategories
@@ -1550,17 +1604,17 @@ internal sealed class WorkerOperations : IWorkerOperations, IWorkQuery, IDisposa
                 actual.StartsWith($"{expected}:", StringComparison.OrdinalIgnoreCase)
             : actual.Equals(expected, StringComparison.OrdinalIgnoreCase);
 
-    private static IReadOnlyList<string> SplitCategoryPath(string? category)
+    private static string[] SplitCategoryPath(string? category)
         => (string.IsNullOrWhiteSpace(category)
                 ? WorkDefinitionMetadataDefaults.Category
                 : category)
             .Split(':', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
 
     private static bool StartsWithCategoryPath(
-        IReadOnlyList<string> categorySegments,
-        IReadOnlyList<string> pathSegments)
-        => pathSegments.Count == 0 ||
-            pathSegments.Count <= categorySegments.Count &&
+        string[] categorySegments,
+        string[] pathSegments)
+        => pathSegments.Length == 0 ||
+            pathSegments.Length <= categorySegments.Length &&
             pathSegments
                 .Select((segment, index) => string.Equals(
                     categorySegments[index],
@@ -1574,36 +1628,36 @@ internal sealed class WorkerOperations : IWorkerOperations, IWorkQuery, IDisposa
 
     private static IEnumerable<WorkerOverviewItem> Sort(
         IEnumerable<WorkerOverviewItem> workers,
-        WorkerQuerySort sort,
-        WorkQuerySortDirection direction)
+        WorkerCriteriaSort sort,
+        WorkCriteriaSortDirection direction)
     {
-        var ascending = direction == WorkQuerySortDirection.Ascending;
+        var ascending = direction == WorkCriteriaSortDirection.Ascending;
         return sort switch
         {
-            WorkerQuerySort.UpdatedAt => ascending ? workers.OrderBy(worker => worker.UpdatedAt) : workers.OrderByDescending(worker => worker.UpdatedAt),
-            WorkerQuerySort.DefinitionName => ascending ? workers.OrderBy(worker => worker.DefinitionName) : workers.OrderByDescending(worker => worker.DefinitionName),
-            WorkerQuerySort.State => ascending ? workers.OrderBy(worker => worker.State) : workers.OrderByDescending(worker => worker.State),
+            WorkerCriteriaSort.UpdatedAt => ascending ? workers.OrderBy(worker => worker.UpdatedAt) : workers.OrderByDescending(worker => worker.UpdatedAt),
+            WorkerCriteriaSort.DefinitionName => ascending ? workers.OrderBy(worker => worker.DefinitionName) : workers.OrderByDescending(worker => worker.DefinitionName),
+            WorkerCriteriaSort.State => ascending ? workers.OrderBy(worker => worker.State) : workers.OrderByDescending(worker => worker.State),
             _ => ascending ? workers.OrderBy(worker => worker.CreatedAt) : workers.OrderByDescending(worker => worker.CreatedAt),
         };
     }
 
     private static IEnumerable<WorkerIterationOverviewItem> Sort(
         IEnumerable<WorkerIterationOverviewItem> iterations,
-        WorkerIterationQuerySort sort,
-        WorkQuerySortDirection direction)
+        WorkerIterationCriteriaSort sort,
+        WorkCriteriaSortDirection direction)
     {
-        var ascending = direction == WorkQuerySortDirection.Ascending;
+        var ascending = direction == WorkCriteriaSortDirection.Ascending;
         return sort switch
         {
-            WorkerIterationQuerySort.StartedAt => ascending ? iterations.OrderBy(iteration => iteration.StartedAt) : iterations.OrderByDescending(iteration => iteration.StartedAt),
-            WorkerIterationQuerySort.ExecutionDuration => ascending ? iterations.OrderBy(iteration => iteration.ExecutionDuration) : iterations.OrderByDescending(iteration => iteration.ExecutionDuration),
-            WorkerIterationQuerySort.DefinitionName => ascending ? iterations.OrderBy(iteration => iteration.DefinitionName) : iterations.OrderByDescending(iteration => iteration.DefinitionName),
-            WorkerIterationQuerySort.Status => ascending ? iterations.OrderBy(iteration => iteration.Status) : iterations.OrderByDescending(iteration => iteration.Status),
+            WorkerIterationCriteriaSort.StartedAt => ascending ? iterations.OrderBy(iteration => iteration.StartedAt) : iterations.OrderByDescending(iteration => iteration.StartedAt),
+            WorkerIterationCriteriaSort.ExecutionDuration => ascending ? iterations.OrderBy(iteration => iteration.ExecutionDuration) : iterations.OrderByDescending(iteration => iteration.ExecutionDuration),
+            WorkerIterationCriteriaSort.DefinitionName => ascending ? iterations.OrderBy(iteration => iteration.DefinitionName) : iterations.OrderByDescending(iteration => iteration.DefinitionName),
+            WorkerIterationCriteriaSort.Status => ascending ? iterations.OrderBy(iteration => iteration.Status) : iterations.OrderByDescending(iteration => iteration.Status),
             _ => ascending ? iterations.OrderBy(iteration => iteration.CompletedAt) : iterations.OrderByDescending(iteration => iteration.CompletedAt),
         };
     }
 
-    private IReadOnlyList<WorkerRecord> CancelActive(WorkOrigin origin)
+    private List<WorkerRecord> CancelActive(WorkOrigin origin)
     {
         var canceledWorkers = new List<WorkerRecord>();
         foreach (var worker in this.workers.Values.Where(worker => ShouldCancelForSystemStop(worker.State)))
@@ -1659,7 +1713,7 @@ internal sealed class WorkerOperations : IWorkerOperations, IWorkQuery, IDisposa
         }
     }
 
-    private IReadOnlyList<WorkerSnapshot> ForceCancelRemaining(
+    private List<WorkerSnapshot> ForceCancelRemaining(
         IReadOnlyList<WorkerRecord> canceledWorkers,
         WorkOrigin origin)
     {
@@ -1723,10 +1777,10 @@ internal sealed class WorkerOperations : IWorkerOperations, IWorkQuery, IDisposa
                 worker,
                 expectedRevision,
                 advancesRevision,
-                systemExecutionCancellationToken,
                 bypassConcurrencyWhenFlexible,
-                out var executionToken)
-            : worker.Start(systemExecutionCancellationToken, expectedRevision, advancesRevision, out executionToken);
+                out var executionToken,
+                systemExecutionCancellationToken)
+            : worker.Start(expectedRevision, advancesRevision, out executionToken, systemExecutionCancellationToken);
         if (!outcome.IsAccepted)
         {
             return outcome;
@@ -1995,7 +2049,7 @@ internal sealed class WorkerOperations : IWorkerOperations, IWorkQuery, IDisposa
         {
             lock (this.sync)
             {
-                if (!this.scheduledPurges.TryPeek(out var next, out var dueAt) ||
+                if (!this.scheduledPurges.TryPeek(out var _, out var dueAt) ||
                     dueAt > DateTimeOffset.UtcNow)
                 {
                     scheduledPurge = null;
@@ -2056,9 +2110,9 @@ internal sealed class WorkerOperations : IWorkerOperations, IWorkQuery, IDisposa
             WorkerRecord worker,
             long expectedRevision,
             bool advancesRevision,
-            CancellationToken cancellationToken,
             bool bypassConcurrencyWhenFlexible,
-            out CancellationToken executionToken)
+            out CancellationToken executionToken,
+            CancellationToken cancellationToken)
         {
             var configuration = worker.Configuration.Concurrency;
             var manager = this.GetManager(worker.Work.Definition.Id);
@@ -2066,10 +2120,10 @@ internal sealed class WorkerOperations : IWorkerOperations, IWorkQuery, IDisposa
                 worker,
                 expectedRevision,
                 advancesRevision,
-                cancellationToken,
                 bypassConcurrencyWhenFlexible,
                 configuration,
-                out executionToken);
+                out executionToken,
+                cancellationToken);
         }
 
         public WorkConcurrencyReservationStatus QueueExistingWorkerForStart(WorkerRecord worker)
@@ -2079,7 +2133,7 @@ internal sealed class WorkerOperations : IWorkerOperations, IWorkQuery, IDisposa
             return manager.QueueExistingWorkerForStart(worker, configuration);
         }
 
-        public IReadOnlyList<WorkerRecord> ReserveDeferredStarts(WorkDefinitionId definitionId)
+        public List<WorkerRecord> ReserveDeferredStarts(WorkDefinitionId definitionId)
         {
             return this.managers.TryGetValue(definitionId, out var manager)
                 ? manager.ReserveDeferredStarts()
@@ -2179,10 +2233,10 @@ internal sealed class WorkerOperations : IWorkerOperations, IWorkQuery, IDisposa
                 WorkerRecord worker,
                 long expectedRevision,
                 bool advancesRevision,
-                CancellationToken cancellationToken,
                 bool bypassConcurrencyWhenFlexible,
                 WorkConcurrencyConfiguration configuration,
-                out CancellationToken executionToken)
+                out CancellationToken executionToken,
+                CancellationToken cancellationToken)
             {
                 lock (this.sync)
                 {
@@ -2200,7 +2254,7 @@ internal sealed class WorkerOperations : IWorkerOperations, IWorkQuery, IDisposa
                         }
                     }
 
-                    var outcome = worker.Start(cancellationToken, expectedRevision, advancesRevision, out executionToken);
+                    var outcome = worker.Start(expectedRevision, advancesRevision, out executionToken, cancellationToken);
                     if (outcome.IsAccepted)
                     {
                         this.TrackLocked(worker);
@@ -2211,7 +2265,7 @@ internal sealed class WorkerOperations : IWorkerOperations, IWorkQuery, IDisposa
                 }
             }
 
-            public IReadOnlyList<WorkerRecord> ReserveDeferredStarts()
+            public List<WorkerRecord> ReserveDeferredStarts()
             {
                 lock (this.sync)
                 {

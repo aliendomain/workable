@@ -15,7 +15,7 @@ public interface IWorkSystem : IAsyncDisposable
 
     IWorkerOperations Workers { get; }
 
-    IWorkQuery Query { get; }
+    IWorkQueryService Query { get; }
 
     IWorkEventStream Events { get; }
 

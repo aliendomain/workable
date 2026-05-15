@@ -90,7 +90,7 @@ public sealed class WorkableSignalRTests
         var workerId = handle.WorkerId ?? throw new InvalidOperationException("Expected worker id.");
         await connection.InvokeAsync("WatchWorker", workerId.Value.ToString("D"), null);
 
-        var worker = await system.Query.GetWorker(workerId)
+        var worker = await system.Query.Worker(workerId)
             ?? throw new InvalidOperationException("Expected worker.");
         var start = await system.Workers.Execute(worker.Version, WorkAction.Start);
         Assert.True(start.IsAccepted);

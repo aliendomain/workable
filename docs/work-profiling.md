@@ -29,7 +29,7 @@ var handle = await system.Queue.Enqueue(
 Runtime reconfiguration can update profiling for workers that can be reconfigured.
 
 ```
-var worker = await system.Query.GetWorker(workerId)
+var worker = await system.Query.Worker(workerId)
     ?? throw new InvalidOperationException("Worker was not found.");
 
 var outcome = await system.Workers.Reconfigure(
@@ -94,7 +94,7 @@ var ascii = completion.Worker?.Profile?.ToAsciiTree();
 Workers capture a profile per iteration. Each retained `WorkerIterationSnapshot` can include its own `Profile`, including run-once workers that produce multiple iterations because of transient retry.
 
 ```
-var worker = await system.Query.GetWorker(workerId);
+var worker = await system.Query.Worker(workerId);
 
 foreach (var iteration in worker?.Iterations ?? [])
 {

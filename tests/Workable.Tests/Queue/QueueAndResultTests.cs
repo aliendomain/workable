@@ -82,7 +82,7 @@ public sealed class QueueAndResultTests
         Assert.False(completionTask.IsCompleted);
 
         var workerId = RequiredWorkerId(handle);
-        var worker = RequiredWorker(await system.Query.GetWorker(workerId));
+        var worker = RequiredWorker(await system.Query.Worker(workerId));
         var start = await system.Workers.Execute(worker.Version, WorkAction.Start);
         var completion = await completionTask;
 

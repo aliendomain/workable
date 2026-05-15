@@ -312,8 +312,8 @@ public sealed class WorkableMcpToolRouter(IWorkSystemRegistry registry)
         JsonElement? arguments,
         CancellationToken cancellationToken)
     {
-        var query = ToWorkerQuery(arguments);
-        return await system.Query.QueryWorkers(query, cancellationToken);
+        var query = ToWorkerCriteria(arguments);
+        return await system.Query.Workers(query, cancellationToken: cancellationToken);
     }
 
     private static async Task<object> GetWorker(
@@ -322,7 +322,7 @@ public sealed class WorkableMcpToolRouter(IWorkSystemRegistry registry)
         CancellationToken cancellationToken)
     {
         var workerId = ReadRequiredGuid(arguments, "workerId");
-        var worker = await system.Query.GetWorker(new WorkerId(workerId), cancellationToken);
+        var worker = await system.Query.Worker(new WorkerId(workerId), cancellationToken: cancellationToken);
         return worker is null
             ? new { found = false, workerId = workerId.ToString("D") }
             : new { found = true, worker };
@@ -335,7 +335,7 @@ public sealed class WorkableMcpToolRouter(IWorkSystemRegistry registry)
     {
         var workerId = new WorkerId(ReadRequiredGuid(arguments, "workerId"));
         var sequence = ReadRequiredLong(arguments, "sequence");
-        var iteration = await system.Query.GetWorkerIteration(new WorkerIterationReference(workerId, sequence), cancellationToken);
+        var iteration = await system.Query.WorkerIteration(new WorkerIterationReference(workerId, sequence), cancellationToken: cancellationToken);
 
         return iteration is null
             ? new { found = false, workerId = workerId.Value.ToString("D"), sequence }
@@ -347,8 +347,8 @@ public sealed class WorkableMcpToolRouter(IWorkSystemRegistry registry)
         JsonElement? arguments,
         CancellationToken cancellationToken)
     {
-        var query = ToWorkerIterationQuery(arguments);
-        return await system.Query.QueryWorkerIterations(query, cancellationToken);
+        var query = ToWorkerIterationCriteria(arguments);
+        return await system.Query.WorkerIterations(query, cancellationToken: cancellationToken);
     }
 
     private static async Task<object> GetWorkInfo(
@@ -362,11 +362,11 @@ public sealed class WorkableMcpToolRouter(IWorkSystemRegistry registry)
 
         if (definitionId.HasValue)
         {
-            info = await system.Query.GetWorkInfo(new WorkDefinitionId(definitionId.Value), cancellationToken);
+            info = await system.Query.WorkInfo(new WorkDefinitionId(definitionId.Value), cancellationToken: cancellationToken);
         }
         else if (!string.IsNullOrWhiteSpace(name))
         {
-            info = await system.Query.GetWorkInfo(name, cancellationToken);
+            info = await system.Query.WorkInfo(name, cancellationToken: cancellationToken);
         }
 
         return info is null
@@ -379,14 +379,14 @@ public sealed class WorkableMcpToolRouter(IWorkSystemRegistry registry)
         JsonElement? arguments,
         CancellationToken cancellationToken)
     {
-        var query = new WorkDefinitionQuery(
+        var query = new WorkDefinitionCriteria(
             Id: ReadGuid(arguments, "definitionId") is { } id ? new WorkDefinitionId(id) : null,
             Name: ReadString(arguments, "name"),
             Category: ReadString(arguments, "category"),
             Search: ReadString(arguments, "search"),
             IncludeSubcategories: ReadBool(arguments, "includeSubcategories") ?? true);
 
-        return await system.Query.QueryWorkDefinitions(query, cancellationToken);
+        return (await system.Query.WorkDefinitions(query, cancellationToken: cancellationToken)).Definitions;
     }
 
     private static async Task<object> QueryWorkerKeys(
@@ -394,16 +394,16 @@ public sealed class WorkableMcpToolRouter(IWorkSystemRegistry registry)
         JsonElement? arguments,
         CancellationToken cancellationToken)
     {
-        var query = new WorkerKeyQuery(
+        var query = new WorkerKeyCriteria(
             Kind: ReadOptionalEnum<WorkKeyKind>(arguments, "kind"),
             Type: ReadString(arguments, "type"),
             Value: ReadString(arguments, "value"),
             Search: ReadString(arguments, "search"),
             States: ReadStates(arguments),
             Skip: ReadInt(arguments, "skip") ?? 0,
-            Take: ReadInt(arguments, "take") ?? WorkerKeyQuery.DefaultTake);
+            Take: ReadInt(arguments, "take") ?? WorkerKeyCriteria.DefaultTake);
 
-        return await system.Query.QueryWorkerKeys(query, cancellationToken);
+        return await system.Query.WorkerKeys(query, cancellationToken: cancellationToken);
     }
 
     private static async Task<object> QueryWorkerKeyTypes(
@@ -411,15 +411,15 @@ public sealed class WorkableMcpToolRouter(IWorkSystemRegistry registry)
         JsonElement? arguments,
         CancellationToken cancellationToken)
     {
-        var query = new WorkerKeyTypeQuery(
+        var query = new WorkerKeyTypeCriteria(
             Kind: ReadOptionalEnum<WorkKeyKind>(arguments, "kind"),
             Search: ReadString(arguments, "search"),
             Type: ReadString(arguments, "type"),
             States: ReadStates(arguments),
             Skip: ReadInt(arguments, "skip") ?? 0,
-            Take: ReadInt(arguments, "take") ?? WorkerKeyQuery.DefaultTake);
+            Take: ReadInt(arguments, "take") ?? WorkerKeyCriteria.DefaultTake);
 
-        return await system.Query.QueryWorkerKeyTypes(query, cancellationToken);
+        return await system.Query.WorkerKeyTypes(query, cancellationToken: cancellationToken);
     }
 
     private static async Task<object> QueryWorkIterationKeys(
@@ -427,16 +427,16 @@ public sealed class WorkableMcpToolRouter(IWorkSystemRegistry registry)
         JsonElement? arguments,
         CancellationToken cancellationToken)
     {
-        var query = new WorkIterationKeyQuery(
+        var query = new WorkIterationKeyCriteria(
             Kind: ReadOptionalEnum<WorkKeyKind>(arguments, "kind"),
             Type: ReadString(arguments, "type"),
             Value: ReadString(arguments, "value"),
             Search: ReadString(arguments, "search"),
             Statuses: ReadCompletionStatuses(arguments),
             Skip: ReadInt(arguments, "skip") ?? 0,
-            Take: ReadInt(arguments, "take") ?? WorkIterationKeyQuery.DefaultTake);
+            Take: ReadInt(arguments, "take") ?? WorkIterationKeyCriteria.DefaultTake);
 
-        return await system.Query.QueryWorkIterationKeys(query, cancellationToken);
+        return await system.Query.WorkIterationKeys(query, cancellationToken: cancellationToken);
     }
 
     private static async Task<object> QueryWorkIterationKeyTypes(
@@ -444,15 +444,15 @@ public sealed class WorkableMcpToolRouter(IWorkSystemRegistry registry)
         JsonElement? arguments,
         CancellationToken cancellationToken)
     {
-        var query = new WorkIterationKeyTypeQuery(
+        var query = new WorkIterationKeyTypeCriteria(
             Kind: ReadOptionalEnum<WorkKeyKind>(arguments, "kind"),
             Search: ReadString(arguments, "search"),
             Type: ReadString(arguments, "type"),
             Statuses: ReadCompletionStatuses(arguments),
             Skip: ReadInt(arguments, "skip") ?? 0,
-            Take: ReadInt(arguments, "take") ?? WorkIterationKeyQuery.DefaultTake);
+            Take: ReadInt(arguments, "take") ?? WorkIterationKeyCriteria.DefaultTake);
 
-        return await system.Query.QueryWorkIterationKeyTypes(query, cancellationToken);
+        return await system.Query.WorkIterationKeyTypes(query, cancellationToken: cancellationToken);
     }
 
     private static async Task<object> GetWorkerStatusSummary(
@@ -460,8 +460,8 @@ public sealed class WorkableMcpToolRouter(IWorkSystemRegistry registry)
         JsonElement? arguments,
         CancellationToken cancellationToken)
     {
-        var query = ToWorkerQuery(arguments);
-        return await system.Query.GetWorkerStatusSummary(query, cancellationToken);
+        var query = ToWorkerCriteria(arguments);
+        return await system.Query.WorkerStatusSummary(query, cancellationToken: cancellationToken);
     }
 
     private static async Task<object> ExecuteWorkerAction(
@@ -508,9 +508,9 @@ public sealed class WorkableMcpToolRouter(IWorkSystemRegistry registry)
             Configuration: ReadObject<WorkConfiguration>(arguments, "configuration"));
     }
 
-    private static WorkerQuery ToWorkerQuery(JsonElement? arguments)
+    private static WorkerCriteria ToWorkerCriteria(JsonElement? arguments)
     {
-        return new WorkerQuery(
+        return new WorkerCriteria(
             DefinitionId: ReadGuid(arguments, "definitionId") is { } definitionId ? new WorkDefinitionId(definitionId) : null,
             DefinitionName: ReadString(arguments, "definitionName") ?? ReadString(arguments, "workName"),
             SubjectId: ReadPair(arguments, "subjectType", "subjectValue") is { } subject ? new WorkSubjectId(subject.Type, subject.Value) : null,
@@ -522,15 +522,15 @@ public sealed class WorkableMcpToolRouter(IWorkSystemRegistry registry)
             CreatedTo: ReadDateTimeOffset(arguments, "createdTo"),
             UpdatedFrom: ReadDateTimeOffset(arguments, "updatedFrom"),
             UpdatedTo: ReadDateTimeOffset(arguments, "updatedTo"),
-            Sort: ReadEnum(arguments, "sort", WorkerQuerySort.CreatedAt),
-            Direction: ReadEnum(arguments, "direction", WorkQuerySortDirection.Descending),
+            Sort: ReadEnum(arguments, "sort", WorkerCriteriaSort.CreatedAt),
+            Direction: ReadEnum(arguments, "direction", WorkCriteriaSortDirection.Descending),
             Skip: ReadInt(arguments, "skip") ?? 0,
             Take: ReadInt(arguments, "take") ?? 100,
             Category: ReadString(arguments, "category"),
             IncludeSubcategories: ReadBool(arguments, "includeSubcategories") ?? true);
     }
 
-    private static WorkerConfigurationQuery? ReadWorkerConfigurationQuery(JsonElement? arguments)
+    private static WorkerConfigurationCriteria? ReadWorkerConfigurationQuery(JsonElement? arguments)
     {
         var recurrenceEnabled = ReadBool(arguments, "recurrenceEnabled");
         var concurrencyEnabled = ReadBool(arguments, "concurrencyEnabled");
@@ -539,15 +539,15 @@ public sealed class WorkableMcpToolRouter(IWorkSystemRegistry registry)
             concurrencyEnabled is null &&
             profilingEnabled is null
             ? null
-            : new WorkerConfigurationQuery(
+            : new WorkerConfigurationCriteria(
                 RecurrenceEnabled: recurrenceEnabled,
                 ConcurrencyEnabled: concurrencyEnabled,
                 ProfilingEnabled: profilingEnabled);
     }
 
-    private static WorkerIterationQuery ToWorkerIterationQuery(JsonElement? arguments)
+    private static WorkerIterationCriteria ToWorkerIterationCriteria(JsonElement? arguments)
     {
-        return new WorkerIterationQuery(
+        return new WorkerIterationCriteria(
             WorkerId: ReadGuid(arguments, "workerId") is { } workerId ? new WorkerId(workerId) : null,
             DefinitionId: ReadGuid(arguments, "definitionId") is { } definitionId ? new WorkDefinitionId(definitionId) : null,
             DefinitionName: ReadString(arguments, "definitionName") ?? ReadString(arguments, "workName"),
@@ -560,10 +560,10 @@ public sealed class WorkableMcpToolRouter(IWorkSystemRegistry registry)
             StartedTo: ReadDateTimeOffset(arguments, "startedTo"),
             CompletedFrom: ReadDateTimeOffset(arguments, "completedFrom"),
             CompletedTo: ReadDateTimeOffset(arguments, "completedTo"),
-            Sort: ReadEnum(arguments, "sort", WorkerIterationQuerySort.CompletedAt),
-            Direction: ReadEnum(arguments, "direction", WorkQuerySortDirection.Descending),
+            Sort: ReadEnum(arguments, "sort", WorkerIterationCriteriaSort.CompletedAt),
+            Direction: ReadEnum(arguments, "direction", WorkCriteriaSortDirection.Descending),
             Skip: ReadInt(arguments, "skip") ?? 0,
-            Take: ReadInt(arguments, "take") ?? WorkerIterationQuery.DefaultTake);
+            Take: ReadInt(arguments, "take") ?? WorkerIterationCriteria.DefaultTake);
     }
 
     private static bool TryGetWorkToolName(
@@ -680,7 +680,7 @@ public sealed class WorkableMcpToolRouter(IWorkSystemRegistry registry)
     private static JsonElement? ToJsonObject(string json)
         => JsonSerializer.Deserialize<JsonElement>(json);
 
-    private static IReadOnlySet<WorkerState>? ReadStates(JsonElement? arguments)
+    private static HashSet<WorkerState>? ReadStates(JsonElement? arguments)
     {
         if (!TryGetProperty(arguments, "states", out var states) || states.ValueKind != JsonValueKind.Array)
         {
@@ -696,7 +696,7 @@ public sealed class WorkableMcpToolRouter(IWorkSystemRegistry registry)
         return parsed.Count == 0 ? null : parsed;
     }
 
-    private static IReadOnlySet<WorkCompletionStatus>? ReadCompletionStatuses(JsonElement? arguments)
+    private static HashSet<WorkCompletionStatus>? ReadCompletionStatuses(JsonElement? arguments)
     {
         if (!TryGetProperty(arguments, "statuses", out var statuses) || statuses.ValueKind != JsonValueKind.Array)
         {

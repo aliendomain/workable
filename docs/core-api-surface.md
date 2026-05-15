@@ -12,7 +12,7 @@ The core API defines the public shape of Workable for discovering work, queueing
 - `IWorkCatalog` exposes available work definitions.
 - `IWorkQueue` accepts work by explicit identity.
 - `IWorkerOperations` controls worker actions.
-- `IWorkQuery` exposes worker snapshots, worker iteration snapshots, slim worker and iteration query rows, work definition browsing, work key search, work info, status summaries, and system overviews.
+- `IWorkQueryService` exposes the discoverable query facade. Each built-in query has a named method, with optional criteria, scope, and cancellation where applicable.
 - `IWorkEventStream` creates event subscriptions.
 - `Start` and `Stop` control system lifecycle.
 - `Stop` returns the shutdown grace period plus workers that were force-canceled because the grace period elapsed, including compact worker summaries and definition names.
@@ -78,16 +78,16 @@ Execution context also exposes the worker's `WorkOrigin`.
 - Completed work results are exposed as `WorkOutput`.
 - Worker snapshots can expose captured logs and profile snapshots.
 - Worker snapshots expose the `WorkOrigin` that queued the worker.
-- `IWorkQuery.GetWorker` returns a full `WorkerSnapshot`.
-- `IWorkQuery.QueryWorkers` returns lightweight `WorkerOverviewItem` rows.
-- `IWorkQuery.GetWorkerIteration` returns one full `WorkerIterationSnapshot` by worker id and iteration sequence.
-- `IWorkQuery.QueryWorkerIterations` returns lightweight `WorkerIterationOverviewItem` rows.
-- `IWorkQuery.QueryWorkerKeys` and `IWorkQuery.QueryWorkerKeyTypes` expose searchable subject, concurrency key, and identifier indexes with matching worker overview rows.
-- `IWorkQuery.QueryWorkIterationKeys` and `IWorkQuery.QueryWorkIterationKeyTypes` expose the same key search shape for worker iteration overview rows.
-- `IWorkQuery.GetSystemOverview` returns system state, active-or-queued definition count, worker counts by state, current executing iteration count, iteration counts by completion status, common iteration key type facets, the five most recently updated failed workers, and the five most recent failed/completed iterations.
-- `IWorkQuery` also exposes overview slice methods for counts, worker counts, iteration counts, common key types, failed workers with worker counts, failed iterations, and completed iterations.
-- Worker queries can filter by definition, definition name, subject id, concurrency key, work identifier, state, selected configuration flags, and timestamps.
-- Work definition queries can filter by id, name, category, and search text.
+- `IWorkQueryService.Worker` returns a full `WorkerSnapshot`.
+- `IWorkQueryService.Workers` returns lightweight `WorkerOverviewItem` rows.
+- `IWorkQueryService.WorkerIteration` returns one full `WorkerIterationSnapshot` by worker id and iteration sequence.
+- `IWorkQueryService.WorkerIterations` returns lightweight `WorkerIterationOverviewItem` rows.
+- `IWorkQueryService.WorkerKeys` and `IWorkQueryService.WorkerKeyTypes` expose searchable subject, concurrency key, and identifier indexes with matching worker overview rows.
+- `IWorkQueryService.WorkIterationKeys` and `IWorkQueryService.WorkIterationKeyTypes` expose the same key search shape for worker iteration overview rows.
+- `IWorkQueryService.SystemOverview` returns system state, active-or-queued definition count, worker counts by state, current executing iteration count, iteration counts by completion status, common iteration key type facets, the five most recently updated failed workers, and the five most recent failed/completed iterations.
+- `IWorkQueryService` also exposes overview slice methods for counts, worker counts, iteration counts, common key types, failed workers with worker counts, failed iterations, and completed iterations.
+- Worker criteria can filter by definition, definition name, subject id, concurrency key, work identifier, state, selected configuration flags, and timestamps.
+- Work definition criteria can filter by id, name, category, and search text.
 - `IWorkCatalog.ListByCategory` returns definitions by category path.
 - Bulk worker actions can target all workers in a system or workers whose definitions belong to a category path.
 

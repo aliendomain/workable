@@ -313,12 +313,12 @@ public sealed class WorkSystemLifecycleTests
         var queued = await system.Queue.Enqueue("shutdown.queued");
 
         await system.Stop();
-        var completedWorker = await system.Query.GetWorker(completed.WorkerId ?? throw new InvalidOperationException("Expected completed worker id."));
-        var failedWorker = await system.Query.GetWorker(handle.WorkerId ?? throw new InvalidOperationException("Expected failed worker id."));
-        var queuedWorker = await system.Query.GetWorker(queued.WorkerId ?? throw new InvalidOperationException("Expected queued worker id."));
-        var overview = await system.Query.GetSystemOverview();
-        var query = await system.Query.QueryWorkers(new WorkerQuery());
-        var keys = await system.Query.QueryWorkerKeys(new WorkerKeyQuery(Search: "shutdown-test"));
+        var completedWorker = await system.Query.Worker(completed.WorkerId ?? throw new InvalidOperationException("Expected completed worker id."));
+        var failedWorker = await system.Query.Worker(handle.WorkerId ?? throw new InvalidOperationException("Expected failed worker id."));
+        var queuedWorker = await system.Query.Worker(queued.WorkerId ?? throw new InvalidOperationException("Expected queued worker id."));
+        var overview = await system.Query.SystemOverview();
+        var query = await system.Query.Workers(new WorkerCriteria());
+        var keys = await system.Query.WorkerKeys(new WorkerKeyCriteria(Search: "shutdown-test"));
 
         Assert.Equal(WorkCompletionStatus.Failed, failed.Status);
         Assert.Null(completedWorker);
@@ -505,7 +505,7 @@ public sealed class WorkSystemLifecycleTests
             CancellationToken cancellationToken)
         {
             tracker.SignalStarted();
-            await Task.Delay(Timeout.InfiniteTimeSpan);
+            await Task.Delay(Timeout.InfiniteTimeSpan, CancellationToken.None);
             return WorkExecutionResult.Success();
         }
     }
@@ -561,7 +561,7 @@ public sealed class WorkSystemLifecycleTests
             CancellationToken cancellationToken)
         {
             tracker.Started.TrySetResult();
-            await Task.Delay(Timeout.InfiniteTimeSpan);
+            await Task.Delay(Timeout.InfiniteTimeSpan, CancellationToken.None);
             return WorkExecutionResult.Success();
         }
     }
