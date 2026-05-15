@@ -54,7 +54,7 @@ Queue-time `WorkerOptions` and runtime `WorkerReconfiguration` do not change inv
 
 ## Channel Behavior
 
-- `DotNet` covers direct C# calls to `IWorkQueue`.
+- `DotNet` covers direct C# calls to `IWorkQueueService`.
 - `HttpApi` covers the Workable HTTP API adapter.
 - `Mcp` covers the Workable MCP adapter.
 

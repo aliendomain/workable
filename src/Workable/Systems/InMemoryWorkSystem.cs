@@ -12,7 +12,7 @@ internal sealed class InMemoryWorkSystem : IWorkSystem, IOriginAwareWorkSystem, 
     private readonly IReadOnlyList<Func<IServiceProvider, IWorkDefinitionSource>> workDefinitionSourceFactories;
     private readonly IReadOnlyList<Func<IServiceProvider, IStartupWorkSource>> startupWorkSourceFactories;
     private readonly WorkSystemCatalog catalog;
-    private readonly WorkQueue queue;
+    private readonly WorkQueueService queue;
     private readonly WorkerOperations workers;
     private readonly WorkQueryService query;
     private readonly InMemoryWorkMetricsSink metrics = new();
@@ -41,7 +41,7 @@ internal sealed class InMemoryWorkSystem : IWorkSystem, IOriginAwareWorkSystem, 
             ?? new DefaultDotNetWorkOriginProvider();
         this.workers = new WorkerOperations(this.catalog, () => this.State, this.Id, this.Name, rootServices, this.events, dotNetOriginProvider, registration.ExceptionClassifiers, globalExceptionClassifiers, this.ShutdownGracePeriod, this.metrics);
         this.query = this.workers.Queries;
-        this.queue = new WorkQueue(this.catalog, this.workers, dotNetOriginProvider);
+        this.queue = new WorkQueueService(this.catalog, this.workers, dotNetOriginProvider);
     }
 
     public WorkSystemId Id { get; }
@@ -54,7 +54,7 @@ internal sealed class InMemoryWorkSystem : IWorkSystem, IOriginAwareWorkSystem, 
 
     public IWorkCatalog Catalog => this.catalog;
 
-    public IWorkQueue Queue => this.queue;
+    public IWorkQueueService Queue => this.queue;
 
     public IWorkerOperations Workers => this.workers;
 

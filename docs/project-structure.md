@@ -21,7 +21,7 @@ Feature libraries reference `Workable.Sdk` when they need to declare work, confi
 - `IWorkSystem`
 - `IWorkSystemRegistry`
 - `IWorkCatalog`
-- `IWorkQueue`
+- `IWorkQueueService`
 - `IWorkerHandle`
 - `IWorkerOperations`
 - `IWorkQueryService`
@@ -60,7 +60,7 @@ ASP.NET Core applications reference `Workable.AspNetCore` when their own control
 `src/Workable.Mcp` contains the MCP adapter surface:
 
 - MCP-style tool descriptors for work definitions
-- work invocation through `IWorkQueue`
+- work invocation through `IWorkQueueService`
 - query tools for worker status, worker snapshots, work definitions, work info, work keys, and status summaries
 - action tools for start, pause, cancel, push, and purge
 - schema compatibility handling for MCP tool input

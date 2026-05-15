@@ -6,7 +6,7 @@ The execution engine owns runtime coordination after work is accepted: dispatch,
 
 ```mermaid
 flowchart TD
-    Queue["WorkQueue"] --> Ops["WorkerOperations"]
+    Queue["WorkQueueService"] --> Ops["WorkerOperations"]
     Ops --> Record["WorkerRecord"]
     Ops --> Dispatcher["WorkerDispatcher"]
     Ops --> Concurrency["WorkConcurrencyCoordinator"]

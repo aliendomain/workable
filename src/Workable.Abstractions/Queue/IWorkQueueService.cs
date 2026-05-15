@@ -1,5 +1,5 @@
 namespace Workable;
-public interface IWorkQueue
+public interface IWorkQueueService
 {
     Task<IWorkerHandle> Enqueue(
         WorkDefinitionId definitionId,

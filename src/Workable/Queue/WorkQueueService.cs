@@ -6,10 +6,10 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 
 namespace Workable;
-internal sealed class WorkQueue(
+internal sealed class WorkQueueService(
     WorkSystemCatalog catalog,
     WorkerOperations workers,
-    IDotNetWorkOriginProvider dotNetOriginProvider) : IWorkQueue
+    IDotNetWorkOriginProvider dotNetOriginProvider) : IWorkQueueService
 {
     public Task<IWorkerHandle> Enqueue(
         WorkDefinitionId definitionId,

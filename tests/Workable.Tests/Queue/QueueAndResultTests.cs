@@ -173,9 +173,9 @@ public sealed class QueueAndResultTests
     [Fact]
     public void QueueApiDoesNotRouteByArgumentType()
     {
-        var enqueueMethods = typeof(IWorkQueue)
+        var enqueueMethods = typeof(IWorkQueueService)
             .GetMethods(BindingFlags.Instance | BindingFlags.Public)
-            .Where(method => method.Name == nameof(IWorkQueue.Enqueue))
+            .Where(method => method.Name == nameof(IWorkQueueService.Enqueue))
             .ToList();
 
         Assert.All(enqueueMethods, method =>

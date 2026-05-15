@@ -15,7 +15,7 @@ Queue acceptance resolves work, creates a queued worker record, publishes the qu
 ```mermaid
 sequenceDiagram
     participant Caller
-    participant Queue as IWorkQueue / WorkQueue
+    participant Queue as IWorkQueueService / WorkQueueService
     participant Catalog as WorkSystemCatalog
     participant Ops as WorkerOperations
     participant Record as WorkerRecord
@@ -130,7 +130,7 @@ The handle exposes the immediate queue outcome and can await completion. The wor
 ```mermaid
 sequenceDiagram
     participant Caller
-    participant Queue as IWorkQueue
+    participant Queue as IWorkQueueService
     participant Handle as IWorkerHandle / WorkerHandle
     participant Record as WorkerRecord
 
@@ -181,8 +181,8 @@ sequenceDiagram
 
 ## Classes
 
-- `IWorkQueue` accepts work by `WorkDefinitionId` or name.
-- `WorkQueue` resolves queued work and delegates worker creation.
+- `IWorkQueueService` accepts work by `WorkDefinitionId` or name.
+- `WorkQueueService` resolves queued work and delegates worker creation.
 - `WorkSystemCatalog` stores the system's immutable work definitions.
 - `RegisteredWork` connects a `WorkDefinition` to an executor factory.
 - `WorkerOperations` creates workers, owns in-memory dispatch, and applies worker actions.

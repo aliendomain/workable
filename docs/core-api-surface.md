@@ -10,7 +10,7 @@ The core API defines the public shape of Workable for discovering work, queueing
 
 - `Id`, `Name`, and `State` expose system identity and lifecycle state.
 - `IWorkCatalog` exposes available work definitions.
-- `IWorkQueue` accepts work by explicit identity.
+- `IWorkQueueService` accepts work by explicit identity.
 - `IWorkerOperations` controls worker actions.
 - `IWorkQueryService` exposes the discoverable query facade. Each built-in query has a named method, with optional criteria, scope, and cancellation where applicable.
 - `IWorkEventStream` creates event subscriptions.
@@ -60,7 +60,7 @@ Execution context also exposes the worker's `WorkOrigin`.
 
 ## Queue Rules
 
-- Queue work by passing a `WorkDefinitionId` or name to `IWorkQueue`.
+- Queue work by passing a `WorkDefinitionId` or name to `IWorkQueueService`.
 - `IStartupWorkSource` can return startup queue requests after the catalog is ready.
 - Starting a stopped system runs automatic starts and startup work sources again without rebuilding work definitions that were already added by work definition sources.
 - Queue input can be supplied as `WorkInput` or as a typed CLR value that Workable serializes into `WorkInput`.

@@ -44,7 +44,7 @@ IWorkerHandle handle = await workSystem.Queue.Enqueue(
     cancellationToken: cancellationToken);
 ```
 
-When queueing from C#, typed input can be passed directly to `IWorkQueue`. Workable serializes it into `WorkInput`.
+When queueing from C#, typed input can be passed directly to `IWorkQueueService`. Workable serializes it into `WorkInput`.
 
 ```csharp
 IWorkerHandle handle = await workSystem.Queue.Enqueue(

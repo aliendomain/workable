@@ -11,7 +11,7 @@ public interface IWorkSystem : IAsyncDisposable
 
     IWorkCatalog Catalog { get; }
 
-    IWorkQueue Queue { get; }
+    IWorkQueueService Queue { get; }
 
     IWorkerOperations Workers { get; }
 
