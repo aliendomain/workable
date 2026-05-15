@@ -338,10 +338,20 @@ export type WorkComponentQueryResult = {
   components: Record<string, WorkComponentResult>;
 };
 
+export type WorkComponentShape = "compact" | "standard" | "detailed";
+
+export type WorkComponentRequest = {
+  id: string;
+  type: string;
+  options?: unknown;
+  shape?: WorkComponentShape;
+};
+
 export type WorkComponentResult<TData = unknown> = {
   status: string;
   data?: TData;
   error?: string | null;
+  shape?: WorkComponentShape;
 };
 
 export type WorkOverviewThroughputComponent = {

@@ -8,7 +8,8 @@ public sealed record WorkComponentCriteria(
 
 public sealed record WorkSingleComponentCriteria(
     WorkSystemCriteria? Scope = null,
-    JsonElement? Options = null);
+    JsonElement? Options = null,
+    string Shape = WorkComponentShapes.Detailed);
 
 public sealed record WorkViewCriteria(
     WorkSystemCriteria? Scope = null,
@@ -17,4 +18,12 @@ public sealed record WorkViewCriteria(
 public sealed record WorkComponentRequest(
     string Id,
     string Type,
-    JsonElement? Options = null);
+    JsonElement? Options = null,
+    string Shape = WorkComponentShapes.Detailed);
+
+public static class WorkComponentShapes
+{
+    public const string Compact = "compact";
+    public const string Standard = "standard";
+    public const string Detailed = "detailed";
+}

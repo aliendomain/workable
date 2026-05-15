@@ -274,11 +274,22 @@ public sealed class WorkableHttpApiTests
                     category = "Http",
                     definitionName = "http.overview.complete",
                 },
-                components = new[]
+                components = new object[]
                 {
-                    new { id = "system", type = "system" },
-                    new { id = "workers", type = "workers" },
-                    new { id = "relationships", type = "relationships" },
+                    new { id = "system", type = "system", shape = "detailed" },
+                    new { id = "workers", type = "workers", shape = "detailed" },
+                    new { id = "relationships", type = "relationships", shape = "compact" },
+                    new
+                    {
+                        id = "throughput",
+                        type = "throughput",
+                        shape = "detailed",
+                        options = new
+                        {
+                            bucketSeconds = 1,
+                            windowSeconds = 60,
+                        },
+                    },
                 },
             });
         viewResponse.EnsureSuccessStatusCode();
@@ -286,28 +297,26 @@ public sealed class WorkableHttpApiTests
             ?? throw new InvalidOperationException("Expected view JSON response.");
         var viewComponents = view["components"]?.AsObject()
             ?? throw new InvalidOperationException("Expected view components.");
-
-        var throughputResponse = await client.PostAsJsonAsync(
-            "/workable/components/throughput",
+        var throughputComponent = viewComponents["throughput"]
+            ?? throw new InvalidOperationException("Expected throughput component.");
+        var throughputBuckets = throughputComponent["data"]?["throughput"]?["buckets"]?.AsArray()
+            ?? throw new InvalidOperationException("Expected throughput buckets.");
+        var catalogResponse = await client.PostAsJsonAsync(
+            "/workable/components/catalog",
             new
             {
                 scope = new
                 {
                     category = "Http",
                 },
-                options = new
-                {
-                    bucketSeconds = 1,
-                    windowSeconds = 60,
-                },
             });
-        throughputResponse.EnsureSuccessStatusCode();
-        var throughput = JsonNode.Parse(await throughputResponse.Content.ReadAsStringAsync())
-            ?? throw new InvalidOperationException("Expected throughput JSON response.");
-        var throughputComponent = throughput["components"]?["throughput"]
-            ?? throw new InvalidOperationException("Expected throughput component.");
-        var throughputBuckets = throughputComponent["data"]?["throughput"]?["buckets"]?.AsArray()
-            ?? throw new InvalidOperationException("Expected throughput buckets.");
+        catalogResponse.EnsureSuccessStatusCode();
+        var catalog = JsonNode.Parse(await catalogResponse.Content.ReadAsStringAsync())
+            ?? throw new InvalidOperationException("Expected catalog JSON response.");
+        var catalogComponent = catalog["components"]?["catalog"]
+            ?? throw new InvalidOperationException("Expected catalog component.");
+        var catalogDefinitions = catalogComponent["data"]?["catalogDefinitions"]?.AsArray()
+            ?? throw new InvalidOperationException("Expected catalog definitions.");
         var defaultViewResponse = await client.PostAsJsonAsync(
             "/workable/views/overview",
             new
@@ -323,21 +332,32 @@ public sealed class WorkableHttpApiTests
         var defaultComponents = defaultView["components"]?.AsObject()
             ?? throw new InvalidOperationException("Expected default view components.");
 
-        Assert.Equal(["relationships", "system", "workers"], viewComponents.Select(component => component.Key).Order().ToArray());
+        Assert.Equal(["relationships", "system", "throughput", "workers"], viewComponents.Select(component => component.Key).Order().ToArray());
         Assert.Equal("ok", viewComponents["system"]?["status"]?.GetValue<string>());
+        Assert.Equal("detailed", viewComponents["system"]?["shape"]?.GetValue<string>());
         Assert.Equal("Started", viewComponents["system"]?["data"]?["systemState"]?.GetValue<string>());
         Assert.Equal("ok", viewComponents["workers"]?["status"]?.GetValue<string>());
+        Assert.Equal("detailed", viewComponents["workers"]?["shape"]?.GetValue<string>());
         Assert.Equal(1, viewComponents["workers"]?["data"]?["finalWorkerCount"]?.GetValue<int>());
         Assert.Equal(0, viewComponents["workers"]?["data"]?["failedWorkerCount"]?.GetValue<int>());
         Assert.Equal(1, viewComponents["workers"]?["data"]?["workerCountByState"]?["Completed"]?.GetValue<int>());
         Assert.Null(viewComponents["workers"]?["data"]?["workerCountByState"]?["Failed"]);
         Assert.Equal("ok", viewComponents["relationships"]?["status"]?.GetValue<string>());
+        Assert.Equal("compact", viewComponents["relationships"]?["shape"]?.GetValue<string>());
         Assert.Equal(1, viewComponents["relationships"]?["data"]?["completedIterationCount"]?.GetValue<int>());
         Assert.Equal(0, viewComponents["relationships"]?["data"]?["failedIterationCount"]?.GetValue<int>());
         Assert.Equal("ok", throughputComponent["status"]?.GetValue<string>());
-        Assert.Equal(2, throughputBuckets.Sum(bucket => bucket?["started"]?.GetValue<int>() ?? 0));
+        Assert.Equal("detailed", throughputComponent["shape"]?.GetValue<string>());
+        Assert.Equal(1, throughputBuckets.Sum(bucket => bucket?["started"]?.GetValue<int>() ?? 0));
         Assert.Equal(1, throughputBuckets.Sum(bucket => bucket?["completed"]?.GetValue<int>() ?? 0));
-        Assert.Equal(1, throughputBuckets.Sum(bucket => bucket?["failed"]?.GetValue<int>() ?? 0));
+        Assert.Equal(0, throughputBuckets.Sum(bucket => bucket?["failed"]?.GetValue<int>() ?? 0));
+        Assert.Equal("ok", catalogComponent["status"]?.GetValue<string>());
+        Assert.Equal("detailed", catalogComponent["shape"]?.GetValue<string>());
+        Assert.Contains(catalogDefinitions, definition => definition?["name"]?.GetValue<string>() == "http.overview.complete");
+        Assert.Equal("standard", defaultComponents["failedIterations"]?["shape"]?.GetValue<string>());
+        Assert.Equal("standard", defaultComponents["completedIterations"]?["shape"]?.GetValue<string>());
+        Assert.Equal("detailed", defaultComponents["workers"]?["shape"]?.GetValue<string>());
+        Assert.DoesNotContain("catalog", defaultComponents.Select(component => component.Key));
         Assert.DoesNotContain("throughput", defaultComponents.Select(component => component.Key));
     }
 

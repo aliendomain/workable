@@ -505,54 +505,6 @@ internal sealed partial class WorkQueryService(
     private IReadOnlyList<WorkerIterationOverviewItem> CreateSystemCompletedIterations(IReadOnlySet<WorkDefinitionId>? definitionIds = null)
         => this.iterationIndex.RecentByStatus(WorkCompletionStatus.Completed, SystemIterationListSize, definitionIds);
 
-    private SystemCatalogLevel CreateSystemCatalogLevel(WorkSystemCriteria? query)
-    {
-        string[] pathSegments = string.IsNullOrWhiteSpace(query?.Category)
-            ? []
-            : SplitCategoryPath(query.Category);
-        var categories = new Dictionary<string, WorkSystemCatalogCategoryItem>(StringComparer.OrdinalIgnoreCase);
-        var directDefinitions = new List<WorkSystemDefinitionItem>();
-
-        foreach (var definition in this.catalog.Definitions)
-        {
-            var definitionSegments = SplitCategoryPath(definition.Category);
-            if (!StartsWithCategoryPath(definitionSegments, pathSegments))
-            {
-                continue;
-            }
-
-            var remainingSegments = definitionSegments.Skip(pathSegments.Length).ToArray();
-            if (remainingSegments.Length == 0)
-            {
-                directDefinitions.Add(new WorkSystemDefinitionItem(
-                    definition.Id,
-                    definition.Name,
-                    definition.Category));
-                continue;
-            }
-
-            var childSegments = pathSegments.Append(remainingSegments[0]).ToArray();
-            var childPath = string.Join(':', childSegments);
-            if (categories.TryGetValue(childPath, out var existing))
-            {
-                categories[childPath] = existing with { Count = existing.Count + 1 };
-            }
-            else
-            {
-                categories[childPath] = new WorkSystemCatalogCategoryItem(
-                    remainingSegments[0],
-                    childPath,
-                    1);
-            }
-        }
-
-        return new SystemCatalogLevel(
-            [.. categories.Values.OrderBy(category => category.Label, StringComparer.OrdinalIgnoreCase)],
-            [.. directDefinitions
-                .OrderBy(definition => definition.Category, StringComparer.OrdinalIgnoreCase)
-                .ThenBy(definition => definition.Name, StringComparer.OrdinalIgnoreCase)]);
-    }
-
     private IReadOnlyList<WorkerOverviewItem> GetOverviewItems(
         IEnumerable<WorkerId> workerIds,
         IReadOnlySet<WorkerState>? states = null)
@@ -835,28 +787,6 @@ internal sealed partial class WorkQueryService(
             ? actual.Equals(expected, StringComparison.OrdinalIgnoreCase) ||
                 actual.StartsWith($"{expected}:", StringComparison.OrdinalIgnoreCase)
             : actual.Equals(expected, StringComparison.OrdinalIgnoreCase);
-
-    private static string[] SplitCategoryPath(string? category)
-        => (string.IsNullOrWhiteSpace(category)
-                ? WorkDefinitionMetadataDefaults.Category
-                : category)
-            .Split(':', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-
-    private static bool StartsWithCategoryPath(
-        string[] categorySegments,
-        string[] pathSegments)
-        => pathSegments.Length == 0 ||
-            pathSegments.Length <= categorySegments.Length &&
-            pathSegments
-                .Select((segment, index) => string.Equals(
-                    categorySegments[index],
-                    segment,
-                    StringComparison.OrdinalIgnoreCase))
-                .All(matches => matches);
-
-    private sealed record SystemCatalogLevel(
-        IReadOnlyList<WorkSystemCatalogCategoryItem> Categories,
-        IReadOnlyList<WorkSystemDefinitionItem> Definitions);
 
     private static IEnumerable<WorkerOverviewItem> Sort(
         IEnumerable<WorkerOverviewItem> workers,

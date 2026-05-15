@@ -18,7 +18,8 @@ public sealed class WorkableHttpQueryAdapter
         foreach (var request in requests)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            components[request.Id] = await this.CreateComponent(system, details, request, query.Scope, cancellationToken);
+            var normalizedRequest = request with { Shape = NormalizeComponentShape(request.Shape) };
+            components[request.Id] = await this.CreateComponent(system, details, normalizedRequest, query.Scope, cancellationToken);
         }
 
         return new WorkComponentQueryResult(DateTimeOffset.UtcNow, components);
@@ -183,7 +184,7 @@ public sealed class WorkableHttpQueryAdapter
             var data = request.Type.Trim().ToLowerInvariant() switch
             {
                 "system" => CreateSystemComponent(await details.Value),
-                "catalog" => CreateCatalogComponent(await details.Value),
+                "catalog" => CreateCatalogComponent(system, criteria),
                 "workers" => CreateWorkerSummaryComponent(await details.Value),
                 "failedworkers" => (await details.Value).FailedWorkers,
                 "relationships" => CreateRelationshipsComponent(await details.Value),
@@ -194,12 +195,12 @@ public sealed class WorkableHttpQueryAdapter
             };
 
             return data is null
-                ? new WorkComponentResult("error", Error: $"Unknown component '{request.Type}'.")
-                : new WorkComponentResult("ok", data);
+                ? new WorkComponentResult("error", Error: $"Unknown component '{request.Type}'.", Shape: request.Shape)
+                : new WorkComponentResult("ok", data, Shape: request.Shape);
         }
         catch (Exception exception)
         {
-            return new WorkComponentResult("error", Error: exception.Message);
+            return new WorkComponentResult("error", Error: exception.Message, Shape: request.Shape);
         }
     }
 
@@ -210,12 +211,15 @@ public sealed class WorkableHttpQueryAdapter
             details.SystemState,
         };
 
-    private static object CreateCatalogComponent(WorkSystemDetails details)
-        => new
+    private static object CreateCatalogComponent(IWorkSystem system, WorkSystemCriteria? criteria)
+    {
+        var level = WorkableHttpCatalogAdapter.GetDefinitionCatalogLevel(system, criteria?.Category);
+        return new
         {
-            details.CatalogCategories,
-            details.CatalogDefinitions,
+            CatalogCategories = level.Categories,
+            CatalogDefinitions = level.Definitions,
         };
+    }
 
     private static object CreateWorkerSummaryComponent(WorkSystemDetails details)
         => new
@@ -262,13 +266,28 @@ public sealed class WorkableHttpQueryAdapter
             ? requests
             : [
                 new("system", "system"),
-                new("catalog", "catalog"),
                 new("workers", "workers"),
                 new("failedWorkers", "failedWorkers"),
                 new("relationships", "relationships"),
-                new("failedIterations", "failedIterations"),
-                new("completedIterations", "completedIterations"),
+                new("failedIterations", "failedIterations", Shape: WorkComponentShapes.Standard),
+                new("completedIterations", "completedIterations", Shape: WorkComponentShapes.Standard),
             ];
+
+    private static string NormalizeComponentShape(string? shape)
+    {
+        if (string.IsNullOrWhiteSpace(shape))
+        {
+            return WorkComponentShapes.Detailed;
+        }
+
+        return shape.Trim().ToLowerInvariant() switch
+        {
+            WorkComponentShapes.Compact => WorkComponentShapes.Compact,
+            WorkComponentShapes.Standard => WorkComponentShapes.Standard,
+            WorkComponentShapes.Detailed => WorkComponentShapes.Detailed,
+            var unknown => unknown,
+        };
+    }
 
     private static WorkThroughputCriteria? CreateThroughputCriteria(JsonElement? options)
     {

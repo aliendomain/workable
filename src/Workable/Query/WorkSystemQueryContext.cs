@@ -10,7 +10,6 @@ internal sealed partial class WorkQueryService
         private readonly Lazy<int> definitionCount;
         private readonly Lazy<WorkSystemWorkerCounts> workerCounts;
         private readonly Lazy<WorkSystemIterationCounts> iterationCounts;
-        private readonly Lazy<SystemCatalogLevel> catalogLevel;
         private readonly Lazy<IReadOnlyList<WorkIterationKeyTypeFacet>> commonKeyTypes;
         private readonly Lazy<IReadOnlyList<WorkerOverviewItem>> failedWorkers;
         private readonly Lazy<IReadOnlyList<WorkerIterationOverviewItem>> failedIterations;
@@ -24,7 +23,6 @@ internal sealed partial class WorkQueryService
             this.definitionCount = new Lazy<int>(() => this.owner.index.ActiveOrQueuedDefinitionCount(this.DefinitionIds));
             this.workerCounts = new Lazy<WorkSystemWorkerCounts>(() => this.owner.CreateSystemWorkerCounts(this.DefinitionIds));
             this.iterationCounts = new Lazy<WorkSystemIterationCounts>(() => this.owner.CreateSystemIterationCounts(this.DefinitionIds));
-            this.catalogLevel = new Lazy<SystemCatalogLevel>(() => this.owner.CreateSystemCatalogLevel(this.criteria));
             this.commonKeyTypes = new Lazy<IReadOnlyList<WorkIterationKeyTypeFacet>>(() => this.owner.CreateSystemCommonKeyTypes(this.DefinitionIds));
             this.failedWorkers = new Lazy<IReadOnlyList<WorkerOverviewItem>>(() => this.owner.CreateSystemFailedWorkers(this.DefinitionIds));
             this.failedIterations = new Lazy<IReadOnlyList<WorkerIterationOverviewItem>>(() => this.owner.CreateSystemFailedIterations(this.DefinitionIds));
@@ -50,8 +48,6 @@ internal sealed partial class WorkQueryService
                 this.owner.workSystemName,
                 this.owner.getSystemState(),
                 this.definitionCount.Value,
-                this.catalogLevel.Value.Categories,
-                this.catalogLevel.Value.Definitions,
                 this.WorkerCounts.ActiveWorkerCount,
                 this.WorkerCounts.FinalWorkerCount,
                 this.WorkerCounts.FailedWorkerCount,

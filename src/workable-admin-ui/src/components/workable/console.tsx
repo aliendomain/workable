@@ -157,7 +157,9 @@ import {
   type WorkDefinitionReconfigurationOutcome,
   type WorkCompletionStatus,
   type WorkComponentQueryResult,
+  type WorkComponentRequest,
   type WorkComponentResult,
+  type WorkComponentShape,
   type WorkIterationKeyTypeQueryResult,
   type WorkIterationKeyTypeFacet,
   type WorkInfo,
@@ -220,6 +222,15 @@ type WorkOverviewRelationshipsComponent = Pick<
   | "failedIterationCount"
   | "iterationCountByStatus"
 >;
+
+function overviewComponent(
+  id: string,
+  type: string = id,
+  shape: WorkComponentShape = "detailed",
+  options?: unknown
+): WorkComponentRequest {
+  return options === undefined ? { id, shape, type } : { id, options, shape, type };
+}
 
 const overviewPanelIds = [
   "workers",
@@ -2360,21 +2371,21 @@ function ViewActionLane({ children }: { children?: ReactNode }) {
 }
 
 function OverviewCatalogFilter({
-  categories,
-  definitions,
+  connection,
   loading,
   onClear,
   onSelectCategory,
   onSelectDefinition,
+  refreshToken,
   scope,
   tooltipLabel = "Filter overview by category and definition",
 }: {
-  categories: WorkOverviewCatalogCategoryItem[];
-  definitions: WorkOverviewDefinitionItem[];
+  connection: WorkableConnection;
   loading: boolean;
   onClear: () => void;
   onSelectCategory: (category: string) => void;
   onSelectDefinition: (definitionName: string, category: string) => void;
+  refreshToken: number;
   scope: OverviewScope | null;
   tooltipLabel?: string;
 }) {
@@ -2387,6 +2398,23 @@ function OverviewCatalogFilter({
   const filterTooltip = scopeLabel
     ? `Filtered by catalog: ${scopeLabel}`
     : tooltipLabel;
+  const catalogRequest = useMemo(
+    () => ({
+      components: [overviewComponent("catalog")],
+      scope: createOverviewComponentScope(scope),
+    }),
+    [scope]
+  );
+  const catalog = useWorkablePostResource<WorkComponentQueryResult>(
+    connection,
+    open ? "components/query" : null,
+    catalogRequest,
+    refreshToken
+  );
+  const catalogComponent = getWorkComponentData<WorkOverviewCatalogComponent>(
+    open ? catalog.data : undefined,
+    "catalog"
+  );
 
   const closeTooltip = useCallback(() => {
     if (tooltipOpenTimer.current) {
@@ -2479,9 +2507,9 @@ function OverviewCatalogFilter({
                 Catalog
               </div>
               <CatalogFilterPanel
-                categories={categories}
-                definitions={definitions}
-                loading={loading}
+                categories={catalogComponent?.catalogCategories ?? []}
+                definitions={catalogComponent?.catalogDefinitions ?? []}
+                loading={loading || catalog.loading || !!catalog.refreshing}
                 onClear={clearAll}
                 onClose={() => setOpen(false)}
                 onSelectCategory={(category) => {
@@ -2743,12 +2771,12 @@ function QueryFilterPopover<TValue extends string>({
   );
   const catalog = useWorkablePostResource<WorkComponentQueryResult>(
     connection,
-    "components/query",
+    open ? "components/query" : null,
     catalogRequest,
     refreshToken
   );
   const catalogComponent = getWorkComponentData<WorkOverviewCatalogComponent>(
-    catalog.data,
+    open ? catalog.data : undefined,
     "catalog"
   );
   const activeFilterCount =
@@ -3018,32 +3046,41 @@ function OverviewView({
       isVisible && isPanelVisible(panelId) && !isPanelCollapsed(panelId),
     [isPanelCollapsed, isPanelVisible, isVisible]
   );
-  const throughputHidden = !isPanelVisible("throughput");
   const throughputCollapsed = isPanelCollapsed("throughput");
   const overviewComponents = useMemo(() => {
-    const components = [
-      { id: "system", type: "system" },
-      { id: "catalog", type: "catalog" },
+    const components: WorkComponentRequest[] = [
+      overviewComponent("system"),
     ];
 
     if (shouldFetchPanel("workers")) {
-      components.push({ id: "workers", type: "workers" });
+      components.push(overviewComponent("workers"));
     }
     if (shouldFetchPanel("failedWorkers")) {
-      components.push({ id: "failedWorkers", type: "failedWorkers" });
+      components.push(overviewComponent("failedWorkers"));
     }
     if (shouldFetchPanel("relationships")) {
-      components.push({ id: "relationships", type: "relationships" });
+      components.push(overviewComponent("relationships"));
     }
     if (shouldFetchPanel("failedIterations")) {
-      components.push({ id: "failedIterations", type: "failedIterations" });
+      components.push(overviewComponent("failedIterations", "failedIterations", "standard"));
     }
     if (shouldFetchPanel("completedIterations")) {
-      components.push({ id: "completedIterations", type: "completedIterations" });
+      components.push(overviewComponent("completedIterations", "completedIterations", "standard"));
+    }
+    if (shouldFetchPanel("throughput")) {
+      components.push(overviewComponent(
+        "throughput",
+        "throughput",
+        "detailed",
+        {
+          bucketSeconds: throughputWindow.bucketSeconds,
+          windowSeconds: throughputWindow.seconds,
+        }
+      ));
     }
 
     return components;
-  }, [shouldFetchPanel]);
+  }, [shouldFetchPanel, throughputWindow.bucketSeconds, throughputWindow.seconds]);
   const overviewRequest = useMemo(
     () => ({
       components: overviewComponents,
@@ -3051,24 +3088,11 @@ function OverviewView({
     }),
     [overviewComponents, overviewScope]
   );
-  const throughputRequest = useMemo(
-    () => ({
-      options: {
-        bucketSeconds: throughputWindow.bucketSeconds,
-        windowSeconds: throughputWindow.seconds,
-      },
-      scope: createOverviewComponentScope(overviewScope),
-    }),
-    [overviewScope, throughputWindow.bucketSeconds, throughputWindow.seconds]
-  );
-  const throughputPath = throughputHidden || throughputCollapsed || !isVisible
-    ? null
-    : "components/throughput";
   const failedWorkersRefreshRequest = useMemo(
     () => ({
       components: [
-        { id: "workers", type: "workers" },
-        { id: "failedWorkers", type: "failedWorkers" },
+        overviewComponent("workers"),
+        overviewComponent("failedWorkers"),
       ],
       scope: createOverviewComponentScope(overviewScope),
     }),
@@ -3081,22 +3105,10 @@ function OverviewView({
     overviewRequest,
     refreshToken
   );
-  const throughput = usePolledWorkablePostResource<WorkComponentQueryResult>(
-    connection,
-    throughputPath,
-    throughputRequest,
-    1000,
-    refreshToken,
-    throughputComponentPayloadsEqual
-  );
   const isReady = !overview.loading;
   const systemComponent = getWorkComponentData<WorkOverviewSystemComponent>(
     overview.data,
     "system"
-  );
-  const catalogComponent = getWorkComponentData<WorkOverviewCatalogComponent>(
-    overview.data,
-    "catalog"
   );
   const workersComponent = getWorkComponentData<WorkOverviewWorkersComponent>(
     overview.data,
@@ -3119,7 +3131,7 @@ function OverviewView({
     "completedIterations"
   );
   const throughputComponent = getWorkComponentData<WorkOverviewThroughputComponent>(
-    throughput.data,
+    overview.data,
     "throughput"
   );
   const throughputData = throughputComponent?.throughput;
@@ -3143,9 +3155,7 @@ function OverviewView({
   const failedWorkers = activeFailedWorkersSlice?.failedWorkers ??
     failedWorkersComponent ??
     [];
-  const componentErrors = getWorkComponentErrors(overview.data).concat(
-    throughputHidden ? [] : getWorkComponentErrors(throughput.data)
-  );
+  const componentErrors = getWorkComponentErrors(overview.data);
   const showFailedIterations = isPanelVisible("failedIterations");
   const showCompletedIterations = isPanelVisible("completedIterations");
   const failedIterationsCollapsed = isPanelCollapsed("failedIterations");
@@ -3236,19 +3246,18 @@ function OverviewView({
       <ErrorPanel
         errors={[
           overview.error,
-          throughputHidden ? undefined : throughput.error,
           actionError,
           ...componentErrors,
         ]}
       />
       <ViewActionLane>
         <OverviewCatalogFilter
-          categories={catalogComponent?.catalogCategories ?? []}
-          definitions={catalogComponent?.catalogDefinitions ?? []}
+          connection={connection}
           loading={overview.loading || !!overview.refreshing}
           onClear={onClearOverviewScope}
           onSelectCategory={onSelectOverviewCategory}
           onSelectDefinition={onSelectOverviewDefinition}
+          refreshToken={refreshToken}
           scope={overviewScope}
         />
         {hasOverviewFilters && (
@@ -3362,7 +3371,7 @@ function OverviewView({
       {isPanelVisible("throughput") && (
         <ThroughputChartPanel
           collapsed={throughputCollapsed}
-          loading={(overview.loading && !throughputData) || (throughput.loading && !throughputData)}
+          loading={overview.loading && !throughputData}
           mode={throughputMode}
           onCollapsedChange={(collapsed) => onPanelCollapsedChange("throughput", collapsed)}
           onModeChange={setThroughputMode}
@@ -6601,41 +6610,6 @@ function formatMilliseconds(value: number) {
   return `${Math.round(value)}ms`;
 }
 
-function throughputPayloadsEqual(
-  left: WorkSystemThroughput,
-  right: WorkSystemThroughput
-) {
-  return (
-    left.windowSeconds === right.windowSeconds &&
-    left.bucketSeconds === right.bucketSeconds &&
-    compactThroughputLiveSummary(left.liveSummary) === compactThroughputLiveSummary(right.liveSummary) &&
-    compactThroughputBuckets(left.buckets) === compactThroughputBuckets(right.buckets)
-  );
-}
-
-function throughputComponentPayloadsEqual(
-  left: WorkComponentQueryResult,
-  right: WorkComponentQueryResult
-) {
-  const leftThroughput = getWorkComponentData<WorkOverviewThroughputComponent>(
-    left,
-    "throughput"
-  );
-  const rightThroughput = getWorkComponentData<WorkOverviewThroughputComponent>(
-    right,
-    "throughput"
-  );
-
-  if (!leftThroughput || !rightThroughput) {
-    return JSON.stringify(left.components) === JSON.stringify(right.components);
-  }
-
-  return (
-    leftThroughput.activeWorkerCount === rightThroughput.activeWorkerCount &&
-    throughputPayloadsEqual(leftThroughput.throughput, rightThroughput.throughput)
-  );
-}
-
 function getWorkComponentData<T>(
   result: WorkComponentQueryResult | undefined,
   id: string
@@ -6648,37 +6622,6 @@ function getWorkComponentErrors(result: WorkComponentQueryResult | undefined) {
   return Object.entries(result?.components ?? {})
     .filter(([, component]) => component.status?.toLowerCase() !== "ok")
     .map(([id, component]) => component.error ?? `${id} failed to load.`);
-}
-
-function compactThroughputLiveSummary(summary: WorkSystemThroughput["liveSummary"]) {
-  return [
-    summary.windowSeconds,
-    summary.startedPerSecond,
-    summary.completedPerSecond,
-    summary.failedPerSecond,
-    summary.canceledPerSecond,
-    Math.round(summary.averageExecutionMilliseconds),
-  ].join("|");
-}
-
-function compactThroughputBuckets(buckets: WorkThroughputBucket[]) {
-  return buckets
-    .filter((bucket) =>
-      bucket.started > 0 ||
-      bucket.completed > 0 ||
-      bucket.failed > 0 ||
-      bucket.canceled > 0 ||
-      bucket.averageExecutionMilliseconds > 0
-    )
-    .map((bucket) => [
-      bucket.at,
-      bucket.started,
-      bucket.completed,
-      bucket.failed,
-      bucket.canceled,
-      Math.round(bucket.averageExecutionMilliseconds),
-    ].join(":"))
-    .join("|");
 }
 
 function WorkerActionButton({
@@ -7460,147 +7403,6 @@ function useWorkablePostResource<T>(
       canceled = true;
     };
   }, [bodyKey, connection, path, refreshToken]);
-
-  return state;
-}
-
-function usePolledWorkableResource<T>(
-  connection: WorkableConnection,
-  path: string | null,
-  intervalMilliseconds: number,
-  refreshToken: number,
-  isEqual?: (left: T, right: T) => boolean
-): Loadable<T> {
-  const [state, setState] = useState<Loadable<T>>({ loading: !!path });
-  const latestDataRef = useRef<T | undefined>(undefined);
-
-  useEffect(() => {
-    latestDataRef.current = undefined;
-    if (!path) {
-      queueMicrotask(() => setState({ loading: false }));
-      return;
-    }
-
-    let canceled = false;
-    let intervalId = 0;
-
-    const load = async (showInitialLoading: boolean) => {
-      if (showInitialLoading) {
-        setState((current) => ({
-          data: current.data,
-          error: undefined,
-          loading: current.data === undefined,
-          refreshing: false,
-        }));
-      }
-
-      try {
-        const data = await workableFetch<T>(connection, path);
-        if (canceled) {
-          return;
-        }
-
-        const previous = latestDataRef.current;
-        if (previous !== undefined && isEqual?.(previous, data)) {
-          setState((current) => current.error ? { ...current, error: undefined } : current);
-          return;
-        }
-
-        latestDataRef.current = data;
-        setState({ data, loading: false, refreshing: false });
-      } catch (error) {
-        if (!canceled) {
-          setState((current) => ({
-            data: current.data,
-            error: error instanceof Error ? error.message : "Request failed.",
-            loading: false,
-            refreshing: false,
-          }));
-        }
-      }
-    };
-
-    void load(true);
-    intervalId = window.setInterval(() => void load(false), intervalMilliseconds);
-
-    return () => {
-      canceled = true;
-      window.clearInterval(intervalId);
-    };
-  }, [connection, intervalMilliseconds, isEqual, path, refreshToken]);
-
-  return state;
-}
-
-function usePolledWorkablePostResource<T>(
-  connection: WorkableConnection,
-  path: string | null,
-  body: unknown,
-  intervalMilliseconds: number,
-  refreshToken: number,
-  isEqual?: (left: T, right: T) => boolean
-): Loadable<T> {
-  const [state, setState] = useState<Loadable<T>>({ loading: !!path });
-  const latestDataRef = useRef<T | undefined>(undefined);
-  const bodyKey = JSON.stringify(body);
-
-  useEffect(() => {
-    latestDataRef.current = undefined;
-    if (!path) {
-      queueMicrotask(() => setState({ loading: false }));
-      return;
-    }
-
-    let canceled = false;
-    let intervalId = 0;
-
-    const load = async (showInitialLoading: boolean) => {
-      if (showInitialLoading) {
-        setState((current) => ({
-          data: current.data,
-          error: undefined,
-          loading: current.data === undefined,
-          refreshing: false,
-        }));
-      }
-
-      try {
-        const data = await workableFetch<T>(connection, path, {
-          method: "POST",
-          body: bodyKey,
-        });
-        if (canceled) {
-          return;
-        }
-
-        const previous = latestDataRef.current;
-        if (previous !== undefined && isEqual?.(previous, data)) {
-          setState((current) => current.error ? { ...current, error: undefined } : current);
-          return;
-        }
-
-        latestDataRef.current = data;
-        setState({ data, loading: false, refreshing: false });
-      } catch (error) {
-        if (!canceled) {
-          setState((current) => ({
-            data: current.data,
-            error: error instanceof Error ? error.message : "Request failed.",
-            loading: false,
-            refreshing: false,
-          }));
-        }
-      }
-    };
-
-    void load(true);
-    intervalId = window.setInterval(() => void load(false), intervalMilliseconds);
-
-    return () => {
-      canceled = true;
-      window.clearInterval(intervalId);
-    };
-  }, [bodyKey, connection, intervalMilliseconds, isEqual, path, refreshToken]);
 
   return state;
 }

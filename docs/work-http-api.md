@@ -269,14 +269,16 @@ Content-Type: application/json
     "includeSubcategories": true
   },
   "components": [
-    { "id": "system", "type": "system" },
-    { "id": "workers", "type": "workers" },
-    { "id": "throughput", "type": "throughput", "options": { "windowSeconds": 60, "bucketSeconds": 1 } }
+    { "id": "system", "type": "system", "shape": "detailed" },
+    { "id": "workers", "type": "workers", "shape": "detailed" },
+    { "id": "throughput", "type": "throughput", "shape": "detailed", "options": { "windowSeconds": 60, "bucketSeconds": 1 } }
   ]
 }
 ```
 
-When `components` is omitted, the overview view returns the default non-live components: `system`, `catalog`, `workers`, `failedWorkers`, `relationships`, `failedIterations`, and `completedIterations`. Request `throughput` explicitly only when the throughput panel is visible.
+When `components` is omitted, the overview view returns the default non-live components: `system`, `workers`, `failedWorkers`, `relationships`, `failedIterations`, and `completedIterations`. The default overview story uses `standard` for the iteration list components and `detailed` for the others. Add `throughput` to the overview component list only when the throughput panel is visible, and request `catalog` only when the filter UI is open.
+
+Component requests can include a UI shape of `compact`, `standard`, or `detailed`, and each component result echoes the normalized `shape` that was served. Hidden or collapsed panels should be omitted from the request. The current overview client requests `standard` for iteration list components and `detailed` for other visible components.
 
 Clients can also request arbitrary components without binding the request to a named view.
 

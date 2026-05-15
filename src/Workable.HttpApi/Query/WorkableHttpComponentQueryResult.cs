@@ -7,4 +7,5 @@ public sealed record WorkComponentQueryResult(
 public sealed record WorkComponentResult(
     string Status,
     object? Data = null,
-    string? Error = null);
+    string? Error = null,
+    string Shape = WorkComponentShapes.Detailed);

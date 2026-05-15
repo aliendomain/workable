@@ -4,8 +4,6 @@ public sealed record WorkSystemDetails(
     string? SystemName,
     WorkSystemState SystemState,
     int DefinitionCount,
-    IReadOnlyList<WorkSystemCatalogCategoryItem> CatalogCategories,
-    IReadOnlyList<WorkSystemDefinitionItem> CatalogDefinitions,
     int ActiveWorkerCount,
     int FinalWorkerCount,
     int FailedWorkerCount,

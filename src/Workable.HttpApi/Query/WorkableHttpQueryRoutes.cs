@@ -38,7 +38,11 @@ internal static class WorkableHttpQueryRoutes
 
             return WorkableHttpRouteResults.ToOk(queries.Components(system, new WorkComponentCriteria(
                     query?.Scope,
-                    [new WorkComponentRequest(componentName, componentName, query?.Options)]), cancellationToken: cancellationToken));
+                    [new WorkComponentRequest(
+                        componentName,
+                        componentName,
+                        query?.Options,
+                        query?.Shape ?? WorkComponentShapes.Detailed)]), cancellationToken: cancellationToken));
         });
 
         group.MapPost("/views/{viewName}", (
