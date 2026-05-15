@@ -107,7 +107,7 @@ Folder names are vocabulary, not decoration. A folder with the same name in two 
 
 `Systems` contains whole-system lifecycle and discovery concerns: `IWorkSystem`, registries, in-memory system implementations, HTTP system resolution, system capability metadata, and system start/stop routes.
 
-`Query` contains read-only query concerns. Public query inputs live in `Query/Criteria`, internal query definitions live in `Query/Definitions`, and returned query models live in `Query/Results`. Runtime query execution belongs in `src/Workable/Query`. Adapter-specific query criteria, adapters, and routes belong in that adapter's `Query` folder. Do not use `Query` for mutable operations.
+`Query` contains read-only query concerns. Public query inputs live in `Query/Criteria`, and returned query models live in `Query/Results`. Runtime query execution belongs in `src/Workable/Query`: `WorkQueryService` is the discoverable facade exposed through `IWorkSystem.Query` and owns the read-model projection for each supported query method. Adapter-specific query criteria, adapters, and routes belong in that adapter's `Query` folder. Do not use `Query` for mutable operations.
 
 `Events` contains event-stream contracts, event payloads, publishers, and subscription behavior.
 
