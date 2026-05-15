@@ -152,13 +152,26 @@ services.AddWorkableSystem("email", builder =>
 });
 ```
 
-Hosts can change the shutdown grace period. The default is 15 seconds.
+Hosts can change the shutdown grace period. By default, Workable uses 80% of the
+.NET generic host shutdown timeout when host options are available. If Workable
+is used outside a generic host, the fallback default is 15 seconds.
 
 ```csharp
 services.AddWorkableSystem(builder =>
 {
     builder.StartWithHost();
     builder.UseShutdownGracePeriod(TimeSpan.FromSeconds(30));
+});
+```
+
+You can also keep the grace period relative to the host timeout. Ratios must be
+greater than zero and cannot exceed 90%.
+
+```csharp
+services.AddWorkableSystem(builder =>
+{
+    builder.StartWithHost();
+    builder.UseShutdownGracePeriodRatio(0.75);
 });
 ```
 

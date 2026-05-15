@@ -33,7 +33,7 @@ foreach (var worker in result.Workers)
 }
 ```
 
-Worker queries can filter by work definition id, work definition name, worker state, relationship keys, selected configuration flags, created time, and updated time.
+Worker queries can filter by work definition id, work definition name, category, worker state, relationship keys, selected configuration flags, created time, and updated time.
 
 Worker queries are paged. If `Take` is omitted, zero, or negative, Workable returns up to `50` workers. Requests for more than `50` workers are capped at `50`; use `Skip` to page through larger result sets.
 
@@ -72,6 +72,17 @@ WorkerQueryResult recurringProfiledWorkers =
 ```
 
 Configuration filters currently support `RecurrenceEnabled`, `ConcurrencyEnabled`, and `ProfilingEnabled`.
+
+Use `Category` to retrieve workers for every definition in a category path. With `IncludeSubcategories` enabled, `Billing` includes workers for definitions registered under `Billing:Invoices` and `Billing:Renewals`.
+
+```csharp
+WorkerQueryResult billingWorkers =
+    await workSystem.Query.QueryWorkers(
+        new WorkerQuery(
+            Category: "Billing",
+            IncludeSubcategories: true),
+        cancellationToken);
+```
 
 ## Iteration Queries
 
@@ -824,6 +835,18 @@ The examples below show the serialized JSON shape returned by HTTP and MCP adapt
 ### System Overview
 
 `GetSystemOverview` returns dashboard-oriented system state, worker state, and iteration activity. It includes active-or-queued definition count, active/final/failed worker counts, worker counts by state, current executing iteration count, completed/failed/canceled iteration counts, counts by iteration completion status, the ten most common iteration key types, the five most recently updated failed workers, and the five most recent failed/completed iterations.
+
+Overview queries can be scoped to one category path or work definition while keeping the same return shape.
+
+```csharp
+WorkSystemOverview billingOverview = await workSystem.Query.GetSystemOverview(
+    new WorkOverviewQuery(Category: "Billing"));
+
+WorkSystemOverview definitionOverview = await workSystem.Query.GetSystemOverview(
+    new WorkOverviewQuery(DefinitionName: "billing.invoice.sync"));
+```
+
+With category scoping, `IncludeSubcategories` defaults to `true`. Scoped overview counts, common key types, failed workers, and recent iterations include only workers and iterations for matching definitions.
 
 For incremental refreshes, the overview can be queried in smaller slices:
 

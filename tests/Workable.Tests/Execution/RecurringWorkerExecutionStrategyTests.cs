@@ -407,14 +407,14 @@ public sealed class RecurringWorkerExecutionStrategyTests
             _ => { },
             async (context, input, cancellationToken) =>
             {
-                attempts++;
-                if (attempts > 5)
+                var attempt = Interlocked.Increment(ref attempts);
+                if (attempt > 5)
                 {
                     await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
                 }
 
-                var output = WorkOutput.FromValue(attempts);
-                return attempts is 3 or 5
+                var output = WorkOutput.FromValue(attempt);
+                return attempt is 3 or 5
                     ? WorkExecutionResult.Failure([WorkMessage.Error("sample.failure", "Failed.")], output)
                     : WorkExecutionResult.Success(output);
             },
@@ -430,7 +430,7 @@ public sealed class RecurringWorkerExecutionStrategyTests
 
         var handle = await system.Queue.Enqueue("recurring-work");
         var workerId = RequiredWorkerId(handle);
-        await Eventually(() => Task.FromResult(attempts >= 5));
+        await Eventually(() => Task.FromResult(Volatile.Read(ref attempts) >= 6));
         await CancelIfActive(system, workerId);
         var completion = await handle.WaitForCompletion();
         var iterations = completion.Worker?.Iterations ?? [];

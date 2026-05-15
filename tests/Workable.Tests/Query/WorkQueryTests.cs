@@ -840,6 +840,35 @@ public sealed class WorkQueryTests
     }
 
     [Fact]
+    public async Task QueryWorkersCanFilterByCategoryPath()
+    {
+        await using var system = new ServiceCollection()
+            .AddWorkableSystem(builder =>
+            {
+                builder.AddWork(WorkDefinition.Create("finance.root", category: "Finance"), SuccessfulWork);
+                builder.AddWork(WorkDefinition.Create("invoice.send", category: "Finance:Invoices"), SuccessfulWork);
+                builder.AddWork(WorkDefinition.Create("operations.cache", category: "Operations:Cache"), SuccessfulWork);
+            })
+            .BuildServiceProvider()
+            .GetRequiredService<IWorkSystemRegistry>()
+            .Default;
+
+        await system.Start();
+        await (await system.Queue.Enqueue("finance.root")).WaitForCompletion();
+        await (await system.Queue.Enqueue("invoice.send")).WaitForCompletion();
+        await (await system.Queue.Enqueue("operations.cache")).WaitForCompletion();
+
+        var finance = await system.Query.QueryWorkers(new WorkerQuery(Category: "finance"));
+        var exactFinance = await system.Query.QueryWorkers(new WorkerQuery(
+            Category: "finance",
+            IncludeSubcategories: false));
+
+        Assert.Equal(["finance.root", "invoice.send"], finance.Workers.Select(worker => worker.DefinitionName).OrderBy(name => name));
+        var worker = Assert.Single(exactFinance.Workers);
+        Assert.Equal("finance.root", worker.DefinitionName);
+    }
+
+    [Fact]
     public async Task WorkMetadataAttributeSuppliesBrowsableNameCategoryAndDescription()
     {
         var definition = WorkDefinition.Create("placeholder", "Placeholder.");
@@ -1097,6 +1126,150 @@ public sealed class WorkQueryTests
         Assert.Equal(2, claim.IterationCountByKind[WorkKeyKind.Subject]);
         Assert.Equal(1, overview.CompletedIterationCount);
         Assert.Equal(1, overview.FailedIterationCount);
+    }
+
+    [Fact]
+    public async Task GetSystemOverviewCanScopeToCategoryOrDefinition()
+    {
+        await using var system = new ServiceCollection()
+            .AddWorkableSystem("overview-scope", builder =>
+            {
+                builder.AddWork(
+                    WorkDefinition.Create("billing.root", category: "Billing"),
+                    SuccessfulWork);
+                builder.AddWork(
+                    WorkDefinition.Create("billing.invoice.failed", category: "Billing:Invoices"),
+                    (context, input, cancellationToken) => Task.FromResult(WorkExecutionResult.Failure([WorkMessage.Error("billing.failed", "Failed.")])));
+                builder.AddWork(
+                    WorkDefinition.Create("shipping.complete", category: "Shipping"),
+                    SuccessfulWork);
+            })
+            .BuildServiceProvider()
+            .GetRequiredService<IWorkSystemRegistry>()
+            .Default;
+
+        await system.Start();
+        await (await system.Queue.Enqueue(
+            "billing.root",
+            WorkInput.Empty.WithIdentifier(new WorkIdentifier("account", "A-1")))).WaitForCompletion();
+        await (await system.Queue.Enqueue(
+            "billing.invoice.failed",
+            WorkInput.Empty.WithIdentifier(new WorkIdentifier("invoice", "I-1")))).WaitForCompletion();
+        await (await system.Queue.Enqueue(
+            "shipping.complete",
+            WorkInput.Empty.WithIdentifier(new WorkIdentifier("shipment", "S-1")))).WaitForCompletion();
+
+        var billing = await system.Query.GetSystemOverview(new WorkOverviewQuery(Category: "Billing"));
+        var exactBilling = await system.Query.GetSystemOverview(new WorkOverviewQuery(
+            Category: "Billing",
+            IncludeSubcategories: false));
+        var invoice = await system.Query.GetSystemOverview(new WorkOverviewQuery(DefinitionName: "billing.invoice.failed"));
+
+        Assert.Equal(1, billing.CompletedIterationCount);
+        Assert.Equal(1, billing.FailedIterationCount);
+        Assert.Equal(1, billing.FinalWorkerCount);
+        Assert.Equal(1, billing.FailedWorkerCount);
+        Assert.Equal(["billing.invoice.failed"], billing.FailedWorkers.Select(worker => worker.DefinitionName));
+        Assert.Contains(billing.CommonKeyTypes, keyType => keyType.Type == "account" && keyType.IterationCount == 1);
+        Assert.Contains(billing.CommonKeyTypes, keyType => keyType.Type == "invoice" && keyType.IterationCount == 1);
+        Assert.DoesNotContain(billing.CommonKeyTypes, keyType => keyType.Type == "shipment");
+
+        Assert.Equal(1, exactBilling.CompletedIterationCount);
+        Assert.Equal(0, exactBilling.FailedIterationCount);
+        Assert.Empty(exactBilling.FailedWorkers);
+        var exactKeyType = Assert.Single(exactBilling.CommonKeyTypes);
+        Assert.Equal("account", exactKeyType.Type);
+
+        Assert.Equal(0, invoice.CompletedIterationCount);
+        Assert.Equal(1, invoice.FailedIterationCount);
+        Assert.Equal("billing.invoice.failed", Assert.Single(invoice.FailedWorkers).DefinitionName);
+    }
+
+    [Fact]
+    public async Task GetSystemOverviewThroughputReportsQueuedSucceededAndFailedIterationsWithinScope()
+    {
+        await using var system = new ServiceCollection()
+            .AddWorkableSystem("overview-throughput", builder =>
+            {
+                builder.AddWork(
+                    WorkDefinition.Create("metrics.success", category: "Metrics:Included"),
+                    SuccessfulWork);
+                builder.AddWork(
+                    WorkDefinition.Create("metrics.failed", category: "Metrics:Included"),
+                    (context, input, cancellationToken) => Task.FromResult(WorkExecutionResult.Failure([WorkMessage.Error("metrics.failed", "Failed.")])));
+                builder.AddWork(
+                    WorkDefinition.Create("metrics.other", category: "Metrics:Other"),
+                    SuccessfulWork);
+            })
+            .BuildServiceProvider()
+            .GetRequiredService<IWorkSystemRegistry>()
+            .Default;
+
+        await system.Start();
+        await (await system.Queue.Enqueue("metrics.success")).WaitForCompletion();
+        await (await system.Queue.Enqueue("metrics.failed")).WaitForCompletion();
+        await (await system.Queue.Enqueue("metrics.other")).WaitForCompletion();
+
+        var overviewWithoutThroughput = await system.Query.GetSystemOverview(new WorkOverviewQuery(
+            Category: "Metrics:Included"));
+        var overview = await system.Query.GetSystemOverview(new WorkOverviewQuery(
+            Category: "Metrics:Included",
+            IncludeThroughput: true));
+        var throughput = await system.Query.GetSystemOverviewThroughput(
+            new WorkOverviewQuery(Category: "Metrics:Included"),
+            new WorkThroughputQuery(WindowSeconds: 60, BucketSeconds: 1));
+
+        Assert.Null(overviewWithoutThroughput.Throughput);
+        Assert.NotNull(overview.Throughput);
+        Assert.Equal(2, overview.Throughput.Buckets.Sum(bucket => bucket.Queued));
+        Assert.Equal(1, overview.Throughput.Buckets.Sum(bucket => bucket.Succeeded));
+        Assert.Equal(1, overview.Throughput.Buckets.Sum(bucket => bucket.Failed));
+        Assert.Equal(2, throughput.Buckets.Sum(bucket => bucket.Queued));
+        Assert.Equal(1, throughput.Buckets.Sum(bucket => bucket.Succeeded));
+        Assert.Equal(1, throughput.Buckets.Sum(bucket => bucket.Failed));
+        Assert.Equal(60, throughput.LiveSummary.WindowSeconds);
+        Assert.Equal(2 / 60.0, throughput.LiveSummary.QueuedPerSecond, precision: 6);
+        Assert.Equal(1 / 60.0, throughput.LiveSummary.SucceededPerSecond, precision: 6);
+        Assert.Equal(1 / 60.0, throughput.LiveSummary.FailedPerSecond, precision: 6);
+        Assert.Equal(0, throughput.LiveSummary.QueueDeltaPerSecond, precision: 6);
+        Assert.All(throughput.Buckets.Where(bucket => bucket.Succeeded > 0 || bucket.Failed > 0), bucket =>
+            Assert.True(bucket.AverageExecutionMilliseconds >= 0));
+    }
+
+    [Fact]
+    public async Task GetSystemOverviewThroughputRetainsMetricsAfterWorkerPurge()
+    {
+        await using var system = CreateSystem(
+            WorkDefinition.Create("metrics.purge", category: "Metrics:Purge"),
+            SuccessfulWork);
+
+        await system.Start();
+        var handle = await system.Queue.Enqueue("metrics.purge");
+        await handle.WaitForCompletion();
+
+        var workerId = RequiredWorkerId(handle);
+        var beforePurge = await system.Query.GetSystemOverviewThroughput(
+            new WorkOverviewQuery(Category: "Metrics:Purge"),
+            new WorkThroughputQuery(WindowSeconds: 60, BucketSeconds: 1));
+        var worker = await system.Query.GetWorker(workerId)
+            ?? throw new InvalidOperationException("Expected worker.");
+
+        var purge = await system.Workers.Execute(worker.Version, WorkAction.Purge);
+
+        var afterPurgeIterations = await system.Query.QueryWorkerIterations(
+            new WorkerIterationQuery(WorkerId: workerId));
+        var afterPurge = await system.Query.GetSystemOverviewThroughput(
+            new WorkOverviewQuery(Category: "Metrics:Purge"),
+            new WorkThroughputQuery(WindowSeconds: 60, BucketSeconds: 1));
+
+        Assert.True(purge.IsAccepted);
+        Assert.Equal(1, beforePurge.Buckets.Sum(bucket => bucket.Queued));
+        Assert.Equal(1, beforePurge.Buckets.Sum(bucket => bucket.Succeeded));
+        Assert.Empty(afterPurgeIterations.Iterations);
+        Assert.Equal(1, afterPurge.Buckets.Sum(bucket => bucket.Queued));
+        Assert.Equal(1, afterPurge.Buckets.Sum(bucket => bucket.Succeeded));
+        Assert.Equal(1 / 60.0, afterPurge.LiveSummary.QueuedPerSecond, precision: 6);
+        Assert.Equal(1 / 60.0, afterPurge.LiveSummary.SucceededPerSecond, precision: 6);
     }
 
     private static IWorkSystem CreateSystem(

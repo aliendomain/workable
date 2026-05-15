@@ -1,4 +1,5 @@
 using Workable;
+using Workable.SampleHost;
 using Workable.SampleHost.Demo;
 using Workable.SampleHost.Fulfillment;
 using Workable.SampleHost.Operations;
@@ -6,6 +7,14 @@ using Workable.SampleHost.Operations;
 var builder = WebApplication.CreateBuilder(args);
 const string sampleCorsPolicy = "WorkableSampleUi";
 const int sampleHttpPort = 61932;
+
+builder.Logging.ClearProviders();
+builder.Logging.AddConsole(options => options.FormatterName = WorkableSampleConsoleFormatter.FormatterName);
+builder.Logging.AddConsoleFormatter<WorkableSampleConsoleFormatter, Microsoft.Extensions.Logging.Console.ConsoleFormatterOptions>();
+builder.Logging.AddFilter("Microsoft", LogLevel.Warning);
+builder.Logging.AddFilter("Microsoft.AspNetCore", LogLevel.Warning);
+builder.Logging.AddFilter("System", LogLevel.Warning);
+builder.Logging.AddFilter("Workable", LogLevel.Information);
 
 builder.Services.AddCors(options =>
 {
@@ -42,6 +51,7 @@ builder.Services.AddWorkableSystem(workable =>
     workable.AddWork<FlakyValidationWork>();
     workable.AddWork<DemoTimedWork>(DemoDefinition("sample.demo.quick", "Samples:Demo", "Short sample work for UI state testing."));
     workable.AddWork<DemoTimedWork>(DemoDefinition("sample.demo.long", "Samples:Demo", "Longer sample work for UI state testing."));
+    workable.AddWork<DemoForceCancelWork>(DemoDefinition("sample.demo.force-cancel", "Samples:Demo", "Ignores cancellation so shutdown must force-cancel it."));
     workable.AddWork<DemoTimedWork>(
         DemoDefinition("sample.demo.throttled", "Samples:Demo", "Sample work that queues behind a concurrency key."),
         configuration => configuration.LimitConcurrency(
@@ -76,6 +86,7 @@ builder.Services.AddWorkableSystem("fulfillment", workable =>
 });
 
 builder.Services.AddSingleton<DemoWorkloadController>();
+builder.Services.AddHostedService(static services => services.GetRequiredService<DemoWorkloadController>());
 builder.Services.AddWorkableHttpApi();
 builder.Services.AddWorkableMcpServer();
 builder.Services.AddWorkableSignalR(options =>
@@ -84,6 +95,21 @@ builder.Services.AddWorkableSignalR(options =>
 });
 
 var app = builder.Build();
+
+var lifetime = app.Services.GetRequiredService<IHostApplicationLifetime>();
+app.Use(async (context, next) =>
+{
+    try
+    {
+        await next();
+    }
+    catch (OperationCanceledException) when (lifetime.ApplicationStopping.IsCancellationRequested)
+    {
+    }
+    catch (ObjectDisposedException) when (lifetime.ApplicationStopping.IsCancellationRequested)
+    {
+    }
+});
 
 app.UseCors(sampleCorsPolicy);
 
@@ -102,33 +128,113 @@ app.MapGet("/", (HttpContext context) =>
             <meta name="viewport" content="width=device-width, initial-scale=1">
             <title>Workable Sample Host</title>
             <style>
-                body { font-family: system-ui, sans-serif; margin: 3rem; max-width: 760px; line-height: 1.5; }
+                body { font-family: system-ui, sans-serif; margin: 3rem; max-width: 1120px; line-height: 1.5; }
                 button { font: inherit; padding: .7rem 1rem; border: 1px solid #222; background: #111; color: white; cursor: pointer; }
                 button.running { background: #8b1d1d; }
                 input { font: inherit; padding: .6rem .7rem; width: 9rem; }
-                .controls { display: flex; flex-wrap: wrap; gap: .75rem; align-items: center; margin-top: 1rem; }
+                table { width: 100%; border-collapse: collapse; margin-top: 1.5rem; border: 1px solid #ddd; table-layout: fixed; }
+                th, td { padding: .85rem 1rem; text-align: left; vertical-align: middle; border-bottom: 1px solid #ddd; }
+                th { background: #f7f7f7; font-size: .85rem; text-transform: uppercase; letter-spacing: .04em; }
+                tr:last-child td { border-bottom: 0; }
+                .action-name { font-weight: 700; }
+                .action-description { color: #555; font-size: .9rem; margin-top: .15rem; }
+                .action-controls { display: flex; flex-wrap: wrap; gap: .75rem; align-items: center; }
+                .sample-workload-controls { display: grid; grid-template-columns: max-content max-content max-content; }
+                .burst-controls { display: grid; grid-template-columns: max-content max-content; }
+                .interval-control { display: grid; grid-template-columns: max-content 8.5rem max-content; gap: .5rem; align-items: center; }
+                .number-control { display: grid; grid-template-columns: max-content 8.5rem; gap: .5rem; align-items: center; }
+                .interval-control input { width: 100%; box-sizing: border-box; }
+                .number-control input { width: 100%; box-sizing: border-box; }
                 code { background: #f3f3f3; padding: .1rem .25rem; }
-                .status { margin-top: 1rem; }
+                .status { color: #333; margin: 0; }
+                @media (max-width: 900px) {
+                    table, thead, tbody, tr, th, td { display: block; }
+                    thead { display: none; }
+                    tr { border-bottom: 1px solid #ddd; }
+                    tr:last-child { border-bottom: 0; }
+                    td { border-bottom: 0; }
+                    .sample-workload-controls { grid-template-columns: 1fr; align-items: stretch; }
+                    .burst-controls { grid-template-columns: 1fr; align-items: stretch; }
+                    .interval-control { grid-template-columns: max-content 1fr max-content; }
+                    .number-control { grid-template-columns: max-content 1fr; }
+                }
             </style>
         </head>
         <body>
             <h1>Workable Sample Host</h1>
             <p>Start the Workable UI and add this server: <code>{{workableUrl}}</code></p>
-            <div class="controls">
-                <button id="toggle" type="button">Start sample workers</button>
-                <label>
-                    Interval
-                    <input id="interval" type="number" min="10" max="10000" step="5">
-                    ms
-                </label>
-                <button id="update-interval" type="button">Update interval</button>
-            </div>
-            <p class="status" id="status">Loading sample workload status...</p>
+            <table>
+                <colgroup>
+                    <col style="width: 24%">
+                    <col style="width: 56%">
+                    <col style="width: 20%">
+                </colgroup>
+                <thead>
+                    <tr>
+                        <th>Action</th>
+                        <th>Controls</th>
+                        <th>Status</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td>
+                            <div class="action-name">Sample workload</div>
+                            <div class="action-description">Queue recurring demo workers.</div>
+                        </td>
+                        <td>
+                            <div class="action-controls sample-workload-controls">
+                                <button id="toggle" type="button">Start sample workers</button>
+                                <label class="interval-control">
+                                    Interval
+                                    <input id="interval" type="number" min="10" max="10000" step="5">
+                                    ms
+                                </label>
+                                <button id="update-interval" type="button">Update interval</button>
+                            </div>
+                        </td>
+                        <td><p class="status" id="status">Loading sample workload status...</p></td>
+                    </tr>
+                    <tr>
+                        <td>
+                            <div class="action-name">Burst queue</div>
+                            <div class="action-description">Submit many demo workers in parallel.</div>
+                        </td>
+                        <td>
+                            <div class="action-controls burst-controls">
+                                <label class="number-control">
+                                    Workers
+                                    <input id="burst-count" type="number" min="1" max="1000000" step="10" value="250">
+                                </label>
+                                <button id="burst-queue" type="button">Queue burst</button>
+                            </div>
+                        </td>
+                        <td><p class="status" id="burst-status">Ready.</p></td>
+                    </tr>
+                    <tr>
+                        <td>
+                            <div class="action-name">Force-cancel worker</div>
+                            <div class="action-description">Queue work that ignores cooperative shutdown.</div>
+                        </td>
+                        <td>
+                            <div class="action-controls">
+                                <button id="force-cancel" type="button">Queue force-cancel worker</button>
+                            </div>
+                        </td>
+                        <td><p class="status" id="force-cancel-status">Ready.</p></td>
+                    </tr>
+                </tbody>
+            </table>
             <script>
                 const button = document.getElementById('toggle');
+                const forceCancel = document.getElementById('force-cancel');
+                const burstCount = document.getElementById('burst-count');
+                const burstQueue = document.getElementById('burst-queue');
                 const interval = document.getElementById('interval');
                 const updateInterval = document.getElementById('update-interval');
                 const status = document.getElementById('status');
+                const burstStatus = document.getElementById('burst-status');
+                const forceCancelStatus = document.getElementById('force-cancel-status');
                 let intervalDirty = false;
 
                 async function refresh() {
@@ -149,6 +255,39 @@ app.MapGet("/", (HttpContext context) =>
                         await refresh();
                     } finally {
                         button.disabled = false;
+                    }
+                });
+
+                forceCancel.addEventListener('click', async () => {
+                    forceCancel.disabled = true;
+                    try {
+                        const response = await fetch('/sample-workload/force-cancel', { method: 'POST' });
+                        const data = await response.json();
+                        forceCancelStatus.textContent = `Queued ${data.definitionName} worker ${data.workerId}`;
+                    } catch (error) {
+                        forceCancelStatus.textContent = 'Unable to queue force-cancel worker.';
+                    } finally {
+                        forceCancel.disabled = false;
+                    }
+                });
+
+                burstQueue.addEventListener('click', async () => {
+                    const count = Number(burstCount.value);
+                    burstQueue.disabled = true;
+                    burstStatus.textContent = `Submitting ${count} workers...`;
+                    try {
+                        const response = await fetch('/sample-workload/burst', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ count })
+                        });
+                        const data = await response.json();
+                        burstStatus.textContent = `Queued ${data.queuedCount}/${data.submittedCount} in ${data.elapsedMilliseconds}ms`;
+                        await refresh();
+                    } catch (error) {
+                        burstStatus.textContent = 'Unable to queue burst workers.';
+                    } finally {
+                        burstQueue.disabled = false;
                     }
                 });
 
@@ -192,6 +331,22 @@ app.MapPost("/sample-workload/toggle", async (DemoWorkloadController controller,
     => Results.Ok(await controller.Toggle(cancellationToken)));
 app.MapPost("/sample-workload/interval", (DemoWorkloadController controller, DemoWorkloadIntervalRequest request)
     => Results.Ok(controller.SetQueueInterval(request.Milliseconds)));
+app.MapPost("/sample-workload/burst", async (DemoWorkloadController controller, DemoBurstRequest request, CancellationToken cancellationToken)
+    => Results.Ok(await controller.QueueBurst(request.Count, cancellationToken)));
+app.MapPost("/sample-workload/force-cancel", async (IWorkSystemRegistry registry, CancellationToken cancellationToken) =>
+{
+    var handle = await registry.Default.Queue.Enqueue(
+        "sample.demo.force-cancel",
+        WorkInput.FromValue(new DemoForceCancelInput(), identifiers: [new WorkIdentifier("sample-workload", "force-cancel")]),
+        cancellationToken: cancellationToken);
+
+    return Results.Ok(new
+    {
+        definitionName = "sample.demo.force-cancel",
+        workerId = handle.WorkerId?.ToString(),
+        status = handle.QueueOutcome.Status.ToString(),
+    });
+});
 
 app.MapWorkableApi("/workable");
 app.MapWorkableMcp();

@@ -63,6 +63,8 @@ public interface IWorkSystemBuilder
 
     IWorkSystemBuilder UseShutdownGracePeriod(TimeSpan gracePeriod);
 
+    IWorkSystemBuilder UseShutdownGracePeriodRatio(double hostShutdownTimeoutRatio);
+
     IWorkSystemBuilder ClassifyExceptions(WorkExceptionClassifier classifier);
 
     IWorkSystemBuilder UseDotNetOriginProvider<TProvider>()

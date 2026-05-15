@@ -14,7 +14,9 @@ public sealed record WorkableHttpWorkerQuery(
     WorkerQuerySort Sort = WorkerQuerySort.CreatedAt,
     WorkQuerySortDirection Direction = WorkQuerySortDirection.Descending,
     int Skip = 0,
-    int Take = WorkerQuery.DefaultTake)
+    int Take = WorkerQuery.DefaultTake,
+    string? Category = null,
+    bool IncludeSubcategories = true)
 {
     public WorkerQuery ToWorkerQuery()
         => new(
@@ -32,5 +34,7 @@ public sealed record WorkableHttpWorkerQuery(
             this.Sort,
             this.Direction,
             this.Skip,
-            this.Take);
+            this.Take,
+            this.Category,
+            this.IncludeSubcategories);
 }

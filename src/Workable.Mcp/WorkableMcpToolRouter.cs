@@ -525,7 +525,9 @@ public sealed class WorkableMcpToolRouter(IWorkSystemRegistry registry)
             Sort: ReadEnum(arguments, "sort", WorkerQuerySort.CreatedAt),
             Direction: ReadEnum(arguments, "direction", WorkQuerySortDirection.Descending),
             Skip: ReadInt(arguments, "skip") ?? 0,
-            Take: ReadInt(arguments, "take") ?? 100);
+            Take: ReadInt(arguments, "take") ?? 100,
+            Category: ReadString(arguments, "category"),
+            IncludeSubcategories: ReadBool(arguments, "includeSubcategories") ?? true);
     }
 
     private static WorkerConfigurationQuery? ReadWorkerConfigurationQuery(JsonElement? arguments)

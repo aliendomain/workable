@@ -15,7 +15,9 @@ public sealed record WorkerQuery(
     WorkerQuerySort Sort = WorkerQuerySort.CreatedAt,
     WorkQuerySortDirection Direction = WorkQuerySortDirection.Descending,
     int Skip = 0,
-    int Take = 50)
+    int Take = 50,
+    string? Category = null,
+    bool IncludeSubcategories = true)
 {
     public const int DefaultTake = 50;
     public const int MaximumTake = 50;

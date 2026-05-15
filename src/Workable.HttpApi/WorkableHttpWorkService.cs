@@ -165,7 +165,14 @@ public sealed class WorkableHttpWorkService(
             system.Id,
             system.Name,
             system.State,
-            result.ForceCanceledWorkers);
+            result.ForceCanceledWorkers)
+        {
+            CancellationRequestedWorkers = result.CancellationRequestedWorkers,
+            CancellationRequestedWorkerSummaries = result.CancellationRequestedWorkerSummaries,
+            ForceCanceledWorkerNames = result.ForceCanceledWorkerNames,
+            ForceCanceledWorkerSummaries = result.ForceCanceledWorkerSummaries,
+            ShutdownGracePeriod = result.ShutdownGracePeriod,
+        };
     }
 
     public Task<WorkActionOutcome> Execute(
@@ -279,6 +286,73 @@ public sealed class WorkableHttpWorkService(
             .OrderBy(definition => definition.Category, StringComparer.OrdinalIgnoreCase)
             .ThenBy(definition => definition.Name, StringComparer.OrdinalIgnoreCase)];
     }
+
+    internal static WorkableHttpDefinitionCatalogLevel GetDefinitionCatalogLevel(
+        IWorkSystem system,
+        string? category)
+    {
+        ArgumentNullException.ThrowIfNull(system);
+
+        IReadOnlyList<string> pathSegments = string.IsNullOrWhiteSpace(category)
+            ? []
+            : SplitCategoryPath(category);
+        var categories = new Dictionary<string, WorkOverviewCatalogCategoryItem>(StringComparer.OrdinalIgnoreCase);
+        var directDefinitions = new List<WorkDefinition>();
+
+        foreach (var definition in system.Catalog.Definitions)
+        {
+            var definitionSegments = SplitCategoryPath(definition.Category);
+            if (!StartsWithCategoryPath(definitionSegments, pathSegments))
+            {
+                continue;
+            }
+
+            var remainingSegments = definitionSegments.Skip(pathSegments.Count).ToArray();
+            if (remainingSegments.Length == 0)
+            {
+                directDefinitions.Add(definition);
+                continue;
+            }
+
+            var childSegments = pathSegments.Append(remainingSegments[0]).ToArray();
+            var childPath = string.Join(':', childSegments);
+            if (categories.TryGetValue(childPath, out var existing))
+            {
+                categories[childPath] = existing with { Count = existing.Count + 1 };
+            }
+            else
+            {
+                categories[childPath] = new WorkOverviewCatalogCategoryItem(
+                    remainingSegments[0],
+                    childPath,
+                    1);
+            }
+        }
+
+        return new WorkableHttpDefinitionCatalogLevel(
+            [.. categories.Values.OrderBy(item => item.Label, StringComparer.OrdinalIgnoreCase)],
+            [.. directDefinitions
+                .OrderBy(definition => definition.Category, StringComparer.OrdinalIgnoreCase)
+                .ThenBy(definition => definition.Name, StringComparer.OrdinalIgnoreCase)]);
+    }
+
+    private static IReadOnlyList<string> SplitCategoryPath(string? category)
+        => (string.IsNullOrWhiteSpace(category)
+                ? WorkDefinitionMetadataDefaults.Category
+                : category)
+            .Split(':', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+
+    private static bool StartsWithCategoryPath(
+        IReadOnlyList<string> categorySegments,
+        IReadOnlyList<string> pathSegments)
+        => pathSegments.Count == 0 ||
+            pathSegments.Count <= categorySegments.Count &&
+            pathSegments
+                .Select((segment, index) => string.Equals(
+                    categorySegments[index],
+                    segment,
+                    StringComparison.OrdinalIgnoreCase))
+                .All(matches => matches);
 
     internal static async Task<WorkableHttpWorkResult> Queue(
         IWorkSystem system,

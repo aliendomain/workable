@@ -15,7 +15,7 @@ The core API defines the public shape of Workable for discovering work, queueing
 - `IWorkQuery` exposes worker snapshots, worker iteration snapshots, slim worker and iteration query rows, work definition browsing, work key search, work info, status summaries, and system overviews.
 - `IWorkEventStream` creates event subscriptions.
 - `Start` and `Stop` control system lifecycle.
-- `Stop` returns the workers that were force-canceled because the shutdown grace period elapsed.
+- `Stop` returns the shutdown grace period plus workers that were force-canceled because the grace period elapsed, including compact worker summaries and definition names.
 - `Stop` clears in-memory worker and iteration records after shutdown cancellation completes.
 - `IWorkSystem` is asynchronously disposable.
 

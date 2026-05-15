@@ -55,18 +55,9 @@ public static class WorkableHttpApiExtensions
 
         group.MapGet("/definitions", (
             HttpContext httpContext,
-            WorkableHttpWorkService work) =>
-        {
-            if (!TryResolveSystem(httpContext, work, out var system, out var notFound))
-            {
-                return notFound;
-            }
-
-            return Results.Ok(WorkableHttpWorkService.GetDefinitions(system));
-        });
-
-        group.MapGet("/overview", (
-            HttpContext httpContext,
+            string? category,
+            bool? includeSubcategories,
+            bool? level,
             WorkableHttpWorkService work,
             CancellationToken cancellationToken) =>
         {
@@ -75,11 +66,26 @@ public static class WorkableHttpApiExtensions
                 return Task.FromResult(notFound);
             }
 
-            return ToOk(system.Query.GetSystemOverview(cancellationToken));
+            if (level == true)
+            {
+                return Task.FromResult<IResult>(Results.Ok(WorkableHttpWorkService.GetDefinitionCatalogLevel(system, category)));
+            }
+
+            if (!string.IsNullOrWhiteSpace(category))
+            {
+                return ToOk(system.Query.QueryWorkDefinitions(
+                    new WorkDefinitionQuery(
+                        Category: category,
+                        IncludeSubcategories: includeSubcategories ?? true),
+                    cancellationToken));
+            }
+
+            return Task.FromResult<IResult>(Results.Ok(WorkableHttpWorkService.GetDefinitions(system)));
         });
 
-        group.MapGet("/overview/counts", (
+        group.MapPost("/components/query", (
             HttpContext httpContext,
+            WorkComponentQuery? query,
             WorkableHttpWorkService work,
             CancellationToken cancellationToken) =>
         {
@@ -88,11 +94,13 @@ public static class WorkableHttpApiExtensions
                 return Task.FromResult(notFound);
             }
 
-            return ToOk(system.Query.GetSystemOverviewCounts(cancellationToken));
+            return ToOk(system.Query.QueryComponents(query, cancellationToken));
         });
 
-        group.MapGet("/overview/worker-counts", (
+        group.MapPost("/components/{componentName}", (
             HttpContext httpContext,
+            string componentName,
+            WorkSingleComponentQuery? query,
             WorkableHttpWorkService work,
             CancellationToken cancellationToken) =>
         {
@@ -101,11 +109,17 @@ public static class WorkableHttpApiExtensions
                 return Task.FromResult(notFound);
             }
 
-            return ToOk(system.Query.GetSystemOverviewWorkerCounts(cancellationToken));
+            return ToOk(system.Query.QueryComponents(
+                new WorkComponentQuery(
+                    query?.Scope,
+                    [new WorkComponentRequest(componentName, componentName, query?.Options)]),
+                cancellationToken));
         });
 
-        group.MapGet("/overview/iteration-counts", (
+        group.MapPost("/views/{viewName}", (
             HttpContext httpContext,
+            string viewName,
+            WorkViewQuery? query,
             WorkableHttpWorkService work,
             CancellationToken cancellationToken) =>
         {
@@ -114,59 +128,7 @@ public static class WorkableHttpApiExtensions
                 return Task.FromResult(notFound);
             }
 
-            return ToOk(system.Query.GetSystemOverviewIterationCounts(cancellationToken));
-        });
-
-        group.MapGet("/overview/common-key-types", (
-            HttpContext httpContext,
-            WorkableHttpWorkService work,
-            CancellationToken cancellationToken) =>
-        {
-            if (!TryResolveSystem(httpContext, work, out var system, out var notFound))
-            {
-                return Task.FromResult(notFound);
-            }
-
-            return ToOk(system.Query.GetSystemOverviewCommonKeyTypes(cancellationToken));
-        });
-
-        group.MapGet("/overview/failed-workers", (
-            HttpContext httpContext,
-            WorkableHttpWorkService work,
-            CancellationToken cancellationToken) =>
-        {
-            if (!TryResolveSystem(httpContext, work, out var system, out var notFound))
-            {
-                return Task.FromResult(notFound);
-            }
-
-            return ToOk(system.Query.GetSystemOverviewFailedWorkers(cancellationToken));
-        });
-
-        group.MapGet("/overview/failed-iterations", (
-            HttpContext httpContext,
-            WorkableHttpWorkService work,
-            CancellationToken cancellationToken) =>
-        {
-            if (!TryResolveSystem(httpContext, work, out var system, out var notFound))
-            {
-                return Task.FromResult(notFound);
-            }
-
-            return ToOk(system.Query.GetSystemOverviewFailedIterations(cancellationToken));
-        });
-
-        group.MapGet("/overview/completed-iterations", (
-            HttpContext httpContext,
-            WorkableHttpWorkService work,
-            CancellationToken cancellationToken) =>
-        {
-            if (!TryResolveSystem(httpContext, work, out var system, out var notFound))
-            {
-                return Task.FromResult(notFound);
-            }
-
-            return ToOk(system.Query.GetSystemOverviewCompletedIterations(cancellationToken));
+            return ToOk(system.Query.GetView(viewName, query, cancellationToken));
         });
 
         group.MapGet("/queue-request/schema", ()

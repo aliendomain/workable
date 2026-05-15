@@ -100,14 +100,17 @@ POST /workable/systems/email/lifecycle/stop
 
 Starting a system runs the normal system startup behavior. Work definition sources are not run again after the catalog has already been built, but automatic starts and startup work sources run each time a stopped system is started.
 
-Stopping a system stops accepting new work, asks active workers to cancel, waits for the configured shutdown grace period, and then force-cancels workers that did not finish cooperatively. After shutdown work completes, Workable clears in-memory worker and iteration records for that system. The stop response includes the workers that were force-canceled after the grace period elapsed.
+Stopping a system stops accepting new work, asks active workers to cancel, waits for the configured shutdown grace period, and then force-cancels workers that did not finish cooperatively. After shutdown work completes, Workable clears in-memory worker and iteration records for that system. The stop response includes the shutdown grace period, summaries for workers asked to stop, and the names and summaries of workers that were force-canceled after the grace period elapsed.
 
 ```json
 {
   "id": { "value": "11111111-1111-1111-1111-111111111111" },
   "name": "email",
   "state": "Stopped",
-  "forceCanceledWorkers": []
+  "forceCanceledWorkers": [],
+  "forceCanceledWorkerNames": [],
+  "forceCanceledWorkerSummaries": [],
+  "shutdownGracePeriod": "00:00:15"
 }
 ```
 
@@ -250,35 +253,46 @@ Content-Type: application/json
 }
 ```
 
-## Query Workers
+## UI Views And Components
 
-Get a system overview for dashboard-style screens.
-
-```http
-GET /workable/overview
-```
-
-The overview includes system name and state, active-or-queued definition count, worker counts by state, active/final/failed worker counts, current executing iteration count, completed/failed/canceled iteration counts, iteration counts by completion status, the ten most common iteration key types, the five most recently updated failed workers, and the five most recent failed/completed iterations.
-
-Use overview slices when a client only needs to refresh part of the overview screen.
+Dashboard-style screens request view data with component selections. The overview view returns a component map so clients can fetch only the panels they intend to render.
 
 ```http
-GET /workable/overview/counts
-GET /workable/overview/worker-counts
-GET /workable/overview/iteration-counts
-GET /workable/overview/common-key-types
-GET /workable/overview/failed-workers
-GET /workable/overview/failed-iterations
-GET /workable/overview/completed-iterations
+POST /workable/views/overview
+Content-Type: application/json
+
+{
+  "scope": {
+    "category": "Billing",
+    "includeSubcategories": true
+  },
+  "components": [
+    { "id": "system", "type": "system" },
+    { "id": "workers", "type": "workers" },
+    { "id": "throughput", "type": "throughput", "options": { "windowSeconds": 60, "bucketSeconds": 1 } }
+  ]
+}
 ```
 
-`/overview/failed-workers` returns worker counts and the recent failed worker rows together, so clients can refresh the failed-worker panel and worker-count tiles with one request.
+When `components` is omitted, the overview view returns the default non-live components: `system`, `catalog`, `workers`, `failedWorkers`, `relationships`, `failedIterations`, and `completedIterations`. Request `throughput` explicitly only when the throughput panel is visible.
+
+Clients can also request arbitrary components without binding the request to a named view.
+
+```http
+POST /workable/components/query
+POST /workable/components/throughput
+```
+
+Component and view requests accept an optional `scope`. Scopes can target `definitionId`, `definitionName`, or `category`. When `category` is supplied, `includeSubcategories` defaults to `true`.
 
 Named systems use the same route shape under `/systems/{systemName}`.
 
 ```http
-GET /workable/systems/fulfillment/overview/counts
+POST /workable/systems/fulfillment/views/overview
+POST /workable/systems/fulfillment/components/throughput
 ```
+
+## Query Workers
 
 Get a worker snapshot.
 
@@ -300,6 +314,8 @@ Content-Type: application/json
 
 {
   "definitionName": "email.welcome.send",
+  "category": "Email",
+  "includeSubcategories": true,
   "states": [ "Completed", "Failed" ],
   "configuration": {
     "recurrenceEnabled": false,

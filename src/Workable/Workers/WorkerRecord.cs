@@ -86,6 +86,8 @@ internal sealed class WorkerRecord(
 
     public Action<WorkerRecord, WorkerIterationSnapshot>? IterationRecorded { get; set; }
 
+    public Action<WorkerRecord, WorkerIterationReference>? IterationForgotten { get; set; }
+
     public bool IsFinal => WorkerStateMachine.IsFinal(this.State);
 
     public WorkerSummary ToSummary()
@@ -207,11 +209,6 @@ internal sealed class WorkerRecord(
             var transition = checkedTransition.RequiredTransition;
             this.ApplyAcceptedTransitionLocked(transition);
 
-            if (!transition.CancelsExecution)
-            {
-                this.SetCompletionLocked(WorkCompletionStatus.Paused);
-            }
-
             cancellation = transition.CancelsExecution ? this.executionCancellation : null;
             this.SignalRecurrenceWaitLocked();
             outcome = this.ToOutcomeLocked(transition);
@@ -239,11 +236,6 @@ internal sealed class WorkerRecord(
             this.ApplyAcceptedTransitionLocked(transition);
 
             cancellation = transition.CancelsExecution ? this.executionCancellation : null;
-            if (!transition.CancelsExecution)
-            {
-                this.SetCompletionLocked(WorkCompletionStatus.Canceled);
-            }
-
             this.SignalRecurrenceWaitLocked();
             outcome = this.ToOutcomeLocked(transition);
         }
@@ -319,7 +311,6 @@ internal sealed class WorkerRecord(
             this.nextRunAt = null;
             this.AdvanceStateSequence();
             this.ReleaseExecutionCancellationLocked();
-            this.SetCompletionLocked(transition.CompletionStatus);
             return transition.CompletionStatus;
         }
     }
@@ -350,7 +341,6 @@ internal sealed class WorkerRecord(
             this.AdvanceStateSequence();
             this.ReleaseExecutionCancellationLocked();
             this.SignalRecurrenceWaitLocked();
-            this.SetCompletionLocked(WorkCompletionStatus.Canceled);
 
             return WorkActionOutcome.Accepted(
                 WorkAction.Cancel,
@@ -368,9 +358,7 @@ internal sealed class WorkerRecord(
         {
             if (this.State is WorkerState.Pausing or WorkerState.Canceling || !continueRecurrence)
             {
-                var status = this.CompleteLocked(result, setCompletion: false);
-                this.SetCompletionLocked(status);
-                return status;
+                return this.CompleteLocked(result);
             }
 
             if (this.State != WorkerState.Running)
@@ -395,9 +383,7 @@ internal sealed class WorkerRecord(
         {
             if (this.State is WorkerState.Pausing or WorkerState.Canceling)
             {
-                var status = this.CompleteLocked(result, setCompletion: false);
-                this.SetCompletionLocked(status);
-                return status;
+                return this.CompleteLocked(result);
             }
 
             if (this.State != WorkerState.Running)
@@ -434,7 +420,6 @@ internal sealed class WorkerRecord(
             this.nextRunAt = null;
             this.AdvanceStateSequence();
             this.ReleaseExecutionCancellationLocked();
-            this.SetCompletionLocked(status);
             return status;
         }
     }
@@ -499,7 +484,6 @@ internal sealed class WorkerRecord(
             this.nextRunAt = null;
             this.AdvanceStateSequence();
             this.ReleaseExecutionCancellationLocked();
-            this.SetCompletionLocked(WorkCompletionStatus.Failed);
         }
     }
 
@@ -638,6 +622,26 @@ internal sealed class WorkerRecord(
         }
 
         await (await Task.WhenAny(startedTask, completionTask)).WaitAsync(cancellationToken);
+    }
+
+    public bool SignalCurrentCompletion()
+    {
+        lock (this.sync)
+        {
+            if (this.completion.Task.IsCompleted)
+            {
+                return false;
+            }
+
+            var status = WorkerStateMachine.CompletionStatusFor(this.State);
+            if (status == WorkCompletionStatus.Invalid)
+            {
+                return false;
+            }
+
+            this.SetCompletionLocked(status);
+            return true;
+        }
     }
 
     public WorkerSnapshot ToSnapshot()
@@ -902,7 +906,7 @@ internal sealed class WorkerRecord(
     private void SetCompletionLocked(WorkCompletionStatus status)
         => this.completion.TrySetResult(this.ToCompletionLocked(status));
 
-    private WorkCompletionStatus CompleteLocked(WorkExecutionResult result, bool setCompletion = true)
+    private WorkCompletionStatus CompleteLocked(WorkExecutionResult result)
     {
         var transition = WorkerStateMachine.Complete(this.State, result.HasErrors);
 
@@ -918,11 +922,6 @@ internal sealed class WorkerRecord(
         this.nextRunAt = null;
         this.AdvanceStateSequence();
         this.ReleaseExecutionCancellationLocked();
-        if (setCompletion)
-        {
-            this.SetCompletionLocked(transition.CompletionStatus);
-        }
-
         return transition.CompletionStatus;
     }
 
@@ -968,7 +967,9 @@ internal sealed class WorkerRecord(
             : this.Configuration.Recurrence.RetainedFailedIterations;
         while (retained.Count > maximum)
         {
+            var forgotten = retained[0];
             retained.RemoveAt(0);
+            this.IterationForgotten?.Invoke(this, new WorkerIterationReference(this.Id, forgotten.Sequence));
         }
     }
 
@@ -1083,11 +1084,6 @@ internal sealed class WorkerRecord(
 
             this.ApplyAcceptedTransitionLocked(transition, advancesRevision: false);
             cancellation = transition.CancelsExecution ? this.executionCancellation : null;
-            if (!transition.CancelsExecution)
-            {
-                this.SetCompletionLocked(WorkCompletionStatus.Canceled);
-            }
-
             this.SignalRecurrenceWaitLocked();
             outcome = this.ToOutcomeLocked(transition);
         }

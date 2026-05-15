@@ -12,6 +12,8 @@ internal sealed class WorkerExecutionInvoker(
 {
     public async Task<WorkExecutionResult> Execute(WorkerRecord worker, CancellationToken cancellationToken)
     {
+        cancellationToken.ThrowIfCancellationRequested();
+
         var activeProfile = worker.Options.ProfilingEnabled
             ? new WorkProfile($"Worker {worker.Id.Value} {worker.Work.Definition.Name}")
             : null;
@@ -24,6 +26,8 @@ internal sealed class WorkerExecutionInvoker(
             {
                 return initializationResult;
             }
+
+            cancellationToken.ThrowIfCancellationRequested();
 
             await using var scope = rootServices.CreateAsyncScope();
             var context = this.CreateContext(worker, scope.ServiceProvider);
@@ -39,6 +43,10 @@ internal sealed class WorkerExecutionInvoker(
                 MessageCount = result.Messages.Count,
             });
             return result;
+        }
+        catch (ObjectDisposedException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw new OperationCanceledException(cancellationToken);
         }
         finally
         {

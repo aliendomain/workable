@@ -26,15 +26,6 @@ internal sealed class WorkableRealtimeBroadcaster(
                 options: new WorkEventSubscriptionOptions(
                     options.Value.EventSubscriptionCapacity,
                     options.Value.EventOverflowBehavior));
-            using var subscriptionCancellation = cancellationToken.UnsafeRegister(
-                static state =>
-                {
-                    if (state is IWorkEventSubscription subscription)
-                    {
-                        _ = Task.Run(async () => await subscription.DisposeAsync());
-                    }
-                },
-                subscription);
 
             await Task.WhenAll(
                 this.BroadcastEvents(system, subscription, dashboardSignal, cancellationToken),
@@ -52,13 +43,8 @@ internal sealed class WorkableRealtimeBroadcaster(
         DashboardSignal dashboardSignal,
         CancellationToken cancellationToken)
     {
-        await foreach (var workEvent in subscription.Read(CancellationToken.None))
+        await foreach (var workEvent in subscription.Read(cancellationToken))
         {
-            if (cancellationToken.IsCancellationRequested)
-            {
-                return;
-            }
-
             dashboardSignal.MarkDirty();
             var realtimeEvent = WorkableRealtimeEvent.From(workEvent);
 
@@ -88,29 +74,14 @@ internal sealed class WorkableRealtimeBroadcaster(
         CancellationToken cancellationToken)
     {
         using var timer = new PeriodicTimer(options.Value.DashboardPublishInterval);
-        using var timerCancellation = cancellationToken.UnsafeRegister(
-            static state =>
-            {
-                if (state is PeriodicTimer timer)
-                {
-                    timer.Dispose();
-                }
-            },
-            timer);
-
-        while (await timer.WaitForNextTickAsync(CancellationToken.None))
+        while (await timer.WaitForNextTickAsync(cancellationToken))
         {
-            if (cancellationToken.IsCancellationRequested)
-            {
-                return;
-            }
-
             if (!dashboardSignal.TryConsumeDirty())
             {
                 continue;
             }
 
-            var overview = await system.Query.GetSystemOverview(cancellationToken);
+            var overview = await system.Query.GetSystemOverview(cancellationToken: cancellationToken);
             await hub.Clients
                 .Group(WorkableRealtimeGroups.Dashboard(system))
                 .SendAsync(

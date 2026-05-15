@@ -190,7 +190,7 @@ public sealed record WorkableRealtimeDashboard(
 
 `DefinitionCount` is the number of definitions that currently have queued or active workers. `CurrentIterationCount` is the number of iterations with `WorkCompletionStatus.Executing`.
 
-Dashboard messages use the same worker-state and iteration-oriented activity shape as `GET /workable/overview`, plus `SystemId` and `UpdatedAt`.
+Dashboard messages use the same worker-state and iteration-oriented activity shape as the default `POST /workable/views/overview` response, plus `SystemId` and `UpdatedAt`.
 
 ## Hub Methods
 

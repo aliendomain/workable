@@ -19,6 +19,7 @@ internal sealed class WorkSystemRegistry : IWorkSystemRegistry
         IEnumerable<StartupWorkSourceContribution> startupWorkSourceContributions,
         IEnumerable<WorkableRegistrationOptions> options)
     {
+        var hostShutdownTimeout = TryResolveHostShutdownTimeout(services);
         var globalExceptionClassifiers = options
             .SelectMany(option => option.ExceptionClassifiers)
             .ToList();
@@ -29,6 +30,7 @@ internal sealed class WorkSystemRegistry : IWorkSystemRegistry
                 ComposeWorkDefinitionSourceFactories(registration, workDefinitionSourceContributions),
                 ComposeStartupWorkSourceFactories(registration, startupWorkSourceContributions),
                 services,
+                registration.ShutdownGracePeriod.Resolve(hostShutdownTimeout),
                 globalExceptionClassifiers))
             .Cast<IWorkSystem>()
             .ToList();
@@ -121,5 +123,31 @@ internal sealed class WorkSystemRegistry : IWorkSystemRegistry
             : [];
 
         return [.. registration.StartupWorkSourceFactories.Concat(contributed)];
+    }
+
+    private static TimeSpan? TryResolveHostShutdownTimeout(IServiceProvider services)
+    {
+        var hostOptionsType = Type.GetType("Microsoft.Extensions.Hosting.HostOptions, Microsoft.Extensions.Hosting");
+        var optionsTypeDefinition = Type.GetType("Microsoft.Extensions.Options.IOptions`1, Microsoft.Extensions.Options");
+        if (hostOptionsType is null || optionsTypeDefinition is null)
+        {
+            return null;
+        }
+
+        var optionsServiceType = optionsTypeDefinition.MakeGenericType(hostOptionsType);
+        var options = services.GetService(optionsServiceType);
+        if (options is null)
+        {
+            return null;
+        }
+
+        var value = optionsServiceType.GetProperty("Value")?.GetValue(options);
+        if (value is null)
+        {
+            return null;
+        }
+
+        var shutdownTimeout = hostOptionsType.GetProperty("ShutdownTimeout")?.GetValue(value);
+        return shutdownTimeout is TimeSpan timeout ? timeout : null;
     }
 }
