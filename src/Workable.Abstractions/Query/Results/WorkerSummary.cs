@@ -13,6 +13,7 @@ public sealed record WorkerSummary(
     WorkOrigin Origin,
     WorkerState State,
     DateTimeOffset CreatedAt,
+    DateTimeOffset StateChangedAt,
     DateTimeOffset UpdatedAt)
 {
     public WorkerVersion Version => new(this.Id, this.Revision);

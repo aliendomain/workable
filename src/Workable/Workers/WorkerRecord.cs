@@ -82,6 +82,8 @@ internal sealed class WorkerRecord(
 
     public DateTimeOffset CreatedAt { get; } = createdAt;
 
+    public DateTimeOffset StateChangedAt { get; private set; } = updatedAt;
+
     public DateTimeOffset UpdatedAt { get; private set; } = updatedAt;
 
     public Action<WorkerRecord, WorkerIterationSnapshot>? IterationRecorded { get; set; }
@@ -318,7 +320,7 @@ internal sealed class WorkerRecord(
                 return transition.CompletionStatus;
             }
 
-            this.State = transition.NextState;
+            this.SetStateLocked(transition.NextState);
             this.Output = null;
             this.RecordIterationLocked(null, this.Messages, transition.CompletionStatus);
             this.nextRunAt = null;
@@ -348,7 +350,7 @@ internal sealed class WorkerRecord(
                     "Worker did not stop within the shutdown grace period and was force-canceled by Workable.",
                     "worker"),
             ];
-            this.State = WorkerState.Canceled;
+            this.SetStateLocked(WorkerState.Canceled);
             this.Output = null;
             this.RecordIterationLocked(null, this.Messages, WorkCompletionStatus.Canceled);
             this.AdvanceStateSequence();
@@ -379,7 +381,7 @@ internal sealed class WorkerRecord(
                 return WorkCompletionStatus.Invalid;
             }
 
-            this.State = WorkerState.Waiting;
+            this.SetStateLocked(WorkerState.Waiting);
             this.Output = result.Output;
             this.Messages = result.Messages;
             this.recurrenceWaitSignal = CreateSignalSource();
@@ -404,7 +406,7 @@ internal sealed class WorkerRecord(
                 return WorkCompletionStatus.Invalid;
             }
 
-            this.State = WorkerState.Retrying;
+            this.SetStateLocked(WorkerState.Retrying);
             this.Output = result.Output;
             this.Messages = result.Messages;
             this.recurrenceWaitSignal = CreateSignalSource();
@@ -427,9 +429,9 @@ internal sealed class WorkerRecord(
             var status = this.Messages.Any(message => message.Severity == WorkMessageSeverity.Error)
                 ? WorkCompletionStatus.Failed
                 : WorkCompletionStatus.Completed;
-            this.State = status == WorkCompletionStatus.Failed
+            this.SetStateLocked(status == WorkCompletionStatus.Failed
                 ? WorkerState.Failed
-                : WorkerState.Completed;
+                : WorkerState.Completed);
             this.nextRunAt = null;
             this.AdvanceStateSequence();
             this.ReleaseExecutionCancellationLocked();
@@ -458,7 +460,7 @@ internal sealed class WorkerRecord(
                 return false;
             }
 
-            this.State = WorkerState.Running;
+            this.SetStateLocked(WorkerState.Running);
             this.Output = null;
             this.Messages = [];
             this.nextRunAt = null;
@@ -477,7 +479,7 @@ internal sealed class WorkerRecord(
                 return false;
             }
 
-            this.State = WorkerState.Running;
+            this.SetStateLocked(WorkerState.Running);
             this.Output = null;
             this.Messages = [];
             this.nextRunAt = null;
@@ -492,7 +494,7 @@ internal sealed class WorkerRecord(
         lock (this.sync)
         {
             this.Messages = [message];
-            this.State = WorkerState.Failed;
+            this.SetStateLocked(WorkerState.Failed);
             this.RecordIterationLocked(null, this.Messages, WorkCompletionStatus.Failed);
             this.nextRunAt = null;
             this.AdvanceStateSequence();
@@ -858,6 +860,7 @@ internal sealed class WorkerRecord(
             this.Configuration,
             this.Messages,
             this.CreatedAt,
+            this.StateChangedAt,
             this.UpdatedAt)
         {
             Iterations = iterations,
@@ -928,7 +931,7 @@ internal sealed class WorkerRecord(
             return transition.CompletionStatus;
         }
 
-        this.State = transition.NextState;
+        this.SetStateLocked(transition.NextState);
         this.Output = transition.CompletionStatus is WorkCompletionStatus.Completed or WorkCompletionStatus.Failed ? result.Output : null;
         this.Messages = result.Messages;
         this.RecordIterationLocked(result, transition.CompletionStatus);
@@ -1053,7 +1056,7 @@ internal sealed class WorkerRecord(
 
         if (changesState && !transition.RemovesWorker)
         {
-            this.State = transition.RequiredNextState;
+            this.SetStateLocked(transition.RequiredNextState);
         }
 
         if (advancesRevision)
@@ -1144,6 +1147,17 @@ internal sealed class WorkerRecord(
     {
         this.Revision++;
         this.MarkUpdated();
+    }
+
+    private void SetStateLocked(WorkerState state)
+    {
+        if (this.State == state)
+        {
+            return;
+        }
+
+        this.State = state;
+        this.StateChangedAt = DateTimeOffset.UtcNow;
     }
 
     private void AdvanceStateSequence()
@@ -1239,6 +1253,7 @@ internal sealed class WorkerRecord(
             this.Origin,
             this.State,
             this.CreatedAt,
+            this.StateChangedAt,
             this.UpdatedAt)
         {
             QueueDuration = this.QueueDurationLocked(),
@@ -1258,6 +1273,7 @@ internal sealed class WorkerRecord(
             this.Work.Definition.Category,
             this.State,
             this.CreatedAt,
+            this.StateChangedAt,
             this.UpdatedAt)
         {
             QueueDuration = this.QueueDurationLocked(),

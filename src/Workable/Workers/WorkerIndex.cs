@@ -20,6 +20,8 @@ internal sealed class WorkerIndex
     private readonly ConcurrentDictionary<bool, ConcurrentDictionary<WorkerId, byte>> byProfilingEnabled = [];
     private readonly ConcurrentDictionary<WorkerState, int> stateCounts = [];
     private readonly ConcurrentDictionary<WorkDefinitionId, int> activeOrQueuedDefinitionCounts = [];
+    private readonly SortedSet<QueuedWorkerIndexEntry> queuedWorkers = [];
+    private readonly Dictionary<WorkDefinitionId, SortedSet<QueuedWorkerIndexEntry>> queuedWorkersByDefinition = [];
     private readonly ConcurrentDictionary<string, int> keyTypeCounts = [];
     private readonly ConcurrentDictionary<(WorkDefinitionId DefinitionId, string Type), int> keyTypeCountsByDefinition = [];
     private readonly ConcurrentDictionary<IndexedWorkKeyTypeKind, int> keyTypeKindCounts = [];
@@ -60,6 +62,18 @@ internal sealed class WorkerIndex
                 this.SynchronizeActiveOrQueuedDefinitionCount(existing, current);
             }
 
+            if (existing.State == WorkerState.Queued &&
+                (current.State != WorkerState.Queued || existing.StateChangedAt != current.StateChangedAt))
+            {
+                this.RemoveQueued(existing, worker.Id);
+            }
+
+            if (current.State == WorkerState.Queued &&
+                (existing.State != WorkerState.Queued || existing.StateChangedAt != current.StateChangedAt))
+            {
+                this.AddQueued(current, worker.Id);
+            }
+
             if (existing.RecurrenceEnabled != current.RecurrenceEnabled)
             {
                 Remove(this.byRecurrenceEnabled, existing.RecurrenceEnabled, worker.Id);
@@ -78,10 +92,7 @@ internal sealed class WorkerIndex
                 Add(this.byProfilingEnabled, current.ProfilingEnabled, worker.Id);
             }
 
-            this.keysByWorker[worker.Id] = current with
-            {
-                State = current.State,
-            };
+            this.keysByWorker[worker.Id] = current;
         }
     }
 
@@ -90,6 +101,7 @@ internal sealed class WorkerIndex
         Add(this.byDefinition, keys.DefinitionId, workerId);
         this.AddState(keys.DefinitionId, keys.State, workerId);
         this.AddActiveOrQueuedDefinitionCount(keys);
+        this.AddQueued(keys, workerId);
         Add(this.byRecurrenceEnabled, keys.RecurrenceEnabled, workerId);
         Add(this.byConcurrencyEnabled, keys.ConcurrencyEnabled, workerId);
         Add(this.byProfilingEnabled, keys.ProfilingEnabled, workerId);
@@ -169,6 +181,8 @@ internal sealed class WorkerIndex
             this.byProfilingEnabled.Clear();
             this.stateCounts.Clear();
             this.activeOrQueuedDefinitionCounts.Clear();
+            this.queuedWorkers.Clear();
+            this.queuedWorkersByDefinition.Clear();
             this.keyTypeCounts.Clear();
             this.keyTypeCountsByDefinition.Clear();
             this.keyTypeKindCounts.Clear();
@@ -406,6 +420,39 @@ internal sealed class WorkerIndex
             : definitionIds.Count(definitionId =>
                 this.activeOrQueuedDefinitionCounts.TryGetValue(definitionId, out var count) && count > 0);
 
+    public DateTimeOffset? OldestQueuedAt(IReadOnlySet<WorkDefinitionId>? definitionIds = null)
+    {
+        lock (this.sync)
+        {
+            if (definitionIds is null)
+            {
+                return OldestQueuedAt(this.queuedWorkers);
+            }
+
+            if (definitionIds.Count == 0)
+            {
+                return null;
+            }
+
+            DateTimeOffset? oldest = null;
+            foreach (var definitionId in definitionIds)
+            {
+                if (!this.queuedWorkersByDefinition.TryGetValue(definitionId, out var queued))
+                {
+                    continue;
+                }
+
+                var queuedAt = OldestQueuedAt(queued);
+                if (queuedAt is not null && (oldest is null || queuedAt.Value < oldest.Value))
+                {
+                    oldest = queuedAt;
+                }
+            }
+
+            return oldest;
+        }
+    }
+
     public IReadOnlyList<WorkerId> ByStates(IReadOnlySet<WorkerState> states)
     {
         if (states.Count == 0)
@@ -492,6 +539,7 @@ internal sealed class WorkerIndex
         Remove(this.byDefinition, keys.DefinitionId, workerId);
         this.RemoveState(keys.DefinitionId, keys.State, workerId);
         this.RemoveActiveOrQueuedDefinitionCount(keys);
+        this.RemoveQueued(keys, workerId);
         Remove(this.byRecurrenceEnabled, keys.RecurrenceEnabled, workerId);
         Remove(this.byConcurrencyEnabled, keys.ConcurrencyEnabled, workerId);
         Remove(this.byProfilingEnabled, keys.ProfilingEnabled, workerId);
@@ -573,6 +621,48 @@ internal sealed class WorkerIndex
             this.activeOrQueuedDefinitionCounts.AddOrUpdate(keys.DefinitionId, 0, static (_, count) => Math.Max(0, count - 1));
         }
     }
+
+    private void AddQueued(WorkerIndexKeys keys, WorkerId workerId)
+    {
+        if (keys.State != WorkerState.Queued)
+        {
+            return;
+        }
+
+        var entry = new QueuedWorkerIndexEntry(keys.StateChangedAt, workerId);
+        this.queuedWorkers.Add(entry);
+        if (!this.queuedWorkersByDefinition.TryGetValue(keys.DefinitionId, out var queued))
+        {
+            queued = [];
+            this.queuedWorkersByDefinition[keys.DefinitionId] = queued;
+        }
+
+        queued.Add(entry);
+    }
+
+    private void RemoveQueued(WorkerIndexKeys keys, WorkerId workerId)
+    {
+        if (keys.State != WorkerState.Queued)
+        {
+            return;
+        }
+
+        var entry = new QueuedWorkerIndexEntry(keys.StateChangedAt, workerId);
+        this.queuedWorkers.Remove(entry);
+        if (!this.queuedWorkersByDefinition.TryGetValue(keys.DefinitionId, out var queued))
+        {
+            return;
+        }
+
+        queued.Remove(entry);
+        if (queued.Count == 0)
+        {
+            this.queuedWorkersByDefinition.Remove(keys.DefinitionId);
+        }
+    }
+
+    private static DateTimeOffset? OldestQueuedAt(SortedSet<QueuedWorkerIndexEntry> queued)
+        => queued.Count == 0 ? null : queued.Min.QueuedAt;
 
     private void AddIdentifierKeyTypeCounts(WorkerIndexKeys existing, WorkIdentifier identifier)
     {
@@ -940,9 +1030,21 @@ internal sealed class WorkerIndex
         WorkKeyKind Kind,
         string Type);
 
+    private readonly record struct QueuedWorkerIndexEntry(
+        DateTimeOffset QueuedAt,
+        WorkerId WorkerId) : IComparable<QueuedWorkerIndexEntry>
+    {
+        public int CompareTo(QueuedWorkerIndexEntry other)
+        {
+            var queuedAt = this.QueuedAt.CompareTo(other.QueuedAt);
+            return queuedAt != 0 ? queuedAt : this.WorkerId.Value.CompareTo(other.WorkerId.Value);
+        }
+    }
+
     private sealed record WorkerIndexKeys(
         WorkDefinitionId DefinitionId,
         WorkerState State,
+        DateTimeOffset StateChangedAt,
         bool RecurrenceEnabled,
         bool ConcurrencyEnabled,
         bool ProfilingEnabled,
@@ -954,6 +1056,7 @@ internal sealed class WorkerIndex
             => new(
                 worker.Work.Definition.Id,
                 worker.State,
+                worker.StateChangedAt,
                 worker.Configuration.Recurrence.IsEnabled,
                 worker.Configuration.Concurrency.IsEnabled,
                 worker.Options.ProfilingEnabled,

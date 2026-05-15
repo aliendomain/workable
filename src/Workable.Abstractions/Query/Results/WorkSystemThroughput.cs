@@ -22,4 +22,5 @@ public sealed record WorkThroughputLiveSummary(
     double CompletedPerSecond,
     double FailedPerSecond,
     double CanceledPerSecond,
+    double InFlightDeltaPerSecond,
     double AverageExecutionMilliseconds);

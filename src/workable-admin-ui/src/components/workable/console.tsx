@@ -3,6 +3,8 @@
 import Image from "next/image";
 import {
   Activity,
+  ArrowDown,
+  ArrowUp,
   Ban,
   Boxes,
   Braces,
@@ -14,6 +16,7 @@ import {
   CircleAlert,
   CircleDot,
   Clock3,
+  Equal,
   FileCode2,
   Folder,
   ListFilter,
@@ -172,6 +175,7 @@ import {
   type WorkSystemOverview,
   type WorkSystemThroughput,
   type WorkThroughputBucket,
+  type WorkThroughputLiveSummary,
   type WorkTypedValue,
   type WorkableConnection,
   type WorkableHttpSystemInfo,
@@ -192,6 +196,8 @@ type ServerView = Exclude<View, "worker">;
 type ThroughputMode = "completion" | "execution";
 type ThroughputMetric = {
   description: string;
+  icon?: typeof Activity;
+  iconClass?: string;
   id: string;
   label: string;
   pulseClass?: string;
@@ -211,6 +217,7 @@ type WorkOverviewWorkersComponent = Pick<
   | "definitionCount"
   | "failedWorkerCount"
   | "finalWorkerCount"
+  | "oldestQueuedAt"
   | "workerCountByState"
 >;
 type WorkOverviewRelationshipsComponent = Pick<
@@ -3152,6 +3159,9 @@ function OverviewView({
   const workerCountByState = activeFailedWorkersSlice?.workerCountByState ??
     workersComponent?.workerCountByState ??
     {};
+  const oldestQueuedAt = activeFailedWorkersSlice?.oldestQueuedAt ??
+    workersComponent?.oldestQueuedAt;
+  const oldestQueuedAge = formatQueueAge(oldestQueuedAt);
   const failedWorkers = activeFailedWorkersSlice?.failedWorkers ??
     failedWorkersComponent ??
     [];
@@ -3209,6 +3219,7 @@ function OverviewView({
           failedWorkerCount: refreshedWorkers?.failedWorkerCount ?? failedWorkerCount,
           finalWorkerCount: refreshedWorkers?.finalWorkerCount ?? finalWorkerCount,
           failedWorkers: refreshedFailedWorkers ?? failedWorkers,
+          oldestQueuedAt: refreshedWorkers?.oldestQueuedAt ?? oldestQueuedAt,
           workerCountByState: refreshedWorkers?.workerCountByState ?? workerCountByState,
         },
         key: failedWorkersKey,
@@ -3312,7 +3323,7 @@ function OverviewView({
             onSelectState={(state) => onViewWorkersByState([state])}
             title="Worker states"
           />
-          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
             <MetricCard
               compact
               description="Workers that are not completed, canceled, or failed."
@@ -3330,6 +3341,16 @@ function OverviewView({
               loading={overview.loading}
               onClick={onOpenCatalog}
               value={workersComponent?.definitionCount ?? 0}
+            />
+            <MetricCard
+              compact
+              description="How long the oldest currently queued worker has been waiting."
+              icon={Hourglass}
+              label="Oldest queued"
+              loading={overview.loading}
+              onClick={() => onViewWorkersByState(["Queued"])}
+              tone={oldestQueuedAge.isWarning ? "text-amber-300" : undefined}
+              value={oldestQueuedAge.text}
             />
             <MetricCard
               compact
@@ -6006,7 +6027,7 @@ function MetricCard({
   loading: boolean;
   onClick?: () => void;
   tone?: string;
-  value: number;
+  value: number | string;
 }) {
   const content = (
     <>
@@ -6141,7 +6162,9 @@ function ThroughputAreaChart({
   windowSeconds: number;
 }) {
   const buckets = getSettledThroughputBuckets(throughput);
-  const bucketSeconds = throughput?.bucketSeconds ?? 1;
+  const bucketSeconds = throughput?.bucketSeconds ??
+    throughputWindows.find((window) => window.seconds === windowSeconds)?.bucketSeconds ??
+    1;
   const series = createThroughputSeries(mode, buckets, bucketSeconds);
   const maxValue = getNiceChartMax(Math.max(0, ...series.flatMap((item) => item.values)), mode);
   const yTicks = createYAxisTicks(maxValue);
@@ -6149,8 +6172,12 @@ function ThroughputAreaChart({
   const metrics = createThroughputMetrics(
     mode,
     throughput,
+    bucketSeconds,
     windowSeconds
   );
+  const lineSeries = mode === "completion" && series.length > 1
+    ? [...series.slice(1), series[0]]
+    : series;
 
   return (
     <div className="space-y-3">
@@ -6164,23 +6191,27 @@ function ThroughputAreaChart({
           ))}
         </div>
         <div className="flex flex-wrap items-center justify-end gap-1.5">
-          {metrics.map((metric) => (
-            <Tooltip delayDuration={500} disableHoverableContent key={metric.id}>
-              <TooltipTrigger asChild>
-                <div
-                  className={`flex items-center justify-center gap-1.5 whitespace-nowrap rounded-full border border-foreground/10 bg-background/70 px-2.5 py-1 shadow-sm ${metric.widthClass ?? "min-w-24"}`}
-                  tabIndex={0}
-                >
-                  {metric.pulseClass && <span className={`size-2 rounded-full ${metric.pulseClass}`} />}
-                  {metric.label && <span className="text-muted-foreground text-[11px]">{metric.label}</span>}
-                  <span className={`font-mono font-semibold text-xs ${metric.valueClass ?? ""}`}>{metric.value}</span>
-                </div>
-              </TooltipTrigger>
-              <TooltipContent className="max-w-64 whitespace-normal text-left" side="top" sideOffset={6}>
-                {metric.description}
-              </TooltipContent>
-            </Tooltip>
-          ))}
+          {metrics.map((metric) => {
+            const Icon = metric.icon;
+            return (
+              <Tooltip delayDuration={500} disableHoverableContent key={metric.id}>
+                <TooltipTrigger asChild>
+                  <div
+                    className={`flex items-center justify-center gap-1.5 whitespace-nowrap rounded-full border border-foreground/10 bg-background/70 px-2.5 py-1 shadow-sm ${metric.widthClass ?? "min-w-24"}`}
+                    tabIndex={0}
+                  >
+                    {metric.pulseClass && <span className={`size-2 rounded-full ${metric.pulseClass}`} />}
+                    {Icon && <Icon className={`size-3.5 ${metric.iconClass ?? "text-muted-foreground"}`} />}
+                    {metric.label && <span className="text-muted-foreground text-[11px]">{metric.label}</span>}
+                    <span className={`font-mono font-semibold text-xs ${metric.valueClass ?? ""}`}>{metric.value}</span>
+                  </div>
+                </TooltipTrigger>
+                <TooltipContent className="max-w-64 whitespace-normal text-left" side="top" sideOffset={6}>
+                  {metric.description}
+                </TooltipContent>
+              </Tooltip>
+            );
+          })}
         </div>
       </div>
       <div>
@@ -6219,18 +6250,20 @@ function ThroughputAreaChart({
                 />
               ))}
               {series.map((item) => (
-                <Fragment key={item.label}>
-                  <path d={createAreaPath(item.values, maxValue)} fill={`url(#${item.gradientId})`} />
-                  <path
-                    d={createLinePath(item.values, maxValue)}
-                    fill="none"
-                    stroke={item.color}
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    strokeWidth="2.5"
-                    vectorEffect="non-scaling-stroke"
-                  />
-                </Fragment>
+                <path d={createAreaPath(item.values, maxValue)} fill={`url(#${item.gradientId})`} key={`${item.label}-area`} />
+              ))}
+              {lineSeries.map((item) => (
+                <path
+                  d={createLinePath(item.values, maxValue)}
+                  fill="none"
+                  key={`${item.label}-line`}
+                  stroke={item.color}
+                  strokeDasharray={item.strokeDasharray}
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth={item.strokeWidth ?? "2.5"}
+                  vectorEffect="non-scaling-stroke"
+                />
               ))}
             </svg>
           </div>
@@ -6295,6 +6328,8 @@ function createThroughputSeries(
         gradientId: "started-throughput",
         label: "Started",
         legendClass: "bg-sky-400",
+        strokeDasharray: "6 5",
+        strokeWidth: "3",
         values: buckets.map((bucket) => bucket.started / normalizedBucketSeconds),
       },
       {
@@ -6354,9 +6389,11 @@ function chartPoint(value: number, index: number, count: number, maxValue: numbe
 function createThroughputMetrics(
   mode: ThroughputMode,
   chartThroughput: WorkSystemThroughput | undefined,
+  chartBucketSeconds: number,
   chartWindowSeconds: number
 ): ThroughputMetric[] {
   const buckets = getSettledThroughputBuckets(chartThroughput);
+  const bucketLabel = formatThroughputBucketLabel(chartBucketSeconds);
   const totalDescription = `Total settled iterations in the selected ${formatThroughputWindowLabel(chartWindowSeconds)} chart window. This includes completed, failed, and canceled iterations.`;
   if (!chartThroughput || buckets.length === 0) {
     return [
@@ -6387,9 +6424,23 @@ function createThroughputMetrics(
         valueClass: "text-red-300",
         widthClass: "min-w-16",
       },
+      ...(mode === "completion"
+        ? [
+            {
+              description: "Live execution pressure over the last 60 seconds: started iterations per second minus completed, failed, and canceled iterations per second.",
+              icon: Equal,
+              iconClass: "text-muted-foreground",
+              id: "execution-pressure",
+              label: "",
+              value: "-",
+              valueClass: "text-muted-foreground",
+              widthClass: "w-24 shrink-0",
+            },
+          ]
+        : []),
       {
         description: mode === "execution"
-          ? "Average execution time across the current chart window."
+          ? `Average execution time across settled iterations in the selected ${formatThroughputWindowLabel(chartWindowSeconds)} chart window.`
           : totalDescription,
         id: mode === "execution" ? "execution-average" : "total",
         label: mode === "execution" ? "Avg" : "Total",
@@ -6399,8 +6450,8 @@ function createThroughputMetrics(
       ...(mode === "completion"
         ? [
             {
-              description: "Average execution time across settled iterations in the last 60 seconds.",
-              id: "live-average",
+              description: `Average execution time across settled iterations in the selected ${formatThroughputWindowLabel(chartWindowSeconds)} chart window.`,
+              id: "window-average",
               label: "Avg",
               value: "-",
               widthClass: "min-w-20",
@@ -6410,17 +6461,12 @@ function createThroughputMetrics(
     ];
   }
 
+  const windowAverageExecution = createWindowExecutionAverageMilliseconds(buckets);
   if (mode === "execution") {
-    const values = buckets
-      .map((bucket) => bucket.averageExecutionMilliseconds)
-      .filter((value) => value > 0);
-    const average = values.length === 0
-      ? 0
-      : values.reduce((sum, value) => sum + value, 0) / values.length;
     const current = buckets.at(-1)?.averageExecutionMilliseconds ?? 0;
     return [
       {
-        description: "Average execution time in the current chart bucket.",
+        description: `Average execution time in the latest ${bucketLabel} bucket.`,
         id: "execution-latest",
         label: "Latest",
         pulseClass: "bg-violet-400 shadow-[0_0_14px_rgba(167,139,250,0.75)]",
@@ -6428,23 +6474,23 @@ function createThroughputMetrics(
         widthClass: "min-w-24",
       },
       {
-        description: "Average execution time across the current chart window.",
+        description: `Average execution time across settled iterations in the selected ${formatThroughputWindowLabel(chartWindowSeconds)} chart window.`,
         id: "execution-average",
         label: "Avg",
-        value: formatMilliseconds(average),
+        value: formatMilliseconds(windowAverageExecution),
         widthClass: "min-w-20",
       },
     ];
   }
 
   const liveSummary = chartThroughput.liveSummary;
-  const averageExecution = liveSummary.averageExecutionMilliseconds;
   const latestStartedRate = liveSummary.startedPerSecond;
   const latestCompletedRate = liveSummary.completedPerSecond;
   const latestFailedRate = liveSummary.failedPerSecond;
   const latestCanceledRate = liveSummary.canceledPerSecond;
   const settledTotal = buckets.reduce((sum, bucket) =>
     sum + bucket.completed + bucket.failed + bucket.canceled, 0);
+  const executionPressureMetric = createExecutionPressureMetric(liveSummary);
   return [
     {
       description: "Started iterations per second over the last 60 seconds.",
@@ -6482,6 +6528,7 @@ function createThroughputMetrics(
       valueClass: "text-amber-300",
       widthClass: "min-w-16",
     },
+    executionPressureMetric,
     {
       description: totalDescription,
       id: "total",
@@ -6490,13 +6537,69 @@ function createThroughputMetrics(
       widthClass: "min-w-20",
     },
     {
-      description: "Average execution time across settled iterations in the last 60 seconds.",
-      id: "live-average",
+      description: `Average execution time across settled iterations in the selected ${formatThroughputWindowLabel(chartWindowSeconds)} chart window.`,
+      id: "window-average",
       label: "Avg",
-      value: formatMilliseconds(averageExecution),
+      value: formatMilliseconds(windowAverageExecution),
       widthClass: "min-w-20",
     },
   ];
+}
+
+function createWindowExecutionAverageMilliseconds(buckets: WorkThroughputBucket[]) {
+  const totals = buckets.reduce(
+    (current, bucket) => {
+      const settledCount = bucket.completed + bucket.failed + bucket.canceled;
+      return {
+        count: current.count + settledCount,
+        milliseconds: current.milliseconds + bucket.averageExecutionMilliseconds * settledCount,
+      };
+    },
+    { count: 0, milliseconds: 0 }
+  );
+
+  return totals.count === 0 ? 0 : totals.milliseconds / totals.count;
+}
+
+function createExecutionPressureMetric(summary: WorkThroughputLiveSummary): ThroughputMetric {
+  const deltaPerSecond = summary.inFlightDeltaPerSecond;
+  if (deltaPerSecond > 0) {
+    return {
+      description: `Live execution pressure is increasing. Over the last ${summary.windowSeconds} seconds, iterations started ${formatRate(deltaPerSecond)} per second faster than they settled.`,
+      icon: ArrowUp,
+      iconClass: "text-red-300",
+      id: "execution-pressure",
+      label: "",
+      value: `+${formatRate(deltaPerSecond)}/s`,
+      valueClass: "text-red-300",
+      widthClass: "w-24 shrink-0",
+    };
+  }
+
+  if (deltaPerSecond < 0) {
+    const absoluteDeltaPerSecond = Math.abs(deltaPerSecond);
+    return {
+      description: `Live execution pressure is decreasing. Over the last ${summary.windowSeconds} seconds, iterations settled ${formatRate(absoluteDeltaPerSecond)} per second faster than they started.`,
+      icon: ArrowDown,
+      iconClass: "text-emerald-300",
+      id: "execution-pressure",
+      label: "",
+      value: `-${formatRate(absoluteDeltaPerSecond)}/s`,
+      valueClass: "text-emerald-300",
+      widthClass: "w-24 shrink-0",
+    };
+  }
+
+  return {
+    description: `Live execution pressure is balanced. Over the last ${summary.windowSeconds} seconds, starts and settled outcomes matched.`,
+    icon: Equal,
+    iconClass: "text-muted-foreground",
+    id: "execution-pressure",
+    label: "",
+    value: "0/s",
+    valueClass: "text-muted-foreground",
+    widthClass: "w-24 shrink-0",
+  };
 }
 
 function formatThroughputWindowLabel(seconds: number) {
@@ -6508,6 +6611,17 @@ function formatThroughputWindowLabel(seconds: number) {
   }
   if (seconds % 3600 === 0) {
     return `${seconds / 3600}-hour`;
+  }
+  if (seconds % 60 === 0) {
+    return `${seconds / 60}-minute`;
+  }
+
+  return `${seconds}-second`;
+}
+
+function formatThroughputBucketLabel(seconds: number) {
+  if (seconds === 60) {
+    return "1-minute";
   }
   if (seconds % 60 === 0) {
     return `${seconds / 60}-minute`;
@@ -7020,6 +7134,19 @@ function formatWorkerDuration(worker: WorkerOverviewItem): DurationDisplay {
   }
 
   return formatDurationSeconds(Math.max(0, (updatedAt - createdAt) / 1000));
+}
+
+function formatQueueAge(value?: string | null): DurationDisplay {
+  if (!value) {
+    return { isWarning: false, text: "-" };
+  }
+
+  const timestamp = Date.parse(value);
+  if (!Number.isFinite(timestamp)) {
+    return { isWarning: false, text: "-" };
+  }
+
+  return formatDurationSeconds(Math.max(0, (Date.now() - timestamp) / 1000));
 }
 
 function formatRelativeTime(value?: string | null) {

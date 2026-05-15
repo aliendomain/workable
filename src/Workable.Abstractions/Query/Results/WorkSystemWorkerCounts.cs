@@ -4,4 +4,5 @@ public sealed record WorkSystemWorkerCounts(
     int ActiveWorkerCount,
     int FinalWorkerCount,
     int FailedWorkerCount,
-    IReadOnlyDictionary<WorkerState, int> WorkerCountByState) : IWorkQueryResult;
+    IReadOnlyDictionary<WorkerState, int> WorkerCountByState,
+    DateTimeOffset? OldestQueuedAt) : IWorkQueryResult;

@@ -149,5 +149,6 @@ public sealed class WorkOutcomeTests
             WorkConfiguration.Default,
             Messages: [],
             DateTimeOffset.UtcNow,
+            DateTimeOffset.UtcNow,
             DateTimeOffset.UtcNow);
 }

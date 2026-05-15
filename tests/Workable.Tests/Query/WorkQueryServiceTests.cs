@@ -1194,6 +1194,54 @@ public sealed class WorkQueryServiceTests
     }
 
     [Fact]
+    public async Task SystemDetailsQueryReportsOldestQueuedWorkerWithinScope()
+    {
+        var queuedConfiguration = WorkerOptionFixtures.DoNotStart().Configuration;
+        await using var system = new ServiceCollection()
+            .AddWorkableSystem("overview-queue-pressure", builder =>
+            {
+                builder.AddWork(WorkDefinition.Create("queue.billing.root", category: "Billing", configuration: queuedConfiguration), SuccessfulWork);
+                builder.AddWork(WorkDefinition.Create("queue.billing.invoice", category: "Billing:Invoices", configuration: queuedConfiguration), SuccessfulWork);
+                builder.AddWork(WorkDefinition.Create("queue.shipping", category: "Shipping", configuration: queuedConfiguration), SuccessfulWork);
+            })
+            .BuildServiceProvider()
+            .GetRequiredService<IWorkSystemRegistry>()
+            .Default;
+
+        await system.Start();
+        var shippingHandle = await system.Queue.Enqueue("queue.shipping");
+        await Task.Delay(10);
+        var billingHandle = await system.Queue.Enqueue("queue.billing.root");
+        await Task.Delay(10);
+        var invoiceHandle = await system.Queue.Enqueue("queue.billing.invoice");
+
+        var shipping = await system.Query.Worker(RequiredWorkerId(shippingHandle))
+            ?? throw new InvalidOperationException("Expected shipping worker.");
+        var billingRoot = await system.Query.Worker(RequiredWorkerId(billingHandle))
+            ?? throw new InvalidOperationException("Expected billing worker.");
+        var billingInvoice = await system.Query.Worker(RequiredWorkerId(invoiceHandle))
+            ?? throw new InvalidOperationException("Expected billing invoice worker.");
+
+        var wholeSystem = await system.Query.SystemDetails();
+        var billing = await system.Query.SystemDetails(new WorkSystemCriteria(Category: "Billing"));
+        var exactBilling = await system.Query.SystemDetails(new WorkSystemCriteria(
+            Category: "Billing",
+            IncludeSubcategories: false));
+        var invoice = await system.Query.SystemDetails(new WorkSystemCriteria(DefinitionName: "queue.billing.invoice"));
+
+        Assert.Equal(shipping.StateChangedAt, wholeSystem.OldestQueuedAt);
+        Assert.Equal(billingRoot.StateChangedAt, billing.OldestQueuedAt);
+        Assert.Equal(billingRoot.StateChangedAt, exactBilling.OldestQueuedAt);
+        Assert.Equal(billingInvoice.StateChangedAt, invoice.OldestQueuedAt);
+
+        var cancelRoot = await system.Workers.Execute(billingRoot.Version, WorkAction.Cancel);
+        var billingAfterCancel = await system.Query.SystemDetails(new WorkSystemCriteria(Category: "Billing"));
+
+        Assert.True(cancelRoot.IsAccepted);
+        Assert.Equal(billingInvoice.StateChangedAt, billingAfterCancel.OldestQueuedAt);
+    }
+
+    [Fact]
     public async Task SystemThroughputQueryReportsIterationLifecycleEventsWithinScope()
     {
         var cancelStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -1256,6 +1304,7 @@ public sealed class WorkQueryServiceTests
         Assert.Equal(1 / 60.0, throughput.LiveSummary.CompletedPerSecond, precision: 6);
         Assert.Equal(1 / 60.0, throughput.LiveSummary.FailedPerSecond, precision: 6);
         Assert.Equal(1 / 60.0, throughput.LiveSummary.CanceledPerSecond, precision: 6);
+        Assert.Equal(0, throughput.LiveSummary.InFlightDeltaPerSecond, precision: 6);
         Assert.All(throughput.Buckets.Where(bucket => bucket.Completed > 0 || bucket.Failed > 0 || bucket.Canceled > 0), bucket =>
             Assert.True(bucket.AverageExecutionMilliseconds >= 0));
     }
@@ -1291,6 +1340,7 @@ public sealed class WorkQueryServiceTests
         Assert.Equal(1, afterPurge.Buckets.Sum(bucket => bucket.Completed));
         Assert.Equal(1 / 60.0, afterPurge.LiveSummary.StartedPerSecond, precision: 6);
         Assert.Equal(1 / 60.0, afterPurge.LiveSummary.CompletedPerSecond, precision: 6);
+        Assert.Equal(0, afterPurge.LiveSummary.InFlightDeltaPerSecond, precision: 6);
     }
 
     private static IWorkSystem CreateSystem(

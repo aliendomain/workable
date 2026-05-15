@@ -25,10 +25,15 @@ public sealed class WorkMetricsSinkTests
         var secondThroughput = metrics.GetThroughput(
             new WorkThroughputCriteria(WindowSeconds: 3_600, BucketSeconds: 15),
             new HashSet<WorkDefinitionId> { oldDefinitionId });
+        var currentThroughput = metrics.GetThroughput(
+            new WorkThroughputCriteria(WindowSeconds: 60, BucketSeconds: 1),
+            new HashSet<WorkDefinitionId> { currentDefinitionId });
 
         Assert.Equal(1, minuteThroughput.Buckets.Sum(bucket => bucket.Started));
         Assert.Equal(1, minuteThroughput.Buckets.Sum(bucket => bucket.Completed));
         Assert.Empty(secondThroughput.Buckets);
+        Assert.Equal(1 / 60.0, currentThroughput.LiveSummary.StartedPerSecond, precision: 6);
+        Assert.Equal(1 / 60.0, currentThroughput.LiveSummary.InFlightDeltaPerSecond, precision: 6);
     }
 
     private static WorkerIterationSnapshot StartedIteration(DateTimeOffset startedAt)

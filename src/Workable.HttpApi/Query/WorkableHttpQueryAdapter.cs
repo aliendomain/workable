@@ -229,6 +229,7 @@ public sealed class WorkableHttpQueryAdapter
             details.FinalWorkerCount,
             details.FailedWorkerCount,
             details.WorkerCountByState,
+            details.OldestQueuedAt,
         };
 
     private static object CreateRelationshipsComponent(WorkSystemDetails details)

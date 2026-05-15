@@ -11,6 +11,7 @@ public sealed record WorkerOverviewItem(
     string Category,
     WorkerState State,
     DateTimeOffset CreatedAt,
+    DateTimeOffset StateChangedAt,
     DateTimeOffset UpdatedAt)
 {
     public TimeSpan? QueueDuration { get; init; }
@@ -31,6 +32,7 @@ public sealed record WorkerOverviewItem(
             worker.DefinitionCategory,
             worker.State,
             worker.CreatedAt,
+            worker.StateChangedAt,
             worker.UpdatedAt)
         {
             QueueDuration = worker.QueueDuration,

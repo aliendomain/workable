@@ -240,6 +240,7 @@ internal sealed class InMemoryWorkMetricsSink : IWorkMetricsSink
             aggregate.Completed / (double)LiveSummaryWindowSeconds,
             aggregate.Failed / (double)LiveSummaryWindowSeconds,
             aggregate.Canceled / (double)LiveSummaryWindowSeconds,
+            (aggregate.Started - aggregate.Completed - aggregate.Failed - aggregate.Canceled) / (double)LiveSummaryWindowSeconds,
             aggregate.ExecutionCount == 0
                 ? 0
                 : TimeSpan.FromTicks(aggregate.ExecutionTicks / aggregate.ExecutionCount).TotalMilliseconds);

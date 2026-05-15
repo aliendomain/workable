@@ -84,8 +84,8 @@ Execution context also exposes the worker's `WorkOrigin`.
 - `IWorkQueryService.WorkerIterations` returns lightweight `WorkerIterationOverviewItem` rows.
 - `IWorkQueryService.WorkerKeys` and `IWorkQueryService.WorkerKeyTypes` expose searchable subject, concurrency key, and identifier indexes with matching worker overview rows.
 - `IWorkQueryService.WorkIterationKeys` and `IWorkQueryService.WorkIterationKeyTypes` expose the same key search shape for worker iteration overview rows.
-- `IWorkQueryService.SystemDetails` exposes the typed whole-system aggregate query.
-- `IWorkQueryService` also exposes system slice methods for throughput, worker counts, iteration counts, common key types, failed workers with worker counts, failed iterations, and completed iterations.
+- `IWorkQueryService.SystemDetails` exposes the typed whole-system aggregate query, including scoped queue pressure through `OldestQueuedAt`.
+- `IWorkQueryService` also exposes system slice methods for throughput, worker counts with queue pressure, iteration counts, common key types, failed workers with worker counts, failed iterations, and completed iterations.
 - Worker criteria can filter by definition, definition name, subject id, concurrency key, work identifier, state, selected configuration flags, and timestamps.
 - Work definition criteria can filter by id, name, category, and search text.
 - `IWorkCatalog.ListByCategory` returns definitions by category path.

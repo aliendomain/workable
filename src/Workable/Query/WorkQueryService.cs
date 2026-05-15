@@ -469,7 +469,8 @@ internal sealed partial class WorkQueryService(
             active,
             final,
             counts.GetValueOrDefault(WorkerState.Failed),
-            counts);
+            counts,
+            this.index.OldestQueuedAt(definitionIds));
     }
 
     private WorkSystemIterationCounts CreateSystemIterationCounts(IReadOnlySet<WorkDefinitionId>? definitionIds = null)

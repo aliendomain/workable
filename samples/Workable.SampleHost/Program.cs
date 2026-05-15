@@ -59,6 +59,13 @@ builder.Services.AddWorkableSystem(workable =>
             scope: WorkConcurrencyScope.PerConcurrencyKey,
             blockingMode: WorkConcurrencyBlockingMode.WhileExecuting,
             limitReachedBehavior: WorkConcurrencyLimitReachedBehavior.DeferStart));
+    workable.AddWork<DemoTimedWork>(
+        DemoDefinition("sample.demo.queue-pressure", "Samples:Demo", "Queues faster than concurrency capacity to demonstrate queue pressure."),
+        configuration => configuration.LimitConcurrency(
+            maximumCapacity: 1,
+            scope: WorkConcurrencyScope.PerConcurrencyKey,
+            blockingMode: WorkConcurrencyBlockingMode.WhileExecuting,
+            limitReachedBehavior: WorkConcurrencyLimitReachedBehavior.DeferStart));
     workable.AddWork<DemoTimedWork>(DemoRecurringDefinition("sample.demo.recurring", "Samples:Demo", "Small recurring pulse for UI waiting/running state testing."));
 });
 
@@ -87,6 +94,7 @@ builder.Services.AddWorkableSystem("fulfillment", workable =>
 
 builder.Services.AddSingleton<DemoWorkloadController>();
 builder.Services.AddHostedService(static services => services.GetRequiredService<DemoWorkloadController>());
+builder.Services.AddSingleton<DemoQueuePressureController>();
 builder.Services.AddWorkableHttpApi();
 builder.Services.AddWorkableMcpServer();
 builder.Services.AddWorkableSignalR(options =>
@@ -140,6 +148,7 @@ app.MapGet("/", (HttpContext context) =>
                 .action-description { color: #555; font-size: .9rem; margin-top: .15rem; }
                 .action-controls { display: flex; flex-wrap: wrap; gap: .75rem; align-items: center; }
                 .sample-workload-controls { display: grid; grid-template-columns: max-content max-content max-content; }
+                .pressure-controls { display: grid; grid-template-columns: max-content max-content; }
                 .burst-controls { display: grid; grid-template-columns: max-content max-content; }
                 .interval-control { display: grid; grid-template-columns: max-content 8.5rem max-content; gap: .5rem; align-items: center; }
                 .number-control { display: grid; grid-template-columns: max-content 8.5rem; gap: .5rem; align-items: center; }
@@ -154,6 +163,7 @@ app.MapGet("/", (HttpContext context) =>
                     tr:last-child { border-bottom: 0; }
                     td { border-bottom: 0; }
                     .sample-workload-controls { grid-template-columns: 1fr; align-items: stretch; }
+                    .pressure-controls { grid-template-columns: 1fr; align-items: stretch; }
                     .burst-controls { grid-template-columns: 1fr; align-items: stretch; }
                     .interval-control { grid-template-columns: max-content 1fr max-content; }
                     .number-control { grid-template-columns: max-content 1fr; }
@@ -213,6 +223,19 @@ app.MapGet("/", (HttpContext context) =>
                     </tr>
                     <tr>
                         <td>
+                            <div class="action-name">Queue pressure</div>
+                            <div class="action-description">Queue 1-second concurrency-limited workers at 4 per second.</div>
+                        </td>
+                        <td>
+                            <div class="action-controls pressure-controls">
+                                <button id="pressure-start" type="button">Start pressure</button>
+                                <button id="pressure-stop" class="running" type="button">Stop pressure</button>
+                            </div>
+                        </td>
+                        <td><p class="status" id="pressure-status">Loading queue pressure status...</p></td>
+                    </tr>
+                    <tr>
+                        <td>
                             <div class="action-name">Force-cancel worker</div>
                             <div class="action-description">Queue work that ignores cooperative shutdown.</div>
                         </td>
@@ -230,10 +253,13 @@ app.MapGet("/", (HttpContext context) =>
                 const forceCancel = document.getElementById('force-cancel');
                 const burstCount = document.getElementById('burst-count');
                 const burstQueue = document.getElementById('burst-queue');
+                const pressureStart = document.getElementById('pressure-start');
+                const pressureStop = document.getElementById('pressure-stop');
                 const interval = document.getElementById('interval');
                 const updateInterval = document.getElementById('update-interval');
                 const status = document.getElementById('status');
                 const burstStatus = document.getElementById('burst-status');
+                const pressureStatus = document.getElementById('pressure-status');
                 const forceCancelStatus = document.getElementById('force-cancel-status');
                 let intervalDirty = false;
 
@@ -246,6 +272,14 @@ app.MapGet("/", (HttpContext context) =>
                         interval.value = data.queueIntervalMilliseconds;
                     }
                     status.textContent = `${data.isRunning ? 'Running' : 'Stopped'} - queued ${data.queuedCount} - tracking ${data.trackedWorkerCount} - interval ${data.queueIntervalMilliseconds}ms`;
+                }
+
+                async function refreshPressure() {
+                    const response = await fetch('/sample-workload/queue-pressure');
+                    const data = await response.json();
+                    pressureStart.disabled = data.isRunning;
+                    pressureStop.disabled = !data.isRunning;
+                    pressureStatus.textContent = `${data.isRunning ? 'Running' : 'Stopped'} - queued ${data.queuedCount} - tracking ${data.trackedWorkerCount} - ${data.workerDelayMilliseconds}ms work every ${data.queueIntervalMilliseconds}ms`;
                 }
 
                 button.addEventListener('click', async () => {
@@ -291,6 +325,27 @@ app.MapGet("/", (HttpContext context) =>
                     }
                 });
 
+                pressureStart.addEventListener('click', async () => {
+                    pressureStart.disabled = true;
+                    try {
+                        await fetch('/sample-workload/queue-pressure/start', { method: 'POST' });
+                    } finally {
+                        await refreshPressure();
+                        await refresh();
+                    }
+                });
+
+                pressureStop.addEventListener('click', async () => {
+                    pressureStop.disabled = true;
+                    pressureStatus.textContent = 'Stopping pressure and canceling tracked workers...';
+                    try {
+                        await fetch('/sample-workload/queue-pressure/stop', { method: 'POST' });
+                    } finally {
+                        await refreshPressure();
+                        await refresh();
+                    }
+                });
+
                 interval.addEventListener('input', () => {
                     intervalDirty = true;
                 });
@@ -317,7 +372,11 @@ app.MapGet("/", (HttpContext context) =>
                 });
 
                 refresh();
-                setInterval(refresh, 2000);
+                refreshPressure();
+                setInterval(() => {
+                    refresh();
+                    refreshPressure();
+                }, 2000);
             </script>
         </body>
         </html>
@@ -333,6 +392,12 @@ app.MapPost("/sample-workload/interval", (DemoWorkloadController controller, Dem
     => Results.Ok(controller.SetQueueInterval(request.Milliseconds)));
 app.MapPost("/sample-workload/burst", async (DemoWorkloadController controller, DemoBurstRequest request, CancellationToken cancellationToken)
     => Results.Ok(await controller.QueueBurst(request.Count, cancellationToken)));
+app.MapGet("/sample-workload/queue-pressure", (DemoQueuePressureController controller)
+    => Results.Ok(controller.Status()));
+app.MapPost("/sample-workload/queue-pressure/start", (DemoQueuePressureController controller)
+    => Results.Ok(controller.Start()));
+app.MapPost("/sample-workload/queue-pressure/stop", async (DemoQueuePressureController controller, CancellationToken cancellationToken)
+    => Results.Ok(await controller.Stop(cancellationToken)));
 app.MapPost("/sample-workload/force-cancel", async (IWorkSystemRegistry registry, CancellationToken cancellationToken) =>
 {
     var handle = await registry.Default.Queue.Enqueue(

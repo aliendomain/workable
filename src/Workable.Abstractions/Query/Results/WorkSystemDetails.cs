@@ -8,6 +8,7 @@ public sealed record WorkSystemDetails(
     int FinalWorkerCount,
     int FailedWorkerCount,
     IReadOnlyDictionary<WorkerState, int> WorkerCountByState,
+    DateTimeOffset? OldestQueuedAt,
     int CurrentIterationCount,
     int CompletedIterationCount,
     int FailedIterationCount,

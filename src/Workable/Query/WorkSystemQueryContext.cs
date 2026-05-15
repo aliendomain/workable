@@ -52,6 +52,7 @@ internal sealed partial class WorkQueryService
                 this.WorkerCounts.FinalWorkerCount,
                 this.WorkerCounts.FailedWorkerCount,
                 this.WorkerCounts.WorkerCountByState,
+                this.WorkerCounts.OldestQueuedAt,
                 this.IterationCounts.CurrentIterationCount,
                 this.IterationCounts.CompletedIterationCount,
                 this.IterationCounts.FailedIterationCount,

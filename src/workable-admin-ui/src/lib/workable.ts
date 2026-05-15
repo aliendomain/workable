@@ -83,6 +83,7 @@ export type WorkerSummary = {
   identifiers?: WorkTypedValue[];
   state: WorkerState;
   createdAt: string;
+  stateChangedAt?: string;
   updatedAt: string;
   version: WorkerVersion;
 };
@@ -98,6 +99,7 @@ export type WorkerOverviewItem = {
   category?: string | null;
   state: WorkerState;
   createdAt: string;
+  stateChangedAt?: string;
   updatedAt: string;
   queueDuration?: string | null;
   totalExecutionDuration?: string;
@@ -321,6 +323,7 @@ export type WorkSystemOverview = {
   finalWorkerCount: number;
   failedWorkerCount: number;
   workerCountByState: Partial<Record<WorkerState, number>>;
+  oldestQueuedAt?: string | null;
   currentIterationCount: number;
   completedIterationCount: number;
   failedIterationCount: number;
@@ -383,6 +386,7 @@ export type WorkThroughputLiveSummary = {
   completedPerSecond: number;
   failedPerSecond: number;
   canceledPerSecond: number;
+  inFlightDeltaPerSecond: number;
   averageExecutionMilliseconds: number;
 };
 
@@ -403,6 +407,7 @@ export type WorkSystemFailedWorkersOverview = {
   finalWorkerCount: number;
   failedWorkerCount: number;
   workerCountByState: Partial<Record<WorkerState, number>>;
+  oldestQueuedAt?: string | null;
   failedWorkers: WorkerOverviewItem[];
 };
 

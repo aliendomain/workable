@@ -810,7 +810,7 @@ The examples below show the serialized JSON shape returned by HTTP and MCP adapt
 
 ### System Aggregates
 
-`IWorkQueryService.SystemDetails` returns the broad whole-system diagnostic shape with catalog entries, worker state, iteration activity, common key types, recent failed workers, and recent failed/completed iterations.
+`IWorkQueryService.SystemDetails` returns the broad whole-system diagnostic shape with catalog entries, worker state, queue pressure, iteration activity, common key types, recent failed workers, and recent failed/completed iterations.
 
 System queries can be scoped to one category path or work definition while keeping the same return shape.
 
@@ -820,7 +820,7 @@ WorkSystemDetails billingDetails = await workSystem.Query.SystemDetails(new Work
 WorkSystemDetails definitionDetails = await workSystem.Query.SystemDetails(new WorkSystemCriteria(DefinitionName: "billing.invoice.sync"));
 ```
 
-With category scoping, `IncludeSubcategories` defaults to `true`. Scoped system counts, common key types, failed workers, and recent iterations include only workers and iterations for matching definitions.
+With category scoping, `IncludeSubcategories` defaults to `true`. Scoped system counts, queue pressure, common key types, failed workers, and recent iterations include only workers and iterations for matching definitions. `OldestQueuedAt` is maintained by definition in the worker index, so category scopes find the oldest queued timestamp by checking the matching definitions instead of enumerating queued workers.
 
 For incremental refreshes, the system state can be queried in smaller slices:
 
@@ -847,6 +847,7 @@ For incremental refreshes, the system state can be queried in smaller slices:
     "Canceled": 2,
     "Completed": 4
   },
+  "oldestQueuedAt": "2026-05-11T12:00:00Z",
   "currentIterationCount": 1,
   "completedIterationCount": 4,
   "failedIterationCount": 1,
@@ -880,6 +881,7 @@ For incremental refreshes, the system state can be queried in smaller slices:
       "category": "Email",
       "state": "Failed",
       "createdAt": "2026-05-11T12:00:00Z",
+      "stateChangedAt": "2026-05-11T12:00:03Z",
       "updatedAt": "2026-05-11T12:00:03Z",
       "queueDuration": null,
       "totalExecutionDuration": "00:00:01",

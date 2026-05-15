@@ -17,6 +17,7 @@ public sealed record WorkerSnapshot(
     WorkConfiguration Configuration,
     IReadOnlyList<WorkMessage> Messages,
     DateTimeOffset CreatedAt,
+    DateTimeOffset StateChangedAt,
     DateTimeOffset UpdatedAt) : IWorkQueryResult
 {
     public WorkerVersion Version => new(this.Id, this.Revision);

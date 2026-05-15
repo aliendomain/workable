@@ -280,6 +280,10 @@ When `components` is omitted, the overview view returns the default non-live com
 
 Component requests can include a UI shape of `compact`, `standard`, or `detailed`, and each component result echoes the normalized `shape` that was served. Hidden or collapsed panels should be omitted from the request. The current overview client requests `standard` for iteration list components and `detailed` for other visible components.
 
+The `workers` component returns worker state counts plus `oldestQueuedAt`, which is the oldest queued worker state-entry timestamp in the requested scope. Queue backlog is reported with worker state counts in the same component.
+
+The `throughput` component returns iteration throughput plus live execution pressure. `liveSummary.inFlightDeltaPerSecond` is based on the fixed 60-second live window: started iterations per second minus completed, failed, and canceled iterations per second.
+
 Clients can also request arbitrary components without binding the request to a named view.
 
 ```http
