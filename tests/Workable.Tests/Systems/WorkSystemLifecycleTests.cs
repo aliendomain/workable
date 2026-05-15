@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Workable;
@@ -125,6 +126,66 @@ public sealed class WorkSystemLifecycleTests
 
         Assert.Equal(WorkSystemState.Stopped, registry.Default.State);
         Assert.Equal(WorkSystemState.Stopped, manual.State);
+    }
+
+    [Fact]
+    public async Task HostedServiceShutdownCompletesWhenHostCancellationTokenIsCanceled()
+    {
+        var tracker = new ShutdownTracker();
+        var provider = new ServiceCollection()
+            .AddSingleton(tracker)
+            .AddWorkableSystem(builder => builder
+                .StartWithHost()
+                .UseShutdownGracePeriod(TimeSpan.FromMilliseconds(20))
+                .AddWork<CancellationIgnoringShutdownWork>(WorkDefinition.Create("shutdown.host-timeout")))
+            .BuildServiceProvider();
+        var registry = provider.GetRequiredService<IWorkSystemRegistry>();
+        var hostedService = Assert.Single(provider.GetServices<IHostedService>());
+
+        await hostedService.StartAsync(CancellationToken.None);
+        var handle = await registry.Default.Queue.Enqueue("shutdown.host-timeout");
+        await tracker.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        using var hostTimeout = new CancellationTokenSource();
+        await hostTimeout.CancelAsync();
+        var exception = await Record.ExceptionAsync(() => hostedService.StopAsync(hostTimeout.Token));
+        var completion = await handle.WaitForCompletion();
+
+        Assert.Null(exception);
+        Assert.Equal(WorkSystemState.Stopped, registry.Default.State);
+        Assert.Equal(WorkCompletionStatus.Canceled, completion.Status);
+    }
+
+    [Fact]
+    public async Task HostedServiceStopsSystemsConcurrently()
+    {
+        var tracker = new ConcurrentShutdownTracker(expectedStarts: 2);
+        var provider = new ServiceCollection()
+            .Configure<HostOptions>(options => options.ShutdownTimeout = TimeSpan.FromMilliseconds(400))
+            .AddSingleton(tracker)
+            .AddWorkableSystem(builder => builder
+                .StartWithHost()
+                .AddWork<ConcurrentCancellationIgnoringShutdownWork>(WorkDefinition.Create("shutdown.concurrent")))
+            .AddWorkableSystem("remote", builder => builder
+                .StartWithHost()
+                .AddWork<ConcurrentCancellationIgnoringShutdownWork>(WorkDefinition.Create("shutdown.concurrent")))
+            .BuildServiceProvider();
+        var registry = provider.GetRequiredService<IWorkSystemRegistry>();
+        var hostedService = Assert.Single(provider.GetServices<IHostedService>());
+        Assert.True(registry.TryGet("remote", out var remote));
+
+        await hostedService.StartAsync(CancellationToken.None);
+        var first = await registry.Default.Queue.Enqueue("shutdown.concurrent");
+        var second = await remote.Queue.Enqueue("shutdown.concurrent");
+        await tracker.AllStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        var startedAt = Stopwatch.GetTimestamp();
+        await hostedService.StopAsync(CancellationToken.None);
+        var elapsed = Stopwatch.GetElapsedTime(startedAt);
+
+        Assert.Equal(WorkCompletionStatus.Canceled, (await first.WaitForCompletion()).Status);
+        Assert.Equal(WorkCompletionStatus.Canceled, (await second.WaitForCompletion()).Status);
+        Assert.True(elapsed < TimeSpan.FromMilliseconds(550), $"Expected systems to stop concurrently, but elapsed was {elapsed}.");
     }
 
     [Fact]
@@ -294,11 +355,122 @@ public sealed class WorkSystemLifecycleTests
         var stop = await system.Stop();
         var completion = await handle.WaitForCompletion();
 
+        var canceled = Assert.Single(stop.CancellationRequestedWorkers);
         var forceCanceled = Assert.Single(stop.ForceCanceledWorkers);
+        var forceCanceledSummary = Assert.Single(stop.ForceCanceledWorkerSummaries);
+        Assert.Equal(handle.WorkerId, canceled.Id);
         Assert.Equal(handle.WorkerId, forceCanceled.Id);
+        Assert.Equal(handle.WorkerId, forceCanceledSummary.Id);
+        Assert.Equal("shutdown.ignores-cancel", forceCanceledSummary.DefinitionName);
+        Assert.Equal(["shutdown.ignores-cancel"], stop.ForceCanceledWorkerNames);
+        Assert.Equal(TimeSpan.FromMilliseconds(20), stop.ShutdownGracePeriod);
         Assert.Equal(WorkCompletionStatus.Canceled, completion.Status);
         Assert.Equal(WorkerState.Canceled, completion.Worker?.State);
         Assert.Contains(completion.Messages, message => message.Code == "workable.worker.shutdown_forced");
+    }
+
+    [Fact]
+    public async Task DefaultShutdownGracePeriodUsesHostShutdownTimeoutRatio()
+    {
+        var tracker = new ShutdownTracker();
+        var provider = new ServiceCollection()
+            .Configure<HostOptions>(options => options.ShutdownTimeout = TimeSpan.FromMilliseconds(200))
+            .AddSingleton(tracker)
+            .AddWorkableSystem(builder => builder
+                .AddWork<CancellationIgnoringShutdownWork>(WorkDefinition.Create("shutdown.host-ratio-default")))
+            .BuildServiceProvider();
+        var system = provider.GetRequiredService<IWorkSystemRegistry>().Default;
+
+        await system.Start();
+        var handle = await system.Queue.Enqueue("shutdown.host-ratio-default");
+        await tracker.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        var startedAt = Stopwatch.GetTimestamp();
+        var stop = await system.Stop();
+        var elapsed = Stopwatch.GetElapsedTime(startedAt);
+
+        Assert.Single(stop.ForceCanceledWorkers);
+        Assert.Equal(WorkCompletionStatus.Canceled, (await handle.WaitForCompletion()).Status);
+        Assert.True(elapsed >= TimeSpan.FromMilliseconds(120), $"Expected host-relative grace wait, but elapsed was {elapsed}.");
+        Assert.True(elapsed < TimeSpan.FromSeconds(2), $"Expected bounded shutdown, but elapsed was {elapsed}.");
+    }
+
+    [Fact]
+    public async Task ExplicitShutdownGracePeriodOverridesHostShutdownTimeoutRatio()
+    {
+        var tracker = new ShutdownTracker();
+        var provider = new ServiceCollection()
+            .Configure<HostOptions>(options => options.ShutdownTimeout = TimeSpan.FromSeconds(5))
+            .AddSingleton(tracker)
+            .AddWorkableSystem(builder => builder
+                .UseShutdownGracePeriod(TimeSpan.FromMilliseconds(20))
+                .AddWork<CancellationIgnoringShutdownWork>(WorkDefinition.Create("shutdown.explicit-grace")))
+            .BuildServiceProvider();
+        var system = provider.GetRequiredService<IWorkSystemRegistry>().Default;
+
+        await system.Start();
+        var handle = await system.Queue.Enqueue("shutdown.explicit-grace");
+        await tracker.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        var startedAt = Stopwatch.GetTimestamp();
+        var stop = await system.Stop();
+        var elapsed = Stopwatch.GetElapsedTime(startedAt);
+
+        Assert.Single(stop.ForceCanceledWorkers);
+        Assert.Equal(WorkCompletionStatus.Canceled, (await handle.WaitForCompletion()).Status);
+        Assert.True(elapsed < TimeSpan.FromSeconds(1), $"Expected explicit grace period to win, but elapsed was {elapsed}.");
+    }
+
+    [Fact]
+    public void ShutdownGracePeriodRatioRejectsValuesAboveNinetyPercent()
+    {
+        var exception = Assert.Throws<ArgumentOutOfRangeException>(() => new ServiceCollection()
+            .AddWorkableSystem(builder => builder.UseShutdownGracePeriodRatio(0.91)));
+
+        Assert.Equal("hostShutdownTimeoutRatio", exception.ParamName);
+    }
+
+    [Fact]
+    public async Task StopCancelsLargeDeferredConcurrencyBacklog()
+    {
+        var tracker = new ShutdownTracker();
+        var system = new ServiceCollection()
+            .AddSingleton(tracker)
+            .AddWorkableSystem(builder => builder
+                .UseShutdownGracePeriod(TimeSpan.FromMilliseconds(20))
+                .AddWork<CancelAwareShutdownWork>(
+                    WorkDefinition.Create(
+                        "shutdown.deferred-backlog",
+                        configuration: WorkConfiguration.Default with
+                        {
+                            Concurrency = WorkConcurrencyConfiguration.Default with
+                            {
+                                IsEnabled = true,
+                                MaximumCapacity = 1,
+                                BlockingMode = WorkConcurrencyBlockingMode.WhileExecuting,
+                                LimitReachedBehavior = WorkConcurrencyLimitReachedBehavior.DeferStart,
+                            },
+                        })))
+            .BuildServiceProvider()
+            .GetRequiredService<IWorkSystemRegistry>()
+            .Default;
+
+        await system.Start();
+        var running = await system.Queue.Enqueue("shutdown.deferred-backlog");
+        await tracker.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var deferred = new List<IWorkerHandle>();
+        for (var i = 0; i < 500; i++)
+        {
+            deferred.Add(await system.Queue.Enqueue("shutdown.deferred-backlog"));
+        }
+
+        await system.Stop().WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.Equal(WorkCompletionStatus.Canceled, (await running.WaitForCompletion()).Status);
+        foreach (var handle in deferred)
+        {
+            Assert.Equal(WorkCompletionStatus.Canceled, (await handle.WaitForCompletion()).Status);
+        }
     }
 
     private sealed class ShutdownTracker
@@ -308,6 +480,34 @@ public sealed class WorkSystemLifecycleTests
         public TaskCompletionSource CancellationObserved { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         public TaskCompletionSource ReleaseCancel { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    }
+
+    private sealed class ConcurrentShutdownTracker(int expectedStarts)
+    {
+        private int startedCount;
+
+        public TaskCompletionSource AllStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public void SignalStarted()
+        {
+            if (Interlocked.Increment(ref this.startedCount) == expectedStarts)
+            {
+                this.AllStarted.TrySetResult();
+            }
+        }
+    }
+
+    private sealed class ConcurrentCancellationIgnoringShutdownWork(ConcurrentShutdownTracker tracker) : IWorkExecutor
+    {
+        public async Task<WorkExecutionResult> Execute(
+            IWorkExecutionContext context,
+            WorkInput? input,
+            CancellationToken cancellationToken)
+        {
+            tracker.SignalStarted();
+            await Task.Delay(Timeout.InfiniteTimeSpan);
+            return WorkExecutionResult.Success();
+        }
     }
 
     private sealed class CancelAwareShutdownWork(ShutdownTracker tracker) : IWorkExecutor

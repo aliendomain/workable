@@ -4,7 +4,6 @@ import { Check, Info, ListPlus, Minus, Plus, WandSparkles } from "lucide-react";
 import type { ReactNode } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import {
   Select,
   SelectContent,
@@ -554,16 +553,18 @@ function FieldHeader({
   ].filter(Boolean);
 
   return (
-    <div className="flex min-w-0 items-center gap-1.5">
-      <Label className="min-w-0 truncate">{name}</Label>
-      <Tooltip>
+    <div className="flex min-w-0 items-center">
+      <Tooltip delayDuration={500} disableHoverableContent>
         <TooltipTrigger asChild>
           <button
             aria-label={`${name} field details`}
-            className="inline-flex size-5 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground"
+            className="group flex min-w-0 items-center gap-1.5 rounded-sm text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
             type="button"
           >
-            <Info className="size-3.5" />
+            <span className="min-w-0 truncate font-medium text-foreground text-sm leading-none">
+              {name}
+            </span>
+            <Info className="size-3.5 shrink-0 text-muted-foreground transition-colors group-hover:text-foreground" />
           </button>
         </TooltipTrigger>
         <TooltipContent
@@ -686,7 +687,7 @@ export function SchemaPresetButton({
       variant="outline"
     >
       <WandSparkles className="size-4" />
-      Reset from schema
+      Use input defaults
     </Button>
   );
 }

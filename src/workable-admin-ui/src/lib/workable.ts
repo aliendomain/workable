@@ -38,6 +38,7 @@ export type WorkDefinition = {
   defaultOptions?: WorkerOptions | null;
   configuration?: WorkConfiguration | null;
   metadata?: Record<string, unknown> | null;
+  revision: number;
 };
 
 export type WorkSchema = {
@@ -178,6 +179,7 @@ export type WorkConfiguration = {
     limitReachedBehavior: "Ignore" | "DeferStart";
     overrideBehavior: "Flexible" | "Strict";
   };
+  invocation?: Record<string, unknown> | null;
 };
 
 export type WorkTypedValue = {
@@ -313,6 +315,8 @@ export type WorkSystemOverview = {
   systemName?: string | null;
   systemState: string;
   definitionCount: number;
+  catalogCategories: WorkOverviewCatalogCategoryItem[];
+  catalogDefinitions: WorkOverviewDefinitionItem[];
   activeWorkerCount: number;
   finalWorkerCount: number;
   failedWorkerCount: number;
@@ -323,9 +327,64 @@ export type WorkSystemOverview = {
   canceledIterationCount: number;
   iterationCountByStatus: Partial<Record<WorkCompletionStatus, number>>;
   commonKeyTypes: WorkIterationKeyTypeFacet[];
+  throughput?: WorkSystemThroughput | null;
   failedWorkers: WorkerOverviewItem[];
   failedIterations: WorkerIterationOverviewItem[];
   completedIterations: WorkerIterationOverviewItem[];
+};
+
+export type WorkComponentQueryResult = {
+  generatedAt: string;
+  components: Record<string, WorkComponentResult>;
+};
+
+export type WorkComponentResult<TData = unknown> = {
+  status: string;
+  data?: TData;
+  error?: string | null;
+};
+
+export type WorkOverviewThroughputComponent = {
+  activeWorkerCount: number;
+  throughput: WorkSystemThroughput;
+};
+
+export type WorkSystemThroughput = {
+  from: string;
+  to: string;
+  windowSeconds: number;
+  bucketSeconds: number;
+  buckets: WorkThroughputBucket[];
+  liveSummary: WorkThroughputLiveSummary;
+};
+
+export type WorkThroughputBucket = {
+  at: string;
+  queued: number;
+  succeeded: number;
+  failed: number;
+  averageExecutionMilliseconds: number;
+};
+
+export type WorkThroughputLiveSummary = {
+  windowSeconds: number;
+  queuedPerSecond: number;
+  succeededPerSecond: number;
+  failedPerSecond: number;
+  queueDeltaPerSecond: number;
+  averageExecutionMilliseconds: number;
+};
+
+export type WorkOverviewCatalogCategoryItem = {
+  label: string;
+  path: string;
+  count: number;
+};
+
+export type WorkOverviewDefinitionItem = {
+  id: { value: string };
+  name: string;
+  category: string;
 };
 
 export type WorkSystemFailedWorkersOverview = {
@@ -360,6 +419,13 @@ export type WorkInfo = {
   };
 };
 
+export type WorkDefinitionReconfigurationOutcome = {
+  status: "Accepted" | "NotFound" | "Invalid" | "Conflict";
+  definitionId: { value: string };
+  definition?: WorkDefinition | null;
+  messages: WorkMessage[];
+};
+
 export type WorkerState =
   | "Queued"
   | "Running"
@@ -376,6 +442,8 @@ export type WorkAction = "Start" | "Pause" | "Cancel" | "Push" | "Purge";
 
 export type WorkerQuery = {
   definitionName?: string;
+  category?: string;
+  includeSubcategories?: boolean;
   states?: WorkerState[];
   subjectId?: WorkTypedValue;
   take?: number;
@@ -509,9 +577,10 @@ async function fetchWorkable<T>(
   });
 
   const contentType = response.headers.get("content-type") ?? "";
-  const body = contentType.includes("application/json")
-    ? await response.json()
-    : await response.text();
+  const responseText = await response.text();
+  const body = contentType.includes("application/json") && responseText.trim()
+    ? JSON.parse(responseText)
+    : responseText;
 
   if (!response.ok) {
     const message =

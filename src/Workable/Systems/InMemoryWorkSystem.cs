@@ -6,7 +6,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 
 namespace Workable;
-internal sealed class InMemoryWorkSystem : IWorkSystem, IOriginAwareWorkSystem
+internal sealed class InMemoryWorkSystem : IWorkSystem, IOriginAwareWorkSystem, IWorkSystemShutdownMetadata
 {
     private readonly IServiceProvider rootServices;
     private readonly IReadOnlyList<Func<IServiceProvider, IWorkDefinitionSource>> workDefinitionSourceFactories;
@@ -14,6 +14,7 @@ internal sealed class InMemoryWorkSystem : IWorkSystem, IOriginAwareWorkSystem
     private readonly WorkSystemCatalog catalog;
     private readonly WorkQueue queue;
     private readonly WorkerOperations workers;
+    private readonly InMemoryWorkMetricsSink metrics = new();
     private readonly WorkEventStream events = new();
     private readonly SemaphoreSlim lifecycleLock = new(1, 1);
     private bool runtimeWorkDefined;
@@ -24,6 +25,7 @@ internal sealed class InMemoryWorkSystem : IWorkSystem, IOriginAwareWorkSystem
         IReadOnlyList<Func<IServiceProvider, IWorkDefinitionSource>> workDefinitionSourceFactories,
         IReadOnlyList<Func<IServiceProvider, IStartupWorkSource>> startupWorkSourceFactories,
         IServiceProvider rootServices,
+        TimeSpan shutdownGracePeriod,
         IReadOnlyList<WorkExceptionClassifier> globalExceptionClassifiers)
     {
         this.Id = registration.Id;
@@ -32,10 +34,11 @@ internal sealed class InMemoryWorkSystem : IWorkSystem, IOriginAwareWorkSystem
         this.workDefinitionSourceFactories = workDefinitionSourceFactories;
         this.startupWorkSourceFactories = startupWorkSourceFactories;
         this.catalog = new WorkSystemCatalog(work);
+        this.ShutdownGracePeriod = shutdownGracePeriod;
         var dotNetOriginProvider = registration.DotNetOriginProviderFactory?.Invoke(rootServices)
             ?? rootServices.GetService<IDotNetWorkOriginProvider>()
             ?? new DefaultDotNetWorkOriginProvider();
-        this.workers = new WorkerOperations(this.catalog, () => this.State, this.Id, this.Name, rootServices, this.events, dotNetOriginProvider, registration.ExceptionClassifiers, globalExceptionClassifiers, registration.ShutdownGracePeriod);
+        this.workers = new WorkerOperations(this.catalog, () => this.State, this.Id, this.Name, rootServices, this.events, dotNetOriginProvider, registration.ExceptionClassifiers, globalExceptionClassifiers, this.ShutdownGracePeriod, this.metrics);
         this.queue = new WorkQueue(this.catalog, this.workers, dotNetOriginProvider);
     }
 
@@ -44,6 +47,8 @@ internal sealed class InMemoryWorkSystem : IWorkSystem, IOriginAwareWorkSystem
     public string? Name { get; }
 
     public WorkSystemState State { get; private set; } = WorkSystemState.Created;
+
+    public TimeSpan ShutdownGracePeriod { get; }
 
     public IWorkCatalog Catalog => this.catalog;
 
@@ -158,7 +163,7 @@ internal sealed class InMemoryWorkSystem : IWorkSystem, IOriginAwareWorkSystem
             }
 
             this.State = WorkSystemState.Stopping;
-            var result = await this.workers.StopDispatching(origin, cancellationToken);
+            var result = await this.workers.StopDispatching(origin, CancellationToken.None);
             this.State = WorkSystemState.Stopped;
             return result;
         }

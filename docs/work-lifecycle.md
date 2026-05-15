@@ -150,7 +150,7 @@ sequenceDiagram
 
 ## Shutdown
 
-When a system stops, it stops accepting new queue requests, stops the dispatcher, requests cancellation for queued, running, waiting, and retrying workers, and waits for the shutdown grace period. The default grace period is 15 seconds. If a worker does not complete after cancellation within that allowance, Workable marks the worker as canceled with a shutdown-forced message and continues shutdown. Once shutdown work is complete, Workable clears in-memory worker and iteration records for the system.
+When a system stops, it stops accepting new queue requests, stops the dispatcher, requests cancellation for queued, running, waiting, and retrying workers, and waits for the shutdown grace period. By default, hosted systems derive that grace period from the .NET generic host shutdown timeout; outside a host, the fallback is 15 seconds. If a worker does not complete after cancellation within that allowance, Workable marks the worker as canceled with a shutdown-forced message and continues shutdown. Stop results include the grace period plus summaries and names for workers that were force-canceled. Once shutdown work is complete, Workable clears in-memory worker and iteration records for the system.
 
 ```mermaid
 sequenceDiagram

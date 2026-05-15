@@ -12,6 +12,8 @@ internal sealed class WorkInitializationExecutor(IServiceProvider rootServices)
         Func<WorkerRecord, IServiceProvider, IWorkExecutionContext> createContext,
         CancellationToken cancellationToken)
     {
+        cancellationToken.ThrowIfCancellationRequested();
+
         var initializers = worker.Work.Initializers
             .OrderBy(initializer => initializer.ExecutionOrder ?? int.MaxValue)
             .ToList();
@@ -28,11 +30,21 @@ internal sealed class WorkInitializationExecutor(IServiceProvider rootServices)
                 continue;
             }
 
-            var result = initializer.Timing == WorkInitializationTiming.OnceLazy
-                ? await worker.Work.RunLazyInitialization(
-                    initializer,
-                    () => this.RunInitializerInNewScope(initializer, worker, createContext, cancellationToken))
-                : await this.RunInitializerInNewScope(initializer, worker, createContext, cancellationToken);
+            cancellationToken.ThrowIfCancellationRequested();
+
+            WorkExecutionResult result;
+            try
+            {
+                result = initializer.Timing == WorkInitializationTiming.OnceLazy
+                    ? await worker.Work.RunLazyInitialization(
+                        initializer,
+                        () => this.RunInitializerInNewScope(initializer, worker, createContext, cancellationToken))
+                    : await this.RunInitializerInNewScope(initializer, worker, createContext, cancellationToken);
+            }
+            catch (ObjectDisposedException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw new OperationCanceledException(cancellationToken);
+            }
 
             if (result.HasErrors)
             {
@@ -54,6 +66,8 @@ internal sealed class WorkInitializationExecutor(IServiceProvider rootServices)
         Func<WorkerRecord, IServiceProvider, IWorkExecutionContext> createContext,
         CancellationToken cancellationToken)
     {
+        cancellationToken.ThrowIfCancellationRequested();
+
         await using var scope = rootServices.CreateAsyncScope();
         var context = createContext(worker, scope.ServiceProvider);
         return await this.RunInitializer(

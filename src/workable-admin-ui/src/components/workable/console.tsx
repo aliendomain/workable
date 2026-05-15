@@ -3,17 +3,25 @@
 import Image from "next/image";
 import {
   Activity,
-  ArrowLeft,
+  ArrowDown,
+  ArrowUp,
   Ban,
   Boxes,
   Braces,
   CheckCircle2,
+  ChevronDown,
+  ChevronLeft,
   ChevronRight,
+  ChevronsLeft,
   CircleAlert,
   CircleDot,
   Clock3,
+  Equal,
+  FileCode2,
+  Folder,
   ListFilter,
   Hourglass,
+  Home,
   Info,
   Loader2,
   MoreHorizontal,
@@ -26,13 +34,15 @@ import {
   Search,
   Send,
   Server,
+  Settings,
   ShieldAlert,
   Square,
   Trash2,
   Workflow,
+  X,
 } from "lucide-react";
-import type { Dispatch, SetStateAction } from "react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { Dispatch, ReactNode, SetStateAction } from "react";
+import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import {
   AlertDialog,
@@ -76,12 +86,15 @@ import {
 } from "@/components/ui/scroll-area";
 import {
   DropdownMenu,
-  DropdownMenuCheckboxItem,
   DropdownMenuContent,
   DropdownMenuItem,
-  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
 import { Separator } from "@/components/ui/separator";
 import {
   Sidebar,
@@ -144,13 +157,22 @@ import {
   type WorkAction,
   type WorkConfiguration,
   type WorkDefinition,
+  type WorkDefinitionReconfigurationOutcome,
   type WorkCompletionStatus,
+  type WorkComponentQueryResult,
+  type WorkComponentResult,
   type WorkIterationKeyTypeQueryResult,
   type WorkIterationKeyTypeFacet,
+  type WorkInfo,
+  type WorkOverviewThroughputComponent,
   type WorkKeyTypeQueryResult,
+  type WorkOverviewCatalogCategoryItem,
+  type WorkOverviewDefinitionItem,
   type WorkSystemFailedWorkersOverview,
   type WorkSystemLifecycleResult,
   type WorkSystemOverview,
+  type WorkSystemThroughput,
+  type WorkThroughputBucket,
   type WorkTypedValue,
   type WorkableConnection,
   type WorkableHttpSystemInfo,
@@ -166,8 +188,53 @@ import {
 const STORAGE_KEY = "workable-console.state.v1";
 const LEGACY_CONNECTION_STORAGE_KEY = "workable-console.connection";
 
-type View = "overview" | "definitions" | "workers" | "iterations" | "worker";
+type View = "overview" | "definitions" | "definition" | "workers" | "iterations" | "worker";
 type ServerView = Exclude<View, "worker">;
+type ThroughputMode = "completion" | "queued" | "execution";
+type ThroughputMetric = {
+  description: string;
+  id: string;
+  label: string;
+  pulseClass?: string;
+  toneClass?: string;
+  trend?: "up" | "down" | "steady";
+  value: string;
+  valueClass?: string;
+  widthClass?: string;
+};
+
+type WorkOverviewSystemComponent = Pick<WorkSystemOverview, "systemName" | "systemState">;
+type WorkOverviewCatalogComponent = Pick<
+  WorkSystemOverview,
+  "catalogCategories" | "catalogDefinitions"
+>;
+type WorkOverviewWorkersComponent = Pick<
+  WorkSystemOverview,
+  | "activeWorkerCount"
+  | "definitionCount"
+  | "failedWorkerCount"
+  | "finalWorkerCount"
+  | "workerCountByState"
+>;
+type WorkOverviewRelationshipsComponent = Pick<
+  WorkSystemOverview,
+  | "canceledIterationCount"
+  | "commonKeyTypes"
+  | "completedIterationCount"
+  | "currentIterationCount"
+  | "failedIterationCount"
+  | "iterationCountByStatus"
+>;
+
+const overviewPanelIds = [
+  "workers",
+  "failedWorkers",
+  "throughput",
+  "relationships",
+  "failedIterations",
+  "completedIterations",
+] as const;
+type OverviewPanelId = (typeof overviewPanelIds)[number];
 
 type WorkableHostConnection = {
   id: string;
@@ -196,6 +263,9 @@ type ConsoleStorage = {
   expandedHostIds: string[];
   expandedSystemIds: string[];
   hosts: WorkableHostConnection[];
+  overviewCollapsedPanels: OverviewPanelId[];
+  overviewHiddenPanels: OverviewPanelId[];
+  overviewThroughputHidden: boolean;
   view: ServerView;
 };
 
@@ -207,12 +277,25 @@ type PendingStopSystem = {
   system: WorkableSystemConnection;
 };
 
+type OverviewScope = {
+  category?: string;
+  definitionName?: string;
+  includeSubcategories?: boolean;
+};
+
 type NavigationEntry = {
+  catalogScope: OverviewScope | null;
+  iterationCategoryFilter: string;
+  iterationDefinitionFilter: string;
   iterationKeyTypeFilter: string;
   iterationStatusFilter: WorkCompletionStatus[];
+  overviewScope: OverviewScope | null;
+  workerCategoryFilter: string;
+  workerDefinitionFilter: string;
   keyTypeFilter: string;
   systemId: string;
   view: View;
+  definitionId: string | null;
   workerId: string | null;
   workerStateFilter: WorkerState[];
 };
@@ -246,6 +329,12 @@ const overviewWorkerStates: WorkerState[] = states.filter(
   (state) => state !== "Pausing" && state !== "Canceling"
 );
 const iterationStatuses: WorkCompletionStatus[] = ["Executing", "Completed", "Failed", "Canceled", "Paused"];
+const throughputWindows = [
+  { label: "60s", seconds: 60, bucketSeconds: 1 },
+  { label: "5m", seconds: 300, bucketSeconds: 5 },
+  { label: "15m", seconds: 900, bucketSeconds: 15 },
+  { label: "1h", seconds: 3600, bucketSeconds: 60 },
+];
 
 const navItems: Array<{ id: ServerView; label: string; icon: typeof Activity }> = [
   { id: "overview", label: "Overview", icon: Activity },
@@ -261,10 +350,18 @@ const subtleClickableTileClass =
 const initialRefreshTokens: Record<View, number> = {
   overview: 0,
   definitions: 0,
+  definition: 0,
   workers: 0,
   iterations: 0,
   worker: 0,
 };
+const viewContentOffsetClass = "pt-2";
+const defaultQueryTake = 4;
+const maxQueryTake = 100;
+const minQueryTake = 4;
+const queryTableHeaderHeight = 41;
+const queryTableRowHeight = 56;
+const queryViewportSafetyPadding = 24;
 
 export function WorkableConsole() {
   const initialConsoleState = useMemo(() => createDefaultConsoleStorage(), []);
@@ -285,16 +382,33 @@ export function WorkableConsole() {
   const [lifecycleActionSystemId, setLifecycleActionSystemId] = useState<string | null>(null);
   const [lifecycleError, setLifecycleError] = useState<string>();
   const [refreshTokens, setRefreshTokens] = useState<Record<View, number>>(initialRefreshTokens);
+  const [selectedDefinitionId, setSelectedDefinitionId] = useState<string | null>(null);
   const [selectedWorkerId, setSelectedWorkerId] = useState<string | null>(null);
+  const [workerCategoryFilter, setWorkerCategoryFilter] = useState("");
+  const [workerDefinitionFilter, setWorkerDefinitionFilter] = useState("");
   const [keyTypeFilter, setKeyTypeFilter] = useState("");
   const [workerStateFilter, setWorkerStateFilter] = useState<WorkerState[]>([]);
+  const [iterationCategoryFilter, setIterationCategoryFilter] = useState("");
+  const [iterationDefinitionFilter, setIterationDefinitionFilter] = useState("");
   const [iterationKeyTypeFilter, setIterationKeyTypeFilter] = useState("");
   const [iterationStatusFilter, setIterationStatusFilter] = useState<WorkCompletionStatus[]>([]);
+  const [catalogScopeBySystemId, setCatalogScopeBySystemId] = useState<
+    Record<string, OverviewScope | undefined>
+  >({});
+  const [overviewScopeBySystemId, setOverviewScopeBySystemId] = useState<
+    Record<string, OverviewScope | undefined>
+  >({});
   const [navigationHistory, setNavigationHistory] = useState<NavigationEntry[]>([]);
   const readyViews = useRef<Set<string>>(new Set());
   const activeLocation = findSystemLocation(consoleState, consoleState.activeSystemId);
   const activeHost = activeLocation?.host;
   const activeSystem = activeLocation?.system;
+  const activeCatalogScope = activeSystem
+    ? catalogScopeBySystemId[activeSystem.id] ?? null
+    : null;
+  const activeOverviewScope = activeSystem
+    ? overviewScopeBySystemId[activeSystem.id] ?? null
+    : null;
   const connection = useMemo<WorkableConnection | null>(
     () =>
       activeHost && activeSystem
@@ -330,21 +444,39 @@ export function WorkableConsole() {
 
   const currentNavigation = useCallback(
     (): NavigationEntry => ({
+      catalogScope: cloneOverviewScope(
+        catalogScopeBySystemId[consoleState.activeSystemId] ?? null
+      ),
+      definitionId: selectedDefinitionId,
+      iterationCategoryFilter,
+      iterationDefinitionFilter,
       iterationKeyTypeFilter,
       iterationStatusFilter,
       keyTypeFilter,
+      overviewScope: cloneOverviewScope(
+        overviewScopeBySystemId[consoleState.activeSystemId] ?? null
+      ),
       systemId: consoleState.activeSystemId,
       view,
+      workerCategoryFilter,
+      workerDefinitionFilter,
       workerId: selectedWorkerId,
       workerStateFilter,
     }),
     [
       consoleState.activeSystemId,
+      catalogScopeBySystemId,
+      iterationCategoryFilter,
+      iterationDefinitionFilter,
       iterationKeyTypeFilter,
       iterationStatusFilter,
       keyTypeFilter,
+      overviewScopeBySystemId,
+      selectedDefinitionId,
       selectedWorkerId,
+      workerCategoryFilter,
       view,
+      workerDefinitionFilter,
       workerStateFilter,
     ]
   );
@@ -381,6 +513,38 @@ export function WorkableConsole() {
       }));
 
       return changed ? { ...current, hosts } : current;
+    });
+  }, []);
+
+  const setSystemOverviewScope = useCallback((
+    systemId: string,
+    scope: OverviewScope | null
+  ) => {
+    setOverviewScopeBySystemId((current) => {
+      const next = { ...current };
+      if (scope) {
+        next[systemId] = { ...scope };
+      } else {
+        delete next[systemId];
+      }
+
+      return next;
+    });
+  }, []);
+
+  const setSystemCatalogScope = useCallback((
+    systemId: string,
+    scope: OverviewScope | null
+  ) => {
+    setCatalogScopeBySystemId((current) => {
+      const next = { ...current };
+      if (scope) {
+        next[systemId] = { ...scope };
+      } else {
+        delete next[systemId];
+      }
+
+      return next;
     });
   }, []);
 
@@ -421,15 +585,76 @@ export function WorkableConsole() {
     }
   };
 
+  const setOverviewPanelVisible = useCallback((
+    panelId: OverviewPanelId,
+    visible: boolean
+  ) => {
+    setConsoleState((current) => {
+      const panels = new Set(current.overviewHiddenPanels ?? []);
+      if (visible) {
+        panels.delete(panelId);
+      } else {
+        panels.add(panelId);
+      }
+
+      return {
+        ...current,
+        overviewHiddenPanels: overviewPanelIds.filter((id) => panels.has(id)),
+        overviewThroughputHidden: panelId === "throughput"
+          ? !visible
+          : current.overviewThroughputHidden,
+      };
+    });
+  }, []);
+
+  const setOverviewPanelCollapsed = useCallback((
+    panelId: OverviewPanelId,
+    collapsed: boolean
+  ) => {
+    setConsoleState((current) => {
+      const panels = new Set(current.overviewCollapsedPanels ?? []);
+      if (collapsed) {
+        panels.add(panelId);
+      } else {
+        panels.delete(panelId);
+      }
+
+      return {
+        ...current,
+        overviewCollapsedPanels: overviewPanelIds.filter((id) => panels.has(id)),
+      };
+    });
+  }, []);
+
   const openWorker = (workerId: string, trackHistory = true) => {
     if (trackHistory) {
       pushCurrentNavigation();
     }
+    setSelectedDefinitionId(null);
     setSelectedWorkerId(workerId);
     setVisibleView("worker");
     setPendingView(null);
     setView("worker");
     refreshView("worker");
+  };
+
+  const openDefinition = (definitionId: string, systemId = activeSystem?.id ?? "") => {
+    pushCurrentNavigation();
+    setSelectedWorkerId(null);
+    setSelectedDefinitionId(definitionId);
+    const isSystemChange = systemId !== activeSystem?.id;
+    setConsoleState((current) => ({
+      ...current,
+      activeSystemId: systemId,
+      view: "definition",
+    }));
+    setMountedViews((current) =>
+      isSystemChange ? new Set(["definition"]) : new Set([...current, "definition"])
+    );
+    setVisibleView("definition");
+    setPendingView(null);
+    setView("definition");
+    refreshView("definition");
   };
 
   const openView = (
@@ -442,10 +667,17 @@ export function WorkableConsole() {
       !navigationEntriesEqual(currentNavigation(), {
         systemId,
         view: nextView,
+        definitionId: nextView === "definition" ? selectedDefinitionId : null,
         workerId: null,
+        catalogScope: cloneOverviewScope(catalogScopeBySystemId[systemId] ?? null),
+        iterationCategoryFilter,
+        iterationDefinitionFilter,
         iterationKeyTypeFilter,
         iterationStatusFilter,
         keyTypeFilter,
+        overviewScope: cloneOverviewScope(overviewScopeBySystemId[systemId] ?? null),
+        workerCategoryFilter,
+        workerDefinitionFilter,
         workerStateFilter,
       })
     ) {
@@ -454,6 +686,9 @@ export function WorkableConsole() {
 
     if (nextView !== "worker") {
       setSelectedWorkerId(null);
+      if (nextView !== "definition") {
+        setSelectedDefinitionId(null);
+      }
       setConsoleState((current) => ({
         ...current,
         activeSystemId: systemId,
@@ -481,6 +716,8 @@ export function WorkableConsole() {
 
   const openWorkersFiltered = (states: WorkerState[]) => {
     pushCurrentNavigation();
+    setWorkerCategoryFilter("");
+    setWorkerDefinitionFilter("");
     setKeyTypeFilter("");
     setWorkerStateFilter(states);
     openView("workers", activeSystem?.id ?? "", false);
@@ -488,6 +725,8 @@ export function WorkableConsole() {
 
   const openIterations = () => {
     pushCurrentNavigation();
+    setIterationCategoryFilter("");
+    setIterationDefinitionFilter("");
     setIterationKeyTypeFilter("");
     setIterationStatusFilter([]);
     openView("iterations", activeSystem?.id ?? "", false);
@@ -495,6 +734,8 @@ export function WorkableConsole() {
 
   const openIterationsByKeyType = (keyType: string) => {
     pushCurrentNavigation();
+    setIterationCategoryFilter("");
+    setIterationDefinitionFilter("");
     setIterationKeyTypeFilter(keyType);
     setIterationStatusFilter([]);
     openView("iterations", activeSystem?.id ?? "", false);
@@ -502,51 +743,116 @@ export function WorkableConsole() {
 
   const openIterationsFiltered = (statuses: WorkCompletionStatus[]) => {
     pushCurrentNavigation();
+    setIterationCategoryFilter("");
+    setIterationDefinitionFilter("");
     setIterationKeyTypeFilter("");
     setIterationStatusFilter(statuses);
     openView("iterations", activeSystem?.id ?? "", false);
   };
 
-  const openMenuView = (nextView: View, systemId: string) => {
-    if (nextView === "workers") {
-      setKeyTypeFilter("");
-      setWorkerStateFilter([]);
-    }
-    if (nextView === "iterations") {
-      setIterationKeyTypeFilter("");
-      setIterationStatusFilter([]);
+  const openCategoryOverview = (systemId: string, category: string) => {
+    const normalizedCategory = normalizeCategoryFilter(category);
+    const nextScope = normalizedCategory
+      ? {
+          category: normalizedCategory,
+          includeSubcategories: true,
+        }
+      : null;
+    const currentScope = overviewScopeBySystemId[systemId] ?? null;
+    const isSameScope = overviewScopesEqual(currentScope, nextScope);
+    const isSameOverview = consoleState.activeSystemId === systemId && view === "overview";
+
+    if (!isSameOverview || !isSameScope) {
+      pushCurrentNavigation();
     }
 
+    setSystemOverviewScope(systemId, nextScope);
+    openView("overview", systemId, false);
+  };
+
+  const openDefinitionOverview = (
+    systemId: string,
+    definitionName: string,
+    category: string
+  ) => {
+    const normalizedDefinitionName = definitionName.trim();
+    const normalizedCategory = normalizeCategoryFilter(category);
+    const nextScope = normalizedDefinitionName
+      ? {
+          category: normalizedCategory || undefined,
+          definitionName: normalizedDefinitionName,
+        }
+      : null;
+    const currentScope = overviewScopeBySystemId[systemId] ?? null;
+    const isSameScope = overviewScopesEqual(currentScope, nextScope);
+    const isSameOverview = consoleState.activeSystemId === systemId && view === "overview";
+
+    if (!isSameOverview || !isSameScope) {
+      pushCurrentNavigation();
+    }
+
+    setSystemOverviewScope(systemId, nextScope);
+    openView("overview", systemId, false);
+  };
+
+  const openCatalogScope = (systemId: string, scope: OverviewScope | null) => {
+    const currentScope = catalogScopeBySystemId[systemId] ?? null;
+    const isSameScope = overviewScopesEqual(currentScope, scope);
+    const isSameCatalog = consoleState.activeSystemId === systemId && view === "definitions";
+
+    if (!isSameCatalog || !isSameScope) {
+      pushCurrentNavigation();
+    }
+
+    setSystemCatalogScope(systemId, scope);
+    openView("definitions", systemId, false);
+  };
+
+  const openMenuView = (nextView: View, systemId: string) => {
     openView(nextView, systemId);
   };
 
-  const goBack = () => {
+  const restoreNavigation = useCallback((entry: NavigationEntry) => {
+    setCatalogScopeBySystemId((current) => ({
+      ...current,
+      [entry.systemId]: cloneOverviewScope(entry.catalogScope) ?? undefined,
+    }));
+    setOverviewScopeBySystemId((current) => ({
+      ...current,
+      [entry.systemId]: cloneOverviewScope(entry.overviewScope) ?? undefined,
+    }));
+    setIterationCategoryFilter(entry.iterationCategoryFilter);
+    setIterationDefinitionFilter(entry.iterationDefinitionFilter);
+    setIterationKeyTypeFilter(entry.iterationKeyTypeFilter);
+    setIterationStatusFilter(entry.iterationStatusFilter);
+    setKeyTypeFilter(entry.keyTypeFilter);
+    setSelectedDefinitionId(entry.definitionId);
+    setSelectedWorkerId(entry.workerId);
+    setWorkerCategoryFilter(entry.workerCategoryFilter);
+    setWorkerDefinitionFilter(entry.workerDefinitionFilter);
+    setWorkerStateFilter(entry.workerStateFilter);
+    setConsoleState((current) => ({
+      ...current,
+      activeSystemId: entry.systemId,
+      view: entry.view === "worker" ? current.view : entry.view,
+    }));
+    if (entry.view !== "worker") {
+      setMountedViews((current) => new Set([...current, entry.view]));
+      setVisibleView(entry.view);
+    }
+    setPendingView(null);
+    setView(entry.view);
+  }, []);
+
+  const navigateBack = useCallback(() => {
     const previous = navigationHistory.at(-1);
     if (!previous) {
       return;
     }
 
+    restoreNavigation(previous);
     setNavigationHistory((current) => current.slice(0, -1));
-    setIterationKeyTypeFilter(previous.iterationKeyTypeFilter);
-    setIterationStatusFilter(previous.iterationStatusFilter);
-    setKeyTypeFilter(previous.keyTypeFilter);
-    setWorkerStateFilter(previous.workerStateFilter);
-    if (previous.view === "worker" && previous.workerId) {
-      setConsoleState((current) => ({
-        ...current,
-        activeSystemId: previous.systemId,
-        view: "workers",
-      }));
-      setSelectedWorkerId(previous.workerId);
-      setVisibleView("worker");
-      setPendingView(null);
-      setView("worker");
-      refreshView("worker");
-      return;
-    }
-
-    openView(previous.view, previous.systemId, false);
-  };
+  }, [navigationHistory, restoreNavigation]);
 
   const markViewReady = (readyView: ServerView) => {
     if (!activeSystem) {
@@ -623,6 +929,7 @@ export function WorkableConsole() {
       };
     });
     if (firstSystem) {
+      setSelectedDefinitionId(null);
       setSelectedWorkerId(null);
       setNavigationHistory([]);
       setView("overview");
@@ -651,6 +958,7 @@ export function WorkableConsole() {
         hosts,
       };
     });
+    setSelectedDefinitionId(null);
     setSelectedWorkerId(null);
     setNavigationHistory([]);
     setView("overview");
@@ -692,6 +1000,7 @@ export function WorkableConsole() {
         hosts,
       };
     });
+    setSelectedDefinitionId(null);
     setSelectedWorkerId(null);
     setNavigationHistory([]);
     setView("overview");
@@ -718,21 +1027,29 @@ export function WorkableConsole() {
         </SidebarHeader>
         <SidebarContent>
           <SidebarGroup>
-            <SidebarGroupLabel>Servers</SidebarGroupLabel>
-            <SidebarGroupAction
-              onClick={() => setServerDialog({ mode: "add" })}
-              title="Add server"
-            >
-              <Plus />
-              <span className="sr-only">Add server</span>
-            </SidebarGroupAction>
+            <SidebarGroupLabel>Server Explorer</SidebarGroupLabel>
+            <Tooltip delayDuration={500} disableHoverableContent>
+              <TooltipTrigger asChild>
+                <SidebarGroupAction onClick={() => setServerDialog({ mode: "add" })}>
+                  <Plus />
+                  <span className="sr-only">Add server</span>
+                </SidebarGroupAction>
+              </TooltipTrigger>
+              <TooltipContent side="right" sideOffset={6}>
+                Add server
+              </TooltipContent>
+            </Tooltip>
             <SidebarGroupContent>
               <ServerTree
                 activeSystemId={activeSystem?.id ?? ""}
+                catalogScopeBySystemId={catalogScopeBySystemId}
                 expandedHostIds={consoleState.expandedHostIds}
                 expandedSystemIds={consoleState.expandedSystemIds}
                 hosts={consoleState.hosts}
                 lifecycleActionSystemId={lifecycleActionSystemId}
+                onOpenCatalogScope={openCatalogScope}
+                onOpenDefinition={openDefinition}
+                onOpenWorker={openWorker}
                 onAddServer={() => setServerDialog({ mode: "add" })}
                 onEditHost={(host) => setServerDialog({ mode: "edit", host })}
                 onLifecycleAction={(system, action) => {
@@ -763,82 +1080,110 @@ export function WorkableConsole() {
         <SidebarFooter />
       </Sidebar>
       <SidebarInset>
-        <header className="flex h-14 shrink-0 items-center gap-3 border-b px-4">
-          <SidebarTrigger />
-          <Separator className="h-6" orientation="vertical" />
-          <Button
-            aria-label="Back"
-            disabled={navigationHistory.length === 0}
-            onClick={goBack}
-            size="icon-sm"
-            variant="ghost"
-          >
-            <ArrowLeft className="size-4" />
-          </Button>
-          <div className="min-w-0 flex-1">
-            <ConsoleBreadcrumb
-              host={activeHost}
-              onOpenView={openView}
-              system={activeSystem}
-              view={view}
-              workerParentView={getWorkerParentView(navigationHistory)}
-              workerId={selectedWorkerId ?? undefined}
-            />
-            <div className="truncate text-muted-foreground text-xs">
-              {activeHost ? formatHostSubtitle(activeHost) : "No Workable system selected"}
-            </div>
-          </div>
-          <Button
-            onClick={() => refreshView(view)}
-            size="sm"
-            variant="outline"
-          >
-            <RefreshCw className="size-4" />
-            Refresh
-          </Button>
-        </header>
         <main className="min-h-0 flex-1 overflow-hidden bg-background">
-          <ScrollArea className="h-[calc(100vh-3.5rem)]">
-            <div className="relative mx-auto w-full max-w-7xl p-4 md:p-6">
+          <ScrollArea className="h-screen">
+            <div className="relative mx-auto w-full max-w-7xl p-4 md:p-6" data-view-content>
               {!connection && (
                 <EmptyServerState onAddServer={() => setServerDialog({ mode: "add" })} />
               )}
               {connection && (
                 <>
+                  {activeHost && activeSystem && (
+                    <ConsoleNavigationHeader
+                      canGoBack={navigationHistory.length > 0}
+                      definitionId={selectedDefinitionId}
+                      host={activeHost}
+                      onBack={navigateBack}
+                      onOpenView={openView}
+                      system={activeSystem}
+                      view={view}
+                      workerId={selectedWorkerId}
+                    />
+                  )}
                   <ErrorPanel errors={[lifecycleError]} />
                   {mountedViews.has("overview") && (
-                    <div className={visibleView === "overview" ? undefined : "hidden"}>
+                    <div className={visibleView === "overview" ? viewContentOffsetClass : "hidden"}>
                       <OverviewView
+                        collapsedPanelIds={consoleState.overviewCollapsedPanels}
                         connection={connection}
+                        hiddenPanelIds={consoleState.overviewHiddenPanels}
+                        isVisible={visibleView === "overview"}
                         onConnectionError={handleOverviewConnectionError}
                         onStateLoaded={handleOverviewStateLoaded}
                         onOpenCatalog={() => openView("definitions")}
+                        onClearOverviewScope={() => {
+                          if (activeSystem) {
+                            openCategoryOverview(activeSystem.id, "");
+                          }
+                        }}
+                        onSelectOverviewCategory={(category) => {
+                          if (activeSystem) {
+                            openCategoryOverview(activeSystem.id, category);
+                          }
+                        }}
+                        onSelectOverviewDefinition={(definitionName, category) => {
+                          if (activeSystem) {
+                            openDefinitionOverview(
+                              activeSystem.id,
+                              definitionName,
+                              category
+                            );
+                          }
+                        }}
                         onOpenIterations={openIterations}
                         onOpenKeyType={openIterationsByKeyType}
+                        onPanelCollapsedChange={setOverviewPanelCollapsed}
                         onReady={() => markViewReady("overview")}
+                        onRefresh={() => refreshView("overview")}
+                        onPanelVisibilityChange={setOverviewPanelVisible}
                         onViewIterationsByStatus={openIterationsFiltered}
                         onViewWorkersByState={openWorkersFiltered}
+                        overviewScope={activeOverviewScope}
                         refreshToken={refreshTokens.overview}
                         onOpenWorker={openWorker}
                       />
                     </div>
                   )}
                   {mountedViews.has("definitions") && (
-                    <div className={visibleView === "definitions" ? undefined : "hidden"}>
+                    <div className={visibleView === "definitions" ? viewContentOffsetClass : "hidden"}>
                       <DefinitionsView
+                        catalogScope={activeCatalogScope}
                         connection={connection}
+                        onCatalogScopeChange={(scope) => {
+                          if (activeSystem) {
+                            openCatalogScope(activeSystem.id, scope);
+                          }
+                        }}
+                        onOpenDefinition={(definitionId) =>
+                          openDefinition(definitionId, activeSystem?.id ?? "")
+                        }
                         onOpenWorker={openWorker}
                         onReady={() => markViewReady("definitions")}
                         refreshToken={refreshTokens.definitions}
                       />
                     </div>
                   )}
+                  {mountedViews.has("definition") && selectedDefinitionId && (
+                    <div className={visibleView === "definition" ? viewContentOffsetClass : "hidden"}>
+                      <DefinitionView
+                        connection={connection}
+                        definitionId={selectedDefinitionId}
+                        onOpenWorker={openWorker}
+                        onReady={() => markViewReady("definition")}
+                        refreshToken={refreshTokens.definition}
+                      />
+                    </div>
+                  )}
                   {mountedViews.has("workers") && (
-                    <div className={visibleView === "workers" ? undefined : "hidden"}>
+                    <div className={visibleView === "workers" ? viewContentOffsetClass : "hidden"}>
                       <WorkersView
+                        categoryFilter={workerCategoryFilter}
                         connection={connection}
                         onOpenWorker={openWorker}
                         onReady={() => markViewReady("workers")}
+                        definitionFilter={workerDefinitionFilter}
+                        onCategoryFilterChange={setWorkerCategoryFilter}
+                        onDefinitionFilterChange={setWorkerDefinitionFilter}
                         keyTypeFilter={keyTypeFilter}
                         onKeyTypeFilterChange={setKeyTypeFilter}
                         stateFilter={workerStateFilter}
@@ -848,10 +1193,14 @@ export function WorkableConsole() {
                     </div>
                   )}
                   {mountedViews.has("iterations") && (
-                    <div className={visibleView === "iterations" ? undefined : "hidden"}>
+                    <div className={visibleView === "iterations" ? viewContentOffsetClass : "hidden"}>
                       <IterationsView
+                        categoryFilter={iterationCategoryFilter}
                         connection={connection}
+                        definitionFilter={iterationDefinitionFilter}
                         keyTypeFilter={iterationKeyTypeFilter}
+                        onCategoryFilterChange={setIterationCategoryFilter}
+                        onDefinitionFilterChange={setIterationDefinitionFilter}
                         onKeyTypeFilterChange={setIterationKeyTypeFilter}
                         onOpenWorker={openWorker}
                         onReady={() => markViewReady("iterations")}
@@ -868,13 +1217,15 @@ export function WorkableConsole() {
                 </>
               )}
               {connection && view === "worker" && selectedWorkerId && (
-                <WorkerConsoleView
-                  backLabel={`Back to ${navTitle(getWorkerParentView(navigationHistory))}`}
-                  connection={connection}
-                  onBack={() => openView(getWorkerParentView(navigationHistory))}
-                  refreshToken={refreshTokens.worker}
-                  workerId={selectedWorkerId}
-                />
+                <div className={viewContentOffsetClass}>
+                  <WorkerConsoleView
+                    backLabel={`Back to ${navTitle(getWorkerParentView(navigationHistory))}`}
+                    connection={connection}
+                    onBack={navigationHistory.length > 0 ? navigateBack : () => openView(getWorkerParentView(navigationHistory))}
+                    refreshToken={refreshTokens.worker}
+                    workerId={selectedWorkerId}
+                  />
+                </div>
               )}
             </div>
             <ScrollBar orientation="vertical" />
@@ -918,100 +1269,18 @@ export function WorkableConsole() {
   );
 }
 
-function ConsoleBreadcrumb({
-  host,
-  onOpenView,
-  system,
-  view,
-  workerParentView = "workers",
-  workerId,
-}: {
-  host?: WorkableHostConnection;
-  onOpenView: (view: View, systemId?: string) => void;
-  system?: WorkableSystemConnection;
-  view: View;
-  workerParentView?: ServerView;
-  workerId?: string;
-}) {
-  if (!host || !system) {
-    return (
-      <Breadcrumb>
-        <BreadcrumbList className="flex-nowrap overflow-hidden">
-          <BreadcrumbItem>
-            <BreadcrumbPage className="truncate">Workable</BreadcrumbPage>
-          </BreadcrumbItem>
-        </BreadcrumbList>
-      </Breadcrumb>
-    );
-  }
-
-  const openSystemOverview = () => onOpenView("overview", system.id);
-  const workerLabel = workerId ? shortId(workerId) : "Worker";
-  const workerParentLabel = navTitle(workerParentView);
-
-  return (
-    <Breadcrumb>
-      <BreadcrumbList className="flex-nowrap overflow-hidden">
-        <BreadcrumbItem className="min-w-0">
-          <BreadcrumbLink asChild>
-            <button
-              className="max-w-40 cursor-pointer truncate text-left"
-              onClick={openSystemOverview}
-              type="button"
-            >
-              {host.name}
-            </button>
-          </BreadcrumbLink>
-        </BreadcrumbItem>
-        <BreadcrumbSeparator />
-        <BreadcrumbItem className="min-w-0">
-          <BreadcrumbLink asChild>
-            <button
-              className="max-w-48 cursor-pointer truncate text-left"
-              onClick={openSystemOverview}
-              type="button"
-            >
-              {system.name}
-            </button>
-          </BreadcrumbLink>
-        </BreadcrumbItem>
-        <BreadcrumbSeparator />
-        {view === "worker" ? (
-          <>
-            <BreadcrumbItem>
-              <BreadcrumbLink asChild>
-                <button
-                  className="cursor-pointer"
-                  onClick={() => onOpenView(workerParentView, system.id)}
-                  type="button"
-                >
-                  {workerParentLabel}
-                </button>
-              </BreadcrumbLink>
-            </BreadcrumbItem>
-            <BreadcrumbSeparator />
-            <BreadcrumbItem className="min-w-0">
-              <BreadcrumbPage className="truncate font-mono">{workerLabel}</BreadcrumbPage>
-            </BreadcrumbItem>
-          </>
-        ) : (
-          <BreadcrumbItem className="min-w-0">
-            <BreadcrumbPage className="truncate">{navTitle(view)}</BreadcrumbPage>
-          </BreadcrumbItem>
-        )}
-      </BreadcrumbList>
-    </Breadcrumb>
-  );
-}
-
 function ServerTree({
   activeSystemId,
+  catalogScopeBySystemId,
   expandedHostIds,
   expandedSystemIds,
   hosts,
   lifecycleActionSystemId,
   onAddServer,
   onEditHost,
+  onOpenCatalogScope,
+  onOpenDefinition,
+  onOpenWorker,
   onLifecycleAction,
   onOpenView,
   onRemoveHost,
@@ -1021,12 +1290,16 @@ function ServerTree({
   view,
 }: {
   activeSystemId: string;
+  catalogScopeBySystemId: Record<string, OverviewScope | undefined>;
   expandedHostIds: string[];
   expandedSystemIds: string[];
   hosts: WorkableHostConnection[];
   lifecycleActionSystemId: string | null;
   onAddServer: () => void;
   onEditHost: (host: WorkableHostConnection) => void;
+  onOpenCatalogScope: (systemId: string, scope: OverviewScope | null) => void;
+  onOpenDefinition: (definitionId: string, systemId?: string) => void;
+  onOpenWorker: (workerId: string) => void;
   onLifecycleAction: (system: WorkableSystemConnection, action: "start" | "stop") => void;
   onOpenView: (view: View, systemId: string) => void;
   onRemoveHost: (host: WorkableHostConnection) => void;
@@ -1038,6 +1311,16 @@ function ServerTree({
   onToggleSystem: (systemId: string) => void;
   view: View;
 }) {
+  const [openCatalogSystemIds, setOpenCatalogSystemIds] = useState<string[]>([]);
+
+  const toggleCatalog = (systemId: string) => {
+    setOpenCatalogSystemIds((current) =>
+      current.includes(systemId)
+        ? current.filter((id) => id !== systemId)
+        : [...current, systemId]
+    );
+  };
+
   return (
     <SidebarMenu>
       {hosts.map((host) => {
@@ -1046,131 +1329,243 @@ function ServerTree({
 
         return (
           <SidebarMenuItem key={host.id}>
-            <SidebarMenuButton
-              className="pr-14"
-              isActive={isActiveHost}
-              onClick={() => onToggleHost(host.id)}
-              tooltip={host.name}
-            >
-              <ChevronRight
-                className={isHostExpanded ? "rotate-90 transition-transform" : "transition-transform"}
-              />
-              <Server />
-              <span>{host.name}</span>
-            </SidebarMenuButton>
-            <SidebarMenuAction
-              className="right-7"
-              onClick={(event) => {
-                event.stopPropagation();
-                onEditHost(host);
-              }}
-              showOnHover
-              title="Edit host"
-            >
-              <Pencil />
-              <span className="sr-only">Edit host</span>
-            </SidebarMenuAction>
-            <SidebarMenuAction
-              onClick={(event) => {
-                event.stopPropagation();
-                onRemoveHost(host);
-              }}
-              showOnHover
-              title="Remove host"
-            >
-              <Trash2 />
-              <span className="sr-only">Remove host</span>
-            </SidebarMenuAction>
+            <div className="group/host-row relative">
+              <SidebarMenuButton
+                className="pr-14"
+                isActive={isActiveHost}
+                onClick={() => onToggleHost(host.id)}
+                tooltip={host.name}
+              >
+                <ChevronRight
+                  className={isHostExpanded ? "rotate-90 transition-transform" : "transition-transform"}
+                />
+                <Server />
+                <span>{host.name}</span>
+              </SidebarMenuButton>
+              <Tooltip delayDuration={500} disableHoverableContent>
+                <TooltipTrigger asChild>
+                  <SidebarMenuAction
+                    className="pointer-events-none right-7 opacity-0 group-hover/host-row:pointer-events-auto group-hover/host-row:opacity-100"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      onEditHost(host);
+                    }}
+                  >
+                    <Pencil />
+                    <span className="sr-only">{`Update '${host.name}' server settings`}</span>
+                  </SidebarMenuAction>
+                </TooltipTrigger>
+                <TooltipContent side="right" sideOffset={6}>
+                  {`Update '${host.name}' server settings`}
+                </TooltipContent>
+              </Tooltip>
+              <Tooltip delayDuration={500} disableHoverableContent>
+                <TooltipTrigger asChild>
+                  <SidebarMenuAction
+                    className="pointer-events-none opacity-0 group-hover/host-row:pointer-events-auto group-hover/host-row:opacity-100"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      onRemoveHost(host);
+                    }}
+                  >
+                    <Trash2 />
+                    <span className="sr-only">Remove this server from your explorer</span>
+                  </SidebarMenuAction>
+                </TooltipTrigger>
+                <TooltipContent side="right" sideOffset={6}>
+                  Remove this server from your explorer
+                </TooltipContent>
+              </Tooltip>
+            </div>
             {isHostExpanded && (
               <SidebarMenuSub>
                 {host.systems.map((system) => {
                   const isActiveSystem = system.id === activeSystemId;
                   const isSystemExpanded = expandedSystemIds.includes(system.id);
                   const lifecycleAction = getSystemLifecycleAction(system.state);
+                  const lifecycleActionLabel = getSystemLifecycleActionLabel(
+                    system.state,
+                    system,
+                    host
+                  );
 
                   return (
                     <SidebarMenuSubItem key={system.id}>
-                      <SidebarMenuSubButton
-                        asChild
-                        className="pr-14"
-                        isActive={isActiveSystem}
-                      >
-                        <button
-                          onClick={() => {
-                            onToggleSystem(system.id);
-                            if (!isActiveSystem) {
-                              onOpenView("overview", system.id);
-                            }
-                          }}
-                          type="button"
+                      <div className="group/system-row relative">
+                        <SidebarMenuSubButton
+                          asChild
+                          className="pr-14"
+                          isActive={isActiveSystem}
                         >
-                          <ChevronRight
-                            className={
-                              isSystemExpanded
-                                ? "rotate-90 transition-transform"
-                                : "transition-transform"
-                            }
-                          />
-                          <span>{system.name}</span>
-                          <SystemStateBadge state={system.state} />
-                          {system.realtimeEnabled && (
-                            <Radio className="text-emerald-300" />
-                          )}
-                        </button>
-                      </SidebarMenuSubButton>
-                      {(lifecycleAction || lifecycleActionSystemId === system.id) && (
-                        <button
-                          className="absolute right-7 top-1 flex size-5 items-center justify-center rounded-md text-sidebar-foreground opacity-0 transition-opacity hover:bg-sidebar-accent hover:text-sidebar-accent-foreground group-focus-within/menu-sub-item:opacity-100 group-hover/menu-sub-item:opacity-100 disabled:cursor-wait disabled:opacity-60"
-                          disabled={lifecycleActionSystemId === system.id || !lifecycleAction}
-                          onClick={(event) => {
-                            event.stopPropagation();
-                            if (lifecycleAction) {
-                              onLifecycleAction(system, lifecycleAction);
-                            }
-                          }}
-                          title={getSystemLifecycleActionLabel(system.state)}
-                          type="button"
-                        >
-                          {lifecycleActionSystemId === system.id ? (
-                            <Loader2 className="size-3.5 animate-spin" />
-                          ) : lifecycleAction === "stop" ? (
-                            <Square className="size-3.5" />
-                          ) : (
-                            <Play className="size-3.5" />
-                          )}
-                          <span className="sr-only">{getSystemLifecycleActionLabel(system.state)}</span>
-                        </button>
-                      )}
-                      <button
-                        className="absolute right-1 top-1 flex size-5 items-center justify-center rounded-md text-sidebar-foreground opacity-0 transition-opacity hover:bg-sidebar-accent hover:text-sidebar-accent-foreground group-focus-within/menu-sub-item:opacity-100 group-hover/menu-sub-item:opacity-100"
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          onRemoveSystem(host, system);
-                        }}
-                        title="Remove system"
-                        type="button"
-                      >
-                        <Trash2 className="size-3.5" />
-                        <span className="sr-only">Remove system</span>
-                      </button>
-                      {isSystemExpanded && (
-                        <SidebarMenuSub className="mx-2">
-                          {navItems.map((item) => (
-                            <SidebarMenuSubItem key={`${system.id}:${item.id}`}>
-                              <SidebarMenuSubButton
-                                asChild
-                                isActive={isActiveSystem && view === item.id}
+                          <button
+                            onClick={() => {
+                              onToggleSystem(system.id);
+                              if (!isActiveSystem) {
+                                onOpenView("overview", system.id);
+                              }
+                            }}
+                            type="button"
+                          >
+                            <ChevronRight
+                              className={
+                                isSystemExpanded
+                                  ? "rotate-90 transition-transform"
+                                  : "transition-transform"
+                              }
+                            />
+                            <span className="min-w-0 truncate">{system.name}</span>
+                            <SystemStateBadge state={system.state} />
+                            {system.realtimeEnabled && (
+                              <Radio className="text-emerald-300" />
+                            )}
+                          </button>
+                        </SidebarMenuSubButton>
+                        {(lifecycleAction || lifecycleActionSystemId === system.id) && (
+                          <Tooltip delayDuration={500} disableHoverableContent>
+                            <TooltipTrigger asChild>
+                              <button
+                                className="pointer-events-none absolute right-7 top-1 flex size-5 items-center justify-center rounded-md text-sidebar-foreground opacity-0 transition-opacity hover:bg-sidebar-accent hover:text-sidebar-accent-foreground group-hover/system-row:pointer-events-auto group-hover/system-row:opacity-100 disabled:cursor-wait disabled:opacity-60"
+                                disabled={lifecycleActionSystemId === system.id || !lifecycleAction}
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  if (lifecycleAction) {
+                                    onLifecycleAction(system, lifecycleAction);
+                                  }
+                                }}
+                                type="button"
                               >
-                                <button
-                                  onClick={() => onOpenView(item.id, system.id)}
-                                  type="button"
-                                >
-                                  <item.icon />
-                                  <span>{item.label}</span>
-                                </button>
-                              </SidebarMenuSubButton>
-                            </SidebarMenuSubItem>
-                          ))}
+                                {lifecycleActionSystemId === system.id ? (
+                                  <Loader2 className="size-3.5 animate-spin" />
+                                ) : lifecycleAction === "stop" ? (
+                                  <Square className="size-3.5" />
+                                ) : (
+                                  <Play className="size-3.5" />
+                                )}
+                                <span className="sr-only">{lifecycleActionLabel}</span>
+                              </button>
+                            </TooltipTrigger>
+                            <TooltipContent
+                              className="max-w-80 whitespace-normal break-words text-left"
+                              side="right"
+                              sideOffset={6}
+                            >
+                              {lifecycleActionLabel}
+                            </TooltipContent>
+                          </Tooltip>
+                        )}
+                        <Tooltip delayDuration={500} disableHoverableContent>
+                          <TooltipTrigger asChild>
+                            <button
+                              className="pointer-events-none absolute right-1 top-1 flex size-5 items-center justify-center rounded-md text-sidebar-foreground opacity-0 transition-opacity hover:bg-sidebar-accent hover:text-sidebar-accent-foreground group-hover/system-row:pointer-events-auto group-hover/system-row:opacity-100"
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                onRemoveSystem(host, system);
+                              }}
+                              type="button"
+                            >
+                              <Trash2 className="size-3.5" />
+                              <span className="sr-only">Remove this system from your explorer</span>
+                            </button>
+                          </TooltipTrigger>
+                          <TooltipContent side="right" sideOffset={6}>
+                            Remove this system from your explorer
+                          </TooltipContent>
+                        </Tooltip>
+                      </div>
+                      {isSystemExpanded && (
+                        <SidebarMenuSub className="ml-2 mr-0 pr-0">
+                          {navItems.map((item) => {
+                            const isCatalog = item.id === "definitions";
+                            const isCatalogOpen = openCatalogSystemIds.includes(system.id);
+
+                            return (
+                              <Fragment key={`${system.id}:${item.id}`}>
+                                <SidebarMenuSubItem>
+                                  {isCatalog ? (
+                                    <SidebarMenuSubButton
+                                      asChild
+                                      className="gap-1 pr-2"
+                                      isActive={isActiveSystem && view === item.id}
+                                    >
+                                      <div>
+                                        <button
+                                          className="flex h-full min-w-0 items-center gap-2 text-left"
+                                          onClick={() => onOpenView(item.id, system.id)}
+                                          type="button"
+                                        >
+                                          <item.icon className="size-4 shrink-0 text-sidebar-accent-foreground" />
+                                          <span>{item.label}</span>
+                                        </button>
+                                        <Tooltip delayDuration={500} disableHoverableContent>
+                                          <TooltipTrigger asChild>
+                                            <button
+                                              aria-label={
+                                                isCatalogOpen
+                                                  ? "Close catalog explorer"
+                                                  : "Explore worker categories and definitions"
+                                              }
+                                              aria-pressed={isCatalogOpen}
+                                              className={
+                                                isCatalogOpen
+                                                  ? "flex size-5 shrink-0 items-center justify-center rounded-md bg-sidebar-accent text-sidebar-accent-foreground"
+                                                  : "flex size-5 shrink-0 items-center justify-center rounded-md text-sidebar-foreground transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
+                                              }
+                                              onClick={(event) => {
+                                                event.stopPropagation();
+                                                toggleCatalog(system.id);
+                                              }}
+                                              type="button"
+                                            >
+                                              <Search className="size-3.5" />
+                                            </button>
+                                          </TooltipTrigger>
+                                          <TooltipContent side="right" sideOffset={6}>
+                                            {isCatalogOpen
+                                              ? "Close catalog explorer"
+                                              : "Explore worker categories and definitions"}
+                                          </TooltipContent>
+                                        </Tooltip>
+                                      </div>
+                                    </SidebarMenuSubButton>
+                                  ) : (
+                                    <SidebarMenuSubButton
+                                      asChild
+                                      isActive={isActiveSystem && view === item.id}
+                                    >
+                                      <button
+                                        onClick={() => onOpenView(item.id, system.id)}
+                                        type="button"
+                                      >
+                                        <item.icon />
+                                        <span>{item.label}</span>
+                                      </button>
+                                    </SidebarMenuSubButton>
+                                  )}
+                                </SidebarMenuSubItem>
+                                {isCatalog && isCatalogOpen && (
+                                  <SidebarMenuSubItem>
+                                    <CatalogExplorer
+                                      activeDefinitionName={
+                                        isActiveSystem
+                                          ? catalogScopeBySystemId[system.id]?.definitionName ?? ""
+                                          : ""
+                                      }
+                                      activeOverviewCategory={
+                                        isActiveSystem
+                                          ? catalogScopeBySystemId[system.id]?.category ?? ""
+                                          : ""
+                                      }
+                                      host={host}
+                                      onOpenCatalogScope={onOpenCatalogScope}
+                                      onOpenDefinition={onOpenDefinition}
+                                      onOpenWorker={onOpenWorker}
+                                      system={system}
+                                    />
+                                  </SidebarMenuSubItem>
+                                )}
+                              </Fragment>
+                            );
+                          })}
                         </SidebarMenuSub>
                       )}
                     </SidebarMenuSubItem>
@@ -1188,6 +1583,163 @@ function ServerTree({
         </SidebarMenuButton>
       </SidebarMenuItem>
     </SidebarMenu>
+  );
+}
+
+type DefinitionCatalogLevel = {
+  categories: WorkOverviewCatalogCategoryItem[];
+  definitions: WorkDefinition[];
+};
+
+function CatalogExplorer({
+  activeDefinitionName,
+  activeOverviewCategory,
+  host,
+  onOpenCatalogScope,
+  onOpenDefinition,
+  onOpenWorker,
+  system,
+}: {
+  activeDefinitionName: string;
+  activeOverviewCategory: string;
+  host: WorkableHostConnection;
+  onOpenCatalogScope: (systemId: string, scope: OverviewScope | null) => void;
+  onOpenDefinition: (definitionId: string, systemId?: string) => void;
+  onOpenWorker: (workerId: string) => void;
+  system: WorkableSystemConnection;
+}) {
+  const connection = useMemo<WorkableConnection>(
+    () => ({
+      apiUrl: host.apiUrl,
+      systemName: system.systemName,
+    }),
+    [host.apiUrl, system.systemName]
+  );
+  const [path, setPath] = useState(activeOverviewCategory);
+  const catalogLevel = useWorkableResource<DefinitionCatalogLevel>(
+    connection,
+    createDefinitionCatalogLevelPath(path),
+    0
+  );
+  const [queueDefinition, setQueueDefinition] = useState<WorkDefinition | null>(null);
+  const categories = catalogLevel.data?.categories ?? [];
+  const definitions = catalogLevel.data?.definitions ?? [];
+  const pathSegments = splitCatalogPath(path);
+  const currentLabel = pathSegments.at(-1) ?? "All categories";
+  const canGoBack = pathSegments.length > 0;
+
+  const goBack = () => {
+    const nextPath = pathSegments.slice(0, -1).join(":");
+    setPath(nextPath);
+  };
+  return (
+    <div className="relative z-10 -ml-11 mr-0 mt-1 w-[calc(var(--sidebar-width)-2rem)] overflow-hidden rounded-md border border-sidebar-border bg-sidebar group-data-[collapsible=icon]:hidden">
+      <div className="flex h-8 min-w-0 items-center gap-1 border-sidebar-border border-b px-1.5 text-sidebar-foreground/80 text-xs">
+        <button
+          aria-label={canGoBack ? "Back to parent category" : "Catalog root"}
+          className="flex size-5 shrink-0 items-center justify-center rounded-md hover:bg-sidebar-accent hover:text-sidebar-accent-foreground disabled:pointer-events-none disabled:opacity-40"
+          disabled={!canGoBack}
+          onClick={goBack}
+          type="button"
+        >
+          {canGoBack ? <ChevronLeft className="size-3.5" /> : <Home className="size-3.5" />}
+        </button>
+        <span className="min-w-0 flex-1 truncate">{currentLabel}</span>
+      </div>
+      <div className="py-1">
+        {catalogLevel.loading ? (
+          Array.from({ length: 4 }).map((_, index) => (
+            <Skeleton className="mx-2 my-1 h-7" key={index} />
+          ))
+        ) : (
+          <>
+            {categories.map((category) => (
+              <div
+                className="flex h-7 min-w-0 items-center text-sidebar-foreground text-sm hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
+                key={category.path}
+              >
+                <button
+                  className="flex h-full min-w-0 flex-1 items-center gap-2 px-2 text-left"
+                  onClick={() => {
+                    setPath(category.path);
+                  }}
+                  type="button"
+                >
+                  <Folder className="size-4 shrink-0 text-sidebar-accent-foreground" />
+                  <span className="min-w-0 flex-1 truncate">{category.label}</span>
+                  <span className="shrink-0 text-sidebar-foreground/60 text-xs tabular-nums">
+                    {category.count}
+                  </span>
+                </button>
+                <Tooltip delayDuration={500} disableHoverableContent>
+                  <TooltipTrigger asChild>
+                    <button
+                      aria-label={`Open Catalog filtered to ${category.label}`}
+                      className="mr-1 flex size-5 shrink-0 items-center justify-center rounded-md text-sidebar-foreground/70 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
+                      onClick={() => onOpenCatalogScope(system.id, {
+                        category: normalizeCategoryFilter(category.path),
+                        includeSubcategories: true,
+                      })}
+                      type="button"
+                    >
+                      <Boxes className="size-3.5" />
+                    </button>
+                  </TooltipTrigger>
+                  <TooltipContent side="right" sideOffset={6}>
+                    Open Catalog filtered to {category.label}
+                  </TooltipContent>
+                </Tooltip>
+              </div>
+            ))}
+            {definitions.map((definition) => (
+              <div
+                className={
+                  definition.name === activeDefinitionName
+                    ? "flex h-7 min-w-0 items-center bg-sidebar-accent text-sidebar-accent-foreground text-sm"
+                    : "flex h-7 min-w-0 items-center text-sidebar-foreground text-sm hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
+                }
+                key={definition.id.value}
+              >
+                <button
+                  className="flex h-full min-w-0 flex-1 items-center gap-2 px-2 text-left"
+                  onClick={() => onOpenDefinition(definition.id.value, system.id)}
+                  type="button"
+                >
+                  <FileCode2 className="size-4 shrink-0 text-sidebar-accent-foreground" />
+                  <span className="min-w-0 flex-1 truncate font-mono">{definition.name}</span>
+                </button>
+                <Tooltip delayDuration={500} disableHoverableContent>
+                  <TooltipTrigger asChild>
+                    <button
+                      aria-label={`Queue ${definition.name}`}
+                      className="mr-1 flex size-5 shrink-0 items-center justify-center rounded-md text-sidebar-foreground/70 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
+                      onClick={() => setQueueDefinition(definition)}
+                      type="button"
+                    >
+                      <Send className="size-3.5" />
+                    </button>
+                  </TooltipTrigger>
+                  <TooltipContent side="right" sideOffset={6}>
+                    Queue {definition.name}
+                  </TooltipContent>
+                </Tooltip>
+              </div>
+            ))}
+            {categories.length === 0 && definitions.length === 0 && (
+              <div className="px-2 py-2 text-sidebar-foreground/60 text-xs">
+                No catalog entries.
+              </div>
+            )}
+          </>
+        )}
+      </div>
+      <QueueDialog
+        connection={connection}
+        definition={queueDefinition}
+        onQueuedWorker={onOpenWorker}
+        onOpenChange={(open) => !open && setQueueDefinition(null)}
+      />
+    </div>
   );
 }
 
@@ -1214,9 +1766,9 @@ function EmptyServerState({ onAddServer }: { onAddServer: () => void }) {
 function SystemStateBadge({ state }: { state?: string | null }) {
   const label = state || "State unknown. Open Overview or refresh to connect.";
   return (
-    <Tooltip>
+    <Tooltip delayDuration={500} disableHoverableContent>
       <TooltipTrigger asChild>
-        <span className={`ml-auto size-2 rounded-full ${systemStateDotClass(state)}`} />
+        <span className={`size-2 shrink-0 rounded-full ${systemStateDotClass(state)}`} />
       </TooltipTrigger>
       <TooltipContent side="right" sideOffset={6}>
         {label}
@@ -1366,7 +1918,7 @@ function ServerDialog({
 
     try {
       const result = await discoverSystems(apiUrl);
-      const systems = result.systems ?? [];
+      const systems = mergeDiscoveredSystemsWithStored(result.systems ?? [], host?.systems);
       setApiUrl(result.apiUrl);
       setDiscovered(systems);
 
@@ -1395,7 +1947,7 @@ function ServerDialog({
     } finally {
       setIsLoadingSystems(false);
     }
-  }, [apiUrl]);
+  }, [apiUrl, host]);
 
   useEffect(() => {
     if (!open || mode !== "edit" || !host?.apiUrl) {
@@ -1425,7 +1977,14 @@ function ServerDialog({
       id: hostId,
       name: name.trim() || "Workable host",
       apiUrl: apiUrl.trim(),
-      systems: selected.map((system) => createStoredSystem(hostId, system, realtimeSystemIds)),
+      systems: selected.map((system) =>
+        createStoredSystem(
+          hostId,
+          system,
+          realtimeSystemIds,
+          findStoredSystemByKey(host, system)
+        )
+      ),
     });
     onOpenChange(false);
   };
@@ -1605,7 +2164,7 @@ function RealtimeCheckbox({
   }
 
   return (
-    <Tooltip>
+    <Tooltip delayDuration={500} disableHoverableContent>
       <TooltipTrigger asChild>
         <span className="flex cursor-not-allowed items-center justify-center">
           {checkbox}
@@ -1622,29 +2181,822 @@ function RealtimeCheckbox({
   );
 }
 
-function OverviewView({
+function ConsoleNavigationHeader({
+  canGoBack,
+  definitionId,
+  host,
+  onBack,
+  onOpenView,
+  system,
+  view,
+  workerId,
+}: {
+  canGoBack: boolean;
+  definitionId: string | null;
+  host: WorkableHostConnection;
+  onBack: () => void;
+  onOpenView: (view: View, systemId?: string, trackHistory?: boolean) => void;
+  system: WorkableSystemConnection;
+  view: View;
+  workerId: string | null;
+}) {
+  const canOpenOverview = view !== "overview";
+  const currentLabel =
+    view === "definition" && definitionId
+      ? definitionId
+      : view === "worker" && workerId
+        ? workerId
+        : navTitle(view);
+
+  return (
+    <div className="mb-3 flex min-h-8 min-w-0 items-center gap-2">
+      <SidebarTrigger className="-ml-1" />
+      <Separator className="h-5" orientation="vertical" />
+      <Tooltip delayDuration={500} disableHoverableContent>
+        <TooltipTrigger asChild>
+          <Button
+            aria-label="Go back"
+            className="shrink-0"
+            disabled={!canGoBack}
+            onClick={onBack}
+            size="icon-sm"
+            variant="ghost"
+          >
+            <ChevronLeft className="size-4" />
+          </Button>
+        </TooltipTrigger>
+        <TooltipContent side="bottom" sideOffset={6}>
+          Go back
+        </TooltipContent>
+      </Tooltip>
+      <div className="min-w-0 overflow-x-auto">
+        <Breadcrumb>
+          <BreadcrumbList className="flex-nowrap whitespace-nowrap">
+            <BreadcrumbItem className="min-w-0 shrink-0">
+              <BreadcrumbPage className="max-w-48 truncate text-muted-foreground">
+                {host.name}
+              </BreadcrumbPage>
+            </BreadcrumbItem>
+            <BreadcrumbSeparator className="shrink-0" />
+            <BreadcrumbItem className="min-w-0 shrink-0">
+              {canOpenOverview ? (
+                <BreadcrumbLink asChild className="max-w-56 truncate">
+                  <button onClick={() => onOpenView("overview", system.id)} type="button">
+                    {system.name}
+                  </button>
+                </BreadcrumbLink>
+              ) : (
+                <BreadcrumbPage className="max-w-56 truncate">
+                  {system.name}
+                </BreadcrumbPage>
+              )}
+            </BreadcrumbItem>
+            <BreadcrumbSeparator className="shrink-0" />
+            <BreadcrumbItem className="min-w-0 shrink-0">
+              <BreadcrumbPage className={`${view === "worker" || view === "definition" ? "font-mono" : ""} max-w-80 truncate font-semibold text-foreground`}>
+                {currentLabel}
+              </BreadcrumbPage>
+            </BreadcrumbItem>
+          </BreadcrumbList>
+        </Breadcrumb>
+      </div>
+    </div>
+  );
+}
+
+function ScopeTrail({
+  onClear,
+  onSelectCategory,
+  onSelectDefinition,
+  scope,
+}: {
+  onClear: () => void;
+  onSelectCategory: (category: string) => void;
+  onSelectDefinition?: (definitionName: string, category: string) => void;
+  scope: OverviewScope | null;
+}) {
+  const categorySegments = splitCatalogPath(scope?.category ?? "");
+  const categoryCrumbs = categorySegments.map((segment, index) => ({
+    label: segment,
+    path: categorySegments.slice(0, index + 1).join(":"),
+  }));
+  const hasDefinition = !!scope?.definitionName;
+  const activeCategoryPath = scope?.category ?? "";
+
+  return (
+    <div className="min-w-0 overflow-x-auto text-xs">
+      <Breadcrumb>
+        <BreadcrumbList className="flex-nowrap whitespace-nowrap text-xs">
+          <BreadcrumbItem className="shrink-0">
+            {scope ? (
+              <BreadcrumbLink asChild>
+                <button onClick={onClear} type="button">
+                  All categories
+                </button>
+              </BreadcrumbLink>
+            ) : (
+              <BreadcrumbPage>All categories</BreadcrumbPage>
+            )}
+          </BreadcrumbItem>
+          {categoryCrumbs.map((crumb, index) => {
+            const isCurrentCategory = !hasDefinition && index === categoryCrumbs.length - 1;
+
+            return (
+              <Fragment key={crumb.path}>
+                <BreadcrumbSeparator className="shrink-0" />
+                <BreadcrumbItem className="min-w-0 shrink-0">
+                  {isCurrentCategory ? (
+                    <BreadcrumbPage className="max-w-56 truncate">
+                      {crumb.label}
+                    </BreadcrumbPage>
+                  ) : (
+                    <BreadcrumbLink asChild className="max-w-56 truncate">
+                      <button
+                        onClick={() => onSelectCategory(crumb.path)}
+                        type="button"
+                      >
+                        {crumb.label}
+                      </button>
+                    </BreadcrumbLink>
+                  )}
+                </BreadcrumbItem>
+              </Fragment>
+            );
+          })}
+          {hasDefinition && (
+            <>
+              <BreadcrumbSeparator className="shrink-0" />
+              <BreadcrumbItem className="min-w-0 shrink-0">
+                {onSelectDefinition && scope?.definitionName ? (
+                  <BreadcrumbLink asChild className="max-w-80 truncate font-mono">
+                    <button
+                      onClick={() => onSelectDefinition(
+                        scope.definitionName ?? "",
+                        activeCategoryPath
+                      )}
+                      type="button"
+                    >
+                      {scope.definitionName}
+                    </button>
+                  </BreadcrumbLink>
+                ) : (
+                  <BreadcrumbPage className="max-w-80 truncate font-mono text-foreground">
+                    {scope?.definitionName}
+                  </BreadcrumbPage>
+                )}
+              </BreadcrumbItem>
+            </>
+          )}
+        </BreadcrumbList>
+      </Breadcrumb>
+    </div>
+  );
+}
+
+function ViewActionLane({ children }: { children?: ReactNode }) {
+  return (
+    <div
+      aria-hidden={children ? undefined : true}
+      className="-mb-2 flex min-h-9 min-w-0 -translate-y-2 items-center justify-end gap-1"
+    >
+      {children}
+    </div>
+  );
+}
+
+function OverviewCatalogFilter({
+  categories,
+  definitions,
+  loading,
+  onClear,
+  onSelectCategory,
+  onSelectDefinition,
+  scope,
+  tooltipLabel = "Filter overview by category and definition",
+}: {
+  categories: WorkOverviewCatalogCategoryItem[];
+  definitions: WorkOverviewDefinitionItem[];
+  loading: boolean;
+  onClear: () => void;
+  onSelectCategory: (category: string) => void;
+  onSelectDefinition: (definitionName: string, category: string) => void;
+  scope: OverviewScope | null;
+  tooltipLabel?: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const [tooltipOpen, setTooltipOpen] = useState(false);
+  const tooltipOpenTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [path, setPath] = useState(scope?.category ?? "");
+  const activeFilterCount = scope ? 1 : 0;
+  const scopeLabel = formatOverviewScopeLabel(scope);
+  const filterTooltip = scopeLabel
+    ? `Filtered by catalog: ${scopeLabel}`
+    : tooltipLabel;
+
+  const closeTooltip = useCallback(() => {
+    if (tooltipOpenTimer.current) {
+      clearTimeout(tooltipOpenTimer.current);
+      tooltipOpenTimer.current = null;
+    }
+    setTooltipOpen(false);
+  }, []);
+
+  const scheduleTooltip = useCallback(() => {
+    closeTooltip();
+    if (open) {
+      return;
+    }
+
+    tooltipOpenTimer.current = setTimeout(() => {
+      setTooltipOpen(true);
+      tooltipOpenTimer.current = null;
+    }, 500);
+  }, [closeTooltip, open]);
+
+  useEffect(() => () => {
+    if (tooltipOpenTimer.current) {
+      clearTimeout(tooltipOpenTimer.current);
+    }
+  }, []);
+
+
+  const handleOpenChange = (nextOpen: boolean) => {
+    closeTooltip();
+    if (nextOpen) {
+      setPath(scope?.category ?? "");
+    }
+    setOpen(nextOpen);
+  };
+
+  const clearAll = () => {
+    closeTooltip();
+    setPath("");
+    onClear();
+  };
+
+  return (
+    <Popover open={open} onOpenChange={handleOpenChange}>
+      <Tooltip
+        disableHoverableContent
+        open={tooltipOpen}
+      >
+        <TooltipTrigger asChild>
+          <PopoverTrigger asChild>
+            <Button
+              aria-label="Filter overview"
+              className="relative text-muted-foreground hover:bg-transparent hover:text-foreground aria-expanded:bg-transparent aria-expanded:text-foreground dark:hover:bg-transparent"
+              onBlur={closeTooltip}
+              onClick={closeTooltip}
+              onFocus={closeTooltip}
+              onPointerEnter={scheduleTooltip}
+              onPointerLeave={closeTooltip}
+              size="icon-sm"
+              variant="ghost"
+            >
+              <ListFilter className="size-4" />
+              {activeFilterCount > 0 && (
+                <span className="-right-0.5 -top-0.5 absolute flex size-4 items-center justify-center rounded-full bg-primary font-medium text-[10px] text-primary-foreground">
+                  {activeFilterCount}
+                </span>
+              )}
+            </Button>
+          </PopoverTrigger>
+        </TooltipTrigger>
+        <TooltipContent
+          className="max-w-80 whitespace-normal text-left"
+          side="bottom"
+          sideOffset={6}
+        >
+          {filterTooltip}
+        </TooltipContent>
+      </Tooltip>
+      <PopoverContent align="end" className="w-[26rem] p-0">
+        <div className="flex h-10 items-center justify-between border-b px-3">
+          <span className="font-medium text-sm">Filters</span>
+          <Button onClick={clearAll} size="sm" variant="ghost">
+            Clear
+          </Button>
+        </div>
+        <ScrollArea className="max-h-[70vh]">
+          <div className="p-3">
+            <div className="overflow-hidden rounded-lg border">
+              <div className="border-b px-3 py-2 font-medium text-muted-foreground text-xs">
+                Catalog
+              </div>
+              <CatalogFilterPanel
+                categories={categories}
+                definitions={definitions}
+                loading={loading}
+                onClear={clearAll}
+                onClose={() => setOpen(false)}
+                onSelectCategory={(category) => {
+                  closeTooltip();
+                  onSelectCategory(category);
+                }}
+                onSelectDefinition={(definitionName, category) => {
+                  closeTooltip();
+                  onSelectDefinition(definitionName, category);
+                }}
+                path={path}
+                scope={scope}
+                setPath={setPath}
+              />
+            </div>
+          </div>
+        </ScrollArea>
+      </PopoverContent>
+    </Popover>
+  );
+}
+
+function CatalogFilterPanel({
+  categories,
+  definitions,
+  loading,
+  onClear,
+  onClose,
+  onSelectCategory,
+  onSelectDefinition,
+  path,
+  scope,
+  setPath,
+}: {
+  categories: WorkOverviewCatalogCategoryItem[];
+  definitions: WorkOverviewDefinitionItem[];
+  loading: boolean;
+  onClear: () => void;
+  onClose?: () => void;
+  onSelectCategory: (category: string) => void;
+  onSelectDefinition: (definitionName: string, category: string) => void;
+  path: string;
+  scope: OverviewScope | null;
+  setPath: (path: string) => void;
+}) {
+  const pathSegments = splitCatalogPath(path);
+  const currentLabel = pathSegments.at(-1) ?? "All categories";
+  const canGoBack = pathSegments.length > 0;
+
+  const selectCategory = (category: string) => {
+    setPath(category);
+    onSelectCategory(category);
+  };
+
+  const clear = () => {
+    setPath("");
+    onClear();
+  };
+
+  const goBack = () => {
+    selectCategory(pathSegments.slice(0, -1).join(":"));
+  };
+
+  return (
+    <>
+      <div className="flex h-10 min-w-0 items-center gap-1 border-b px-2">
+        <button
+          aria-label={canGoBack ? "Back to parent category" : "Catalog root"}
+          className="flex size-7 shrink-0 items-center justify-center rounded-md hover:bg-accent hover:text-accent-foreground disabled:pointer-events-none disabled:opacity-40"
+          disabled={!canGoBack}
+          onClick={goBack}
+          type="button"
+        >
+          {canGoBack ? <ChevronLeft className="size-4" /> : <Home className="size-4" />}
+        </button>
+        <span className="min-w-0 flex-1 truncate font-medium text-sm">
+          {currentLabel}
+        </span>
+        <Button onClick={clear} size="sm" variant="ghost">
+          All
+        </Button>
+      </div>
+      <ScrollArea className="max-h-80">
+        <div className="py-1">
+          {loading ? (
+            Array.from({ length: 5 }).map((_, index) => (
+              <Skeleton className="mx-2 my-1 h-8" key={index} />
+            ))
+          ) : (
+            <>
+              {categories.map((category) => {
+                const isActive =
+                  !scope?.definitionName &&
+                  normalizeCategoryFilter(scope?.category ?? "") ===
+                    normalizeCategoryFilter(category.path);
+
+                return (
+                  <button
+                    className={
+                      isActive
+                        ? "flex h-8 w-full min-w-0 items-center gap-2 bg-accent px-2 text-left text-accent-foreground text-sm"
+                        : "flex h-8 w-full min-w-0 items-center gap-2 px-2 text-left text-sm hover:bg-accent hover:text-accent-foreground"
+                    }
+                    key={category.path}
+                    onClick={() => selectCategory(category.path)}
+                    type="button"
+                  >
+                    <Folder className="size-4 shrink-0 text-muted-foreground" />
+                    <span className="min-w-0 flex-1 truncate">{category.label}</span>
+                    <span className="shrink-0 text-muted-foreground text-xs tabular-nums">
+                      {category.count}
+                    </span>
+                  </button>
+                );
+              })}
+              {definitions.map((definition) => {
+                const isActive = definition.name === scope?.definitionName;
+
+                return (
+                  <button
+                    className={
+                      isActive
+                        ? "flex h-8 w-full min-w-0 items-center gap-2 bg-accent px-2 text-left text-accent-foreground text-sm"
+                        : "flex h-8 w-full min-w-0 items-center gap-2 px-2 text-left text-sm hover:bg-accent hover:text-accent-foreground"
+                    }
+                    key={definition.id.value}
+                    onClick={() => {
+                      onSelectDefinition(
+                        definition.name,
+                        definition.category ?? path
+                      );
+                      onClose?.();
+                    }}
+                    type="button"
+                  >
+                    <FileCode2 className="size-4 shrink-0 text-muted-foreground" />
+                    <span className="min-w-0 flex-1 truncate font-mono">
+                      {definition.name}
+                    </span>
+                  </button>
+                );
+              })}
+              {categories.length === 0 && definitions.length === 0 && (
+                <div className="px-3 py-3 text-muted-foreground text-sm">
+                  No catalog entries.
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      </ScrollArea>
+    </>
+  );
+}
+
+function QueryFacetPanel<TValue extends string>({
+  allLabel,
+  onChange,
+  options,
+  value,
+}: {
+  allLabel: string;
+  onChange: (value: TValue[]) => void;
+  options: TValue[];
+  value: TValue[];
+}) {
+  const selected = new Set(value);
+  const selectedLabel =
+    value.length === 0
+      ? allLabel
+      : value.length === 1
+        ? value[0]
+        : `${value.length} selected`;
+
+  const setEnabled = (option: TValue, enabled: boolean) => {
+    const next = new Set(selected);
+    if (enabled) {
+      next.add(option);
+    } else {
+      next.delete(option);
+    }
+    onChange(options.filter((item) => next.has(item)));
+  };
+
+  return (
+    <div>
+      <div className="flex h-10 items-center justify-between border-b px-3">
+        <span className="truncate font-medium text-sm">{selectedLabel}</span>
+        <Button onClick={() => onChange([])} size="sm" variant="ghost">
+          All
+        </Button>
+      </div>
+      <div className="py-1">
+        {options.map((option) => {
+          const isSelected = selected.has(option);
+
+          return (
+            <button
+              className={
+                isSelected
+                  ? "flex h-8 w-full items-center gap-2 bg-accent px-3 text-accent-foreground text-sm"
+                  : "flex h-8 w-full items-center gap-2 px-3 text-sm hover:bg-accent hover:text-accent-foreground"
+              }
+              key={option}
+              onClick={() => setEnabled(option, !isSelected)}
+              type="button"
+            >
+              {isSelected ? (
+                <CheckCircle2 className="size-4 shrink-0 text-primary" />
+              ) : (
+                <Square className="size-4 shrink-0 text-muted-foreground" />
+              )}
+              <span>{option}</span>
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function QueryFilterPopover<TValue extends string>({
+  allFacetLabel,
+  catalogScope,
   connection,
+  facetLabel,
+  facetOptions,
+  facetValue,
+  keyTypeFilter,
+  onClearCatalog,
+  onFacetChange,
+  onKeyTypeFilterChange,
+  onSelectCategory,
+  onSelectDefinition,
+  refreshToken,
+}: {
+  allFacetLabel: string;
+  catalogScope: OverviewScope | null;
+  connection: WorkableConnection;
+  facetLabel: string;
+  facetOptions: TValue[];
+  facetValue: TValue[];
+  keyTypeFilter: string;
+  onClearCatalog: () => void;
+  onFacetChange: (value: TValue[]) => void;
+  onKeyTypeFilterChange: (keyType: string) => void;
+  onSelectCategory: (category: string) => void;
+  onSelectDefinition: (definitionName: string, category: string) => void;
+  refreshToken: number;
+}) {
+  const [open, setOpen] = useState(false);
+  const [path, setPath] = useState(catalogScope?.category ?? "");
+  const catalogRequest = useMemo(
+    () => ({
+      components: [{ id: "catalog", type: "catalog" }],
+      scope: createOverviewComponentScope(catalogScope),
+    }),
+    [catalogScope]
+  );
+  const catalog = useWorkablePostResource<WorkComponentQueryResult>(
+    connection,
+    "components/query",
+    catalogRequest,
+    refreshToken
+  );
+  const catalogComponent = getWorkComponentData<WorkOverviewCatalogComponent>(
+    catalog.data,
+    "catalog"
+  );
+  const activeFilterCount =
+    (catalogScope ? 1 : 0) +
+    (keyTypeFilter.trim() ? 1 : 0) +
+    (facetValue.length > 0 ? 1 : 0);
+  const filterDescriptions = createQueryFilterDescriptions(
+    catalogScope,
+    facetLabel,
+    facetValue,
+    keyTypeFilter
+  );
+  const filterTooltip =
+    filterDescriptions.length > 0
+      ? `Filtered by ${filterDescriptions.join("; ")}`
+      : "Filter query";
+
+  const handleOpenChange = (nextOpen: boolean) => {
+    if (nextOpen) {
+      setPath(catalogScope?.category ?? "");
+    }
+    setOpen(nextOpen);
+  };
+
+  const clearAll = () => {
+    onClearCatalog();
+    onKeyTypeFilterChange("");
+    onFacetChange([]);
+    setPath("");
+  };
+
+  return (
+    <Popover open={open} onOpenChange={handleOpenChange}>
+      <Tooltip delayDuration={500} disableHoverableContent>
+        <TooltipTrigger asChild>
+          <PopoverTrigger asChild>
+            <Button
+              aria-label="Filter query"
+              className="relative text-muted-foreground hover:bg-transparent hover:text-foreground aria-expanded:bg-transparent aria-expanded:text-foreground dark:hover:bg-transparent"
+              size="icon-sm"
+              variant="ghost"
+            >
+              <ListFilter className="size-4" />
+              {activeFilterCount > 0 && (
+                <span className="-right-0.5 -top-0.5 absolute flex size-4 items-center justify-center rounded-full bg-primary font-medium text-[10px] text-primary-foreground">
+                  {activeFilterCount}
+                </span>
+              )}
+            </Button>
+          </PopoverTrigger>
+        </TooltipTrigger>
+        <TooltipContent
+          className="max-w-80 whitespace-normal text-left"
+          side="bottom"
+          sideOffset={6}
+        >
+          {filterTooltip}
+        </TooltipContent>
+      </Tooltip>
+      <PopoverContent align="end" className="w-[26rem] p-0">
+        <div className="flex h-10 items-center justify-between border-b px-3">
+          <span className="font-medium text-sm">Filters</span>
+          <Button onClick={clearAll} size="sm" variant="ghost">
+            Clear
+          </Button>
+        </div>
+        <ScrollArea className="max-h-[70vh]">
+          <div className="grid gap-3 p-3">
+            <div className="overflow-hidden rounded-lg border">
+              <div className="border-b px-3 py-2 font-medium text-muted-foreground text-xs">
+                Catalog
+              </div>
+              <CatalogFilterPanel
+                categories={catalogComponent?.catalogCategories ?? []}
+                definitions={catalogComponent?.catalogDefinitions ?? []}
+                loading={catalog.loading || !!catalog.refreshing}
+                onClear={onClearCatalog}
+                onSelectCategory={onSelectCategory}
+                onSelectDefinition={(definitionName, category) => {
+                  onSelectDefinition(definitionName, category);
+                  setOpen(false);
+                }}
+                path={path}
+                scope={catalogScope}
+                setPath={setPath}
+              />
+            </div>
+            <div className="rounded-lg border">
+              <div className="border-b px-3 py-2 font-medium text-muted-foreground text-xs">
+                {facetLabel}
+              </div>
+              <QueryFacetPanel
+                allLabel={allFacetLabel}
+                onChange={onFacetChange}
+                options={facetOptions}
+                value={facetValue}
+              />
+            </div>
+            <div className="grid gap-2 rounded-lg border p-3">
+              <Label className="text-muted-foreground text-xs">Key type</Label>
+              <Input
+                className="h-8"
+                onChange={(event) => onKeyTypeFilterChange(event.target.value)}
+                placeholder="Any key type"
+                value={keyTypeFilter}
+              />
+            </div>
+          </div>
+        </ScrollArea>
+      </PopoverContent>
+    </Popover>
+  );
+}
+
+function createQueryFilterDescriptions<TValue extends string>(
+  catalogScope: OverviewScope | null,
+  facetLabel: string,
+  facetValue: TValue[],
+  keyTypeFilter: string
+) {
+  const descriptions: string[] = [];
+  const catalogLabel = formatOverviewScopeLabel(catalogScope);
+  if (catalogLabel) {
+    descriptions.push(`catalog: ${catalogLabel}`);
+  }
+  if (facetValue.length > 0) {
+    descriptions.push(`${facetLabel.toLowerCase()}: ${formatFilterValues(facetValue)}`);
+  }
+  if (keyTypeFilter.trim()) {
+    descriptions.push(`key type: ${keyTypeFilter.trim()}`);
+  }
+
+  return descriptions;
+}
+
+function formatFilterValues(values: readonly string[]) {
+  const visible = values.slice(0, 3);
+  const suffix = values.length > visible.length
+    ? `, +${values.length - visible.length} more`
+    : "";
+  return `${visible.join(", ")}${suffix}`;
+}
+
+function QueryPaginationControls({
+  skip,
+  take,
+  totalCount,
+  onFirst,
+  onNext,
+  onPrevious,
+}: {
+  skip: number;
+  take: number;
+  totalCount?: number;
+  onFirst: () => void;
+  onNext: () => void;
+  onPrevious: () => void;
+}) {
+  const count = totalCount ?? 0;
+  const firstRecord = count === 0 ? 0 : Math.min(skip + 1, count);
+  const lastRecord = count === 0 ? 0 : Math.min(skip + take, count);
+  const canPrevious = skip > 0;
+  const canNext = skip + take < count;
+
+  return (
+    <div className="ml-1 flex items-center gap-1 text-muted-foreground text-xs">
+      <span className="min-w-24 text-right tabular-nums">
+        {firstRecord}-{lastRecord} of {count}
+      </span>
+      <Button
+        aria-label="First page"
+        disabled={!canPrevious}
+        onClick={onFirst}
+        size="icon-sm"
+        variant="ghost"
+      >
+        <ChevronsLeft className="size-4" />
+      </Button>
+      <Button
+        aria-label="Previous page"
+        disabled={!canPrevious}
+        onClick={onPrevious}
+        size="icon-sm"
+        variant="ghost"
+      >
+        <ChevronLeft className="size-4" />
+      </Button>
+      <Button
+        aria-label="Next page"
+        disabled={!canNext}
+        onClick={onNext}
+        size="icon-sm"
+        variant="ghost"
+      >
+        <ChevronRight className="size-4" />
+      </Button>
+    </div>
+  );
+}
+
+function OverviewView({
+  collapsedPanelIds,
+  connection,
+  hiddenPanelIds,
+  isVisible,
+  onClearOverviewScope,
   onConnectionError,
   onOpenCatalog,
   onOpenIterations,
   onOpenKeyType,
+  onPanelCollapsedChange,
   onReady,
   onOpenWorker,
+  onPanelVisibilityChange,
+  onRefresh,
   onStateLoaded,
+  onSelectOverviewCategory,
+  onSelectOverviewDefinition,
   onViewIterationsByStatus,
   onViewWorkersByState,
+  overviewScope,
   refreshToken,
 }: {
+  collapsedPanelIds: OverviewPanelId[];
   connection: WorkableConnection;
+  hiddenPanelIds: OverviewPanelId[];
+  isVisible: boolean;
+  onClearOverviewScope: () => void;
   onConnectionError: () => void;
   onOpenCatalog: () => void;
   onOpenIterations: () => void;
   onOpenKeyType: (keyType: string) => void;
+  onPanelCollapsedChange: (panelId: OverviewPanelId, collapsed: boolean) => void;
   onReady: () => void;
   onOpenWorker: (workerId: string) => void;
+  onPanelVisibilityChange: (panelId: OverviewPanelId, visible: boolean) => void;
+  onRefresh: () => void;
   onStateLoaded: (state: string) => void;
+  onSelectOverviewCategory: (category: string) => void;
+  onSelectOverviewDefinition: (definitionName: string, category: string) => void;
   onViewIterationsByStatus: (statuses: WorkCompletionStatus[]) => void;
   onViewWorkersByState: (states: WorkerState[]) => void;
+  overviewScope: OverviewScope | null;
   refreshToken: number;
 }) {
   const [actionError, setActionError] = useState<string>();
@@ -1653,22 +3005,161 @@ function OverviewView({
     data: WorkSystemFailedWorkersOverview;
     key: string;
   } | null>(null);
-  const failedWorkersKey = `${connection.apiUrl}:${connection.systemName ?? ""}:${refreshToken}`;
-  const overview = useWorkableResource<WorkSystemOverview>(
+  const [throughputMode, setThroughputMode] = useState<ThroughputMode>("completion");
+  const [throughputWindowSeconds, setThroughputWindowSeconds] = useState(60);
+  const throughputWindow =
+    throughputWindows.find((window) => window.seconds === throughputWindowSeconds) ??
+    throughputWindows[0];
+  const isPanelVisible = useCallback(
+    (panelId: OverviewPanelId) => !hiddenPanelIds.includes(panelId),
+    [hiddenPanelIds]
+  );
+  const isPanelCollapsed = useCallback(
+    (panelId: OverviewPanelId) => collapsedPanelIds.includes(panelId),
+    [collapsedPanelIds]
+  );
+  const shouldFetchPanel = useCallback(
+    (panelId: OverviewPanelId) =>
+      isVisible && isPanelVisible(panelId) && !isPanelCollapsed(panelId),
+    [isPanelCollapsed, isPanelVisible, isVisible]
+  );
+  const throughputHidden = !isPanelVisible("throughput");
+  const throughputCollapsed = isPanelCollapsed("throughput");
+  const overviewComponents = useMemo(() => {
+    const components = [
+      { id: "system", type: "system" },
+      { id: "catalog", type: "catalog" },
+    ];
+
+    if (shouldFetchPanel("workers")) {
+      components.push({ id: "workers", type: "workers" });
+    }
+    if (shouldFetchPanel("failedWorkers")) {
+      components.push({ id: "failedWorkers", type: "failedWorkers" });
+    }
+    if (shouldFetchPanel("relationships")) {
+      components.push({ id: "relationships", type: "relationships" });
+    }
+    if (shouldFetchPanel("failedIterations")) {
+      components.push({ id: "failedIterations", type: "failedIterations" });
+    }
+    if (shouldFetchPanel("completedIterations")) {
+      components.push({ id: "completedIterations", type: "completedIterations" });
+    }
+
+    return components;
+  }, [shouldFetchPanel]);
+  const overviewRequest = useMemo(
+    () => ({
+      components: overviewComponents,
+      scope: createOverviewComponentScope(overviewScope),
+    }),
+    [overviewComponents, overviewScope]
+  );
+  const throughputRequest = useMemo(
+    () => ({
+      options: {
+        bucketSeconds: throughputWindow.bucketSeconds,
+        windowSeconds: throughputWindow.seconds,
+      },
+      scope: createOverviewComponentScope(overviewScope),
+    }),
+    [overviewScope, throughputWindow.bucketSeconds, throughputWindow.seconds]
+  );
+  const throughputPath = throughputHidden || throughputCollapsed || !isVisible
+    ? null
+    : "components/throughput";
+  const failedWorkersRefreshRequest = useMemo(
+    () => ({
+      components: [
+        { id: "workers", type: "workers" },
+        { id: "failedWorkers", type: "failedWorkers" },
+      ],
+      scope: createOverviewComponentScope(overviewScope),
+    }),
+    [overviewScope]
+  );
+  const failedWorkersKey = `${connection.apiUrl}:${connection.systemName ?? ""}:${JSON.stringify(failedWorkersRefreshRequest)}:${refreshToken}`;
+  const overview = useWorkablePostResource<WorkComponentQueryResult>(
     connection,
-    "overview",
+    isVisible ? "views/overview" : null,
+    overviewRequest,
     refreshToken
   );
+  const throughput = usePolledWorkablePostResource<WorkComponentQueryResult>(
+    connection,
+    throughputPath,
+    throughputRequest,
+    1000,
+    refreshToken,
+    throughputComponentPayloadsEqual
+  );
   const isReady = !overview.loading;
-  const data = overview.data;
+  const systemComponent = getWorkComponentData<WorkOverviewSystemComponent>(
+    overview.data,
+    "system"
+  );
+  const catalogComponent = getWorkComponentData<WorkOverviewCatalogComponent>(
+    overview.data,
+    "catalog"
+  );
+  const workersComponent = getWorkComponentData<WorkOverviewWorkersComponent>(
+    overview.data,
+    "workers"
+  );
+  const failedWorkersComponent = getWorkComponentData<WorkerOverviewItem[]>(
+    overview.data,
+    "failedWorkers"
+  );
+  const relationshipsComponent = getWorkComponentData<WorkOverviewRelationshipsComponent>(
+    overview.data,
+    "relationships"
+  );
+  const failedIterationsComponent = getWorkComponentData<WorkerIterationOverviewItem[]>(
+    overview.data,
+    "failedIterations"
+  );
+  const completedIterationsComponent = getWorkComponentData<WorkerIterationOverviewItem[]>(
+    overview.data,
+    "completedIterations"
+  );
+  const throughputComponent = getWorkComponentData<WorkOverviewThroughputComponent>(
+    throughput.data,
+    "throughput"
+  );
+  const throughputData = throughputComponent?.throughput;
   const activeFailedWorkersSlice = failedWorkersSlice?.key === failedWorkersKey
     ? failedWorkersSlice.data
     : undefined;
-  const activeWorkerCount = activeFailedWorkersSlice?.activeWorkerCount ?? data?.activeWorkerCount ?? 0;
-  const finalWorkerCount = activeFailedWorkersSlice?.finalWorkerCount ?? data?.finalWorkerCount ?? 0;
-  const failedWorkerCount = activeFailedWorkersSlice?.failedWorkerCount ?? data?.failedWorkerCount ?? 0;
-  const workerCountByState = activeFailedWorkersSlice?.workerCountByState ?? data?.workerCountByState ?? {};
-  const failedWorkers = activeFailedWorkersSlice?.failedWorkers ?? data?.failedWorkers ?? [];
+  const hasOverviewFilters = !!overviewScope;
+  const activeWorkerCount = activeFailedWorkersSlice?.activeWorkerCount ??
+    throughputComponent?.activeWorkerCount ??
+    workersComponent?.activeWorkerCount ??
+    0;
+  const finalWorkerCount = activeFailedWorkersSlice?.finalWorkerCount ??
+    workersComponent?.finalWorkerCount ??
+    0;
+  const failedWorkerCount = activeFailedWorkersSlice?.failedWorkerCount ??
+    workersComponent?.failedWorkerCount ??
+    0;
+  const workerCountByState = activeFailedWorkersSlice?.workerCountByState ??
+    workersComponent?.workerCountByState ??
+    {};
+  const failedWorkers = activeFailedWorkersSlice?.failedWorkers ??
+    failedWorkersComponent ??
+    [];
+  const componentErrors = getWorkComponentErrors(overview.data).concat(
+    throughputHidden ? [] : getWorkComponentErrors(throughput.data)
+  );
+  const showFailedIterations = isPanelVisible("failedIterations");
+  const showCompletedIterations = isPanelVisible("completedIterations");
+  const failedIterationsCollapsed = isPanelCollapsed("failedIterations");
+  const completedIterationsCollapsed = isPanelCollapsed("completedIterations");
+  const iterationListsCanShareRow =
+    showFailedIterations &&
+    showCompletedIterations &&
+    !failedIterationsCollapsed &&
+    !completedIterationsCollapsed;
 
   const executeWorkerAction = async (worker: WorkerOverviewItem, action: WorkAction) => {
     setActionError(undefined);
@@ -1691,11 +3182,32 @@ function OverviewView({
     }
 
     try {
-      const failedWorkersOverview = await workableFetch<WorkSystemFailedWorkersOverview>(
+      const failedWorkersOverview = await workableFetch<WorkComponentQueryResult>(
         connection,
-        "overview/failed-workers"
+        "views/overview",
+        {
+          method: "POST",
+          body: JSON.stringify(failedWorkersRefreshRequest),
+        }
       );
-      setFailedWorkersSlice({ data: failedWorkersOverview, key: failedWorkersKey });
+      const refreshedWorkers = getWorkComponentData<WorkOverviewWorkersComponent>(
+        failedWorkersOverview,
+        "workers"
+      );
+      const refreshedFailedWorkers = getWorkComponentData<WorkerOverviewItem[]>(
+        failedWorkersOverview,
+        "failedWorkers"
+      );
+      setFailedWorkersSlice({
+        data: {
+          activeWorkerCount: refreshedWorkers?.activeWorkerCount ?? activeWorkerCount,
+          failedWorkerCount: refreshedWorkers?.failedWorkerCount ?? failedWorkerCount,
+          finalWorkerCount: refreshedWorkers?.finalWorkerCount ?? finalWorkerCount,
+          failedWorkers: refreshedFailedWorkers ?? failedWorkers,
+          workerCountByState: refreshedWorkers?.workerCountByState ?? workerCountByState,
+        },
+        key: failedWorkersKey,
+      });
     } catch (error) {
       const detail = error instanceof Error ? error.message : "Request failed.";
       setActionError(
@@ -1713,10 +3225,10 @@ function OverviewView({
   }, [isReady, onReady]);
 
   useEffect(() => {
-    if (data?.systemState) {
-      onStateLoaded(data.systemState);
+    if (systemComponent?.systemState) {
+      onStateLoaded(systemComponent.systemState);
     }
-  }, [data?.systemState, onStateLoaded]);
+  }, [systemComponent?.systemState, onStateLoaded]);
 
   useEffect(() => {
     if (overview.error) {
@@ -1725,105 +3237,373 @@ function OverviewView({
   }, [overview.error, onConnectionError]);
 
   return (
-    <div className="space-y-6">
-      <ErrorPanel errors={[overview.error, actionError]} />
-      <section className="space-y-4 rounded-lg border bg-card p-4">
-        <WorkerStateStrip
-          counts={workerCountByState}
-          loading={overview.loading}
-          onSelectState={(state) => onViewWorkersByState([state])}
-        />
-        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-          <MetricCard
-            compact
-            description="Workers that are not completed, canceled, or failed."
-            icon={Activity}
-            label="Active workers"
-            loading={overview.loading}
-            onClick={() => onViewWorkersByState(activeWorkerStates)}
-            value={activeWorkerCount}
-          />
-          <MetricCard
-            compact
-            description="Definitions currently associated with active or queued workers."
-            icon={Boxes}
-            label="Catalog"
-            loading={overview.loading}
-            onClick={onOpenCatalog}
-            value={data?.definitionCount ?? 0}
-          />
-          <MetricCard
-            compact
-            description="Workers in a final state: canceled or completed."
-            icon={CheckCircle2}
-            label="Final workers"
-            loading={overview.loading}
-            onClick={() => onViewWorkersByState(finalWorkerStates)}
-            value={finalWorkerCount}
-          />
-          <MetricCard
-            compact
-            description="Workers currently in the failed state."
-            icon={CircleAlert}
-            label="Failed workers"
-            loading={overview.loading}
-            onClick={() => onViewWorkersByState(failedWorkerStates)}
-            tone="text-red-300"
-            value={failedWorkerCount}
-          />
-        </div>
-      </section>
-      <OverviewWorkerList
-        emptyText="No failed workers."
-        loading={overview.loading && failedWorkers.length === 0}
-        onWorkerAction={executeWorkerAction}
-        onOpenWorker={onOpenWorker}
-        onViewState={() => onViewWorkersByState(failedWorkerStates)}
-        pendingActionWorkerId={actionWorkerId}
-        state="Failed"
-        title="Recent Failed Workers"
-        workers={failedWorkers}
+    <div className="space-y-4">
+      <ErrorPanel
+        errors={[
+          overview.error,
+          throughputHidden ? undefined : throughput.error,
+          actionError,
+          ...componentErrors,
+        ]}
       />
-      <section className="space-y-4 rounded-lg border bg-card p-4">
-        <IterationStatusStrip
-          counts={data?.iterationCountByStatus ?? {}}
-          loading={overview.loading}
-          onSelectStatus={(status) => onViewIterationsByStatus([status])}
+      <ViewActionLane>
+        <OverviewCatalogFilter
+          categories={catalogComponent?.catalogCategories ?? []}
+          definitions={catalogComponent?.catalogDefinitions ?? []}
+          loading={overview.loading || !!overview.refreshing}
+          onClear={onClearOverviewScope}
+          onSelectCategory={onSelectOverviewCategory}
+          onSelectDefinition={onSelectOverviewDefinition}
+          scope={overviewScope}
         />
-      <TopKeyTypePanel
-        keys={data?.commonKeyTypes ?? []}
-        loading={overview.loading}
-        onShowMore={onOpenIterations}
-        onSelectKeyType={onOpenKeyType}
-      />
-      </section>
-      <div className="grid gap-4 xl:grid-cols-2">
-        <OverviewIterationList
-          emptyText="No failed iterations."
-          loading={overview.loading}
+        {hasOverviewFilters && (
+          <Tooltip delayDuration={500} disableHoverableContent>
+            <TooltipTrigger asChild>
+              <Button
+                aria-label="Clear filters"
+                className="text-muted-foreground hover:bg-transparent hover:text-foreground dark:hover:bg-transparent"
+                onClick={onClearOverviewScope}
+                size="icon-sm"
+                variant="ghost"
+              >
+                <X className="size-4" />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent side="bottom" sideOffset={6}>
+              Clear filters
+            </TooltipContent>
+          </Tooltip>
+        )}
+        <Tooltip delayDuration={500} disableHoverableContent>
+          <TooltipTrigger asChild>
+            <Button
+              aria-label="Refresh overview"
+              className="text-muted-foreground hover:bg-transparent hover:text-foreground dark:hover:bg-transparent"
+              onClick={onRefresh}
+              size="icon-sm"
+              variant="ghost"
+            >
+              <RefreshCw className="size-4" />
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent side="bottom" sideOffset={6}>
+            Refresh overview
+          </TooltipContent>
+        </Tooltip>
+        <OverviewPanelSettings
+          hiddenPanelIds={hiddenPanelIds}
+          onPanelVisibilityChange={onPanelVisibilityChange}
+        />
+      </ViewActionLane>
+      {isPanelVisible("workers") && (
+        <OverviewPanelShell
+          collapsed={isPanelCollapsed("workers")}
+          onCollapsedChange={(collapsed) => onPanelCollapsedChange("workers", collapsed)}
+          description="Worker states and current worker totals."
+          title="Workers"
+        >
+          <WorkerStateStrip
+            counts={workerCountByState}
+            loading={overview.loading}
+            onSelectState={(state) => onViewWorkersByState([state])}
+            title="Worker states"
+          />
+          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+            <MetricCard
+              compact
+              description="Workers that are not completed, canceled, or failed."
+              icon={Activity}
+              label="Active workers"
+              loading={overview.loading}
+              onClick={() => onViewWorkersByState(activeWorkerStates)}
+              value={activeWorkerCount}
+            />
+            <MetricCard
+              compact
+              description="Definitions currently associated with active or queued workers."
+              icon={Boxes}
+              label="Catalog"
+              loading={overview.loading}
+              onClick={onOpenCatalog}
+              value={workersComponent?.definitionCount ?? 0}
+            />
+            <MetricCard
+              compact
+              description="Workers in a final state: canceled or completed."
+              icon={CheckCircle2}
+              label="Final workers"
+              loading={overview.loading}
+              onClick={() => onViewWorkersByState(finalWorkerStates)}
+              value={finalWorkerCount}
+            />
+            <MetricCard
+              compact
+              description="Workers currently in the failed state."
+              icon={CircleAlert}
+              label="Failed workers"
+              loading={overview.loading}
+              onClick={() => onViewWorkersByState(failedWorkerStates)}
+              tone="text-red-300"
+              value={failedWorkerCount}
+            />
+          </div>
+        </OverviewPanelShell>
+      )}
+      {isPanelVisible("failedWorkers") && (
+        <OverviewWorkerList
+          emptyText="No failed workers."
+          loading={overview.loading && failedWorkers.length === 0}
+          collapsed={isPanelCollapsed("failedWorkers")}
+          onCollapsedChange={(collapsed) => onPanelCollapsedChange("failedWorkers", collapsed)}
+          onWorkerAction={executeWorkerAction}
           onOpenWorker={onOpenWorker}
-          onViewState={() => onViewIterationsByStatus(["Failed"])}
-          status="Failed"
-          title="Recent Failed Iterations"
-          iterations={data?.failedIterations ?? []}
+          onViewState={() => onViewWorkersByState(failedWorkerStates)}
+          pendingActionWorkerId={actionWorkerId}
+          state="Failed"
+          title="Recent Failed Workers"
+          workers={failedWorkers}
         />
-        <OverviewIterationList
-          emptyText="No completed iterations."
-          loading={overview.loading}
-          onOpenWorker={onOpenWorker}
-          onViewState={() => onViewIterationsByStatus(["Completed"])}
-          status="Completed"
-          title="Recent Completed Iterations"
-          iterations={data?.completedIterations ?? []}
+      )}
+      {isPanelVisible("throughput") && (
+        <ThroughputChartPanel
+          activeWorkerCount={activeWorkerCount}
+          collapsed={throughputCollapsed}
+          loading={(overview.loading && !throughputData) || (throughput.loading && !throughputData)}
+          mode={throughputMode}
+          onCollapsedChange={(collapsed) => onPanelCollapsedChange("throughput", collapsed)}
+          onModeChange={setThroughputMode}
+          onWindowChange={setThroughputWindowSeconds}
+          throughput={throughputData}
+          windowSeconds={throughputWindow.seconds}
         />
+      )}
+      {isPanelVisible("relationships") && (
+        <OverviewPanelShell
+          collapsed={isPanelCollapsed("relationships")}
+          onCollapsedChange={(collapsed) => onPanelCollapsedChange("relationships", collapsed)}
+          description="Iteration statuses and common relationship types."
+          title="Relationships"
+        >
+          <IterationStatusStrip
+            counts={relationshipsComponent?.iterationCountByStatus ?? {}}
+            loading={overview.loading}
+            onSelectStatus={(status) => onViewIterationsByStatus([status])}
+            title="Iteration statuses"
+          />
+          <TopKeyTypePanel
+            keys={relationshipsComponent?.commonKeyTypes ?? []}
+            loading={overview.loading}
+            onShowMore={onOpenIterations}
+            onSelectKeyType={onOpenKeyType}
+          />
+        </OverviewPanelShell>
+      )}
+      <div className={`grid gap-4 ${iterationListsCanShareRow ? "xl:grid-cols-2" : ""}`}>
+        {showFailedIterations && (
+          <OverviewIterationList
+            emptyText="No failed iterations."
+            loading={overview.loading}
+            collapsed={failedIterationsCollapsed}
+            onCollapsedChange={(collapsed) => onPanelCollapsedChange("failedIterations", collapsed)}
+            onOpenWorker={onOpenWorker}
+            onViewState={() => onViewIterationsByStatus(["Failed"])}
+            status="Failed"
+            title="Recent Failed Iterations"
+            iterations={failedIterationsComponent ?? []}
+          />
+        )}
+        {showCompletedIterations && (
+          <OverviewIterationList
+            emptyText="No completed iterations."
+            loading={overview.loading}
+            collapsed={completedIterationsCollapsed}
+            onCollapsedChange={(collapsed) => onPanelCollapsedChange("completedIterations", collapsed)}
+            onOpenWorker={onOpenWorker}
+            onViewState={() => onViewIterationsByStatus(["Completed"])}
+            status="Completed"
+            title="Recent Completed Iterations"
+            iterations={completedIterationsComponent ?? []}
+          />
+        )}
       </div>
     </div>
   );
 }
 
+function OverviewPanelShell({
+  actions,
+  children,
+  collapsed = false,
+  contentClassName,
+  description,
+  onCollapsedChange,
+  title,
+}: {
+  actions?: ReactNode;
+  children: ReactNode;
+  collapsed?: boolean;
+  contentClassName?: string;
+  description?: string;
+  onCollapsedChange?: (collapsed: boolean) => void;
+  title: ReactNode;
+}) {
+  return (
+    <section className="rounded-xl bg-card p-4 ring-1 ring-foreground/10">
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex min-w-0 items-center gap-2">
+          {onCollapsedChange && (
+            <Button
+              aria-label={collapsed ? "Expand panel" : "Collapse panel"}
+              className="-ml-1 size-7 shrink-0 text-muted-foreground"
+              onClick={() => onCollapsedChange(!collapsed)}
+              size="icon-sm"
+              variant="ghost"
+            >
+              <ChevronDown className={`size-4 transition-transform ${collapsed ? "-rotate-90" : ""}`} />
+            </Button>
+          )}
+          <span className="min-w-0">
+            <span className="flex min-w-0 flex-wrap items-center gap-2 font-semibold text-sm">
+              {title}
+            </span>
+            {description && (
+              <span className="mt-0.5 block text-muted-foreground text-xs">
+                {description}
+              </span>
+            )}
+          </span>
+        </div>
+        {actions && !collapsed && (
+          <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
+            {actions}
+          </div>
+        )}
+      </div>
+      {!collapsed && (
+        <div className={contentClassName ?? "mt-4 space-y-4"}>
+          {children}
+        </div>
+      )}
+    </section>
+  );
+}
+
+const overviewPanelOptions: Array<{
+  description: string;
+  id: OverviewPanelId;
+  label: string;
+}> = [
+  {
+    description: "Worker states and current worker totals.",
+    id: "workers",
+    label: "Workers",
+  },
+  {
+    description: "Recent workers in the failed state.",
+    id: "failedWorkers",
+    label: "Recent Failed Workers",
+  },
+  {
+    description: "Throughput and execution charts.",
+    id: "throughput",
+    label: "Throughput",
+  },
+  {
+    description: "Iteration statuses and common relationship types.",
+    id: "relationships",
+    label: "Relationships",
+  },
+  {
+    description: "Recent failed worker iterations.",
+    id: "failedIterations",
+    label: "Recent Failed Iterations",
+  },
+  {
+    description: "Recent completed worker iterations.",
+    id: "completedIterations",
+    label: "Recent Completed Iterations",
+  },
+];
+
+function OverviewPanelSettings({
+  hiddenPanelIds,
+  onPanelVisibilityChange,
+}: {
+  hiddenPanelIds: OverviewPanelId[];
+  onPanelVisibilityChange: (panelId: OverviewPanelId, visible: boolean) => void;
+}) {
+  return (
+    <Popover>
+      <Tooltip delayDuration={500} disableHoverableContent>
+        <TooltipTrigger asChild>
+          <PopoverTrigger asChild>
+            <Button
+              aria-label="Overview panel settings"
+              className="text-muted-foreground hover:bg-transparent hover:text-foreground dark:hover:bg-transparent"
+              size="icon-sm"
+              variant="ghost"
+            >
+              <Settings className="size-4" />
+            </Button>
+          </PopoverTrigger>
+        </TooltipTrigger>
+        <TooltipContent side="bottom" sideOffset={6}>
+          Overview panel settings
+        </TooltipContent>
+      </Tooltip>
+      <PopoverContent align="end" className="w-80 p-0">
+        <div className="flex items-start justify-between gap-3 border-b px-3 py-2">
+          <div className="min-w-0">
+            <div className="font-medium text-sm">Overview panels</div>
+            <div className="text-muted-foreground text-xs">
+              Checked panels are shown on the overview screen.
+            </div>
+          </div>
+          <Button
+            className="h-6 shrink-0 px-2 text-xs"
+            onClick={() => overviewPanelIds.forEach((id) => onPanelVisibilityChange(id, true))}
+            size="sm"
+            variant="ghost"
+          >
+            All
+          </Button>
+        </div>
+        <div className="space-y-1 p-2">
+          {overviewPanelOptions.map((panel) => {
+            const visible = !hiddenPanelIds.includes(panel.id);
+            return (
+              <label
+                className="flex cursor-pointer items-start gap-3 rounded-md px-2 py-2 transition-colors hover:bg-accent/40"
+                key={panel.id}
+              >
+                <input
+                  checked={visible}
+                  className="mt-0.5 size-4 accent-primary"
+                  onChange={(event) =>
+                    onPanelVisibilityChange(panel.id, event.currentTarget.checked)
+                  }
+                  type="checkbox"
+                />
+                <span className="min-w-0">
+                  <span className="block font-medium text-sm">{panel.label}</span>
+                  <span className="block text-muted-foreground text-xs">
+                    {panel.description}
+                  </span>
+                </span>
+              </label>
+            );
+          })}
+        </div>
+      </PopoverContent>
+    </Popover>
+  );
+}
+
 function OverviewWorkerList({
+  collapsed,
   emptyText,
   loading,
+  onCollapsedChange,
   onOpenWorker,
   onViewState,
   onWorkerAction,
@@ -1832,8 +3612,10 @@ function OverviewWorkerList({
   title,
   workers,
 }: {
+  collapsed?: boolean;
   emptyText: string;
   loading: boolean;
+  onCollapsedChange?: (collapsed: boolean) => void;
   onOpenWorker: (workerId: string) => void;
   onViewState: () => void;
   onWorkerAction: (worker: WorkerOverviewItem, action: WorkAction) => Promise<void>;
@@ -1843,34 +3625,38 @@ function OverviewWorkerList({
   workers: WorkerOverviewItem[];
 }) {
   return (
-    <Card>
-      <CardHeader>
-        <div>
-          <button
-            className="-mx-2 -my-1 inline-flex cursor-pointer items-center gap-1 rounded-md border border-transparent px-2 py-1 font-semibold text-base transition-colors hover:border-primary/60 hover:bg-accent/40 hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
-            onClick={onViewState}
-            type="button"
-          >
-            {title}
-            <Badge className={`justify-center ${stateTone(state)}`} variant="outline">
-              {state}
-            </Badge>
-            <ChevronRight className="size-4" />
-          </button>
-        </div>
-      </CardHeader>
-      <CardContent>
-        <WorkerTable
-          emptyText={emptyText}
-          hideState
-          loading={loading}
-          onAction={onWorkerAction}
-          onSelect={(worker) => onOpenWorker(worker.id.value)}
-          pendingActionWorkerId={pendingActionWorkerId}
-          workers={workers}
-        />
-      </CardContent>
-    </Card>
+    <OverviewPanelShell
+      actions={
+        <button
+          className="inline-flex cursor-pointer items-center gap-1 rounded-md border border-transparent px-2 py-1 text-muted-foreground text-sm transition-colors hover:border-primary/60 hover:bg-accent/40 hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+          onClick={onViewState}
+          type="button"
+        >
+          View
+          <ChevronRight className="size-4" />
+        </button>
+      }
+      collapsed={collapsed}
+      onCollapsedChange={onCollapsedChange}
+      title={
+        <>
+          {title}
+          <Badge className={`justify-center ${stateTone(state)}`} variant="outline">
+            {state}
+          </Badge>
+        </>
+      }
+    >
+      <WorkerTable
+        emptyText={emptyText}
+        hideState
+        loading={loading}
+        onAction={onWorkerAction}
+        onSelect={(worker) => onOpenWorker(worker.id.value)}
+        pendingActionWorkerId={pendingActionWorkerId}
+        workers={workers}
+      />
+    </OverviewPanelShell>
   );
 }
 
@@ -1878,16 +3664,18 @@ function WorkerStateStrip({
   counts,
   loading,
   onSelectState,
+  title = "Workers",
 }: {
   counts: Partial<Record<WorkerState, number>>;
   loading: boolean;
   onSelectState: (state: WorkerState) => void;
+  title?: string;
 }) {
   if (loading) {
     return (
       <StatusStripSection
         description="Workers grouped by current state, with summary links for active, final, failed, and catalog counts."
-        title="Workers"
+        title={title}
       >
         <div className="flex gap-2 overflow-x-auto pb-1">
           {overviewWorkerStates.map((state) => (
@@ -1901,7 +3689,7 @@ function WorkerStateStrip({
   return (
     <StatusStripSection
       description="Workers grouped by current state, with summary links for active, final, failed, and catalog counts."
-      title="Workers"
+      title={title}
     >
       <div className="flex gap-2 overflow-x-auto pb-1">
         {overviewWorkerStates.map((state) => (
@@ -1927,16 +3715,18 @@ function IterationStatusStrip({
   counts,
   loading,
   onSelectStatus,
+  title = "Worker iterations",
 }: {
   counts: Partial<Record<WorkCompletionStatus, number>>;
   loading: boolean;
   onSelectStatus: (status: WorkCompletionStatus) => void;
+  title?: string;
 }) {
   if (loading) {
     return (
       <StatusStripSection
         description="Worker iterations grouped by status, with common relationship types for quick filtering."
-        title="Worker iterations"
+        title={title}
       >
         <div className="flex gap-2 overflow-x-auto pb-1">
           {iterationStatuses.map((status) => (
@@ -1950,7 +3740,7 @@ function IterationStatusStrip({
   return (
     <StatusStripSection
       description="Worker iterations grouped by status, with common relationship types for quick filtering."
-      title="Worker iterations"
+      title={title}
     >
       <div className="flex gap-2 overflow-x-auto pb-1">
         {iterationStatuses.map((status) => (
@@ -1985,16 +3775,16 @@ function StatusStripSection({
 }) {
   return (
     <section className="space-y-2">
-      <div className="flex items-center gap-1.5">
-        <h2 className="font-medium text-sm">{title}</h2>
-        <Tooltip>
+      <div className="flex items-center">
+        <Tooltip delayDuration={500} disableHoverableContent>
           <TooltipTrigger asChild>
             <button
               aria-label={`${title}: ${description}`}
-              className="inline-flex size-4 items-center justify-center rounded-full text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+              className="group inline-flex min-w-0 items-center gap-1.5 rounded-sm text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
               type="button"
             >
-              <Info className="size-3.5" />
+              <span className="font-medium text-foreground text-sm">{title}</span>
+              <Info className="size-3.5 shrink-0 text-muted-foreground transition-colors group-hover:text-foreground" />
             </button>
           </TooltipTrigger>
           <TooltipContent className="max-w-64 whitespace-normal text-left" side="top" sideOffset={6}>
@@ -2107,7 +3897,7 @@ function TopKeyTypePanel({
           </div>
           <div className="flex gap-2 overflow-hidden">
           {visibleKeys.map((key) => (
-            <Tooltip key={key.type}>
+            <Tooltip delayDuration={500} disableHoverableContent key={key.type}>
               <TooltipTrigger asChild>
                 <button
                   aria-label={`Open iterations for key type ${key.type}`}
@@ -2128,7 +3918,7 @@ function TopKeyTypePanel({
             </Tooltip>
           ))}
           {hiddenKeys.length > 0 && (
-            <Tooltip>
+            <Tooltip delayDuration={500} disableHoverableContent>
               <TooltipTrigger asChild>
                 <button
                   aria-label={`Open iterations to view ${hiddenKeys.length} more relationship types`}
@@ -2163,6 +3953,7 @@ function TopKeyTypePanel({
 function KeyTypeTooltipContent({ keyType }: { keyType: WorkIterationKeyTypeFacet }) {
   return (
     <div className="space-y-1">
+      <div className="font-medium">Open iterations filtered to this key type.</div>
       <div>{formatIterationCount(keyType.iterationCount)} with this relationship type.</div>
       <div className="grid grid-cols-[auto_auto] gap-x-3 gap-y-0.5 text-muted-foreground">
         <span>Subjects</span>
@@ -2177,16 +3968,20 @@ function KeyTypeTooltipContent({ keyType }: { keyType: WorkIterationKeyTypeFacet
 }
 
 function OverviewIterationList({
+  collapsed,
   emptyText,
   loading,
+  onCollapsedChange,
   onOpenWorker,
   onViewState,
   status,
   title,
   iterations,
 }: {
+  collapsed?: boolean;
   emptyText: string;
   loading: boolean;
+  onCollapsedChange?: (collapsed: boolean) => void;
   onOpenWorker: (workerId: string) => void;
   onViewState: () => void;
   status: WorkCompletionStatus;
@@ -2194,58 +3989,62 @@ function OverviewIterationList({
   iterations: WorkerIterationOverviewItem[];
 }) {
   return (
-    <Card>
-      <CardHeader>
-        <div>
-          <button
-            className="-mx-2 -my-1 inline-flex cursor-pointer items-center gap-1 rounded-md border border-transparent px-2 py-1 font-semibold text-base transition-colors hover:border-primary/60 hover:bg-accent/40 hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
-            onClick={onViewState}
-            type="button"
-          >
-            {title}
-            <Badge className={`justify-center ${completionTone(status)}`} variant="outline">
-              {status}
-            </Badge>
-            <ChevronRight className="size-4" />
-          </button>
+    <OverviewPanelShell
+      actions={
+        <button
+          className="inline-flex cursor-pointer items-center gap-1 rounded-md border border-transparent px-2 py-1 text-muted-foreground text-sm transition-colors hover:border-primary/60 hover:bg-accent/40 hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+          onClick={onViewState}
+          type="button"
+        >
+          View
+          <ChevronRight className="size-4" />
+        </button>
+      }
+      collapsed={collapsed}
+      onCollapsedChange={onCollapsedChange}
+      title={
+        <>
+          {title}
+          <Badge className={`justify-center ${completionTone(status)}`} variant="outline">
+            {status}
+          </Badge>
+        </>
+      }
+    >
+      {loading ? (
+        <StackedSkeleton count={4} />
+      ) : iterations.length === 0 ? (
+        <div className="rounded-lg border border-dashed p-6 text-center text-muted-foreground text-sm">
+          {emptyText}
         </div>
-      </CardHeader>
-      <CardContent>
-        {loading ? (
-          <StackedSkeleton count={4} />
-        ) : iterations.length === 0 ? (
-          <div className="rounded-lg border border-dashed p-6 text-center text-muted-foreground text-sm">
-            {emptyText}
-          </div>
-        ) : (
-          <div className="space-y-2">
-            {iterations.map((iteration) => (
-              <button
-                className="grid w-full cursor-pointer gap-3 rounded-lg border bg-card p-3 text-left transition-colors hover:bg-accent md:grid-cols-[minmax(0,1fr)_12rem_7rem]"
-                key={`${iteration.workerId.value}-${iteration.sequence}`}
-                onClick={() => onOpenWorker(iteration.workerId.value)}
-                type="button"
-              >
-                <div className="min-w-0">
-                  <div className="truncate font-mono text-xs">{iteration.definitionName}</div>
-                  <div className="mt-1 text-muted-foreground text-xs">
-                    {iteration.category ?? "Uncategorized"}
-                  </div>
+      ) : (
+        <div className="space-y-2">
+          {iterations.map((iteration) => (
+            <button
+              className="grid w-full cursor-pointer gap-3 rounded-lg border bg-card p-3 text-left transition-colors hover:bg-accent md:grid-cols-[minmax(0,1fr)_12rem_7rem]"
+              key={`${iteration.workerId.value}-${iteration.sequence}`}
+              onClick={() => onOpenWorker(iteration.workerId.value)}
+              type="button"
+            >
+              <div className="min-w-0">
+                <div className="truncate font-mono text-xs">{iteration.definitionName}</div>
+                <div className="mt-1 text-muted-foreground text-xs">
+                  {iteration.category ?? "Uncategorized"}
                 </div>
-                <OverviewWorkerMeta
-                  label={status === "Failed" ? "Failed" : "Completed"}
-                  value={formatRelativeTime(iteration.completedAt)}
-                />
-                <OverviewWorkerMeta
-                  label="Execution"
-                  value={<DurationValue duration={formatExecutionDuration(iteration.executionDuration)} />}
-                />
-              </button>
-            ))}
-          </div>
-        )}
-      </CardContent>
-    </Card>
+              </div>
+              <OverviewWorkerMeta
+                label={status === "Failed" ? "Failed" : "Completed"}
+                value={formatRelativeTime(iteration.completedAt)}
+              />
+              <OverviewWorkerMeta
+                label="Execution"
+                value={<DurationValue duration={formatExecutionDuration(iteration.executionDuration)} />}
+              />
+            </button>
+          ))}
+        </div>
+      )}
+    </OverviewPanelShell>
   );
 }
 
@@ -2281,12 +4080,18 @@ function DurationValue({
 }
 
 function DefinitionsView({
+  catalogScope,
   connection,
+  onCatalogScopeChange,
+  onOpenDefinition,
   onOpenWorker,
   onReady,
   refreshToken,
 }: {
+  catalogScope: OverviewScope | null;
   connection: WorkableConnection;
+  onCatalogScopeChange: (scope: OverviewScope | null) => void;
+  onOpenDefinition: (definitionId: string) => void;
   onOpenWorker: (workerId: string) => void;
   onReady: () => void;
   refreshToken: number;
@@ -2298,6 +4103,7 @@ function DefinitionsView({
   );
   const [search, setSearch] = useState("");
   const [queueDefinition, setQueueDefinition] = useState<WorkDefinition | null>(null);
+  const autoOpenedDefinitionScope = useRef("");
   const isReady = !definitions.loading;
 
   useEffect(() => {
@@ -2308,21 +4114,51 @@ function DefinitionsView({
 
   const filtered = useMemo(() => {
     const query = search.trim().toLowerCase();
-    if (!query) {
-      return definitions.data ?? [];
-    }
-    return (definitions.data ?? []).filter((definition) =>
-      [definition.name, definition.category, definition.description]
+    return (definitions.data ?? [])
+      .filter((definition) => definitionMatchesCatalogScope(definition, catalogScope))
+      .filter((definition) =>
+        !query ||
+        [definition.name, definition.category, definition.description]
         .filter(Boolean)
         .some((value) => String(value).toLowerCase().includes(query))
-    );
-  }, [definitions.data, search]);
+      );
+  }, [catalogScope, definitions.data, search]);
+
+  useEffect(() => {
+    if (!catalogScope?.definitionName) {
+      autoOpenedDefinitionScope.current = "";
+    }
+    const autoOpenKey =
+      catalogScope?.definitionName && filtered.length === 1
+        ? `${catalogScope.definitionName}:${filtered[0].id.value}`
+        : "";
+    if (
+      !definitions.loading &&
+      catalogScope?.definitionName &&
+      filtered.length === 1 &&
+      autoOpenedDefinitionScope.current !== autoOpenKey
+    ) {
+      autoOpenedDefinitionScope.current = autoOpenKey;
+      onOpenDefinition(filtered[0].id.value);
+    }
+  }, [catalogScope?.definitionName, definitions.loading, filtered, onOpenDefinition]);
 
   return (
     <div className="space-y-6">
       <ErrorPanel errors={[definitions.error]} />
+      <ViewActionLane />
       <Card>
-        <CardHeader className="gap-4 md:flex-row md:items-center md:justify-start">
+        <CardHeader className="gap-4 md:flex-row md:items-center md:justify-between">
+          <div className="min-w-0 flex-1">
+            <ScopeTrail
+              onClear={() => onCatalogScopeChange(null)}
+              onSelectCategory={(category) => onCatalogScopeChange({
+                category,
+                includeSubcategories: true,
+              })}
+              scope={catalogScope}
+            />
+          </div>
           <div className="relative w-full md:w-80">
             <Search className="absolute left-3 top-2.5 size-4 text-muted-foreground" />
             <Input
@@ -2339,11 +4175,9 @@ function DefinitionsView({
           ) : (
             <div className="grid gap-3 md:grid-cols-2">
               {filtered.map((definition) => (
-                <button
-                  className="rounded-lg border bg-card p-4 text-left transition-colors hover:bg-accent"
+                <div
+                  className="rounded-lg border bg-card p-4"
                   key={definition.id.value}
-                  onClick={() => setQueueDefinition(definition)}
-                  type="button"
                 >
                   <div className="flex items-start justify-between gap-4">
                     <div className="min-w-0">
@@ -2354,7 +4188,21 @@ function DefinitionsView({
                     </div>
                     <Badge variant="secondary">{definition.category ?? "Uncategorized"}</Badge>
                   </div>
-                </button>
+                  <div className="mt-4 flex justify-end gap-2">
+                    <Button
+                      onClick={() => onOpenDefinition(definition.id.value)}
+                      size="sm"
+                      variant="outline"
+                    >
+                      <Info className="size-4" />
+                      Definition
+                    </Button>
+                    <Button onClick={() => setQueueDefinition(definition)} size="sm">
+                      <Send className="size-4" />
+                      Queue
+                    </Button>
+                  </div>
+                </div>
               ))}
             </div>
           )}
@@ -2370,9 +4218,241 @@ function DefinitionsView({
   );
 }
 
-function WorkersView({
+function DefinitionView({
   connection,
+  definitionId,
+  onOpenWorker,
+  onReady,
+  refreshToken,
+}: {
+  connection: WorkableConnection;
+  definitionId: string;
+  onOpenWorker: (workerId: string) => void;
+  onReady: () => void;
+  refreshToken: number;
+}) {
+  const info = useWorkableResource<WorkInfo>(
+    connection,
+    `definitions/${definitionId}/info`,
+    refreshToken
+  );
+  const [queueDefinition, setQueueDefinition] = useState<WorkDefinition | null>(null);
+  const [definitionRequest, setDefinitionRequest] = useState<QueueWorkRequest>(() =>
+    createDefaultQueueRequest(null)
+  );
+  const [queueSchemaDescriptor, setQueueSchemaDescriptor] =
+    useState<QueueRequestSchemaDescriptor | null>(null);
+  const [saveError, setSaveError] = useState<string>();
+  const [saveStatus, setSaveStatus] = useState<string>();
+  const [isSaving, setIsSaving] = useState(false);
+  const [updatedDefinition, setUpdatedDefinition] = useState<WorkDefinition | null>(null);
+  const definition = updatedDefinition ?? info.data?.definition;
+  const isReady = !info.loading;
+  const queueRequestSchema = useMemo(
+    () => parseJsonSchema(queueSchemaDescriptor?.schema?.jsonSchema),
+    [queueSchemaDescriptor?.schema?.jsonSchema]
+  );
+  const definitionConfigurationDescriptor = useMemo(
+    () => createDefinitionConfigurationDescriptor(queueSchemaDescriptor),
+    [queueSchemaDescriptor]
+  );
+
+  useEffect(() => {
+    if (isReady) {
+      onReady();
+    }
+  }, [isReady, onReady]);
+
+  useEffect(() => {
+    if (!definition) {
+      return;
+    }
+
+    const nextRequest = createDefaultQueueRequest(definition);
+    queueMicrotask(() => {
+      setDefinitionRequest(nextRequest);
+      setSaveError(undefined);
+      setSaveStatus(undefined);
+    });
+  }, [definition]);
+
+  useEffect(() => {
+    queueMicrotask(() => setUpdatedDefinition(null));
+  }, [definitionId, info.data?.definition]);
+
+  useEffect(() => {
+    let canceled = false;
+
+    workableFetch<QueueRequestSchemaDescriptor>(connection, "queue-request/schema")
+      .then((descriptor) => {
+        if (!canceled) {
+          setQueueSchemaDescriptor(descriptor);
+        }
+      })
+      .catch(() => {
+        if (!canceled) {
+          setQueueSchemaDescriptor(null);
+        }
+      });
+
+    return () => {
+      canceled = true;
+    };
+  }, [connection]);
+
+  const saveConfiguration = async () => {
+    if (!definition) {
+      return;
+    }
+
+    setIsSaving(true);
+    setSaveError(undefined);
+    setSaveStatus(undefined);
+
+    try {
+      const configuration = definitionRequest.options?.configuration
+        ? stripInvocationConfiguration(definitionRequest.options.configuration)
+        : stripInvocationConfiguration(cloneConfiguration(defaultWorkConfiguration));
+      const defaultOptions: WorkerOptions = {
+        ...definition.defaultOptions,
+        profilingEnabled: definitionRequest.options?.profilingEnabled ?? false,
+        configuration: definition.defaultOptions?.configuration ?? null,
+      };
+      const result = await workableFetch<WorkDefinitionReconfigurationOutcome>(
+        connection,
+        `definitions/${definition.id.value}/reconfigure`,
+        {
+          method: "POST",
+          body: JSON.stringify({
+            revision: definition.revision,
+            changes: {
+              configuration,
+              defaultOptions,
+            },
+          }),
+        }
+      );
+
+      if (result.definition) {
+        setUpdatedDefinition(result.definition);
+      }
+      setSaveStatus(`Definition configuration ${result.status.toLowerCase()}.`);
+    } catch (caught) {
+      setSaveError(caught instanceof Error ? caught.message : "Configuration update failed.");
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  return (
+    <div className="space-y-6">
+      <ErrorPanel errors={[info.error, saveError]} />
+      <ViewActionLane />
+      {info.loading ? (
+        <StackedSkeleton count={6} />
+      ) : !definition ? (
+        <div className="rounded-lg border border-dashed p-8 text-center text-muted-foreground text-sm">
+          Definition not found.
+        </div>
+      ) : (
+        <>
+          {saveStatus && (
+            <Alert>
+              <CheckCircle2 className="size-4" />
+              <AlertTitle>Configuration saved</AlertTitle>
+              <AlertDescription>{saveStatus}</AlertDescription>
+            </Alert>
+          )}
+          <Card>
+            <CardHeader className="gap-4 md:flex-row md:items-start md:justify-between">
+              <div className="min-w-0">
+                <CardTitle className="truncate font-mono text-base">
+                  {definition.name}
+                </CardTitle>
+                <CardDescription className="mt-1">
+                  {definition.description ?? "No description"}
+                </CardDescription>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <Badge variant="secondary">{definition.category ?? "Uncategorized"}</Badge>
+                  <Badge variant="outline">Revision {definition.revision}</Badge>
+                  <Badge variant="outline">{info.data?.status ?? "Unknown"}</Badge>
+                </div>
+              </div>
+              <Button onClick={() => setQueueDefinition(definition)}>
+                <Send className="size-4" />
+                Queue
+              </Button>
+            </CardHeader>
+            <CardContent>
+              <div className="grid gap-3 md:grid-cols-4">
+                <MetadataItem label="Total workers" value={String(info.data?.workers.total ?? 0)} />
+                <MetadataItem label="Active" value={String(info.data?.workers.active ?? 0)} />
+                <MetadataItem label="Failed" value={String(info.data?.workers.failed ?? 0)} />
+                <MetadataItem
+                  label="Last activity"
+                  value={formatDateTime(info.data?.workers.lastActivityAt)}
+                />
+              </div>
+            </CardContent>
+          </Card>
+          <Card>
+            <CardHeader className="gap-3 md:flex-row md:items-center md:justify-between">
+              <div>
+                <CardTitle className="text-base">Configuration</CardTitle>
+                <CardDescription>
+                  Changes apply to future workers queued from this definition.
+                </CardDescription>
+              </div>
+              <Button disabled={isSaving} onClick={() => void saveConfiguration()} size="sm">
+                {isSaving ? (
+                  <Loader2 className="size-4 animate-spin" />
+                ) : (
+                  <CheckCircle2 className="size-4" />
+                )}
+                Save
+              </Button>
+            </CardHeader>
+            <CardContent>
+              <div className="space-y-6">
+                <QueueConfigurationTabs
+                  descriptor={definitionConfigurationDescriptor}
+                  onRequestChange={setDefinitionRequest}
+                  request={definitionRequest}
+                  schema={queueRequestSchema}
+                />
+                <div className="grid gap-4 lg:grid-cols-2">
+                  <SnapshotBlock
+                    label="Input schema"
+                    value={parseSchemaJsonValue(definition.inputSchema?.jsonSchema)}
+                  />
+                  <SnapshotBlock
+                    label="Output schema"
+                    value={parseSchemaJsonValue(definition.outputSchema?.jsonSchema)}
+                  />
+                  <SnapshotBlock label="Metadata" value={definition.metadata} />
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+          <QueueDialog
+            connection={connection}
+            definition={queueDefinition}
+            onQueuedWorker={onOpenWorker}
+            onOpenChange={(open) => !open && setQueueDefinition(null)}
+          />
+        </>
+      )}
+    </div>
+  );
+}
+
+function WorkersView({
+  categoryFilter,
+  connection,
+  definitionFilter,
   keyTypeFilter,
+  onCategoryFilterChange,
+  onDefinitionFilterChange,
   onOpenWorker,
   onKeyTypeFilterChange,
   onReady,
@@ -2380,26 +4460,63 @@ function WorkersView({
   refreshToken,
   stateFilter,
 }: {
+  categoryFilter: string;
   connection: WorkableConnection;
+  definitionFilter: string;
   keyTypeFilter: string;
   onOpenWorker: (workerId: string) => void;
+  onCategoryFilterChange: (category: string) => void;
+  onDefinitionFilterChange: (definitionName: string) => void;
   onKeyTypeFilterChange: (keyType: string) => void;
   onReady: () => void;
   onStateFilterChange: (states: WorkerState[]) => void;
   refreshToken: number;
   stateFilter: WorkerState[];
 }) {
-  const [definitionName, setDefinitionName] = useState("");
+  const [pageState, setPageState] = useState({
+    index: 0,
+    queryKey: "",
+    take: defaultQueryTake,
+  });
+  const catalogScope = useMemo<OverviewScope | null>(() => {
+    const category = normalizeCategoryFilter(categoryFilter);
+    const definitionName = definitionFilter.trim();
+    if (!category && !definitionName) {
+      return null;
+    }
+
+    return {
+      category: category || undefined,
+      definitionName: definitionName || undefined,
+      includeSubcategories: true,
+    };
+  }, [categoryFilter, definitionFilter]);
   const query = useMemo(
     () => ({
-      definitionName: definitionName.trim() || undefined,
+      category: normalizeCategoryFilter(categoryFilter) || undefined,
+      definitionName: definitionFilter.trim() || undefined,
+      includeSubcategories: true,
       keyType: keyTypeFilter.trim() || undefined,
       states: stateFilter.length === 0 ? undefined : stateFilter,
     }),
-    [definitionName, keyTypeFilter, stateFilter]
+    [categoryFilter, definitionFilter, keyTypeFilter, stateFilter]
   );
-  const workers = useWorkerQuery(connection, query, refreshToken);
+  const { queryTake, queryTableRef } = useViewportQueryTake();
+  const queryKey = JSON.stringify(query);
+  const pageIndex =
+    pageState.queryKey === queryKey && pageState.take === queryTake
+      ? pageState.index
+      : 0;
+  const skip = pageIndex * queryTake;
+  const workers = useWorkerQuery(connection, query, refreshToken, queryTake, skip);
   const isReady = !workers.loading;
+  const hasFilters = !!catalogScope || !!keyTypeFilter.trim() || stateFilter.length > 0;
+  const clearFilters = () => {
+    onCategoryFilterChange("");
+    onDefinitionFilterChange("");
+    onKeyTypeFilterChange("");
+    onStateFilterChange([]);
+  };
 
   useEffect(() => {
     if (isReady) {
@@ -2410,31 +4527,79 @@ function WorkersView({
   return (
     <div className="space-y-6">
       <ErrorPanel errors={[workers.error]} />
+      <ViewActionLane>
+        <QueryFilterPopover
+          allFacetLabel="All states"
+          catalogScope={catalogScope}
+          connection={connection}
+          facetLabel="Worker states"
+          facetOptions={states}
+          facetValue={stateFilter}
+          keyTypeFilter={keyTypeFilter}
+          onClearCatalog={() => {
+            onCategoryFilterChange("");
+            onDefinitionFilterChange("");
+          }}
+          onFacetChange={onStateFilterChange}
+          onKeyTypeFilterChange={onKeyTypeFilterChange}
+          onSelectCategory={(category) => {
+            onCategoryFilterChange(category);
+            onDefinitionFilterChange("");
+          }}
+          onSelectDefinition={(definitionName, category) => {
+            onCategoryFilterChange(category);
+            onDefinitionFilterChange(definitionName);
+          }}
+          refreshToken={refreshToken}
+        />
+        {hasFilters && (
+          <Tooltip delayDuration={500} disableHoverableContent>
+            <TooltipTrigger asChild>
+              <Button
+                aria-label="Clear filters"
+                className="text-muted-foreground hover:bg-transparent hover:text-foreground dark:hover:bg-transparent"
+                onClick={clearFilters}
+                size="icon-sm"
+                variant="ghost"
+              >
+                <X className="size-4" />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent side="bottom" sideOffset={6}>
+              Clear filters
+            </TooltipContent>
+          </Tooltip>
+        )}
+        <QueryPaginationControls
+          skip={skip}
+          take={queryTake}
+          totalCount={workers.data?.totalCount}
+          onFirst={() => setPageState({
+            index: 0,
+            queryKey,
+            take: queryTake,
+          })}
+          onNext={() => setPageState({
+            index: pageIndex + 1,
+            queryKey,
+            take: queryTake,
+          })}
+          onPrevious={() => setPageState({
+            index: Math.max(0, pageIndex - 1),
+            queryKey,
+            take: queryTake,
+          })}
+        />
+      </ViewActionLane>
       <Card>
-        <CardHeader className="gap-4 lg:flex-row lg:items-center lg:justify-start">
-          <div className="grid gap-3 md:grid-cols-[minmax(0,18rem)_minmax(0,18rem)_14rem]">
-            <Input
-              onChange={(event) => setDefinitionName(event.target.value)}
-              placeholder="Definition name"
-              value={definitionName}
-            />
-            <Input
-              onChange={(event) => onKeyTypeFilterChange(event.target.value)}
-              placeholder="Key type"
-              value={keyTypeFilter}
-            />
-            <WorkerStateFilterDropdown
-              onChange={onStateFilterChange}
-              value={stateFilter}
+        <CardContent className="pt-0">
+          <div ref={queryTableRef}>
+            <WorkerTable
+              loading={workers.loading}
+              onSelect={(worker) => onOpenWorker(worker.id.value)}
+              workers={workers.data?.workers ?? []}
             />
           </div>
-        </CardHeader>
-        <CardContent>
-          <WorkerTable
-            loading={workers.loading}
-            onSelect={(worker) => onOpenWorker(worker.id.value)}
-            workers={workers.data?.workers ?? []}
-          />
         </CardContent>
       </Card>
     </div>
@@ -2626,8 +4791,12 @@ function getWorkerRowActions(worker: WorkerOverviewItem): WorkAction[] {
 }
 
 function IterationsView({
+  categoryFilter,
   connection,
+  definitionFilter,
   keyTypeFilter,
+  onCategoryFilterChange,
+  onDefinitionFilterChange,
   onKeyTypeFilterChange,
   onOpenWorker,
   onReady,
@@ -2635,8 +4804,12 @@ function IterationsView({
   refreshToken,
   statusFilter,
 }: {
+  categoryFilter: string;
   connection: WorkableConnection;
+  definitionFilter: string;
   keyTypeFilter: string;
+  onCategoryFilterChange: (category: string) => void;
+  onDefinitionFilterChange: (definitionName: string) => void;
   onKeyTypeFilterChange: (keyType: string) => void;
   onOpenWorker: (workerId: string) => void;
   onReady: () => void;
@@ -2644,17 +4817,49 @@ function IterationsView({
   refreshToken: number;
   statusFilter: WorkCompletionStatus[];
 }) {
-  const [definitionName, setDefinitionName] = useState("");
+  const [pageState, setPageState] = useState({
+    index: 0,
+    queryKey: "",
+    take: defaultQueryTake,
+  });
+  const catalogScope = useMemo<OverviewScope | null>(() => {
+    const category = normalizeCategoryFilter(categoryFilter);
+    const definitionName = definitionFilter.trim();
+    if (!category && !definitionName) {
+      return null;
+    }
+
+    return {
+      category: category || undefined,
+      definitionName: definitionName || undefined,
+      includeSubcategories: true,
+    };
+  }, [categoryFilter, definitionFilter]);
   const query = useMemo(
     () => ({
-      definitionName: definitionName.trim() || undefined,
+      category: normalizeCategoryFilter(categoryFilter) || undefined,
+      definitionName: definitionFilter.trim() || undefined,
       keyType: keyTypeFilter.trim() || undefined,
       statuses: statusFilter.length === 0 ? undefined : statusFilter,
     }),
-    [definitionName, keyTypeFilter, statusFilter]
+    [categoryFilter, definitionFilter, keyTypeFilter, statusFilter]
   );
-  const iterations = useIterationQuery(connection, query, refreshToken);
+  const { queryTake, queryTableRef } = useViewportQueryTake();
+  const queryKey = JSON.stringify(query);
+  const pageIndex =
+    pageState.queryKey === queryKey && pageState.take === queryTake
+      ? pageState.index
+      : 0;
+  const skip = pageIndex * queryTake;
+  const iterations = useIterationQuery(connection, query, refreshToken, queryTake, skip);
   const isReady = !iterations.loading;
+  const hasFilters = !!catalogScope || !!keyTypeFilter.trim() || statusFilter.length > 0;
+  const clearFilters = () => {
+    onCategoryFilterChange("");
+    onDefinitionFilterChange("");
+    onKeyTypeFilterChange("");
+    onStatusFilterChange([]);
+  };
 
   useEffect(() => {
     if (isReady) {
@@ -2665,31 +4870,79 @@ function IterationsView({
   return (
     <div className="space-y-6">
       <ErrorPanel errors={[iterations.error]} />
+      <ViewActionLane>
+        <QueryFilterPopover
+          allFacetLabel="All statuses"
+          catalogScope={catalogScope}
+          connection={connection}
+          facetLabel="Iteration statuses"
+          facetOptions={iterationStatuses}
+          facetValue={statusFilter}
+          keyTypeFilter={keyTypeFilter}
+          onClearCatalog={() => {
+            onCategoryFilterChange("");
+            onDefinitionFilterChange("");
+          }}
+          onFacetChange={onStatusFilterChange}
+          onKeyTypeFilterChange={onKeyTypeFilterChange}
+          onSelectCategory={(category) => {
+            onCategoryFilterChange(category);
+            onDefinitionFilterChange("");
+          }}
+          onSelectDefinition={(definitionName, category) => {
+            onCategoryFilterChange(category);
+            onDefinitionFilterChange(definitionName);
+          }}
+          refreshToken={refreshToken}
+        />
+        {hasFilters && (
+          <Tooltip delayDuration={500} disableHoverableContent>
+            <TooltipTrigger asChild>
+              <Button
+                aria-label="Clear filters"
+                className="text-muted-foreground hover:bg-transparent hover:text-foreground dark:hover:bg-transparent"
+                onClick={clearFilters}
+                size="icon-sm"
+                variant="ghost"
+              >
+                <X className="size-4" />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent side="bottom" sideOffset={6}>
+              Clear filters
+            </TooltipContent>
+          </Tooltip>
+        )}
+        <QueryPaginationControls
+          skip={skip}
+          take={queryTake}
+          totalCount={iterations.data?.totalCount}
+          onFirst={() => setPageState({
+            index: 0,
+            queryKey,
+            take: queryTake,
+          })}
+          onNext={() => setPageState({
+            index: pageIndex + 1,
+            queryKey,
+            take: queryTake,
+          })}
+          onPrevious={() => setPageState({
+            index: Math.max(0, pageIndex - 1),
+            queryKey,
+            take: queryTake,
+          })}
+        />
+      </ViewActionLane>
       <Card>
-        <CardHeader className="gap-4 lg:flex-row lg:items-center lg:justify-start">
-          <div className="grid gap-3 md:grid-cols-[minmax(0,18rem)_minmax(0,18rem)_14rem]">
-            <Input
-              onChange={(event) => setDefinitionName(event.target.value)}
-              placeholder="Definition name"
-              value={definitionName}
-            />
-            <Input
-              onChange={(event) => onKeyTypeFilterChange(event.target.value)}
-              placeholder="Key type"
-              value={keyTypeFilter}
-            />
-            <IterationStatusFilterDropdown
-              onChange={onStatusFilterChange}
-              value={statusFilter}
+        <CardContent className="pt-0">
+          <div ref={queryTableRef}>
+            <IterationTable
+              iterations={iterations.data?.iterations ?? []}
+              loading={iterations.loading}
+              onSelect={(iteration) => onOpenWorker(iteration.workerId.value)}
             />
           </div>
-        </CardHeader>
-        <CardContent>
-          <IterationTable
-            iterations={iterations.data?.iterations ?? []}
-            loading={iterations.loading}
-            onSelect={(iteration) => onOpenWorker(iteration.workerId.value)}
-          />
         </CardContent>
       </Card>
     </div>
@@ -2770,130 +5023,6 @@ function IterationTable({
   );
 }
 
-function WorkerStateFilterDropdown({
-  onChange,
-  value,
-}: {
-  onChange: (states: WorkerState[]) => void;
-  value: WorkerState[];
-}) {
-  const selected = new Set(value);
-  const label =
-    value.length === 0
-      ? "All states"
-      : value.length === 1
-        ? value[0]
-        : `${value.length} states`;
-
-  const setStateEnabled = (state: WorkerState, enabled: boolean) => {
-    const next = new Set(selected);
-    if (enabled) {
-      next.add(state);
-    } else {
-      next.delete(state);
-    }
-    onChange(states.filter((item) => next.has(item)));
-  };
-
-  return (
-    <DropdownMenu>
-      <DropdownMenuTrigger asChild>
-        <Button className="justify-between" type="button" variant="outline">
-          <span className="flex items-center gap-2">
-            <ListFilter className="size-4" />
-            {label}
-          </span>
-          {value.length > 0 && (
-            <Badge variant="secondary">{value.length}</Badge>
-          )}
-        </Button>
-      </DropdownMenuTrigger>
-      <DropdownMenuContent align="end" className="w-56">
-        <DropdownMenuCheckboxItem
-          checked={value.length === 0}
-          onCheckedChange={() => onChange([])}
-          onSelect={(event) => event.preventDefault()}
-        >
-          All states
-        </DropdownMenuCheckboxItem>
-        <DropdownMenuSeparator />
-        {states.map((state) => (
-          <DropdownMenuCheckboxItem
-            checked={selected.has(state)}
-            key={state}
-            onCheckedChange={(checked) => setStateEnabled(state, checked === true)}
-            onSelect={(event) => event.preventDefault()}
-          >
-            {state}
-          </DropdownMenuCheckboxItem>
-        ))}
-      </DropdownMenuContent>
-    </DropdownMenu>
-  );
-}
-
-function IterationStatusFilterDropdown({
-  onChange,
-  value,
-}: {
-  onChange: (statuses: WorkCompletionStatus[]) => void;
-  value: WorkCompletionStatus[];
-}) {
-  const selected = new Set(value);
-  const label =
-    value.length === 0
-      ? "All statuses"
-      : value.length === 1
-        ? value[0]
-        : `${value.length} statuses`;
-
-  const setStatusEnabled = (status: WorkCompletionStatus, enabled: boolean) => {
-    const next = new Set(selected);
-    if (enabled) {
-      next.add(status);
-    } else {
-      next.delete(status);
-    }
-    onChange(iterationStatuses.filter((item) => next.has(item)));
-  };
-
-  return (
-    <DropdownMenu>
-      <DropdownMenuTrigger asChild>
-        <Button className="justify-between" type="button" variant="outline">
-          <span className="flex items-center gap-2">
-            <ListFilter className="size-4" />
-            {label}
-          </span>
-          {value.length > 0 && (
-            <Badge variant="secondary">{value.length}</Badge>
-          )}
-        </Button>
-      </DropdownMenuTrigger>
-      <DropdownMenuContent align="end" className="w-56">
-        <DropdownMenuCheckboxItem
-          checked={value.length === 0}
-          onCheckedChange={() => onChange([])}
-          onSelect={(event) => event.preventDefault()}
-        >
-          All statuses
-        </DropdownMenuCheckboxItem>
-        <DropdownMenuSeparator />
-        {iterationStatuses.map((status) => (
-          <DropdownMenuCheckboxItem
-            checked={selected.has(status)}
-            key={status}
-            onCheckedChange={(checked) => setStatusEnabled(status, checked === true)}
-            onSelect={(event) => event.preventDefault()}
-          >
-            {status}
-          </DropdownMenuCheckboxItem>
-        ))}
-      </DropdownMenuContent>
-    </DropdownMenu>
-  );
-}
-
 function WorkerConsoleView({
   backLabel,
   connection,
@@ -2938,6 +5067,7 @@ function WorkerConsoleView({
 
   return (
     <div className="space-y-6">
+      <ViewActionLane />
       <div className="flex flex-wrap items-start justify-between gap-4">
         <PageHeading
           description={workerId}
@@ -3133,6 +5263,13 @@ function QueueDialog({
     setFormValue(nextValue);
   };
 
+  const resetQueueConfiguration = () => {
+    setQueueRequest((current) => ({
+      ...current,
+      options: createEffectiveConfigurationOptions(definition),
+    }));
+  };
+
   const createComposedRequest = () => {
     const request: QueueWorkRequest = {
       ...queueRequest,
@@ -3196,12 +5333,20 @@ function QueueDialog({
 
   return (
     <Dialog onOpenChange={onOpenChange} open={!!definition}>
-      <DialogContent className="max-h-[88vh] overflow-hidden p-0 sm:max-w-5xl">
+      <DialogContent
+        className="max-h-[88vh] overflow-hidden p-0 sm:max-w-5xl"
+        onInteractOutside={(event) => event.preventDefault()}
+      >
         <DialogHeader>
-          <DialogTitle className="px-4 pt-4">Queue Work</DialogTitle>
-          <DialogDescription className="space-y-2 px-4">
-            <span className="block font-mono">{definition?.name}</span>
-          </DialogDescription>
+          <DialogTitle className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1 px-4 pt-4">
+            <span>Configure input, behavior, and runtime options for</span>
+            <span
+              className="min-w-0 truncate font-mono text-sm font-semibold text-sky-300"
+              title={definition?.name}
+            >
+              {definition?.name ?? "worker"}
+            </span>
+          </DialogTitle>
         </DialogHeader>
         <div className="min-h-0 space-y-4 px-4">
           {error && (
@@ -3255,6 +5400,12 @@ function QueueDialog({
               {activeTab === "input" && (
                 <SchemaPresetButton schema={inputSchema} onApply={updateFormValue} />
               )}
+              {activeTab === "config" && (
+                <Button onClick={resetQueueConfiguration} size="sm" type="button" variant="outline">
+                  <RefreshCw className="size-4" />
+                  Use definition defaults
+                </Button>
+              )}
             </div>
             <TabsContent className="mt-4 h-[54vh] overflow-y-auto pr-2" value="input">
               <SchemaForm
@@ -3272,20 +5423,20 @@ function QueueDialog({
               />
             </TabsContent>
             <TabsContent className="mt-4 h-[54vh] overflow-y-auto pr-2" value="manual">
-              <div className="grid gap-2">
-                <Label>Request JSON</Label>
-                <Textarea
-                  className="h-[calc(54vh-2rem)] min-h-0 resize-none overflow-y-auto font-mono"
-                  onChange={(event) => setManualRequestJson(event.target.value)}
-                  value={manualRequestJson}
-                />
-              </div>
+              <JsonTextEditor
+                label="Request JSON"
+                onChange={setManualRequestJson}
+                value={manualRequestJson}
+              />
             </TabsContent>
           </Tabs>
-          <div className="-mx-4 flex justify-end gap-2 border-t bg-muted/30 px-4 py-3">
-            <Button disabled={isQueueing} onClick={() => onOpenChange(false)} variant="outline">
-              Close
-            </Button>
+          <div className="-mx-4 flex items-center justify-between gap-3 border-t bg-muted/30 px-4 py-3">
+            <div className="min-w-0 text-sm">
+              <span className="text-muted-foreground">Queue a worker for </span>
+              <span className="font-mono font-semibold text-sky-300">
+                {definition?.name ?? "definition"}
+              </span>
+            </div>
             <Button disabled={isQueueing} onClick={() => void queue()}>
               {isQueueing ? (
                 <Loader2 className="size-4 animate-spin" />
@@ -3354,6 +5505,26 @@ function QueueConfigurationTabs({
   );
 }
 
+function createDefinitionConfigurationDescriptor(
+  descriptor: QueueRequestSchemaDescriptor | null
+): QueueRequestSchemaDescriptor | null {
+  if (!descriptor) {
+    return null;
+  }
+
+  const tabs = descriptor.tabs
+    .map((tab) => ({
+      ...tab,
+      fields: tab.fields.filter((field) => field.path.startsWith("options.")),
+    }))
+    .filter((tab) => tab.fields.length > 0);
+
+  return {
+    ...descriptor,
+    tabs,
+  };
+}
+
 function ConfigTabHeader({
   description,
   title,
@@ -3382,11 +5553,28 @@ function loadConsoleStorage(): ConsoleStorage {
       const parsed = JSON.parse(stored) as Partial<ConsoleStorage> & {
         activeServerId?: string;
         expandedServerIds?: string[];
+        overviewCollapsedPanels?: unknown;
         servers?: LegacyWorkableServerConnection[];
       };
 
-      if (Array.isArray(parsed.hosts) && parsed.hosts.length > 0) {
+      if (Array.isArray(parsed.hosts)) {
         const hosts = parsed.hosts.map(normalizeStoredHost);
+        if (hosts.length === 0) {
+          return {
+            activeSystemId: "",
+            expandedHostIds: [],
+            expandedSystemIds: [],
+            hosts: [],
+            overviewCollapsedPanels: normalizeOverviewPanelIds(parsed.overviewCollapsedPanels),
+            overviewHiddenPanels: normalizeOverviewHiddenPanels(
+              parsed.overviewHiddenPanels,
+              parsed.overviewThroughputHidden
+            ),
+            overviewThroughputHidden: parsed.overviewThroughputHidden ?? false,
+            view: isServerView(parsed.view) ? parsed.view : "overview",
+          };
+        }
+
         const systemIds = new Set(hosts.flatMap((host) => host.systems.map((system) => system.id)));
         const activeSystemId = parsed.activeSystemId && systemIds.has(parsed.activeSystemId)
           ? parsed.activeSystemId
@@ -3401,6 +5589,12 @@ function loadConsoleStorage(): ConsoleStorage {
             activeSystemId,
           ],
           hosts,
+          overviewCollapsedPanels: normalizeOverviewPanelIds(parsed.overviewCollapsedPanels),
+          overviewHiddenPanels: normalizeOverviewHiddenPanels(
+            parsed.overviewHiddenPanels,
+            parsed.overviewThroughputHidden
+          ),
+          overviewThroughputHidden: parsed.overviewThroughputHidden ?? false,
           view: isServerView(parsed.view) ? parsed.view : "overview",
         };
       }
@@ -3417,6 +5611,9 @@ function loadConsoleStorage(): ConsoleStorage {
           expandedHostIds: hosts.map((host) => host.id),
           expandedSystemIds: parsed.expandedServerIds ?? [activeSystemId],
           hosts,
+          overviewCollapsedPanels: [],
+          overviewHiddenPanels: [],
+          overviewThroughputHidden: false,
           view: isServerView(parsed.view) ? parsed.view : "overview",
         };
       }
@@ -3441,6 +5638,9 @@ function loadConsoleStorage(): ConsoleStorage {
       expandedHostIds: [migratedHost.id],
       expandedSystemIds: [migratedHost.systems[0].id],
       hosts: [migratedHost],
+      overviewCollapsedPanels: [],
+      overviewHiddenPanels: [],
+      overviewThroughputHidden: false,
       view: "overview",
     };
   } catch {
@@ -3458,8 +5658,37 @@ function createDefaultConsoleStorage(): ConsoleStorage {
     expandedHostIds: [defaultHost.id],
     expandedSystemIds: [defaultSystem.id],
     hosts: [defaultHost],
+    overviewCollapsedPanels: [],
+    overviewHiddenPanels: [],
+    overviewThroughputHidden: false,
     view: "overview",
   };
+}
+
+function normalizeOverviewHiddenPanels(
+  value: unknown,
+  legacyThroughputHidden = false
+): OverviewPanelId[] {
+  const requested = new Set(normalizeOverviewPanelIds(value));
+
+  if (legacyThroughputHidden) {
+    requested.add("throughput");
+  }
+
+  return overviewPanelIds.filter((id) => requested.has(id));
+}
+
+function normalizeOverviewPanelIds(value: unknown): OverviewPanelId[] {
+  const requested = new Set(
+    Array.isArray(value)
+      ? value.filter((item): item is OverviewPanelId =>
+          typeof item === "string" &&
+          overviewPanelIds.includes(item as OverviewPanelId)
+        )
+      : []
+  );
+
+  return overviewPanelIds.filter((id) => requested.has(id));
 }
 
 function normalizeStoredHost(host: WorkableHostConnection): WorkableHostConnection {
@@ -3566,13 +5795,14 @@ function createDefaultSystem(hostId: string): WorkableSystemConnection {
 function createStoredSystem(
   hostId: string,
   system: WorkableHttpSystemInfo,
-  realtimeSystemIds: Set<string>
+  realtimeSystemIds: Set<string>,
+  existingSystem?: WorkableSystemConnection
 ): WorkableSystemConnection {
   const key = getSystemStorageKey(system);
   const realtimeSupported = system.capabilities.realtime.enabled;
 
   return {
-    id: `${hostId}-${key || "default"}`,
+    id: existingSystem?.id ?? `${hostId}-${key || "default"}`,
     hostId,
     name: getSystemDisplayName(system),
     systemName: normalizeOptional(system.name),
@@ -3581,6 +5811,38 @@ function createStoredSystem(
     realtimeTransport: system.capabilities.realtime.transport ?? null,
     state: system.state,
   };
+}
+
+function mergeDiscoveredSystemsWithStored(
+  discovered: WorkableHttpSystemInfo[],
+  storedSystems?: WorkableSystemConnection[]
+) {
+  if (!storedSystems?.length) {
+    return discovered;
+  }
+
+  const merged = [...discovered];
+  const discoveredKeys = new Set(discovered.map(getSystemStorageKey));
+  for (const storedSystem of storedSystems) {
+    const storedDiscovery = createDiscoveredSystemFromStored(storedSystem);
+    const key = getSystemStorageKey(storedDiscovery);
+    if (!discoveredKeys.has(key)) {
+      merged.push(storedDiscovery);
+      discoveredKeys.add(key);
+    }
+  }
+
+  return merged;
+}
+
+function findStoredSystemByKey(
+  host: WorkableHostConnection | undefined,
+  system: WorkableHttpSystemInfo
+) {
+  const key = getSystemStorageKey(system);
+  return host?.systems.find(
+    (storedSystem) => getSystemStorageKey(createDiscoveredSystemFromStored(storedSystem)) === key
+  );
 }
 
 async function discoverSystems(apiUrl: string): Promise<WorkableHttpSystems & { apiUrl: string }> {
@@ -3707,10 +5969,6 @@ function normalizeOptional(value?: string | null) {
   return trimmed ? trimmed : undefined;
 }
 
-function formatHostSubtitle(host: WorkableHostConnection) {
-  return host.apiUrl;
-}
-
 function PageHeading({
   description,
   title,
@@ -3757,7 +6015,7 @@ function MetricCard({
               : "inline-flex w-full items-center justify-center gap-1.5 text-center"
           }
         >
-          <Tooltip>
+          <Tooltip delayDuration={500} disableHoverableContent>
             <TooltipTrigger asChild>
               <span className="inline-flex min-w-0 items-center justify-center gap-1.5">
                 <Icon className="size-4 shrink-0 text-muted-foreground" />
@@ -3801,6 +6059,746 @@ function MetricCard({
   );
 }
 
+function ThroughputChartPanel({
+  activeWorkerCount,
+  collapsed,
+  loading,
+  mode,
+  onCollapsedChange,
+  onModeChange,
+  onWindowChange,
+  throughput,
+  windowSeconds,
+}: {
+  activeWorkerCount: number;
+  collapsed?: boolean;
+  loading: boolean;
+  mode: ThroughputMode;
+  onCollapsedChange?: (collapsed: boolean) => void;
+  onModeChange: (mode: ThroughputMode) => void;
+  onWindowChange: (seconds: number) => void;
+  throughput?: WorkSystemThroughput;
+  windowSeconds: number;
+}) {
+  const selectedMode = mode === "queued" ? "completion" : mode;
+  const chartLabel = selectedMode === "execution" ? "Execution time" : "Throughput";
+  const chartDescription = selectedMode === "execution"
+    ? "Average execution time for completed iterations, scoped to the current overview filter."
+    : "Queued, succeeded, and failed iteration rates, scoped to the current overview filter.";
+  return (
+    <OverviewPanelShell
+      actions={
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="flex rounded-lg bg-muted/40 p-0.5">
+            {throughputWindows.map((window) => (
+              <Button
+                className="h-7 px-2 text-xs"
+                key={window.seconds}
+                onClick={() => onWindowChange(window.seconds)}
+                size="sm"
+                variant={windowSeconds === window.seconds ? "secondary" : "ghost"}
+              >
+                {window.label}
+              </Button>
+            ))}
+          </div>
+        </div>
+      }
+      collapsed={collapsed}
+      onCollapsedChange={onCollapsedChange}
+      description={chartDescription}
+      title={chartLabel}
+    >
+      <Tabs value={selectedMode} onValueChange={(value) => onModeChange(value as ThroughputMode)}>
+        <TabsList className="h-8">
+          <TabsTrigger className="text-xs" value="completion">Throughput</TabsTrigger>
+          <TabsTrigger className="text-xs" value="execution">Execution</TabsTrigger>
+        </TabsList>
+        <TabsContent className="mt-3" value={selectedMode}>
+          {loading ? (
+            <Skeleton className="h-52 w-full" />
+          ) : (
+            <ThroughputAreaChart
+              activeWorkerCount={activeWorkerCount}
+              key={selectedMode}
+              mode={selectedMode}
+              throughput={throughput}
+              windowSeconds={windowSeconds}
+            />
+          )}
+        </TabsContent>
+      </Tabs>
+    </OverviewPanelShell>
+  );
+}
+
+function ThroughputAreaChart({
+  activeWorkerCount,
+  mode,
+  throughput,
+  windowSeconds,
+}: {
+  activeWorkerCount: number;
+  mode: ThroughputMode;
+  throughput?: WorkSystemThroughput;
+  windowSeconds: number;
+}) {
+  const buckets = getSettledThroughputBuckets(throughput);
+  const bucketSeconds = throughput?.bucketSeconds ?? 1;
+  const series = createThroughputSeries(mode, buckets, bucketSeconds);
+  const maxValue = getNiceChartMax(Math.max(0, ...series.flatMap((item) => item.values)), mode);
+  const yTicks = createYAxisTicks(maxValue);
+  const xTicks = createTimeAxisTicks(throughput, buckets);
+  const metrics = createThroughputMetrics(
+    mode,
+    throughput,
+    activeWorkerCount,
+    windowSeconds
+  );
+
+  return (
+    <div className="space-y-3">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="flex flex-wrap items-center gap-3">
+          {series.map((item) => (
+            <div className="flex items-center gap-1.5 text-xs" key={item.label}>
+              <span className={`size-2 rounded-full ${item.legendClass}`} />
+              <span className="text-muted-foreground">{item.label}</span>
+            </div>
+          ))}
+        </div>
+        <div className="flex flex-wrap items-center justify-end gap-1.5">
+          {metrics.map((metric) => (
+            <Tooltip delayDuration={500} disableHoverableContent key={metric.id}>
+              <TooltipTrigger asChild>
+                <div
+                  className={`flex items-center justify-center gap-1.5 whitespace-nowrap rounded-full border border-foreground/10 bg-background/70 px-2.5 py-1 shadow-sm ${metric.widthClass ?? "min-w-24"}`}
+                  tabIndex={0}
+                >
+                  {metric.pulseClass && <span className={`size-2 rounded-full ${metric.pulseClass}`} />}
+                  {metric.trend === "up" && <ArrowUp className={`size-3.5 shrink-0 ${metric.toneClass ?? ""}`} />}
+                  {metric.trend === "down" && <ArrowDown className={`size-3.5 shrink-0 ${metric.toneClass ?? ""}`} />}
+                  {metric.trend === "steady" && <Equal className={`size-3.5 shrink-0 ${metric.toneClass ?? ""}`} />}
+                  {metric.label && <span className="text-muted-foreground text-[11px]">{metric.label}</span>}
+                  <span className={`font-mono font-semibold text-xs ${metric.valueClass ?? ""}`}>{metric.value}</span>
+                </div>
+              </TooltipTrigger>
+              <TooltipContent className="max-w-64 whitespace-normal text-left" side="top" sideOffset={6}>
+                {metric.description}
+              </TooltipContent>
+            </Tooltip>
+          ))}
+        </div>
+      </div>
+      <div>
+        <div className="relative grid h-56 grid-cols-[3.25rem_1fr] overflow-hidden rounded-lg border bg-background/40">
+          <div className="flex flex-col justify-between border-r border-border/70 px-2 py-3 text-right font-mono text-[10px] text-muted-foreground">
+            {yTicks.map((tick) => (
+              <span key={tick}>{formatThroughputAxisValue(mode, tick)}</span>
+            ))}
+          </div>
+          <div className="relative min-w-0">
+            <svg
+              aria-label={mode === "execution" ? "Execution time chart" : "Throughput chart"}
+              className="h-full w-full"
+              preserveAspectRatio="none"
+              role="img"
+              viewBox="0 0 1000 220"
+            >
+              <defs>
+                {series.map((item) => (
+                  <linearGradient id={item.gradientId} key={item.gradientId} x1="0" x2="0" y1="0" y2="1">
+                    <stop offset="5%" stopColor={item.color} stopOpacity="0.42" />
+                    <stop offset="95%" stopColor={item.color} stopOpacity="0.04" />
+                  </linearGradient>
+                ))}
+              </defs>
+              {[0, 1, 2, 3].map((line) => (
+                <line
+                  className="stroke-border"
+                  key={line}
+                  strokeDasharray={line === 3 ? undefined : "4 8"}
+                  strokeWidth="1"
+                  x1="0"
+                  x2="1000"
+                  y1={20 + line * 55}
+                  y2={20 + line * 55}
+                />
+              ))}
+              {series.map((item) => (
+                <Fragment key={item.label}>
+                  <path d={createAreaPath(item.values, maxValue)} fill={`url(#${item.gradientId})`} />
+                  <path
+                    d={createLinePath(item.values, maxValue)}
+                    fill="none"
+                    stroke={item.color}
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth="2.5"
+                    vectorEffect="non-scaling-stroke"
+                  />
+                </Fragment>
+              ))}
+            </svg>
+          </div>
+          {buckets.length === 0 && (
+            <div className="absolute inset-0 grid place-items-center bg-background/70 text-muted-foreground text-sm">
+              Waiting for throughput data.
+            </div>
+          )}
+        </div>
+        {xTicks.length > 0 && (
+          <div className="ml-[3.25rem] mt-1 grid grid-cols-5 gap-2 px-1 font-mono text-[10px] text-foreground/75">
+            {xTicks.map((tick, index) => (
+              <span
+                className={
+                  index === 0
+                    ? "text-left"
+                    : index === xTicks.length - 1
+                      ? "text-right"
+                      : "text-center"
+                }
+                key={`${tick.position}-${tick.label}`}
+              >
+                {tick.label}
+              </span>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function getSettledThroughputBuckets(throughput?: WorkSystemThroughput) {
+  if (!throughput) {
+    return [];
+  }
+
+  return throughput.buckets.slice(0, -1);
+}
+
+function createThroughputSeries(
+  mode: ThroughputMode,
+  buckets: WorkThroughputBucket[],
+  bucketSeconds: number
+) {
+  const normalizedBucketSeconds = Math.max(1, bucketSeconds);
+  if (mode === "queued") {
+    return [
+      {
+        color: "#38bdf8",
+        gradientId: "queued-throughput",
+        label: "Queued",
+        legendClass: "bg-sky-400",
+        values: buckets.map((bucket) => bucket.queued / normalizedBucketSeconds),
+      },
+    ];
+  }
+
+  if (mode === "execution") {
+    return [
+      {
+        color: "#a78bfa",
+        gradientId: "execution-throughput",
+        label: "Avg execution ms",
+        legendClass: "bg-violet-400",
+        values: buckets.map((bucket) => Math.round(bucket.averageExecutionMilliseconds)),
+      },
+    ];
+  }
+
+  return [
+      {
+        color: "#38bdf8",
+        gradientId: "queued-throughput",
+        label: "Queued",
+        legendClass: "bg-sky-400",
+        values: buckets.map((bucket) => bucket.queued / normalizedBucketSeconds),
+      },
+      {
+        color: "#34d399",
+        gradientId: "succeeded-throughput",
+        label: "Succeeded",
+        legendClass: "bg-emerald-400",
+        values: buckets.map((bucket) => bucket.succeeded / normalizedBucketSeconds),
+      },
+      {
+        color: "#f87171",
+        gradientId: "failed-throughput",
+        label: "Failed",
+        legendClass: "bg-red-400",
+        values: buckets.map((bucket) => bucket.failed / normalizedBucketSeconds),
+      },
+  ];
+}
+
+function createLinePath(values: number[], maxValue: number) {
+  if (values.length === 0) {
+    return "";
+  }
+
+  return values
+    .map((value, index) => {
+      const point = chartPoint(value, index, values.length, maxValue);
+      return `${index === 0 ? "M" : "L"} ${point.x.toFixed(2)} ${point.y.toFixed(2)}`;
+    })
+    .join(" ");
+}
+
+function createAreaPath(values: number[], maxValue: number) {
+  const line = createLinePath(values, maxValue);
+  if (!line) {
+    return "";
+  }
+
+  const last = chartPoint(values.at(-1) ?? 0, values.length - 1, values.length, maxValue);
+  const first = chartPoint(values[0] ?? 0, 0, values.length, maxValue);
+  return `${line} L ${last.x.toFixed(2)} 210 L ${first.x.toFixed(2)} 210 Z`;
+}
+
+function chartPoint(value: number, index: number, count: number, maxValue: number) {
+  const x = count <= 1 ? 0 : (index / (count - 1)) * 1000;
+  const y = 20 + (1 - value / maxValue) * 170;
+  return { x, y };
+}
+
+function createThroughputMetrics(
+  mode: ThroughputMode,
+  chartThroughput: WorkSystemThroughput | undefined,
+  activeWorkerCount: number,
+  chartWindowSeconds: number
+): ThroughputMetric[] {
+  const buckets = getSettledThroughputBuckets(chartThroughput);
+  const totalDescription = `Total completed iterations in the selected ${formatThroughputWindowLabel(chartWindowSeconds)} chart window. This includes succeeded and failed work, but not queued work.`;
+  if (!chartThroughput || buckets.length === 0) {
+    return [
+      {
+        description: "Queued iterations per second over the last 60 seconds.",
+        id: "queued",
+        label: "",
+        pulseClass: "bg-sky-400",
+        value: "-",
+        valueClass: "text-sky-300",
+        widthClass: "min-w-16",
+      },
+      {
+        description: "Succeeded iterations per second over the last 60 seconds.",
+        id: "succeeded",
+        label: "",
+        pulseClass: "bg-emerald-400",
+        value: "-",
+        valueClass: "text-emerald-300",
+        widthClass: "min-w-16",
+      },
+      {
+        description: "Failed iterations per second over the last 60 seconds.",
+        id: "failed",
+        label: "",
+        pulseClass: "bg-red-400",
+        value: "-",
+        valueClass: "text-red-300",
+        widthClass: "min-w-16",
+      },
+      {
+        description: mode === "execution"
+          ? "Average execution time across the current chart window."
+          : totalDescription,
+        id: mode === "execution" ? "execution-average" : "total",
+        label: mode === "execution" ? "Avg" : "Total",
+        value: "-",
+        widthClass: mode === "execution" ? "min-w-20" : "min-w-20",
+      },
+      ...(mode === "completion"
+        ? [
+            {
+              description: "Last-60-seconds queued rate compared with completed rate. Growing means new work is arriving faster than it is finishing.",
+              id: "net",
+              label: "",
+              trend: "steady" as const,
+              value: "-",
+              widthClass: "w-24",
+            },
+            {
+              description: "Estimated time to clear active workers at the last-60-seconds completion rate.",
+              id: "eta",
+              label: "ETA",
+              value: "-",
+              widthClass: "min-w-20",
+            },
+            {
+              description: "Average execution time across completed work in the last 60 seconds.",
+              id: "live-average",
+              label: "Avg",
+              value: "-",
+              widthClass: "min-w-20",
+            },
+          ]
+        : []),
+    ];
+  }
+
+  if (mode === "execution") {
+    const values = buckets
+      .map((bucket) => bucket.averageExecutionMilliseconds)
+      .filter((value) => value > 0);
+    const average = values.length === 0
+      ? 0
+      : values.reduce((sum, value) => sum + value, 0) / values.length;
+    const current = buckets.at(-1)?.averageExecutionMilliseconds ?? 0;
+    return [
+      {
+        description: "Average execution time in the current chart bucket.",
+        id: "execution-latest",
+        label: "Latest",
+        pulseClass: "bg-violet-400 shadow-[0_0_14px_rgba(167,139,250,0.75)]",
+        value: formatMilliseconds(current),
+        widthClass: "min-w-24",
+      },
+      {
+        description: "Average execution time across the current chart window.",
+        id: "execution-average",
+        label: "Avg",
+        value: formatMilliseconds(average),
+        widthClass: "min-w-20",
+      },
+    ];
+  }
+
+  const liveSummary = chartThroughput.liveSummary;
+  const averageExecution = liveSummary.averageExecutionMilliseconds;
+  const latestQueuedRate = liveSummary.queuedPerSecond;
+  const latestSucceededRate = liveSummary.succeededPerSecond;
+  const latestFailedRate = liveSummary.failedPerSecond;
+  const latestCompletionRate = latestSucceededRate + latestFailedRate;
+  const completedTotal = buckets.reduce((sum, bucket) =>
+    sum + bucket.succeeded + bucket.failed, 0);
+  const backlogRate = liveSummary.queueDeltaPerSecond;
+  const drain = formatDrainTime(activeWorkerCount, latestCompletionRate);
+  return [
+    {
+      description: "Queued iterations per second over the last 60 seconds.",
+      id: "queued",
+      label: "",
+      pulseClass: "bg-sky-400 shadow-[0_0_14px_rgba(56,189,248,0.75)]",
+      value: `${formatRate(latestQueuedRate)}/s`,
+      valueClass: "text-sky-300",
+      widthClass: "min-w-16",
+    },
+    {
+      description: "Succeeded iterations per second over the last 60 seconds.",
+      id: "succeeded",
+      label: "",
+      pulseClass: "bg-emerald-400 shadow-[0_0_14px_rgba(52,211,153,0.75)]",
+      value: `${formatRate(latestSucceededRate)}/s`,
+      valueClass: "text-emerald-300",
+      widthClass: "min-w-16",
+    },
+    {
+      description: "Failed iterations per second over the last 60 seconds.",
+      id: "failed",
+      label: "",
+      pulseClass: "bg-red-400 shadow-[0_0_14px_rgba(248,113,113,0.7)]",
+      value: `${formatRate(latestFailedRate)}/s`,
+      valueClass: "text-red-300",
+      widthClass: "min-w-16",
+    },
+    {
+      description: totalDescription,
+      id: "total",
+      label: "Total",
+      value: String(completedTotal),
+      widthClass: "min-w-20",
+    },
+    {
+      description: "Last-60-seconds queued rate compared with completed rate. Growing means new work is arriving faster than it is finishing.",
+      id: "net",
+      label: "",
+      toneClass: getBacklogToneClass(backlogRate, latestCompletionRate),
+      trend: getBacklogTrend(backlogRate),
+      value: formatBacklogMovement(backlogRate),
+      valueClass: getBacklogToneClass(backlogRate, latestCompletionRate),
+      widthClass: "w-24",
+    },
+    {
+      description: "Estimated time to clear active workers at the last-60-seconds completion rate.",
+      id: "eta",
+      label: "ETA",
+      toneClass: getDrainToneClass(drain.seconds),
+      value: drain.text,
+      widthClass: "min-w-20",
+    },
+    {
+      description: "Average execution time across completed work in the last 60 seconds.",
+      id: "live-average",
+      label: "Avg",
+      value: formatMilliseconds(averageExecution),
+      widthClass: "min-w-20",
+    },
+  ];
+}
+
+function getBacklogToneClass(backlogRate: number, completionRate: number) {
+  if (backlogRate <= 0) {
+    return "text-emerald-300";
+  }
+
+  if (backlogRate <= Math.max(1, completionRate * 0.15)) {
+    return "text-amber-300";
+  }
+
+  return "text-red-300";
+}
+
+function getDrainToneClass(seconds: number | null) {
+  if (seconds === null) {
+    return "border-red-400/35 bg-red-400/10 text-red-200";
+  }
+
+  if (seconds <= 30) {
+    return "border-emerald-400/30 bg-emerald-400/10 text-emerald-200";
+  }
+
+  if (seconds <= 120) {
+    return "border-amber-400/30 bg-amber-400/10 text-amber-200";
+  }
+
+  return "border-red-400/35 bg-red-400/10 text-red-200";
+}
+
+function averageVisibleExecutionMilliseconds(buckets: WorkThroughputBucket[]) {
+  const values = buckets
+    .map((bucket) => bucket.averageExecutionMilliseconds)
+    .filter((value) => value > 0);
+  return values.length === 0
+    ? 0
+    : values.reduce((sum, value) => sum + value, 0) / values.length;
+}
+
+function formatDrainTime(activeWorkerCount: number, completionRate: number) {
+  if (activeWorkerCount <= 0) {
+    return { seconds: 0, text: "0s" };
+  }
+
+  if (completionRate <= 0) {
+    return { seconds: null, text: "stalled" };
+  }
+
+  const seconds = activeWorkerCount / completionRate;
+  return { seconds, text: formatDurationSeconds(seconds).text };
+}
+
+function formatThroughputWindowLabel(seconds: number) {
+  if (seconds === 60) {
+    return "60-second";
+  }
+  if (seconds === 3600) {
+    return "1-hour";
+  }
+  if (seconds % 3600 === 0) {
+    return `${seconds / 3600}-hour`;
+  }
+  if (seconds % 60 === 0) {
+    return `${seconds / 60}-minute`;
+  }
+
+  return `${seconds}-second`;
+}
+
+function getNiceChartMax(value: number, mode: ThroughputMode) {
+  if (value <= 0) {
+    return mode === "execution" ? 100 : 1;
+  }
+
+  const exponent = Math.floor(Math.log10(value));
+  const magnitude = 10 ** exponent;
+  const normalized = value / magnitude;
+  const nice = normalized <= 1
+    ? 1
+    : normalized <= 2
+      ? 2
+      : normalized <= 5
+        ? 5
+        : 10;
+  return nice * magnitude;
+}
+
+function createYAxisTicks(maxValue: number) {
+  return [maxValue, maxValue * 2 / 3, maxValue / 3, 0];
+}
+
+function formatThroughputAxisValue(mode: ThroughputMode, value: number) {
+  if (mode === "execution") {
+    return formatMilliseconds(value);
+  }
+
+  return `${formatRate(value)}/s`;
+}
+
+function createTimeAxisTicks(throughput: WorkSystemThroughput | undefined, buckets: WorkThroughputBucket[]) {
+  if (!throughput || buckets.length === 0) {
+    return [];
+  }
+
+  const firstBucketTime = parseChartTimestamp(buckets[0].at);
+  const latestBucketTime = parseChartTimestamp(buckets.at(-1)?.at ?? throughput.to);
+  const toTime = parseChartTimestamp(throughput.to);
+  const latest = latestBucketTime ?? toTime;
+  const from = firstBucketTime ?? (
+    latest === null ? null : latest - Math.max(1, buckets.length - 1) * throughput.bucketSeconds * 1000
+  );
+  if (from === null || latest === null || !Number.isFinite(from) || !Number.isFinite(latest)) {
+    return [];
+  }
+
+  const windowSeconds = Math.max(1, Math.round((latest - from) / 1000) + throughput.bucketSeconds);
+  return [0, 0.25, 0.5, 0.75, 1].map((position) => {
+    const timestamp = from + (latest - from) * position;
+    return {
+      label: formatChartTimeAxisLabel(timestamp, windowSeconds),
+      position,
+    };
+  });
+}
+
+function parseChartTimestamp(value: string | undefined) {
+  if (!value) {
+    return null;
+  }
+
+  const timestamp = Date.parse(value);
+  return Number.isFinite(timestamp) ? timestamp : null;
+}
+
+function formatChartTimeAxisLabel(timestamp: number, windowSeconds: number) {
+  const options: Intl.DateTimeFormatOptions =
+    windowSeconds >= 3600
+      ? { hour: "numeric", minute: "2-digit" }
+      : { hour: "numeric", minute: "2-digit", second: "2-digit" };
+  return new Intl.DateTimeFormat(undefined, options).format(new Date(timestamp));
+}
+
+function formatRate(value: number) {
+  if (value >= 100) {
+    return value.toFixed(0);
+  }
+  if (value >= 10) {
+    return value.toFixed(1);
+  }
+  if (value >= 1) {
+    return value.toFixed(2);
+  }
+  return value.toFixed(2);
+}
+
+function formatBacklogMovement(value: number) {
+  const normalized = Math.abs(value) < 0.005 ? 0 : value;
+  if (normalized > 0) {
+    return `${formatRate(normalized)}/s`;
+  }
+  if (normalized < 0) {
+    return `${formatRate(Math.abs(normalized))}/s`;
+  }
+  return "0/s";
+}
+
+function getBacklogTrend(value: number) {
+  const normalized = Math.abs(value) < 0.005 ? 0 : value;
+  if (normalized > 0) {
+    return "up" as const;
+  }
+  if (normalized < 0) {
+    return "down" as const;
+  }
+  return "steady" as const;
+}
+
+function formatMilliseconds(value: number) {
+  if (value >= 1000) {
+    return `${(value / 1000).toFixed(value >= 10_000 ? 0 : 1)}s`;
+  }
+
+  return `${Math.round(value)}ms`;
+}
+
+function throughputPayloadsEqual(
+  left: WorkSystemThroughput,
+  right: WorkSystemThroughput
+) {
+  return (
+    left.windowSeconds === right.windowSeconds &&
+    left.bucketSeconds === right.bucketSeconds &&
+    compactThroughputLiveSummary(left.liveSummary) === compactThroughputLiveSummary(right.liveSummary) &&
+    compactThroughputBuckets(left.buckets) === compactThroughputBuckets(right.buckets)
+  );
+}
+
+function throughputComponentPayloadsEqual(
+  left: WorkComponentQueryResult,
+  right: WorkComponentQueryResult
+) {
+  const leftThroughput = getWorkComponentData<WorkOverviewThroughputComponent>(
+    left,
+    "throughput"
+  );
+  const rightThroughput = getWorkComponentData<WorkOverviewThroughputComponent>(
+    right,
+    "throughput"
+  );
+
+  if (!leftThroughput || !rightThroughput) {
+    return JSON.stringify(left.components) === JSON.stringify(right.components);
+  }
+
+  return (
+    leftThroughput.activeWorkerCount === rightThroughput.activeWorkerCount &&
+    throughputPayloadsEqual(leftThroughput.throughput, rightThroughput.throughput)
+  );
+}
+
+function getWorkComponentData<T>(
+  result: WorkComponentQueryResult | undefined,
+  id: string
+): T | undefined {
+  const component = result?.components[id] as WorkComponentResult<T> | undefined;
+  return component?.status?.toLowerCase() === "ok" ? component.data : undefined;
+}
+
+function getWorkComponentErrors(result: WorkComponentQueryResult | undefined) {
+  return Object.entries(result?.components ?? {})
+    .filter(([, component]) => component.status?.toLowerCase() !== "ok")
+    .map(([id, component]) => component.error ?? `${id} failed to load.`);
+}
+
+function compactThroughputLiveSummary(summary: WorkSystemThroughput["liveSummary"]) {
+  return [
+    summary.windowSeconds,
+    summary.queuedPerSecond,
+    summary.succeededPerSecond,
+    summary.failedPerSecond,
+    summary.queueDeltaPerSecond,
+    Math.round(summary.averageExecutionMilliseconds),
+  ].join("|");
+}
+
+function compactThroughputBuckets(buckets: WorkThroughputBucket[]) {
+  return buckets
+    .filter((bucket) =>
+      bucket.queued > 0 ||
+      bucket.succeeded > 0 ||
+      bucket.failed > 0 ||
+      bucket.averageExecutionMilliseconds > 0
+    )
+    .map((bucket) => [
+      bucket.at,
+      bucket.queued,
+      bucket.succeeded,
+      bucket.failed,
+      Math.round(bucket.averageExecutionMilliseconds),
+    ].join(":"))
+    .join("|");
+}
+
 function WorkerActionButton({
   action,
   icon: Icon,
@@ -3825,11 +6823,134 @@ function SnapshotBlock({ label, value }: { label: string; value: unknown }) {
         <Braces className="size-4 text-muted-foreground" />
         <span className="font-medium">{label}</span>
       </div>
-      <pre className="max-h-64 overflow-auto rounded-lg border bg-muted/30 p-3 font-mono text-xs">
-        {JSON.stringify(value ?? null, null, 2)}
+      <pre className="max-h-64 overflow-auto rounded-lg border bg-muted/30 p-3 font-mono text-xs leading-relaxed">
+        <JsonValue value={value ?? null} />
       </pre>
     </div>
   );
+}
+
+function JsonTextEditor({
+  label,
+  onChange,
+  value,
+}: {
+  label: string;
+  onChange: (value: string) => void;
+  value: string;
+}) {
+  const parsed = parseJsonText(value);
+
+  const format = () => {
+    if (!parsed.ok) {
+      return;
+    }
+
+    onChange(JSON.stringify(parsed.value, null, 2));
+  };
+
+  return (
+    <div className="grid h-full min-h-0 gap-3 lg:grid-cols-2">
+      <div className="grid min-h-0 gap-2">
+        <div className="flex items-center justify-between gap-2">
+          <Label>{label}</Label>
+          <Button disabled={!parsed.ok} onClick={format} size="xs" variant="outline">
+            <Braces className="size-3" />
+            Format
+          </Button>
+        </div>
+        <Textarea
+          className="h-[calc(54vh-2.25rem)] min-h-0 resize-none overflow-y-auto font-mono text-xs"
+          onChange={(event) => onChange(event.target.value)}
+          spellCheck={false}
+          value={value}
+        />
+      </div>
+      <div className="grid min-h-0 gap-2">
+        <Label>Preview</Label>
+        <pre className="h-[calc(54vh-2.25rem)] overflow-auto rounded-lg border bg-muted/30 p-3 font-mono text-xs leading-relaxed">
+          {parsed.ok ? (
+            <JsonValue value={parsed.value} />
+          ) : (
+            <span className="text-red-300">{parsed.error}</span>
+          )}
+        </pre>
+      </div>
+    </div>
+  );
+}
+
+function JsonValue({ indent = 0, value }: { indent?: number; value: unknown }) {
+  if (value === null || value === undefined) {
+    return <span className="text-muted-foreground">null</span>;
+  }
+
+  if (typeof value === "string") {
+    return <span className="text-emerald-300">{JSON.stringify(value)}</span>;
+  }
+
+  if (typeof value === "number") {
+    return <span className="text-amber-300">{String(value)}</span>;
+  }
+
+  if (typeof value === "boolean") {
+    return <span className="text-sky-300">{String(value)}</span>;
+  }
+
+  if (Array.isArray(value)) {
+    if (value.length === 0) {
+      return <span>[]</span>;
+    }
+
+    return (
+      <>
+        <span>[</span>
+        {"\n"}
+        {value.map((item, index) => (
+          <Fragment key={index}>
+            {jsonIndent(indent + 1)}
+            <JsonValue indent={indent + 1} value={item} />
+            {index < value.length - 1 && <span>,</span>}
+            {"\n"}
+          </Fragment>
+        ))}
+        {jsonIndent(indent)}
+        <span>]</span>
+      </>
+    );
+  }
+
+  if (typeof value === "object") {
+    const entries = Object.entries(value as Record<string, unknown>);
+    if (entries.length === 0) {
+      return <span>{"{}"}</span>;
+    }
+
+    return (
+      <>
+        <span>{"{"}</span>
+        {"\n"}
+        {entries.map(([key, item], index) => (
+          <Fragment key={key}>
+            {jsonIndent(indent + 1)}
+            <span className="text-violet-300">{JSON.stringify(key)}</span>
+            <span>: </span>
+            <JsonValue indent={indent + 1} value={item} />
+            {index < entries.length - 1 && <span>,</span>}
+            {"\n"}
+          </Fragment>
+        ))}
+        {jsonIndent(indent)}
+        <span>{"}"}</span>
+      </>
+    );
+  }
+
+  return <span>{JSON.stringify(value)}</span>;
+}
+
+function jsonIndent(level: number) {
+  return "  ".repeat(level);
 }
 
 function MetadataItem({ label, value }: { label: string; value: string }) {
@@ -3874,17 +6995,170 @@ function navTitle(view: View) {
   if (view === "worker") {
     return "Worker Console";
   }
+  if (view === "definition") {
+    return "Definition";
+  }
 
   return navItems.find((item) => item.id === view)?.label ?? "Overview";
+}
+
+function cloneOverviewScope(scope: OverviewScope | null): OverviewScope | null {
+  return scope ? { ...scope } : null;
+}
+
+function overviewScopesEqual(
+  left: OverviewScope | null,
+  right: OverviewScope | null
+) {
+  return (
+    left?.category === right?.category &&
+    left?.definitionName === right?.definitionName &&
+    left?.includeSubcategories === right?.includeSubcategories
+  );
+}
+
+function createOverviewComponentScope(scope: OverviewScope | null) {
+  const category = normalizeCategoryFilter(scope?.category ?? "");
+  const definitionName = scope?.definitionName?.trim() ?? "";
+  if (!category && !definitionName) {
+    return null;
+  }
+
+  return {
+    category: category || undefined,
+    definitionName: definitionName || undefined,
+    includeSubcategories: category && !definitionName
+      ? scope?.includeSubcategories ?? true
+      : undefined,
+  };
+}
+
+function createDefinitionCatalogLevelPath(category: string) {
+  const query = new URLSearchParams({ level: "true" });
+  const normalizedCategory = normalizeCategoryFilter(category);
+  if (normalizedCategory) {
+    query.set("category", normalizedCategory);
+  }
+
+  return `definitions?${query.toString()}`;
+}
+
+function splitCategoryPath(category?: string | null) {
+  return (category?.trim() || "General")
+    .split(":")
+    .map((segment) => segment.trim())
+    .filter(Boolean);
+}
+
+function splitCatalogPath(path: string) {
+  return path.trim()
+    ? path
+        .split(":")
+        .map((segment) => segment.trim())
+        .filter(Boolean)
+    : [];
+}
+
+function startsWithCategoryPath(categorySegments: string[], pathSegments: string[]) {
+  return pathSegments.every((segment, index) =>
+    segment.localeCompare(categorySegments[index] ?? "", undefined, {
+      sensitivity: "accent",
+    }) === 0
+  );
+}
+
+function normalizeCategoryFilter(path: string) {
+  return splitCatalogPath(path).join(":");
+}
+
+function formatOverviewScopeLabel(scope: OverviewScope | null) {
+  if (!scope) {
+    return "";
+  }
+
+  const categoryLabel = splitCatalogPath(scope.category ?? "").join(" / ");
+  if (scope.definitionName) {
+    return categoryLabel
+      ? `${categoryLabel} / ${scope.definitionName}`
+      : scope.definitionName;
+  }
+
+  return categoryLabel;
+}
+
+function definitionMatchesCatalogScope(
+  definition: WorkDefinition,
+  scope: OverviewScope | null
+) {
+  if (!scope) {
+    return true;
+  }
+
+  if (scope.definitionName) {
+    return definition.name === scope.definitionName;
+  }
+
+  const scopeSegments = splitCatalogPath(scope.category ?? "");
+  if (scopeSegments.length === 0) {
+    return true;
+  }
+
+  const categorySegments = splitCategoryPath(definition.category);
+  return scope.includeSubcategories === false
+    ? categorySegments.length === scopeSegments.length &&
+        startsWithCategoryPath(categorySegments, scopeSegments)
+    : startsWithCategoryPath(categorySegments, scopeSegments);
+}
+
+function workerMatchesCategory(
+  item: { category?: string | null },
+  category?: string,
+  includeSubcategories = true
+) {
+  const scopeSegments = splitCatalogPath(category ?? "");
+  if (scopeSegments.length === 0) {
+    return true;
+  }
+
+  const categorySegments = splitCategoryPath(item.category);
+  return includeSubcategories
+    ? startsWithCategoryPath(categorySegments, scopeSegments)
+    : categorySegments.length === scopeSegments.length &&
+        startsWithCategoryPath(categorySegments, scopeSegments);
+}
+
+function parseSchemaJsonValue(json?: string | null) {
+  if (!json?.trim()) {
+    return null;
+  }
+
+  try {
+    return JSON.parse(json) as unknown;
+  } catch {
+    return json;
+  }
+}
+
+function parseJsonText(value: string):
+  | { ok: true; value: unknown }
+  | { error: string; ok: false } {
+  if (!value.trim()) {
+    return { ok: true, value: null };
+  }
+
+  try {
+    return { ok: true, value: JSON.parse(value) as unknown };
+  } catch (caught) {
+    return {
+      error: caught instanceof Error ? caught.message : "Invalid JSON.",
+      ok: false,
+    };
+  }
 }
 
 function getWorkerParentView(history: NavigationEntry[]): ServerView {
   const previous = history.at(-1);
   return previous && isServerView(previous.view) ? previous.view : "workers";
-}
-
-function shortId(value: string) {
-  return value.length > 12 ? `${value.slice(0, 8)}...` : value;
 }
 
 function formatIterationCount(count: number) {
@@ -4019,13 +7293,17 @@ function getSystemLifecycleAction(state?: string | null): "start" | "stop" | nul
   return null;
 }
 
-function getSystemLifecycleActionLabel(state?: string | null) {
+function getSystemLifecycleActionLabel(
+  state: string | null | undefined,
+  system: WorkableSystemConnection,
+  host: WorkableHostConnection
+) {
   const action = getSystemLifecycleAction(state);
   if (action === "start") {
-    return "Start system";
+    return `Start the workable system '${system.name}' at ${host.apiUrl}`;
   }
   if (action === "stop") {
-    return "Stop system";
+    return `Stop the workable system '${system.name}' at ${host.apiUrl}`;
   }
   return "Lifecycle action unavailable";
 }
@@ -4048,13 +7326,20 @@ function systemStateDotClass(state?: string | null) {
 function navigationEntriesEqual(left: NavigationEntry | undefined, right: NavigationEntry) {
   return (
     left?.systemId === right.systemId &&
+    overviewScopesEqual(left.catalogScope, right.catalogScope) &&
+    left.definitionId === right.definitionId &&
+    left.iterationCategoryFilter === right.iterationCategoryFilter &&
+    left.iterationDefinitionFilter === right.iterationDefinitionFilter &&
     left.iterationKeyTypeFilter === right.iterationKeyTypeFilter &&
     left.iterationStatusFilter.length === right.iterationStatusFilter.length &&
     left.iterationStatusFilter.every(
       (status, index) => status === right.iterationStatusFilter[index]
     ) &&
     left.keyTypeFilter === right.keyTypeFilter &&
+    overviewScopesEqual(left.overviewScope, right.overviewScope) &&
     left.view === right.view &&
+    left.workerCategoryFilter === right.workerCategoryFilter &&
+    left.workerDefinitionFilter === right.workerDefinitionFilter &&
     left.workerId === right.workerId &&
     left.workerStateFilter.length === right.workerStateFilter.length &&
     left.workerStateFilter.every((state, index) => state === right.workerStateFilter[index])
@@ -4242,20 +7527,302 @@ function useWorkableResource<T>(
   return state;
 }
 
+function useWorkablePostResource<T>(
+  connection: WorkableConnection,
+  path: string | null,
+  body: unknown,
+  refreshToken: number
+): Loadable<T> {
+  const [state, setState] = useState<Loadable<T>>({ loading: !!path });
+  const bodyKey = JSON.stringify(body);
+
+  useEffect(() => {
+    if (!path) {
+      queueMicrotask(() => setState({ loading: false }));
+      return;
+    }
+
+    let canceled = false;
+    queueMicrotask(() => {
+      if (!canceled) {
+        setState((current) => ({
+          ...current,
+          error: undefined,
+          loading: current.data === undefined,
+          refreshing: current.data !== undefined,
+        }));
+      }
+    });
+
+    workableFetch<T>(connection, path, {
+      method: "POST",
+      body: bodyKey,
+    })
+      .then((data) => {
+        if (!canceled) {
+          setState({ data, loading: false, refreshing: false });
+        }
+      })
+      .catch((error) => {
+        if (!canceled) {
+          setState((current) => ({
+            data: current.data,
+            error: error instanceof Error ? error.message : "Request failed.",
+            loading: false,
+            refreshing: false,
+          }));
+        }
+      });
+
+    return () => {
+      canceled = true;
+    };
+  }, [bodyKey, connection, path, refreshToken]);
+
+  return state;
+}
+
+function usePolledWorkableResource<T>(
+  connection: WorkableConnection,
+  path: string | null,
+  intervalMilliseconds: number,
+  refreshToken: number,
+  isEqual?: (left: T, right: T) => boolean
+): Loadable<T> {
+  const [state, setState] = useState<Loadable<T>>({ loading: !!path });
+  const latestDataRef = useRef<T | undefined>(undefined);
+
+  useEffect(() => {
+    latestDataRef.current = undefined;
+    if (!path) {
+      queueMicrotask(() => setState({ loading: false }));
+      return;
+    }
+
+    let canceled = false;
+    let intervalId = 0;
+
+    const load = async (showInitialLoading: boolean) => {
+      if (showInitialLoading) {
+        setState((current) => ({
+          data: current.data,
+          error: undefined,
+          loading: current.data === undefined,
+          refreshing: false,
+        }));
+      }
+
+      try {
+        const data = await workableFetch<T>(connection, path);
+        if (canceled) {
+          return;
+        }
+
+        const previous = latestDataRef.current;
+        if (previous !== undefined && isEqual?.(previous, data)) {
+          setState((current) => current.error ? { ...current, error: undefined } : current);
+          return;
+        }
+
+        latestDataRef.current = data;
+        setState({ data, loading: false, refreshing: false });
+      } catch (error) {
+        if (!canceled) {
+          setState((current) => ({
+            data: current.data,
+            error: error instanceof Error ? error.message : "Request failed.",
+            loading: false,
+            refreshing: false,
+          }));
+        }
+      }
+    };
+
+    void load(true);
+    intervalId = window.setInterval(() => void load(false), intervalMilliseconds);
+
+    return () => {
+      canceled = true;
+      window.clearInterval(intervalId);
+    };
+  }, [connection, intervalMilliseconds, isEqual, path, refreshToken]);
+
+  return state;
+}
+
+function usePolledWorkablePostResource<T>(
+  connection: WorkableConnection,
+  path: string | null,
+  body: unknown,
+  intervalMilliseconds: number,
+  refreshToken: number,
+  isEqual?: (left: T, right: T) => boolean
+): Loadable<T> {
+  const [state, setState] = useState<Loadable<T>>({ loading: !!path });
+  const latestDataRef = useRef<T | undefined>(undefined);
+  const bodyKey = JSON.stringify(body);
+
+  useEffect(() => {
+    latestDataRef.current = undefined;
+    if (!path) {
+      queueMicrotask(() => setState({ loading: false }));
+      return;
+    }
+
+    let canceled = false;
+    let intervalId = 0;
+
+    const load = async (showInitialLoading: boolean) => {
+      if (showInitialLoading) {
+        setState((current) => ({
+          data: current.data,
+          error: undefined,
+          loading: current.data === undefined,
+          refreshing: false,
+        }));
+      }
+
+      try {
+        const data = await workableFetch<T>(connection, path, {
+          method: "POST",
+          body: bodyKey,
+        });
+        if (canceled) {
+          return;
+        }
+
+        const previous = latestDataRef.current;
+        if (previous !== undefined && isEqual?.(previous, data)) {
+          setState((current) => current.error ? { ...current, error: undefined } : current);
+          return;
+        }
+
+        latestDataRef.current = data;
+        setState({ data, loading: false, refreshing: false });
+      } catch (error) {
+        if (!canceled) {
+          setState((current) => ({
+            data: current.data,
+            error: error instanceof Error ? error.message : "Request failed.",
+            loading: false,
+            refreshing: false,
+          }));
+        }
+      }
+    };
+
+    void load(true);
+    intervalId = window.setInterval(() => void load(false), intervalMilliseconds);
+
+    return () => {
+      canceled = true;
+      window.clearInterval(intervalId);
+    };
+  }, [bodyKey, connection, intervalMilliseconds, isEqual, path, refreshToken]);
+
+  return state;
+}
+
+function useViewportQueryTake() {
+  const queryTableRef = useRef<HTMLDivElement>(null);
+  const [queryTake, setQueryTake] = useState(defaultQueryTake);
+
+  useLayoutEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    let frameId = 0;
+    const updateTake = () => {
+      frameId = 0;
+      const root = queryTableRef.current;
+      const tableTop = root?.getBoundingClientRect().top ?? 0;
+      const scrollViewport = root?.closest("[data-slot='scroll-area-viewport']");
+      const viewportBottom =
+        scrollViewport?.getBoundingClientRect().bottom ?? window.innerHeight;
+      const pageContainer = root?.closest("[data-view-content]");
+      const pageBottomPadding = pageContainer
+        ? Number.parseFloat(window.getComputedStyle(pageContainer).paddingBottom) || 0
+        : 0;
+      const headerHeight =
+        root?.querySelector("thead")?.getBoundingClientRect().height ??
+        queryTableHeaderHeight;
+      const tableRows = root
+        ? [...root.querySelectorAll("tbody tr")].slice(0, 5)
+        : [];
+      const measuredRowHeight = tableRows.length > 0
+        ? tableRows.reduce(
+            (total, row) => total + row.getBoundingClientRect().height,
+            0
+          ) / tableRows.length
+        : queryTableRowHeight;
+      const availableHeight = Math.max(
+        0,
+        viewportBottom - tableTop - pageBottomPadding - queryViewportSafetyPadding
+      );
+      const rows = Math.floor(
+        (availableHeight - headerHeight) / Math.max(1, measuredRowHeight)
+      );
+      const nextTake = Math.min(maxQueryTake, Math.max(minQueryTake, rows));
+
+      setQueryTake((current) => (current === nextTake ? current : nextTake));
+    };
+
+    const scheduleUpdate = () => {
+      if (frameId) {
+        window.cancelAnimationFrame(frameId);
+      }
+      frameId = window.requestAnimationFrame(updateTake);
+    };
+
+    scheduleUpdate();
+    window.addEventListener("resize", scheduleUpdate);
+
+    const observer = typeof ResizeObserver !== "undefined"
+      ? new ResizeObserver(scheduleUpdate)
+      : null;
+    if (queryTableRef.current) {
+      observer?.observe(queryTableRef.current);
+    }
+    observer?.observe(document.body);
+
+    return () => {
+      window.removeEventListener("resize", scheduleUpdate);
+      if (frameId) {
+        window.cancelAnimationFrame(frameId);
+      }
+      observer?.disconnect();
+    };
+  }, []);
+
+  return { queryTake, queryTableRef };
+}
+
 function useWorkerQuery(
   connection: WorkableConnection,
-  query: { definitionName?: string; keyType?: string; states?: WorkerState[] },
-  refreshToken: number
+  query: {
+    category?: string;
+    definitionName?: string;
+    includeSubcategories?: boolean;
+    keyType?: string;
+    states?: WorkerState[];
+  },
+  refreshToken: number,
+  take: number,
+  skip: number
 ): Loadable<WorkerQueryResult> {
   const [state, setState] = useState<Loadable<WorkerQueryResult>>({
     loading: true,
   });
   const key = JSON.stringify(query);
+  const boundedTake = Math.min(maxQueryTake, Math.max(minQueryTake, Math.trunc(take)));
 
   useEffect(() => {
     let canceled = false;
     const parsedQuery = JSON.parse(key) as {
+      category?: string;
       definitionName?: string;
+      includeSubcategories?: boolean;
       keyType?: string;
       states?: WorkerState[];
     };
@@ -4277,14 +7844,18 @@ function useWorkerQuery(
           ? await queryWorkersByKeyType(connection, {
               ...parsedQuery,
               keyType: parsedQuery.keyType,
+              skip,
+              take: boundedTake,
             })
           : await workableFetch<WorkerQueryResult>(connection, "workers/query", {
               method: "POST",
               body: JSON.stringify({
+                category: parsedQuery.category,
                 definitionName: parsedQuery.definitionName,
+                includeSubcategories: parsedQuery.includeSubcategories,
                 states: parsedQuery.states,
-                skip: 0,
-                take: 50,
+                skip,
+                take: boundedTake,
               }),
             });
 
@@ -4309,7 +7880,7 @@ function useWorkerQuery(
     return () => {
       canceled = true;
     };
-  }, [connection, key, refreshToken]);
+  }, [boundedTake, connection, key, refreshToken, skip]);
 
   return state;
 }
@@ -4317,20 +7888,25 @@ function useWorkerQuery(
 function useIterationQuery(
   connection: WorkableConnection,
   query: {
+    category?: string;
     definitionName?: string;
     keyType?: string;
     statuses?: WorkCompletionStatus[];
   },
-  refreshToken: number
+  refreshToken: number,
+  take: number,
+  skip: number
 ): Loadable<WorkerIterationQueryResult> {
   const [state, setState] = useState<Loadable<WorkerIterationQueryResult>>({
     loading: true,
   });
   const key = JSON.stringify(query);
+  const boundedTake = Math.min(maxQueryTake, Math.max(minQueryTake, Math.trunc(take)));
 
   useEffect(() => {
     let canceled = false;
     const parsedQuery = JSON.parse(key) as {
+      category?: string;
       definitionName?: string;
       keyType?: string;
       statuses?: WorkCompletionStatus[];
@@ -4353,16 +7929,19 @@ function useIterationQuery(
           ? await queryIterationsByKeyType(connection, {
               ...parsedQuery,
               keyType: parsedQuery.keyType,
+              skip,
+              take: boundedTake,
             })
           : await workableFetch<WorkerIterationQueryResult>(connection, "iterations/query", {
               method: "POST",
               body: JSON.stringify({
+                category: parsedQuery.category,
                 definitionName: parsedQuery.definitionName,
                 statuses: parsedQuery.statuses,
                 sort: "CompletedAt",
                 direction: "Descending",
-                skip: 0,
-                take: 50,
+                skip,
+                take: boundedTake,
               }),
             });
 
@@ -4387,14 +7966,22 @@ function useIterationQuery(
     return () => {
       canceled = true;
     };
-  }, [connection, key, refreshToken]);
+  }, [boundedTake, connection, key, refreshToken, skip]);
 
   return state;
 }
 
 async function queryWorkersByKeyType(
   connection: WorkableConnection,
-  query: { definitionName?: string; keyType: string; states?: WorkerState[] }
+  query: {
+    category?: string;
+    definitionName?: string;
+    includeSubcategories?: boolean;
+    keyType: string;
+    states?: WorkerState[];
+    skip: number;
+    take: number;
+  }
 ): Promise<WorkerQueryResult> {
   const result = await workableFetch<WorkKeyTypeQueryResult>(
     connection,
@@ -4405,7 +7992,7 @@ async function queryWorkersByKeyType(
         type: query.keyType,
         states: query.states,
         skip: 0,
-        take: 50,
+        take: query.take,
       }),
     }
   );
@@ -4418,6 +8005,9 @@ async function queryWorkersByKeyType(
       ) {
         continue;
       }
+      if (!workerMatchesCategory(worker, query.category, query.includeSubcategories ?? true)) {
+        continue;
+      }
 
       workersById.set(worker.id.value, worker);
     }
@@ -4428,19 +8018,22 @@ async function queryWorkersByKeyType(
   );
 
   return {
-    workers: workers.slice(0, 50),
+    workers: workers.slice(query.skip, query.skip + query.take),
     totalCount: workers.length,
-    skip: 0,
-    take: 50,
+    skip: query.skip,
+    take: query.take,
   };
 }
 
 async function queryIterationsByKeyType(
   connection: WorkableConnection,
   query: {
+    category?: string;
     definitionName?: string;
     keyType: string;
     statuses?: WorkCompletionStatus[];
+    skip: number;
+    take: number;
   }
 ): Promise<WorkerIterationQueryResult> {
   const result = await workableFetch<WorkIterationKeyTypeQueryResult>(
@@ -4452,7 +8045,7 @@ async function queryIterationsByKeyType(
         type: query.keyType,
         statuses: query.statuses,
         skip: 0,
-        take: 50,
+        take: query.take,
       }),
     }
   );
@@ -4465,6 +8058,9 @@ async function queryIterationsByKeyType(
       ) {
         continue;
       }
+      if (!workerMatchesCategory(iteration, query.category, true)) {
+        continue;
+      }
 
       iterationsById.set(`${iteration.workerId.value}:${iteration.sequence}`, iteration);
     }
@@ -4475,9 +8071,9 @@ async function queryIterationsByKeyType(
   );
 
   return {
-    iterations: iterations.slice(0, 50),
+    iterations: iterations.slice(query.skip, query.skip + query.take),
     totalCount: iterations.length,
-    skip: 0,
-    take: 50,
+    skip: query.skip,
+    take: query.take,
   };
 }

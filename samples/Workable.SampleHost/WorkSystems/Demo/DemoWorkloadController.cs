@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using Workable.SampleHost.Fulfillment;
 using Workable.SampleHost.Operations;
 
@@ -6,11 +7,13 @@ namespace Workable.SampleHost.Demo;
 
 public sealed class DemoWorkloadController(
     IWorkSystemRegistry registry,
-    ILogger<DemoWorkloadController> logger) : IAsyncDisposable
+    ILogger<DemoWorkloadController> logger) : IHostedService, IAsyncDisposable
 {
     private static readonly TimeSpan DefaultQueueInterval = TimeSpan.FromMilliseconds(85);
     private static readonly TimeSpan MinimumQueueInterval = TimeSpan.FromMilliseconds(10);
     private static readonly TimeSpan MaximumQueueInterval = TimeSpan.FromSeconds(10);
+    private static readonly TimeSpan FinishedWorkerCleanupInterval = TimeSpan.FromSeconds(1);
+    private const int MaximumBurstWorkerCount = 1_000_000;
 
     private readonly Lock sync = new();
     private readonly ConcurrentDictionary<WorkerId, byte> activeDemoWorkers = [];
@@ -18,6 +21,7 @@ public sealed class DemoWorkloadController(
     private Task? runTask;
     private TimeSpan queueInterval = DefaultQueueInterval;
     private int sequence;
+    private bool disposed;
 
     public bool IsRunning
     {
@@ -46,18 +50,24 @@ public sealed class DemoWorkloadController(
 
     public DemoWorkloadStatus Start()
     {
+        CancellationTokenSource? previousCancellation = null;
         lock (this.sync)
         {
+            ObjectDisposedException.ThrowIf(this.disposed, this);
+
             if (this.runTask is { IsCompleted: false })
             {
                 return new DemoWorkloadStatus(true, this.sequence, this.activeDemoWorkers.Count, (int)this.queueInterval.TotalMilliseconds);
             }
 
-            this.cancellation?.Dispose();
-            this.cancellation = new CancellationTokenSource();
-            this.runTask = Task.Run(() => this.Run(this.cancellation.Token), CancellationToken.None);
-            return new DemoWorkloadStatus(true, this.sequence, this.activeDemoWorkers.Count, (int)this.queueInterval.TotalMilliseconds);
+            previousCancellation = this.cancellation;
+            var nextCancellation = new CancellationTokenSource();
+            this.cancellation = nextCancellation;
+            this.runTask = Task.Run(() => this.Run(nextCancellation.Token), CancellationToken.None);
         }
+
+        previousCancellation?.Dispose();
+        return this.Status();
     }
 
     public DemoWorkloadStatus SetQueueInterval(int milliseconds)
@@ -78,13 +88,21 @@ public sealed class DemoWorkloadController(
     }
 
     public async Task<DemoWorkloadStatus> Stop(CancellationToken cancellationToken)
+        => await this.Stop(cancellationToken, cancelTrackedWorkers: true);
+
+    private async Task<DemoWorkloadStatus> Stop(
+        CancellationToken cancellationToken,
+        bool cancelTrackedWorkers)
     {
+        CancellationTokenSource? source;
         Task? task;
         lock (this.sync)
         {
-            this.cancellation?.Cancel();
+            source = this.cancellation;
             task = this.runTask;
         }
+
+        CancelIfAvailable(source);
 
         if (task is not null)
         {
@@ -92,12 +110,30 @@ public sealed class DemoWorkloadController(
             {
                 await task.WaitAsync(cancellationToken);
             }
-            catch (OperationCanceledException) when (this.cancellation?.IsCancellationRequested == true)
+            catch (OperationCanceledException) when (source?.IsCancellationRequested == true)
             {
             }
         }
 
-        await this.CancelTrackedWorkers(cancellationToken);
+        if (task is not null && task.IsCompleted)
+        {
+            lock (this.sync)
+            {
+                if (ReferenceEquals(this.runTask, task))
+                {
+                    this.runTask = null;
+                    this.cancellation = null;
+                }
+            }
+
+            source?.Dispose();
+        }
+
+        if (cancelTrackedWorkers)
+        {
+            await this.CancelTrackedWorkers(cancellationToken);
+        }
+
         this.activeDemoWorkers.Clear();
         return this.Status();
     }
@@ -105,14 +141,68 @@ public sealed class DemoWorkloadController(
     public async Task<DemoWorkloadStatus> Toggle(CancellationToken cancellationToken)
         => this.IsRunning ? await this.Stop(cancellationToken) : this.Start();
 
+    public async Task<DemoBurstResult> QueueBurst(int count, CancellationToken cancellationToken)
+    {
+        var requestedCount = count;
+        var workerCount = Math.Clamp(count, 1, MaximumBurstWorkerCount);
+        var firstSequence = Interlocked.Add(ref this.sequence, workerCount) - workerCount + 1;
+        var stopwatch = Stopwatch.StartNew();
+
+        var queueTasks = Enumerable
+            .Range(0, workerCount)
+            .Select(offset => this.QueueBurstWorker(firstSequence + offset, cancellationToken))
+            .ToArray();
+
+        var queued = await Task.WhenAll(queueTasks);
+        stopwatch.Stop();
+
+        return new DemoBurstResult(
+            requestedCount,
+            workerCount,
+            queued.Count(wasQueued => wasQueued),
+            queued.Count(wasQueued => !wasQueued),
+            stopwatch.ElapsedMilliseconds);
+    }
+
+    public Task StartAsync(CancellationToken cancellationToken)
+        => Task.CompletedTask;
+
+    public async Task StopAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            await this.Stop(cancellationToken, cancelTrackedWorkers: false);
+        }
+        catch (Exception exception)
+        {
+            logger.LogWarning(exception, "Sample workload generator encountered an error while stopping during host shutdown.");
+        }
+    }
+
     public async ValueTask DisposeAsync()
     {
-        this.cancellation?.Cancel();
-        if (this.runTask is not null)
+        CancellationTokenSource? source;
+        Task? task;
+        lock (this.sync)
+        {
+            if (this.disposed)
+            {
+                return;
+            }
+
+            this.disposed = true;
+            source = this.cancellation;
+            task = this.runTask;
+            this.cancellation = null;
+            this.runTask = null;
+        }
+
+        CancelIfAvailable(source);
+        if (task is not null)
         {
             try
             {
-                await this.runTask;
+                await task;
             }
             catch (OperationCanceledException)
             {
@@ -123,18 +213,25 @@ public sealed class DemoWorkloadController(
             }
         }
 
-        this.cancellation?.Dispose();
+        source?.Dispose();
     }
 
     private async Task Run(CancellationToken cancellationToken)
     {
         await this.QueueRecurringWorkers(cancellationToken);
+        var nextCleanupAt = DateTimeOffset.UtcNow + FinishedWorkerCleanupInterval;
 
         while (true)
         {
             await Task.Delay(this.GetQueueInterval(), cancellationToken);
             await this.QueueNext(cancellationToken);
-            await this.RemoveFinishedTrackedWorkers(cancellationToken);
+
+            var now = DateTimeOffset.UtcNow;
+            if (now >= nextCleanupAt)
+            {
+                nextCleanupAt = now + FinishedWorkerCleanupInterval;
+                await this.RemoveFinishedTrackedWorkers(cancellationToken);
+            }
         }
     }
 
@@ -258,6 +355,48 @@ public sealed class DemoWorkloadController(
         }
     }
 
+    private async Task<bool> QueueBurstWorker(int sequenceNumber, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var useFulfillment = sequenceNumber % 2 == 1 && registry.TryGet("fulfillment", out _);
+            var system = useFulfillment && registry.TryGet("fulfillment", out var fulfillment)
+                ? fulfillment
+                : registry.Default;
+            var systemName = useFulfillment ? "fulfillment" : "operations";
+            var workName = useFulfillment ? "fulfillment.demo.quick" : "sample.demo.quick";
+            var input = WorkInput.FromValue(
+                new DemoTimedInput(
+                    $"burst {systemName} #{sequenceNumber}",
+                    500,
+                    DiscoveredIdentifierType: "burst-sequence",
+                    DiscoveredIdentifierValue: sequenceNumber.ToString()),
+                subjectId: new WorkSubjectId("sample-burst", systemName),
+                identifiers:
+                [
+                    new WorkIdentifier("sample-workload", "burst"),
+                    new WorkIdentifier("burst-sequence", sequenceNumber.ToString()),
+                ]);
+
+            var handle = await system.Queue.Enqueue(workName, input, cancellationToken: cancellationToken);
+            if (handle.WorkerId is { } workerId)
+            {
+                this.activeDemoWorkers[workerId] = 0;
+            }
+
+            return true;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception exception)
+        {
+            logger.LogWarning(exception, "Failed to queue burst sample workload item {SequenceNumber}.", sequenceNumber);
+            return false;
+        }
+    }
+
     private async Task CancelTrackedWorkers(CancellationToken cancellationToken)
     {
         foreach (var workerId in this.activeDemoWorkers.Keys)
@@ -296,7 +435,7 @@ public sealed class DemoWorkloadController(
                     continue;
                 }
 
-                if (worker.State is WorkerState.Completed or WorkerState.Canceled)
+                if (worker.State is WorkerState.Completed or WorkerState.Canceled or WorkerState.Failed)
                 {
                     this.activeDemoWorkers.TryRemove(workerId, out _);
                 }
@@ -319,6 +458,24 @@ public sealed class DemoWorkloadController(
 
     private static bool ShouldCancelWhenStoppingDemoWorkload(WorkerState state)
         => state is WorkerState.Queued or WorkerState.Running or WorkerState.Waiting or WorkerState.Retrying;
+
+    private static bool CancelIfAvailable(CancellationTokenSource? source)
+    {
+        if (source is null)
+        {
+            return false;
+        }
+
+        try
+        {
+            source.Cancel();
+            return true;
+        }
+        catch (ObjectDisposedException)
+        {
+            return false;
+        }
+    }
 
     private static DemoRelationshipKeys Subject(string type, object value)
         => new(Subject: new WorkSubjectId(type, value.ToString() ?? string.Empty));
@@ -343,6 +500,15 @@ public sealed record DemoWorkloadStatus(
     int QueueIntervalMilliseconds);
 
 public sealed record DemoWorkloadIntervalRequest(int Milliseconds);
+
+public sealed record DemoBurstRequest(int Count);
+
+public sealed record DemoBurstResult(
+    int RequestedCount,
+    int SubmittedCount,
+    int QueuedCount,
+    int FailedCount,
+    long ElapsedMilliseconds);
 
 internal sealed record DemoRelationshipKeys(
     WorkSubjectId? Subject = null,

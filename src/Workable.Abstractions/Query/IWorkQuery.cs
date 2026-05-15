@@ -26,19 +26,28 @@ public interface IWorkQuery
 
     Task<WorkerStatusSummary> GetWorkerStatusSummary(WorkerQuery? query = null, CancellationToken cancellationToken = default);
 
-    Task<WorkSystemOverview> GetSystemOverview(CancellationToken cancellationToken = default);
+    Task<WorkComponentQueryResult> QueryComponents(WorkComponentQuery? query = null, CancellationToken cancellationToken = default);
 
-    Task<WorkSystemOverviewCounts> GetSystemOverviewCounts(CancellationToken cancellationToken = default);
+    Task<WorkComponentQueryResult> GetView(string name, WorkViewQuery? query = null, CancellationToken cancellationToken = default);
 
-    Task<WorkSystemWorkerCounts> GetSystemOverviewWorkerCounts(CancellationToken cancellationToken = default);
+    Task<WorkSystemOverview> GetSystemOverview(WorkOverviewQuery? query = null, CancellationToken cancellationToken = default);
 
-    Task<WorkSystemIterationCounts> GetSystemOverviewIterationCounts(CancellationToken cancellationToken = default);
+    Task<WorkSystemThroughput> GetSystemOverviewThroughput(
+        WorkOverviewQuery? query = null,
+        WorkThroughputQuery? throughputQuery = null,
+        CancellationToken cancellationToken = default);
 
-    Task<IReadOnlyList<WorkIterationKeyTypeFacet>> GetSystemOverviewCommonKeyTypes(CancellationToken cancellationToken = default);
+    Task<WorkSystemOverviewCounts> GetSystemOverviewCounts(WorkOverviewQuery? query = null, CancellationToken cancellationToken = default);
 
-    Task<WorkSystemFailedWorkersOverview> GetSystemOverviewFailedWorkers(CancellationToken cancellationToken = default);
+    Task<WorkSystemWorkerCounts> GetSystemOverviewWorkerCounts(WorkOverviewQuery? query = null, CancellationToken cancellationToken = default);
 
-    Task<IReadOnlyList<WorkerIterationOverviewItem>> GetSystemOverviewFailedIterations(CancellationToken cancellationToken = default);
+    Task<WorkSystemIterationCounts> GetSystemOverviewIterationCounts(WorkOverviewQuery? query = null, CancellationToken cancellationToken = default);
 
-    Task<IReadOnlyList<WorkerIterationOverviewItem>> GetSystemOverviewCompletedIterations(CancellationToken cancellationToken = default);
+    Task<IReadOnlyList<WorkIterationKeyTypeFacet>> GetSystemOverviewCommonKeyTypes(WorkOverviewQuery? query = null, CancellationToken cancellationToken = default);
+
+    Task<WorkSystemFailedWorkersOverview> GetSystemOverviewFailedWorkers(WorkOverviewQuery? query = null, CancellationToken cancellationToken = default);
+
+    Task<IReadOnlyList<WorkerIterationOverviewItem>> GetSystemOverviewFailedIterations(WorkOverviewQuery? query = null, CancellationToken cancellationToken = default);
+
+    Task<IReadOnlyList<WorkerIterationOverviewItem>> GetSystemOverviewCompletedIterations(WorkOverviewQuery? query = null, CancellationToken cancellationToken = default);
 }

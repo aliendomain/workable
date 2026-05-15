@@ -15,7 +15,7 @@ internal sealed class WorkSystemBuilder(IServiceCollection services, string? nam
     private readonly List<WorkExceptionClassifier> exceptionClassifiers = [];
     private bool includeContributedWork = true;
     private bool startWithHost;
-    private TimeSpan shutdownGracePeriod = TimeSpan.FromSeconds(15);
+    private WorkSystemShutdownGracePeriod shutdownGracePeriod = WorkSystemShutdownGracePeriod.HostRelative();
     private Func<IServiceProvider, IDotNetWorkOriginProvider>? dotNetOriginProviderFactory;
 
     public IWorkSystemBuilder AddWork(
@@ -130,12 +130,15 @@ internal sealed class WorkSystemBuilder(IServiceCollection services, string? nam
 
     public IWorkSystemBuilder UseShutdownGracePeriod(TimeSpan gracePeriod)
     {
-        if (gracePeriod < TimeSpan.Zero)
-        {
-            throw new ArgumentOutOfRangeException(nameof(gracePeriod), gracePeriod, "Shutdown grace period cannot be negative.");
-        }
+        this.shutdownGracePeriod = WorkSystemShutdownGracePeriod.Explicit(gracePeriod);
+        return this;
+    }
 
-        this.shutdownGracePeriod = gracePeriod;
+    public IWorkSystemBuilder UseShutdownGracePeriodRatio(double hostShutdownTimeoutRatio)
+    {
+        this.shutdownGracePeriod = WorkSystemShutdownGracePeriod.HostRelative(
+            hostShutdownTimeoutRatio,
+            nameof(hostShutdownTimeoutRatio));
         return this;
     }
 

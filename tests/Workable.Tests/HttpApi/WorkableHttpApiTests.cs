@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using System.Net;
 using System.Net.Http.Json;
 using System.Security.Claims;
 using Microsoft.AspNetCore.Builder;
@@ -234,39 +235,22 @@ public sealed class WorkableHttpApiTests
     }
 
     [Fact]
-    public async Task MappedHttpRouteExposesSystemOverview()
+    public async Task MappedHttpRouteDoesNotExposeLegacyOverviewRoutes()
     {
         using var host = await CreateOverviewHttpHost();
         var client = host.GetTestClient();
-        var system = host.Services.GetRequiredService<IWorkSystemRegistry>().Default;
-        await (await system.Queue.Enqueue("http.overview.complete")).WaitForCompletion();
-        await (await system.Queue.Enqueue("http.overview.failed")).WaitForCompletion();
 
-        var response = await client.GetAsync("/workable/overview");
-        response.EnsureSuccessStatusCode();
-        var json = JsonNode.Parse(await response.Content.ReadAsStringAsync())
-            ?? throw new InvalidOperationException("Expected JSON response.");
+        var overview = await client.GetAsync("/workable/overview");
+        var overviewSlice = await client.GetAsync("/workable/overview/counts");
+        var namedOverview = await client.GetAsync("/workable/systems/default/overview");
 
-        Assert.Equal("Started", json["systemState"]?.GetValue<string>());
-        Assert.Equal(0, json["definitionCount"]?.GetValue<int>());
-        Assert.Equal(0, json["activeWorkerCount"]?.GetValue<int>());
-        Assert.Equal(1, json["finalWorkerCount"]?.GetValue<int>());
-        Assert.Equal(1, json["failedWorkerCount"]?.GetValue<int>());
-        Assert.Equal(1, json["workerCountByState"]?["Completed"]?.GetValue<int>());
-        Assert.Equal(1, json["workerCountByState"]?["Failed"]?.GetValue<int>());
-        Assert.Equal(0, json["currentIterationCount"]?.GetValue<int>());
-        Assert.Equal(1, json["completedIterationCount"]?.GetValue<int>());
-        Assert.Equal(1, json["failedIterationCount"]?.GetValue<int>());
-        Assert.Equal(1, json["iterationCountByStatus"]?["Completed"]?.GetValue<int>());
-        Assert.Equal(1, json["iterationCountByStatus"]?["Failed"]?.GetValue<int>());
-        Assert.Equal("http.overview.failed", json["failedWorkers"]?.AsArray().Single()?["definitionName"]?.GetValue<string>());
-        Assert.Equal("Failed", json["failedWorkers"]?.AsArray().Single()?["state"]?.GetValue<string>());
-        Assert.Equal("http.overview.failed", json["failedIterations"]?.AsArray().Single()?["definitionName"]?.GetValue<string>());
-        Assert.Equal("http.overview.complete", json["completedIterations"]?.AsArray().Single()?["definitionName"]?.GetValue<string>());
+        Assert.Equal(HttpStatusCode.NotFound, overview.StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, overviewSlice.StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, namedOverview.StatusCode);
     }
 
     [Fact]
-    public async Task MappedHttpRouteExposesSystemOverviewSlices()
+    public async Task MappedHttpRouteCanQueryViewAndComponents()
     {
         using var host = await CreateOverviewHttpHost();
         var client = host.GetTestClient();
@@ -278,36 +262,80 @@ public sealed class WorkableHttpApiTests
             "http.overview.failed",
             WorkInput.Empty.WithIdentifier(new WorkIdentifier("case", "failed")))).WaitForCompletion();
 
-        var counts = await GetJson(client, "/workable/overview/counts");
-        var workerCounts = await GetJson(client, "/workable/overview/worker-counts");
-        var iterationCounts = await GetJson(client, "/workable/overview/iteration-counts");
-        var commonKeyTypes = await GetJson(client, "/workable/overview/common-key-types");
-        var failedWorkers = await GetJson(client, "/workable/overview/failed-workers");
-        var failedIterations = await GetJson(client, "/workable/overview/failed-iterations");
-        var completedIterations = await GetJson(client, "/workable/overview/completed-iterations");
+        var viewResponse = await client.PostAsJsonAsync(
+            "/workable/views/overview",
+            new
+            {
+                scope = new
+                {
+                    category = "Http",
+                    definitionName = "http.overview.complete",
+                },
+                components = new[]
+                {
+                    new { id = "system", type = "system" },
+                    new { id = "workers", type = "workers" },
+                    new { id = "relationships", type = "relationships" },
+                },
+            });
+        viewResponse.EnsureSuccessStatusCode();
+        var view = JsonNode.Parse(await viewResponse.Content.ReadAsStringAsync())
+            ?? throw new InvalidOperationException("Expected view JSON response.");
+        var viewComponents = view["components"]?.AsObject()
+            ?? throw new InvalidOperationException("Expected view components.");
 
-        Assert.Equal("Started", counts["systemState"]?.GetValue<string>());
-        Assert.Equal(0, counts["definitionCount"]?.GetValue<int>());
-        Assert.Equal(0, counts["activeWorkerCount"]?.GetValue<int>());
-        Assert.Equal(1, counts["finalWorkerCount"]?.GetValue<int>());
-        Assert.Equal(1, counts["failedWorkerCount"]?.GetValue<int>());
-        Assert.Equal(1, counts["completedIterationCount"]?.GetValue<int>());
-        Assert.Equal(1, counts["failedIterationCount"]?.GetValue<int>());
-        Assert.Equal(1, workerCounts["workerCountByState"]?["Completed"]?.GetValue<int>());
-        Assert.Equal(1, workerCounts["workerCountByState"]?["Failed"]?.GetValue<int>());
-        Assert.Equal(1, iterationCounts["iterationCountByStatus"]?["Completed"]?.GetValue<int>());
-        Assert.Equal(1, iterationCounts["iterationCountByStatus"]?["Failed"]?.GetValue<int>());
-        var keyType = commonKeyTypes.AsArray().Single();
-        Assert.Equal("case", keyType?["type"]?.GetValue<string>());
-        Assert.Equal(2, keyType?["iterationCount"]?.GetValue<int>());
-        Assert.Equal(0, failedWorkers["activeWorkerCount"]?.GetValue<int>());
-        Assert.Equal(1, failedWorkers["finalWorkerCount"]?.GetValue<int>());
-        Assert.Equal(1, failedWorkers["failedWorkerCount"]?.GetValue<int>());
-        Assert.Equal(1, failedWorkers["workerCountByState"]?["Completed"]?.GetValue<int>());
-        Assert.Equal(1, failedWorkers["workerCountByState"]?["Failed"]?.GetValue<int>());
-        Assert.Equal("http.overview.failed", failedWorkers["failedWorkers"]?.AsArray().Single()?["definitionName"]?.GetValue<string>());
-        Assert.Equal("http.overview.failed", failedIterations.AsArray().Single()?["definitionName"]?.GetValue<string>());
-        Assert.Equal("http.overview.complete", completedIterations.AsArray().Single()?["definitionName"]?.GetValue<string>());
+        var throughputResponse = await client.PostAsJsonAsync(
+            "/workable/components/throughput",
+            new
+            {
+                scope = new
+                {
+                    category = "Http",
+                },
+                options = new
+                {
+                    bucketSeconds = 1,
+                    windowSeconds = 60,
+                },
+            });
+        throughputResponse.EnsureSuccessStatusCode();
+        var throughput = JsonNode.Parse(await throughputResponse.Content.ReadAsStringAsync())
+            ?? throw new InvalidOperationException("Expected throughput JSON response.");
+        var throughputComponent = throughput["components"]?["throughput"]
+            ?? throw new InvalidOperationException("Expected throughput component.");
+        var throughputBuckets = throughputComponent["data"]?["throughput"]?["buckets"]?.AsArray()
+            ?? throw new InvalidOperationException("Expected throughput buckets.");
+        var defaultViewResponse = await client.PostAsJsonAsync(
+            "/workable/views/overview",
+            new
+            {
+                scope = new
+                {
+                    category = "Http",
+                },
+            });
+        defaultViewResponse.EnsureSuccessStatusCode();
+        var defaultView = JsonNode.Parse(await defaultViewResponse.Content.ReadAsStringAsync())
+            ?? throw new InvalidOperationException("Expected default view JSON response.");
+        var defaultComponents = defaultView["components"]?.AsObject()
+            ?? throw new InvalidOperationException("Expected default view components.");
+
+        Assert.Equal(["relationships", "system", "workers"], viewComponents.Select(component => component.Key).Order().ToArray());
+        Assert.Equal("ok", viewComponents["system"]?["status"]?.GetValue<string>());
+        Assert.Equal("Started", viewComponents["system"]?["data"]?["systemState"]?.GetValue<string>());
+        Assert.Equal("ok", viewComponents["workers"]?["status"]?.GetValue<string>());
+        Assert.Equal(1, viewComponents["workers"]?["data"]?["finalWorkerCount"]?.GetValue<int>());
+        Assert.Equal(0, viewComponents["workers"]?["data"]?["failedWorkerCount"]?.GetValue<int>());
+        Assert.Equal(1, viewComponents["workers"]?["data"]?["workerCountByState"]?["Completed"]?.GetValue<int>());
+        Assert.Null(viewComponents["workers"]?["data"]?["workerCountByState"]?["Failed"]);
+        Assert.Equal("ok", viewComponents["relationships"]?["status"]?.GetValue<string>());
+        Assert.Equal(1, viewComponents["relationships"]?["data"]?["completedIterationCount"]?.GetValue<int>());
+        Assert.Equal(0, viewComponents["relationships"]?["data"]?["failedIterationCount"]?.GetValue<int>());
+        Assert.Equal("ok", throughputComponent["status"]?.GetValue<string>());
+        Assert.Equal(2, throughputBuckets.Sum(bucket => bucket?["queued"]?.GetValue<int>() ?? 0));
+        Assert.Equal(1, throughputBuckets.Sum(bucket => bucket?["succeeded"]?.GetValue<int>() ?? 0));
+        Assert.Equal(1, throughputBuckets.Sum(bucket => bucket?["failed"]?.GetValue<int>() ?? 0));
+        Assert.DoesNotContain("throughput", defaultComponents.Select(component => component.Key));
     }
 
     [Fact]
@@ -773,6 +801,40 @@ public sealed class WorkableHttpApiTests
     }
 
     [Fact]
+    public async Task MappedHttpDefinitionsCanReturnCatalogLevels()
+    {
+        using var host = await CreateDefinitionCatalogHttpHost();
+        var client = host.GetTestClient();
+
+        var root = await GetJson(client, "/workable/definitions?level=true");
+        var billing = await GetJson(client, "/workable/definitions?level=true&category=Billing");
+        var invoices = await GetJson(client, "/workable/definitions?level=true&category=Billing%3AInvoices");
+
+        var rootCategories = root["categories"]?.AsArray()
+            ?? throw new InvalidOperationException("Expected root categories.");
+        var rootBilling = rootCategories.Single(category => category?["path"]?.GetValue<string>() == "Billing")
+            ?? throw new InvalidOperationException("Expected Billing category.");
+        Assert.Equal(2, rootBilling["count"]?.GetValue<int>());
+        Assert.Contains(rootCategories, category => category?["path"]?.GetValue<string>() == "Operations");
+        Assert.Empty(root["definitions"]?.AsArray()
+            ?? throw new InvalidOperationException("Expected root definitions."));
+
+        var billingCategoryLabels = billing["categories"]?.AsArray()
+            .Select(category => category?["label"]?.GetValue<string>() ?? "")
+            .ToArray()
+            ?? throw new InvalidOperationException("Expected Billing categories.");
+        Assert.Equal(["Invoices", "Payments"], billingCategoryLabels);
+        Assert.Empty(billing["definitions"]?.AsArray()
+            ?? throw new InvalidOperationException("Expected Billing definitions."));
+
+        Assert.Empty(invoices["categories"]?.AsArray()
+            ?? throw new InvalidOperationException("Expected Invoices categories."));
+        var definition = Assert.Single(invoices["definitions"]?.AsArray()
+            ?? throw new InvalidOperationException("Expected Invoices definitions."));
+        Assert.Equal("billing.invoice.generate", definition?["name"]?.GetValue<string>());
+    }
+
+    [Fact]
     public async Task MappedHttpWorkInfoCanBeReadByWorkNameOrId()
     {
         using var host = await CreateHttpHost();
@@ -943,6 +1005,39 @@ public sealed class WorkableHttpApiTests
         Assert.Equal("Stopped", stopJson["state"]?.GetValue<string>());
         Assert.Empty(stopJson["forceCanceledWorkers"]?.AsArray()
             ?? throw new InvalidOperationException("Expected force-canceled worker array."));
+    }
+
+    [Fact]
+    public async Task MappedHttpLifecycleStopReturnsForceCanceledWorkerNames()
+    {
+        using var host = await CreateShutdownHttpHost();
+        var client = host.GetTestClient();
+        var tracker = host.Services.GetRequiredService<HttpShutdownTracker>();
+
+        var queueResponse = await client.PostAsJsonAsync(
+            "/workable/work/http.shutdown.force",
+            new
+            {
+                completion = "returnAfterAccepted",
+            });
+        queueResponse.EnsureSuccessStatusCode();
+        await tracker.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        var stopResponse = await client.PostAsync("/workable/lifecycle/stop", content: null);
+        stopResponse.EnsureSuccessStatusCode();
+        var stopJson = JsonNode.Parse(await stopResponse.Content.ReadAsStringAsync())
+            ?? throw new InvalidOperationException("Expected JSON response.");
+        var names = stopJson["forceCanceledWorkerNames"]?.AsArray()
+            ?? throw new InvalidOperationException("Expected force-canceled worker names.");
+        var summaries = stopJson["forceCanceledWorkerSummaries"]?.AsArray()
+            ?? throw new InvalidOperationException("Expected force-canceled worker summaries.");
+
+        var name = Assert.Single(names)
+            ?? throw new InvalidOperationException("Expected force-canceled worker name.");
+        Assert.Equal("http.shutdown.force", name.GetValue<string>());
+        var summary = Assert.Single(summaries)
+            ?? throw new InvalidOperationException("Expected force-canceled worker summary.");
+        Assert.Equal("http.shutdown.force", summary["definitionName"]?.GetValue<string>());
     }
 
     [Fact]
@@ -1204,6 +1299,43 @@ public sealed class WorkableHttpApiTests
         return host;
     }
 
+    private static async Task<IHost> CreateShutdownHttpHost()
+    {
+        var host = new HostBuilder()
+            .ConfigureWebHost(web =>
+            {
+                web.UseTestServer();
+                web.ConfigureServices(services =>
+                {
+                    services.AddRouting();
+                    services.AddSingleton<HttpShutdownTracker>();
+                    services.AddWorkableSystem(builder =>
+                    {
+                        builder.StartWithHost();
+                        builder.UseShutdownGracePeriod(TimeSpan.FromMilliseconds(20));
+                        builder.AddWork(
+                            WorkDefinition.Create("http.shutdown.force"),
+                            async (context, input, cancellationToken) =>
+                            {
+                                context.Services.GetRequiredService<HttpShutdownTracker>().Started.TrySetResult();
+                                await Task.Delay(Timeout.InfiniteTimeSpan);
+                                return WorkExecutionResult.Success();
+                            });
+                    });
+                    services.AddWorkableHttpApi();
+                });
+                web.Configure(app =>
+                {
+                    app.UseRouting();
+                    app.UseEndpoints(endpoints => endpoints.MapWorkableApi("/workable"));
+                });
+            })
+            .Build();
+
+        await host.StartAsync();
+        return host;
+    }
+
     private static async Task<IHost> CreateDefinitionDiscoveryHttpHost()
     {
         var host = new HostBuilder()
@@ -1229,6 +1361,36 @@ public sealed class WorkableHttpApiTests
                                     Invocation = WorkInvocationConfiguration.Allow(WorkInvocationChannel.DotNet),
                                 }),
                             SuccessfulWork);
+                    });
+                    services.AddWorkableHttpApi();
+                });
+                web.Configure(app =>
+                {
+                    app.UseRouting();
+                    app.UseEndpoints(endpoints => endpoints.MapWorkableApi("/workable"));
+                });
+            })
+            .Build();
+
+        await host.StartAsync();
+        return host;
+    }
+
+    private static async Task<IHost> CreateDefinitionCatalogHttpHost()
+    {
+        var host = new HostBuilder()
+            .ConfigureWebHost(web =>
+            {
+                web.UseTestServer();
+                web.ConfigureServices(services =>
+                {
+                    services.AddRouting();
+                    services.AddWorkableSystem(builder =>
+                    {
+                        builder.StartWithHost();
+                        builder.AddWork(WorkDefinition.Create("billing.invoice.generate", category: "Billing:Invoices"), SuccessfulWork);
+                        builder.AddWork(WorkDefinition.Create("billing.payment.capture", category: "Billing:Payments"), SuccessfulWork);
+                        builder.AddWork(WorkDefinition.Create("operations.cleanup", category: "Operations"), SuccessfulWork);
                     });
                     services.AddWorkableHttpApi();
                 });
@@ -1325,6 +1487,11 @@ public sealed class WorkableHttpApiTests
         WorkInput? input,
         CancellationToken cancellationToken)
         => Task.FromResult(WorkExecutionResult.Success());
+
+    private sealed class HttpShutdownTracker
+    {
+        public TaskCompletionSource Started { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    }
 
     private static async Task<Guid> QueueAndReadWorkerId(HttpClient client, string path)
     {
