@@ -1,5 +1,5 @@
 namespace Workable;
 
 public sealed record WorkableHttpDefinitionCatalogLevel(
-    IReadOnlyList<WorkOverviewCatalogCategoryItem> Categories,
+    IReadOnlyList<WorkSystemCatalogCategoryItem> Categories,
     IReadOnlyList<WorkDefinition> Definitions);

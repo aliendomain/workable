@@ -1,6 +1,6 @@
 namespace Workable;
 
-public sealed record WorkSystemFailedWorkersOverview(
+public sealed record WorkSystemFailedWorkers(
     int ActiveWorkerCount,
     int FinalWorkerCount,
     int FailedWorkerCount,

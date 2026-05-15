@@ -470,13 +470,19 @@ internal sealed class WorkerOperations : IWorkerOperations, IDisposable
             if (action != WorkAction.Purge)
             {
                 this.SynchronizeWorkerIfTracked(record);
-                record.SignalCurrentCompletion();
+                if (ShouldSignalCurrentCompletion(action))
+                {
+                    record.SignalCurrentCompletion();
+                }
             }
         }
 
         this.workerEvents.ActionApplied(record, outcome, origin);
         return outcome;
     }
+
+    private static bool ShouldSignalCurrentCompletion(WorkAction action)
+        => action != WorkAction.Pause;
 
     public Task<WorkActionOutcome> Reconfigure(
         WorkerVersion worker,

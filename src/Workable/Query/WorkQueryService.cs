@@ -1,9 +1,7 @@
 using System.Collections.Concurrent;
-using System.Text.Json;
-
 namespace Workable;
 
-internal sealed class WorkQueryService(
+internal sealed partial class WorkQueryService(
     WorkSystemCatalog catalog,
     Func<WorkSystemState> getSystemState,
     string? workSystemName,
@@ -12,9 +10,9 @@ internal sealed class WorkQueryService(
     WorkerIterationIndex iterationIndex,
     InMemoryWorkMetricsSink metrics) : IWorkQueryService
 {
-    private const int OverviewWorkerListSize = 5;
-    private const int OverviewIterationListSize = 5;
-    private const int OverviewCommonKeyTypeCount = 10;
+    private const int SystemWorkerListSize = 5;
+    private const int SystemIterationListSize = 5;
+    private const int SystemCommonKeyTypeCount = 10;
 
     private readonly WorkSystemCatalog catalog = catalog;
     private readonly Func<WorkSystemState> getSystemState = getSystemState;
@@ -354,198 +352,73 @@ internal sealed class WorkQueryService(
             counts));
     }
 
-    public Task<WorkComponentQueryResult> Components(
-        WorkComponentCriteria? criteria = null,
-        WorkQueryScope? scope = null,
+    public Task<WorkSystemDetails> SystemDetails(
+        WorkSystemCriteria? criteria = null,
         CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
-
-        var query = ApplyScope(criteria ?? new WorkComponentCriteria(), scope);
-        var requests = NormalizeComponentRequests(query.Components);
-        var definitionIds = this.ResolveDefinitionScope(query.Scope);
-        var components = new Dictionary<string, WorkComponentResult>(StringComparer.OrdinalIgnoreCase);
-        foreach (var request in requests)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            components[request.Id] = this.CreateComponent(request, query.Scope, definitionIds);
-        }
-
-        return Task.FromResult(new WorkComponentQueryResult(DateTimeOffset.UtcNow, components));
-    }
-
-    public Task<WorkComponentQueryResult> View(
-        string name,
-        WorkViewCriteria? criteria = null,
-        WorkQueryScope? scope = null,
-        CancellationToken cancellationToken = default)
-    {
-        cancellationToken.ThrowIfCancellationRequested();
-
-        var query = ApplyScope(criteria ?? new WorkViewCriteria(), scope);
-        if (!string.Equals(name, "overview", StringComparison.OrdinalIgnoreCase))
-        {
-            return Task.FromResult(new WorkComponentQueryResult(
-                DateTimeOffset.UtcNow,
-                new Dictionary<string, WorkComponentResult>(StringComparer.OrdinalIgnoreCase)
-                {
-                    [name] = new("error", Error: $"Unknown view '{name}'."),
-                }));
-        }
-
-        return this.Components(
-            new WorkComponentCriteria(
-                query.Scope,
-                NormalizeComponentRequests(query.Components)),
-            cancellationToken: cancellationToken);
-    }
-
-    public Task<WorkSystemOverview> SystemOverview(
-        WorkOverviewCriteria? criteria = null,
-        WorkQueryScope? scope = null,
-        CancellationToken cancellationToken = default)
-    {
-        cancellationToken.ThrowIfCancellationRequested();
-
-        var query = ApplyScope(criteria, scope);
-        var definitionIds = this.ResolveDefinitionScope(query);
-        var workerCounts = this.CreateOverviewWorkerCounts(definitionIds);
-        var iterationCounts = this.CreateOverviewIterationCounts(definitionIds);
-        var catalogLevel = this.CreateOverviewCatalogLevel(query);
-
-        return Task.FromResult(new WorkSystemOverview(
-            this.workSystemName,
-            this.getSystemState(),
-            this.index.ActiveOrQueuedDefinitionCount(definitionIds),
-            catalogLevel.Categories,
-            catalogLevel.Definitions,
-            workerCounts.ActiveWorkerCount,
-            workerCounts.FinalWorkerCount,
-            workerCounts.FailedWorkerCount,
-            workerCounts.WorkerCountByState,
-            iterationCounts.CurrentIterationCount,
-            iterationCounts.CompletedIterationCount,
-            iterationCounts.FailedIterationCount,
-            iterationCounts.CanceledIterationCount,
-            iterationCounts.IterationCountByStatus,
-            this.CreateOverviewCommonKeyTypes(definitionIds),
-            query?.IncludeThroughput == true ? this.CreateOverviewThroughput(definitionIds) : null,
-            this.CreateOverviewFailedWorkers(definitionIds),
-            this.CreateOverviewFailedIterations(definitionIds),
-            this.CreateOverviewCompletedIterations(definitionIds)));
+        return Task.FromResult(this.CreateSystemQueryContext(criteria).CreateDetails());
     }
 
     public Task<WorkSystemThroughput> SystemThroughput(
-        WorkOverviewCriteria? criteria = null,
+        WorkSystemCriteria? criteria = null,
         WorkThroughputCriteria? throughput = null,
-        WorkQueryScope? scope = null,
         CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        return Task.FromResult(this.CreateOverviewThroughput(this.ResolveDefinitionScope(ApplyScope(criteria, scope)), throughput));
-    }
-
-    public Task<WorkSystemOverviewCounts> SystemOverviewCounts(
-        WorkOverviewCriteria? criteria = null,
-        WorkQueryScope? scope = null,
-        CancellationToken cancellationToken = default)
-    {
-        cancellationToken.ThrowIfCancellationRequested();
-
-        var definitionIds = this.ResolveDefinitionScope(ApplyScope(criteria, scope));
-        var workerCounts = this.CreateOverviewWorkerCounts(definitionIds);
-        var iterationCounts = this.CreateOverviewIterationCounts(definitionIds);
-        return Task.FromResult(new WorkSystemOverviewCounts(
-            this.workSystemName,
-            this.getSystemState(),
-            this.index.ActiveOrQueuedDefinitionCount(definitionIds),
-            workerCounts.ActiveWorkerCount,
-            workerCounts.FinalWorkerCount,
-            workerCounts.FailedWorkerCount,
-            iterationCounts.CurrentIterationCount,
-            iterationCounts.CompletedIterationCount,
-            iterationCounts.FailedIterationCount,
-            iterationCounts.CanceledIterationCount));
+        return Task.FromResult(this.CreateSystemQueryContext(criteria).CreateThroughput(throughput));
     }
 
     public Task<WorkSystemWorkerCounts> SystemWorkerCounts(
-        WorkOverviewCriteria? criteria = null,
-        WorkQueryScope? scope = null,
+        WorkSystemCriteria? criteria = null,
         CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        return Task.FromResult(this.CreateOverviewWorkerCounts(this.ResolveDefinitionScope(ApplyScope(criteria, scope))));
+        return Task.FromResult(this.CreateSystemQueryContext(criteria).WorkerCounts);
     }
 
     public Task<WorkSystemIterationCounts> SystemIterationCounts(
-        WorkOverviewCriteria? criteria = null,
-        WorkQueryScope? scope = null,
+        WorkSystemCriteria? criteria = null,
         CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        return Task.FromResult(this.CreateOverviewIterationCounts(this.ResolveDefinitionScope(ApplyScope(criteria, scope))));
+        return Task.FromResult(this.CreateSystemQueryContext(criteria).IterationCounts);
     }
 
     public Task<WorkIterationKeyTypeFacetQueryResult> SystemCommonKeyTypes(
-        WorkOverviewCriteria? criteria = null,
-        WorkQueryScope? scope = null,
+        WorkSystemCriteria? criteria = null,
         CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        var keyTypes = this.CreateOverviewCommonKeyTypes(this.ResolveDefinitionScope(ApplyScope(criteria, scope)));
-        return Task.FromResult(new WorkIterationKeyTypeFacetQueryResult(keyTypes));
+        return Task.FromResult(new WorkIterationKeyTypeFacetQueryResult(
+            this.CreateSystemQueryContext(criteria).CommonKeyTypes));
     }
 
-    public Task<WorkSystemFailedWorkersOverview> SystemFailedWorkers(
-        WorkOverviewCriteria? criteria = null,
-        WorkQueryScope? scope = null,
+    public Task<WorkSystemFailedWorkers> SystemFailedWorkers(
+        WorkSystemCriteria? criteria = null,
         CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        var definitionIds = this.ResolveDefinitionScope(ApplyScope(criteria, scope));
-        var counts = this.CreateOverviewWorkerCounts(definitionIds);
-        return Task.FromResult(new WorkSystemFailedWorkersOverview(
-            counts.ActiveWorkerCount,
-            counts.FinalWorkerCount,
-            counts.FailedWorkerCount,
-            counts.WorkerCountByState,
-            this.CreateOverviewFailedWorkers(definitionIds)));
+        return Task.FromResult(this.CreateSystemQueryContext(criteria).CreateFailedWorkers());
     }
 
     public Task<WorkerIterationOverviewQueryResult> SystemFailedIterations(
-        WorkOverviewCriteria? criteria = null,
-        WorkQueryScope? scope = null,
+        WorkSystemCriteria? criteria = null,
         CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        var iterations = this.CreateOverviewFailedIterations(this.ResolveDefinitionScope(ApplyScope(criteria, scope)));
-        return Task.FromResult(new WorkerIterationOverviewQueryResult(iterations));
+        return Task.FromResult(new WorkerIterationOverviewQueryResult(
+            this.CreateSystemQueryContext(criteria).FailedIterations));
     }
 
     public Task<WorkerIterationOverviewQueryResult> SystemCompletedIterations(
-        WorkOverviewCriteria? criteria = null,
-        WorkQueryScope? scope = null,
+        WorkSystemCriteria? criteria = null,
         CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        var iterations = this.CreateOverviewCompletedIterations(this.ResolveDefinitionScope(ApplyScope(criteria, scope)));
-        return Task.FromResult(new WorkerIterationOverviewQueryResult(iterations));
+        return Task.FromResult(new WorkerIterationOverviewQueryResult(
+            this.CreateSystemQueryContext(criteria).CompletedIterations));
     }
-
-    private static WorkOverviewCriteria? ApplyScope(WorkOverviewCriteria? criteria, WorkQueryScope? scope)
-        => scope is null
-            ? criteria
-            : scope.ToOverviewCriteria(criteria?.IncludeThroughput == true);
-
-    private static WorkComponentCriteria ApplyScope(WorkComponentCriteria criteria, WorkQueryScope? scope)
-        => scope is null
-            ? criteria
-            : criteria with { Scope = scope.ToOverviewCriteria() };
-
-    private static WorkViewCriteria ApplyScope(WorkViewCriteria criteria, WorkQueryScope? scope)
-        => scope is null
-            ? criteria
-            : criteria with { Scope = scope.ToOverviewCriteria() };
 
     private static WorkerStatusSummary CreateStatusSummary(IReadOnlyDictionary<WorkerState, int> counts)
     {
@@ -580,7 +453,10 @@ internal sealed class WorkQueryService(
             query.UpdatedFrom is null &&
             query.UpdatedTo is null;
 
-    private WorkSystemWorkerCounts CreateOverviewWorkerCounts(IReadOnlySet<WorkDefinitionId>? definitionIds = null)
+    private WorkSystemQueryContext CreateSystemQueryContext(WorkSystemCriteria? criteria)
+        => new(this, criteria);
+
+    private WorkSystemWorkerCounts CreateSystemWorkerCounts(IReadOnlySet<WorkDefinitionId>? definitionIds = null)
     {
         var counts = this.index.CountByState(definitionIds);
         var final = counts
@@ -596,7 +472,7 @@ internal sealed class WorkQueryService(
             counts);
     }
 
-    private WorkSystemIterationCounts CreateOverviewIterationCounts(IReadOnlySet<WorkDefinitionId>? definitionIds = null)
+    private WorkSystemIterationCounts CreateSystemIterationCounts(IReadOnlySet<WorkDefinitionId>? definitionIds = null)
     {
         var counts = this.iterationIndex.CountByStatus(definitionIds);
         return new WorkSystemIterationCounts(
@@ -607,153 +483,35 @@ internal sealed class WorkQueryService(
             counts);
     }
 
-    private IReadOnlyList<WorkIterationKeyTypeFacet> CreateOverviewCommonKeyTypes(IReadOnlySet<WorkDefinitionId>? definitionIds = null)
-        => [.. this.iterationIndex.CommonKeyTypes(OverviewCommonKeyTypeCount, definitionIds)
+    private IReadOnlyList<WorkIterationKeyTypeFacet> CreateSystemCommonKeyTypes(IReadOnlySet<WorkDefinitionId>? definitionIds = null)
+        => [.. this.iterationIndex.CommonKeyTypes(SystemCommonKeyTypeCount, definitionIds)
             .Select(keyType => new WorkIterationKeyTypeFacet(
                 keyType.Type,
                 keyType.IterationCount,
                 keyType.IterationCountByKind))];
 
-    private WorkSystemThroughput CreateOverviewThroughput(
+    private WorkSystemThroughput CreateSystemThroughput(
         IReadOnlySet<WorkDefinitionId>? definitionIds = null,
         WorkThroughputCriteria? throughputQuery = null)
         => this.metrics.GetThroughput(throughputQuery, definitionIds);
 
-    private WorkComponentResult CreateComponent(
-        WorkComponentRequest request,
-        WorkOverviewCriteria? query,
-        IReadOnlySet<WorkDefinitionId>? definitionIds)
-    {
-        try
-        {
-            var data = request.Type.Trim().ToLowerInvariant() switch
-            {
-                "system" => new
-                {
-                    SystemName = this.workSystemName,
-                    SystemState = this.getSystemState(),
-                },
-                "catalog" => this.CreateCatalogComponent(query),
-                "workers" => this.CreateWorkerSummaryComponent(definitionIds),
-                "failedworkers" => this.CreateOverviewFailedWorkers(definitionIds),
-                "relationships" => this.CreateRelationshipsComponent(definitionIds),
-                "failediterations" => this.CreateOverviewFailedIterations(definitionIds),
-                "completediterations" => this.CreateOverviewCompletedIterations(definitionIds),
-                "throughput" => this.CreateThroughputComponent(definitionIds, request.Options),
-                _ => null,
-            };
-
-            return data is null
-                ? new WorkComponentResult("error", Error: $"Unknown component '{request.Type}'.")
-                : new WorkComponentResult("ok", data);
-        }
-        catch (Exception exception)
-        {
-            return new WorkComponentResult("error", Error: exception.Message);
-        }
-    }
-
-    private object CreateCatalogComponent(WorkOverviewCriteria? query)
-    {
-        var catalogLevel = this.CreateOverviewCatalogLevel(query);
-        return new
-        {
-            CatalogCategories = catalogLevel.Categories,
-            CatalogDefinitions = catalogLevel.Definitions,
-        };
-    }
-
-    private object CreateWorkerSummaryComponent(IReadOnlySet<WorkDefinitionId>? definitionIds)
-    {
-        var workerCounts = this.CreateOverviewWorkerCounts(definitionIds);
-        return new
-        {
-            DefinitionCount = this.index.ActiveOrQueuedDefinitionCount(definitionIds),
-            workerCounts.ActiveWorkerCount,
-            workerCounts.FinalWorkerCount,
-            workerCounts.FailedWorkerCount,
-            workerCounts.WorkerCountByState,
-        };
-    }
-
-    private object CreateThroughputComponent(
-        IReadOnlySet<WorkDefinitionId>? definitionIds,
-        JsonElement? options)
-    {
-        var workerCounts = this.CreateOverviewWorkerCounts(definitionIds);
-        return new
-        {
-            workerCounts.ActiveWorkerCount,
-            Throughput = this.CreateOverviewThroughput(definitionIds, CreateThroughputQuery(options)),
-        };
-    }
-
-    private object CreateRelationshipsComponent(IReadOnlySet<WorkDefinitionId>? definitionIds)
-    {
-        var iterationCounts = this.CreateOverviewIterationCounts(definitionIds);
-        return new
-        {
-            iterationCounts.CurrentIterationCount,
-            iterationCounts.CompletedIterationCount,
-            iterationCounts.FailedIterationCount,
-            iterationCounts.CanceledIterationCount,
-            iterationCounts.IterationCountByStatus,
-            CommonKeyTypes = this.CreateOverviewCommonKeyTypes(definitionIds),
-        };
-    }
-
-    private static IReadOnlyList<WorkComponentRequest> NormalizeComponentRequests(
-        IReadOnlyList<WorkComponentRequest>? requests)
-        => requests is { Count: > 0 }
-            ? requests
-            : [
-                new("system", "system"),
-                new("catalog", "catalog"),
-                new("workers", "workers"),
-                new("failedWorkers", "failedWorkers"),
-                new("relationships", "relationships"),
-                new("failedIterations", "failedIterations"),
-                new("completedIterations", "completedIterations"),
-            ];
-
-    private static WorkThroughputCriteria? CreateThroughputQuery(JsonElement? options)
-    {
-        if (options is null || options.Value.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined)
-        {
-            return null;
-        }
-
-        var windowSeconds = TryGetInt32(options.Value, "windowSeconds") ??
-            WorkThroughputCriteria.DefaultWindowSeconds;
-        var bucketSeconds = TryGetInt32(options.Value, "bucketSeconds") ??
-            WorkThroughputCriteria.DefaultBucketSeconds;
-        return new WorkThroughputCriteria(windowSeconds, bucketSeconds);
-    }
-
-    private static int? TryGetInt32(JsonElement options, string propertyName)
-        => options.ValueKind == JsonValueKind.Object &&
-            options.TryGetProperty(propertyName, out var property) &&
-            property.TryGetInt32(out var value)
-                ? value
-                : null;
-
-    private IReadOnlyList<WorkerOverviewItem> CreateOverviewFailedWorkers(IReadOnlySet<WorkDefinitionId>? definitionIds = null)
+    private IReadOnlyList<WorkerOverviewItem> CreateSystemFailedWorkers(IReadOnlySet<WorkDefinitionId>? definitionIds = null)
         => [.. this.GetOverviewItems(this.index.ByState(WorkerState.Failed, definitionIds))
-            .Take(OverviewWorkerListSize)];
+            .Take(SystemWorkerListSize)];
 
-    private IReadOnlyList<WorkerIterationOverviewItem> CreateOverviewFailedIterations(IReadOnlySet<WorkDefinitionId>? definitionIds = null)
-        => this.iterationIndex.RecentByStatus(WorkCompletionStatus.Failed, OverviewIterationListSize, definitionIds);
+    private IReadOnlyList<WorkerIterationOverviewItem> CreateSystemFailedIterations(IReadOnlySet<WorkDefinitionId>? definitionIds = null)
+        => this.iterationIndex.RecentByStatus(WorkCompletionStatus.Failed, SystemIterationListSize, definitionIds);
 
-    private IReadOnlyList<WorkerIterationOverviewItem> CreateOverviewCompletedIterations(IReadOnlySet<WorkDefinitionId>? definitionIds = null)
-        => this.iterationIndex.RecentByStatus(WorkCompletionStatus.Completed, OverviewIterationListSize, definitionIds);
+    private IReadOnlyList<WorkerIterationOverviewItem> CreateSystemCompletedIterations(IReadOnlySet<WorkDefinitionId>? definitionIds = null)
+        => this.iterationIndex.RecentByStatus(WorkCompletionStatus.Completed, SystemIterationListSize, definitionIds);
 
-    private OverviewCatalogLevel CreateOverviewCatalogLevel(WorkOverviewCriteria? query)
+    private SystemCatalogLevel CreateSystemCatalogLevel(WorkSystemCriteria? query)
     {
         string[] pathSegments = string.IsNullOrWhiteSpace(query?.Category)
             ? []
             : SplitCategoryPath(query.Category);
-        var categories = new Dictionary<string, WorkOverviewCatalogCategoryItem>(StringComparer.OrdinalIgnoreCase);
-        var directDefinitions = new List<WorkOverviewDefinitionItem>();
+        var categories = new Dictionary<string, WorkSystemCatalogCategoryItem>(StringComparer.OrdinalIgnoreCase);
+        var directDefinitions = new List<WorkSystemDefinitionItem>();
 
         foreach (var definition in this.catalog.Definitions)
         {
@@ -766,7 +524,7 @@ internal sealed class WorkQueryService(
             var remainingSegments = definitionSegments.Skip(pathSegments.Length).ToArray();
             if (remainingSegments.Length == 0)
             {
-                directDefinitions.Add(new WorkOverviewDefinitionItem(
+                directDefinitions.Add(new WorkSystemDefinitionItem(
                     definition.Id,
                     definition.Name,
                     definition.Category));
@@ -781,14 +539,14 @@ internal sealed class WorkQueryService(
             }
             else
             {
-                categories[childPath] = new WorkOverviewCatalogCategoryItem(
+                categories[childPath] = new WorkSystemCatalogCategoryItem(
                     remainingSegments[0],
                     childPath,
                     1);
             }
         }
 
-        return new OverviewCatalogLevel(
+        return new SystemCatalogLevel(
             [.. categories.Values.OrderBy(category => category.Label, StringComparer.OrdinalIgnoreCase)],
             [.. directDefinitions
                 .OrderBy(definition => definition.Category, StringComparer.OrdinalIgnoreCase)
@@ -805,7 +563,7 @@ internal sealed class WorkQueryService(
             .Where(worker => states is null || states.Contains(worker.State))
             .OrderByDescending(worker => worker.UpdatedAt)];
 
-    private HashSet<WorkDefinitionId>? ResolveDefinitionScope(WorkOverviewCriteria? query)
+    private HashSet<WorkDefinitionId>? ResolveDefinitionScope(WorkSystemCriteria? query)
     {
         if (query is null ||
             (query.DefinitionId is null &&
@@ -821,7 +579,7 @@ internal sealed class WorkQueryService(
             .ToHashSet();
     }
 
-    private IEnumerable<WorkDefinition> GetDefinitionScopeCandidates(WorkOverviewCriteria query)
+    private IEnumerable<WorkDefinition> GetDefinitionScopeCandidates(WorkSystemCriteria query)
     {
         if (query.DefinitionId is { } definitionId)
         {
@@ -960,7 +718,7 @@ internal sealed class WorkQueryService(
                 definition.Name.Contains(query.Search, StringComparison.OrdinalIgnoreCase) ||
                 (definition.Description?.Contains(query.Search, StringComparison.OrdinalIgnoreCase) ?? false));
 
-    private static bool Matches(WorkDefinition definition, WorkOverviewCriteria query)
+    private static bool Matches(WorkDefinition definition, WorkSystemCriteria query)
         => (query.DefinitionId is null || definition.Id == query.DefinitionId) &&
             (string.IsNullOrWhiteSpace(query.DefinitionName) || string.Equals(definition.Name, query.DefinitionName, StringComparison.OrdinalIgnoreCase)) &&
             (string.IsNullOrWhiteSpace(query.Category) || CategoryMatches(definition.Category, query.Category, query.IncludeSubcategories));
@@ -1096,9 +854,9 @@ internal sealed class WorkQueryService(
                     StringComparison.OrdinalIgnoreCase))
                 .All(matches => matches);
 
-    private sealed record OverviewCatalogLevel(
-        IReadOnlyList<WorkOverviewCatalogCategoryItem> Categories,
-        IReadOnlyList<WorkOverviewDefinitionItem> Definitions);
+    private sealed record SystemCatalogLevel(
+        IReadOnlyList<WorkSystemCatalogCategoryItem> Categories,
+        IReadOnlyList<WorkSystemDefinitionItem> Definitions);
 
     private static IEnumerable<WorkerOverviewItem> Sort(
         IEnumerable<WorkerOverviewItem> workers,

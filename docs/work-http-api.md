@@ -257,6 +257,8 @@ Content-Type: application/json
 
 Dashboard-style screens request view data with component selections. The overview view returns a component map so clients can fetch only the panels they intend to render.
 
+View and component names are HTTP adapter concerns. The in-process `IWorkQueryService` exposes typed system queries such as `SystemDetails`; the HTTP adapter maps view/component requests onto those typed queries.
+
 ```http
 POST /workable/views/overview
 Content-Type: application/json

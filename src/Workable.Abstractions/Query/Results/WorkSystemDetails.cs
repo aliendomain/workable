@@ -1,11 +1,11 @@
 namespace Workable;
 
-public sealed record WorkSystemOverview(
+public sealed record WorkSystemDetails(
     string? SystemName,
     WorkSystemState SystemState,
     int DefinitionCount,
-    IReadOnlyList<WorkOverviewCatalogCategoryItem> CatalogCategories,
-    IReadOnlyList<WorkOverviewDefinitionItem> CatalogDefinitions,
+    IReadOnlyList<WorkSystemCatalogCategoryItem> CatalogCategories,
+    IReadOnlyList<WorkSystemDefinitionItem> CatalogDefinitions,
     int ActiveWorkerCount,
     int FinalWorkerCount,
     int FailedWorkerCount,
@@ -21,12 +21,12 @@ public sealed record WorkSystemOverview(
     IReadOnlyList<WorkerIterationOverviewItem> FailedIterations,
     IReadOnlyList<WorkerIterationOverviewItem> CompletedIterations) : IWorkQueryResult;
 
-public sealed record WorkOverviewCatalogCategoryItem(
+public sealed record WorkSystemCatalogCategoryItem(
     string Label,
     string Path,
     int Count);
 
-public sealed record WorkOverviewDefinitionItem(
+public sealed record WorkSystemDefinitionItem(
     WorkDefinitionId Id,
     string Name,
     string Category);

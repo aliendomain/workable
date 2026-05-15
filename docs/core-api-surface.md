@@ -12,7 +12,7 @@ The core API defines the public shape of Workable for discovering work, queueing
 - `IWorkCatalog` exposes available work definitions.
 - `IWorkQueueService` accepts work by explicit identity.
 - `IWorkerOperations` controls worker actions.
-- `IWorkQueryService` exposes the discoverable query facade. Each built-in query has a named method, with optional criteria, scope, and cancellation where applicable.
+- `IWorkQueryService` exposes the discoverable query facade. Each built-in query has a named method, with optional criteria and cancellation where applicable.
 - `IWorkEventStream` creates event subscriptions.
 - `Start` and `Stop` control system lifecycle.
 - `Stop` returns the shutdown grace period plus workers that were force-canceled because the grace period elapsed, including compact worker summaries and definition names.
@@ -84,8 +84,8 @@ Execution context also exposes the worker's `WorkOrigin`.
 - `IWorkQueryService.WorkerIterations` returns lightweight `WorkerIterationOverviewItem` rows.
 - `IWorkQueryService.WorkerKeys` and `IWorkQueryService.WorkerKeyTypes` expose searchable subject, concurrency key, and identifier indexes with matching worker overview rows.
 - `IWorkQueryService.WorkIterationKeys` and `IWorkQueryService.WorkIterationKeyTypes` expose the same key search shape for worker iteration overview rows.
-- `IWorkQueryService.SystemOverview` returns system state, active-or-queued definition count, worker counts by state, current executing iteration count, iteration counts by completion status, common iteration key type facets, the five most recently updated failed workers, and the five most recent failed/completed iterations.
-- `IWorkQueryService` also exposes overview slice methods for counts, worker counts, iteration counts, common key types, failed workers with worker counts, failed iterations, and completed iterations.
+- `IWorkQueryService.SystemDetails` exposes the typed whole-system aggregate query.
+- `IWorkQueryService` also exposes system slice methods for throughput, worker counts, iteration counts, common key types, failed workers with worker counts, failed iterations, and completed iterations.
 - Worker criteria can filter by definition, definition name, subject id, concurrency key, work identifier, state, selected configuration flags, and timestamps.
 - Work definition criteria can filter by id, name, category, and search text.
 - `IWorkCatalog.ListByCategory` returns definitions by category path.

@@ -1,6 +1,6 @@
 namespace Workable;
 
-public sealed record WorkOverviewCriteria(
+public sealed record WorkSystemCriteria(
     WorkDefinitionId? DefinitionId = null,
     string? DefinitionName = null,
     string? Category = null,

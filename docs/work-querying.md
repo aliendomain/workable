@@ -808,23 +808,22 @@ The examples below show the serialized JSON shape returned by HTTP and MCP adapt
 }
 ```
 
-### System Overview
+### System Aggregates
 
-`IWorkQueryService.SystemOverview` returns dashboard-oriented system state, worker state, and iteration activity. It includes active-or-queued definition count, active/final/failed worker counts, worker counts by state, current executing iteration count, completed/failed/canceled iteration counts, counts by iteration completion status, the ten most common iteration key types, the five most recently updated failed workers, and the five most recent failed/completed iterations.
+`IWorkQueryService.SystemDetails` returns the broad whole-system diagnostic shape with catalog entries, worker state, iteration activity, common key types, recent failed workers, and recent failed/completed iterations.
 
-Overview queries can be scoped to one category path or work definition while keeping the same return shape.
+System queries can be scoped to one category path or work definition while keeping the same return shape.
 
 ```csharp
-WorkSystemOverview billingOverview = await workSystem.Query.SystemOverview(new WorkOverviewCriteria(Category: "Billing"));
+WorkSystemDetails billingDetails = await workSystem.Query.SystemDetails(new WorkSystemCriteria(Category: "Billing"));
 
-WorkSystemOverview definitionOverview = await workSystem.Query.SystemOverview(new WorkOverviewCriteria(DefinitionName: "billing.invoice.sync"));
+WorkSystemDetails definitionDetails = await workSystem.Query.SystemDetails(new WorkSystemCriteria(DefinitionName: "billing.invoice.sync"));
 ```
 
-With category scoping, `IncludeSubcategories` defaults to `true`. Scoped overview counts, common key types, failed workers, and recent iterations include only workers and iterations for matching definitions.
+With category scoping, `IncludeSubcategories` defaults to `true`. Scoped system counts, common key types, failed workers, and recent iterations include only workers and iterations for matching definitions.
 
-For incremental refreshes, the overview can be queried in smaller slices:
+For incremental refreshes, the system state can be queried in smaller slices:
 
-- `IWorkQueryService.SystemOverviewCounts`
 - `IWorkQueryService.SystemWorkerCounts`
 - `IWorkQueryService.SystemIterationCounts`
 - `IWorkQueryService.SystemCommonKeyTypes`

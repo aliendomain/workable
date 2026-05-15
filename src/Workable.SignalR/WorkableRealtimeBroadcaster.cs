@@ -81,12 +81,12 @@ internal sealed class WorkableRealtimeBroadcaster(
                 continue;
             }
 
-            var overview = await system.Query.SystemOverview(cancellationToken: cancellationToken);
+            var details = await system.Query.SystemDetails(cancellationToken: cancellationToken);
             await hub.Clients
                 .Group(WorkableRealtimeGroups.Dashboard(system))
                 .SendAsync(
                     WorkableRealtimeClientMethods.DashboardUpdated,
-                    WorkableRealtimeDashboard.From(system, overview),
+                    WorkableRealtimeDashboard.From(system, details),
                     cancellationToken);
         }
     }

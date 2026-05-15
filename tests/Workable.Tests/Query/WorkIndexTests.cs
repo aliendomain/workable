@@ -59,7 +59,7 @@ public sealed class WorkIndexTests
         var runningWorkerId = RequiredWorkerId(running);
         var queuedWorkerId = RequiredWorkerId(queued);
 
-        var activeBilling = await system.Query.SystemOverview(new WorkOverviewCriteria(Category: "Billing"));
+        var activeBilling = await system.Query.SystemDetails(new WorkSystemCriteria(Category: "Billing"));
         var exactBillingQueued = await system.Query.Workers(new WorkerCriteria(
             Category: "Billing",
             IncludeSubcategories: false,
@@ -86,7 +86,7 @@ public sealed class WorkIndexTests
         release.TrySetResult();
         await running.WaitForCompletion();
 
-        var settledBilling = await system.Query.SystemOverview(new WorkOverviewCriteria(Category: "Billing"));
+        var settledBilling = await system.Query.SystemDetails(new WorkSystemCriteria(Category: "Billing"));
         var noExecutingIterations = await system.Query.WorkerIterations(new WorkerIterationCriteria(
             Category: "Billing",
             Statuses: new HashSet<WorkCompletionStatus> { WorkCompletionStatus.Executing }));
@@ -104,7 +104,7 @@ public sealed class WorkIndexTests
         var afterPurgeWorkers = await system.Query.Workers(new WorkerCriteria(Category: "Billing"));
         var afterPurgeIterations = await system.Query.WorkerIterations(new WorkerIterationCriteria(Category: "Billing"));
         var afterPurgeKeys = await system.Query.WorkerKeys(new WorkerKeyCriteria(Search: "request"));
-        var afterPurgeOverview = await system.Query.SystemOverview(new WorkOverviewCriteria(Category: "Billing"));
+        var afterPurgeOverview = await system.Query.SystemDetails(new WorkSystemCriteria(Category: "Billing"));
 
         Assert.Empty(afterPurgeWorkers.Workers);
         Assert.Empty(afterPurgeIterations.Iterations);
@@ -165,9 +165,9 @@ public sealed class WorkIndexTests
                 .WithConcurrencyKey(new WorkConcurrencyKey("shared", "shipping"))
                 .WithIdentifier(new WorkIdentifier("shared", "shipping")))).WaitForCompletion();
 
-        var wholeSystem = await system.Query.SystemOverview();
-        var billingScope = await system.Query.SystemOverview(new WorkOverviewCriteria(Category: "Billing"));
-        var shippingScope = await system.Query.SystemOverview(new WorkOverviewCriteria(Category: "Shipping"));
+        var wholeSystem = await system.Query.SystemDetails();
+        var billingScope = await system.Query.SystemDetails(new WorkSystemCriteria(Category: "Billing"));
+        var shippingScope = await system.Query.SystemDetails(new WorkSystemCriteria(Category: "Shipping"));
 
         AssertKeyType(wholeSystem.CommonKeyTypes, "shared", 3, subject: 3, concurrency: 3, identifier: 3);
         AssertKeyType(billingScope.CommonKeyTypes, "shared", 2, subject: 2, concurrency: 2, identifier: 2);
@@ -175,8 +175,8 @@ public sealed class WorkIndexTests
 
         await Purge(system, RequiredWorkerId(billing));
 
-        var wholeSystemAfterPurge = await system.Query.SystemOverview();
-        var billingAfterPurge = await system.Query.SystemOverview(new WorkOverviewCriteria(Category: "Billing"));
+        var wholeSystemAfterPurge = await system.Query.SystemDetails();
+        var billingAfterPurge = await system.Query.SystemDetails(new WorkSystemCriteria(Category: "Billing"));
 
         AssertKeyType(wholeSystemAfterPurge.CommonKeyTypes, "shared", 1, subject: 1, concurrency: 1, identifier: 1);
         Assert.DoesNotContain(billingAfterPurge.CommonKeyTypes, keyType => keyType.Type == "shared");
@@ -248,7 +248,7 @@ public sealed class WorkIndexTests
             Kind: WorkKeyKind.Identifier,
             Type: "retention",
             Value: "shared"))).Keys);
-        var overview = await system.Query.SystemOverview(new WorkOverviewCriteria(Category: "Index:Retention"));
+        var overview = await system.Query.SystemDetails(new WorkSystemCriteria(Category: "Index:Retention"));
 
         Assert.Equal(2, retained.TotalCount);
         Assert.Equal([3L, 4L], retained.Iterations.Select(iteration => iteration.Sequence).Order());
@@ -440,7 +440,7 @@ public sealed class WorkIndexTests
             WorkInput.Empty.WithSubject(new WorkSubjectId("status", "replace")));
         await entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
 
-        var executingOverview = await system.Query.SystemOverview(new WorkOverviewCriteria(Category: "Index"));
+        var executingOverview = await system.Query.SystemDetails(new WorkSystemCriteria(Category: "Index"));
         var executingQuery = await system.Query.WorkerIterations(new WorkerIterationCriteria(
             Category: "Index",
             Statuses: new HashSet<WorkCompletionStatus> { WorkCompletionStatus.Executing }));
@@ -452,7 +452,7 @@ public sealed class WorkIndexTests
         release.TrySetResult();
         await handle.WaitForCompletion();
 
-        var completedOverview = await system.Query.SystemOverview(new WorkOverviewCriteria(Category: "Index"));
+        var completedOverview = await system.Query.SystemDetails(new WorkSystemCriteria(Category: "Index"));
         var executingAfterCompletion = await system.Query.WorkerIterations(new WorkerIterationCriteria(
             Category: "Index",
             Statuses: new HashSet<WorkCompletionStatus> { WorkCompletionStatus.Executing }));
@@ -494,7 +494,7 @@ public sealed class WorkIndexTests
             "index.recent.shipping",
             WorkInput.Empty.WithIdentifier(new WorkIdentifier("sequence", "shipping")))).WaitForCompletion();
 
-        var billing = await system.Query.SystemOverview(new WorkOverviewCriteria(Category: "Billing"));
+        var billing = await system.Query.SystemDetails(new WorkSystemCriteria(Category: "Billing"));
 
         Assert.Equal(5, billing.CompletedIterations.Count);
         Assert.All(billing.CompletedIterations, iteration => Assert.Equal("index.recent.billing", iteration.DefinitionName));

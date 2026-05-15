@@ -3,15 +3,15 @@ using System.Text.Json;
 namespace Workable;
 
 public sealed record WorkComponentCriteria(
-    WorkOverviewCriteria? Scope = null,
+    WorkSystemCriteria? Scope = null,
     IReadOnlyList<WorkComponentRequest>? Components = null);
 
 public sealed record WorkSingleComponentCriteria(
-    WorkOverviewCriteria? Scope = null,
+    WorkSystemCriteria? Scope = null,
     JsonElement? Options = null);
 
 public sealed record WorkViewCriteria(
-    WorkOverviewCriteria? Scope = null,
+    WorkSystemCriteria? Scope = null,
     IReadOnlyList<WorkComponentRequest>? Components = null);
 
 public sealed record WorkComponentRequest(

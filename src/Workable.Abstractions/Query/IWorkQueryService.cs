@@ -50,60 +50,36 @@ public interface IWorkQueryService
         WorkerCriteria? criteria = null,
         CancellationToken cancellationToken = default);
 
-    Task<WorkComponentQueryResult> Components(
-        WorkComponentCriteria? criteria = null,
-        WorkQueryScope? scope = null,
-        CancellationToken cancellationToken = default);
-
-    Task<WorkComponentQueryResult> View(
-        string name,
-        WorkViewCriteria? criteria = null,
-        WorkQueryScope? scope = null,
-        CancellationToken cancellationToken = default);
-
-    Task<WorkSystemOverview> SystemOverview(
-        WorkOverviewCriteria? criteria = null,
-        WorkQueryScope? scope = null,
+    Task<WorkSystemDetails> SystemDetails(
+        WorkSystemCriteria? criteria = null,
         CancellationToken cancellationToken = default);
 
     Task<WorkSystemThroughput> SystemThroughput(
-        WorkOverviewCriteria? criteria = null,
+        WorkSystemCriteria? criteria = null,
         WorkThroughputCriteria? throughput = null,
-        WorkQueryScope? scope = null,
-        CancellationToken cancellationToken = default);
-
-    Task<WorkSystemOverviewCounts> SystemOverviewCounts(
-        WorkOverviewCriteria? criteria = null,
-        WorkQueryScope? scope = null,
         CancellationToken cancellationToken = default);
 
     Task<WorkSystemWorkerCounts> SystemWorkerCounts(
-        WorkOverviewCriteria? criteria = null,
-        WorkQueryScope? scope = null,
+        WorkSystemCriteria? criteria = null,
         CancellationToken cancellationToken = default);
 
     Task<WorkSystemIterationCounts> SystemIterationCounts(
-        WorkOverviewCriteria? criteria = null,
-        WorkQueryScope? scope = null,
+        WorkSystemCriteria? criteria = null,
         CancellationToken cancellationToken = default);
 
     Task<WorkIterationKeyTypeFacetQueryResult> SystemCommonKeyTypes(
-        WorkOverviewCriteria? criteria = null,
-        WorkQueryScope? scope = null,
+        WorkSystemCriteria? criteria = null,
         CancellationToken cancellationToken = default);
 
-    Task<WorkSystemFailedWorkersOverview> SystemFailedWorkers(
-        WorkOverviewCriteria? criteria = null,
-        WorkQueryScope? scope = null,
+    Task<WorkSystemFailedWorkers> SystemFailedWorkers(
+        WorkSystemCriteria? criteria = null,
         CancellationToken cancellationToken = default);
 
     Task<WorkerIterationOverviewQueryResult> SystemFailedIterations(
-        WorkOverviewCriteria? criteria = null,
-        WorkQueryScope? scope = null,
+        WorkSystemCriteria? criteria = null,
         CancellationToken cancellationToken = default);
 
     Task<WorkerIterationOverviewQueryResult> SystemCompletedIterations(
-        WorkOverviewCriteria? criteria = null,
-        WorkQueryScope? scope = null,
+        WorkSystemCriteria? criteria = null,
         CancellationToken cancellationToken = default);
 }

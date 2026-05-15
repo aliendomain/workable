@@ -50,7 +50,7 @@ public sealed class WorkableHttpCatalogAdapter
         string[] pathSegments = string.IsNullOrWhiteSpace(category)
             ? []
             : SplitCategoryPath(category);
-        var categories = new Dictionary<string, WorkOverviewCatalogCategoryItem>(StringComparer.OrdinalIgnoreCase);
+        var categories = new Dictionary<string, WorkSystemCatalogCategoryItem>(StringComparer.OrdinalIgnoreCase);
         var directDefinitions = new List<WorkDefinition>();
 
         foreach (var definition in system.Catalog.Definitions)
@@ -76,7 +76,7 @@ public sealed class WorkableHttpCatalogAdapter
             }
             else
             {
-                categories[childPath] = new WorkOverviewCatalogCategoryItem(
+                categories[childPath] = new WorkSystemCatalogCategoryItem(
                     remainingSegments[0],
                     childPath,
                     1);

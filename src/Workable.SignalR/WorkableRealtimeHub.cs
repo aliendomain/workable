@@ -46,10 +46,10 @@ public sealed class WorkableRealtimeHub(IWorkSystemRegistry registry) : Hub
 
     private async Task SendDashboard(IWorkSystem system, IClientProxy client)
     {
-        var overview = await system.Query.SystemOverview(cancellationToken: this.Context.ConnectionAborted);
+        var details = await system.Query.SystemDetails(cancellationToken: this.Context.ConnectionAborted);
         await client.SendAsync(
             WorkableRealtimeClientMethods.DashboardUpdated,
-            WorkableRealtimeDashboard.From(system, overview),
+            WorkableRealtimeDashboard.From(system, details),
             this.Context.ConnectionAborted);
     }
 

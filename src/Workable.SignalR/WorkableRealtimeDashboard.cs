@@ -19,29 +19,29 @@ public sealed record WorkableRealtimeDashboard(
     IReadOnlyList<WorkerIterationOverviewItem> CompletedIterations,
     DateTimeOffset UpdatedAt)
 {
-    public static WorkableRealtimeDashboard From(IWorkSystem system, WorkSystemOverview overview)
+    public static WorkableRealtimeDashboard From(IWorkSystem system, WorkSystemDetails details)
     {
         ArgumentNullException.ThrowIfNull(system);
-        ArgumentNullException.ThrowIfNull(overview);
+        ArgumentNullException.ThrowIfNull(details);
 
         return new WorkableRealtimeDashboard(
             system.Id,
-            overview.SystemName,
-            overview.SystemState,
-            overview.DefinitionCount,
-            overview.ActiveWorkerCount,
-            overview.FinalWorkerCount,
-            overview.FailedWorkerCount,
-            overview.WorkerCountByState,
-            overview.CurrentIterationCount,
-            overview.CompletedIterationCount,
-            overview.FailedIterationCount,
-            overview.CanceledIterationCount,
-            overview.IterationCountByStatus,
-            overview.CommonKeyTypes,
-            overview.FailedWorkers,
-            overview.FailedIterations,
-            overview.CompletedIterations,
+            details.SystemName,
+            details.SystemState,
+            details.DefinitionCount,
+            details.ActiveWorkerCount,
+            details.FinalWorkerCount,
+            details.FailedWorkerCount,
+            details.WorkerCountByState,
+            details.CurrentIterationCount,
+            details.CompletedIterationCount,
+            details.FailedIterationCount,
+            details.CanceledIterationCount,
+            details.IterationCountByStatus,
+            details.CommonKeyTypes,
+            details.FailedWorkers,
+            details.FailedIterations,
+            details.CompletedIterations,
             DateTimeOffset.UtcNow);
     }
 }

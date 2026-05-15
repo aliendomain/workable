@@ -147,7 +147,7 @@ public sealed class WorkQueryServiceTests
             var executingByDiscoveredIdentifier = await system.Query.WorkerIterations(new WorkerIterationCriteria(
                 Identifier: discoveredIdentifier,
                 Statuses: new HashSet<WorkCompletionStatus> { WorkCompletionStatus.Executing }));
-            var overview = await system.Query.SystemOverview();
+            var overview = await system.Query.SystemDetails();
 
             Assert.NotNull(snapshot);
             Assert.Equal(WorkCompletionStatus.Executing, snapshot.Status);
@@ -913,7 +913,7 @@ public sealed class WorkQueryServiceTests
     }
 
     [Fact]
-    public async Task SystemOverviewQueryReturnsCountsAndSlimFailedAndCompletedIterations()
+    public async Task SystemDetailsQueryReturnsCountsAndSlimFailedAndCompletedIterations()
     {
         await using var system = new ServiceCollection()
             .AddWorkableSystem("overview", builder =>
@@ -933,7 +933,7 @@ public sealed class WorkQueryServiceTests
         var failed = await system.Queue.Enqueue("overview.failed", WorkInput.Empty);
         await failed.WaitForCompletion();
 
-        var overview = await system.Query.SystemOverview();
+        var overview = await system.Query.SystemDetails();
 
         Assert.Equal("overview", overview.SystemName);
         Assert.Equal(WorkSystemState.Started, overview.SystemState);
@@ -963,7 +963,7 @@ public sealed class WorkQueryServiceTests
     }
 
     [Fact]
-    public async Task SystemOverviewCountsQueryCountsDefinitionsWithActiveOrQueuedWorkersFromIndex()
+    public async Task SystemDetailsQueryCountsDefinitionsWithActiveOrQueuedWorkersFromIndex()
     {
         var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -1006,11 +1006,11 @@ public sealed class WorkQueryServiceTests
 
         try
         {
-            var overview = await system.Query.SystemOverview();
+            var details = await system.Query.SystemDetails();
 
-            Assert.Equal(2, overview.DefinitionCount);
-            Assert.Equal(1, overview.CurrentIterationCount);
-            Assert.Equal(1, overview.IterationCountByStatus[WorkCompletionStatus.Executing]);
+            Assert.Equal(2, details.DefinitionCount);
+            Assert.Equal(1, details.CurrentIterationCount);
+            Assert.Equal(1, details.IterationCountByStatus[WorkCompletionStatus.Executing]);
         }
         finally
         {
@@ -1020,7 +1020,7 @@ public sealed class WorkQueryServiceTests
     }
 
     [Fact]
-    public async Task SystemOverviewQueryLimitsCompletedAndFailedIterationsToFiveRecentItems()
+    public async Task SystemDetailsQueryLimitsCompletedAndFailedIterationsToFiveRecentItems()
     {
         await using var system = new ServiceCollection()
             .AddWorkableSystem("overview-limit", builder =>
@@ -1042,7 +1042,7 @@ public sealed class WorkQueryServiceTests
             await (await system.Queue.Enqueue("overview.limit.failed", WorkInput.Empty)).WaitForCompletion();
         }
 
-        var overview = await system.Query.SystemOverview();
+        var overview = await system.Query.SystemDetails();
 
         Assert.Equal(6, overview.IterationCountByStatus[WorkCompletionStatus.Completed]);
         Assert.Equal(6, overview.IterationCountByStatus[WorkCompletionStatus.Failed]);
@@ -1055,7 +1055,7 @@ public sealed class WorkQueryServiceTests
     }
 
     [Fact]
-    public async Task SystemOverviewQueryReturnsTopCommonKeyTypesWithDistinctIterationCounts()
+    public async Task SystemDetailsQueryReturnsTopCommonKeyTypesWithDistinctIterationCounts()
     {
         await using var system = CreateSystem(
             WorkDefinition.Create("overview.keys", "Adds overview keys."),
@@ -1081,7 +1081,7 @@ public sealed class WorkQueryServiceTests
                 WorkInput.Empty.WithIdentifier(new WorkIdentifier($"secondary-{index}", index.ToString())))).WaitForCompletion();
         }
 
-        var overview = await system.Query.SystemOverview();
+        var overview = await system.Query.SystemDetails();
 
         Assert.Equal(10, overview.CommonKeyTypes.Count);
         var claim = Assert.Single(overview.CommonKeyTypes, keyType => keyType.Type == "claim");
@@ -1093,7 +1093,7 @@ public sealed class WorkQueryServiceTests
     }
 
     [Fact]
-    public async Task SystemOverviewQueryCountsCommonKeyTypesByIterationNotWorker()
+    public async Task SystemDetailsQueryCountsCommonKeyTypesByIterationNotWorker()
     {
         var attempts = 0;
         var definition = WorkDefinition.Create("overview.retry.keys", "Retries with the same key.");
@@ -1127,7 +1127,7 @@ public sealed class WorkQueryServiceTests
             "overview.retry.keys",
             WorkInput.Empty.WithSubject(new WorkSubjectId("claim", "CLM-1")))).WaitForCompletion();
 
-        var overview = await system.Query.SystemOverview();
+        var overview = await system.Query.SystemDetails();
 
         var claim = Assert.Single(overview.CommonKeyTypes, keyType => keyType.Type == "claim");
         Assert.Equal(2, claim.IterationCount);
@@ -1137,7 +1137,7 @@ public sealed class WorkQueryServiceTests
     }
 
     [Fact]
-    public async Task SystemOverviewQueryCanScopeToCategoryOrDefinition()
+    public async Task SystemDetailsQueryCanScopeToCategoryOrDefinition()
     {
         await using var system = new ServiceCollection()
             .AddWorkableSystem("overview-scope", builder =>
@@ -1167,11 +1167,11 @@ public sealed class WorkQueryServiceTests
             "shipping.complete",
             WorkInput.Empty.WithIdentifier(new WorkIdentifier("shipment", "S-1")))).WaitForCompletion();
 
-        var billing = await system.Query.SystemOverview(new WorkOverviewCriteria(Category: "Billing"));
-        var exactBilling = await system.Query.SystemOverview(new WorkOverviewCriteria(
+        var billing = await system.Query.SystemDetails(new WorkSystemCriteria(Category: "Billing"));
+        var exactBilling = await system.Query.SystemDetails(new WorkSystemCriteria(
             Category: "Billing",
             IncludeSubcategories: false));
-        var invoice = await system.Query.SystemOverview(new WorkOverviewCriteria(DefinitionName: "billing.invoice.failed"));
+        var invoice = await system.Query.SystemDetails(new WorkSystemCriteria(DefinitionName: "billing.invoice.failed"));
 
         Assert.Equal(1, billing.CompletedIterationCount);
         Assert.Equal(1, billing.FailedIterationCount);
@@ -1233,12 +1233,12 @@ public sealed class WorkQueryServiceTests
         await canceled.WaitForCompletion();
         await (await system.Queue.Enqueue("metrics.other")).WaitForCompletion();
 
-        var overviewWithoutThroughput = await system.Query.SystemOverview(new WorkOverviewCriteria(
+        var overviewWithoutThroughput = await system.Query.SystemDetails(new WorkSystemCriteria(
             Category: "Metrics:Included"));
-        var overview = await system.Query.SystemOverview(new WorkOverviewCriteria(
+        var overview = await system.Query.SystemDetails(new WorkSystemCriteria(
             Category: "Metrics:Included",
             IncludeThroughput: true));
-        var throughput = await system.Query.SystemThroughput(new WorkOverviewCriteria(Category: "Metrics:Included"),
+        var throughput = await system.Query.SystemThroughput(new WorkSystemCriteria(Category: "Metrics:Included"),
             new WorkThroughputCriteria(WindowSeconds: 60, BucketSeconds: 1));
 
         Assert.Null(overviewWithoutThroughput.Throughput);
@@ -1272,7 +1272,7 @@ public sealed class WorkQueryServiceTests
         await handle.WaitForCompletion();
 
         var workerId = RequiredWorkerId(handle);
-        var beforePurge = await system.Query.SystemThroughput(new WorkOverviewCriteria(Category: "Metrics:Purge"),
+        var beforePurge = await system.Query.SystemThroughput(new WorkSystemCriteria(Category: "Metrics:Purge"),
             new WorkThroughputCriteria(WindowSeconds: 60, BucketSeconds: 1));
         var worker = await system.Query.Worker(workerId)
             ?? throw new InvalidOperationException("Expected worker.");
@@ -1280,7 +1280,7 @@ public sealed class WorkQueryServiceTests
         var purge = await system.Workers.Execute(worker.Version, WorkAction.Purge);
 
         var afterPurgeIterations = await system.Query.WorkerIterations(new WorkerIterationCriteria(WorkerId: workerId));
-        var afterPurge = await system.Query.SystemThroughput(new WorkOverviewCriteria(Category: "Metrics:Purge"),
+        var afterPurge = await system.Query.SystemThroughput(new WorkSystemCriteria(Category: "Metrics:Purge"),
             new WorkThroughputCriteria(WindowSeconds: 60, BucketSeconds: 1));
 
         Assert.True(purge.IsAccepted);
