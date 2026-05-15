@@ -108,6 +108,8 @@ internal sealed class WorkerRecord(
 
     public bool AddIdentifier(WorkIdentifier identifier)
     {
+        WorkerIterationSnapshot? currentIterationSnapshot = null;
+        Action<WorkerRecord, WorkerIterationSnapshot>? iterationRecorded = null;
         lock (this.sync)
         {
             if (!this.identifiers.Add(identifier))
@@ -116,8 +118,19 @@ internal sealed class WorkerRecord(
             }
 
             this.MarkUpdated();
-            return true;
+            if (this.currentIteration is not null)
+            {
+                currentIterationSnapshot = this.CreateCurrentIterationSnapshotLocked(DateTimeOffset.UtcNow);
+                iterationRecorded = this.IterationRecorded;
+            }
         }
+
+        if (currentIterationSnapshot is not null)
+        {
+            iterationRecorded?.Invoke(this, currentIterationSnapshot);
+        }
+
+        return true;
     }
 
     public bool IsInitializationComplete(WorkInitializationId initializationId)

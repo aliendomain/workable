@@ -10,15 +10,16 @@ public sealed record WorkSystemThroughput(
 
 public sealed record WorkThroughputBucket(
     DateTimeOffset At,
-    int Queued,
-    int Succeeded,
+    int Started,
+    int Completed,
     int Failed,
+    int Canceled,
     double AverageExecutionMilliseconds);
 
 public sealed record WorkThroughputLiveSummary(
     int WindowSeconds,
-    double QueuedPerSecond,
-    double SucceededPerSecond,
+    double StartedPerSecond,
+    double CompletedPerSecond,
     double FailedPerSecond,
-    double QueueDeltaPerSecond,
+    double CanceledPerSecond,
     double AverageExecutionMilliseconds);

@@ -202,7 +202,6 @@ internal sealed class WorkerOperations : IWorkerOperations, IWorkQuery, IDisposa
         }
 
         this.workerEvents.Queued(record);
-        this.metrics.WorkerQueued(record.Work.Definition.Id, now);
         var handle = new WorkerHandle(outcome, record);
 
         if (shouldScheduleStart)
@@ -268,8 +267,12 @@ internal sealed class WorkerOperations : IWorkerOperations, IWorkQuery, IDisposa
     {
         if (this.workers.ContainsKey(worker.Id))
         {
+            var existing = this.iterationIndex.Get(new WorkerIterationReference(worker.Id, iteration.Sequence));
             this.iterationIndex.Register(worker, iteration);
-            this.metrics.IterationCompleted(worker.Work.Definition.Id, iteration);
+            if (existing is null || existing.Status != iteration.Status)
+            {
+                this.metrics.IterationRecorded(worker.Work.Definition.Id, iteration);
+            }
         }
     }
 

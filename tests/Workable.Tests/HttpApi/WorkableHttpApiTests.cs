@@ -332,8 +332,8 @@ public sealed class WorkableHttpApiTests
         Assert.Equal(1, viewComponents["relationships"]?["data"]?["completedIterationCount"]?.GetValue<int>());
         Assert.Equal(0, viewComponents["relationships"]?["data"]?["failedIterationCount"]?.GetValue<int>());
         Assert.Equal("ok", throughputComponent["status"]?.GetValue<string>());
-        Assert.Equal(2, throughputBuckets.Sum(bucket => bucket?["queued"]?.GetValue<int>() ?? 0));
-        Assert.Equal(1, throughputBuckets.Sum(bucket => bucket?["succeeded"]?.GetValue<int>() ?? 0));
+        Assert.Equal(2, throughputBuckets.Sum(bucket => bucket?["started"]?.GetValue<int>() ?? 0));
+        Assert.Equal(1, throughputBuckets.Sum(bucket => bucket?["completed"]?.GetValue<int>() ?? 0));
         Assert.Equal(1, throughputBuckets.Sum(bucket => bucket?["failed"]?.GetValue<int>() ?? 0));
         Assert.DoesNotContain("throughput", defaultComponents.Select(component => component.Key));
     }

@@ -14,10 +14,10 @@ public sealed class WorkMetricsSinkTests
         var now = DateTimeOffset.UtcNow;
         var old = now.AddMinutes(-20);
 
-        metrics.WorkerQueued(oldDefinitionId, old);
-        metrics.IterationCompleted(oldDefinitionId, CompletedIteration(old));
+        metrics.IterationRecorded(oldDefinitionId, StartedIteration(old.AddMilliseconds(-50)));
+        metrics.IterationRecorded(oldDefinitionId, CompletedIteration(old));
 
-        metrics.WorkerQueued(currentDefinitionId, now);
+        metrics.IterationRecorded(currentDefinitionId, StartedIteration(now));
 
         var minuteThroughput = metrics.GetThroughput(
             new WorkThroughputQuery(WindowSeconds: 3_600, BucketSeconds: 60),
@@ -26,10 +26,20 @@ public sealed class WorkMetricsSinkTests
             new WorkThroughputQuery(WindowSeconds: 3_600, BucketSeconds: 15),
             new HashSet<WorkDefinitionId> { oldDefinitionId });
 
-        Assert.Equal(1, minuteThroughput.Buckets.Sum(bucket => bucket.Queued));
-        Assert.Equal(1, minuteThroughput.Buckets.Sum(bucket => bucket.Succeeded));
+        Assert.Equal(1, minuteThroughput.Buckets.Sum(bucket => bucket.Started));
+        Assert.Equal(1, minuteThroughput.Buckets.Sum(bucket => bucket.Completed));
         Assert.Empty(secondThroughput.Buckets);
     }
+
+    private static WorkerIterationSnapshot StartedIteration(DateTimeOffset startedAt)
+        => new(
+            Sequence: 1,
+            StartedAt: startedAt,
+            CompletedAt: startedAt,
+            ExecutionDuration: TimeSpan.Zero,
+            Status: WorkCompletionStatus.Executing,
+            Output: null,
+            Messages: []);
 
     private static WorkerIterationSnapshot CompletedIteration(DateTimeOffset completedAt)
         => new(

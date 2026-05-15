@@ -360,18 +360,19 @@ export type WorkSystemThroughput = {
 
 export type WorkThroughputBucket = {
   at: string;
-  queued: number;
-  succeeded: number;
+  started: number;
+  completed: number;
   failed: number;
+  canceled: number;
   averageExecutionMilliseconds: number;
 };
 
 export type WorkThroughputLiveSummary = {
   windowSeconds: number;
-  queuedPerSecond: number;
-  succeededPerSecond: number;
+  startedPerSecond: number;
+  completedPerSecond: number;
   failedPerSecond: number;
-  queueDeltaPerSecond: number;
+  canceledPerSecond: number;
   averageExecutionMilliseconds: number;
 };
 

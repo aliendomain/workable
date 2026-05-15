@@ -13,39 +13,43 @@ internal sealed class InMemoryWorkMetricsSink : IWorkMetricsSink
     private readonly MetricStore minuteBuckets = new();
     private long lastPrunedSecond;
 
-    public void WorkerQueued(WorkDefinitionId definitionId, DateTimeOffset queuedAt)
+    public void IterationRecorded(WorkDefinitionId definitionId, WorkerIterationSnapshot iteration)
     {
-        var second = queuedAt.ToUnixTimeSeconds();
-        this.Record(
-            definitionId,
-            second,
-            static bucket => bucket.IncrementQueued());
-        this.PruneIfDue(second);
-    }
-
-    public void IterationCompleted(WorkDefinitionId definitionId, WorkerIterationSnapshot iteration)
-    {
-        if (iteration.Status is not (WorkCompletionStatus.Completed or WorkCompletionStatus.Failed))
+        if (iteration.Status is not (
+            WorkCompletionStatus.Executing or
+            WorkCompletionStatus.Completed or
+            WorkCompletionStatus.Failed or
+            WorkCompletionStatus.Canceled))
         {
             return;
         }
 
-        var second = iteration.CompletedAt.ToUnixTimeSeconds();
+        var second = (iteration.Status == WorkCompletionStatus.Executing
+            ? iteration.StartedAt
+            : iteration.CompletedAt).ToUnixTimeSeconds();
         this.Record(
             definitionId,
             second,
             bucket =>
             {
-                if (iteration.Status == WorkCompletionStatus.Completed)
+                switch (iteration.Status)
                 {
-                    bucket.IncrementSucceeded();
+                    case WorkCompletionStatus.Executing:
+                        bucket.IncrementStarted();
+                        break;
+                    case WorkCompletionStatus.Completed:
+                        bucket.IncrementCompleted();
+                        bucket.AddExecution(iteration.ExecutionDuration);
+                        break;
+                    case WorkCompletionStatus.Failed:
+                        bucket.IncrementFailed();
+                        bucket.AddExecution(iteration.ExecutionDuration);
+                        break;
+                    case WorkCompletionStatus.Canceled:
+                        bucket.IncrementCanceled();
+                        bucket.AddExecution(iteration.ExecutionDuration);
+                        break;
                 }
-                else
-                {
-                    bucket.IncrementFailed();
-                }
-
-                bucket.AddExecution(iteration.ExecutionDuration);
             });
         this.PruneIfDue(second);
     }
@@ -212,9 +216,10 @@ internal sealed class InMemoryWorkMetricsSink : IWorkMetricsSink
     private static WorkThroughputBucket ToThroughputBucket(long second, WorkMetricBucketSnapshot aggregate)
         => new(
             DateTimeOffset.FromUnixTimeSeconds(second),
-            ToInt32Saturated(aggregate.Queued),
-            ToInt32Saturated(aggregate.Succeeded),
+            ToInt32Saturated(aggregate.Started),
+            ToInt32Saturated(aggregate.Completed),
             ToInt32Saturated(aggregate.Failed),
+            ToInt32Saturated(aggregate.Canceled),
             aggregate.ExecutionCount == 0
                 ? 0
                 : TimeSpan.FromTicks(aggregate.ExecutionTicks / aggregate.ExecutionCount).TotalMilliseconds);
@@ -231,10 +236,10 @@ internal sealed class InMemoryWorkMetricsSink : IWorkMetricsSink
 
         return new WorkThroughputLiveSummary(
             LiveSummaryWindowSeconds,
-            aggregate.Queued / (double)LiveSummaryWindowSeconds,
-            aggregate.Succeeded / (double)LiveSummaryWindowSeconds,
+            aggregate.Started / (double)LiveSummaryWindowSeconds,
+            aggregate.Completed / (double)LiveSummaryWindowSeconds,
             aggregate.Failed / (double)LiveSummaryWindowSeconds,
-            (aggregate.Queued - aggregate.Succeeded - aggregate.Failed) / (double)LiveSummaryWindowSeconds,
+            aggregate.Canceled / (double)LiveSummaryWindowSeconds,
             aggregate.ExecutionCount == 0
                 ? 0
                 : TimeSpan.FromTicks(aggregate.ExecutionTicks / aggregate.ExecutionCount).TotalMilliseconds);
@@ -289,20 +294,24 @@ internal sealed class InMemoryWorkMetricsSink : IWorkMetricsSink
 
     private sealed class WorkMetricBucket
     {
-        private long queued;
-        private long succeeded;
+        private long started;
+        private long completed;
         private long failed;
+        private long canceled;
         private long executionCount;
         private long executionTicks;
 
-        public void IncrementQueued()
-            => Interlocked.Increment(ref this.queued);
+        public void IncrementStarted()
+            => Interlocked.Increment(ref this.started);
 
-        public void IncrementSucceeded()
-            => Interlocked.Increment(ref this.succeeded);
+        public void IncrementCompleted()
+            => Interlocked.Increment(ref this.completed);
 
         public void IncrementFailed()
             => Interlocked.Increment(ref this.failed);
+
+        public void IncrementCanceled()
+            => Interlocked.Increment(ref this.canceled);
 
         public void AddExecution(TimeSpan duration)
         {
@@ -312,41 +321,47 @@ internal sealed class InMemoryWorkMetricsSink : IWorkMetricsSink
 
         public WorkMetricBucketSnapshot Snapshot()
             => new(
-                Volatile.Read(ref this.queued),
-                Volatile.Read(ref this.succeeded),
+                Volatile.Read(ref this.started),
+                Volatile.Read(ref this.completed),
                 Volatile.Read(ref this.failed),
+                Volatile.Read(ref this.canceled),
                 Volatile.Read(ref this.executionCount),
                 Volatile.Read(ref this.executionTicks));
     }
 
     private sealed class WorkMetricBucketSnapshot(
-        long queued = 0,
-        long succeeded = 0,
+        long started = 0,
+        long completed = 0,
         long failed = 0,
+        long canceled = 0,
         long executionCount = 0,
         long executionTicks = 0)
     {
-        public long Queued { get; private set; } = queued;
+        public long Started { get; private set; } = started;
 
-        public long Succeeded { get; private set; } = succeeded;
+        public long Completed { get; private set; } = completed;
 
         public long Failed { get; private set; } = failed;
+
+        public long Canceled { get; private set; } = canceled;
 
         public long ExecutionCount { get; private set; } = executionCount;
 
         public long ExecutionTicks { get; private set; } = executionTicks;
 
         public bool IsEmpty
-            => this.Queued == 0 &&
-               this.Succeeded == 0 &&
+            => this.Started == 0 &&
+               this.Completed == 0 &&
                this.Failed == 0 &&
+               this.Canceled == 0 &&
                this.ExecutionCount == 0;
 
         public void Add(WorkMetricBucketSnapshot bucket)
         {
-            this.Queued += bucket.Queued;
-            this.Succeeded += bucket.Succeeded;
+            this.Started += bucket.Started;
+            this.Completed += bucket.Completed;
             this.Failed += bucket.Failed;
+            this.Canceled += bucket.Canceled;
             this.ExecutionCount += bucket.ExecutionCount;
             this.ExecutionTicks += bucket.ExecutionTicks;
         }

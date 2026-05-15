@@ -3,8 +3,6 @@
 import Image from "next/image";
 import {
   Activity,
-  ArrowDown,
-  ArrowUp,
   Ban,
   Boxes,
   Braces,
@@ -16,7 +14,6 @@ import {
   CircleAlert,
   CircleDot,
   Clock3,
-  Equal,
   FileCode2,
   Folder,
   ListFilter,
@@ -190,14 +187,12 @@ const LEGACY_CONNECTION_STORAGE_KEY = "workable-console.connection";
 
 type View = "overview" | "definitions" | "definition" | "workers" | "iterations" | "worker";
 type ServerView = Exclude<View, "worker">;
-type ThroughputMode = "completion" | "queued" | "execution";
+type ThroughputMode = "completion" | "execution";
 type ThroughputMetric = {
   description: string;
   id: string;
   label: string;
   pulseClass?: string;
-  toneClass?: string;
-  trend?: "up" | "down" | "steady";
   value: string;
   valueClass?: string;
   widthClass?: string;
@@ -3366,7 +3361,6 @@ function OverviewView({
       )}
       {isPanelVisible("throughput") && (
         <ThroughputChartPanel
-          activeWorkerCount={activeWorkerCount}
           collapsed={throughputCollapsed}
           loading={(overview.loading && !throughputData) || (throughput.loading && !throughputData)}
           mode={throughputMode}
@@ -6060,7 +6054,6 @@ function MetricCard({
 }
 
 function ThroughputChartPanel({
-  activeWorkerCount,
   collapsed,
   loading,
   mode,
@@ -6070,7 +6063,6 @@ function ThroughputChartPanel({
   throughput,
   windowSeconds,
 }: {
-  activeWorkerCount: number;
   collapsed?: boolean;
   loading: boolean;
   mode: ThroughputMode;
@@ -6080,11 +6072,10 @@ function ThroughputChartPanel({
   throughput?: WorkSystemThroughput;
   windowSeconds: number;
 }) {
-  const selectedMode = mode === "queued" ? "completion" : mode;
-  const chartLabel = selectedMode === "execution" ? "Execution time" : "Throughput";
-  const chartDescription = selectedMode === "execution"
-    ? "Average execution time for completed iterations, scoped to the current overview filter."
-    : "Queued, succeeded, and failed iteration rates, scoped to the current overview filter.";
+  const chartLabel = mode === "execution" ? "Execution time" : "Throughput";
+  const chartDescription = mode === "execution"
+    ? "Average execution time for settled iterations, scoped to the current overview filter."
+    : "Started, completed, failed, and canceled iteration rates, scoped to the current overview filter.";
   return (
     <OverviewPanelShell
       actions={
@@ -6109,19 +6100,18 @@ function ThroughputChartPanel({
       description={chartDescription}
       title={chartLabel}
     >
-      <Tabs value={selectedMode} onValueChange={(value) => onModeChange(value as ThroughputMode)}>
+      <Tabs value={mode} onValueChange={(value) => onModeChange(value as ThroughputMode)}>
         <TabsList className="h-8">
           <TabsTrigger className="text-xs" value="completion">Throughput</TabsTrigger>
           <TabsTrigger className="text-xs" value="execution">Execution</TabsTrigger>
         </TabsList>
-        <TabsContent className="mt-3" value={selectedMode}>
+        <TabsContent className="mt-3" value={mode}>
           {loading ? (
             <Skeleton className="h-52 w-full" />
           ) : (
             <ThroughputAreaChart
-              activeWorkerCount={activeWorkerCount}
-              key={selectedMode}
-              mode={selectedMode}
+              key={mode}
+              mode={mode}
               throughput={throughput}
               windowSeconds={windowSeconds}
             />
@@ -6133,12 +6123,10 @@ function ThroughputChartPanel({
 }
 
 function ThroughputAreaChart({
-  activeWorkerCount,
   mode,
   throughput,
   windowSeconds,
 }: {
-  activeWorkerCount: number;
   mode: ThroughputMode;
   throughput?: WorkSystemThroughput;
   windowSeconds: number;
@@ -6152,7 +6140,6 @@ function ThroughputAreaChart({
   const metrics = createThroughputMetrics(
     mode,
     throughput,
-    activeWorkerCount,
     windowSeconds
   );
 
@@ -6176,9 +6163,6 @@ function ThroughputAreaChart({
                   tabIndex={0}
                 >
                   {metric.pulseClass && <span className={`size-2 rounded-full ${metric.pulseClass}`} />}
-                  {metric.trend === "up" && <ArrowUp className={`size-3.5 shrink-0 ${metric.toneClass ?? ""}`} />}
-                  {metric.trend === "down" && <ArrowDown className={`size-3.5 shrink-0 ${metric.toneClass ?? ""}`} />}
-                  {metric.trend === "steady" && <Equal className={`size-3.5 shrink-0 ${metric.toneClass ?? ""}`} />}
                   {metric.label && <span className="text-muted-foreground text-[11px]">{metric.label}</span>}
                   <span className={`font-mono font-semibold text-xs ${metric.valueClass ?? ""}`}>{metric.value}</span>
                 </div>
@@ -6284,18 +6268,6 @@ function createThroughputSeries(
   bucketSeconds: number
 ) {
   const normalizedBucketSeconds = Math.max(1, bucketSeconds);
-  if (mode === "queued") {
-    return [
-      {
-        color: "#38bdf8",
-        gradientId: "queued-throughput",
-        label: "Queued",
-        legendClass: "bg-sky-400",
-        values: buckets.map((bucket) => bucket.queued / normalizedBucketSeconds),
-      },
-    ];
-  }
-
   if (mode === "execution") {
     return [
       {
@@ -6311,17 +6283,17 @@ function createThroughputSeries(
   return [
       {
         color: "#38bdf8",
-        gradientId: "queued-throughput",
-        label: "Queued",
+        gradientId: "started-throughput",
+        label: "Started",
         legendClass: "bg-sky-400",
-        values: buckets.map((bucket) => bucket.queued / normalizedBucketSeconds),
+        values: buckets.map((bucket) => bucket.started / normalizedBucketSeconds),
       },
       {
         color: "#34d399",
-        gradientId: "succeeded-throughput",
-        label: "Succeeded",
+        gradientId: "completed-throughput",
+        label: "Completed",
         legendClass: "bg-emerald-400",
-        values: buckets.map((bucket) => bucket.succeeded / normalizedBucketSeconds),
+        values: buckets.map((bucket) => bucket.completed / normalizedBucketSeconds),
       },
       {
         color: "#f87171",
@@ -6329,6 +6301,13 @@ function createThroughputSeries(
         label: "Failed",
         legendClass: "bg-red-400",
         values: buckets.map((bucket) => bucket.failed / normalizedBucketSeconds),
+      },
+      {
+        color: "#fbbf24",
+        gradientId: "canceled-throughput",
+        label: "Canceled",
+        legendClass: "bg-amber-400",
+        values: buckets.map((bucket) => bucket.canceled / normalizedBucketSeconds),
       },
   ];
 }
@@ -6366,16 +6345,15 @@ function chartPoint(value: number, index: number, count: number, maxValue: numbe
 function createThroughputMetrics(
   mode: ThroughputMode,
   chartThroughput: WorkSystemThroughput | undefined,
-  activeWorkerCount: number,
   chartWindowSeconds: number
 ): ThroughputMetric[] {
   const buckets = getSettledThroughputBuckets(chartThroughput);
-  const totalDescription = `Total completed iterations in the selected ${formatThroughputWindowLabel(chartWindowSeconds)} chart window. This includes succeeded and failed work, but not queued work.`;
+  const totalDescription = `Total settled iterations in the selected ${formatThroughputWindowLabel(chartWindowSeconds)} chart window. This includes completed, failed, and canceled iterations.`;
   if (!chartThroughput || buckets.length === 0) {
     return [
       {
-        description: "Queued iterations per second over the last 60 seconds.",
-        id: "queued",
+        description: "Started iterations per second over the last 60 seconds.",
+        id: "started",
         label: "",
         pulseClass: "bg-sky-400",
         value: "-",
@@ -6383,8 +6361,8 @@ function createThroughputMetrics(
         widthClass: "min-w-16",
       },
       {
-        description: "Succeeded iterations per second over the last 60 seconds.",
-        id: "succeeded",
+        description: "Completed iterations per second over the last 60 seconds.",
+        id: "completed",
         label: "",
         pulseClass: "bg-emerald-400",
         value: "-",
@@ -6412,22 +6390,7 @@ function createThroughputMetrics(
       ...(mode === "completion"
         ? [
             {
-              description: "Last-60-seconds queued rate compared with completed rate. Growing means new work is arriving faster than it is finishing.",
-              id: "net",
-              label: "",
-              trend: "steady" as const,
-              value: "-",
-              widthClass: "w-24",
-            },
-            {
-              description: "Estimated time to clear active workers at the last-60-seconds completion rate.",
-              id: "eta",
-              label: "ETA",
-              value: "-",
-              widthClass: "min-w-20",
-            },
-            {
-              description: "Average execution time across completed work in the last 60 seconds.",
+              description: "Average execution time across settled iterations in the last 60 seconds.",
               id: "live-average",
               label: "Avg",
               value: "-",
@@ -6467,30 +6430,28 @@ function createThroughputMetrics(
 
   const liveSummary = chartThroughput.liveSummary;
   const averageExecution = liveSummary.averageExecutionMilliseconds;
-  const latestQueuedRate = liveSummary.queuedPerSecond;
-  const latestSucceededRate = liveSummary.succeededPerSecond;
+  const latestStartedRate = liveSummary.startedPerSecond;
+  const latestCompletedRate = liveSummary.completedPerSecond;
   const latestFailedRate = liveSummary.failedPerSecond;
-  const latestCompletionRate = latestSucceededRate + latestFailedRate;
-  const completedTotal = buckets.reduce((sum, bucket) =>
-    sum + bucket.succeeded + bucket.failed, 0);
-  const backlogRate = liveSummary.queueDeltaPerSecond;
-  const drain = formatDrainTime(activeWorkerCount, latestCompletionRate);
+  const latestCanceledRate = liveSummary.canceledPerSecond;
+  const settledTotal = buckets.reduce((sum, bucket) =>
+    sum + bucket.completed + bucket.failed + bucket.canceled, 0);
   return [
     {
-      description: "Queued iterations per second over the last 60 seconds.",
-      id: "queued",
+      description: "Started iterations per second over the last 60 seconds.",
+      id: "started",
       label: "",
       pulseClass: "bg-sky-400 shadow-[0_0_14px_rgba(56,189,248,0.75)]",
-      value: `${formatRate(latestQueuedRate)}/s`,
+      value: `${formatRate(latestStartedRate)}/s`,
       valueClass: "text-sky-300",
       widthClass: "min-w-16",
     },
     {
-      description: "Succeeded iterations per second over the last 60 seconds.",
-      id: "succeeded",
+      description: "Completed iterations per second over the last 60 seconds.",
+      id: "completed",
       label: "",
       pulseClass: "bg-emerald-400 shadow-[0_0_14px_rgba(52,211,153,0.75)]",
-      value: `${formatRate(latestSucceededRate)}/s`,
+      value: `${formatRate(latestCompletedRate)}/s`,
       valueClass: "text-emerald-300",
       widthClass: "min-w-16",
     },
@@ -6504,88 +6465,29 @@ function createThroughputMetrics(
       widthClass: "min-w-16",
     },
     {
+      description: "Canceled iterations per second over the last 60 seconds.",
+      id: "canceled",
+      label: "",
+      pulseClass: "bg-amber-400 shadow-[0_0_14px_rgba(251,191,36,0.7)]",
+      value: `${formatRate(latestCanceledRate)}/s`,
+      valueClass: "text-amber-300",
+      widthClass: "min-w-16",
+    },
+    {
       description: totalDescription,
       id: "total",
       label: "Total",
-      value: String(completedTotal),
+      value: String(settledTotal),
       widthClass: "min-w-20",
     },
     {
-      description: "Last-60-seconds queued rate compared with completed rate. Growing means new work is arriving faster than it is finishing.",
-      id: "net",
-      label: "",
-      toneClass: getBacklogToneClass(backlogRate, latestCompletionRate),
-      trend: getBacklogTrend(backlogRate),
-      value: formatBacklogMovement(backlogRate),
-      valueClass: getBacklogToneClass(backlogRate, latestCompletionRate),
-      widthClass: "w-24",
-    },
-    {
-      description: "Estimated time to clear active workers at the last-60-seconds completion rate.",
-      id: "eta",
-      label: "ETA",
-      toneClass: getDrainToneClass(drain.seconds),
-      value: drain.text,
-      widthClass: "min-w-20",
-    },
-    {
-      description: "Average execution time across completed work in the last 60 seconds.",
+      description: "Average execution time across settled iterations in the last 60 seconds.",
       id: "live-average",
       label: "Avg",
       value: formatMilliseconds(averageExecution),
       widthClass: "min-w-20",
     },
   ];
-}
-
-function getBacklogToneClass(backlogRate: number, completionRate: number) {
-  if (backlogRate <= 0) {
-    return "text-emerald-300";
-  }
-
-  if (backlogRate <= Math.max(1, completionRate * 0.15)) {
-    return "text-amber-300";
-  }
-
-  return "text-red-300";
-}
-
-function getDrainToneClass(seconds: number | null) {
-  if (seconds === null) {
-    return "border-red-400/35 bg-red-400/10 text-red-200";
-  }
-
-  if (seconds <= 30) {
-    return "border-emerald-400/30 bg-emerald-400/10 text-emerald-200";
-  }
-
-  if (seconds <= 120) {
-    return "border-amber-400/30 bg-amber-400/10 text-amber-200";
-  }
-
-  return "border-red-400/35 bg-red-400/10 text-red-200";
-}
-
-function averageVisibleExecutionMilliseconds(buckets: WorkThroughputBucket[]) {
-  const values = buckets
-    .map((bucket) => bucket.averageExecutionMilliseconds)
-    .filter((value) => value > 0);
-  return values.length === 0
-    ? 0
-    : values.reduce((sum, value) => sum + value, 0) / values.length;
-}
-
-function formatDrainTime(activeWorkerCount: number, completionRate: number) {
-  if (activeWorkerCount <= 0) {
-    return { seconds: 0, text: "0s" };
-  }
-
-  if (completionRate <= 0) {
-    return { seconds: null, text: "stalled" };
-  }
-
-  const seconds = activeWorkerCount / completionRate;
-  return { seconds, text: formatDurationSeconds(seconds).text };
 }
 
 function formatThroughputWindowLabel(seconds: number) {
@@ -6691,28 +6593,6 @@ function formatRate(value: number) {
   return value.toFixed(2);
 }
 
-function formatBacklogMovement(value: number) {
-  const normalized = Math.abs(value) < 0.005 ? 0 : value;
-  if (normalized > 0) {
-    return `${formatRate(normalized)}/s`;
-  }
-  if (normalized < 0) {
-    return `${formatRate(Math.abs(normalized))}/s`;
-  }
-  return "0/s";
-}
-
-function getBacklogTrend(value: number) {
-  const normalized = Math.abs(value) < 0.005 ? 0 : value;
-  if (normalized > 0) {
-    return "up" as const;
-  }
-  if (normalized < 0) {
-    return "down" as const;
-  }
-  return "steady" as const;
-}
-
 function formatMilliseconds(value: number) {
   if (value >= 1000) {
     return `${(value / 1000).toFixed(value >= 10_000 ? 0 : 1)}s`;
@@ -6773,10 +6653,10 @@ function getWorkComponentErrors(result: WorkComponentQueryResult | undefined) {
 function compactThroughputLiveSummary(summary: WorkSystemThroughput["liveSummary"]) {
   return [
     summary.windowSeconds,
-    summary.queuedPerSecond,
-    summary.succeededPerSecond,
+    summary.startedPerSecond,
+    summary.completedPerSecond,
     summary.failedPerSecond,
-    summary.queueDeltaPerSecond,
+    summary.canceledPerSecond,
     Math.round(summary.averageExecutionMilliseconds),
   ].join("|");
 }
@@ -6784,16 +6664,18 @@ function compactThroughputLiveSummary(summary: WorkSystemThroughput["liveSummary
 function compactThroughputBuckets(buckets: WorkThroughputBucket[]) {
   return buckets
     .filter((bucket) =>
-      bucket.queued > 0 ||
-      bucket.succeeded > 0 ||
+      bucket.started > 0 ||
+      bucket.completed > 0 ||
       bucket.failed > 0 ||
+      bucket.canceled > 0 ||
       bucket.averageExecutionMilliseconds > 0
     )
     .map((bucket) => [
       bucket.at,
-      bucket.queued,
-      bucket.succeeded,
+      bucket.started,
+      bucket.completed,
       bucket.failed,
+      bucket.canceled,
       Math.round(bucket.averageExecutionMilliseconds),
     ].join(":"))
     .join("|");

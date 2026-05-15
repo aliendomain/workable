@@ -120,12 +120,14 @@ public sealed class WorkQueryTests
     [Fact]
     public async Task QueryWorkerIterationsCanFilterExecutingIteration()
     {
+        var discoveredIdentifier = new WorkIdentifier("execution", "active");
         var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         await using var system = CreateSystem(
             WorkDefinition.Create("iteration.executing", "Keeps an iteration executing."),
-            async (_, _, cancellationToken) =>
+            async (context, _, cancellationToken) =>
             {
+                context.AddIdentifier(discoveredIdentifier);
                 entered.TrySetResult();
                 await release.Task.WaitAsync(cancellationToken);
                 return WorkExecutionResult.Success();
@@ -142,6 +144,9 @@ public sealed class WorkQueryTests
             var snapshot = await system.Query.GetWorkerIteration(new WorkerIterationReference(workerId, 1));
             var executing = await system.Query.QueryWorkerIterations(new WorkerIterationQuery(
                 Statuses: new HashSet<WorkCompletionStatus> { WorkCompletionStatus.Executing }));
+            var executingByDiscoveredIdentifier = await system.Query.QueryWorkerIterations(new WorkerIterationQuery(
+                Identifier: discoveredIdentifier,
+                Statuses: new HashSet<WorkCompletionStatus> { WorkCompletionStatus.Executing }));
             var overview = await system.Query.GetSystemOverview();
 
             Assert.NotNull(snapshot);
@@ -149,6 +154,9 @@ public sealed class WorkQueryTests
             var item = Assert.Single(executing.Iterations);
             Assert.Equal(workerId, item.WorkerId);
             Assert.Equal(WorkCompletionStatus.Executing, item.Status);
+            var itemByDiscoveredIdentifier = Assert.Single(executingByDiscoveredIdentifier.Iterations);
+            Assert.Equal(workerId, itemByDiscoveredIdentifier.WorkerId);
+            Assert.Contains(discoveredIdentifier, itemByDiscoveredIdentifier.Identifiers);
             Assert.Equal(1, overview.CurrentIterationCount);
             Assert.Equal(1, overview.IterationCountByStatus[WorkCompletionStatus.Executing]);
         }
@@ -1186,8 +1194,9 @@ public sealed class WorkQueryTests
     }
 
     [Fact]
-    public async Task GetSystemOverviewThroughputReportsQueuedSucceededAndFailedIterationsWithinScope()
+    public async Task GetSystemOverviewThroughputReportsIterationLifecycleEventsWithinScope()
     {
+        var cancelStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         await using var system = new ServiceCollection()
             .AddWorkableSystem("overview-throughput", builder =>
             {
@@ -1197,6 +1206,14 @@ public sealed class WorkQueryTests
                 builder.AddWork(
                     WorkDefinition.Create("metrics.failed", category: "Metrics:Included"),
                     (context, input, cancellationToken) => Task.FromResult(WorkExecutionResult.Failure([WorkMessage.Error("metrics.failed", "Failed.")])));
+                builder.AddWork(
+                    WorkDefinition.Create("metrics.canceled", category: "Metrics:Included"),
+                    async (_, _, cancellationToken) =>
+                    {
+                        cancelStarted.TrySetResult();
+                        await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+                        return WorkExecutionResult.Success();
+                    });
                 builder.AddWork(
                     WorkDefinition.Create("metrics.other", category: "Metrics:Other"),
                     SuccessfulWork);
@@ -1208,6 +1225,12 @@ public sealed class WorkQueryTests
         await system.Start();
         await (await system.Queue.Enqueue("metrics.success")).WaitForCompletion();
         await (await system.Queue.Enqueue("metrics.failed")).WaitForCompletion();
+        var canceled = await system.Queue.Enqueue("metrics.canceled");
+        await cancelStarted.Task.WaitAsync(TimeSpan.FromSeconds(1));
+        var canceledWorker = await system.Query.GetWorker(RequiredWorkerId(canceled))
+            ?? throw new InvalidOperationException("Expected canceled worker.");
+        await system.Workers.Execute(canceledWorker.Version, WorkAction.Cancel);
+        await canceled.WaitForCompletion();
         await (await system.Queue.Enqueue("metrics.other")).WaitForCompletion();
 
         var overviewWithoutThroughput = await system.Query.GetSystemOverview(new WorkOverviewQuery(
@@ -1221,18 +1244,20 @@ public sealed class WorkQueryTests
 
         Assert.Null(overviewWithoutThroughput.Throughput);
         Assert.NotNull(overview.Throughput);
-        Assert.Equal(2, overview.Throughput.Buckets.Sum(bucket => bucket.Queued));
-        Assert.Equal(1, overview.Throughput.Buckets.Sum(bucket => bucket.Succeeded));
+        Assert.Equal(3, overview.Throughput.Buckets.Sum(bucket => bucket.Started));
+        Assert.Equal(1, overview.Throughput.Buckets.Sum(bucket => bucket.Completed));
         Assert.Equal(1, overview.Throughput.Buckets.Sum(bucket => bucket.Failed));
-        Assert.Equal(2, throughput.Buckets.Sum(bucket => bucket.Queued));
-        Assert.Equal(1, throughput.Buckets.Sum(bucket => bucket.Succeeded));
+        Assert.Equal(1, overview.Throughput.Buckets.Sum(bucket => bucket.Canceled));
+        Assert.Equal(3, throughput.Buckets.Sum(bucket => bucket.Started));
+        Assert.Equal(1, throughput.Buckets.Sum(bucket => bucket.Completed));
         Assert.Equal(1, throughput.Buckets.Sum(bucket => bucket.Failed));
+        Assert.Equal(1, throughput.Buckets.Sum(bucket => bucket.Canceled));
         Assert.Equal(60, throughput.LiveSummary.WindowSeconds);
-        Assert.Equal(2 / 60.0, throughput.LiveSummary.QueuedPerSecond, precision: 6);
-        Assert.Equal(1 / 60.0, throughput.LiveSummary.SucceededPerSecond, precision: 6);
+        Assert.Equal(3 / 60.0, throughput.LiveSummary.StartedPerSecond, precision: 6);
+        Assert.Equal(1 / 60.0, throughput.LiveSummary.CompletedPerSecond, precision: 6);
         Assert.Equal(1 / 60.0, throughput.LiveSummary.FailedPerSecond, precision: 6);
-        Assert.Equal(0, throughput.LiveSummary.QueueDeltaPerSecond, precision: 6);
-        Assert.All(throughput.Buckets.Where(bucket => bucket.Succeeded > 0 || bucket.Failed > 0), bucket =>
+        Assert.Equal(1 / 60.0, throughput.LiveSummary.CanceledPerSecond, precision: 6);
+        Assert.All(throughput.Buckets.Where(bucket => bucket.Completed > 0 || bucket.Failed > 0 || bucket.Canceled > 0), bucket =>
             Assert.True(bucket.AverageExecutionMilliseconds >= 0));
     }
 
@@ -1263,13 +1288,13 @@ public sealed class WorkQueryTests
             new WorkThroughputQuery(WindowSeconds: 60, BucketSeconds: 1));
 
         Assert.True(purge.IsAccepted);
-        Assert.Equal(1, beforePurge.Buckets.Sum(bucket => bucket.Queued));
-        Assert.Equal(1, beforePurge.Buckets.Sum(bucket => bucket.Succeeded));
+        Assert.Equal(1, beforePurge.Buckets.Sum(bucket => bucket.Started));
+        Assert.Equal(1, beforePurge.Buckets.Sum(bucket => bucket.Completed));
         Assert.Empty(afterPurgeIterations.Iterations);
-        Assert.Equal(1, afterPurge.Buckets.Sum(bucket => bucket.Queued));
-        Assert.Equal(1, afterPurge.Buckets.Sum(bucket => bucket.Succeeded));
-        Assert.Equal(1 / 60.0, afterPurge.LiveSummary.QueuedPerSecond, precision: 6);
-        Assert.Equal(1 / 60.0, afterPurge.LiveSummary.SucceededPerSecond, precision: 6);
+        Assert.Equal(1, afterPurge.Buckets.Sum(bucket => bucket.Started));
+        Assert.Equal(1, afterPurge.Buckets.Sum(bucket => bucket.Completed));
+        Assert.Equal(1 / 60.0, afterPurge.LiveSummary.StartedPerSecond, precision: 6);
+        Assert.Equal(1 / 60.0, afterPurge.LiveSummary.CompletedPerSecond, precision: 6);
     }
 
     private static IWorkSystem CreateSystem(
