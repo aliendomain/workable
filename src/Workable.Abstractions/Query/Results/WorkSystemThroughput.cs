@@ -5,12 +5,14 @@ public sealed record WorkSystemThroughput(
     DateTimeOffset To,
     int WindowSeconds,
     int BucketSeconds,
+    int SettledCount,
     IReadOnlyList<WorkThroughputBucket> Buckets,
     WorkThroughputExecutionSummary ExecutionSummary,
     WorkThroughputLiveSummary LiveSummary) : IWorkQueryResult;
 
 public sealed record WorkSystemThroughputSummary(
     int WindowSeconds,
+    int SettledCount,
     WorkThroughputExecutionSummary ExecutionSummary,
     WorkThroughputLiveSummary LiveSummary) : IWorkQueryResult;
 

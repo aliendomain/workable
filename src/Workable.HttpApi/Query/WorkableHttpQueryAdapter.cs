@@ -457,6 +457,7 @@ public sealed class WorkableHttpQueryAdapter
                 workerCounts.ActiveWorkerCount,
                 new WorkOverviewThroughputCompact(
                     summary.WindowSeconds,
+                    summary.SettledCount,
                     summary.ExecutionSummary,
                     CreateLiveSummary(summary.LiveSummary)));
         }
@@ -472,6 +473,7 @@ public sealed class WorkableHttpQueryAdapter
                 throughput.To,
                 throughput.WindowSeconds,
                 throughput.BucketSeconds,
+                throughput.SettledCount,
                 throughput.Buckets.Select(bucket => new WorkOverviewThroughputBucket(
                     bucket.At,
                     bucket.Started,

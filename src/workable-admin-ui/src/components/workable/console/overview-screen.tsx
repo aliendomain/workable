@@ -1886,7 +1886,7 @@ function ThroughputChartPanel({
   const compact = shape === "compact";
   const chartLabel = mode === "execution" ? "Execution time" : "Throughput";
   const chartDescription = mode === "execution"
-    ? "Execution timing for settled iterations, scoped to the current overview filter."
+    ? "Execution timing for completed iterations, scoped to the current overview filter."
     : "Started, completed, failed, and canceled iteration rates, scoped to the current overview filter.";
   return (
     <OverviewPanelShell
@@ -2272,7 +2272,7 @@ function createThroughputSeries(
         color: "#a78bfa",
         gradientId: "execution-throughput",
         id: "execution-average",
-        label: "Avg execution ms",
+        label: "Avg successful execution ms",
         legendClass: "bg-violet-400",
         values: buckets.map((bucket) => Math.round(bucket.averageExecutionMilliseconds)),
       },
@@ -2357,7 +2357,7 @@ function createThroughputMetrics(
     if (mode === "execution") {
       return [
         {
-          description: `Exact average execution time across settled iterations in the selected ${formatThroughputWindowLabel(chartWindowSeconds)} chart window.`,
+          description: `Exact average execution time across completed iterations in the selected ${formatThroughputWindowLabel(chartWindowSeconds)} chart window. Failed and canceled iterations are excluded.`,
           id: "execution-average",
           label: "Avg",
           pulseClass: "bg-violet-400",
@@ -2365,28 +2365,28 @@ function createThroughputMetrics(
           widthClass: "min-w-20",
         },
         {
-          description: `Approximate p95 execution time across settled iterations in the selected ${formatThroughputWindowLabel(chartWindowSeconds)} chart window, interpolated from fast-work-optimized backend histogram buckets.`,
+          description: `Approximate p95 execution time across completed iterations in the selected ${formatThroughputWindowLabel(chartWindowSeconds)} chart window, interpolated from fast-work-optimized backend histogram buckets. Failed and canceled iterations are excluded.`,
           id: "execution-p95",
           label: "P95",
           value: "-",
           widthClass: "min-w-20",
         },
         {
-          description: `Approximate p99 execution time across settled iterations in the selected ${formatThroughputWindowLabel(chartWindowSeconds)} chart window, interpolated from fast-work-optimized backend histogram buckets.`,
+          description: `Approximate p99 execution time across completed iterations in the selected ${formatThroughputWindowLabel(chartWindowSeconds)} chart window, interpolated from fast-work-optimized backend histogram buckets. Failed and canceled iterations are excluded.`,
           id: "execution-p99",
           label: "P99",
           value: "-",
           widthClass: "min-w-20",
         },
         {
-          description: `Exact slowest execution time across settled iterations in the selected ${formatThroughputWindowLabel(chartWindowSeconds)} chart window.`,
+          description: `Exact slowest execution time across completed iterations in the selected ${formatThroughputWindowLabel(chartWindowSeconds)} chart window. Failed and canceled iterations are excluded.`,
           id: "execution-slowest",
           label: "Slow",
           value: "-",
           widthClass: "min-w-20",
         },
         {
-          description: `Exact count of settled iterations with execution timing in the selected ${formatThroughputWindowLabel(chartWindowSeconds)} chart window.`,
+          description: `Exact count of completed iterations with execution timing in the selected ${formatThroughputWindowLabel(chartWindowSeconds)} chart window.`,
           id: "execution-count",
           label: "Count",
           value: "-",
@@ -2450,7 +2450,7 @@ function createThroughputMetrics(
         widthClass: "min-w-20",
       },
       {
-        description: `Average execution time across settled iterations in the selected ${formatThroughputWindowLabel(chartWindowSeconds)} chart window.`,
+        description: `Average execution time across completed iterations in the selected ${formatThroughputWindowLabel(chartWindowSeconds)} chart window. Failed and canceled iterations are excluded.`,
         id: "window-average",
         label: "Avg",
         value: "-",
@@ -2463,7 +2463,7 @@ function createThroughputMetrics(
     const executionSummary = chartThroughput.executionSummary;
     return [
       {
-        description: `Exact average execution time across ${executionSummary.executionCount} settled ${pluralize("iteration", executionSummary.executionCount)} in the selected ${formatThroughputWindowLabel(chartWindowSeconds)} chart window.`,
+        description: `Exact average execution time across ${executionSummary.executionCount} completed ${pluralize("iteration", executionSummary.executionCount)} in the selected ${formatThroughputWindowLabel(chartWindowSeconds)} chart window. Failed and canceled iterations are excluded.`,
         id: "execution-average",
         label: "Avg",
         pulseClass: "bg-violet-400 shadow-[0_0_14px_rgba(167,139,250,0.75)]",
@@ -2471,28 +2471,28 @@ function createThroughputMetrics(
         widthClass: "min-w-20",
       },
       {
-        description: `Approximate p95 execution time across settled iterations in the selected ${formatThroughputWindowLabel(chartWindowSeconds)} chart window, interpolated from fast-work-optimized backend histogram buckets.`,
+        description: `Approximate p95 execution time across completed iterations in the selected ${formatThroughputWindowLabel(chartWindowSeconds)} chart window, interpolated from fast-work-optimized backend histogram buckets. Failed and canceled iterations are excluded.`,
         id: "execution-p95",
         label: "P95",
         value: formatMilliseconds(executionSummary.p95ExecutionMilliseconds),
         widthClass: "min-w-20",
       },
       {
-        description: `Approximate p99 execution time across settled iterations in the selected ${formatThroughputWindowLabel(chartWindowSeconds)} chart window, interpolated from fast-work-optimized backend histogram buckets.`,
+        description: `Approximate p99 execution time across completed iterations in the selected ${formatThroughputWindowLabel(chartWindowSeconds)} chart window, interpolated from fast-work-optimized backend histogram buckets. Failed and canceled iterations are excluded.`,
         id: "execution-p99",
         label: "P99",
         value: formatMilliseconds(executionSummary.p99ExecutionMilliseconds),
         widthClass: "min-w-20",
       },
       {
-        description: `Exact slowest execution time across settled iterations in the selected ${formatThroughputWindowLabel(chartWindowSeconds)} chart window.`,
+        description: `Exact slowest execution time across completed iterations in the selected ${formatThroughputWindowLabel(chartWindowSeconds)} chart window. Failed and canceled iterations are excluded.`,
         id: "execution-slowest",
         label: "Slow",
         value: formatMilliseconds(executionSummary.slowestExecutionMilliseconds),
         widthClass: "min-w-20",
       },
       {
-        description: `Exact count of settled iterations with execution timing in the selected ${formatThroughputWindowLabel(chartWindowSeconds)} chart window.`,
+        description: `Exact count of completed iterations with execution timing in the selected ${formatThroughputWindowLabel(chartWindowSeconds)} chart window.`,
         id: "execution-count",
         label: "Count",
         value: String(executionSummary.executionCount),
@@ -2507,7 +2507,7 @@ function createThroughputMetrics(
   const latestCompletedRate = liveSummary.completedPerSecond;
   const latestFailedRate = liveSummary.failedPerSecond;
   const latestCanceledRate = liveSummary.canceledPerSecond;
-  const settledTotal = executionSummary.executionCount;
+  const settledTotal = chartThroughput.settledCount;
   const executionPressureMetric = createExecutionPressureMetric(liveSummary);
   return [
     {
@@ -2555,7 +2555,7 @@ function createThroughputMetrics(
       widthClass: "min-w-20",
     },
     {
-      description: `Exact average execution time across ${executionSummary.executionCount} settled ${pluralize("iteration", executionSummary.executionCount)} in the selected ${formatThroughputWindowLabel(chartWindowSeconds)} chart window.`,
+      description: `Exact average execution time across ${executionSummary.executionCount} completed ${pluralize("iteration", executionSummary.executionCount)} in the selected ${formatThroughputWindowLabel(chartWindowSeconds)} chart window. Failed and canceled iterations are excluded.`,
       id: "window-average",
       label: "Avg",
       value: formatMilliseconds(executionSummary.averageExecutionMilliseconds),

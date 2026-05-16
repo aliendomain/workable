@@ -442,6 +442,7 @@ public sealed class WorkableHttpApiTests
         Assert.Null(throughputBuckets.FirstOrDefault()?["slowestExecutionMilliseconds"]);
         Assert.Null(throughputBuckets.FirstOrDefault()?["p95ExecutionMilliseconds"]);
         Assert.Null(throughputBuckets.FirstOrDefault()?["p99ExecutionMilliseconds"]);
+        Assert.Equal(1, throughputComponent["data"]?["throughput"]?["settledCount"]?.GetValue<int>());
         Assert.Equal(1, throughputExecutionSummary["executionCount"]?.GetValue<int>());
         Assert.True(throughputExecutionSummary["averageExecutionMilliseconds"]?.GetValue<double>() >= 0);
         Assert.True(throughputExecutionSummary["slowestExecutionMilliseconds"]?.GetValue<double>() >= 0);
@@ -462,6 +463,7 @@ public sealed class WorkableHttpApiTests
         Assert.Equal("compact", compactThroughputComponent["shape"]?.GetValue<string>());
         Assert.Null(compactThroughputComponent["data"]?["throughput"]?["buckets"]);
         Assert.Null(compactThroughputComponent["data"]?["throughput"]?["bucketSeconds"]);
+        Assert.True(compactThroughputComponent["data"]?["throughput"]?["settledCount"]?.GetValue<int>() >= 1);
         Assert.NotNull(compactThroughputComponent["data"]?["throughput"]?["executionSummary"]);
         Assert.NotNull(compactThroughputComponent["data"]?["throughput"]?["liveSummary"]);
         Assert.Equal("ok", catalogComponent["status"]?.GetValue<string>());

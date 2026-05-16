@@ -31,6 +31,7 @@ public sealed class WorkMetricsSinkTests
 
         Assert.Equal(1, minuteThroughput.Buckets.Sum(bucket => bucket.Started));
         Assert.Equal(1, minuteThroughput.Buckets.Sum(bucket => bucket.Completed));
+        Assert.Equal(1, minuteThroughput.SettledCount);
         Assert.Equal(1, minuteThroughput.Buckets.Sum(bucket => bucket.ExecutionCount));
         Assert.Equal(50, minuteThroughput.Buckets.Max(bucket => bucket.SlowestExecutionMilliseconds));
         Assert.Empty(secondThroughput.Buckets);
@@ -73,6 +74,7 @@ public sealed class WorkMetricsSinkTests
         Assert.Equal(TimeSpan.FromMinutes(1).TotalMilliseconds, bucket.SlowestExecutionMilliseconds);
         Assert.Equal(45_000, bucket.P95ExecutionMilliseconds);
         Assert.Equal(57_000, bucket.P99ExecutionMilliseconds, precision: 6);
+        Assert.Equal(durations.Length, throughput.SettledCount);
         Assert.Equal(durations.Length, throughput.ExecutionSummary.ExecutionCount);
         Assert.Equal(bucket.AverageExecutionMilliseconds, throughput.ExecutionSummary.AverageExecutionMilliseconds);
         Assert.Equal(bucket.SlowestExecutionMilliseconds, throughput.ExecutionSummary.SlowestExecutionMilliseconds);
@@ -85,7 +87,7 @@ public sealed class WorkMetricsSinkTests
     }
 
     [Fact]
-    public void ThroughputDistributionIncludesFailedAndCanceledIterations()
+    public void ThroughputCountsFailedAndCanceledIterationsButExcludesThemFromExecutionDistribution()
     {
         var metrics = new InMemoryWorkMetricsSink();
         var definitionId = new WorkDefinitionId(Guid.NewGuid());
@@ -105,11 +107,14 @@ public sealed class WorkMetricsSinkTests
         Assert.Equal(1, bucket.Completed);
         Assert.Equal(1, bucket.Failed);
         Assert.Equal(1, bucket.Canceled);
-        Assert.Equal(3, bucket.ExecutionCount);
-        Assert.Equal(350, bucket.AverageExecutionMilliseconds);
-        Assert.Equal(700, bucket.SlowestExecutionMilliseconds);
-        Assert.Equal(700, bucket.P95ExecutionMilliseconds);
-        Assert.Equal(700, bucket.P99ExecutionMilliseconds);
+        Assert.Equal(3, throughput.SettledCount);
+        Assert.Equal(1, bucket.ExecutionCount);
+        Assert.Equal(100, bucket.AverageExecutionMilliseconds);
+        Assert.Equal(100, bucket.SlowestExecutionMilliseconds);
+        Assert.Equal(98.75, bucket.P95ExecutionMilliseconds);
+        Assert.Equal(99.75, bucket.P99ExecutionMilliseconds);
+        Assert.Equal(1, throughput.ExecutionSummary.ExecutionCount);
+        Assert.Equal(100, throughput.ExecutionSummary.AverageExecutionMilliseconds);
     }
 
     [Fact]
@@ -139,6 +144,8 @@ public sealed class WorkMetricsSinkTests
         Assert.Equal(500, scopedThroughput.ExecutionSummary.AverageExecutionMilliseconds);
         Assert.Equal(900, scopedThroughput.ExecutionSummary.SlowestExecutionMilliseconds);
         Assert.Equal(900, scopedThroughput.ExecutionSummary.P95ExecutionMilliseconds);
+        Assert.Equal(2, scopedThroughput.SettledCount);
+        Assert.Equal(3, systemThroughput.SettledCount);
         Assert.Equal(3, systemBucket.ExecutionCount);
         Assert.Equal(10_000, systemBucket.SlowestExecutionMilliseconds);
         Assert.Equal(9_625, systemBucket.P95ExecutionMilliseconds);

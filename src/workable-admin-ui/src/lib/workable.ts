@@ -416,6 +416,7 @@ export type WorkSystemThroughput = {
   to?: string;
   windowSeconds: number;
   bucketSeconds?: number;
+  settledCount: number;
   buckets?: WorkThroughputBucket[];
   executionSummary: WorkThroughputExecutionSummary;
   liveSummary: WorkThroughputLiveSummary;

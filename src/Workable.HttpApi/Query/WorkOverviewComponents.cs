@@ -59,6 +59,7 @@ public sealed record WorkOverviewThroughputCompactComponent(
 
 public sealed record WorkOverviewThroughputCompact(
     int WindowSeconds,
+    int SettledCount,
     WorkThroughputExecutionSummary ExecutionSummary,
     WorkOverviewThroughputLiveSummary LiveSummary);
 
@@ -71,6 +72,7 @@ public sealed record WorkOverviewThroughputStandard(
     DateTimeOffset To,
     int WindowSeconds,
     int BucketSeconds,
+    int SettledCount,
     IReadOnlyList<WorkOverviewThroughputBucket> Buckets,
     WorkThroughputExecutionSummary ExecutionSummary,
     WorkOverviewThroughputLiveSummary LiveSummary);

@@ -73,11 +73,9 @@ internal sealed class InMemoryWorkMetricsSink : IWorkMetricsSink
                         break;
                     case WorkCompletionStatus.Failed:
                         bucket.IncrementFailed();
-                        bucket.AddExecution(iteration.ExecutionDuration);
                         break;
                     case WorkCompletionStatus.Canceled:
                         bucket.IncrementCanceled();
-                        bucket.AddExecution(iteration.ExecutionDuration);
                         break;
                 }
             });
@@ -107,16 +105,18 @@ internal sealed class InMemoryWorkMetricsSink : IWorkMetricsSink
                 DateTimeOffset.FromUnixTimeSeconds(toSecond),
                 normalized.WindowSeconds,
                 normalized.BucketSeconds,
+                0,
                 [],
                 CreateExecutionSummary(new WorkMetricBucketSnapshot()),
                 this.CreateLiveSummary(nowSecond, definitionIds));
         }
 
-        var summary = CreateExecutionSummary(Aggregate(
+        var summaryAggregate = Aggregate(
             source,
             requestedFirstBucketSecond,
             toSecond,
-            definitionIds));
+            definitionIds);
+        var summary = CreateExecutionSummary(summaryAggregate);
         var buckets = new List<WorkThroughputBucket>();
 
         for (var bucketSecond = firstBucketSecond.Value; bucketSecond <= toSecond; bucketSecond += normalized.BucketSeconds)
@@ -131,6 +131,7 @@ internal sealed class InMemoryWorkMetricsSink : IWorkMetricsSink
             DateTimeOffset.FromUnixTimeSeconds(toSecond),
             normalized.WindowSeconds,
             normalized.BucketSeconds,
+            GetSettledCount(summaryAggregate),
             buckets,
             summary,
             this.CreateLiveSummary(nowSecond, definitionIds));
@@ -146,13 +147,15 @@ internal sealed class InMemoryWorkMetricsSink : IWorkMetricsSink
         var fromSecond = toSecond - normalized.WindowSeconds + 1;
         var requestedFirstBucketSecond = FloorToBucket(fromSecond, normalized.BucketSeconds);
         var source = this.GetQuerySource(normalized);
+        var aggregate = Aggregate(
+            source,
+            requestedFirstBucketSecond,
+            toSecond,
+            definitionIds);
         return new WorkSystemThroughputSummary(
             normalized.WindowSeconds,
-            CreateExecutionSummary(Aggregate(
-                source,
-                requestedFirstBucketSecond,
-                toSecond,
-                definitionIds)),
+            GetSettledCount(aggregate),
+            CreateExecutionSummary(aggregate),
             this.CreateLiveSummary(nowSecond, definitionIds));
     }
 
@@ -331,6 +334,9 @@ internal sealed class InMemoryWorkMetricsSink : IWorkMetricsSink
             TimeSpan.FromTicks(aggregate.MaxExecutionTicks).TotalMilliseconds,
             GetExecutionPercentileMilliseconds(aggregate, 0.95),
             GetExecutionPercentileMilliseconds(aggregate, 0.99));
+
+    private static int GetSettledCount(WorkMetricBucketSnapshot aggregate)
+        => ToInt32Saturated(aggregate.Completed + aggregate.Failed + aggregate.Canceled);
 
     private static int GetExecutionDurationHistogramBucket(long ticks)
     {

@@ -10,6 +10,8 @@ internal sealed class WorkerRetentionScheduler(
     Func<WorkerRecord, long, WorkActionOutcome> purge,
     Action<WorkerRecord> publishPurgeEvent) : IDisposable
 {
+    private const int ScheduledPurgeTrimMinimumHighWaterMark = 65_536;
+    private static readonly TimeSpan ScheduledPurgeTrimInterval = TimeSpan.FromMinutes(1);
     private static readonly WorkerState[] FinalStates = [WorkerState.Canceled, WorkerState.Completed];
     private readonly PriorityQueue<ScheduledPurge, DateTimeOffset> scheduledPurges = new();
     private readonly Dictionary<WorkDefinitionId, int> countRetentionTargetsByDefinition = [];
@@ -19,6 +21,8 @@ internal sealed class WorkerRetentionScheduler(
     private Task? schedulerTask;
     private bool systemCountRetentionDirty;
     private bool signalPending;
+    private int scheduledPurgeHighWaterMark;
+    private DateTimeOffset lastScheduledPurgeTrimAt = DateTimeOffset.MinValue;
 
     public void Start()
     {
@@ -62,8 +66,11 @@ internal sealed class WorkerRetentionScheduler(
         lock (this.sync)
         {
             this.scheduledPurges.Clear();
+            this.scheduledPurges.TrimExcess();
             this.countRetentionTargetsByDefinition.Clear();
             this.systemCountRetentionDirty = false;
+            this.scheduledPurgeHighWaterMark = 0;
+            this.lastScheduledPurgeTrimAt = DateTimeOffset.MinValue;
         }
     }
 
@@ -78,6 +85,9 @@ internal sealed class WorkerRetentionScheduler(
         lock (this.sync)
         {
             this.scheduledPurges.Enqueue(new ScheduledPurge(worker.Id), dueAt);
+            this.scheduledPurgeHighWaterMark = Math.Max(
+                this.scheduledPurgeHighWaterMark,
+                this.scheduledPurges.Count);
             this.countRetentionTargetsByDefinition[worker.Work.Definition.Id] = worker.Configuration.Retention.MaximumFinalWorkers;
             this.systemCountRetentionDirty = true;
         }
@@ -116,6 +126,7 @@ internal sealed class WorkerRetentionScheduler(
                     continue;
                 }
 
+                this.TrimScheduledPurgeQueueIfNeeded();
                 await this.WaitForSignal(this.GetDelayUntilNextPurge(), cancellationToken);
             }
         }
@@ -286,6 +297,29 @@ internal sealed class WorkerRetentionScheduler(
         if (shouldRelease)
         {
             this.signal.Release();
+        }
+    }
+
+    private void TrimScheduledPurgeQueueIfNeeded()
+    {
+        lock (this.sync)
+        {
+            var count = this.scheduledPurges.Count;
+            if (this.scheduledPurgeHighWaterMark < ScheduledPurgeTrimMinimumHighWaterMark ||
+                count > this.scheduledPurgeHighWaterMark / 4)
+            {
+                return;
+            }
+
+            var now = DateTimeOffset.UtcNow;
+            if (now - this.lastScheduledPurgeTrimAt < ScheduledPurgeTrimInterval)
+            {
+                return;
+            }
+
+            this.scheduledPurges.TrimExcess();
+            this.scheduledPurgeHighWaterMark = count;
+            this.lastScheduledPurgeTrimAt = now;
         }
     }
 

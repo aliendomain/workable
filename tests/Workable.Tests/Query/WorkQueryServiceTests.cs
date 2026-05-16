@@ -1300,6 +1300,7 @@ public sealed class WorkQueryServiceTests
         Assert.Equal(1, throughput.Buckets.Sum(bucket => bucket.Completed));
         Assert.Equal(1, throughput.Buckets.Sum(bucket => bucket.Failed));
         Assert.Equal(1, throughput.Buckets.Sum(bucket => bucket.Canceled));
+        Assert.Equal(3, throughput.SettledCount);
         Assert.Equal(60, throughput.LiveSummary.WindowSeconds);
         Assert.Equal(3 / 60.0, throughput.LiveSummary.StartedPerSecond, precision: 6);
         Assert.Equal(1 / 60.0, throughput.LiveSummary.CompletedPerSecond, precision: 6);
