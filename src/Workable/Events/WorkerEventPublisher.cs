@@ -5,13 +5,13 @@ internal sealed class WorkerEventPublisher(
     WorkEventStream events,
     Action<WorkerRecord> synchronize)
 {
-    public void Queued(WorkerRecord worker)
-        => this.Publish(worker, "worker.queued", details: new WorkerEventPayloadDetails(IncludeInput: true));
+    internal void Queued(WorkerRecord worker)
+        => this.PublishWithoutSynchronize(worker, "worker.queued", details: new WorkerEventPayloadDetails(IncludeInput: true));
 
-    public void Started(WorkerRecord worker)
+    internal void Started(WorkerRecord worker)
         => this.Publish(worker, "worker.started", details: new WorkerEventPayloadDetails(IncludeInput: true));
 
-    public void ActionApplied(WorkerRecord worker, WorkActionOutcome outcome, WorkOrigin origin)
+    internal void ActionApplied(WorkerRecord worker, WorkActionOutcome outcome, WorkOrigin origin)
     {
         var action = outcome.Action;
         var eventType = $"worker.{action.ToString().ToLowerInvariant()}";
@@ -28,7 +28,7 @@ internal sealed class WorkerEventPublisher(
         this.Publish(worker, eventType, origin, details);
     }
 
-    public void Reconfigured(
+    internal void Reconfigured(
         WorkerRecord worker,
         WorkerReconfiguration changes,
         WorkActionOutcome outcome,
@@ -41,7 +41,7 @@ internal sealed class WorkerEventPublisher(
                 ReconfigurationStatus: outcome.Status,
                 Reconfiguration: changes));
 
-    public void CompletionRecorded(WorkerRecord worker, WorkCompletionStatus status)
+    internal void CompletionRecorded(WorkerRecord worker, WorkCompletionStatus status)
         => this.Publish(
             worker,
             EventTypeFor(status),
@@ -49,7 +49,7 @@ internal sealed class WorkerEventPublisher(
                 IncludeOutput: true,
                 CompletionStatus: status));
 
-    public void Waiting(WorkerRecord worker)
+    internal void Waiting(WorkerRecord worker)
     {
         var recurrenceInterval = worker.GetConfiguration().Recurrence.Interval;
         this.Publish(
@@ -58,13 +58,13 @@ internal sealed class WorkerEventPublisher(
                 details: new WorkerEventPayloadDetails(RecurrenceInterval: recurrenceInterval));
     }
 
-    public void Retrying(WorkerRecord worker, TimeSpan retryDelay)
+    internal void Retrying(WorkerRecord worker, TimeSpan retryDelay)
         => this.Publish(
             worker,
             "worker.retrying",
             details: new WorkerEventPayloadDetails(RetryDelay: retryDelay));
 
-    public void IterationCompleted(WorkerRecord worker)
+    internal void IterationCompleted(WorkerRecord worker)
         => this.Publish(
             worker,
             "worker.iteration.completed",
@@ -72,7 +72,7 @@ internal sealed class WorkerEventPublisher(
                 CompletionStatus: WorkCompletionStatus.Completed,
                 IncludeLatestIteration: true));
 
-    public void IterationFailed(WorkerRecord worker)
+    internal void IterationFailed(WorkerRecord worker)
         => this.Publish(
             worker,
             "worker.iteration.failed",
@@ -80,13 +80,13 @@ internal sealed class WorkerEventPublisher(
                 CompletionStatus: WorkCompletionStatus.Failed,
                 IncludeLatestIteration: true));
 
-    public void RecurrenceCircuitOpened(WorkerRecord worker)
+    internal void RecurrenceCircuitOpened(WorkerRecord worker)
         => this.Publish(
             worker,
             "worker.recurrence.circuit_opened",
             details: new WorkerEventPayloadDetails(IncludeLatestIteration: true));
 
-    public void Failed(WorkerRecord worker)
+    internal void Failed(WorkerRecord worker)
         => this.Publish(
             worker,
             "worker.failed",
@@ -94,11 +94,13 @@ internal sealed class WorkerEventPublisher(
                 IncludeOutput: true,
                 CompletionStatus: WorkCompletionStatus.Failed));
 
-    public void Purged(WorkerRecord worker)
+    internal void Purged(WorkerRecord worker)
         => this.PublishWithoutSynchronize(worker, "worker.purge");
 
-    public void Log(WorkerRecord worker, WorkerLogEntry entry)
-        => events.Publish(worker.ToLogEvent(workSystemId, entry));
+    internal void Log(WorkerRecord worker, WorkerLogEntry entry)
+        => events.Publish(
+            (WorkSystemId: workSystemId, Worker: worker, Entry: entry),
+            static state => state.Worker.ToLogEvent(state.WorkSystemId, state.Entry));
 
     internal static string EventTypeFor(WorkCompletionStatus status)
         => status == WorkCompletionStatus.Completed
@@ -112,7 +114,7 @@ internal sealed class WorkerEventPublisher(
         WorkerEventPayloadDetails? details = null)
     {
         synchronize(worker);
-        events.Publish(worker.ToEvent(workSystemId, eventType, origin, details));
+        this.PublishWithoutSynchronize(worker, eventType, origin, details);
     }
 
     private void PublishWithoutSynchronize(
@@ -120,5 +122,11 @@ internal sealed class WorkerEventPublisher(
         string eventType,
         WorkOrigin? origin = null,
         WorkerEventPayloadDetails? details = null)
-        => events.Publish(worker.ToEvent(workSystemId, eventType, origin, details));
+        => events.Publish(
+            (WorkSystemId: workSystemId, Worker: worker, EventType: eventType, Origin: origin, Details: details),
+            static state => state.Worker.ToEvent(
+                state.WorkSystemId,
+                state.EventType,
+                state.Origin,
+                state.Details));
 }

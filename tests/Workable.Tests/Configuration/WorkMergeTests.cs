@@ -51,11 +51,11 @@ public sealed class WorkMergeTests
     {
         var configuration = WorkConfiguration.Default;
 
-        Assert.Same(configuration, configuration.Merge(null));
+        Assert.Same(configuration, configuration.MergeRuntimeOptions(null));
     }
 
     [Fact]
-    public void WorkConfigurationMergeUsesOverrideFacets()
+    public void WorkConfigurationRuntimeOptionsMergeUsesOverrideFacetsExceptInvocation()
     {
         var original = WorkConfiguration.Default with
         {
@@ -97,7 +97,7 @@ public sealed class WorkMergeTests
             Invocation = WorkInvocationConfiguration.Allow(WorkInvocationChannel.DotNet),
         };
 
-        var merged = original.Merge(overrides);
+        var merged = original.MergeRuntimeOptions(overrides);
 
         Assert.Equal(overrides.Start, merged.Start);
         Assert.Equal(overrides.Idempotency, merged.Idempotency);

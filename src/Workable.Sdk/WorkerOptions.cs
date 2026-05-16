@@ -11,6 +11,6 @@ public sealed record WorkerOptions(
             : this with
             {
                 ProfilingEnabled = overrides.ProfilingEnabled,
-                Configuration = this.Configuration?.Merge(overrides.Configuration) ?? overrides.Configuration,
+                Configuration = this.Configuration?.MergeRuntimeOptions(overrides.Configuration) ?? overrides.Configuration,
             };
 }

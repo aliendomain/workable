@@ -49,6 +49,27 @@ public sealed class WorkInitializationTests
     }
 
     [Fact]
+    public async Task TypedInitializationSelectsMatchingInputType()
+    {
+        var tracker = new InitializationTracker();
+        var system = new ServiceCollection()
+            .AddSingleton(tracker)
+            .AddWorkableSystem(builder => builder.AddWork<InitializedExecutor>(
+                WorkDefinition.Create("multi-typed.initialized"),
+                configure => configure.WithInitialization<MultiTypedRecordingInitializer>()))
+            .BuildServiceProvider()
+            .GetRequiredService<IWorkSystemRegistry>()
+            .Default;
+
+        await system.Start();
+
+        var completion = await (await system.Queue.Enqueue("multi-typed.initialized", new OtherInitializationInput("bravo"))).WaitForCompletion();
+
+        Assert.True(completion.IsCompletedSuccessfully);
+        Assert.Equal(["initializer:other:bravo", "executor"], tracker.Events);
+    }
+
+    [Fact]
     public async Task InitializationFailureFailsWorkerWithoutExecutingWork()
     {
         var tracker = new InitializationTracker();
@@ -155,6 +176,8 @@ public sealed class WorkInitializationTests
 
     private sealed record InitializationInput(string Message);
 
+    private sealed record OtherInitializationInput(string Message);
+
     private sealed class InitializationTracker
     {
         private readonly List<string> events = [];
@@ -223,6 +246,29 @@ public sealed class WorkInitializationTests
             CancellationToken cancellationToken = default)
         {
             tracker.Record($"initializer:{input.Message}");
+            return Task.FromResult(WorkExecutionResult.Success());
+        }
+    }
+
+    private sealed class MultiTypedRecordingInitializer(InitializationTracker tracker) :
+        IWorkInitializer<InitializationInput>,
+        IWorkInitializer<OtherInitializationInput>
+    {
+        public Task<WorkExecutionResult> Initialize(
+            IWorkExecutionContext context,
+            InitializationInput input,
+            CancellationToken cancellationToken = default)
+        {
+            tracker.Record($"initializer:first:{input.Message}");
+            return Task.FromResult(WorkExecutionResult.Success());
+        }
+
+        public Task<WorkExecutionResult> Initialize(
+            IWorkExecutionContext context,
+            OtherInitializationInput input,
+            CancellationToken cancellationToken = default)
+        {
+            tracker.Record($"initializer:other:{input.Message}");
             return Task.FromResult(WorkExecutionResult.Success());
         }
     }

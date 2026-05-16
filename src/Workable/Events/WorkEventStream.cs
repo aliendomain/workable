@@ -40,16 +40,24 @@ internal sealed class WorkEventStream : IWorkEventStream, IAsyncDisposable
     {
         ArgumentNullException.ThrowIfNull(workEvent);
 
-        if (Volatile.Read(ref this.isDisposed))
+        if (!this.TryGetActiveSubscribers(out var subscribers))
         {
             return;
         }
 
-        var subscribers = Volatile.Read(ref this.subscriptions);
-        foreach (var subscription in subscribers)
+        PublishToSubscribers(subscribers, workEvent);
+    }
+
+    internal void Publish<TState>(TState state, Func<TState, WorkEvent> createEvent)
+    {
+        ArgumentNullException.ThrowIfNull(createEvent);
+
+        if (!this.TryGetActiveSubscribers(out var subscribers))
         {
-            subscription.Publish(workEvent);
+            return;
         }
+
+        PublishToSubscribers(subscribers, createEvent(state));
     }
 
     public ValueTask DisposeAsync()
@@ -103,6 +111,26 @@ internal sealed class WorkEventStream : IWorkEventStream, IAsyncDisposable
             }
 
             this.subscriptions = remaining;
+        }
+    }
+
+    private bool TryGetActiveSubscribers([NotNullWhen(true)] out WorkEventSubscription[]? subscribers)
+    {
+        if (Volatile.Read(ref this.isDisposed))
+        {
+            subscribers = null;
+            return false;
+        }
+
+        subscribers = Volatile.Read(ref this.subscriptions);
+        return subscribers.Length > 0;
+    }
+
+    private static void PublishToSubscribers(WorkEventSubscription[] subscribers, WorkEvent workEvent)
+    {
+        foreach (var subscription in subscribers)
+        {
+            subscription.Publish(workEvent);
         }
     }
 

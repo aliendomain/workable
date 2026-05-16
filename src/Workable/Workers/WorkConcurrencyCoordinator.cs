@@ -78,6 +78,8 @@ internal sealed class WorkConcurrencyCoordinator
     {
         private readonly Lock sync = new();
         private readonly Dictionary<WorkerId, WorkerRecord> workers = [];
+        private readonly Dictionary<WorkerId, WorkerConcurrencyCapacityEntry> capacityEntriesByWorker = [];
+        private readonly Dictionary<WorkConcurrencyGroupKey, WorkConcurrencyGroupCounts> capacityCountsByGroup = [];
         private readonly Queue<WorkerId> deferredStarts = [];
 
         public WorkConcurrencyReservation QueueWorker(
@@ -128,6 +130,7 @@ internal sealed class WorkConcurrencyCoordinator
                 if (status == WorkConcurrencyReservationStatus.Deferred)
                 {
                     worker.DeferConcurrencyStart();
+                    this.TrackLocked(worker);
                     if (!this.deferredStarts.Contains(worker.Id))
                     {
                         this.deferredStarts.Enqueue(worker.Id);
@@ -198,6 +201,7 @@ internal sealed class WorkConcurrencyCoordinator
                     }
 
                     worker.ReserveDeferredConcurrencyStart();
+                    this.TrackLocked(worker);
                     scheduled.Add(worker);
                 }
 
@@ -223,6 +227,7 @@ internal sealed class WorkConcurrencyCoordinator
             lock (this.sync)
             {
                 this.workers.Remove(worker.Id);
+                this.RemoveCapacityEntryLocked(worker.Id);
                 this.RemoveDeferred(worker.Id);
             }
         }
@@ -232,27 +237,13 @@ internal sealed class WorkConcurrencyCoordinator
             WorkConcurrencyGroupKey groupKey,
             WorkerRecord? candidate = null)
         {
-            var count = 0;
-            var candidateAlreadyCounts = false;
-
-            foreach (var worker in this.workers.Values)
-            {
-                if (!worker.CountsAgainstConcurrencyCapacity(configuration.BlockingMode))
-                {
-                    continue;
-                }
-
-                if (WorkConcurrencyGroupKey.From(configuration.Scope, worker.Input) != groupKey)
-                {
-                    continue;
-                }
-
-                count++;
-                if (ReferenceEquals(worker, candidate))
-                {
-                    candidateAlreadyCounts = true;
-                }
-            }
+            var count = this.capacityCountsByGroup.TryGetValue(groupKey, out var counts)
+                ? counts.CountFor(configuration.BlockingMode)
+                : 0;
+            var candidateAlreadyCounts = candidate is not null &&
+                this.capacityEntriesByWorker.TryGetValue(candidate.Id, out var candidateEntry) &&
+                candidateEntry.GroupKey == groupKey &&
+                candidateEntry.Bucket.CountsFor(configuration.BlockingMode);
 
             return count < configuration.MaximumCapacity ||
                 candidateAlreadyCounts && count == configuration.MaximumCapacity;
@@ -261,6 +252,47 @@ internal sealed class WorkConcurrencyCoordinator
         private void TrackLocked(WorkerRecord worker)
         {
             this.workers[worker.Id] = worker;
+            this.RemoveCapacityEntryLocked(worker.Id);
+            if (!worker.TryGetConcurrencyCapacityContribution(out var scope, out var bucket))
+            {
+                return;
+            }
+
+            var entry = new WorkerConcurrencyCapacityEntry(
+                WorkConcurrencyGroupKey.From(scope, worker.Input),
+                bucket.Value);
+            this.capacityEntriesByWorker[worker.Id] = entry;
+            this.GetOrAddCounts(entry.GroupKey).Add(entry.Bucket);
+        }
+
+        private void RemoveCapacityEntryLocked(WorkerId workerId)
+        {
+            if (!this.capacityEntriesByWorker.Remove(workerId, out var entry))
+            {
+                return;
+            }
+
+            if (!this.capacityCountsByGroup.TryGetValue(entry.GroupKey, out var counts))
+            {
+                return;
+            }
+
+            counts.Remove(entry.Bucket);
+            if (counts.IsEmpty)
+            {
+                this.capacityCountsByGroup.Remove(entry.GroupKey);
+            }
+        }
+
+        private WorkConcurrencyGroupCounts GetOrAddCounts(WorkConcurrencyGroupKey groupKey)
+        {
+            if (!this.capacityCountsByGroup.TryGetValue(groupKey, out var counts))
+            {
+                counts = new WorkConcurrencyGroupCounts();
+                this.capacityCountsByGroup[groupKey] = counts;
+            }
+
+            return counts;
         }
 
         private void RemoveDeferred(WorkerId workerId)
@@ -286,6 +318,67 @@ internal sealed class WorkConcurrencyCoordinator
         }
     }
 
+    private sealed class WorkConcurrencyGroupCounts
+    {
+        private int executing;
+        private int paused;
+        private int failed;
+
+        public bool IsEmpty => this.executing == 0 && this.paused == 0 && this.failed == 0;
+
+        public void Add(WorkConcurrencyCapacityBucket bucket)
+        {
+            switch (bucket)
+            {
+                case WorkConcurrencyCapacityBucket.Executing:
+                    this.executing++;
+                    break;
+                case WorkConcurrencyCapacityBucket.Paused:
+                    this.paused++;
+                    break;
+                case WorkConcurrencyCapacityBucket.Failed:
+                    this.failed++;
+                    break;
+            }
+        }
+
+        public void Remove(WorkConcurrencyCapacityBucket bucket)
+        {
+            switch (bucket)
+            {
+                case WorkConcurrencyCapacityBucket.Executing:
+                    this.executing = Math.Max(0, this.executing - 1);
+                    break;
+                case WorkConcurrencyCapacityBucket.Paused:
+                    this.paused = Math.Max(0, this.paused - 1);
+                    break;
+                case WorkConcurrencyCapacityBucket.Failed:
+                    this.failed = Math.Max(0, this.failed - 1);
+                    break;
+            }
+        }
+
+        public int CountFor(WorkConcurrencyBlockingMode blockingMode)
+        {
+            var count = this.executing;
+            if (blockingMode is WorkConcurrencyBlockingMode.WhileExecutingOrPaused or WorkConcurrencyBlockingMode.WhileExecutingPausedOrFailed)
+            {
+                count += this.paused;
+            }
+
+            if (blockingMode is WorkConcurrencyBlockingMode.WhileExecutingOrFailed or WorkConcurrencyBlockingMode.WhileExecutingPausedOrFailed)
+            {
+                count += this.failed;
+            }
+
+            return count;
+        }
+    }
+
+    private readonly record struct WorkerConcurrencyCapacityEntry(
+        WorkConcurrencyGroupKey GroupKey,
+        WorkConcurrencyCapacityBucket Bucket);
+
     private readonly record struct WorkConcurrencyGroupKey(
         WorkConcurrencyScope Scope,
         WorkSubjectId? SubjectId,
@@ -310,4 +403,23 @@ internal enum WorkConcurrencyReservationStatus
     Reserved,
     Deferred,
     Rejected,
+}
+
+internal enum WorkConcurrencyCapacityBucket
+{
+    Executing,
+    Paused,
+    Failed,
+}
+
+internal static class WorkConcurrencyCapacityBucketExtensions
+{
+    public static bool CountsFor(this WorkConcurrencyCapacityBucket bucket, WorkConcurrencyBlockingMode blockingMode)
+        => bucket switch
+        {
+            WorkConcurrencyCapacityBucket.Executing => true,
+            WorkConcurrencyCapacityBucket.Paused => blockingMode is WorkConcurrencyBlockingMode.WhileExecutingOrPaused or WorkConcurrencyBlockingMode.WhileExecutingPausedOrFailed,
+            WorkConcurrencyCapacityBucket.Failed => blockingMode is WorkConcurrencyBlockingMode.WhileExecutingOrFailed or WorkConcurrencyBlockingMode.WhileExecutingPausedOrFailed,
+            _ => false,
+        };
 }

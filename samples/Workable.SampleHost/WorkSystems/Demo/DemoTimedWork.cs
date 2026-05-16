@@ -7,7 +7,8 @@ public sealed record DemoTimedInput(
     int DelayMilliseconds,
     bool ShouldFail = false,
     string? DiscoveredIdentifierType = null,
-    string? DiscoveredIdentifierValue = null);
+    string? DiscoveredIdentifierValue = null,
+    bool UseTaskYield = false);
 
 public sealed record DemoTimedOutput(
     string Scenario,
@@ -21,14 +22,25 @@ public sealed class DemoTimedWork : IWorkExecutor<DemoTimedInput, DemoTimedOutpu
         DemoTimedInput input,
         CancellationToken cancellationToken)
     {
-        var delayMilliseconds = Math.Clamp(input.DelayMilliseconds, 500, 10_000);
+        var delayMilliseconds = input.UseTaskYield
+            ? 0
+            : Math.Clamp(input.DelayMilliseconds, 500, 10_000);
         if (!string.IsNullOrWhiteSpace(input.DiscoveredIdentifierType) &&
             !string.IsNullOrWhiteSpace(input.DiscoveredIdentifierValue))
         {
             context.AddIdentifier(new WorkIdentifier(input.DiscoveredIdentifierType, input.DiscoveredIdentifierValue));
         }
 
-        await Task.Delay(delayMilliseconds, cancellationToken);
+        cancellationToken.ThrowIfCancellationRequested();
+        if (input.UseTaskYield)
+        {
+            await Task.Yield();
+            cancellationToken.ThrowIfCancellationRequested();
+        }
+        else
+        {
+            await Task.Delay(delayMilliseconds, cancellationToken);
+        }
 
         var output = new DemoTimedOutput(
             input.Scenario,
@@ -44,6 +56,8 @@ public sealed class DemoTimedWork : IWorkExecutor<DemoTimedInput, DemoTimedOutpu
 
         return WorkExecutionResult<DemoTimedOutput>.Success(
             output,
-            [WorkMessage.Info("sample.demo.completed", $"Demo scenario '{input.Scenario}' completed after {delayMilliseconds}ms.")]);
+            [WorkMessage.Info("sample.demo.completed", input.UseTaskYield
+                ? $"Demo scenario '{input.Scenario}' completed after yielding once."
+                : $"Demo scenario '{input.Scenario}' completed after {delayMilliseconds}ms.")]);
     }
 }

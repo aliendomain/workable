@@ -11,6 +11,11 @@ internal sealed record RegisteredWork(
 {
     private readonly ConcurrentDictionary<WorkInitializationId, LazyInitializationState> lazyInitializationStates = [];
 
+    public RegisteredWorkRuntimePlan DefaultRuntimePlan { get; } = RegisteredWorkRuntimePlan.CreateDefault(Definition);
+
+    public IReadOnlyList<WorkInitializationRegistration> OrderedInitializers { get; } =
+        WorkInitializationRegistration.Order(Initializers);
+
     public RegisteredWork(
         WorkDefinition definition,
         Func<IServiceProvider, IWorkExecutor> executorFactory,
@@ -18,6 +23,14 @@ internal sealed record RegisteredWork(
         : this(definition, executorFactory, exceptionClassifiers, [], [])
     {
     }
+
+    public RegisteredWork WithDefinition(WorkDefinition definition)
+        => new(
+            definition,
+            this.ExecutorFactory,
+            this.ExceptionClassifiers,
+            this.AutomaticStarts,
+            this.Initializers);
 
     public async Task<WorkExecutionResult> RunLazyInitialization(
         WorkInitializationRegistration initializer,
@@ -51,5 +64,38 @@ internal sealed record RegisteredWork(
         public SemaphoreSlim Sync { get; } = new(1, 1);
 
         public bool IsComplete { get; set; }
+    }
+}
+
+internal sealed record RegisteredWorkRuntimePlan(
+    WorkerOptions Options,
+    WorkConfiguration Configuration,
+    IReadOnlyList<WorkMessage> ConfigurationErrors)
+{
+    public WorkStartPolicy StartPolicy => this.Configuration.Start.Policy;
+
+    public bool ShouldStart => this.StartPolicy != WorkStartPolicy.DoNotStart;
+
+    public static RegisteredWorkRuntimePlan CreateDefault(WorkDefinition definition)
+        => Create(
+            definition.DefaultOptions,
+            definition.Configuration.MergeRuntimeOptions(definition.DefaultOptions.Configuration));
+
+    public static RegisteredWorkRuntimePlan Create(WorkDefinition definition, WorkerOptions options)
+        => Create(
+            definition.DefaultOptions.Merge(options),
+            definition.Configuration
+                .MergeRuntimeOptions(definition.DefaultOptions.Configuration)
+                .MergeRuntimeOptions(options.Configuration));
+
+    private static RegisteredWorkRuntimePlan Create(
+        WorkerOptions options,
+        WorkConfiguration configuration)
+    {
+        var errors = WorkConfigurationValidator.Validate(configuration);
+        return new RegisteredWorkRuntimePlan(
+            options,
+            configuration,
+            errors.Count == 0 ? [] : errors);
     }
 }

@@ -251,6 +251,10 @@ app.MapGet("/", (HttpContext context) =>
                                         <input id="tight-loop-fulfillment" type="checkbox" checked>
                                         Fulfillment
                                     </label>
+                                    <label class="system-toggle">
+                                        <input id="tight-loop-yield" type="checkbox">
+                                        Use Task.Yield
+                                    </label>
                                 </div>
                             </div>
                         </td>
@@ -294,6 +298,7 @@ app.MapGet("/", (HttpContext context) =>
                 const tightLoopStop = document.getElementById('tight-loop-stop');
                 const tightLoopOperations = document.getElementById('tight-loop-operations');
                 const tightLoopFulfillment = document.getElementById('tight-loop-fulfillment');
+                const tightLoopYield = document.getElementById('tight-loop-yield');
                 const interval = document.getElementById('interval');
                 const failurePercentage = document.getElementById('failure-percentage');
                 const updateSettings = document.getElementById('update-settings');
@@ -340,11 +345,16 @@ app.MapGet("/", (HttpContext context) =>
                     const data = await response.json();
                     tightLoopStart.disabled = data.isRunning;
                     tightLoopStop.disabled = !data.isRunning;
+                    tightLoopYield.disabled = data.isRunning;
+                    if (!data.isRunning) {
+                        tightLoopYield.checked = data.useTaskYield;
+                    }
                     const selectedSystems = [
                         data.operationsRunning ? 'operations' : null,
                         data.fulfillmentRunning ? 'fulfillment' : null
                     ].filter(Boolean).join(', ') || 'none';
-                    tightLoopStatus.textContent = `${data.isRunning ? 'Running' : 'Stopped'} - systems ${selectedSystems} - queued operations ${data.operationsQueued} - fulfillment ${data.fulfillmentQueued} - rejected ${data.rejectedCount} - failed ${data.failedCount}`;
+                    const mode = data.useTaskYield ? 'Task.Yield' : '500ms delay';
+                    tightLoopStatus.textContent = `${data.isRunning ? 'Running' : 'Stopped'} - ${mode} - systems ${selectedSystems} - queued operations ${data.operationsQueued} - fulfillment ${data.fulfillmentQueued} - rejected ${data.rejectedCount} - failed ${data.failedCount}`;
                 }
 
                 button.addEventListener('click', async () => {
@@ -448,7 +458,8 @@ app.MapGet("/", (HttpContext context) =>
                             headers: { 'Content-Type': 'application/json' },
                             body: JSON.stringify({
                                 operations: tightLoopOperations.checked,
-                                fulfillment: tightLoopFulfillment.checked
+                                fulfillment: tightLoopFulfillment.checked,
+                                useTaskYield: tightLoopYield.checked
                             })
                         });
                     } finally {

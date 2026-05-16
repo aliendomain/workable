@@ -13,6 +13,7 @@ public sealed class DemoTightLoopController(
     private long fulfillmentQueued;
     private long rejectedCount;
     private long failedCount;
+    private volatile bool useTaskYield;
     private bool disposed;
 
     public DemoTightLoopStatus Status()
@@ -41,6 +42,7 @@ public sealed class DemoTightLoopController(
 
             var source = new CancellationTokenSource();
             this.cancellation = source;
+            this.useTaskYield = request.UseTaskYield;
 
             if (request.Operations)
             {
@@ -163,7 +165,8 @@ public sealed class DemoTightLoopController(
                     $"tight operations #{sequenceNumber}",
                     500,
                     DiscoveredIdentifierType: "tight-loop-sequence",
-                    DiscoveredIdentifierValue: sequenceNumber.ToString()),
+                    DiscoveredIdentifierValue: sequenceNumber.ToString(),
+                    UseTaskYield: this.useTaskYield),
                 subjectId: new WorkSubjectId("tight-loop", "operations"),
                 identifiers:
                 [
@@ -205,7 +208,8 @@ public sealed class DemoTightLoopController(
                     $"tight fulfillment #{sequenceNumber}",
                     500,
                     DiscoveredIdentifierType: "tight-loop-sequence",
-                    DiscoveredIdentifierValue: sequenceNumber.ToString()),
+                    DiscoveredIdentifierValue: sequenceNumber.ToString(),
+                    UseTaskYield: this.useTaskYield),
                 subjectId: new WorkSubjectId("tight-loop", "fulfillment"),
                 identifiers:
                 [
@@ -255,6 +259,7 @@ public sealed class DemoTightLoopController(
             this.IsRunningUnsafe(),
             this.operationsTask is { IsCompleted: false },
             this.fulfillmentTask is { IsCompleted: false },
+            this.useTaskYield,
             Interlocked.Read(ref this.operationsQueued),
             Interlocked.Read(ref this.fulfillmentQueued),
             Interlocked.Read(ref this.rejectedCount),
@@ -283,12 +288,13 @@ public sealed class DemoTightLoopController(
     }
 }
 
-public sealed record DemoTightLoopRequest(bool Operations, bool Fulfillment);
+public sealed record DemoTightLoopRequest(bool Operations, bool Fulfillment, bool UseTaskYield = false);
 
 public sealed record DemoTightLoopStatus(
     bool IsRunning,
     bool OperationsRunning,
     bool FulfillmentRunning,
+    bool UseTaskYield,
     long OperationsQueued,
     long FulfillmentQueued,
     long RejectedCount,

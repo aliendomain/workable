@@ -46,6 +46,24 @@ public sealed class WorkEventStreamTests
     }
 
     [Fact]
+    public void LazyPublishWithoutSubscribersDoesNotCreateEvent()
+    {
+        var stream = new WorkEventStream();
+        var created = false;
+        var workEvent = CreateEvent(eventType: "worker.queued");
+
+        stream.Publish(
+            workEvent,
+            state =>
+            {
+                created = true;
+                return state;
+            });
+
+        Assert.False(created);
+    }
+
+    [Fact]
     public async Task EventsAreBroadcastToEveryActiveSubscription()
     {
         var stream = new WorkEventStream();

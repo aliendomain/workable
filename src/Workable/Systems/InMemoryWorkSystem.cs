@@ -217,10 +217,10 @@ internal sealed class InMemoryWorkSystem : IWorkSystem, IOriginAwareWorkSystem, 
             foreach (var request in requests)
             {
                 var registeredWork = this.GetStartupRegisteredWork(request);
-                var configuration = registeredWork.Definition.Configuration
-                    .Merge(registeredWork.Definition.DefaultOptions.Configuration)
-                    .Merge(request.Options?.Configuration);
-                if (configuration.Start.Policy == WorkStartPolicy.StartAndReturnAfterCompleted)
+                var runtimePlan = request.Options is null
+                    ? registeredWork.DefaultRuntimePlan
+                    : RegisteredWorkRuntimePlan.Create(registeredWork.Definition, request.Options);
+                if (runtimePlan.StartPolicy == WorkStartPolicy.StartAndReturnAfterCompleted)
                 {
                     throw new InvalidOperationException(
                         $"Startup work '{registeredWork.Definition.Name}' cannot use '{nameof(WorkStartPolicy.StartAndReturnAfterCompleted)}'. Startup work is queued during system start and cannot wait for worker completion.");
@@ -272,9 +272,7 @@ internal sealed class InMemoryWorkSystem : IWorkSystem, IOriginAwareWorkSystem, 
         IServiceProvider services,
         CancellationToken cancellationToken)
     {
-        var configuration = registeredWork.Definition.Configuration
-            .Merge(registeredWork.Definition.DefaultOptions.Configuration);
-        if (configuration.Start.Policy == WorkStartPolicy.StartAndReturnAfterCompleted)
+        if (registeredWork.DefaultRuntimePlan.StartPolicy == WorkStartPolicy.StartAndReturnAfterCompleted)
         {
             throw new InvalidOperationException(
                 $"Automatically started work '{registeredWork.Definition.Name}' cannot use '{nameof(WorkStartPolicy.StartAndReturnAfterCompleted)}'. Automatically started work is queued during system start and cannot wait for worker completion.");

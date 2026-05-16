@@ -757,24 +757,19 @@ internal sealed class WorkerRecord(
     {
         lock (this.sync)
         {
-            if (!this.Configuration.Concurrency.IsEnabled)
-            {
-                return false;
-            }
+            return TryGetConcurrencyCapacityBucketLocked(this.State, this.Configuration, this.IsStartDeferred, out var bucket) &&
+                bucket.Value.CountsFor(blockingMode);
+        }
+    }
 
-            if (this.State == WorkerState.Queued)
-            {
-                return this.ShouldStartAutomatically() && !this.IsStartDeferred;
-            }
-
-            return blockingMode switch
-            {
-                WorkConcurrencyBlockingMode.WhileExecuting => this.State is WorkerState.Running or WorkerState.Waiting or WorkerState.Retrying or WorkerState.Pausing or WorkerState.Canceling,
-                WorkConcurrencyBlockingMode.WhileExecutingOrPaused => this.State is WorkerState.Running or WorkerState.Waiting or WorkerState.Retrying or WorkerState.Pausing or WorkerState.Canceling or WorkerState.Paused,
-                WorkConcurrencyBlockingMode.WhileExecutingOrFailed => this.State is WorkerState.Running or WorkerState.Waiting or WorkerState.Retrying or WorkerState.Pausing or WorkerState.Canceling or WorkerState.Failed,
-                WorkConcurrencyBlockingMode.WhileExecutingPausedOrFailed => this.State is WorkerState.Running or WorkerState.Waiting or WorkerState.Retrying or WorkerState.Pausing or WorkerState.Canceling or WorkerState.Paused or WorkerState.Failed,
-                _ => false,
-            };
+    internal bool TryGetConcurrencyCapacityContribution(
+        out WorkConcurrencyScope scope,
+        [NotNullWhen(true)] out WorkConcurrencyCapacityBucket? bucket)
+    {
+        lock (this.sync)
+        {
+            scope = this.Configuration.Concurrency.Scope;
+            return TryGetConcurrencyCapacityBucketLocked(this.State, this.Configuration, this.IsStartDeferred, out bucket);
         }
     }
 
@@ -1171,6 +1166,41 @@ internal sealed class WorkerRecord(
 
     private bool ShouldStartAutomatically()
         => this.Configuration.Start.Policy != WorkStartPolicy.DoNotStart;
+
+    private static bool TryGetConcurrencyCapacityBucketLocked(
+        WorkerState state,
+        WorkConfiguration configuration,
+        bool isStartDeferred,
+        [NotNullWhen(true)] out WorkConcurrencyCapacityBucket? bucket)
+    {
+        if (!configuration.Concurrency.IsEnabled)
+        {
+            bucket = null;
+            return false;
+        }
+
+        if (state == WorkerState.Queued)
+        {
+            if (configuration.Start.Policy == WorkStartPolicy.DoNotStart || isStartDeferred)
+            {
+                bucket = null;
+                return false;
+            }
+
+            bucket = WorkConcurrencyCapacityBucket.Executing;
+            return true;
+        }
+
+        bucket = state switch
+        {
+            WorkerState.Running or WorkerState.Waiting or WorkerState.Retrying or WorkerState.Pausing or WorkerState.Canceling => WorkConcurrencyCapacityBucket.Executing,
+            WorkerState.Paused => WorkConcurrencyCapacityBucket.Paused,
+            WorkerState.Failed => WorkConcurrencyCapacityBucket.Failed,
+            _ => null,
+        };
+
+        return bucket is not null;
+    }
 
     private void ReleaseExecutionCancellationLocked()
     {

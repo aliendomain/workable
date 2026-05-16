@@ -354,6 +354,28 @@ public sealed class WorkerStateTests
     }
 
     [Fact]
+    public async Task SystemStopResetsApproximateWorkerCapacityCount()
+    {
+        var definition = WorkDefinition.Create("system-capacity-reset", "Capacity count resets when worker memory is cleared.",
+            defaultOptions: WorkerOptionFixtures.DoNotStart());
+        var system = CreateSystem(builder => builder
+            .ConfigureCapacity(maximumWorkers: 1)
+            .AddWork(definition, (context, input, cancellationToken) => Task.FromResult(WorkExecutionResult.Success())));
+
+        await system.Start();
+
+        var first = await system.Queue.Enqueue("system-capacity-reset");
+        var rejected = await system.Queue.Enqueue("system-capacity-reset");
+        await system.Stop();
+        await system.Start();
+        var afterRestart = await system.Queue.Enqueue("system-capacity-reset");
+
+        Assert.Equal(WorkQueueStatus.Accepted, first.QueueOutcome.Status);
+        Assert.Equal(WorkQueueStatus.Invalid, rejected.QueueOutcome.Status);
+        Assert.Equal(WorkQueueStatus.Accepted, afterRestart.QueueOutcome.Status);
+    }
+
+    [Fact]
     public async Task WorkerCanceledDuringSystemStopIsClearedFromMemory()
     {
         var definition = WorkDefinition.Create("stop-clear-memory", "Clears queued work canceled by system stop.",

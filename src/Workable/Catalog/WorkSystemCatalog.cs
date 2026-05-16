@@ -121,10 +121,7 @@ internal sealed class WorkSystemCatalog : IWorkCatalog
                 return Task.FromResult(WorkDefinitionReconfigurationOutcome.NotFound(definition.DefinitionId));
             }
 
-            this.work[index] = registeredWork with
-            {
-                Definition = updatedDefinition,
-            };
+            this.work[index] = registeredWork.WithDefinition(updatedDefinition);
             this.RebuildIndexes();
             return Task.FromResult(WorkDefinitionReconfigurationOutcome.Accepted(updatedDefinition));
         }

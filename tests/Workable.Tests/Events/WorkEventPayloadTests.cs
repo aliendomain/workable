@@ -144,6 +144,61 @@ public sealed class WorkEventPayloadTests
         }
     }
 
+    [Fact]
+    public void WorkerPublisherSkipsLogPayloadConstructionWithoutSubscribers()
+    {
+        var stream = new WorkEventStream();
+        var publisher = new WorkerEventPublisher(WorkSystemId.New(), stream, _ => { });
+        var worker = CreateWorker("events.no-subscribers.log");
+        var metadata = new CyclicLogMetadata();
+        metadata.Self = metadata;
+        var entry = new WorkerLogEntry(
+            DateTimeOffset.UtcNow,
+            worker.Id,
+            worker.Work.Definition.Id,
+            "test",
+            Microsoft.Extensions.Logging.LogLevel.Information,
+            new Microsoft.Extensions.Logging.EventId(1, "cycle"),
+            "log message",
+            Metadata: new Dictionary<string, object?> { ["cycle"] = metadata });
+
+        publisher.Log(worker, entry);
+
+        Assert.Equal(0, stream.ActiveSubscriptionCount);
+    }
+
+    [Fact]
+    public void WorkerPublisherStillSynchronizesWithoutSubscribers()
+    {
+        var stream = new WorkEventStream();
+        var synchronized = false;
+        var publisher = new WorkerEventPublisher(WorkSystemId.New(), stream, _ => synchronized = true);
+        var worker = CreateWorker("events.no-subscribers.sync");
+
+        publisher.Started(worker);
+
+        Assert.True(synchronized);
+        Assert.Equal(0, stream.ActiveSubscriptionCount);
+    }
+
+    [Fact]
+    public async Task QueuedPublishesWithoutSynchronizingRegisteredWorker()
+    {
+        var stream = new WorkEventStream();
+        var synchronized = false;
+        var publisher = new WorkerEventPublisher(WorkSystemId.New(), stream, _ => synchronized = true);
+        var worker = CreateWorker("events.new-worker.fast-queued");
+        await using var subscription = stream.Subscribe(new WorkEventFilter(WorkerId: worker.Id, EventType: "worker.queued"));
+        await using var reader = subscription.Read().GetAsyncEnumerator();
+
+        publisher.Queued(worker);
+        var workEvent = await ReadNext(reader);
+
+        Assert.False(synchronized);
+        Assert.Equal(worker.Id, workEvent.WorkerId);
+        Assert.Equal("worker.queued", workEvent.EventType);
+    }
+
     private static IWorkSystem CreateSystem(
         WorkDefinition definition,
         Func<IWorkExecutionContext, WorkInput?, CancellationToken, Task<WorkExecutionResult>> execute)
@@ -165,10 +220,42 @@ public sealed class WorkEventPayloadTests
     private static JsonElement RequiredData(WorkEvent workEvent)
         => workEvent.Data ?? throw new InvalidOperationException($"Expected data for event '{workEvent.EventType}'.");
 
+    private static WorkerRecord CreateWorker(string definitionName)
+    {
+        var definition = WorkDefinition.Create(definitionName);
+        var now = DateTimeOffset.UtcNow;
+        return new WorkerRecord(
+            WorkerId.New(),
+            new RegisteredWork(definition, _ => new NoopExecutor(), []),
+            WorkInput.Empty,
+            WorkerOptions.Default,
+            WorkConfiguration.Default,
+            WorkOrigin.Create(WorkInvocationChannel.DotNet, description: "Test worker."),
+            WorkerState.Queued,
+            isStartDeferred: false,
+            messages: [],
+            createdAt: now,
+            updatedAt: now);
+    }
+
     private static async Task<WorkEvent> ReadNext(IAsyncEnumerator<WorkEvent> reader)
     {
         var hasEvent = await reader.MoveNextAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(5));
         Assert.True(hasEvent);
         return reader.Current;
+    }
+
+    private sealed class NoopExecutor : IWorkExecutor
+    {
+        public Task<WorkExecutionResult> Execute(
+            IWorkExecutionContext context,
+            WorkInput? input,
+            CancellationToken cancellationToken)
+            => Task.FromResult(WorkExecutionResult.Success());
+    }
+
+    private sealed class CyclicLogMetadata
+    {
+        public CyclicLogMetadata? Self { get; set; }
     }
 }

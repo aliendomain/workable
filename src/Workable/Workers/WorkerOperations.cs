@@ -32,6 +32,7 @@ internal sealed class WorkerOperations : IWorkerOperations, IDisposable
     private readonly WorkSystemCapacityConfiguration capacity;
     private CancellationTokenSource systemExecutionLifetime = new();
     private volatile bool acceptingWork;
+    private long workerCount;
 
     internal WorkerOperations(
         WorkSystemCatalog catalog,
@@ -111,26 +112,24 @@ internal sealed class WorkerOperations : IWorkerOperations, IDisposable
         }
 
         var workerId = WorkerId.New();
-        var mergedOptions = registeredWork.Definition.DefaultOptions.Merge(options);
-        var configuration = registeredWork.Definition.Configuration
-            .Merge(registeredWork.Definition.DefaultOptions.Configuration)
-            .Merge(options?.Configuration);
-        var configurationErrors = WorkConfigurationValidator.Validate(configuration);
-        if (configurationErrors.Count > 0)
+        var runtimePlan = options is null
+            ? registeredWork.DefaultRuntimePlan
+            : RegisteredWorkRuntimePlan.Create(registeredWork.Definition, options);
+        if (runtimePlan.ConfigurationErrors.Count > 0)
         {
-            return WorkerHandle.Rejected(WorkQueueOutcome.Invalid(registeredWork.Definition.Id, configurationErrors));
+            return WorkerHandle.Rejected(WorkQueueOutcome.Invalid(registeredWork.Definition.Id, runtimePlan.ConfigurationErrors));
         }
 
         var concurrencyInputErrors = WorkConfigurationValidator.ValidateConcurrencyInput(
-            concurrency: configuration.Concurrency,
+            concurrency: runtimePlan.Configuration.Concurrency,
             input: input);
         if (concurrencyInputErrors.Count > 0)
         {
             return WorkerHandle.Rejected(WorkQueueOutcome.Invalid(registeredWork.Definition.Id, concurrencyInputErrors));
         }
 
-        var startPolicy = configuration.Start.Policy;
-        var shouldStart = startPolicy != WorkStartPolicy.DoNotStart;
+        var startPolicy = runtimePlan.StartPolicy;
+        var shouldStart = runtimePlan.ShouldStart;
         var now = DateTimeOffset.UtcNow;
         WorkerRecord record;
         WorkQueueOutcome outcome;
@@ -139,7 +138,7 @@ internal sealed class WorkerOperations : IWorkerOperations, IDisposable
 
         lock (this.subjectSync)
         {
-            var idempotencyErrors = this.ValidateIdempotencyLocked(registeredWork.Definition.Id, input?.SubjectId, configuration.Idempotency);
+            var idempotencyErrors = this.ValidateIdempotencyLocked(registeredWork.Definition.Id, input?.SubjectId, runtimePlan.Configuration.Idempotency);
             if (idempotencyErrors.Count > 0)
             {
                 return WorkerHandle.Rejected(WorkQueueOutcome.Invalid(
@@ -147,20 +146,20 @@ internal sealed class WorkerOperations : IWorkerOperations, IDisposable
                     idempotencyErrors));
             }
 
-            if (configuration.Concurrency.IsEnabled && shouldStart)
+            if (runtimePlan.Configuration.Concurrency.IsEnabled && shouldStart)
             {
                 var reservation = this.concurrency.QueueWorker(
                     registeredWork.Definition.Id,
                     input,
-                    configuration.Concurrency,
+                    runtimePlan.Configuration.Concurrency,
                     status =>
                     {
                         var queued = new WorkerRecord(
                             workerId,
                             registeredWork,
                             input,
-                            mergedOptions,
-                            configuration,
+                            runtimePlan.Options,
+                            runtimePlan.Configuration,
                             origin,
                             WorkerState.Queued,
                             isStartDeferred: status == WorkConcurrencyReservationStatus.Deferred,
@@ -169,7 +168,7 @@ internal sealed class WorkerOperations : IWorkerOperations, IDisposable
                             updatedAt: now);
 
                         this.AttachIndexCallbacks(queued);
-                        this.workers.TryAdd(workerId, queued);
+                        this.TrackWorker(queued);
                         this.index.Register(queued);
                         return queued;
                     });
@@ -195,8 +194,8 @@ internal sealed class WorkerOperations : IWorkerOperations, IDisposable
                     workerId,
                     registeredWork,
                     input,
-                    mergedOptions,
-                    configuration,
+                    runtimePlan.Options,
+                    runtimePlan.Configuration,
                     origin,
                     WorkerState.Queued,
                     isStartDeferred: false,
@@ -205,10 +204,10 @@ internal sealed class WorkerOperations : IWorkerOperations, IDisposable
                     updatedAt: now);
 
                 this.AttachIndexCallbacks(record);
-                this.workers.TryAdd(workerId, record);
+                this.TrackWorker(record);
                 this.index.Register(record);
                 shouldScheduleStart = shouldStart;
-                shouldDrainQueuedWorkers = configuration.Concurrency.IsEnabled && shouldStart;
+                shouldDrainQueuedWorkers = runtimePlan.Configuration.Concurrency.IsEnabled && shouldStart;
                 outcome = WorkQueueOutcome.Accepted(registeredWork.Definition.Id, workerId);
             }
         }
@@ -271,7 +270,7 @@ internal sealed class WorkerOperations : IWorkerOperations, IDisposable
             }
         }
 
-        if (this.workers.Count >= this.capacity.MaximumWorkers)
+        if (Volatile.Read(ref this.workerCount) >= this.capacity.MaximumWorkers)
         {
             rejection = WorkQueueOutcome.Invalid(
                 definitionId,
@@ -601,11 +600,31 @@ internal sealed class WorkerOperations : IWorkerOperations, IDisposable
     private void ClearWorkerMemory()
     {
         this.workers.Clear();
+        Volatile.Write(ref this.workerCount, 0);
         this.index.Clear();
         this.iterationIndex.Clear();
         this.concurrency.Clear();
         this.dispatcher.ClearScheduledWork();
         this.retention.Clear();
+    }
+
+    private void TrackWorker(WorkerRecord worker)
+    {
+        if (this.workers.TryAdd(worker.Id, worker))
+        {
+            Interlocked.Increment(ref this.workerCount);
+        }
+    }
+
+    private bool TryRemoveWorker(WorkerId workerId, [NotNullWhen(true)] out WorkerRecord? worker)
+    {
+        if (!this.workers.TryRemove(workerId, out worker))
+        {
+            return false;
+        }
+
+        Interlocked.Decrement(ref this.workerCount);
+        return true;
     }
 
     private async Task WaitForCanceledWorkers(
@@ -755,6 +774,11 @@ internal sealed class WorkerOperations : IWorkerOperations, IDisposable
 
     private void HandleAcceptedWorkerChange(WorkerRecord worker, WorkAction action)
     {
+        if (action != WorkAction.Purge)
+        {
+            this.concurrency.Synchronize(worker);
+        }
+
         if (action != WorkAction.Purge && worker.IsFinal)
         {
             this.retention.Schedule(worker);
@@ -765,6 +789,8 @@ internal sealed class WorkerOperations : IWorkerOperations, IDisposable
 
     private void HandleWorkerExecutionCompleted(WorkerRecord worker)
     {
+        this.concurrency.Synchronize(worker);
+
         if (worker.IsFinal)
         {
             this.retention.Schedule(worker);
@@ -786,7 +812,7 @@ internal sealed class WorkerOperations : IWorkerOperations, IDisposable
             return outcome;
         }
 
-        this.workers.TryRemove(worker.Id, out _);
+        this.TryRemoveWorker(worker.Id, out _);
         this.concurrency.Forget(worker);
         this.index.Forget(worker);
         this.iterationIndex.Forget(worker);
