@@ -92,12 +92,29 @@ public sealed class WorkSystemLifecycleTests
     }
 
     [Fact]
+    public void SystemCapacityDefaultsMatchConfiguredValues()
+    {
+        var capacity = WorkSystemCapacityConfiguration.Default;
+
+        Assert.Equal(1_000_000, capacity.MaximumWorkers);
+    }
+
+    [Fact]
     public void SystemRetentionRejectsInvalidMaximumFinalWorkers()
     {
         var exception = Assert.Throws<InvalidOperationException>(() => new ServiceCollection()
             .AddWorkableSystem(builder => builder.ConfigureRetention(maximumFinalWorkers: 0)));
 
         Assert.Contains("maximum final workers", exception.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void SystemCapacityRejectsInvalidMaximumWorkers()
+    {
+        var exception = Assert.Throws<InvalidOperationException>(() => new ServiceCollection()
+            .AddWorkableSystem(builder => builder.ConfigureCapacity(maximumWorkers: 0)));
+
+        Assert.Contains("maximum workers", exception.Message, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]

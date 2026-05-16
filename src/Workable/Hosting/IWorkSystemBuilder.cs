@@ -69,6 +69,10 @@ public interface IWorkSystemBuilder
 
     IWorkSystemBuilder ConfigureRetention(int? maximumFinalWorkers = null);
 
+    IWorkSystemBuilder UseCapacity(WorkSystemCapacityConfiguration capacity);
+
+    IWorkSystemBuilder ConfigureCapacity(int? maximumWorkers = null);
+
     IWorkSystemBuilder ClassifyExceptions(WorkExceptionClassifier classifier);
 
     IWorkSystemBuilder UseDotNetOriginProvider<TProvider>()

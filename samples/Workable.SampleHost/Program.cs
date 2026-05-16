@@ -344,7 +344,7 @@ app.MapGet("/", (HttpContext context) =>
                         data.operationsRunning ? 'operations' : null,
                         data.fulfillmentRunning ? 'fulfillment' : null
                     ].filter(Boolean).join(', ') || 'none';
-                    tightLoopStatus.textContent = `${data.isRunning ? 'Running' : 'Stopped'} - systems ${selectedSystems} - queued operations ${data.operationsQueued} - fulfillment ${data.fulfillmentQueued} - failed ${data.failedCount}`;
+                    tightLoopStatus.textContent = `${data.isRunning ? 'Running' : 'Stopped'} - systems ${selectedSystems} - queued operations ${data.operationsQueued} - fulfillment ${data.fulfillmentQueued} - rejected ${data.rejectedCount} - failed ${data.failedCount}`;
                 }
 
                 button.addEventListener('click', async () => {

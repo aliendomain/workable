@@ -11,6 +11,7 @@ public sealed class DemoTightLoopController(
     private int sequence;
     private long operationsQueued;
     private long fulfillmentQueued;
+    private long rejectedCount;
     private long failedCount;
     private bool disposed;
 
@@ -139,10 +140,7 @@ public sealed class DemoTightLoopController(
         {
             cancellationToken.ThrowIfCancellationRequested();
             var current = Interlocked.Increment(ref this.sequence);
-            if (await this.QueueOperations(current, cancellationToken))
-            {
-                Interlocked.Increment(ref this.operationsQueued);
-            }
+            await this.QueueOperations(current, cancellationToken);
         }
     }
 
@@ -152,14 +150,11 @@ public sealed class DemoTightLoopController(
         {
             cancellationToken.ThrowIfCancellationRequested();
             var current = Interlocked.Increment(ref this.sequence);
-            if (await this.QueueFulfillment(current, cancellationToken))
-            {
-                Interlocked.Increment(ref this.fulfillmentQueued);
-            }
+            await this.QueueFulfillment(current, cancellationToken);
         }
     }
 
-    private async Task<bool> QueueOperations(int sequenceNumber, CancellationToken cancellationToken)
+    private async Task QueueOperations(int sequenceNumber, CancellationToken cancellationToken)
     {
         try
         {
@@ -181,7 +176,7 @@ public sealed class DemoTightLoopController(
                 input,
                 cancellationToken: cancellationToken);
 
-            return handle.QueueOutcome.Status == WorkQueueStatus.Accepted;
+            this.TrackQueueOutcome(handle.QueueOutcome, DemoTightLoopSystem.Operations);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -192,17 +187,17 @@ public sealed class DemoTightLoopController(
             Interlocked.Increment(ref this.failedCount);
             logger.LogWarning(exception, "Failed to queue operations tight-loop sample worker {SequenceNumber}.", sequenceNumber);
             await Task.Delay(TimeSpan.FromMilliseconds(100), cancellationToken);
-            return false;
         }
     }
 
-    private async Task<bool> QueueFulfillment(int sequenceNumber, CancellationToken cancellationToken)
+    private async Task QueueFulfillment(int sequenceNumber, CancellationToken cancellationToken)
     {
         try
         {
             if (!registry.TryGet("fulfillment", out var system))
             {
-                return false;
+                Interlocked.Increment(ref this.failedCount);
+                return;
             }
 
             var input = WorkInput.FromValue(
@@ -223,7 +218,7 @@ public sealed class DemoTightLoopController(
                 input,
                 cancellationToken: cancellationToken);
 
-            return handle.QueueOutcome.Status == WorkQueueStatus.Accepted;
+            this.TrackQueueOutcome(handle.QueueOutcome, DemoTightLoopSystem.Fulfillment);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -234,7 +229,24 @@ public sealed class DemoTightLoopController(
             Interlocked.Increment(ref this.failedCount);
             logger.LogWarning(exception, "Failed to queue fulfillment tight-loop sample worker {SequenceNumber}.", sequenceNumber);
             await Task.Delay(TimeSpan.FromMilliseconds(100), cancellationToken);
-            return false;
+        }
+    }
+
+    private void TrackQueueOutcome(WorkQueueOutcome outcome, DemoTightLoopSystem systemName)
+    {
+        if (!outcome.IsAccepted)
+        {
+            Interlocked.Increment(ref this.rejectedCount);
+            return;
+        }
+
+        if (systemName == DemoTightLoopSystem.Operations)
+        {
+            Interlocked.Increment(ref this.operationsQueued);
+        }
+        else
+        {
+            Interlocked.Increment(ref this.fulfillmentQueued);
         }
     }
 
@@ -245,6 +257,7 @@ public sealed class DemoTightLoopController(
             this.fulfillmentTask is { IsCompleted: false },
             Interlocked.Read(ref this.operationsQueued),
             Interlocked.Read(ref this.fulfillmentQueued),
+            Interlocked.Read(ref this.rejectedCount),
             Interlocked.Read(ref this.failedCount));
 
     private bool IsRunningUnsafe()
@@ -278,4 +291,11 @@ public sealed record DemoTightLoopStatus(
     bool FulfillmentRunning,
     long OperationsQueued,
     long FulfillmentQueued,
+    long RejectedCount,
     long FailedCount);
+
+internal enum DemoTightLoopSystem
+{
+    Operations,
+    Fulfillment,
+}

@@ -312,6 +312,6 @@ See [Start Configuration](work-configuration-start.md) for the available policie
 
 ## Configuration
 
-Queueing applies definition configuration, contributed configuration, and queue options before accepting the worker. Workable has configuration options for start behavior, idempotency, recurrence, transient retry, logging, retention, and concurrency.
+Queueing applies definition configuration, contributed configuration, and queue options before accepting the worker. Workable has configuration options for start behavior, idempotency, recurrence, transient retry, logging, retention, and concurrency. At the system level, `MaximumWorkers` is checked before accepting a worker so an in-memory system can reject new queue requests when the approximate total worker record count is at capacity.
 
 See [Work Configuration](work-configuration.md) for the configuration surface and the per-feature configuration documents.

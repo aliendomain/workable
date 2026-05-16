@@ -17,6 +17,7 @@ internal sealed class WorkSystemBuilder(IServiceCollection services, string? nam
     private bool startWithHost;
     private WorkSystemShutdownGracePeriod shutdownGracePeriod = WorkSystemShutdownGracePeriod.HostRelative();
     private WorkSystemRetentionConfiguration retention = WorkSystemRetentionConfiguration.Default;
+    private WorkSystemCapacityConfiguration capacity = WorkSystemCapacityConfiguration.Default;
     private Func<IServiceProvider, IDotNetWorkOriginProvider>? dotNetOriginProviderFactory;
 
     public IWorkSystemBuilder AddWork(
@@ -162,6 +163,25 @@ internal sealed class WorkSystemBuilder(IServiceCollection services, string? nam
         return this;
     }
 
+    public IWorkSystemBuilder UseCapacity(WorkSystemCapacityConfiguration capacity)
+    {
+        ArgumentNullException.ThrowIfNull(capacity);
+        ValidateCapacity(capacity);
+
+        this.capacity = capacity;
+        return this;
+    }
+
+    public IWorkSystemBuilder ConfigureCapacity(int? maximumWorkers = null)
+    {
+        this.capacity = this.capacity with
+        {
+            MaximumWorkers = maximumWorkers ?? WorkSystemCapacityConfiguration.Default.MaximumWorkers,
+        };
+        ValidateCapacity(this.capacity);
+        return this;
+    }
+
     public IWorkSystemBuilder IncludeContributedWork(bool enabled = true)
     {
         this.includeContributedWork = enabled;
@@ -242,7 +262,8 @@ internal sealed class WorkSystemBuilder(IServiceCollection services, string? nam
             this.includeContributedWork,
             this.startWithHost,
             this.shutdownGracePeriod,
-            this.retention);
+            this.retention,
+            this.capacity);
 
     private void RegisterInitializerTypes(WorkRegistrationConfiguration registration)
     {
@@ -257,6 +278,14 @@ internal sealed class WorkSystemBuilder(IServiceCollection services, string? nam
         if (retention.MaximumFinalWorkers <= 0)
         {
             throw new InvalidOperationException("System retention maximum final workers must be greater than zero.");
+        }
+    }
+
+    private static void ValidateCapacity(WorkSystemCapacityConfiguration capacity)
+    {
+        if (capacity.MaximumWorkers <= 0)
+        {
+            throw new InvalidOperationException("System capacity maximum workers must be greater than zero.");
         }
     }
 }

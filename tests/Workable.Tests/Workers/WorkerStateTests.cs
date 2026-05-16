@@ -331,6 +331,29 @@ public sealed class WorkerStateTests
     }
 
     [Fact]
+    public async Task QueueRejectsWhenSystemMaximumWorkersIsReached()
+    {
+        var definition = WorkDefinition.Create("system-capacity", "Rejects when system worker count reaches the configured limit.",
+            defaultOptions: WorkerOptionFixtures.DoNotStart());
+        var system = CreateSystem(builder => builder
+            .ConfigureCapacity(maximumWorkers: 2)
+            .AddWork(definition, (context, input, cancellationToken) => Task.FromResult(WorkExecutionResult.Success())));
+
+        await system.Start();
+
+        var first = await system.Queue.Enqueue("system-capacity");
+        var second = await system.Queue.Enqueue("system-capacity");
+        var third = await system.Queue.Enqueue("system-capacity");
+
+        Assert.Equal(WorkQueueStatus.Accepted, first.QueueOutcome.Status);
+        Assert.Equal(WorkQueueStatus.Accepted, second.QueueOutcome.Status);
+        Assert.Equal(WorkQueueStatus.Invalid, third.QueueOutcome.Status);
+        Assert.Contains(third.QueueOutcome.Messages, message =>
+            message.Code == "workable.system.capacity_reached" &&
+            message.Target == "system.capacity.maximumWorkers");
+    }
+
+    [Fact]
     public async Task WorkerCanceledDuringSystemStopIsClearedFromMemory()
     {
         var definition = WorkDefinition.Create("stop-clear-memory", "Clears queued work canceled by system stop.",

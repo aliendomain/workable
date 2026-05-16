@@ -29,6 +29,7 @@ internal sealed class WorkerOperations : IWorkerOperations, IDisposable
     private readonly WorkerRetentionScheduler retention;
     private readonly IDotNetWorkOriginProvider dotNetOriginProvider;
     private readonly TimeSpan shutdownGracePeriod;
+    private readonly WorkSystemCapacityConfiguration capacity;
     private CancellationTokenSource systemExecutionLifetime = new();
     private volatile bool acceptingWork;
 
@@ -44,6 +45,7 @@ internal sealed class WorkerOperations : IWorkerOperations, IDisposable
         IReadOnlyList<WorkExceptionClassifier> globalExceptionClassifiers,
         TimeSpan shutdownGracePeriod,
         WorkSystemRetentionConfiguration retentionConfiguration,
+        WorkSystemCapacityConfiguration capacity,
         InMemoryWorkMetricsSink metrics)
     {
         this.catalog = catalog;
@@ -51,6 +53,7 @@ internal sealed class WorkerOperations : IWorkerOperations, IDisposable
         this.workSystemName = workSystemName;
         this.dotNetOriginProvider = dotNetOriginProvider;
         this.shutdownGracePeriod = shutdownGracePeriod;
+        this.capacity = capacity;
         this.metrics = metrics;
         this.workerEvents = new WorkerEventPublisher(workSystemId, events, this.SynchronizeWorkerIfTracked);
         var logger = rootServices.GetService<ILoggerFactory>()?.CreateLogger("Workable.WorkerExecution");
@@ -266,6 +269,17 @@ internal sealed class WorkerOperations : IWorkerOperations, IDisposable
                         "system")]);
                 return false;
             }
+        }
+
+        if (this.workers.Count >= this.capacity.MaximumWorkers)
+        {
+            rejection = WorkQueueOutcome.Invalid(
+                definitionId,
+                [WorkMessage.Warning(
+                    "workable.system.capacity_reached",
+                    $"Workable has reached the configured maximum worker count of {this.capacity.MaximumWorkers}.",
+                    "system.capacity.maximumWorkers")]);
+            return false;
         }
 
         rejection = null;
