@@ -509,7 +509,7 @@ public sealed class WorkableHttpApiTests
     }
 
     [Fact]
-    public async Task MappedHttpRouteCanQueryWorkersByMultipleStates()
+    public async Task MappedHttpRouteCanQueryWorkerGridView()
     {
         using var host = await CreateOverviewHttpHost();
         var client = host.GetTestClient();
@@ -521,23 +521,47 @@ public sealed class WorkableHttpApiTests
             options: new WorkerOptions(ProfilingEnabled: true))).WaitForCompletion();
 
         var response = await client.PostAsJsonAsync(
-            "/workable/workers/query",
+            "/workable/views/workers",
             new
             {
-                states = CompletedFailedStates,
-                skip = 0,
-                take = 50,
+                components = new object[]
+                {
+                    new
+                    {
+                        id = "workerGrid",
+                        type = "workerGrid",
+                        shape = "detailed",
+                        options = new
+                        {
+                            states = CompletedFailedStates,
+                            skip = 0,
+                            take = 50,
+                        },
+                    },
+                },
             });
         var configurationResponse = await client.PostAsJsonAsync(
-            "/workable/workers/query",
+            "/workable/views/workers",
             new
             {
-                configuration = new
+                components = new object[]
                 {
-                    profilingEnabled = true,
+                    new
+                    {
+                        id = "workerGrid",
+                        type = "workerGrid",
+                        shape = "detailed",
+                        options = new
+                        {
+                            configuration = new
+                            {
+                                profilingEnabled = true,
+                            },
+                            skip = 0,
+                            take = 50,
+                        },
+                    },
                 },
-                skip = 0,
-                take = 50,
             });
         response.EnsureSuccessStatusCode();
         configurationResponse.EnsureSuccessStatusCode();
@@ -545,20 +569,25 @@ public sealed class WorkableHttpApiTests
             ?? throw new InvalidOperationException("Expected JSON response.");
         var configurationJson = JsonNode.Parse(await configurationResponse.Content.ReadAsStringAsync())
             ?? throw new InvalidOperationException("Expected configuration JSON response.");
+        var grid = json["components"]?["workerGrid"]?["data"]
+            ?? throw new InvalidOperationException("Expected worker grid component.");
+        var configurationGrid = configurationJson["components"]?["workerGrid"]?["data"]
+            ?? throw new InvalidOperationException("Expected configured worker grid component.");
 
-        Assert.Equal(3, json["totalCount"]?.GetValue<int>());
-        var workers = json["workers"]?.AsArray()
+        Assert.Equal(3, grid["totalCount"]?.GetValue<int>());
+        var workers = grid["workers"]?.AsArray()
             ?? throw new InvalidOperationException("Expected workers array.");
-        var configuredWorkers = configurationJson["workers"]?.AsArray()
+        var configuredWorkers = configurationGrid["workers"]?.AsArray()
             ?? throw new InvalidOperationException("Expected configured workers array.");
         Assert.Contains(workers, worker => worker?["state"]?.GetValue<string>() == "Completed");
         Assert.Contains(workers, worker => worker?["state"]?.GetValue<string>() == "Failed");
-        Assert.Equal(1, configurationJson["totalCount"]?.GetValue<int>());
+        Assert.NotNull(workers.FirstOrDefault()?["identifiers"]);
+        Assert.Equal(1, configurationGrid["totalCount"]?.GetValue<int>());
         Assert.Equal("http.overview.complete", Assert.Single(configuredWorkers)?["definitionName"]?.GetValue<string>());
     }
 
     [Fact]
-    public async Task MappedHttpRouteCanGetAndQueryWorkerIterations()
+    public async Task MappedHttpRouteCanGetAndQueryIterationGridView()
     {
         using var host = await CreateHttpHost();
         var client = host.GetTestClient();
@@ -574,16 +603,29 @@ public sealed class WorkableHttpApiTests
 
         var getResponse = await client.GetAsync($"/workable/workers/{workerId:D}/iterations/1");
         var queryResponse = await client.PostAsJsonAsync(
-            "/workable/iterations/query",
+            "/workable/views/iterations",
             new
             {
-                definitionName = "http.route.case",
-                identifier = new
+                scope = new
                 {
-                    type = "batch",
-                    value = "iteration",
+                    definitionName = "http.route.case",
                 },
-                statuses = CompletedStatuses,
+                components = new object[]
+                {
+                    new
+                    {
+                        id = "iterationGrid",
+                        type = "iterationGrid",
+                        shape = "detailed",
+                        options = new
+                        {
+                            keyType = "batch",
+                            statuses = CompletedStatuses,
+                            skip = 0,
+                            take = 50,
+                        },
+                    },
+                },
             });
 
         getResponse.EnsureSuccessStatusCode();
@@ -592,13 +634,19 @@ public sealed class WorkableHttpApiTests
             ?? throw new InvalidOperationException("Expected iteration JSON response.");
         var queryJson = JsonNode.Parse(await queryResponse.Content.ReadAsStringAsync())
             ?? throw new InvalidOperationException("Expected iteration query JSON response.");
-        var iterations = queryJson["iterations"]?.AsArray()
+        var grid = queryJson["components"]?["iterationGrid"]?["data"]
+            ?? throw new InvalidOperationException("Expected iteration grid component.");
+        var iterations = grid["iterations"]?.AsArray()
             ?? throw new InvalidOperationException("Expected iterations array.");
 
         Assert.Equal(1, getJson["sequence"]?.GetValue<int>());
         Assert.Equal("Completed", getJson["status"]?.GetValue<string>());
-        Assert.Equal(1, queryJson["totalCount"]?.GetValue<int>());
-        Assert.Equal(workerId.ToString("D"), Assert.Single(iterations)?["workerId"]?["value"]?.GetValue<string>());
+        Assert.Equal(1, grid["totalCount"]?.GetValue<int>());
+        var iteration = Assert.Single(iterations);
+        Assert.Equal(workerId.ToString("D"), iteration?["workerId"]?["value"]?.GetValue<string>());
+        Assert.Equal("Completed", iteration?["status"]?.GetValue<string>());
+        Assert.NotNull(iteration?["workerState"]);
+        Assert.NotNull(iteration?["identifiers"]);
     }
 
     [Fact]

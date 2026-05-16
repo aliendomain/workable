@@ -18,7 +18,7 @@ The sample registers operation, fulfillment, and demo work definitions. Open the
 http://localhost:61932/
 ```
 
-The demo workload queues work continuously while it is enabled. It includes short work, long work, throttled work that creates queued workers, a small fixed set of recurring workers, discovered identifiers, subjects, concurrency keys, supplied identifiers, and a small percentage of intentional failures.
+The demo workload queues work continuously while it is enabled. It includes short work, long work, a small fixed set of recurring workers, discovered identifiers, subjects, supplied identifiers, selectable target systems, and a configurable intentional failure percentage.
 
 The root page also includes a queue pressure control. It starts a dedicated producer that queues `sample.demo.queue-pressure` workers every 250ms. Each worker takes 1 second and shares one concurrency key with capacity 1, so the queue grows until you press Stop pressure. The stop action cancels the tracked queued/running pressure workers.
 

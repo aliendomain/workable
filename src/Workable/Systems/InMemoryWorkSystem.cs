@@ -166,6 +166,7 @@ internal sealed class InMemoryWorkSystem : IWorkSystem, IOriginAwareWorkSystem, 
 
             this.State = WorkSystemState.Stopping;
             var result = await this.workers.StopDispatching(origin, CancellationToken.None);
+            this.metrics.Clear();
             this.State = WorkSystemState.Stopped;
             return result;
         }

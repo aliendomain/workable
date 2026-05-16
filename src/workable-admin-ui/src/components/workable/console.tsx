@@ -1,6 +1,7 @@
 "use client";
 
 import Image from "next/image";
+import { useVirtualizer } from "@tanstack/react-virtual";
 import {
   Activity,
   ArrowDown,
@@ -11,7 +12,6 @@ import {
   CheckCircle2,
   ChevronLeft,
   ChevronRight,
-  ChevronsLeft,
   CircleAlert,
   CircleDot,
   Clock3,
@@ -44,8 +44,8 @@ import {
   Workflow,
   X,
 } from "lucide-react";
-import type { Dispatch, ReactNode, SetStateAction } from "react";
-import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import type { Dispatch, ReactNode, RefObject, SetStateAction } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import {
   AlertDialog,
@@ -168,11 +168,9 @@ import {
   type WorkOverviewFailedWorker,
   type WorkOverviewFailedWorkerDetailed,
   type WorkOverviewIteration,
-  type WorkIterationKeyTypeQueryResult,
   type WorkIterationKeyTypeFacet,
   type WorkInfo,
   type WorkOverviewThroughputComponent,
-  type WorkKeyTypeQueryResult,
   type WorkOverviewCatalogCategoryItem,
   type WorkSystemFailedWorkersOverview,
   type WorkSystemLifecycleResult,
@@ -181,10 +179,11 @@ import {
   type WorkThroughputBucket,
   type WorkThroughputLiveSummary,
   type WorkTypedValue,
+  type WorkViewIterationGridDetailed,
+  type WorkViewWorkerGridDetailed,
   type WorkableConnection,
   type WorkableHttpSystemInfo,
   type WorkableHttpSystems,
-  type WorkerIterationOverviewItem,
   type WorkerIterationQueryResult,
   type WorkerOverviewItem,
   type WorkerQueryResult,
@@ -305,6 +304,13 @@ const overviewPanelShapeCapabilities: Record<OverviewPanelId, {
     supportedShapes: ["compact", "standard"],
   },
 };
+const queryGridShapeCapabilities = {
+  defaultShape: "detailed",
+  supportedShapes: ["detailed"],
+} as const satisfies {
+  defaultShape: WorkComponentShape;
+  supportedShapes: WorkComponentShape[];
+};
 
 type WorkableHostConnection = {
   id: string;
@@ -378,6 +384,16 @@ type Loadable<T> = {
   refreshing?: boolean;
 };
 
+type InfiniteLoadable<TItem> = {
+  error?: string;
+  hasMore: boolean;
+  items: TItem[];
+  loading: boolean;
+  loadingMore: boolean;
+  loadMore: () => void;
+  totalCount?: number;
+};
+
 const states: WorkerState[] = [
   "Queued",
   "Running",
@@ -428,12 +444,9 @@ const initialRefreshTokens: Record<View, number> = {
   worker: 0,
 };
 const viewContentOffsetClass = "pt-2";
-const defaultQueryTake = 4;
-const maxQueryTake = 100;
-const minQueryTake = 4;
-const queryTableHeaderHeight = 41;
-const queryTableRowHeight = 56;
-const queryViewportSafetyPadding = 24;
+const queryPageTake = 50;
+const maxQueryTake = 50;
+const minQueryTake = 1;
 
 export function WorkableConsole() {
   const initialConsoleState = useMemo(() => createDefaultConsoleStorage(), []);
@@ -818,40 +831,52 @@ export function WorkableConsole() {
     refreshView(nextView);
   };
 
-  const openWorkersFiltered = (states: WorkerState[]) => {
+  const applyWorkerOverviewScope = (scope: OverviewScope | null) => {
+    const normalizedScope = normalizeOverviewScope(scope);
+    setWorkerCategoryFilter(normalizedScope?.category ?? "");
+    setWorkerDefinitionFilter(normalizedScope?.definitionName ?? "");
+  };
+
+  const applyIterationOverviewScope = (scope: OverviewScope | null) => {
+    const normalizedScope = normalizeOverviewScope(scope);
+    setIterationCategoryFilter(normalizedScope?.category ?? "");
+    setIterationDefinitionFilter(normalizedScope?.definitionName ?? "");
+  };
+
+  const openWorkersFromOverview = (states: WorkerState[] = [], systemId = activeSystem?.id ?? "") => {
     pushCurrentNavigation();
-    setWorkerCategoryFilter("");
-    setWorkerDefinitionFilter("");
+    applyWorkerOverviewScope(overviewScopeBySystemId[systemId] ?? null);
     setKeyTypeFilter("");
     setWorkerStateFilter(states);
-    openView("workers", activeSystem?.id ?? "", false);
+    openView("workers", systemId, false);
+  };
+
+  const openIterationsFromOverview = (
+    statuses: WorkCompletionStatus[] = [],
+    keyType = "",
+    systemId = activeSystem?.id ?? ""
+  ) => {
+    pushCurrentNavigation();
+    applyIterationOverviewScope(overviewScopeBySystemId[systemId] ?? null);
+    setIterationKeyTypeFilter(keyType);
+    setIterationStatusFilter(statuses);
+    openView("iterations", systemId, false);
+  };
+
+  const openWorkersFiltered = (states: WorkerState[]) => {
+    openWorkersFromOverview(states);
   };
 
   const openIterations = () => {
-    pushCurrentNavigation();
-    setIterationCategoryFilter("");
-    setIterationDefinitionFilter("");
-    setIterationKeyTypeFilter("");
-    setIterationStatusFilter([]);
-    openView("iterations", activeSystem?.id ?? "", false);
+    openIterationsFromOverview();
   };
 
   const openIterationsByKeyType = (keyType: string) => {
-    pushCurrentNavigation();
-    setIterationCategoryFilter("");
-    setIterationDefinitionFilter("");
-    setIterationKeyTypeFilter(keyType);
-    setIterationStatusFilter([]);
-    openView("iterations", activeSystem?.id ?? "", false);
+    openIterationsFromOverview([], keyType);
   };
 
   const openIterationsFiltered = (statuses: WorkCompletionStatus[]) => {
-    pushCurrentNavigation();
-    setIterationCategoryFilter("");
-    setIterationDefinitionFilter("");
-    setIterationKeyTypeFilter("");
-    setIterationStatusFilter(statuses);
-    openView("iterations", activeSystem?.id ?? "", false);
+    openIterationsFromOverview(statuses);
   };
 
   const openCategoryOverview = (systemId: string, category: string) => {
@@ -913,6 +938,16 @@ export function WorkableConsole() {
   };
 
   const openMenuView = (nextView: View, systemId: string) => {
+    if (view === "overview" && nextView === "workers") {
+      openWorkersFromOverview([], systemId);
+      return;
+    }
+
+    if (view === "overview" && nextView === "iterations") {
+      openIterationsFromOverview([], "", systemId);
+      return;
+    }
+
     openView(nextView, systemId);
   };
 
@@ -1285,6 +1320,8 @@ export function WorkableConsole() {
                       <WorkersView
                         categoryFilter={workerCategoryFilter}
                         connection={connection}
+                        isLoadingTarget={visibleView === "workers" || pendingView === "workers"}
+                        isVisible={visibleView === "workers"}
                         onOpenWorker={openWorker}
                         onReady={() => markViewReady("workers")}
                         definitionFilter={workerDefinitionFilter}
@@ -1304,6 +1341,8 @@ export function WorkableConsole() {
                         categoryFilter={iterationCategoryFilter}
                         connection={connection}
                         definitionFilter={iterationDefinitionFilter}
+                        isLoadingTarget={visibleView === "iterations" || pendingView === "iterations"}
+                        isVisible={visibleView === "iterations"}
                         keyTypeFilter={iterationKeyTypeFilter}
                         onCategoryFilterChange={setIterationCategoryFilter}
                         onDefinitionFilterChange={setIterationDefinitionFilter}
@@ -3010,63 +3049,6 @@ function formatFilterValues(values: readonly string[]) {
   return `${visible.join(", ")}${suffix}`;
 }
 
-function QueryPaginationControls({
-  skip,
-  take,
-  totalCount,
-  onFirst,
-  onNext,
-  onPrevious,
-}: {
-  skip: number;
-  take: number;
-  totalCount?: number;
-  onFirst: () => void;
-  onNext: () => void;
-  onPrevious: () => void;
-}) {
-  const count = totalCount ?? 0;
-  const firstRecord = count === 0 ? 0 : Math.min(skip + 1, count);
-  const lastRecord = count === 0 ? 0 : Math.min(skip + take, count);
-  const canPrevious = skip > 0;
-  const canNext = skip + take < count;
-
-  return (
-    <div className="ml-1 flex items-center gap-1 text-muted-foreground text-xs">
-      <span className="min-w-24 text-right tabular-nums">
-        {firstRecord}-{lastRecord} of {count}
-      </span>
-      <Button
-        aria-label="First page"
-        disabled={!canPrevious}
-        onClick={onFirst}
-        size="icon-sm"
-        variant="ghost"
-      >
-        <ChevronsLeft className="size-4" />
-      </Button>
-      <Button
-        aria-label="Previous page"
-        disabled={!canPrevious}
-        onClick={onPrevious}
-        size="icon-sm"
-        variant="ghost"
-      >
-        <ChevronLeft className="size-4" />
-      </Button>
-      <Button
-        aria-label="Next page"
-        disabled={!canNext}
-        onClick={onNext}
-        size="icon-sm"
-        variant="ghost"
-      >
-        <ChevronRight className="size-4" />
-      </Button>
-    </div>
-  );
-}
-
 function OverviewView({
   connection,
   hiddenPanelIds,
@@ -3252,7 +3234,6 @@ function OverviewView({
   const activeFailedWorkersSlice = failedWorkersSlice?.key === failedWorkersKey
     ? failedWorkersSlice.data
     : undefined;
-  const hasOverviewFilters = !!overviewScope;
   const activeWorkerCount = activeFailedWorkersSlice?.activeWorkerCount ??
     throughputComponent?.activeWorkerCount ??
     workersComponent?.activeWorkerCount ??
@@ -3371,24 +3352,6 @@ function OverviewView({
           refreshToken={refreshToken}
           scope={overviewScope}
         />
-        {hasOverviewFilters && (
-          <Tooltip delayDuration={500} disableHoverableContent>
-            <TooltipTrigger asChild>
-              <Button
-                aria-label="Clear filters"
-                className="text-muted-foreground hover:bg-transparent hover:text-foreground dark:hover:bg-transparent"
-                onClick={onClearOverviewScope}
-                size="icon-sm"
-                variant="ghost"
-              >
-                <X className="size-4" />
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent side="bottom" sideOffset={6}>
-              Clear filters
-            </TooltipContent>
-          </Tooltip>
-        )}
         <Tooltip delayDuration={500} disableHoverableContent>
           <TooltipTrigger asChild>
             <Button
@@ -4914,6 +4877,8 @@ function WorkersView({
   categoryFilter,
   connection,
   definitionFilter,
+  isLoadingTarget,
+  isVisible,
   keyTypeFilter,
   onCategoryFilterChange,
   onDefinitionFilterChange,
@@ -4927,6 +4892,8 @@ function WorkersView({
   categoryFilter: string;
   connection: WorkableConnection;
   definitionFilter: string;
+  isLoadingTarget: boolean;
+  isVisible: boolean;
   keyTypeFilter: string;
   onOpenWorker: (workerId: string) => void;
   onCategoryFilterChange: (category: string) => void;
@@ -4937,11 +4904,6 @@ function WorkersView({
   refreshToken: number;
   stateFilter: WorkerState[];
 }) {
-  const [pageState, setPageState] = useState({
-    index: 0,
-    queryKey: "",
-    take: defaultQueryTake,
-  });
   const catalogScope = useMemo<OverviewScope | null>(() => {
     const category = normalizeCategoryFilter(categoryFilter);
     const definitionName = definitionFilter.trim();
@@ -4965,28 +4927,20 @@ function WorkersView({
     }),
     [categoryFilter, definitionFilter, keyTypeFilter, stateFilter]
   );
-  const { queryTake, queryTableRef } = useViewportQueryTake();
-  const queryKey = JSON.stringify(query);
-  const pageIndex =
-    pageState.queryKey === queryKey && pageState.take === queryTake
-      ? pageState.index
-      : 0;
-  const skip = pageIndex * queryTake;
-  const workers = useWorkerQuery(connection, query, refreshToken, queryTake, skip);
+  const workers = useInfiniteWorkerQuery(connection, query, refreshToken, isLoadingTarget);
+  const [gridShape, setGridShape] = useState<WorkComponentShape>(
+    queryGridShapeCapabilities.defaultShape
+  );
   const isReady = !workers.loading;
-  const hasFilters = !!catalogScope || !!keyTypeFilter.trim() || stateFilter.length > 0;
-  const clearFilters = () => {
-    onCategoryFilterChange("");
-    onDefinitionFilterChange("");
-    onKeyTypeFilterChange("");
-    onStateFilterChange([]);
-  };
-
   useEffect(() => {
-    if (isReady) {
+    if (isLoadingTarget && isReady) {
       onReady();
     }
-  }, [isReady, onReady]);
+  }, [isLoadingTarget, isReady, onReady]);
+
+  if (!isVisible) {
+    return null;
+  }
 
   return (
     <div className="space-y-6">
@@ -5016,56 +4970,161 @@ function WorkersView({
           }}
           refreshToken={refreshToken}
         />
-        {hasFilters && (
-          <Tooltip delayDuration={500} disableHoverableContent>
-            <TooltipTrigger asChild>
-              <Button
-                aria-label="Clear filters"
-                className="text-muted-foreground hover:bg-transparent hover:text-foreground dark:hover:bg-transparent"
-                onClick={clearFilters}
-                size="icon-sm"
-                variant="ghost"
-              >
-                <X className="size-4" />
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent side="bottom" sideOffset={6}>
-              Clear filters
-            </TooltipContent>
-          </Tooltip>
-        )}
-        <QueryPaginationControls
-          skip={skip}
-          take={queryTake}
-          totalCount={workers.data?.totalCount}
-          onFirst={() => setPageState({
-            index: 0,
-            queryKey,
-            take: queryTake,
-          })}
-          onNext={() => setPageState({
-            index: pageIndex + 1,
-            queryKey,
-            take: queryTake,
-          })}
-          onPrevious={() => setPageState({
-            index: Math.max(0, pageIndex - 1),
-            queryKey,
-            take: queryTake,
-          })}
-        />
       </ViewActionLane>
-      <Card>
-        <CardContent className="pt-0">
-          <div ref={queryTableRef}>
-            <WorkerTable
-              loading={workers.loading}
-              onSelect={(worker) => onOpenWorker(worker.id.value)}
-              workers={workers.data?.workers ?? []}
-            />
-          </div>
-        </CardContent>
-      </Card>
+      <OverviewPanelShell
+        actions={<QueryResultTotal noun="worker" totalCount={workers.totalCount} />}
+        contentClassName="mt-3"
+        onShapeChange={setGridShape}
+        shape={gridShape}
+        supportedShapes={queryGridShapeCapabilities.supportedShapes}
+        title="Workers"
+      >
+        <VirtualWorkerTable
+          hasMore={workers.hasMore}
+          loading={workers.loading}
+          loadingMore={workers.loadingMore}
+          loadMore={workers.loadMore}
+          onSelect={(worker) => onOpenWorker(worker.id.value)}
+          shape={gridShape}
+          workers={workers.items}
+        />
+      </OverviewPanelShell>
+    </div>
+  );
+}
+
+function VirtualWorkerTable({
+  hasMore,
+  loading,
+  loadingMore,
+  loadMore,
+  onSelect,
+  shape,
+  workers,
+}: {
+  hasMore: boolean;
+  loading: boolean;
+  loadingMore: boolean;
+  loadMore: () => void;
+  onSelect: (worker: WorkViewWorkerGridDetailed) => void;
+  shape: WorkComponentShape;
+  workers: WorkViewWorkerGridDetailed[];
+}) {
+  const detailed = shape === "detailed";
+  const scrollRef = useRef<HTMLDivElement>(null);
+  // eslint-disable-next-line react-hooks/incompatible-library -- TanStack Virtual owns scroll measurement state.
+  const rowVirtualizer = useVirtualizer({
+    count: workers.length,
+    estimateSize: () => 64,
+    getScrollElement: () => scrollRef.current,
+    getItemKey: (index) => workers[index]?.id.value ?? index,
+    overscan: 10,
+  });
+  const virtualItems = rowVirtualizer.getVirtualItems();
+  const lastVirtualIndex = virtualItems.at(-1)?.index;
+
+  useEffect(() => {
+    if (lastVirtualIndex !== undefined && lastVirtualIndex >= workers.length - 8 && hasMore) {
+      loadMore();
+    }
+  }, [hasMore, lastVirtualIndex, loadMore, workers.length]);
+
+  if (loading && workers.length === 0) {
+    return <StackedSkeleton count={8} />;
+  }
+
+  if (workers.length === 0) {
+    return (
+      <div className="rounded-lg border border-dashed p-8 text-center text-muted-foreground text-sm">
+        No workers matched the current query.
+      </div>
+    );
+  }
+
+  return (
+    <div className="overflow-hidden rounded-lg border">
+      <div className="grid bg-card shadow-[0_1px_0_var(--border)]">
+        <div className="flex min-h-12">
+          <div className="flex h-12 flex-[2_2_22rem] items-center px-3 font-medium text-sm">Definition</div>
+          <div className="flex h-12 w-32 items-center px-3 font-medium text-sm">State</div>
+          {detailed && <div className="flex h-12 w-72 items-center px-3 font-medium text-sm">Subject id</div>}
+          {detailed && <div className="flex h-12 flex-[2_2_20rem] items-center px-3 font-medium text-sm">Identifiers</div>}
+          <div className="flex h-12 w-36 items-center px-3 font-medium text-sm">Updated</div>
+          <div className="flex h-12 w-28 items-center px-3 font-medium text-sm">Duration</div>
+        </div>
+      </div>
+      <div
+        className="workable-grid-scrollbar max-h-[calc(100vh-17rem)] overflow-auto"
+        ref={scrollRef}
+      >
+        <Table className="grid">
+          <TableBody
+            className="relative grid"
+            style={{ height: `${rowVirtualizer.getTotalSize()}px` }}
+          >
+            {virtualItems.map((virtualRow) => {
+              const worker = workers[virtualRow.index];
+              if (!worker) {
+                return null;
+              }
+
+              return (
+                <TableRow
+                  className="absolute flex h-16 w-full cursor-pointer overflow-hidden"
+                  data-index={virtualRow.index}
+                  key={virtualRow.key}
+                  onClick={() => onSelect(worker)}
+                  style={{
+                    transform: `translateY(${virtualRow.start}px)`,
+                  }}
+                >
+                  <TableCell className="min-w-0 flex-[2_2_22rem] overflow-hidden">
+                    <div className="font-mono text-xs">{worker.definitionName}</div>
+                    <div
+                      className="truncate font-mono text-muted-foreground text-xs"
+                      title={worker.id.value}
+                    >
+                      {worker.id.value}
+                    </div>
+                  </TableCell>
+                  <TableCell className="w-32 overflow-hidden">
+                    <Badge className={stateTone(worker.state)} variant="outline">
+                      {worker.state}
+                    </Badge>
+                  </TableCell>
+                  {detailed && (
+                    <TableCell className="w-72 overflow-hidden font-mono text-muted-foreground text-xs">
+                      <TypedValueSummary values={worker.subjectId ? [worker.subjectId] : []} />
+                    </TableCell>
+                  )}
+                  {detailed && (
+                    <TableCell className="min-w-0 flex-[2_2_20rem] overflow-hidden font-mono text-muted-foreground text-xs">
+                      <IdentifierSummary identifiers={worker.identifiers} />
+                    </TableCell>
+                  )}
+                  <TableCell className="w-36 overflow-hidden text-muted-foreground text-xs">
+                    {formatRelativeTime(worker.updatedAt)}
+                  </TableCell>
+                  <TableCell className="w-28 overflow-hidden">
+                    <DurationValue
+                      className="font-mono text-xs"
+                      duration={formatWorkerDuration(worker)}
+                      muted
+                    />
+                  </TableCell>
+                </TableRow>
+              );
+            })}
+          </TableBody>
+        </Table>
+        <InfiniteGridFooter
+          hasMore={hasMore}
+          loadedCount={workers.length}
+          loadMore={loadMore}
+          loadingMore={loadingMore}
+          scrollRootRef={scrollRef}
+        />
+      </div>
     </div>
   );
 }
@@ -5422,6 +5481,8 @@ function IterationsView({
   categoryFilter,
   connection,
   definitionFilter,
+  isLoadingTarget,
+  isVisible,
   keyTypeFilter,
   onCategoryFilterChange,
   onDefinitionFilterChange,
@@ -5435,6 +5496,8 @@ function IterationsView({
   categoryFilter: string;
   connection: WorkableConnection;
   definitionFilter: string;
+  isLoadingTarget: boolean;
+  isVisible: boolean;
   keyTypeFilter: string;
   onCategoryFilterChange: (category: string) => void;
   onDefinitionFilterChange: (definitionName: string) => void;
@@ -5445,11 +5508,6 @@ function IterationsView({
   refreshToken: number;
   statusFilter: WorkCompletionStatus[];
 }) {
-  const [pageState, setPageState] = useState({
-    index: 0,
-    queryKey: "",
-    take: defaultQueryTake,
-  });
   const catalogScope = useMemo<OverviewScope | null>(() => {
     const category = normalizeCategoryFilter(categoryFilter);
     const definitionName = definitionFilter.trim();
@@ -5472,28 +5530,20 @@ function IterationsView({
     }),
     [categoryFilter, definitionFilter, keyTypeFilter, statusFilter]
   );
-  const { queryTake, queryTableRef } = useViewportQueryTake();
-  const queryKey = JSON.stringify(query);
-  const pageIndex =
-    pageState.queryKey === queryKey && pageState.take === queryTake
-      ? pageState.index
-      : 0;
-  const skip = pageIndex * queryTake;
-  const iterations = useIterationQuery(connection, query, refreshToken, queryTake, skip);
+  const iterations = useInfiniteIterationQuery(connection, query, refreshToken, isLoadingTarget);
+  const [gridShape, setGridShape] = useState<WorkComponentShape>(
+    queryGridShapeCapabilities.defaultShape
+  );
   const isReady = !iterations.loading;
-  const hasFilters = !!catalogScope || !!keyTypeFilter.trim() || statusFilter.length > 0;
-  const clearFilters = () => {
-    onCategoryFilterChange("");
-    onDefinitionFilterChange("");
-    onKeyTypeFilterChange("");
-    onStatusFilterChange([]);
-  };
-
   useEffect(() => {
-    if (isReady) {
+    if (isLoadingTarget && isReady) {
       onReady();
     }
-  }, [isReady, onReady]);
+  }, [isLoadingTarget, isReady, onReady]);
+
+  if (!isVisible) {
+    return null;
+  }
 
   return (
     <div className="space-y-6">
@@ -5523,70 +5573,69 @@ function IterationsView({
           }}
           refreshToken={refreshToken}
         />
-        {hasFilters && (
-          <Tooltip delayDuration={500} disableHoverableContent>
-            <TooltipTrigger asChild>
-              <Button
-                aria-label="Clear filters"
-                className="text-muted-foreground hover:bg-transparent hover:text-foreground dark:hover:bg-transparent"
-                onClick={clearFilters}
-                size="icon-sm"
-                variant="ghost"
-              >
-                <X className="size-4" />
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent side="bottom" sideOffset={6}>
-              Clear filters
-            </TooltipContent>
-          </Tooltip>
-        )}
-        <QueryPaginationControls
-          skip={skip}
-          take={queryTake}
-          totalCount={iterations.data?.totalCount}
-          onFirst={() => setPageState({
-            index: 0,
-            queryKey,
-            take: queryTake,
-          })}
-          onNext={() => setPageState({
-            index: pageIndex + 1,
-            queryKey,
-            take: queryTake,
-          })}
-          onPrevious={() => setPageState({
-            index: Math.max(0, pageIndex - 1),
-            queryKey,
-            take: queryTake,
-          })}
-        />
       </ViewActionLane>
-      <Card>
-        <CardContent className="pt-0">
-          <div ref={queryTableRef}>
-            <IterationTable
-              iterations={iterations.data?.iterations ?? []}
-              loading={iterations.loading}
-              onSelect={(iteration) => onOpenWorker(iteration.workerId.value)}
-            />
-          </div>
-        </CardContent>
-      </Card>
+      <OverviewPanelShell
+        actions={<QueryResultTotal noun="iteration" totalCount={iterations.totalCount} />}
+        contentClassName="mt-3"
+        onShapeChange={setGridShape}
+        shape={gridShape}
+        supportedShapes={queryGridShapeCapabilities.supportedShapes}
+        title="Iterations"
+      >
+        <VirtualIterationTable
+          hasMore={iterations.hasMore}
+          iterations={iterations.items}
+          loading={iterations.loading}
+          loadingMore={iterations.loadingMore}
+          loadMore={iterations.loadMore}
+          onSelect={(iteration) => onOpenWorker(iteration.workerId.value)}
+          shape={gridShape}
+        />
+      </OverviewPanelShell>
     </div>
   );
 }
 
-function IterationTable({
+function VirtualIterationTable({
+  hasMore,
   iterations,
   loading,
+  loadingMore,
+  loadMore,
   onSelect,
+  shape,
 }: {
-  iterations: WorkerIterationOverviewItem[];
+  hasMore: boolean;
+  iterations: WorkViewIterationGridDetailed[];
   loading: boolean;
-  onSelect: (iteration: WorkerIterationOverviewItem) => void;
+  loadingMore: boolean;
+  loadMore: () => void;
+  onSelect: (iteration: WorkViewIterationGridDetailed) => void;
+  shape: WorkComponentShape;
 }) {
-  if (loading) {
+  const detailed = shape === "detailed";
+  const scrollRef = useRef<HTMLDivElement>(null);
+  // eslint-disable-next-line react-hooks/incompatible-library -- TanStack Virtual owns scroll measurement state.
+  const rowVirtualizer = useVirtualizer({
+    count: iterations.length,
+    estimateSize: () => 64,
+    getScrollElement: () => scrollRef.current,
+    getItemKey: (index) => {
+      const iteration = iterations[index];
+      return iteration ? `${iteration.workerId.value}:${iteration.sequence}` : index;
+    },
+    overscan: 10,
+  });
+  const virtualItems = rowVirtualizer.getVirtualItems();
+  const lastVirtualIndex = virtualItems.at(-1)?.index;
+
+  useEffect(() => {
+    if (lastVirtualIndex !== undefined && lastVirtualIndex >= iterations.length - 8 && hasMore) {
+      loadMore();
+    }
+  }, [hasMore, iterations.length, lastVirtualIndex, loadMore]);
+
+  if (loading && iterations.length === 0) {
     return <StackedSkeleton count={8} />;
   }
 
@@ -5600,53 +5649,164 @@ function IterationTable({
 
   return (
     <div className="overflow-hidden rounded-lg border">
-      <Table>
-        <TableHeader>
-          <TableRow>
-            <TableHead>Definition</TableHead>
-            <TableHead>Status</TableHead>
-            <TableHead>Worker state</TableHead>
-            <TableHead>Subject</TableHead>
-            <TableHead>Completed</TableHead>
-            <TableHead>Duration</TableHead>
-          </TableRow>
-        </TableHeader>
-        <TableBody>
-          {iterations.map((iteration) => (
-            <TableRow
-              className="cursor-pointer"
-              key={`${iteration.workerId.value}:${iteration.sequence}`}
-              onClick={() => onSelect(iteration)}
-            >
-              <TableCell>
-                <div className="font-mono text-xs">{iteration.definitionName}</div>
-                <div className="font-mono text-muted-foreground text-xs">
-                  {iteration.workerId.value.slice(0, 8)} / iteration {iteration.sequence}
-                </div>
-              </TableCell>
-              <TableCell>
-                <Badge className={completionTone(iteration.status)} variant="outline">
-                  {iteration.status}
-                </Badge>
-              </TableCell>
-              <TableCell>
-                <Badge className={stateTone(iteration.workerState)} variant="outline">
-                  {iteration.workerState}
-                </Badge>
-              </TableCell>
-              <TableCell className="font-mono text-muted-foreground text-xs">
-                {formatTypedValue(iteration.subjectId)}
-              </TableCell>
-              <TableCell className="text-muted-foreground text-xs">
-                {formatRelativeTime(iteration.completedAt)}
-              </TableCell>
-              <TableCell className="font-mono text-muted-foreground text-xs">
-                <DurationValue duration={formatExecutionDuration(iteration.executionDuration)} />
-              </TableCell>
-            </TableRow>
-          ))}
-        </TableBody>
-      </Table>
+      <div className="grid bg-card shadow-[0_1px_0_var(--border)]">
+        <div className="flex min-h-12">
+          <div className="flex h-12 flex-[2_2_22rem] items-center px-3 font-medium text-sm">Definition</div>
+          <div className="flex h-12 w-32 items-center px-3 font-medium text-sm">Status</div>
+          <div className="flex h-12 w-32 items-center px-3 font-medium text-sm">Worker state</div>
+          {detailed && <div className="flex h-12 w-72 items-center px-3 font-medium text-sm">Subject id</div>}
+          {detailed && <div className="flex h-12 flex-[2_2_20rem] items-center px-3 font-medium text-sm">Identifiers</div>}
+          <div className="flex h-12 w-36 items-center px-3 font-medium text-sm">Completed</div>
+          <div className="flex h-12 w-28 items-center px-3 font-medium text-sm">Duration</div>
+        </div>
+      </div>
+      <div
+        className="workable-grid-scrollbar max-h-[calc(100vh-17rem)] overflow-auto"
+        ref={scrollRef}
+      >
+        <Table className="grid">
+          <TableBody
+            className="relative grid"
+            style={{ height: `${rowVirtualizer.getTotalSize()}px` }}
+          >
+            {virtualItems.map((virtualRow) => {
+              const iteration = iterations[virtualRow.index];
+              if (!iteration) {
+                return null;
+              }
+
+              return (
+                <TableRow
+                  className="absolute flex h-16 w-full cursor-pointer overflow-hidden"
+                  data-index={virtualRow.index}
+                  key={virtualRow.key}
+                  onClick={() => onSelect(iteration)}
+                  style={{
+                    transform: `translateY(${virtualRow.start}px)`,
+                  }}
+                >
+                  <TableCell className="min-w-0 flex-[2_2_22rem] overflow-hidden">
+                    <div className="font-mono text-xs">{iteration.definitionName}</div>
+                    <div className="truncate font-mono text-muted-foreground text-xs">
+                      {iteration.workerId.value} / #{iteration.sequence}
+                    </div>
+                  </TableCell>
+                  <TableCell className="w-32 overflow-hidden">
+                    <Badge className={completionTone(iteration.status)} variant="outline">
+                      {iteration.status}
+                    </Badge>
+                  </TableCell>
+                  <TableCell className="w-32 overflow-hidden">
+                    <Badge className={stateTone(iteration.workerState)} variant="outline">
+                      {iteration.workerState}
+                    </Badge>
+                  </TableCell>
+                  {detailed && (
+                    <TableCell className="w-72 overflow-hidden font-mono text-muted-foreground text-xs">
+                      <TypedValueSummary values={iteration.subjectId ? [iteration.subjectId] : []} />
+                    </TableCell>
+                  )}
+                  {detailed && (
+                    <TableCell className="min-w-0 flex-[2_2_20rem] overflow-hidden font-mono text-muted-foreground text-xs">
+                      <IdentifierSummary identifiers={iteration.identifiers} />
+                    </TableCell>
+                  )}
+                  <TableCell className="w-36 overflow-hidden text-muted-foreground text-xs">
+                    {formatRelativeTime(iteration.completedAt)}
+                  </TableCell>
+                  <TableCell className="w-28 overflow-hidden font-mono text-muted-foreground text-xs">
+                    <DurationValue duration={formatExecutionDuration(iteration.executionDuration)} />
+                  </TableCell>
+                </TableRow>
+              );
+            })}
+          </TableBody>
+        </Table>
+        <InfiniteGridFooter
+          hasMore={hasMore}
+          loadedCount={iterations.length}
+          loadMore={loadMore}
+          loadingMore={loadingMore}
+          scrollRootRef={scrollRef}
+        />
+      </div>
+    </div>
+  );
+}
+
+function QueryResultTotal({
+  noun,
+  totalCount,
+}: {
+  noun: string;
+  totalCount?: number;
+}) {
+  return (
+    <div className="flex min-h-5 items-center justify-end px-1 text-muted-foreground text-xs">
+      {totalCount === undefined ? (
+        <span>&nbsp;</span>
+      ) : (
+        <span className="tabular-nums">
+          {formatResultCount(totalCount)} {pluralize(noun, totalCount)}
+        </span>
+      )}
+    </div>
+  );
+}
+
+function InfiniteGridFooter({
+  hasMore,
+  loadedCount,
+  loadMore,
+  loadingMore,
+  scrollRootRef,
+}: {
+  hasMore: boolean;
+  loadedCount: number;
+  loadMore: () => void;
+  loadingMore: boolean;
+  scrollRootRef: RefObject<HTMLDivElement | null>;
+}) {
+  const sentinelRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const node = sentinelRef.current;
+    const root = scrollRootRef.current;
+    if (!node || !hasMore || loadingMore) {
+      return;
+    }
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) {
+          loadMore();
+        }
+      },
+      { root, rootMargin: "600px 0px" }
+    );
+
+    observer.observe(node);
+
+    return () => observer.disconnect();
+  }, [hasMore, loadedCount, loadingMore, loadMore, scrollRootRef]);
+
+  if (!hasMore && !loadingMore) {
+    return null;
+  }
+
+  return (
+    <div
+      className="flex h-10 items-center justify-center gap-2 border-t text-muted-foreground text-xs"
+      ref={sentinelRef}
+    >
+      {loadingMore ? (
+        <>
+          <Loader2 className="size-3.5 animate-spin" />
+          Loading more
+        </>
+      ) : (
+        <span>Scroll to load more</span>
+      )}
     </div>
   );
 }
@@ -7631,6 +7791,10 @@ function pluralize(word: string, count: number) {
   return count === 1 ? word : `${word}s`;
 }
 
+function formatResultCount(count: number) {
+  return count.toLocaleString();
+}
+
 function getWorkComponentData<T>(
   result: WorkComponentQueryResult | undefined,
   id: string
@@ -7982,23 +8146,6 @@ function definitionMatchesCatalogScope(
     ? categorySegments.length === scopeSegments.length &&
         startsWithCategoryPath(categorySegments, scopeSegments)
     : startsWithCategoryPath(categorySegments, scopeSegments);
-}
-
-function workerMatchesCategory(
-  item: { category?: string | null },
-  category?: string,
-  includeSubcategories = true
-) {
-  const scopeSegments = splitCatalogPath(category ?? "");
-  if (scopeSegments.length === 0) {
-    return true;
-  }
-
-  const categorySegments = splitCategoryPath(item.category);
-  return includeSubcategories
-    ? startsWithCategoryPath(categorySegments, scopeSegments)
-    : categorySegments.length === scopeSegments.length &&
-        startsWithCategoryPath(categorySegments, scopeSegments);
 }
 
 function parseSchemaJsonValue(json?: string | null) {
@@ -8500,82 +8647,7 @@ function useWorkablePostResource<T>(
   return state;
 }
 
-function useViewportQueryTake() {
-  const queryTableRef = useRef<HTMLDivElement>(null);
-  const [queryTake, setQueryTake] = useState(defaultQueryTake);
-
-  useLayoutEffect(() => {
-    if (typeof window === "undefined") {
-      return;
-    }
-
-    let frameId = 0;
-    const updateTake = () => {
-      frameId = 0;
-      const root = queryTableRef.current;
-      const tableTop = root?.getBoundingClientRect().top ?? 0;
-      const scrollViewport = root?.closest("[data-slot='scroll-area-viewport']");
-      const viewportBottom =
-        scrollViewport?.getBoundingClientRect().bottom ?? window.innerHeight;
-      const pageContainer = root?.closest("[data-view-content]");
-      const pageBottomPadding = pageContainer
-        ? Number.parseFloat(window.getComputedStyle(pageContainer).paddingBottom) || 0
-        : 0;
-      const headerHeight =
-        root?.querySelector("thead")?.getBoundingClientRect().height ??
-        queryTableHeaderHeight;
-      const tableRows = root
-        ? [...root.querySelectorAll("tbody tr")].slice(0, 5)
-        : [];
-      const measuredRowHeight = tableRows.length > 0
-        ? tableRows.reduce(
-            (total, row) => total + row.getBoundingClientRect().height,
-            0
-          ) / tableRows.length
-        : queryTableRowHeight;
-      const availableHeight = Math.max(
-        0,
-        viewportBottom - tableTop - pageBottomPadding - queryViewportSafetyPadding
-      );
-      const rows = Math.floor(
-        (availableHeight - headerHeight) / Math.max(1, measuredRowHeight)
-      );
-      const nextTake = Math.min(maxQueryTake, Math.max(minQueryTake, rows));
-
-      setQueryTake((current) => (current === nextTake ? current : nextTake));
-    };
-
-    const scheduleUpdate = () => {
-      if (frameId) {
-        window.cancelAnimationFrame(frameId);
-      }
-      frameId = window.requestAnimationFrame(updateTake);
-    };
-
-    scheduleUpdate();
-    window.addEventListener("resize", scheduleUpdate);
-
-    const observer = typeof ResizeObserver !== "undefined"
-      ? new ResizeObserver(scheduleUpdate)
-      : null;
-    if (queryTableRef.current) {
-      observer?.observe(queryTableRef.current);
-    }
-    observer?.observe(document.body);
-
-    return () => {
-      window.removeEventListener("resize", scheduleUpdate);
-      if (frameId) {
-        window.cancelAnimationFrame(frameId);
-      }
-      observer?.disconnect();
-    };
-  }, []);
-
-  return { queryTake, queryTableRef };
-}
-
-function useWorkerQuery(
+function useInfiniteWorkerQuery(
   connection: WorkableConnection,
   query: {
     category?: string;
@@ -8585,19 +8657,38 @@ function useWorkerQuery(
     states?: WorkerState[];
   },
   refreshToken: number,
-  take: number,
-  skip: number
-): Loadable<WorkerQueryResult> {
-  const [state, setState] = useState<Loadable<WorkerQueryResult>>({
+  enabled: boolean
+): InfiniteLoadable<WorkViewWorkerGridDetailed> {
+  const [state, setState] = useState<{
+    error?: string;
+    items: WorkViewWorkerGridDetailed[];
+    loading: boolean;
+    loadingMore: boolean;
+    nextSkip: number;
+    totalCount?: number;
+  }>({
+    items: [],
     loading: true,
+    loadingMore: false,
+    nextSkip: 0,
   });
+  const stateRef = useRef(state);
+  const requestIdRef = useRef(0);
+  const inFlightSkipRef = useRef<number | null>(null);
   const apiUrl = connection.apiUrl;
   const systemName = connection.systemName;
   const key = JSON.stringify(query);
-  const boundedTake = Math.min(maxQueryTake, Math.max(minQueryTake, Math.trunc(take)));
+  const boundedTake = Math.min(maxQueryTake, Math.max(minQueryTake, queryPageTake));
 
   useEffect(() => {
-    let canceled = false;
+    stateRef.current = state;
+  }, [state]);
+
+  const loadPage = useCallback(async (skip: number, append: boolean, requestId: number) => {
+    if (!enabled) {
+      return;
+    }
+
     const parsedQuery = JSON.parse(key) as {
       category?: string;
       definitionName?: string;
@@ -8607,70 +8698,136 @@ function useWorkerQuery(
     };
     const requestConnection = { apiUrl, systemName };
 
-    const load = async () => {
-      queueMicrotask(() => {
-        if (!canceled) {
-          setState((current) => ({
-            ...current,
-            error: undefined,
-            loading: current.data === undefined,
-            refreshing: current.data !== undefined,
-          }));
-        }
-      });
+    setState((current) => ({
+      ...current,
+      error: undefined,
+      loading: !append && current.items.length === 0,
+      loadingMore: append,
+    }));
 
-      try {
-        const data = parsedQuery.keyType !== undefined
-          ? await queryWorkersByKeyType(requestConnection, {
-              ...parsedQuery,
+    try {
+      const result = await workableFetch<WorkComponentQueryResult>(requestConnection, "views/workers", {
+        method: "POST",
+        body: JSON.stringify({
+          components: [
+            overviewComponent("workerGrid", "workerGrid", "detailed", {
               keyType: parsedQuery.keyType,
+              states: parsedQuery.states,
               skip,
               take: boundedTake,
-            })
-          : await workableFetch<WorkerQueryResult>(requestConnection, "workers/query", {
-              method: "POST",
-              body: JSON.stringify({
-                category: parsedQuery.category,
-                definitionName: parsedQuery.definitionName,
-                includeSubcategories: parsedQuery.includeSubcategories,
-                states: parsedQuery.states,
-                skip,
-                take: boundedTake,
-              }),
-            });
-
-        if (!canceled) {
-          setState({ data, loading: false, refreshing: false });
-        }
-      } catch (error) {
-        if (!canceled) {
-          const detail = error instanceof Error ? error.message : "Request failed.";
-          const nextError = `Worker query failed. ${detail}`;
-          setState((current) =>
-            current.error === nextError && !current.loading && !current.refreshing
-              ? current
-              : {
-                  data: current.data,
-                  error: nextError,
-                  loading: false,
-                  refreshing: false,
-                }
-          );
-        }
+            }),
+          ],
+          scope: createOverviewComponentScope({
+            category: parsedQuery.category,
+            definitionName: parsedQuery.definitionName,
+            includeSubcategories: parsedQuery.includeSubcategories,
+          }),
+        }),
+      });
+      const data = getWorkComponentData<WorkerQueryResult>(result, "workerGrid");
+      if (!data) {
+        throw new Error(getWorkComponentErrors(result)[0] ?? "Worker grid failed to load.");
       }
-    };
 
-    void load();
+      if (requestIdRef.current !== requestId) {
+        return;
+      }
 
-    return () => {
-      canceled = true;
-    };
-  }, [apiUrl, boundedTake, key, refreshToken, skip, systemName]);
+      setState((current) => {
+        const items = append
+          ? appendUniqueWorkers(current.items, data.workers)
+          : data.workers;
 
-  return state;
+        return {
+          items,
+          loading: false,
+          loadingMore: false,
+          nextSkip: Math.max(current.nextSkip, data.skip + data.workers.length),
+          totalCount: data.totalCount,
+        };
+      });
+      if (inFlightSkipRef.current === skip) {
+        inFlightSkipRef.current = null;
+      }
+    } catch (error) {
+      if (requestIdRef.current !== requestId) {
+        return;
+      }
+      if (inFlightSkipRef.current === skip) {
+        inFlightSkipRef.current = null;
+      }
+
+      const detail = error instanceof Error ? error.message : "Request failed.";
+      const nextError = `Worker query failed. ${detail}`;
+      setState((current) =>
+        current.error === nextError && !current.loading && !current.loadingMore
+          ? current
+          : {
+              ...current,
+              error: nextError,
+              loading: false,
+              loadingMore: false,
+            }
+      );
+    }
+  }, [apiUrl, boundedTake, enabled, key, systemName]);
+
+  useEffect(() => {
+    if (!enabled) {
+      requestIdRef.current += 1;
+      inFlightSkipRef.current = null;
+      return;
+    }
+
+    const requestId = requestIdRef.current + 1;
+    requestIdRef.current = requestId;
+    inFlightSkipRef.current = null;
+    queueMicrotask(() => {
+      if (requestIdRef.current !== requestId) {
+        return;
+      }
+
+      setState({
+        items: [],
+        loading: true,
+        loadingMore: false,
+        nextSkip: 0,
+      });
+      void loadPage(0, false, requestId);
+    });
+  }, [enabled, loadPage, refreshToken]);
+
+  const loadMore = useCallback(() => {
+    if (!enabled) {
+      return;
+    }
+
+    const current = stateRef.current;
+    if (
+      current.loading ||
+      current.loadingMore ||
+      inFlightSkipRef.current === current.nextSkip ||
+      (current.totalCount !== undefined && current.nextSkip >= current.totalCount)
+    ) {
+      return;
+    }
+
+    inFlightSkipRef.current = current.nextSkip;
+    void loadPage(current.nextSkip, true, requestIdRef.current);
+  }, [enabled, loadPage]);
+
+  return {
+    error: state.error,
+    hasMore: state.totalCount === undefined || state.nextSkip < state.totalCount,
+    items: state.items,
+    loading: state.loading,
+    loadingMore: state.loadingMore,
+    loadMore,
+    totalCount: state.totalCount,
+  };
 }
 
-function useIterationQuery(
+function useInfiniteIterationQuery(
   connection: WorkableConnection,
   query: {
     category?: string;
@@ -8679,19 +8836,38 @@ function useIterationQuery(
     statuses?: WorkCompletionStatus[];
   },
   refreshToken: number,
-  take: number,
-  skip: number
-): Loadable<WorkerIterationQueryResult> {
-  const [state, setState] = useState<Loadable<WorkerIterationQueryResult>>({
+  enabled: boolean
+): InfiniteLoadable<WorkViewIterationGridDetailed> {
+  const [state, setState] = useState<{
+    error?: string;
+    items: WorkViewIterationGridDetailed[];
+    loading: boolean;
+    loadingMore: boolean;
+    nextSkip: number;
+    totalCount?: number;
+  }>({
+    items: [],
     loading: true,
+    loadingMore: false,
+    nextSkip: 0,
   });
+  const stateRef = useRef(state);
+  const requestIdRef = useRef(0);
+  const inFlightSkipRef = useRef<number | null>(null);
   const apiUrl = connection.apiUrl;
   const systemName = connection.systemName;
   const key = JSON.stringify(query);
-  const boundedTake = Math.min(maxQueryTake, Math.max(minQueryTake, Math.trunc(take)));
+  const boundedTake = Math.min(maxQueryTake, Math.max(minQueryTake, queryPageTake));
 
   useEffect(() => {
-    let canceled = false;
+    stateRef.current = state;
+  }, [state]);
+
+  const loadPage = useCallback(async (skip: number, append: boolean, requestId: number) => {
+    if (!enabled) {
+      return;
+    }
+
     const parsedQuery = JSON.parse(key) as {
       category?: string;
       definitionName?: string;
@@ -8700,173 +8876,170 @@ function useIterationQuery(
     };
     const requestConnection = { apiUrl, systemName };
 
-    const load = async () => {
-      queueMicrotask(() => {
-        if (!canceled) {
-          setState((current) => ({
-            ...current,
-            error: undefined,
-            loading: current.data === undefined,
-            refreshing: current.data !== undefined,
-          }));
-        }
-      });
+    setState((current) => ({
+      ...current,
+      error: undefined,
+      loading: !append && current.items.length === 0,
+      loadingMore: append,
+    }));
 
-      try {
-        const data = parsedQuery.keyType !== undefined
-          ? await queryIterationsByKeyType(requestConnection, {
-              ...parsedQuery,
+    try {
+      const result = await workableFetch<WorkComponentQueryResult>(requestConnection, "views/iterations", {
+        method: "POST",
+        body: JSON.stringify({
+          components: [
+            overviewComponent("iterationGrid", "iterationGrid", "detailed", {
               keyType: parsedQuery.keyType,
+              statuses: parsedQuery.statuses,
               skip,
               take: boundedTake,
-            })
-          : await workableFetch<WorkerIterationQueryResult>(requestConnection, "iterations/query", {
-              method: "POST",
-              body: JSON.stringify({
-                category: parsedQuery.category,
-                definitionName: parsedQuery.definitionName,
-                statuses: parsedQuery.statuses,
-                sort: "CompletedAt",
-                direction: "Descending",
-                skip,
-                take: boundedTake,
-              }),
-            });
-
-        if (!canceled) {
-          setState({ data, loading: false, refreshing: false });
-        }
-      } catch (error) {
-        if (!canceled) {
-          const detail = error instanceof Error ? error.message : "Request failed.";
-          const nextError = `Iteration query failed. ${detail}`;
-          setState((current) =>
-            current.error === nextError && !current.loading && !current.refreshing
-              ? current
-              : {
-                  data: current.data,
-                  error: nextError,
-                  loading: false,
-                  refreshing: false,
-                }
-          );
-        }
+            }),
+          ],
+          scope: createOverviewComponentScope({
+            category: parsedQuery.category,
+            definitionName: parsedQuery.definitionName,
+            includeSubcategories: true,
+          }),
+        }),
+      });
+      const data = getWorkComponentData<WorkerIterationQueryResult>(result, "iterationGrid");
+      if (!data) {
+        throw new Error(getWorkComponentErrors(result)[0] ?? "Iteration grid failed to load.");
       }
-    };
 
-    void load();
+      if (requestIdRef.current !== requestId) {
+        return;
+      }
 
-    return () => {
-      canceled = true;
-    };
-  }, [apiUrl, boundedTake, key, refreshToken, skip, systemName]);
+      setState((current) => {
+        const items = append
+          ? appendUniqueIterations(current.items, data.iterations)
+          : data.iterations;
 
-  return state;
-}
+        return {
+          items,
+          loading: false,
+          loadingMore: false,
+          nextSkip: Math.max(current.nextSkip, data.skip + data.iterations.length),
+          totalCount: data.totalCount,
+        };
+      });
+      if (inFlightSkipRef.current === skip) {
+        inFlightSkipRef.current = null;
+      }
+    } catch (error) {
+      if (requestIdRef.current !== requestId) {
+        return;
+      }
+      if (inFlightSkipRef.current === skip) {
+        inFlightSkipRef.current = null;
+      }
 
-async function queryWorkersByKeyType(
-  connection: WorkableConnection,
-  query: {
-    category?: string;
-    definitionName?: string;
-    includeSubcategories?: boolean;
-    keyType: string;
-    states?: WorkerState[];
-    skip: number;
-    take: number;
-  }
-): Promise<WorkerQueryResult> {
-  const result = await workableFetch<WorkKeyTypeQueryResult>(
-    connection,
-    "work-keys/types/query",
-    {
-      method: "POST",
-      body: JSON.stringify({
-        type: query.keyType,
-        states: query.states,
-        skip: 0,
-        take: query.take,
-      }),
+      const detail = error instanceof Error ? error.message : "Request failed.";
+      const nextError = `Iteration query failed. ${detail}`;
+      setState((current) =>
+        current.error === nextError && !current.loading && !current.loadingMore
+          ? current
+          : {
+              ...current,
+              error: nextError,
+              loading: false,
+              loadingMore: false,
+            }
+      );
     }
-  );
-  const workersById = new Map<string, WorkerOverviewItem>();
-  for (const keyType of result.types) {
-    for (const worker of keyType.workers) {
-      if (
-        query.definitionName &&
-        !worker.definitionName.toLowerCase().includes(query.definitionName.toLowerCase())
-      ) {
-        continue;
-      }
-      if (!workerMatchesCategory(worker, query.category, query.includeSubcategories ?? true)) {
-        continue;
+  }, [apiUrl, boundedTake, enabled, key, systemName]);
+
+  useEffect(() => {
+    if (!enabled) {
+      requestIdRef.current += 1;
+      inFlightSkipRef.current = null;
+      return;
+    }
+
+    const requestId = requestIdRef.current + 1;
+    requestIdRef.current = requestId;
+    inFlightSkipRef.current = null;
+    queueMicrotask(() => {
+      if (requestIdRef.current !== requestId) {
+        return;
       }
 
-      workersById.set(worker.id.value, worker);
+      setState({
+        items: [],
+        loading: true,
+        loadingMore: false,
+        nextSkip: 0,
+      });
+      void loadPage(0, false, requestId);
+    });
+  }, [enabled, loadPage, refreshToken]);
+
+  const loadMore = useCallback(() => {
+    if (!enabled) {
+      return;
     }
-  }
-  const workers = [...workersById.values()].sort(
-    (left, right) =>
-      new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime()
-  );
+
+    const current = stateRef.current;
+    if (
+      current.loading ||
+      current.loadingMore ||
+      inFlightSkipRef.current === current.nextSkip ||
+      (current.totalCount !== undefined && current.nextSkip >= current.totalCount)
+    ) {
+      return;
+    }
+
+    inFlightSkipRef.current = current.nextSkip;
+    void loadPage(current.nextSkip, true, requestIdRef.current);
+  }, [enabled, loadPage]);
 
   return {
-    workers: workers.slice(query.skip, query.skip + query.take),
-    totalCount: workers.length,
-    skip: query.skip,
-    take: query.take,
+    error: state.error,
+    hasMore: state.totalCount === undefined || state.nextSkip < state.totalCount,
+    items: state.items,
+    loading: state.loading,
+    loadingMore: state.loadingMore,
+    loadMore,
+    totalCount: state.totalCount,
   };
 }
 
-async function queryIterationsByKeyType(
-  connection: WorkableConnection,
-  query: {
-    category?: string;
-    definitionName?: string;
-    keyType: string;
-    statuses?: WorkCompletionStatus[];
-    skip: number;
-    take: number;
-  }
-): Promise<WorkerIterationQueryResult> {
-  const result = await workableFetch<WorkIterationKeyTypeQueryResult>(
-    connection,
-    "work-iteration-keys/types/query",
-    {
-      method: "POST",
-      body: JSON.stringify({
-        type: query.keyType,
-        statuses: query.statuses,
-        skip: 0,
-        take: query.take,
-      }),
-    }
-  );
-  const iterationsById = new Map<string, WorkerIterationOverviewItem>();
-  for (const keyType of result.types) {
-    for (const iteration of keyType.iterations) {
-      if (
-        query.definitionName &&
-        !iteration.definitionName.toLowerCase().includes(query.definitionName.toLowerCase())
-      ) {
-        continue;
-      }
-      if (!workerMatchesCategory(iteration, query.category, true)) {
-        continue;
+function appendUniqueWorkers(
+  current: WorkViewWorkerGridDetailed[],
+  next: WorkViewWorkerGridDetailed[]
+) {
+  const seen = new Set(current.map((worker) => worker.id.value));
+  return [
+    ...current,
+    ...next.filter((worker) => {
+      if (seen.has(worker.id.value)) {
+        return false;
       }
 
-      iterationsById.set(`${iteration.workerId.value}:${iteration.sequence}`, iteration);
-    }
-  }
-  const iterations = [...iterationsById.values()].sort(
-    (left, right) =>
-      new Date(right.completedAt).getTime() - new Date(left.completedAt).getTime()
-  );
+      seen.add(worker.id.value);
+      return true;
+    }),
+  ];
+}
 
-  return {
-    iterations: iterations.slice(query.skip, query.skip + query.take),
-    totalCount: iterations.length,
-    skip: query.skip,
-    take: query.take,
-  };
+function appendUniqueIterations(
+  current: WorkViewIterationGridDetailed[],
+  next: WorkViewIterationGridDetailed[]
+) {
+  const seen = new Set(
+    current.map((iteration) => `${iteration.workerId.value}:${iteration.sequence}`)
+  );
+  return [
+    ...current,
+    ...next.filter((iteration) => {
+      const key = `${iteration.workerId.value}:${iteration.sequence}`;
+      if (seen.has(key)) {
+        return false;
+      }
+
+      seen.add(key);
+      return true;
+    }),
+  ];
 }

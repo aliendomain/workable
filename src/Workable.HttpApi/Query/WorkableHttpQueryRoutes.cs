@@ -158,36 +158,6 @@ internal static class WorkableHttpQueryRoutes
             return iteration is null ? Results.NotFound() : Results.Ok(iteration);
         });
 
-        group.MapPost("/workers/query", (
-            HttpContext httpContext,
-            WorkableHttpWorkerCriteria? query,
-            WorkableHttpSystemResolver systems,
-            WorkableHttpQueryAdapter queries,
-            CancellationToken cancellationToken) =>
-        {
-            if (!WorkableHttpRouteResults.TryResolveSystem(httpContext, systems, out var system, out var notFound))
-            {
-                return Task.FromResult(notFound);
-            }
-
-            return WorkableHttpRouteResults.ToOk(queries.Workers(system, query?.ToWorkerCriteria(), cancellationToken: cancellationToken));
-        });
-
-        group.MapPost("/iterations/query", (
-            HttpContext httpContext,
-            WorkableHttpWorkerIterationCriteria? query,
-            WorkableHttpSystemResolver systems,
-            WorkableHttpQueryAdapter queries,
-            CancellationToken cancellationToken) =>
-        {
-            if (!WorkableHttpRouteResults.TryResolveSystem(httpContext, systems, out var system, out var notFound))
-            {
-                return Task.FromResult(notFound);
-            }
-
-            return WorkableHttpRouteResults.ToOk(queries.WorkerIterations(system, query?.ToWorkerIterationCriteria(), cancellationToken: cancellationToken));
-        });
-
         group.MapGet("/workers/status-summary", (
             HttpContext httpContext,
             WorkableHttpSystemResolver systems,

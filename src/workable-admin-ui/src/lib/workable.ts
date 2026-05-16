@@ -120,6 +120,12 @@ export type WorkOverviewFailedWorkerDetailed = WorkOverviewFailedWorkerStandard 
   state: WorkerState;
 };
 
+export type WorkViewWorkerGridDetailed = WorkOverviewFailedWorkerStandard & {
+  subjectId?: WorkTypedValue | null;
+  identifiers?: WorkTypedValue[];
+  state: WorkerState;
+};
+
 export type WorkOverviewFailedWorker =
   | WorkOverviewFailedWorkerStandard
   | WorkOverviewFailedWorkerDetailed
@@ -275,20 +281,24 @@ export type WorkOverviewIterationDetailed = WorkOverviewIterationStandard & {
   identifiers?: WorkTypedValue[];
 };
 
+export type WorkViewIterationGridDetailed = WorkOverviewIterationDetailed & {
+  status: WorkCompletionStatus;
+};
+
 export type WorkOverviewIteration =
   | WorkOverviewIterationStandard
   | WorkOverviewIterationDetailed
   | WorkerIterationOverviewItem;
 
 export type WorkerQueryResult = {
-  workers: WorkerOverviewItem[];
+  workers: WorkViewWorkerGridDetailed[];
   totalCount: number;
   skip: number;
   take: number;
 };
 
 export type WorkerIterationQueryResult = {
-  iterations: WorkerIterationOverviewItem[];
+  iterations: WorkViewIterationGridDetailed[];
   totalCount: number;
   skip: number;
   take: number;

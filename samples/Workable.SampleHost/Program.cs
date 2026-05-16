@@ -52,13 +52,7 @@ builder.Services.AddWorkableSystem(workable =>
     workable.AddWork<DemoTimedWork>(DemoDefinition("sample.demo.quick", "Samples:Demo", "Short sample work for UI state testing."));
     workable.AddWork<DemoTimedWork>(DemoDefinition("sample.demo.long", "Samples:Demo", "Longer sample work for UI state testing."));
     workable.AddWork<DemoForceCancelWork>(DemoDefinition("sample.demo.force-cancel", "Samples:Demo", "Ignores cancellation so shutdown must force-cancel it."));
-    workable.AddWork<DemoTimedWork>(
-        DemoDefinition("sample.demo.throttled", "Samples:Demo", "Sample work that queues behind a concurrency key."),
-        configuration => configuration.LimitConcurrency(
-            maximumCapacity: 1,
-            scope: WorkConcurrencyScope.PerConcurrencyKey,
-            blockingMode: WorkConcurrencyBlockingMode.WhileExecuting,
-            limitReachedBehavior: WorkConcurrencyLimitReachedBehavior.DeferStart));
+    workable.AddWork<DemoTimedWork>(DemoDefinition("sample.demo.throttled", "Samples:Demo", "Longer sample work without an artificial concurrency bottleneck."));
     workable.AddWork<DemoTimedWork>(
         DemoDefinition("sample.demo.queue-pressure", "Samples:Demo", "Queues faster than concurrency capacity to demonstrate queue pressure."),
         configuration => configuration.LimitConcurrency(
@@ -82,13 +76,7 @@ builder.Services.AddWorkableSystem("fulfillment", workable =>
     workable.AddWork<FulfillmentExceptionWork>();
     workable.AddWork<DemoTimedWork>(DemoDefinition("fulfillment.demo.quick", "Fulfillment:Demo", "Short fulfillment sample work for UI state testing."));
     workable.AddWork<DemoTimedWork>(DemoDefinition("fulfillment.demo.long", "Fulfillment:Demo", "Longer fulfillment sample work for UI state testing."));
-    workable.AddWork<DemoTimedWork>(
-        DemoDefinition("fulfillment.demo.throttled", "Fulfillment:Demo", "Fulfillment sample work that queues behind a concurrency key."),
-        configuration => configuration.LimitConcurrency(
-            maximumCapacity: 1,
-            scope: WorkConcurrencyScope.PerConcurrencyKey,
-            blockingMode: WorkConcurrencyBlockingMode.WhileExecuting,
-            limitReachedBehavior: WorkConcurrencyLimitReachedBehavior.DeferStart));
+    workable.AddWork<DemoTimedWork>(DemoDefinition("fulfillment.demo.throttled", "Fulfillment:Demo", "Longer fulfillment sample work without an artificial concurrency bottleneck."));
     workable.AddWork<DemoTimedWork>(DemoRecurringDefinition("fulfillment.demo.recurring", "Fulfillment:Demo", "Small recurring fulfillment pulse for UI waiting/running state testing."));
 });
 
@@ -147,13 +135,18 @@ app.MapGet("/", (HttpContext context) =>
                 .action-name { font-weight: 700; }
                 .action-description { color: #555; font-size: .9rem; margin-top: .15rem; }
                 .action-controls { display: flex; flex-wrap: wrap; gap: .75rem; align-items: center; }
-                .sample-workload-controls { display: grid; grid-template-columns: max-content max-content max-content; }
+                .sample-workload-controls { display: flex; flex-wrap: wrap; }
                 .pressure-controls { display: grid; grid-template-columns: max-content max-content; }
                 .burst-controls { display: grid; grid-template-columns: max-content max-content; }
                 .interval-control { display: grid; grid-template-columns: max-content 8.5rem max-content; gap: .5rem; align-items: center; }
                 .number-control { display: grid; grid-template-columns: max-content 8.5rem; gap: .5rem; align-items: center; }
+                .percentage-control { display: grid; grid-template-columns: max-content 5rem max-content; gap: .5rem; align-items: center; }
+                .system-controls { display: flex; flex-wrap: wrap; gap: .75rem; align-items: center; }
+                .system-toggle { display: inline-flex; gap: .35rem; align-items: center; white-space: nowrap; }
+                .system-toggle input { width: auto; padding: 0; }
                 .interval-control input { width: 100%; box-sizing: border-box; }
                 .number-control input { width: 100%; box-sizing: border-box; }
+                .percentage-control input { width: 100%; box-sizing: border-box; }
                 code { background: #f3f3f3; padding: .1rem .25rem; }
                 .status { color: #333; margin: 0; }
                 @media (max-width: 900px) {
@@ -167,6 +160,7 @@ app.MapGet("/", (HttpContext context) =>
                     .burst-controls { grid-template-columns: 1fr; align-items: stretch; }
                     .interval-control { grid-template-columns: max-content 1fr max-content; }
                     .number-control { grid-template-columns: max-content 1fr; }
+                    .percentage-control { grid-template-columns: max-content 1fr max-content; }
                 }
             </style>
         </head>
@@ -195,12 +189,27 @@ app.MapGet("/", (HttpContext context) =>
                         <td>
                             <div class="action-controls sample-workload-controls">
                                 <button id="toggle" type="button">Start sample workers</button>
+                                <div class="system-controls" aria-label="Sample systems">
+                                    <label class="system-toggle">
+                                        <input id="system-operations" type="checkbox">
+                                        Operations
+                                    </label>
+                                    <label class="system-toggle">
+                                        <input id="system-fulfillment" type="checkbox">
+                                        Fulfillment
+                                    </label>
+                                </div>
                                 <label class="interval-control">
                                     Interval
                                     <input id="interval" type="number" min="5" max="10000" step="5">
                                     ms
                                 </label>
-                                <button id="update-interval" type="button">Update interval</button>
+                                <label class="percentage-control">
+                                    Failures
+                                    <input id="failure-percentage" type="number" min="0" max="100" step="1">
+                                    %
+                                </label>
+                                <button id="update-settings" type="button">Update settings</button>
                             </div>
                         </td>
                         <td><p class="status" id="status">Loading sample workload status...</p></td>
@@ -256,12 +265,16 @@ app.MapGet("/", (HttpContext context) =>
                 const pressureStart = document.getElementById('pressure-start');
                 const pressureStop = document.getElementById('pressure-stop');
                 const interval = document.getElementById('interval');
-                const updateInterval = document.getElementById('update-interval');
+                const failurePercentage = document.getElementById('failure-percentage');
+                const updateSettings = document.getElementById('update-settings');
+                const systemOperations = document.getElementById('system-operations');
+                const systemFulfillment = document.getElementById('system-fulfillment');
                 const status = document.getElementById('status');
                 const burstStatus = document.getElementById('burst-status');
                 const pressureStatus = document.getElementById('pressure-status');
                 const forceCancelStatus = document.getElementById('force-cancel-status');
                 let intervalDirty = false;
+                let failurePercentageDirty = false;
 
                 async function refresh() {
                     const response = await fetch('/sample-workload');
@@ -271,7 +284,16 @@ app.MapGet("/", (HttpContext context) =>
                     if (!intervalDirty && document.activeElement !== interval) {
                         interval.value = data.queueIntervalMilliseconds;
                     }
-                    status.textContent = `${data.isRunning ? 'Running' : 'Stopped'} - queued ${data.queuedCount} - tracking ${data.trackedWorkerCount} - interval ${data.queueIntervalMilliseconds}ms`;
+                    if (!failurePercentageDirty && document.activeElement !== failurePercentage) {
+                        failurePercentage.value = data.failurePercentage;
+                    }
+                    systemOperations.checked = data.operationsEnabled;
+                    systemFulfillment.checked = data.fulfillmentEnabled;
+                    const selectedSystems = [
+                        data.operationsEnabled ? 'operations' : null,
+                        data.fulfillmentEnabled ? 'fulfillment' : null
+                    ].filter(Boolean).join(', ') || 'none';
+                    status.textContent = `${data.isRunning ? 'Running' : 'Stopped'} - queued ${data.queuedCount} - tracking ${data.trackedWorkerCount} - interval ${data.queueIntervalMilliseconds}ms - failures ${data.failurePercentage}% - systems ${selectedSystems}`;
                 }
 
                 async function refreshPressure() {
@@ -350,24 +372,55 @@ app.MapGet("/", (HttpContext context) =>
                     intervalDirty = true;
                 });
 
+                failurePercentage.addEventListener('input', () => {
+                    failurePercentageDirty = true;
+                });
+
+                async function updateSystems() {
+                    await fetch('/sample-workload/systems', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            operations: systemOperations.checked,
+                            fulfillment: systemFulfillment.checked
+                        })
+                    });
+                    await refresh();
+                }
+
+                systemOperations.addEventListener('change', updateSystems);
+                systemFulfillment.addEventListener('change', updateSystems);
+
                 interval.addEventListener('blur', async () => {
                     if (!intervalDirty) {
                         await refresh();
                     }
                 });
 
-                updateInterval.addEventListener('click', async () => {
-                    updateInterval.disabled = true;
+                failurePercentage.addEventListener('blur', async () => {
+                    if (!failurePercentageDirty) {
+                        await refresh();
+                    }
+                });
+
+                updateSettings.addEventListener('click', async () => {
+                    updateSettings.disabled = true;
                     try {
                         await fetch('/sample-workload/interval', {
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json' },
                             body: JSON.stringify({ milliseconds: Number(interval.value) })
                         });
+                        await fetch('/sample-workload/failures', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ percentage: Number(failurePercentage.value) })
+                        });
                         intervalDirty = false;
+                        failurePercentageDirty = false;
                         await refresh();
                     } finally {
-                        updateInterval.disabled = false;
+                        updateSettings.disabled = false;
                     }
                 });
 
@@ -390,6 +443,10 @@ app.MapPost("/sample-workload/toggle", async (DemoWorkloadController controller,
     => Results.Ok(await controller.Toggle(cancellationToken)));
 app.MapPost("/sample-workload/interval", (DemoWorkloadController controller, DemoWorkloadIntervalRequest request)
     => Results.Ok(controller.SetQueueInterval(request.Milliseconds)));
+app.MapPost("/sample-workload/failures", (DemoWorkloadController controller, DemoWorkloadFailureRequest request)
+    => Results.Ok(controller.SetFailurePercentage(request.Percentage)));
+app.MapPost("/sample-workload/systems", (DemoWorkloadController controller, DemoWorkloadSystemsRequest request)
+    => Results.Ok(controller.SetEnabledSystems(request)));
 app.MapPost("/sample-workload/burst", async (DemoWorkloadController controller, DemoBurstRequest request, CancellationToken cancellationToken)
     => Results.Ok(await controller.QueueBurst(request.Count, cancellationToken)));
 app.MapGet("/sample-workload/queue-pressure", (DemoQueuePressureController controller)

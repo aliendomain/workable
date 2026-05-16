@@ -28,7 +28,7 @@ The default routes target `IWorkSystemRegistry.Default`. The same endpoints are 
 GET /workable/systems/email/definitions
 POST /workable/systems/email/work/email.welcome.send
 GET /workable/systems/email/workers/22222222-2222-2222-2222-222222222222
-POST /workable/systems/email/workers/query
+POST /workable/systems/email/views/workers
 POST /workable/systems/email/workers/22222222-2222-2222-2222-222222222222/actions/cancel
 ```
 
@@ -289,6 +289,7 @@ Overview component shape support:
 - `iterations` supports `compact` and `standard`. `compact` returns `iterationCountByStatus` only. `standard` adds common relationship key-type facets.
 - `failedIterations` and `completedIterations` support `standard` and `detailed`. `standard` returns definition, worker id, iteration sequence, completed time, and duration. `detailed` adds worker state and relationship fields.
 - `throughput` supports `compact` and `standard`; both use the requested throughput window/options. `compact` returns active worker count plus live and window execution summaries for the pill strip, without chart buckets. `standard` adds chart buckets trimmed to `at`, started/completed/failed/canceled counts, and average execution milliseconds. `detailed` normalizes to `standard`.
+- `workerGrid` and `iterationGrid` support `detailed` for the Workers and Iterations views. They return paged grid rows plus `totalCount`, `skip`, and `take`.
 
 The `workers` component returns worker state counts plus `oldestQueuedAt`, which is the oldest queued worker state-entry timestamp in the requested scope. Queue backlog is reported with worker state counts in the same component.
 
@@ -324,46 +325,63 @@ Get one completed worker iteration by worker id and iteration sequence.
 GET /workable/workers/22222222-2222-2222-2222-222222222222/iterations/1
 ```
 
-Query workers. The response contains lightweight `WorkerOverviewItem` rows, not full worker snapshots.
+Query the workers view. The `workerGrid` component currently supports the `detailed` shape and returns paged worker rows for the screen.
 
 ```http
-POST /workable/workers/query
+POST /workable/views/workers
 Content-Type: application/json
 
 {
-  "definitionName": "email.welcome.send",
-  "category": "Email",
-  "includeSubcategories": true,
-  "states": [ "Completed", "Failed" ],
-  "configuration": {
-    "recurrenceEnabled": false,
-    "concurrencyEnabled": true,
-    "profilingEnabled": true
+  "scope": {
+    "definitionName": "email.welcome.send",
+    "category": "Email",
+    "includeSubcategories": true
   },
-  "skip": 0,
-  "take": 50
+  "components": [
+    {
+      "id": "workerGrid",
+      "type": "workerGrid",
+      "shape": "detailed",
+      "options": {
+        "states": [ "Completed", "Failed" ],
+        "keyType": "claim",
+        "skip": 0,
+        "take": 50
+      }
+    }
+  ]
 }
 ```
 
-The `configuration` filter is optional. Supported fields are `recurrenceEnabled`, `concurrencyEnabled`, and `profilingEnabled`.
+The worker grid detailed row includes definition, full worker id, revision, state, updated time, duration, subject id, and identifiers. The optional `keyType` filter matches workers with any relationship of that type.
 
-Query worker iterations. The response contains lightweight `WorkerIterationOverviewItem` rows.
+Query the iterations view. The `iterationGrid` component currently supports the `detailed` shape and returns paged iteration rows for the screen.
 
 ```http
-POST /workable/iterations/query
+POST /workable/views/iterations
 Content-Type: application/json
 
 {
-  "definitionName": "email.welcome.send",
-  "statuses": [ "Failed", "Completed" ],
-  "identifier": {
-    "type": "claim",
-    "value": "CLM-123"
+  "scope": {
+    "definitionName": "email.welcome.send"
   },
-  "skip": 0,
-  "take": 50
+  "components": [
+    {
+      "id": "iterationGrid",
+      "type": "iterationGrid",
+      "shape": "detailed",
+      "options": {
+        "statuses": [ "Failed", "Completed" ],
+        "keyType": "claim",
+        "skip": 0,
+        "take": 50
+      }
+    }
+  ]
 }
 ```
+
+The iteration grid detailed row includes definition, full worker id, iteration sequence, worker state, iteration status, completed time, duration, subject id, and identifiers. The optional `keyType` filter matches iterations with any relationship of that type.
 
 Get system activity counts by worker status.
 

@@ -156,6 +156,13 @@ internal sealed class InMemoryWorkMetricsSink : IWorkMetricsSink
             this.CreateLiveSummary(nowSecond, definitionIds));
     }
 
+    public void Clear()
+    {
+        this.secondBuckets.Clear();
+        this.minuteBuckets.Clear();
+        Volatile.Write(ref this.lastPrunedSecond, 0);
+    }
+
     private void Record(
         WorkDefinitionId definitionId,
         long second,
@@ -411,6 +418,12 @@ internal sealed class InMemoryWorkMetricsSink : IWorkMetricsSink
 
         public WorkMetricBucket GetSystemBucket(long bucket)
             => this.SystemBuckets.GetOrAdd(bucket, static _ => new WorkMetricBucket());
+
+        public void Clear()
+        {
+            this.DefinitionBuckets.Clear();
+            this.SystemBuckets.Clear();
+        }
 
         public void PruneBefore(long cutoff)
         {

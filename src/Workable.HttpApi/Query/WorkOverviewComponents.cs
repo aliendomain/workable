@@ -30,6 +30,22 @@ public sealed record WorkOverviewFailedWorkerDetailed(
     WorkSubjectId? SubjectId,
     IReadOnlySet<WorkIdentifier> Identifiers);
 
+public sealed record WorkViewWorkerGridDetailedComponent(
+    IReadOnlyList<WorkViewWorkerGridDetailed> Workers,
+    int TotalCount,
+    int Skip,
+    int Take);
+
+public sealed record WorkViewWorkerGridDetailed(
+    WorkerId Id,
+    string DefinitionName,
+    long Revision,
+    WorkerState State,
+    DateTimeOffset UpdatedAt,
+    TimeSpan TotalExecutionDuration,
+    WorkSubjectId? SubjectId,
+    IReadOnlySet<WorkIdentifier> Identifiers);
+
 public sealed record WorkOverviewIterationsCompactComponent(
     IReadOnlyDictionary<WorkCompletionStatus, int> IterationCountByStatus);
 
@@ -87,6 +103,23 @@ public sealed record WorkOverviewIterationDetailed(
     long Sequence,
     string DefinitionName,
     WorkerState WorkerState,
+    DateTimeOffset CompletedAt,
+    TimeSpan ExecutionDuration,
+    WorkSubjectId? SubjectId,
+    IReadOnlyCollection<WorkIdentifier> Identifiers);
+
+public sealed record WorkViewIterationGridDetailedComponent(
+    IReadOnlyList<WorkViewIterationGridDetailed> Iterations,
+    int TotalCount,
+    int Skip,
+    int Take);
+
+public sealed record WorkViewIterationGridDetailed(
+    WorkerId WorkerId,
+    long Sequence,
+    string DefinitionName,
+    WorkerState WorkerState,
+    WorkCompletionStatus Status,
     DateTimeOffset CompletedAt,
     TimeSpan ExecutionDuration,
     WorkSubjectId? SubjectId,

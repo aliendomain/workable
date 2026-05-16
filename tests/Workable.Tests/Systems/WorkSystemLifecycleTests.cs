@@ -336,6 +336,41 @@ public sealed class WorkSystemLifecycleTests
     }
 
     [Fact]
+    public async Task StopClearsThroughputMetricsAfterShutdown()
+    {
+        var system = new ServiceCollection()
+            .AddWorkableSystem(builder =>
+            {
+                builder.AddWork(WorkDefinition.Create("shutdown.metrics"), (context, input, cancellationToken) =>
+                    Task.FromResult(WorkExecutionResult.Success()));
+            })
+            .BuildServiceProvider()
+            .GetRequiredService<IWorkSystemRegistry>()
+            .Default;
+
+        await system.Start();
+        var handle = await system.Queue.Enqueue("shutdown.metrics");
+        await handle.WaitForCompletion();
+
+        var beforeStop = await system.Query.SystemThroughput(
+            new WorkSystemCriteria(),
+            new WorkThroughputCriteria(WindowSeconds: 60, BucketSeconds: 1));
+
+        await system.Stop();
+
+        var afterStop = await system.Query.SystemThroughput(
+            new WorkSystemCriteria(),
+            new WorkThroughputCriteria(WindowSeconds: 60, BucketSeconds: 1));
+
+        Assert.Equal(1 / 60.0, beforeStop.LiveSummary.StartedPerSecond, precision: 6);
+        Assert.Equal(1 / 60.0, beforeStop.LiveSummary.CompletedPerSecond, precision: 6);
+        Assert.Empty(afterStop.Buckets);
+        Assert.Equal(0, afterStop.ExecutionSummary.ExecutionCount);
+        Assert.Equal(0, afterStop.LiveSummary.StartedPerSecond);
+        Assert.Equal(0, afterStop.LiveSummary.CompletedPerSecond);
+    }
+
+    [Fact]
     public async Task StopForceCancelsWorkAfterGracePeriod()
     {
         var tracker = new ShutdownTracker();
