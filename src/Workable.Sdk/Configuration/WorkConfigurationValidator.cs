@@ -138,6 +138,14 @@ internal static class WorkConfigurationValidator
                 "Retention purge interval must be greater than zero.",
                 "configuration.retention.purgeInterval"));
         }
+
+        if (retention.MaximumFinalWorkers <= 0)
+        {
+            messages.Add(WorkMessage.Error(
+                "workable.configuration.retention.maximum_final_workers_required",
+                "Retention maximum final workers must be greater than zero.",
+                "configuration.retention.maximumFinalWorkers"));
+        }
     }
 
     private static void ValidateLogging(WorkLoggingConfiguration logging, List<WorkMessage> messages)

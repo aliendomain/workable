@@ -277,6 +277,60 @@ public sealed class WorkerStateTests
     }
 
     [Fact]
+    public async Task CompletedWorkersArePurgedWhenMaximumFinalWorkersIsExceeded()
+    {
+        var definition = WorkDefinition.Create("auto-purge-count", "Purges final workers when count is exceeded.",
+            configuration: WorkConfiguration.Default with
+            {
+                Retention = WorkRetentionConfiguration.Default with
+                {
+                    PurgeInterval = TimeSpan.FromMinutes(10),
+                    MaximumFinalWorkers = 2,
+                },
+            });
+        var system = CreateSystem(definition, (context, input, cancellationToken) =>
+            Task.FromResult(WorkExecutionResult.Success()));
+
+        await system.Start();
+
+        var workers = new[]
+        {
+            RequiredCompletionWorker(await (await system.Queue.Enqueue("auto-purge-count")).WaitForCompletion()),
+            RequiredCompletionWorker(await (await system.Queue.Enqueue("auto-purge-count")).WaitForCompletion()),
+            RequiredCompletionWorker(await (await system.Queue.Enqueue("auto-purge-count")).WaitForCompletion()),
+        };
+
+        await Eventually(async () => await CountExistingWorkers(system, workers) == 2);
+
+        Assert.Equal(2, await CountExistingWorkers(system, workers));
+    }
+
+    [Fact]
+    public async Task CompletedWorkersArePurgedWhenSystemMaximumFinalWorkersIsExceeded()
+    {
+        var firstDefinition = WorkDefinition.Create("auto-purge-system-a", "First definition for system purge cap.");
+        var secondDefinition = WorkDefinition.Create("auto-purge-system-b", "Second definition for system purge cap.");
+        var system = CreateSystem(builder => builder
+            .ConfigureRetention(maximumFinalWorkers: 3)
+            .AddWork(firstDefinition, (context, input, cancellationToken) => Task.FromResult(WorkExecutionResult.Success()))
+            .AddWork(secondDefinition, (context, input, cancellationToken) => Task.FromResult(WorkExecutionResult.Success())));
+
+        await system.Start();
+
+        var workers = new[]
+        {
+            RequiredCompletionWorker(await (await system.Queue.Enqueue("auto-purge-system-a")).WaitForCompletion()),
+            RequiredCompletionWorker(await (await system.Queue.Enqueue("auto-purge-system-b")).WaitForCompletion()),
+            RequiredCompletionWorker(await (await system.Queue.Enqueue("auto-purge-system-a")).WaitForCompletion()),
+            RequiredCompletionWorker(await (await system.Queue.Enqueue("auto-purge-system-b")).WaitForCompletion()),
+        };
+
+        await Eventually(async () => await CountExistingWorkers(system, workers) == 3);
+
+        Assert.Equal(3, await CountExistingWorkers(system, workers));
+    }
+
+    [Fact]
     public async Task WorkerCanceledDuringSystemStopIsClearedFromMemory()
     {
         var definition = WorkDefinition.Create("stop-clear-memory", "Clears queued work canceled by system stop.",
@@ -435,6 +489,13 @@ public sealed class WorkerStateTests
             .GetRequiredService<IWorkSystemRegistry>()
             .Default;
 
+    private static IWorkSystem CreateSystem(Action<IWorkSystemBuilder> configure)
+        => new ServiceCollection()
+            .AddWorkableSystem(configure)
+            .BuildServiceProvider()
+            .GetRequiredService<IWorkSystemRegistry>()
+            .Default;
+
     private static TaskCompletionSource CreateSignal()
         => new(TaskCreationOptions.RunContinuationsAsynchronously);
 
@@ -449,6 +510,20 @@ public sealed class WorkerStateTests
 
     private static WorkerSnapshot RequiredCompletionWorker(WorkCompletion completion)
         => completion.Worker ?? throw new InvalidOperationException("Expected completion to include worker.");
+
+    private static async Task<int> CountExistingWorkers(IWorkSystem system, IEnumerable<WorkerSnapshot> workers)
+    {
+        var count = 0;
+        foreach (var worker in workers)
+        {
+            if (await system.Query.Worker(worker.Id) is not null)
+            {
+                count++;
+            }
+        }
+
+        return count;
+    }
 
     private static async Task Eventually(Func<Task<bool>> condition)
     {

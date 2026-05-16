@@ -1467,7 +1467,8 @@ const defaultWorkConfiguration: WorkConfiguration = {
     maximumBufferedEntries: 100,
   },
   retention: {
-    purgeInterval: "00:05:00",
+    purgeInterval: "00:10:00",
+    maximumFinalWorkers: 1000,
   },
   concurrency: {
     isEnabled: false,

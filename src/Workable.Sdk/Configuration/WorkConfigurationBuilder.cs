@@ -143,13 +143,16 @@ internal sealed class WorkConfigurationBuilder(WorkConfiguration configuration) 
         return this;
     }
 
-    public IWorkConfigurationBuilder ConfigureRetention(TimeSpan? purgeInterval = null)
+    public IWorkConfigurationBuilder ConfigureRetention(
+        TimeSpan? purgeInterval = null,
+        int? maximumFinalWorkers = null)
     {
         this.configuration = this.configuration with
         {
             Retention = this.configuration.Retention with
             {
                 PurgeInterval = purgeInterval ?? WorkRetentionConfiguration.Default.PurgeInterval,
+                MaximumFinalWorkers = maximumFinalWorkers ?? WorkRetentionConfiguration.Default.MaximumFinalWorkers,
             },
         };
         return this;

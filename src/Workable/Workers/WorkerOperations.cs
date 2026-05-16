@@ -43,6 +43,7 @@ internal sealed class WorkerOperations : IWorkerOperations, IDisposable
         IReadOnlyList<WorkExceptionClassifier> systemExceptionClassifiers,
         IReadOnlyList<WorkExceptionClassifier> globalExceptionClassifiers,
         TimeSpan shutdownGracePeriod,
+        WorkSystemRetentionConfiguration retentionConfiguration,
         InMemoryWorkMetricsSink metrics)
     {
         this.catalog = catalog;
@@ -79,7 +80,7 @@ internal sealed class WorkerOperations : IWorkerOperations, IDisposable
         this.executionStrategy = new ConfiguredWorkerExecutionStrategy(runOnce, transientRetry, recurring);
         this.concurrency = new WorkConcurrencyCoordinator();
         this.dispatcher = new WorkerDispatcher(this.DispatchQueuedWorker);
-        this.retention = new WorkerRetentionScheduler(this.workers, this.Purge, this.PublishPurgeEvent);
+        this.retention = new WorkerRetentionScheduler(this.workers, this.index, retentionConfiguration, this.Purge, this.PublishPurgeEvent);
         this.queries = new WorkQueryService(
             this.catalog,
             this.getSystemState,

@@ -39,7 +39,7 @@ internal sealed class InMemoryWorkSystem : IWorkSystem, IOriginAwareWorkSystem, 
         var dotNetOriginProvider = registration.DotNetOriginProviderFactory?.Invoke(rootServices)
             ?? rootServices.GetService<IDotNetWorkOriginProvider>()
             ?? new DefaultDotNetWorkOriginProvider();
-        this.workers = new WorkerOperations(this.catalog, () => this.State, this.Id, this.Name, rootServices, this.events, dotNetOriginProvider, registration.ExceptionClassifiers, globalExceptionClassifiers, this.ShutdownGracePeriod, this.metrics);
+        this.workers = new WorkerOperations(this.catalog, () => this.State, this.Id, this.Name, rootServices, this.events, dotNetOriginProvider, registration.ExceptionClassifiers, globalExceptionClassifiers, this.ShutdownGracePeriod, registration.Retention, this.metrics);
         this.query = this.workers.Queries;
         this.queue = new WorkQueueService(this.catalog, this.workers, dotNetOriginProvider);
     }

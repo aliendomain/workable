@@ -20,7 +20,7 @@ http://localhost:61932/
 
 The demo workload queues work continuously while it is enabled. It includes short work, long work, a small fixed set of recurring workers, discovered identifiers, subjects, supplied identifiers, selectable target systems, and a configurable intentional failure percentage.
 
-The root page also includes a queue pressure control. It starts a dedicated producer that queues `sample.demo.queue-pressure` workers every 250ms. Each worker takes 1 second and shares one concurrency key with capacity 1, so the queue grows until you press Stop pressure. The stop action cancels the tracked queued/running pressure workers.
+The root page also includes a tight queue loop control and a queue pressure control. Tight queue loops submit quick demo workers as fast as the selected systems accept them. Queue pressure starts a dedicated producer that queues `sample.demo.queue-pressure` workers every 250ms. Each pressure worker takes 1 second and shares one concurrency key with capacity 1, so the queue grows until you press Stop pressure. The stop action cancels the tracked queued/running pressure workers.
 
 The sample also exposes the toggle endpoints directly:
 
@@ -30,6 +30,9 @@ Invoke-RestMethod http://localhost:61932/sample-workload/toggle -Method Post
 Invoke-RestMethod http://localhost:61932/sample-workload/queue-pressure
 Invoke-RestMethod http://localhost:61932/sample-workload/queue-pressure/start -Method Post
 Invoke-RestMethod http://localhost:61932/sample-workload/queue-pressure/stop -Method Post
+Invoke-RestMethod http://localhost:61932/sample-workload/tight-loops
+Invoke-RestMethod http://localhost:61932/sample-workload/tight-loops/start -Method Post -ContentType application/json -Body '{"operations":true,"fulfillment":true}'
+Invoke-RestMethod http://localhost:61932/sample-workload/tight-loops/stop -Method Post
 ```
 
 MCP exposes work definitions with protocol-safe names such as:

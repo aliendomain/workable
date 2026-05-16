@@ -83,6 +83,7 @@ builder.Services.AddWorkableSystem("fulfillment", workable =>
 builder.Services.AddSingleton<DemoWorkloadController>();
 builder.Services.AddHostedService(static services => services.GetRequiredService<DemoWorkloadController>());
 builder.Services.AddSingleton<DemoQueuePressureController>();
+builder.Services.AddSingleton<DemoTightLoopController>();
 builder.Services.AddWorkableHttpApi();
 builder.Services.AddWorkableMcpServer();
 builder.Services.AddWorkableSignalR(options =>
@@ -138,6 +139,7 @@ app.MapGet("/", (HttpContext context) =>
                 .sample-workload-controls { display: flex; flex-wrap: wrap; }
                 .pressure-controls { display: grid; grid-template-columns: max-content max-content; }
                 .burst-controls { display: grid; grid-template-columns: max-content max-content; }
+                .tight-loop-controls { display: flex; flex-wrap: wrap; }
                 .interval-control { display: grid; grid-template-columns: max-content 8.5rem max-content; gap: .5rem; align-items: center; }
                 .number-control { display: grid; grid-template-columns: max-content 8.5rem; gap: .5rem; align-items: center; }
                 .percentage-control { display: grid; grid-template-columns: max-content 5rem max-content; gap: .5rem; align-items: center; }
@@ -158,6 +160,7 @@ app.MapGet("/", (HttpContext context) =>
                     .sample-workload-controls { grid-template-columns: 1fr; align-items: stretch; }
                     .pressure-controls { grid-template-columns: 1fr; align-items: stretch; }
                     .burst-controls { grid-template-columns: 1fr; align-items: stretch; }
+                    .tight-loop-controls { grid-template-columns: 1fr; align-items: stretch; }
                     .interval-control { grid-template-columns: max-content 1fr max-content; }
                     .number-control { grid-template-columns: max-content 1fr; }
                     .percentage-control { grid-template-columns: max-content 1fr max-content; }
@@ -232,6 +235,29 @@ app.MapGet("/", (HttpContext context) =>
                     </tr>
                     <tr>
                         <td>
+                            <div class="action-name">Tight queue loops</div>
+                            <div class="action-description">Continuously submit demo workers as fast as the selected systems accept them.</div>
+                        </td>
+                        <td>
+                            <div class="action-controls tight-loop-controls">
+                                <button id="tight-loop-start" type="button">Start tight loops</button>
+                                <button id="tight-loop-stop" class="running" type="button">Stop tight loops</button>
+                                <div class="system-controls" aria-label="Tight loop systems">
+                                    <label class="system-toggle">
+                                        <input id="tight-loop-operations" type="checkbox" checked>
+                                        Operations
+                                    </label>
+                                    <label class="system-toggle">
+                                        <input id="tight-loop-fulfillment" type="checkbox" checked>
+                                        Fulfillment
+                                    </label>
+                                </div>
+                            </div>
+                        </td>
+                        <td><p class="status" id="tight-loop-status">Loading tight-loop status...</p></td>
+                    </tr>
+                    <tr>
+                        <td>
                             <div class="action-name">Queue pressure</div>
                             <div class="action-description">Queue 1-second concurrency-limited workers at 4 per second.</div>
                         </td>
@@ -264,6 +290,10 @@ app.MapGet("/", (HttpContext context) =>
                 const burstQueue = document.getElementById('burst-queue');
                 const pressureStart = document.getElementById('pressure-start');
                 const pressureStop = document.getElementById('pressure-stop');
+                const tightLoopStart = document.getElementById('tight-loop-start');
+                const tightLoopStop = document.getElementById('tight-loop-stop');
+                const tightLoopOperations = document.getElementById('tight-loop-operations');
+                const tightLoopFulfillment = document.getElementById('tight-loop-fulfillment');
                 const interval = document.getElementById('interval');
                 const failurePercentage = document.getElementById('failure-percentage');
                 const updateSettings = document.getElementById('update-settings');
@@ -272,6 +302,7 @@ app.MapGet("/", (HttpContext context) =>
                 const status = document.getElementById('status');
                 const burstStatus = document.getElementById('burst-status');
                 const pressureStatus = document.getElementById('pressure-status');
+                const tightLoopStatus = document.getElementById('tight-loop-status');
                 const forceCancelStatus = document.getElementById('force-cancel-status');
                 let intervalDirty = false;
                 let failurePercentageDirty = false;
@@ -302,6 +333,18 @@ app.MapGet("/", (HttpContext context) =>
                     pressureStart.disabled = data.isRunning;
                     pressureStop.disabled = !data.isRunning;
                     pressureStatus.textContent = `${data.isRunning ? 'Running' : 'Stopped'} - queued ${data.queuedCount} - tracking ${data.trackedWorkerCount} - ${data.workerDelayMilliseconds}ms work every ${data.queueIntervalMilliseconds}ms`;
+                }
+
+                async function refreshTightLoops() {
+                    const response = await fetch('/sample-workload/tight-loops');
+                    const data = await response.json();
+                    tightLoopStart.disabled = data.isRunning;
+                    tightLoopStop.disabled = !data.isRunning;
+                    const selectedSystems = [
+                        data.operationsRunning ? 'operations' : null,
+                        data.fulfillmentRunning ? 'fulfillment' : null
+                    ].filter(Boolean).join(', ') || 'none';
+                    tightLoopStatus.textContent = `${data.isRunning ? 'Running' : 'Stopped'} - systems ${selectedSystems} - queued operations ${data.operationsQueued} - fulfillment ${data.fulfillmentQueued} - failed ${data.failedCount}`;
                 }
 
                 button.addEventListener('click', async () => {
@@ -397,6 +440,34 @@ app.MapGet("/", (HttpContext context) =>
                     }
                 });
 
+                tightLoopStart.addEventListener('click', async () => {
+                    tightLoopStart.disabled = true;
+                    try {
+                        await fetch('/sample-workload/tight-loops/start', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                operations: tightLoopOperations.checked,
+                                fulfillment: tightLoopFulfillment.checked
+                            })
+                        });
+                    } finally {
+                        await refreshTightLoops();
+                        await refresh();
+                    }
+                });
+
+                tightLoopStop.addEventListener('click', async () => {
+                    tightLoopStop.disabled = true;
+                    tightLoopStatus.textContent = 'Stopping tight queue loops...';
+                    try {
+                        await fetch('/sample-workload/tight-loops/stop', { method: 'POST' });
+                    } finally {
+                        await refreshTightLoops();
+                        await refresh();
+                    }
+                });
+
                 failurePercentage.addEventListener('blur', async () => {
                     if (!failurePercentageDirty) {
                         await refresh();
@@ -426,9 +497,11 @@ app.MapGet("/", (HttpContext context) =>
 
                 refresh();
                 refreshPressure();
+                refreshTightLoops();
                 setInterval(() => {
                     refresh();
                     refreshPressure();
+                    refreshTightLoops();
                 }, 2000);
             </script>
         </body>
@@ -454,6 +527,12 @@ app.MapGet("/sample-workload/queue-pressure", (DemoQueuePressureController contr
 app.MapPost("/sample-workload/queue-pressure/start", (DemoQueuePressureController controller)
     => Results.Ok(controller.Start()));
 app.MapPost("/sample-workload/queue-pressure/stop", async (DemoQueuePressureController controller, CancellationToken cancellationToken)
+    => Results.Ok(await controller.Stop(cancellationToken)));
+app.MapGet("/sample-workload/tight-loops", (DemoTightLoopController controller)
+    => Results.Ok(controller.Status()));
+app.MapPost("/sample-workload/tight-loops/start", (DemoTightLoopController controller, DemoTightLoopRequest request)
+    => Results.Ok(controller.Start(request)));
+app.MapPost("/sample-workload/tight-loops/stop", async (DemoTightLoopController controller, CancellationToken cancellationToken)
     => Results.Ok(await controller.Stop(cancellationToken)));
 app.MapPost("/sample-workload/force-cancel", async (IWorkSystemRegistry registry, CancellationToken cancellationToken) =>
 {

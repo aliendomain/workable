@@ -490,7 +490,8 @@ The examples below show the serialized JSON shape returned by HTTP and MCP adapt
       "maximumBufferedEntries": 100
     },
     "retention": {
-      "purgeInterval": "00:05:00"
+      "purgeInterval": "00:10:00",
+      "maximumFinalWorkers": 1000
     },
     "concurrency": {
       "isEnabled": false,
@@ -674,7 +675,8 @@ The examples below show the serialized JSON shape returned by HTTP and MCP adapt
         "maximumBufferedEntries": 100
       },
       "retention": {
-        "purgeInterval": "00:05:00"
+        "purgeInterval": "00:10:00",
+        "maximumFinalWorkers": 1000
       },
       "concurrency": {
         "isEnabled": false,
@@ -754,7 +756,8 @@ The examples below show the serialized JSON shape returned by HTTP and MCP adapt
         "maximumBufferedEntries": 100
       },
       "retention": {
-        "purgeInterval": "00:05:00"
+        "purgeInterval": "00:10:00",
+        "maximumFinalWorkers": 1000
       },
       "concurrency": {
         "isEnabled": false,

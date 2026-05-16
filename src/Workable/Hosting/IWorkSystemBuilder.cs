@@ -65,6 +65,10 @@ public interface IWorkSystemBuilder
 
     IWorkSystemBuilder UseShutdownGracePeriodRatio(double hostShutdownTimeoutRatio);
 
+    IWorkSystemBuilder UseRetention(WorkSystemRetentionConfiguration retention);
+
+    IWorkSystemBuilder ConfigureRetention(int? maximumFinalWorkers = null);
+
     IWorkSystemBuilder ClassifyExceptions(WorkExceptionClassifier classifier);
 
     IWorkSystemBuilder UseDotNetOriginProvider<TProvider>()

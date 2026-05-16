@@ -193,6 +193,7 @@ export type WorkConfiguration = {
   };
   retention: {
     purgeInterval: string;
+    maximumFinalWorkers: number;
   };
   concurrency: {
     isEnabled: boolean;

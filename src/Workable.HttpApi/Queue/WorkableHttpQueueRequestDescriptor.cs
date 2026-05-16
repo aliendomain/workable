@@ -74,7 +74,8 @@ public sealed record WorkableHttpQueueRequestDescriptor(
             "Retention",
             "Controls how often completed or purged worker records are eligible for cleanup.",
             [
-                Field("options.configuration.retention.purgeInterval", "Purge interval", "How often Workable should run retention cleanup for this worker group. Use .NET TimeSpan text such as 00:05:00."),
+                Field("options.configuration.retention.purgeInterval", "Purge interval", "How long Workable should keep completed or canceled workers before automatic purge. Use .NET TimeSpan text such as 00:10:00."),
+                Field("options.configuration.retention.maximumFinalWorkers", "Final worker target", "Approximate retained completed or canceled worker target for this worker group. Count cleanup runs in the background and can purge any final workers in the group."),
             ]),
         new(
             "concurrency",

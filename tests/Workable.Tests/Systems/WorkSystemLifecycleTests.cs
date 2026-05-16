@@ -84,6 +84,23 @@ public sealed class WorkSystemLifecycleTests
     }
 
     [Fact]
+    public void SystemRetentionDefaultsMatchConfiguredValues()
+    {
+        var retention = WorkSystemRetentionConfiguration.Default;
+
+        Assert.Equal(10_000, retention.MaximumFinalWorkers);
+    }
+
+    [Fact]
+    public void SystemRetentionRejectsInvalidMaximumFinalWorkers()
+    {
+        var exception = Assert.Throws<InvalidOperationException>(() => new ServiceCollection()
+            .AddWorkableSystem(builder => builder.ConfigureRetention(maximumFinalWorkers: 0)));
+
+        Assert.Contains("maximum final workers", exception.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public async Task SystemStartAndStopAreIdempotent()
     {
         var system = new ServiceCollection()

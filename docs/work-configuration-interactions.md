@@ -50,7 +50,7 @@ When idempotency is enabled, a recurring worker blocks another worker with the s
 
 ## Retention And Failure
 
-Retention applies to final workers. Final workers are `Completed` and `Canceled`, so automatic purge uses the configured retention interval for those states.
+Retention applies to final workers. Final workers are `Completed` and `Canceled`, so automatic purge uses the configured retention interval and asynchronously enforced final-worker count targets for those states.
 
 Failed workers remain available for inspection and control because they can be started again or canceled. They are not automatically purged by final-worker retention.
 

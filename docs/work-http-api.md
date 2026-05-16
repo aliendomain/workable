@@ -236,7 +236,7 @@ Queue requests can include HTTP worker options and input identity metadata.
 }
 ```
 
-HTTP queue options use `WorkableHttpWorkerOptions`. Its `configuration` shape includes start behavior, idempotency, recurrence, transient retry, logging, retention, and concurrency. Invocation channels are not part of the HTTP queue request because they are definition-level configuration.
+HTTP queue options use `WorkableHttpWorkerOptions`. Its `configuration` shape includes start behavior, idempotency, recurrence, transient retry, logging, retention, and concurrency. Retention includes `purgeInterval` and the asynchronously enforced `maximumFinalWorkers` target. Invocation channels are not part of the HTTP queue request because they are definition-level configuration.
 
 The accepted worker remains owned by Workable and can be queried, observed, or controlled through Workable.
 

@@ -35,7 +35,9 @@ public interface IWorkConfigurationBuilder
         LogLevel level = LogLevel.Information,
         int maximumBufferedEntries = 100);
 
-    IWorkConfigurationBuilder ConfigureRetention(TimeSpan? purgeInterval = null);
+    IWorkConfigurationBuilder ConfigureRetention(
+        TimeSpan? purgeInterval = null,
+        int? maximumFinalWorkers = null);
 
     IWorkConfigurationBuilder LimitConcurrency(
         int maximumCapacity,

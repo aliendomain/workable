@@ -6,5 +6,7 @@ public sealed record WorkRetentionConfiguration
 {
     public static WorkRetentionConfiguration Default { get; } = new();
 
-    public TimeSpan PurgeInterval { get; init; } = TimeSpan.FromMinutes(5);
+    public TimeSpan PurgeInterval { get; init; } = TimeSpan.FromMinutes(10);
+
+    public int MaximumFinalWorkers { get; init; } = 1_000;
 }
