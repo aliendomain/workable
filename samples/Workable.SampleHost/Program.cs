@@ -197,7 +197,7 @@ app.MapGet("/", (HttpContext context) =>
                                 <button id="toggle" type="button">Start sample workers</button>
                                 <label class="interval-control">
                                     Interval
-                                    <input id="interval" type="number" min="10" max="10000" step="5">
+                                    <input id="interval" type="number" min="5" max="10000" step="5">
                                     ms
                                 </label>
                                 <button id="update-interval" type="button">Update interval</button>

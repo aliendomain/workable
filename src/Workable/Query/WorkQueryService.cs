@@ -369,6 +369,15 @@ internal sealed partial class WorkQueryService(
         return Task.FromResult(this.CreateSystemQueryContext(criteria).CreateThroughput(throughput));
     }
 
+    public Task<WorkSystemThroughputSummary> SystemThroughputSummary(
+        WorkSystemCriteria? criteria = null,
+        WorkThroughputCriteria? throughput = null,
+        CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        return Task.FromResult(this.CreateSystemQueryContext(criteria).CreateThroughputSummary(throughput));
+    }
+
     public Task<WorkSystemWorkerCounts> SystemWorkerCounts(
         WorkSystemCriteria? criteria = null,
         CancellationToken cancellationToken = default)
@@ -466,6 +475,7 @@ internal sealed partial class WorkQueryService(
             .Where(count => IsActiveForSummary(count.Key))
             .Sum(count => count.Value);
         return new WorkSystemWorkerCounts(
+            this.index.ActiveOrQueuedDefinitionCount(definitionIds),
             active,
             final,
             counts.GetValueOrDefault(WorkerState.Failed),
@@ -495,6 +505,11 @@ internal sealed partial class WorkQueryService(
         IReadOnlySet<WorkDefinitionId>? definitionIds = null,
         WorkThroughputCriteria? throughputQuery = null)
         => this.metrics.GetThroughput(throughputQuery, definitionIds);
+
+    private WorkSystemThroughputSummary CreateSystemThroughputSummary(
+        IReadOnlySet<WorkDefinitionId>? definitionIds = null,
+        WorkThroughputCriteria? throughputQuery = null)
+        => this.metrics.GetThroughputSummary(throughputQuery, definitionIds);
 
     private IReadOnlyList<WorkerOverviewItem> CreateSystemFailedWorkers(IReadOnlySet<WorkDefinitionId>? definitionIds = null)
         => [.. this.GetOverviewItems(this.index.ByState(WorkerState.Failed, definitionIds))

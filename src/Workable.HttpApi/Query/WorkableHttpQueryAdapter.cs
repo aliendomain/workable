@@ -13,13 +13,12 @@ public sealed class WorkableHttpQueryAdapter
 
         var query = criteria ?? new WorkComponentCriteria();
         var requests = NormalizeComponentRequests(query.Components);
-        var details = new Lazy<Task<WorkSystemDetails>>(() => system.Query.SystemDetails(query.Scope, cancellationToken: cancellationToken));
         var components = new Dictionary<string, WorkComponentResult>(StringComparer.OrdinalIgnoreCase);
         foreach (var request in requests)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var normalizedRequest = request with { Shape = NormalizeComponentShape(request.Shape) };
-            components[request.Id] = await this.CreateComponent(system, details, normalizedRequest, query.Scope, cancellationToken);
+            var normalizedRequest = NormalizeComponentRequest(request);
+            components[request.Id] = await this.CreateComponent(system, normalizedRequest, query.Scope, cancellationToken);
         }
 
         return new WorkComponentQueryResult(DateTimeOffset.UtcNow, components);
@@ -174,7 +173,6 @@ public sealed class WorkableHttpQueryAdapter
 
     private async Task<WorkComponentResult> CreateComponent(
         IWorkSystem system,
-        Lazy<Task<WorkSystemDetails>> details,
         WorkComponentRequest request,
         WorkSystemCriteria? criteria,
         CancellationToken cancellationToken)
@@ -183,14 +181,14 @@ public sealed class WorkableHttpQueryAdapter
         {
             var data = request.Type.Trim().ToLowerInvariant() switch
             {
-                "system" => CreateSystemComponent(await details.Value),
+                "system" => CreateSystemComponent(system),
                 "catalog" => CreateCatalogComponent(system, criteria),
-                "workers" => CreateWorkerSummaryComponent(await details.Value),
-                "failedworkers" => (await details.Value).FailedWorkers,
-                "relationships" => CreateRelationshipsComponent(await details.Value),
-                "failediterations" => (await details.Value).FailedIterations,
-                "completediterations" => (await details.Value).CompletedIterations,
-                "throughput" => await CreateThroughputComponent(system, criteria, request.Options, cancellationToken),
+                "workers" => await CreateWorkersComponent(system, criteria, request.Shape, cancellationToken),
+                "failedworkers" => await CreateFailedWorkersComponent(system, criteria, request.Shape, cancellationToken),
+                "iterations" => await CreateIterationsComponent(system, criteria, request.Shape, cancellationToken),
+                "failediterations" => await CreateFailedIterationsComponent(system, criteria, request.Shape, cancellationToken),
+                "completediterations" => await CreateCompletedIterationsComponent(system, criteria, request.Shape, cancellationToken),
+                "throughput" => await CreateThroughputComponent(system, criteria, request.Shape, request.Options, cancellationToken),
                 _ => null,
             };
 
@@ -204,11 +202,11 @@ public sealed class WorkableHttpQueryAdapter
         }
     }
 
-    private static object CreateSystemComponent(WorkSystemDetails details)
+    private static object CreateSystemComponent(IWorkSystem system)
         => new
         {
-            details.SystemName,
-            details.SystemState,
+            SystemName = system.Name,
+            SystemState = system.State,
         };
 
     private static object CreateCatalogComponent(IWorkSystem system, WorkSystemCriteria? criteria)
@@ -221,45 +219,173 @@ public sealed class WorkableHttpQueryAdapter
         };
     }
 
-    private static object CreateWorkerSummaryComponent(WorkSystemDetails details)
-        => new
+    private static async Task<object> CreateWorkersComponent(
+        IWorkSystem system,
+        WorkSystemCriteria? criteria,
+        string shape,
+        CancellationToken cancellationToken)
+    {
+        var counts = await system.Query.SystemWorkerCounts(criteria, cancellationToken: cancellationToken);
+        if (shape == WorkComponentShapes.Compact)
         {
-            details.DefinitionCount,
-            details.ActiveWorkerCount,
-            details.FinalWorkerCount,
-            details.FailedWorkerCount,
-            details.WorkerCountByState,
-            details.OldestQueuedAt,
-        };
+            return CreateCompactWorkersComponent(counts);
+        }
 
-    private static object CreateRelationshipsComponent(WorkSystemDetails details)
-        => new
+        return CreateStandardWorkersComponent(counts);
+    }
+
+    private static WorkOverviewWorkersCompactComponent CreateCompactWorkersComponent(WorkSystemWorkerCounts counts)
+        => new(
+            counts.ActiveWorkerCount,
+            counts.FailedWorkerCount,
+            counts.OldestQueuedAt);
+
+    private static WorkOverviewWorkersStandardComponent CreateStandardWorkersComponent(WorkSystemWorkerCounts counts)
+        => new(
+            counts.DefinitionCount,
+            counts.ActiveWorkerCount,
+            counts.FinalWorkerCount,
+            counts.FailedWorkerCount,
+            counts.WorkerCountByState,
+            counts.OldestQueuedAt);
+
+    private static async Task<object> CreateFailedWorkersComponent(
+        IWorkSystem system,
+        WorkSystemCriteria? criteria,
+        string shape,
+        CancellationToken cancellationToken)
+    {
+        var failedWorkers = await system.Query.SystemFailedWorkers(criteria, cancellationToken: cancellationToken);
+        return shape == WorkComponentShapes.Detailed
+            ? failedWorkers.FailedWorkers.Select(worker => new WorkOverviewFailedWorkerDetailed(
+                worker.Id,
+                worker.DefinitionName,
+                worker.Revision,
+                worker.State,
+                worker.UpdatedAt,
+                worker.TotalExecutionDuration,
+                worker.SubjectId,
+                worker.Identifiers)).ToArray()
+            : failedWorkers.FailedWorkers.Select(worker => new WorkOverviewFailedWorkerStandard(
+                worker.Id,
+                worker.DefinitionName,
+                worker.Revision,
+                worker.UpdatedAt,
+                worker.TotalExecutionDuration)).ToArray();
+    }
+
+    private static async Task<object> CreateIterationsComponent(
+        IWorkSystem system,
+        WorkSystemCriteria? criteria,
+        string shape,
+        CancellationToken cancellationToken)
+    {
+        var counts = await system.Query.SystemIterationCounts(criteria, cancellationToken: cancellationToken);
+        if (shape == WorkComponentShapes.Compact)
         {
-            details.CurrentIterationCount,
-            details.CompletedIterationCount,
-            details.FailedIterationCount,
-            details.CanceledIterationCount,
-            details.IterationCountByStatus,
-            details.CommonKeyTypes,
-        };
+            return new WorkOverviewIterationsCompactComponent(
+                counts.IterationCountByStatus);
+        }
+
+        var keyTypes = await system.Query.SystemCommonKeyTypes(criteria, cancellationToken: cancellationToken);
+        return new WorkOverviewIterationsStandardComponent(
+            counts.IterationCountByStatus,
+            keyTypes.KeyTypes);
+    }
+
+    private static async Task<object> CreateFailedIterationsComponent(
+        IWorkSystem system,
+        WorkSystemCriteria? criteria,
+        string shape,
+        CancellationToken cancellationToken)
+    {
+        var iterations = await system.Query.SystemFailedIterations(criteria, cancellationToken: cancellationToken);
+        return CreateIterationListComponent(iterations.Iterations, shape);
+    }
+
+    private static async Task<object> CreateCompletedIterationsComponent(
+        IWorkSystem system,
+        WorkSystemCriteria? criteria,
+        string shape,
+        CancellationToken cancellationToken)
+    {
+        var iterations = await system.Query.SystemCompletedIterations(criteria, cancellationToken: cancellationToken);
+        return CreateIterationListComponent(iterations.Iterations, shape);
+    }
+
+    private static object CreateIterationListComponent(
+        IEnumerable<WorkerIterationOverviewItem> iterations,
+        string shape)
+        => shape == WorkComponentShapes.Detailed
+            ? iterations.Select(iteration => new WorkOverviewIterationDetailed(
+                iteration.WorkerId,
+                iteration.Sequence,
+                iteration.DefinitionName,
+                iteration.WorkerState,
+                iteration.CompletedAt,
+                iteration.ExecutionDuration,
+                iteration.SubjectId,
+                iteration.Identifiers)).ToArray()
+            : iterations.Select(iteration => new WorkOverviewIterationStandard(
+                iteration.WorkerId,
+                iteration.Sequence,
+                iteration.DefinitionName,
+                iteration.CompletedAt,
+                iteration.ExecutionDuration)).ToArray();
 
     private static async Task<object> CreateThroughputComponent(
         IWorkSystem system,
         WorkSystemCriteria? criteria,
+        string shape,
         JsonElement? options,
         CancellationToken cancellationToken)
     {
         var workerCounts = await system.Query.SystemWorkerCounts(criteria, cancellationToken: cancellationToken);
+        var throughputCriteria = CreateThroughputCriteria(options);
+        if (shape == WorkComponentShapes.Compact)
+        {
+            var summary = await system.Query.SystemThroughputSummary(
+                criteria,
+                throughputCriteria,
+                cancellationToken: cancellationToken);
+            return new WorkOverviewThroughputCompactComponent(
+                workerCounts.ActiveWorkerCount,
+                new WorkOverviewThroughputCompact(
+                    summary.WindowSeconds,
+                    summary.ExecutionSummary,
+                    CreateLiveSummary(summary.LiveSummary)));
+        }
+
         var throughput = await system.Query.SystemThroughput(
             criteria,
-            CreateThroughputCriteria(options),
+            throughputCriteria,
             cancellationToken: cancellationToken);
-        return new
-        {
+        return new WorkOverviewThroughputStandardComponent(
             workerCounts.ActiveWorkerCount,
-            Throughput = throughput,
-        };
+            new WorkOverviewThroughputStandard(
+                throughput.From,
+                throughput.To,
+                throughput.WindowSeconds,
+                throughput.BucketSeconds,
+                throughput.Buckets.Select(bucket => new WorkOverviewThroughputBucket(
+                    bucket.At,
+                    bucket.Started,
+                    bucket.Completed,
+                    bucket.Failed,
+                    bucket.Canceled,
+                    bucket.AverageExecutionMilliseconds)).ToArray(),
+                throughput.ExecutionSummary,
+                CreateLiveSummary(throughput.LiveSummary)));
     }
+
+    private static WorkOverviewThroughputLiveSummary CreateLiveSummary(WorkThroughputLiveSummary summary)
+        => new(
+            summary.WindowSeconds,
+            summary.StartedPerSecond,
+            summary.CompletedPerSecond,
+            summary.FailedPerSecond,
+            summary.CanceledPerSecond,
+            summary.InFlightDeltaPerSecond);
 
     private static IReadOnlyList<WorkComponentRequest> NormalizeComponentRequests(
         IReadOnlyList<WorkComponentRequest>? requests)
@@ -267,12 +393,34 @@ public sealed class WorkableHttpQueryAdapter
             ? requests
             : [
                 new("system", "system"),
-                new("workers", "workers"),
-                new("failedWorkers", "failedWorkers"),
-                new("relationships", "relationships"),
+                new("workers", "workers", Shape: WorkComponentShapes.Standard),
+                new("failedWorkers", "failedWorkers", Shape: WorkComponentShapes.Standard),
+                new("iterations", "iterations"),
                 new("failedIterations", "failedIterations", Shape: WorkComponentShapes.Standard),
                 new("completedIterations", "completedIterations", Shape: WorkComponentShapes.Standard),
             ];
+
+    private static WorkComponentRequest NormalizeComponentRequest(WorkComponentRequest request)
+    {
+        var shape = NormalizeComponentShape(request.Shape);
+        if (string.Equals(request.Type, "workers", StringComparison.OrdinalIgnoreCase) &&
+            shape == WorkComponentShapes.Detailed)
+        {
+            shape = WorkComponentShapes.Standard;
+        }
+        else if (string.Equals(request.Type, "throughput", StringComparison.OrdinalIgnoreCase) &&
+            shape == WorkComponentShapes.Detailed)
+        {
+            shape = WorkComponentShapes.Standard;
+        }
+        else if (string.Equals(request.Type, "failedWorkers", StringComparison.OrdinalIgnoreCase) &&
+            shape == WorkComponentShapes.Compact)
+        {
+            shape = WorkComponentShapes.Standard;
+        }
+
+        return request with { Shape = shape };
+    }
 
     private static string NormalizeComponentShape(string? shape)
     {

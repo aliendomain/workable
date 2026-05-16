@@ -59,6 +59,11 @@ public interface IWorkQueryService
         WorkThroughputCriteria? throughput = null,
         CancellationToken cancellationToken = default);
 
+    Task<WorkSystemThroughputSummary> SystemThroughputSummary(
+        WorkSystemCriteria? criteria = null,
+        WorkThroughputCriteria? throughput = null,
+        CancellationToken cancellationToken = default);
+
     Task<WorkSystemWorkerCounts> SystemWorkerCounts(
         WorkSystemCriteria? criteria = null,
         CancellationToken cancellationToken = default);

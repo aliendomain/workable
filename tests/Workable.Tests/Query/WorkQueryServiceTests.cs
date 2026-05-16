@@ -1280,6 +1280,7 @@ public sealed class WorkQueryServiceTests
         await system.Workers.Execute(canceledWorker.Version, WorkAction.Cancel);
         await canceled.WaitForCompletion();
         await (await system.Queue.Enqueue("metrics.other")).WaitForCompletion();
+        await WaitForThroughputBucketToClose();
 
         var overviewWithoutThroughput = await system.Query.SystemDetails(new WorkSystemCriteria(
             Category: "Metrics:Included"));
@@ -1319,6 +1320,7 @@ public sealed class WorkQueryServiceTests
         await system.Start();
         var handle = await system.Queue.Enqueue("metrics.purge");
         await handle.WaitForCompletion();
+        await WaitForThroughputBucketToClose();
 
         var workerId = RequiredWorkerId(handle);
         var beforePurge = await system.Query.SystemThroughput(new WorkSystemCriteria(Category: "Metrics:Purge"),
@@ -1341,6 +1343,15 @@ public sealed class WorkQueryServiceTests
         Assert.Equal(1 / 60.0, afterPurge.LiveSummary.StartedPerSecond, precision: 6);
         Assert.Equal(1 / 60.0, afterPurge.LiveSummary.CompletedPerSecond, precision: 6);
         Assert.Equal(0, afterPurge.LiveSummary.InFlightDeltaPerSecond, precision: 6);
+    }
+
+    private static async Task WaitForThroughputBucketToClose()
+    {
+        var currentSecond = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        while (DateTimeOffset.UtcNow.ToUnixTimeSeconds() <= currentSecond)
+        {
+            await Task.Delay(10);
+        }
     }
 
     private static IWorkSystem CreateSystem(

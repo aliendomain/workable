@@ -7,7 +7,6 @@ internal sealed partial class WorkQueryService
         private readonly WorkQueryService owner;
         private readonly WorkSystemCriteria? criteria;
         private readonly Lazy<HashSet<WorkDefinitionId>?> definitionIds;
-        private readonly Lazy<int> definitionCount;
         private readonly Lazy<WorkSystemWorkerCounts> workerCounts;
         private readonly Lazy<WorkSystemIterationCounts> iterationCounts;
         private readonly Lazy<IReadOnlyList<WorkIterationKeyTypeFacet>> commonKeyTypes;
@@ -20,7 +19,6 @@ internal sealed partial class WorkQueryService
             this.owner = owner;
             this.criteria = criteria;
             this.definitionIds = new Lazy<HashSet<WorkDefinitionId>?>(() => this.owner.ResolveDefinitionScope(this.criteria));
-            this.definitionCount = new Lazy<int>(() => this.owner.index.ActiveOrQueuedDefinitionCount(this.DefinitionIds));
             this.workerCounts = new Lazy<WorkSystemWorkerCounts>(() => this.owner.CreateSystemWorkerCounts(this.DefinitionIds));
             this.iterationCounts = new Lazy<WorkSystemIterationCounts>(() => this.owner.CreateSystemIterationCounts(this.DefinitionIds));
             this.commonKeyTypes = new Lazy<IReadOnlyList<WorkIterationKeyTypeFacet>>(() => this.owner.CreateSystemCommonKeyTypes(this.DefinitionIds));
@@ -47,7 +45,7 @@ internal sealed partial class WorkQueryService
             => new(
                 this.owner.workSystemName,
                 this.owner.getSystemState(),
-                this.definitionCount.Value,
+                this.WorkerCounts.DefinitionCount,
                 this.WorkerCounts.ActiveWorkerCount,
                 this.WorkerCounts.FinalWorkerCount,
                 this.WorkerCounts.FailedWorkerCount,
@@ -66,6 +64,9 @@ internal sealed partial class WorkQueryService
 
         public WorkSystemThroughput CreateThroughput(WorkThroughputCriteria? throughput = null)
             => this.owner.CreateSystemThroughput(this.DefinitionIds, throughput);
+
+        public WorkSystemThroughputSummary CreateThroughputSummary(WorkThroughputCriteria? throughput = null)
+            => this.owner.CreateSystemThroughputSummary(this.DefinitionIds, throughput);
 
         public WorkSystemFailedWorkers CreateFailedWorkers()
             => new(

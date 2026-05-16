@@ -106,6 +106,25 @@ export type WorkerOverviewItem = {
   nextRunAt?: string | null;
 };
 
+export type WorkOverviewFailedWorkerStandard = {
+  id: { value: string };
+  definitionName: string;
+  revision: number;
+  updatedAt: string;
+  totalExecutionDuration?: string;
+};
+
+export type WorkOverviewFailedWorkerDetailed = WorkOverviewFailedWorkerStandard & {
+  subjectId?: WorkTypedValue | null;
+  identifiers?: WorkTypedValue[];
+  state: WorkerState;
+};
+
+export type WorkOverviewFailedWorker =
+  | WorkOverviewFailedWorkerStandard
+  | WorkOverviewFailedWorkerDetailed
+  | WorkerOverviewItem;
+
 export type WorkerSnapshot = WorkerSummary & {
   input?: WorkData | null;
   output?: WorkData | null;
@@ -242,6 +261,25 @@ export type WorkerIterationOverviewItem = {
   identifiers?: WorkTypedValue[];
 };
 
+export type WorkOverviewIterationStandard = {
+  workerId: { value: string };
+  sequence: number;
+  definitionName: string;
+  completedAt: string;
+  executionDuration: string;
+};
+
+export type WorkOverviewIterationDetailed = WorkOverviewIterationStandard & {
+  workerState: WorkerState;
+  subjectId?: WorkTypedValue | null;
+  identifiers?: WorkTypedValue[];
+};
+
+export type WorkOverviewIteration =
+  | WorkOverviewIterationStandard
+  | WorkOverviewIterationDetailed
+  | WorkerIterationOverviewItem;
+
 export type WorkerQueryResult = {
   workers: WorkerOverviewItem[];
   totalCount: number;
@@ -363,12 +401,21 @@ export type WorkOverviewThroughputComponent = {
 };
 
 export type WorkSystemThroughput = {
-  from: string;
-  to: string;
+  from?: string;
+  to?: string;
   windowSeconds: number;
-  bucketSeconds: number;
-  buckets: WorkThroughputBucket[];
+  bucketSeconds?: number;
+  buckets?: WorkThroughputBucket[];
+  executionSummary: WorkThroughputExecutionSummary;
   liveSummary: WorkThroughputLiveSummary;
+};
+
+export type WorkThroughputExecutionSummary = {
+  executionCount: number;
+  averageExecutionMilliseconds: number;
+  slowestExecutionMilliseconds: number;
+  p95ExecutionMilliseconds: number;
+  p99ExecutionMilliseconds: number;
 };
 
 export type WorkThroughputBucket = {
@@ -381,13 +428,12 @@ export type WorkThroughputBucket = {
 };
 
 export type WorkThroughputLiveSummary = {
-  windowSeconds: number;
+  rateWindowSeconds: number;
   startedPerSecond: number;
   completedPerSecond: number;
   failedPerSecond: number;
   canceledPerSecond: number;
   inFlightDeltaPerSecond: number;
-  averageExecutionMilliseconds: number;
 };
 
 export type WorkOverviewCatalogCategoryItem = {
@@ -408,7 +454,7 @@ export type WorkSystemFailedWorkersOverview = {
   failedWorkerCount: number;
   workerCountByState: Partial<Record<WorkerState, number>>;
   oldestQueuedAt?: string | null;
-  failedWorkers: WorkerOverviewItem[];
+  failedWorkers: WorkOverviewFailedWorker[];
 };
 
 export type WorkSystemLifecycleResult = {

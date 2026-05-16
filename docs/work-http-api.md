@@ -269,20 +269,30 @@ Content-Type: application/json
     "includeSubcategories": true
   },
   "components": [
-    { "id": "system", "type": "system", "shape": "detailed" },
-    { "id": "workers", "type": "workers", "shape": "detailed" },
-    { "id": "throughput", "type": "throughput", "shape": "detailed", "options": { "windowSeconds": 60, "bucketSeconds": 1 } }
+    { "id": "system", "type": "system" },
+    { "id": "workers", "type": "workers", "shape": "compact" },
+    { "id": "failedIterations", "type": "failedIterations", "shape": "detailed" },
+    { "id": "throughput", "type": "throughput", "shape": "standard", "options": { "windowSeconds": 60, "bucketSeconds": 1 } }
   ]
 }
 ```
 
-When `components` is omitted, the overview view returns the default non-live components: `system`, `workers`, `failedWorkers`, `relationships`, `failedIterations`, and `completedIterations`. The default overview story uses `standard` for the iteration list components and `detailed` for the others. Add `throughput` to the overview component list only when the throughput panel is visible, and request `catalog` only when the filter UI is open.
+When `components` is omitted, the overview view returns the default non-live components: `system`, `workers`, `failedWorkers`, `iterations`, `failedIterations`, and `completedIterations`. The default overview story uses `standard` for `workers`, `failedWorkers`, `iterations`, `failedIterations`, and `completedIterations`. Add `throughput` to the overview component list only when the throughput panel is visible, and request `catalog` only when the filter UI is open.
 
-Component requests can include a UI shape of `compact`, `standard`, or `detailed`, and each component result echoes the normalized `shape` that was served. Hidden or collapsed panels should be omitted from the request. The current overview client requests `standard` for iteration list components and `detailed` for other visible components.
+Component requests can include a UI shape of `compact`, `standard`, or `detailed`, and each component result echoes the normalized `shape` that was served. Hidden panels should be omitted from the request. Collapsed panels should request `compact` when the component supports it. The HTTP adapter treats shape as an efficiency contract: if a smaller shape can avoid an indexed domain aggregation, the adapter calls the narrower query; if the domain query already has the rows in hand, the adapter still projects the result before serialization so clients only receive fields they can render.
+
+Overview component shape support:
+
+- `system` returns system name and state; shape is accepted for consistency but does not change the payload.
+- `workers` supports `compact` and `standard`. `compact` returns active workers, failed workers, and oldest queued time. `standard` adds definition count, final workers, and worker counts by state.
+- `failedWorkers` supports `standard` and `detailed`. `standard` returns definition, worker id, revision, updated time, and duration; the failed state is implied by the component. `detailed` adds state and relationship fields used by the detailed table.
+- `iterations` supports `compact` and `standard`. `compact` returns `iterationCountByStatus` only. `standard` adds common relationship key-type facets.
+- `failedIterations` and `completedIterations` support `standard` and `detailed`. `standard` returns definition, worker id, iteration sequence, completed time, and duration. `detailed` adds worker state and relationship fields.
+- `throughput` supports `compact` and `standard`; both use the requested throughput window/options. `compact` returns active worker count plus live and window execution summaries for the pill strip, without chart buckets. `standard` adds chart buckets trimmed to `at`, started/completed/failed/canceled counts, and average execution milliseconds. `detailed` normalizes to `standard`.
 
 The `workers` component returns worker state counts plus `oldestQueuedAt`, which is the oldest queued worker state-entry timestamp in the requested scope. Queue backlog is reported with worker state counts in the same component.
 
-The `throughput` component returns iteration throughput plus live execution pressure. `liveSummary.inFlightDeltaPerSecond` is based on the fixed 60-second live window: started iterations per second minus completed, failed, and canceled iterations per second.
+The `throughput` component returns iteration throughput plus live execution pressure. `throughput.windowSeconds` is the selected throughput/execution window. `buckets` contains only fully closed time buckets so charts do not include the still-open bucket at the right edge. Each bucket includes started/completed/failed/canceled counts and average execution milliseconds. `executionSummary` reports exact execution count, exact average execution milliseconds, exact slowest execution milliseconds, and approximate p95/p99 execution milliseconds interpolated from fast-work-optimized histogram buckets across the requested closed-bucket throughput window. `liveSummary` reports only live rates for the fixed `rateWindowSeconds` live-rate window through the current moment. `liveSummary.inFlightDeltaPerSecond` is started iterations per second minus completed, failed, and canceled iterations per second.
 
 Clients can also request arbitrary components without binding the request to a named view.
 

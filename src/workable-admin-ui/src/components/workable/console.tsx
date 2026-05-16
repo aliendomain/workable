@@ -9,7 +9,6 @@ import {
   Boxes,
   Braces,
   CheckCircle2,
-  ChevronDown,
   ChevronLeft,
   ChevronRight,
   ChevronsLeft,
@@ -31,6 +30,10 @@ import {
   Plus,
   Radio,
   RefreshCw,
+  RotateCcw,
+  Rows2,
+  Rows3,
+  Rows4,
   Search,
   Send,
   Server,
@@ -82,7 +85,6 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
   ScrollArea,
-  ScrollBar,
 } from "@/components/ui/scroll-area";
 import {
   DropdownMenu,
@@ -163,13 +165,15 @@ import {
   type WorkComponentRequest,
   type WorkComponentResult,
   type WorkComponentShape,
+  type WorkOverviewFailedWorker,
+  type WorkOverviewFailedWorkerDetailed,
+  type WorkOverviewIteration,
   type WorkIterationKeyTypeQueryResult,
   type WorkIterationKeyTypeFacet,
   type WorkInfo,
   type WorkOverviewThroughputComponent,
   type WorkKeyTypeQueryResult,
   type WorkOverviewCatalogCategoryItem,
-  type WorkOverviewDefinitionItem,
   type WorkSystemFailedWorkersOverview,
   type WorkSystemLifecycleResult,
   type WorkSystemOverview,
@@ -194,6 +198,8 @@ const LEGACY_CONNECTION_STORAGE_KEY = "workable-console.connection";
 type View = "overview" | "definitions" | "definition" | "workers" | "iterations" | "worker";
 type ServerView = Exclude<View, "worker">;
 type ThroughputMode = "completion" | "execution";
+const throughputSeriesIds = ["started", "completed", "failed", "canceled"] as const;
+type ThroughputSeriesId = (typeof throughputSeriesIds)[number];
 type ThroughputMetric = {
   description: string;
   icon?: typeof Activity;
@@ -204,6 +210,16 @@ type ThroughputMetric = {
   value: string;
   valueClass?: string;
   widthClass?: string;
+};
+type ThroughputSeries = {
+  color: string;
+  gradientId: string;
+  id: string;
+  label: string;
+  legendClass: string;
+  strokeDasharray?: string;
+  strokeWidth?: string;
+  values: number[];
 };
 
 type WorkOverviewSystemComponent = Pick<WorkSystemOverview, "systemName" | "systemState">;
@@ -220,15 +236,15 @@ type WorkOverviewWorkersComponent = Pick<
   | "oldestQueuedAt"
   | "workerCountByState"
 >;
-type WorkOverviewRelationshipsComponent = Pick<
-  WorkSystemOverview,
-  | "canceledIterationCount"
-  | "commonKeyTypes"
-  | "completedIterationCount"
-  | "currentIterationCount"
-  | "failedIterationCount"
-  | "iterationCountByStatus"
+type WorkerActionTarget = Pick<
+  WorkerOverviewItem,
+  "definitionName" | "id" | "revision" | "state"
 >;
+type WorkerTableItem = WorkerOverviewItem | WorkOverviewFailedWorkerDetailed;
+type WorkOverviewIterationsComponent = {
+  commonKeyTypes?: WorkIterationKeyTypeFacet[];
+  iterationCountByStatus: Partial<Record<WorkCompletionStatus, number>>;
+};
 
 function overviewComponent(
   id: string,
@@ -243,11 +259,52 @@ const overviewPanelIds = [
   "workers",
   "failedWorkers",
   "throughput",
-  "relationships",
+  "iterations",
   "failedIterations",
   "completedIterations",
 ] as const;
 type OverviewPanelId = (typeof overviewPanelIds)[number];
+type OverviewPanelShapeMap = Record<OverviewPanelId, WorkComponentShape>;
+
+const overviewShapeOptions: Array<{
+  icon: typeof Rows2;
+  label: string;
+  shape: WorkComponentShape;
+}> = [
+  { icon: Rows2, label: "Compact", shape: "compact" },
+  { icon: Rows3, label: "Standard", shape: "standard" },
+  { icon: Rows4, label: "Detailed", shape: "detailed" },
+];
+
+const overviewPanelShapeCapabilities: Record<OverviewPanelId, {
+  defaultShape: WorkComponentShape;
+  supportedShapes: WorkComponentShape[];
+}> = {
+  completedIterations: {
+    defaultShape: "standard",
+    supportedShapes: ["standard", "detailed"],
+  },
+  failedIterations: {
+    defaultShape: "standard",
+    supportedShapes: ["standard", "detailed"],
+  },
+  failedWorkers: {
+    defaultShape: "detailed",
+    supportedShapes: ["standard", "detailed"],
+  },
+  iterations: {
+    defaultShape: "standard",
+    supportedShapes: ["compact", "standard"],
+  },
+  throughput: {
+    defaultShape: "standard",
+    supportedShapes: ["compact", "standard"],
+  },
+  workers: {
+    defaultShape: "standard",
+    supportedShapes: ["compact", "standard"],
+  },
+};
 
 type WorkableHostConnection = {
   id: string;
@@ -276,8 +333,9 @@ type ConsoleStorage = {
   expandedHostIds: string[];
   expandedSystemIds: string[];
   hosts: WorkableHostConnection[];
-  overviewCollapsedPanels: OverviewPanelId[];
   overviewHiddenPanels: OverviewPanelId[];
+  overviewPanelShapes: OverviewPanelShapeMap;
+  overviewHiddenThroughputSeries: ThroughputSeriesId[];
   overviewThroughputHidden: boolean;
   view: ServerView;
 };
@@ -348,6 +406,7 @@ const throughputWindows = [
   { label: "15m", seconds: 900, bucketSeconds: 15 },
   { label: "1h", seconds: 3600, bucketSeconds: 60 },
 ];
+const compactThroughputWindow = throughputWindows[0];
 
 const navItems: Array<{ id: ServerView; label: string; icon: typeof Activity }> = [
   { id: "overview", label: "Overview", icon: Activity },
@@ -416,6 +475,8 @@ export function WorkableConsole() {
   const activeLocation = findSystemLocation(consoleState, consoleState.activeSystemId);
   const activeHost = activeLocation?.host;
   const activeSystem = activeLocation?.system;
+  const activeApiUrl = activeHost?.apiUrl;
+  const activeSystemName = activeSystem?.systemName;
   const activeCatalogScope = activeSystem
     ? catalogScopeBySystemId[activeSystem.id] ?? null
     : null;
@@ -424,13 +485,13 @@ export function WorkableConsole() {
     : null;
   const connection = useMemo<WorkableConnection | null>(
     () =>
-      activeHost && activeSystem
+      activeApiUrl
         ? {
-            apiUrl: activeHost.apiUrl,
-            systemName: activeSystem.systemName,
+            apiUrl: activeApiUrl,
+            systemName: activeSystemName,
           }
         : null,
-    [activeHost, activeSystem]
+    [activeApiUrl, activeSystemName]
   );
 
   useEffect(() => {
@@ -534,9 +595,10 @@ export function WorkableConsole() {
     scope: OverviewScope | null
   ) => {
     setOverviewScopeBySystemId((current) => {
+      const normalizedScope = normalizeOverviewScope(scope);
       const next = { ...current };
-      if (scope) {
-        next[systemId] = { ...scope };
+      if (normalizedScope) {
+        next[systemId] = normalizedScope;
       } else {
         delete next[systemId];
       }
@@ -550,9 +612,10 @@ export function WorkableConsole() {
     scope: OverviewScope | null
   ) => {
     setCatalogScopeBySystemId((current) => {
+      const normalizedScope = normalizeOverviewScope(scope);
       const next = { ...current };
-      if (scope) {
-        next[systemId] = { ...scope };
+      if (normalizedScope) {
+        next[systemId] = normalizedScope;
       } else {
         delete next[systemId];
       }
@@ -620,23 +683,51 @@ export function WorkableConsole() {
     });
   }, []);
 
-  const setOverviewPanelCollapsed = useCallback((
+  const setOverviewPanelShape = useCallback((
     panelId: OverviewPanelId,
-    collapsed: boolean
+    shape: WorkComponentShape
   ) => {
     setConsoleState((current) => {
-      const panels = new Set(current.overviewCollapsedPanels ?? []);
-      if (collapsed) {
-        panels.add(panelId);
+      return {
+        ...current,
+        overviewPanelShapes: normalizeOverviewPanelShapes({
+          ...current.overviewPanelShapes,
+          [panelId]: shape,
+        }),
+      };
+    });
+  }, []);
+
+  const toggleOverviewThroughputSeries = useCallback((seriesId: ThroughputSeriesId) => {
+    setConsoleState((current) => {
+      const hidden = new Set(current.overviewHiddenThroughputSeries);
+      const isHidden = hidden.has(seriesId);
+      if (isHidden) {
+        hidden.delete(seriesId);
       } else {
-        panels.delete(panelId);
+        const visibleCount = throughputSeriesIds.filter((id) => !hidden.has(id)).length;
+        if (visibleCount <= 1) {
+          return current;
+        }
+
+        hidden.add(seriesId);
       }
 
       return {
         ...current,
-        overviewCollapsedPanels: overviewPanelIds.filter((id) => panels.has(id)),
+        overviewHiddenThroughputSeries: normalizeThroughputSeriesIds([...hidden]),
       };
     });
+  }, []);
+
+  const resetOverviewUiToDefaults = useCallback(() => {
+    setConsoleState((current) => ({
+      ...current,
+      overviewHiddenPanels: [],
+      overviewHiddenThroughputSeries: [],
+      overviewPanelShapes: createDefaultOverviewPanelShapes(),
+      overviewThroughputHidden: false,
+    }));
   }, []);
 
   const openWorker = (workerId: string, trackHistory = true) => {
@@ -1093,9 +1184,8 @@ export function WorkableConsole() {
         <SidebarFooter />
       </Sidebar>
       <SidebarInset>
-        <main className="min-h-0 flex-1 overflow-hidden bg-background">
-          <ScrollArea className="h-screen">
-            <div className="relative mx-auto w-full max-w-7xl p-4 md:p-6" data-view-content>
+        <main className="flex-1 bg-background">
+          <div className="relative mx-auto w-full max-w-7xl p-4 md:p-6" data-view-content>
               {!connection && (
                 <EmptyServerState onAddServer={() => setServerDialog({ mode: "add" })} />
               )}
@@ -1117,9 +1207,9 @@ export function WorkableConsole() {
                   {mountedViews.has("overview") && (
                     <div className={visibleView === "overview" ? viewContentOffsetClass : "hidden"}>
                       <OverviewView
-                        collapsedPanelIds={consoleState.overviewCollapsedPanels}
                         connection={connection}
                         hiddenPanelIds={consoleState.overviewHiddenPanels}
+                        hiddenThroughputSeries={consoleState.overviewHiddenThroughputSeries}
                         isVisible={visibleView === "overview"}
                         onConnectionError={handleOverviewConnectionError}
                         onStateLoaded={handleOverviewStateLoaded}
@@ -1145,10 +1235,13 @@ export function WorkableConsole() {
                         }}
                         onOpenIterations={openIterations}
                         onOpenKeyType={openIterationsByKeyType}
-                        onPanelCollapsedChange={setOverviewPanelCollapsed}
                         onReady={() => markViewReady("overview")}
                         onRefresh={() => refreshView("overview")}
+                        onPanelShapeChange={setOverviewPanelShape}
                         onPanelVisibilityChange={setOverviewPanelVisible}
+                        onResetOverviewUi={resetOverviewUiToDefaults}
+                        onThroughputSeriesToggle={toggleOverviewThroughputSeries}
+                        panelShapes={consoleState.overviewPanelShapes}
                         onViewIterationsByStatus={openIterationsFiltered}
                         onViewWorkersByState={openWorkersFiltered}
                         overviewScope={activeOverviewScope}
@@ -1240,9 +1333,7 @@ export function WorkableConsole() {
                   />
                 </div>
               )}
-            </div>
-            <ScrollBar orientation="vertical" />
-          </ScrollArea>
+          </div>
         </main>
       </SidebarInset>
       <ServerDialog
@@ -1602,6 +1693,10 @@ function ServerTree({
 type DefinitionCatalogLevel = {
   categories: WorkOverviewCatalogCategoryItem[];
   definitions: WorkDefinition[];
+};
+
+type CatalogFilterDefinitionItem = Pick<WorkDefinition, "id" | "name"> & {
+  category?: string | null;
 };
 
 function CatalogExplorer({
@@ -2405,22 +2500,10 @@ function OverviewCatalogFilter({
   const filterTooltip = scopeLabel
     ? `Filtered by catalog: ${scopeLabel}`
     : tooltipLabel;
-  const catalogRequest = useMemo(
-    () => ({
-      components: [overviewComponent("catalog")],
-      scope: createOverviewComponentScope(scope),
-    }),
-    [scope]
-  );
-  const catalog = useWorkablePostResource<WorkComponentQueryResult>(
+  const catalog = useWorkableResource<DefinitionCatalogLevel>(
     connection,
-    open ? "components/query" : null,
-    catalogRequest,
+    open ? createDefinitionCatalogLevelPath(path) : null,
     refreshToken
-  );
-  const catalogComponent = getWorkComponentData<WorkOverviewCatalogComponent>(
-    open ? catalog.data : undefined,
-    "catalog"
   );
 
   const closeTooltip = useCallback(() => {
@@ -2514,8 +2597,8 @@ function OverviewCatalogFilter({
                 Catalog
               </div>
               <CatalogFilterPanel
-                categories={catalogComponent?.catalogCategories ?? []}
-                definitions={catalogComponent?.catalogDefinitions ?? []}
+                categories={catalog.data?.categories ?? []}
+                definitions={catalog.data?.definitions ?? []}
                 loading={loading || catalog.loading || !!catalog.refreshing}
                 onClear={clearAll}
                 onClose={() => setOpen(false)}
@@ -2552,7 +2635,7 @@ function CatalogFilterPanel({
   setPath,
 }: {
   categories: WorkOverviewCatalogCategoryItem[];
-  definitions: WorkOverviewDefinitionItem[];
+  definitions: CatalogFilterDefinitionItem[];
   loading: boolean;
   onClear: () => void;
   onClose?: () => void;
@@ -2985,48 +3068,54 @@ function QueryPaginationControls({
 }
 
 function OverviewView({
-  collapsedPanelIds,
   connection,
   hiddenPanelIds,
+  hiddenThroughputSeries,
   isVisible,
   onClearOverviewScope,
   onConnectionError,
   onOpenCatalog,
   onOpenIterations,
   onOpenKeyType,
-  onPanelCollapsedChange,
   onReady,
   onOpenWorker,
+  onPanelShapeChange,
   onPanelVisibilityChange,
   onRefresh,
+  onResetOverviewUi,
   onStateLoaded,
   onSelectOverviewCategory,
   onSelectOverviewDefinition,
+  onThroughputSeriesToggle,
   onViewIterationsByStatus,
   onViewWorkersByState,
   overviewScope,
+  panelShapes,
   refreshToken,
 }: {
-  collapsedPanelIds: OverviewPanelId[];
   connection: WorkableConnection;
   hiddenPanelIds: OverviewPanelId[];
+  hiddenThroughputSeries: ThroughputSeriesId[];
   isVisible: boolean;
   onClearOverviewScope: () => void;
   onConnectionError: () => void;
   onOpenCatalog: () => void;
   onOpenIterations: () => void;
   onOpenKeyType: (keyType: string) => void;
-  onPanelCollapsedChange: (panelId: OverviewPanelId, collapsed: boolean) => void;
   onReady: () => void;
   onOpenWorker: (workerId: string) => void;
+  onPanelShapeChange: (panelId: OverviewPanelId, shape: WorkComponentShape) => void;
   onPanelVisibilityChange: (panelId: OverviewPanelId, visible: boolean) => void;
   onRefresh: () => void;
+  onResetOverviewUi: () => void;
   onStateLoaded: (state: string) => void;
   onSelectOverviewCategory: (category: string) => void;
   onSelectOverviewDefinition: (definitionName: string, category: string) => void;
+  onThroughputSeriesToggle: (seriesId: ThroughputSeriesId) => void;
   onViewIterationsByStatus: (statuses: WorkCompletionStatus[]) => void;
   onViewWorkersByState: (states: WorkerState[]) => void;
   overviewScope: OverviewScope | null;
+  panelShapes: OverviewPanelShapeMap;
   refreshToken: number;
 }) {
   const [actionError, setActionError] = useState<string>();
@@ -3044,50 +3133,68 @@ function OverviewView({
     (panelId: OverviewPanelId) => !hiddenPanelIds.includes(panelId),
     [hiddenPanelIds]
   );
-  const isPanelCollapsed = useCallback(
-    (panelId: OverviewPanelId) => collapsedPanelIds.includes(panelId),
-    [collapsedPanelIds]
+  const panelShape = useCallback(
+    (panelId: OverviewPanelId) => getOverviewPanelShape(panelShapes, panelId),
+    [panelShapes]
   );
   const shouldFetchPanel = useCallback(
     (panelId: OverviewPanelId) =>
-      isVisible && isPanelVisible(panelId) && !isPanelCollapsed(panelId),
-    [isPanelCollapsed, isPanelVisible, isVisible]
+      isVisible && isPanelVisible(panelId),
+    [isPanelVisible, isVisible]
   );
-  const throughputCollapsed = isPanelCollapsed("throughput");
+  const workersShape = panelShape("workers");
+  const failedWorkersShape = panelShape("failedWorkers");
+  const throughputShape = panelShape("throughput");
+  const requestedThroughputWindow = throughputShape === "compact"
+    ? compactThroughputWindow
+    : throughputWindow;
+  const iterationsShape = panelShape("iterations");
+  const failedIterationsShape = panelShape("failedIterations");
+  const completedIterationsShape = panelShape("completedIterations");
   const overviewComponents = useMemo(() => {
     const components: WorkComponentRequest[] = [
       overviewComponent("system"),
     ];
 
     if (shouldFetchPanel("workers")) {
-      components.push(overviewComponent("workers"));
+      components.push(overviewComponent("workers", "workers", workersShape));
     }
     if (shouldFetchPanel("failedWorkers")) {
-      components.push(overviewComponent("failedWorkers"));
+      components.push(overviewComponent("failedWorkers", "failedWorkers", failedWorkersShape));
     }
-    if (shouldFetchPanel("relationships")) {
-      components.push(overviewComponent("relationships"));
+    if (shouldFetchPanel("iterations")) {
+      components.push(overviewComponent("iterations", "iterations", iterationsShape));
     }
     if (shouldFetchPanel("failedIterations")) {
-      components.push(overviewComponent("failedIterations", "failedIterations", "standard"));
+      components.push(overviewComponent("failedIterations", "failedIterations", failedIterationsShape));
     }
     if (shouldFetchPanel("completedIterations")) {
-      components.push(overviewComponent("completedIterations", "completedIterations", "standard"));
+      components.push(overviewComponent("completedIterations", "completedIterations", completedIterationsShape));
     }
     if (shouldFetchPanel("throughput")) {
       components.push(overviewComponent(
         "throughput",
         "throughput",
-        "detailed",
+        throughputShape,
         {
-          bucketSeconds: throughputWindow.bucketSeconds,
-          windowSeconds: throughputWindow.seconds,
+          bucketSeconds: requestedThroughputWindow.bucketSeconds,
+          windowSeconds: requestedThroughputWindow.seconds,
         }
       ));
     }
 
     return components;
-  }, [shouldFetchPanel, throughputWindow.bucketSeconds, throughputWindow.seconds]);
+  }, [
+    completedIterationsShape,
+    failedIterationsShape,
+    failedWorkersShape,
+    iterationsShape,
+    requestedThroughputWindow.bucketSeconds,
+    requestedThroughputWindow.seconds,
+    shouldFetchPanel,
+    throughputShape,
+    workersShape,
+  ]);
   const overviewRequest = useMemo(
     () => ({
       components: overviewComponents,
@@ -3098,12 +3205,12 @@ function OverviewView({
   const failedWorkersRefreshRequest = useMemo(
     () => ({
       components: [
-        overviewComponent("workers"),
-        overviewComponent("failedWorkers"),
+        overviewComponent("workers", "workers", workersShape),
+        overviewComponent("failedWorkers", "failedWorkers", failedWorkersShape),
       ],
       scope: createOverviewComponentScope(overviewScope),
     }),
-    [overviewScope]
+    [failedWorkersShape, overviewScope, workersShape]
   );
   const failedWorkersKey = `${connection.apiUrl}:${connection.systemName ?? ""}:${JSON.stringify(failedWorkersRefreshRequest)}:${refreshToken}`;
   const overview = useWorkablePostResource<WorkComponentQueryResult>(
@@ -3121,19 +3228,19 @@ function OverviewView({
     overview.data,
     "workers"
   );
-  const failedWorkersComponent = getWorkComponentData<WorkerOverviewItem[]>(
+  const failedWorkersComponent = getWorkComponentData<WorkOverviewFailedWorker[]>(
     overview.data,
     "failedWorkers"
   );
-  const relationshipsComponent = getWorkComponentData<WorkOverviewRelationshipsComponent>(
+  const iterationsComponent = getWorkComponentData<WorkOverviewIterationsComponent>(
     overview.data,
-    "relationships"
+    "iterations"
   );
-  const failedIterationsComponent = getWorkComponentData<WorkerIterationOverviewItem[]>(
+  const failedIterationsComponent = getWorkComponentData<WorkOverviewIteration[]>(
     overview.data,
     "failedIterations"
   );
-  const completedIterationsComponent = getWorkComponentData<WorkerIterationOverviewItem[]>(
+  const completedIterationsComponent = getWorkComponentData<WorkOverviewIteration[]>(
     overview.data,
     "completedIterations"
   );
@@ -3168,15 +3275,8 @@ function OverviewView({
   const componentErrors = getWorkComponentErrors(overview.data);
   const showFailedIterations = isPanelVisible("failedIterations");
   const showCompletedIterations = isPanelVisible("completedIterations");
-  const failedIterationsCollapsed = isPanelCollapsed("failedIterations");
-  const completedIterationsCollapsed = isPanelCollapsed("completedIterations");
-  const iterationListsCanShareRow =
-    showFailedIterations &&
-    showCompletedIterations &&
-    !failedIterationsCollapsed &&
-    !completedIterationsCollapsed;
 
-  const executeWorkerAction = async (worker: WorkerOverviewItem, action: WorkAction) => {
+  const executeWorkerAction = async (worker: WorkerActionTarget, action: WorkAction) => {
     setActionError(undefined);
     setActionWorkerId(worker.id.value);
     try {
@@ -3209,7 +3309,7 @@ function OverviewView({
         failedWorkersOverview,
         "workers"
       );
-      const refreshedFailedWorkers = getWorkComponentData<WorkerOverviewItem[]>(
+      const refreshedFailedWorkers = getWorkComponentData<WorkOverviewFailedWorker[]>(
         failedWorkersOverview,
         "failedWorkers"
       );
@@ -3241,10 +3341,10 @@ function OverviewView({
   }, [isReady, onReady]);
 
   useEffect(() => {
-    if (systemComponent?.systemState) {
+    if (!overview.error && systemComponent?.systemState) {
       onStateLoaded(systemComponent.systemState);
     }
-  }, [systemComponent?.systemState, onStateLoaded]);
+  }, [overview.error, systemComponent?.systemState, onStateLoaded]);
 
   useEffect(() => {
     if (overview.error) {
@@ -3308,130 +3408,213 @@ function OverviewView({
         <OverviewPanelSettings
           hiddenPanelIds={hiddenPanelIds}
           onPanelVisibilityChange={onPanelVisibilityChange}
+          onResetUi={onResetOverviewUi}
         />
       </ViewActionLane>
       {isPanelVisible("workers") && (
         <OverviewPanelShell
-          collapsed={isPanelCollapsed("workers")}
-          onCollapsedChange={(collapsed) => onPanelCollapsedChange("workers", collapsed)}
-          description="Worker states and current worker totals."
-          title="Workers"
+          actions={workersShape === "compact" ? (
+            <CompactWorkerStrip
+              activeWorkerCount={activeWorkerCount}
+              failedWorkerCount={failedWorkerCount}
+              loading={overview.loading}
+              oldestQueuedText={oldestQueuedAge.text}
+              oldestQueuedWarning={oldestQueuedAge.isWarning}
+              onOpenActive={() => onViewWorkersByState(activeWorkerStates)}
+              onOpenFailed={() => onViewWorkersByState(failedWorkerStates)}
+              onOpenQueued={() => onViewWorkersByState(["Queued"])}
+            />
+          ) : undefined}
+          className={workersShape === "compact" ? "w-full xl:w-[calc(50%_-_0.5rem)]" : undefined}
+          contentClassName={workersShape === "compact" ? "hidden" : undefined}
+          description={undefined}
+          onClose={() => onPanelVisibilityChange("workers", false)}
+          onShapeChange={(shape) => onPanelShapeChange("workers", shape)}
+          shape={workersShape}
+          supportedShapes={overviewPanelShapeCapabilities.workers.supportedShapes}
+          title={
+            <>
+              Workers
+              {workersShape !== "compact" && (
+                <Tooltip delayDuration={500} disableHoverableContent>
+                  <TooltipTrigger asChild>
+                    <button
+                      aria-label="Workers: Workers grouped by current state, with summary links for active, final, failed, and catalog counts."
+                      className="group inline-flex size-5 items-center justify-center rounded-sm text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+                      type="button"
+                    >
+                      <Info className="size-3.5 shrink-0" />
+                    </button>
+                  </TooltipTrigger>
+                  <TooltipContent className="max-w-64 whitespace-normal text-left" side="top" sideOffset={6}>
+                    Workers grouped by current state, with summary links for active, final, failed, and catalog counts.
+                  </TooltipContent>
+                </Tooltip>
+              )}
+            </>
+          }
         >
-          <WorkerStateStrip
-            counts={workerCountByState}
-            loading={overview.loading}
-            onSelectState={(state) => onViewWorkersByState([state])}
-            title="Worker states"
-          />
-          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
-            <MetricCard
-              compact
-              description="Workers that are not completed, canceled, or failed."
-              icon={Activity}
-              label="Active workers"
-              loading={overview.loading}
-              onClick={() => onViewWorkersByState(activeWorkerStates)}
-              value={activeWorkerCount}
-            />
-            <MetricCard
-              compact
-              description="Definitions currently associated with active or queued workers."
-              icon={Boxes}
-              label="Catalog"
-              loading={overview.loading}
-              onClick={onOpenCatalog}
-              value={workersComponent?.definitionCount ?? 0}
-            />
-            <MetricCard
-              compact
-              description="How long the oldest currently queued worker has been waiting."
-              icon={Hourglass}
-              label="Oldest queued"
-              loading={overview.loading}
-              onClick={() => onViewWorkersByState(["Queued"])}
-              tone={oldestQueuedAge.isWarning ? "text-amber-300" : undefined}
-              value={oldestQueuedAge.text}
-            />
-            <MetricCard
-              compact
-              description="Workers in a final state: canceled or completed."
-              icon={CheckCircle2}
-              label="Final workers"
-              loading={overview.loading}
-              onClick={() => onViewWorkersByState(finalWorkerStates)}
-              value={finalWorkerCount}
-            />
-            <MetricCard
-              compact
-              description="Workers currently in the failed state."
-              icon={CircleAlert}
-              label="Failed workers"
-              loading={overview.loading}
-              onClick={() => onViewWorkersByState(failedWorkerStates)}
-              tone="text-red-300"
-              value={failedWorkerCount}
-            />
-          </div>
+          {workersShape !== "compact" && (
+            <>
+              <WorkerStateStrip
+                counts={workerCountByState}
+                loading={overview.loading}
+                onSelectState={(state) => onViewWorkersByState([state])}
+              />
+              <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
+                <MetricCard
+                  compact
+                  description="Workers that are not completed, canceled, or failed."
+                  icon={Activity}
+                  label="Active workers"
+                  loading={overview.loading}
+                  onClick={() => onViewWorkersByState(activeWorkerStates)}
+                  value={activeWorkerCount}
+                />
+                <MetricCard
+                  compact
+                  description="Definitions currently associated with active or queued workers."
+                  icon={Boxes}
+                  label="Catalog"
+                  loading={overview.loading}
+                  onClick={onOpenCatalog}
+                  value={workersComponent?.definitionCount ?? 0}
+                />
+                <MetricCard
+                  compact
+                  description="How long the oldest currently queued worker has been waiting."
+                  icon={Hourglass}
+                  label="Oldest queued"
+                  loading={overview.loading}
+                  onClick={() => onViewWorkersByState(["Queued"])}
+                  tone={oldestQueuedAge.isWarning ? "text-amber-300" : undefined}
+                  value={oldestQueuedAge.text}
+                />
+                <MetricCard
+                  compact
+                  description="Workers in a final state: canceled or completed."
+                  icon={CheckCircle2}
+                  label="Final workers"
+                  loading={overview.loading}
+                  onClick={() => onViewWorkersByState(finalWorkerStates)}
+                  value={finalWorkerCount}
+                />
+                <MetricCard
+                  compact
+                  description="Workers currently in the failed state."
+                  icon={CircleAlert}
+                  label="Failed workers"
+                  loading={overview.loading}
+                  onClick={() => onViewWorkersByState(failedWorkerStates)}
+                  tone="text-red-300"
+                  value={failedWorkerCount}
+                />
+              </div>
+            </>
+          )}
         </OverviewPanelShell>
       )}
       {isPanelVisible("failedWorkers") && (
         <OverviewWorkerList
           emptyText="No failed workers."
           loading={overview.loading && failedWorkers.length === 0}
-          collapsed={isPanelCollapsed("failedWorkers")}
-          onCollapsedChange={(collapsed) => onPanelCollapsedChange("failedWorkers", collapsed)}
+          panelClassName={failedWorkersShape === "standard" ? "w-full xl:w-[calc(50%_-_0.5rem)]" : undefined}
+          onClose={() => onPanelVisibilityChange("failedWorkers", false)}
+          onShapeChange={(shape) => onPanelShapeChange("failedWorkers", shape)}
           onWorkerAction={executeWorkerAction}
           onOpenWorker={onOpenWorker}
           onViewState={() => onViewWorkersByState(failedWorkerStates)}
           pendingActionWorkerId={actionWorkerId}
+          shape={failedWorkersShape}
           state="Failed"
+          supportedShapes={overviewPanelShapeCapabilities.failedWorkers.supportedShapes}
           title="Recent Failed Workers"
           workers={failedWorkers}
         />
       )}
       {isPanelVisible("throughput") && (
         <ThroughputChartPanel
-          collapsed={throughputCollapsed}
+          hiddenSeries={hiddenThroughputSeries}
           loading={overview.loading && !throughputData}
           mode={throughputMode}
-          onCollapsedChange={(collapsed) => onPanelCollapsedChange("throughput", collapsed)}
+          onClose={() => onPanelVisibilityChange("throughput", false)}
           onModeChange={setThroughputMode}
+          onShapeChange={(shape) => onPanelShapeChange("throughput", shape)}
+          onSeriesToggle={onThroughputSeriesToggle}
           onWindowChange={setThroughputWindowSeconds}
+          shape={throughputShape}
+          supportedShapes={overviewPanelShapeCapabilities.throughput.supportedShapes}
           throughput={throughputData}
-          windowSeconds={throughputWindow.seconds}
+          windowSeconds={requestedThroughputWindow.seconds}
         />
       )}
-      {isPanelVisible("relationships") && (
+      {isPanelVisible("iterations") && (
         <OverviewPanelShell
-          collapsed={isPanelCollapsed("relationships")}
-          onCollapsedChange={(collapsed) => onPanelCollapsedChange("relationships", collapsed)}
-          description="Iteration statuses and common relationship types."
-          title="Relationships"
+          actions={iterationsShape === "compact" ? (
+            <CompactIterationStrip
+              statuses={["Executing", "Completed", "Failed"]}
+              counts={iterationsComponent?.iterationCountByStatus ?? {}}
+              loading={overview.loading}
+              onSelectStatus={(status) => onViewIterationsByStatus([status])}
+            />
+          ) : undefined}
+          className={iterationsShape === "compact" ? "w-full xl:w-[calc(50%_-_0.5rem)]" : undefined}
+          contentClassName={iterationsShape === "compact" ? "hidden" : undefined}
+          description={undefined}
+          onClose={() => onPanelVisibilityChange("iterations", false)}
+          onShapeChange={(shape) => onPanelShapeChange("iterations", shape)}
+          shape={iterationsShape}
+          supportedShapes={overviewPanelShapeCapabilities.iterations.supportedShapes}
+          title={
+            <>
+              Iterations
+              <Tooltip delayDuration={500} disableHoverableContent>
+                <TooltipTrigger asChild>
+                  <button
+                    aria-label="Iterations: Worker iterations grouped by status and common relationship type."
+                    className="group inline-flex size-5 items-center justify-center rounded-sm text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+                    type="button"
+                  >
+                    <Info className="size-3.5 shrink-0" />
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent className="max-w-64 whitespace-normal text-left" side="top" sideOffset={6}>
+                  Worker iterations grouped by status, with common relationship types for quick filtering.
+                </TooltipContent>
+              </Tooltip>
+            </>
+          }
         >
-          <IterationStatusStrip
-            counts={relationshipsComponent?.iterationCountByStatus ?? {}}
-            loading={overview.loading}
-            onSelectStatus={(status) => onViewIterationsByStatus([status])}
-            title="Iteration statuses"
-          />
-          <TopKeyTypePanel
-            keys={relationshipsComponent?.commonKeyTypes ?? []}
-            loading={overview.loading}
-            onShowMore={onOpenIterations}
-            onSelectKeyType={onOpenKeyType}
-          />
+          {iterationsShape !== "compact" && (
+            <IterationStatusStrip
+              counts={iterationsComponent?.iterationCountByStatus ?? {}}
+              loading={overview.loading}
+              onSelectStatus={(status) => onViewIterationsByStatus([status])}
+            />
+          )}
+          {iterationsShape === "standard" && (
+            <TopKeyTypePanel
+              keys={iterationsComponent?.commonKeyTypes ?? []}
+              loading={overview.loading}
+              onShowMore={onOpenIterations}
+              onSelectKeyType={onOpenKeyType}
+            />
+          )}
         </OverviewPanelShell>
       )}
-      <div className={`grid gap-4 ${iterationListsCanShareRow ? "xl:grid-cols-2" : ""}`}>
+      <div className="grid gap-4 xl:grid-cols-2">
         {showFailedIterations && (
           <OverviewIterationList
             emptyText="No failed iterations."
             loading={overview.loading}
-            collapsed={failedIterationsCollapsed}
-            onCollapsedChange={(collapsed) => onPanelCollapsedChange("failedIterations", collapsed)}
+            onClose={() => onPanelVisibilityChange("failedIterations", false)}
+            onShapeChange={(shape) => onPanelShapeChange("failedIterations", shape)}
             onOpenWorker={onOpenWorker}
             onViewState={() => onViewIterationsByStatus(["Failed"])}
+            panelClassName={failedIterationsShape === "detailed" ? "xl:col-span-2" : undefined}
+            shape={failedIterationsShape}
             status="Failed"
+            supportedShapes={overviewPanelShapeCapabilities.failedIterations.supportedShapes}
             title="Recent Failed Iterations"
             iterations={failedIterationsComponent ?? []}
           />
@@ -3440,11 +3623,14 @@ function OverviewView({
           <OverviewIterationList
             emptyText="No completed iterations."
             loading={overview.loading}
-            collapsed={completedIterationsCollapsed}
-            onCollapsedChange={(collapsed) => onPanelCollapsedChange("completedIterations", collapsed)}
+            onClose={() => onPanelVisibilityChange("completedIterations", false)}
+            onShapeChange={(shape) => onPanelShapeChange("completedIterations", shape)}
             onOpenWorker={onOpenWorker}
             onViewState={() => onViewIterationsByStatus(["Completed"])}
+            panelClassName={completedIterationsShape === "detailed" ? "xl:col-span-2" : undefined}
+            shape={completedIterationsShape}
             status="Completed"
+            supportedShapes={overviewPanelShapeCapabilities.completedIterations.supportedShapes}
             title="Recent Completed Iterations"
             iterations={completedIterationsComponent ?? []}
           />
@@ -3456,36 +3642,35 @@ function OverviewView({
 
 function OverviewPanelShell({
   actions,
+  centerActions = false,
   children,
-  collapsed = false,
+  className,
   contentClassName,
   description,
-  onCollapsedChange,
+  onClose,
+  onShapeChange,
+  shape,
+  supportedShapes,
   title,
 }: {
   actions?: ReactNode;
+  centerActions?: boolean;
   children: ReactNode;
-  collapsed?: boolean;
+  className?: string;
   contentClassName?: string;
   description?: string;
-  onCollapsedChange?: (collapsed: boolean) => void;
+  onClose?: () => void;
+  onShapeChange?: (shape: WorkComponentShape) => void;
+  shape?: WorkComponentShape;
+  supportedShapes?: WorkComponentShape[];
   title: ReactNode;
 }) {
+  const hasPanelMenu = Boolean((shape && onShapeChange && supportedShapes) || onClose);
+
   return (
-    <section className="rounded-xl bg-card p-4 ring-1 ring-foreground/10">
-      <div className="flex items-center justify-between gap-3">
+    <section className={`rounded-xl bg-card p-4 ring-1 ring-foreground/10 ${className ?? ""}`}>
+      <div className={centerActions ? "grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-3" : "flex items-center justify-between gap-3"}>
         <div className="flex min-w-0 items-center gap-2">
-          {onCollapsedChange && (
-            <Button
-              aria-label={collapsed ? "Expand panel" : "Collapse panel"}
-              className="-ml-1 size-7 shrink-0 text-muted-foreground"
-              onClick={() => onCollapsedChange(!collapsed)}
-              size="icon-sm"
-              variant="ghost"
-            >
-              <ChevronDown className={`size-4 transition-transform ${collapsed ? "-rotate-90" : ""}`} />
-            </Button>
-          )}
           <span className="min-w-0">
             <span className="flex min-w-0 flex-wrap items-center gap-2 font-semibold text-sm">
               {title}
@@ -3497,18 +3682,110 @@ function OverviewPanelShell({
             )}
           </span>
         </div>
-        {actions && !collapsed && (
-          <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
+        {centerActions ? (
+          <>
+            <div className="flex min-w-0 flex-wrap items-center justify-center gap-1.5">
+              {actions}
+            </div>
+            <div className="flex min-w-0 items-center justify-end">
+              {hasPanelMenu && (
+                <OverviewPanelMenu
+                  onClose={onClose}
+                  onShapeChange={onShapeChange}
+                  shape={shape}
+                  supportedShapes={supportedShapes}
+                />
+              )}
+            </div>
+          </>
+        ) : (
+          <div className="flex shrink-0 flex-wrap items-center justify-end gap-1.5">
             {actions}
+            {hasPanelMenu && (
+              <OverviewPanelMenu
+                onClose={onClose}
+                onShapeChange={onShapeChange}
+                shape={shape}
+                supportedShapes={supportedShapes}
+              />
+            )}
           </div>
         )}
       </div>
-      {!collapsed && (
-        <div className={contentClassName ?? "mt-4 space-y-4"}>
-          {children}
-        </div>
-      )}
+      <div className={contentClassName ?? "mt-4 space-y-4"}>
+        {children}
+      </div>
     </section>
+  );
+}
+
+function OverviewPanelMenu({
+  onClose,
+  onShapeChange,
+  shape,
+  supportedShapes,
+}: {
+  onClose?: () => void;
+  onShapeChange?: (shape: WorkComponentShape) => void;
+  shape?: WorkComponentShape;
+  supportedShapes?: WorkComponentShape[];
+}) {
+  const canChangeShape = Boolean(shape && onShapeChange && supportedShapes);
+
+  return (
+    <DropdownMenu>
+      <Tooltip delayDuration={500} disableHoverableContent>
+        <TooltipTrigger asChild>
+          <DropdownMenuTrigger asChild>
+            <Button
+              aria-label="Open panel options"
+              className="size-7 text-muted-foreground"
+              size="icon-sm"
+              variant="ghost"
+            >
+              <MoreHorizontal className="size-4" />
+            </Button>
+          </DropdownMenuTrigger>
+        </TooltipTrigger>
+        <TooltipContent side="top" sideOffset={6}>
+          Panel options
+        </TooltipContent>
+      </Tooltip>
+      <DropdownMenuContent align="end" className="w-44">
+        {canChangeShape && overviewShapeOptions.map((option) => {
+          const Icon = option.icon;
+          const supported = supportedShapes?.includes(option.shape) ?? false;
+          const active = shape === option.shape;
+
+          return (
+            <DropdownMenuItem
+              className={active ? "bg-accent/60" : undefined}
+              disabled={!supported}
+              key={option.shape}
+              onSelect={() => {
+                if (supported) {
+                  onShapeChange?.(option.shape);
+                }
+              }}
+            >
+              <Icon className="size-4" />
+              <span>{option.label}</span>
+              {!supported && (
+                <span className="ml-auto text-muted-foreground text-[11px]">
+                  Unavailable
+                </span>
+              )}
+            </DropdownMenuItem>
+          );
+        })}
+        {onClose && (
+          <DropdownMenuItem onSelect={onClose}>
+            <X className="size-4" />
+            Hide panel
+          </DropdownMenuItem>
+        )}
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }
 
@@ -3533,9 +3810,9 @@ const overviewPanelOptions: Array<{
     label: "Throughput",
   },
   {
-    description: "Iteration statuses and common relationship types.",
-    id: "relationships",
-    label: "Relationships",
+    description: "Worker iteration statuses and common relationship filters.",
+    id: "iterations",
+    label: "Iterations",
   },
   {
     description: "Recent failed worker iterations.",
@@ -3552,9 +3829,11 @@ const overviewPanelOptions: Array<{
 function OverviewPanelSettings({
   hiddenPanelIds,
   onPanelVisibilityChange,
+  onResetUi,
 }: {
   hiddenPanelIds: OverviewPanelId[];
   onPanelVisibilityChange: (panelId: OverviewPanelId, visible: boolean) => void;
+  onResetUi: () => void;
 }) {
   return (
     <Popover>
@@ -3618,36 +3897,57 @@ function OverviewPanelSettings({
             );
           })}
         </div>
+        <div className="border-t p-2">
+          <Button
+            className="h-9 w-full justify-start gap-2 text-muted-foreground"
+            onClick={() => {
+              onResetUi();
+            }}
+            size="sm"
+            variant="ghost"
+          >
+            <RotateCcw className="size-4" />
+            Reset UI to defaults
+          </Button>
+        </div>
       </PopoverContent>
     </Popover>
   );
 }
 
 function OverviewWorkerList({
-  collapsed,
   emptyText,
   loading,
-  onCollapsedChange,
+  onClose,
+  onShapeChange,
   onOpenWorker,
   onViewState,
   onWorkerAction,
+  panelClassName,
   pendingActionWorkerId,
+  shape,
   state,
+  supportedShapes,
   title,
   workers,
 }: {
-  collapsed?: boolean;
   emptyText: string;
   loading: boolean;
-  onCollapsedChange?: (collapsed: boolean) => void;
+  onClose: () => void;
+  onShapeChange: (shape: WorkComponentShape) => void;
   onOpenWorker: (workerId: string) => void;
   onViewState: () => void;
-  onWorkerAction: (worker: WorkerOverviewItem, action: WorkAction) => Promise<void>;
+  onWorkerAction: (worker: WorkerActionTarget, action: WorkAction) => Promise<void>;
+  panelClassName?: string;
   pendingActionWorkerId: string | null;
+  shape: WorkComponentShape;
   state: WorkerState;
+  supportedShapes: WorkComponentShape[];
   title: string;
-  workers: WorkerOverviewItem[];
+  workers: WorkOverviewFailedWorker[];
 }) {
+  const detailedWorkers = workers.filter(isDetailedWorkerOverviewItem);
+
   return (
     <OverviewPanelShell
       actions={
@@ -3660,8 +3960,11 @@ function OverviewWorkerList({
           <ChevronRight className="size-4" />
         </button>
       }
-      collapsed={collapsed}
-      onCollapsedChange={onCollapsedChange}
+      className={panelClassName}
+      onClose={onClose}
+      onShapeChange={onShapeChange}
+      shape={shape}
+      supportedShapes={supportedShapes}
       title={
         <>
           {title}
@@ -3671,16 +3974,107 @@ function OverviewWorkerList({
         </>
       }
     >
-      <WorkerTable
-        emptyText={emptyText}
-        hideState
-        loading={loading}
-        onAction={onWorkerAction}
-        onSelect={(worker) => onOpenWorker(worker.id.value)}
-        pendingActionWorkerId={pendingActionWorkerId}
-        workers={workers}
-      />
+      {shape === "detailed" ? (
+        <WorkerTable
+          emptyText={emptyText}
+          hideState
+          showIdentifiers
+          showSubjectSummary
+          loading={loading}
+          onAction={onWorkerAction}
+          onSelect={(worker) => onOpenWorker(worker.id.value)}
+          pendingActionWorkerId={pendingActionWorkerId}
+          workers={detailedWorkers}
+        />
+      ) : (
+        <FailedWorkerTable
+          emptyText={emptyText}
+          loading={loading}
+          onAction={onWorkerAction}
+          onSelect={(worker) => onOpenWorker(worker.id.value)}
+          pendingActionWorkerId={pendingActionWorkerId}
+          workers={workers}
+        />
+      )}
     </OverviewPanelShell>
+  );
+}
+
+function CompactWorkerStrip({
+  activeWorkerCount,
+  failedWorkerCount,
+  loading,
+  oldestQueuedText,
+  oldestQueuedWarning,
+  onOpenActive,
+  onOpenFailed,
+  onOpenQueued,
+}: {
+  activeWorkerCount: number;
+  failedWorkerCount: number;
+  loading: boolean;
+  oldestQueuedText: string;
+  oldestQueuedWarning: boolean;
+  onOpenActive: () => void;
+  onOpenFailed: () => void;
+  onOpenQueued: () => void;
+}) {
+  if (loading) {
+    return (
+      <div className="flex h-8 items-center gap-2 overflow-x-auto">
+        <Skeleton className="h-7 w-32 rounded-full" />
+        <Skeleton className="h-7 w-30 rounded-full" />
+        <Skeleton className="h-7 w-30 rounded-full" />
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex min-h-8 items-center gap-2 overflow-x-auto">
+      <CompactWorkerStripItem
+        label="Oldest queued"
+        onClick={onOpenQueued}
+        value={oldestQueuedText}
+        valueClassName={oldestQueuedWarning ? "text-amber-300" : undefined}
+      />
+      <CompactWorkerStripItem
+        label="Active workers"
+        onClick={onOpenActive}
+        value={activeWorkerCount}
+      />
+      <CompactWorkerStripItem
+        label="Failed workers"
+        onClick={onOpenFailed}
+        value={failedWorkerCount}
+        valueClassName="text-red-300"
+      />
+    </div>
+  );
+}
+
+function CompactWorkerStripItem({
+  label,
+  onClick,
+  value,
+  valueClassName,
+}: {
+  label: string;
+  onClick: () => void;
+  value: number | string;
+  valueClassName?: string;
+}) {
+  return (
+    <button
+      aria-label={`Open ${label.toLowerCase()}`}
+      className="inline-flex h-8 shrink-0 cursor-pointer items-center gap-2 rounded-full border border-foreground/10 bg-muted/25 px-3 text-left transition-colors hover:border-primary/60 hover:bg-accent/50 hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+      onClick={onClick}
+      type="button"
+    >
+      <span className="whitespace-nowrap text-muted-foreground text-xs">{label}</span>
+      <span className={`whitespace-nowrap font-mono font-medium text-sm leading-none ${valueClassName ?? ""}`}>
+        {value}
+      </span>
+    </button>
   );
 }
 
@@ -3688,50 +4082,38 @@ function WorkerStateStrip({
   counts,
   loading,
   onSelectState,
-  title = "Workers",
 }: {
   counts: Partial<Record<WorkerState, number>>;
   loading: boolean;
   onSelectState: (state: WorkerState) => void;
-  title?: string;
 }) {
   if (loading) {
     return (
-      <StatusStripSection
-        description="Workers grouped by current state, with summary links for active, final, failed, and catalog counts."
-        title={title}
-      >
-        <div className="flex gap-2 overflow-x-auto pb-1">
-          {overviewWorkerStates.map((state) => (
-            <Skeleton className="h-8 min-w-28 flex-1 rounded-full" key={state} />
-          ))}
-        </div>
-      </StatusStripSection>
+      <div className="flex gap-2 overflow-x-auto pb-1">
+        {overviewWorkerStates.map((state) => (
+          <Skeleton className="h-8 min-w-28 flex-1 rounded-full" key={state} />
+        ))}
+      </div>
     );
   }
 
   return (
-    <StatusStripSection
-      description="Workers grouped by current state, with summary links for active, final, failed, and catalog counts."
-      title={title}
-    >
-      <div className="flex gap-2 overflow-x-auto pb-1">
-        {overviewWorkerStates.map((state) => (
-          <button
-            aria-label={`Open workers filtered by ${state}`}
-            className={`inline-flex h-8 min-w-28 flex-1 cursor-pointer items-center justify-center gap-2 rounded-full border bg-muted/25 px-3 text-center ${subtleClickableTileClass} focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background`}
-            key={state}
-            onClick={() => onSelectState(state)}
-            type="button"
-          >
-            <Badge className={`justify-center ${stateTone(state)}`} variant="outline">
-              {state}
-            </Badge>
-            <span className="font-mono text-sm leading-none">{counts[state] ?? 0}</span>
-          </button>
-        ))}
-      </div>
-    </StatusStripSection>
+    <div className="flex gap-2 overflow-x-auto pb-1">
+      {overviewWorkerStates.map((state) => (
+        <button
+          aria-label={`Open workers filtered by ${state}`}
+          className={`inline-flex h-8 min-w-28 flex-1 cursor-pointer items-center justify-center gap-2 rounded-full border bg-muted/25 px-3 text-center ${subtleClickableTileClass} focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background`}
+          key={state}
+          onClick={() => onSelectState(state)}
+          type="button"
+        >
+          <Badge className={`justify-center ${stateTone(state)}`} variant="outline">
+            {state}
+          </Badge>
+          <span className="font-mono text-sm leading-none">{counts[state] ?? 0}</span>
+        </button>
+      ))}
+    </div>
   );
 }
 
@@ -3739,85 +4121,78 @@ function IterationStatusStrip({
   counts,
   loading,
   onSelectStatus,
-  title = "Worker iterations",
+  statuses = iterationStatuses,
 }: {
   counts: Partial<Record<WorkCompletionStatus, number>>;
   loading: boolean;
   onSelectStatus: (status: WorkCompletionStatus) => void;
-  title?: string;
+  statuses?: WorkCompletionStatus[];
 }) {
   if (loading) {
     return (
-      <StatusStripSection
-        description="Worker iterations grouped by status, with common relationship types for quick filtering."
-        title={title}
-      >
-        <div className="flex gap-2 overflow-x-auto pb-1">
-          {iterationStatuses.map((status) => (
-            <Skeleton className="h-8 min-w-28 flex-1 rounded-full" key={status} />
-          ))}
-        </div>
-      </StatusStripSection>
+      <div className="flex gap-2 overflow-x-auto pb-1">
+        {statuses.map((status) => (
+          <Skeleton className="h-8 min-w-28 flex-1 rounded-full" key={status} />
+        ))}
+      </div>
     );
   }
 
   return (
-    <StatusStripSection
-      description="Worker iterations grouped by status, with common relationship types for quick filtering."
-      title={title}
-    >
-      <div className="flex gap-2 overflow-x-auto pb-1">
-        {iterationStatuses.map((status) => (
-          <button
-            aria-label={`Open iterations filtered by ${status}`}
-            className={`inline-flex h-8 min-w-28 flex-1 cursor-pointer items-center justify-center gap-2 rounded-full border bg-muted/25 px-3 text-center ${subtleClickableTileClass} focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background`}
-            key={status}
-            onClick={() => onSelectStatus(status)}
-            type="button"
-          >
-            <Badge className={`justify-center ${completionTone(status)}`} variant="outline">
-              {status}
-            </Badge>
-            <span className={`font-mono text-sm leading-none ${status === "Failed" ? "text-red-300" : ""}`}>
-              {counts[status] ?? 0}
-            </span>
-          </button>
-        ))}
-      </div>
-    </StatusStripSection>
+    <div className="flex gap-2 overflow-x-auto pb-1">
+      {statuses.map((status) => (
+        <button
+          aria-label={`Open iterations filtered by ${status}`}
+          className={`inline-flex h-8 min-w-28 flex-1 cursor-pointer items-center justify-center gap-2 rounded-full border bg-muted/25 px-3 text-center ${subtleClickableTileClass} focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background`}
+          key={status}
+          onClick={() => onSelectStatus(status)}
+          type="button"
+        >
+          <Badge className={`justify-center ${completionTone(status)}`} variant="outline">
+            {status}
+          </Badge>
+          <span className={`font-mono text-sm leading-none ${status === "Failed" ? "text-red-300" : ""}`}>
+            {counts[status] ?? 0}
+          </span>
+        </button>
+      ))}
+    </div>
   );
 }
 
-function StatusStripSection({
-  children,
-  description,
-  title,
+function CompactIterationStrip({
+  counts,
+  loading,
+  onSelectStatus,
+  statuses,
 }: {
-  children: React.ReactNode;
-  description: string;
-  title: string;
+  counts: Partial<Record<WorkCompletionStatus, number>>;
+  loading: boolean;
+  onSelectStatus: (status: WorkCompletionStatus) => void;
+  statuses: WorkCompletionStatus[];
 }) {
-  return (
-    <section className="space-y-2">
-      <div className="flex items-center">
-        <Tooltip delayDuration={500} disableHoverableContent>
-          <TooltipTrigger asChild>
-            <button
-              aria-label={`${title}: ${description}`}
-              className="group inline-flex min-w-0 items-center gap-1.5 rounded-sm text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
-              type="button"
-            >
-              <span className="font-medium text-foreground text-sm">{title}</span>
-              <Info className="size-3.5 shrink-0 text-muted-foreground transition-colors group-hover:text-foreground" />
-            </button>
-          </TooltipTrigger>
-          <TooltipContent className="max-w-64 whitespace-normal text-left" side="top" sideOffset={6}>
-            {description}
-          </TooltipContent>
-        </Tooltip>
+  if (loading) {
+    return (
+      <div className="flex h-8 items-center gap-2 overflow-x-auto">
+        {statuses.map((status) => (
+          <Skeleton className="h-7 w-30 rounded-full" key={status} />
+        ))}
       </div>
-      {children}
-    </section>
+    );
+  }
+
+  return (
+    <div className="flex min-h-8 items-center gap-2 overflow-x-auto">
+      {statuses.map((status) => (
+        <CompactWorkerStripItem
+          key={status}
+          label={status}
+          onClick={() => onSelectStatus(status)}
+          value={counts[status] ?? 0}
+          valueClassName={status === "Failed" ? "text-red-300" : undefined}
+        />
+      ))}
+    </div>
   );
 }
 
@@ -3992,25 +4367,31 @@ function KeyTypeTooltipContent({ keyType }: { keyType: WorkIterationKeyTypeFacet
 }
 
 function OverviewIterationList({
-  collapsed,
   emptyText,
   loading,
-  onCollapsedChange,
+  onClose,
+  onShapeChange,
   onOpenWorker,
   onViewState,
+  panelClassName,
+  shape,
   status,
+  supportedShapes,
   title,
   iterations,
 }: {
-  collapsed?: boolean;
   emptyText: string;
   loading: boolean;
-  onCollapsedChange?: (collapsed: boolean) => void;
+  onClose: () => void;
+  onShapeChange: (shape: WorkComponentShape) => void;
   onOpenWorker: (workerId: string) => void;
   onViewState: () => void;
+  panelClassName?: string;
+  shape: WorkComponentShape;
   status: WorkCompletionStatus;
+  supportedShapes: WorkComponentShape[];
   title: string;
-  iterations: WorkerIterationOverviewItem[];
+  iterations: WorkOverviewIteration[];
 }) {
   return (
     <OverviewPanelShell
@@ -4024,8 +4405,11 @@ function OverviewIterationList({
           <ChevronRight className="size-4" />
         </button>
       }
-      collapsed={collapsed}
-      onCollapsedChange={onCollapsedChange}
+      className={panelClassName}
+      onClose={onClose}
+      onShapeChange={onShapeChange}
+      shape={shape}
+      supportedShapes={supportedShapes}
       title={
         <>
           {title}
@@ -4041,42 +4425,98 @@ function OverviewIterationList({
         <div className="rounded-lg border border-dashed p-6 text-center text-muted-foreground text-sm">
           {emptyText}
         </div>
+      ) : shape === "detailed" ? (
+        <OverviewIterationTable
+          iterations={iterations}
+          timestampLabel={status}
+          onOpenWorker={onOpenWorker}
+        />
       ) : (
-        <div className="space-y-2">
-          {iterations.map((iteration) => (
-            <button
-              className="grid w-full cursor-pointer gap-3 rounded-lg border bg-card p-3 text-left transition-colors hover:bg-accent md:grid-cols-[minmax(0,1fr)_12rem_7rem]"
-              key={`${iteration.workerId.value}-${iteration.sequence}`}
-              onClick={() => onOpenWorker(iteration.workerId.value)}
-              type="button"
-            >
-              <div className="min-w-0">
-                <div className="truncate font-mono text-xs">{iteration.definitionName}</div>
-                <div className="mt-1 text-muted-foreground text-xs">
-                  {iteration.category ?? "Uncategorized"}
-                </div>
-              </div>
-              <OverviewWorkerMeta
-                label={status === "Failed" ? "Failed" : "Completed"}
-                value={formatRelativeTime(iteration.completedAt)}
-              />
-              <OverviewWorkerMeta
-                label="Execution"
-                value={<DurationValue duration={formatExecutionDuration(iteration.executionDuration)} />}
-              />
-            </button>
-          ))}
-        </div>
+        <OverviewIterationTable
+          compact
+          iterations={iterations}
+          timestampLabel={status}
+          onOpenWorker={onOpenWorker}
+        />
       )}
     </OverviewPanelShell>
   );
 }
 
-function OverviewWorkerMeta({ label, value }: { label: string; value: React.ReactNode }) {
+function OverviewIterationTable({
+  compact = false,
+  iterations,
+  onOpenWorker,
+  timestampLabel,
+}: {
+  compact?: boolean;
+  iterations: WorkOverviewIteration[];
+  onOpenWorker: (workerId: string) => void;
+  timestampLabel: string;
+}) {
   return (
-    <div className="min-w-0">
-      <div className="text-muted-foreground text-[11px]">{label}</div>
-      <div className="truncate text-xs">{value}</div>
+    <div className="overflow-hidden rounded-lg border">
+      <Table>
+        <TableHeader>
+          <TableRow>
+            <TableHead>Definition</TableHead>
+            {!compact && <TableHead>Worker state</TableHead>}
+            {!compact && <TableHead>Subject id</TableHead>}
+            {!compact && <TableHead>Identifiers</TableHead>}
+            <TableHead>{timestampLabel}</TableHead>
+            <TableHead>Duration</TableHead>
+          </TableRow>
+        </TableHeader>
+        <TableBody>
+          {iterations.map((iteration) => (
+            <TableRow
+              className="cursor-pointer"
+              key={`${iteration.workerId.value}:${iteration.sequence}`}
+              onClick={() => onOpenWorker(iteration.workerId.value)}
+            >
+              <TableCell>
+                <div className="font-mono text-xs">{iteration.definitionName}</div>
+                {!compact && (
+                  <div className="font-mono text-muted-foreground text-xs">
+                    {iteration.workerId.value} / #{iteration.sequence}
+                  </div>
+                )}
+              </TableCell>
+              {!compact && (
+                <TableCell>
+                  {"workerState" in iteration ? (
+                    <Badge className={stateTone(iteration.workerState)} variant="outline">
+                      {iteration.workerState}
+                    </Badge>
+                  ) : (
+                    <span className="text-muted-foreground">-</span>
+                  )}
+                </TableCell>
+              )}
+              {!compact && (
+                <TableCell className="max-w-72 font-mono text-muted-foreground text-xs">
+                  <TypedValueSummary values={"subjectId" in iteration && iteration.subjectId ? [iteration.subjectId] : []} />
+                </TableCell>
+              )}
+              {!compact && (
+                <TableCell className="max-w-72 font-mono text-muted-foreground text-xs">
+                  <IdentifierSummary identifiers={"identifiers" in iteration ? iteration.identifiers : []} />
+                </TableCell>
+              )}
+              <TableCell className="text-muted-foreground text-xs">
+                {formatRelativeTime(iteration.completedAt)}
+              </TableCell>
+              <TableCell>
+                <DurationValue
+                  className="font-mono text-xs"
+                  duration={formatExecutionDuration(iteration.executionDuration)}
+                  muted
+                />
+              </TableCell>
+            </TableRow>
+          ))}
+        </TableBody>
+      </Table>
     </div>
   );
 }
@@ -4632,22 +5072,28 @@ function WorkersView({
 
 function WorkerTable({
   compact,
+  durationLabel = "Duration",
   emptyText = "No workers matched the current query.",
   hideState = false,
   loading,
   onAction,
   onSelect,
   pendingActionWorkerId,
+  showIdentifiers = false,
+  showSubjectSummary = false,
   workers,
 }: {
   compact?: boolean;
+  durationLabel?: string;
   emptyText?: string;
   hideState?: boolean;
   loading: boolean;
-  onAction?: (worker: WorkerOverviewItem, action: WorkAction) => Promise<void>;
-  onSelect?: (worker: WorkerOverviewItem) => void;
+  onAction?: (worker: WorkerActionTarget, action: WorkAction) => Promise<void>;
+  onSelect?: (worker: WorkerTableItem) => void;
   pendingActionWorkerId?: string | null;
-  workers: WorkerOverviewItem[];
+  showIdentifiers?: boolean;
+  showSubjectSummary?: boolean;
+  workers: WorkerTableItem[];
 }) {
   const hasActions = Boolean(onAction);
 
@@ -4670,9 +5116,11 @@ function WorkerTable({
           <TableRow>
             <TableHead>Definition</TableHead>
             {!hideState && <TableHead>State</TableHead>}
-            {!compact && <TableHead>Subject</TableHead>}
+            {!compact && !showSubjectSummary && <TableHead>Subject</TableHead>}
+            {showSubjectSummary && <TableHead>Subject id</TableHead>}
+            {showIdentifiers && <TableHead>Identifiers</TableHead>}
             <TableHead>Updated</TableHead>
-            <TableHead>Duration</TableHead>
+            <TableHead>{durationLabel}</TableHead>
             {hasActions && <TableHead className="w-12" />}
           </TableRow>
         </TableHeader>
@@ -4695,8 +5143,11 @@ function WorkerTable({
             >
               <TableCell>
                 <div className="font-mono text-xs">{worker.definitionName}</div>
-                <div className="font-mono text-muted-foreground text-xs">
-                  {worker.id.value.slice(0, 8)}
+                <div
+                  className="font-mono text-muted-foreground text-xs"
+                  title={worker.id.value}
+                >
+                  {worker.id.value}
                 </div>
               </TableCell>
               {!hideState && (
@@ -4706,11 +5157,21 @@ function WorkerTable({
                   </Badge>
                 </TableCell>
               )}
-              {!compact && (
+              {!compact && !showSubjectSummary && (
                 <TableCell className="font-mono text-muted-foreground text-xs">
                   {worker.subjectId
                     ? `${worker.subjectId.type}:${worker.subjectId.value}`
                     : "-"}
+                </TableCell>
+              )}
+              {showSubjectSummary && (
+                <TableCell className="max-w-72 font-mono text-muted-foreground text-xs">
+                  <TypedValueSummary values={worker.subjectId ? [worker.subjectId] : []} />
+                </TableCell>
+              )}
+              {showIdentifiers && (
+                <TableCell className="max-w-72 font-mono text-muted-foreground text-xs">
+                  <IdentifierSummary identifiers={worker.identifiers} />
                 </TableCell>
               )}
               <TableCell className="text-muted-foreground text-xs">
@@ -4740,6 +5201,134 @@ function WorkerTable({
   );
 }
 
+function IdentifierSummary({ identifiers }: { identifiers?: WorkTypedValue[] | null }) {
+  return <TypedValueSummary values={identifiers ?? []} />;
+}
+
+function TypedValueSummary({ values }: { values: WorkTypedValue[] }) {
+  if (values.length === 0) {
+    return <span>-</span>;
+  }
+
+  const visible = values.slice(0, 3);
+  const overflow = values.length - visible.length;
+
+  return (
+    <Tooltip delayDuration={500} disableHoverableContent>
+      <TooltipTrigger asChild>
+        <span className="block min-w-44 max-w-full">
+          <span className="grid grid-cols-[minmax(4rem,0.8fr)_minmax(5rem,1.2fr)] gap-x-2 gap-y-1">
+            {visible.map((identifier, index) => (
+              <Fragment key={`${identifier.type}:${identifier.value}:${index}`}>
+                <span className="truncate text-muted-foreground">{identifier.type}</span>
+                <span className="truncate text-foreground/85">{identifier.value}</span>
+              </Fragment>
+            ))}
+          </span>
+          {overflow > 0 && (
+            <span className="mt-1 block text-muted-foreground text-[11px]">
+              +{overflow} more
+            </span>
+          )}
+        </span>
+      </TooltipTrigger>
+      <TooltipContent className="max-w-96 whitespace-normal text-left" side="top" sideOffset={6}>
+        <div className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1 font-mono text-xs">
+          {values.map((identifier, index) => (
+            <Fragment key={`${identifier.type}:${identifier.value}:${index}`}>
+              <span className="text-muted-foreground">{identifier.type}</span>
+              <span className="break-all">{identifier.value}</span>
+            </Fragment>
+          ))}
+        </div>
+      </TooltipContent>
+    </Tooltip>
+  );
+}
+
+function FailedWorkerTable({
+  emptyText,
+  loading,
+  onAction,
+  onSelect,
+  pendingActionWorkerId,
+  workers,
+}: {
+  emptyText: string;
+  loading: boolean;
+  onAction: (worker: WorkerActionTarget, action: WorkAction) => Promise<void>;
+  onSelect: (worker: WorkOverviewFailedWorker) => void;
+  pendingActionWorkerId: string | null;
+  workers: WorkOverviewFailedWorker[];
+}) {
+  if (loading) {
+    return <StackedSkeleton count={5} />;
+  }
+
+  if (workers.length === 0) {
+    return (
+      <div className="rounded-lg border border-dashed p-8 text-center text-muted-foreground text-sm">
+        {emptyText}
+      </div>
+    );
+  }
+
+  return (
+    <div className="overflow-hidden rounded-lg border">
+      <Table>
+        <TableHeader>
+          <TableRow>
+            <TableHead>Definition</TableHead>
+            <TableHead>Updated</TableHead>
+            <TableHead>Duration</TableHead>
+            <TableHead className="w-12" />
+          </TableRow>
+        </TableHeader>
+        <TableBody>
+          {workers.map((worker) => (
+            <TableRow
+              className="cursor-pointer"
+              key={worker.id.value}
+              onClick={(event) => {
+                const target = event.target;
+                if (
+                  target instanceof Element &&
+                  target.closest("[data-worker-row-action]")
+                ) {
+                  return;
+                }
+
+                onSelect(worker);
+              }}
+            >
+              <TableCell>
+                <div className="font-mono text-xs">{worker.definitionName}</div>
+              </TableCell>
+              <TableCell className="text-muted-foreground text-xs">
+                {formatRelativeTime(worker.updatedAt)}
+              </TableCell>
+              <TableCell>
+                <DurationValue
+                  className="font-mono text-xs"
+                  duration={formatFailedWorkerDuration(worker)}
+                  muted
+                />
+              </TableCell>
+              <TableCell data-worker-row-action>
+                <WorkerRowActionMenu
+                  disabled={pendingActionWorkerId === worker.id.value}
+                  onAction={(action) => onAction(toFailedWorkerActionTarget(worker), action)}
+                  worker={toFailedWorkerActionTarget(worker)}
+                />
+              </TableCell>
+            </TableRow>
+          ))}
+        </TableBody>
+      </Table>
+    </div>
+  );
+}
+
 function WorkerRowActionMenu({
   disabled,
   onAction,
@@ -4747,7 +5336,7 @@ function WorkerRowActionMenu({
 }: {
   disabled: boolean;
   onAction: (action: WorkAction) => Promise<void> | void;
-  worker: WorkerOverviewItem;
+  worker: WorkerActionTarget;
 }) {
   const actions = getWorkerRowActions(worker);
   if (actions.length === 0) {
@@ -4802,7 +5391,7 @@ function WorkerRowActionMenu({
   );
 }
 
-function getWorkerRowActions(worker: WorkerOverviewItem): WorkAction[] {
+function getWorkerRowActions(worker: WorkerActionTarget): WorkAction[] {
   if (worker.state === "Failed" || worker.state === "Paused" || worker.state === "Queued") {
     return ["Start", "Cancel"];
   }
@@ -4812,6 +5401,21 @@ function getWorkerRowActions(worker: WorkerOverviewItem): WorkAction[] {
   }
 
   return [];
+}
+
+function toFailedWorkerActionTarget(worker: WorkOverviewFailedWorker): WorkerActionTarget {
+  return {
+    definitionName: worker.definitionName,
+    id: worker.id,
+    revision: worker.revision,
+    state: "Failed",
+  };
+}
+
+function isDetailedWorkerOverviewItem(
+  worker: WorkOverviewFailedWorker
+): worker is WorkOverviewFailedWorkerDetailed | WorkerOverviewItem {
+  return "subjectId" in worker || "identifiers" in worker;
 }
 
 function IterationsView({
@@ -5578,6 +6182,7 @@ function loadConsoleStorage(): ConsoleStorage {
         activeServerId?: string;
         expandedServerIds?: string[];
         overviewCollapsedPanels?: unknown;
+        overviewPanelShapes?: unknown;
         servers?: LegacyWorkableServerConnection[];
       };
 
@@ -5589,10 +6194,16 @@ function loadConsoleStorage(): ConsoleStorage {
             expandedHostIds: [],
             expandedSystemIds: [],
             hosts: [],
-            overviewCollapsedPanels: normalizeOverviewPanelIds(parsed.overviewCollapsedPanels),
             overviewHiddenPanels: normalizeOverviewHiddenPanels(
               parsed.overviewHiddenPanels,
               parsed.overviewThroughputHidden
+            ),
+            overviewPanelShapes: normalizeOverviewPanelShapes(
+              parsed.overviewPanelShapes,
+              parsed.overviewCollapsedPanels
+            ),
+            overviewHiddenThroughputSeries: normalizeThroughputSeriesIds(
+              parsed.overviewHiddenThroughputSeries
             ),
             overviewThroughputHidden: parsed.overviewThroughputHidden ?? false,
             view: isServerView(parsed.view) ? parsed.view : "overview",
@@ -5613,10 +6224,16 @@ function loadConsoleStorage(): ConsoleStorage {
             activeSystemId,
           ],
           hosts,
-          overviewCollapsedPanels: normalizeOverviewPanelIds(parsed.overviewCollapsedPanels),
           overviewHiddenPanels: normalizeOverviewHiddenPanels(
             parsed.overviewHiddenPanels,
             parsed.overviewThroughputHidden
+          ),
+          overviewPanelShapes: normalizeOverviewPanelShapes(
+            parsed.overviewPanelShapes,
+            parsed.overviewCollapsedPanels
+          ),
+          overviewHiddenThroughputSeries: normalizeThroughputSeriesIds(
+            parsed.overviewHiddenThroughputSeries
           ),
           overviewThroughputHidden: parsed.overviewThroughputHidden ?? false,
           view: isServerView(parsed.view) ? parsed.view : "overview",
@@ -5635,8 +6252,9 @@ function loadConsoleStorage(): ConsoleStorage {
           expandedHostIds: hosts.map((host) => host.id),
           expandedSystemIds: parsed.expandedServerIds ?? [activeSystemId],
           hosts,
-          overviewCollapsedPanels: [],
           overviewHiddenPanels: [],
+          overviewPanelShapes: createDefaultOverviewPanelShapes(),
+          overviewHiddenThroughputSeries: [],
           overviewThroughputHidden: false,
           view: isServerView(parsed.view) ? parsed.view : "overview",
         };
@@ -5662,8 +6280,9 @@ function loadConsoleStorage(): ConsoleStorage {
       expandedHostIds: [migratedHost.id],
       expandedSystemIds: [migratedHost.systems[0].id],
       hosts: [migratedHost],
-      overviewCollapsedPanels: [],
       overviewHiddenPanels: [],
+      overviewPanelShapes: createDefaultOverviewPanelShapes(),
+      overviewHiddenThroughputSeries: [],
       overviewThroughputHidden: false,
       view: "overview",
     };
@@ -5682,11 +6301,61 @@ function createDefaultConsoleStorage(): ConsoleStorage {
     expandedHostIds: [defaultHost.id],
     expandedSystemIds: [defaultSystem.id],
     hosts: [defaultHost],
-    overviewCollapsedPanels: [],
     overviewHiddenPanels: [],
+    overviewPanelShapes: createDefaultOverviewPanelShapes(),
+    overviewHiddenThroughputSeries: [],
     overviewThroughputHidden: false,
     view: "overview",
   };
+}
+
+function createDefaultOverviewPanelShapes(): OverviewPanelShapeMap {
+  return Object.fromEntries(
+    overviewPanelIds.map((panelId) => [
+      panelId,
+      overviewPanelShapeCapabilities[panelId].defaultShape,
+    ])
+  ) as OverviewPanelShapeMap;
+}
+
+function getOverviewPanelShape(
+  panelShapes: OverviewPanelShapeMap,
+  panelId: OverviewPanelId
+): WorkComponentShape {
+  return normalizeOverviewPanelShape(panelId, panelShapes[panelId]);
+}
+
+function normalizeOverviewPanelShapes(
+  value: unknown,
+  legacyCollapsedPanels?: unknown
+): OverviewPanelShapeMap {
+  const shapes = createDefaultOverviewPanelShapes();
+
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    const requested = value as Partial<Record<OverviewPanelId, unknown>>;
+    for (const panelId of overviewPanelIds) {
+      shapes[panelId] = normalizeOverviewPanelShape(panelId, requested[panelId]);
+    }
+  }
+
+  for (const panelId of normalizeOverviewPanelIds(legacyCollapsedPanels)) {
+    if (overviewPanelShapeCapabilities[panelId].supportedShapes.includes("compact")) {
+      shapes[panelId] = "compact";
+    }
+  }
+
+  return shapes;
+}
+
+function normalizeOverviewPanelShape(
+  panelId: OverviewPanelId,
+  value: unknown
+): WorkComponentShape {
+  const capabilities = overviewPanelShapeCapabilities[panelId];
+  return typeof value === "string" &&
+    capabilities.supportedShapes.includes(value as WorkComponentShape)
+    ? value as WorkComponentShape
+    : capabilities.defaultShape;
 }
 
 function normalizeOverviewHiddenPanels(
@@ -5700,6 +6369,21 @@ function normalizeOverviewHiddenPanels(
   }
 
   return overviewPanelIds.filter((id) => requested.has(id));
+}
+
+function normalizeThroughputSeriesIds(value: unknown): ThroughputSeriesId[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  const requested = new Set(value.filter(isThroughputSeriesId));
+  const hidden = throughputSeriesIds.filter((id) => requested.has(id));
+  return hidden.length >= throughputSeriesIds.length ? hidden.slice(1) : hidden;
+}
+
+function isThroughputSeriesId(value: unknown): value is ThroughputSeriesId {
+  return typeof value === "string" &&
+    throughputSeriesIds.includes(value as ThroughputSeriesId);
 }
 
 function normalizeOverviewPanelIds(value: unknown): OverviewPanelId[] {
@@ -6084,31 +6768,46 @@ function MetricCard({
 }
 
 function ThroughputChartPanel({
-  collapsed,
+  hiddenSeries,
   loading,
   mode,
-  onCollapsedChange,
+  onClose,
   onModeChange,
+  onSeriesToggle,
+  onShapeChange,
   onWindowChange,
+  shape,
+  supportedShapes,
   throughput,
   windowSeconds,
 }: {
-  collapsed?: boolean;
+  hiddenSeries: ThroughputSeriesId[];
   loading: boolean;
   mode: ThroughputMode;
-  onCollapsedChange?: (collapsed: boolean) => void;
+  onClose: () => void;
   onModeChange: (mode: ThroughputMode) => void;
+  onSeriesToggle: (seriesId: ThroughputSeriesId) => void;
+  onShapeChange: (shape: WorkComponentShape) => void;
   onWindowChange: (seconds: number) => void;
+  shape: WorkComponentShape;
+  supportedShapes: WorkComponentShape[];
   throughput?: WorkSystemThroughput;
   windowSeconds: number;
 }) {
+  const compact = shape === "compact";
   const chartLabel = mode === "execution" ? "Execution time" : "Throughput";
   const chartDescription = mode === "execution"
-    ? "Average execution time for settled iterations, scoped to the current overview filter."
+    ? "Execution timing for settled iterations, scoped to the current overview filter."
     : "Started, completed, failed, and canceled iteration rates, scoped to the current overview filter.";
   return (
     <OverviewPanelShell
-      actions={
+      actions={compact ? (
+        <CompactThroughputStrip
+          loading={loading}
+          throughput={throughput}
+          windowSeconds={compactThroughputWindow.seconds}
+        />
+      ) : (
         <div className="flex flex-wrap items-center gap-2">
           <div className="flex rounded-lg bg-muted/40 p-0.5">
             {throughputWindows.map((window) => (
@@ -6124,12 +6823,18 @@ function ThroughputChartPanel({
             ))}
           </div>
         </div>
-      }
-      collapsed={collapsed}
-      onCollapsedChange={onCollapsedChange}
-      description={chartDescription}
-      title={chartLabel}
+      )}
+      className={compact ? "w-full" : undefined}
+      centerActions={compact}
+      contentClassName={compact ? "hidden" : undefined}
+      description={compact ? undefined : chartDescription}
+      onClose={onClose}
+      onShapeChange={onShapeChange}
+      shape={shape}
+      supportedShapes={supportedShapes}
+      title={compact ? "Throughput & Execution" : chartLabel}
     >
+      {!compact && (
       <Tabs value={mode} onValueChange={(value) => onModeChange(value as ThroughputMode)}>
         <TabsList className="h-8">
           <TabsTrigger className="text-xs" value="completion">Throughput</TabsTrigger>
@@ -6140,39 +6845,103 @@ function ThroughputChartPanel({
             <Skeleton className="h-52 w-full" />
           ) : (
             <ThroughputAreaChart
+              hiddenSeries={hiddenSeries}
               key={mode}
               mode={mode}
+              onSeriesToggle={onSeriesToggle}
               throughput={throughput}
               windowSeconds={windowSeconds}
             />
           )}
         </TabsContent>
       </Tabs>
+      )}
     </OverviewPanelShell>
   );
 }
 
-function ThroughputAreaChart({
-  mode,
+function CompactThroughputStrip({
+  loading,
   throughput,
   windowSeconds,
 }: {
-  mode: ThroughputMode;
+  loading: boolean;
   throughput?: WorkSystemThroughput;
   windowSeconds: number;
 }) {
-  const buckets = getSettledThroughputBuckets(throughput);
+  const throughputMetrics = createThroughputMetrics(
+    "completion",
+    throughput,
+    windowSeconds
+  ).filter((metric) =>
+    metric.id !== "window-average"
+  );
+  const executionMetrics = createThroughputMetrics(
+    "execution",
+    throughput,
+    windowSeconds
+  ).filter((metric) =>
+    [
+      "execution-average",
+      "execution-p95",
+      "execution-p99",
+      "execution-slowest",
+    ].includes(metric.id)
+  );
+  const metrics = [...throughputMetrics, ...executionMetrics];
+
+  if (loading) {
+    return (
+      <div className="flex h-8 max-w-full flex-wrap items-center justify-center gap-2 overflow-hidden">
+        {Array.from({ length: 10 }).map((_, index) => (
+          <Skeleton className="h-7 w-20 shrink-0 rounded-full" key={index} />
+        ))}
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex min-h-8 max-w-full flex-wrap items-center justify-center gap-1.5 overflow-hidden">
+      {metrics.map((metric) => (
+        <ThroughputMetricPill key={metric.id} metric={metric} />
+      ))}
+    </div>
+  );
+}
+
+function ThroughputAreaChart({
+  hiddenSeries,
+  mode,
+  onSeriesToggle,
+  showChart = true,
+  showLegend = true,
+  throughput,
+  windowSeconds,
+}: {
+  hiddenSeries: ThroughputSeriesId[];
+  mode: ThroughputMode;
+  onSeriesToggle: (seriesId: ThroughputSeriesId) => void;
+  showChart?: boolean;
+  showLegend?: boolean;
+  throughput?: WorkSystemThroughput;
+  windowSeconds: number;
+}) {
+  const buckets = getThroughputBuckets(throughput);
   const bucketSeconds = throughput?.bucketSeconds ??
     throughputWindows.find((window) => window.seconds === windowSeconds)?.bucketSeconds ??
     1;
-  const series = createThroughputSeries(mode, buckets, bucketSeconds);
+  const allSeries = createThroughputSeries(mode, buckets, bucketSeconds);
+  const hiddenSeriesSet = new Set(hiddenSeries);
+  const visibleSeries = mode === "completion"
+    ? allSeries.filter((item) => !isThroughputSeriesId(item.id) || !hiddenSeriesSet.has(item.id))
+    : allSeries;
+  const series = visibleSeries.length > 0 ? visibleSeries : allSeries;
   const maxValue = getNiceChartMax(Math.max(0, ...series.flatMap((item) => item.values)), mode);
   const yTicks = createYAxisTicks(maxValue);
   const xTicks = createTimeAxisTicks(throughput, buckets);
   const metrics = createThroughputMetrics(
     mode,
     throughput,
-    bucketSeconds,
     windowSeconds
   );
   const lineSeries = mode === "completion" && series.length > 1
@@ -6181,140 +6950,239 @@ function ThroughputAreaChart({
 
   return (
     <div className="space-y-3">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="flex flex-wrap items-center gap-3">
-          {series.map((item) => (
-            <div className="flex items-center gap-1.5 text-xs" key={item.label}>
-              <span className={`size-2 rounded-full ${item.legendClass}`} />
-              <span className="text-muted-foreground">{item.label}</span>
-            </div>
-          ))}
-        </div>
+      <div className={`flex flex-wrap items-center gap-3 ${showLegend ? "justify-between" : "justify-end"}`}>
+        {showLegend && (
+          <div className="flex flex-wrap items-center gap-3">
+            {allSeries.map((item) => {
+              const seriesId = isThroughputSeriesId(item.id) ? item.id : null;
+              return (
+                <ThroughputLegendItem
+                  hidden={seriesId ? hiddenSeriesSet.has(seriesId) : false}
+                  item={item}
+                  key={item.id}
+                  onToggle={
+                    mode === "completion" && seriesId
+                      ? () => onSeriesToggle(seriesId)
+                      : undefined
+                  }
+                />
+              );
+            })}
+          </div>
+        )}
         <div className="flex flex-wrap items-center justify-end gap-1.5">
           {metrics.map((metric) => {
-            const Icon = metric.icon;
+            const seriesId = isThroughputSeriesId(metric.id) ? metric.id : null;
             return (
-              <Tooltip delayDuration={500} disableHoverableContent key={metric.id}>
-                <TooltipTrigger asChild>
-                  <div
-                    className={`flex items-center justify-center gap-1.5 whitespace-nowrap rounded-full border border-foreground/10 bg-background/70 px-2.5 py-1 shadow-sm ${metric.widthClass ?? "min-w-24"}`}
-                    tabIndex={0}
-                  >
-                    {metric.pulseClass && <span className={`size-2 rounded-full ${metric.pulseClass}`} />}
-                    {Icon && <Icon className={`size-3.5 ${metric.iconClass ?? "text-muted-foreground"}`} />}
-                    {metric.label && <span className="text-muted-foreground text-[11px]">{metric.label}</span>}
-                    <span className={`font-mono font-semibold text-xs ${metric.valueClass ?? ""}`}>{metric.value}</span>
-                  </div>
-                </TooltipTrigger>
-                <TooltipContent className="max-w-64 whitespace-normal text-left" side="top" sideOffset={6}>
-                  {metric.description}
-                </TooltipContent>
-              </Tooltip>
+              <ThroughputMetricPill
+                hidden={seriesId ? hiddenSeriesSet.has(seriesId) : false}
+                key={metric.id}
+                metric={metric}
+                onClick={
+                  mode === "completion" && seriesId
+                    ? () => onSeriesToggle(seriesId)
+                    : undefined
+                }
+              />
             );
           })}
         </div>
       </div>
-      <div>
-        <div className="relative grid h-56 grid-cols-[3.25rem_1fr] overflow-hidden rounded-lg border bg-background/40">
-          <div className="flex flex-col justify-between border-r border-border/70 px-2 py-3 text-right font-mono text-[10px] text-muted-foreground">
-            {yTicks.map((tick) => (
-              <span key={tick}>{formatThroughputAxisValue(mode, tick)}</span>
-            ))}
-          </div>
-          <div className="relative min-w-0">
-            <svg
-              aria-label={mode === "execution" ? "Execution time chart" : "Throughput chart"}
-              className="h-full w-full"
-              preserveAspectRatio="none"
-              role="img"
-              viewBox="0 0 1000 220"
-            >
-              <defs>
-                {series.map((item) => (
-                  <linearGradient id={item.gradientId} key={item.gradientId} x1="0" x2="0" y1="0" y2="1">
-                    <stop offset="5%" stopColor={item.color} stopOpacity="0.42" />
-                    <stop offset="95%" stopColor={item.color} stopOpacity="0.04" />
-                  </linearGradient>
+      {showChart && (
+        <div>
+          <div className="relative grid h-56 grid-cols-[3.25rem_1fr] overflow-hidden rounded-lg border bg-background/40">
+            <div className="flex flex-col justify-between border-r border-border/70 px-2 py-3 text-right font-mono text-[10px] text-muted-foreground">
+              {yTicks.map((tick) => (
+                <span key={tick}>{formatThroughputAxisValue(mode, tick)}</span>
+              ))}
+            </div>
+            <div className="relative min-w-0">
+              <svg
+                aria-label={mode === "execution" ? "Execution time chart" : "Throughput chart"}
+                className="h-full w-full"
+                preserveAspectRatio="none"
+                role="img"
+                viewBox="0 0 1000 220"
+              >
+                <defs>
+                  {series.map((item) => (
+                    <linearGradient id={item.gradientId} key={item.gradientId} x1="0" x2="0" y1="0" y2="1">
+                      <stop offset="5%" stopColor={item.color} stopOpacity="0.42" />
+                      <stop offset="95%" stopColor={item.color} stopOpacity="0.04" />
+                    </linearGradient>
+                  ))}
+                </defs>
+                {[0, 1, 2, 3].map((line) => (
+                  <line
+                    className="stroke-border"
+                    key={line}
+                    strokeDasharray={line === 3 ? undefined : "4 8"}
+                    strokeWidth="1"
+                    x1="0"
+                    x2="1000"
+                    y1={20 + line * 55}
+                    y2={20 + line * 55}
+                  />
                 ))}
-              </defs>
-              {[0, 1, 2, 3].map((line) => (
-                <line
-                  className="stroke-border"
-                  key={line}
-                  strokeDasharray={line === 3 ? undefined : "4 8"}
-                  strokeWidth="1"
-                  x1="0"
-                  x2="1000"
-                  y1={20 + line * 55}
-                  y2={20 + line * 55}
-                />
-              ))}
-              {series.map((item) => (
-                <path d={createAreaPath(item.values, maxValue)} fill={`url(#${item.gradientId})`} key={`${item.label}-area`} />
-              ))}
-              {lineSeries.map((item) => (
-                <path
-                  d={createLinePath(item.values, maxValue)}
-                  fill="none"
-                  key={`${item.label}-line`}
-                  stroke={item.color}
-                  strokeDasharray={item.strokeDasharray}
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  strokeWidth={item.strokeWidth ?? "2.5"}
-                  vectorEffect="non-scaling-stroke"
-                />
-              ))}
-            </svg>
+                {series.map((item) => (
+                  <path d={createAreaPath(item.values, maxValue)} fill={`url(#${item.gradientId})`} key={`${item.label}-area`} />
+                ))}
+                {lineSeries.map((item) => (
+                  <path
+                    d={createLinePath(item.values, maxValue)}
+                    fill="none"
+                    key={`${item.label}-line`}
+                    stroke={item.color}
+                    strokeDasharray={item.strokeDasharray}
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={item.strokeWidth ?? "2.5"}
+                    vectorEffect="non-scaling-stroke"
+                  />
+                ))}
+              </svg>
+            </div>
+            {buckets.length === 0 && (
+              <div className="absolute inset-0 grid place-items-center bg-background/70 text-muted-foreground text-sm">
+                Waiting for throughput data.
+              </div>
+            )}
           </div>
-          {buckets.length === 0 && (
-            <div className="absolute inset-0 grid place-items-center bg-background/70 text-muted-foreground text-sm">
-              Waiting for throughput data.
+          {xTicks.length > 0 && (
+            <div className="ml-[3.25rem] mt-1 grid grid-cols-5 gap-2 px-1 font-mono text-[10px] text-foreground/75">
+              {xTicks.map((tick, index) => (
+                <span
+                  className={
+                    index === 0
+                      ? "text-left"
+                      : index === xTicks.length - 1
+                        ? "text-right"
+                        : "text-center"
+                  }
+                  key={`${tick.position}-${tick.label}`}
+                >
+                  {tick.label}
+                </span>
+              ))}
             </div>
           )}
         </div>
-        {xTicks.length > 0 && (
-          <div className="ml-[3.25rem] mt-1 grid grid-cols-5 gap-2 px-1 font-mono text-[10px] text-foreground/75">
-            {xTicks.map((tick, index) => (
-              <span
-                className={
-                  index === 0
-                    ? "text-left"
-                    : index === xTicks.length - 1
-                      ? "text-right"
-                      : "text-center"
-                }
-                key={`${tick.position}-${tick.label}`}
-              >
-                {tick.label}
-              </span>
-            ))}
-          </div>
-        )}
-      </div>
+      )}
     </div>
   );
 }
 
-function getSettledThroughputBuckets(throughput?: WorkSystemThroughput) {
+function ThroughputLegendItem({
+  hidden,
+  item,
+  onToggle,
+}: {
+  hidden: boolean;
+  item: ThroughputSeries;
+  onToggle?: () => void;
+}) {
+  const content = (
+    <>
+      <span className={`size-2 rounded-full ${item.legendClass}`} />
+      <span>{item.label}</span>
+    </>
+  );
+
+  if (!onToggle) {
+    return (
+      <div className="flex items-center gap-1.5 text-muted-foreground text-xs">
+        {content}
+      </div>
+    );
+  }
+
+  return (
+    <button
+      aria-pressed={!hidden}
+      className={`flex cursor-pointer items-center gap-1.5 rounded-md border px-1.5 py-0.5 text-xs transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background ${
+        hidden
+          ? "border-transparent text-muted-foreground/45 hover:border-foreground/10 hover:bg-muted/20 hover:text-muted-foreground"
+          : "border-foreground/10 bg-muted/20 text-foreground shadow-sm hover:border-primary/50 hover:bg-accent/50 hover:text-primary"
+      }`}
+      onClick={onToggle}
+      type="button"
+    >
+      {content}
+    </button>
+  );
+}
+
+function ThroughputMetricPill({
+  hidden = false,
+  metric,
+  onClick,
+}: {
+  hidden?: boolean;
+  metric: ThroughputMetric;
+  onClick?: () => void;
+}) {
+  const Icon = metric.icon;
+  const content = (
+    <>
+      {metric.pulseClass && <span className={`size-2 rounded-full ${metric.pulseClass}`} />}
+      {Icon && <Icon className={`size-3.5 ${metric.iconClass ?? "text-muted-foreground"}`} />}
+      {metric.label && <span className="text-muted-foreground text-[11px]">{metric.label}</span>}
+      <span className={`font-mono font-medium text-xs ${metric.valueClass ?? ""}`}>{metric.value}</span>
+    </>
+  );
+  const className = `flex items-center justify-center gap-1.5 whitespace-nowrap rounded-full border px-2.5 py-1 shadow-sm transition-all ${
+    onClick
+      ? hidden
+        ? "border-foreground/10 bg-background/40 opacity-50"
+        : "border-primary/35 bg-accent/35 ring-1 ring-primary/20"
+      : "border-foreground/10 bg-background/70"
+  } ${metric.widthClass ?? "min-w-24"}`;
+
+  return (
+    <Tooltip delayDuration={500} disableHoverableContent>
+      <TooltipTrigger asChild>
+        {onClick ? (
+          <button
+            aria-pressed={!hidden}
+            className={`${className} cursor-pointer hover:border-primary/70 hover:bg-accent/60 hover:ring-primary/35 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background`}
+            onClick={onClick}
+            type="button"
+          >
+            {content}
+          </button>
+        ) : (
+          <div className={className} tabIndex={0}>
+            {content}
+          </div>
+        )}
+      </TooltipTrigger>
+      <TooltipContent className="max-w-64 whitespace-normal text-left" side="top" sideOffset={6}>
+        {metric.description}
+      </TooltipContent>
+    </Tooltip>
+  );
+}
+
+function getThroughputBuckets(throughput?: WorkSystemThroughput) {
   if (!throughput) {
     return [];
   }
 
-  return throughput.buckets.slice(0, -1);
+  return throughput.buckets ?? [];
 }
 
 function createThroughputSeries(
   mode: ThroughputMode,
   buckets: WorkThroughputBucket[],
   bucketSeconds: number
-) {
+): ThroughputSeries[] {
   const normalizedBucketSeconds = Math.max(1, bucketSeconds);
   if (mode === "execution") {
     return [
       {
         color: "#a78bfa",
         gradientId: "execution-throughput",
+        id: "execution-average",
         label: "Avg execution ms",
         legendClass: "bg-violet-400",
         values: buckets.map((bucket) => Math.round(bucket.averageExecutionMilliseconds)),
@@ -6326,6 +7194,7 @@ function createThroughputSeries(
       {
         color: "#38bdf8",
         gradientId: "started-throughput",
+        id: "started",
         label: "Started",
         legendClass: "bg-sky-400",
         strokeDasharray: "6 5",
@@ -6335,6 +7204,7 @@ function createThroughputSeries(
       {
         color: "#34d399",
         gradientId: "completed-throughput",
+        id: "completed",
         label: "Completed",
         legendClass: "bg-emerald-400",
         values: buckets.map((bucket) => bucket.completed / normalizedBucketSeconds),
@@ -6342,6 +7212,7 @@ function createThroughputSeries(
       {
         color: "#f87171",
         gradientId: "failed-throughput",
+        id: "failed",
         label: "Failed",
         legendClass: "bg-red-400",
         values: buckets.map((bucket) => bucket.failed / normalizedBucketSeconds),
@@ -6349,6 +7220,7 @@ function createThroughputSeries(
       {
         color: "#fbbf24",
         gradientId: "canceled-throughput",
+        id: "canceled",
         label: "Canceled",
         legendClass: "bg-amber-400",
         values: buckets.map((bucket) => bucket.canceled / normalizedBucketSeconds),
@@ -6389,13 +7261,51 @@ function chartPoint(value: number, index: number, count: number, maxValue: numbe
 function createThroughputMetrics(
   mode: ThroughputMode,
   chartThroughput: WorkSystemThroughput | undefined,
-  chartBucketSeconds: number,
   chartWindowSeconds: number
 ): ThroughputMetric[] {
-  const buckets = getSettledThroughputBuckets(chartThroughput);
-  const bucketLabel = formatThroughputBucketLabel(chartBucketSeconds);
   const totalDescription = `Total settled iterations in the selected ${formatThroughputWindowLabel(chartWindowSeconds)} chart window. This includes completed, failed, and canceled iterations.`;
-  if (!chartThroughput || buckets.length === 0) {
+  if (!chartThroughput) {
+    if (mode === "execution") {
+      return [
+        {
+          description: `Exact average execution time across settled iterations in the selected ${formatThroughputWindowLabel(chartWindowSeconds)} chart window.`,
+          id: "execution-average",
+          label: "Avg",
+          pulseClass: "bg-violet-400",
+          value: "-",
+          widthClass: "min-w-20",
+        },
+        {
+          description: `Approximate p95 execution time across settled iterations in the selected ${formatThroughputWindowLabel(chartWindowSeconds)} chart window, interpolated from fast-work-optimized backend histogram buckets.`,
+          id: "execution-p95",
+          label: "P95",
+          value: "-",
+          widthClass: "min-w-20",
+        },
+        {
+          description: `Approximate p99 execution time across settled iterations in the selected ${formatThroughputWindowLabel(chartWindowSeconds)} chart window, interpolated from fast-work-optimized backend histogram buckets.`,
+          id: "execution-p99",
+          label: "P99",
+          value: "-",
+          widthClass: "min-w-20",
+        },
+        {
+          description: `Exact slowest execution time across settled iterations in the selected ${formatThroughputWindowLabel(chartWindowSeconds)} chart window.`,
+          id: "execution-slowest",
+          label: "Slow",
+          value: "-",
+          widthClass: "min-w-20",
+        },
+        {
+          description: `Exact count of settled iterations with execution timing in the selected ${formatThroughputWindowLabel(chartWindowSeconds)} chart window.`,
+          id: "execution-count",
+          label: "Count",
+          value: "-",
+          widthClass: "min-w-20",
+        },
+      ];
+    }
+
     return [
       {
         description: "Started iterations per second over the last 60 seconds.",
@@ -6424,72 +7334,91 @@ function createThroughputMetrics(
         valueClass: "text-red-300",
         widthClass: "min-w-16",
       },
-      ...(mode === "completion"
-        ? [
-            {
-              description: "Live execution pressure over the last 60 seconds: started iterations per second minus completed, failed, and canceled iterations per second.",
-              icon: Equal,
-              iconClass: "text-muted-foreground",
-              id: "execution-pressure",
-              label: "",
-              value: "-",
-              valueClass: "text-muted-foreground",
-              widthClass: "w-24 shrink-0",
-            },
-          ]
-        : []),
       {
-        description: mode === "execution"
-          ? `Average execution time across settled iterations in the selected ${formatThroughputWindowLabel(chartWindowSeconds)} chart window.`
-          : totalDescription,
-        id: mode === "execution" ? "execution-average" : "total",
-        label: mode === "execution" ? "Avg" : "Total",
+        description: "Canceled iterations per second over the last 60 seconds.",
+        id: "canceled",
+        label: "",
+        pulseClass: "bg-amber-400",
         value: "-",
-        widthClass: mode === "execution" ? "min-w-20" : "min-w-20",
+        valueClass: "text-amber-300",
+        widthClass: "min-w-16",
       },
-      ...(mode === "completion"
-        ? [
-            {
-              description: `Average execution time across settled iterations in the selected ${formatThroughputWindowLabel(chartWindowSeconds)} chart window.`,
-              id: "window-average",
-              label: "Avg",
-              value: "-",
-              widthClass: "min-w-20",
-            },
-          ]
-        : []),
-    ];
-  }
-
-  const windowAverageExecution = createWindowExecutionAverageMilliseconds(buckets);
-  if (mode === "execution") {
-    const current = buckets.at(-1)?.averageExecutionMilliseconds ?? 0;
-    return [
       {
-        description: `Average execution time in the latest ${bucketLabel} bucket.`,
-        id: "execution-latest",
-        label: "Latest",
-        pulseClass: "bg-violet-400 shadow-[0_0_14px_rgba(167,139,250,0.75)]",
-        value: formatMilliseconds(current),
-        widthClass: "min-w-24",
+        description: "Live execution pressure over the last 60 seconds: started iterations per second minus completed, failed, and canceled iterations per second.",
+        icon: Equal,
+        iconClass: "text-muted-foreground",
+        id: "execution-pressure",
+        label: "",
+        value: "-",
+        valueClass: "text-muted-foreground",
+        widthClass: "w-24 shrink-0",
+      },
+      {
+        description: totalDescription,
+        id: "total",
+        label: "Total",
+        value: "-",
+        widthClass: "min-w-20",
       },
       {
         description: `Average execution time across settled iterations in the selected ${formatThroughputWindowLabel(chartWindowSeconds)} chart window.`,
+        id: "window-average",
+        label: "Avg",
+        value: "-",
+        widthClass: "min-w-20",
+      },
+    ];
+  }
+
+  if (mode === "execution") {
+    const executionSummary = chartThroughput.executionSummary;
+    return [
+      {
+        description: `Exact average execution time across ${executionSummary.executionCount} settled ${pluralize("iteration", executionSummary.executionCount)} in the selected ${formatThroughputWindowLabel(chartWindowSeconds)} chart window.`,
         id: "execution-average",
         label: "Avg",
-        value: formatMilliseconds(windowAverageExecution),
+        pulseClass: "bg-violet-400 shadow-[0_0_14px_rgba(167,139,250,0.75)]",
+        value: formatMilliseconds(executionSummary.averageExecutionMilliseconds),
+        widthClass: "min-w-20",
+      },
+      {
+        description: `Approximate p95 execution time across settled iterations in the selected ${formatThroughputWindowLabel(chartWindowSeconds)} chart window, interpolated from fast-work-optimized backend histogram buckets.`,
+        id: "execution-p95",
+        label: "P95",
+        value: formatMilliseconds(executionSummary.p95ExecutionMilliseconds),
+        widthClass: "min-w-20",
+      },
+      {
+        description: `Approximate p99 execution time across settled iterations in the selected ${formatThroughputWindowLabel(chartWindowSeconds)} chart window, interpolated from fast-work-optimized backend histogram buckets.`,
+        id: "execution-p99",
+        label: "P99",
+        value: formatMilliseconds(executionSummary.p99ExecutionMilliseconds),
+        widthClass: "min-w-20",
+      },
+      {
+        description: `Exact slowest execution time across settled iterations in the selected ${formatThroughputWindowLabel(chartWindowSeconds)} chart window.`,
+        id: "execution-slowest",
+        label: "Slow",
+        value: formatMilliseconds(executionSummary.slowestExecutionMilliseconds),
+        widthClass: "min-w-20",
+      },
+      {
+        description: `Exact count of settled iterations with execution timing in the selected ${formatThroughputWindowLabel(chartWindowSeconds)} chart window.`,
+        id: "execution-count",
+        label: "Count",
+        value: String(executionSummary.executionCount),
         widthClass: "min-w-20",
       },
     ];
   }
 
   const liveSummary = chartThroughput.liveSummary;
+  const executionSummary = chartThroughput.executionSummary;
   const latestStartedRate = liveSummary.startedPerSecond;
   const latestCompletedRate = liveSummary.completedPerSecond;
   const latestFailedRate = liveSummary.failedPerSecond;
   const latestCanceledRate = liveSummary.canceledPerSecond;
-  const settledTotal = buckets.reduce((sum, bucket) =>
-    sum + bucket.completed + bucket.failed + bucket.canceled, 0);
+  const settledTotal = executionSummary.executionCount;
   const executionPressureMetric = createExecutionPressureMetric(liveSummary);
   return [
     {
@@ -6537,35 +7466,20 @@ function createThroughputMetrics(
       widthClass: "min-w-20",
     },
     {
-      description: `Average execution time across settled iterations in the selected ${formatThroughputWindowLabel(chartWindowSeconds)} chart window.`,
+      description: `Exact average execution time across ${executionSummary.executionCount} settled ${pluralize("iteration", executionSummary.executionCount)} in the selected ${formatThroughputWindowLabel(chartWindowSeconds)} chart window.`,
       id: "window-average",
       label: "Avg",
-      value: formatMilliseconds(windowAverageExecution),
+      value: formatMilliseconds(executionSummary.averageExecutionMilliseconds),
       widthClass: "min-w-20",
     },
   ];
-}
-
-function createWindowExecutionAverageMilliseconds(buckets: WorkThroughputBucket[]) {
-  const totals = buckets.reduce(
-    (current, bucket) => {
-      const settledCount = bucket.completed + bucket.failed + bucket.canceled;
-      return {
-        count: current.count + settledCount,
-        milliseconds: current.milliseconds + bucket.averageExecutionMilliseconds * settledCount,
-      };
-    },
-    { count: 0, milliseconds: 0 }
-  );
-
-  return totals.count === 0 ? 0 : totals.milliseconds / totals.count;
 }
 
 function createExecutionPressureMetric(summary: WorkThroughputLiveSummary): ThroughputMetric {
   const deltaPerSecond = summary.inFlightDeltaPerSecond;
   if (deltaPerSecond > 0) {
     return {
-      description: `Live execution pressure is increasing. Over the last ${summary.windowSeconds} seconds, iterations started ${formatRate(deltaPerSecond)} per second faster than they settled.`,
+      description: `Live execution pressure is increasing. Over the last ${summary.rateWindowSeconds} seconds, iterations started ${formatRate(deltaPerSecond)} per second faster than they settled.`,
       icon: ArrowUp,
       iconClass: "text-red-300",
       id: "execution-pressure",
@@ -6579,7 +7493,7 @@ function createExecutionPressureMetric(summary: WorkThroughputLiveSummary): Thro
   if (deltaPerSecond < 0) {
     const absoluteDeltaPerSecond = Math.abs(deltaPerSecond);
     return {
-      description: `Live execution pressure is decreasing. Over the last ${summary.windowSeconds} seconds, iterations settled ${formatRate(absoluteDeltaPerSecond)} per second faster than they started.`,
+      description: `Live execution pressure is decreasing. Over the last ${summary.rateWindowSeconds} seconds, iterations settled ${formatRate(absoluteDeltaPerSecond)} per second faster than they started.`,
       icon: ArrowDown,
       iconClass: "text-emerald-300",
       id: "execution-pressure",
@@ -6591,7 +7505,7 @@ function createExecutionPressureMetric(summary: WorkThroughputLiveSummary): Thro
   }
 
   return {
-    description: `Live execution pressure is balanced. Over the last ${summary.windowSeconds} seconds, starts and settled outcomes matched.`,
+    description: `Live execution pressure is balanced. Over the last ${summary.rateWindowSeconds} seconds, starts and settled outcomes matched.`,
     icon: Equal,
     iconClass: "text-muted-foreground",
     id: "execution-pressure",
@@ -6611,17 +7525,6 @@ function formatThroughputWindowLabel(seconds: number) {
   }
   if (seconds % 3600 === 0) {
     return `${seconds / 3600}-hour`;
-  }
-  if (seconds % 60 === 0) {
-    return `${seconds / 60}-minute`;
-  }
-
-  return `${seconds}-second`;
-}
-
-function formatThroughputBucketLabel(seconds: number) {
-  if (seconds === 60) {
-    return "1-minute";
   }
   if (seconds % 60 === 0) {
     return `${seconds / 60}-minute`;
@@ -6661,7 +7564,7 @@ function formatThroughputAxisValue(mode: ThroughputMode, value: number) {
 }
 
 function createTimeAxisTicks(throughput: WorkSystemThroughput | undefined, buckets: WorkThroughputBucket[]) {
-  if (!throughput || buckets.length === 0) {
+  if (!throughput || buckets.length === 0 || !throughput.bucketSeconds) {
     return [];
   }
 
@@ -6718,10 +7621,14 @@ function formatRate(value: number) {
 
 function formatMilliseconds(value: number) {
   if (value >= 1000) {
-    return `${(value / 1000).toFixed(value >= 10_000 ? 0 : 1)}s`;
+    return `${(value / 1000).toFixed(value >= 60_000 ? 0 : 1)}s`;
   }
 
   return `${Math.round(value)}ms`;
+}
+
+function pluralize(word: string, count: number) {
+  return count === 1 ? word : `${word}s`;
 }
 
 function getWorkComponentData<T>(
@@ -6942,23 +7849,26 @@ function navTitle(view: View) {
 }
 
 function cloneOverviewScope(scope: OverviewScope | null): OverviewScope | null {
-  return scope ? { ...scope } : null;
+  return normalizeOverviewScope(scope);
 }
 
 function overviewScopesEqual(
   left: OverviewScope | null,
   right: OverviewScope | null
 ) {
+  const normalizedLeft = normalizeOverviewScope(left);
+  const normalizedRight = normalizeOverviewScope(right);
   return (
-    left?.category === right?.category &&
-    left?.definitionName === right?.definitionName &&
-    left?.includeSubcategories === right?.includeSubcategories
+    normalizedLeft?.category === normalizedRight?.category &&
+    normalizedLeft?.definitionName === normalizedRight?.definitionName &&
+    normalizedLeft?.includeSubcategories === normalizedRight?.includeSubcategories
   );
 }
 
 function createOverviewComponentScope(scope: OverviewScope | null) {
-  const category = normalizeCategoryFilter(scope?.category ?? "");
-  const definitionName = scope?.definitionName?.trim() ?? "";
+  const normalizedScope = normalizeOverviewScope(scope);
+  const category = normalizeCategoryFilter(normalizedScope?.category ?? "");
+  const definitionName = normalizedScope?.definitionName ?? "";
   if (!category && !definitionName) {
     return null;
   }
@@ -6970,6 +7880,30 @@ function createOverviewComponentScope(scope: OverviewScope | null) {
       ? scope?.includeSubcategories ?? true
       : undefined,
   };
+}
+
+function normalizeOverviewScope(scope: OverviewScope | null | undefined): OverviewScope | null {
+  if (!scope) {
+    return null;
+  }
+
+  const category = normalizeScopeText(scope.category);
+  const definitionName = normalizeScopeText(scope.definitionName);
+  if (!category && !definitionName) {
+    return null;
+  }
+
+  return {
+    category: category || undefined,
+    definitionName: definitionName || undefined,
+    includeSubcategories: category && !definitionName
+      ? scope.includeSubcategories ?? true
+      : undefined,
+  };
+}
+
+function normalizeScopeText(value: unknown) {
+  return typeof value === "string" ? value.trim() : "";
 }
 
 function createDefinitionCatalogLevelPath(category: string) {
@@ -6989,9 +7923,10 @@ function splitCategoryPath(category?: string | null) {
     .filter(Boolean);
 }
 
-function splitCatalogPath(path: string) {
-  return path.trim()
-    ? path
+function splitCatalogPath(path: unknown) {
+  const value = normalizeScopeText(path);
+  return value
+    ? value
         .split(":")
         .map((segment) => segment.trim())
         .filter(Boolean)
@@ -7006,7 +7941,7 @@ function startsWithCategoryPath(categorySegments: string[], pathSegments: string
   );
 }
 
-function normalizeCategoryFilter(path: string) {
+function normalizeCategoryFilter(path: unknown) {
   return splitCatalogPath(path).join(":");
 }
 
@@ -7118,13 +8053,17 @@ function formatExecutionDuration(value?: string | null): DurationDisplay {
   return formatDurationSeconds(seconds);
 }
 
-function formatWorkerDuration(worker: WorkerOverviewItem): DurationDisplay {
-  if (worker.nextRunAt) {
+function formatWorkerDuration(worker: WorkerTableItem): DurationDisplay {
+  if ("nextRunAt" in worker && worker.nextRunAt) {
     return { isWarning: false, text: "∞" };
   }
 
   if (worker.totalExecutionDuration) {
     return formatExecutionDuration(worker.totalExecutionDuration);
+  }
+
+  if (!("createdAt" in worker)) {
+    return { isWarning: false, text: "-" };
   }
 
   const createdAt = Date.parse(worker.createdAt);
@@ -7134,6 +8073,12 @@ function formatWorkerDuration(worker: WorkerOverviewItem): DurationDisplay {
   }
 
   return formatDurationSeconds(Math.max(0, (updatedAt - createdAt) / 1000));
+}
+
+function formatFailedWorkerDuration(worker: WorkOverviewFailedWorker): DurationDisplay {
+  return worker.totalExecutionDuration
+    ? formatExecutionDuration(worker.totalExecutionDuration)
+    : { isWarning: false, text: "-" };
 }
 
 function formatQueueAge(value?: string | null): DurationDisplay {
@@ -7435,6 +8380,8 @@ function useWorkableResource<T>(
   refreshToken: number
 ): Loadable<T> {
   const [state, setState] = useState<Loadable<T>>({ loading: !!path });
+  const apiUrl = connection.apiUrl;
+  const systemName = connection.systemName;
 
   useEffect(() => {
     if (!path) {
@@ -7454,7 +8401,8 @@ function useWorkableResource<T>(
       }
     });
 
-    workableFetch<T>(connection, path)
+    const requestConnection = { apiUrl, systemName };
+    workableFetch<T>(requestConnection, path)
       .then((data) => {
         if (!canceled) {
           setState({ data, loading: false, refreshing: false });
@@ -7462,19 +8410,24 @@ function useWorkableResource<T>(
       })
       .catch((error) => {
         if (!canceled) {
-          setState((current) => ({
-            data: current.data,
-            error: error instanceof Error ? error.message : "Request failed.",
-            loading: false,
-            refreshing: false,
-          }));
+          const detail = error instanceof Error ? error.message : "Request failed.";
+          setState((current) =>
+            current.error === detail && !current.loading && !current.refreshing
+              ? current
+              : {
+                  data: current.data,
+                  error: detail,
+                  loading: false,
+                  refreshing: false,
+                }
+          );
         }
       });
 
     return () => {
       canceled = true;
     };
-  }, [connection, path, refreshToken]);
+  }, [apiUrl, systemName, path, refreshToken]);
 
   return state;
 }
@@ -7486,27 +8439,35 @@ function useWorkablePostResource<T>(
   refreshToken: number
 ): Loadable<T> {
   const [state, setState] = useState<Loadable<T>>({ loading: !!path });
+  const apiUrl = connection.apiUrl;
+  const systemName = connection.systemName;
   const bodyKey = JSON.stringify(body);
+  const requestKey = `${apiUrl}\n${systemName ?? ""}\n${path ?? ""}\n${bodyKey}`;
+  const previousRequestKey = useRef<string | null>(null);
 
   useEffect(() => {
     if (!path) {
+      previousRequestKey.current = requestKey;
       queueMicrotask(() => setState({ loading: false }));
       return;
     }
 
     let canceled = false;
+    const requestChanged = previousRequestKey.current !== requestKey;
+    previousRequestKey.current = requestKey;
     queueMicrotask(() => {
       if (!canceled) {
         setState((current) => ({
-          ...current,
+          ...(requestChanged ? {} : current),
           error: undefined,
-          loading: current.data === undefined,
-          refreshing: current.data !== undefined,
+          loading: requestChanged || current.data === undefined,
+          refreshing: !requestChanged && current.data !== undefined,
         }));
       }
     });
 
-    workableFetch<T>(connection, path, {
+    const requestConnection = { apiUrl, systemName };
+    workableFetch<T>(requestConnection, path, {
       method: "POST",
       body: bodyKey,
     })
@@ -7517,19 +8478,24 @@ function useWorkablePostResource<T>(
       })
       .catch((error) => {
         if (!canceled) {
-          setState((current) => ({
-            data: current.data,
-            error: error instanceof Error ? error.message : "Request failed.",
-            loading: false,
-            refreshing: false,
-          }));
+          const detail = error instanceof Error ? error.message : "Request failed.";
+          setState((current) =>
+            current.error === detail && !current.loading && !current.refreshing
+              ? current
+              : {
+                  data: current.data,
+                  error: detail,
+                  loading: false,
+                  refreshing: false,
+                }
+          );
         }
       });
 
     return () => {
       canceled = true;
     };
-  }, [bodyKey, connection, path, refreshToken]);
+  }, [apiUrl, bodyKey, path, refreshToken, requestKey, systemName]);
 
   return state;
 }
@@ -7625,6 +8591,8 @@ function useWorkerQuery(
   const [state, setState] = useState<Loadable<WorkerQueryResult>>({
     loading: true,
   });
+  const apiUrl = connection.apiUrl;
+  const systemName = connection.systemName;
   const key = JSON.stringify(query);
   const boundedTake = Math.min(maxQueryTake, Math.max(minQueryTake, Math.trunc(take)));
 
@@ -7637,6 +8605,7 @@ function useWorkerQuery(
       keyType?: string;
       states?: WorkerState[];
     };
+    const requestConnection = { apiUrl, systemName };
 
     const load = async () => {
       queueMicrotask(() => {
@@ -7652,13 +8621,13 @@ function useWorkerQuery(
 
       try {
         const data = parsedQuery.keyType !== undefined
-          ? await queryWorkersByKeyType(connection, {
+          ? await queryWorkersByKeyType(requestConnection, {
               ...parsedQuery,
               keyType: parsedQuery.keyType,
               skip,
               take: boundedTake,
             })
-          : await workableFetch<WorkerQueryResult>(connection, "workers/query", {
+          : await workableFetch<WorkerQueryResult>(requestConnection, "workers/query", {
               method: "POST",
               body: JSON.stringify({
                 category: parsedQuery.category,
@@ -7676,12 +8645,17 @@ function useWorkerQuery(
       } catch (error) {
         if (!canceled) {
           const detail = error instanceof Error ? error.message : "Request failed.";
-          setState((current) => ({
-            data: current.data,
-            error: `Worker query failed. ${detail}`,
-            loading: false,
-            refreshing: false,
-          }));
+          const nextError = `Worker query failed. ${detail}`;
+          setState((current) =>
+            current.error === nextError && !current.loading && !current.refreshing
+              ? current
+              : {
+                  data: current.data,
+                  error: nextError,
+                  loading: false,
+                  refreshing: false,
+                }
+          );
         }
       }
     };
@@ -7691,7 +8665,7 @@ function useWorkerQuery(
     return () => {
       canceled = true;
     };
-  }, [boundedTake, connection, key, refreshToken, skip]);
+  }, [apiUrl, boundedTake, key, refreshToken, skip, systemName]);
 
   return state;
 }
@@ -7711,6 +8685,8 @@ function useIterationQuery(
   const [state, setState] = useState<Loadable<WorkerIterationQueryResult>>({
     loading: true,
   });
+  const apiUrl = connection.apiUrl;
+  const systemName = connection.systemName;
   const key = JSON.stringify(query);
   const boundedTake = Math.min(maxQueryTake, Math.max(minQueryTake, Math.trunc(take)));
 
@@ -7722,6 +8698,7 @@ function useIterationQuery(
       keyType?: string;
       statuses?: WorkCompletionStatus[];
     };
+    const requestConnection = { apiUrl, systemName };
 
     const load = async () => {
       queueMicrotask(() => {
@@ -7737,13 +8714,13 @@ function useIterationQuery(
 
       try {
         const data = parsedQuery.keyType !== undefined
-          ? await queryIterationsByKeyType(connection, {
+          ? await queryIterationsByKeyType(requestConnection, {
               ...parsedQuery,
               keyType: parsedQuery.keyType,
               skip,
               take: boundedTake,
             })
-          : await workableFetch<WorkerIterationQueryResult>(connection, "iterations/query", {
+          : await workableFetch<WorkerIterationQueryResult>(requestConnection, "iterations/query", {
               method: "POST",
               body: JSON.stringify({
                 category: parsedQuery.category,
@@ -7762,12 +8739,17 @@ function useIterationQuery(
       } catch (error) {
         if (!canceled) {
           const detail = error instanceof Error ? error.message : "Request failed.";
-          setState((current) => ({
-            data: current.data,
-            error: `Iteration query failed. ${detail}`,
-            loading: false,
-            refreshing: false,
-          }));
+          const nextError = `Iteration query failed. ${detail}`;
+          setState((current) =>
+            current.error === nextError && !current.loading && !current.refreshing
+              ? current
+              : {
+                  data: current.data,
+                  error: nextError,
+                  loading: false,
+                  refreshing: false,
+                }
+          );
         }
       }
     };
@@ -7777,7 +8759,7 @@ function useIterationQuery(
     return () => {
       canceled = true;
     };
-  }, [boundedTake, connection, key, refreshToken, skip]);
+  }, [apiUrl, boundedTake, key, refreshToken, skip, systemName]);
 
   return state;
 }

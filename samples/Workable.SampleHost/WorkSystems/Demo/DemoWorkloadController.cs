@@ -10,7 +10,7 @@ public sealed class DemoWorkloadController(
     ILogger<DemoWorkloadController> logger) : IHostedService, IAsyncDisposable
 {
     private static readonly TimeSpan DefaultQueueInterval = TimeSpan.FromMilliseconds(85);
-    private static readonly TimeSpan MinimumQueueInterval = TimeSpan.FromMilliseconds(10);
+    private static readonly TimeSpan MinimumQueueInterval = TimeSpan.FromMilliseconds(5);
     private static readonly TimeSpan MaximumQueueInterval = TimeSpan.FromSeconds(10);
     private static readonly TimeSpan FinishedWorkerCleanupInterval = TimeSpan.FromSeconds(1);
     private const int MaximumBurstWorkerCount = 1_000_000;

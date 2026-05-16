@@ -264,6 +264,7 @@ public sealed class WorkableHttpApiTests
         await (await system.Queue.Enqueue(
             "http.overview.failed",
             WorkInput.Empty.WithIdentifier(new WorkIdentifier("case", "failed")))).WaitForCompletion();
+        await WaitForThroughputBucketToClose();
 
         var viewResponse = await client.PostAsJsonAsync(
             "/workable/views/overview",
@@ -277,13 +278,14 @@ public sealed class WorkableHttpApiTests
                 components = new object[]
                 {
                     new { id = "system", type = "system", shape = "detailed" },
-                    new { id = "workers", type = "workers", shape = "detailed" },
-                    new { id = "relationships", type = "relationships", shape = "compact" },
+                    new { id = "workers", type = "workers", shape = "standard" },
+                    new { id = "workersCompact", type = "workers", shape = "compact" },
+                    new { id = "iterations", type = "iterations", shape = "compact" },
                     new
                     {
                         id = "throughput",
                         type = "throughput",
-                        shape = "detailed",
+                        shape = "standard",
                         options = new
                         {
                             bucketSeconds = 1,
@@ -301,6 +303,10 @@ public sealed class WorkableHttpApiTests
             ?? throw new InvalidOperationException("Expected throughput component.");
         var throughputBuckets = throughputComponent["data"]?["throughput"]?["buckets"]?.AsArray()
             ?? throw new InvalidOperationException("Expected throughput buckets.");
+        var throughputExecutionSummary = throughputComponent["data"]?["throughput"]?["executionSummary"]
+            ?? throw new InvalidOperationException("Expected throughput execution summary.");
+        var throughputLiveSummary = throughputComponent["data"]?["throughput"]?["liveSummary"]
+            ?? throw new InvalidOperationException("Expected throughput live summary.");
         var catalogResponse = await client.PostAsJsonAsync(
             "/workable/components/catalog",
             new
@@ -331,32 +337,173 @@ public sealed class WorkableHttpApiTests
             ?? throw new InvalidOperationException("Expected default view JSON response.");
         var defaultComponents = defaultView["components"]?.AsObject()
             ?? throw new InvalidOperationException("Expected default view components.");
+        var failedWorkersResponse = await client.PostAsJsonAsync(
+            "/workable/components/failedWorkers",
+            new
+            {
+                scope = new
+                {
+                    category = "Http",
+                },
+                shape = "standard",
+            });
+        failedWorkersResponse.EnsureSuccessStatusCode();
+        var failedWorkersQuery = JsonNode.Parse(await failedWorkersResponse.Content.ReadAsStringAsync())
+            ?? throw new InvalidOperationException("Expected failed workers JSON response.");
+        var failedWorkersComponent = failedWorkersQuery["components"]?["failedWorkers"]
+            ?? throw new InvalidOperationException("Expected failed workers component.");
+        var failedWorker = Assert.Single(failedWorkersComponent["data"]?.AsArray()
+            ?? throw new InvalidOperationException("Expected failed workers component data."));
+        var detailedFailedWorkersResponse = await client.PostAsJsonAsync(
+            "/workable/components/failedWorkers",
+            new
+            {
+                scope = new
+                {
+                    category = "Http",
+                },
+                shape = "detailed",
+            });
+        detailedFailedWorkersResponse.EnsureSuccessStatusCode();
+        var detailedFailedWorkersQuery = JsonNode.Parse(await detailedFailedWorkersResponse.Content.ReadAsStringAsync())
+            ?? throw new InvalidOperationException("Expected detailed failed workers JSON response.");
+        var detailedFailedWorkersComponent = detailedFailedWorkersQuery["components"]?["failedWorkers"]
+            ?? throw new InvalidOperationException("Expected detailed failed workers component.");
+        var detailedFailedWorker = Assert.Single(detailedFailedWorkersComponent["data"]?.AsArray()
+            ?? throw new InvalidOperationException("Expected detailed failed workers component data."));
+        var detailedFailedIterationsResponse = await client.PostAsJsonAsync(
+            "/workable/components/failedIterations",
+            new
+            {
+                scope = new
+                {
+                    category = "Http",
+                },
+                shape = "detailed",
+            });
+        detailedFailedIterationsResponse.EnsureSuccessStatusCode();
+        var detailedFailedIterationsQuery = JsonNode.Parse(await detailedFailedIterationsResponse.Content.ReadAsStringAsync())
+            ?? throw new InvalidOperationException("Expected detailed failed iterations JSON response.");
+        var detailedFailedIterationsComponent = detailedFailedIterationsQuery["components"]?["failedIterations"]
+            ?? throw new InvalidOperationException("Expected detailed failed iterations component.");
+        var detailedFailedIteration = Assert.Single(detailedFailedIterationsComponent["data"]?.AsArray()
+            ?? throw new InvalidOperationException("Expected detailed failed iterations component data."));
+        var compactThroughputResponse = await client.PostAsJsonAsync(
+            "/workable/components/throughput",
+            new
+            {
+                scope = new
+                {
+                    category = "Http",
+                },
+                shape = "compact",
+                options = new
+                {
+                    bucketSeconds = 1,
+                    windowSeconds = 60,
+                },
+            });
+        compactThroughputResponse.EnsureSuccessStatusCode();
+        var compactThroughputQuery = JsonNode.Parse(await compactThroughputResponse.Content.ReadAsStringAsync())
+            ?? throw new InvalidOperationException("Expected compact throughput JSON response.");
+        var compactThroughputComponent = compactThroughputQuery["components"]?["throughput"]
+            ?? throw new InvalidOperationException("Expected compact throughput component.");
 
-        Assert.Equal(["relationships", "system", "throughput", "workers"], viewComponents.Select(component => component.Key).Order().ToArray());
+        Assert.Equal(["iterations", "system", "throughput", "workers", "workersCompact"], viewComponents.Select(component => component.Key).Order().ToArray());
         Assert.Equal("ok", viewComponents["system"]?["status"]?.GetValue<string>());
         Assert.Equal("detailed", viewComponents["system"]?["shape"]?.GetValue<string>());
         Assert.Equal("Started", viewComponents["system"]?["data"]?["systemState"]?.GetValue<string>());
         Assert.Equal("ok", viewComponents["workers"]?["status"]?.GetValue<string>());
-        Assert.Equal("detailed", viewComponents["workers"]?["shape"]?.GetValue<string>());
+        Assert.Equal("standard", viewComponents["workers"]?["shape"]?.GetValue<string>());
         Assert.Equal(1, viewComponents["workers"]?["data"]?["finalWorkerCount"]?.GetValue<int>());
         Assert.Equal(0, viewComponents["workers"]?["data"]?["failedWorkerCount"]?.GetValue<int>());
         Assert.Equal(1, viewComponents["workers"]?["data"]?["workerCountByState"]?["Completed"]?.GetValue<int>());
         Assert.Null(viewComponents["workers"]?["data"]?["workerCountByState"]?["Failed"]);
-        Assert.Equal("ok", viewComponents["relationships"]?["status"]?.GetValue<string>());
-        Assert.Equal("compact", viewComponents["relationships"]?["shape"]?.GetValue<string>());
-        Assert.Equal(1, viewComponents["relationships"]?["data"]?["completedIterationCount"]?.GetValue<int>());
-        Assert.Equal(0, viewComponents["relationships"]?["data"]?["failedIterationCount"]?.GetValue<int>());
+        Assert.Equal("ok", viewComponents["workersCompact"]?["status"]?.GetValue<string>());
+        Assert.Equal("compact", viewComponents["workersCompact"]?["shape"]?.GetValue<string>());
+        Assert.Equal(0, viewComponents["workersCompact"]?["data"]?["activeWorkerCount"]?.GetValue<int>());
+        Assert.Equal(0, viewComponents["workersCompact"]?["data"]?["failedWorkerCount"]?.GetValue<int>());
+        Assert.Null(viewComponents["workersCompact"]?["data"]?["definitionCount"]);
+        Assert.Null(viewComponents["workersCompact"]?["data"]?["finalWorkerCount"]);
+        Assert.Null(viewComponents["workersCompact"]?["data"]?["workerCountByState"]);
+        Assert.Equal("ok", viewComponents["iterations"]?["status"]?.GetValue<string>());
+        Assert.Equal("compact", viewComponents["iterations"]?["shape"]?.GetValue<string>());
+        Assert.Equal(1, viewComponents["iterations"]?["data"]?["iterationCountByStatus"]?["Completed"]?.GetValue<int>());
+        Assert.Null(viewComponents["iterations"]?["data"]?["iterationCountByStatus"]?["Failed"]);
+        Assert.Null(viewComponents["iterations"]?["data"]?["completedIterationCount"]);
+        Assert.Null(viewComponents["iterations"]?["data"]?["failedIterationCount"]);
+        Assert.Null(viewComponents["iterations"]?["data"]?["commonKeyTypes"]);
         Assert.Equal("ok", throughputComponent["status"]?.GetValue<string>());
-        Assert.Equal("detailed", throughputComponent["shape"]?.GetValue<string>());
+        Assert.Equal("standard", throughputComponent["shape"]?.GetValue<string>());
         Assert.Equal(1, throughputBuckets.Sum(bucket => bucket?["started"]?.GetValue<int>() ?? 0));
         Assert.Equal(1, throughputBuckets.Sum(bucket => bucket?["completed"]?.GetValue<int>() ?? 0));
         Assert.Equal(0, throughputBuckets.Sum(bucket => bucket?["failed"]?.GetValue<int>() ?? 0));
+        Assert.Null(throughputBuckets.FirstOrDefault()?["executionCount"]);
+        Assert.Null(throughputBuckets.FirstOrDefault()?["slowestExecutionMilliseconds"]);
+        Assert.Null(throughputBuckets.FirstOrDefault()?["p95ExecutionMilliseconds"]);
+        Assert.Null(throughputBuckets.FirstOrDefault()?["p99ExecutionMilliseconds"]);
+        Assert.Equal(1, throughputExecutionSummary["executionCount"]?.GetValue<int>());
+        Assert.True(throughputExecutionSummary["averageExecutionMilliseconds"]?.GetValue<double>() >= 0);
+        Assert.True(throughputExecutionSummary["slowestExecutionMilliseconds"]?.GetValue<double>() >= 0);
+        Assert.True(throughputExecutionSummary["p95ExecutionMilliseconds"]?.GetValue<double>() >= 0);
+        Assert.True(throughputExecutionSummary["p99ExecutionMilliseconds"]?.GetValue<double>() >= 0);
+        Assert.Equal(60, throughputLiveSummary["rateWindowSeconds"]?.GetValue<int>());
+        Assert.Null(throughputLiveSummary["windowSeconds"]);
+        Assert.NotNull(throughputLiveSummary["startedPerSecond"]);
+        Assert.NotNull(throughputLiveSummary["completedPerSecond"]);
+        Assert.NotNull(throughputLiveSummary["failedPerSecond"]);
+        Assert.NotNull(throughputLiveSummary["inFlightDeltaPerSecond"]);
+        Assert.Null(throughputLiveSummary["executionCount"]);
+        Assert.Null(throughputLiveSummary["averageExecutionMilliseconds"]);
+        Assert.Null(throughputLiveSummary["slowestExecutionMilliseconds"]);
+        Assert.Null(throughputLiveSummary["p95ExecutionMilliseconds"]);
+        Assert.Null(throughputLiveSummary["p99ExecutionMilliseconds"]);
+        Assert.Equal("ok", compactThroughputComponent["status"]?.GetValue<string>());
+        Assert.Equal("compact", compactThroughputComponent["shape"]?.GetValue<string>());
+        Assert.Null(compactThroughputComponent["data"]?["throughput"]?["buckets"]);
+        Assert.Null(compactThroughputComponent["data"]?["throughput"]?["bucketSeconds"]);
+        Assert.NotNull(compactThroughputComponent["data"]?["throughput"]?["executionSummary"]);
+        Assert.NotNull(compactThroughputComponent["data"]?["throughput"]?["liveSummary"]);
         Assert.Equal("ok", catalogComponent["status"]?.GetValue<string>());
         Assert.Equal("detailed", catalogComponent["shape"]?.GetValue<string>());
         Assert.Contains(catalogDefinitions, definition => definition?["name"]?.GetValue<string>() == "http.overview.complete");
+        Assert.Equal("ok", failedWorkersComponent["status"]?.GetValue<string>());
+        Assert.Equal("standard", failedWorkersComponent["shape"]?.GetValue<string>());
+        Assert.Equal("http.overview.failed", failedWorker?["definitionName"]?.GetValue<string>());
+        Assert.Null(failedWorker?["state"]);
+        Assert.NotNull(failedWorker?["id"]);
+        Assert.NotNull(failedWorker?["revision"]);
+        Assert.NotNull(failedWorker?["updatedAt"]);
+        Assert.NotNull(failedWorker?["totalExecutionDuration"]);
+        Assert.Null(failedWorker?["definitionId"]);
+        Assert.Null(failedWorker?["subjectId"]);
+        Assert.Null(failedWorker?["identifiers"]);
+        Assert.Equal("ok", detailedFailedWorkersComponent["status"]?.GetValue<string>());
+        Assert.Equal("detailed", detailedFailedWorkersComponent["shape"]?.GetValue<string>());
+        Assert.Equal("http.overview.failed", detailedFailedWorker?["definitionName"]?.GetValue<string>());
+        Assert.Equal("Failed", detailedFailedWorker?["state"]?.GetValue<string>());
+        Assert.Null(detailedFailedWorker?["definitionId"]);
+        Assert.Null(detailedFailedWorker?["createdAt"]);
+        Assert.NotNull(detailedFailedWorker?["identifiers"]);
         Assert.Equal("standard", defaultComponents["failedIterations"]?["shape"]?.GetValue<string>());
         Assert.Equal("standard", defaultComponents["completedIterations"]?["shape"]?.GetValue<string>());
-        Assert.Equal("detailed", defaultComponents["workers"]?["shape"]?.GetValue<string>());
+        var defaultFailedIteration = Assert.Single(defaultComponents["failedIterations"]?["data"]?.AsArray()
+            ?? throw new InvalidOperationException("Expected default failed iterations data."));
+        Assert.Equal("http.overview.failed", defaultFailedIteration?["definitionName"]?.GetValue<string>());
+        Assert.NotNull(defaultFailedIteration?["workerId"]);
+        Assert.NotNull(defaultFailedIteration?["sequence"]);
+        Assert.NotNull(defaultFailedIteration?["completedAt"]);
+        Assert.NotNull(defaultFailedIteration?["executionDuration"]);
+        Assert.Null(defaultFailedIteration?["workerState"]);
+        Assert.Null(defaultFailedIteration?["subjectId"]);
+        Assert.Null(defaultFailedIteration?["identifiers"]);
+        Assert.Equal("ok", detailedFailedIterationsComponent["status"]?.GetValue<string>());
+        Assert.Equal("detailed", detailedFailedIterationsComponent["shape"]?.GetValue<string>());
+        Assert.Equal("http.overview.failed", detailedFailedIteration?["definitionName"]?.GetValue<string>());
+        Assert.NotNull(detailedFailedIteration?["workerState"]);
+        Assert.NotNull(detailedFailedIteration?["identifiers"]);
+        Assert.Equal("standard", defaultComponents["workers"]?["shape"]?.GetValue<string>());
+        Assert.Equal("standard", defaultComponents["failedWorkers"]?["shape"]?.GetValue<string>());
         Assert.DoesNotContain("catalog", defaultComponents.Select(component => component.Key));
         Assert.DoesNotContain("throughput", defaultComponents.Select(component => component.Key));
     }
@@ -1556,5 +1703,14 @@ public sealed class WorkableHttpApiTests
         var hasEvent = await reader.MoveNextAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(5));
         Assert.True(hasEvent);
         return reader.Current;
+    }
+
+    private static async Task WaitForThroughputBucketToClose()
+    {
+        var currentSecond = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        while (DateTimeOffset.UtcNow.ToUnixTimeSeconds() <= currentSecond)
+        {
+            await Task.Delay(10);
+        }
     }
 }

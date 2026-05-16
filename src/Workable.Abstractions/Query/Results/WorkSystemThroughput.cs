@@ -6,7 +6,20 @@ public sealed record WorkSystemThroughput(
     int WindowSeconds,
     int BucketSeconds,
     IReadOnlyList<WorkThroughputBucket> Buckets,
+    WorkThroughputExecutionSummary ExecutionSummary,
     WorkThroughputLiveSummary LiveSummary) : IWorkQueryResult;
+
+public sealed record WorkSystemThroughputSummary(
+    int WindowSeconds,
+    WorkThroughputExecutionSummary ExecutionSummary,
+    WorkThroughputLiveSummary LiveSummary) : IWorkQueryResult;
+
+public sealed record WorkThroughputExecutionSummary(
+    int ExecutionCount,
+    double AverageExecutionMilliseconds,
+    double SlowestExecutionMilliseconds,
+    double P95ExecutionMilliseconds,
+    double P99ExecutionMilliseconds);
 
 public sealed record WorkThroughputBucket(
     DateTimeOffset At,
@@ -14,7 +27,11 @@ public sealed record WorkThroughputBucket(
     int Completed,
     int Failed,
     int Canceled,
-    double AverageExecutionMilliseconds);
+    double AverageExecutionMilliseconds,
+    int ExecutionCount,
+    double SlowestExecutionMilliseconds,
+    double P95ExecutionMilliseconds,
+    double P99ExecutionMilliseconds);
 
 public sealed record WorkThroughputLiveSummary(
     int WindowSeconds,
@@ -23,4 +40,8 @@ public sealed record WorkThroughputLiveSummary(
     double FailedPerSecond,
     double CanceledPerSecond,
     double InFlightDeltaPerSecond,
-    double AverageExecutionMilliseconds);
+    double AverageExecutionMilliseconds,
+    int ExecutionCount,
+    double SlowestExecutionMilliseconds,
+    double P95ExecutionMilliseconds,
+    double P99ExecutionMilliseconds);
