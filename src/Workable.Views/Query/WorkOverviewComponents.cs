@@ -127,6 +127,17 @@ public sealed record WorkViewIterationGridDetailed(
     WorkSubjectId? SubjectId,
     IReadOnlyCollection<WorkIdentifier> Identifiers);
 
+public sealed record WorkQueueDiagnosticsCompactComponent(
+    long RejectedWorkCount,
+    bool HasRejectedWork,
+    DateTimeOffset? LastRejectedAt,
+    string? LastRejectedCode,
+    string? LastRejectedMessage);
+
+public sealed record WorkQueueDiagnosticsDetailedComponent(
+    WorkSystemQueueDiagnostics Queue,
+    bool HasRejectedWork);
+
 public sealed record WorkReadModelDiagnosticsCompactComponent(
     long PendingUpdateCount,
     bool IsReadModelBehind,

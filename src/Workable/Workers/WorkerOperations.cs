@@ -27,6 +27,7 @@ internal sealed class WorkerOperations : IWorkerOperations, IDisposable
     private readonly IDotNetWorkOriginProvider dotNetOriginProvider;
     private readonly TimeSpan shutdownGracePeriod;
     private readonly WorkSystemCapacityConfiguration capacity;
+    private readonly WorkSystemQueueDiagnosticsTracker queueDiagnostics;
     private CancellationTokenSource systemExecutionLifetime = new();
     private volatile bool acceptingWork;
     private long workerCount;
@@ -47,7 +48,8 @@ internal sealed class WorkerOperations : IWorkerOperations, IDisposable
         TimeSpan shutdownGracePeriod,
         WorkSystemRetentionConfiguration retentionConfiguration,
         WorkSystemCapacityConfiguration capacity,
-        InMemoryWorkMetricsSink metrics)
+        InMemoryWorkMetricsSink metrics,
+        WorkSystemQueueDiagnosticsTracker queueDiagnostics)
     {
         this.catalog = catalog;
         this.getSystemState = getSystemState;
@@ -55,6 +57,7 @@ internal sealed class WorkerOperations : IWorkerOperations, IDisposable
         this.shutdownGracePeriod = shutdownGracePeriod;
         this.capacity = capacity;
         this.metrics = metrics;
+        this.queueDiagnostics = queueDiagnostics;
         this.readModel = readModel;
         this.workerEvents = new WorkerEventPublisher(workSystemId, events, this.SynchronizeWorkerIfTracked, readModel);
         var logger = rootServices.GetService<ILoggerFactory>()?.CreateLogger("Workable.WorkerExecution");
@@ -100,7 +103,7 @@ internal sealed class WorkerOperations : IWorkerOperations, IDisposable
 
         if (!this.TryAcceptWork(registeredWork.Definition.Id, out var rejection))
         {
-            return WorkerHandle.Rejected(rejection);
+            return this.RejectQueue(rejection);
         }
 
         var workerId = WorkerId.New();
@@ -109,7 +112,7 @@ internal sealed class WorkerOperations : IWorkerOperations, IDisposable
             : RegisteredWorkRuntimePlan.Create(registeredWork.Definition, options);
         if (runtimePlan.ConfigurationErrors.Count > 0)
         {
-            return WorkerHandle.Rejected(WorkQueueOutcome.Invalid(registeredWork.Definition.Id, runtimePlan.ConfigurationErrors));
+            return this.RejectQueue(WorkQueueOutcome.Invalid(registeredWork.Definition.Id, runtimePlan.ConfigurationErrors));
         }
 
         var concurrencyInputErrors = WorkConfigurationValidator.ValidateConcurrencyInput(
@@ -117,7 +120,7 @@ internal sealed class WorkerOperations : IWorkerOperations, IDisposable
             input: input);
         if (concurrencyInputErrors.Count > 0)
         {
-            return WorkerHandle.Rejected(WorkQueueOutcome.Invalid(registeredWork.Definition.Id, concurrencyInputErrors));
+            return this.RejectQueue(WorkQueueOutcome.Invalid(registeredWork.Definition.Id, concurrencyInputErrors));
         }
 
         var startPolicy = runtimePlan.StartPolicy;
@@ -133,7 +136,7 @@ internal sealed class WorkerOperations : IWorkerOperations, IDisposable
             var idempotencyErrors = this.ValidateIdempotencyLocked(registeredWork.Definition.Id, input?.SubjectId, runtimePlan.Configuration.Idempotency);
             if (idempotencyErrors.Count > 0)
             {
-                return WorkerHandle.Rejected(WorkQueueOutcome.Invalid(
+                return this.RejectQueue(WorkQueueOutcome.Invalid(
                     registeredWork.Definition.Id,
                     idempotencyErrors));
             }
@@ -166,7 +169,7 @@ internal sealed class WorkerOperations : IWorkerOperations, IDisposable
                     });
                 if (reservation.Status == WorkConcurrencyReservationStatus.Rejected)
                 {
-                    return WorkerHandle.Rejected(WorkQueueOutcome.Invalid(
+                    return this.RejectQueue(WorkQueueOutcome.Invalid(
                         registeredWork.Definition.Id,
                         [WorkMessage.Info("workable.concurrency.capacity_reached", "Concurrency capacity has been reached for this work group.", "configuration.concurrency.maximumCapacity")]));
                 }
@@ -219,6 +222,12 @@ internal sealed class WorkerOperations : IWorkerOperations, IDisposable
 
         await WaitForStartPolicy(record, startPolicy, cancellationToken);
         return handle;
+    }
+
+    internal IWorkerHandle RejectQueue(WorkQueueOutcome rejection)
+    {
+        this.queueDiagnostics.RecordRejected(rejection);
+        return WorkerHandle.Rejected(rejection);
     }
 
     private bool TryAcceptWork(

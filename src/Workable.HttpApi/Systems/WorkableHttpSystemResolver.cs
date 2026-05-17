@@ -50,6 +50,7 @@ public sealed class WorkableHttpSystemResolver(
             system.Id,
             system.Name,
             system.State,
+            system.Diagnostics.Queue,
             system.Diagnostics.ReadModel,
             system.Diagnostics.Retention);
     }

@@ -347,7 +347,7 @@ app.MapGet("/", (HttpContext context) =>
                     tightLoopStart.disabled = data.isRunning;
                     tightLoopStop.disabled = !data.isRunning;
                     tightLoopYield.disabled = data.isRunning;
-                    if (!data.isRunning) {
+                    if (data.isRunning) {
                         tightLoopYield.checked = data.useTaskYield;
                     }
                     const selectedSystems = [

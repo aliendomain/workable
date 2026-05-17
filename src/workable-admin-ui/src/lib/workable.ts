@@ -33,8 +33,18 @@ export type WorkableHttpSystemDiagnostics = {
   id: { value: string };
   name?: string | null;
   state: string;
+  queue: WorkSystemQueueDiagnostics;
   readModel: WorkSystemReadModelDiagnostics;
   retention: WorkSystemRetentionDiagnostics;
+};
+
+export type WorkSystemQueueDiagnostics = {
+  rejectedWorkCount: number;
+  lastRejectedAt?: string | null;
+  lastRejectedStatus?: string | null;
+  lastRejectedDefinitionId?: { value: string } | null;
+  lastRejectedCode?: string | null;
+  lastRejectedMessage?: string | null;
 };
 
 export type WorkSystemReadModelDiagnostics = {
@@ -445,6 +455,19 @@ export type WorkComponentResult<TData = unknown> = {
   error?: string | null;
   shape?: WorkComponentShape;
 };
+
+export type WorkQueueDiagnosticsCompactComponent = {
+  rejectedWorkCount: number;
+  hasRejectedWork: boolean;
+  lastRejectedAt?: string | null;
+  lastRejectedCode?: string | null;
+  lastRejectedMessage?: string | null;
+};
+
+export type WorkQueueDiagnosticsDetailedComponent =
+  WorkQueueDiagnosticsCompactComponent & {
+    queue: WorkSystemQueueDiagnostics;
+  };
 
 export type WorkReadModelDiagnosticsCompactComponent = {
   pendingUpdateCount: number;

@@ -186,6 +186,11 @@ public sealed class WorkableSignalRTests
             new WorkViewCriteria(Components:
             [
                 new WorkComponentRequest(
+                    "queueDiagnostics",
+                    "queueDiagnostics",
+                    JsonSerializer.SerializeToElement(new { publishMode = "continuous" }),
+                    WorkComponentShapes.Compact),
+                new WorkComponentRequest(
                     "readModelDiagnostics",
                     "readModelDiagnostics",
                     JsonSerializer.SerializeToElement(new { warningThreshold = 100 }),
@@ -204,12 +209,17 @@ public sealed class WorkableSignalRTests
         var updated = await ReadUntil(
             views.Reader,
             view => view.GeneratedAt > initial.GeneratedAt &&
+                view.Components.ContainsKey("queueDiagnostics") &&
                 view.Components.ContainsKey("readModelDiagnostics") &&
                 view.Components.ContainsKey("retentionDiagnostics"));
+        var queue = Assert.IsType<JsonElement>(updated.Components["queueDiagnostics"].Data);
         var diagnostics = Assert.IsType<JsonElement>(updated.Components["readModelDiagnostics"].Data);
         var retention = Assert.IsType<JsonElement>(updated.Components["retentionDiagnostics"].Data);
 
-        Assert.Equal(["readModelDiagnostics", "retentionDiagnostics"], updated.Components.Keys.ToArray());
+        Assert.Equal(["queueDiagnostics", "readModelDiagnostics", "retentionDiagnostics"], updated.Components.Keys.ToArray());
+        Assert.Equal("compact", updated.Components["queueDiagnostics"].Shape);
+        Assert.True(queue.TryGetProperty("rejectedWorkCount", out _));
+        Assert.True(queue.TryGetProperty("hasRejectedWork", out _));
         Assert.Equal("compact", updated.Components["readModelDiagnostics"].Shape);
         Assert.True(diagnostics.TryGetProperty("pendingUpdateCount", out _));
         Assert.True(diagnostics.TryGetProperty("isReadModelBehind", out _));
@@ -256,6 +266,59 @@ public sealed class WorkableSignalRTests
             TimeSpan.FromMilliseconds(250));
 
         Assert.False(receivedHealthyTick);
+    }
+
+    [Fact]
+    public async Task DiagnosticsAlertChangeWatcherReceivesAlertPayloadWhenWorkIsRejected()
+    {
+        using var host = await CreateHost(addSignalR: true);
+        var system = host.Services.GetRequiredService<IWorkSystemRegistry>().Default;
+        await using var connection = CreateConnection(host);
+        var views = Channel.CreateUnbounded<WorkComponentQueryResult>();
+        connection.On<WorkComponentQueryResult>(
+            WorkableRealtimeClientMethods.ViewUpdated,
+            view => views.Writer.TryWrite(view));
+        await connection.StartAsync();
+        await connection.InvokeAsync(
+            "WatchView",
+            "diagnostics",
+            new WorkViewCriteria(Components:
+            [
+                new WorkComponentRequest(
+                    "queueDiagnostics",
+                    "queueDiagnostics",
+                    JsonSerializer.SerializeToElement(new
+                    {
+                        publishMode = "alertChanges",
+                    }),
+                    WorkComponentShapes.Compact),
+            ]),
+            null);
+        var initial = await ReadUntil(
+            views.Reader,
+            view => view.Components.ContainsKey("queueDiagnostics"));
+
+        var rejected = await system.Queue.Enqueue("signalr.missing");
+        Assert.False(rejected.QueueOutcome.IsAccepted);
+
+        var updated = await ReadUntil(
+            views.Reader,
+            view =>
+            {
+                if (view.GeneratedAt <= initial.GeneratedAt ||
+                    !view.Components.TryGetValue("queueDiagnostics", out var component))
+                {
+                    return false;
+                }
+
+                var diagnostics = Assert.IsType<JsonElement>(component.Data);
+                return diagnostics.TryGetProperty("hasRejectedWork", out var hasRejectedWork) &&
+                    hasRejectedWork.GetBoolean();
+            });
+        var data = Assert.IsType<JsonElement>(updated.Components["queueDiagnostics"].Data);
+
+        Assert.Equal(1, data.GetProperty("rejectedWorkCount").GetInt64());
+        Assert.Equal(rejected.QueueOutcome.Messages[0].Code, data.GetProperty("lastRejectedCode").GetString());
     }
 
     [Fact]

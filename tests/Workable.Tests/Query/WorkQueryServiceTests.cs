@@ -1451,6 +1451,27 @@ public sealed class WorkQueryServiceTests
     }
 
     [Fact]
+    public async Task QueryQueueDiagnosticsReportRejectedQueueRequests()
+    {
+        await using var system = CreateSystem(
+            WorkDefinition.Create("queue.diagnostics", category: "Queue"),
+            SuccessfulWork);
+
+        await system.Start();
+        var initial = system.Diagnostics.Queue;
+        var rejected = await system.Queue.Enqueue("queue.diagnostics.missing");
+        var diagnostics = system.Diagnostics.Queue;
+
+        Assert.False(rejected.QueueOutcome.IsAccepted);
+        Assert.Equal(0, initial.RejectedWorkCount);
+        Assert.Equal(1, diagnostics.RejectedWorkCount);
+        Assert.NotNull(diagnostics.LastRejectedAt);
+        Assert.Equal(WorkQueueStatus.NotFound, diagnostics.LastRejectedStatus);
+        Assert.Equal(rejected.QueueOutcome.Messages[0].Code, diagnostics.LastRejectedCode);
+        Assert.Equal(rejected.QueueOutcome.Messages[0].Text, diagnostics.LastRejectedMessage);
+    }
+
+    [Fact]
     public async Task QueryRetentionDiagnosticsReportScheduledFinalWorkerState()
     {
         const string definitionName = "retention.diagnostics";

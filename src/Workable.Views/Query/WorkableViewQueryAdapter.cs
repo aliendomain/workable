@@ -229,6 +229,8 @@ public class WorkableViewQueryAdapter
                 "throughput" => await CreateThroughputComponent(queries, criteria, request.Shape, request.Options, cancellationToken),
                 "workergrid" => await CreateWorkerGridComponent(queries, criteria, request.Options, cancellationToken),
                 "iterationgrid" => await CreateIterationGridComponent(queries, criteria, request.Options, cancellationToken),
+                "queuemessages" => CreateQueueDiagnosticsComponent(system, request.Shape),
+                "queuediagnostics" => CreateQueueDiagnosticsComponent(system, request.Shape),
                 "readmodeldiagnostics" => CreateReadModelDiagnosticsComponent(system, request.Shape, request.Options),
                 "retentiondiagnostics" => CreateRetentionDiagnosticsComponent(system, request.Shape, request.Options),
                 _ => null,
@@ -594,6 +596,28 @@ public class WorkableViewQueryAdapter
             summary.CanceledPerSecond,
             summary.InFlightDeltaPerSecond);
 
+    private static object CreateQueueDiagnosticsComponent(
+        IWorkSystem system,
+        string shape)
+    {
+        var queue = system.Diagnostics.Queue;
+        var hasRejectedWork = queue.RejectedWorkCount > 0;
+
+        if (shape == WorkComponentShapes.Compact)
+        {
+            return new WorkQueueDiagnosticsCompactComponent(
+                queue.RejectedWorkCount,
+                hasRejectedWork,
+                queue.LastRejectedAt,
+                queue.LastRejectedCode,
+                queue.LastRejectedMessage);
+        }
+
+        return new WorkQueueDiagnosticsDetailedComponent(
+            queue,
+            hasRejectedWork);
+    }
+
     private static object CreateReadModelDiagnosticsComponent(
         IWorkSystem system,
         string shape,
@@ -699,6 +723,7 @@ public class WorkableViewQueryAdapter
             return requests is { Count: > 0 }
                 ? requests
                 : [
+                    new("queueDiagnostics", "queueDiagnostics", Shape: WorkComponentShapes.Compact),
                     new("readModelDiagnostics", "readModelDiagnostics", Shape: WorkComponentShapes.Compact),
                     new("retentionDiagnostics", "retentionDiagnostics", Shape: WorkComponentShapes.Compact),
                 ];
@@ -750,6 +775,12 @@ public class WorkableViewQueryAdapter
             shape = WorkComponentShapes.Detailed;
         }
         else if (string.Equals(request.Type, "retentionDiagnostics", StringComparison.OrdinalIgnoreCase) &&
+            shape == WorkComponentShapes.Standard)
+        {
+            shape = WorkComponentShapes.Detailed;
+        }
+        else if ((string.Equals(request.Type, "queueDiagnostics", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(request.Type, "queueMessages", StringComparison.OrdinalIgnoreCase)) &&
             shape == WorkComponentShapes.Standard)
         {
             shape = WorkComponentShapes.Detailed;

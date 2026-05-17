@@ -75,6 +75,7 @@ import {
   type WorkCompletionStatus,
   type WorkComponentQueryResult,
   type WorkComponentShape,
+  type WorkQueueDiagnosticsCompactComponent,
   type WorkReadModelDiagnosticsCompactComponent,
   type WorkReadModelDiagnosticsDetailedComponent,
   type WorkRetentionDiagnosticsCompactComponent,
@@ -252,6 +253,7 @@ export function WorkableConsole() {
   const [lifecycleActionSystemId, setLifecycleActionSystemId] = useState<string | null>(null);
   const [lifecycleError, setLifecycleError] = useState<string>();
   const [systemNotificationOpen, setSystemNotificationOpen] = useState(false);
+  const [acknowledgedRejectedWorkCounts, setAcknowledgedRejectedWorkCounts] = useState<Record<string, number>>({});
   const [readModelDiagnosticsExpanded, setReadModelDiagnosticsExpanded] = useState(false);
   const [retentionDiagnosticsExpanded, setRetentionDiagnosticsExpanded] = useState(false);
   const [realtimePayloadCaptureEnabled, setRealtimePayloadCaptureEnabled] = useState(true);
@@ -288,6 +290,9 @@ export function WorkableConsole() {
   const activeOverviewScope = activeSystem
     ? overviewScopeBySystemId[activeSystem.id] ?? null
     : null;
+  const acknowledgedRejectedWorkCount = activeSystem
+    ? acknowledgedRejectedWorkCounts[activeSystem.id] ?? 0
+    : 0;
   const connection = useMemo<WorkableConnection | null>(
     () =>
       activeApiUrl
@@ -304,6 +309,14 @@ export function WorkableConsole() {
   const diagnosticsAlertRequest = useMemo(
     () => ({
       components: [
+        {
+          id: "queueDiagnostics",
+          options: {
+            publishMode: "alertChanges",
+          },
+          shape: "compact",
+          type: "queueDiagnostics",
+        },
         {
           id: "readModelDiagnostics",
           options: {
@@ -329,6 +342,14 @@ export function WorkableConsole() {
   const diagnosticsTrayRequest = useMemo(
     () => ({
       components: [
+        {
+          id: "queueDiagnostics",
+          options: {
+            publishMode: "continuous",
+          },
+          shape: "compact",
+          type: "queueDiagnostics",
+        },
         {
           id: "readModelDiagnostics",
           options: {
@@ -457,6 +478,16 @@ export function WorkableConsole() {
       setRetentionDiagnosticsExpanded(false);
     }
   }, []);
+  const acknowledgeQueueRejections = useCallback((count: number) => {
+    if (!activeSystem) {
+      return;
+    }
+
+    setAcknowledgedRejectedWorkCounts((current) => ({
+      ...current,
+      [activeSystem.id]: count,
+    }));
+  }, [activeSystem]);
 
   useEffect(() => {
     queueMicrotask(() => {
@@ -1242,7 +1273,9 @@ export function WorkableConsole() {
                       system={activeSystem}
                       systemNotifications={(
                         <SystemNotificationTray
+                          acknowledgedRejectedWorkCount={acknowledgedRejectedWorkCount}
                           alertDiagnostics={diagnosticsAlert}
+                          onAcknowledgeQueueRejections={acknowledgeQueueRejections}
                           onOpenChange={handleSystemNotificationOpenChange}
                           onReadModelExpandedChange={setReadModelDiagnosticsExpanded}
                           onRetentionExpandedChange={setRetentionDiagnosticsExpanded}
@@ -1562,7 +1595,9 @@ type SystemNotification = {
 };
 
 function SystemNotificationTray({
+  acknowledgedRejectedWorkCount,
   alertDiagnostics,
+  onAcknowledgeQueueRejections,
   onOpenChange,
   onReadModelExpandedChange,
   onRetentionExpandedChange,
@@ -1574,7 +1609,9 @@ function SystemNotificationTray({
   systemName,
   trayDiagnostics,
 }: {
+  acknowledgedRejectedWorkCount: number;
   alertDiagnostics: SystemDiagnosticsViewState;
+  onAcknowledgeQueueRejections: (count: number) => void;
   onOpenChange: (open: boolean) => void;
   onReadModelExpandedChange: (expanded: boolean) => void;
   onRetentionExpandedChange: (expanded: boolean) => void;
@@ -1586,6 +1623,14 @@ function SystemNotificationTray({
   systemName: string;
   trayDiagnostics: SystemDiagnosticsViewState;
 }) {
+  const alertQueueCompact = getWorkComponentData<WorkQueueDiagnosticsCompactComponent>(
+    alertDiagnostics.data,
+    "queueDiagnostics"
+  );
+  const trayQueueCompact = getWorkComponentData<WorkQueueDiagnosticsCompactComponent>(
+    trayDiagnostics.data,
+    "queueDiagnostics"
+  );
   const alertReadModelCompact = getWorkComponentData<WorkReadModelDiagnosticsCompactComponent>(
     alertDiagnostics.data,
     "readModelDiagnostics"
@@ -1618,6 +1663,9 @@ function SystemNotificationTray({
   const retentionCompact = open
     ? (retentionExpanded ? retentionDetailCompact ?? trayRetentionCompact : trayRetentionCompact) ?? alertRetentionCompact
     : alertRetentionCompact;
+  const queueCompact = open
+    ? trayQueueCompact ?? alertQueueCompact
+    : alertQueueCompact;
   const diagnosticsError = alertDiagnostics.error || (
     readModelExpanded
       ? readModelDetailDiagnostics.error
@@ -1627,8 +1675,15 @@ function SystemNotificationTray({
           ? trayDiagnostics.error
           : undefined
   );
-  const notifications = createSystemNotifications(readModelCompact, retentionCompact, diagnosticsError);
+  const notifications = createSystemNotifications(
+    queueCompact,
+    acknowledgedRejectedWorkCount,
+    readModelCompact,
+    retentionCompact,
+    diagnosticsError
+  );
   const hasNotifications = notifications.length > 0;
+  const hasCriticalNotifications = notifications.some((notification) => notification.tone === "critical");
   const busy = alertDiagnostics.loading || alertDiagnostics.refreshing ||
     (open && !readModelExpanded && !retentionExpanded && (trayDiagnostics.loading || trayDiagnostics.refreshing)) ||
     (readModelExpanded && (readModelDetailDiagnostics.loading || readModelDetailDiagnostics.refreshing)) ||
@@ -1650,7 +1705,7 @@ function SystemNotificationTray({
           <PopoverTrigger asChild>
             <Button
               aria-label="System notifications"
-              className={`relative ${hasNotifications ? "text-amber-400 hover:text-amber-300" : "text-muted-foreground hover:text-foreground"} hover:bg-transparent dark:hover:bg-transparent`}
+              className={`relative ${hasCriticalNotifications ? "text-red-400 hover:text-red-300" : hasNotifications ? "text-amber-400 hover:text-amber-300" : "text-muted-foreground hover:text-foreground"} hover:bg-transparent dark:hover:bg-transparent`}
               size="icon-sm"
               variant="ghost"
             >
@@ -1660,7 +1715,7 @@ function SystemNotificationTray({
                 <Bell className="size-4" />
               )}
               {hasNotifications && (
-                <span className="absolute right-0.5 top-0.5 flex min-w-3 translate-x-1/4 -translate-y-1/4 items-center justify-center rounded-full border border-background bg-amber-400 px-0.5 text-[9px] font-semibold leading-3 text-black">
+                <span className={`absolute right-0.5 top-0.5 flex min-w-3 translate-x-1/4 -translate-y-1/4 items-center justify-center rounded-full border border-background px-0.5 text-[9px] font-semibold leading-3 ${hasCriticalNotifications ? "bg-red-500 text-white" : "bg-amber-400 text-black"}`}>
                   {notifications.length}
                 </span>
               )}
@@ -1683,7 +1738,7 @@ function SystemNotificationTray({
         </div>
         <div className="max-h-[70vh] overflow-auto">
           <div className="space-y-2 border-b p-3">
-            {alertDiagnostics.loading && !readModelCompact && !retentionCompact ? (
+            {alertDiagnostics.loading && !queueCompact && !readModelCompact && !retentionCompact ? (
               <div className="flex items-center gap-2 text-muted-foreground text-sm">
                 <Loader2 className="size-4 animate-spin" />
                 Loading diagnostics.
@@ -1699,6 +1754,16 @@ function SystemNotificationTray({
                     <div className="min-w-0">
                       <div className="font-medium text-sm">{notification.title}</div>
                       <div className="text-xs opacity-85">{notification.description}</div>
+                      {notification.id === "queue-rejections" && queueCompact ? (
+                        <Button
+                          className="mt-2 border-red-500/30 bg-red-500/10 text-red-100 hover:bg-red-500/20 hover:text-red-50"
+                          onClick={() => onAcknowledgeQueueRejections(queueCompact.rejectedWorkCount)}
+                          size="xs"
+                          variant="outline"
+                        >
+                          Acknowledge
+                        </Button>
+                      ) : null}
                     </div>
                   </div>
                 </div>
@@ -1945,6 +2010,8 @@ function DiagnosticsMetric({
 }
 
 function createSystemNotifications(
+  queue?: WorkQueueDiagnosticsCompactComponent,
+  acknowledgedRejectedWorkCount = 0,
   readModel?: WorkReadModelDiagnosticsCompactComponent,
   retention?: WorkRetentionDiagnosticsCompactComponent,
   error?: string
@@ -1957,6 +2024,20 @@ function createSystemNotifications(
       id: "diagnostics-unavailable",
       tone: "warning",
       title: "Diagnostics unavailable",
+    });
+  }
+
+  const hasUnacknowledgedRejectedWork = queue?.hasRejectedWork &&
+    queue.rejectedWorkCount !== acknowledgedRejectedWorkCount;
+  if (queue && hasUnacknowledgedRejectedWork) {
+    const rejectedWorkCount = queue.rejectedWorkCount > acknowledgedRejectedWorkCount
+      ? queue.rejectedWorkCount - acknowledgedRejectedWorkCount
+      : queue.rejectedWorkCount;
+    notifications.push({
+      description: `${formatNumber(rejectedWorkCount)} new rejected queue request${rejectedWorkCount === 1 ? "" : "s"} (${formatNumber(queue.rejectedWorkCount)} total)${queue.lastRejectedMessage ? `. Last: ${queue.lastRejectedMessage}` : "."}`,
+      id: "queue-rejections",
+      tone: "critical",
+      title: "Work is being rejected",
     });
   }
 

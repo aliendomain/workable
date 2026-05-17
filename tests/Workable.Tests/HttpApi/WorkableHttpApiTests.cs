@@ -1225,11 +1225,15 @@ public sealed class WorkableHttpApiTests
             ?? throw new InvalidOperationException("Expected JSON response.");
         var readModel = json["readModel"]
             ?? throw new InvalidOperationException("Expected read model diagnostics.");
+        var queue = json["queue"]
+            ?? throw new InvalidOperationException("Expected queue diagnostics.");
         var retention = json["retention"]
             ?? throw new InvalidOperationException("Expected retention diagnostics.");
 
         Assert.Equal(system.Id.Value.ToString(), json["id"]?["value"]?.GetValue<string>());
         Assert.Equal("Started", json["state"]?.GetValue<string>());
+        Assert.Equal(0, queue["rejectedWorkCount"]?.GetValue<long>());
+        Assert.Null(queue["lastRejectedAt"]);
         Assert.True(readModel["enqueuedSequence"]?.GetValue<long>() > 0);
         Assert.Equal(
             readModel["enqueuedSequence"]?.GetValue<long>(),

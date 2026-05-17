@@ -262,7 +262,20 @@ internal sealed class WorkableRealtimeBroadcaster(
         var components = new Dictionary<string, WorkComponentResult>(StringComparer.OrdinalIgnoreCase);
         foreach (var component in subscription.Criteria.Components ?? [])
         {
-            if (string.Equals(component.Type, "readModelDiagnostics", StringComparison.OrdinalIgnoreCase))
+            if (string.Equals(component.Type, "queueDiagnostics", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(component.Type, "queueMessages", StringComparison.OrdinalIgnoreCase))
+            {
+                components[component.Id] = new WorkComponentResult(
+                    "ok",
+                    new WorkQueueDiagnosticsCompactComponent(
+                        alertState.RejectedWorkCount,
+                        alertState.HasRejectedWork,
+                        alertState.LastRejectedAt,
+                        alertState.LastRejectedCode,
+                        alertState.LastRejectedMessage),
+                    Shape: component.Shape);
+            }
+            else if (string.Equals(component.Type, "readModelDiagnostics", StringComparison.OrdinalIgnoreCase))
             {
                 components[component.Id] = new WorkComponentResult(
                     "ok",
@@ -316,13 +329,16 @@ internal sealed class WorkableRealtimeBroadcaster(
                 string.Equals(GetStringOption(component.Options, "publishMode"), "alertChanges", StringComparison.OrdinalIgnoreCase)) == true;
 
     private static bool IsAlertDiagnosticsComponent(WorkComponentRequest component)
-        => string.Equals(component.Type, "readModelDiagnostics", StringComparison.OrdinalIgnoreCase) ||
+        => string.Equals(component.Type, "queueDiagnostics", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(component.Type, "queueMessages", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(component.Type, "readModelDiagnostics", StringComparison.OrdinalIgnoreCase) ||
             string.Equals(component.Type, "retentionDiagnostics", StringComparison.OrdinalIgnoreCase);
 
     private static DiagnosticsAlertState CreateDiagnosticsAlertState(
         IWorkSystem system,
         WorkableRealtimeViewSubscription subscription)
     {
+        var queue = system.Diagnostics.Queue;
         var readModel = system.Diagnostics.ReadModel;
         var readModelThreshold = GetReadModelDiagnosticsWarningThreshold(subscription);
         var readModelLagSeverity = readModel.PendingUpdateCount >= readModelThreshold * 10L
@@ -339,6 +355,10 @@ internal sealed class WorkableRealtimeBroadcaster(
                 : DiagnosticsLagSeverity.Normal;
 
         return new DiagnosticsAlertState(
+            queue.RejectedWorkCount,
+            queue.LastRejectedAt,
+            queue.LastRejectedCode,
+            queue.LastRejectedMessage,
             readModel.PendingUpdateCount,
             readModelThreshold,
             readModelLagSeverity,
@@ -394,6 +414,10 @@ internal sealed class WorkableRealtimeBroadcaster(
     }
 
     private sealed record DiagnosticsAlertState(
+        long RejectedWorkCount,
+        DateTimeOffset? LastRejectedAt,
+        string? LastRejectedCode,
+        string? LastRejectedMessage,
         long ReadModelPendingUpdateCount,
         int ReadModelWarningThreshold,
         DiagnosticsLagSeverity ReadModelLagSeverity,
@@ -409,11 +433,14 @@ internal sealed class WorkableRealtimeBroadcaster(
         string? SchedulerFailureType,
         string? SchedulerFailureMessage)
     {
+        public bool HasRejectedWork => this.RejectedWorkCount > 0;
+
         public bool IsReadModelBehind => this.ReadModelLagSeverity != DiagnosticsLagSeverity.Normal;
 
         public bool IsRetentionBehind => this.RetentionLagSeverity != DiagnosticsLagSeverity.Normal;
 
         public bool IsAlerting =>
+            this.HasRejectedWork ||
             this.IsReadModelBehind ||
             this.HasProjectorFailure ||
             this.IsRetentionBehind ||
