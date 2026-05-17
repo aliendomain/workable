@@ -86,9 +86,9 @@ internal sealed class WorkerRecord(
 
     public DateTimeOffset UpdatedAt { get; private set; } = updatedAt;
 
-    public Action<WorkerRecord, WorkerIterationSnapshot>? IterationRecorded { get; set; }
+    public Action<WorkerReadModelIterationUpdate>? IterationRecorded { get; set; }
 
-    public Action<WorkerRecord, WorkerIterationReference>? IterationForgotten { get; set; }
+    public Action<WorkerIterationReference>? IterationForgotten { get; set; }
 
     public bool IsFinal => WorkerStateMachine.IsFinal(this.State);
 
@@ -110,8 +110,8 @@ internal sealed class WorkerRecord(
 
     public bool AddIdentifier(WorkIdentifier identifier)
     {
-        WorkerIterationSnapshot? currentIterationSnapshot = null;
-        Action<WorkerRecord, WorkerIterationSnapshot>? iterationRecorded = null;
+        WorkerReadModelIterationUpdate? currentIteration = null;
+        Action<WorkerReadModelIterationUpdate>? iterationRecorded = null;
         lock (this.sync)
         {
             if (!this.identifiers.Add(identifier))
@@ -122,14 +122,15 @@ internal sealed class WorkerRecord(
             this.MarkUpdated();
             if (this.currentIteration is not null)
             {
-                currentIterationSnapshot = this.CreateCurrentIterationSnapshotLocked(DateTimeOffset.UtcNow);
+                currentIteration = this.CreateReadModelIterationUpdateLocked(
+                    this.CreateCurrentIterationSnapshotLocked(DateTimeOffset.UtcNow));
                 iterationRecorded = this.IterationRecorded;
             }
         }
 
-        if (currentIterationSnapshot is not null)
+        if (currentIteration is not null)
         {
-            iterationRecorded?.Invoke(this, currentIterationSnapshot);
+            iterationRecorded?.Invoke(currentIteration);
         }
 
         return true;
@@ -667,6 +668,14 @@ internal sealed class WorkerRecord(
         }
     }
 
+    public WorkerReadModelWorker ToReadModelWorker()
+    {
+        lock (this.sync)
+        {
+            return this.CreateReadModelWorkerLocked();
+        }
+    }
+
     public bool ShouldCaptureLog(LogLevel level)
     {
         lock (this.sync)
@@ -871,6 +880,17 @@ internal sealed class WorkerRecord(
         };
     }
 
+    private WorkerReadModelWorker CreateReadModelWorkerLocked()
+        => WorkerReadModelWorker.From(this.ToSnapshotLocked());
+
+    private WorkerReadModelIterationUpdate CreateReadModelIterationUpdateLocked(WorkerIterationSnapshot iteration)
+    {
+        var snapshot = this.ToSnapshotLocked();
+        return new WorkerReadModelIterationUpdate(
+            WorkerReadModelWorker.From(snapshot),
+            WorkerReadModelIteration.From(snapshot, iteration));
+    }
+
     private static TaskCompletionSource<WorkCompletion> CreateCompletionSource()
         => new(TaskCreationOptions.RunContinuationsAsynchronously);
 
@@ -964,7 +984,6 @@ internal sealed class WorkerRecord(
         this.pendingIterationProfile = null;
         this.currentIteration = null;
         this.lastIterationSequence = iteration.Sequence;
-        this.IterationRecorded?.Invoke(this, iteration);
         var retained = status switch
         {
             WorkCompletionStatus.Completed => this.successfulIterations,
@@ -976,11 +995,18 @@ internal sealed class WorkerRecord(
         var maximum = status == WorkCompletionStatus.Completed
             ? this.Configuration.Recurrence.RetainedSuccessfulIterations
             : this.Configuration.Recurrence.RetainedFailedIterations;
+        var forgottenIterations = new List<WorkerIterationReference>();
         while (retained.Count > maximum)
         {
             var forgotten = retained[0];
             retained.RemoveAt(0);
-            this.IterationForgotten?.Invoke(this, new WorkerIterationReference(this.Id, forgotten.Sequence));
+            forgottenIterations.Add(new WorkerIterationReference(this.Id, forgotten.Sequence));
+        }
+
+        this.IterationRecorded?.Invoke(this.CreateReadModelIterationUpdateLocked(iteration));
+        foreach (var forgotten in forgottenIterations)
+        {
+            this.IterationForgotten?.Invoke(forgotten);
         }
     }
 
@@ -990,7 +1016,8 @@ internal sealed class WorkerRecord(
         this.currentIteration = new CurrentWorkerIteration(++this.iterationSequence, startedAt);
         this.pendingIterationProfile = null;
         this.firstStartedAt ??= startedAt;
-        this.IterationRecorded?.Invoke(this, this.CreateCurrentIterationSnapshotLocked(startedAt));
+        this.IterationRecorded?.Invoke(this.CreateReadModelIterationUpdateLocked(
+            this.CreateCurrentIterationSnapshotLocked(startedAt)));
     }
 
     private WorkerIterationSnapshot CreateCurrentIterationSnapshotLocked(DateTimeOffset observedAt)

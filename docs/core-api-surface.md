@@ -79,6 +79,7 @@ Execution context also exposes the worker's `WorkOrigin`.
 - Worker snapshots can expose captured logs and profile snapshots.
 - Worker snapshots expose the `WorkOrigin` that queued the worker.
 - `IWorkQueryService.Worker` returns a full `WorkerSnapshot`.
+- `IWorkQueryService` reads worker and iteration state from the runtime read model snapshot; the in-memory model starts empty with the process and is cleared when the system stops.
 - `IWorkQueryService.Workers` returns lightweight `WorkerOverviewItem` rows.
 - `IWorkQueryService.WorkerIteration` returns one full `WorkerIterationSnapshot` by worker id and iteration sequence.
 - `IWorkQueryService.WorkerIterations` returns lightweight `WorkerIterationOverviewItem` rows.

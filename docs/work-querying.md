@@ -4,6 +4,8 @@
 
 Workable query APIs provide read-only access to worker state and registered work definitions. Use the methods on `IWorkSystem.Query` to inspect work without changing it. `IWorkQueryService` is intentionally discoverable: each built-in query has its own method.
 
+Runtime worker and iteration queries are served from an in-memory read model. Worker lifecycle code publishes lightweight updates to a projector, and query methods read the latest published snapshot instead of locking worker records. The read model starts empty with the process and is cleared when the in-memory system stops; it is eventually consistent with worker execution, while query methods wait for updates already accepted by the projector before returning.
+
 ## Worker Queries
 
 Use `IWorkQueryService.Worker` when you need full worker detail.

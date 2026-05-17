@@ -9,18 +9,15 @@ using Microsoft.Extensions.Logging;
 namespace Workable;
 internal sealed class WorkerOperations : IWorkerOperations, IDisposable
 {
-    private const int IterationIndexRecentCapacity = 5;
-
     private readonly WorkSystemCatalog catalog;
     private readonly Func<WorkSystemState> getSystemState;
-    private readonly string? workSystemName;
     private readonly WorkerEventPublisher workerEvents;
     private readonly ConfiguredWorkerExecutionStrategy executionStrategy;
     private readonly ConcurrentDictionary<WorkerId, WorkerRecord> workers = [];
     private readonly WorkerIndex index = new();
-    private readonly WorkerIterationIndex iterationIndex = new(IterationIndexRecentCapacity);
+    private readonly ConcurrentDictionary<WorkerIterationReference, WorkCompletionStatus> iterationStatuses = [];
     private readonly InMemoryWorkMetricsSink metrics;
-    private readonly WorkQueryService queries;
+    private readonly IWorkSystemReadModelStore readModel;
     private readonly Lock lifecycleSync = new();
     private readonly Lock subjectSync = new();
     private readonly List<CancellationTokenSource> retiredSystemExecutionLifetimes = [];
@@ -43,6 +40,7 @@ internal sealed class WorkerOperations : IWorkerOperations, IDisposable
         string? workSystemName,
         IServiceProvider rootServices,
         WorkEventStream events,
+        IWorkSystemReadModelStore readModel,
         IDotNetWorkOriginProvider dotNetOriginProvider,
         IReadOnlyList<WorkExceptionClassifier> systemExceptionClassifiers,
         IReadOnlyList<WorkExceptionClassifier> globalExceptionClassifiers,
@@ -53,19 +51,19 @@ internal sealed class WorkerOperations : IWorkerOperations, IDisposable
     {
         this.catalog = catalog;
         this.getSystemState = getSystemState;
-        this.workSystemName = workSystemName;
         this.dotNetOriginProvider = dotNetOriginProvider;
         this.shutdownGracePeriod = shutdownGracePeriod;
         this.capacity = capacity;
         this.metrics = metrics;
-        this.workerEvents = new WorkerEventPublisher(workSystemId, events, this.SynchronizeWorkerIfTracked);
+        this.readModel = readModel;
+        this.workerEvents = new WorkerEventPublisher(workSystemId, events, this.SynchronizeWorkerIfTracked, readModel);
         var logger = rootServices.GetService<ILoggerFactory>()?.CreateLogger("Workable.WorkerExecution");
         var invoker = new WorkerExecutionInvoker(
             workSystemId,
             workSystemName,
             rootServices,
             this.workerEvents,
-            this.index.AddIdentifier,
+            this.AddIdentifier,
             new WorkInitializationExecutor(rootServices));
         var exceptionHandler = new WorkerExecutionExceptionHandler(
             new WorkExceptionClassifierChain(systemExceptionClassifiers, globalExceptionClassifiers, logger),
@@ -87,17 +85,7 @@ internal sealed class WorkerOperations : IWorkerOperations, IDisposable
         this.concurrency = new WorkConcurrencyCoordinator();
         this.dispatcher = new WorkerDispatcher(this.DispatchQueuedWorker);
         this.retention = new WorkerRetentionScheduler(this.workers, this.index, retentionConfiguration, this.Purge, this.PublishPurgeEvent);
-        this.queries = new WorkQueryService(
-            this.catalog,
-            this.getSystemState,
-            this.workSystemName,
-            this.workers,
-            this.index,
-            this.iterationIndex,
-            this.metrics);
     }
-
-    internal WorkQueryService Queries => this.queries;
 
     internal async Task<IWorkerHandle> CreateWorker(
         RegisteredWork registeredWork,
@@ -287,25 +275,60 @@ internal sealed class WorkerOperations : IWorkerOperations, IDisposable
         return true;
     }
 
-    private void RegisterIterationIfTracked(WorkerRecord worker, WorkerIterationSnapshot iteration)
+    private void RegisterIterationIfTracked(WorkerReadModelIterationUpdate iteration)
     {
-        if (this.workers.ContainsKey(worker.Id))
+        if (this.workers.ContainsKey(iteration.Worker.Id))
         {
-            var existing = this.iterationIndex.Get(new WorkerIterationReference(worker.Id, iteration.Sequence));
-            this.iterationIndex.Register(worker, iteration);
-            if (existing is null || existing.Status != iteration.Status)
+            var reference = iteration.Iteration.Reference;
+            if (this.TryRecordIterationStatus(reference, iteration.Iteration.Status))
             {
-                this.metrics.IterationRecorded(worker.Work.Definition.Id, iteration);
+                this.metrics.IterationRecorded(iteration.Iteration.DefinitionId, iteration.Iteration.Snapshot);
+            }
+
+            this.readModel.RecordIteration(iteration);
+        }
+    }
+
+    private void ForgetIterationIfTracked(WorkerIterationReference iteration)
+    {
+        if (this.workers.ContainsKey(iteration.WorkerId))
+        {
+            this.iterationStatuses.TryRemove(iteration, out _);
+            this.readModel.ForgetIteration(iteration);
+        }
+    }
+
+    private bool TryRecordIterationStatus(
+        WorkerIterationReference reference,
+        WorkCompletionStatus status)
+    {
+        while (true)
+        {
+            if (!this.iterationStatuses.TryGetValue(reference, out var existing))
+            {
+                if (this.iterationStatuses.TryAdd(reference, status))
+                {
+                    return true;
+                }
+
+                continue;
+            }
+
+            if (existing == status)
+            {
+                return false;
+            }
+
+            if (this.iterationStatuses.TryUpdate(reference, status, existing))
+            {
+                return true;
             }
         }
     }
 
-    private void ForgetIterationIfTracked(WorkerRecord worker, WorkerIterationReference iteration)
+    private void AddIdentifier(WorkerRecord worker, WorkIdentifier _)
     {
-        if (this.workers.ContainsKey(worker.Id))
-        {
-            this.iterationIndex.Forget(iteration);
-        }
+        this.readModel.RecordWorker(worker.ToReadModelWorker());
     }
 
     private void AttachIndexCallbacks(WorkerRecord worker)
@@ -377,29 +400,37 @@ internal sealed class WorkerOperations : IWorkerOperations, IDisposable
         };
     }
 
-    public Task<WorkerSnapshot?> Get(WorkerId workerId, CancellationToken cancellationToken = default)
-        => Task.FromResult(this.workers.TryGetValue(workerId, out var worker) ? worker.ToSnapshot() : null);
-
-    public Task<IReadOnlyList<WorkerSnapshot>> List(CancellationToken cancellationToken = default)
-        => Task.FromResult<IReadOnlyList<WorkerSnapshot>>([.. this.workers.Values.Select(worker => worker.ToSnapshot())]);
-
-    public Task<IReadOnlyList<WorkerSnapshot>> List(WorkSubjectId subjectId, CancellationToken cancellationToken = default)
+    public async Task<WorkerSnapshot?> Get(WorkerId workerId, CancellationToken cancellationToken = default)
     {
-        lock (this.subjectSync)
-        {
-            return Task.FromResult<IReadOnlyList<WorkerSnapshot>>(this.GetSubjectWorkersLocked(subjectId));
-        }
+        await this.readModel.Flush(cancellationToken);
+        return this.readModel.Current.WorkersById.TryGetValue(workerId, out var worker)
+            ? worker.Snapshot
+            : null;
     }
 
-    public Task<IReadOnlyList<WorkerSnapshot>> List(
+    public async Task<IReadOnlyList<WorkerSnapshot>> List(CancellationToken cancellationToken = default)
+    {
+        await this.readModel.Flush(cancellationToken);
+        return [.. this.readModel.Current.Workers.Select(worker => worker.Snapshot)];
+    }
+
+    public async Task<IReadOnlyList<WorkerSnapshot>> List(WorkSubjectId subjectId, CancellationToken cancellationToken = default)
+    {
+        await this.readModel.Flush(cancellationToken);
+        return this.readModel.Current.WorkersBySubject.TryGetValue(subjectId, out var workers)
+            ? CreateSnapshotList(workers)
+            : [];
+    }
+
+    public async Task<IReadOnlyList<WorkerSnapshot>> List(
         WorkDefinitionId definitionId,
         WorkSubjectId subjectId,
         CancellationToken cancellationToken = default)
     {
-        lock (this.subjectSync)
-        {
-            return Task.FromResult<IReadOnlyList<WorkerSnapshot>>(this.GetSubjectWorkersLocked(definitionId, subjectId));
-        }
+        await this.readModel.Flush(cancellationToken);
+        return this.readModel.Current.WorkersByDefinitionAndSubject.TryGetValue((definitionId, subjectId), out var workers)
+            ? CreateSnapshotList(workers)
+            : [];
     }
 
     public Task<WorkActionOutcome> Execute(
@@ -606,7 +637,8 @@ internal sealed class WorkerOperations : IWorkerOperations, IDisposable
         Volatile.Write(ref this.finalWorkerCount, 0);
         this.finalCapacityWorkers.Clear();
         this.index.Clear();
-        this.iterationIndex.Clear();
+        this.iterationStatuses.Clear();
+        this.readModel.Clear();
         this.concurrency.Clear();
         this.dispatcher.ClearScheduledWork();
         this.retention.Clear();
@@ -840,9 +872,17 @@ internal sealed class WorkerOperations : IWorkerOperations, IDisposable
         this.retention.Forget(worker.Id);
         this.concurrency.Forget(worker);
         this.index.Forget(worker);
-        this.iterationIndex.Forget(worker);
+        this.ForgetIterationStatuses(worker.Id);
         this.ScheduleConcurrencyDrain(worker.Work.Definition.Id);
         return outcome;
+    }
+
+    private void ForgetIterationStatuses(WorkerId workerId)
+    {
+        foreach (var reference in this.iterationStatuses.Keys.Where(reference => reference.WorkerId == workerId))
+        {
+            this.iterationStatuses.TryRemove(reference, out _);
+        }
     }
 
     private IReadOnlyList<WorkMessage> ValidateIdempotencyLocked(
@@ -885,6 +925,11 @@ internal sealed class WorkerOperations : IWorkerOperations, IDisposable
         => [.. workerIds
             .Select(workerId => this.workers.TryGetValue(workerId, out var worker) ? worker.ToSnapshot() : null)
             .OfType<WorkerSnapshot>()
+            .OrderByDescending(worker => worker.CreatedAt)];
+
+    private static IReadOnlyList<WorkerSnapshot> CreateSnapshotList(IEnumerable<WorkerReadModelWorker> workers)
+        => [.. workers
+            .Select(worker => worker.Snapshot)
             .OrderByDescending(worker => worker.CreatedAt)];
 
     private void ScheduleConcurrencyDrain(WorkDefinitionId definitionId)

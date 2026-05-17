@@ -3,7 +3,8 @@ namespace Workable;
 internal sealed class WorkerEventPublisher(
     WorkSystemId workSystemId,
     WorkEventStream events,
-    Action<WorkerRecord> synchronize)
+    Action<WorkerRecord> synchronize,
+    IWorkSystemReadModelWriter? readModel = null)
 {
     internal void Queued(WorkerRecord worker)
         => this.PublishWithoutSynchronize(worker, "worker.queued", details: new WorkerEventPayloadDetails(IncludeInput: true));
@@ -98,9 +99,12 @@ internal sealed class WorkerEventPublisher(
         => this.PublishWithoutSynchronize(worker, "worker.purge");
 
     internal void Log(WorkerRecord worker, WorkerLogEntry entry)
-        => events.Publish(
+    {
+        readModel?.RecordWorker(worker.ToReadModelWorker());
+        events.Publish(
             (WorkSystemId: workSystemId, Worker: worker, Entry: entry),
             static state => state.Worker.ToLogEvent(state.WorkSystemId, state.Entry));
+    }
 
     internal static string EventTypeFor(WorkCompletionStatus status)
         => status == WorkCompletionStatus.Completed
@@ -122,11 +126,22 @@ internal sealed class WorkerEventPublisher(
         string eventType,
         WorkOrigin? origin = null,
         WorkerEventPayloadDetails? details = null)
-        => events.Publish(
+    {
+        if (eventType == "worker.purge")
+        {
+            readModel?.ForgetWorker(worker.Id);
+        }
+        else
+        {
+            readModel?.RecordWorker(worker.ToReadModelWorker());
+        }
+
+        events.Publish(
             (WorkSystemId: workSystemId, Worker: worker, EventType: eventType, Origin: origin, Details: details),
             static state => state.Worker.ToEvent(
                 state.WorkSystemId,
                 state.EventType,
                 state.Origin,
                 state.Details));
+    }
 }

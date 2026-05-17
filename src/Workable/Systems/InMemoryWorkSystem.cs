@@ -14,7 +14,8 @@ internal sealed class InMemoryWorkSystem : IWorkSystem, IOriginAwareWorkSystem, 
     private readonly WorkSystemCatalog catalog;
     private readonly WorkQueueService queue;
     private readonly WorkerOperations workers;
-    private readonly WorkQueryService query;
+    private readonly WorkSystemReadModel readModel;
+    private readonly IWorkQueryService query;
     private readonly InMemoryWorkMetricsSink metrics = new();
     private readonly WorkEventStream events = new();
     private readonly SemaphoreSlim lifecycleLock = new(1, 1);
@@ -39,8 +40,23 @@ internal sealed class InMemoryWorkSystem : IWorkSystem, IOriginAwareWorkSystem, 
         var dotNetOriginProvider = registration.DotNetOriginProviderFactory?.Invoke(rootServices)
             ?? rootServices.GetService<IDotNetWorkOriginProvider>()
             ?? new DefaultDotNetWorkOriginProvider();
-        this.workers = new WorkerOperations(this.catalog, () => this.State, this.Id, this.Name, rootServices, this.events, dotNetOriginProvider, registration.ExceptionClassifiers, globalExceptionClassifiers, this.ShutdownGracePeriod, registration.Retention, registration.Capacity, this.metrics);
-        this.query = this.workers.Queries;
+        this.readModel = new WorkSystemReadModel(this.catalog, () => this.State, this.Name, this.metrics);
+        this.workers = new WorkerOperations(
+            this.catalog,
+            () => this.State,
+            this.Id,
+            this.Name,
+            rootServices,
+            this.events,
+            this.readModel,
+            dotNetOriginProvider,
+            registration.ExceptionClassifiers,
+            globalExceptionClassifiers,
+            this.ShutdownGracePeriod,
+            registration.Retention,
+            registration.Capacity,
+            this.metrics);
+        this.query = this.readModel.Query;
         this.queue = new WorkQueueService(this.catalog, this.workers, dotNetOriginProvider);
     }
 
@@ -181,6 +197,7 @@ internal sealed class InMemoryWorkSystem : IWorkSystem, IOriginAwareWorkSystem, 
         await this.Stop();
         this.workers.Dispose();
         this.lifecycleLock.Dispose();
+        await this.readModel.DisposeAsync();
         await this.events.DisposeAsync();
     }
 

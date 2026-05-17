@@ -1346,6 +1346,60 @@ public sealed class WorkQueryServiceTests
         Assert.Equal(0, afterPurge.LiveSummary.InFlightDeltaPerSecond, precision: 6);
     }
 
+    [Fact]
+    public async Task QueryReadModelClearsWhenSystemStops()
+    {
+        await using var system = CreateSystem(
+            WorkDefinition.Create("readmodel.clear", category: "ReadModel"),
+            SuccessfulWork);
+
+        await system.Start();
+        await (await system.Queue.Enqueue("readmodel.clear")).WaitForCompletion();
+
+        var beforeStop = await system.Query.Workers();
+        await system.Stop();
+        var afterStop = await system.Query.Workers();
+        var overview = await system.Query.SystemDetails();
+
+        Assert.NotEmpty(beforeStop.Workers);
+        Assert.Empty(afterStop.Workers);
+        Assert.Equal(0, overview.ActiveWorkerCount);
+        Assert.Empty(overview.WorkerCountByState);
+    }
+
+    [Fact]
+    public async Task WorkerOperationsReadFromReadModel()
+    {
+        var subject = new WorkSubjectId("read-model", "worker-operations");
+        var definition = WorkDefinition.Create("readmodel.worker-operations", category: "ReadModel");
+        await using var system = CreateSystem(definition, SuccessfulWork);
+
+        await system.Start();
+        var handle = await system.Queue.Enqueue(
+            "readmodel.worker-operations",
+            WorkInput.Empty.WithSubject(subject));
+        await handle.WaitForCompletion();
+        var workerId = RequiredWorkerId(handle);
+        var operations = Assert.IsType<WorkerOperations>(system.Workers);
+
+        var byId = await operations.Get(workerId);
+        var all = await operations.List();
+        var bySubject = await operations.List(subject);
+        var byDefinitionAndSubject = await operations.List(definition.Id, subject);
+        await system.Stop();
+
+        var afterStopById = await operations.Get(workerId);
+        var afterStopAll = await operations.List();
+
+        Assert.NotNull(byId);
+        Assert.Equal(workerId, byId.Id);
+        Assert.Contains(all, worker => worker.Id == workerId);
+        Assert.Equal(workerId, Assert.Single(bySubject).Id);
+        Assert.Equal(workerId, Assert.Single(byDefinitionAndSubject).Id);
+        Assert.Null(afterStopById);
+        Assert.Empty(afterStopAll);
+    }
+
     private static async Task WaitForThroughputBucketToClose()
     {
         var currentSecond = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
