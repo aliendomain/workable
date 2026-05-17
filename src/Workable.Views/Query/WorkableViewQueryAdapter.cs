@@ -19,12 +19,18 @@ public class WorkableViewQueryAdapter
 
         var query = criteria ?? new WorkComponentCriteria();
         var requests = NormalizeComponentRequests(query.Components);
+        var queryService = BeginRead(system.Query);
         var components = new Dictionary<string, WorkComponentResult>(StringComparer.OrdinalIgnoreCase);
         foreach (var request in requests)
         {
             cancellationToken.ThrowIfCancellationRequested();
             var normalizedRequest = NormalizeComponentRequest(request);
-            components[request.Id] = await this.CreateComponent(system, normalizedRequest, query.Scope, cancellationToken);
+            components[request.Id] = await this.CreateComponent(
+                system,
+                queryService,
+                normalizedRequest,
+                query.Scope,
+                cancellationToken);
         }
 
         return new WorkComponentQueryResult(DateTimeOffset.UtcNow, components);
@@ -197,8 +203,14 @@ public class WorkableViewQueryAdapter
             [.. NormalizeComponentRequests(query.Components).Select(NormalizeComponentRequest)]);
     }
 
+    private static IWorkQueryService BeginRead(IWorkQueryService queries)
+        => queries is IWorkSnapshotQueryService snapshotQueries
+            ? snapshotQueries.BeginRead()
+            : queries;
+
     private async Task<WorkComponentResult> CreateComponent(
         IWorkSystem system,
+        IWorkQueryService queries,
         WorkComponentRequest request,
         WorkSystemCriteria? criteria,
         CancellationToken cancellationToken)
@@ -209,14 +221,14 @@ public class WorkableViewQueryAdapter
             {
                 "system" => CreateSystemComponent(system),
                 "catalog" => CreateCatalogComponent(system, criteria),
-                "workers" => await CreateWorkersComponent(system, criteria, request.Shape, cancellationToken),
-                "failedworkers" => await CreateFailedWorkersComponent(system, criteria, request.Shape, cancellationToken),
-                "iterations" => await CreateIterationsComponent(system, criteria, request.Shape, cancellationToken),
-                "failediterations" => await CreateFailedIterationsComponent(system, criteria, request.Shape, cancellationToken),
-                "completediterations" => await CreateCompletedIterationsComponent(system, criteria, request.Shape, cancellationToken),
-                "throughput" => await CreateThroughputComponent(system, criteria, request.Shape, request.Options, cancellationToken),
-                "workergrid" => await CreateWorkerGridComponent(system, criteria, request.Options, cancellationToken),
-                "iterationgrid" => await CreateIterationGridComponent(system, criteria, request.Options, cancellationToken),
+                "workers" => await CreateWorkersComponent(queries, criteria, request.Shape, cancellationToken),
+                "failedworkers" => await CreateFailedWorkersComponent(queries, criteria, request.Shape, cancellationToken),
+                "iterations" => await CreateIterationsComponent(queries, criteria, request.Shape, cancellationToken),
+                "failediterations" => await CreateFailedIterationsComponent(queries, criteria, request.Shape, cancellationToken),
+                "completediterations" => await CreateCompletedIterationsComponent(queries, criteria, request.Shape, cancellationToken),
+                "throughput" => await CreateThroughputComponent(queries, criteria, request.Shape, request.Options, cancellationToken),
+                "workergrid" => await CreateWorkerGridComponent(queries, criteria, request.Options, cancellationToken),
+                "iterationgrid" => await CreateIterationGridComponent(queries, criteria, request.Options, cancellationToken),
                 "readmodeldiagnostics" => CreateReadModelDiagnosticsComponent(system, request.Shape, request.Options),
                 _ => null,
             };
@@ -316,12 +328,12 @@ public class WorkableViewQueryAdapter
                 .All(matches => matches);
 
     private static async Task<object> CreateWorkersComponent(
-        IWorkSystem system,
+        IWorkQueryService queries,
         WorkSystemCriteria? criteria,
         string shape,
         CancellationToken cancellationToken)
     {
-        var counts = await system.Query.SystemWorkerCounts(criteria, cancellationToken: cancellationToken);
+        var counts = await queries.SystemWorkerCounts(criteria, cancellationToken: cancellationToken);
         if (shape == WorkComponentShapes.Compact)
         {
             return CreateCompactWorkersComponent(counts);
@@ -346,12 +358,12 @@ public class WorkableViewQueryAdapter
             counts.OldestQueuedAt);
 
     private static async Task<object> CreateFailedWorkersComponent(
-        IWorkSystem system,
+        IWorkQueryService queries,
         WorkSystemCriteria? criteria,
         string shape,
         CancellationToken cancellationToken)
     {
-        var failedWorkers = await system.Query.SystemFailedWorkers(criteria, cancellationToken: cancellationToken);
+        var failedWorkers = await queries.SystemFailedWorkers(criteria, cancellationToken: cancellationToken);
         return shape == WorkComponentShapes.Detailed
             ? failedWorkers.FailedWorkers.Select(worker => new WorkOverviewFailedWorkerDetailed(
                 worker.Id,
@@ -371,7 +383,7 @@ public class WorkableViewQueryAdapter
     }
 
     private static async Task<WorkViewWorkerGridDetailedComponent> CreateWorkerGridComponent(
-        IWorkSystem system,
+        IWorkQueryService queries,
         WorkSystemCriteria? criteria,
         JsonElement? options,
         CancellationToken cancellationToken)
@@ -379,10 +391,10 @@ public class WorkableViewQueryAdapter
         var query = CreateWorkerGridCriteria(criteria, options);
         if (!string.IsNullOrWhiteSpace(query.KeyType))
         {
-            return await CreateWorkerGridByKeyTypeComponent(system, criteria, query, cancellationToken);
+            return await CreateWorkerGridByKeyTypeComponent(queries, criteria, query, cancellationToken);
         }
 
-        var result = await system.Query.Workers(query.Criteria, cancellationToken: cancellationToken);
+        var result = await queries.Workers(query.Criteria, cancellationToken: cancellationToken);
         return new WorkViewWorkerGridDetailedComponent(
             result.Workers.Select(CreateWorkerGridDetailed).ToArray(),
             result.TotalCount,
@@ -391,12 +403,12 @@ public class WorkableViewQueryAdapter
     }
 
     private static async Task<WorkViewWorkerGridDetailedComponent> CreateWorkerGridByKeyTypeComponent(
-        IWorkSystem system,
+        IWorkQueryService queries,
         WorkSystemCriteria? scope,
         WorkViewWorkerGridCriteria query,
         CancellationToken cancellationToken)
     {
-        var keyTypes = await system.Query.WorkerKeyTypes(new WorkerKeyTypeCriteria(
+        var keyTypes = await queries.WorkerKeyTypes(new WorkerKeyTypeCriteria(
             Type: query.KeyType,
             States: query.Criteria.States), cancellationToken: cancellationToken);
         var workers = keyTypes.Types
@@ -419,41 +431,41 @@ public class WorkableViewQueryAdapter
     }
 
     private static async Task<object> CreateIterationsComponent(
-        IWorkSystem system,
+        IWorkQueryService queries,
         WorkSystemCriteria? criteria,
         string shape,
         CancellationToken cancellationToken)
     {
-        var counts = await system.Query.SystemIterationCounts(criteria, cancellationToken: cancellationToken);
+        var counts = await queries.SystemIterationCounts(criteria, cancellationToken: cancellationToken);
         if (shape == WorkComponentShapes.Compact)
         {
             return new WorkOverviewIterationsCompactComponent(
                 counts.IterationCountByStatus);
         }
 
-        var keyTypes = await system.Query.SystemCommonKeyTypes(criteria, cancellationToken: cancellationToken);
+        var keyTypes = await queries.SystemCommonKeyTypes(criteria, cancellationToken: cancellationToken);
         return new WorkOverviewIterationsStandardComponent(
             counts.IterationCountByStatus,
             keyTypes.KeyTypes);
     }
 
     private static async Task<object> CreateFailedIterationsComponent(
-        IWorkSystem system,
+        IWorkQueryService queries,
         WorkSystemCriteria? criteria,
         string shape,
         CancellationToken cancellationToken)
     {
-        var iterations = await system.Query.SystemFailedIterations(criteria, cancellationToken: cancellationToken);
+        var iterations = await queries.SystemFailedIterations(criteria, cancellationToken: cancellationToken);
         return CreateIterationListComponent(iterations.Iterations, shape);
     }
 
     private static async Task<object> CreateCompletedIterationsComponent(
-        IWorkSystem system,
+        IWorkQueryService queries,
         WorkSystemCriteria? criteria,
         string shape,
         CancellationToken cancellationToken)
     {
-        var iterations = await system.Query.SystemCompletedIterations(criteria, cancellationToken: cancellationToken);
+        var iterations = await queries.SystemCompletedIterations(criteria, cancellationToken: cancellationToken);
         return CreateIterationListComponent(iterations.Iterations, shape);
     }
 
@@ -478,7 +490,7 @@ public class WorkableViewQueryAdapter
                 iteration.ExecutionDuration)).ToArray();
 
     private static async Task<WorkViewIterationGridDetailedComponent> CreateIterationGridComponent(
-        IWorkSystem system,
+        IWorkQueryService queries,
         WorkSystemCriteria? criteria,
         JsonElement? options,
         CancellationToken cancellationToken)
@@ -486,10 +498,10 @@ public class WorkableViewQueryAdapter
         var query = CreateIterationGridCriteria(criteria, options);
         if (!string.IsNullOrWhiteSpace(query.KeyType))
         {
-            return await CreateIterationGridByKeyTypeComponent(system, criteria, query, cancellationToken);
+            return await CreateIterationGridByKeyTypeComponent(queries, criteria, query, cancellationToken);
         }
 
-        var result = await system.Query.WorkerIterations(query.Criteria, cancellationToken: cancellationToken);
+        var result = await queries.WorkerIterations(query.Criteria, cancellationToken: cancellationToken);
         return new WorkViewIterationGridDetailedComponent(
             result.Iterations.Select(CreateIterationGridDetailed).ToArray(),
             result.TotalCount,
@@ -498,12 +510,12 @@ public class WorkableViewQueryAdapter
     }
 
     private static async Task<WorkViewIterationGridDetailedComponent> CreateIterationGridByKeyTypeComponent(
-        IWorkSystem system,
+        IWorkQueryService queries,
         WorkSystemCriteria? scope,
         WorkViewIterationGridCriteria query,
         CancellationToken cancellationToken)
     {
-        var keyTypes = await system.Query.WorkIterationKeyTypes(new WorkIterationKeyTypeCriteria(
+        var keyTypes = await queries.WorkIterationKeyTypes(new WorkIterationKeyTypeCriteria(
             Type: query.KeyType,
             Statuses: query.Criteria.Statuses), cancellationToken: cancellationToken);
         var iterations = keyTypes.Types
@@ -526,17 +538,17 @@ public class WorkableViewQueryAdapter
     }
 
     private static async Task<object> CreateThroughputComponent(
-        IWorkSystem system,
+        IWorkQueryService queries,
         WorkSystemCriteria? criteria,
         string shape,
         JsonElement? options,
         CancellationToken cancellationToken)
     {
-        var workerCounts = await system.Query.SystemWorkerCounts(criteria, cancellationToken: cancellationToken);
+        var workerCounts = await queries.SystemWorkerCounts(criteria, cancellationToken: cancellationToken);
         var throughputCriteria = CreateThroughputCriteria(options);
         if (shape == WorkComponentShapes.Compact)
         {
-            var summary = await system.Query.SystemThroughputSummary(
+            var summary = await queries.SystemThroughputSummary(
                 criteria,
                 throughputCriteria,
                 cancellationToken: cancellationToken);
@@ -549,7 +561,7 @@ public class WorkableViewQueryAdapter
                     CreateLiveSummary(summary.LiveSummary)));
         }
 
-        var throughput = await system.Query.SystemThroughput(
+        var throughput = await queries.SystemThroughput(
             criteria,
             throughputCriteria,
             cancellationToken: cancellationToken);

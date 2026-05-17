@@ -1451,6 +1451,30 @@ public sealed class WorkQueryServiceTests
     }
 
     [Fact]
+    public async Task QuerySnapshotReadStaysPinnedToCapturedReadModelSnapshot()
+    {
+        const string definitionName = "readmodel.snapshot";
+        var definition = WorkDefinition.Create(definitionName, category: "ReadModel");
+        await using var system = CreateSystem(definition, SuccessfulWork);
+
+        await system.Start();
+        var first = await system.Queue.Enqueue(definitionName);
+        await first.WaitForCompletion();
+        await Eventually(async () =>
+            (await system.Query.Workers(new WorkerCriteria(DefinitionName: definitionName, Take: 10))).Workers.Count == 1);
+        var snapshotQueries = Assert.IsAssignableFrom<IWorkSnapshotQueryService>(system.Query);
+        var snapshotRead = snapshotQueries.BeginRead();
+
+        var second = await system.Queue.Enqueue(definitionName);
+        await second.WaitForCompletion();
+        await Eventually(async () =>
+            (await system.Query.Workers(new WorkerCriteria(DefinitionName: definitionName, Take: 10))).Workers.Count == 2);
+        var pinned = await snapshotRead.Workers(new WorkerCriteria(DefinitionName: definitionName, Take: 10));
+
+        Assert.Equal(RequiredWorkerId(first), Assert.Single(pinned.Workers).Id);
+    }
+
+    [Fact]
     public async Task WorkerOperationsReadFromReadModel()
     {
         var subject = new WorkSubjectId("read-model", "worker-operations");
@@ -1490,6 +1514,22 @@ public sealed class WorkQueryServiceTests
         {
             await Task.Delay(10);
         }
+    }
+
+    private static async Task Eventually(Func<Task<bool>> condition)
+    {
+        var deadline = DateTimeOffset.UtcNow.AddSeconds(5);
+        while (DateTimeOffset.UtcNow < deadline)
+        {
+            if (await condition())
+            {
+                return;
+            }
+
+            await Task.Delay(10);
+        }
+
+        Assert.True(await condition(), "Expected condition to become true.");
     }
 
     private static IWorkSystem CreateSystem(

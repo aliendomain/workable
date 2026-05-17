@@ -103,6 +103,9 @@ internal sealed class WorkSystemReadModel : IWorkSystemReadModelStore, IAsyncDis
     public void Clear()
         => this.Enqueue(new ClearReadModelUpdate(this.NextSequence()));
 
+    public void ThrowIfProjectorFailed()
+        => ThrowIfProjectorFailed(Volatile.Read(ref this.projectorException));
+
     public async ValueTask Flush(CancellationToken cancellationToken = default)
     {
         var targetSequence = Volatile.Read(ref this.enqueuedSequence);

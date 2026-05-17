@@ -1529,7 +1529,12 @@ function SystemNotificationTray({
     "readModelDiagnostics"
   );
   const detailCompact = createCompactDiagnosticsFromDetailed(detailed);
-  const compact = trayCompact ?? detailCompact ?? alertCompact;
+  const visibleCompact = readModelExpanded
+    ? detailCompact ?? trayCompact
+    : trayCompact;
+  const compact = open
+    ? visibleCompact ?? alertCompact
+    : alertCompact;
   const diagnosticsError = alertDiagnostics.error || (
     readModelExpanded ? detailDiagnostics.error : open ? trayDiagnostics.error : undefined
   );
