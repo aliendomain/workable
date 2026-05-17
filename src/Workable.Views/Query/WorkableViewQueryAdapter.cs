@@ -217,6 +217,7 @@ public class WorkableViewQueryAdapter
                 "throughput" => await CreateThroughputComponent(system, criteria, request.Shape, request.Options, cancellationToken),
                 "workergrid" => await CreateWorkerGridComponent(system, criteria, request.Options, cancellationToken),
                 "iterationgrid" => await CreateIterationGridComponent(system, criteria, request.Options, cancellationToken),
+                "readmodeldiagnostics" => CreateReadModelDiagnosticsComponent(system, request.Shape, request.Options),
                 _ => null,
             };
 
@@ -580,6 +581,32 @@ public class WorkableViewQueryAdapter
             summary.CanceledPerSecond,
             summary.InFlightDeltaPerSecond);
 
+    private static object CreateReadModelDiagnosticsComponent(
+        IWorkSystem system,
+        string shape,
+        JsonElement? options)
+    {
+        var readModel = system.Diagnostics.ReadModel;
+        var warningThreshold = Math.Max(1, TryGetInt32(options, "warningThreshold") ?? 100);
+        var isBehind = readModel.PendingUpdateCount >= warningThreshold;
+
+        if (shape == WorkComponentShapes.Compact)
+        {
+            return new WorkReadModelDiagnosticsCompactComponent(
+                readModel.PendingUpdateCount,
+                isBehind,
+                warningThreshold,
+                readModel.HasProjectorFailure,
+                readModel.ProjectorFailureType,
+                readModel.ProjectorFailureMessage);
+        }
+
+        return new WorkReadModelDiagnosticsDetailedComponent(
+            readModel,
+            isBehind,
+            warningThreshold);
+    }
+
     private static WorkViewWorkerGridDetailed CreateWorkerGridDetailed(WorkerOverviewItem worker)
         => new(
             worker.Id,
@@ -626,6 +653,13 @@ public class WorkableViewQueryAdapter
                 : [new("iterationGrid", "iterationGrid", Shape: WorkComponentShapes.Detailed)];
         }
 
+        if (string.Equals(name, "diagnostics", StringComparison.OrdinalIgnoreCase))
+        {
+            return requests is { Count: > 0 }
+                ? requests
+                : [new("readModelDiagnostics", "readModelDiagnostics", Shape: WorkComponentShapes.Compact)];
+        }
+
         return null;
     }
 
@@ -663,6 +697,11 @@ public class WorkableViewQueryAdapter
         else if ((string.Equals(request.Type, "workerGrid", StringComparison.OrdinalIgnoreCase) ||
             string.Equals(request.Type, "iterationGrid", StringComparison.OrdinalIgnoreCase)) &&
             shape != WorkComponentShapes.Detailed)
+        {
+            shape = WorkComponentShapes.Detailed;
+        }
+        else if (string.Equals(request.Type, "readModelDiagnostics", StringComparison.OrdinalIgnoreCase) &&
+            shape == WorkComponentShapes.Standard)
         {
             shape = WorkComponentShapes.Detailed;
         }
@@ -785,6 +824,11 @@ public class WorkableViewQueryAdapter
             property.TryGetInt32(out var value)
                 ? value
                 : null;
+
+    private static int? TryGetInt32(JsonElement? options, string propertyName)
+        => options.HasValue && options.Value.ValueKind is not (JsonValueKind.Null or JsonValueKind.Undefined)
+            ? TryGetInt32(options.Value, propertyName)
+            : null;
 
     private sealed record WorkViewWorkerGridCriteria(
         WorkerCriteria Criteria,

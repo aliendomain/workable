@@ -725,6 +725,58 @@ public sealed class WorkQueryServiceTests
     }
 
     [Fact]
+    public async Task QueryReadModelTracksControlStateTransitions()
+    {
+        var running = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var attempts = 0;
+        var definition = WorkDefinition.Create("readmodel.control.transitions", category: "ReadModel");
+        await using var system = CreateSystem(
+            definition,
+            async (_, _, cancellationToken) =>
+            {
+                if (Interlocked.Increment(ref attempts) == 1)
+                {
+                    running.TrySetResult();
+                    await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+                }
+
+                return WorkExecutionResult.Success();
+            });
+
+        await system.Start();
+
+        var handle = await system.Queue.Enqueue("readmodel.control.transitions");
+        var workerId = RequiredWorkerId(handle);
+        await running.Task.WaitAsync(TimeSpan.FromSeconds(1));
+        var runningWorker = await system.Query.Worker(workerId)
+            ?? throw new InvalidOperationException("Expected running worker.");
+
+        var pause = await system.Workers.Execute(runningWorker.Version, WorkAction.Pause);
+        await handle.WaitForCompletion();
+        var pausedWorker = await system.Query.Worker(workerId)
+            ?? throw new InvalidOperationException("Expected paused worker.");
+        var pausedQuery = await system.Query.Workers(new WorkerCriteria(
+            States: new HashSet<WorkerState> { WorkerState.Paused }));
+
+        var start = await system.Workers.Execute(pausedWorker.Version, WorkAction.Start);
+        await handle.WaitForCompletion();
+        var completedWorker = await system.Query.Worker(workerId)
+            ?? throw new InvalidOperationException("Expected completed worker.");
+        var completedQuery = await system.Query.Workers(new WorkerCriteria(
+            States: new HashSet<WorkerState> { WorkerState.Completed }));
+        var summary = await system.Query.WorkerStatusSummary();
+
+        Assert.True(pause.IsAccepted);
+        Assert.Equal(WorkerState.Paused, pausedWorker.State);
+        Assert.Equal(workerId, Assert.Single(pausedQuery.Workers).Id);
+        Assert.True(start.IsAccepted);
+        Assert.Equal(WorkerState.Completed, completedWorker.State);
+        Assert.Equal(workerId, Assert.Single(completedQuery.Workers).Id);
+        Assert.Equal(1, summary.Counts.GetValueOrDefault(WorkerState.Completed));
+        Assert.Equal(2, attempts);
+    }
+
+    [Fact]
     public async Task WorkersQueryCapsOversizedTakeAtSafeMaximum()
     {
         var definition = WorkDefinition.Create(

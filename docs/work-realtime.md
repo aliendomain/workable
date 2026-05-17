@@ -21,6 +21,7 @@ builder.Services.AddWorkableSignalR(options =>
 {
     options.HubPath = "/internal/work/realtime";
     options.PublishInterval = TimeSpan.FromSeconds(2);
+    options.DiagnosticsPublishInterval = TimeSpan.FromMilliseconds(250);
 });
 
 app.MapWorkableSignalR();
@@ -59,7 +60,7 @@ When `Workable.SignalR` is registered:
           "enabled": true,
           "transport": "signalr",
           "hubPath": "/workable/realtime",
-          "features": ["worker-events", "component-views"]
+          "features": ["worker-events", "component-views", "diagnostics-view"]
         }
       }
     }
@@ -187,6 +188,55 @@ Stop watching a view when the page no longer needs live updates.
 
 ```csharp
 await connection.InvokeAsync("UnwatchView", "overview", (string?)null);
+```
+
+## Diagnostics View Updates
+
+System health chrome can subscribe to the `diagnostics` view without adding diagnostics data to the overview payload. The default diagnostics publish interval is 250ms and only active diagnostics view groups are published.
+
+```csharp
+await connection.InvokeAsync(
+    "WatchView",
+    "diagnostics",
+    new WorkViewCriteria(
+        Components:
+        [
+            new(
+                "readModelDiagnostics",
+                "readModelDiagnostics",
+                Options: JsonSerializer.SerializeToElement(new { warningThreshold = 100 }),
+                Shape: WorkComponentShapes.Compact)
+        ]),
+    (string?)null);
+```
+
+Use the compact shape for alert indicators and the detailed shape for an expanded read-model diagnostics panel. The compact payload includes `pendingUpdateCount`, `isReadModelBehind`, `readModelLagWarningThreshold`, and projector failure fields. The detailed payload also includes the full `readModel` diagnostics object.
+
+Diagnostics components can set `publishMode` in their options:
+
+- `alertChanges` only pushes compact diagnostics when the alert state changes, such as normal-to-behind, behind-to-normal, severity band changes, or projector failure changes. This is intended for always-on notification indicators.
+- `continuous` pushes on every diagnostics publish tick while the subscription is active. This is intended for visible diagnostics panels.
+
+For example, an always-on alert indicator can stay quiet while healthy:
+
+```csharp
+await connection.InvokeAsync(
+    "WatchView",
+    "diagnostics",
+    new WorkViewCriteria(
+        Components:
+        [
+            new(
+                "readModelDiagnostics",
+                "readModelDiagnostics",
+                Options: JsonSerializer.SerializeToElement(new
+                {
+                    publishMode = "alertChanges",
+                    warningThreshold = 100
+                }),
+                Shape: WorkComponentShapes.Compact)
+        ]),
+    (string?)null);
 ```
 
 ## Hub Methods

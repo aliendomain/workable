@@ -7,6 +7,7 @@ internal sealed class WorkableRealtimeCapabilityProvider(IOptions<WorkableSignal
     [
         "worker-events",
         "component-views",
+        "diagnostics-view",
     ];
 
     public WorkRealtimeCapability GetCapability(IWorkSystem system)

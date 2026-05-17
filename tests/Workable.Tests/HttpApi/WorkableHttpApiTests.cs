@@ -1204,6 +1204,41 @@ public sealed class WorkableHttpApiTests
     }
 
     [Fact]
+    public async Task MappedHttpDiagnosticsRouteReturnsReadModelCounters()
+    {
+        using var host = await CreateHttpHost();
+        var client = host.GetTestClient();
+        var system = host.Services.GetRequiredService<IWorkSystemRegistry>().Default;
+
+        var queueResponse = await client.PostAsJsonAsync(
+            "/workable/work/http.route.case",
+            new
+            {
+                completion = "returnAfterAccepted",
+            });
+        queueResponse.EnsureSuccessStatusCode();
+        await system.Query.Workers();
+
+        var response = await client.GetAsync("/workable/diagnostics");
+        response.EnsureSuccessStatusCode();
+        var json = JsonNode.Parse(await response.Content.ReadAsStringAsync())
+            ?? throw new InvalidOperationException("Expected JSON response.");
+        var readModel = json["readModel"]
+            ?? throw new InvalidOperationException("Expected read model diagnostics.");
+
+        Assert.Equal(system.Id.Value.ToString(), json["id"]?["value"]?.GetValue<string>());
+        Assert.Equal("Started", json["state"]?.GetValue<string>());
+        Assert.True(readModel["enqueuedSequence"]?.GetValue<long>() > 0);
+        Assert.Equal(
+            readModel["enqueuedSequence"]?.GetValue<long>(),
+            readModel["appliedSequence"]?.GetValue<long>());
+        Assert.Equal(0, readModel["pendingUpdateCount"]?.GetValue<long>());
+        Assert.True(readModel["appliedUpdateCount"]?.GetValue<long>() > 0);
+        Assert.True(readModel["publishedSnapshotCount"]?.GetValue<long>() > 0);
+        Assert.False(readModel["hasProjectorFailure"]?.GetValue<bool>());
+    }
+
+    [Fact]
     public async Task MappedHttpLifecycleRoutesCanStartAndStopSystem()
     {
         using var host = await CreateManualHttpHost();

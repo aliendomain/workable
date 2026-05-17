@@ -89,6 +89,7 @@ builder.Services.AddWorkableMcpServer();
 builder.Services.AddWorkableSignalR(options =>
 {
     options.PublishInterval = TimeSpan.FromMilliseconds(250);
+    options.DiagnosticsPublishInterval = TimeSpan.FromMilliseconds(250);
 });
 
 var app = builder.Build();

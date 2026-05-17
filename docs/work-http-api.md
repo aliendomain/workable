@@ -82,6 +82,40 @@ The `capabilities` object lets clients discover optional adapter features for ea
 
 When realtime is not registered, `enabled` is `false`.
 
+## Diagnostics
+
+Read runtime diagnostics for the selected system.
+
+```http
+GET /workable/diagnostics
+GET /workable/systems/email/diagnostics
+```
+
+The response includes read-model projection counters that can be used to monitor query freshness and projector pressure.
+
+```json
+{
+  "id": { "value": "11111111-1111-1111-1111-111111111111" },
+  "name": "email",
+  "state": "Started",
+  "readModel": {
+    "enqueuedSequence": 42,
+    "appliedSequence": 42,
+    "appliedUpdateCount": 42,
+    "publishedSnapshotCount": 7,
+    "lastBatchSize": 3,
+    "lastProjectionDuration": "00:00:00.0012000",
+    "lastProjectedAt": "2026-05-17T16:19:00.168+00:00",
+    "projectorFailureType": null,
+    "projectorFailureMessage": null,
+    "pendingUpdateCount": 0,
+    "hasProjectorFailure": false
+  }
+}
+```
+
+`pendingUpdateCount` should usually return to `0`. Sustained growth means the read-model projector is falling behind accepted lifecycle updates.
+
 ## System Lifecycle
 
 Start or stop a Workable system through the HTTP API.

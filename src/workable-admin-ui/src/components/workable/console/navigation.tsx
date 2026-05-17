@@ -22,7 +22,7 @@ import {
   Trash2,
   Workflow,
 } from "lucide-react";
-import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
+import { Fragment, type ReactNode, useCallback, useEffect, useMemo, useState } from "react";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -1026,6 +1026,7 @@ export function ConsoleNavigationHeader({
   onBack,
   onOpenView,
   system,
+  systemNotifications,
   view,
   workerId,
 }: {
@@ -1035,6 +1036,7 @@ export function ConsoleNavigationHeader({
   onBack: () => void;
   onOpenView: (view: View, systemId?: string, trackHistory?: boolean) => void;
   system: WorkableSystemConnection;
+  systemNotifications?: ReactNode;
   view: View;
   workerId: string | null;
 }) {
@@ -1067,7 +1069,7 @@ export function ConsoleNavigationHeader({
           Go back
         </TooltipContent>
       </Tooltip>
-      <div className="min-w-0 overflow-x-auto">
+      <div className="min-w-0 flex-1 overflow-x-auto">
         <Breadcrumb>
           <BreadcrumbList className="flex-nowrap whitespace-nowrap">
             <BreadcrumbItem className="min-w-0 shrink-0">
@@ -1098,6 +1100,11 @@ export function ConsoleNavigationHeader({
           </BreadcrumbList>
         </Breadcrumb>
       </div>
+      {systemNotifications && (
+        <div className="ml-auto flex shrink-0 items-center">
+          {systemNotifications}
+        </div>
+      )}
     </div>
   );
 }

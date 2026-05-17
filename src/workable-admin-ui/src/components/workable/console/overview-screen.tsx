@@ -135,21 +135,25 @@ type RealtimePayloadPanelState = {
   captureEnabled: boolean;
   connectionState: string;
   enabled: boolean;
+  externalMessages: RealtimePayloadMessage[];
   hubUrl?: string | null;
   maxMessages: number;
   messages: RealtimePayloadMessage[];
   onCaptureEnabledChange: (enabled: boolean) => void;
+  onClearExternalMessages: () => void;
   onClearMessages: () => void;
   onMaxMessagesChange: (maxMessages: number) => void;
   onOpenChange: (open: boolean) => void;
   open: boolean;
 };
-type RealtimePayloadMessage = {
+export type RealtimePayloadMessage = {
   bytes: number;
   components: Array<{ id: string; shape?: string; status?: string }>;
-  id: number;
+  id: string;
   receivedAt: number;
+  subscription: string;
   value: unknown;
+  viewName: string;
 };
 type RealtimePayloadComponentData = {
   data: unknown;
@@ -249,9 +253,11 @@ function overviewComponent(
 }
 export function OverviewView({
   connection,
+  externalRealtimeMessages,
   hiddenPanelIds,
   hiddenThroughputSeries,
   isVisible,
+  onClearExternalRealtimeMessages,
   onConnectionError,
   onOpenCatalog,
   onOpenIterations,
@@ -260,19 +266,27 @@ export function OverviewView({
   onOpenWorker,
   onPanelShapeChange,
   onPanelVisibilityChange,
+  onRealtimePayloadCaptureEnabledChange,
+  onRealtimePayloadMaxMessagesChange,
+  onRealtimePayloadOpenChange,
   onStateLoaded,
   onThroughputSeriesToggle,
   onViewIterationsByStatus,
   onViewWorkersByState,
   overviewScope,
   panelShapes,
+  realtimePayloadCaptureEnabled,
+  realtimePayloadMaxMessages,
+  realtimePayloadOpen,
   refreshToken,
   renderToolbar,
 }: {
   connection: WorkableConnection;
+  externalRealtimeMessages?: RealtimePayloadMessage[];
   hiddenPanelIds: OverviewPanelId[];
   hiddenThroughputSeries: ThroughputSeriesId[];
   isVisible: boolean;
+  onClearExternalRealtimeMessages?: () => void;
   onConnectionError: () => void;
   onOpenCatalog: () => void;
   onOpenIterations: () => void;
@@ -281,12 +295,18 @@ export function OverviewView({
   onOpenWorker: (workerId: string) => void;
   onPanelShapeChange: (panelId: OverviewPanelId, shape: WorkComponentShape) => void;
   onPanelVisibilityChange: (panelId: OverviewPanelId, visible: boolean) => void;
+  onRealtimePayloadCaptureEnabledChange?: (enabled: boolean) => void;
+  onRealtimePayloadMaxMessagesChange?: (maxMessages: number) => void;
+  onRealtimePayloadOpenChange?: (open: boolean) => void;
   onStateLoaded: (state: string) => void;
   onThroughputSeriesToggle: (seriesId: ThroughputSeriesId) => void;
   onViewIterationsByStatus: (statuses: WorkCompletionStatus[]) => void;
   onViewWorkersByState: (states: WorkerState[]) => void;
   overviewScope: OverviewScope | null;
   panelShapes: OverviewPanelShapeMap;
+  realtimePayloadCaptureEnabled?: boolean;
+  realtimePayloadMaxMessages?: number;
+  realtimePayloadOpen?: boolean;
   refreshToken: number;
   renderToolbar: (state: {
     loading: boolean;
@@ -300,11 +320,14 @@ export function OverviewView({
     data: WorkSystemFailedWorkersOverview;
     key: string;
   } | null>(null);
-  const [realtimeCaptureEnabled, setRealtimeCaptureEnabled] = useState(true);
-  const [realtimeMaxMessages, setRealtimeMaxMessages] = useState(100);
-  const [realtimePayloadOpen, setRealtimePayloadOpen] = useState(false);
   const [throughputMode, setThroughputMode] = useState<ThroughputMode>("completion");
   const [throughputWindowSeconds, setThroughputWindowSeconds] = useState(60);
+  const payloadOpen = realtimePayloadOpen ?? false;
+  const payloadCaptureEnabled = realtimePayloadCaptureEnabled ?? true;
+  const payloadMaxMessages = realtimePayloadMaxMessages ?? 100;
+  const setPayloadOpen = onRealtimePayloadOpenChange ?? (() => undefined);
+  const setPayloadCaptureEnabled = onRealtimePayloadCaptureEnabledChange ?? (() => undefined);
+  const setPayloadMaxMessages = onRealtimePayloadMaxMessagesChange ?? (() => undefined);
   const throughputWindow =
     throughputWindows.find((window) => window.seconds === throughputWindowSeconds) ??
     throughputWindows[0];
@@ -403,14 +426,15 @@ export function OverviewView({
     "overview",
     overviewRequest,
     isVisible && Boolean(connection.realtimeHubPath),
-    realtimeCaptureEnabled && realtimePayloadOpen,
-    realtimeMaxMessages
+    payloadCaptureEnabled && payloadOpen,
+    payloadMaxMessages,
+    "overview"
   );
   const overviewData = realtimeOverview.data ?? overview.data;
   const realtimePayloadControl = (
     <Button
       className="h-9 w-full justify-start gap-2 text-muted-foreground"
-      onClick={() => setRealtimePayloadOpen(true)}
+      onClick={() => setPayloadOpen(true)}
       size="sm"
       variant="ghost"
     >
@@ -428,17 +452,19 @@ export function OverviewView({
   );
   const realtimePayloadWindow = (
     <RealtimePayloadWindow
-      captureEnabled={realtimeCaptureEnabled}
+      captureEnabled={payloadCaptureEnabled}
       connectionState={realtimeOverview.connectionState}
       enabled={realtimeOverview.enabled}
+      externalMessages={externalRealtimeMessages ?? []}
       hubUrl={realtimeOverview.hubUrl}
-      maxMessages={realtimeMaxMessages}
+      maxMessages={payloadMaxMessages}
       messages={realtimeOverview.messages}
-      onCaptureEnabledChange={setRealtimeCaptureEnabled}
+      onCaptureEnabledChange={setPayloadCaptureEnabled}
+      onClearExternalMessages={onClearExternalRealtimeMessages ?? (() => undefined)}
       onClearMessages={realtimeOverview.clearMessages}
-      onMaxMessagesChange={setRealtimeMaxMessages}
-      onOpenChange={setRealtimePayloadOpen}
-      open={realtimePayloadOpen}
+      onMaxMessagesChange={setPayloadMaxMessages}
+      onOpenChange={setPayloadOpen}
+      open={payloadOpen}
     />
   );
   const isReady = !overview.loading;
@@ -3033,10 +3059,12 @@ function RealtimePayloadWindow({
   captureEnabled,
   connectionState,
   enabled,
+  externalMessages,
   hubUrl,
   maxMessages,
   messages,
   onCaptureEnabledChange,
+  onClearExternalMessages,
   onClearMessages,
   onMaxMessagesChange,
   onOpenChange,
@@ -3047,8 +3075,9 @@ function RealtimePayloadWindow({
   const [messagesCollapsed, setMessagesCollapsed] = useState(false);
   const [jsonView, setJsonView] = useState<"payload" | "componentData">("payload");
   const [jsonCollapsedToComponents, setJsonCollapsedToComponents] = useState(false);
+  const [subscriptionFilter, setSubscriptionFilter] = useState("all");
   const [selectedComponentId, setSelectedComponentId] = useState<string | null>(null);
-  const [selectedMessageId, setSelectedMessageId] = useState<number | null>(null);
+  const [selectedMessageId, setSelectedMessageId] = useState<string | null>(null);
   const dragRef = useRef<{
     originX: number;
     originY: number;
@@ -3057,8 +3086,25 @@ function RealtimePayloadWindow({
   } | null>(null);
   const panelRef = useRef<HTMLDivElement | null>(null);
   const wasOpenRef = useRef(false);
+  const allMessages = useMemo(
+    () => [...messages, ...externalMessages]
+      .sort((left, right) => right.receivedAt - left.receivedAt)
+      .slice(0, maxMessages),
+    [externalMessages, maxMessages, messages]
+  );
+  const subscriptionOptions = useMemo(
+    () => Array.from(new Set(allMessages.map((message) => message.subscription))).sort(),
+    [allMessages]
+  );
+  const activeSubscriptionFilter =
+    subscriptionFilter !== "all" && subscriptionOptions.includes(subscriptionFilter)
+      ? subscriptionFilter
+      : "all";
+  const filteredMessages = activeSubscriptionFilter === "all"
+    ? allMessages
+    : allMessages.filter((message) => message.subscription === activeSubscriptionFilter);
   const selectedMessage =
-    messages.find((message) => message.id === selectedMessageId) ?? messages[0];
+    filteredMessages.find((message) => message.id === selectedMessageId) ?? filteredMessages[0];
   const returnedComponents = useMemo(
     () => getRealtimePayloadComponentData(selectedMessage?.value),
     [selectedMessage]
@@ -3186,23 +3232,40 @@ function RealtimePayloadWindow({
                 <div className="flex min-w-0 flex-wrap items-center gap-x-4 gap-y-1 text-xs">
                   <PayloadInlineMetric label="Received" value={receivedAtText} />
                   <PayloadInlineMetric label="Size" value={payloadSizeText} />
-                  <PayloadInlineMetric label="Messages" value={`${messages.length}/${maxMessages}`} />
+                  <PayloadInlineMetric label="Messages" value={`${filteredMessages.length}/${allMessages.length}/${maxMessages}`} />
+                  <PayloadInlineMetric label="Subscription" value={selectedMessage?.subscription ?? "-"} />
                   <PayloadInlineMetric label="Hub" value={hubUrl ?? "-"} wide />
                 </div>
                 <div className="flex flex-wrap items-center gap-3">
                   <Button
                     className="h-8 px-2 text-xs"
-                    disabled={messages.length === 0}
+                    disabled={allMessages.length === 0}
                     onClick={() => {
                       setSelectedMessageId(null);
                       setSelectedComponentId(null);
                       onClearMessages();
+                      onClearExternalMessages();
                     }}
                     size="sm"
                     variant="ghost"
                   >
                     Clear
                   </Button>
+                  <label className="flex items-center gap-2 text-muted-foreground">
+                    <span>Show</span>
+                    <select
+                      className="h-8 max-w-44 rounded-md border bg-background px-2 text-foreground"
+                      onChange={(event) => setSubscriptionFilter(event.currentTarget.value)}
+                      value={activeSubscriptionFilter}
+                    >
+                      <option value="all">All subscriptions</option>
+                      {subscriptionOptions.map((subscription) => (
+                        <option key={subscription} value={subscription}>
+                          {subscription}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
                   <label className="flex items-center gap-2 text-muted-foreground">
                     <input
                       checked={captureEnabled}
@@ -3256,18 +3319,22 @@ function RealtimePayloadWindow({
                   {messagesCollapsed ? (
                     <div className="flex min-h-0 items-start justify-center overflow-hidden py-2">
                       <div className="font-mono text-muted-foreground text-xs [writing-mode:vertical-rl]">
-                        {messages.length}
+                        {filteredMessages.length}
                       </div>
                     </div>
                   ) : (
                     <div className="min-h-0 overflow-auto p-2">
-                      {messages.length === 0 ? (
+                      {allMessages.length === 0 ? (
                         <div className="p-3 text-muted-foreground text-sm">
                           Waiting for realtime payloads.
                         </div>
+                      ) : filteredMessages.length === 0 ? (
+                        <div className="p-3 text-muted-foreground text-sm">
+                          No payloads match this subscription.
+                        </div>
                       ) : (
                         <div className="space-y-1">
-                          {messages.map((message) => (
+                          {filteredMessages.map((message) => (
                             <button
                               className={`grid w-full gap-1 rounded-md px-2 py-2 text-left text-xs transition-colors ${
                                 message.id === selectedMessage?.id
@@ -3279,10 +3346,15 @@ function RealtimePayloadWindow({
                               type="button"
                             >
                               <span className="flex items-center justify-between gap-2">
-                                <span className="font-mono">{formatPayloadTime(message.receivedAt)}</span>
+                                <span className="min-w-0 truncate font-mono">
+                                  {formatPayloadTime(message.receivedAt)}
+                                </span>
                                 <span className="font-mono text-muted-foreground">
                                   {message.bytes.toLocaleString()}b
                                 </span>
+                              </span>
+                              <span className="truncate font-mono text-muted-foreground">
+                                {message.subscription}
                               </span>
                               <span className="truncate text-muted-foreground">
                                 {message.components.map((component) => component.id).join(", ")}
@@ -3656,7 +3728,7 @@ function clampFloatingWindowPosition(value: number, viewport: number, size: numb
   return Math.min(Math.max(min, value), max);
 }
 
-type RealtimeViewLoadable<T> = Loadable<T> & {
+export type RealtimeViewLoadable<T> = Loadable<T> & {
   clearMessages: () => void;
   connectionState: string;
   enabled: boolean;
@@ -3664,26 +3736,27 @@ type RealtimeViewLoadable<T> = Loadable<T> & {
   messages: RealtimePayloadMessage[];
 };
 
-function useWorkableRealtimeView<T>(
-  connection: WorkableConnection,
+export function useWorkableRealtimeView<T>(
+  connection: WorkableConnection | null,
   viewName: string,
   body: unknown,
   enabled: boolean,
   captureEnabled: boolean,
-  maxMessages: number
+  maxMessages: number,
+  subscription = viewName
 ): RealtimeViewLoadable<T> {
   const [state, setState] = useState<RealtimeViewLoadable<T>>({
     clearMessages: () => undefined,
     connectionState: enabled ? "connecting" : "disabled",
     enabled,
-    hubUrl: createWorkableRealtimeUrl(connection),
+    hubUrl: connection ? createWorkableRealtimeUrl(connection) : null,
     loading: false,
     messages: [],
   });
   const hubConnectionRef = useRef<HubConnection | null>(null);
-  const apiUrl = connection.apiUrl;
-  const hubUrl = createWorkableRealtimeUrl(connection);
-  const systemName = connection.systemName;
+  const apiUrl = connection?.apiUrl ?? "";
+  const hubUrl = connection ? createWorkableRealtimeUrl(connection) : null;
+  const systemName = connection?.systemName;
   const bodyKey = JSON.stringify(body);
   const bodyKeyRef = useRef(bodyKey);
   const captureEnabledRef = useRef(captureEnabled);
@@ -3713,7 +3786,7 @@ function useWorkableRealtimeView<T>(
   }, [maxMessages]);
 
   useEffect(() => {
-    if (!enabled || !hubUrl) {
+    if (!connection || !enabled || !hubUrl) {
       queueMicrotask(() =>
         setState((current) => ({
           ...current,
@@ -3748,7 +3821,13 @@ function useWorkableRealtimeView<T>(
     hubConnection.on("workable.view", (result: T) => {
       if (!canceled) {
         const payloadJson = JSON.stringify(result);
-        const message = createRealtimePayloadMessage(result, payloadJson, ++messageIdRef.current);
+        const message = createRealtimePayloadMessage(
+          result,
+          payloadJson,
+          `${subscription}:${++messageIdRef.current}`,
+          viewName,
+          subscription
+        );
         setState((current) => ({
           ...current,
           connectionState: "connected",
@@ -3826,7 +3905,7 @@ function useWorkableRealtimeView<T>(
       hubConnectionRef.current = null;
       void hubConnection.stop();
     };
-  }, [apiUrl, enabled, hubUrl, systemName, viewName]);
+  }, [apiUrl, connection, enabled, hubUrl, subscription, systemName, viewName]);
 
   useEffect(() => {
     const hubConnection = hubConnectionRef.current;
@@ -3876,7 +3955,9 @@ function useWorkableRealtimeView<T>(
 function createRealtimePayloadMessage<T>(
   result: T,
   payloadJson: string,
-  id: number
+  id: string,
+  viewName: string,
+  subscription: string
 ): RealtimePayloadMessage {
   const maybeComponents =
     typeof result === "object" && result !== null && "components" in result
@@ -3892,7 +3973,9 @@ function createRealtimePayloadMessage<T>(
     })),
     id,
     receivedAt: Date.now(),
+    subscription,
     value: result,
+    viewName,
   };
 }
 

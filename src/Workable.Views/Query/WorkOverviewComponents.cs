@@ -126,3 +126,16 @@ public sealed record WorkViewIterationGridDetailed(
     TimeSpan ExecutionDuration,
     WorkSubjectId? SubjectId,
     IReadOnlyCollection<WorkIdentifier> Identifiers);
+
+public sealed record WorkReadModelDiagnosticsCompactComponent(
+    long PendingUpdateCount,
+    bool IsReadModelBehind,
+    int ReadModelLagWarningThreshold,
+    bool HasProjectorFailure,
+    string? ProjectorFailureType,
+    string? ProjectorFailureMessage);
+
+public sealed record WorkReadModelDiagnosticsDetailedComponent(
+    WorkSystemReadModelDiagnostics ReadModel,
+    bool IsReadModelBehind,
+    int ReadModelLagWarningThreshold);

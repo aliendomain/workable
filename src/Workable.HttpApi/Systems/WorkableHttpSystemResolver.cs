@@ -42,6 +42,17 @@ public sealed class WorkableHttpSystemResolver(
         return new WorkableHttpSystemLifecycleResult(system.Id, system.Name, system.State);
     }
 
+    internal static WorkableHttpSystemDiagnostics Diagnostics(IWorkSystem system)
+    {
+        ArgumentNullException.ThrowIfNull(system);
+
+        return new WorkableHttpSystemDiagnostics(
+            system.Id,
+            system.Name,
+            system.State,
+            system.Diagnostics.ReadModel);
+    }
+
     internal static async Task<WorkableHttpSystemStopResult> Stop(
         IWorkSystem system,
         WorkOrigin origin,

@@ -29,6 +29,27 @@ export type WorkableHttpSystemInfo = {
   capabilities: WorkableHttpCapabilities;
 };
 
+export type WorkableHttpSystemDiagnostics = {
+  id: { value: string };
+  name?: string | null;
+  state: string;
+  readModel: WorkSystemReadModelDiagnostics;
+};
+
+export type WorkSystemReadModelDiagnostics = {
+  enqueuedSequence: number;
+  appliedSequence: number;
+  appliedUpdateCount: number;
+  publishedSnapshotCount: number;
+  lastBatchSize: number;
+  lastProjectionDuration: string;
+  lastProjectedAt?: string | null;
+  projectorFailureType?: string | null;
+  projectorFailureMessage?: string | null;
+  pendingUpdateCount: number;
+  hasProjectorFailure: boolean;
+};
+
 export type WorkDefinition = {
   id: { value: string };
   name: string;
@@ -406,6 +427,20 @@ export type WorkComponentResult<TData = unknown> = {
   error?: string | null;
   shape?: WorkComponentShape;
 };
+
+export type WorkReadModelDiagnosticsCompactComponent = {
+  pendingUpdateCount: number;
+  isReadModelBehind: boolean;
+  readModelLagWarningThreshold: number;
+  hasProjectorFailure: boolean;
+  projectorFailureType?: string | null;
+  projectorFailureMessage?: string | null;
+};
+
+export type WorkReadModelDiagnosticsDetailedComponent =
+  WorkReadModelDiagnosticsCompactComponent & {
+    readModel: WorkSystemReadModelDiagnostics;
+  };
 
 export type WorkOverviewThroughputComponent = {
   activeWorkerCount: number;

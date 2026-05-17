@@ -3,8 +3,12 @@
 import Image from "next/image";
 import {
   Activity,
+  Bell,
   Boxes,
+  ChevronRight,
+  CircleAlert,
   Clock3,
+  Loader2,
   Plus,
   RefreshCw,
   RotateCcw,
@@ -41,6 +45,8 @@ import {
 } from "@/components/workable/console/query-screens";
 import {
   OverviewView,
+  useWorkableRealtimeView,
+  type RealtimeViewLoadable,
 } from "@/components/workable/console/overview-screen";
 import {
   DefinitionView,
@@ -67,7 +73,11 @@ import {
   WorkableApiError,
   workableFetch,
   type WorkCompletionStatus,
+  type WorkComponentQueryResult,
   type WorkComponentShape,
+  type WorkReadModelDiagnosticsCompactComponent,
+  type WorkReadModelDiagnosticsDetailedComponent,
+  type WorkSystemReadModelDiagnostics,
   type WorkSystemLifecycleResult,
   type WorkableConnection,
   type WorkerState,
@@ -218,6 +228,7 @@ const initialRefreshTokens: Record<View, number> = {
   worker: 0,
 };
 const viewContentOffsetClass = "pt-2";
+const readModelLagWarningThreshold = 100;
 
 export function WorkableConsole() {
   const initialConsoleState = useMemo(() => createDefaultConsoleStorage(), []);
@@ -237,6 +248,11 @@ export function WorkableConsole() {
   const [pendingStopSystem, setPendingStopSystem] = useState<PendingStopSystem | null>(null);
   const [lifecycleActionSystemId, setLifecycleActionSystemId] = useState<string | null>(null);
   const [lifecycleError, setLifecycleError] = useState<string>();
+  const [systemNotificationOpen, setSystemNotificationOpen] = useState(false);
+  const [readModelDiagnosticsExpanded, setReadModelDiagnosticsExpanded] = useState(false);
+  const [realtimePayloadCaptureEnabled, setRealtimePayloadCaptureEnabled] = useState(true);
+  const [realtimePayloadMaxMessages, setRealtimePayloadMaxMessages] = useState(100);
+  const [realtimePayloadOpen, setRealtimePayloadOpen] = useState(false);
   const [refreshTokens, setRefreshTokens] = useState<Record<View, number>>(initialRefreshTokens);
   const [selectedDefinitionId, setSelectedDefinitionId] = useState<string | null>(null);
   const [selectedWorkerId, setSelectedWorkerId] = useState<string | null>(null);
@@ -281,6 +297,105 @@ export function WorkableConsole() {
         : null,
     [activeApiUrl, activeSystem, activeSystemName]
   );
+  const diagnosticsAlertRequest = useMemo(
+    () => ({
+      components: [
+        {
+          id: "readModelDiagnostics",
+          options: {
+            publishMode: "alertChanges",
+            warningThreshold: readModelLagWarningThreshold,
+          },
+          shape: "compact",
+          type: "readModelDiagnostics",
+        },
+      ],
+    }),
+    []
+  );
+  const diagnosticsTrayRequest = useMemo(
+    () => ({
+      components: [
+        {
+          id: "readModelDiagnostics",
+          options: {
+            publishMode: "continuous",
+            warningThreshold: readModelLagWarningThreshold,
+          },
+          shape: "compact",
+          type: "readModelDiagnostics",
+        },
+      ],
+    }),
+    []
+  );
+  const diagnosticsDetailRequest = useMemo(
+    () => ({
+      components: [
+        {
+          id: "readModelDiagnostics",
+          options: {
+            publishMode: "continuous",
+            warningThreshold: readModelLagWarningThreshold,
+          },
+          shape: "detailed",
+          type: "readModelDiagnostics",
+        },
+      ],
+    }),
+    []
+  );
+  const diagnosticsRealtimeEnabled = Boolean(connection?.realtimeHubPath);
+  const captureRealtimePayloads = realtimePayloadOpen && realtimePayloadCaptureEnabled;
+  const diagnosticsAlert = useWorkableRealtimeView<WorkComponentQueryResult>(
+    connection,
+    "diagnostics",
+    diagnosticsAlertRequest,
+    diagnosticsRealtimeEnabled,
+    captureRealtimePayloads,
+    realtimePayloadMaxMessages,
+    "diagnostics:alerts"
+  );
+  const diagnosticsTray = useWorkableRealtimeView<WorkComponentQueryResult>(
+    connection,
+    "diagnostics",
+    diagnosticsTrayRequest,
+    diagnosticsRealtimeEnabled && systemNotificationOpen,
+    captureRealtimePayloads,
+    realtimePayloadMaxMessages,
+    "diagnostics:tray"
+  );
+  const diagnosticsDetail = useWorkableRealtimeView<WorkComponentQueryResult>(
+    connection,
+    "diagnostics",
+    diagnosticsDetailRequest,
+    diagnosticsRealtimeEnabled && systemNotificationOpen && readModelDiagnosticsExpanded,
+    captureRealtimePayloads,
+    realtimePayloadMaxMessages,
+    "diagnostics:read-model"
+  );
+  const diagnosticsRealtimeMessages = useMemo(
+    () => [
+      ...diagnosticsAlert.messages,
+      ...diagnosticsTray.messages,
+      ...diagnosticsDetail.messages,
+    ],
+    [diagnosticsAlert.messages, diagnosticsDetail.messages, diagnosticsTray.messages]
+  );
+  const clearDiagnosticsAlertMessages = diagnosticsAlert.clearMessages;
+  const clearDiagnosticsTrayMessages = diagnosticsTray.clearMessages;
+  const clearDiagnosticsDetailMessages = diagnosticsDetail.clearMessages;
+  const clearDiagnosticsRealtimeMessages = useCallback(() => {
+    clearDiagnosticsAlertMessages();
+    clearDiagnosticsTrayMessages();
+    clearDiagnosticsDetailMessages();
+  }, [clearDiagnosticsAlertMessages, clearDiagnosticsDetailMessages, clearDiagnosticsTrayMessages]);
+  const handleSystemNotificationOpenChange = useCallback((open: boolean) => {
+    setSystemNotificationOpen(open);
+    if (!open) {
+      setReadModelDiagnosticsExpanded(false);
+    }
+  }, []);
 
   useEffect(() => {
     queueMicrotask(() => {
@@ -1064,6 +1179,18 @@ export function WorkableConsole() {
                       onBack={navigateBack}
                       onOpenView={openView}
                       system={activeSystem}
+                      systemNotifications={(
+                        <SystemNotificationTray
+                          alertDiagnostics={diagnosticsAlert}
+                          detailDiagnostics={diagnosticsDetail}
+                          onOpenChange={handleSystemNotificationOpenChange}
+                          onReadModelExpandedChange={setReadModelDiagnosticsExpanded}
+                          open={systemNotificationOpen}
+                          readModelExpanded={readModelDiagnosticsExpanded}
+                          systemName={activeSystem.name}
+                          trayDiagnostics={diagnosticsTray}
+                        />
+                      )}
                       view={view}
                       workerId={selectedWorkerId}
                     />
@@ -1073,9 +1200,11 @@ export function WorkableConsole() {
                     <div className={visibleView === "overview" ? viewContentOffsetClass : "hidden"}>
                       <OverviewView
                         connection={connection}
+                        externalRealtimeMessages={diagnosticsRealtimeMessages}
                         hiddenPanelIds={consoleState.overviewHiddenPanels}
                         hiddenThroughputSeries={consoleState.overviewHiddenThroughputSeries}
                         isVisible={visibleView === "overview"}
+                        onClearExternalRealtimeMessages={clearDiagnosticsRealtimeMessages}
                         onConnectionError={handleOverviewConnectionError}
                         onStateLoaded={handleOverviewStateLoaded}
                         onOpenCatalog={() => openView("definitions")}
@@ -1086,6 +1215,12 @@ export function WorkableConsole() {
                         onPanelVisibilityChange={setOverviewPanelVisible}
                         onThroughputSeriesToggle={toggleOverviewThroughputSeries}
                         panelShapes={consoleState.overviewPanelShapes}
+                        realtimePayloadCaptureEnabled={realtimePayloadCaptureEnabled}
+                        realtimePayloadMaxMessages={realtimePayloadMaxMessages}
+                        realtimePayloadOpen={realtimePayloadOpen}
+                        onRealtimePayloadCaptureEnabledChange={setRealtimePayloadCaptureEnabled}
+                        onRealtimePayloadMaxMessagesChange={setRealtimePayloadMaxMessages}
+                        onRealtimePayloadOpenChange={setRealtimePayloadOpen}
                         onViewIterationsByStatus={openIterationsFiltered}
                         onViewWorkersByState={openWorkersFiltered}
                         overviewScope={activeOverviewScope}
@@ -1352,6 +1487,369 @@ const overviewPanelOptions: Array<{
     label: "Recent Completed Iterations",
   },
 ];
+
+type SystemDiagnosticsViewState = RealtimeViewLoadable<WorkComponentQueryResult>;
+
+type SystemNotification = {
+  description: string;
+  id: string;
+  tone: "critical" | "warning";
+  title: string;
+};
+
+function SystemNotificationTray({
+  alertDiagnostics,
+  detailDiagnostics,
+  onOpenChange,
+  onReadModelExpandedChange,
+  open,
+  readModelExpanded,
+  systemName,
+  trayDiagnostics,
+}: {
+  alertDiagnostics: SystemDiagnosticsViewState;
+  detailDiagnostics: SystemDiagnosticsViewState;
+  onOpenChange: (open: boolean) => void;
+  onReadModelExpandedChange: (expanded: boolean) => void;
+  open: boolean;
+  readModelExpanded: boolean;
+  systemName: string;
+  trayDiagnostics: SystemDiagnosticsViewState;
+}) {
+  const alertCompact = getWorkComponentData<WorkReadModelDiagnosticsCompactComponent>(
+    alertDiagnostics.data,
+    "readModelDiagnostics"
+  );
+  const trayCompact = getWorkComponentData<WorkReadModelDiagnosticsCompactComponent>(
+    trayDiagnostics.data,
+    "readModelDiagnostics"
+  );
+  const detailed = getWorkComponentData<WorkReadModelDiagnosticsDetailedComponent>(
+    detailDiagnostics.data,
+    "readModelDiagnostics"
+  );
+  const detailCompact = createCompactDiagnosticsFromDetailed(detailed);
+  const compact = trayCompact ?? detailCompact ?? alertCompact;
+  const diagnosticsError = alertDiagnostics.error || (
+    readModelExpanded ? detailDiagnostics.error : open ? trayDiagnostics.error : undefined
+  );
+  const notifications = createSystemNotifications(compact, diagnosticsError);
+  const hasNotifications = notifications.length > 0;
+  const busy = alertDiagnostics.loading || alertDiagnostics.refreshing ||
+    (open && !readModelExpanded && (trayDiagnostics.loading || trayDiagnostics.refreshing)) ||
+    (readModelExpanded && (detailDiagnostics.loading || detailDiagnostics.refreshing));
+  const connectionState = alertDiagnostics.enabled
+    ? alertDiagnostics.connectionState
+    : "disabled";
+  const detailLastUpdatedAt = detailDiagnostics.data?.generatedAt
+    ? new Date(detailDiagnostics.data.generatedAt)
+    : undefined;
+
+  return (
+    <Popover onOpenChange={onOpenChange} open={open}>
+      <Tooltip delayDuration={500} disableHoverableContent>
+        <TooltipTrigger asChild>
+          <PopoverTrigger asChild>
+            <Button
+              aria-label="System notifications"
+              className={`relative ${hasNotifications ? "text-amber-400 hover:text-amber-300" : "text-muted-foreground hover:text-foreground"} hover:bg-transparent dark:hover:bg-transparent`}
+              size="icon-sm"
+              variant="ghost"
+            >
+              {hasNotifications ? (
+                <CircleAlert className="size-4" />
+              ) : (
+                <Bell className="size-4" />
+              )}
+              {hasNotifications && (
+                <span className="absolute right-0.5 top-0.5 flex min-w-3 translate-x-1/4 -translate-y-1/4 items-center justify-center rounded-full border border-background bg-amber-400 px-0.5 text-[9px] font-semibold leading-3 text-black">
+                  {notifications.length}
+                </span>
+              )}
+            </Button>
+          </PopoverTrigger>
+        </TooltipTrigger>
+        <TooltipContent side="bottom" sideOffset={6}>
+          System notifications
+        </TooltipContent>
+      </Tooltip>
+      <PopoverContent align="end" className="w-[min(420px,calc(100vw-2rem))] gap-0 p-0">
+        <div className="flex items-center justify-between gap-3 border-b px-3 py-2">
+          <div className="min-w-0">
+            <div className="font-medium text-sm">System notifications</div>
+            <div className="truncate text-muted-foreground text-xs">
+              {systemName} - {connectionState}
+            </div>
+          </div>
+          {busy && <Loader2 className="size-4 shrink-0 animate-spin text-muted-foreground" />}
+        </div>
+        <div className="max-h-[70vh] overflow-auto">
+          <div className="space-y-2 border-b p-3">
+            {alertDiagnostics.loading && !compact ? (
+              <div className="flex items-center gap-2 text-muted-foreground text-sm">
+                <Loader2 className="size-4 animate-spin" />
+                Loading diagnostics.
+              </div>
+            ) : notifications.length > 0 ? (
+              notifications.map((notification) => (
+                <div
+                  className={`rounded-md border px-3 py-2 ${notification.tone === "critical" ? "border-red-500/30 bg-red-500/10 text-red-200" : "border-amber-500/30 bg-amber-500/10 text-amber-100"}`}
+                  key={notification.id}
+                >
+                  <div className="flex items-start gap-2">
+                    <CircleAlert className="mt-0.5 size-4 shrink-0" />
+                    <div className="min-w-0">
+                      <div className="font-medium text-sm">{notification.title}</div>
+                      <div className="text-xs opacity-85">{notification.description}</div>
+                    </div>
+                  </div>
+                </div>
+              ))
+            ) : (
+              <div className="rounded-md border border-border bg-muted/20 px-3 py-2 text-muted-foreground text-sm">
+                No system notifications.
+              </div>
+            )}
+          </div>
+          <ReadModelDiagnosticsSummary
+            compact={compact}
+            expanded={readModelExpanded}
+            lastUpdatedAt={detailLastUpdatedAt}
+            loading={detailDiagnostics.loading && !detailed}
+            onExpandedChange={onReadModelExpandedChange}
+            readModel={detailed?.readModel}
+          />
+        </div>
+      </PopoverContent>
+    </Popover>
+  );
+}
+
+function ReadModelDiagnosticsSummary({
+  compact,
+  expanded,
+  lastUpdatedAt,
+  loading,
+  onExpandedChange,
+  readModel,
+}: {
+  compact?: WorkReadModelDiagnosticsCompactComponent;
+  expanded: boolean;
+  lastUpdatedAt?: Date;
+  loading: boolean;
+  onExpandedChange: (expanded: boolean) => void;
+  readModel?: WorkSystemReadModelDiagnostics;
+}) {
+  return (
+    <div className="border-b p-3 last:border-b-0">
+      <button
+        className="flex w-full items-center justify-between gap-3 text-left"
+        onClick={() => onExpandedChange(!expanded)}
+        type="button"
+      >
+        <div className="flex min-w-0 items-center gap-2">
+          <ChevronRight className={`size-4 shrink-0 transition-transform ${expanded ? "rotate-90" : ""}`} />
+          <div className="min-w-0">
+            <div className="font-medium text-sm">Read model diagnostics</div>
+            <div className="truncate text-muted-foreground text-xs">
+              Pending {formatNumber(compact?.pendingUpdateCount)}
+              {compact?.isReadModelBehind
+                ? `, threshold ${formatNumber(compact.readModelLagWarningThreshold)}`
+                : ""}
+            </div>
+          </div>
+        </div>
+        <div className="shrink-0 text-muted-foreground text-xs">
+          {expanded && lastUpdatedAt ? formatLocalTime(lastUpdatedAt) : expanded ? "Waiting" : "Collapsed"}
+        </div>
+      </button>
+      {expanded && (
+        <div className="mt-3 space-y-2">
+          {loading && !readModel ? (
+            <div className="flex items-center gap-2 rounded-md border border-border px-3 py-2 text-muted-foreground text-sm">
+              <Loader2 className="size-4 animate-spin" />
+              Loading read model diagnostics.
+            </div>
+          ) : null}
+          {!loading && !readModel ? (
+            <div className="rounded-md border border-border bg-muted/20 px-3 py-2 text-muted-foreground text-sm">
+              Expand this section while realtime is connected to load read model diagnostics.
+            </div>
+          ) : null}
+          {readModel && (
+            <>
+      <div className="grid grid-cols-2 gap-2 text-xs">
+        <DiagnosticsMetric
+          label="Pending"
+          tone={compact?.isReadModelBehind ? "warning" : undefined}
+          value={formatNumber(readModel?.pendingUpdateCount)}
+        />
+        <DiagnosticsMetric
+          label="Last batch"
+          value={formatNumber(readModel?.lastBatchSize)}
+        />
+        <DiagnosticsMetric
+          label="Enqueued"
+          value={formatNumber(readModel?.enqueuedSequence)}
+        />
+        <DiagnosticsMetric
+          label="Applied"
+          value={formatNumber(readModel?.appliedSequence)}
+        />
+        <DiagnosticsMetric
+          label="Snapshots"
+          value={formatNumber(readModel?.publishedSnapshotCount)}
+        />
+        <DiagnosticsMetric
+          label="Last projection"
+          value={formatDuration(readModel?.lastProjectionDuration)}
+        />
+      </div>
+      <div className="rounded-md border border-border px-3 py-2 text-xs">
+        <div className="flex items-center justify-between gap-3">
+          <span className="text-muted-foreground">Last projected</span>
+          <span className="min-w-0 truncate font-mono">
+            {formatDateTimeShort(readModel?.lastProjectedAt)}
+          </span>
+        </div>
+      </div>
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function DiagnosticsMetric({
+  label,
+  tone,
+  value,
+}: {
+  label: string;
+  tone?: "warning";
+  value: string;
+}) {
+  return (
+    <div className={`rounded-md border px-3 py-2 ${tone === "warning" ? "border-amber-500/30 bg-amber-500/10" : "border-border"}`}>
+      <div className="text-muted-foreground">{label}</div>
+      <div className="truncate font-mono text-foreground">{value}</div>
+    </div>
+  );
+}
+
+function createSystemNotifications(
+  diagnostics?: WorkReadModelDiagnosticsCompactComponent,
+  error?: string
+): SystemNotification[] {
+  const notifications: SystemNotification[] = [];
+
+  if (error) {
+    notifications.push({
+      description: error,
+      id: "diagnostics-unavailable",
+      tone: "warning",
+      title: "Diagnostics unavailable",
+    });
+  }
+
+  if (diagnostics?.hasProjectorFailure) {
+    notifications.push({
+      description: `${diagnostics.projectorFailureType ?? "Projector failure"}${diagnostics.projectorFailureMessage ? `: ${diagnostics.projectorFailureMessage}` : ""}`,
+      id: "read-model-failure",
+      tone: "critical",
+      title: "Read model projector failed",
+    });
+  }
+
+  if (diagnostics?.isReadModelBehind) {
+    notifications.push({
+      description: `${formatNumber(diagnostics.pendingUpdateCount)} update${diagnostics.pendingUpdateCount === 1 ? "" : "s"} waiting to be projected.`,
+      id: "read-model-lag",
+      tone: diagnostics.pendingUpdateCount >= diagnostics.readModelLagWarningThreshold * 10
+        ? "critical"
+        : "warning",
+      title: "Read model is behind",
+    });
+  }
+
+  return notifications;
+}
+
+function createCompactDiagnosticsFromDetailed(
+  detailed?: WorkReadModelDiagnosticsDetailedComponent
+): WorkReadModelDiagnosticsCompactComponent | undefined {
+  if (!detailed) {
+    return undefined;
+  }
+
+  return {
+    hasProjectorFailure: detailed.readModel.hasProjectorFailure,
+    isReadModelBehind: detailed.isReadModelBehind,
+    pendingUpdateCount: detailed.readModel.pendingUpdateCount,
+    projectorFailureMessage: detailed.readModel.projectorFailureMessage,
+    projectorFailureType: detailed.readModel.projectorFailureType,
+    readModelLagWarningThreshold: detailed.readModelLagWarningThreshold,
+  };
+}
+
+function getWorkComponentData<T>(result: WorkComponentQueryResult | undefined, id: string) {
+  const component = result?.components?.[id];
+  return component?.status?.toLowerCase() === "ok" ? component.data as T : undefined;
+}
+
+function formatNumber(value?: number | null) {
+  return typeof value === "number" ? value.toLocaleString() : "-";
+}
+
+function formatLocalTime(value: Date) {
+  return new Intl.DateTimeFormat(undefined, {
+    hour: "numeric",
+    minute: "2-digit",
+    second: "2-digit",
+  }).format(value);
+}
+
+function formatDateTimeShort(value?: string | null) {
+  if (!value) {
+    return "-";
+  }
+
+  return new Intl.DateTimeFormat(undefined, {
+    hour: "numeric",
+    minute: "2-digit",
+    second: "2-digit",
+  }).format(new Date(value));
+}
+
+function formatDuration(value?: string | null) {
+  if (!value) {
+    return "-";
+  }
+
+  const milliseconds = parseTimeSpanMilliseconds(value);
+  if (milliseconds === null) {
+    return value;
+  }
+
+  return `${milliseconds.toLocaleString(undefined, {
+    maximumFractionDigits: milliseconds < 10 ? 3 : 1,
+  })} ms`;
+}
+
+function parseTimeSpanMilliseconds(value: string) {
+  const match = /^(?:(\d+)\.)?(\d{1,2}):(\d{2}):(\d{2})(?:\.(\d+))?$/.exec(value);
+  if (!match) {
+    return null;
+  }
+
+  const days = Number(match[1] ?? 0);
+  const hours = Number(match[2]);
+  const minutes = Number(match[3]);
+  const seconds = Number(match[4]);
+  const fraction = match[5] ? Number(`0.${match[5]}`) : 0;
+  return (((days * 24 + hours) * 60 + minutes) * 60 + seconds + fraction) * 1000;
+}
 
 function OverviewPanelSettings({
   hiddenPanelIds,

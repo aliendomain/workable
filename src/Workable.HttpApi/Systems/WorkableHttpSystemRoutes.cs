@@ -8,6 +8,18 @@ internal static class WorkableHttpSystemRoutes
 {
     internal static void Map(RouteGroupBuilder group)
     {
+        group.MapGet("/diagnostics", (
+            HttpContext httpContext,
+            WorkableHttpSystemResolver systems) =>
+        {
+            if (!WorkableHttpRouteResults.TryResolveSystem(httpContext, systems, out var system, out var notFound))
+            {
+                return notFound;
+            }
+
+            return Results.Ok(WorkableHttpSystemResolver.Diagnostics(system));
+        });
+
         group.MapPost("/lifecycle/start", async (
             HttpContext httpContext,
             WorkableHttpSystemResolver systems,

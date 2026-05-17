@@ -46,6 +46,7 @@ public sealed class WorkableSignalRTests
         Assert.Equal("/workable/realtime", capabilities.Realtime.HubPath);
         Assert.Contains("worker-events", capabilities.Realtime.Features ?? []);
         Assert.Contains("component-views", capabilities.Realtime.Features ?? []);
+        Assert.Contains("diagnostics-view", capabilities.Realtime.Features ?? []);
     }
 
     [Fact]
@@ -149,6 +150,149 @@ public sealed class WorkableSignalRTests
         Assert.False(workers.TryGetProperty("finalWorkerCount", out _));
     }
 
+    [Fact]
+    public async Task ViewWatcherReceivesDiagnosticsViewOnDiagnosticsInterval()
+    {
+        using var host = await CreateHost(addSignalR: true);
+        await using var connection = CreateConnection(host);
+        var views = Channel.CreateUnbounded<WorkComponentQueryResult>();
+        connection.On<WorkComponentQueryResult>(
+            WorkableRealtimeClientMethods.ViewUpdated,
+            view => views.Writer.TryWrite(view));
+        await connection.StartAsync();
+        await connection.InvokeAsync(
+            "WatchView",
+            "diagnostics",
+            new WorkViewCriteria(Components:
+            [
+                new WorkComponentRequest(
+                    "readModelDiagnostics",
+                    "readModelDiagnostics",
+                    JsonSerializer.SerializeToElement(new { warningThreshold = 100 }),
+                    WorkComponentShapes.Compact),
+            ]),
+            null);
+
+        var initial = await ReadUntil(
+            views.Reader,
+            view => view.Components.ContainsKey("readModelDiagnostics"));
+        var updated = await ReadUntil(
+            views.Reader,
+            view => view.GeneratedAt > initial.GeneratedAt &&
+                view.Components.ContainsKey("readModelDiagnostics"));
+        var diagnostics = Assert.IsType<JsonElement>(updated.Components["readModelDiagnostics"].Data);
+
+        Assert.Equal(["readModelDiagnostics"], updated.Components.Keys.ToArray());
+        Assert.Equal("compact", updated.Components["readModelDiagnostics"].Shape);
+        Assert.True(diagnostics.TryGetProperty("pendingUpdateCount", out _));
+        Assert.True(diagnostics.TryGetProperty("isReadModelBehind", out _));
+        Assert.True(diagnostics.TryGetProperty("readModelLagWarningThreshold", out _));
+    }
+
+    [Fact]
+    public async Task DiagnosticsAlertChangeWatcherDoesNotReceiveHealthyTimerPayloads()
+    {
+        using var host = await CreateHost(addSignalR: true);
+        await using var connection = CreateConnection(host);
+        var views = Channel.CreateUnbounded<WorkComponentQueryResult>();
+        connection.On<WorkComponentQueryResult>(
+            WorkableRealtimeClientMethods.ViewUpdated,
+            view => views.Writer.TryWrite(view));
+        await connection.StartAsync();
+        await connection.InvokeAsync(
+            "WatchView",
+            "diagnostics",
+            new WorkViewCriteria(Components:
+            [
+                new WorkComponentRequest(
+                    "readModelDiagnostics",
+                    "readModelDiagnostics",
+                    JsonSerializer.SerializeToElement(new
+                    {
+                        publishMode = "alertChanges",
+                        warningThreshold = 100,
+                    }),
+                    WorkComponentShapes.Compact),
+            ]),
+            null);
+
+        var initial = await ReadUntil(
+            views.Reader,
+            view => view.Components.ContainsKey("readModelDiagnostics"));
+        var receivedHealthyTick = await TryReadUntil(
+            views.Reader,
+            view => view.GeneratedAt > initial.GeneratedAt,
+            TimeSpan.FromMilliseconds(250));
+
+        Assert.False(receivedHealthyTick);
+    }
+
+    [Fact]
+    public async Task DiagnosticsAlertChangeWatcherReceivesAlertPayloadWhenReadModelFallsBehind()
+    {
+        using var host = await CreateHost(addSignalR: true);
+        var system = host.Services.GetRequiredService<IWorkSystemRegistry>().Default;
+        var gate = host.Services.GetRequiredService<SignalRWorkGate>();
+        await using var connection = CreateConnection(host);
+        var views = Channel.CreateUnbounded<WorkComponentQueryResult>();
+        connection.On<WorkComponentQueryResult>(
+            WorkableRealtimeClientMethods.ViewUpdated,
+            view => views.Writer.TryWrite(view));
+        await connection.StartAsync();
+        await connection.InvokeAsync(
+            "WatchView",
+            "diagnostics",
+            new WorkViewCriteria(Components:
+            [
+                new WorkComponentRequest(
+                    "readModelDiagnostics",
+                    "readModelDiagnostics",
+                    JsonSerializer.SerializeToElement(new
+                    {
+                        publishMode = "alertChanges",
+                        warningThreshold = 1,
+                    }),
+                    WorkComponentShapes.Compact),
+            ]),
+            null);
+        var initial = await ReadUntil(
+            views.Reader,
+            view => view.Components.ContainsKey("readModelDiagnostics"));
+
+        try
+        {
+            for (var index = 0; index < 500; index++)
+            {
+                _ = await system.Queue.Enqueue("signalr.view");
+            }
+
+            var updated = await ReadUntil(
+                views.Reader,
+                view =>
+                {
+                    if (view.GeneratedAt <= initial.GeneratedAt ||
+                        !view.Components.TryGetValue("readModelDiagnostics", out var component))
+                    {
+                        return false;
+                    }
+
+                    var diagnostics = Assert.IsType<JsonElement>(component.Data);
+                    return diagnostics.TryGetProperty("isReadModelBehind", out var behind) &&
+                        behind.GetBoolean();
+                });
+            var data = Assert.IsType<JsonElement>(updated.Components["readModelDiagnostics"].Data);
+
+            Assert.True(data.GetProperty("pendingUpdateCount").GetInt64() >= 1);
+        }
+        finally
+        {
+            if (!gate.Release.Task.IsCompleted)
+            {
+                gate.Release.SetResult();
+            }
+        }
+    }
+
     private static async Task<IHost> CreateHost(bool addSignalR, string? hubPath = null)
     {
         var host = new HostBuilder()
@@ -178,6 +322,7 @@ public sealed class WorkableSignalRTests
                         services.AddWorkableSignalR(options =>
                         {
                             options.PublishInterval = TimeSpan.FromMilliseconds(50);
+                            options.DiagnosticsPublishInterval = TimeSpan.FromMilliseconds(50);
                         });
                     }
                 });
@@ -229,6 +374,30 @@ public sealed class WorkableSignalRTests
         }
 
         throw new InvalidOperationException("Expected item was not received.");
+    }
+
+    private static async Task<bool> TryReadUntil<T>(
+        ChannelReader<T> reader,
+        Func<T, bool> predicate,
+        TimeSpan timeout)
+    {
+        using var cancellation = new CancellationTokenSource(timeout);
+        try
+        {
+            await foreach (var item in reader.ReadAllAsync(cancellation.Token))
+            {
+                if (predicate(item))
+                {
+                    return true;
+                }
+            }
+        }
+        catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
+        {
+            return false;
+        }
+
+        return false;
     }
 
     private static System.Text.Json.JsonSerializerOptions JsonOptions()
