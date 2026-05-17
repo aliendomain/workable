@@ -230,6 +230,7 @@ public class WorkableViewQueryAdapter
                 "workergrid" => await CreateWorkerGridComponent(queries, criteria, request.Options, cancellationToken),
                 "iterationgrid" => await CreateIterationGridComponent(queries, criteria, request.Options, cancellationToken),
                 "readmodeldiagnostics" => CreateReadModelDiagnosticsComponent(system, request.Shape, request.Options),
+                "retentiondiagnostics" => CreateRetentionDiagnosticsComponent(system, request.Shape, request.Options),
                 _ => null,
             };
 
@@ -619,6 +620,34 @@ public class WorkableViewQueryAdapter
             warningThreshold);
     }
 
+    private static object CreateRetentionDiagnosticsComponent(
+        IWorkSystem system,
+        string shape,
+        JsonElement? options)
+    {
+        var retention = system.Diagnostics.Retention;
+        var warningSeconds = Math.Max(1, TryGetInt32(options, "warningSeconds") ?? 30);
+        var isBehind = retention.OldestDuePurgeAge >= TimeSpan.FromSeconds(warningSeconds);
+
+        if (shape == WorkComponentShapes.Compact)
+        {
+            return new WorkRetentionDiagnosticsCompactComponent(
+                retention.TrackedFinalWorkerCount,
+                retention.ScheduledPurgeCount,
+                retention.OldestDuePurgeAge,
+                isBehind,
+                warningSeconds,
+                retention.HasSchedulerFailure,
+                retention.SchedulerFailureType,
+                retention.SchedulerFailureMessage);
+        }
+
+        return new WorkRetentionDiagnosticsDetailedComponent(
+            retention,
+            isBehind,
+            warningSeconds);
+    }
+
     private static WorkViewWorkerGridDetailed CreateWorkerGridDetailed(WorkerOverviewItem worker)
         => new(
             worker.Id,
@@ -669,7 +698,10 @@ public class WorkableViewQueryAdapter
         {
             return requests is { Count: > 0 }
                 ? requests
-                : [new("readModelDiagnostics", "readModelDiagnostics", Shape: WorkComponentShapes.Compact)];
+                : [
+                    new("readModelDiagnostics", "readModelDiagnostics", Shape: WorkComponentShapes.Compact),
+                    new("retentionDiagnostics", "retentionDiagnostics", Shape: WorkComponentShapes.Compact),
+                ];
         }
 
         return null;
@@ -713,6 +745,11 @@ public class WorkableViewQueryAdapter
             shape = WorkComponentShapes.Detailed;
         }
         else if (string.Equals(request.Type, "readModelDiagnostics", StringComparison.OrdinalIgnoreCase) &&
+            shape == WorkComponentShapes.Standard)
+        {
+            shape = WorkComponentShapes.Detailed;
+        }
+        else if (string.Equals(request.Type, "retentionDiagnostics", StringComparison.OrdinalIgnoreCase) &&
             shape == WorkComponentShapes.Standard)
         {
             shape = WorkComponentShapes.Detailed;

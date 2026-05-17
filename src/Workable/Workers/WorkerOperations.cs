@@ -87,6 +87,8 @@ internal sealed class WorkerOperations : IWorkerOperations, IDisposable
         this.retention = new WorkerRetentionScheduler(this.index, retentionConfiguration, this.PurgeFinalWorkersForRetention);
     }
 
+    internal WorkSystemRetentionDiagnostics RetentionDiagnostics => this.retention.Diagnostics;
+
     internal async Task<IWorkerHandle> CreateWorker(
         RegisteredWork registeredWork,
         WorkInput? input,
@@ -881,16 +883,17 @@ internal sealed class WorkerOperations : IWorkerOperations, IDisposable
         return outcome;
     }
 
-    private void PurgeFinalWorkersForRetention(
+    private int PurgeFinalWorkersForRetention(
         IReadOnlyList<WorkerId> workerIds,
         WorkDefinitionId? requiredDefinitionId)
     {
         if (workerIds.Count == 0)
         {
-            return;
+            return 0;
         }
 
         Dictionary<WorkDefinitionId, List<WorkerId>>? purgedWorkerIdsByDefinition = null;
+        List<WorkerId>? allPurgedWorkerIds = null;
         foreach (var workerId in workerIds)
         {
             if (!this.workers.TryGetValue(workerId, out var worker) ||
@@ -907,28 +910,38 @@ internal sealed class WorkerOperations : IWorkerOperations, IDisposable
 
             this.concurrency.Forget(removed);
             this.index.Forget(removed);
-            this.ForgetIterationStatuses(workerId);
+            allPurgedWorkerIds ??= [];
+            allPurgedWorkerIds.Add(workerId);
 
             var definitionId = removed.Work.Definition.Id;
             purgedWorkerIdsByDefinition ??= [];
-            if (!purgedWorkerIdsByDefinition.TryGetValue(definitionId, out var purgedWorkerIds))
+            if (!purgedWorkerIdsByDefinition.TryGetValue(definitionId, out var definitionPurgedWorkerIds))
             {
-                purgedWorkerIds = [];
-                purgedWorkerIdsByDefinition[definitionId] = purgedWorkerIds;
+                definitionPurgedWorkerIds = [];
+                purgedWorkerIdsByDefinition[definitionId] = definitionPurgedWorkerIds;
             }
 
-            purgedWorkerIds.Add(workerId);
+            definitionPurgedWorkerIds.Add(workerId);
         }
 
         if (purgedWorkerIdsByDefinition is null)
         {
-            return;
+            return 0;
         }
 
+        if (allPurgedWorkerIds is not null)
+        {
+            this.ForgetIterationStatuses(allPurgedWorkerIds);
+        }
+
+        var purgedCount = 0;
         foreach (var purgedWorkers in purgedWorkerIdsByDefinition)
         {
+            purgedCount += purgedWorkers.Value.Count;
             this.workerEvents.Purged(purgedWorkers.Value, purgedWorkers.Key);
         }
+
+        return purgedCount;
     }
 
     private void ForgetIterationStatuses(WorkerId workerId)
@@ -938,6 +951,27 @@ internal sealed class WorkerOperations : IWorkerOperations, IDisposable
             this.iterationStatuses.TryRemove(reference, out _);
         }
     }
+
+    private void ForgetIterationStatuses(IReadOnlyCollection<WorkerId> workerIds)
+    {
+        if (workerIds.Count == 0)
+        {
+            return;
+        }
+
+        var workerIdSet = workerIds.Count > 4 ? workerIds.ToHashSet() : null;
+        foreach (var reference in this.iterationStatuses.Keys
+            .Where(reference => ContainsWorker(workerIds, workerIdSet, reference.WorkerId)))
+        {
+            this.iterationStatuses.TryRemove(reference, out _);
+        }
+    }
+
+    private static bool ContainsWorker(
+        IReadOnlyCollection<WorkerId> workerIds,
+        HashSet<WorkerId>? workerIdSet,
+        WorkerId workerId)
+        => workerIdSet?.Contains(workerId) ?? workerIds.Contains(workerId);
 
     private IReadOnlyList<WorkMessage> ValidateIdempotencyLocked(
         WorkDefinitionId definitionId,

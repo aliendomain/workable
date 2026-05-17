@@ -42,7 +42,6 @@ internal sealed class InMemoryWorkSystem : IWorkSystem, IOriginAwareWorkSystem, 
             ?? rootServices.GetService<IDotNetWorkOriginProvider>()
             ?? new DefaultDotNetWorkOriginProvider();
         this.readModel = new WorkSystemReadModel(this.catalog, () => this.State, this.Name, this.metrics);
-        this.diagnostics = new WorkSystemDiagnostics(this.readModel);
         this.workers = new WorkerOperations(
             this.catalog,
             () => this.State,
@@ -58,6 +57,7 @@ internal sealed class InMemoryWorkSystem : IWorkSystem, IOriginAwareWorkSystem, 
             registration.Retention,
             registration.Capacity,
             this.metrics);
+        this.diagnostics = new WorkSystemDiagnostics(this.readModel, this.workers);
         this.readModel.UseDetailReaders(this.workers.GetAuthoritative, this.workers.GetIterationAuthoritative);
         this.query = this.readModel.Query;
         this.queue = new WorkQueueService(this.catalog, this.workers, dotNetOriginProvider);

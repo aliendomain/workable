@@ -139,3 +139,18 @@ public sealed record WorkReadModelDiagnosticsDetailedComponent(
     WorkSystemReadModelDiagnostics ReadModel,
     bool IsReadModelBehind,
     int ReadModelLagWarningThreshold);
+
+public sealed record WorkRetentionDiagnosticsCompactComponent(
+    int TrackedFinalWorkerCount,
+    int ScheduledPurgeCount,
+    TimeSpan OldestDuePurgeAge,
+    bool IsRetentionBehind,
+    int RetentionLagWarningSeconds,
+    bool HasSchedulerFailure,
+    string? SchedulerFailureType,
+    string? SchedulerFailureMessage);
+
+public sealed record WorkRetentionDiagnosticsDetailedComponent(
+    WorkSystemRetentionDiagnostics Retention,
+    bool IsRetentionBehind,
+    int RetentionLagWarningSeconds);

@@ -4,7 +4,7 @@ namespace Workable;
 internal sealed class WorkerRetentionScheduler(
     WorkerIndex index,
     WorkSystemRetentionConfiguration systemRetention,
-    Action<IReadOnlyList<WorkerId>, WorkDefinitionId?> purge) : IDisposable
+    Func<IReadOnlyList<WorkerId>, WorkDefinitionId?, int> purge) : IDisposable
 {
     private const int PurgeBatchSize = 4096;
     private const int ScheduledPurgeTrimMinimumHighWaterMark = 65_536;
@@ -23,6 +23,44 @@ internal sealed class WorkerRetentionScheduler(
     private bool signalPending;
     private int scheduledPurgeHighWaterMark;
     private DateTimeOffset lastScheduledPurgeTrimAt = DateTimeOffset.MinValue;
+    private DateTimeOffset? lastRunAt;
+    private TimeSpan lastRunDuration;
+    private int lastPurgedCount;
+    private long totalPurgedCount;
+    private string? schedulerFailureType;
+    private string? schedulerFailureMessage;
+
+    public WorkSystemRetentionDiagnostics Diagnostics
+    {
+        get
+        {
+            lock (this.sync)
+            {
+                var now = DateTimeOffset.UtcNow;
+                var oldestDueAt = this.scheduledPurges.TryPeek(out _, out var dueAt)
+                    ? dueAt
+                    : (DateTimeOffset?)null;
+                var oldestDuePurgeAge = oldestDueAt is { } scheduledAt && scheduledAt < now
+                    ? now - scheduledAt
+                    : TimeSpan.Zero;
+
+                return new WorkSystemRetentionDiagnostics(
+                    this.finalWorkerEntriesById.Count,
+                    this.scheduledPurges.Count,
+                    this.scheduledPurgeHighWaterMark,
+                    oldestDueAt,
+                    oldestDuePurgeAge,
+                    this.countRetentionTargetsByDefinition.Count,
+                    this.systemCountRetentionDirty,
+                    this.lastRunAt,
+                    this.lastRunDuration,
+                    this.lastPurgedCount,
+                    this.totalPurgedCount,
+                    this.schedulerFailureType,
+                    this.schedulerFailureMessage);
+            }
+        }
+    }
 
     public void Start()
     {
@@ -128,13 +166,13 @@ internal sealed class WorkerRetentionScheduler(
 
                 if (this.TryTakeDuePurgeBatch(out var scheduledPurgeWorkerIds, out var scheduledPurgeDefinitionId))
                 {
-                    purge(scheduledPurgeWorkerIds, scheduledPurgeDefinitionId);
+                    this.TryPurge(scheduledPurgeWorkerIds, scheduledPurgeDefinitionId, cancellationToken);
                     continue;
                 }
 
                 if (this.TryTakeCountRetentionWork(out var definitionIds, out var enforceSystemCap))
                 {
-                    this.EnforceCountRetention(definitionIds, enforceSystemCap);
+                    this.EnforceCountRetention(definitionIds, enforceSystemCap, cancellationToken);
                     continue;
                 }
 
@@ -259,20 +297,24 @@ internal sealed class WorkerRetentionScheduler(
 
     private void EnforceCountRetention(
         IReadOnlyDictionary<WorkDefinitionId, int> definitionTargets,
-        bool enforceSystemCap)
+        bool enforceSystemCap,
+        CancellationToken cancellationToken)
     {
         foreach (var definitionTarget in definitionTargets)
         {
-            this.EnforceDefinitionCountRetention(definitionTarget.Key, definitionTarget.Value);
+            this.EnforceDefinitionCountRetention(definitionTarget.Key, definitionTarget.Value, cancellationToken);
         }
 
         if (enforceSystemCap)
         {
-            this.EnforceSystemCountRetention();
+            this.EnforceSystemCountRetention(cancellationToken);
         }
     }
 
-    private void EnforceDefinitionCountRetention(WorkDefinitionId definitionId, int targetFinalWorkers)
+    private void EnforceDefinitionCountRetention(
+        WorkDefinitionId definitionId,
+        int targetFinalWorkers,
+        CancellationToken cancellationToken)
     {
         var definitionIds = new HashSet<WorkDefinitionId> { definitionId };
         var finalWorkerCount = this.CountFinalWorkers(definitionIds);
@@ -287,10 +329,10 @@ internal sealed class WorkerRetentionScheduler(
             return;
         }
 
-        this.PurgeExcessFinalWorkers(definitionId, excessCount);
+        this.PurgeExcessFinalWorkers(definitionId, excessCount, cancellationToken);
     }
 
-    private void EnforceSystemCountRetention()
+    private void EnforceSystemCountRetention(CancellationToken cancellationToken)
     {
         var excessCount = this.CountFinalWorkers(definitionIds: null) - systemRetention.MaximumFinalWorkers;
         if (excessCount <= 0)
@@ -298,7 +340,7 @@ internal sealed class WorkerRetentionScheduler(
             return;
         }
 
-        this.PurgeExcessFinalWorkers(definitionId: null, excessCount);
+        this.PurgeExcessFinalWorkers(definitionId: null, excessCount, cancellationToken);
     }
 
     private int CountFinalWorkers(IReadOnlySet<WorkDefinitionId>? definitionIds)
@@ -307,7 +349,10 @@ internal sealed class WorkerRetentionScheduler(
         return FinalStates.Sum(state => counts.GetValueOrDefault(state));
     }
 
-    private void PurgeExcessFinalWorkers(WorkDefinitionId? definitionId, int excessCount)
+    private void PurgeExcessFinalWorkers(
+        WorkDefinitionId? definitionId,
+        int excessCount,
+        CancellationToken cancellationToken)
     {
         var remaining = excessCount;
         while (remaining > 0)
@@ -318,8 +363,49 @@ internal sealed class WorkerRetentionScheduler(
                 return;
             }
 
-            purge(workerIds, definitionId);
+            this.TryPurge(workerIds, definitionId, cancellationToken);
             remaining -= workerIds.Count;
+        }
+    }
+
+    private void TryPurge(
+        IReadOnlyList<WorkerId> workerIds,
+        WorkDefinitionId? definitionId,
+        CancellationToken cancellationToken)
+    {
+        var startedAt = DateTimeOffset.UtcNow;
+        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+        try
+        {
+            var purgedCount = purge(workerIds, definitionId);
+            stopwatch.Stop();
+            this.RecordRun(startedAt, stopwatch.Elapsed, purgedCount, exception: null);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception exception)
+        {
+            stopwatch.Stop();
+            this.RecordRun(startedAt, stopwatch.Elapsed, purgedCount: 0, exception);
+        }
+    }
+
+    private void RecordRun(
+        DateTimeOffset startedAt,
+        TimeSpan duration,
+        int purgedCount,
+        Exception? exception)
+    {
+        lock (this.sync)
+        {
+            this.lastRunAt = startedAt;
+            this.lastRunDuration = duration;
+            this.lastPurgedCount = purgedCount;
+            this.totalPurgedCount += purgedCount;
+            this.schedulerFailureType = exception?.GetType().FullName;
+            this.schedulerFailureMessage = exception?.Message;
         }
     }
 

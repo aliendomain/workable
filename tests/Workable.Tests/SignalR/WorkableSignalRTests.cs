@@ -190,6 +190,11 @@ public sealed class WorkableSignalRTests
                     "readModelDiagnostics",
                     JsonSerializer.SerializeToElement(new { warningThreshold = 100 }),
                     WorkComponentShapes.Compact),
+                new WorkComponentRequest(
+                    "retentionDiagnostics",
+                    "retentionDiagnostics",
+                    JsonSerializer.SerializeToElement(new { warningSeconds = 30 }),
+                    WorkComponentShapes.Compact),
             ]),
             null);
 
@@ -199,14 +204,20 @@ public sealed class WorkableSignalRTests
         var updated = await ReadUntil(
             views.Reader,
             view => view.GeneratedAt > initial.GeneratedAt &&
-                view.Components.ContainsKey("readModelDiagnostics"));
+                view.Components.ContainsKey("readModelDiagnostics") &&
+                view.Components.ContainsKey("retentionDiagnostics"));
         var diagnostics = Assert.IsType<JsonElement>(updated.Components["readModelDiagnostics"].Data);
+        var retention = Assert.IsType<JsonElement>(updated.Components["retentionDiagnostics"].Data);
 
-        Assert.Equal(["readModelDiagnostics"], updated.Components.Keys.ToArray());
+        Assert.Equal(["readModelDiagnostics", "retentionDiagnostics"], updated.Components.Keys.ToArray());
         Assert.Equal("compact", updated.Components["readModelDiagnostics"].Shape);
         Assert.True(diagnostics.TryGetProperty("pendingUpdateCount", out _));
         Assert.True(diagnostics.TryGetProperty("isReadModelBehind", out _));
         Assert.True(diagnostics.TryGetProperty("readModelLagWarningThreshold", out _));
+        Assert.Equal("compact", updated.Components["retentionDiagnostics"].Shape);
+        Assert.True(retention.TryGetProperty("scheduledPurgeCount", out _));
+        Assert.True(retention.TryGetProperty("isRetentionBehind", out _));
+        Assert.True(retention.TryGetProperty("retentionLagWarningSeconds", out _));
     }
 
     [Fact]

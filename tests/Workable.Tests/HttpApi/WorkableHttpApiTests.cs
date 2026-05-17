@@ -1204,7 +1204,7 @@ public sealed class WorkableHttpApiTests
     }
 
     [Fact]
-    public async Task MappedHttpDiagnosticsRouteReturnsReadModelCounters()
+    public async Task MappedHttpDiagnosticsRouteReturnsSystemCounters()
     {
         using var host = await CreateHttpHost();
         var client = host.GetTestClient();
@@ -1225,6 +1225,8 @@ public sealed class WorkableHttpApiTests
             ?? throw new InvalidOperationException("Expected JSON response.");
         var readModel = json["readModel"]
             ?? throw new InvalidOperationException("Expected read model diagnostics.");
+        var retention = json["retention"]
+            ?? throw new InvalidOperationException("Expected retention diagnostics.");
 
         Assert.Equal(system.Id.Value.ToString(), json["id"]?["value"]?.GetValue<string>());
         Assert.Equal("Started", json["state"]?.GetValue<string>());
@@ -1236,6 +1238,10 @@ public sealed class WorkableHttpApiTests
         Assert.True(readModel["appliedUpdateCount"]?.GetValue<long>() > 0);
         Assert.True(readModel["publishedSnapshotCount"]?.GetValue<long>() > 0);
         Assert.False(readModel["hasProjectorFailure"]?.GetValue<bool>());
+        Assert.True(retention["trackedFinalWorkerCount"]?.GetValue<int>() >= 0);
+        Assert.True(retention["scheduledPurgeCount"]?.GetValue<int>() >= 0);
+        Assert.True(retention["scheduledPurgeHighWaterMark"]?.GetValue<int>() >= 0);
+        Assert.False(retention["hasSchedulerFailure"]?.GetValue<bool>());
     }
 
     [Fact]

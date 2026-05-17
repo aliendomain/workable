@@ -262,21 +262,34 @@ internal sealed class WorkableRealtimeBroadcaster(
         var components = new Dictionary<string, WorkComponentResult>(StringComparer.OrdinalIgnoreCase);
         foreach (var component in subscription.Criteria.Components ?? [])
         {
-            if (!string.Equals(component.Type, "readModelDiagnostics", StringComparison.OrdinalIgnoreCase))
+            if (string.Equals(component.Type, "readModelDiagnostics", StringComparison.OrdinalIgnoreCase))
             {
-                continue;
+                components[component.Id] = new WorkComponentResult(
+                    "ok",
+                    new WorkReadModelDiagnosticsCompactComponent(
+                        alertState.ReadModelPendingUpdateCount,
+                        alertState.IsReadModelBehind,
+                        alertState.ReadModelWarningThreshold,
+                        alertState.HasProjectorFailure,
+                        alertState.ProjectorFailureType,
+                        alertState.ProjectorFailureMessage),
+                    Shape: component.Shape);
             }
-
-            components[component.Id] = new WorkComponentResult(
-                "ok",
-                new WorkReadModelDiagnosticsCompactComponent(
-                    alertState.PendingUpdateCount,
-                    alertState.IsReadModelBehind,
-                    alertState.WarningThreshold,
-                    alertState.HasProjectorFailure,
-                    alertState.ProjectorFailureType,
-                    alertState.ProjectorFailureMessage),
-                Shape: component.Shape);
+            else if (string.Equals(component.Type, "retentionDiagnostics", StringComparison.OrdinalIgnoreCase))
+            {
+                components[component.Id] = new WorkComponentResult(
+                    "ok",
+                    new WorkRetentionDiagnosticsCompactComponent(
+                        alertState.TrackedFinalWorkerCount,
+                        alertState.ScheduledPurgeCount,
+                        alertState.OldestDuePurgeAge,
+                        alertState.IsRetentionBehind,
+                        alertState.RetentionWarningSeconds,
+                        alertState.HasSchedulerFailure,
+                        alertState.SchedulerFailureType,
+                        alertState.SchedulerFailureMessage),
+                    Shape: component.Shape);
+            }
         }
 
         if (components.Count == 0)
@@ -298,29 +311,48 @@ internal sealed class WorkableRealtimeBroadcaster(
     private static bool IsDiagnosticsAlertChangesSubscription(WorkableRealtimeViewSubscription subscription)
         => subscription.Criteria.Components?
             .Any(component =>
-                string.Equals(component.Type, "readModelDiagnostics", StringComparison.OrdinalIgnoreCase) &&
+                IsAlertDiagnosticsComponent(component) &&
                 string.Equals(component.Shape, WorkComponentShapes.Compact, StringComparison.OrdinalIgnoreCase) &&
                 string.Equals(GetStringOption(component.Options, "publishMode"), "alertChanges", StringComparison.OrdinalIgnoreCase)) == true;
+
+    private static bool IsAlertDiagnosticsComponent(WorkComponentRequest component)
+        => string.Equals(component.Type, "readModelDiagnostics", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(component.Type, "retentionDiagnostics", StringComparison.OrdinalIgnoreCase);
 
     private static DiagnosticsAlertState CreateDiagnosticsAlertState(
         IWorkSystem system,
         WorkableRealtimeViewSubscription subscription)
     {
         var readModel = system.Diagnostics.ReadModel;
-        var threshold = GetReadModelDiagnosticsWarningThreshold(subscription);
-        var lagSeverity = readModel.PendingUpdateCount >= threshold * 10L
+        var readModelThreshold = GetReadModelDiagnosticsWarningThreshold(subscription);
+        var readModelLagSeverity = readModel.PendingUpdateCount >= readModelThreshold * 10L
             ? DiagnosticsLagSeverity.Critical
-            : readModel.PendingUpdateCount >= threshold
+            : readModel.PendingUpdateCount >= readModelThreshold
+                ? DiagnosticsLagSeverity.Warning
+                : DiagnosticsLagSeverity.Normal;
+        var retention = system.Diagnostics.Retention;
+        var retentionWarningSeconds = GetRetentionDiagnosticsWarningSeconds(subscription);
+        var retentionLagSeverity = retention.OldestDuePurgeAge >= TimeSpan.FromSeconds(retentionWarningSeconds * 10L)
+            ? DiagnosticsLagSeverity.Critical
+            : retention.OldestDuePurgeAge >= TimeSpan.FromSeconds(retentionWarningSeconds)
                 ? DiagnosticsLagSeverity.Warning
                 : DiagnosticsLagSeverity.Normal;
 
         return new DiagnosticsAlertState(
             readModel.PendingUpdateCount,
-            threshold,
-            lagSeverity,
+            readModelThreshold,
+            readModelLagSeverity,
             readModel.HasProjectorFailure,
             readModel.ProjectorFailureType,
-            readModel.ProjectorFailureMessage);
+            readModel.ProjectorFailureMessage,
+            retention.TrackedFinalWorkerCount,
+            retention.ScheduledPurgeCount,
+            retention.OldestDuePurgeAge,
+            retentionWarningSeconds,
+            retentionLagSeverity,
+            retention.HasSchedulerFailure,
+            retention.SchedulerFailureType,
+            retention.SchedulerFailureMessage);
     }
 
     private static int GetReadModelDiagnosticsWarningThreshold(WorkableRealtimeViewSubscription subscription)
@@ -328,6 +360,12 @@ internal sealed class WorkableRealtimeBroadcaster(
             .Where(component => string.Equals(component.Type, "readModelDiagnostics", StringComparison.OrdinalIgnoreCase))
             .Select(component => GetInt32Option(component.Options, "warningThreshold"))
             .FirstOrDefault(value => value.HasValue) ?? 100);
+
+    private static int GetRetentionDiagnosticsWarningSeconds(WorkableRealtimeViewSubscription subscription)
+        => Math.Max(1, subscription.Criteria.Components?
+            .Where(component => string.Equals(component.Type, "retentionDiagnostics", StringComparison.OrdinalIgnoreCase))
+            .Select(component => GetInt32Option(component.Options, "warningSeconds"))
+            .FirstOrDefault(value => value.HasValue) ?? 30);
 
     private static string? GetStringOption(JsonElement? options, string propertyName)
         => options.HasValue &&
@@ -356,16 +394,30 @@ internal sealed class WorkableRealtimeBroadcaster(
     }
 
     private sealed record DiagnosticsAlertState(
-        long PendingUpdateCount,
-        int WarningThreshold,
-        DiagnosticsLagSeverity LagSeverity,
+        long ReadModelPendingUpdateCount,
+        int ReadModelWarningThreshold,
+        DiagnosticsLagSeverity ReadModelLagSeverity,
         bool HasProjectorFailure,
         string? ProjectorFailureType,
-        string? ProjectorFailureMessage)
+        string? ProjectorFailureMessage,
+        int TrackedFinalWorkerCount,
+        int ScheduledPurgeCount,
+        TimeSpan OldestDuePurgeAge,
+        int RetentionWarningSeconds,
+        DiagnosticsLagSeverity RetentionLagSeverity,
+        bool HasSchedulerFailure,
+        string? SchedulerFailureType,
+        string? SchedulerFailureMessage)
     {
-        public bool IsReadModelBehind => this.LagSeverity != DiagnosticsLagSeverity.Normal;
+        public bool IsReadModelBehind => this.ReadModelLagSeverity != DiagnosticsLagSeverity.Normal;
 
-        public bool IsAlerting => this.LagSeverity != DiagnosticsLagSeverity.Normal || this.HasProjectorFailure;
+        public bool IsRetentionBehind => this.RetentionLagSeverity != DiagnosticsLagSeverity.Normal;
+
+        public bool IsAlerting =>
+            this.IsReadModelBehind ||
+            this.HasProjectorFailure ||
+            this.IsRetentionBehind ||
+            this.HasSchedulerFailure;
     }
 
     private sealed record EventPump(

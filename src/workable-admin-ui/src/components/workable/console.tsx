@@ -77,7 +77,10 @@ import {
   type WorkComponentShape,
   type WorkReadModelDiagnosticsCompactComponent,
   type WorkReadModelDiagnosticsDetailedComponent,
+  type WorkRetentionDiagnosticsCompactComponent,
+  type WorkRetentionDiagnosticsDetailedComponent,
   type WorkSystemReadModelDiagnostics,
+  type WorkSystemRetentionDiagnostics,
   type WorkSystemLifecycleResult,
   type WorkableConnection,
   type WorkerState,
@@ -250,6 +253,7 @@ export function WorkableConsole() {
   const [lifecycleError, setLifecycleError] = useState<string>();
   const [systemNotificationOpen, setSystemNotificationOpen] = useState(false);
   const [readModelDiagnosticsExpanded, setReadModelDiagnosticsExpanded] = useState(false);
+  const [retentionDiagnosticsExpanded, setRetentionDiagnosticsExpanded] = useState(false);
   const [realtimePayloadCaptureEnabled, setRealtimePayloadCaptureEnabled] = useState(true);
   const [realtimePayloadMaxMessages, setRealtimePayloadMaxMessages] = useState(100);
   const [realtimePayloadOpen, setRealtimePayloadOpen] = useState(false);
@@ -309,6 +313,15 @@ export function WorkableConsole() {
           shape: "compact",
           type: "readModelDiagnostics",
         },
+        {
+          id: "retentionDiagnostics",
+          options: {
+            publishMode: "alertChanges",
+            warningSeconds: 30,
+          },
+          shape: "compact",
+          type: "retentionDiagnostics",
+        },
       ],
     }),
     []
@@ -325,11 +338,20 @@ export function WorkableConsole() {
           shape: "compact",
           type: "readModelDiagnostics",
         },
+        {
+          id: "retentionDiagnostics",
+          options: {
+            publishMode: "continuous",
+            warningSeconds: 30,
+          },
+          shape: "compact",
+          type: "retentionDiagnostics",
+        },
       ],
     }),
     []
   );
-  const diagnosticsDetailRequest = useMemo(
+  const readModelDiagnosticsDetailRequest = useMemo(
     () => ({
       components: [
         {
@@ -340,6 +362,22 @@ export function WorkableConsole() {
           },
           shape: "detailed",
           type: "readModelDiagnostics",
+        },
+      ],
+    }),
+    []
+  );
+  const retentionDiagnosticsDetailRequest = useMemo(
+    () => ({
+      components: [
+        {
+          id: "retentionDiagnostics",
+          options: {
+            publishMode: "continuous",
+            warningSeconds: 30,
+          },
+          shape: "detailed",
+          type: "retentionDiagnostics",
         },
       ],
     }),
@@ -365,35 +403,58 @@ export function WorkableConsole() {
     realtimePayloadMaxMessages,
     "diagnostics:tray"
   );
-  const diagnosticsDetail = useWorkableRealtimeView<WorkComponentQueryResult>(
+  const readModelDiagnosticsDetail = useWorkableRealtimeView<WorkComponentQueryResult>(
     connection,
     "diagnostics",
-    diagnosticsDetailRequest,
+    readModelDiagnosticsDetailRequest,
     diagnosticsRealtimeEnabled && systemNotificationOpen && readModelDiagnosticsExpanded,
     captureRealtimePayloads,
     realtimePayloadMaxMessages,
     "diagnostics:read-model"
   );
+  const retentionDiagnosticsDetail = useWorkableRealtimeView<WorkComponentQueryResult>(
+    connection,
+    "diagnostics",
+    retentionDiagnosticsDetailRequest,
+    diagnosticsRealtimeEnabled && systemNotificationOpen && retentionDiagnosticsExpanded,
+    captureRealtimePayloads,
+    realtimePayloadMaxMessages,
+    "diagnostics:retention"
+  );
   const diagnosticsRealtimeMessages = useMemo(
     () => [
       ...diagnosticsAlert.messages,
       ...diagnosticsTray.messages,
-      ...diagnosticsDetail.messages,
+      ...readModelDiagnosticsDetail.messages,
+      ...retentionDiagnosticsDetail.messages,
     ],
-    [diagnosticsAlert.messages, diagnosticsDetail.messages, diagnosticsTray.messages]
+    [
+      diagnosticsAlert.messages,
+      diagnosticsTray.messages,
+      readModelDiagnosticsDetail.messages,
+      retentionDiagnosticsDetail.messages,
+    ]
   );
   const clearDiagnosticsAlertMessages = diagnosticsAlert.clearMessages;
   const clearDiagnosticsTrayMessages = diagnosticsTray.clearMessages;
-  const clearDiagnosticsDetailMessages = diagnosticsDetail.clearMessages;
+  const clearReadModelDiagnosticsDetailMessages = readModelDiagnosticsDetail.clearMessages;
+  const clearRetentionDiagnosticsDetailMessages = retentionDiagnosticsDetail.clearMessages;
   const clearDiagnosticsRealtimeMessages = useCallback(() => {
     clearDiagnosticsAlertMessages();
     clearDiagnosticsTrayMessages();
-    clearDiagnosticsDetailMessages();
-  }, [clearDiagnosticsAlertMessages, clearDiagnosticsDetailMessages, clearDiagnosticsTrayMessages]);
+    clearReadModelDiagnosticsDetailMessages();
+    clearRetentionDiagnosticsDetailMessages();
+  }, [
+    clearDiagnosticsAlertMessages,
+    clearDiagnosticsTrayMessages,
+    clearReadModelDiagnosticsDetailMessages,
+    clearRetentionDiagnosticsDetailMessages,
+  ]);
   const handleSystemNotificationOpenChange = useCallback((open: boolean) => {
     setSystemNotificationOpen(open);
     if (!open) {
       setReadModelDiagnosticsExpanded(false);
+      setRetentionDiagnosticsExpanded(false);
     }
   }, []);
 
@@ -1182,11 +1243,14 @@ export function WorkableConsole() {
                       systemNotifications={(
                         <SystemNotificationTray
                           alertDiagnostics={diagnosticsAlert}
-                          detailDiagnostics={diagnosticsDetail}
                           onOpenChange={handleSystemNotificationOpenChange}
                           onReadModelExpandedChange={setReadModelDiagnosticsExpanded}
+                          onRetentionExpandedChange={setRetentionDiagnosticsExpanded}
                           open={systemNotificationOpen}
+                          readModelDetailDiagnostics={readModelDiagnosticsDetail}
                           readModelExpanded={readModelDiagnosticsExpanded}
+                          retentionDetailDiagnostics={retentionDiagnosticsDetail}
+                          retentionExpanded={retentionDiagnosticsExpanded}
                           systemName={activeSystem.name}
                           trayDiagnostics={diagnosticsTray}
                         />
@@ -1499,55 +1563,84 @@ type SystemNotification = {
 
 function SystemNotificationTray({
   alertDiagnostics,
-  detailDiagnostics,
   onOpenChange,
   onReadModelExpandedChange,
+  onRetentionExpandedChange,
   open,
+  readModelDetailDiagnostics,
   readModelExpanded,
+  retentionDetailDiagnostics,
+  retentionExpanded,
   systemName,
   trayDiagnostics,
 }: {
   alertDiagnostics: SystemDiagnosticsViewState;
-  detailDiagnostics: SystemDiagnosticsViewState;
   onOpenChange: (open: boolean) => void;
   onReadModelExpandedChange: (expanded: boolean) => void;
+  onRetentionExpandedChange: (expanded: boolean) => void;
   open: boolean;
+  readModelDetailDiagnostics: SystemDiagnosticsViewState;
   readModelExpanded: boolean;
+  retentionDetailDiagnostics: SystemDiagnosticsViewState;
+  retentionExpanded: boolean;
   systemName: string;
   trayDiagnostics: SystemDiagnosticsViewState;
 }) {
-  const alertCompact = getWorkComponentData<WorkReadModelDiagnosticsCompactComponent>(
+  const alertReadModelCompact = getWorkComponentData<WorkReadModelDiagnosticsCompactComponent>(
     alertDiagnostics.data,
     "readModelDiagnostics"
   );
-  const trayCompact = getWorkComponentData<WorkReadModelDiagnosticsCompactComponent>(
+  const trayReadModelCompact = getWorkComponentData<WorkReadModelDiagnosticsCompactComponent>(
     trayDiagnostics.data,
     "readModelDiagnostics"
   );
-  const detailed = getWorkComponentData<WorkReadModelDiagnosticsDetailedComponent>(
-    detailDiagnostics.data,
+  const detailedReadModel = getWorkComponentData<WorkReadModelDiagnosticsDetailedComponent>(
+    readModelDetailDiagnostics.data,
     "readModelDiagnostics"
   );
-  const detailCompact = createCompactDiagnosticsFromDetailed(detailed);
-  const visibleCompact = readModelExpanded
-    ? detailCompact ?? trayCompact
-    : trayCompact;
-  const compact = open
-    ? visibleCompact ?? alertCompact
-    : alertCompact;
-  const diagnosticsError = alertDiagnostics.error || (
-    readModelExpanded ? detailDiagnostics.error : open ? trayDiagnostics.error : undefined
+  const alertRetentionCompact = getWorkComponentData<WorkRetentionDiagnosticsCompactComponent>(
+    alertDiagnostics.data,
+    "retentionDiagnostics"
   );
-  const notifications = createSystemNotifications(compact, diagnosticsError);
+  const trayRetentionCompact = getWorkComponentData<WorkRetentionDiagnosticsCompactComponent>(
+    trayDiagnostics.data,
+    "retentionDiagnostics"
+  );
+  const detailedRetention = getWorkComponentData<WorkRetentionDiagnosticsDetailedComponent>(
+    retentionDetailDiagnostics.data,
+    "retentionDiagnostics"
+  );
+  const readModelDetailCompact = createCompactReadModelDiagnosticsFromDetailed(detailedReadModel);
+  const retentionDetailCompact = createCompactRetentionDiagnosticsFromDetailed(detailedRetention);
+  const readModelCompact = open
+    ? (readModelExpanded ? readModelDetailCompact ?? trayReadModelCompact : trayReadModelCompact) ?? alertReadModelCompact
+    : alertReadModelCompact;
+  const retentionCompact = open
+    ? (retentionExpanded ? retentionDetailCompact ?? trayRetentionCompact : trayRetentionCompact) ?? alertRetentionCompact
+    : alertRetentionCompact;
+  const diagnosticsError = alertDiagnostics.error || (
+    readModelExpanded
+      ? readModelDetailDiagnostics.error
+      : retentionExpanded
+        ? retentionDetailDiagnostics.error
+        : open
+          ? trayDiagnostics.error
+          : undefined
+  );
+  const notifications = createSystemNotifications(readModelCompact, retentionCompact, diagnosticsError);
   const hasNotifications = notifications.length > 0;
   const busy = alertDiagnostics.loading || alertDiagnostics.refreshing ||
-    (open && !readModelExpanded && (trayDiagnostics.loading || trayDiagnostics.refreshing)) ||
-    (readModelExpanded && (detailDiagnostics.loading || detailDiagnostics.refreshing));
+    (open && !readModelExpanded && !retentionExpanded && (trayDiagnostics.loading || trayDiagnostics.refreshing)) ||
+    (readModelExpanded && (readModelDetailDiagnostics.loading || readModelDetailDiagnostics.refreshing)) ||
+    (retentionExpanded && (retentionDetailDiagnostics.loading || retentionDetailDiagnostics.refreshing));
   const connectionState = alertDiagnostics.enabled
     ? alertDiagnostics.connectionState
     : "disabled";
-  const detailLastUpdatedAt = detailDiagnostics.data?.generatedAt
-    ? new Date(detailDiagnostics.data.generatedAt)
+  const readModelLastUpdatedAt = readModelDetailDiagnostics.data?.generatedAt
+    ? new Date(readModelDetailDiagnostics.data.generatedAt)
+    : undefined;
+  const retentionLastUpdatedAt = retentionDetailDiagnostics.data?.generatedAt
+    ? new Date(retentionDetailDiagnostics.data.generatedAt)
     : undefined;
 
   return (
@@ -1590,7 +1683,7 @@ function SystemNotificationTray({
         </div>
         <div className="max-h-[70vh] overflow-auto">
           <div className="space-y-2 border-b p-3">
-            {alertDiagnostics.loading && !compact ? (
+            {alertDiagnostics.loading && !readModelCompact && !retentionCompact ? (
               <div className="flex items-center gap-2 text-muted-foreground text-sm">
                 <Loader2 className="size-4 animate-spin" />
                 Loading diagnostics.
@@ -1617,12 +1710,20 @@ function SystemNotificationTray({
             )}
           </div>
           <ReadModelDiagnosticsSummary
-            compact={compact}
+            compact={readModelCompact}
             expanded={readModelExpanded}
-            lastUpdatedAt={detailLastUpdatedAt}
-            loading={detailDiagnostics.loading && !detailed}
+            lastUpdatedAt={readModelLastUpdatedAt}
+            loading={readModelDetailDiagnostics.loading && !detailedReadModel}
             onExpandedChange={onReadModelExpandedChange}
-            readModel={detailed?.readModel}
+            readModel={detailedReadModel?.readModel}
+          />
+          <RetentionDiagnosticsSummary
+            compact={retentionCompact}
+            expanded={retentionExpanded}
+            lastUpdatedAt={retentionLastUpdatedAt}
+            loading={retentionDetailDiagnostics.loading && !detailedRetention}
+            onExpandedChange={onRetentionExpandedChange}
+            retention={detailedRetention?.retention}
           />
         </div>
       </PopoverContent>
@@ -1683,41 +1784,141 @@ function ReadModelDiagnosticsSummary({
           ) : null}
           {readModel && (
             <>
-      <div className="grid grid-cols-2 gap-2 text-xs">
-        <DiagnosticsMetric
-          label="Pending"
-          tone={compact?.isReadModelBehind ? "warning" : undefined}
-          value={formatNumber(readModel?.pendingUpdateCount)}
-        />
-        <DiagnosticsMetric
-          label="Last batch"
-          value={formatNumber(readModel?.lastBatchSize)}
-        />
-        <DiagnosticsMetric
-          label="Enqueued"
-          value={formatNumber(readModel?.enqueuedSequence)}
-        />
-        <DiagnosticsMetric
-          label="Applied"
-          value={formatNumber(readModel?.appliedSequence)}
-        />
-        <DiagnosticsMetric
-          label="Snapshots"
-          value={formatNumber(readModel?.publishedSnapshotCount)}
-        />
-        <DiagnosticsMetric
-          label="Last projection"
-          value={formatDuration(readModel?.lastProjectionDuration)}
-        />
-      </div>
-      <div className="rounded-md border border-border px-3 py-2 text-xs">
-        <div className="flex items-center justify-between gap-3">
-          <span className="text-muted-foreground">Last projected</span>
-          <span className="min-w-0 truncate font-mono">
-            {formatDateTimeShort(readModel?.lastProjectedAt)}
-          </span>
+              <div className="grid grid-cols-2 gap-2 text-xs">
+                <DiagnosticsMetric
+                  label="Pending"
+                  tone={compact?.isReadModelBehind ? "warning" : undefined}
+                  value={formatNumber(readModel?.pendingUpdateCount)}
+                />
+                <DiagnosticsMetric
+                  label="Last batch"
+                  value={formatNumber(readModel?.lastBatchSize)}
+                />
+                <DiagnosticsMetric
+                  label="Enqueued"
+                  value={formatNumber(readModel?.enqueuedSequence)}
+                />
+                <DiagnosticsMetric
+                  label="Applied"
+                  value={formatNumber(readModel?.appliedSequence)}
+                />
+                <DiagnosticsMetric
+                  label="Snapshots"
+                  value={formatNumber(readModel?.publishedSnapshotCount)}
+                />
+                <DiagnosticsMetric
+                  label="Last projection"
+                  value={formatDuration(readModel?.lastProjectionDuration)}
+                />
+              </div>
+              <div className="rounded-md border border-border px-3 py-2 text-xs">
+                <div className="flex items-center justify-between gap-3">
+                  <span className="text-muted-foreground">Last projected</span>
+                  <span className="min-w-0 truncate font-mono">
+                    {formatDateTimeShort(readModel?.lastProjectedAt)}
+                  </span>
+                </div>
+              </div>
+            </>
+          )}
         </div>
-      </div>
+      )}
+    </div>
+  );
+}
+
+function RetentionDiagnosticsSummary({
+  compact,
+  expanded,
+  lastUpdatedAt,
+  loading,
+  onExpandedChange,
+  retention,
+}: {
+  compact?: WorkRetentionDiagnosticsCompactComponent;
+  expanded: boolean;
+  lastUpdatedAt?: Date;
+  loading: boolean;
+  onExpandedChange: (expanded: boolean) => void;
+  retention?: WorkSystemRetentionDiagnostics;
+}) {
+  return (
+    <div className="border-b p-3 last:border-b-0">
+      <button
+        className="flex w-full items-center justify-between gap-3 text-left"
+        onClick={() => onExpandedChange(!expanded)}
+        type="button"
+      >
+        <div className="flex min-w-0 items-center gap-2">
+          <ChevronRight className={`size-4 shrink-0 transition-transform ${expanded ? "rotate-90" : ""}`} />
+          <div className="min-w-0">
+            <div className="font-medium text-sm">Retention diagnostics</div>
+            <div className="truncate text-muted-foreground text-xs">
+              Scheduled {formatNumber(compact?.scheduledPurgeCount)}, tracked final {formatNumber(compact?.trackedFinalWorkerCount)}
+            </div>
+          </div>
+        </div>
+        <div className="shrink-0 text-muted-foreground text-xs">
+          {expanded && lastUpdatedAt ? formatLocalTime(lastUpdatedAt) : expanded ? "Waiting" : "Collapsed"}
+        </div>
+      </button>
+      {expanded && (
+        <div className="mt-3 space-y-2">
+          {loading && !retention ? (
+            <div className="flex items-center gap-2 rounded-md border border-border px-3 py-2 text-muted-foreground text-sm">
+              <Loader2 className="size-4 animate-spin" />
+              Loading retention diagnostics.
+            </div>
+          ) : null}
+          {!loading && !retention ? (
+            <div className="rounded-md border border-border bg-muted/20 px-3 py-2 text-muted-foreground text-sm">
+              Expand this section while realtime is connected to load retention diagnostics.
+            </div>
+          ) : null}
+          {retention && (
+            <>
+              <div className="grid grid-cols-2 gap-2 text-xs">
+                <DiagnosticsMetric
+                  label="Tracked final"
+                  value={formatNumber(retention.trackedFinalWorkerCount)}
+                />
+                <DiagnosticsMetric
+                  label="Scheduled"
+                  tone={compact?.isRetentionBehind ? "warning" : undefined}
+                  value={formatNumber(retention.scheduledPurgeCount)}
+                />
+                <DiagnosticsMetric
+                  label="High water"
+                  value={formatNumber(retention.scheduledPurgeHighWaterMark)}
+                />
+                <DiagnosticsMetric
+                  label="Overdue age"
+                  tone={compact?.isRetentionBehind ? "warning" : undefined}
+                  value={formatDuration(retention.oldestDuePurgeAge)}
+                />
+                <DiagnosticsMetric
+                  label="Last purged"
+                  value={formatNumber(retention.lastPurgedCount)}
+                />
+                <DiagnosticsMetric
+                  label="Total purged"
+                  value={formatNumber(retention.totalPurgedCount)}
+                />
+              </div>
+              <div className="rounded-md border border-border px-3 py-2 text-xs">
+                <div className="flex items-center justify-between gap-3">
+                  <span className="text-muted-foreground">Oldest scheduled purge</span>
+                  <span className="min-w-0 truncate font-mono">
+                    {formatDateTimeShort(retention.oldestScheduledPurgeDueAt)}
+                  </span>
+                </div>
+                <div className="mt-1 flex items-center justify-between gap-3">
+                  <span className="text-muted-foreground">Last run</span>
+                  <span className="min-w-0 truncate font-mono">
+                    {formatDateTimeShort(retention.lastRunAt)}
+                  </span>
+                </div>
+              </div>
             </>
           )}
         </div>
@@ -1744,7 +1945,8 @@ function DiagnosticsMetric({
 }
 
 function createSystemNotifications(
-  diagnostics?: WorkReadModelDiagnosticsCompactComponent,
+  readModel?: WorkReadModelDiagnosticsCompactComponent,
+  retention?: WorkRetentionDiagnosticsCompactComponent,
   error?: string
 ): SystemNotification[] {
   const notifications: SystemNotification[] = [];
@@ -1758,30 +1960,50 @@ function createSystemNotifications(
     });
   }
 
-  if (diagnostics?.hasProjectorFailure) {
+  if (readModel?.hasProjectorFailure) {
     notifications.push({
-      description: `${diagnostics.projectorFailureType ?? "Projector failure"}${diagnostics.projectorFailureMessage ? `: ${diagnostics.projectorFailureMessage}` : ""}`,
+      description: `${readModel.projectorFailureType ?? "Projector failure"}${readModel.projectorFailureMessage ? `: ${readModel.projectorFailureMessage}` : ""}`,
       id: "read-model-failure",
       tone: "critical",
       title: "Read model projector failed",
     });
   }
 
-  if (diagnostics?.isReadModelBehind) {
+  if (readModel?.isReadModelBehind) {
     notifications.push({
-      description: `${formatNumber(diagnostics.pendingUpdateCount)} update${diagnostics.pendingUpdateCount === 1 ? "" : "s"} waiting to be projected.`,
+      description: `${formatNumber(readModel.pendingUpdateCount)} update${readModel.pendingUpdateCount === 1 ? "" : "s"} waiting to be projected.`,
       id: "read-model-lag",
-      tone: diagnostics.pendingUpdateCount >= diagnostics.readModelLagWarningThreshold * 10
+      tone: readModel.pendingUpdateCount >= readModel.readModelLagWarningThreshold * 10
         ? "critical"
         : "warning",
       title: "Read model is behind",
     });
   }
 
+  if (retention?.hasSchedulerFailure) {
+    notifications.push({
+      description: `${retention.schedulerFailureType ?? "Retention scheduler failure"}${retention.schedulerFailureMessage ? `: ${retention.schedulerFailureMessage}` : ""}`,
+      id: "retention-failure",
+      tone: "critical",
+      title: "Retention scheduler failed",
+    });
+  }
+
+  if (retention?.isRetentionBehind) {
+    notifications.push({
+      description: `Oldest due purge is overdue by ${formatDuration(retention.oldestDuePurgeAge)}.`,
+      id: "retention-lag",
+      tone: parseDurationSeconds(retention.oldestDuePurgeAge) >= retention.retentionLagWarningSeconds * 10
+        ? "critical"
+        : "warning",
+      title: "Retention is behind",
+    });
+  }
+
   return notifications;
 }
 
-function createCompactDiagnosticsFromDetailed(
+function createCompactReadModelDiagnosticsFromDetailed(
   detailed?: WorkReadModelDiagnosticsDetailedComponent
 ): WorkReadModelDiagnosticsCompactComponent | undefined {
   if (!detailed) {
@@ -1795,6 +2017,25 @@ function createCompactDiagnosticsFromDetailed(
     projectorFailureMessage: detailed.readModel.projectorFailureMessage,
     projectorFailureType: detailed.readModel.projectorFailureType,
     readModelLagWarningThreshold: detailed.readModelLagWarningThreshold,
+  };
+}
+
+function createCompactRetentionDiagnosticsFromDetailed(
+  detailed?: WorkRetentionDiagnosticsDetailedComponent
+): WorkRetentionDiagnosticsCompactComponent | undefined {
+  if (!detailed) {
+    return undefined;
+  }
+
+  return {
+    hasSchedulerFailure: detailed.retention.hasSchedulerFailure,
+    isRetentionBehind: detailed.isRetentionBehind,
+    oldestDuePurgeAge: detailed.retention.oldestDuePurgeAge,
+    retentionLagWarningSeconds: detailed.retentionLagWarningSeconds,
+    scheduledPurgeCount: detailed.retention.scheduledPurgeCount,
+    schedulerFailureMessage: detailed.retention.schedulerFailureMessage,
+    schedulerFailureType: detailed.retention.schedulerFailureType,
+    trackedFinalWorkerCount: detailed.retention.trackedFinalWorkerCount,
   };
 }
 
@@ -1854,6 +2095,10 @@ function parseTimeSpanMilliseconds(value: string) {
   const seconds = Number(match[4]);
   const fraction = match[5] ? Number(`0.${match[5]}`) : 0;
   return (((days * 24 + hours) * 60 + minutes) * 60 + seconds + fraction) * 1000;
+}
+
+function parseDurationSeconds(value: string) {
+  return (parseTimeSpanMilliseconds(value) ?? 0) / 1000;
 }
 
 function OverviewPanelSettings({

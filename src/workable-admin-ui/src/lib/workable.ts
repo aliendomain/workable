@@ -34,6 +34,7 @@ export type WorkableHttpSystemDiagnostics = {
   name?: string | null;
   state: string;
   readModel: WorkSystemReadModelDiagnostics;
+  retention: WorkSystemRetentionDiagnostics;
 };
 
 export type WorkSystemReadModelDiagnostics = {
@@ -48,6 +49,23 @@ export type WorkSystemReadModelDiagnostics = {
   projectorFailureMessage?: string | null;
   pendingUpdateCount: number;
   hasProjectorFailure: boolean;
+};
+
+export type WorkSystemRetentionDiagnostics = {
+  trackedFinalWorkerCount: number;
+  scheduledPurgeCount: number;
+  scheduledPurgeHighWaterMark: number;
+  oldestScheduledPurgeDueAt?: string | null;
+  oldestDuePurgeAge: string;
+  pendingCountRetentionDefinitionCount: number;
+  systemCountRetentionPending: boolean;
+  lastRunAt?: string | null;
+  lastRunDuration: string;
+  lastPurgedCount: number;
+  totalPurgedCount: number;
+  schedulerFailureType?: string | null;
+  schedulerFailureMessage?: string | null;
+  hasSchedulerFailure: boolean;
 };
 
 export type WorkDefinition = {
@@ -440,6 +458,22 @@ export type WorkReadModelDiagnosticsCompactComponent = {
 export type WorkReadModelDiagnosticsDetailedComponent =
   WorkReadModelDiagnosticsCompactComponent & {
     readModel: WorkSystemReadModelDiagnostics;
+  };
+
+export type WorkRetentionDiagnosticsCompactComponent = {
+  trackedFinalWorkerCount: number;
+  scheduledPurgeCount: number;
+  oldestDuePurgeAge: string;
+  isRetentionBehind: boolean;
+  retentionLagWarningSeconds: number;
+  hasSchedulerFailure: boolean;
+  schedulerFailureType?: string | null;
+  schedulerFailureMessage?: string | null;
+};
+
+export type WorkRetentionDiagnosticsDetailedComponent =
+  WorkRetentionDiagnosticsCompactComponent & {
+    retention: WorkSystemRetentionDiagnostics;
   };
 
 export type WorkOverviewThroughputComponent = {

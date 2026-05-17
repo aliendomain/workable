@@ -50,7 +50,8 @@ public sealed class WorkableHttpSystemResolver(
             system.Id,
             system.Name,
             system.State,
-            system.Diagnostics.ReadModel);
+            system.Diagnostics.ReadModel,
+            system.Diagnostics.Retention);
     }
 
     internal static async Task<WorkableHttpSystemStopResult> Stop(

@@ -392,7 +392,10 @@ app.MapGet("/", (HttpContext context) =>
                             body: JSON.stringify({ count })
                         });
                         const data = await response.json();
-                        burstStatus.textContent = `Queued ${data.queuedCount}/${data.submittedCount} in ${data.elapsedMilliseconds}ms`;
+                        const requested = data.requestedCount === data.submittedCount
+                            ? ''
+                            : ` requested ${data.requestedCount},`;
+                        burstStatus.textContent = `Burst:${requested} submitted ${data.submittedCount}, accepted ${data.acceptedCount}, rejected ${data.rejectedCount} in ${data.elapsedMilliseconds}ms`;
                         await refresh();
                     } catch (error) {
                         burstStatus.textContent = 'Unable to queue burst workers.';

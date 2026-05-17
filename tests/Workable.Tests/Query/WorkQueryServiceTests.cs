@@ -1451,6 +1451,41 @@ public sealed class WorkQueryServiceTests
     }
 
     [Fact]
+    public async Task QueryRetentionDiagnosticsReportScheduledFinalWorkerState()
+    {
+        const string definitionName = "retention.diagnostics";
+        await using var system = CreateSystem(
+            WorkDefinition.Create(
+                definitionName,
+                category: "Retention",
+                configuration: WorkConfiguration.Default with
+                {
+                    Retention = WorkRetentionConfiguration.Default with
+                    {
+                        PurgeInterval = TimeSpan.FromMinutes(10),
+                    },
+                }),
+            SuccessfulWork);
+
+        var initial = system.Diagnostics.Retention;
+        await system.Start();
+        var handle = await system.Queue.Enqueue(definitionName);
+        await handle.WaitForCompletion();
+        var diagnostics = system.Diagnostics.Retention;
+
+        Assert.Equal(0, initial.TrackedFinalWorkerCount);
+        Assert.Equal(0, initial.ScheduledPurgeCount);
+        Assert.True(diagnostics.TrackedFinalWorkerCount >= 1);
+        Assert.True(diagnostics.ScheduledPurgeCount >= 1);
+        Assert.True(diagnostics.ScheduledPurgeHighWaterMark >= diagnostics.ScheduledPurgeCount);
+        Assert.NotNull(diagnostics.OldestScheduledPurgeDueAt);
+        Assert.Equal(TimeSpan.Zero, diagnostics.OldestDuePurgeAge);
+        Assert.False(diagnostics.HasSchedulerFailure);
+        Assert.Null(diagnostics.SchedulerFailureType);
+        Assert.Null(diagnostics.SchedulerFailureMessage);
+    }
+
+    [Fact]
     public async Task QueryFlushPublishesReadModelWhenProjectorBatchExactlyDrains()
     {
         const int batchSize = 1024;

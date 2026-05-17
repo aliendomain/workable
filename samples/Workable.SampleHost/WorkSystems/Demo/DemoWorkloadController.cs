@@ -13,7 +13,7 @@ public sealed class DemoWorkloadController(
     private static readonly TimeSpan MinimumQueueInterval = TimeSpan.FromMilliseconds(5);
     private static readonly TimeSpan MaximumQueueInterval = TimeSpan.FromSeconds(10);
     private static readonly TimeSpan FinishedWorkerCleanupInterval = TimeSpan.FromSeconds(1);
-    private const int MaximumBurstWorkerCount = 1_000_000;
+    private const int MaximumBurstWorkerCount = 10_000_000;
     private const int DefaultFailurePercentage = 8;
 
     private readonly Lock sync = new();
@@ -178,14 +178,14 @@ public sealed class DemoWorkloadController(
             .Select(offset => this.QueueBurstWorker(firstSequence + offset, cancellationToken))
             .ToArray();
 
-        var queued = await Task.WhenAll(queueTasks);
+        var accepted = await Task.WhenAll(queueTasks);
         stopwatch.Stop();
 
         return new DemoBurstResult(
             requestedCount,
             workerCount,
-            queued.Count(wasQueued => wasQueued),
-            queued.Count(wasQueued => !wasQueued),
+            accepted.Count(wasAccepted => wasAccepted),
+            accepted.Count(wasAccepted => !wasAccepted),
             stopwatch.ElapsedMilliseconds);
     }
 
@@ -456,12 +456,12 @@ public sealed class DemoWorkloadController(
                 ]);
 
             var handle = await system.Queue.Enqueue(workName, input, cancellationToken: cancellationToken);
-            if (handle.WorkerId is { } workerId)
+            if (handle.QueueOutcome.IsAccepted && handle.WorkerId is { } workerId)
             {
                 this.activeDemoWorkers[workerId] = 0;
             }
 
-            return true;
+            return handle.QueueOutcome.IsAccepted;
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -634,9 +634,14 @@ public sealed record DemoBurstRequest(int Count);
 public sealed record DemoBurstResult(
     int RequestedCount,
     int SubmittedCount,
-    int QueuedCount,
-    int FailedCount,
-    long ElapsedMilliseconds);
+    int AcceptedCount,
+    int RejectedCount,
+    long ElapsedMilliseconds)
+{
+    public int QueuedCount => this.AcceptedCount;
+
+    public int FailedCount => this.RejectedCount;
+}
 
 internal sealed record DemoRelationshipKeys(
     WorkSubjectId? Subject = null,
