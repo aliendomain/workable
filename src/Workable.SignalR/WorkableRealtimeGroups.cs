@@ -1,8 +1,8 @@
 namespace Workable;
 internal static class WorkableRealtimeGroups
 {
-    public static string Dashboard(IWorkSystem system)
-        => $"{System(system)}:dashboard";
+    public static string View(IWorkSystem system, string key)
+        => $"{System(system)}:view:{key}";
 
     public static string SystemEvents(IWorkSystem system)
         => $"{System(system)}:events";

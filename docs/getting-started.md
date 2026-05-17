@@ -13,7 +13,7 @@ Optional adapter packages connect Workable to the edges of an application:
 - Use `Workable.AspNetCore` when the host queues work from its own ASP.NET Core controllers or minimal API routes and wants worker origins to include the authenticated HTTP user and request path.
 - Use `Workable.HttpApi` when the host wants Workable to provide standard HTTP routes for queueing work, querying workers, and sending worker actions such as pause, cancel, push, and purge.
 - Use `Workable.Mcp` when the host wants authored work definitions, work-system query tools, and worker action tools to be available to an MCP client, such as an LLM tool host.
-- Use `Workable.SignalR` when the host wants browser clients to receive realtime worker events and dashboard summaries.
+- Use `Workable.SignalR` when the host wants browser clients to receive realtime worker events and component-view updates.
 
 The core host does not need these adapters unless it wants one of those integration points.
 

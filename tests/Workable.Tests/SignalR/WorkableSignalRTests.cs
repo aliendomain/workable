@@ -1,4 +1,5 @@
 using System.Net.Http.Json;
+using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
 using System.Threading.Channels;
@@ -44,7 +45,7 @@ public sealed class WorkableSignalRTests
         Assert.Equal("signalr", capabilities.Realtime.Transport);
         Assert.Equal("/workable/realtime", capabilities.Realtime.HubPath);
         Assert.Contains("worker-events", capabilities.Realtime.Features ?? []);
-        Assert.Contains("system-dashboard", capabilities.Realtime.Features ?? []);
+        Assert.Contains("component-views", capabilities.Realtime.Features ?? []);
     }
 
     [Fact]
@@ -109,41 +110,43 @@ public sealed class WorkableSignalRTests
     }
 
     [Fact]
-    public async Task DashboardWatcherReceivesInitialAndCoalescedOverviewUpdates()
+    public async Task ViewWatcherReceivesRequestedOverviewComponentsOnly()
     {
         using var host = await CreateHost(addSignalR: true);
         var system = host.Services.GetRequiredService<IWorkSystemRegistry>().Default;
         var gate = host.Services.GetRequiredService<SignalRWorkGate>();
         await using var connection = CreateConnection(host);
-        var dashboards = Channel.CreateUnbounded<WorkableRealtimeDashboard>();
-        connection.On<WorkableRealtimeDashboard>(
-            WorkableRealtimeClientMethods.DashboardUpdated,
-            dashboard => dashboards.Writer.TryWrite(dashboard));
+        var views = Channel.CreateUnbounded<WorkComponentQueryResult>();
+        connection.On<WorkComponentQueryResult>(
+            WorkableRealtimeClientMethods.ViewUpdated,
+            view => views.Writer.TryWrite(view));
         await connection.StartAsync();
-        await connection.InvokeAsync("WatchDashboard", null);
+        await connection.InvokeAsync(
+            "WatchView",
+            "overview",
+            new WorkViewCriteria(Components:
+            [
+                new WorkComponentRequest("system", "system"),
+                new WorkComponentRequest("workers", "workers", Shape: WorkComponentShapes.Compact),
+            ]),
+            null);
 
-        var initial = await ReadUntil(dashboards.Reader, dashboard => dashboard.CompletedIterationCount == 0);
+        var initial = await ReadUntil(views.Reader, view => view.Components.ContainsKey("workers"));
 
-        var handle = await system.Queue.Enqueue("signalr.dashboard");
+        var handle = await system.Queue.Enqueue("signalr.view");
         await gate.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
         gate.Release.SetResult();
         var completion = await handle.WaitForCompletion();
         Assert.True(completion.IsCompletedSuccessfully);
 
-        var updated = await ReadUntil(dashboards.Reader, dashboard => dashboard.CompletedIterationCount == 1);
+        var updated = await ReadUntil(views.Reader, view => view.GeneratedAt > initial.GeneratedAt);
+        var workers = Assert.IsType<JsonElement>(updated.Components["workers"].Data);
 
-        Assert.Equal(system.Id, initial.SystemId);
-        Assert.Equal(system.Id, updated.SystemId);
-        Assert.Equal(WorkSystemState.Started, updated.SystemState);
-        Assert.Equal(0, updated.DefinitionCount);
-        Assert.Equal(0, updated.ActiveWorkerCount);
-        Assert.Equal(1, updated.FinalWorkerCount);
-        Assert.Equal(0, updated.FailedWorkerCount);
-        Assert.Equal(1, updated.WorkerCountByState[WorkerState.Completed]);
-        Assert.Equal(0, updated.FailedIterationCount);
-        Assert.Equal(1, updated.IterationCountByStatus[WorkCompletionStatus.Completed]);
-        Assert.Empty(updated.FailedWorkers);
-        Assert.Equal("signalr.dashboard", Assert.Single(updated.CompletedIterations).DefinitionName);
+        Assert.Equal(["system", "workers"], initial.Components.Keys.Order().ToArray());
+        Assert.Equal(["system", "workers"], updated.Components.Keys.Order().ToArray());
+        Assert.Equal("compact", updated.Components["workers"].Shape);
+        Assert.True(workers.TryGetProperty("activeWorkerCount", out _));
+        Assert.False(workers.TryGetProperty("finalWorkerCount", out _));
     }
 
     private static async Task<IHost> CreateHost(bool addSignalR, string? hubPath = null)
@@ -167,14 +170,14 @@ public sealed class WorkableSignalRTests
                                     Start = WorkStartConfiguration.DoNotStart,
                                 }),
                             SuccessfulWork);
-                        builder.AddWork(WorkDefinition.Create("signalr.dashboard"), SuccessfulWork);
+                        builder.AddWork(WorkDefinition.Create("signalr.view"), SuccessfulWork);
                     });
                     services.AddWorkableHttpApi();
                     if (addSignalR)
                     {
                         services.AddWorkableSignalR(options =>
                         {
-                            options.DashboardPublishInterval = TimeSpan.FromMilliseconds(50);
+                            options.PublishInterval = TimeSpan.FromMilliseconds(50);
                         });
                     }
                 });

@@ -4,7 +4,7 @@
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
-    <Description>Expose Workable worker events and dashboard summaries to ASP.NET Core clients through SignalR.</Description>
+    <Description>Expose Workable worker events and component-view updates to ASP.NET Core clients through SignalR.</Description>
   </PropertyGroup>
 
   <ItemGroup>
@@ -13,6 +13,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\Workable.Abstractions\Workable.Abstractions.csproj" />
+    <ProjectReference Include="..\Workable.Views\Workable.Views.csproj" />
   </ItemGroup>
 
 </Project>

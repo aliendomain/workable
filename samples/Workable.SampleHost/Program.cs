@@ -88,7 +88,7 @@ builder.Services.AddWorkableHttpApi();
 builder.Services.AddWorkableMcpServer();
 builder.Services.AddWorkableSignalR(options =>
 {
-    options.DashboardPublishInterval = TimeSpan.FromSeconds(2);
+    options.PublishInterval = TimeSpan.FromMilliseconds(250);
 });
 
 var app = builder.Build();

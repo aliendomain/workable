@@ -32,6 +32,7 @@
   <Project Path="src/Workable.Abstractions/Workable.Abstractions.csproj" />
   <Project Path="src/Workable/Workable.csproj" />
   <Project Path="src/Workable.AspNetCore/Workable.AspNetCore.csproj" />
+  <Project Path="src/Workable.Views/Workable.Views.csproj" />
   <Project Path="src/Workable.HttpApi/Workable.HttpApi.csproj" />
   <Project Path="src/Workable.Mcp/Workable.Mcp.csproj" />
   <Project Path="src/Workable.SignalR/Workable.SignalR.csproj" />

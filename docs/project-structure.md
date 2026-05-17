@@ -50,6 +50,15 @@ Host applications reference `Workable` when they need to create systems and run 
 
 Applications reference `Workable.HttpApi` when they want to expose Workable systems through HTTP endpoints.
 
+`src/Workable.Views` contains reusable component-view composition:
+
+- component and view request DTOs
+- component result envelopes
+- overview, worker-grid, iteration-grid, catalog, and throughput component projections
+- shared view normalization used by HTTP and realtime transports
+
+Adapter packages reference `Workable.Views` when they need to expose the component-view contract over a transport.
+
 `src/Workable.AspNetCore` contains ASP.NET Core integration that does not expose routes:
 
 - HTTP-context origin provider for direct .NET queueing and worker operations
@@ -70,10 +79,10 @@ Applications reference `Workable.Mcp` when they want to expose Workable systems 
 
 `src/Workable.SignalR` contains the realtime adapter surface:
 
-- SignalR hub mapping for worker event and dashboard subscriptions
+- SignalR hub mapping for worker event and component-view subscriptions
 - one Workable event-stream subscription per hosted system
 - worker detail event broadcasting
-- coalesced dashboard summary broadcasting
+- coalesced component-view broadcasting using shared view subscriptions
 - HTTP realtime capability provider registration
 
 Applications reference `Workable.SignalR` when they want ASP.NET Core clients to receive realtime Workable updates.
@@ -107,7 +116,7 @@ Folder names are vocabulary, not decoration. A folder with the same name in two 
 
 `Systems` contains whole-system lifecycle and discovery concerns: `IWorkSystem`, registries, in-memory system implementations, HTTP system resolution, system capability metadata, and system start/stop routes.
 
-`Query` contains read-only query concerns. Public query inputs live in `Query/Criteria`, and returned query models live in `Query/Results`. Runtime query execution belongs in `src/Workable/Query`: `WorkQueryService` is the discoverable facade exposed through `IWorkSystem.Query`, and lazy query contexts can group related reads so typed aggregate queries do not recount shared indexes. Adapter-specific query criteria, component/view DTOs, adapters, and routes belong in that adapter's `Query` folder. Do not use `Query` for mutable operations.
+`Query` contains read-only query concerns. Public query inputs live in `Query/Criteria`, and returned query models live in `Query/Results`. Runtime query execution belongs in `src/Workable/Query`: `WorkQueryService` is the discoverable facade exposed through `IWorkSystem.Query`, and lazy query contexts can group related reads so typed aggregate queries do not recount shared indexes. Shared component/view DTOs and component composition belong in `src/Workable.Views/Query`. Adapter route glue belongs in that adapter's `Query` folder. Do not use `Query` for mutable operations.
 
 `Events` contains event-stream contracts, event payloads, publishers, and subscription behavior.
 
@@ -155,11 +164,13 @@ The admin UI follows Next.js conventions rather than the .NET domain folder voca
 
 `Workable.AspNetCore` references `Workable.Abstractions`.
 
-`Workable.HttpApi` references `Workable` and `Workable.AspNetCore`.
+`Workable.Views` references `Workable.Abstractions`.
+
+`Workable.HttpApi` references `Workable`, `Workable.AspNetCore`, and `Workable.Views`.
 
 `Workable.Mcp` references `Workable`.
 
-`Workable.SignalR` references `Workable.Abstractions`.
+`Workable.SignalR` references `Workable.Abstractions` and `Workable.Views`.
 
 Feature libraries reference `Workable.Sdk`.
 

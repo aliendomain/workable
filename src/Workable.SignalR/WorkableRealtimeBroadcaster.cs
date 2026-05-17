@@ -6,6 +6,8 @@ namespace Workable;
 internal sealed class WorkableRealtimeBroadcaster(
     IWorkSystemRegistry registry,
     IHubContext<WorkableRealtimeHub> hub,
+    WorkableViewQueryAdapter views,
+    WorkableRealtimeViewSubscriptions viewSubscriptions,
     IOptions<WorkableSignalROptions> options) : BackgroundService
 {
     protected override Task ExecuteAsync(CancellationToken stoppingToken)
@@ -21,15 +23,15 @@ internal sealed class WorkableRealtimeBroadcaster(
     {
         try
         {
-            var dashboardSignal = new DashboardSignal();
+            var publishSignal = new PublishSignal();
             await using var subscription = system.Events.Subscribe(
                 options: new WorkEventSubscriptionOptions(
                     options.Value.EventSubscriptionCapacity,
                     options.Value.EventOverflowBehavior));
 
             await Task.WhenAll(
-                this.BroadcastEvents(system, subscription, dashboardSignal, cancellationToken),
-                this.BroadcastDashboard(system, dashboardSignal, cancellationToken));
+                this.BroadcastEvents(system, subscription, publishSignal, cancellationToken),
+                this.BroadcastViews(system, publishSignal, cancellationToken));
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -40,12 +42,12 @@ internal sealed class WorkableRealtimeBroadcaster(
     private async Task BroadcastEvents(
         IWorkSystem system,
         IWorkEventSubscription subscription,
-        DashboardSignal dashboardSignal,
+        PublishSignal publishSignal,
         CancellationToken cancellationToken)
     {
         await foreach (var workEvent in subscription.Read(cancellationToken))
         {
-            dashboardSignal.MarkDirty();
+            publishSignal.MarkDirty();
             var realtimeEvent = WorkableRealtimeEvent.From(workEvent);
 
             await hub.Clients
@@ -68,30 +70,37 @@ internal sealed class WorkableRealtimeBroadcaster(
         }
     }
 
-    private async Task BroadcastDashboard(
+    private async Task BroadcastViews(
         IWorkSystem system,
-        DashboardSignal dashboardSignal,
+        PublishSignal publishSignal,
         CancellationToken cancellationToken)
     {
-        using var timer = new PeriodicTimer(options.Value.DashboardPublishInterval);
+        using var timer = new PeriodicTimer(options.Value.PublishInterval);
         while (await timer.WaitForNextTickAsync(cancellationToken))
         {
-            if (!dashboardSignal.TryConsumeDirty())
+            if (!publishSignal.TryConsumeDirty())
             {
                 continue;
             }
 
-            var details = await system.Query.SystemDetails(cancellationToken: cancellationToken);
-            await hub.Clients
-                .Group(WorkableRealtimeGroups.Dashboard(system))
-                .SendAsync(
-                    WorkableRealtimeClientMethods.DashboardUpdated,
-                    WorkableRealtimeDashboard.From(system, details),
-                    cancellationToken);
+            foreach (var subscription in viewSubscriptions.GetActiveSubscriptions(system))
+            {
+                var view = await views.View(
+                    system,
+                    subscription.ViewName,
+                    subscription.Criteria,
+                    cancellationToken: cancellationToken);
+                await hub.Clients
+                    .Group(subscription.GroupName)
+                    .SendAsync(
+                        WorkableRealtimeClientMethods.ViewUpdated,
+                        view,
+                        cancellationToken);
+            }
         }
     }
 
-    private sealed class DashboardSignal
+    private sealed class PublishSignal
     {
         private int isDirty;
 

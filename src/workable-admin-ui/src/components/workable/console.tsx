@@ -11,7 +11,7 @@ import {
   Settings,
   Workflow,
 } from "lucide-react";
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import {
   Popover,
@@ -134,6 +134,7 @@ type WorkableSystemConnection = {
   name: string;
   systemName?: string;
   realtimeEnabled: boolean;
+  realtimeHubPath?: string | null;
   realtimeSupported?: boolean;
   realtimeTransport?: string | null;
   state?: string | null;
@@ -272,10 +273,13 @@ export function WorkableConsole() {
       activeApiUrl
         ? {
             apiUrl: activeApiUrl,
+            realtimeHubPath: activeSystem?.realtimeEnabled
+              ? activeSystem.realtimeHubPath
+              : null,
             systemName: activeSystemName,
           }
         : null,
-    [activeApiUrl, activeSystemName]
+    [activeApiUrl, activeSystem, activeSystemName]
   );
 
   useEffect(() => {
@@ -1087,7 +1091,7 @@ export function WorkableConsole() {
                         overviewScope={activeOverviewScope}
                         refreshToken={refreshTokens.overview}
                         onOpenWorker={openWorker}
-                        renderToolbar={({ loading, refreshing }) => (
+                        renderToolbar={({ loading, realtimePayloadControl, refreshing }) => (
                           <ViewActionLane>
                             <OverviewCatalogFilter
                               connection={connection}
@@ -1133,6 +1137,7 @@ export function WorkableConsole() {
                             <OverviewPanelSettings
                               hiddenPanelIds={consoleState.overviewHiddenPanels}
                               onPanelVisibilityChange={setOverviewPanelVisible}
+                              realtimePayloadControl={realtimePayloadControl}
                               onResetUi={resetOverviewUiToDefaults}
                             />
                           </ViewActionLane>
@@ -1351,10 +1356,12 @@ const overviewPanelOptions: Array<{
 function OverviewPanelSettings({
   hiddenPanelIds,
   onPanelVisibilityChange,
+  realtimePayloadControl,
   onResetUi,
 }: {
   hiddenPanelIds: OverviewPanelId[];
   onPanelVisibilityChange: (panelId: OverviewPanelId, visible: boolean) => void;
+  realtimePayloadControl?: ReactNode;
   onResetUi: () => void;
 }) {
   return (
@@ -1420,6 +1427,7 @@ function OverviewPanelSettings({
           })}
         </div>
         <div className="border-t p-2">
+          {realtimePayloadControl}
           <Button
             className="h-9 w-full justify-start gap-2 text-muted-foreground"
             onClick={() => {
@@ -1685,6 +1693,7 @@ function normalizeStoredSystem(
     name: system.name || "Default",
     systemName: normalizeOptional(system.systemName),
     realtimeEnabled: Boolean(system.realtimeEnabled && system.realtimeSupported),
+    realtimeHubPath: system.realtimeHubPath ?? null,
     realtimeSupported: Boolean(system.realtimeSupported),
     realtimeTransport: system.realtimeTransport ?? null,
     state: system.state ?? null,
@@ -1756,6 +1765,7 @@ function createDefaultSystem(hostId: string): WorkableSystemConnection {
     hostId,
     name: "Default",
     realtimeEnabled: false,
+    realtimeHubPath: null,
     realtimeSupported: false,
     realtimeTransport: null,
     state: null,

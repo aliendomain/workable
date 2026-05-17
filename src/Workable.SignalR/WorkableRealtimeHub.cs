@@ -1,7 +1,10 @@
 using Microsoft.AspNetCore.SignalR;
 
 namespace Workable;
-public sealed class WorkableRealtimeHub(IWorkSystemRegistry registry) : Hub
+public sealed class WorkableRealtimeHub(
+    IWorkSystemRegistry registry,
+    WorkableViewQueryAdapter views,
+    WorkableRealtimeViewSubscriptions viewSubscriptions) : Hub
 {
     public async Task WatchWorker(string workerId, string? systemName = null)
     {
@@ -19,17 +22,32 @@ public sealed class WorkableRealtimeHub(IWorkSystemRegistry registry) : Hub
             WorkableRealtimeGroups.Worker(system, ParseWorkerId(workerId)));
     }
 
-    public async Task WatchDashboard(string? systemName = null)
+    public async Task WatchView(
+        string viewName,
+        WorkViewCriteria? criteria = null,
+        string? systemName = null)
     {
         var system = ResolveSystem(systemName);
-        await this.Groups.AddToGroupAsync(this.Context.ConnectionId, WorkableRealtimeGroups.Dashboard(system));
-        await SendDashboard(system, this.Clients.Caller);
+        var subscription = await viewSubscriptions.WatchView(
+            this.Context.ConnectionId,
+            this.Groups,
+            system,
+            viewName,
+            views.NormalizeViewCriteria(viewName, criteria),
+            this.Context.ConnectionAborted);
+
+        await SendView(system, subscription.ViewName, subscription.Criteria, this.Clients.Caller);
     }
 
-    public async Task UnwatchDashboard(string? systemName = null)
+    public Task UnwatchView(string viewName, string? systemName = null)
     {
         var system = ResolveSystem(systemName);
-        await this.Groups.RemoveFromGroupAsync(this.Context.ConnectionId, WorkableRealtimeGroups.Dashboard(system));
+        return viewSubscriptions.UnwatchView(
+            this.Context.ConnectionId,
+            this.Groups,
+            system,
+            viewName,
+            this.Context.ConnectionAborted);
     }
 
     public async Task WatchSystem(string? systemName = null)
@@ -44,12 +62,26 @@ public sealed class WorkableRealtimeHub(IWorkSystemRegistry registry) : Hub
         await this.Groups.RemoveFromGroupAsync(this.Context.ConnectionId, WorkableRealtimeGroups.SystemEvents(system));
     }
 
-    private async Task SendDashboard(IWorkSystem system, IClientProxy client)
+    public override async Task OnDisconnectedAsync(Exception? exception)
     {
-        var details = await system.Query.SystemDetails(cancellationToken: this.Context.ConnectionAborted);
+        await viewSubscriptions.RemoveConnection(this.Context.ConnectionId, this.Groups, this.Context.ConnectionAborted);
+        await base.OnDisconnectedAsync(exception);
+    }
+
+    private async Task SendView(
+        IWorkSystem system,
+        string viewName,
+        WorkViewCriteria criteria,
+        IClientProxy client)
+    {
+        var result = await views.View(
+            system,
+            viewName,
+            criteria,
+            cancellationToken: this.Context.ConnectionAborted);
         await client.SendAsync(
-            WorkableRealtimeClientMethods.DashboardUpdated,
-            WorkableRealtimeDashboard.From(system, details),
+            WorkableRealtimeClientMethods.ViewUpdated,
+            result,
             this.Context.ConnectionAborted);
     }
 

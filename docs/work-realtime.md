@@ -1,6 +1,6 @@
 # Workable Realtime
 
-Workable can stream worker events and coalesced dashboard summaries to ASP.NET Core clients through the `Workable.SignalR` adapter package.
+Workable can stream worker events and coalesced component-view updates to ASP.NET Core clients through the `Workable.SignalR` adapter package.
 
 The realtime adapter is observability-only. Queueing work, querying snapshots, and sending worker actions remain in the .NET and HTTP API surfaces. SignalR clients subscribe to updates and receive messages when the underlying Workable event stream changes.
 
@@ -20,7 +20,7 @@ The default hub path is `/workable/realtime`.
 builder.Services.AddWorkableSignalR(options =>
 {
     options.HubPath = "/internal/work/realtime";
-    options.DashboardPublishInterval = TimeSpan.FromSeconds(2);
+    options.PublishInterval = TimeSpan.FromSeconds(2);
 });
 
 app.MapWorkableSignalR();
@@ -59,7 +59,7 @@ When `Workable.SignalR` is registered:
           "enabled": true,
           "transport": "signalr",
           "hubPath": "/workable/realtime",
-          "features": ["worker-events", "system-dashboard"]
+          "features": ["worker-events", "component-views"]
         }
       }
     }
@@ -148,49 +148,46 @@ public sealed record WorkableRealtimeEvent(
 
 The event data follows the payloads documented in [Work Observability](https://github.com/aliendomain/workable/blob/main/docs/work-observability.md).
 
-## Dashboard Updates
+## Component View Updates
 
-Dashboard pages should load their initial summaries through HTTP, then subscribe to coalesced realtime dashboard updates.
+Overview-style clients can subscribe to the same component-view request shape used by the HTTP API.
 
 ```csharp
-connection.On<WorkableRealtimeDashboard>("workable.dashboard", dashboard =>
+connection.On<WorkComponentQueryResult>("workable.view", view =>
 {
-    // Update iteration counts, common key types, and recent iteration lists.
+    // Replace the visible component data with the pushed component map.
 });
 
 await connection.StartAsync();
-await connection.InvokeAsync("WatchDashboard", (string?)null);
+await connection.InvokeAsync(
+    "WatchView",
+    "overview",
+    new WorkViewCriteria(
+        Components:
+        [
+            new("system", "system"),
+            new("workers", "workers", Shape: WorkComponentShapes.Compact),
+            new("throughput", "throughput", Shape: WorkComponentShapes.Standard)
+        ]),
+    (string?)null);
 ```
 
-`WatchDashboard` immediately sends the current dashboard summary to the caller. After that, the server publishes another summary when Workable events occur and the dashboard publish interval elapses.
+`WatchView` immediately sends the current `WorkComponentQueryResult` to the caller. After that, the server coalesces Workable events and publishes refreshed results on the publish interval.
 
-Dashboard messages use this shape:
+View subscriptions are grouped by system id, view name, scope, component ids, component types, shapes, and options. Connections with the same normalized request share one server recomputation per publish tick. If a client hides a panel, it should call `WatchView` again with that component omitted; if it changes a panel between `compact`, `standard`, and `detailed`, it should call `WatchView` with the new shape. The same SignalR connection stays open while the server swaps the connection between normalized view groups.
+
+SignalR view payloads use the same component efficiency contract as HTTP:
+
+- hidden panels are omitted from the pushed component map
+- `compact`, `standard`, and `detailed` shapes are normalized the same way as HTTP
+- per-component errors are returned inside the component result
+- unknown views return an error component rather than failing the hub connection
+
+Stop watching a view when the page no longer needs live updates.
 
 ```csharp
-public sealed record WorkableRealtimeDashboard(
-    WorkSystemId SystemId,
-    string? SystemName,
-    WorkSystemState SystemState,
-    int DefinitionCount,
-    int ActiveWorkerCount,
-    int FinalWorkerCount,
-    int FailedWorkerCount,
-    IReadOnlyDictionary<WorkerState, int> WorkerCountByState,
-    int CurrentIterationCount,
-    int CompletedIterationCount,
-    int FailedIterationCount,
-    int CanceledIterationCount,
-    IReadOnlyDictionary<WorkCompletionStatus, int> IterationCountByStatus,
-    IReadOnlyList<WorkIterationKeyTypeFacet> CommonKeyTypes,
-    IReadOnlyList<WorkerOverviewItem> FailedWorkers,
-    IReadOnlyList<WorkerIterationOverviewItem> FailedIterations,
-    IReadOnlyList<WorkerIterationOverviewItem> CompletedIterations,
-    DateTimeOffset UpdatedAt);
+await connection.InvokeAsync("UnwatchView", "overview", (string?)null);
 ```
-
-`DefinitionCount` is the number of definitions that currently have queued or active workers. `CurrentIterationCount` is the number of iterations with `WorkCompletionStatus.Executing`.
-
-Dashboard messages use the same worker-state and iteration-oriented activity shape as the default `POST /workable/views/overview` response, plus `SystemId` and `UpdatedAt`.
 
 ## Hub Methods
 
@@ -199,8 +196,8 @@ The hub exposes these observability methods:
 ```csharp
 Task WatchWorker(string workerId, string? systemName = null);
 Task UnwatchWorker(string workerId, string? systemName = null);
-Task WatchDashboard(string? systemName = null);
-Task UnwatchDashboard(string? systemName = null);
+Task WatchView(string viewName, WorkViewCriteria? criteria = null, string? systemName = null);
+Task UnwatchView(string viewName, string? systemName = null);
 Task WatchSystem(string? systemName = null);
 Task UnwatchSystem(string? systemName = null);
 ```

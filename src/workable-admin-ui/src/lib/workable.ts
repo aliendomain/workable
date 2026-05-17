@@ -2,6 +2,7 @@ export const DEFAULT_WORKABLE_API_URL = "http://localhost:61932/workable";
 
 export type WorkableConnection = {
   apiUrl: string;
+  realtimeHubPath?: string | null;
   systemName?: string;
 };
 
@@ -662,6 +663,24 @@ async function fetchWorkable<T>(
   }
 
   return body as T;
+}
+
+export function createWorkableRealtimeUrl(connection: WorkableConnection) {
+  const hubPath = connection.realtimeHubPath?.trim();
+  if (!hubPath) {
+    return null;
+  }
+
+  try {
+    if (/^https?:\/\//i.test(hubPath)) {
+      return hubPath;
+    }
+
+    const apiUrl = new URL(connection.apiUrl);
+    return `${apiUrl.origin}${hubPath.startsWith("/") ? hubPath : `/${hubPath}`}`;
+  } catch {
+    return null;
+  }
 }
 
 function getWorkableErrorMessage(status: number, body: unknown) {

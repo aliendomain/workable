@@ -3,7 +3,7 @@ public sealed class WorkableSignalROptions
 {
     public string HubPath { get; set; } = "/workable/realtime";
 
-    public TimeSpan DashboardPublishInterval { get; set; } = TimeSpan.FromSeconds(2);
+    public TimeSpan PublishInterval { get; set; } = TimeSpan.FromSeconds(2);
 
     public int EventSubscriptionCapacity { get; set; } = 1_024;
 

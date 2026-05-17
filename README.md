@@ -27,7 +27,7 @@ Workable also gives applications a path to expose the same authored work through
 - `Workable.AspNetCore`: ASP.NET Core origin enrichment for direct .NET queue calls.
 - `Workable.HttpApi`: standard HTTP endpoints for queueing, querying, and controlling work.
 - `Workable.Mcp`: MCP server adapter for authored work, query tools, and worker action tools.
-- `Workable.SignalR`: realtime worker events and dashboard summaries for ASP.NET Core clients.
+- `Workable.SignalR`: realtime worker events and component-view updates for ASP.NET Core clients.
 
 ## Documentation
 
@@ -51,7 +51,7 @@ Workable also gives applications a path to expose the same authored work through
 - [Work Profiling](https://github.com/aliendomain/workable/blob/main/docs/work-profiling.md): capture per-worker execution profile trees.
 - [Workable HTTP API](https://github.com/aliendomain/workable/blob/main/docs/work-http-api.md): expose registered work through HTTP endpoints.
 - [Workable MCP](https://github.com/aliendomain/workable/blob/main/docs/work-mcp.md): expose registered work and read-only query tools through an MCP server.
-- [Workable Realtime](https://github.com/aliendomain/workable/blob/main/docs/work-realtime.md): stream worker events and dashboard summaries through SignalR.
+- [Workable Realtime](https://github.com/aliendomain/workable/blob/main/docs/work-realtime.md): stream worker events and component-view updates through SignalR.
 - [Sample Host](https://github.com/aliendomain/workable/blob/main/samples/Workable.SampleHost/README.md): run HTTP and MCP adapters together in one ASP.NET Core app.
 
 ### Under The Hood

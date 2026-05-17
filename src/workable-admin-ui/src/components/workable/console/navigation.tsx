@@ -88,6 +88,7 @@ type WorkableSystemConnection = {
   name: string;
   systemName?: string;
   realtimeEnabled: boolean;
+  realtimeHubPath?: string | null;
   realtimeSupported?: boolean;
   realtimeTransport?: string | null;
   state?: string | null;
@@ -1116,6 +1117,7 @@ function createStoredSystem(
     name: getSystemDisplayName(system),
     systemName: normalizeOptional(system.name),
     realtimeEnabled: realtimeSupported && realtimeSystemIds.has(key),
+    realtimeHubPath: system.capabilities.realtime.hubPath ?? null,
     realtimeSupported,
     realtimeTransport: system.capabilities.realtime.transport ?? null,
     state: system.state,
@@ -1251,6 +1253,7 @@ function createDiscoveredSystemFromStored(
     capabilities: {
       realtime: {
         enabled: Boolean(system.realtimeSupported),
+        hubPath: system.realtimeHubPath,
         transport: system.realtimeTransport,
       },
     },

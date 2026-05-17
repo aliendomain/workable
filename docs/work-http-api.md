@@ -59,7 +59,7 @@ The response includes each system's id, optional name, state, default-system mar
           "enabled": true,
           "transport": "signalr",
           "hubPath": "/workable/realtime",
-          "features": ["worker-events", "system-dashboard"]
+          "features": ["worker-events", "component-views"]
         }
       }
     }
@@ -75,7 +75,7 @@ The `capabilities` object lets clients discover optional adapter features for ea
     "enabled": true,
     "transport": "signalr",
     "hubPath": "/workable/realtime",
-    "features": ["worker-events", "system-dashboard"]
+    "features": ["worker-events", "component-views"]
   }
 }
 ```

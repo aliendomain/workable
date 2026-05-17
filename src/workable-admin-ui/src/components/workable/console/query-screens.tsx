@@ -1344,8 +1344,8 @@ function useInfiniteWorkerQuery(
   const key = JSON.stringify(query);
   const resetKey = `${apiUrl}\n${systemName ?? ""}\n${key}`;
   const requestKey = `${resetKey}\n${refreshToken}`;
-  const resetKeyRef = useRef<string>();
-  const loadedRequestKeyRef = useRef<string>();
+  const resetKeyRef = useRef<string | undefined>(undefined);
+  const loadedRequestKeyRef = useRef<string | undefined>(undefined);
   const boundedTake = Math.min(maxQueryTake, Math.max(minQueryTake, queryPageTake));
 
   useEffect(() => {
@@ -1631,8 +1631,8 @@ function useInfiniteIterationQuery(
   const key = JSON.stringify(query);
   const resetKey = `${apiUrl}\n${systemName ?? ""}\n${key}`;
   const requestKey = `${resetKey}\n${refreshToken}`;
-  const resetKeyRef = useRef<string>();
-  const loadedRequestKeyRef = useRef<string>();
+  const resetKeyRef = useRef<string | undefined>(undefined);
+  const loadedRequestKeyRef = useRef<string | undefined>(undefined);
   const boundedTake = Math.min(maxQueryTake, Math.max(minQueryTake, queryPageTake));
 
   useEffect(() => {

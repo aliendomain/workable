@@ -6,7 +6,7 @@ internal sealed class WorkableRealtimeCapabilityProvider(IOptions<WorkableSignal
     private static readonly string[] Features =
     [
         "worker-events",
-        "system-dashboard",
+        "component-views",
     ];
 
     public WorkRealtimeCapability GetCapability(IWorkSystem system)
