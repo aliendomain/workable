@@ -16,6 +16,7 @@ internal sealed class InMemoryWorkSystem : IWorkSystem, IOriginAwareWorkSystem, 
     private readonly WorkerOperations workers;
     private readonly WorkSystemReadModel readModel;
     private readonly IWorkQueryService query;
+    private readonly IWorkSystemDiagnostics diagnostics;
     private readonly InMemoryWorkMetricsSink metrics = new();
     private readonly WorkEventStream events = new();
     private readonly SemaphoreSlim lifecycleLock = new(1, 1);
@@ -41,6 +42,7 @@ internal sealed class InMemoryWorkSystem : IWorkSystem, IOriginAwareWorkSystem, 
             ?? rootServices.GetService<IDotNetWorkOriginProvider>()
             ?? new DefaultDotNetWorkOriginProvider();
         this.readModel = new WorkSystemReadModel(this.catalog, () => this.State, this.Name, this.metrics);
+        this.diagnostics = new WorkSystemDiagnostics(this.readModel);
         this.workers = new WorkerOperations(
             this.catalog,
             () => this.State,
@@ -77,6 +79,8 @@ internal sealed class InMemoryWorkSystem : IWorkSystem, IOriginAwareWorkSystem, 
     public IWorkQueryService Query => this.query;
 
     public IWorkEventStream Events => this.events;
+
+    public IWorkSystemDiagnostics Diagnostics => this.diagnostics;
 
     Task<IWorkerHandle> IOriginAwareWorkSystem.Enqueue(
         string name,

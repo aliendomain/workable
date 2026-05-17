@@ -14,6 +14,7 @@ The core API defines the public shape of Workable for discovering work, queueing
 - `IWorkerOperations` controls worker actions.
 - `IWorkQueryService` exposes the discoverable query facade. Each built-in query has a named method, with optional criteria and cancellation where applicable.
 - `IWorkEventStream` creates event subscriptions.
+- `IWorkSystemDiagnostics` exposes runtime diagnostics such as read-model projection progress.
 - `Start` and `Stop` control system lifecycle.
 - `Stop` returns the shutdown grace period plus workers that were force-canceled because the grace period elapsed, including compact worker summaries and definition names.
 - `Stop` clears in-memory worker and iteration records after shutdown cancellation completes.
@@ -80,6 +81,8 @@ Execution context also exposes the worker's `WorkOrigin`.
 - Worker snapshots expose the `WorkOrigin` that queued the worker.
 - `IWorkQueryService.Worker` returns a full `WorkerSnapshot`.
 - `IWorkQueryService` reads worker and iteration state from the runtime read model snapshot; the in-memory model starts empty with the process and is cleared when the system stops.
+- Control and correctness paths use live worker records instead of the eventually consistent read model. This includes idempotency checks, concurrency decisions, worker actions, shutdown cancellation, retention purge selection, and bulk action execution.
+- `IWorkSystem.Diagnostics.ReadModel` exposes read-model projection counters, including enqueued sequence, applied sequence, pending update count, projection batches, projection timing, and projector failures.
 - `IWorkQueryService.Workers` returns lightweight `WorkerOverviewItem` rows.
 - `IWorkQueryService.WorkerIteration` returns one full `WorkerIterationSnapshot` by worker id and iteration sequence.
 - `IWorkQueryService.WorkerIterations` returns lightweight `WorkerIterationOverviewItem` rows.

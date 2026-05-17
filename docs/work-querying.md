@@ -6,6 +6,24 @@ Workable query APIs provide read-only access to worker state and registered work
 
 Runtime worker and iteration queries are served from an in-memory read model. Worker lifecycle code publishes lightweight updates to a projector, and query methods read the latest published snapshot instead of locking worker records. The read model starts empty with the process and is cleared when the in-memory system stops; it is eventually consistent with worker execution, while query methods wait for updates already accepted by the projector before returning.
 
+## Read Model Boundaries
+
+`IWorkSystem.Query` is the display and inspection read surface. It uses the projected read model for worker detail, worker rows, iteration detail, iteration rows, key search, system details, and overview component views.
+
+Control and correctness paths continue to read live worker records. This includes idempotency checks during queue acceptance, concurrency reservations, worker actions and reconfiguration, shutdown cancellation, retention purge selection, and bulk action execution. Those paths need authoritative current state and optimistic concurrency behavior, so they do not rely on the eventually consistent read model.
+
+## Read Model Diagnostics
+
+`IWorkSystem.Diagnostics.ReadModel` exposes projection counters for operators and performance tests:
+
+- `EnqueuedSequence` and `AppliedSequence` show read-model lag.
+- `PendingUpdateCount` is the current sequence gap.
+- `AppliedUpdateCount`, `PublishedSnapshotCount`, and `LastBatchSize` show projector activity.
+- `LastProjectionDuration` and `LastProjectedAt` show recent projection cost and recency.
+- `HasProjectorFailure`, `ProjectorFailureType`, and `ProjectorFailureMessage` surface projector failures.
+
+The read-model channel is unbounded so accepted updates are not dropped. Treat sustained `PendingUpdateCount` growth or rising `LastProjectionDuration` as pressure signals for tuning projection batching, snapshot shape, or publish cadence.
+
 ## Worker Queries
 
 Use `IWorkQueryService.Worker` when you need full worker detail.

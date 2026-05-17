@@ -4,6 +4,8 @@ namespace Workable;
 
 internal sealed class WorkerIndex
 {
+    // This index only supports live-worker correctness and control paths. Query-shaped
+    // indexes belong to the read model so lifecycle writes stay narrowly scoped.
     private readonly Lock sync = new();
     private readonly ConcurrentDictionary<WorkDefinitionId, ConcurrentDictionary<WorkerId, byte>> byDefinition = [];
     private readonly ConcurrentDictionary<WorkSubjectId, ConcurrentDictionary<WorkerId, byte>> bySubject = [];

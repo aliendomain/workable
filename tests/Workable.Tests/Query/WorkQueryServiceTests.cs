@@ -1368,6 +1368,37 @@ public sealed class WorkQueryServiceTests
     }
 
     [Fact]
+    public async Task QueryReadModelDiagnosticsReportProjectionProgress()
+    {
+        await using var system = CreateSystem(
+            WorkDefinition.Create("readmodel.diagnostics", category: "ReadModel"),
+            SuccessfulWork);
+
+        var initial = system.Diagnostics.ReadModel;
+        await system.Start();
+        var handle = await system.Queue.Enqueue("readmodel.diagnostics");
+        await handle.WaitForCompletion();
+
+        await system.Query.Worker(RequiredWorkerId(handle));
+        var diagnostics = system.Diagnostics.ReadModel;
+
+        Assert.Equal(0, initial.EnqueuedSequence);
+        Assert.Equal(0, initial.AppliedSequence);
+        Assert.Equal(0, initial.PendingUpdateCount);
+        Assert.True(diagnostics.EnqueuedSequence > 0);
+        Assert.Equal(diagnostics.EnqueuedSequence, diagnostics.AppliedSequence);
+        Assert.Equal(0, diagnostics.PendingUpdateCount);
+        Assert.True(diagnostics.AppliedUpdateCount > 0);
+        Assert.True(diagnostics.PublishedSnapshotCount > 0);
+        Assert.True(diagnostics.LastBatchSize > 0);
+        Assert.True(diagnostics.LastProjectionDuration >= TimeSpan.Zero);
+        Assert.NotNull(diagnostics.LastProjectedAt);
+        Assert.False(diagnostics.HasProjectorFailure);
+        Assert.Null(diagnostics.ProjectorFailureType);
+        Assert.Null(diagnostics.ProjectorFailureMessage);
+    }
+
+    [Fact]
     public async Task WorkerOperationsReadFromReadModel()
     {
         var subject = new WorkSubjectId("read-model", "worker-operations");

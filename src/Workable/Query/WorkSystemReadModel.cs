@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Threading.Channels;
 
 namespace Workable;
@@ -42,6 +43,11 @@ internal sealed class WorkSystemReadModel : IWorkSystemReadModelStore, IAsyncDis
     private Exception? projectorException;
     private long enqueuedSequence;
     private long appliedSequence;
+    private long appliedUpdateCount;
+    private long publishedSnapshotCount;
+    private long lastBatchSize;
+    private long lastProjectionDurationTicks;
+    private long lastProjectedAtUnixTimeMilliseconds;
 
     public WorkSystemReadModel(
         WorkSystemCatalog catalog,
@@ -56,6 +62,25 @@ internal sealed class WorkSystemReadModel : IWorkSystemReadModelStore, IAsyncDis
     public WorkSystemReadModelQueryService Query { get; }
 
     public WorkSystemReadModelSnapshot Current => Volatile.Read(ref this.snapshot);
+
+    public WorkSystemReadModelDiagnostics Diagnostics
+    {
+        get
+        {
+            var exception = Volatile.Read(ref this.projectorException);
+            var lastProjectedAt = Volatile.Read(ref this.lastProjectedAtUnixTimeMilliseconds);
+            return new WorkSystemReadModelDiagnostics(
+                Volatile.Read(ref this.enqueuedSequence),
+                Volatile.Read(ref this.appliedSequence),
+                Volatile.Read(ref this.appliedUpdateCount),
+                Volatile.Read(ref this.publishedSnapshotCount),
+                (int)Volatile.Read(ref this.lastBatchSize),
+                TimeSpan.FromTicks(Volatile.Read(ref this.lastProjectionDurationTicks)),
+                lastProjectedAt > 0 ? DateTimeOffset.FromUnixTimeMilliseconds(lastProjectedAt) : null,
+                exception?.GetType().FullName,
+                exception?.Message);
+        }
+    }
 
     public void RecordWorker(WorkerReadModelWorker worker)
     {
@@ -119,15 +144,18 @@ internal sealed class WorkSystemReadModel : IWorkSystemReadModelStore, IAsyncDis
         {
             await foreach (var first in this.updates.Reader.ReadAllAsync())
             {
+                var stopwatch = Stopwatch.StartNew();
+                var batchSize = 1;
                 var lastSequence = this.Apply(first);
                 var remaining = ProjectorBatchSize - 1;
                 while (remaining > 0 && this.updates.Reader.TryRead(out var next))
                 {
                     lastSequence = this.Apply(next);
+                    batchSize++;
                     remaining--;
                 }
 
-                this.Publish(lastSequence);
+                this.Publish(lastSequence, batchSize, stopwatch);
             }
         }
         catch (Exception exception)
@@ -161,10 +189,16 @@ internal sealed class WorkSystemReadModel : IWorkSystemReadModelStore, IAsyncDis
         return update.Sequence;
     }
 
-    private void Publish(long sequence)
+    private void Publish(long sequence, int batchSize, Stopwatch stopwatch)
     {
         Volatile.Write(ref this.snapshot, this.state.ToSnapshot());
+        stopwatch.Stop();
         Volatile.Write(ref this.appliedSequence, sequence);
+        Interlocked.Add(ref this.appliedUpdateCount, batchSize);
+        Interlocked.Increment(ref this.publishedSnapshotCount);
+        Volatile.Write(ref this.lastBatchSize, batchSize);
+        Volatile.Write(ref this.lastProjectionDurationTicks, stopwatch.Elapsed.Ticks);
+        Volatile.Write(ref this.lastProjectedAtUnixTimeMilliseconds, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
         this.SignalProjectionAdvanced();
     }
 

@@ -19,6 +19,8 @@ public interface IWorkSystem : IAsyncDisposable
 
     IWorkEventStream Events { get; }
 
+    IWorkSystemDiagnostics Diagnostics { get; }
+
     Task Start(CancellationToken cancellationToken = default);
 
     Task<WorkSystemStopResult> Stop(CancellationToken cancellationToken = default);

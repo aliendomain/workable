@@ -1,4 +1,11 @@
 <Solution>
+  <Folder Name="/Samples/">
+    <Project Path="samples/Workable.SampleHost/Workable.SampleHost.csproj" />
+  </Folder>
+  <Folder Name="/Tests/">
+    <Project Path="src/Workable.PerformanceHarness/Workable.PerformanceHarness.csproj" />
+    <Project Path="tests/Workable.Tests/Workable.Tests.csproj" />
+  </Folder>
   <Folder Name="/Solution Items/">
     <File Path=".editorconfig" />
     <File Path="README.md" />
@@ -28,14 +35,12 @@
     <File Path="docs/work-realtime.md" />
     <File Path="docs/work-registration.md" />
   </Folder>
-  <Project Path="src/Workable.Sdk/Workable.Sdk.csproj" />
   <Project Path="src/Workable.Abstractions/Workable.Abstractions.csproj" />
-  <Project Path="src/Workable/Workable.csproj" />
   <Project Path="src/Workable.AspNetCore/Workable.AspNetCore.csproj" />
-  <Project Path="src/Workable.Views/Workable.Views.csproj" />
   <Project Path="src/Workable.HttpApi/Workable.HttpApi.csproj" />
   <Project Path="src/Workable.Mcp/Workable.Mcp.csproj" />
+  <Project Path="src/Workable.Sdk/Workable.Sdk.csproj" />
   <Project Path="src/Workable.SignalR/Workable.SignalR.csproj" />
-  <Project Path="samples/Workable.SampleHost/Workable.SampleHost.csproj" />
-  <Project Path="tests/Workable.Tests/Workable.Tests.csproj" />
+  <Project Path="src/Workable.Views/Workable.Views.csproj" />
+  <Project Path="src/Workable/Workable.csproj" />
 </Solution>
