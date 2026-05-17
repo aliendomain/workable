@@ -293,16 +293,19 @@ public sealed class WorkerStateTests
 
         await system.Start();
 
-        var workers = new[]
-        {
-            RequiredCompletionWorker(await (await system.Queue.Enqueue("auto-purge-count")).WaitForCompletion()),
-            RequiredCompletionWorker(await (await system.Queue.Enqueue("auto-purge-count")).WaitForCompletion()),
-            RequiredCompletionWorker(await (await system.Queue.Enqueue("auto-purge-count")).WaitForCompletion()),
-        };
+        var first = RequiredCompletionWorker(await (await system.Queue.Enqueue("auto-purge-count")).WaitForCompletion());
+        await Task.Delay(TimeSpan.FromMilliseconds(20));
+        var second = RequiredCompletionWorker(await (await system.Queue.Enqueue("auto-purge-count")).WaitForCompletion());
+        await Task.Delay(TimeSpan.FromMilliseconds(20));
+        var third = RequiredCompletionWorker(await (await system.Queue.Enqueue("auto-purge-count")).WaitForCompletion());
+        var workers = new[] { first, second, third };
 
-        await Eventually(async () => await CountExistingWorkers(system, workers) == 2);
+        await Eventually(async () => await system.Query.Worker(first.Id) is null);
 
         Assert.Equal(2, await CountExistingWorkers(system, workers));
+        Assert.Null(await system.Query.Worker(first.Id));
+        Assert.NotNull(await system.Query.Worker(second.Id));
+        Assert.NotNull(await system.Query.Worker(third.Id));
     }
 
     [Fact]
@@ -317,17 +320,22 @@ public sealed class WorkerStateTests
 
         await system.Start();
 
-        var workers = new[]
-        {
-            RequiredCompletionWorker(await (await system.Queue.Enqueue("auto-purge-system-a")).WaitForCompletion()),
-            RequiredCompletionWorker(await (await system.Queue.Enqueue("auto-purge-system-b")).WaitForCompletion()),
-            RequiredCompletionWorker(await (await system.Queue.Enqueue("auto-purge-system-a")).WaitForCompletion()),
-            RequiredCompletionWorker(await (await system.Queue.Enqueue("auto-purge-system-b")).WaitForCompletion()),
-        };
+        var first = RequiredCompletionWorker(await (await system.Queue.Enqueue("auto-purge-system-a")).WaitForCompletion());
+        await Task.Delay(TimeSpan.FromMilliseconds(20));
+        var second = RequiredCompletionWorker(await (await system.Queue.Enqueue("auto-purge-system-b")).WaitForCompletion());
+        await Task.Delay(TimeSpan.FromMilliseconds(20));
+        var third = RequiredCompletionWorker(await (await system.Queue.Enqueue("auto-purge-system-a")).WaitForCompletion());
+        await Task.Delay(TimeSpan.FromMilliseconds(20));
+        var fourth = RequiredCompletionWorker(await (await system.Queue.Enqueue("auto-purge-system-b")).WaitForCompletion());
+        var workers = new[] { first, second, third, fourth };
 
-        await Eventually(async () => await CountExistingWorkers(system, workers) == 3);
+        await Eventually(async () => await system.Query.Worker(first.Id) is null);
 
         Assert.Equal(3, await CountExistingWorkers(system, workers));
+        Assert.Null(await system.Query.Worker(first.Id));
+        Assert.NotNull(await system.Query.Worker(second.Id));
+        Assert.NotNull(await system.Query.Worker(third.Id));
+        Assert.NotNull(await system.Query.Worker(fourth.Id));
     }
 
     [Fact]
@@ -351,6 +359,38 @@ public sealed class WorkerStateTests
         Assert.Contains(third.QueueOutcome.Messages, message =>
             message.Code == "workable.system.capacity_reached" &&
             message.Target == "system.capacity.maximumWorkers");
+    }
+
+    [Fact]
+    public async Task FinalWorkersDoNotCountAgainstSystemMaximumWorkers()
+    {
+        var definition = WorkDefinition.Create(
+            "system-capacity-final",
+            "Retained final workers do not block new queue requests.",
+            configuration: WorkConfiguration.Default with
+            {
+                Start = new WorkStartConfiguration
+                {
+                    Policy = WorkStartPolicy.StartAndReturnAfterCompleted,
+                },
+                Retention = WorkRetentionConfiguration.Default with
+                {
+                    PurgeInterval = TimeSpan.FromMinutes(10),
+                },
+            });
+        var system = CreateSystem(builder => builder
+            .ConfigureCapacity(maximumWorkers: 1)
+            .AddWork(definition, (context, input, cancellationToken) => Task.FromResult(WorkExecutionResult.Success())));
+
+        await system.Start();
+
+        var first = await system.Queue.Enqueue("system-capacity-final");
+        var retained = await system.Query.Worker(RequiredWorkerId(first));
+        var second = await system.Queue.Enqueue("system-capacity-final");
+
+        Assert.Equal(WorkQueueStatus.Accepted, first.QueueOutcome.Status);
+        Assert.Equal(WorkerState.Completed, retained?.State);
+        Assert.Equal(WorkQueueStatus.Accepted, second.QueueOutcome.Status);
     }
 
     [Fact]

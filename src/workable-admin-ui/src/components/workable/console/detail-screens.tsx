@@ -4,9 +4,7 @@ import {
   Ban,
   Braces,
   CheckCircle2,
-  CircleDot,
   Clock3,
-  Hourglass,
   Info,
   Loader2,
   Pause,
@@ -14,12 +12,10 @@ import {
   RefreshCw,
   Search,
   Send,
-  ShieldAlert,
   Trash2,
 } from "lucide-react";
 import type { Dispatch, ReactNode, SetStateAction } from "react";
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
-import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import {
   Breadcrumb,
@@ -45,6 +41,12 @@ import {
   createDefaultValue,
   parseJsonSchema,
 } from "@/components/workable/schema-form";
+import {
+  ErrorBanner,
+  ErrorPanel,
+  FeedbackBanner,
+  type FeedbackTone,
+} from "@/components/workable/console/feedback-panel";
 import {
   formatDateTime,
   stateTone,
@@ -351,11 +353,12 @@ export function DefinitionView({
       ) : (
         <>
           {saveStatus && (
-            <Alert>
-              <CheckCircle2 className="size-4" />
-              <AlertTitle>Configuration saved</AlertTitle>
-              <AlertDescription>{saveStatus}</AlertDescription>
-            </Alert>
+            <FeedbackBanner
+              key={saveStatus}
+              message={saveStatus}
+              title="Configuration saved"
+              tone="success"
+            />
           )}
           <Card>
             <CardHeader className="gap-4 md:flex-row md:items-start md:justify-between">
@@ -453,7 +456,10 @@ export function WorkerConsoleView({
   refreshToken: number;
   workerId: string;
 }) {
-  const [actionMessage, setActionMessage] = useState<string | undefined>();
+  const [actionFeedback, setActionFeedback] = useState<{
+    message: string;
+    tone: FeedbackTone;
+  }>();
   const [actionRefreshToken, setActionRefreshToken] = useState(0);
   const snapshot = useWorkableResource<WorkerSnapshot>(
     connection,
@@ -475,10 +481,12 @@ export function WorkerConsoleView({
         body: JSON.stringify({ revision: current.revision }),
       }
     );
-    setActionMessage(
-      result.messages?.map((message) => message.text).join(" ") ||
-        `${action} returned ${result.status}.`
-    );
+    const message = result.messages?.map((message) => message.text).filter(Boolean).join(" ") ||
+      `${action} returned ${result.status}.`;
+    setActionFeedback({
+      message,
+      tone: result.status === "Accepted" ? "info" : "warning",
+    });
     setActionRefreshToken((value) => value + 1);
   };
 
@@ -496,11 +504,7 @@ export function WorkerConsoleView({
       </div>
       {snapshot.loading && <StackedSkeleton count={8} />}
       {snapshot.error && (
-        <Alert variant="destructive">
-          <ShieldAlert className="size-4" />
-          <AlertTitle>Unable to load worker</AlertTitle>
-          <AlertDescription>{snapshot.error}</AlertDescription>
-        </Alert>
+        <ErrorBanner key={snapshot.error} message={snapshot.error} title="Unable to load worker" />
       )}
       {snapshot.data && (
         <>
@@ -579,12 +583,13 @@ export function WorkerConsoleView({
             </CardContent>
           </Card>
 
-          {actionMessage && (
-            <Alert>
-              <CircleDot className="size-4" />
-              <AlertTitle>Action result</AlertTitle>
-              <AlertDescription>{actionMessage}</AlertDescription>
-            </Alert>
+          {actionFeedback && (
+            <FeedbackBanner
+              key={actionFeedback.message}
+              message={actionFeedback.message}
+              title="Action result"
+              tone={actionFeedback.tone}
+            />
           )}
 
           <div className="grid gap-4 xl:grid-cols-2">
@@ -767,27 +772,22 @@ export function QueueDialog({
         </DialogHeader>
         <div className="min-h-0 space-y-4 px-4">
           {error && (
-            <Alert variant="destructive">
-              <ShieldAlert className="size-4" />
-              <AlertTitle>Queue failed</AlertTitle>
-              <AlertDescription>{error}</AlertDescription>
-            </Alert>
+            <ErrorBanner key={error} message={error} title="Queue failed" />
           )}
           {status && (
-            <Alert>
-              <CheckCircle2 className="size-4" />
-              <AlertTitle>Queue accepted</AlertTitle>
-              <AlertDescription>{status}</AlertDescription>
-            </Alert>
+            <FeedbackBanner
+              key={status}
+              message={status}
+              title="Queue accepted"
+              tone="success"
+            />
           )}
           {isWaitingForCompletion && (
-            <Alert>
-              <Hourglass className="size-4 animate-pulse" />
-              <AlertTitle>Waiting for completion</AlertTitle>
-              <AlertDescription>
-                The worker is executing. This dialog will update when the HTTP request returns.
-              </AlertDescription>
-            </Alert>
+            <FeedbackBanner
+              message="The worker is executing. This dialog will update when the HTTP request returns."
+              title="Waiting for completion"
+              tone="info"
+            />
           )}
           <Tabs
             onValueChange={(value) => {
@@ -1239,21 +1239,6 @@ function MetadataItem({ label, value }: { label: string; value: string }) {
 
 function formatTypedValue(value?: WorkTypedValue | null) {
   return value ? `${value.type}:${value.value}` : "-";
-}
-
-function ErrorPanel({ errors }: { errors: Array<string | undefined> }) {
-  const error = [...new Set(errors.filter(Boolean))].join(" ");
-  if (!error) {
-    return null;
-  }
-
-  return (
-    <Alert variant="destructive">
-      <ShieldAlert className="size-4" />
-      <AlertTitle>Connection issue</AlertTitle>
-      <AlertDescription>{error}</AlertDescription>
-    </Alert>
-  );
 }
 
 function StackedSkeleton({ count }: { count: number }) {

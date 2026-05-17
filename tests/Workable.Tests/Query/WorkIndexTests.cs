@@ -105,6 +105,8 @@ public sealed class WorkIndexTests
         var afterPurgeIterations = await system.Query.WorkerIterations(new WorkerIterationCriteria(Category: "Billing"));
         var afterPurgeKeys = await system.Query.WorkerKeys(new WorkerKeyCriteria(Search: "request"));
         var afterPurgeOverview = await system.Query.SystemDetails(new WorkSystemCriteria(Category: "Billing"));
+        var afterPurgeSystemOverview = await system.Query.SystemDetails();
+        var afterPurgeStatusSummary = await system.Query.WorkerStatusSummary();
 
         Assert.Empty(afterPurgeWorkers.Workers);
         Assert.Empty(afterPurgeIterations.Iterations);
@@ -114,6 +116,10 @@ public sealed class WorkIndexTests
         Assert.Equal(0, afterPurgeOverview.CompletedIterationCount);
         Assert.Empty(afterPurgeOverview.WorkerCountByState);
         Assert.Empty(afterPurgeOverview.CommonKeyTypes);
+        Assert.False(afterPurgeSystemOverview.WorkerCountByState.ContainsKey(WorkerState.Running));
+        Assert.Equal(
+            afterPurgeSystemOverview.WorkerCountByState.GetValueOrDefault(WorkerState.Running),
+            afterPurgeStatusSummary.Counts.GetValueOrDefault(WorkerState.Running));
     }
 
     [Fact]
@@ -412,6 +418,124 @@ public sealed class WorkIndexTests
     }
 
     [Fact]
+    public async Task WorkerKeyTypeFacetsStayAlignedWithKeyMembershipAfterDuplicateIdentifiersAndPurge()
+    {
+        await using var system = new ServiceCollection()
+            .AddWorkableSystem("index-worker-key-type-consistency", builder =>
+            {
+                builder.AddWork(
+                    WorkDefinition.Create("index.worker.key.consistency", category: "Index:Keys"),
+                    (context, input, cancellationToken) =>
+                    {
+                        var runtimeIdentifier = new WorkIdentifier("claim", $"runtime-{context.WorkerId}");
+                        Assert.True(context.AddIdentifier(runtimeIdentifier));
+                        Assert.False(context.AddIdentifier(runtimeIdentifier));
+                        return Task.FromResult(WorkExecutionResult.Success());
+                    });
+            })
+            .BuildServiceProvider()
+            .GetRequiredService<IWorkSystemRegistry>()
+            .Default;
+
+        await system.Start();
+
+        var first = await system.Queue.Enqueue(
+            "index.worker.key.consistency",
+            WorkInput.Empty
+                .WithSubject(new WorkSubjectId("claim", "CLM-1"))
+                .WithConcurrencyKey(new WorkConcurrencyKey("claim", "CLM-1"))
+                .WithIdentifier(new WorkIdentifier("claim", "input-1")));
+        var second = await system.Queue.Enqueue(
+            "index.worker.key.consistency",
+            WorkInput.Empty
+                .WithSubject(new WorkSubjectId("claim", "CLM-2"))
+                .WithConcurrencyKey(new WorkConcurrencyKey("claim", "CLM-2"))
+                .WithIdentifier(new WorkIdentifier("claim", "input-2")));
+        await first.WaitForCompletion();
+        await second.WaitForCompletion();
+
+        await AssertWorkerKeyTypeMatchesKeys(
+            system,
+            "CLAIM",
+            expectedWorkers: 2,
+            expectedSubject: 2,
+            expectedConcurrency: 2,
+            expectedIdentifier: 2);
+
+        await Purge(system, RequiredWorkerId(first));
+
+        await AssertWorkerKeyTypeMatchesKeys(
+            system,
+            "claim",
+            expectedWorkers: 1,
+            expectedSubject: 1,
+            expectedConcurrency: 1,
+            expectedIdentifier: 1);
+    }
+
+    [Fact]
+    public async Task IterationKeyTypeFacetsStayAlignedWithKeyMembershipAcrossRetriesAndPurge()
+    {
+        var attempts = 0;
+        await using var system = new ServiceCollection()
+            .AddWorkableSystem("index-iteration-key-type-consistency", builder =>
+            {
+                builder.AddWork(
+                    WorkDefinition.Create("index.iteration.key.consistency", category: "Index:Keys"),
+                    (context, input, cancellationToken) =>
+                    {
+                        attempts++;
+                        var runtimeIdentifier = new WorkIdentifier("claim", $"runtime-{attempts}");
+                        Assert.True(context.AddIdentifier(runtimeIdentifier));
+                        Assert.False(context.AddIdentifier(runtimeIdentifier));
+                        if (attempts == 1)
+                        {
+                            throw new TimeoutException("Retry this work.");
+                        }
+
+                        return Task.FromResult(WorkExecutionResult.Success());
+                    },
+                    configuration => configuration
+                        .RetryTransientFailures(
+                            count: 1,
+                            initialDelay: TimeSpan.FromMilliseconds(1),
+                            jitter: TimeSpan.Zero)
+                        .ClassifyExceptions(exception => exception is TimeoutException
+                            ? WorkExceptionClassification.Transient
+                            : WorkExceptionClassification.Unknown));
+            })
+            .BuildServiceProvider()
+            .GetRequiredService<IWorkSystemRegistry>()
+            .Default;
+
+        await system.Start();
+
+        var handle = await system.Queue.Enqueue(
+            "index.iteration.key.consistency",
+            WorkInput.Empty
+                .WithSubject(new WorkSubjectId("claim", "CLM-1"))
+                .WithConcurrencyKey(new WorkConcurrencyKey("claim", "CLM-1"))
+                .WithIdentifier(new WorkIdentifier("claim", "input-1")));
+        await handle.WaitForCompletion();
+
+        await AssertIterationKeyTypeMatchesKeys(
+            system,
+            "CLAIM",
+            expectedIterations: 2,
+            expectedSubject: 2,
+            expectedConcurrency: 2,
+            expectedIdentifier: 2);
+
+        await Purge(system, RequiredWorkerId(handle));
+
+        var keyTypesAfterPurge = await system.Query.WorkIterationKeyTypes(new WorkIterationKeyTypeCriteria(Type: "claim"));
+        var keysAfterPurge = await system.Query.WorkIterationKeys(new WorkIterationKeyCriteria(Type: "claim"));
+
+        Assert.Empty(keyTypesAfterPurge.Types);
+        Assert.Empty(keysAfterPurge.Keys);
+    }
+
+    [Fact]
     public async Task ReplacingExecutingIterationWithCompletedIterationUpdatesScopedStatusIndexes()
     {
         var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -504,6 +628,42 @@ public sealed class WorkIndexTests
                 .Select(iteration => Assert.Single(iteration.Identifiers, identifier => identifier.Type == "sequence").Value));
     }
 
+    [Fact]
+    public async Task RecentIterationIndexesBackfillAfterRecentWorkersArePurged()
+    {
+        await using var system = new ServiceCollection()
+            .AddWorkableSystem("index-recent-backfill", builder =>
+            {
+                builder.AddWork(WorkDefinition.Create("index.recent.backfill", category: "Index:Recent"), SuccessfulWork);
+            })
+            .BuildServiceProvider()
+            .GetRequiredService<IWorkSystemRegistry>()
+            .Default;
+
+        await system.Start();
+
+        var workerIds = new List<WorkerId>();
+        for (var index = 0; index < 7; index++)
+        {
+            var handle = await system.Queue.Enqueue(
+                "index.recent.backfill",
+                WorkInput.Empty.WithIdentifier(new WorkIdentifier("sequence", index.ToString())));
+            await handle.WaitForCompletion();
+            workerIds.Add(RequiredWorkerId(handle));
+        }
+
+        await Purge(system, workerIds[6]);
+        await Purge(system, workerIds[5]);
+
+        var overview = await system.Query.SystemDetails(new WorkSystemCriteria(Category: "Index:Recent"));
+
+        Assert.Equal(5, overview.CompletedIterations.Count);
+        Assert.Equal(
+            ["4", "3", "2", "1", "0"],
+            overview.CompletedIterations
+                .Select(iteration => Assert.Single(iteration.Identifiers, identifier => identifier.Type == "sequence").Value));
+    }
+
     private static async Task Purge(IWorkSystem system, WorkerId workerId)
     {
         var worker = RequiredWorker(await system.Query.Worker(workerId));
@@ -532,6 +692,80 @@ public sealed class WorkIndexTests
         Assert.Equal(concurrency, keyType.IterationCountByKind[WorkKeyKind.ConcurrencyKey]);
         Assert.Equal(identifier, keyType.IterationCountByKind[WorkKeyKind.Identifier]);
     }
+
+    private static async Task AssertWorkerKeyTypeMatchesKeys(
+        IWorkSystem system,
+        string type,
+        int expectedWorkers,
+        int expectedSubject,
+        int expectedConcurrency,
+        int expectedIdentifier)
+    {
+        var keyTypes = await system.Query.WorkerKeyTypes(new WorkerKeyTypeCriteria(Type: type));
+        var keys = await system.Query.WorkerKeys(new WorkerKeyCriteria(Type: type));
+        var keyType = Assert.Single(keyTypes.Types);
+        var expectedCountsByKind = CountWorkerKeysByKind(keys.Keys);
+        var expectedWorkerIds = keys.Keys
+            .SelectMany(key => key.Workers.Select(worker => worker.Id))
+            .Distinct()
+            .ToHashSet();
+
+        Assert.Equal(expectedWorkerIds.Count, keyType.WorkerCount);
+        Assert.Equal(expectedWorkerIds, keyType.Workers.Select(worker => worker.Id).ToHashSet());
+        Assert.Equal(expectedCountsByKind, keyType.WorkerCountByKind);
+        Assert.Equal(expectedWorkers, keyType.WorkerCount);
+        Assert.Equal(expectedSubject, keyType.WorkerCountByKind[WorkKeyKind.Subject]);
+        Assert.Equal(expectedConcurrency, keyType.WorkerCountByKind[WorkKeyKind.ConcurrencyKey]);
+        Assert.Equal(expectedIdentifier, keyType.WorkerCountByKind[WorkKeyKind.Identifier]);
+    }
+
+    private static async Task AssertIterationKeyTypeMatchesKeys(
+        IWorkSystem system,
+        string type,
+        int expectedIterations,
+        int expectedSubject,
+        int expectedConcurrency,
+        int expectedIdentifier)
+    {
+        var keyTypes = await system.Query.WorkIterationKeyTypes(new WorkIterationKeyTypeCriteria(Type: type));
+        var keys = await system.Query.WorkIterationKeys(new WorkIterationKeyCriteria(Type: type));
+        var keyType = Assert.Single(keyTypes.Types);
+        var expectedCountsByKind = CountIterationKeysByKind(keys.Keys);
+        var expectedIterationReferences = keys.Keys
+            .SelectMany(key => key.Iterations.Select(iteration => new WorkerIterationReference(iteration.WorkerId, iteration.Sequence)))
+            .Distinct()
+            .ToHashSet();
+
+        Assert.Equal(expectedIterationReferences.Count, keyType.IterationCount);
+        Assert.Equal(
+            expectedIterationReferences,
+            keyType.Iterations.Select(iteration => new WorkerIterationReference(iteration.WorkerId, iteration.Sequence)).ToHashSet());
+        Assert.Equal(expectedCountsByKind, keyType.IterationCountByKind);
+        Assert.Equal(expectedIterations, keyType.IterationCount);
+        Assert.Equal(expectedSubject, keyType.IterationCountByKind[WorkKeyKind.Subject]);
+        Assert.Equal(expectedConcurrency, keyType.IterationCountByKind[WorkKeyKind.ConcurrencyKey]);
+        Assert.Equal(expectedIdentifier, keyType.IterationCountByKind[WorkKeyKind.Identifier]);
+    }
+
+    private static Dictionary<WorkKeyKind, int> CountWorkerKeysByKind(IReadOnlyList<WorkerKeyDescriptor> keys)
+        => keys
+            .GroupBy(key => key.Kind)
+            .ToDictionary(
+                group => group.Key,
+                group => group
+                    .SelectMany(key => key.Workers.Select(worker => worker.Id))
+                    .Distinct()
+                    .Count());
+
+    private static Dictionary<WorkKeyKind, int> CountIterationKeysByKind(IReadOnlyList<WorkIterationKeyDescriptor> keys)
+        => keys
+            .GroupBy(key => key.Kind)
+            .ToDictionary(
+                group => group.Key,
+                group => group
+                    .SelectMany(key => key.Iterations.Select(iteration => new WorkerIterationReference(iteration.WorkerId, iteration.Sequence)))
+                    .Distinct()
+                    .Count());
 
     private static WorkerSnapshot RequiredWorker(WorkerSnapshot? worker)
         => worker ?? throw new InvalidOperationException("Expected worker.");

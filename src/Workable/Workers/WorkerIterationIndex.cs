@@ -238,13 +238,13 @@ internal sealed class WorkerIterationIndex
 
         lock (this.sync)
         {
-            return this.recentByStatus.TryGetValue(status, out var references)
-                ? [.. references
-                    .Take(normalizedTake)
-                    .Select(reference => this.iterations.TryGetValue(reference.Reference, out var iteration) ? iteration : null)
-                    .OfType<IndexedWorkerIteration>()
-                    .Select(iteration => iteration.ToOverviewItem())]
+            var recentReferences = this.recentByStatus.TryGetValue(status, out var references)
+                ? references
+                : null;
+            var candidates = this.byStatus.TryGetValue(status, out var statusReferences)
+                ? statusReferences.Keys
                 : [];
+            return this.CreateRecentOverviewItems(status, normalizedTake, recentReferences, candidates);
         }
     }
 
@@ -270,25 +270,26 @@ internal sealed class WorkerIterationIndex
         }
 
         var recent = new List<RecentIterationReference>();
+        var candidates = new List<WorkerIterationReference>();
         lock (this.sync)
         {
             foreach (var definitionId in definitionIds)
             {
-                if (!this.recentByDefinitionAndStatus.TryGetValue((definitionId, status), out var references))
+                if (this.recentByDefinitionAndStatus.TryGetValue((definitionId, status), out var references))
+                {
+                    recent.AddRange(references.Take(normalizedTake));
+                }
+
+                if (!this.byDefinitionAndStatus.TryGetValue((definitionId, status), out var definitionReferences))
                 {
                     continue;
                 }
 
-                recent.AddRange(references.Take(normalizedTake));
+                candidates.AddRange(definitionReferences.Keys);
             }
-        }
 
-        return [.. recent
-            .Order()
-            .Take(normalizedTake)
-            .Select(reference => this.iterations.TryGetValue(reference.Reference, out var iteration) ? iteration : null)
-            .OfType<IndexedWorkerIteration>()
-            .Select(iteration => iteration.ToOverviewItem())];
+            return this.CreateRecentOverviewItems(status, normalizedTake, recent, candidates);
+        }
     }
 
     private HashSet<WorkerIterationReference>? FindBestCandidates(
@@ -624,6 +625,48 @@ internal sealed class WorkerIterationIndex
         var reference = RecentIterationReference.From(iteration);
         RemoveRecentReference(this.recentByStatus, iteration.Status, reference);
         RemoveRecentReference(this.recentByDefinitionAndStatus, (iteration.DefinitionId, iteration.Status), reference);
+    }
+
+    private IReadOnlyList<WorkerIterationOverviewItem> CreateRecentOverviewItems(
+        WorkCompletionStatus status,
+        int take,
+        IEnumerable<RecentIterationReference>? recentReferences,
+        IEnumerable<WorkerIterationReference> candidates)
+    {
+        var recent = new Dictionary<WorkerIterationReference, RecentIterationReference>();
+        if (recentReferences is not null)
+        {
+            foreach (var reference in recentReferences.Take(take))
+            {
+                if (this.iterations.TryGetValue(reference.Reference, out var iteration) &&
+                    iteration.Status == status)
+                {
+                    recent[reference.Reference] = reference;
+                }
+            }
+        }
+
+        if (recent.Count < take)
+        {
+            foreach (var candidate in candidates)
+            {
+                if (recent.ContainsKey(candidate) ||
+                    !this.iterations.TryGetValue(candidate, out var iteration) ||
+                    iteration.Status != status)
+                {
+                    continue;
+                }
+
+                recent[candidate] = RecentIterationReference.From(iteration);
+            }
+        }
+
+        return [.. recent.Values
+            .Order()
+            .Take(take)
+            .Select(reference => this.iterations.TryGetValue(reference.Reference, out var iteration) ? iteration : null)
+            .OfType<IndexedWorkerIteration>()
+            .Select(iteration => iteration.ToOverviewItem())];
     }
 
     private void AddRecentReference<TKey>(

@@ -44,7 +44,7 @@ flowchart TD
 
 `WorkerDispatcher` is the queue-to-execution boundary. It starts accepted workers outside the caller's queue request and caller execution context.
 
-During shutdown, `WorkerOperations` flips the system into a non-accepting state before it cancels active workers. New queue requests return `WorkQueueStatus.Invalid` with a `workable.system.stopping` message. During normal operation, `WorkerOperations` also checks the system's approximate total worker capacity before accepting a new worker. Shutdown then stops dispatching, requests cancellation for non-final workers, waits for the configured grace period, and force-completes any remaining workers as canceled in Workable state.
+During shutdown, `WorkerOperations` flips the system into a non-accepting state before it cancels active workers. New queue requests return `WorkQueueStatus.Invalid` with a `workable.system.stopping` message. During normal operation, `WorkerOperations` also checks the system's approximate non-final worker capacity before accepting a new worker. Completed and canceled workers are final, so retained history does not block new queue requests. Shutdown then stops dispatching, requests cancellation for non-final workers, waits for the configured grace period, and force-completes any remaining workers as canceled in Workable state.
 
 `WorkConcurrencyCoordinator` only participates for workers with concurrency enabled. It owns per-definition managers, so capacity checks and deferred start drains are limited to workers known to that work definition's concurrency manager. Within a definition, capacity can be grouped by definition, subject, or concurrency key.
 

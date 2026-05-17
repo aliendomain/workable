@@ -657,14 +657,60 @@ async function fetchWorkable<T>(
     : responseText;
 
   if (!response.ok) {
-    const message =
-      typeof body === "object" && body && "error" in body
-        ? String((body as { error: unknown }).error)
-        : `Workable request failed with ${response.status}.`;
+    const message = getWorkableErrorMessage(response.status, body);
     throw new WorkableApiError(message, response.status, body);
   }
 
   return body as T;
+}
+
+function getWorkableErrorMessage(status: number, body: unknown) {
+  if (typeof body === "object" && body) {
+    if ("error" in body && typeof body.error === "string" && body.error.trim()) {
+      return body.error;
+    }
+
+    if ("messages" in body && Array.isArray(body.messages)) {
+      const details = body.messages
+        .map((message) => {
+          if (typeof message === "object" && message && "text" in message) {
+            return String(message.text ?? "").trim();
+          }
+
+          return "";
+        })
+        .filter(Boolean)
+        .join(" ");
+      if (details) {
+        return details;
+      }
+    }
+
+    if ("detail" in body && typeof body.detail === "string" && body.detail.trim()) {
+      return body.detail;
+    }
+
+    if ("errors" in body && typeof body.errors === "object" && body.errors) {
+      const details = Object.values(body.errors)
+        .flatMap((value) => Array.isArray(value) ? value : [value])
+        .map((value) => String(value ?? "").trim())
+        .filter(Boolean)
+        .join(" ");
+      if (details) {
+        return details;
+      }
+    }
+
+    if ("title" in body && typeof body.title === "string" && body.title.trim()) {
+      return body.title;
+    }
+  }
+
+  if (typeof body === "string" && body.trim()) {
+    return body.trim();
+  }
+
+  return `Workable request failed with ${status}.`;
 }
 
 function createScopedWorkablePath(connection: WorkableConnection, path: string) {

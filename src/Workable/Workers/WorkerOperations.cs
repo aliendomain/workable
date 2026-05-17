@@ -33,6 +33,8 @@ internal sealed class WorkerOperations : IWorkerOperations, IDisposable
     private CancellationTokenSource systemExecutionLifetime = new();
     private volatile bool acceptingWork;
     private long workerCount;
+    private long finalWorkerCount;
+    private readonly ConcurrentDictionary<WorkerId, byte> finalCapacityWorkers = [];
 
     internal WorkerOperations(
         WorkSystemCatalog catalog,
@@ -270,13 +272,13 @@ internal sealed class WorkerOperations : IWorkerOperations, IDisposable
             }
         }
 
-        if (Volatile.Read(ref this.workerCount) >= this.capacity.MaximumWorkers)
+        if (this.GetNonFinalWorkerCount() >= this.capacity.MaximumWorkers)
         {
             rejection = WorkQueueOutcome.Invalid(
                 definitionId,
                 [WorkMessage.Warning(
                     "workable.system.capacity_reached",
-                    $"Workable has reached the configured maximum worker count of {this.capacity.MaximumWorkers}.",
+                    $"Workable has reached the configured maximum non-final worker count of {this.capacity.MaximumWorkers}.",
                     "system.capacity.maximumWorkers")]);
             return false;
         }
@@ -601,6 +603,8 @@ internal sealed class WorkerOperations : IWorkerOperations, IDisposable
     {
         this.workers.Clear();
         Volatile.Write(ref this.workerCount, 0);
+        Volatile.Write(ref this.finalWorkerCount, 0);
+        this.finalCapacityWorkers.Clear();
         this.index.Clear();
         this.iterationIndex.Clear();
         this.concurrency.Clear();
@@ -624,7 +628,25 @@ internal sealed class WorkerOperations : IWorkerOperations, IDisposable
         }
 
         Interlocked.Decrement(ref this.workerCount);
+        if (this.finalCapacityWorkers.TryRemove(workerId, out _))
+        {
+            Interlocked.Decrement(ref this.finalWorkerCount);
+        }
+
         return true;
+    }
+
+    private long GetNonFinalWorkerCount()
+        => Math.Max(
+            0,
+            Volatile.Read(ref this.workerCount) - Volatile.Read(ref this.finalWorkerCount));
+
+    private void TrackFinalWorkerForCapacity(WorkerRecord worker)
+    {
+        if (worker.IsFinal && this.finalCapacityWorkers.TryAdd(worker.Id, 0))
+        {
+            Interlocked.Increment(ref this.finalWorkerCount);
+        }
     }
 
     private async Task WaitForCanceledWorkers(
@@ -777,6 +799,7 @@ internal sealed class WorkerOperations : IWorkerOperations, IDisposable
         if (action != WorkAction.Purge)
         {
             this.concurrency.Synchronize(worker);
+            this.TrackFinalWorkerForCapacity(worker);
         }
 
         if (action != WorkAction.Purge && worker.IsFinal)
@@ -790,6 +813,7 @@ internal sealed class WorkerOperations : IWorkerOperations, IDisposable
     private void HandleWorkerExecutionCompleted(WorkerRecord worker)
     {
         this.concurrency.Synchronize(worker);
+        this.TrackFinalWorkerForCapacity(worker);
 
         if (worker.IsFinal)
         {
@@ -813,6 +837,7 @@ internal sealed class WorkerOperations : IWorkerOperations, IDisposable
         }
 
         this.TryRemoveWorker(worker.Id, out _);
+        this.retention.Forget(worker.Id);
         this.concurrency.Forget(worker);
         this.index.Forget(worker);
         this.iterationIndex.Forget(worker);

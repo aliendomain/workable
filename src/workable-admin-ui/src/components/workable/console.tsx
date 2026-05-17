@@ -9,11 +9,9 @@ import {
   RefreshCw,
   RotateCcw,
   Settings,
-  ShieldAlert,
   Workflow,
 } from "lucide-react";
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import {
   Popover,
@@ -54,6 +52,7 @@ import {
   QueryFilterPopover,
   ViewActionLane,
 } from "@/components/workable/console/filters";
+import { ErrorPanel } from "@/components/workable/console/feedback-panel";
 import {
   ConsoleNavigationHeader,
   DelayedLoadingOverlay,
@@ -255,6 +254,7 @@ export function WorkableConsole() {
     Record<string, OverviewScope | undefined>
   >({});
   const [navigationHistory, setNavigationHistory] = useState<NavigationEntry[]>([]);
+  const viewScrollPositions = useRef<Partial<Record<ServerView, number>>>({});
   const readyViews = useRef<Set<string>>(new Set());
   const activeLocation = findSystemLocation(consoleState, consoleState.activeSystemId);
   const activeHost = activeLocation?.host;
@@ -514,7 +514,14 @@ export function WorkableConsole() {
     }));
   }, []);
 
+  const rememberCurrentViewScroll = useCallback(() => {
+    if (visibleView !== "worker") {
+      viewScrollPositions.current[visibleView] = getWindowScrollTop();
+    }
+  }, [visibleView]);
+
   const openWorker = (workerId: string, trackHistory = true) => {
+    rememberCurrentViewScroll();
     if (trackHistory) {
       pushCurrentNavigation();
     }
@@ -527,6 +534,7 @@ export function WorkableConsole() {
   };
 
   const openDefinition = (definitionId: string, systemId = activeSystem?.id ?? "") => {
+    rememberCurrentViewScroll();
     pushCurrentNavigation();
     setSelectedWorkerId(null);
     setSelectedDefinitionId(definitionId);
@@ -550,6 +558,7 @@ export function WorkableConsole() {
     systemId = activeSystem?.id ?? "",
     trackHistory = true
   ) => {
+    rememberCurrentViewScroll();
     if (
       trackHistory &&
       !navigationEntriesEqual(currentNavigation(), {
@@ -775,6 +784,52 @@ export function WorkableConsole() {
       setPendingView(null);
     }
   };
+
+  useEffect(() => {
+    if (visibleView === "worker") {
+      return;
+    }
+
+    const rememberScroll = () => {
+      viewScrollPositions.current[visibleView] = getWindowScrollTop();
+    };
+
+    window.addEventListener("scroll", rememberScroll, { passive: true });
+    return () => {
+      window.removeEventListener("scroll", rememberScroll);
+    };
+  }, [visibleView]);
+
+  useEffect(() => {
+    if (visibleView === "worker") {
+      return;
+    }
+
+    const scrollTop = viewScrollPositions.current[visibleView] ?? 0;
+    let canceled = false;
+    let frame = 0;
+    let attempts = 0;
+    const restoreWhenReady = () => {
+      if (canceled) {
+        return;
+      }
+
+      const maxScrollTop = Math.max(0, getDocumentScrollHeight() - window.innerHeight);
+      if (scrollTop <= maxScrollTop || attempts >= 12) {
+        window.scrollTo({ top: Math.min(scrollTop, maxScrollTop) });
+        return;
+      }
+
+      attempts += 1;
+      frame = requestAnimationFrame(restoreWhenReady);
+    };
+    frame = requestAnimationFrame(restoreWhenReady);
+
+    return () => {
+      canceled = true;
+      cancelAnimationFrame(frame);
+    };
+  }, [visibleView]);
 
   const handleOverviewStateLoaded = useCallback((state: string) => {
     setLifecycleError(undefined);
@@ -1121,32 +1176,30 @@ export function WorkableConsole() {
                         categoryFilter={workerCategoryFilter}
                         connection={connection}
                         filterControls={(
-                          <ViewActionLane>
-                            <QueryFilterPopover
-                              allFacetLabel="All states"
-                              catalogScope={createQueryCatalogScope(workerCategoryFilter, workerDefinitionFilter)}
-                              connection={connection}
-                              facetLabel="Worker states"
-                              facetOptions={states}
-                              facetValue={workerStateFilter}
-                              keyTypeFilter={keyTypeFilter}
-                              onClearCatalog={() => {
-                                setWorkerCategoryFilter("");
-                                setWorkerDefinitionFilter("");
-                              }}
-                              onFacetChange={setWorkerStateFilter}
-                              onKeyTypeFilterChange={setKeyTypeFilter}
-                              onSelectCategory={(category) => {
-                                setWorkerCategoryFilter(category);
-                                setWorkerDefinitionFilter("");
-                              }}
-                              onSelectDefinition={(definitionName, category) => {
-                                setWorkerCategoryFilter(category);
-                                setWorkerDefinitionFilter(definitionName);
-                              }}
-                              refreshToken={refreshTokens.workers}
-                            />
-                          </ViewActionLane>
+                          <QueryFilterPopover
+                            allFacetLabel="All states"
+                            catalogScope={createQueryCatalogScope(workerCategoryFilter, workerDefinitionFilter)}
+                            connection={connection}
+                            facetLabel="Worker states"
+                            facetOptions={states}
+                            facetValue={workerStateFilter}
+                            keyTypeFilter={keyTypeFilter}
+                            onClearCatalog={() => {
+                              setWorkerCategoryFilter("");
+                              setWorkerDefinitionFilter("");
+                            }}
+                            onFacetChange={setWorkerStateFilter}
+                            onKeyTypeFilterChange={setKeyTypeFilter}
+                            onSelectCategory={(category) => {
+                              setWorkerCategoryFilter(category);
+                              setWorkerDefinitionFilter("");
+                            }}
+                            onSelectDefinition={(definitionName, category) => {
+                              setWorkerCategoryFilter(category);
+                              setWorkerDefinitionFilter(definitionName);
+                            }}
+                            refreshToken={refreshTokens.workers}
+                          />
                         )}
                         isLoadingTarget={visibleView === "workers" || pendingView === "workers"}
                         isVisible={visibleView === "workers"}
@@ -1166,32 +1219,30 @@ export function WorkableConsole() {
                         connection={connection}
                         definitionFilter={iterationDefinitionFilter}
                         filterControls={(
-                          <ViewActionLane>
-                            <QueryFilterPopover
-                              allFacetLabel="All statuses"
-                              catalogScope={createQueryCatalogScope(iterationCategoryFilter, iterationDefinitionFilter)}
-                              connection={connection}
-                              facetLabel="Iteration statuses"
-                              facetOptions={iterationStatuses}
-                              facetValue={iterationStatusFilter}
-                              keyTypeFilter={iterationKeyTypeFilter}
-                              onClearCatalog={() => {
-                                setIterationCategoryFilter("");
-                                setIterationDefinitionFilter("");
-                              }}
-                              onFacetChange={setIterationStatusFilter}
-                              onKeyTypeFilterChange={setIterationKeyTypeFilter}
-                              onSelectCategory={(category) => {
-                                setIterationCategoryFilter(category);
-                                setIterationDefinitionFilter("");
-                              }}
-                              onSelectDefinition={(definitionName, category) => {
-                                setIterationCategoryFilter(category);
-                                setIterationDefinitionFilter(definitionName);
-                              }}
-                              refreshToken={refreshTokens.iterations}
-                            />
-                          </ViewActionLane>
+                          <QueryFilterPopover
+                            allFacetLabel="All statuses"
+                            catalogScope={createQueryCatalogScope(iterationCategoryFilter, iterationDefinitionFilter)}
+                            connection={connection}
+                            facetLabel="Iteration statuses"
+                            facetOptions={iterationStatuses}
+                            facetValue={iterationStatusFilter}
+                            keyTypeFilter={iterationKeyTypeFilter}
+                            onClearCatalog={() => {
+                              setIterationCategoryFilter("");
+                              setIterationDefinitionFilter("");
+                            }}
+                            onFacetChange={setIterationStatusFilter}
+                            onKeyTypeFilterChange={setIterationKeyTypeFilter}
+                            onSelectCategory={(category) => {
+                              setIterationCategoryFilter(category);
+                              setIterationDefinitionFilter("");
+                            }}
+                            onSelectDefinition={(definitionName, category) => {
+                              setIterationCategoryFilter(category);
+                              setIterationDefinitionFilter(definitionName);
+                            }}
+                            refreshToken={refreshTokens.iterations}
+                          />
                         )}
                         isLoadingTarget={visibleView === "iterations" || pendingView === "iterations"}
                         isVisible={visibleView === "iterations"}
@@ -1724,21 +1775,6 @@ function normalizeOptional(value?: string | null) {
   return trimmed ? trimmed : undefined;
 }
 
-function ErrorPanel({ errors }: { errors: Array<string | undefined> }) {
-  const error = [...new Set(errors.filter(Boolean))].join(" ");
-  if (!error) {
-    return null;
-  }
-
-  return (
-    <Alert variant="destructive">
-      <ShieldAlert className="size-4" />
-      <AlertTitle>Connection issue</AlertTitle>
-      <AlertDescription>{error}</AlertDescription>
-    </Alert>
-  );
-}
-
 function navTitle(view: View) {
   if (view === "worker") {
     return "Worker Console";
@@ -1817,6 +1853,17 @@ function splitCatalogPath(path: unknown) {
 
 function normalizeCategoryFilter(path: unknown) {
   return splitCatalogPath(path).join(":");
+}
+
+function getWindowScrollTop() {
+  return document.scrollingElement?.scrollTop ?? window.scrollY;
+}
+
+function getDocumentScrollHeight() {
+  return Math.max(
+    document.body.scrollHeight,
+    document.documentElement.scrollHeight
+  );
 }
 
 function getWorkerParentView(history: NavigationEntry[]): ServerView {

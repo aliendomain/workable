@@ -18,13 +18,11 @@ import {
   Search,
   Send,
   Server,
-  ShieldAlert,
   Square,
   Trash2,
   Workflow,
 } from "lucide-react";
 import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
-import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -61,6 +59,7 @@ import {
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { QueueDialog } from "@/components/workable/console/detail-screens";
+import { ErrorBanner } from "@/components/workable/console/feedback-panel";
 import {
   workableFetch,
   type WorkDefinition,
@@ -903,11 +902,7 @@ export function ServerDialog({
             </div>
           </div>
           {systemsError && (
-            <Alert variant="destructive">
-              <ShieldAlert className="size-4" />
-              <AlertTitle>Discovery failed</AlertTitle>
-              <AlertDescription>{systemsError}</AlertDescription>
-            </Alert>
+            <ErrorBanner key={systemsError} message={systemsError} title="Discovery failed" />
           )}
           <div className="rounded-lg border">
             <div className="grid grid-cols-[1fr_7rem] border-b px-3 py-2 font-medium text-muted-foreground text-xs">

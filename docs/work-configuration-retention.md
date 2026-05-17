@@ -82,4 +82,4 @@ var outcome = await system.Workers.Reconfigure(
 ## Related Interactions
 
 - [Retention And Failure](work-configuration-interactions.md#retention-and-failure): failed workers are not final and are not automatically purged by final-worker retention.
-- [System Capacity Configuration](work-system-capacity.md): system capacity rejects new queue requests when the approximate total worker record count is at capacity.
+- [System Capacity Configuration](work-system-capacity.md): system capacity rejects new queue requests when the approximate non-final worker record count is at capacity. Retained completed and canceled workers do not block admission, but still consume memory while retained.

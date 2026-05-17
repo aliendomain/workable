@@ -18,12 +18,10 @@ import {
   Rows2,
   Rows3,
   Rows4,
-  ShieldAlert,
   X,
 } from "lucide-react";
 import type { ReactNode } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader } from "@/components/ui/card";
@@ -44,6 +42,11 @@ import {
 } from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { ErrorPanel } from "@/components/workable/console/feedback-panel";
+import {
+  formatRelativeTime,
+  useLiveRelativeTimeNow,
+} from "@/components/workable/console/live-relative-time";
 import { IdentifierSummary, TypedValueSummary } from "@/components/workable/console/query-screens";
 import {
   stateTone,
@@ -905,6 +908,7 @@ function OverviewWorkerList({
   workers: WorkOverviewFailedWorker[];
 }) {
   const detailedWorkers = workers.filter(isDetailedWorkerOverviewItem);
+  const [selectedWorkerId, setSelectedWorkerId] = useState<string | null>(null);
 
   return (
     <OverviewPanelShell
@@ -940,8 +944,10 @@ function OverviewWorkerList({
           showSubjectSummary
           loading={loading}
           onAction={onWorkerAction}
+          onActionMenuOpen={(worker) => setSelectedWorkerId(worker.id.value)}
           onSelect={(worker) => onOpenWorker(worker.id.value)}
           pendingActionWorkerId={pendingActionWorkerId}
+          selectedWorkerId={selectedWorkerId}
           workers={detailedWorkers}
         />
       ) : (
@@ -949,8 +955,10 @@ function OverviewWorkerList({
           emptyText={emptyText}
           loading={loading}
           onAction={onWorkerAction}
+          onActionMenuOpen={(worker) => setSelectedWorkerId(worker.id.value)}
           onSelect={(worker) => onOpenWorker(worker.id.value)}
           pendingActionWorkerId={pendingActionWorkerId}
+          selectedWorkerId={selectedWorkerId}
           workers={workers}
         />
       )}
@@ -1412,6 +1420,8 @@ function OverviewIterationTable({
   onOpenWorker: (workerId: string) => void;
   timestampLabel: string;
 }) {
+  const relativeNow = useLiveRelativeTimeNow();
+
   return (
     <div className="overflow-hidden rounded-lg border">
       <Table>
@@ -1462,7 +1472,7 @@ function OverviewIterationTable({
                 </TableCell>
               )}
               <TableCell className="text-muted-foreground text-xs">
-                {formatRelativeTime(iteration.completedAt)}
+                {formatRelativeTime(iteration.completedAt, relativeNow)}
               </TableCell>
               <TableCell>
                 <DurationValue
@@ -1505,17 +1515,23 @@ function FailedWorkerTable({
   emptyText,
   loading,
   onAction,
+  onActionMenuOpen,
   onSelect,
   pendingActionWorkerId,
+  selectedWorkerId,
   workers,
 }: {
   emptyText: string;
   loading: boolean;
   onAction: (worker: WorkerActionTarget, action: WorkAction) => Promise<void>;
+  onActionMenuOpen: (worker: WorkOverviewFailedWorker) => void;
   onSelect: (worker: WorkOverviewFailedWorker) => void;
   pendingActionWorkerId: string | null;
+  selectedWorkerId: string | null;
   workers: WorkOverviewFailedWorker[];
 }) {
+  const relativeNow = useLiveRelativeTimeNow();
+
   if (loading) {
     return <StackedSkeleton count={5} />;
   }
@@ -1540,44 +1556,51 @@ function FailedWorkerTable({
           </TableRow>
         </TableHeader>
         <TableBody>
-          {workers.map((worker) => (
-            <TableRow
-              className="cursor-pointer"
-              key={worker.id.value}
-              onClick={(event) => {
-                const target = event.target;
-                if (
-                  target instanceof Element &&
-                  target.closest("[data-worker-row-action]")
-                ) {
-                  return;
-                }
+          {workers.map((worker) => {
+            const isSelected = selectedWorkerId === worker.id.value;
 
-                onSelect(worker);
-              }}
-            >
-              <TableCell>
-                <div className="font-mono text-xs">{worker.definitionName}</div>
-              </TableCell>
-              <TableCell className="text-muted-foreground text-xs">
-                {formatRelativeTime(worker.updatedAt)}
-              </TableCell>
-              <TableCell>
-                <DurationValue
-                  className="font-mono text-xs"
-                  duration={formatFailedWorkerDuration(worker)}
-                  muted
-                />
-              </TableCell>
-              <TableCell data-worker-row-action>
-                <WorkerRowActionMenu
-                  disabled={pendingActionWorkerId === worker.id.value}
-                  onAction={(action) => onAction(toFailedWorkerActionTarget(worker), action)}
-                  worker={toFailedWorkerActionTarget(worker)}
-                />
-              </TableCell>
-            </TableRow>
-          ))}
+            return (
+              <TableRow
+                className={`cursor-pointer ${
+                  isSelected ? "bg-sky-500/10 ring-1 ring-inset ring-sky-500/40" : ""
+                }`}
+                key={worker.id.value}
+                onClick={(event) => {
+                  const target = event.target;
+                  if (
+                    target instanceof Element &&
+                    target.closest("[data-worker-row-action]")
+                  ) {
+                    return;
+                  }
+
+                  onSelect(worker);
+                }}
+              >
+                <TableCell>
+                  <div className="font-mono text-xs">{worker.definitionName}</div>
+                </TableCell>
+                <TableCell className="text-muted-foreground text-xs">
+                  {formatRelativeTime(worker.updatedAt, relativeNow)}
+                </TableCell>
+                <TableCell>
+                  <DurationValue
+                    className="font-mono text-xs"
+                    duration={formatFailedWorkerDuration(worker)}
+                    muted
+                  />
+                </TableCell>
+                <TableCell data-worker-row-action>
+                  <WorkerRowActionMenu
+                    disabled={pendingActionWorkerId === worker.id.value}
+                    onAction={(action) => onAction(toFailedWorkerActionTarget(worker), action)}
+                    onOpen={() => onActionMenuOpen(worker)}
+                    worker={toFailedWorkerActionTarget(worker)}
+                  />
+                </TableCell>
+              </TableRow>
+            );
+          })}
         </TableBody>
       </Table>
     </div>
@@ -1589,8 +1612,10 @@ function WorkerTable({
   hideState = false,
   loading,
   onAction,
+  onActionMenuOpen,
   onSelect,
   pendingActionWorkerId,
+  selectedWorkerId,
   showIdentifiers = false,
   showSubjectSummary = false,
   workers,
@@ -1599,12 +1624,16 @@ function WorkerTable({
   hideState?: boolean;
   loading: boolean;
   onAction: (worker: WorkerActionTarget, action: WorkAction) => Promise<void>;
+  onActionMenuOpen: (worker: WorkOverviewFailedWorkerDetailed | WorkerOverviewItem) => void;
   onSelect: (worker: WorkOverviewFailedWorkerDetailed | WorkerOverviewItem) => void;
   pendingActionWorkerId: string | null;
+  selectedWorkerId: string | null;
   showIdentifiers?: boolean;
   showSubjectSummary?: boolean;
   workers: Array<WorkOverviewFailedWorkerDetailed | WorkerOverviewItem>;
 }) {
+  const relativeNow = useLiveRelativeTimeNow();
+
   if (loading) {
     return <StackedSkeleton count={5} />;
   }
@@ -1632,62 +1661,69 @@ function WorkerTable({
           </TableRow>
         </TableHeader>
         <TableBody>
-          {workers.map((worker) => (
-            <TableRow
-              className="cursor-pointer"
-              key={worker.id.value}
-              onClick={(event) => {
-                const target = event.target;
-                if (
-                  target instanceof Element &&
-                  target.closest("[data-worker-row-action]")
-                ) {
-                  return;
-                }
+          {workers.map((worker) => {
+            const isSelected = selectedWorkerId === worker.id.value;
 
-                onSelect(worker);
-              }}
-            >
-              <TableCell>
-                <div className="font-mono text-xs">{worker.definitionName}</div>
-                <div className="font-mono text-muted-foreground text-xs">{worker.id.value}</div>
-              </TableCell>
-              {!hideState && (
+            return (
+              <TableRow
+                className={`cursor-pointer ${
+                  isSelected ? "bg-sky-500/10 ring-1 ring-inset ring-sky-500/40" : ""
+                }`}
+                key={worker.id.value}
+                onClick={(event) => {
+                  const target = event.target;
+                  if (
+                    target instanceof Element &&
+                    target.closest("[data-worker-row-action]")
+                  ) {
+                    return;
+                  }
+
+                  onSelect(worker);
+                }}
+              >
                 <TableCell>
-                  <Badge className={stateTone(worker.state)} variant="outline">
-                    {worker.state}
-                  </Badge>
+                  <div className="font-mono text-xs">{worker.definitionName}</div>
+                  <div className="font-mono text-muted-foreground text-xs">{worker.id.value}</div>
                 </TableCell>
-              )}
-              {showSubjectSummary && (
-                <TableCell className="max-w-72 font-mono text-muted-foreground text-xs">
-                  <TypedValueSummary values={worker.subjectId ? [worker.subjectId] : []} />
+                {!hideState && (
+                  <TableCell>
+                    <Badge className={stateTone(worker.state)} variant="outline">
+                      {worker.state}
+                    </Badge>
+                  </TableCell>
+                )}
+                {showSubjectSummary && (
+                  <TableCell className="max-w-72 font-mono text-muted-foreground text-xs">
+                    <TypedValueSummary values={worker.subjectId ? [worker.subjectId] : []} />
+                  </TableCell>
+                )}
+                {showIdentifiers && (
+                  <TableCell className="max-w-72 font-mono text-muted-foreground text-xs">
+                    <IdentifierSummary identifiers={worker.identifiers} />
+                  </TableCell>
+                )}
+                <TableCell className="text-muted-foreground text-xs">
+                  {formatRelativeTime(worker.updatedAt, relativeNow)}
                 </TableCell>
-              )}
-              {showIdentifiers && (
-                <TableCell className="max-w-72 font-mono text-muted-foreground text-xs">
-                  <IdentifierSummary identifiers={worker.identifiers} />
+                <TableCell>
+                  <DurationValue
+                    className="font-mono text-xs"
+                    duration={formatFailedWorkerDuration(worker)}
+                    muted
+                  />
                 </TableCell>
-              )}
-              <TableCell className="text-muted-foreground text-xs">
-                {formatRelativeTime(worker.updatedAt)}
-              </TableCell>
-              <TableCell>
-                <DurationValue
-                  className="font-mono text-xs"
-                  duration={formatFailedWorkerDuration(worker)}
-                  muted
-                />
-              </TableCell>
-              <TableCell data-worker-row-action>
-                <WorkerRowActionMenu
-                  disabled={pendingActionWorkerId === worker.id.value}
-                  onAction={(action) => onAction(worker, action)}
-                  worker={worker}
-                />
-              </TableCell>
-            </TableRow>
-          ))}
+                <TableCell data-worker-row-action>
+                  <WorkerRowActionMenu
+                    disabled={pendingActionWorkerId === worker.id.value}
+                    onAction={(action) => onAction(worker, action)}
+                    onOpen={() => onActionMenuOpen(worker)}
+                    worker={worker}
+                  />
+                </TableCell>
+              </TableRow>
+            );
+          })}
         </TableBody>
       </Table>
     </div>
@@ -1697,10 +1733,12 @@ function WorkerTable({
 function WorkerRowActionMenu({
   disabled,
   onAction,
+  onOpen,
   worker,
 }: {
   disabled: boolean;
   onAction: (action: WorkAction) => Promise<void> | void;
+  onOpen: () => void;
   worker: WorkerActionTarget;
 }) {
   const actions = getWorkerRowActions(worker);
@@ -1717,7 +1755,10 @@ function WorkerRowActionMenu({
           data-worker-row-action
           disabled={disabled}
           onClick={(event) => event.stopPropagation()}
-          onPointerDown={(event) => event.stopPropagation()}
+          onPointerDown={(event) => {
+            event.stopPropagation();
+            onOpen();
+          }}
           type="button"
         >
           {disabled ? (
@@ -2738,21 +2779,6 @@ function getWorkComponentErrors(result: WorkComponentQueryResult | undefined) {
     .map(([id, component]) => component.error ?? `${id} failed to load.`);
 }
 
-function ErrorPanel({ errors }: { errors: Array<string | undefined> }) {
-  const error = [...new Set(errors.filter(Boolean))].join(" ");
-  if (!error) {
-    return null;
-  }
-
-  return (
-    <Alert variant="destructive">
-      <ShieldAlert className="size-4" />
-      <AlertTitle>Connection issue</AlertTitle>
-      <AlertDescription>{error}</AlertDescription>
-    </Alert>
-  );
-}
-
 function StackedSkeleton({ count }: { count: number }) {
   return (
     <div className="space-y-3">
@@ -2854,35 +2880,6 @@ function formatQueueAge(value?: string | null): DurationDisplay {
   }
 
   return formatDurationSeconds(Math.max(0, (Date.now() - timestamp) / 1000));
-}
-
-function formatRelativeTime(value?: string | null) {
-  if (!value) {
-    return "-";
-  }
-
-  const timestamp = Date.parse(value);
-  if (!Number.isFinite(timestamp)) {
-    return "-";
-  }
-
-  const elapsedSeconds = Math.max(0, (Date.now() - timestamp) / 1000);
-  if (elapsedSeconds < 5) {
-    return "just now";
-  }
-
-  const formatter = new Intl.RelativeTimeFormat(undefined, { numeric: "always" });
-  if (elapsedSeconds < 60) {
-    return formatter.format(-Math.floor(elapsedSeconds), "second");
-  }
-  if (elapsedSeconds < 60 * 60) {
-    return formatter.format(-Math.floor(elapsedSeconds / 60), "minute");
-  }
-  if (elapsedSeconds < 24 * 60 * 60) {
-    return formatter.format(-Math.floor(elapsedSeconds / (60 * 60)), "hour");
-  }
-
-  return formatter.format(-Math.floor(elapsedSeconds / (24 * 60 * 60)), "day");
 }
 
 function formatDurationSeconds(seconds: number): DurationDisplay {

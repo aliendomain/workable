@@ -20,6 +20,13 @@ internal sealed class WorkableSampleConsoleFormatter() : ConsoleFormatter(Format
         }
 
         textWriter.Write(FormatLogLevel(logEntry.LogLevel));
+        if (ShouldIncludeCategory(logEntry.LogLevel) && !string.IsNullOrWhiteSpace(logEntry.Category))
+        {
+            textWriter.Write(" [");
+            textWriter.Write(logEntry.Category);
+            textWriter.Write(']');
+        }
+
         textWriter.Write(": ");
         if (!string.IsNullOrWhiteSpace(message))
         {
@@ -50,6 +57,9 @@ internal sealed class WorkableSampleConsoleFormatter() : ConsoleFormatter(Format
             LogLevel.Critical => "crit",
             _ => "none"
         };
+
+    private static bool ShouldIncludeCategory(LogLevel level)
+        => level >= LogLevel.Warning;
 
     private static string FormatLogLevelColor(LogLevel level)
         => level switch

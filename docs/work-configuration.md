@@ -27,7 +27,7 @@ Some registration-time behavior is attached with the same fluent builder but is 
 - [Transient Retry Configuration](work-configuration-transient-retry.md): transient exception classification and retry behavior.
 - [Logging Configuration](work-configuration-logging.md): worker-scoped logging behavior.
 - [Retention Configuration](work-configuration-retention.md): automatic purge timing and background count-target cleanup for completed and canceled workers.
-- [System Capacity Configuration](work-system-capacity.md): approximate admission guard for total in-memory worker records.
+- [System Capacity Configuration](work-system-capacity.md): approximate admission guard for non-final in-memory worker records.
 - [Concurrency Configuration](work-configuration-concurrency.md): capacity limits by definition, subject, or concurrency key.
 - [Invocation Configuration](work-configuration-invocation.md): channels allowed to start a work definition.
 - [Configuration Interactions](work-configuration-interactions.md): non-obvious behavior when configuration types are combined.
