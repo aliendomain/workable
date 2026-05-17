@@ -13,6 +13,8 @@ internal interface IWorkSystemReadModelWriter
 
     void ForgetWorker(WorkerId workerId);
 
+    void ForgetWorkers(IReadOnlyCollection<WorkerId> workerIds);
+
     void Clear();
 }
 
@@ -27,9 +29,9 @@ internal interface IWorkSystemReadModelStore : IWorkSystemReadModelWriter, IWork
 
 internal sealed class WorkSystemReadModel : IWorkSystemReadModelStore, IAsyncDisposable
 {
-    private const int ProjectorBatchSize = 1024;
+    private static readonly TimeSpan SnapshotPublishInterval = TimeSpan.FromMilliseconds(250);
 
-    private readonly Channel<ReadModelUpdate> updates = Channel.CreateUnbounded<ReadModelUpdate>(
+    private readonly Channel<ReadModelInboxSignal> updates = Channel.CreateUnbounded<ReadModelInboxSignal>(
         new UnboundedChannelOptions
         {
             SingleReader = true,
@@ -38,6 +40,8 @@ internal sealed class WorkSystemReadModel : IWorkSystemReadModelStore, IAsyncDis
     private readonly WorkSystemReadModelState state = new();
     private readonly Task projector;
     private readonly object projectionSync = new();
+    private readonly object updateSync = new();
+    private readonly Dictionary<ReadModelUpdateKey, PendingReadModelUpdate> pendingUpdates = [];
     private WorkSystemReadModelSnapshot snapshot = WorkSystemReadModelSnapshot.Empty;
     private TaskCompletionSource projectionAdvanced = CreateProjectionSignal();
     private Exception? projectorException;
@@ -48,6 +52,8 @@ internal sealed class WorkSystemReadModel : IWorkSystemReadModelStore, IAsyncDis
     private long lastBatchSize;
     private long lastProjectionDurationTicks;
     private long lastProjectedAtUnixTimeMilliseconds;
+    private int publishRequested;
+    private bool hasPendingSignal;
 
     public WorkSystemReadModel(
         WorkSystemCatalog catalog,
@@ -62,6 +68,11 @@ internal sealed class WorkSystemReadModel : IWorkSystemReadModelStore, IAsyncDis
     public WorkSystemReadModelQueryService Query { get; }
 
     public WorkSystemReadModelSnapshot Current => Volatile.Read(ref this.snapshot);
+
+    public void UseDetailReaders(
+        Func<WorkerId, CancellationToken, Task<WorkerSnapshot?>> getWorker,
+        Func<WorkerIterationReference, CancellationToken, Task<WorkerIterationSnapshot?>> getIteration)
+        => this.Query.UseDetailReaders(getWorker, getIteration);
 
     public WorkSystemReadModelDiagnostics Diagnostics
     {
@@ -85,23 +96,35 @@ internal sealed class WorkSystemReadModel : IWorkSystemReadModelStore, IAsyncDis
     public void RecordWorker(WorkerReadModelWorker worker)
     {
         ArgumentNullException.ThrowIfNull(worker);
-        this.Enqueue(new RecordWorkerUpdate(this.NextSequence(), worker));
+        this.Enqueue(sequence => new RecordWorkerUpdate(sequence, worker));
     }
 
     public void RecordIteration(WorkerReadModelIterationUpdate iteration)
     {
         ArgumentNullException.ThrowIfNull(iteration);
-        this.Enqueue(new RecordIterationUpdate(this.NextSequence(), iteration));
+        this.Enqueue(sequence => new RecordIterationUpdate(sequence, iteration));
     }
 
     public void ForgetIteration(WorkerIterationReference iteration)
-        => this.Enqueue(new ForgetIterationUpdate(this.NextSequence(), iteration));
+        => this.Enqueue(sequence => new ForgetIterationUpdate(sequence, iteration));
 
     public void ForgetWorker(WorkerId workerId)
-        => this.Enqueue(new ForgetWorkerUpdate(this.NextSequence(), workerId));
+        => this.Enqueue(sequence => new ForgetWorkerUpdate(sequence, workerId));
+
+    public void ForgetWorkers(IReadOnlyCollection<WorkerId> workerIds)
+    {
+        ArgumentNullException.ThrowIfNull(workerIds);
+        if (workerIds.Count == 0)
+        {
+            return;
+        }
+
+        var ids = workerIds.Distinct().ToArray();
+        this.Enqueue(sequence => new ForgetWorkersUpdate(sequence, ids));
+    }
 
     public void Clear()
-        => this.Enqueue(new ClearReadModelUpdate(this.NextSequence()));
+        => this.Enqueue(sequence => new ClearReadModelUpdate(sequence));
 
     public void ThrowIfProjectorFailed()
         => ThrowIfProjectorFailed(Volatile.Read(ref this.projectorException));
@@ -111,6 +134,7 @@ internal sealed class WorkSystemReadModel : IWorkSystemReadModelStore, IAsyncDis
         var targetSequence = Volatile.Read(ref this.enqueuedSequence);
         while (Volatile.Read(ref this.appliedSequence) < targetSequence)
         {
+            Volatile.Write(ref this.publishRequested, 1);
             ThrowIfProjectorFailed(Volatile.Read(ref this.projectorException));
             Task wait;
             lock (this.projectionSync)
@@ -135,30 +159,55 @@ internal sealed class WorkSystemReadModel : IWorkSystemReadModelStore, IAsyncDis
         await this.projector.ConfigureAwait(false);
     }
 
-    private long NextSequence()
-        => Interlocked.Increment(ref this.enqueuedSequence);
+    private void Enqueue(Func<long, ReadModelUpdate> createUpdate)
+    {
+        ArgumentNullException.ThrowIfNull(createUpdate);
 
-    private void Enqueue(ReadModelUpdate update)
-        => this.updates.Writer.TryWrite(update);
+        var signal = false;
+        lock (this.updateSync)
+        {
+            var update = createUpdate(Interlocked.Increment(ref this.enqueuedSequence));
+            this.StorePendingUpdateLocked(update);
+            if (!this.hasPendingSignal)
+            {
+                this.hasPendingSignal = true;
+                signal = true;
+            }
+        }
+
+        if (signal)
+        {
+            this.updates.Writer.TryWrite(ReadModelInboxSignal.Value);
+        }
+    }
 
     private async Task Project()
     {
         try
         {
-            await foreach (var first in this.updates.Reader.ReadAllAsync())
+            var lastPublishedAt = DateTimeOffset.MinValue;
+            var updatesSinceLastPublish = 0L;
+            await foreach (var _ in this.updates.Reader.ReadAllAsync())
             {
-                var stopwatch = Stopwatch.StartNew();
-                var batchSize = 1;
-                var lastSequence = this.Apply(first);
-                var remaining = ProjectorBatchSize - 1;
-                while (remaining > 0 && this.updates.Reader.TryRead(out var next))
+                var batch = this.TakePendingUpdates();
+                if (batch.Updates.Count == 0)
                 {
-                    lastSequence = this.Apply(next);
-                    batchSize++;
-                    remaining--;
+                    continue;
                 }
 
-                this.Publish(lastSequence, batchSize, stopwatch);
+                foreach (var update in batch.Updates)
+                {
+                    this.Apply(update);
+                }
+
+                updatesSinceLastPublish += batch.UpdateCount;
+                Interlocked.Add(ref this.appliedUpdateCount, batch.UpdateCount);
+                var queueDrained = this.IsPendingQueueDrained();
+                if (this.ShouldPublishSnapshot(queueDrained, lastPublishedAt))
+                {
+                    lastPublishedAt = this.Publish(batch.TargetSequence, updatesSinceLastPublish);
+                    updatesSinceLastPublish = 0;
+                }
             }
         }
         catch (Exception exception)
@@ -168,41 +217,138 @@ internal sealed class WorkSystemReadModel : IWorkSystemReadModelStore, IAsyncDis
         }
     }
 
-    private long Apply(ReadModelUpdate update)
+    private void StorePendingUpdateLocked(ReadModelUpdate update)
+    {
+        var representedUpdateCount = 1L;
+        if (update is ClearReadModelUpdate)
+        {
+            representedUpdateCount += this.pendingUpdates.Values.Sum(pending => pending.UpdateCount);
+            this.pendingUpdates.Clear();
+        }
+        else if (update is ForgetWorkerUpdate worker)
+        {
+            representedUpdateCount += this.RemovePendingIterationsLocked(worker.WorkerId);
+        }
+        else if (update is ForgetWorkersUpdate workers)
+        {
+            representedUpdateCount += this.RemovePendingWorkersLocked(workers.WorkerIds);
+        }
+
+        var key = ReadModelUpdateKey.From(update);
+        if (this.pendingUpdates.Remove(key, out var existing))
+        {
+            representedUpdateCount += existing.UpdateCount;
+        }
+
+        this.pendingUpdates[key] = new PendingReadModelUpdate(update, representedUpdateCount);
+    }
+
+    private long RemovePendingIterationsLocked(WorkerId workerId)
+    {
+        var removed = 0L;
+        foreach (var key in this.pendingUpdates.Keys
+            .Where(key => key.Kind == ReadModelUpdateKind.Iteration && key.Iteration.WorkerId == workerId)
+            .ToArray())
+        {
+            removed += this.pendingUpdates[key].UpdateCount;
+            this.pendingUpdates.Remove(key);
+        }
+
+        return removed;
+    }
+
+    private long RemovePendingWorkersLocked(IReadOnlyCollection<WorkerId> workerIds)
+    {
+        var removed = 0L;
+        var ids = workerIds.Count > 4 ? workerIds.ToHashSet() : null;
+        foreach (var key in this.pendingUpdates.Keys
+            .Where(key =>
+                ContainsWorker(workerIds, ids, key.WorkerId) ||
+                (key.Kind == ReadModelUpdateKind.Iteration && ContainsWorker(workerIds, ids, key.Iteration.WorkerId)))
+            .ToArray())
+        {
+            removed += this.pendingUpdates[key].UpdateCount;
+            this.pendingUpdates.Remove(key);
+        }
+
+        return removed;
+    }
+
+    private PendingReadModelBatch TakePendingUpdates()
+    {
+        lock (this.updateSync)
+        {
+            if (this.pendingUpdates.Count == 0)
+            {
+                this.hasPendingSignal = false;
+                return PendingReadModelBatch.Empty;
+            }
+
+            var updates = this.pendingUpdates.Values
+                .OrderBy(pending => pending.Update.Sequence)
+                .Select(pending => pending.Update)
+                .ToArray();
+            var targetSequence = updates[^1].Sequence;
+            var updateCount = this.pendingUpdates.Values.Sum(pending => pending.UpdateCount);
+            this.pendingUpdates.Clear();
+            this.hasPendingSignal = false;
+            return new PendingReadModelBatch(updates, targetSequence, updateCount);
+        }
+    }
+
+    private bool IsPendingQueueDrained()
+    {
+        lock (this.updateSync)
+        {
+            return this.pendingUpdates.Count == 0 && !this.hasPendingSignal;
+        }
+    }
+
+    private void Apply(ReadModelUpdate update)
     {
         switch (update)
         {
             case RecordWorkerUpdate worker:
-                this.state.RecordWorker(worker.Worker);
+                this.state.RecordWorker(worker.Worker, update.Sequence);
                 break;
             case RecordIterationUpdate iteration:
-                this.state.RecordIteration(iteration.Iteration);
+                this.state.RecordIteration(iteration.Iteration, update.Sequence);
                 break;
             case ForgetIterationUpdate iteration:
-                this.state.ForgetIteration(iteration.Iteration);
+                this.state.ForgetIteration(iteration.Iteration, update.Sequence);
                 break;
             case ForgetWorkerUpdate worker:
-                this.state.ForgetWorker(worker.WorkerId);
+                this.state.ForgetWorker(worker.WorkerId, update.Sequence);
                 break;
-            case ClearReadModelUpdate:
-                this.state.Clear();
+            case ForgetWorkersUpdate workers:
+                this.state.ForgetWorkers(workers.WorkerIds, update.Sequence);
+                break;
+            case ClearReadModelUpdate clear:
+                this.state.Clear(clear.Sequence);
                 break;
         }
-
-        return update.Sequence;
     }
 
-    private void Publish(long sequence, int batchSize, Stopwatch stopwatch)
+    private bool ShouldPublishSnapshot(bool queueDrained, DateTimeOffset lastPublishedAt)
+        => queueDrained ||
+            Volatile.Read(ref this.publishRequested) == 1 ||
+            lastPublishedAt == DateTimeOffset.MinValue ||
+            DateTimeOffset.UtcNow - lastPublishedAt >= SnapshotPublishInterval;
+
+    private DateTimeOffset Publish(long sequence, long batchSize)
     {
+        Interlocked.Exchange(ref this.publishRequested, 0);
+        var stopwatch = Stopwatch.StartNew();
         Volatile.Write(ref this.snapshot, this.state.ToSnapshot());
         stopwatch.Stop();
+        var publishedAt = DateTimeOffset.UtcNow;
         Volatile.Write(ref this.appliedSequence, sequence);
-        Interlocked.Add(ref this.appliedUpdateCount, batchSize);
         Interlocked.Increment(ref this.publishedSnapshotCount);
         Volatile.Write(ref this.lastBatchSize, batchSize);
         Volatile.Write(ref this.lastProjectionDurationTicks, stopwatch.Elapsed.Ticks);
-        Volatile.Write(ref this.lastProjectedAtUnixTimeMilliseconds, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+        Volatile.Write(ref this.lastProjectedAtUnixTimeMilliseconds, publishedAt.ToUnixTimeMilliseconds());
         this.SignalProjectionAdvanced();
+        return publishedAt;
     }
 
     private void SignalProjectionAdvanced()
@@ -228,6 +374,68 @@ internal sealed class WorkSystemReadModel : IWorkSystemReadModelStore, IAsyncDis
         }
     }
 
+    private static bool ContainsWorker(
+        IReadOnlyCollection<WorkerId> workerIds,
+        HashSet<WorkerId>? workerIdSet,
+        WorkerId workerId)
+        => workerIdSet?.Contains(workerId) ?? workerIds.Contains(workerId);
+
+    private readonly record struct ReadModelInboxSignal
+    {
+        public static ReadModelInboxSignal Value { get; } = new();
+    }
+
+    private enum ReadModelUpdateKind
+    {
+        Worker,
+        Iteration,
+        WorkerBatch,
+        Clear,
+    }
+
+    private readonly record struct ReadModelUpdateKey(
+        ReadModelUpdateKind Kind,
+        WorkerId WorkerId,
+        WorkerIterationReference Iteration,
+        long BatchSequence)
+    {
+        public static ReadModelUpdateKey From(ReadModelUpdate update)
+            => update switch
+            {
+                RecordWorkerUpdate worker => Worker(worker.Worker.Id),
+                RecordIterationUpdate iteration => IterationKey(iteration.Iteration.Iteration.Reference),
+                ForgetIterationUpdate iteration => IterationKey(iteration.Iteration),
+                ForgetWorkerUpdate worker => Worker(worker.WorkerId),
+                ForgetWorkersUpdate workers => WorkerBatch(workers.Sequence),
+                ClearReadModelUpdate => Clear(),
+                _ => throw new InvalidOperationException($"Unknown read model update '{update.GetType().FullName}'."),
+            };
+
+        private static ReadModelUpdateKey Worker(WorkerId workerId)
+            => new(ReadModelUpdateKind.Worker, workerId, default, 0);
+
+        private static ReadModelUpdateKey IterationKey(WorkerIterationReference iteration)
+            => new(ReadModelUpdateKind.Iteration, iteration.WorkerId, iteration, 0);
+
+        private static ReadModelUpdateKey WorkerBatch(long sequence)
+            => new(ReadModelUpdateKind.WorkerBatch, default, default, sequence);
+
+        private static ReadModelUpdateKey Clear()
+            => new(ReadModelUpdateKind.Clear, default, default, 0);
+    }
+
+    private sealed record PendingReadModelUpdate(
+        ReadModelUpdate Update,
+        long UpdateCount);
+
+    private sealed record PendingReadModelBatch(
+        IReadOnlyList<ReadModelUpdate> Updates,
+        long TargetSequence,
+        long UpdateCount)
+    {
+        public static PendingReadModelBatch Empty { get; } = new([], 0, 0);
+    }
+
     private abstract record ReadModelUpdate(long Sequence);
 
     private sealed record RecordWorkerUpdate(long Sequence, WorkerReadModelWorker Worker) : ReadModelUpdate(Sequence);
@@ -238,88 +446,439 @@ internal sealed class WorkSystemReadModel : IWorkSystemReadModelStore, IAsyncDis
 
     private sealed record ForgetWorkerUpdate(long Sequence, WorkerId WorkerId) : ReadModelUpdate(Sequence);
 
+    private sealed record ForgetWorkersUpdate(long Sequence, IReadOnlyList<WorkerId> WorkerIds) : ReadModelUpdate(Sequence);
+
     private sealed record ClearReadModelUpdate(long Sequence) : ReadModelUpdate(Sequence);
 }
 
 internal sealed class WorkSystemReadModelState
 {
     private readonly Dictionary<WorkerId, WorkerReadModelWorker> workers = [];
+    private readonly Dictionary<WorkerId, long> workerSequences = [];
     private readonly Dictionary<WorkerIterationReference, WorkerReadModelIteration> iterations = [];
+    private readonly Dictionary<WorkerIterationReference, long> iterationSequences = [];
+    private readonly Dictionary<WorkDefinitionId, HashSet<WorkerReadModelWorker>> workersByDefinition = [];
+    private readonly Dictionary<WorkerState, HashSet<WorkerReadModelWorker>> workersByState = [];
+    private readonly Dictionary<(WorkDefinitionId DefinitionId, WorkerState State), HashSet<WorkerReadModelWorker>> workersByDefinitionAndState = [];
+    private readonly Dictionary<WorkSubjectId, HashSet<WorkerReadModelWorker>> workersBySubject = [];
+    private readonly Dictionary<(WorkDefinitionId DefinitionId, WorkSubjectId SubjectId), HashSet<WorkerReadModelWorker>> workersByDefinitionAndSubject = [];
+    private readonly Dictionary<WorkConcurrencyKey, HashSet<WorkerReadModelWorker>> workersByConcurrencyKey = [];
+    private readonly Dictionary<(WorkDefinitionId DefinitionId, WorkConcurrencyKey ConcurrencyKey), HashSet<WorkerReadModelWorker>> workersByDefinitionAndConcurrencyKey = [];
+    private readonly Dictionary<WorkIdentifier, HashSet<WorkerReadModelWorker>> workersByIdentifier = [];
+    private readonly Dictionary<bool, HashSet<WorkerReadModelWorker>> workersByRecurrenceEnabled = [];
+    private readonly Dictionary<bool, HashSet<WorkerReadModelWorker>> workersByConcurrencyEnabled = [];
+    private readonly Dictionary<bool, HashSet<WorkerReadModelWorker>> workersByProfilingEnabled = [];
+    private readonly Dictionary<WorkerId, HashSet<WorkerReadModelIteration>> iterationsByWorker = [];
+    private readonly Dictionary<WorkDefinitionId, HashSet<WorkerReadModelIteration>> iterationsByDefinition = [];
+    private readonly Dictionary<WorkCompletionStatus, HashSet<WorkerReadModelIteration>> iterationsByStatus = [];
+    private readonly Dictionary<(WorkDefinitionId DefinitionId, WorkCompletionStatus Status), HashSet<WorkerReadModelIteration>> iterationsByDefinitionAndStatus = [];
+    private readonly Dictionary<WorkSubjectId, HashSet<WorkerReadModelIteration>> iterationsBySubject = [];
+    private readonly Dictionary<WorkConcurrencyKey, HashSet<WorkerReadModelIteration>> iterationsByConcurrencyKey = [];
+    private readonly Dictionary<WorkIdentifier, HashSet<WorkerReadModelIteration>> iterationsByIdentifier = [];
+    private readonly HashSet<WorkerReadModelKey> workerKeys = [];
+    private readonly HashSet<WorkerIterationReadModelKey> iterationKeys = [];
+    private long clearedSequence;
 
-    public void RecordWorker(WorkerReadModelWorker worker)
-        => this.workers[worker.Id] = worker;
-
-    public void RecordIteration(WorkerReadModelIterationUpdate iteration)
+    public void RecordWorker(WorkerReadModelWorker worker, long sequence)
     {
-        this.workers[iteration.Worker.Id] = iteration.Worker;
-        this.iterations[iteration.Iteration.Reference] = iteration.Iteration;
+        if (sequence < this.clearedSequence ||
+            (this.workerSequences.TryGetValue(worker.Id, out var existingSequence) && existingSequence > sequence))
+        {
+            return;
+        }
+
+        if (this.workers.TryGetValue(worker.Id, out var existing))
+        {
+            this.RemoveWorkerIndexes(existing);
+        }
+
+        this.workers[worker.Id] = worker;
+        this.workerSequences[worker.Id] = sequence;
+        this.AddWorkerIndexes(worker);
     }
 
-    public void ForgetIteration(WorkerIterationReference iteration)
-        => this.iterations.Remove(iteration);
-
-    public void ForgetWorker(WorkerId workerId)
+    public void RecordIteration(WorkerReadModelIterationUpdate iteration, long sequence)
     {
-        this.workers.Remove(workerId);
-        foreach (var reference in this.iterations.Values
-            .Where(iteration => iteration.WorkerId == workerId)
-            .Select(iteration => iteration.Reference)
-            .ToArray())
+        if (sequence < this.clearedSequence)
         {
-            this.iterations.Remove(reference);
+            return;
+        }
+
+        this.RecordWorker(iteration.Worker, sequence);
+        if (this.iterationSequences.TryGetValue(iteration.Iteration.Reference, out var existingSequence) &&
+            existingSequence > sequence)
+        {
+            return;
+        }
+
+        if (this.iterations.TryGetValue(iteration.Iteration.Reference, out var existing))
+        {
+            this.RemoveIterationIndexes(existing);
+        }
+
+        this.iterations[iteration.Iteration.Reference] = iteration.Iteration;
+        this.iterationSequences[iteration.Iteration.Reference] = sequence;
+        this.AddIterationIndexes(iteration.Iteration);
+    }
+
+    public void ForgetIteration(WorkerIterationReference iteration, long sequence)
+    {
+        if (sequence < this.clearedSequence ||
+            (this.iterationSequences.TryGetValue(iteration, out var existingSequence) && existingSequence > sequence))
+        {
+            return;
+        }
+
+        if (this.iterations.Remove(iteration, out var existing))
+        {
+            this.RemoveIterationIndexes(existing);
+        }
+
+        this.iterationSequences.Remove(iteration);
+    }
+
+    public void ForgetWorker(WorkerId workerId, long sequence)
+    {
+        if (sequence < this.clearedSequence ||
+            (this.workerSequences.TryGetValue(workerId, out var existingSequence) && existingSequence > sequence))
+        {
+            return;
+        }
+
+        if (this.workers.Remove(workerId, out var existing))
+        {
+            this.RemoveWorkerIndexes(existing);
+        }
+
+        this.workerSequences.Remove(workerId);
+        var workerIterations = this.iterationsByWorker.TryGetValue(workerId, out var indexed)
+            ? indexed.ToArray()
+            : [];
+        foreach (var iteration in workerIterations)
+        {
+            var reference = iteration.Reference;
+            if (this.iterationSequences.TryGetValue(reference, out var iterationSequence) && iterationSequence > sequence)
+            {
+                continue;
+            }
+
+            if (this.iterations.Remove(reference, out var existingIteration))
+            {
+                this.RemoveIterationIndexes(existingIteration);
+            }
+
+            this.iterationSequences.Remove(reference);
         }
     }
 
-    public void Clear()
+    public void ForgetWorkers(IReadOnlyCollection<WorkerId> workerIds, long sequence)
     {
+        foreach (var workerId in workerIds)
+        {
+            this.ForgetWorker(workerId, sequence);
+        }
+    }
+
+    public void Clear(long sequence)
+    {
+        if (sequence < this.clearedSequence)
+        {
+            return;
+        }
+
+        this.clearedSequence = sequence;
         this.workers.Clear();
+        this.workerSequences.Clear();
         this.iterations.Clear();
+        this.iterationSequences.Clear();
+        this.workersByDefinition.Clear();
+        this.workersByState.Clear();
+        this.workersByDefinitionAndState.Clear();
+        this.workersBySubject.Clear();
+        this.workersByDefinitionAndSubject.Clear();
+        this.workersByConcurrencyKey.Clear();
+        this.workersByDefinitionAndConcurrencyKey.Clear();
+        this.workersByIdentifier.Clear();
+        this.workersByRecurrenceEnabled.Clear();
+        this.workersByConcurrencyEnabled.Clear();
+        this.workersByProfilingEnabled.Clear();
+        this.iterationsByWorker.Clear();
+        this.iterationsByDefinition.Clear();
+        this.iterationsByStatus.Clear();
+        this.iterationsByDefinitionAndStatus.Clear();
+        this.iterationsBySubject.Clear();
+        this.iterationsByConcurrencyKey.Clear();
+        this.iterationsByIdentifier.Clear();
+        this.workerKeys.Clear();
+        this.iterationKeys.Clear();
     }
 
     public WorkSystemReadModelSnapshot ToSnapshot()
         => new(
             this.workers.ToDictionary(entry => entry.Key, entry => entry.Value),
-            this.iterations.ToDictionary(entry => entry.Key, entry => entry.Value));
+            this.iterations.ToDictionary(entry => entry.Key, entry => entry.Value),
+            this.workers.Values.ToArray(),
+            this.iterations.Values.ToArray(),
+            FreezeIndex(this.workersByDefinition),
+            FreezeIndex(this.workersByState),
+            FreezeIndex(this.workersByDefinitionAndState),
+            FreezeIndex(this.workersBySubject),
+            FreezeIndex(this.workersByDefinitionAndSubject),
+            FreezeIndex(this.workersByConcurrencyKey),
+            FreezeIndex(this.workersByDefinitionAndConcurrencyKey),
+            FreezeIndex(this.workersByIdentifier),
+            FreezeIndex(this.workersByRecurrenceEnabled),
+            FreezeIndex(this.workersByConcurrencyEnabled),
+            FreezeIndex(this.workersByProfilingEnabled),
+            FreezeIndex(this.iterationsByWorker),
+            FreezeIndex(this.iterationsByDefinition),
+            FreezeIndex(this.iterationsByStatus),
+            FreezeIndex(this.iterationsByDefinitionAndStatus),
+            FreezeIndex(this.iterationsBySubject),
+            FreezeIndex(this.iterationsByConcurrencyKey),
+            FreezeIndex(this.iterationsByIdentifier),
+            this.workerKeys.ToArray(),
+            this.iterationKeys.ToArray());
+
+    private void AddWorkerIndexes(WorkerReadModelWorker worker)
+    {
+        AddIndex(this.workersByDefinition, worker.DefinitionId, worker);
+        AddIndex(this.workersByState, worker.State, worker);
+        AddIndex(this.workersByDefinitionAndState, (worker.DefinitionId, worker.State), worker);
+        AddIndex(this.workersByRecurrenceEnabled, worker.RecurrenceEnabled, worker);
+        AddIndex(this.workersByConcurrencyEnabled, worker.ConcurrencyEnabled, worker);
+        AddIndex(this.workersByProfilingEnabled, worker.ProfilingEnabled, worker);
+
+        if (worker.SubjectId is { } subjectId)
+        {
+            AddIndex(this.workersBySubject, subjectId, worker);
+            AddIndex(this.workersByDefinitionAndSubject, (worker.DefinitionId, subjectId), worker);
+        }
+
+        if (worker.ConcurrencyKey is { } concurrencyKey)
+        {
+            AddIndex(this.workersByConcurrencyKey, concurrencyKey, worker);
+            AddIndex(this.workersByDefinitionAndConcurrencyKey, (worker.DefinitionId, concurrencyKey), worker);
+        }
+
+        foreach (var identifier in worker.Identifiers)
+        {
+            AddIndex(this.workersByIdentifier, identifier, worker);
+        }
+
+        foreach (var key in WorkerReadModelKey.From(worker))
+        {
+            this.workerKeys.Add(key);
+        }
+    }
+
+    private void RemoveWorkerIndexes(WorkerReadModelWorker worker)
+    {
+        RemoveIndex(this.workersByDefinition, worker.DefinitionId, worker);
+        RemoveIndex(this.workersByState, worker.State, worker);
+        RemoveIndex(this.workersByDefinitionAndState, (worker.DefinitionId, worker.State), worker);
+        RemoveIndex(this.workersByRecurrenceEnabled, worker.RecurrenceEnabled, worker);
+        RemoveIndex(this.workersByConcurrencyEnabled, worker.ConcurrencyEnabled, worker);
+        RemoveIndex(this.workersByProfilingEnabled, worker.ProfilingEnabled, worker);
+
+        if (worker.SubjectId is { } subjectId)
+        {
+            RemoveIndex(this.workersBySubject, subjectId, worker);
+            RemoveIndex(this.workersByDefinitionAndSubject, (worker.DefinitionId, subjectId), worker);
+        }
+
+        if (worker.ConcurrencyKey is { } concurrencyKey)
+        {
+            RemoveIndex(this.workersByConcurrencyKey, concurrencyKey, worker);
+            RemoveIndex(this.workersByDefinitionAndConcurrencyKey, (worker.DefinitionId, concurrencyKey), worker);
+        }
+
+        foreach (var identifier in worker.Identifiers)
+        {
+            RemoveIndex(this.workersByIdentifier, identifier, worker);
+        }
+
+        foreach (var key in WorkerReadModelKey.From(worker))
+        {
+            this.workerKeys.Remove(key);
+        }
+    }
+
+    private void AddIterationIndexes(WorkerReadModelIteration iteration)
+    {
+        AddIndex(this.iterationsByWorker, iteration.WorkerId, iteration);
+        AddIndex(this.iterationsByDefinition, iteration.DefinitionId, iteration);
+        AddIndex(this.iterationsByStatus, iteration.Status, iteration);
+        AddIndex(this.iterationsByDefinitionAndStatus, (iteration.DefinitionId, iteration.Status), iteration);
+
+        if (iteration.SubjectId is { } subjectId)
+        {
+            AddIndex(this.iterationsBySubject, subjectId, iteration);
+        }
+
+        if (iteration.ConcurrencyKey is { } concurrencyKey)
+        {
+            AddIndex(this.iterationsByConcurrencyKey, concurrencyKey, iteration);
+        }
+
+        foreach (var identifier in iteration.Identifiers)
+        {
+            AddIndex(this.iterationsByIdentifier, identifier, iteration);
+        }
+
+        foreach (var key in WorkerIterationReadModelKey.From(iteration))
+        {
+            this.iterationKeys.Add(key);
+        }
+    }
+
+    private void RemoveIterationIndexes(WorkerReadModelIteration iteration)
+    {
+        RemoveIndex(this.iterationsByWorker, iteration.WorkerId, iteration);
+        RemoveIndex(this.iterationsByDefinition, iteration.DefinitionId, iteration);
+        RemoveIndex(this.iterationsByStatus, iteration.Status, iteration);
+        RemoveIndex(this.iterationsByDefinitionAndStatus, (iteration.DefinitionId, iteration.Status), iteration);
+
+        if (iteration.SubjectId is { } subjectId)
+        {
+            RemoveIndex(this.iterationsBySubject, subjectId, iteration);
+        }
+
+        if (iteration.ConcurrencyKey is { } concurrencyKey)
+        {
+            RemoveIndex(this.iterationsByConcurrencyKey, concurrencyKey, iteration);
+        }
+
+        foreach (var identifier in iteration.Identifiers)
+        {
+            RemoveIndex(this.iterationsByIdentifier, identifier, iteration);
+        }
+
+        foreach (var key in WorkerIterationReadModelKey.From(iteration))
+        {
+            this.iterationKeys.Remove(key);
+        }
+    }
+
+    private static void AddIndex<TKey, TValue>(
+        Dictionary<TKey, HashSet<TValue>> index,
+        TKey key,
+        TValue value)
+        where TKey : notnull
+    {
+        if (!index.TryGetValue(key, out var values))
+        {
+            values = [];
+            index[key] = values;
+        }
+
+        values.Add(value);
+    }
+
+    private static void RemoveIndex<TKey, TValue>(
+        Dictionary<TKey, HashSet<TValue>> index,
+        TKey key,
+        TValue value)
+        where TKey : notnull
+    {
+        if (!index.TryGetValue(key, out var values))
+        {
+            return;
+        }
+
+        values.Remove(value);
+        if (values.Count == 0)
+        {
+            index.Remove(key);
+        }
+    }
+
+    private static IReadOnlyDictionary<TKey, IReadOnlyList<TValue>> FreezeIndex<TKey, TValue>(
+        Dictionary<TKey, HashSet<TValue>> index)
+        where TKey : notnull
+        => index.ToDictionary(
+            entry => entry.Key,
+            entry => (IReadOnlyList<TValue>)entry.Value.ToArray());
 }
 
 internal sealed class WorkSystemReadModelSnapshot
 {
     public static WorkSystemReadModelSnapshot Empty { get; } = new(
         new Dictionary<WorkerId, WorkerReadModelWorker>(),
-        new Dictionary<WorkerIterationReference, WorkerReadModelIteration>());
+        new Dictionary<WorkerIterationReference, WorkerReadModelIteration>(),
+        Array.Empty<WorkerReadModelWorker>(),
+        Array.Empty<WorkerReadModelIteration>(),
+        EmptyIndex<WorkDefinitionId, WorkerReadModelWorker>(),
+        EmptyIndex<WorkerState, WorkerReadModelWorker>(),
+        EmptyIndex<(WorkDefinitionId DefinitionId, WorkerState State), WorkerReadModelWorker>(),
+        EmptyIndex<WorkSubjectId, WorkerReadModelWorker>(),
+        EmptyIndex<(WorkDefinitionId DefinitionId, WorkSubjectId SubjectId), WorkerReadModelWorker>(),
+        EmptyIndex<WorkConcurrencyKey, WorkerReadModelWorker>(),
+        EmptyIndex<(WorkDefinitionId DefinitionId, WorkConcurrencyKey ConcurrencyKey), WorkerReadModelWorker>(),
+        EmptyIndex<WorkIdentifier, WorkerReadModelWorker>(),
+        EmptyIndex<bool, WorkerReadModelWorker>(),
+        EmptyIndex<bool, WorkerReadModelWorker>(),
+        EmptyIndex<bool, WorkerReadModelWorker>(),
+        EmptyIndex<WorkerId, WorkerReadModelIteration>(),
+        EmptyIndex<WorkDefinitionId, WorkerReadModelIteration>(),
+        EmptyIndex<WorkCompletionStatus, WorkerReadModelIteration>(),
+        EmptyIndex<(WorkDefinitionId DefinitionId, WorkCompletionStatus Status), WorkerReadModelIteration>(),
+        EmptyIndex<WorkSubjectId, WorkerReadModelIteration>(),
+        EmptyIndex<WorkConcurrencyKey, WorkerReadModelIteration>(),
+        EmptyIndex<WorkIdentifier, WorkerReadModelIteration>(),
+        Array.Empty<WorkerReadModelKey>(),
+        Array.Empty<WorkerIterationReadModelKey>());
 
     public WorkSystemReadModelSnapshot(
         IReadOnlyDictionary<WorkerId, WorkerReadModelWorker> workersById,
-        IReadOnlyDictionary<WorkerIterationReference, WorkerReadModelIteration> iterationsByReference)
+        IReadOnlyDictionary<WorkerIterationReference, WorkerReadModelIteration> iterationsByReference,
+        IReadOnlyList<WorkerReadModelWorker> workers,
+        IReadOnlyList<WorkerReadModelIteration> iterations,
+        IReadOnlyDictionary<WorkDefinitionId, IReadOnlyList<WorkerReadModelWorker>> workersByDefinition,
+        IReadOnlyDictionary<WorkerState, IReadOnlyList<WorkerReadModelWorker>> workersByState,
+        IReadOnlyDictionary<(WorkDefinitionId DefinitionId, WorkerState State), IReadOnlyList<WorkerReadModelWorker>> workersByDefinitionAndState,
+        IReadOnlyDictionary<WorkSubjectId, IReadOnlyList<WorkerReadModelWorker>> workersBySubject,
+        IReadOnlyDictionary<(WorkDefinitionId DefinitionId, WorkSubjectId SubjectId), IReadOnlyList<WorkerReadModelWorker>> workersByDefinitionAndSubject,
+        IReadOnlyDictionary<WorkConcurrencyKey, IReadOnlyList<WorkerReadModelWorker>> workersByConcurrencyKey,
+        IReadOnlyDictionary<(WorkDefinitionId DefinitionId, WorkConcurrencyKey ConcurrencyKey), IReadOnlyList<WorkerReadModelWorker>> workersByDefinitionAndConcurrencyKey,
+        IReadOnlyDictionary<WorkIdentifier, IReadOnlyList<WorkerReadModelWorker>> workersByIdentifier,
+        IReadOnlyDictionary<bool, IReadOnlyList<WorkerReadModelWorker>> workersByRecurrenceEnabled,
+        IReadOnlyDictionary<bool, IReadOnlyList<WorkerReadModelWorker>> workersByConcurrencyEnabled,
+        IReadOnlyDictionary<bool, IReadOnlyList<WorkerReadModelWorker>> workersByProfilingEnabled,
+        IReadOnlyDictionary<WorkerId, IReadOnlyList<WorkerReadModelIteration>> iterationsByWorker,
+        IReadOnlyDictionary<WorkDefinitionId, IReadOnlyList<WorkerReadModelIteration>> iterationsByDefinition,
+        IReadOnlyDictionary<WorkCompletionStatus, IReadOnlyList<WorkerReadModelIteration>> iterationsByStatus,
+        IReadOnlyDictionary<(WorkDefinitionId DefinitionId, WorkCompletionStatus Status), IReadOnlyList<WorkerReadModelIteration>> iterationsByDefinitionAndStatus,
+        IReadOnlyDictionary<WorkSubjectId, IReadOnlyList<WorkerReadModelIteration>> iterationsBySubject,
+        IReadOnlyDictionary<WorkConcurrencyKey, IReadOnlyList<WorkerReadModelIteration>> iterationsByConcurrencyKey,
+        IReadOnlyDictionary<WorkIdentifier, IReadOnlyList<WorkerReadModelIteration>> iterationsByIdentifier,
+        IReadOnlyList<WorkerReadModelKey> workerKeys,
+        IReadOnlyList<WorkerIterationReadModelKey> iterationKeys)
     {
         this.WorkersById = workersById;
         this.IterationsByReference = iterationsByReference;
-        this.Workers = [.. workersById.Values];
-        this.Iterations = [.. iterationsByReference.Values];
-        this.WorkersByDefinition = GroupBy(this.Workers, worker => worker.DefinitionId);
-        this.WorkersByState = GroupBy(this.Workers, worker => worker.State);
-        this.WorkersByDefinitionAndState = GroupBy(this.Workers, worker => (worker.DefinitionId, worker.State));
-        this.WorkersBySubject = GroupNullable(this.Workers, worker => worker.SubjectId);
-        this.WorkersByDefinitionAndSubject = GroupNullable<(WorkDefinitionId DefinitionId, WorkSubjectId SubjectId), WorkerReadModelWorker>(
-            this.Workers,
-            worker => worker.SubjectId is { } subjectId ? (worker.DefinitionId, subjectId) : null);
-        this.WorkersByConcurrencyKey = GroupNullable(this.Workers, worker => worker.ConcurrencyKey);
-        this.WorkersByDefinitionAndConcurrencyKey = GroupNullable<(WorkDefinitionId DefinitionId, WorkConcurrencyKey ConcurrencyKey), WorkerReadModelWorker>(
-            this.Workers,
-            worker => worker.ConcurrencyKey is { } concurrencyKey ? (worker.DefinitionId, concurrencyKey) : null);
-        this.WorkersByIdentifier = GroupMany(this.Workers, worker => worker.Identifiers);
-        this.WorkersByRecurrenceEnabled = GroupBy(this.Workers, worker => worker.RecurrenceEnabled);
-        this.WorkersByConcurrencyEnabled = GroupBy(this.Workers, worker => worker.ConcurrencyEnabled);
-        this.WorkersByProfilingEnabled = GroupBy(this.Workers, worker => worker.ProfilingEnabled);
-        this.IterationsByWorker = GroupBy(this.Iterations, iteration => iteration.WorkerId);
-        this.IterationsByDefinition = GroupBy(this.Iterations, iteration => iteration.DefinitionId);
-        this.IterationsByStatus = GroupBy(this.Iterations, iteration => iteration.Status);
-        this.IterationsByDefinitionAndStatus = GroupBy(this.Iterations, iteration => (iteration.DefinitionId, iteration.Status));
-        this.IterationsBySubject = GroupNullable(this.Iterations, iteration => iteration.SubjectId);
-        this.IterationsByConcurrencyKey = GroupNullable(this.Iterations, iteration => iteration.ConcurrencyKey);
-        this.IterationsByIdentifier = GroupMany(this.Iterations, iteration => iteration.Identifiers);
-        this.WorkerKeys = [.. this.Workers.SelectMany(WorkerReadModelKey.From)];
-        this.IterationKeys = [.. this.Iterations.SelectMany(WorkerIterationReadModelKey.From)];
+        this.Workers = workers;
+        this.Iterations = iterations;
+        this.WorkersByDefinition = workersByDefinition;
+        this.WorkersByState = workersByState;
+        this.WorkersByDefinitionAndState = workersByDefinitionAndState;
+        this.WorkersBySubject = workersBySubject;
+        this.WorkersByDefinitionAndSubject = workersByDefinitionAndSubject;
+        this.WorkersByConcurrencyKey = workersByConcurrencyKey;
+        this.WorkersByDefinitionAndConcurrencyKey = workersByDefinitionAndConcurrencyKey;
+        this.WorkersByIdentifier = workersByIdentifier;
+        this.WorkersByRecurrenceEnabled = workersByRecurrenceEnabled;
+        this.WorkersByConcurrencyEnabled = workersByConcurrencyEnabled;
+        this.WorkersByProfilingEnabled = workersByProfilingEnabled;
+        this.IterationsByWorker = iterationsByWorker;
+        this.IterationsByDefinition = iterationsByDefinition;
+        this.IterationsByStatus = iterationsByStatus;
+        this.IterationsByDefinitionAndStatus = iterationsByDefinitionAndStatus;
+        this.IterationsBySubject = iterationsBySubject;
+        this.IterationsByConcurrencyKey = iterationsByConcurrencyKey;
+        this.IterationsByIdentifier = iterationsByIdentifier;
+        this.WorkerKeys = workerKeys;
+        this.IterationKeys = iterationKeys;
     }
 
     public IReadOnlyDictionary<WorkerId, WorkerReadModelWorker> WorkersById { get; }
@@ -370,73 +929,12 @@ internal sealed class WorkSystemReadModelSnapshot
 
     public IReadOnlyList<WorkerIterationReadModelKey> IterationKeys { get; }
 
-    private static IReadOnlyDictionary<TKey, IReadOnlyList<TValue>> GroupBy<TKey, TValue>(
-        IEnumerable<TValue> values,
-        Func<TValue, TKey> getKey)
+    private static IReadOnlyDictionary<TKey, IReadOnlyList<TValue>> EmptyIndex<TKey, TValue>()
         where TKey : notnull
-        => Freeze(values
-            .GroupBy(getKey)
-            .ToDictionary(group => group.Key, group => group.ToList()));
-
-    private static IReadOnlyDictionary<TKey, IReadOnlyList<TValue>> GroupNullable<TKey, TValue>(
-        IEnumerable<TValue> values,
-        Func<TValue, TKey?> getKey)
-        where TKey : struct
-    {
-        var groups = new Dictionary<TKey, List<TValue>>();
-        foreach (var value in values)
-        {
-            if (getKey(value) is { } key)
-            {
-                Add(groups, key, value);
-            }
-        }
-
-        return Freeze(groups);
-    }
-
-    private static IReadOnlyDictionary<TKey, IReadOnlyList<TValue>> GroupMany<TKey, TValue>(
-        IEnumerable<TValue> values,
-        Func<TValue, IEnumerable<TKey>> getKeys)
-        where TKey : notnull
-    {
-        var groups = new Dictionary<TKey, List<TValue>>();
-        foreach (var value in values)
-        {
-            foreach (var key in getKeys(value))
-            {
-                Add(groups, key, value);
-            }
-        }
-
-        return Freeze(groups);
-    }
-
-    private static void Add<TKey, TValue>(
-        Dictionary<TKey, List<TValue>> groups,
-        TKey key,
-        TValue value)
-        where TKey : notnull
-    {
-        if (!groups.TryGetValue(key, out var values))
-        {
-            values = [];
-            groups[key] = values;
-        }
-
-        values.Add(value);
-    }
-
-    private static IReadOnlyDictionary<TKey, IReadOnlyList<TValue>> Freeze<TKey, TValue>(
-        Dictionary<TKey, List<TValue>> groups)
-        where TKey : notnull
-        => groups.ToDictionary(
-            entry => entry.Key,
-            entry => (IReadOnlyList<TValue>)entry.Value.ToArray());
+        => new Dictionary<TKey, IReadOnlyList<TValue>>();
 }
 
 internal sealed record WorkerReadModelWorker(
-    WorkerSnapshot Snapshot,
     WorkerOverviewItem Overview,
     bool RecurrenceEnabled,
     bool ConcurrencyEnabled,
@@ -454,6 +952,8 @@ internal sealed record WorkerReadModelWorker(
 
     public IReadOnlySet<WorkIdentifier> Identifiers => this.Overview.Identifiers;
 
+    public long Revision => this.Overview.Revision;
+
     public string Category => this.Overview.Category;
 
     public WorkerState State => this.Overview.State;
@@ -465,8 +965,7 @@ internal sealed record WorkerReadModelWorker(
     public DateTimeOffset UpdatedAt => this.Overview.UpdatedAt;
 
     public static WorkerReadModelWorker From(WorkerSnapshot snapshot)
-        => new(
-            snapshot,
+        => From(
             new WorkerOverviewItem(
                 snapshot.Id,
                 snapshot.DefinitionId,
@@ -488,11 +987,17 @@ internal sealed record WorkerReadModelWorker(
             snapshot.Configuration.Recurrence.IsEnabled,
             snapshot.Configuration.Concurrency.IsEnabled,
             snapshot.Options.ProfilingEnabled);
+
+    public static WorkerReadModelWorker From(
+        WorkerOverviewItem overview,
+        bool recurrenceEnabled,
+        bool concurrencyEnabled,
+        bool profilingEnabled)
+        => new(overview, recurrenceEnabled, concurrencyEnabled, profilingEnabled);
 }
 
 internal sealed record WorkerReadModelIteration(
     WorkerIterationReference Reference,
-    WorkerIterationSnapshot Snapshot,
     WorkerIterationOverviewItem Overview)
 {
     public WorkerId WorkerId => this.Reference.WorkerId;
@@ -521,18 +1026,17 @@ internal sealed record WorkerReadModelIteration(
 
     public IReadOnlyCollection<WorkIdentifier> Identifiers => this.Overview.Identifiers;
 
-    public static WorkerReadModelIteration From(WorkerSnapshot worker, WorkerIterationSnapshot iteration)
+    public static WorkerReadModelIteration From(WorkerReadModelWorker worker, WorkerIterationSnapshot iteration)
     {
         var reference = new WorkerIterationReference(worker.Id, iteration.Sequence);
         return new(
             reference,
-            iteration,
             new WorkerIterationOverviewItem(
                 worker.Id,
                 iteration.Sequence,
                 worker.DefinitionId,
                 worker.DefinitionName,
-                worker.DefinitionCategory,
+                worker.Category,
                 worker.State,
                 iteration.Status,
                 iteration.StartedAt,
@@ -546,7 +1050,8 @@ internal sealed record WorkerReadModelIteration(
 
 internal sealed record WorkerReadModelIterationUpdate(
     WorkerReadModelWorker Worker,
-    WorkerReadModelIteration Iteration);
+    WorkerReadModelIteration Iteration,
+    WorkerIterationSnapshot Snapshot);
 
 internal sealed record WorkerReadModelKey(
     WorkKeyKind Kind,

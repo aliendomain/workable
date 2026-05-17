@@ -1,15 +1,12 @@
-using System.Collections.Concurrent;
 using System.Diagnostics.CodeAnalysis;
-using System.Runtime.CompilerServices;
 
 namespace Workable;
 internal sealed class WorkerRetentionScheduler(
-    ConcurrentDictionary<WorkerId, WorkerRecord> workers,
     WorkerIndex index,
     WorkSystemRetentionConfiguration systemRetention,
-    Func<WorkerRecord, long, WorkActionOutcome> purge,
-    Action<WorkerRecord> publishPurgeEvent) : IDisposable
+    Action<IReadOnlyList<WorkerId>, WorkDefinitionId?> purge) : IDisposable
 {
+    private const int PurgeBatchSize = 4096;
     private const int ScheduledPurgeTrimMinimumHighWaterMark = 65_536;
     private static readonly TimeSpan ScheduledPurgeTrimInterval = TimeSpan.FromMinutes(1);
     private static readonly WorkerState[] FinalStates = [WorkerState.Canceled, WorkerState.Completed];
@@ -129,9 +126,9 @@ internal sealed class WorkerRetentionScheduler(
             {
                 cancellationToken.ThrowIfCancellationRequested();
 
-                if (this.TryTakeDuePurge(out var scheduledPurge))
+                if (this.TryTakeDuePurgeBatch(out var scheduledPurgeWorkerIds, out var scheduledPurgeDefinitionId))
                 {
-                    this.TryPurge(scheduledPurge);
+                    purge(scheduledPurgeWorkerIds, scheduledPurgeDefinitionId);
                     continue;
                 }
 
@@ -151,18 +148,54 @@ internal sealed class WorkerRetentionScheduler(
         }
     }
 
-    private bool TryTakeDuePurge([NotNullWhen(true)] out ScheduledPurge? scheduledPurge)
+    private bool TryTakeDuePurgeBatch(
+        [NotNullWhen(true)] out IReadOnlyList<WorkerId>? workerIds,
+        out WorkDefinitionId? definitionId)
     {
         lock (this.sync)
         {
             if (!this.scheduledPurges.TryPeek(out var _, out var dueAt) ||
                 dueAt > DateTimeOffset.UtcNow)
             {
-                scheduledPurge = null;
+                workerIds = null;
+                definitionId = null;
                 return false;
             }
 
-            scheduledPurge = this.scheduledPurges.Dequeue();
+            var dueWorkerIds = new List<WorkerId>(PurgeBatchSize);
+            WorkDefinitionId? commonDefinitionId = null;
+            var mixedDefinitions = false;
+            while (dueWorkerIds.Count < PurgeBatchSize &&
+                this.scheduledPurges.TryPeek(out var scheduledPurge, out dueAt) &&
+                dueAt <= DateTimeOffset.UtcNow)
+            {
+                this.scheduledPurges.Dequeue();
+                if (!this.finalWorkerEntriesById.TryGetValue(scheduledPurge.WorkerId, out var entry))
+                {
+                    continue;
+                }
+
+                this.RemoveFinalWorkerLocked(entry);
+                dueWorkerIds.Add(entry.WorkerId);
+                if (commonDefinitionId is null)
+                {
+                    commonDefinitionId = entry.DefinitionId;
+                }
+                else if (commonDefinitionId != entry.DefinitionId)
+                {
+                    mixedDefinitions = true;
+                }
+            }
+
+            if (dueWorkerIds.Count == 0)
+            {
+                workerIds = null;
+                definitionId = null;
+                return false;
+            }
+
+            workerIds = dueWorkerIds;
+            definitionId = mixedDefinitions ? null : commonDefinitionId;
             return true;
         }
     }
@@ -276,28 +309,17 @@ internal sealed class WorkerRetentionScheduler(
 
     private void PurgeExcessFinalWorkers(WorkDefinitionId? definitionId, int excessCount)
     {
-        var purgedCount = 0;
-        while (purgedCount < excessCount && this.TryTakeOldestFinalWorker(definitionId, out var workerId))
+        var remaining = excessCount;
+        while (remaining > 0)
         {
-            if (!workers.TryGetValue(workerId, out var worker) ||
-                !worker.IsFinal ||
-                (definitionId is not null && worker.Work.Definition.Id != definitionId))
+            var workerIds = this.TakeOldestFinalWorkers(definitionId, Math.Min(PurgeBatchSize, remaining));
+            if (workerIds.Count == 0)
             {
-                continue;
+                return;
             }
 
-            if (this.TryPurge(worker))
-            {
-                purgedCount++;
-                continue;
-            }
-
-            if (workers.ContainsKey(workerId) && worker.IsFinal)
-            {
-                this.TrackFinalWorker(worker);
-            }
-
-            return;
+            purge(workerIds, definitionId);
+            remaining -= workerIds.Count;
         }
     }
 
@@ -342,37 +364,6 @@ internal sealed class WorkerRetentionScheduler(
         }
     }
 
-    private void TryPurge(ScheduledPurge scheduledPurge)
-    {
-        if (!workers.TryGetValue(scheduledPurge.WorkerId, out var worker) || !worker.IsFinal)
-        {
-            this.Forget(scheduledPurge.WorkerId);
-            return;
-        }
-
-        this.TryPurge(worker);
-    }
-
-    private bool TryPurge(WorkerRecord worker)
-    {
-        var outcome = purge(worker, worker.Revision);
-        if (outcome.IsAccepted)
-        {
-            publishPurgeEvent(worker);
-            return true;
-        }
-
-        return false;
-    }
-
-    private void TrackFinalWorker(WorkerRecord worker)
-    {
-        lock (this.sync)
-        {
-            this.TrackFinalWorkerLocked(worker);
-        }
-    }
-
     private void TrackFinalWorkerLocked(WorkerRecord worker)
     {
         var entry = new FinalWorkerRetentionEntry(
@@ -393,22 +384,31 @@ internal sealed class WorkerRetentionScheduler(
         definitionWorkers.Add(entry);
     }
 
-    private bool TryTakeOldestFinalWorker(WorkDefinitionId? definitionId, out WorkerId workerId)
+    private IReadOnlyList<WorkerId> TakeOldestFinalWorkers(WorkDefinitionId? definitionId, int count)
     {
+        if (count <= 0)
+        {
+            return [];
+        }
+
         lock (this.sync)
         {
-            var candidates = definitionId is { } id
-                ? this.finalWorkersByDefinition.GetValueOrDefault(id)
-                : this.finalWorkers;
-            if (candidates?.Min is not { } entry)
+            var workerIds = new List<WorkerId>(count);
+            while (workerIds.Count < count)
             {
-                workerId = default;
-                return false;
+                var candidates = definitionId is { } id
+                    ? this.finalWorkersByDefinition.GetValueOrDefault(id)
+                    : this.finalWorkers;
+                if (candidates?.Min is not { } entry)
+                {
+                    break;
+                }
+
+                this.RemoveFinalWorkerLocked(entry);
+                workerIds.Add(entry.WorkerId);
             }
 
-            this.RemoveFinalWorkerLocked(entry);
-            workerId = entry.WorkerId;
-            return true;
+            return workerIds;
         }
     }
 

@@ -3728,6 +3728,20 @@ function clampFloatingWindowPosition(value: number, viewport: number, size: numb
   return Math.min(Math.max(min, value), max);
 }
 
+function getRealtimeErrorMessage(error: unknown, fallback: string) {
+  return error instanceof Error && error.message ? error.message : fallback;
+}
+
+function isExpectedRealtimeDisconnect(error: unknown) {
+  const message = getRealtimeErrorMessage(error, "").toLowerCase();
+  return (
+    message.includes("failed to fetch") ||
+    message.includes("failed to complete negotiation") ||
+    message.includes("failed to start the connection") ||
+    message.includes("websocket closed with status code: 1006")
+  );
+}
+
 export type RealtimeViewLoadable<T> = Loadable<T> & {
   clearMessages: () => void;
   connectionState: string;
@@ -3814,7 +3828,7 @@ export function useWorkableRealtimeView<T>(
     const hubConnection = new HubConnectionBuilder()
       .withUrl(hubUrl, { withCredentials: true })
       .withAutomaticReconnect()
-      .configureLogging(LogLevel.Warning)
+      .configureLogging(LogLevel.None)
       .build();
 
     hubConnectionRef.current = hubConnection;
@@ -3863,7 +3877,30 @@ export function useWorkableRealtimeView<T>(
         viewName,
         JSON.parse(bodyKeyRef.current),
         systemNameRef.current ?? null
-      );
+      ).catch((error) => {
+        if (!canceled && !isExpectedRealtimeDisconnect(error)) {
+          setState((current) => ({
+            ...current,
+            connectionState: "error",
+            error: getRealtimeErrorMessage(error, "Realtime view subscription failed."),
+            loading: false,
+            refreshing: false,
+          }));
+        }
+      });
+    });
+    hubConnection.onclose((error) => {
+      if (!canceled) {
+        setState((current) => ({
+          ...current,
+          connectionState: error && !isExpectedRealtimeDisconnect(error) ? "error" : "disconnected",
+          error: error && !isExpectedRealtimeDisconnect(error)
+            ? getRealtimeErrorMessage(error, "Realtime connection closed.")
+            : undefined,
+          loading: false,
+          refreshing: false,
+        }));
+      }
     });
 
     hubConnection
@@ -3892,7 +3929,7 @@ export function useWorkableRealtimeView<T>(
             connectionState: "error",
             data: current.data,
             enabled,
-            error: error instanceof Error ? error.message : "Realtime connection failed.",
+            error: getRealtimeErrorMessage(error, "Realtime connection failed."),
             hubUrl,
             loading: false,
             refreshing: false,
@@ -3903,7 +3940,7 @@ export function useWorkableRealtimeView<T>(
     return () => {
       canceled = true;
       hubConnectionRef.current = null;
-      void hubConnection.stop();
+      void hubConnection.stop().catch(() => undefined);
     };
   }, [apiUrl, connection, enabled, hubUrl, subscription, systemName, viewName]);
 
@@ -3934,7 +3971,7 @@ export function useWorkableRealtimeView<T>(
             ...current,
             data: current.data,
             connectionState: "error",
-            error: error instanceof Error ? error.message : "Realtime view subscription failed.",
+            error: getRealtimeErrorMessage(error, "Realtime view subscription failed."),
             loading: false,
             refreshing: false,
           }));
@@ -3944,7 +3981,9 @@ export function useWorkableRealtimeView<T>(
     return () => {
       canceled = true;
       if (hubConnection.state === HubConnectionState.Connected) {
-        void hubConnection.invoke("UnwatchView", viewName, systemName ?? null);
+        void hubConnection
+          .invoke("UnwatchView", viewName, systemName ?? null)
+          .catch(() => undefined);
       }
     };
   }, [bodyKey, enabled, systemName, viewName]);

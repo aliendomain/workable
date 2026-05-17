@@ -60,6 +60,32 @@ internal sealed class WorkEventStream : IWorkEventStream, IAsyncDisposable
         PublishToSubscribers(subscribers, createEvent(state));
     }
 
+    internal void Publish<TState>(
+        WorkEventMetadata metadata,
+        TState state,
+        Func<TState, WorkEvent> createEvent)
+    {
+        ArgumentNullException.ThrowIfNull(metadata);
+        ArgumentNullException.ThrowIfNull(createEvent);
+
+        if (!this.TryGetActiveSubscribers(out var subscribers))
+        {
+            return;
+        }
+
+        WorkEvent? workEvent = null;
+        foreach (var subscription in subscribers)
+        {
+            if (!subscription.Matches(metadata))
+            {
+                continue;
+            }
+
+            workEvent ??= createEvent(state);
+            subscription.Publish(workEvent);
+        }
+    }
+
     public ValueTask DisposeAsync()
     {
         WorkEventSubscription[] subscribers;
@@ -192,6 +218,16 @@ internal sealed class WorkEventStream : IWorkEventStream, IAsyncDisposable
 
             this.events.Writer.TryWrite(workEvent);
         }
+
+        internal bool Matches(WorkEventMetadata metadata)
+            => Volatile.Read(ref this.isDisposed) == 0 &&
+                (filter is null ||
+                    ((filter.WorkerId is null || filter.WorkerId == metadata.WorkerId) &&
+                        (filter.DefinitionId is null || filter.DefinitionId == metadata.DefinitionId) &&
+                        (filter.SubjectId is null || filter.SubjectId == metadata.SubjectId) &&
+                        (filter.ConcurrencyKey is null || filter.ConcurrencyKey == metadata.ConcurrencyKey) &&
+                        (filter.Identifier is null || metadata.ContainsIdentifier(filter.Identifier.Value)) &&
+                        (filter.EventType is null || string.Equals(filter.EventType, metadata.EventType, StringComparison.OrdinalIgnoreCase))));
 
         private static BoundedChannelFullMode ToBoundedChannelFullMode(WorkEventOverflowBehavior behavior)
             => behavior switch

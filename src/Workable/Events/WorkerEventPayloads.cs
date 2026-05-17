@@ -36,6 +36,15 @@ internal static class WorkerEventPayloads
             WorkEventJson.Options);
     }
 
+    public static JsonElement CreatePurge(
+        IReadOnlyList<WorkerId> workerIds,
+        DateTimeOffset purgedAt)
+    {
+        return JsonSerializer.SerializeToElement(
+            new WorkerPurgePayload(purgedAt, workerIds),
+            WorkEventJson.Options);
+    }
+
     private sealed record WorkerEventPayload(
         WorkerSummary Worker,
         WorkInput? Input = null,
@@ -49,6 +58,10 @@ internal static class WorkerEventPayloads
         TimeSpan? RecurrenceInterval = null,
         TimeSpan? RetryDelay = null,
         WorkerLogPayload? Log = null);
+
+    private sealed record WorkerPurgePayload(
+        DateTimeOffset PurgedAt,
+        IReadOnlyList<WorkerId> WorkerIds);
 
     private sealed record WorkerLogPayload(
         DateTimeOffset OccurredAt,

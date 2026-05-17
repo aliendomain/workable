@@ -1451,6 +1451,36 @@ public sealed class WorkQueryServiceTests
     }
 
     [Fact]
+    public async Task QueryFlushPublishesReadModelWhenProjectorBatchExactlyDrains()
+    {
+        const int batchSize = 1024;
+        const string definitionName = "readmodel.batch.boundary";
+        await using var system = CreateSystem(
+            WorkDefinition.Create(
+                definitionName,
+                category: "ReadModel",
+                configuration: WorkConfiguration.Default with
+                {
+                    Start = WorkStartConfiguration.DoNotStart,
+                }),
+            SuccessfulWork);
+
+        await system.Start();
+        for (var index = 0; index < batchSize; index++)
+        {
+            await system.Queue.Enqueue(definitionName);
+        }
+
+        var counts = await system.Query.SystemWorkerCounts();
+        var diagnostics = system.Diagnostics.ReadModel;
+
+        Assert.Equal(batchSize, counts.ActiveWorkerCount);
+        Assert.Equal(batchSize, counts.WorkerCountByState[WorkerState.Queued]);
+        Assert.Equal(diagnostics.EnqueuedSequence, diagnostics.AppliedSequence);
+        Assert.Equal(0, diagnostics.PendingUpdateCount);
+    }
+
+    [Fact]
     public async Task QuerySnapshotReadStaysPinnedToCapturedReadModelSnapshot()
     {
         const string definitionName = "readmodel.snapshot";
@@ -1475,7 +1505,7 @@ public sealed class WorkQueryServiceTests
     }
 
     [Fact]
-    public async Task WorkerOperationsReadFromReadModel()
+    public async Task WorkerOperationsReadFromAuthoritativeRecords()
     {
         var subject = new WorkSubjectId("read-model", "worker-operations");
         var definition = WorkDefinition.Create("readmodel.worker-operations", category: "ReadModel");

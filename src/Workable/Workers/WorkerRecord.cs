@@ -676,6 +676,14 @@ internal sealed class WorkerRecord(
         }
     }
 
+    public WorkerIterationSnapshot? GetIterationSnapshot(long sequence)
+    {
+        lock (this.sync)
+        {
+            return this.GetIterationSnapshotLocked(sequence);
+        }
+    }
+
     public bool ShouldCaptureLog(LogLevel level)
     {
         lock (this.sync)
@@ -881,14 +889,19 @@ internal sealed class WorkerRecord(
     }
 
     private WorkerReadModelWorker CreateReadModelWorkerLocked()
-        => WorkerReadModelWorker.From(this.ToSnapshotLocked());
+        => WorkerReadModelWorker.From(
+            this.ToOverviewItemLocked(),
+            this.Configuration.Recurrence.IsEnabled,
+            this.Configuration.Concurrency.IsEnabled,
+            this.Options.ProfilingEnabled);
 
     private WorkerReadModelIterationUpdate CreateReadModelIterationUpdateLocked(WorkerIterationSnapshot iteration)
     {
-        var snapshot = this.ToSnapshotLocked();
+        var worker = this.CreateReadModelWorkerLocked();
         return new WorkerReadModelIterationUpdate(
-            WorkerReadModelWorker.From(snapshot),
-            WorkerReadModelIteration.From(snapshot, iteration));
+            worker,
+            WorkerReadModelIteration.From(worker, iteration),
+            iteration);
     }
 
     private static TaskCompletionSource<WorkCompletion> CreateCompletionSource()
@@ -1249,6 +1262,18 @@ internal sealed class WorkerRecord(
     private WorkCompletion ToCompletionLocked(WorkCompletionStatus status)
         => new(status, this.ToSnapshotLocked(), this.Output, this.Messages);
 
+    public WorkEventMetadata ToEventMetadata(
+        WorkSystemId workSystemId,
+        string eventType)
+        => new(
+            workSystemId,
+            this.Id,
+            this.Work.Definition.Id,
+            this.SubjectId,
+            this.ConcurrencyKey,
+            eventType,
+            this.GetIdentifierSnapshot);
+
     public WorkEvent ToEvent(
         WorkSystemId workSystemId,
         string eventType,
@@ -1293,6 +1318,14 @@ internal sealed class WorkerRecord(
                     entry.Message,
                     "worker.log",
                     LogMetadata(entry))]);
+        }
+    }
+
+    private IReadOnlySet<WorkIdentifier> GetIdentifierSnapshot()
+    {
+        lock (this.sync)
+        {
+            return this.identifiers.ToHashSet();
         }
     }
 
@@ -1362,6 +1395,19 @@ internal sealed class WorkerRecord(
             .Concat(this.interruptedIterations)
             .OrderByDescending(iteration => iteration.Sequence)
             .FirstOrDefault();
+
+    private WorkerIterationSnapshot? GetIterationSnapshotLocked(long sequence)
+    {
+        if (this.currentIteration?.Sequence == sequence)
+        {
+            return this.CreateCurrentIterationSnapshotLocked(DateTimeOffset.UtcNow);
+        }
+
+        return this.successfulIterations
+            .Concat(this.failedIterations)
+            .Concat(this.interruptedIterations)
+            .FirstOrDefault(iteration => iteration.Sequence == sequence);
+    }
 
     private TimeSpan? QueueDurationLocked()
         => this.firstStartedAt is null ? null : this.firstStartedAt.Value - this.CreatedAt;

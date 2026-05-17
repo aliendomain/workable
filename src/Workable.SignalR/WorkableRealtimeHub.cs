@@ -4,22 +4,29 @@ namespace Workable;
 public sealed class WorkableRealtimeHub(
     IWorkSystemRegistry registry,
     WorkableViewQueryAdapter views,
+    WorkableRealtimeEventSubscriptions eventSubscriptions,
     WorkableRealtimeViewSubscriptions viewSubscriptions) : Hub
 {
     public async Task WatchWorker(string workerId, string? systemName = null)
     {
         var system = ResolveSystem(systemName);
-        await this.Groups.AddToGroupAsync(
+        await eventSubscriptions.WatchWorker(
             this.Context.ConnectionId,
-            WorkableRealtimeGroups.Worker(system, ParseWorkerId(workerId)));
+            this.Groups,
+            system,
+            ParseWorkerId(workerId),
+            this.Context.ConnectionAborted);
     }
 
     public async Task UnwatchWorker(string workerId, string? systemName = null)
     {
         var system = ResolveSystem(systemName);
-        await this.Groups.RemoveFromGroupAsync(
+        await eventSubscriptions.UnwatchWorker(
             this.Context.ConnectionId,
-            WorkableRealtimeGroups.Worker(system, ParseWorkerId(workerId)));
+            this.Groups,
+            system,
+            ParseWorkerId(workerId),
+            this.Context.ConnectionAborted);
     }
 
     public async Task WatchView(
@@ -53,17 +60,26 @@ public sealed class WorkableRealtimeHub(
     public async Task WatchSystem(string? systemName = null)
     {
         var system = ResolveSystem(systemName);
-        await this.Groups.AddToGroupAsync(this.Context.ConnectionId, WorkableRealtimeGroups.SystemEvents(system));
+        await eventSubscriptions.WatchSystem(
+            this.Context.ConnectionId,
+            this.Groups,
+            system,
+            this.Context.ConnectionAborted);
     }
 
     public async Task UnwatchSystem(string? systemName = null)
     {
         var system = ResolveSystem(systemName);
-        await this.Groups.RemoveFromGroupAsync(this.Context.ConnectionId, WorkableRealtimeGroups.SystemEvents(system));
+        await eventSubscriptions.UnwatchSystem(
+            this.Context.ConnectionId,
+            this.Groups,
+            system,
+            this.Context.ConnectionAborted);
     }
 
     public override async Task OnDisconnectedAsync(Exception? exception)
     {
+        await eventSubscriptions.RemoveConnection(this.Context.ConnectionId, this.Groups, this.Context.ConnectionAborted);
         await viewSubscriptions.RemoveConnection(this.Context.ConnectionId, this.Groups, this.Context.ConnectionAborted);
         await base.OnDisconnectedAsync(exception);
     }

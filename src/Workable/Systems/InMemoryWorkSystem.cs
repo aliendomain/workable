@@ -58,6 +58,7 @@ internal sealed class InMemoryWorkSystem : IWorkSystem, IOriginAwareWorkSystem, 
             registration.Retention,
             registration.Capacity,
             this.metrics);
+        this.readModel.UseDetailReaders(this.workers.GetAuthoritative, this.workers.GetIterationAuthoritative);
         this.query = this.readModel.Query;
         this.queue = new WorkQueueService(this.catalog, this.workers, dotNetOriginProvider);
     }

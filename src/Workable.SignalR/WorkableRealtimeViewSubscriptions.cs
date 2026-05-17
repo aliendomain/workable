@@ -160,7 +160,8 @@ public sealed class WorkableRealtimeViewSubscriptions
             system.Id,
             viewName,
             criteria,
-            WorkableRealtimeGroups.View(system, key));
+            WorkableRealtimeGroups.View(system, key),
+            system.Diagnostics.ReadModel.AppliedSequence);
     }
 
     private static string CreateGroupKey(

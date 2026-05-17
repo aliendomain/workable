@@ -8,6 +8,7 @@ internal sealed class WorkableRealtimeBroadcaster(
     IWorkSystemRegistry registry,
     IHubContext<WorkableRealtimeHub> hub,
     WorkableViewQueryAdapter views,
+    WorkableRealtimeEventSubscriptions eventSubscriptions,
     WorkableRealtimeViewSubscriptions viewSubscriptions,
     IOptions<WorkableSignalROptions> options) : BackgroundService
 {
@@ -24,15 +25,9 @@ internal sealed class WorkableRealtimeBroadcaster(
     {
         try
         {
-            var publishSignal = new PublishSignal();
-            await using var subscription = system.Events.Subscribe(
-                options: new WorkEventSubscriptionOptions(
-                    options.Value.EventSubscriptionCapacity,
-                    options.Value.EventOverflowBehavior));
-
             await Task.WhenAll(
-                this.BroadcastEvents(system, subscription, publishSignal, cancellationToken),
-                this.BroadcastViews(system, publishSignal, cancellationToken),
+                this.BroadcastEvents(system, cancellationToken),
+                this.BroadcastViews(system, cancellationToken),
                 this.BroadcastDiagnosticsViews(system, cancellationToken));
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -43,56 +38,149 @@ internal sealed class WorkableRealtimeBroadcaster(
 
     private async Task BroadcastEvents(
         IWorkSystem system,
-        IWorkEventSubscription subscription,
-        PublishSignal publishSignal,
         CancellationToken cancellationToken)
     {
-        await foreach (var workEvent in subscription.Read(cancellationToken))
+        var pumps = new Dictionary<string, EventPump>(StringComparer.Ordinal);
+        try
         {
-            publishSignal.MarkDirty();
-            var realtimeEvent = WorkableRealtimeEvent.From(workEvent);
-
-            await hub.Clients
-                .Group(WorkableRealtimeGroups.SystemEvents(system))
-                .SendAsync(WorkableRealtimeClientMethods.WorkEvent, realtimeEvent, cancellationToken);
-
-            if (workEvent.WorkerId is { } workerId)
+            while (!cancellationToken.IsCancellationRequested)
             {
-                await hub.Clients
-                    .Group(WorkableRealtimeGroups.Worker(system, workerId))
-                    .SendAsync(WorkableRealtimeClientMethods.WorkEvent, realtimeEvent, cancellationToken);
+                var activeSubscriptions = eventSubscriptions
+                    .GetActiveSubscriptions(system)
+                    .ToDictionary(subscription => subscription.GroupName, StringComparer.Ordinal);
+
+                foreach (var groupName in pumps.Keys.ToArray())
+                {
+                    if (!activeSubscriptions.ContainsKey(groupName))
+                    {
+                        await StopEventPump(pumps[groupName]);
+                        pumps.Remove(groupName);
+                    }
+                }
+
+                foreach (var subscription in activeSubscriptions.Values)
+                {
+                    if (!pumps.ContainsKey(subscription.GroupName))
+                    {
+                        pumps[subscription.GroupName] = this.StartEventPump(system, subscription, cancellationToken);
+                    }
+                }
+
+                var observedVersion = eventSubscriptions.Version;
+                await eventSubscriptions.WaitForChange(observedVersion, cancellationToken);
             }
-
-            if (workEvent.DefinitionId is { } definitionId)
+        }
+        finally
+        {
+            foreach (var pump in pumps.Values)
             {
-                await hub.Clients
-                    .Group(WorkableRealtimeGroups.Definition(system, definitionId))
-                    .SendAsync(WorkableRealtimeClientMethods.WorkEvent, realtimeEvent, cancellationToken);
+                await StopEventPump(pump);
             }
         }
     }
 
-    private async Task BroadcastViews(
+    private EventPump StartEventPump(
         IWorkSystem system,
-        PublishSignal publishSignal,
+        WorkableRealtimeEventSubscriptions.EventSubscription subscription,
         CancellationToken cancellationToken)
     {
+        var pumpCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        return new EventPump(
+            pumpCancellation,
+            this.BroadcastEventGroup(system, subscription, pumpCancellation.Token));
+    }
+
+    private async Task BroadcastEventGroup(
+        IWorkSystem system,
+        WorkableRealtimeEventSubscriptions.EventSubscription subscription,
+        CancellationToken cancellationToken)
+    {
+        await using var events = system.Events.Subscribe(
+            subscription.Filter,
+            new WorkEventSubscriptionOptions(
+                options.Value.EventSubscriptionCapacity,
+                options.Value.EventOverflowBehavior));
+        eventSubscriptions.SetStreaming(subscription.GroupName, isStreaming: true);
+        try
+        {
+            await foreach (var workEvent in events.Read(cancellationToken))
+            {
+                await hub.Clients
+                    .Group(subscription.GroupName)
+                    .SendAsync(
+                        WorkableRealtimeClientMethods.WorkEvent,
+                        WorkableRealtimeEvent.From(workEvent),
+                        cancellationToken);
+            }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            return;
+        }
+        finally
+        {
+            eventSubscriptions.SetStreaming(subscription.GroupName, isStreaming: false);
+        }
+    }
+
+    private static async Task StopEventPump(EventPump pump)
+    {
+        await pump.Cancellation.CancelAsync();
+        try
+        {
+            await pump.Task;
+        }
+        catch (OperationCanceledException)
+        {
+            // Expected when the last SignalR event watcher leaves a group.
+        }
+
+        pump.Cancellation.Dispose();
+    }
+
+    private async Task BroadcastViews(
+        IWorkSystem system,
+        CancellationToken cancellationToken)
+    {
+        var lastPublishedSequencesByGroup = new Dictionary<string, long>(StringComparer.Ordinal);
         using var timer = new PeriodicTimer(options.Value.PublishInterval);
         while (await timer.WaitForNextTickAsync(cancellationToken))
         {
-            if (!publishSignal.TryConsumeDirty())
+            var subscriptions = viewSubscriptions
+                .GetActiveSubscriptions(system)
+                .Where(subscription => !IsDiagnosticsView(subscription))
+                .ToArray();
+            var activeGroups = subscriptions
+                .Select(subscription => subscription.GroupName)
+                .ToHashSet(StringComparer.Ordinal);
+            foreach (var groupName in lastPublishedSequencesByGroup.Keys.ToArray())
+            {
+                if (!activeGroups.Contains(groupName))
+                {
+                    lastPublishedSequencesByGroup.Remove(groupName);
+                }
+            }
+
+            if (subscriptions.Length == 0)
             {
                 continue;
             }
 
-            foreach (var subscription in viewSubscriptions.GetActiveSubscriptions(system))
+            var diagnostics = system.Diagnostics.ReadModel;
+
+            foreach (var subscription in subscriptions)
             {
-                if (IsDiagnosticsView(subscription))
+                var lastPublishedSequence = lastPublishedSequencesByGroup.TryGetValue(subscription.GroupName, out var sequence)
+                    ? sequence
+                    : subscription.InitialReadModelSequence;
+                if (lastPublishedSequence == diagnostics.AppliedSequence)
                 {
+                    lastPublishedSequencesByGroup[subscription.GroupName] = diagnostics.AppliedSequence;
                     continue;
                 }
 
                 await this.BroadcastView(system, subscription, cancellationToken);
+                lastPublishedSequencesByGroup[subscription.GroupName] = diagnostics.AppliedSequence;
             }
         }
     }
@@ -280,14 +368,7 @@ internal sealed class WorkableRealtimeBroadcaster(
         public bool IsAlerting => this.LagSeverity != DiagnosticsLagSeverity.Normal || this.HasProjectorFailure;
     }
 
-    private sealed class PublishSignal
-    {
-        private int isDirty;
-
-        public void MarkDirty()
-            => Volatile.Write(ref this.isDirty, 1);
-
-        public bool TryConsumeDirty()
-            => Interlocked.Exchange(ref this.isDirty, 0) == 1;
-    }
+    private sealed record EventPump(
+        CancellationTokenSource Cancellation,
+        Task Task);
 }

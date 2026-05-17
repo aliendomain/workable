@@ -64,6 +64,71 @@ public sealed class WorkEventStreamTests
     }
 
     [Fact]
+    public async Task LazyPublishWithMetadataDoesNotCreateEventWhenFiltersDoNotMatch()
+    {
+        var stream = new WorkEventStream();
+        var acceptedWorkerId = WorkerId.New();
+        var loadedIdentifiers = false;
+        var created = false;
+        await using var subscription = stream.Subscribe(new WorkEventFilter(WorkerId: acceptedWorkerId));
+        var metadata = new WorkEventMetadata(
+            WorkSystemId.New(),
+            WorkerId.New(),
+            WorkDefinitionId.New(),
+            null,
+            null,
+            "worker.queued",
+            () =>
+            {
+                loadedIdentifiers = true;
+                return new HashSet<WorkIdentifier> { new("invoice", "inv-100") };
+            });
+
+        stream.Publish(
+            metadata,
+            CreateEvent(eventType: "worker.queued"),
+            state =>
+            {
+                created = true;
+                return state;
+            });
+
+        Assert.False(created);
+        Assert.False(loadedIdentifiers);
+        await AssertNoEvent(subscription);
+    }
+
+    [Fact]
+    public async Task LazyPublishWithMetadataCreatesEventWhenFilterMatches()
+    {
+        var stream = new WorkEventStream();
+        var acceptedWorkerId = WorkerId.New();
+        var created = false;
+        await using var subscription = stream.Subscribe(new WorkEventFilter(WorkerId: acceptedWorkerId));
+        await using var reader = subscription.Read().GetAsyncEnumerator();
+        var workEvent = CreateEvent(workerId: acceptedWorkerId, eventType: "worker.started");
+        var metadata = new WorkEventMetadata(
+            WorkSystemId.New(),
+            acceptedWorkerId,
+            WorkDefinitionId.New(),
+            null,
+            null,
+            "worker.started");
+
+        stream.Publish(
+            metadata,
+            workEvent,
+            state =>
+            {
+                created = true;
+                return state;
+            });
+
+        Assert.True(created);
+        Assert.Equal(workEvent, await ReadNext(reader));
+    }
+
+    [Fact]
     public async Task EventsAreBroadcastToEveryActiveSubscription()
     {
         var stream = new WorkEventStream();

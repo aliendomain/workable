@@ -84,7 +84,7 @@ internal sealed class WorkerOperations : IWorkerOperations, IDisposable
         this.executionStrategy = new ConfiguredWorkerExecutionStrategy(runOnce, transientRetry, recurring);
         this.concurrency = new WorkConcurrencyCoordinator();
         this.dispatcher = new WorkerDispatcher(this.DispatchQueuedWorker);
-        this.retention = new WorkerRetentionScheduler(this.workers, this.index, retentionConfiguration, this.Purge, this.PublishPurgeEvent);
+        this.retention = new WorkerRetentionScheduler(this.index, retentionConfiguration, this.PurgeFinalWorkersForRetention);
     }
 
     internal async Task<IWorkerHandle> CreateWorker(
@@ -282,7 +282,7 @@ internal sealed class WorkerOperations : IWorkerOperations, IDisposable
             var reference = iteration.Iteration.Reference;
             if (this.TryRecordIterationStatus(reference, iteration.Iteration.Status))
             {
-                this.metrics.IterationRecorded(iteration.Iteration.DefinitionId, iteration.Iteration.Snapshot);
+                this.metrics.IterationRecorded(iteration.Iteration.DefinitionId, iteration.Snapshot);
             }
 
             this.readModel.RecordIteration(iteration);
@@ -400,37 +400,46 @@ internal sealed class WorkerOperations : IWorkerOperations, IDisposable
         };
     }
 
-    public async Task<WorkerSnapshot?> Get(WorkerId workerId, CancellationToken cancellationToken = default)
+    public Task<WorkerSnapshot?> Get(WorkerId workerId, CancellationToken cancellationToken = default)
+        => this.GetAuthoritative(workerId, cancellationToken);
+
+    internal Task<WorkerSnapshot?> GetAuthoritative(WorkerId workerId, CancellationToken cancellationToken = default)
     {
-        await this.readModel.Flush(cancellationToken);
-        return this.readModel.Current.WorkersById.TryGetValue(workerId, out var worker)
-            ? worker.Snapshot
-            : null;
+        cancellationToken.ThrowIfCancellationRequested();
+        return Task.FromResult(this.workers.TryGetValue(workerId, out var worker)
+            ? worker.ToSnapshot()
+            : null);
     }
 
-    public async Task<IReadOnlyList<WorkerSnapshot>> List(CancellationToken cancellationToken = default)
+    internal Task<WorkerIterationSnapshot?> GetIterationAuthoritative(
+        WorkerIterationReference iteration,
+        CancellationToken cancellationToken = default)
     {
-        await this.readModel.Flush(cancellationToken);
-        return [.. this.readModel.Current.Workers.Select(worker => worker.Snapshot)];
+        cancellationToken.ThrowIfCancellationRequested();
+        return Task.FromResult(this.workers.TryGetValue(iteration.WorkerId, out var worker)
+            ? worker.GetIterationSnapshot(iteration.Sequence)
+            : null);
     }
 
-    public async Task<IReadOnlyList<WorkerSnapshot>> List(WorkSubjectId subjectId, CancellationToken cancellationToken = default)
+    public Task<IReadOnlyList<WorkerSnapshot>> List(CancellationToken cancellationToken = default)
     {
-        await this.readModel.Flush(cancellationToken);
-        return this.readModel.Current.WorkersBySubject.TryGetValue(subjectId, out var workers)
-            ? CreateSnapshotList(workers)
-            : [];
+        cancellationToken.ThrowIfCancellationRequested();
+        return Task.FromResult(CreateSnapshotList(this.workers.Values));
     }
 
-    public async Task<IReadOnlyList<WorkerSnapshot>> List(
+    public Task<IReadOnlyList<WorkerSnapshot>> List(WorkSubjectId subjectId, CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        return Task.FromResult(this.GetSubjectWorkersLocked(subjectId));
+    }
+
+    public Task<IReadOnlyList<WorkerSnapshot>> List(
         WorkDefinitionId definitionId,
         WorkSubjectId subjectId,
         CancellationToken cancellationToken = default)
     {
-        await this.readModel.Flush(cancellationToken);
-        return this.readModel.Current.WorkersByDefinitionAndSubject.TryGetValue((definitionId, subjectId), out var workers)
-            ? CreateSnapshotList(workers)
-            : [];
+        cancellationToken.ThrowIfCancellationRequested();
+        return Task.FromResult(this.GetSubjectWorkersLocked(definitionId, subjectId));
     }
 
     public Task<WorkActionOutcome> Execute(
@@ -855,11 +864,6 @@ internal sealed class WorkerOperations : IWorkerOperations, IDisposable
         this.ScheduleConcurrencyDrain(worker.Work.Definition.Id);
     }
 
-    private void PublishPurgeEvent(WorkerRecord worker)
-    {
-        this.workerEvents.Purged(worker);
-    }
-
     private WorkActionOutcome Purge(WorkerRecord worker, long expectedRevision)
     {
         var outcome = worker.Purge(expectedRevision);
@@ -875,6 +879,56 @@ internal sealed class WorkerOperations : IWorkerOperations, IDisposable
         this.ForgetIterationStatuses(worker.Id);
         this.ScheduleConcurrencyDrain(worker.Work.Definition.Id);
         return outcome;
+    }
+
+    private void PurgeFinalWorkersForRetention(
+        IReadOnlyList<WorkerId> workerIds,
+        WorkDefinitionId? requiredDefinitionId)
+    {
+        if (workerIds.Count == 0)
+        {
+            return;
+        }
+
+        Dictionary<WorkDefinitionId, List<WorkerId>>? purgedWorkerIdsByDefinition = null;
+        foreach (var workerId in workerIds)
+        {
+            if (!this.workers.TryGetValue(workerId, out var worker) ||
+                !worker.IsFinal ||
+                (requiredDefinitionId is not null && worker.Work.Definition.Id != requiredDefinitionId))
+            {
+                continue;
+            }
+
+            if (!this.TryRemoveWorker(workerId, out var removed))
+            {
+                continue;
+            }
+
+            this.concurrency.Forget(removed);
+            this.index.Forget(removed);
+            this.ForgetIterationStatuses(workerId);
+
+            var definitionId = removed.Work.Definition.Id;
+            purgedWorkerIdsByDefinition ??= [];
+            if (!purgedWorkerIdsByDefinition.TryGetValue(definitionId, out var purgedWorkerIds))
+            {
+                purgedWorkerIds = [];
+                purgedWorkerIdsByDefinition[definitionId] = purgedWorkerIds;
+            }
+
+            purgedWorkerIds.Add(workerId);
+        }
+
+        if (purgedWorkerIdsByDefinition is null)
+        {
+            return;
+        }
+
+        foreach (var purgedWorkers in purgedWorkerIdsByDefinition)
+        {
+            this.workerEvents.Purged(purgedWorkers.Value, purgedWorkers.Key);
+        }
     }
 
     private void ForgetIterationStatuses(WorkerId workerId)
@@ -927,9 +981,9 @@ internal sealed class WorkerOperations : IWorkerOperations, IDisposable
             .OfType<WorkerSnapshot>()
             .OrderByDescending(worker => worker.CreatedAt)];
 
-    private static IReadOnlyList<WorkerSnapshot> CreateSnapshotList(IEnumerable<WorkerReadModelWorker> workers)
+    private static IReadOnlyList<WorkerSnapshot> CreateSnapshotList(IEnumerable<WorkerRecord> workers)
         => [.. workers
-            .Select(worker => worker.Snapshot)
+            .Select(worker => worker.ToSnapshot())
             .OrderByDescending(worker => worker.CreatedAt)];
 
     private void ScheduleConcurrencyDrain(WorkDefinitionId definitionId)

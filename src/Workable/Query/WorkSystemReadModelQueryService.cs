@@ -6,6 +6,8 @@ internal sealed class WorkSystemReadModelQueryService(
     string? workSystemName,
     WorkSystemReadModel readModel,
     InMemoryWorkMetricsSink metrics,
+    Func<WorkerId, CancellationToken, Task<WorkerSnapshot?>>? getWorkerDetail = null,
+    Func<WorkerIterationReference, CancellationToken, Task<WorkerIterationSnapshot?>>? getIterationDetail = null,
     WorkSystemReadModelSnapshot? snapshot = null) : IWorkSnapshotQueryService
 {
     private const int SystemWorkerListSize = 5;
@@ -29,6 +31,19 @@ internal sealed class WorkSystemReadModelQueryService(
     private readonly WorkSystemReadModel readModel = readModel;
     private readonly InMemoryWorkMetricsSink metrics = metrics;
     private readonly WorkSystemReadModelSnapshot? capturedSnapshot = snapshot;
+    private Func<WorkerId, CancellationToken, Task<WorkerSnapshot?>> getWorkerDetail = getWorkerDetail ?? MissingWorkerDetail;
+    private Func<WorkerIterationReference, CancellationToken, Task<WorkerIterationSnapshot?>> getIterationDetail = getIterationDetail ?? MissingIterationDetail;
+
+    internal void UseDetailReaders(
+        Func<WorkerId, CancellationToken, Task<WorkerSnapshot?>> getWorker,
+        Func<WorkerIterationReference, CancellationToken, Task<WorkerIterationSnapshot?>> getIteration)
+    {
+        ArgumentNullException.ThrowIfNull(getWorker);
+        ArgumentNullException.ThrowIfNull(getIteration);
+
+        this.getWorkerDetail = getWorker;
+        this.getIterationDetail = getIteration;
+    }
 
     public IWorkQueryService BeginRead()
     {
@@ -38,6 +53,8 @@ internal sealed class WorkSystemReadModelQueryService(
             this.workSystemName,
             this.readModel,
             this.metrics,
+            this.getWorkerDetail,
+            this.getIterationDetail,
             this.readModel.Current);
     }
 
@@ -45,18 +62,26 @@ internal sealed class WorkSystemReadModelQueryService(
         WorkerId workerId,
         CancellationToken cancellationToken = default)
     {
-        var snapshot = await this.GetSnapshot(cancellationToken);
-        return snapshot.WorkersById.TryGetValue(workerId, out var worker) ? worker.Snapshot : null;
+        cancellationToken.ThrowIfCancellationRequested();
+        if (this.capturedSnapshot is { } snapshot && !snapshot.WorkersById.ContainsKey(workerId))
+        {
+            return null;
+        }
+
+        return await this.getWorkerDetail(workerId, cancellationToken);
     }
 
     public async Task<WorkerIterationSnapshot?> WorkerIteration(
         WorkerIterationReference iteration,
         CancellationToken cancellationToken = default)
     {
-        var snapshot = await this.GetSnapshot(cancellationToken);
-        return snapshot.IterationsByReference.TryGetValue(iteration, out var readIteration)
-            ? readIteration.Snapshot
-            : null;
+        cancellationToken.ThrowIfCancellationRequested();
+        if (this.capturedSnapshot is { } snapshot && !snapshot.IterationsByReference.ContainsKey(iteration))
+        {
+            return null;
+        }
+
+        return await this.getIterationDetail(iteration, cancellationToken);
     }
 
     public async Task<WorkerQueryResult> Workers(
@@ -440,6 +465,22 @@ internal sealed class WorkSystemReadModelQueryService(
         }
 
         await this.readModel.Flush(cancellationToken);
+    }
+
+    private static Task<WorkerSnapshot?> MissingWorkerDetail(
+        WorkerId _,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        return Task.FromResult<WorkerSnapshot?>(null);
+    }
+
+    private static Task<WorkerIterationSnapshot?> MissingIterationDetail(
+        WorkerIterationReference _,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        return Task.FromResult<WorkerIterationSnapshot?>(null);
     }
 
     private bool TryNormalizeWorkerDefinitionName(

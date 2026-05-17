@@ -78,6 +78,26 @@ public sealed class WorkableSignalRTests
     }
 
     [Fact]
+    public async Task SignalREventStreamSubscribesOnlyWhileEventWatchersAreActive()
+    {
+        using var host = await CreateHost(addSignalR: true);
+        var system = host.Services.GetRequiredService<IWorkSystemRegistry>().Default;
+        var stream = Assert.IsType<WorkEventStream>(system.Events);
+        await using var connection = CreateConnection(host);
+
+        await connection.StartAsync();
+
+        Assert.Equal(0, stream.ActiveSubscriptionCount);
+        var watchedWorkerId = WorkerId.New();
+        await connection.InvokeAsync("WatchWorker", watchedWorkerId.Value.ToString("D"), null);
+        await Eventually(() => stream.ActiveSubscriptionCount == 1);
+
+        await connection.InvokeAsync("UnwatchWorker", watchedWorkerId.Value.ToString("D"), null);
+
+        await Eventually(() => stream.ActiveSubscriptionCount == 0);
+    }
+
+    [Fact]
     public async Task WorkerWatcherReceivesEventsForThatWorker()
     {
         using var host = await CreateHost(addSignalR: true);
@@ -261,10 +281,13 @@ public sealed class WorkableSignalRTests
 
         try
         {
-            for (var index = 0; index < 500; index++)
+            var enqueueBurst = Task.Run(async () =>
             {
-                _ = await system.Queue.Enqueue("signalr.view");
-            }
+                for (var index = 0; index < 5_000; index++)
+                {
+                    _ = await system.Queue.Enqueue("signalr.view");
+                }
+            });
 
             var updated = await ReadUntil(
                 views.Reader,
@@ -282,6 +305,7 @@ public sealed class WorkableSignalRTests
                 });
             var data = Assert.IsType<JsonElement>(updated.Components["readModelDiagnostics"].Data);
 
+            await enqueueBurst.WaitAsync(TimeSpan.FromSeconds(5));
             Assert.True(data.GetProperty("pendingUpdateCount").GetInt64() >= 1);
         }
         finally
@@ -398,6 +422,22 @@ public sealed class WorkableSignalRTests
         }
 
         return false;
+    }
+
+    private static async Task Eventually(Func<bool> condition)
+    {
+        var deadline = DateTimeOffset.UtcNow.AddSeconds(5);
+        while (DateTimeOffset.UtcNow < deadline)
+        {
+            if (condition())
+            {
+                return;
+            }
+
+            await Task.Delay(10);
+        }
+
+        Assert.True(condition(), "Expected condition to become true.");
     }
 
     private static System.Text.Json.JsonSerializerOptions JsonOptions()

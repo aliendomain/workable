@@ -26,6 +26,7 @@ public static class WorkableSignalRServiceCollectionExtensions
 
         services.TryAddSingleton<IWorkRealtimeCapabilityProvider, WorkableRealtimeCapabilityProvider>();
         services.TryAddSingleton<WorkableViewQueryAdapter>();
+        services.TryAddSingleton<WorkableRealtimeEventSubscriptions>();
         services.TryAddSingleton<WorkableRealtimeViewSubscriptions>();
         services.AddHostedService<WorkableRealtimeBroadcaster>();
         return services;

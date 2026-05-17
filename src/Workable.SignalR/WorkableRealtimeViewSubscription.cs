@@ -4,4 +4,5 @@ internal sealed record WorkableRealtimeViewSubscription(
     WorkSystemId SystemId,
     string ViewName,
     WorkViewCriteria Criteria,
-    string GroupName);
+    string GroupName,
+    long InitialReadModelSequence);

@@ -67,6 +67,83 @@ public sealed class WorkEventPayloadTests
     }
 
     [Fact]
+    public async Task PurgeEventsCarryPurgedWorkerIdsAndDate()
+    {
+        var definition = WorkDefinition.Create("events.purge", "Publishes lightweight purge payloads.");
+        await using var system = CreateSystem(definition, SuccessfulWork);
+        await system.Start();
+
+        var completed = await (await system.Queue.Enqueue("events.purge")).WaitForCompletion();
+        var worker = completed.Worker ?? throw new InvalidOperationException("Expected worker.");
+        await using var subscription = system.Events.Subscribe(new WorkEventFilter(WorkerId: worker.Id, EventType: "worker.purge"));
+        await using var reader = subscription.Read().GetAsyncEnumerator();
+
+        var outcome = await system.Workers.Execute(worker.Version, WorkAction.Purge);
+        var workEvent = await ReadNext(reader);
+
+        var data = RequiredData(workEvent);
+        var workerIds = data.GetProperty("workerIds").EnumerateArray().ToArray();
+        Assert.True(outcome.IsAccepted);
+        Assert.Equal(worker.Id, workEvent.WorkerId);
+        Assert.NotEqual(default, data.GetProperty("purgedAt").GetDateTimeOffset());
+        Assert.Single(workerIds);
+        Assert.Equal(worker.Id.Value, workerIds[0].GetProperty("value").GetGuid());
+        Assert.False(data.TryGetProperty("worker", out _));
+        Assert.False(data.TryGetProperty("action", out _));
+        Assert.False(data.TryGetProperty("actionStatus", out _));
+    }
+
+    [Fact]
+    public async Task RetentionPurgeEventsCanCarryMultiplePurgedWorkerIds()
+    {
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var allStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var startedCount = 0;
+        const int WorkerCount = 32;
+        var definition = WorkDefinition.Create(
+            "events.purge.batch",
+            "Publishes batched retention purge payloads.",
+            configuration: WorkConfiguration.Default with
+            {
+                Retention = WorkRetentionConfiguration.Default with
+                {
+                    PurgeInterval = TimeSpan.FromMinutes(10),
+                    MaximumFinalWorkers = 1,
+                },
+            });
+        await using var system = CreateSystem(definition, async (context, input, cancellationToken) =>
+        {
+            if (Interlocked.Increment(ref startedCount) == WorkerCount)
+            {
+                allStarted.TrySetResult();
+            }
+
+            await release.Task.WaitAsync(cancellationToken);
+            return WorkExecutionResult.Success();
+        });
+        await system.Start();
+        await using var subscription = system.Events.Subscribe(new WorkEventFilter(EventType: "worker.purge"));
+        await using var reader = subscription.Read().GetAsyncEnumerator();
+
+        var handles = await Task.WhenAll(Enumerable.Range(0, WorkerCount).Select(_ => system.Queue.Enqueue("events.purge.batch")));
+        await allStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        release.TrySetResult();
+        await Task.WhenAll(handles.Select(handle => handle.WaitForCompletion()));
+
+        var workEvent = await ReadUntil(
+            reader,
+            workEvent => RequiredData(workEvent).GetProperty("workerIds").GetArrayLength() > 1);
+        var data = RequiredData(workEvent);
+
+        Assert.Null(workEvent.WorkerId);
+        Assert.Equal(definition.Id, workEvent.DefinitionId);
+        Assert.True(data.GetProperty("workerIds").GetArrayLength() > 1);
+        Assert.NotEqual(default, data.GetProperty("purgedAt").GetDateTimeOffset());
+        Assert.False(data.TryGetProperty("worker", out _));
+        Assert.False(data.TryGetProperty("action", out _));
+    }
+
+    [Fact]
     public async Task ReconfigurationEventsCarryRequestedChangesAndResultingWorkerState()
     {
         var definition = WorkDefinition.Create(
@@ -243,6 +320,29 @@ public sealed class WorkEventPayloadTests
         var hasEvent = await reader.MoveNextAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(5));
         Assert.True(hasEvent);
         return reader.Current;
+    }
+
+    private static async Task<WorkEvent> ReadUntil(
+        IAsyncEnumerator<WorkEvent> reader,
+        Func<WorkEvent, bool> predicate)
+    {
+        var deadline = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(5);
+        while (DateTimeOffset.UtcNow < deadline)
+        {
+            var remaining = deadline - DateTimeOffset.UtcNow;
+            var hasEvent = await reader.MoveNextAsync().AsTask().WaitAsync(remaining);
+            if (!hasEvent)
+            {
+                break;
+            }
+
+            if (predicate(reader.Current))
+            {
+                return reader.Current;
+            }
+        }
+
+        throw new TimeoutException("The expected event did not happen.");
     }
 
     private sealed class NoopExecutor : IWorkExecutor
