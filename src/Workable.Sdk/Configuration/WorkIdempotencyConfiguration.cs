@@ -8,5 +8,7 @@ public sealed record WorkIdempotencyConfiguration
 
     public bool IsEnabled { get; init; }
 
+    public WorkIdempotencyStorage Storage { get; init; } = WorkIdempotencyStorage.Local;
+
     public WorkIdempotencyConflictPolicy ConflictPolicy { get; init; } = WorkIdempotencyConflictPolicy.RejectDuplicates;
 }

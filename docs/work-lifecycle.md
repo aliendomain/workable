@@ -93,6 +93,8 @@ sequenceDiagram
     Strategy->>Record: Release per-worker cancellation resources
 ```
 
+Executors receive a Workable-owned `CancellationToken`. Explicit API cancellation and interruption both cancel that token, but they produce different lifecycle outcomes. During interruption, `IWorkExecutionContext.IsInterrupted` returns `true` and `IWorkExecutionContext.InterruptionReason` reports why, such as `Shutdown` or `LeaseLost`, so executor code can distinguish recoverable interruption from an explicit cancel request.
+
 ## Recurring Execution
 
 Recurring execution keeps one worker active across multiple iterations. Each iteration calls `WorkerExecutionInvoker`, so every iteration gets its own async DI scope and scoped service provider.
@@ -117,9 +119,9 @@ sequenceDiagram
         Strategy->>Record: Begin next iteration
     else Interval elapses
         Strategy->>Record: Begin next iteration
-    else Pause or Cancel
+    else Pause, Cancel, or shutdown interruption
         Record-->>Strategy: Wait is signaled
-        Strategy->>Record: Complete as paused or canceled
+        Strategy->>Record: Complete as paused, canceled, or interrupted
     end
 ```
 
@@ -150,7 +152,9 @@ sequenceDiagram
 
 ## Shutdown
 
-When a system stops, it stops accepting new queue requests, stops the dispatcher, requests cancellation for queued, running, waiting, and retrying workers, and waits for the shutdown grace period. By default, hosted systems derive that grace period from the .NET generic host shutdown timeout; outside a host, the fallback is 15 seconds. If a worker does not complete after cancellation within that allowance, Workable marks the worker as canceled with a shutdown-forced message and continues shutdown. Stop results include the grace period plus summaries and names for workers that were force-canceled. Once shutdown work is complete, Workable clears in-memory worker and iteration records for the system.
+When a system stops, it stops accepting new queue requests, interrupts queued, running, waiting, and retrying workers, stops the dispatcher, and waits for the shutdown grace period. By default, hosted systems derive that grace period from the .NET generic host shutdown timeout; outside a host, the fallback is 15 seconds. If a worker does not complete after interruption within that allowance, Workable marks the worker as interrupted with a forced-interruption message and continues shutdown. Stop results include the grace period plus summaries and names for workers that had to be force-completed during shutdown. Once shutdown work is complete, Workable clears in-memory worker and iteration records for the system.
+
+Shutdown interruption is not the same as API cancellation. `WorkAction.Cancel` is an explicit final state and publishes the normal cancel/canceled action and completion events. Shutdown interruption records `WorkerState.Interrupted`, publishes `worker.interrupted`, and leaves durable queue rows eligible for replay after lease expiry.
 
 ```mermaid
 sequenceDiagram
@@ -164,17 +168,16 @@ sequenceDiagram
     Host->>System: Stop()
     System->>Ops: StopDispatching()
     Ops->>Ops: Stop accepting new queue requests
+    Ops->>Record: RequestInterruptForSystemStop()
+    Record-->>Ops: Interruption requested
     Ops->>Dispatcher: Stop()
-    Ops->>Record: RequestCancelForSystemStop()
-    Record-->>Ops: Cancel accepted
-    Ops->>Events: Publish worker.cancel
     Ops->>Record: WaitForCompletion(grace period)
     alt Worker completes before grace expires
-        Record-->>Ops: Canceled completion
-        Ops->>Events: Publish worker.canceled
+        Record-->>Ops: Interrupted completion
+        Ops->>Events: Publish worker.interrupted
     else Grace expires
-        Ops->>Record: ForceCancelForSystemStop()
-        Ops->>Events: Publish worker.cancel and worker.canceled
+        Ops->>Record: ForceInterruptForSystemStop()
+        Ops->>Events: Publish worker.interrupted
     end
     Ops-->>System: Shutdown complete
 ```
@@ -210,12 +213,12 @@ sequenceDiagram
 - Accepted workers continue running even when the caller discards the `WorkerHandle`.
 - The queue cancellation token only cancels queue acceptance before a worker is accepted.
 - The dispatcher starts accepted workers outside the caller's execution context.
-- Work execution uses Workable-owned cancellation, including pause, cancel, shutdown, and runtime policy cancellation.
-- Shutdown stops accepting new queue requests before cancellation begins. New queue requests return `WorkQueueStatus.Invalid` with `workable.system.stopping`.
-- Shutdown cancellation is cooperative. Workable requests cancellation and waits for the configured grace period, then force-completes remaining workers as canceled in Workable state.
+- Work execution uses Workable-owned cancellation, including pause, cancel, shutdown interruption, and runtime policy cancellation.
+- Shutdown stops accepting new queue requests before interruption begins. New queue requests return `WorkQueueStatus.Invalid` with `workable.system.stopping`.
+- Shutdown interruption is cooperative. Workable cancels execution tokens, exposes `IWorkExecutionContext.IsInterrupted`, and waits for the configured grace period. Remaining workers are force-completed as interrupted in Workable state.
 - Initializers and executors do not share scoped service instances. Each initializer run creates and disposes its own DI scope before the executor scope is created.
 - Recurring workers create new initializer and executor scopes for each iteration.
 - `OnceLazy` initialization uses a per-definition gate. The first worker that reaches the initializer runs it while competing workers wait; after it succeeds, later workers skip it.
 - Recurring workers that use concurrency hold their capacity while waiting between iterations.
-- Per-worker execution resources are released when execution completes, fails, pauses, or is canceled.
+- Per-worker execution resources are released when execution completes, fails, pauses, is canceled, or is interrupted.
 - Event subscriptions are owned by callers and are removed when disposed or canceled.

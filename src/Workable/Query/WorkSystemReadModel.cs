@@ -976,6 +976,7 @@ internal sealed record WorkerReadModelWorker(
                 snapshot.Revision,
                 snapshot.DefinitionCategory,
                 snapshot.State,
+                snapshot.InterruptionReason,
                 snapshot.CreatedAt,
                 snapshot.StateChangedAt,
                 snapshot.UpdatedAt)

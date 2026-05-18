@@ -3,8 +3,10 @@ using System.Diagnostics;
 using System.Globalization;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using Microsoft.Data.SqlClient;
 using Microsoft.Extensions.DependencyInjection;
 using Workable;
+using Workable.SqlServer;
 
 var options = HarnessOptions.Parse(args);
 if (options.ShowHelp)
@@ -16,6 +18,11 @@ if (options.ShowHelp)
 Console.WriteLine("Workable performance harness");
 Console.WriteLine();
 PrintOptions(options);
+
+if (options.QueueMode.IsDurable())
+{
+    await PrepareDurabilityStore(options);
+}
 
 await using var provider = CreateProvider(options);
 var system = provider.GetRequiredService<IWorkSystemRegistry>().Default;
@@ -57,15 +64,80 @@ static ServiceProvider CreateProvider(HarnessOptions options)
 {
     var even = WorkDefinition.Create("perf.lifecycle.even", category: "Perf:Even");
     var odd = WorkDefinition.Create("perf.lifecycle.odd", category: "Perf:Odd");
+    var services = new ServiceCollection();
+    if (options.QueueMode.IsDurable())
+    {
+        services.AddWorkableSqlServerDurableQueue(
+            options.DurabilityConnectionString,
+            options.DurabilitySchemaName);
+    }
 
-    return new ServiceCollection()
+    return services
         .AddWorkableSystem(builder =>
         {
-            builder.AddWork(even, CreateWorkExecutor(options.WorkDelay));
-            builder.AddWork(odd, CreateWorkExecutor(options.WorkDelay));
+            builder.AddWork(even, CreateWorkExecutor(options.WorkDelay), ConfigureQueueMode(options.QueueMode));
+            builder.AddWork(odd, CreateWorkExecutor(options.WorkDelay), ConfigureQueueMode(options.QueueMode));
         })
         .BuildServiceProvider();
 }
+
+static Action<IWorkConfigurationBuilder> ConfigureQueueMode(HarnessQueueMode queueMode)
+    => queueMode switch
+    {
+        HarnessQueueMode.InMemory => _ => { },
+        HarnessQueueMode.DurableIdempotent => configuration => configuration
+            .RejectDuplicateSubjects(WorkIdempotencyStorage.Persistence)
+            .QueueDurably(),
+        HarnessQueueMode.DurableNonIdempotent => configuration => configuration.QueueDurably(),
+        _ => throw new ArgumentOutOfRangeException(nameof(queueMode), queueMode, "Unknown queue mode."),
+    };
+
+static async Task PrepareDurabilityStore(HarnessOptions options)
+{
+    await EnsureDatabase(options.DurabilityConnectionString);
+    await WorkableSqlServerSchema.Apply(
+        options.DurabilityConnectionString,
+        options.DurabilitySchemaName);
+
+    if (!options.DurabilityResetStore)
+    {
+        return;
+    }
+
+    await using var connection = new SqlConnection(options.DurabilityConnectionString);
+    await connection.OpenAsync();
+    await using var command = connection.CreateCommand();
+    command.CommandText = $"DELETE FROM {QuoteIdentifier(options.DurabilitySchemaName)}.[WorkEntries];";
+    await command.ExecuteNonQueryAsync();
+}
+
+static async Task EnsureDatabase(string connectionString)
+{
+    var builder = new SqlConnectionStringBuilder(connectionString);
+    if (string.IsNullOrWhiteSpace(builder.InitialCatalog))
+    {
+        return;
+    }
+
+    var databaseName = builder.InitialCatalog;
+    builder.InitialCatalog = "master";
+    await using var connection = new SqlConnection(builder.ConnectionString);
+    await connection.OpenAsync();
+    await using var command = connection.CreateCommand();
+    command.CommandText = $"""
+IF DB_ID(N'{EscapeLiteral(databaseName)}') IS NULL
+BEGIN
+    CREATE DATABASE {QuoteIdentifier(databaseName)};
+END
+""";
+    await command.ExecuteNonQueryAsync();
+}
+
+static string QuoteIdentifier(string identifier)
+    => $"[{identifier.Replace("]", "]]", StringComparison.Ordinal)}]";
+
+static string EscapeLiteral(string value)
+    => value.Replace("'", "''", StringComparison.Ordinal);
 
 static Func<IWorkExecutionContext, WorkInput?, CancellationToken, Task<WorkExecutionResult>> CreateWorkExecutor(TimeSpan delay)
     => async (_, _, cancellationToken) =>
@@ -108,12 +180,15 @@ static async Task<LifecycleResult> RunLifecycle(
     CancellationToken cancellationToken)
 {
     var durations = new DurationRecorder();
+    var queueDurations = new DurationRecorder();
     var rejected = new ConcurrentBag<string>();
+    var acceptedWorkers = new ConcurrentBag<QueuedWorker>();
     var completed = 0;
     var accepted = 0;
 
     using var gate = new SemaphoreSlim(options.Parallelism);
     var stopwatch = Stopwatch.StartNew();
+    var queueStopwatch = Stopwatch.StartNew();
     var tasks = new List<Task>(options.Workers);
 
     for (var index = 0; index < options.Workers; index++)
@@ -122,14 +197,17 @@ static async Task<LifecycleResult> RunLifecycle(
         var workerIndex = index;
         tasks.Add(Task.Run(async () =>
         {
-            var workerStopwatch = Stopwatch.StartNew();
+            var lifecycleStopwatch = Stopwatch.StartNew();
             try
             {
                 var name = workerIndex % 2 == 0 ? "perf.lifecycle.even" : "perf.lifecycle.odd";
+                var workerQueueStopwatch = Stopwatch.StartNew();
                 var handle = await system.Queue.Enqueue(
                     name,
                     CreateInput(workerIndex),
                     cancellationToken: cancellationToken);
+                workerQueueStopwatch.Stop();
+                queueDurations.Record(workerQueueStopwatch.Elapsed);
                 readModelLag.Observe(system);
 
                 if (!handle.QueueOutcome.IsAccepted)
@@ -139,11 +217,7 @@ static async Task<LifecycleResult> RunLifecycle(
                 }
 
                 Interlocked.Increment(ref accepted);
-                await handle.WaitForCompletion(cancellationToken);
-                Interlocked.Increment(ref completed);
-                workerStopwatch.Stop();
-                durations.Record(workerStopwatch.Elapsed);
-                readModelLag.Observe(system);
+                acceptedWorkers.Add(new QueuedWorker(handle, lifecycleStopwatch));
             }
             finally
             {
@@ -153,6 +227,16 @@ static async Task<LifecycleResult> RunLifecycle(
     }
 
     await Task.WhenAll(tasks);
+    queueStopwatch.Stop();
+
+    await Task.WhenAll(acceptedWorkers.Select(async worker =>
+    {
+        await worker.Handle.WaitForCompletion(cancellationToken);
+        Interlocked.Increment(ref completed);
+        worker.LifecycleStopwatch.Stop();
+        durations.Record(worker.LifecycleStopwatch.Elapsed);
+        readModelLag.Observe(system);
+    }));
     stopwatch.Stop();
 
     return new LifecycleResult(
@@ -161,6 +245,8 @@ static async Task<LifecycleResult> RunLifecycle(
         completed,
         rejected.Count,
         stopwatch.Elapsed,
+        queueStopwatch.Elapsed,
+        queueDurations.Snapshot(),
         durations.Snapshot());
 }
 
@@ -295,6 +381,7 @@ static JsonElement CreateThroughputOptions(HarnessOptions options)
 static void PrintOptions(HarnessOptions options)
 {
     Console.WriteLine("Configuration");
+    Console.WriteLine($"  Queue mode:         {options.QueueMode.ToOptionValue()}");
     Console.WriteLine($"  Workers:            {options.Workers:N0}");
     Console.WriteLine($"  Parallelism:        {options.Parallelism:N0}");
     Console.WriteLine($"  Work delay:         {options.WorkDelay.TotalMilliseconds:N0} ms");
@@ -303,6 +390,11 @@ static void PrintOptions(HarnessOptions options)
     Console.WriteLine($"  Serialize payloads: {options.SerializePayloads}");
     Console.WriteLine($"  Warmup workers:     {options.WarmupWorkers:N0}");
     Console.WriteLine($"  Warmup views:       {options.WarmupViews:N0}");
+    if (options.QueueMode.IsDurable())
+    {
+        Console.WriteLine($"  SQL schema:         {options.DurabilitySchemaName}");
+        Console.WriteLine($"  Reset durable rows: {options.DurabilityResetStore}");
+    }
 }
 
 static void PrintLifecycle(LifecycleResult result)
@@ -313,7 +405,10 @@ static void PrintLifecycle(LifecycleResult result)
     Console.WriteLine($"  Completed workers:  {result.CompletedWorkers:N0}");
     Console.WriteLine($"  Rejected workers:   {result.RejectedWorkers:N0}");
     Console.WriteLine($"  Elapsed:            {FormatDuration(result.Elapsed)}");
+    Console.WriteLine($"  Queue elapsed:      {FormatDuration(result.QueueElapsed)}");
+    Console.WriteLine($"  Accepted/sec:       {Rate(result.AcceptedWorkers, result.QueueElapsed):N1}");
     Console.WriteLine($"  Completed/sec:      {Rate(result.CompletedWorkers, result.Elapsed):N1}");
+    PrintDurations(result.QueueLatency, "Queue latency");
     PrintDurations(result.CompletionLatency, "Completion latency");
 }
 
@@ -377,7 +472,30 @@ internal static class HarnessJson
     };
 }
 
+internal enum HarnessQueueMode
+{
+    InMemory,
+    DurableIdempotent,
+    DurableNonIdempotent,
+}
+
+internal static class HarnessQueueModeExtensions
+{
+    public static bool IsDurable(this HarnessQueueMode mode)
+        => mode is HarnessQueueMode.DurableIdempotent or HarnessQueueMode.DurableNonIdempotent;
+
+    public static string ToOptionValue(this HarnessQueueMode mode)
+        => mode switch
+        {
+            HarnessQueueMode.InMemory => "in-memory",
+            HarnessQueueMode.DurableIdempotent => "durable-idempotent",
+            HarnessQueueMode.DurableNonIdempotent => "durable-non-idempotent",
+            _ => throw new ArgumentOutOfRangeException(nameof(mode), mode, "Unknown queue mode."),
+        };
+}
+
 internal sealed record HarnessOptions(
+    HarnessQueueMode QueueMode,
     int Workers,
     int Parallelism,
     TimeSpan WorkDelay,
@@ -388,11 +506,15 @@ internal sealed record HarnessOptions(
     int ThroughputBucketSeconds,
     int WarmupWorkers,
     int WarmupViews,
+    string DurabilityConnectionString,
+    string DurabilitySchemaName,
+    bool DurabilityResetStore,
     bool ShowHelp)
 {
     public static HarnessOptions Parse(string[] args)
     {
         var options = new HarnessOptions(
+            QueueMode: HarnessQueueMode.InMemory,
             Workers: 1_000,
             Parallelism: Math.Max(1, Environment.ProcessorCount),
             WorkDelay: TimeSpan.FromMilliseconds(1),
@@ -403,6 +525,9 @@ internal sealed record HarnessOptions(
             ThroughputBucketSeconds: 1,
             WarmupWorkers: 20,
             WarmupViews: 3,
+            DurabilityConnectionString: "Server=(localdb)\\MSSQLLocalDB;Database=WorkablePerformanceHarness;Integrated Security=true;TrustServerCertificate=true",
+            DurabilitySchemaName: "workable_perf",
+            DurabilityResetStore: true,
             ShowHelp: false);
 
         for (var index = 0; index < args.Length; index++)
@@ -419,6 +544,7 @@ internal sealed record HarnessOptions(
 
             options = name switch
             {
+                "--queue-mode" => options with { QueueMode = ParseQueueMode(name, value) },
                 "--workers" => options with { Workers = PositiveInt(name, value) },
                 "--parallelism" => options with { Parallelism = PositiveInt(name, value) },
                 "--work-delay-ms" => options with { WorkDelay = TimeSpan.FromMilliseconds(NonNegativeInt(name, value)) },
@@ -429,6 +555,9 @@ internal sealed record HarnessOptions(
                 "--throughput-bucket-seconds" => options with { ThroughputBucketSeconds = PositiveInt(name, value) },
                 "--warmup-workers" => options with { WarmupWorkers = NonNegativeInt(name, value) },
                 "--warmup-views" => options with { WarmupViews = NonNegativeInt(name, value) },
+                "--durability-connection-string" => options with { DurabilityConnectionString = Required(name, value) },
+                "--durability-schema" => options with { DurabilitySchemaName = Required(name, value) },
+                "--durability-reset-store" => options with { DurabilityResetStore = Bool(name, value) },
                 _ => throw new ArgumentException($"Unknown option '{name}'. Use --help for supported options."),
             };
         }
@@ -444,6 +573,7 @@ internal sealed record HarnessOptions(
         Console.WriteLine("  dotnet run --project src/Workable.PerformanceHarness -- [options]");
         Console.WriteLine();
         Console.WriteLine("Options:");
+        Console.WriteLine("  --queue-mode <mode>               Queue mode: in-memory, durable-idempotent, durable-non-idempotent. Default: in-memory");
         Console.WriteLine("  --workers <n>                     Workers to queue. Default: 1000");
         Console.WriteLine("  --parallelism <n>                 Concurrent queue/wait operations. Default: processor count");
         Console.WriteLine("  --work-delay-ms <n>               Simulated work delay per worker. Default: 1");
@@ -454,6 +584,9 @@ internal sealed record HarnessOptions(
         Console.WriteLine("  --throughput-bucket-seconds <n>   Throughput bucket size requested by overview. Default: 1");
         Console.WriteLine("  --warmup-workers <n>              Workers queued before measurement. Default: 20");
         Console.WriteLine("  --warmup-views <n>                Overview views before measurement. Default: 3");
+        Console.WriteLine("  --durability-connection-string <s> SQL Server connection string for durable modes. Default: LocalDB WorkablePerformanceHarness");
+        Console.WriteLine("  --durability-schema <s>           SQL schema for durable modes. Default: workable_perf");
+        Console.WriteLine("  --durability-reset-store <true|false> Delete durable rows before measurement. Default: true");
         Console.WriteLine("  -h|--help                         Show help.");
     }
 
@@ -477,6 +610,20 @@ internal sealed record HarnessOptions(
         => bool.TryParse(value, out var parsed)
             ? parsed
             : throw new ArgumentException($"'{name}' must be true or false.");
+
+    private static string Required(string name, string value)
+        => string.IsNullOrWhiteSpace(value)
+            ? throw new ArgumentException($"'{name}' must not be empty.")
+            : value;
+
+    private static HarnessQueueMode ParseQueueMode(string name, string value)
+        => value.Trim().ToLowerInvariant() switch
+        {
+            "in-memory" => HarnessQueueMode.InMemory,
+            "durable-idempotent" => HarnessQueueMode.DurableIdempotent,
+            "durable-non-idempotent" => HarnessQueueMode.DurableNonIdempotent,
+            _ => throw new ArgumentException($"'{name}' must be in-memory, durable-idempotent, or durable-non-idempotent."),
+        };
 }
 
 internal sealed class DurationRecorder
@@ -562,12 +709,18 @@ internal sealed record DurationSnapshot(
     double P99Milliseconds,
     double MaxMilliseconds);
 
+internal sealed record QueuedWorker(
+    IWorkerHandle Handle,
+    Stopwatch LifecycleStopwatch);
+
 internal sealed record LifecycleResult(
     int RequestedWorkers,
     int AcceptedWorkers,
     int CompletedWorkers,
     int RejectedWorkers,
     TimeSpan Elapsed,
+    TimeSpan QueueElapsed,
+    DurationSnapshot QueueLatency,
     DurationSnapshot CompletionLatency);
 
 internal sealed record ViewFanoutResult(

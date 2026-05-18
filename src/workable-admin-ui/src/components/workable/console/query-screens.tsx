@@ -965,9 +965,12 @@ function getWorkerActions(state: WorkerState): WorkAction[] {
     case "Waiting":
     case "Retrying":
       return ["Pause", "Push", "Cancel"];
+    case "Interrupted":
+      return ["Cancel"];
     case "Canceled":
     case "Completed":
       return ["Purge"];
+    case "Interrupting":
     case "Canceling":
     case "Pausing":
       return [];
@@ -2096,6 +2099,7 @@ function completionTone(status: WorkCompletionStatus) {
     case "Canceled":
       return "bg-red-500/15 text-red-300 border-red-500/30";
     case "Paused":
+    case "Interrupted":
       return "border-amber-500/40 bg-amber-500/10 text-amber-300";
     default:
       return "border-muted-foreground/30 text-muted-foreground";

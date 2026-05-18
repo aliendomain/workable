@@ -44,6 +44,7 @@ Workable also gives applications a path to expose the same authored work through
   - [Logging](https://github.com/aliendomain/workable/blob/main/docs/work-configuration-logging.md): worker-scoped logging behavior.
   - [Retention](https://github.com/aliendomain/workable/blob/main/docs/work-configuration-retention.md): automatic purge timing for completed and canceled workers.
   - [Concurrency](https://github.com/aliendomain/workable/blob/main/docs/work-configuration-concurrency.md): capacity limits by definition, subject, or concurrency key.
+  - [Queue Durability](https://github.com/aliendomain/workable/blob/main/docs/work-configuration-queue-durability.md): persist accepted queue requests and replay interrupted durable work.
   - [Invocation](https://github.com/aliendomain/workable/blob/main/docs/work-configuration-invocation.md): channels allowed to start a work definition.
   - [Interactions](https://github.com/aliendomain/workable/blob/main/docs/work-configuration-interactions.md): non-obvious behavior when configuration types are combined.
 - [Work Querying](https://github.com/aliendomain/workable/blob/main/docs/work-querying.md): build admin views, status summaries, and definition browsers.

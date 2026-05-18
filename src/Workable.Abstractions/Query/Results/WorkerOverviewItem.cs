@@ -10,6 +10,7 @@ public sealed record WorkerOverviewItem(
     long Revision,
     string Category,
     WorkerState State,
+    WorkInterruptionReason? InterruptionReason,
     DateTimeOffset CreatedAt,
     DateTimeOffset StateChangedAt,
     DateTimeOffset UpdatedAt)
@@ -31,6 +32,7 @@ public sealed record WorkerOverviewItem(
             worker.Revision,
             worker.DefinitionCategory,
             worker.State,
+            worker.InterruptionReason,
             worker.CreatedAt,
             worker.StateChangedAt,
             worker.UpdatedAt)

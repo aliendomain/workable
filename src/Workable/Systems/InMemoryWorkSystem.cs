@@ -42,6 +42,8 @@ internal sealed class InMemoryWorkSystem : IWorkSystem, IOriginAwareWorkSystem, 
         var dotNetOriginProvider = registration.DotNetOriginProviderFactory?.Invoke(rootServices)
             ?? rootServices.GetService<IDotNetWorkOriginProvider>()
             ?? new DefaultDotNetWorkOriginProvider();
+        var persistenceStore = rootServices.GetService<IWorkPersistenceStore>()
+            ?? rootServices.GetService<IWorkQueueDurabilityStore>();
         this.readModel = new WorkSystemReadModel(this.catalog, () => this.State, this.Name, this.metrics);
         this.workers = new WorkerOperations(
             this.catalog,
@@ -58,7 +60,8 @@ internal sealed class InMemoryWorkSystem : IWorkSystem, IOriginAwareWorkSystem, 
             registration.Retention,
             registration.Capacity,
             this.metrics,
-            this.queueDiagnostics);
+            this.queueDiagnostics,
+            persistenceStore);
         this.diagnostics = new WorkSystemDiagnostics(this.queueDiagnostics, this.readModel, this.workers);
         this.readModel.UseDetailReaders(this.workers.GetAuthoritative, this.workers.GetIterationAuthoritative);
         this.query = this.readModel.Query;
@@ -106,7 +109,10 @@ internal sealed class InMemoryWorkSystem : IWorkSystem, IOriginAwareWorkSystem, 
         WorkAction action,
         WorkOrigin origin,
         CancellationToken cancellationToken)
-        => this.workers.Execute(worker, action, origin, cancellationToken);
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        return this.workers.Execute(worker, action, origin);
+    }
 
     Task<WorkerBulkActionOutcome> IOriginAwareWorkSystem.ExecuteAll(
         WorkAction action,
@@ -120,7 +126,10 @@ internal sealed class InMemoryWorkSystem : IWorkSystem, IOriginAwareWorkSystem, 
         WorkerReconfiguration changes,
         WorkOrigin origin,
         CancellationToken cancellationToken)
-        => this.workers.Reconfigure(worker, changes, origin, cancellationToken);
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        return this.workers.Reconfigure(worker, changes, origin);
+    }
 
     Task<WorkSystemStopResult> IOriginAwareWorkSystem.Stop(
         WorkOrigin origin,
@@ -146,7 +155,7 @@ internal sealed class InMemoryWorkSystem : IWorkSystem, IOriginAwareWorkSystem, 
             }
 
             this.catalog.Freeze();
-            this.workers.StartDispatching();
+            await this.workers.StartDispatching(cancellationToken);
             dispatchingStarted = true;
             this.State = WorkSystemState.Started;
             await this.QueueAutomaticallyStartedWork(cancellationToken);
@@ -189,7 +198,7 @@ internal sealed class InMemoryWorkSystem : IWorkSystem, IOriginAwareWorkSystem, 
 
             this.State = WorkSystemState.Stopping;
             await this.NotifyStopping(origin);
-            var result = await this.workers.StopDispatching(origin, CancellationToken.None);
+            var result = await this.workers.StopDispatching(origin, cancellationToken);
             this.metrics.Clear();
             this.State = WorkSystemState.Stopped;
             return result;

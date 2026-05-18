@@ -29,6 +29,7 @@ Some registration-time behavior is attached with the same fluent builder but is 
 - [Retention Configuration](work-configuration-retention.md): automatic purge timing and background count-target cleanup for completed and canceled workers.
 - [System Capacity Configuration](work-system-capacity.md): approximate admission guard for non-final in-memory worker records.
 - [Concurrency Configuration](work-configuration-concurrency.md): capacity limits by definition, subject, or concurrency key.
+- [Queue Durability Configuration](work-configuration-queue-durability.md): persist accepted queue requests, recover interrupted durable work, and opt into transaction-bound durable completion.
 - [Invocation Configuration](work-configuration-invocation.md): channels allowed to start a work definition.
 - [Configuration Interactions](work-configuration-interactions.md): non-obvious behavior when configuration types are combined.
 

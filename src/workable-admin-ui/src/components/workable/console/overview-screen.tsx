@@ -242,6 +242,7 @@ const overviewWorkerStates: WorkerState[] = [
   "Waiting",
   "Retrying",
   "Paused",
+  "Interrupted",
   "Failed",
   "Canceled",
   "Completed",
@@ -249,7 +250,7 @@ const overviewWorkerStates: WorkerState[] = [
 const activeWorkerStates: WorkerState[] = ["Queued", "Running", "Waiting", "Retrying", "Paused"];
 const failedWorkerStates: WorkerState[] = ["Failed"];
 const finalWorkerStates: WorkerState[] = ["Canceled", "Completed"];
-const iterationStatuses: WorkCompletionStatus[] = ["Executing", "Completed", "Failed", "Canceled", "Paused"];
+const iterationStatuses: WorkCompletionStatus[] = ["Executing", "Completed", "Failed", "Interrupted", "Canceled", "Paused"];
 const throughputWindows = [
   { bucketSeconds: 1, label: "60s", seconds: 60 },
   { bucketSeconds: 5, label: "5m", seconds: 5 * 60 },
@@ -3114,6 +3115,7 @@ function completionTone(status: WorkCompletionStatus) {
     case "Canceled":
       return "bg-red-500/15 text-red-300 border-red-500/30";
     case "Paused":
+    case "Interrupted":
       return "border-amber-500/40 bg-amber-500/10 text-amber-300";
     default:
       return "border-muted-foreground/30 text-muted-foreground";

@@ -6,6 +6,7 @@ internal sealed class WorkerExecutionInvoker(
     WorkSystemId workSystemId,
     string? workSystemName,
     IServiceProvider rootServices,
+    IWorkerPersistenceCoordinator persistence,
     WorkerEventPublisher workerEvents,
     Action<WorkerRecord, WorkIdentifier> identifierDiscovered,
     WorkInitializationExecutor initialization)
@@ -21,7 +22,10 @@ internal sealed class WorkerExecutionInvoker(
         using var logCapture = WorkableLogCaptureContext.Begin(worker, workerEvents);
         try
         {
-            var initializationResult = await initialization.Initialize(worker, this.CreateContext, cancellationToken);
+            IWorkExecutionContext CreateDurableContext(WorkerRecord contextWorker, IServiceProvider services)
+                => this.CreateContext(contextWorker, services);
+
+            var initializationResult = await initialization.Initialize(worker, CreateDurableContext, cancellationToken);
             if (initializationResult.HasErrors)
             {
                 return initializationResult;
@@ -42,6 +46,16 @@ internal sealed class WorkerExecutionInvoker(
                 result.HasErrors,
                 MessageCount = result.Messages.Count,
             });
+
+            if (worker.Configuration.QueueDurability.CompleteDurably &&
+                !result.HasErrors &&
+                worker.State == WorkerState.Running &&
+                !context.IsDurableCompletionRecorded)
+            {
+                throw new InvalidOperationException(
+                    "Durable completion is enabled for this work. Successful executor code must call IWorkExecutionContext.CompleteDurably with the developer-owned transaction before committing it.");
+            }
+
             return result;
         }
         catch (ObjectDisposedException) when (cancellationToken.IsCancellationRequested)
@@ -57,7 +71,9 @@ internal sealed class WorkerExecutionInvoker(
         }
     }
 
-    private WorkExecutionContext CreateContext(WorkerRecord worker, IServiceProvider services)
+    private WorkExecutionContext CreateContext(
+        WorkerRecord worker,
+        IServiceProvider services)
     {
         var profiler = services.GetService<IWorkProfiler>() ?? NoOpWorkProfiler.Instance;
         return new WorkExecutionContext(
@@ -68,6 +84,7 @@ internal sealed class WorkerExecutionInvoker(
             worker.Origin,
             worker.Options,
             worker.Configuration,
+            () => worker.InterruptionReason,
             profiler,
             services,
             identifier =>
@@ -79,6 +96,8 @@ internal sealed class WorkerExecutionInvoker(
                 }
 
                 return added;
-            });
+            },
+            (transaction, durableCompletionCancellation) =>
+                persistence.CompleteDurably(worker, transaction, durableCompletionCancellation));
     }
 }

@@ -160,7 +160,9 @@ POST /workable/systems/email/lifecycle/stop
 
 Starting a system runs the normal system startup behavior. Work definition sources are not run again after the catalog has already been built, but automatic starts and startup work sources run each time a stopped system is started.
 
-Stopping a system stops accepting new work, asks active workers to cancel, waits for the configured shutdown grace period, and then force-cancels workers that did not finish cooperatively. After shutdown work completes, Workable clears in-memory worker and iteration records for that system. The stop response includes the shutdown grace period, summaries for workers asked to stop, and the names and summaries of workers that were force-canceled after the grace period elapsed.
+Stopping a system stops accepting new work, interrupts active workers, waits for the configured shutdown grace period, and then force-completes workers that did not finish cooperatively as `Interrupted`. After shutdown work completes, Workable clears in-memory worker and iteration records for that system. The stop response includes the shutdown grace period, summaries for workers asked to stop, and the names and summaries of workers that were force-completed after the grace period elapsed.
+
+The response keeps the existing `forceCanceled*` JSON property names for compatibility. During shutdown interruption, those lists contain workers force-completed as `Interrupted`.
 
 ```json
 {

@@ -1,7 +1,8 @@
 namespace Workable;
 public sealed record WorkerOptions(
     bool ProfilingEnabled = false,
-    WorkConfiguration? Configuration = null)
+    WorkConfiguration? Configuration = null,
+    IWorkQueueDurabilityTransaction? QueueDurabilityTransaction = null)
 {
     public static WorkerOptions Default { get; } = new();
 
@@ -12,5 +13,6 @@ public sealed record WorkerOptions(
             {
                 ProfilingEnabled = overrides.ProfilingEnabled,
                 Configuration = this.Configuration?.MergeRuntimeOptions(overrides.Configuration) ?? overrides.Configuration,
+                QueueDurabilityTransaction = overrides.QueueDurabilityTransaction,
             };
 }

@@ -2,7 +2,7 @@
 
 Retention configuration controls how many final workers Workable keeps available after completion or cancellation, and how long those final workers may stay available.
 
-`PurgeInterval` is the maximum retention age for final workers. Worker-level `MaximumFinalWorkers` is an asynchronously enforced retained final-worker target for a work definition. System-level `MaximumFinalWorkers` is an asynchronously enforced retained final-worker target across the whole system. Final workers are `Completed` or `Canceled`. When a final worker has not been manually purged, Workable purges it after the configured interval, when the work definition is above its retained final-worker target, or when the system is above its retained final-worker target. Failed workers are not final and are handled separately because they can be started again or canceled.
+`PurgeInterval` is the maximum retention age for final workers. Worker-level `MaximumFinalWorkers` is an asynchronously enforced retained final-worker target for a work definition. System-level `MaximumFinalWorkers` is an asynchronously enforced retained final-worker target across the whole system. Final workers are `Completed` or `Canceled`. When a final worker has not been manually purged, Workable purges it after the configured interval, when the work definition is above its retained final-worker target, or when the system is above its retained final-worker target. Failed and interrupted workers are not final and are handled separately because they can still require retry, replay, inspection, or explicit cancellation.
 
 | Worker setting | Default | Behavior |
 | --- | --- | --- |
@@ -81,5 +81,5 @@ var outcome = await system.Workers.Reconfigure(
 
 ## Related Interactions
 
-- [Retention And Failure](work-configuration-interactions.md#retention-and-failure): failed workers are not final and are not automatically purged by final-worker retention.
+- [Retention And Failure](work-configuration-interactions.md#retention-and-failure): failed and interrupted workers are not final and are not automatically purged by final-worker retention.
 - [System Capacity Configuration](work-system-capacity.md): system capacity rejects new queue requests when the approximate non-final worker record count is at capacity. Retained completed and canceled workers do not block admission, but still consume memory while retained.

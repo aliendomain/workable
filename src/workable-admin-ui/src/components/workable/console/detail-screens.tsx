@@ -473,21 +473,28 @@ export function WorkerConsoleView({
       return;
     }
 
-    const result = await workableFetch<{ status: string; messages?: { text: string }[] }>(
-      connection,
-      `workers/${current.id.value}/actions/${action.toLowerCase()}`,
-      {
-        method: "POST",
-        body: JSON.stringify({ revision: current.revision }),
-      }
-    );
-    const message = result.messages?.map((message) => message.text).filter(Boolean).join(" ") ||
-      `${action} returned ${result.status}.`;
-    setActionFeedback({
-      message,
-      tone: result.status === "Accepted" ? "info" : "warning",
-    });
-    setActionRefreshToken((value) => value + 1);
+    try {
+      const result = await workableFetch<{ status: string; messages?: { text: string }[] }>(
+        connection,
+        `workers/${current.id.value}/actions/${action.toLowerCase()}`,
+        {
+          method: "POST",
+          body: JSON.stringify({ revision: current.revision }),
+        }
+      );
+      const message = result.messages?.map((message) => message.text).filter(Boolean).join(" ") ||
+        `${action} returned ${result.status}.`;
+      setActionFeedback({
+        message,
+        tone: result.status === "Accepted" ? "info" : "warning",
+      });
+      setActionRefreshToken((value) => value + 1);
+    } catch (error) {
+      setActionFeedback({
+        message: error instanceof Error ? error.message : `Unable to ${action.toLowerCase()} worker.`,
+        tone: "warning",
+      });
+    }
   };
 
   return (
@@ -1428,6 +1435,7 @@ const defaultWorkConfiguration: WorkConfiguration = {
   },
   idempotency: {
     isEnabled: false,
+    storage: "Local",
     conflictPolicy: "RejectDuplicates",
   },
   recurrence: {
@@ -1462,6 +1470,10 @@ const defaultWorkConfiguration: WorkConfiguration = {
     blockingMode: "WhileExecutingPausedOrFailed",
     limitReachedBehavior: "Ignore",
     overrideBehavior: "Flexible",
+  },
+  queueDurability: {
+    isEnabled: false,
+    completeDurably: false,
   },
 };
 

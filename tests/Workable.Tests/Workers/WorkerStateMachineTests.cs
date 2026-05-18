@@ -64,6 +64,10 @@ public sealed class WorkerStateMachineTests
     [InlineData(WorkerState.Pausing, true, WorkerState.Paused, WorkCompletionStatus.Paused)]
     [InlineData(WorkerState.Paused, false, WorkerState.Paused, WorkCompletionStatus.Invalid)]
     [InlineData(WorkerState.Paused, true, WorkerState.Paused, WorkCompletionStatus.Invalid)]
+    [InlineData(WorkerState.Interrupting, false, WorkerState.Interrupted, WorkCompletionStatus.Interrupted)]
+    [InlineData(WorkerState.Interrupting, true, WorkerState.Interrupted, WorkCompletionStatus.Interrupted)]
+    [InlineData(WorkerState.Interrupted, false, WorkerState.Interrupted, WorkCompletionStatus.Interrupted)]
+    [InlineData(WorkerState.Interrupted, true, WorkerState.Interrupted, WorkCompletionStatus.Interrupted)]
     [InlineData(WorkerState.Canceling, false, WorkerState.Canceled, WorkCompletionStatus.Canceled)]
     [InlineData(WorkerState.Canceling, true, WorkerState.Canceled, WorkCompletionStatus.Canceled)]
     [InlineData(WorkerState.Canceled, false, WorkerState.Canceled, WorkCompletionStatus.Canceled)]
@@ -91,6 +95,8 @@ public sealed class WorkerStateMachineTests
     [InlineData(WorkerState.Retrying, false)]
     [InlineData(WorkerState.Pausing, false)]
     [InlineData(WorkerState.Paused, false)]
+    [InlineData(WorkerState.Interrupting, false)]
+    [InlineData(WorkerState.Interrupted, false)]
     [InlineData(WorkerState.Canceling, false)]
     [InlineData(WorkerState.Canceled, true)]
     [InlineData(WorkerState.Completed, true)]
@@ -105,6 +111,7 @@ public sealed class WorkerStateMachineTests
     [InlineData(WorkerState.Running, WorkerState.Canceled, WorkCompletionStatus.Canceled)]
     [InlineData(WorkerState.Canceling, WorkerState.Canceled, WorkCompletionStatus.Canceled)]
     [InlineData(WorkerState.Retrying, WorkerState.Canceled, WorkCompletionStatus.Canceled)]
+    [InlineData(WorkerState.Interrupted, WorkerState.Interrupted, WorkCompletionStatus.Interrupted)]
     [InlineData(WorkerState.Queued, WorkerState.Queued, WorkCompletionStatus.Invalid)]
     [InlineData(WorkerState.Completed, WorkerState.Completed, WorkCompletionStatus.Completed)]
     public void CancellationCompletionRulesAreExplicit(
@@ -113,6 +120,24 @@ public sealed class WorkerStateMachineTests
         WorkCompletionStatus expectedStatus)
     {
         var transition = WorkerStateMachine.CompleteCancellation(state);
+
+        Assert.Equal(expectedNextState, transition.NextState);
+        Assert.Equal(expectedStatus, transition.CompletionStatus);
+    }
+
+    [Theory]
+    [InlineData(WorkerState.Running, WorkerState.Interrupted, WorkCompletionStatus.Interrupted)]
+    [InlineData(WorkerState.Interrupting, WorkerState.Interrupted, WorkCompletionStatus.Interrupted)]
+    [InlineData(WorkerState.Waiting, WorkerState.Interrupted, WorkCompletionStatus.Interrupted)]
+    [InlineData(WorkerState.Retrying, WorkerState.Interrupted, WorkCompletionStatus.Interrupted)]
+    [InlineData(WorkerState.Queued, WorkerState.Queued, WorkCompletionStatus.Invalid)]
+    [InlineData(WorkerState.Completed, WorkerState.Completed, WorkCompletionStatus.Completed)]
+    public void InterruptionCompletionRulesAreExplicit(
+        WorkerState state,
+        WorkerState expectedNextState,
+        WorkCompletionStatus expectedStatus)
+    {
+        var transition = WorkerStateMachine.CompleteInterruption(state);
 
         Assert.Equal(expectedNextState, transition.NextState);
         Assert.Equal(expectedStatus, transition.CompletionStatus);
@@ -193,7 +218,7 @@ public sealed class WorkerStateMachineTests
         => state switch
         {
             WorkerState.Running => WorkerState.Canceling,
-            WorkerState.Queued or WorkerState.Waiting or WorkerState.Retrying or WorkerState.Paused or WorkerState.Failed => WorkerState.Canceled,
+            WorkerState.Queued or WorkerState.Waiting or WorkerState.Retrying or WorkerState.Paused or WorkerState.Interrupted or WorkerState.Failed => WorkerState.Canceled,
             _ => null,
         };
 

@@ -6,5 +6,6 @@ public enum WorkableHttpWorkStatus
     Accepted,
     Completed,
     Failed,
+    Interrupted,
     Canceled,
 }

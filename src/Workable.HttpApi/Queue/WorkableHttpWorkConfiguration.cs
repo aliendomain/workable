@@ -7,7 +7,8 @@ public sealed record WorkableHttpWorkConfiguration(
     WorkTransientRetryConfiguration TransientRetry,
     WorkLoggingConfiguration Logging,
     WorkRetentionConfiguration Retention,
-    WorkConcurrencyConfiguration Concurrency)
+    WorkConcurrencyConfiguration Concurrency,
+    WorkQueueDurabilityConfiguration QueueDurability)
 {
     public static WorkableHttpWorkConfiguration Default { get; } = From(WorkConfiguration.Default);
 
@@ -22,7 +23,8 @@ public sealed record WorkableHttpWorkConfiguration(
             configuration.TransientRetry,
             configuration.Logging,
             configuration.Retention,
-            configuration.Concurrency);
+            configuration.Concurrency,
+            configuration.QueueDurability);
     }
 
     internal WorkConfiguration ToWorkConfiguration()
@@ -34,5 +36,8 @@ public sealed record WorkableHttpWorkConfiguration(
             Logging,
             Retention,
             Concurrency,
-            WorkInvocationConfiguration.Default);
+            WorkInvocationConfiguration.Default)
+        {
+            QueueDurability = QueueDurability,
+        };
 }

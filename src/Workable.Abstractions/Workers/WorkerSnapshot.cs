@@ -16,6 +16,7 @@ public sealed record WorkerSnapshot(
     WorkerOptions Options,
     WorkConfiguration Configuration,
     IReadOnlyList<WorkMessage> Messages,
+    WorkInterruptionReason? InterruptionReason,
     DateTimeOffset CreatedAt,
     DateTimeOffset StateChangedAt,
     DateTimeOffset UpdatedAt) : IWorkQueryResult

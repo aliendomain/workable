@@ -151,6 +151,7 @@ public sealed class WorkableHttpApiTests
                 nameof(WorkableHttpWorkConfiguration.Logging),
                 nameof(WorkableHttpWorkConfiguration.Retention),
                 nameof(WorkableHttpWorkConfiguration.Concurrency),
+                nameof(WorkableHttpWorkConfiguration.QueueDurability),
             ],
             typeof(WorkableHttpWorkConfiguration)
                 .GetProperties()

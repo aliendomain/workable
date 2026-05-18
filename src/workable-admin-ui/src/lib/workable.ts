@@ -242,6 +242,7 @@ export type WorkConfiguration = {
   };
   idempotency: {
     isEnabled: boolean;
+    storage: "Local" | "Persistence";
     conflictPolicy: "RejectDuplicates";
   };
   recurrence: {
@@ -287,6 +288,10 @@ export type WorkConfiguration = {
       | "WhileExecuting";
     limitReachedBehavior: "Ignore" | "DeferStart";
     overrideBehavior: "Flexible" | "Strict";
+  };
+  queueDurability?: {
+    isEnabled: boolean;
+    completeDurably?: boolean;
   };
   invocation?: Record<string, unknown> | null;
 };
@@ -399,6 +404,7 @@ export type WorkCompletionStatus =
   | "Completed"
   | "Failed"
   | "Paused"
+  | "Interrupted"
   | "Canceled"
   | "Invalid"
   | "NotFound";
@@ -637,6 +643,8 @@ export type WorkerState =
   | "Retrying"
   | "Pausing"
   | "Paused"
+  | "Interrupting"
+  | "Interrupted"
   | "Canceling"
   | "Failed"
   | "Canceled"
@@ -712,6 +720,8 @@ export function stateTone(state: string) {
     case "Queued":
     case "Retrying":
     case "Paused":
+    case "Interrupting":
+    case "Interrupted":
       return "bg-sky-500/15 text-sky-300 border-sky-500/30";
     case "Failed":
     case "Canceled":

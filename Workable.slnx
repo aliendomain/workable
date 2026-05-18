@@ -6,6 +6,12 @@
     <Project Path="src/Workable.PerformanceHarness/Workable.PerformanceHarness.csproj" />
     <Project Path="tests/Workable.Tests/Workable.Tests.csproj" />
   </Folder>
+  <Folder Name="/Integrations/SqlServer/">
+    <Project Path="integrations/sqlserver/src/Workable.SqlServer/Workable.SqlServer.csproj" />
+    <Project Path="integrations/sqlserver/tests/Workable.SqlServer.Tests/Workable.SqlServer.Tests.csproj" />
+    <Project Path="integrations/sqlserver/tools/Workable.SqlServer.Cli/Workable.SqlServer.Cli.csproj" />
+    <File Path="integrations/sqlserver/README.md" />
+  </Folder>
   <Folder Name="/Solution Items/">
     <File Path=".editorconfig" />
     <File Path="README.md" />
@@ -20,6 +26,7 @@
     <File Path="docs/work-configuration-invocation.md" />
     <File Path="docs/work-configuration-interactions.md" />
     <File Path="docs/work-configuration-logging.md" />
+    <File Path="docs/work-configuration-queue-durability.md" />
     <File Path="docs/work-configuration-recurrence.md" />
     <File Path="docs/work-configuration-retention.md" />
     <File Path="docs/work-configuration-start.md" />

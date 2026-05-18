@@ -10,7 +10,7 @@ Runtime worker and iteration queries are served from an in-memory read model. Wo
 
 `IWorkSystem.Query` is the display and inspection read surface. It uses the projected read model for worker detail, worker rows, iteration detail, iteration rows, key search, system details, and overview component views.
 
-Control and correctness paths continue to read live worker records. This includes idempotency checks during queue acceptance, concurrency reservations, worker actions and reconfiguration, shutdown cancellation, retention purge selection, and bulk action execution. Those paths need authoritative current state and optimistic concurrency behavior, so they do not rely on the eventually consistent read model.
+Control and correctness paths continue to read live worker records. This includes idempotency checks during queue acceptance, concurrency reservations, worker actions and reconfiguration, shutdown interruption, retention purge selection, and bulk action execution. Those paths need authoritative current state and optimistic concurrency behavior, so they do not rely on the eventually consistent read model.
 
 ## Read Model Diagnostics
 

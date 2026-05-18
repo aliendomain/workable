@@ -15,11 +15,11 @@ internal sealed class WorkerOperations : IWorkerOperations, IDisposable
     private readonly ConfiguredWorkerExecutionStrategy executionStrategy;
     private readonly ConcurrentDictionary<WorkerId, WorkerRecord> workers = [];
     private readonly WorkerIndex index = new();
+    private readonly WorkerPersistenceCoordinator persistence;
     private readonly ConcurrentDictionary<WorkerIterationReference, WorkCompletionStatus> iterationStatuses = [];
     private readonly InMemoryWorkMetricsSink metrics;
     private readonly IWorkSystemReadModelStore readModel;
     private readonly Lock lifecycleSync = new();
-    private readonly Lock subjectSync = new();
     private readonly List<CancellationTokenSource> retiredSystemExecutionLifetimes = [];
     private readonly WorkerDispatcher dispatcher;
     private readonly WorkConcurrencyCoordinator concurrency;
@@ -49,7 +49,8 @@ internal sealed class WorkerOperations : IWorkerOperations, IDisposable
         WorkSystemRetentionConfiguration retentionConfiguration,
         WorkSystemCapacityConfiguration capacity,
         InMemoryWorkMetricsSink metrics,
-        WorkSystemQueueDiagnosticsTracker queueDiagnostics)
+        WorkSystemQueueDiagnosticsTracker queueDiagnostics,
+        IWorkPersistenceStore? persistenceStore)
     {
         this.catalog = catalog;
         this.getSystemState = getSystemState;
@@ -59,12 +60,28 @@ internal sealed class WorkerOperations : IWorkerOperations, IDisposable
         this.metrics = metrics;
         this.queueDiagnostics = queueDiagnostics;
         this.readModel = readModel;
+        this.concurrency = new WorkConcurrencyCoordinator();
+        this.persistence = new WorkerPersistenceCoordinator(
+            catalog,
+            this.workers,
+            this.index,
+            this.concurrency,
+            workSystemId,
+            workSystemName,
+            persistenceStore,
+            this.IsAcceptingWork,
+            this.GetSystemExecutionLifetimeToken,
+            this.AcceptWorkerIntoMemory,
+            this.GetTrackedWorker,
+            this.OnPersistedWorkerMaterialized,
+            this.InterruptWorker);
         this.workerEvents = new WorkerEventPublisher(workSystemId, events, this.SynchronizeWorkerIfTracked, readModel);
         var logger = rootServices.GetService<ILoggerFactory>()?.CreateLogger("Workable.WorkerExecution");
         var invoker = new WorkerExecutionInvoker(
             workSystemId,
             workSystemName,
             rootServices,
+            this.persistence,
             this.workerEvents,
             this.AddIdentifier,
             new WorkInitializationExecutor(rootServices));
@@ -85,7 +102,6 @@ internal sealed class WorkerOperations : IWorkerOperations, IDisposable
             completionRecorder,
             this.workerEvents);
         this.executionStrategy = new ConfiguredWorkerExecutionStrategy(runOnce, transientRetry, recurring);
-        this.concurrency = new WorkConcurrencyCoordinator();
         this.dispatcher = new WorkerDispatcher(this.DispatchQueuedWorker);
         this.retention = new WorkerRetentionScheduler(this.index, retentionConfiguration, this.PurgeFinalWorkersForRetention);
     }
@@ -123,104 +139,41 @@ internal sealed class WorkerOperations : IWorkerOperations, IDisposable
             return this.RejectQueue(WorkQueueOutcome.Invalid(registeredWork.Definition.Id, concurrencyInputErrors));
         }
 
-        var startPolicy = runtimePlan.StartPolicy;
-        var shouldStart = runtimePlan.ShouldStart;
-        var now = DateTimeOffset.UtcNow;
-        WorkerRecord record;
-        WorkQueueOutcome outcome;
-        bool shouldScheduleStart = false;
-        bool shouldDrainQueuedWorkers = false;
+        var acceptance = await this.persistence.AcceptQueuedWorker(
+            workerId,
+            registeredWork,
+            input,
+            runtimePlan,
+            origin,
+            DateTimeOffset.UtcNow,
+            cancellationToken);
 
-        lock (this.subjectSync)
+        if (!acceptance.Outcome.IsAccepted)
         {
-            var idempotencyErrors = this.ValidateIdempotencyLocked(registeredWork.Definition.Id, input?.SubjectId, runtimePlan.Configuration.Idempotency);
-            if (idempotencyErrors.Count > 0)
-            {
-                return this.RejectQueue(WorkQueueOutcome.Invalid(
-                    registeredWork.Definition.Id,
-                    idempotencyErrors));
-            }
-
-            if (runtimePlan.Configuration.Concurrency.IsEnabled && shouldStart)
-            {
-                var reservation = this.concurrency.QueueWorker(
-                    registeredWork.Definition.Id,
-                    input,
-                    runtimePlan.Configuration.Concurrency,
-                    status =>
-                    {
-                        var queued = new WorkerRecord(
-                            workerId,
-                            registeredWork,
-                            input,
-                            runtimePlan.Options,
-                            runtimePlan.Configuration,
-                            origin,
-                            WorkerState.Queued,
-                            isStartDeferred: status == WorkConcurrencyReservationStatus.Deferred,
-                            messages: [],
-                            createdAt: now,
-                            updatedAt: now);
-
-                        this.AttachIndexCallbacks(queued);
-                        this.TrackWorker(queued);
-                        this.index.Register(queued);
-                        return queued;
-                    });
-                if (reservation.Status == WorkConcurrencyReservationStatus.Rejected)
-                {
-                    return this.RejectQueue(WorkQueueOutcome.Invalid(
-                        registeredWork.Definition.Id,
-                        [WorkMessage.Info("workable.concurrency.capacity_reached", "Concurrency capacity has been reached for this work group.", "configuration.concurrency.maximumCapacity")]));
-                }
-
-                record = reservation.Worker ?? throw new InvalidOperationException("Accepted concurrency queue reservation did not include a worker.");
-                shouldScheduleStart = reservation.Status == WorkConcurrencyReservationStatus.Reserved;
-                outcome = WorkQueueOutcome.Accepted(
-                    registeredWork.Definition.Id,
-                    workerId,
-                    reservation.Status == WorkConcurrencyReservationStatus.Deferred
-                        ? [WorkMessage.Info("workable.concurrency.start_deferred", "Worker start was deferred until concurrency capacity is available.", "configuration.concurrency")]
-                        : null);
-            }
-            else
-            {
-                record = new WorkerRecord(
-                    workerId,
-                    registeredWork,
-                    input,
-                    runtimePlan.Options,
-                    runtimePlan.Configuration,
-                    origin,
-                    WorkerState.Queued,
-                    isStartDeferred: false,
-                    messages: [],
-                    createdAt: now,
-                    updatedAt: now);
-
-                this.AttachIndexCallbacks(record);
-                this.TrackWorker(record);
-                this.index.Register(record);
-                shouldScheduleStart = shouldStart;
-                shouldDrainQueuedWorkers = runtimePlan.Configuration.Concurrency.IsEnabled && shouldStart;
-                outcome = WorkQueueOutcome.Accepted(registeredWork.Definition.Id, workerId);
-            }
+            return this.RejectQueue(acceptance.Outcome);
         }
 
-        this.workerEvents.Queued(record);
-        var handle = new WorkerHandle(outcome, record);
+        if (acceptance.Handle is { } durableHandle)
+        {
+            return durableHandle;
+        }
 
-        if (shouldScheduleStart)
+        var record = acceptance.Worker ?? throw new InvalidOperationException("Accepted queue operation did not include a worker.");
+
+        this.workerEvents.Queued(record);
+        var handle = new WorkerHandle(acceptance.Outcome, record);
+
+        if (acceptance.ShouldScheduleStart)
         {
             this.ScheduleStart(record);
         }
 
-        if (shouldDrainQueuedWorkers)
+        if (acceptance.ShouldDrainQueuedWorkers)
         {
             this.ScheduleConcurrencyDrain(registeredWork.Definition.Id);
         }
 
-        await WaitForStartPolicy(record, startPolicy, cancellationToken);
+        await WaitForStartPolicy(record, runtimePlan.StartPolicy, cancellationToken);
         return handle;
     }
 
@@ -348,6 +301,13 @@ internal sealed class WorkerOperations : IWorkerOperations, IDisposable
         worker.IterationForgotten = this.ForgetIterationIfTracked;
     }
 
+    private void AcceptWorkerIntoMemory(WorkerRecord worker)
+    {
+        this.AttachIndexCallbacks(worker);
+        this.TrackWorker(worker);
+        this.index.Register(worker);
+    }
+
     private void SynchronizeWorkerIfTracked(WorkerRecord worker)
     {
         if (this.workers.ContainsKey(worker.Id))
@@ -356,7 +316,7 @@ internal sealed class WorkerOperations : IWorkerOperations, IDisposable
         }
     }
 
-    internal void StartDispatching()
+    internal async Task StartDispatching(CancellationToken cancellationToken)
     {
         lock (this.lifecycleSync)
         {
@@ -369,8 +329,13 @@ internal sealed class WorkerOperations : IWorkerOperations, IDisposable
             this.acceptingWork = true;
         }
 
+        await this.persistence.InitializeAndDrain(
+            [.. this.catalog.RegisteredWork.Select(work => work.Definition)],
+            cancellationToken);
+
         this.dispatcher.Start(this.GetSystemExecutionLifetimeToken());
         this.retention.Start();
+        this.persistence.StartBackgroundTasks();
     }
 
     internal Task<WorkSystemStopResult> StopDispatching(CancellationToken cancellationToken)
@@ -389,23 +354,24 @@ internal sealed class WorkerOperations : IWorkerOperations, IDisposable
             this.acceptingWork = false;
         }
 
+        var interruptedWorkers = this.InterruptActiveForSystemStop();
         await this.dispatcher.Stop(cancellationToken);
         await this.retention.Stop(cancellationToken);
-        var canceledWorkers = this.CancelActive(origin);
-        await this.WaitForCanceledWorkers(canceledWorkers, cancellationToken);
-        var forceCanceledWorkers = this.ForceCancelRemaining(canceledWorkers, origin);
+        await this.WaitForInterruptedWorkers(interruptedWorkers, cancellationToken);
+        var forceInterruptedWorkers = this.ForceInterruptRemaining(interruptedWorkers);
         lock (this.lifecycleSync)
         {
             this.systemExecutionLifetime.Cancel();
         }
 
+        await this.persistence.StopBackgroundTasks(cancellationToken);
         this.ClearWorkerMemory();
-        return new WorkSystemStopResult(forceCanceledWorkers)
+        return new WorkSystemStopResult(forceInterruptedWorkers)
         {
-            CancellationRequestedWorkers = [.. canceledWorkers.Select(worker => worker.ToSnapshot())],
-            CancellationRequestedWorkerSummaries = [.. canceledWorkers
+            CancellationRequestedWorkers = [.. interruptedWorkers.Select(worker => worker.ToSnapshot())],
+            CancellationRequestedWorkerSummaries = [.. interruptedWorkers
                 .Select(worker => WorkSystemShutdownWorker.From(worker.ToSnapshot()))],
-            ForceCanceledWorkerSummaries = [.. forceCanceledWorkers
+            ForceCanceledWorkerSummaries = [.. forceInterruptedWorkers
                 .Select(WorkSystemShutdownWorker.From)],
             ShutdownGracePeriod = this.shutdownGracePeriod,
         };
@@ -457,17 +423,18 @@ internal sealed class WorkerOperations : IWorkerOperations, IDisposable
         WorkerVersion worker,
         WorkAction action,
         CancellationToken cancellationToken = default)
-        => this.Execute(
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        return this.Execute(
             worker,
             action,
-            this.dotNetOriginProvider.CreateOrigin($"Apply worker action '{action}' through .NET."),
-            cancellationToken);
+            this.dotNetOriginProvider.CreateOrigin($"Apply worker action '{action}' through .NET."));
+    }
 
     internal Task<WorkActionOutcome> Execute(
         WorkerVersion worker,
         WorkAction action,
-        WorkOrigin origin,
-        CancellationToken cancellationToken = default)
+        WorkOrigin origin)
     {
         ArgumentNullException.ThrowIfNull(origin);
 
@@ -555,17 +522,18 @@ internal sealed class WorkerOperations : IWorkerOperations, IDisposable
         WorkerVersion worker,
         WorkerReconfiguration changes,
         CancellationToken cancellationToken = default)
-        => this.Reconfigure(
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        return this.Reconfigure(
             worker,
             changes,
-            this.dotNetOriginProvider.CreateOrigin("Reconfigure worker through .NET."),
-            cancellationToken);
+            this.dotNetOriginProvider.CreateOrigin("Reconfigure worker through .NET."));
+    }
 
     internal Task<WorkActionOutcome> Reconfigure(
         WorkerVersion worker,
         WorkerReconfiguration changes,
-        WorkOrigin origin,
-        CancellationToken cancellationToken = default)
+        WorkOrigin origin)
     {
         ArgumentNullException.ThrowIfNull(origin);
 
@@ -627,27 +595,22 @@ internal sealed class WorkerOperations : IWorkerOperations, IDisposable
             .OfType<WorkerRecord>()];
     }
 
-    private List<WorkerRecord> CancelActive(WorkOrigin origin)
+    private List<WorkerRecord> InterruptActiveForSystemStop()
     {
-        var canceledWorkers = new List<WorkerRecord>();
-        foreach (var worker in this.workers.Values.Where(worker => ShouldCancelForSystemStop(worker.State)))
+        var interruptedWorkers = new List<WorkerRecord>();
+        foreach (var worker in this.workers.Values.Where(worker => ShouldInterruptForSystemStop(worker.State)))
         {
-            var outcome = worker.RequestCancelForSystemStop();
-            if (outcome.IsAccepted)
+            if (worker.RequestInterruptForSystemStop())
             {
-                canceledWorkers.Add(worker);
-                this.HandleAcceptedWorkerChange(worker, WorkAction.Cancel);
-                worker.RecordActionHistory(outcome, origin);
-                this.SynchronizeWorkerIfTracked(worker);
-                worker.SignalCurrentCompletion();
-                this.workerEvents.ActionApplied(worker, outcome, origin);
+                interruptedWorkers.Add(worker);
+                this.HandleAcceptedInterruption(worker);
             }
         }
 
-        return canceledWorkers;
+        return interruptedWorkers;
     }
 
-    private static bool ShouldCancelForSystemStop(WorkerState state)
+    private static bool ShouldInterruptForSystemStop(WorkerState state)
         => state is WorkerState.Queued or WorkerState.Running or WorkerState.Waiting or WorkerState.Retrying;
 
     private void ClearWorkerMemory()
@@ -669,6 +632,28 @@ internal sealed class WorkerOperations : IWorkerOperations, IDisposable
         if (this.workers.TryAdd(worker.Id, worker))
         {
             Interlocked.Increment(ref this.workerCount);
+            this.persistence.SignalAccepted(worker);
+        }
+    }
+
+    private WorkerRecord? GetTrackedWorker(WorkerId workerId)
+        => this.workers.TryGetValue(workerId, out var worker) ? worker : null;
+
+    private void InterruptWorker(WorkerRecord worker, WorkInterruptionReason reason)
+    {
+        if (worker.RequestInterrupt(reason))
+        {
+            this.HandleAcceptedInterruption(worker);
+        }
+    }
+
+    private void HandleAcceptedInterruption(WorkerRecord worker, bool signalCompletion = true)
+    {
+        this.concurrency.Synchronize(worker);
+        this.SynchronizeWorkerIfTracked(worker);
+        if (signalCompletion && worker.SignalCurrentCompletion())
+        {
+            this.workerEvents.CompletionRecorded(worker, WorkCompletionStatus.Interrupted);
         }
     }
 
@@ -701,12 +686,12 @@ internal sealed class WorkerOperations : IWorkerOperations, IDisposable
         }
     }
 
-    private async Task WaitForCanceledWorkers(
-        IReadOnlyList<WorkerRecord> canceledWorkers,
+    private async Task WaitForInterruptedWorkers(
+        IReadOnlyList<WorkerRecord> interruptedWorkers,
         CancellationToken cancellationToken)
     {
-        var pending = canceledWorkers
-            .Where(worker => !worker.IsFinal)
+        var pending = interruptedWorkers
+            .Where(worker => !worker.IsCompletionSignaled)
             .Select(worker => worker.WaitForCompletion(CancellationToken.None))
             .ToArray();
         if (pending.Length == 0)
@@ -724,32 +709,24 @@ internal sealed class WorkerOperations : IWorkerOperations, IDisposable
         }
     }
 
-    private List<WorkerSnapshot> ForceCancelRemaining(
-        IReadOnlyList<WorkerRecord> canceledWorkers,
-        WorkOrigin origin)
+    private List<WorkerSnapshot> ForceInterruptRemaining(
+        IReadOnlyList<WorkerRecord> interruptedWorkers)
     {
-        var forceCanceledWorkers = new List<WorkerSnapshot>();
-        foreach (var worker in canceledWorkers.Where(worker => !worker.IsFinal))
+        var forceInterruptedWorkers = new List<WorkerSnapshot>();
+        foreach (var worker in interruptedWorkers.Where(worker => !worker.IsCompletionSignaled))
         {
-            var outcome = worker.ForceCancelForSystemStop();
-            if (!outcome.IsAccepted)
+            var snapshot = worker.ForceInterruptForSystemStop();
+            if (snapshot is null)
             {
                 continue;
             }
 
-            this.HandleAcceptedWorkerChange(worker, WorkAction.Cancel);
-            worker.RecordActionHistory(outcome, origin);
-            this.SynchronizeWorkerIfTracked(worker);
-            worker.SignalCurrentCompletion();
-            this.workerEvents.ActionApplied(worker, outcome, origin);
-            this.workerEvents.CompletionRecorded(worker, WorkCompletionStatus.Canceled);
-            if (outcome.Worker is { } snapshot)
-            {
-                forceCanceledWorkers.Add(snapshot);
-            }
+            this.HandleAcceptedInterruption(worker, signalCompletion: false);
+            this.workerEvents.CompletionRecorded(worker, WorkCompletionStatus.Interrupted);
+            forceInterruptedWorkers.Add(snapshot);
         }
 
-        return forceCanceledWorkers;
+        return forceInterruptedWorkers;
     }
 
     public void Dispose()
@@ -857,6 +834,7 @@ internal sealed class WorkerOperations : IWorkerOperations, IDisposable
         if (action != WorkAction.Purge && worker.IsFinal)
         {
             this.retention.Schedule(worker);
+            this.persistence.SynchronizeWorkerState(worker);
         }
 
         this.ScheduleConcurrencyDrain(worker.Work.Definition.Id);
@@ -871,6 +849,8 @@ internal sealed class WorkerOperations : IWorkerOperations, IDisposable
         {
             this.retention.Schedule(worker);
         }
+
+        this.persistence.SynchronizeWorkerState(worker);
 
         this.ScheduleConcurrencyDrain(worker.Work.Definition.Id);
     }
@@ -889,6 +869,7 @@ internal sealed class WorkerOperations : IWorkerOperations, IDisposable
         this.index.Forget(worker);
         this.ForgetIterationStatuses(worker.Id);
         this.ScheduleConcurrencyDrain(worker.Work.Definition.Id);
+        this.persistence.SynchronizeWorkerState(worker);
         return outcome;
     }
 
@@ -961,7 +942,7 @@ internal sealed class WorkerOperations : IWorkerOperations, IDisposable
         }
     }
 
-    private void ForgetIterationStatuses(IReadOnlyCollection<WorkerId> workerIds)
+    private void ForgetIterationStatuses(List<WorkerId> workerIds)
     {
         if (workerIds.Count == 0)
         {
@@ -977,52 +958,16 @@ internal sealed class WorkerOperations : IWorkerOperations, IDisposable
     }
 
     private static bool ContainsWorker(
-        IReadOnlyCollection<WorkerId> workerIds,
+        List<WorkerId> workerIds,
         HashSet<WorkerId>? workerIdSet,
         WorkerId workerId)
         => workerIdSet?.Contains(workerId) ?? workerIds.Contains(workerId);
 
-    private IReadOnlyList<WorkMessage> ValidateIdempotencyLocked(
-        WorkDefinitionId definitionId,
-        WorkSubjectId? subjectId,
-        WorkIdempotencyConfiguration idempotency)
-    {
-        if (!idempotency.IsEnabled)
-        {
-            return [];
-        }
-
-        if (subjectId is not { } requiredSubjectId)
-        {
-            return [WorkMessage.Error(
-                "workable.idempotency.subject_required",
-                "Idempotent work requires a work subject id.",
-                "input.subjectId")];
-        }
-
-        var conflicts = this.GetSubjectWorkersLocked(definitionId, requiredSubjectId)
-            .Where(worker => worker.State != WorkerState.Canceled)
-            .ToList();
-
-        return conflicts.Count == 0
-            ? []
-            : [WorkMessage.Error(
-                "workable.idempotency.duplicate_subject",
-                $"A worker already exists for work subject '{requiredSubjectId}'.",
-                "input.subjectId")];
-    }
-
     private IReadOnlyList<WorkerSnapshot> GetSubjectWorkersLocked(WorkSubjectId subjectId)
-        => this.GetSnapshotsNewestFirst(this.index.BySubject(subjectId));
+        => this.persistence.GetSubjectWorkers(subjectId);
 
     private IReadOnlyList<WorkerSnapshot> GetSubjectWorkersLocked(WorkDefinitionId definitionId, WorkSubjectId subjectId)
-        => this.GetSnapshotsNewestFirst(this.index.ByDefinitionAndSubject(definitionId, subjectId));
-
-    private IReadOnlyList<WorkerSnapshot> GetSnapshotsNewestFirst(IEnumerable<WorkerId> workerIds)
-        => [.. workerIds
-            .Select(workerId => this.workers.TryGetValue(workerId, out var worker) ? worker.ToSnapshot() : null)
-            .OfType<WorkerSnapshot>()
-            .OrderByDescending(worker => worker.CreatedAt)];
+        => this.persistence.GetSubjectWorkers(definitionId, subjectId);
 
     private static IReadOnlyList<WorkerSnapshot> CreateSnapshotList(IEnumerable<WorkerRecord> workers)
         => [.. workers
@@ -1044,4 +989,35 @@ internal sealed class WorkerOperations : IWorkerOperations, IDisposable
             this.ScheduleStart(worker);
         }
     }
+
+    private Task OnPersistedWorkerMaterialized(
+        WorkerPersistenceMaterializedWorker materialized,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+
+        var worker = materialized.Worker;
+        this.workerEvents.Queued(worker);
+
+        if (materialized.ShouldScheduleStart)
+        {
+            this.ScheduleStart(worker);
+        }
+
+        if (materialized.ShouldDrainQueuedWorkers)
+        {
+            this.ScheduleConcurrencyDrain(worker.Work.Definition.Id);
+        }
+
+        return Task.CompletedTask;
+    }
+
+    private bool IsAcceptingWork()
+    {
+        lock (this.lifecycleSync)
+        {
+            return this.acceptingWork;
+        }
+    }
+
 }

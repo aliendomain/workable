@@ -10,6 +10,7 @@ public sealed class WorkIdempotencyTests
     public void DefaultIdempotencyIsDisabled()
     {
         Assert.False(WorkIdempotencyConfiguration.Default.IsEnabled);
+        Assert.Equal(WorkIdempotencyStorage.Local, WorkIdempotencyConfiguration.Default.Storage);
         Assert.Equal(WorkIdempotencyConflictPolicy.RejectDuplicates, WorkIdempotencyConfiguration.Default.ConflictPolicy);
     }
 
@@ -26,6 +27,7 @@ public sealed class WorkIdempotencyTests
         var configured = RequiredDefinition(system, "attributed-idempotency");
 
         Assert.True(configured.Configuration.Idempotency.IsEnabled);
+        Assert.Equal(WorkIdempotencyStorage.Local, configured.Configuration.Idempotency.Storage);
     }
 
     [Fact]
@@ -43,6 +45,25 @@ public sealed class WorkIdempotencyTests
         var configured = RequiredDefinition(system, "bootstrap-idempotency");
 
         Assert.True(configured.Configuration.Idempotency.IsEnabled);
+        Assert.Equal(WorkIdempotencyStorage.Local, configured.Configuration.Idempotency.Storage);
+    }
+
+    [Fact]
+    public void BootstrapConfigurationCanUsePersistenceBackedIdempotency()
+    {
+        var definition = WorkDefinition.Create("bootstrap-persistent-idempotency", "Uses persistence-backed idempotency.");
+        var system = new ServiceCollection()
+            .AddWorkableSystem(builder => builder.AddWork<SuccessfulExecutor>(
+                definition,
+                configuration => configuration.RejectDuplicateSubjects(WorkIdempotencyStorage.Persistence)))
+            .BuildServiceProvider()
+            .GetRequiredService<IWorkSystemRegistry>()
+            .Default;
+
+        var configured = RequiredDefinition(system, "bootstrap-persistent-idempotency");
+
+        Assert.True(configured.Configuration.Idempotency.IsEnabled);
+        Assert.Equal(WorkIdempotencyStorage.Persistence, configured.Configuration.Idempotency.Storage);
     }
 
     [Fact]

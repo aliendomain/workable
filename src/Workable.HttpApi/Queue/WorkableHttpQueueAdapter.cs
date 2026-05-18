@@ -221,6 +221,7 @@ public sealed class WorkableHttpQueueAdapter(IDotNetWorkOriginProvider dotNetOri
         => status switch
         {
             WorkCompletionStatus.Completed => WorkableHttpWorkStatus.Completed,
+            WorkCompletionStatus.Interrupted => WorkableHttpWorkStatus.Interrupted,
             WorkCompletionStatus.Canceled => WorkableHttpWorkStatus.Canceled,
             WorkCompletionStatus.Failed => WorkableHttpWorkStatus.Failed,
             _ => WorkableHttpWorkStatus.Failed,

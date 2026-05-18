@@ -131,6 +131,7 @@ public sealed class WorkReadModelStateTests
                 Revision: 1,
                 Category: "ReadModel",
                 state,
+                InterruptionReason: null,
                 CreatedAt: timestamp,
                 StateChangedAt: timestamp,
                 UpdatedAt: timestamp),

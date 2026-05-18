@@ -45,6 +45,7 @@ Common event types include:
 - `worker.started`
 - `worker.completed`
 - `worker.failed`
+- `worker.interrupted`
 - `worker.canceled`
 - `worker.waiting`
 - `worker.retrying`
@@ -59,7 +60,7 @@ Common event types include:
 - `worker.purge`
 - `worker.reconfigured`
 
-Action events such as `worker.cancel` describe the immediate action outcome. Completion events such as `worker.completed` describe the lifecycle result.
+Action events such as `worker.cancel` describe the immediate action outcome. Completion events such as `worker.completed`, `worker.failed`, `worker.interrupted`, and `worker.canceled` describe the lifecycle result. Shutdown interruption publishes `worker.interrupted`; explicit API cancellation publishes the cancel action event and then the canceled completion event.
 
 ## Payloads
 

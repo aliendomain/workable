@@ -139,6 +139,51 @@ public sealed class WorkerStateTests
     }
 
     [Fact]
+    public async Task ShutdownInterruptionCancelsExecutorTokenCompletesAsInterruptedAndPublishesEvent()
+    {
+        var running = CreateSignal();
+        var interruptedSeen = CreateSignal();
+        var definition = WorkDefinition.Create("shutdown-interrupted", "Observes shutdown interruption.");
+        var system = CreateSystem(definition, async (context, input, cancellationToken) =>
+        {
+            running.SetResult();
+            try
+            {
+                await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+                return WorkExecutionResult.Success();
+            }
+            catch (OperationCanceledException)
+            {
+                if (context.IsInterrupted)
+                {
+                    Assert.Equal(WorkInterruptionReason.Shutdown, context.InterruptionReason);
+                    interruptedSeen.SetResult();
+                }
+
+                throw;
+            }
+        });
+
+        await system.Start();
+
+        var handle = await system.Queue.Enqueue("shutdown-interrupted");
+        await running.Task;
+        var workerId = RequiredWorkerId(handle);
+        await using var subscription = system.Events.Subscribe(new WorkEventFilter(WorkerId: workerId, EventType: "worker.interrupted"));
+        await using var reader = subscription.Read().GetAsyncEnumerator();
+
+        await system.Stop();
+        var completion = await handle.WaitForCompletion();
+        var interruptedEvent = await ReadNext(reader);
+
+        await interruptedSeen.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Equal(WorkCompletionStatus.Interrupted, completion.Status);
+        Assert.Equal(WorkerState.Interrupted, completion.Worker?.State);
+        Assert.Equal(WorkInterruptionReason.Shutdown, completion.Worker?.InterruptionReason);
+        Assert.Equal("worker.interrupted", interruptedEvent.EventType);
+    }
+
+    [Fact]
     public async Task ConcurrentStateChangesConflict()
     {
         var running = CreateSignal();
@@ -653,5 +698,12 @@ public sealed class WorkerStateTests
         }
 
         throw new TimeoutException("The expected condition did not happen.");
+    }
+
+    private static async Task<WorkEvent> ReadNext(IAsyncEnumerator<WorkEvent> reader)
+    {
+        var hasEvent = await reader.MoveNextAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.True(hasEvent);
+        return reader.Current;
     }
 }

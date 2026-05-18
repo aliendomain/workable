@@ -4,6 +4,7 @@ namespace Workable.SampleHost.Demo;
 
 public sealed class DemoQueuePressureController(
     IWorkSystemRegistry registry,
+    DemoSampleSystemSelection systemSelection,
     ILogger<DemoQueuePressureController> logger) : IAsyncDisposable
 {
     private const string DefinitionName = "sample.demo.queue-pressure";
@@ -32,6 +33,17 @@ public sealed class DemoQueuePressureController(
         lock (this.sync)
         {
             ObjectDisposedException.ThrowIf(this.disposed, this);
+
+            if (!systemSelection.Current.Operations)
+            {
+                return new DemoQueuePressureStatus(
+                    false,
+                    DefinitionName,
+                    this.sequence,
+                    this.trackedWorkers.Count,
+                    (int)QueueInterval.TotalMilliseconds,
+                    WorkerDelayMilliseconds);
+            }
 
             if (this.runTask is { IsCompleted: false })
             {
@@ -148,7 +160,11 @@ public sealed class DemoQueuePressureController(
     {
         while (true)
         {
-            await this.QueueNext(cancellationToken);
+            if (systemSelection.Current.Operations)
+            {
+                await this.QueueNext(cancellationToken);
+            }
+
             await Task.Delay(QueueInterval, cancellationToken);
         }
     }

@@ -187,7 +187,7 @@ public sealed class WorkSystemLifecycleTests
 
         Assert.Null(exception);
         Assert.Equal(WorkSystemState.Stopped, registry.Default.State);
-        Assert.Equal(WorkCompletionStatus.Canceled, completion.Status);
+        Assert.Equal(WorkCompletionStatus.Interrupted, completion.Status);
     }
 
     [Fact]
@@ -217,8 +217,8 @@ public sealed class WorkSystemLifecycleTests
         await hostedService.StopAsync(CancellationToken.None);
         var elapsed = Stopwatch.GetElapsedTime(startedAt);
 
-        Assert.Equal(WorkCompletionStatus.Canceled, (await first.WaitForCompletion()).Status);
-        Assert.Equal(WorkCompletionStatus.Canceled, (await second.WaitForCompletion()).Status);
+        Assert.Equal(WorkCompletionStatus.Interrupted, (await first.WaitForCompletion()).Status);
+        Assert.Equal(WorkCompletionStatus.Interrupted, (await second.WaitForCompletion()).Status);
         Assert.True(elapsed < TimeSpan.FromMilliseconds(550), $"Expected systems to stop concurrently, but elapsed was {elapsed}.");
     }
 
@@ -290,7 +290,7 @@ public sealed class WorkSystemLifecycleTests
     }
 
     [Fact]
-    public async Task StopRequestsCancellationAndWaitsForCooperativeWork()
+    public async Task StopRequestsInterruptionAndWaitsForCooperativeWork()
     {
         var tracker = new ShutdownTracker();
         var system = new ServiceCollection()
@@ -309,7 +309,7 @@ public sealed class WorkSystemLifecycleTests
         await system.Stop();
         var completion = await handle.WaitForCompletion();
 
-        Assert.Equal(WorkCompletionStatus.Canceled, completion.Status);
+        Assert.Equal(WorkCompletionStatus.Interrupted, completion.Status);
         Assert.True(tracker.CancellationObserved.Task.IsCompletedSuccessfully);
     }
 
@@ -405,7 +405,7 @@ public sealed class WorkSystemLifecycleTests
     }
 
     [Fact]
-    public async Task StopForceCancelsWorkAfterGracePeriod()
+    public async Task StopForceInterruptsWorkAfterGracePeriod()
     {
         var tracker = new ShutdownTracker();
         var system = new ServiceCollection()
@@ -433,9 +433,9 @@ public sealed class WorkSystemLifecycleTests
         Assert.Equal("shutdown.ignores-cancel", forceCanceledSummary.DefinitionName);
         Assert.Equal(["shutdown.ignores-cancel"], stop.ForceCanceledWorkerNames);
         Assert.Equal(TimeSpan.FromMilliseconds(20), stop.ShutdownGracePeriod);
-        Assert.Equal(WorkCompletionStatus.Canceled, completion.Status);
-        Assert.Equal(WorkerState.Canceled, completion.Worker?.State);
-        Assert.Contains(completion.Messages, message => message.Code == "workable.worker.shutdown_forced");
+        Assert.Equal(WorkCompletionStatus.Interrupted, completion.Status);
+        Assert.Equal(WorkerState.Interrupted, completion.Worker?.State);
+        Assert.Contains(completion.Messages, message => message.Code == "workable.worker.shutdown_interrupted_forced");
     }
 
     [Fact]
@@ -459,7 +459,7 @@ public sealed class WorkSystemLifecycleTests
         var elapsed = Stopwatch.GetElapsedTime(startedAt);
 
         Assert.Single(stop.ForceCanceledWorkers);
-        Assert.Equal(WorkCompletionStatus.Canceled, (await handle.WaitForCompletion()).Status);
+        Assert.Equal(WorkCompletionStatus.Interrupted, (await handle.WaitForCompletion()).Status);
         Assert.True(elapsed >= TimeSpan.FromMilliseconds(120), $"Expected host-relative grace wait, but elapsed was {elapsed}.");
         Assert.True(elapsed < TimeSpan.FromSeconds(2), $"Expected bounded shutdown, but elapsed was {elapsed}.");
     }
@@ -486,7 +486,7 @@ public sealed class WorkSystemLifecycleTests
         var elapsed = Stopwatch.GetElapsedTime(startedAt);
 
         Assert.Single(stop.ForceCanceledWorkers);
-        Assert.Equal(WorkCompletionStatus.Canceled, (await handle.WaitForCompletion()).Status);
+        Assert.Equal(WorkCompletionStatus.Interrupted, (await handle.WaitForCompletion()).Status);
         Assert.True(elapsed < TimeSpan.FromSeconds(1), $"Expected explicit grace period to win, but elapsed was {elapsed}.");
     }
 
@@ -500,7 +500,7 @@ public sealed class WorkSystemLifecycleTests
     }
 
     [Fact]
-    public async Task StopCancelsLargeDeferredConcurrencyBacklog()
+    public async Task StopInterruptsLargeDeferredConcurrencyBacklog()
     {
         var tracker = new ShutdownTracker();
         var system = new ServiceCollection()
@@ -535,10 +535,10 @@ public sealed class WorkSystemLifecycleTests
 
         await system.Stop().WaitAsync(TimeSpan.FromSeconds(5));
 
-        Assert.Equal(WorkCompletionStatus.Canceled, (await running.WaitForCompletion()).Status);
+        Assert.Equal(WorkCompletionStatus.Interrupted, (await running.WaitForCompletion()).Status);
         foreach (var handle in deferred)
         {
-            Assert.Equal(WorkCompletionStatus.Canceled, (await handle.WaitForCompletion()).Status);
+            Assert.Equal(WorkCompletionStatus.Interrupted, (await handle.WaitForCompletion()).Status);
         }
     }
 

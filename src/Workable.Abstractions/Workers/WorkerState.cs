@@ -7,6 +7,8 @@ public enum WorkerState
     Retrying,
     Pausing,
     Paused,
+    Interrupting,
+    Interrupted,
     Canceling,
     Canceled,
     Completed,

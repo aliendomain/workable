@@ -7,11 +7,13 @@ public sealed class WorkIdempotencyAttribute : Attribute
 {
     public WorkIdempotencyAttribute(
         bool isEnabled = true,
-        WorkIdempotencyConflictPolicy conflictPolicy = WorkIdempotencyConflictPolicy.RejectDuplicates)
+        WorkIdempotencyConflictPolicy conflictPolicy = WorkIdempotencyConflictPolicy.RejectDuplicates,
+        WorkIdempotencyStorage storage = WorkIdempotencyStorage.Local)
     {
         this.Configuration = new WorkIdempotencyConfiguration
         {
             IsEnabled = isEnabled,
+            Storage = storage,
             ConflictPolicy = conflictPolicy,
         };
 

@@ -17,6 +17,8 @@ public interface IWorkConfigurationBuilder
 
     IWorkConfigurationBuilder UseConcurrency(WorkConcurrencyConfiguration concurrency);
 
+    IWorkConfigurationBuilder UseQueueDurability(WorkQueueDurabilityConfiguration durability);
+
     IWorkConfigurationBuilder UseInvocation(WorkInvocationConfiguration invocation);
 
     IWorkConfigurationBuilder RecurEvery(TimeSpan interval);
@@ -44,7 +46,12 @@ public interface IWorkConfigurationBuilder
         WorkConcurrencyScope scope = WorkConcurrencyScope.PerDefinition,
         WorkConcurrencyBlockingMode blockingMode = WorkConcurrencyBlockingMode.WhileExecutingPausedOrFailed,
         WorkConcurrencyLimitReachedBehavior limitReachedBehavior = WorkConcurrencyLimitReachedBehavior.Ignore,
-        WorkConcurrencyOverrideBehavior overrideBehavior = WorkConcurrencyOverrideBehavior.Flexible);
+        WorkConcurrencyOverrideBehavior overrideBehavior = WorkConcurrencyOverrideBehavior.Flexible,
+        WorkConcurrencyStorage storage = WorkConcurrencyStorage.Local);
+
+    IWorkConfigurationBuilder QueueDurably(TimeSpan? fallbackPollingInterval = null);
+
+    IWorkConfigurationBuilder CompleteDurably();
 
     IWorkConfigurationBuilder DoNotStart();
 
@@ -64,7 +71,10 @@ public interface IWorkConfigurationBuilder
         where TInitializer : class;
 
     IWorkConfigurationBuilder RejectDuplicateSubjects(
-        WorkIdempotencyConflictPolicy conflictPolicy = WorkIdempotencyConflictPolicy.RejectDuplicates);
+        WorkIdempotencyConflictPolicy conflictPolicy = WorkIdempotencyConflictPolicy.RejectDuplicates,
+        WorkIdempotencyStorage storage = WorkIdempotencyStorage.Local);
+
+    IWorkConfigurationBuilder RejectDuplicateSubjects(WorkIdempotencyStorage storage);
 
     IWorkConfigurationBuilder AllowInvocationFrom(params WorkInvocationChannel[] channels);
 

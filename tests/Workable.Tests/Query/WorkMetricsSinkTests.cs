@@ -238,7 +238,7 @@ public sealed class WorkMetricsSinkTests
         var throughput = metrics.GetThroughput(
             new WorkThroughputCriteria(WindowSeconds: 60, BucketSeconds: 1),
             new HashSet<WorkDefinitionId> { definitionId });
-        var bucket = Assert.Single(throughput.Buckets);
+        var bucket = Assert.Single(throughput.Buckets, bucket => bucket.ExecutionCount > 0);
 
         Assert.Equal(150, bucket.P95ExecutionMilliseconds);
         Assert.Equal(bucket.P95ExecutionMilliseconds, throughput.ExecutionSummary.P95ExecutionMilliseconds);

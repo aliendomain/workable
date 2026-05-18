@@ -3,10 +3,12 @@ using Workable.SampleHost;
 using Workable.SampleHost.Demo;
 using Workable.SampleHost.Fulfillment;
 using Workable.SampleHost.Operations;
+using Workable.SqlServer;
 
 var builder = WebApplication.CreateBuilder(args);
 const string sampleCorsPolicy = "WorkableSampleUi";
 const int sampleHttpPort = 61932;
+const string samplePersistenceConnectionString = "Server=(localdb)\\MSSQLLocalDB;Database=WorkableSampleHost;Integrated Security=true;TrustServerCertificate=true";
 
 builder.Logging.ClearProviders();
 builder.Logging.AddConsole(options => options.FormatterName = WorkableSampleConsoleFormatter.FormatterName);
@@ -36,6 +38,8 @@ builder.Services.AddCors(options =>
     });
 });
 
+builder.Services.AddWorkableSqlServerDurableQueue(samplePersistenceConnectionString);
+
 builder.Services.AddWorkableSystem(workable =>
 {
     workable.StartWithHost();
@@ -53,6 +57,9 @@ builder.Services.AddWorkableSystem(workable =>
     workable.AddWork<DemoTimedWork>(DemoDefinition("sample.demo.long", "Samples:Demo", "Longer sample work for UI state testing."));
     workable.AddWork<DemoForceCancelWork>(DemoDefinition("sample.demo.force-cancel", "Samples:Demo", "Ignores cancellation so shutdown must force-cancel it."));
     workable.AddWork<DemoTimedWork>(DemoDefinition("sample.demo.throttled", "Samples:Demo", "Longer sample work without an artificial concurrency bottleneck."));
+    workable.AddWork<DemoTimedWork>(
+        DemoDefinition("sample.demo.durable", "Samples:Demo", "Durable sample work persisted through SQL Server LocalDB."),
+        configuration => configuration.QueueDurably());
     workable.AddWork<DemoTimedWork>(
         DemoDefinition("sample.demo.queue-pressure", "Samples:Demo", "Queues faster than concurrency capacity to demonstrate queue pressure."),
         configuration => configuration.LimitConcurrency(
@@ -82,6 +89,7 @@ builder.Services.AddWorkableSystem("fulfillment", workable =>
 
 builder.Services.AddSingleton<DemoWorkloadController>();
 builder.Services.AddHostedService(static services => services.GetRequiredService<DemoWorkloadController>());
+builder.Services.AddSingleton<DemoSampleSystemSelection>();
 builder.Services.AddSingleton<DemoQueuePressureController>();
 builder.Services.AddSingleton<DemoTightLoopController>();
 builder.Services.AddWorkableHttpApi();
@@ -138,8 +146,11 @@ app.MapGet("/", (HttpContext context) =>
                 .action-description { color: #555; font-size: .9rem; margin-top: .15rem; }
                 .action-controls { display: flex; flex-wrap: wrap; gap: .75rem; align-items: center; }
                 .sample-workload-controls { display: flex; flex-wrap: wrap; }
+                .system-selection { display: flex; flex-wrap: wrap; gap: .75rem; align-items: center; margin: 1.25rem 0; padding: .9rem 1rem; border: 1px solid #ddd; background: #fafafa; }
+                .system-selection-title { font-weight: 700; margin-right: .25rem; }
                 .pressure-controls { display: grid; grid-template-columns: max-content max-content; }
                 .burst-controls { display: grid; grid-template-columns: max-content max-content; }
+                .durable-burst-controls { display: grid; grid-template-columns: max-content max-content; }
                 .tight-loop-controls { display: flex; flex-wrap: wrap; }
                 .interval-control { display: grid; grid-template-columns: max-content 8.5rem max-content; gap: .5rem; align-items: center; }
                 .number-control { display: grid; grid-template-columns: max-content 8.5rem; gap: .5rem; align-items: center; }
@@ -161,6 +172,7 @@ app.MapGet("/", (HttpContext context) =>
                     .sample-workload-controls { grid-template-columns: 1fr; align-items: stretch; }
                     .pressure-controls { grid-template-columns: 1fr; align-items: stretch; }
                     .burst-controls { grid-template-columns: 1fr; align-items: stretch; }
+                    .durable-burst-controls { grid-template-columns: 1fr; align-items: stretch; }
                     .tight-loop-controls { grid-template-columns: 1fr; align-items: stretch; }
                     .interval-control { grid-template-columns: max-content 1fr max-content; }
                     .number-control { grid-template-columns: max-content 1fr; }
@@ -171,6 +183,17 @@ app.MapGet("/", (HttpContext context) =>
         <body>
             <h1>Workable Sample Host</h1>
             <p>Start the Workable UI and add this server: <code>{{workableUrl}}</code></p>
+            <div class="system-selection" aria-label="Sample systems">
+                <span class="system-selection-title">Enabled systems</span>
+                <label class="system-toggle">
+                    <input id="system-operations" type="checkbox">
+                    Operations
+                </label>
+                <label class="system-toggle">
+                    <input id="system-fulfillment" type="checkbox">
+                    Fulfillment
+                </label>
+            </div>
             <table>
                 <colgroup>
                     <col style="width: 24%">
@@ -193,16 +216,6 @@ app.MapGet("/", (HttpContext context) =>
                         <td>
                             <div class="action-controls sample-workload-controls">
                                 <button id="toggle" type="button">Start sample workers</button>
-                                <div class="system-controls" aria-label="Sample systems">
-                                    <label class="system-toggle">
-                                        <input id="system-operations" type="checkbox">
-                                        Operations
-                                    </label>
-                                    <label class="system-toggle">
-                                        <input id="system-fulfillment" type="checkbox">
-                                        Fulfillment
-                                    </label>
-                                </div>
                                 <label class="interval-control">
                                     Interval
                                     <input id="interval" type="number" min="5" max="10000" step="5">
@@ -236,6 +249,22 @@ app.MapGet("/", (HttpContext context) =>
                     </tr>
                     <tr>
                         <td>
+                            <div class="action-name">Durable burst</div>
+                            <div class="action-description">Persist demo workers through SQL Server LocalDB before they start.</div>
+                        </td>
+                        <td>
+                            <div class="action-controls durable-burst-controls">
+                                <label class="number-control">
+                                    Workers
+                                    <input id="durable-burst-count" type="number" min="1" max="1000000" step="10" value="25">
+                                </label>
+                                <button id="durable-burst-queue" type="button">Queue durable burst</button>
+                            </div>
+                        </td>
+                        <td><p class="status" id="durable-burst-status">Ready.</p></td>
+                    </tr>
+                    <tr>
+                        <td>
                             <div class="action-name">Tight queue loops</div>
                             <div class="action-description">Continuously submit demo workers as fast as the selected systems accept them.</div>
                         </td>
@@ -243,20 +272,10 @@ app.MapGet("/", (HttpContext context) =>
                             <div class="action-controls tight-loop-controls">
                                 <button id="tight-loop-start" type="button">Start tight loops</button>
                                 <button id="tight-loop-stop" class="running" type="button">Stop tight loops</button>
-                                <div class="system-controls" aria-label="Tight loop systems">
-                                    <label class="system-toggle">
-                                        <input id="tight-loop-operations" type="checkbox" checked>
-                                        Operations
-                                    </label>
-                                    <label class="system-toggle">
-                                        <input id="tight-loop-fulfillment" type="checkbox" checked>
-                                        Fulfillment
-                                    </label>
-                                    <label class="system-toggle">
-                                        <input id="tight-loop-yield" type="checkbox">
-                                        Use Task.Yield
-                                    </label>
-                                </div>
+                                <label class="system-toggle">
+                                    <input id="tight-loop-yield" type="checkbox">
+                                    Use Task.Yield
+                                </label>
                             </div>
                         </td>
                         <td><p class="status" id="tight-loop-status">Loading tight-loop status...</p></td>
@@ -293,12 +312,12 @@ app.MapGet("/", (HttpContext context) =>
                 const forceCancel = document.getElementById('force-cancel');
                 const burstCount = document.getElementById('burst-count');
                 const burstQueue = document.getElementById('burst-queue');
+                const durableBurstCount = document.getElementById('durable-burst-count');
+                const durableBurstQueue = document.getElementById('durable-burst-queue');
                 const pressureStart = document.getElementById('pressure-start');
                 const pressureStop = document.getElementById('pressure-stop');
                 const tightLoopStart = document.getElementById('tight-loop-start');
                 const tightLoopStop = document.getElementById('tight-loop-stop');
-                const tightLoopOperations = document.getElementById('tight-loop-operations');
-                const tightLoopFulfillment = document.getElementById('tight-loop-fulfillment');
                 const tightLoopYield = document.getElementById('tight-loop-yield');
                 const interval = document.getElementById('interval');
                 const failurePercentage = document.getElementById('failure-percentage');
@@ -307,15 +326,39 @@ app.MapGet("/", (HttpContext context) =>
                 const systemFulfillment = document.getElementById('system-fulfillment');
                 const status = document.getElementById('status');
                 const burstStatus = document.getElementById('burst-status');
+                const durableBurstStatus = document.getElementById('durable-burst-status');
                 const pressureStatus = document.getElementById('pressure-status');
                 const tightLoopStatus = document.getElementById('tight-loop-status');
                 const forceCancelStatus = document.getElementById('force-cancel-status');
                 let intervalDirty = false;
                 let failurePercentageDirty = false;
+                let selectedOperations = true;
+                let selectedFulfillment = true;
+                let sampleWorkloadRunning = false;
+                let pressureRunning = false;
+                let tightLoopRunning = false;
+
+                function selectedSystemLabel() {
+                    return [
+                        selectedOperations ? 'operations' : null,
+                        selectedFulfillment ? 'fulfillment' : null
+                    ].filter(Boolean).join(', ') || 'none';
+                }
+
+                function updateFeatureAvailability() {
+                    const anySelected = selectedOperations || selectedFulfillment;
+                    button.disabled = !sampleWorkloadRunning && !anySelected;
+                    burstQueue.disabled = !anySelected;
+                    durableBurstQueue.disabled = !selectedOperations;
+                    pressureStart.disabled = pressureRunning || !selectedOperations;
+                    forceCancel.disabled = !selectedOperations;
+                    tightLoopStart.disabled = tightLoopRunning || !anySelected;
+                }
 
                 async function refresh() {
                     const response = await fetch('/sample-workload');
                     const data = await response.json();
+                    sampleWorkloadRunning = data.isRunning;
                     button.textContent = data.isRunning ? 'Stop sample workers' : 'Start sample workers';
                     button.classList.toggle('running', data.isRunning);
                     if (!intervalDirty && document.activeElement !== interval) {
@@ -326,17 +369,17 @@ app.MapGet("/", (HttpContext context) =>
                     }
                     systemOperations.checked = data.operationsEnabled;
                     systemFulfillment.checked = data.fulfillmentEnabled;
-                    const selectedSystems = [
-                        data.operationsEnabled ? 'operations' : null,
-                        data.fulfillmentEnabled ? 'fulfillment' : null
-                    ].filter(Boolean).join(', ') || 'none';
-                    status.textContent = `${data.isRunning ? 'Running' : 'Stopped'} - queued ${data.queuedCount} - tracking ${data.trackedWorkerCount} - interval ${data.queueIntervalMilliseconds}ms - failures ${data.failurePercentage}% - systems ${selectedSystems}`;
+                    selectedOperations = data.operationsEnabled;
+                    selectedFulfillment = data.fulfillmentEnabled;
+                    status.textContent = `${data.isRunning ? 'Running' : 'Stopped'} - queued ${data.queuedCount} - tracking ${data.trackedWorkerCount} - interval ${data.queueIntervalMilliseconds}ms - failures ${data.failurePercentage}% - systems ${selectedSystemLabel()}`;
+                    updateFeatureAvailability();
                 }
 
                 async function refreshPressure() {
                     const response = await fetch('/sample-workload/queue-pressure');
                     const data = await response.json();
-                    pressureStart.disabled = data.isRunning;
+                    pressureRunning = data.isRunning;
+                    pressureStart.disabled = pressureRunning || !selectedOperations;
                     pressureStop.disabled = !data.isRunning;
                     pressureStatus.textContent = `${data.isRunning ? 'Running' : 'Stopped'} - queued ${data.queuedCount} - tracking ${data.trackedWorkerCount} - ${data.workerDelayMilliseconds}ms work every ${data.queueIntervalMilliseconds}ms`;
                 }
@@ -344,7 +387,8 @@ app.MapGet("/", (HttpContext context) =>
                 async function refreshTightLoops() {
                     const response = await fetch('/sample-workload/tight-loops');
                     const data = await response.json();
-                    tightLoopStart.disabled = data.isRunning;
+                    tightLoopRunning = data.isRunning;
+                    tightLoopStart.disabled = tightLoopRunning || (!selectedOperations && !selectedFulfillment);
                     tightLoopStop.disabled = !data.isRunning;
                     tightLoopYield.disabled = data.isRunning;
                     if (data.isRunning) {
@@ -365,6 +409,7 @@ app.MapGet("/", (HttpContext context) =>
                         await refresh();
                     } finally {
                         button.disabled = false;
+                        updateFeatureAvailability();
                     }
                 });
 
@@ -373,11 +418,14 @@ app.MapGet("/", (HttpContext context) =>
                     try {
                         const response = await fetch('/sample-workload/force-cancel', { method: 'POST' });
                         const data = await response.json();
-                        forceCancelStatus.textContent = `Queued ${data.definitionName} worker ${data.workerId}`;
+                        forceCancelStatus.textContent = data.workerId
+                            ? `Queued ${data.definitionName} worker ${data.workerId}`
+                            : data.message;
                     } catch (error) {
                         forceCancelStatus.textContent = 'Unable to queue force-cancel worker.';
                     } finally {
                         forceCancel.disabled = false;
+                        updateFeatureAvailability();
                     }
                 });
 
@@ -401,6 +449,31 @@ app.MapGet("/", (HttpContext context) =>
                         burstStatus.textContent = 'Unable to queue burst workers.';
                     } finally {
                         burstQueue.disabled = false;
+                        updateFeatureAvailability();
+                    }
+                });
+
+                durableBurstQueue.addEventListener('click', async () => {
+                    const count = Number(durableBurstCount.value);
+                    durableBurstQueue.disabled = true;
+                    durableBurstStatus.textContent = `Persisting ${count} durable workers...`;
+                    try {
+                        const response = await fetch('/sample-workload/durable-burst', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ count })
+                        });
+                        const data = await response.json();
+                        const requested = data.requestedCount === data.submittedCount
+                            ? ''
+                            : ` requested ${data.requestedCount},`;
+                        durableBurstStatus.textContent = `Durable:${requested} submitted ${data.submittedCount}, accepted ${data.acceptedCount}, rejected ${data.rejectedCount} in ${data.elapsedMilliseconds}ms`;
+                        await refresh();
+                    } catch (error) {
+                        durableBurstStatus.textContent = 'Unable to queue durable burst workers.';
+                    } finally {
+                        durableBurstQueue.disabled = false;
+                        updateFeatureAvailability();
                     }
                 });
 
@@ -443,6 +516,8 @@ app.MapGet("/", (HttpContext context) =>
                         })
                     });
                     await refresh();
+                    await refreshPressure();
+                    await refreshTightLoops();
                 }
 
                 systemOperations.addEventListener('change', updateSystems);
@@ -461,8 +536,6 @@ app.MapGet("/", (HttpContext context) =>
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json' },
                             body: JSON.stringify({
-                                operations: tightLoopOperations.checked,
-                                fulfillment: tightLoopFulfillment.checked,
                                 useTaskYield: tightLoopYield.checked
                             })
                         });
@@ -537,6 +610,8 @@ app.MapPost("/sample-workload/systems", (DemoWorkloadController controller, Demo
     => Results.Ok(controller.SetEnabledSystems(request)));
 app.MapPost("/sample-workload/burst", async (DemoWorkloadController controller, DemoBurstRequest request, CancellationToken cancellationToken)
     => Results.Ok(await controller.QueueBurst(request.Count, cancellationToken)));
+app.MapPost("/sample-workload/durable-burst", async (DemoWorkloadController controller, DemoBurstRequest request, CancellationToken cancellationToken)
+    => Results.Ok(await controller.QueueDurableBurst(request.Count, cancellationToken)));
 app.MapGet("/sample-workload/queue-pressure", (DemoQueuePressureController controller)
     => Results.Ok(controller.Status()));
 app.MapPost("/sample-workload/queue-pressure/start", (DemoQueuePressureController controller)
@@ -549,8 +624,22 @@ app.MapPost("/sample-workload/tight-loops/start", (DemoTightLoopController contr
     => Results.Ok(controller.Start(request)));
 app.MapPost("/sample-workload/tight-loops/stop", async (DemoTightLoopController controller, CancellationToken cancellationToken)
     => Results.Ok(await controller.Stop(cancellationToken)));
-app.MapPost("/sample-workload/force-cancel", async (IWorkSystemRegistry registry, CancellationToken cancellationToken) =>
+app.MapPost("/sample-workload/force-cancel", async (
+    IWorkSystemRegistry registry,
+    DemoSampleSystemSelection systemSelection,
+    CancellationToken cancellationToken) =>
 {
+    if (!systemSelection.Current.Operations)
+    {
+        return Results.Ok(new
+        {
+            definitionName = "sample.demo.force-cancel",
+            workerId = (string?)null,
+            status = "Skipped",
+            message = "Operations is disabled.",
+        });
+    }
+
     var handle = await registry.Default.Queue.Enqueue(
         "sample.demo.force-cancel",
         WorkInput.FromValue(new DemoForceCancelInput(), identifiers: [new WorkIdentifier("sample-workload", "force-cancel")]),
@@ -561,6 +650,7 @@ app.MapPost("/sample-workload/force-cancel", async (IWorkSystemRegistry registry
         definitionName = "sample.demo.force-cancel",
         workerId = handle.WorkerId?.ToString(),
         status = handle.QueueOutcome.Status.ToString(),
+        message = "Queued force-cancel worker.",
     });
 });
 

@@ -32,6 +32,7 @@ public sealed record WorkableHttpQueueRequestDescriptor(
             "Prevents duplicate work from being accepted for the same subject while an existing matching worker is still active.",
             [
                 Field("options.configuration.idempotency.isEnabled", "Enabled", "Turn on duplicate detection for subject-based queue requests."),
+                Field("options.configuration.idempotency.storage", "Storage", "Choose whether duplicate detection is local to this runtime or backed by the configured persistence provider."),
                 Field("subjectId.type", "Subject type", "Idempotency requires a subject so duplicates can be detected."),
                 Field("subjectId.value", "Subject value", "Idempotency compares queued workers by this subject value."),
                 Field("options.configuration.idempotency.conflictPolicy", "Conflict policy", "Defines what happens when a duplicate subject is detected."),
@@ -88,6 +89,18 @@ public sealed record WorkableHttpQueueRequestDescriptor(
                 Field("options.configuration.concurrency.blockingMode", "Blocking mode", "Selects which worker states count against the active capacity limit."),
                 Field("options.configuration.concurrency.limitReachedBehavior", "Limit reached", "Controls what happens when a queued worker would exceed the capacity limit."),
                 Field("options.configuration.concurrency.overrideBehavior", "Override behavior", "Controls whether runtime configuration changes may temporarily exceed capacity."),
+            ]),
+        new(
+            "durability",
+            "Durability",
+            "Persists queue acceptance to the host configured durable queue store before committed work can start.",
+            [
+                Field("options.configuration.queueDurability.isEnabled", "Enabled", "Persist queue acceptance to the durable queue store before the worker is accepted into the runtime for execution."),
+                Field("options.configuration.queueDurability.completeDurably", "Complete durably", "Commit successful work completion and durable queue cleanup in the same persistence transaction."),
+                Field("options.configuration.idempotency.isEnabled", "Idempotency", "Enable subject-based duplicate detection for this queued worker."),
+                Field("options.configuration.idempotency.storage", "Idempotency storage", "Use persistence-backed idempotency when duplicate detection must coordinate with durable queue rows."),
+                Field("subjectId.type", "Subject type", "Idempotency requires a subject so duplicates can be detected."),
+                Field("subjectId.value", "Subject value", "Idempotency compares queued workers by this subject value."),
             ]),
     ];
 

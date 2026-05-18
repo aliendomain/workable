@@ -2,6 +2,7 @@ namespace Workable.SampleHost.Demo;
 
 public sealed class DemoTightLoopController(
     IWorkSystemRegistry registry,
+    DemoSampleSystemSelection systemSelection,
     ILogger<DemoTightLoopController> logger) : IAsyncDisposable
 {
     private readonly Lock sync = new();
@@ -35,7 +36,8 @@ public sealed class DemoTightLoopController(
                 return this.CreateStatusUnsafe();
             }
 
-            if (!request.Operations && !request.Fulfillment)
+            var systems = systemSelection.Current;
+            if (!systems.Operations && !systems.Fulfillment)
             {
                 return this.CreateStatusUnsafe();
             }
@@ -44,15 +46,8 @@ public sealed class DemoTightLoopController(
             this.cancellation = source;
             this.useTaskYield = request.UseTaskYield;
 
-            if (request.Operations)
-            {
-                this.operationsTask = Task.Run(() => this.RunOperations(source.Token), CancellationToken.None);
-            }
-
-            if (request.Fulfillment)
-            {
-                this.fulfillmentTask = Task.Run(() => this.RunFulfillment(source.Token), CancellationToken.None);
-            }
+            this.operationsTask = Task.Run(() => this.RunOperations(source.Token), CancellationToken.None);
+            this.fulfillmentTask = Task.Run(() => this.RunFulfillment(source.Token), CancellationToken.None);
 
             return this.CreateStatusUnsafe();
         }
@@ -141,6 +136,12 @@ public sealed class DemoTightLoopController(
         while (true)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            if (!systemSelection.Current.Operations)
+            {
+                await Task.Delay(TimeSpan.FromMilliseconds(250), cancellationToken);
+                continue;
+            }
+
             var current = Interlocked.Increment(ref this.sequence);
             await this.QueueOperations(current, cancellationToken);
         }
@@ -151,6 +152,12 @@ public sealed class DemoTightLoopController(
         while (true)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            if (!systemSelection.Current.Fulfillment)
+            {
+                await Task.Delay(TimeSpan.FromMilliseconds(250), cancellationToken);
+                continue;
+            }
+
             var current = Interlocked.Increment(ref this.sequence);
             await this.QueueFulfillment(current, cancellationToken);
         }
@@ -255,15 +262,18 @@ public sealed class DemoTightLoopController(
     }
 
     private DemoTightLoopStatus CreateStatusUnsafe()
-        => new(
+    {
+        var systems = systemSelection.Current;
+        return new(
             this.IsRunningUnsafe(),
-            this.operationsTask is { IsCompleted: false },
-            this.fulfillmentTask is { IsCompleted: false },
+            this.operationsTask is { IsCompleted: false } && systems.Operations,
+            this.fulfillmentTask is { IsCompleted: false } && systems.Fulfillment,
             this.useTaskYield,
             Interlocked.Read(ref this.operationsQueued),
             Interlocked.Read(ref this.fulfillmentQueued),
             Interlocked.Read(ref this.rejectedCount),
             Interlocked.Read(ref this.failedCount));
+    }
 
     private bool IsRunningUnsafe()
         => this.operationsTask is { IsCompleted: false } ||
@@ -288,7 +298,7 @@ public sealed class DemoTightLoopController(
     }
 }
 
-public sealed record DemoTightLoopRequest(bool Operations, bool Fulfillment, bool UseTaskYield = false);
+public sealed record DemoTightLoopRequest(bool UseTaskYield = false);
 
 public sealed record DemoTightLoopStatus(
     bool IsRunning,

@@ -229,13 +229,15 @@ const states: WorkerState[] = [
   "Retrying",
   "Pausing",
   "Paused",
+  "Interrupting",
+  "Interrupted",
   "Canceling",
   "Failed",
   "Canceled",
   "Completed",
 ];
 
-const iterationStatuses: WorkCompletionStatus[] = ["Executing", "Completed", "Failed", "Canceled", "Paused"];
+const iterationStatuses: WorkCompletionStatus[] = ["Executing", "Completed", "Failed", "Interrupted", "Canceled", "Paused"];
 
 const navItems: Array<{ id: ServerView; label: string; icon: typeof Activity }> = [
   { id: "overview", label: "Overview", icon: Activity },

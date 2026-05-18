@@ -12,6 +12,7 @@ public sealed record WorkerSummary(
     IReadOnlySet<WorkIdentifier> Identifiers,
     WorkOrigin Origin,
     WorkerState State,
+    WorkInterruptionReason? InterruptionReason,
     DateTimeOffset CreatedAt,
     DateTimeOffset StateChangedAt,
     DateTimeOffset UpdatedAt)

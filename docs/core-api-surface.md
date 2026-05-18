@@ -16,14 +16,14 @@ The core API defines the public shape of Workable for discovering work, queueing
 - `IWorkEventStream` creates event subscriptions.
 - `IWorkSystemDiagnostics` exposes runtime diagnostics for queue rejection, read-model projection, and retention cleanup.
 - `Start` and `Stop` control system lifecycle.
-- `Stop` returns the shutdown grace period plus workers that were force-canceled because the grace period elapsed, including compact worker summaries and definition names.
-- `Stop` clears in-memory worker and iteration records after shutdown cancellation completes.
+- `Stop` returns the shutdown grace period plus workers that were force-completed because the grace period elapsed, including compact worker summaries and definition names. The stop result keeps the existing `ForceCanceled*` property names for compatibility; during shutdown interruption those entries represent workers force-completed as `Interrupted`.
+- `Stop` clears in-memory worker and iteration records after shutdown interruption completes.
 - `IWorkSystem` is asynchronously disposable.
 
 `IWorkSystemRegistry` exposes the default system, lookup by `WorkSystemId`, optional lookup by name, and enumeration of registered systems.
 
 Work execution receives scoped services and profile access through `IWorkExecutionContext`.
-Execution context also exposes the worker's `WorkOrigin`.
+Execution context also exposes the worker's `WorkOrigin`, whether interruption is currently being applied through `IsInterrupted`, and the nullable `InterruptionReason` (`Shutdown` or `LeaseLost`).
 
 ## Definition Rules
 
@@ -81,7 +81,7 @@ Execution context also exposes the worker's `WorkOrigin`.
 - Worker snapshots expose the `WorkOrigin` that queued the worker.
 - `IWorkQueryService.Worker` returns a full `WorkerSnapshot`.
 - `IWorkQueryService` reads worker and iteration state from the runtime read model snapshot; the in-memory model starts empty with the process and is cleared when the system stops.
-- Control and correctness paths use live worker records instead of the eventually consistent read model. This includes idempotency checks, concurrency decisions, worker actions, shutdown cancellation, retention purge selection, and bulk action execution.
+- Control and correctness paths use live worker records instead of the eventually consistent read model. This includes idempotency checks, concurrency decisions, worker actions, shutdown interruption, retention purge selection, and bulk action execution.
 - `IWorkSystem.Diagnostics` exposes queue, read-model, and retention diagnostics. See [Work Diagnostics](work-diagnostics.md).
 - `IWorkQueryService.Workers` returns lightweight `WorkerOverviewItem` rows.
 - `IWorkQueryService.WorkerIteration` returns one full `WorkerIterationSnapshot` by worker id and iteration sequence.
@@ -114,10 +114,11 @@ Execution context also exposes the worker's `WorkOrigin`.
 - Workers enter `Waiting` between scheduled iterations.
 - Pause requests move running workers through `Pausing` before they become `Paused`.
 - Cancel requests move running workers through `Canceling` before they become `Canceled`.
+- Shutdown interruption moves running workers through `Interrupting` before they become `Interrupted`.
 - Workers become `Completed` when execution succeeds.
 - Workers become `Failed` when execution returns errors or fails unexpectedly.
 - Final workers are `Completed` or `Canceled`.
-- Failed workers are not final; they can be started again or canceled.
+- Failed and interrupted workers are not final. Failed workers can be started again or canceled; interrupted durable workers can be replayed after lease expiry or explicitly canceled when materialized.
 - Purging removes a final worker from memory.
 
 ## Worker Action Rules

@@ -9,6 +9,7 @@ namespace Workable;
 internal sealed class WorkerHandle : IWorkerHandle
 {
     private readonly WorkerRecord? worker;
+    private readonly Func<WorkerId, CancellationToken, Task<WorkerRecord?>>? resolveWorker;
 
     public WorkerHandle(WorkQueueOutcome queueOutcome, WorkerRecord worker)
     {
@@ -21,6 +22,14 @@ internal sealed class WorkerHandle : IWorkerHandle
         this.QueueOutcome = queueOutcome;
     }
 
+    private WorkerHandle(
+        WorkQueueOutcome queueOutcome,
+        Func<WorkerId, CancellationToken, Task<WorkerRecord?>> resolveWorker)
+    {
+        this.QueueOutcome = queueOutcome;
+        this.resolveWorker = resolveWorker;
+    }
+
     public WorkQueueOutcome QueueOutcome { get; }
 
     public WorkerId? WorkerId => this.QueueOutcome.WorkerId;
@@ -28,9 +37,20 @@ internal sealed class WorkerHandle : IWorkerHandle
     public static WorkerHandle Rejected(WorkQueueOutcome outcome)
         => new(outcome);
 
+    public static WorkerHandle AcceptedWhenAvailable(
+        WorkQueueOutcome outcome,
+        Func<WorkerId, CancellationToken, Task<WorkerRecord?>> resolveWorker)
+        => new(outcome, resolveWorker);
+
     public async Task<WorkCompletion> WaitForCompletion(CancellationToken cancellationToken = default)
     {
-        if (this.worker is null)
+        var resolvedWorker = this.worker;
+        if (resolvedWorker is null && this.resolveWorker is not null && this.WorkerId is { } workerId)
+        {
+            resolvedWorker = await this.resolveWorker(workerId, cancellationToken);
+        }
+
+        if (resolvedWorker is null)
         {
             var status = this.QueueOutcome.Status == WorkQueueStatus.NotFound
                 ? WorkCompletionStatus.NotFound
@@ -39,7 +59,7 @@ internal sealed class WorkerHandle : IWorkerHandle
             return new WorkCompletion(status, null, null, this.QueueOutcome.Messages);
         }
 
-        return await this.worker.WaitForCompletion(cancellationToken);
+        return await resolvedWorker.WaitForCompletion(cancellationToken);
     }
 
     public async Task<WorkCompletion<TOutput>> WaitForCompletion<TOutput>(CancellationToken cancellationToken = default)

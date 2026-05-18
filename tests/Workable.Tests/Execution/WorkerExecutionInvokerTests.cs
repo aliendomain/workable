@@ -49,6 +49,7 @@ public sealed class WorkerExecutionInvokerTests
             systemId,
             workSystemName: null,
             services,
+            new NoOpWorkerPersistenceCoordinator(),
             publisher,
             identifierDiscovered: (_, _) => { },
             new WorkInitializationExecutor(services));
@@ -75,6 +76,49 @@ public sealed class WorkerExecutionInvokerTests
             messages: [],
             DateTimeOffset.UtcNow,
             DateTimeOffset.UtcNow);
+    }
+
+    private sealed class NoOpWorkerPersistenceCoordinator : IWorkerPersistenceCoordinator
+    {
+        public Task InitializeAndDrain(IReadOnlyList<WorkDefinition> definitions, CancellationToken cancellationToken)
+            => Task.CompletedTask;
+
+        public void StartBackgroundTasks()
+        {
+        }
+
+        public Task StopBackgroundTasks(CancellationToken cancellationToken)
+            => Task.CompletedTask;
+
+        public Task<WorkerPersistenceQueueAcceptance> AcceptQueuedWorker(
+            WorkerId workerId,
+            RegisteredWork registeredWork,
+            WorkInput? input,
+            RegisteredWorkRuntimePlan runtimePlan,
+            WorkOrigin origin,
+            DateTimeOffset now,
+            CancellationToken cancellationToken)
+            => throw new NotSupportedException();
+
+        public void SignalAccepted(WorkerRecord worker)
+        {
+        }
+
+        public void SynchronizeWorkerState(WorkerRecord worker)
+        {
+        }
+
+        public Task CompleteDurably(
+            WorkerRecord worker,
+            IWorkQueueDurabilityTransaction transaction,
+            CancellationToken cancellationToken)
+            => Task.CompletedTask;
+
+        public IReadOnlyList<WorkerSnapshot> GetSubjectWorkers(WorkSubjectId subjectId)
+            => [];
+
+        public IReadOnlyList<WorkerSnapshot> GetSubjectWorkers(WorkDefinitionId definitionId, WorkSubjectId subjectId)
+            => [];
     }
 
     private sealed class ShouldNotResolveInitializer : IWorkInitializer

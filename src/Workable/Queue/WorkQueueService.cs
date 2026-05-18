@@ -31,7 +31,7 @@ internal sealed class WorkQueueService(
         WorkOrigin origin,
         CancellationToken cancellationToken = default)
         => !catalog.TryGetWork(definitionId, out var registeredWork)
-            ? Task.FromResult(Reject(WorkQueueOutcome.NotFound(definitionId.ToString())))
+            ? Task.FromResult<IWorkerHandle>(Reject(WorkQueueOutcome.NotFound(definitionId.ToString())))
             : workers.CreateWorker(registeredWork, input, options, origin, cancellationToken);
 
     public Task<IWorkerHandle> Enqueue<TInput>(
@@ -67,7 +67,7 @@ internal sealed class WorkQueueService(
         ArgumentException.ThrowIfNullOrWhiteSpace(name);
 
         return !catalog.TryGetWork(name, out var registeredWork)
-            ? Task.FromResult(Reject(WorkQueueOutcome.NotFound(name)))
+            ? Task.FromResult<IWorkerHandle>(Reject(WorkQueueOutcome.NotFound(name)))
             : workers.CreateWorker(registeredWork, input, options, origin, cancellationToken);
     }
 
@@ -86,7 +86,7 @@ internal sealed class WorkQueueService(
             _ => WorkInput.FromValue(input, WorkData.DefaultJsonOptions),
         };
 
-    private IWorkerHandle Reject(WorkQueueOutcome outcome)
+    private WorkerHandle Reject(WorkQueueOutcome outcome)
     {
         queueDiagnostics.RecordRejected(outcome);
         return WorkerHandle.Rejected(outcome);

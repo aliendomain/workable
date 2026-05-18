@@ -9,6 +9,8 @@ public sealed record WorkConfiguration(
     WorkConcurrencyConfiguration Concurrency,
     WorkInvocationConfiguration Invocation)
 {
+    public WorkQueueDurabilityConfiguration QueueDurability { get; init; } = WorkQueueDurabilityConfiguration.Default;
+
     public static WorkConfiguration Default { get; } = new(
         WorkStartConfiguration.Default,
         WorkIdempotencyConfiguration.Default,
@@ -31,6 +33,7 @@ public sealed record WorkConfiguration(
                 Logging = overrides.Logging,
                 Retention = overrides.Retention,
                 Concurrency = overrides.Concurrency,
+                QueueDurability = overrides.QueueDurability,
                 // Invocation is intentionally excluded. Allowed invocation channels are a
                 // design-time contract for the work definition, not a runtime worker option.
             };

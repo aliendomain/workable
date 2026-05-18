@@ -35,6 +35,7 @@ internal sealed class WorkerRecord(
     private WorkProfileSnapshot? profile;
     private WorkProfileSnapshot? pendingIterationProfile;
     private CurrentWorkerIteration? currentIteration;
+    private WorkInterruptionReason? interruptionReason;
     private DateTimeOffset? firstStartedAt;
     private DateTimeOffset? nextRunAt;
     private TimeSpan totalExecutionDuration;
@@ -91,6 +92,39 @@ internal sealed class WorkerRecord(
     public Action<WorkerIterationReference>? IterationForgotten { get; set; }
 
     public bool IsFinal => WorkerStateMachine.IsFinal(this.State);
+
+    public bool IsInterrupted
+    {
+        get
+        {
+            lock (this.sync)
+            {
+                return this.State is WorkerState.Interrupting or WorkerState.Interrupted;
+            }
+        }
+    }
+
+    public WorkInterruptionReason? InterruptionReason
+    {
+        get
+        {
+            lock (this.sync)
+            {
+                return this.interruptionReason;
+            }
+        }
+    }
+
+    public bool IsCompletionSignaled
+    {
+        get
+        {
+            lock (this.sync)
+            {
+                return this.completion.Task.IsCompleted;
+            }
+        }
+    }
 
     public WorkerSummary ToSummary()
     {
@@ -331,40 +365,28 @@ internal sealed class WorkerRecord(
         }
     }
 
-    public WorkActionOutcome ForceCancelForSystemStop()
+    public WorkCompletionStatus CompleteInterruption()
     {
         lock (this.sync)
         {
-            if (this.IsFinal)
+            if (this.completion.Task.IsCompleted)
             {
-                return WorkActionOutcome.Invalid(
-                    WorkAction.Cancel,
-                    this.ToSnapshotLocked(),
-                    [WorkMessage.Error("workable.worker.final", $"Worker cannot be force-canceled from state '{this.State}'.", "worker")]);
+                return WorkCompletionStatus.Invalid;
             }
 
-            this.Messages =
-            [
-                .. this.Messages,
-                WorkMessage.Warning(
-                    "workable.worker.shutdown_forced",
-                    "Worker did not stop within the shutdown grace period and was force-canceled by Workable.",
-                    "worker"),
-            ];
-            this.SetStateLocked(WorkerState.Canceled);
+            var transition = WorkerStateMachine.CompleteInterruption(this.State);
+            if (transition.CompletionStatus == WorkCompletionStatus.Invalid)
+            {
+                return transition.CompletionStatus;
+            }
+
+            this.SetStateLocked(transition.NextState);
             this.Output = null;
-            this.RecordIterationLocked(null, this.Messages, WorkCompletionStatus.Canceled);
+            this.RecordIterationLocked(null, this.Messages, transition.CompletionStatus);
+            this.nextRunAt = null;
             this.AdvanceStateSequence();
             this.ReleaseExecutionCancellationLocked();
-            this.SignalRecurrenceWaitLocked();
-
-            return WorkActionOutcome.Accepted(
-                WorkAction.Cancel,
-                this.ToSnapshotLocked(),
-                [WorkMessage.Warning(
-                    "workable.worker.shutdown_forced",
-                    "Worker did not stop within the shutdown grace period and was force-canceled by Workable.",
-                    "worker")]);
+            return transition.CompletionStatus;
         }
     }
 
@@ -566,6 +588,14 @@ internal sealed class WorkerRecord(
                 };
             }
 
+            if (changes.QueueDurability is not null)
+            {
+                configuration = configuration with
+                {
+                    QueueDurability = changes.QueueDurability,
+                };
+            }
+
             if (changes.Start is not null)
             {
                 configuration = configuration with
@@ -667,6 +697,37 @@ internal sealed class WorkerRecord(
             return this.ToSnapshotLocked();
         }
     }
+
+    public WorkerSnapshot? ForceInterrupt(WorkInterruptionReason reason)
+    {
+        lock (this.sync)
+        {
+            if (this.completion.Task.IsCompleted)
+            {
+                return null;
+            }
+
+            this.Messages =
+            [
+                .. this.Messages,
+                CreateInterruptionMessage(reason, forced: true),
+            ];
+            this.interruptionReason = reason;
+            this.SetStateLocked(WorkerState.Interrupted);
+            this.Output = null;
+            this.RecordIterationLocked(null, this.Messages, WorkCompletionStatus.Interrupted);
+            this.nextRunAt = null;
+            this.AdvanceStateSequence();
+            this.ReleaseExecutionCancellationLocked();
+            this.SignalRecurrenceWaitLocked();
+            this.SetCompletionLocked(WorkCompletionStatus.Interrupted);
+
+            return this.ToSnapshotLocked();
+        }
+    }
+
+    public WorkerSnapshot? ForceInterruptForSystemStop()
+        => this.ForceInterrupt(WorkInterruptionReason.Shutdown);
 
     public WorkerReadModelWorker ToReadModelWorker()
     {
@@ -871,6 +932,7 @@ internal sealed class WorkerRecord(
             this.Options,
             this.Configuration,
             this.Messages,
+            this.interruptionReason,
             this.CreatedAt,
             this.StateChangedAt,
             this.UpdatedAt)
@@ -1120,29 +1182,65 @@ internal sealed class WorkerRecord(
         return WorkMessage.Error(transition.MessageCode, transition.MessageText, "worker");
     }
 
-    public WorkActionOutcome RequestCancelForSystemStop()
+    public bool RequestInterrupt(WorkInterruptionReason reason)
     {
-        CancellationTokenSource? cancellation;
-        WorkActionOutcome outcome;
-
+        CancellationTokenSource? cancellation = null;
         lock (this.sync)
         {
-            var transition = WorkerStateMachine.Apply(this.State, WorkAction.Cancel);
-            if (!transition.IsAccepted)
+            if (!CanInterrupt(this.State, reason))
             {
-                return this.ToOutcomeLocked(transition);
+                return false;
             }
 
-            this.ApplyAcceptedTransitionLocked(transition, advancesRevision: false);
-            cancellation = transition.CancelsExecution ? this.executionCancellation : null;
+            var currentState = this.State;
+            this.Messages =
+            [
+                .. this.Messages,
+                CreateInterruptionMessage(reason, forced: false),
+            ];
+            this.interruptionReason = reason;
+            this.SetStateLocked(currentState == WorkerState.Running
+                ? WorkerState.Interrupting
+                : WorkerState.Interrupted);
+            this.AdvanceStateSequence();
+
+            cancellation = currentState == WorkerState.Running ? this.executionCancellation : null;
             this.SignalRecurrenceWaitLocked();
-            outcome = this.ToOutcomeLocked(transition);
         }
 
         CancelIfAvailable(cancellation);
 
-        return outcome;
+        return true;
     }
+
+    public bool RequestInterruptForSystemStop()
+        => this.RequestInterrupt(WorkInterruptionReason.Shutdown);
+
+    private static bool CanInterrupt(WorkerState state, WorkInterruptionReason reason)
+        => reason == WorkInterruptionReason.LeaseLost
+            ? state is WorkerState.Queued or WorkerState.Running or WorkerState.Waiting or WorkerState.Retrying or WorkerState.Paused
+            : state is WorkerState.Queued or WorkerState.Running or WorkerState.Waiting or WorkerState.Retrying;
+
+    private static WorkMessage CreateInterruptionMessage(WorkInterruptionReason reason, bool forced)
+        => reason switch
+        {
+            WorkInterruptionReason.LeaseLost => WorkMessage.Warning(
+                forced
+                    ? "workable.worker.lease_lost_interrupted_forced"
+                    : "workable.worker.lease_lost_interrupted",
+                forced
+                    ? "Worker was marked interrupted because this runtime lost its durable queue lease."
+                    : "Worker execution was interrupted because this runtime lost its durable queue lease.",
+                "worker"),
+            _ => WorkMessage.Warning(
+                forced
+                    ? "workable.worker.shutdown_interrupted_forced"
+                    : "workable.worker.shutdown_interrupted",
+                forced
+                    ? "Worker did not stop within the shutdown grace period and was marked interrupted by Workable."
+                    : "Worker execution was interrupted because the Workable system is stopping.",
+                "worker"),
+        };
 
     private static bool CancelIfAvailable(CancellationTokenSource? cancellation)
     {
@@ -1233,7 +1331,7 @@ internal sealed class WorkerRecord(
 
         bucket = state switch
         {
-            WorkerState.Running or WorkerState.Waiting or WorkerState.Retrying or WorkerState.Pausing or WorkerState.Canceling => WorkConcurrencyCapacityBucket.Executing,
+            WorkerState.Running or WorkerState.Waiting or WorkerState.Retrying or WorkerState.Pausing or WorkerState.Interrupting or WorkerState.Canceling => WorkConcurrencyCapacityBucket.Executing,
             WorkerState.Paused => WorkConcurrencyCapacityBucket.Paused,
             WorkerState.Failed => WorkConcurrencyCapacityBucket.Failed,
             _ => null,
@@ -1337,6 +1435,7 @@ internal sealed class WorkerRecord(
             this.identifiers.ToHashSet(),
             this.Origin,
             this.State,
+            this.interruptionReason,
             this.CreatedAt,
             this.StateChangedAt,
             this.UpdatedAt)
@@ -1357,6 +1456,7 @@ internal sealed class WorkerRecord(
             this.Revision,
             this.Work.Definition.Category,
             this.State,
+            this.interruptionReason,
             this.CreatedAt,
             this.StateChangedAt,
             this.UpdatedAt)
