@@ -190,10 +190,20 @@ The admin UI notification tray uses compact diagnostics to show system warnings 
 - Retention lag is shown when `OldestDuePurgeAge` crosses the configured threshold.
 - Projector and scheduler failures are shown as errors because an internal background component failed.
 
-The always-on bell indicator subscribes to compact `alertChanges` diagnostics. That subscription stays quiet while the alert state is unchanged, so healthy systems do not receive a continuous stream of "still healthy" messages. Opening the tray subscribes to compact `continuous` diagnostics so the visible counts stay fresh at the diagnostics publish interval. Expanding a diagnostics section subscribes to the detailed component for that section. Closing the tray or collapsing a detail section removes the extra subscription.
+The always-on bell indicator subscribes to compact `alertChanges` diagnostics for every realtime-enabled system configured in the admin UI, across all configured hosts. Each subscription is still scoped to one Workable system because the SignalR hub resolves diagnostics by system name. The client aggregates those compact alert states into one tray indicator and labels warnings with the system and host that produced them.
+
+That aggregate alert layer is intentionally lightweight:
+
+- Healthy systems stay quiet because `alertChanges` does not push repeated "still healthy" payloads.
+- Alert subscriptions do not capture realtime payload messages for the payload viewer.
+- Queue rejection acknowledgements are tracked per system, so acknowledging one system does not hide rejection alerts from another system.
+
+Opening the tray does not subscribe to full diagnostics for every configured system. The visible detail panels remain scoped to the currently selected system. Opening the tray subscribes to compact `continuous` diagnostics for the active system so visible counts stay fresh at the diagnostics publish interval. Expanding a diagnostics section subscribes to the detailed component for that active system and section. Closing the tray or collapsing a detail section removes the extra subscription.
+
+To inspect detailed diagnostics for a different host or system, switch the admin UI to that system and open or expand the tray there. The bell can alert across systems; the detailed diagnostics panels inspect the active system.
 
 Healthy systems should be quiet. The always-on alert subscription uses `alertChanges`, so it does not continually push "everything is fine" messages.
 
-Acknowledging queue rejection warnings stores the current `RejectedWorkCount` in the admin UI. The critical warning stays quiet until the server reports a larger rejection count.
+Acknowledging queue rejection warnings stores the current `RejectedWorkCount` for that system in the admin UI. The critical warning stays quiet until that same system reports a larger rejection count.
 
 The system tools menu near the tray opens the realtime payload viewer and event viewer. The payload viewer can show diagnostics `workable.view` messages when diagnostics subscriptions are active, which is useful for verifying compact alert payloads, tray payloads, and detailed diagnostics payloads separately.

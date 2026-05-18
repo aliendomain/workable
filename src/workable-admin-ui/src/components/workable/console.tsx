@@ -293,6 +293,7 @@ export function WorkableConsole() {
   const [lifecycleError, setLifecycleError] = useState<string>();
   const [systemNotificationOpen, setSystemNotificationOpen] = useState(false);
   const [acknowledgedRejectedWorkCounts, setAcknowledgedRejectedWorkCounts] = useState<Record<string, number>>({});
+  const [diagnosticsAlertsBySystemId, setDiagnosticsAlertsBySystemId] = useState<Record<string, DiagnosticsAlertSnapshot>>({});
   const [readModelDiagnosticsExpanded, setReadModelDiagnosticsExpanded] = useState(false);
   const [retentionDiagnosticsExpanded, setRetentionDiagnosticsExpanded] = useState(false);
   const [realtimePayloadCaptureEnabled, setRealtimePayloadCaptureEnabled] = useState(true);
@@ -338,9 +339,6 @@ export function WorkableConsole() {
   const activeOverviewScope = activeSystem
     ? overviewScopeBySystemId[activeSystem.id] ?? null
     : null;
-  const acknowledgedRejectedWorkCount = activeSystem
-    ? acknowledgedRejectedWorkCounts[activeSystem.id] ?? 0
-    : 0;
   const connection = useMemo<WorkableConnection | null>(
     () =>
       activeApiUrl
@@ -453,16 +451,22 @@ export function WorkableConsole() {
     []
   );
   const diagnosticsRealtimeEnabled = Boolean(connection?.realtimeHubPath);
-  const captureRealtimePayloads = realtimePayloadOpen && realtimePayloadCaptureEnabled;
-  const diagnosticsAlert = useWorkableRealtimeView<WorkComponentQueryResult>(
-    connection,
-    "diagnostics",
-    diagnosticsAlertRequest,
-    diagnosticsRealtimeEnabled,
-    captureRealtimePayloads,
-    realtimePayloadMaxMessages,
-    "diagnostics:alerts"
+  const diagnosticsAlertTargets = useMemo(
+    () => createDiagnosticsAlertTargets(consoleState.hosts),
+    [consoleState.hosts]
   );
+  const diagnosticsAlertSources = useMemo<DiagnosticsAlertSource[]>(
+    () => diagnosticsAlertTargets.map((target) => ({
+      ...(diagnosticsAlertsBySystemId[target.systemId] ?? {
+        connectionState: "connecting",
+        enabled: true,
+        loading: true,
+      }),
+      target,
+    })),
+    [diagnosticsAlertTargets, diagnosticsAlertsBySystemId]
+  );
+  const captureRealtimePayloads = realtimePayloadOpen && realtimePayloadCaptureEnabled;
   const diagnosticsTray = useWorkableRealtimeView<WorkComponentQueryResult>(
     connection,
     "diagnostics",
@@ -492,13 +496,11 @@ export function WorkableConsole() {
   );
   const diagnosticsRealtimeMessages = useMemo(
     () => [
-      ...diagnosticsAlert.messages,
       ...diagnosticsTray.messages,
       ...readModelDiagnosticsDetail.messages,
       ...retentionDiagnosticsDetail.messages,
     ],
     [
-      diagnosticsAlert.messages,
       diagnosticsTray.messages,
       readModelDiagnosticsDetail.messages,
       retentionDiagnosticsDetail.messages,
@@ -576,17 +578,14 @@ export function WorkableConsole() {
       )
     );
   }, []);
-  const clearDiagnosticsAlertMessages = diagnosticsAlert.clearMessages;
   const clearDiagnosticsTrayMessages = diagnosticsTray.clearMessages;
   const clearReadModelDiagnosticsDetailMessages = readModelDiagnosticsDetail.clearMessages;
   const clearRetentionDiagnosticsDetailMessages = retentionDiagnosticsDetail.clearMessages;
   const clearDiagnosticsRealtimeMessages = useCallback(() => {
-    clearDiagnosticsAlertMessages();
     clearDiagnosticsTrayMessages();
     clearReadModelDiagnosticsDetailMessages();
     clearRetentionDiagnosticsDetailMessages();
   }, [
-    clearDiagnosticsAlertMessages,
     clearDiagnosticsTrayMessages,
     clearReadModelDiagnosticsDetailMessages,
     clearRetentionDiagnosticsDetailMessages,
@@ -598,16 +597,30 @@ export function WorkableConsole() {
       setRetentionDiagnosticsExpanded(false);
     }
   }, []);
-  const acknowledgeQueueRejections = useCallback((count: number) => {
-    if (!activeSystem) {
-      return;
-    }
-
+  const acknowledgeQueueRejections = useCallback((systemId: string, count: number) => {
     setAcknowledgedRejectedWorkCounts((current) => ({
       ...current,
-      [activeSystem.id]: count,
+      [systemId]: count,
     }));
-  }, [activeSystem]);
+  }, []);
+
+  const updateDiagnosticsAlertSnapshot = useCallback((
+    systemId: string,
+    snapshot: DiagnosticsAlertSnapshot | null
+  ) => {
+    setDiagnosticsAlertsBySystemId((current) => {
+      if (!snapshot) {
+        const next = { ...current };
+        delete next[systemId];
+        return next;
+      }
+
+      return {
+        ...current,
+        [systemId]: snapshot,
+      };
+    });
+  }, []);
 
   useEffect(() => {
     queueMicrotask(() => {
@@ -1341,6 +1354,14 @@ export function WorkableConsole() {
 
   return (
     <SidebarProvider>
+      <DiagnosticsAlertSubscriptions
+        captureEnabled={false}
+        enabled={hasMounted}
+        maxMessages={realtimePayloadMaxMessages}
+        onSnapshot={updateDiagnosticsAlertSnapshot}
+        request={diagnosticsAlertRequest}
+        targets={diagnosticsAlertTargets}
+      />
       <Sidebar variant="inset">
         <SidebarHeader>
           <div className="flex h-14 items-center px-2">
@@ -1433,8 +1454,9 @@ export function WorkableConsole() {
                             realtimePayloadOpen={realtimePayloadOpen}
                           />
                           <SystemNotificationTray
-                            acknowledgedRejectedWorkCount={acknowledgedRejectedWorkCount}
-                            alertDiagnostics={diagnosticsAlert}
+                            acknowledgedRejectedWorkCounts={acknowledgedRejectedWorkCounts}
+                            activeSystemId={activeSystem.id}
+                            alertSources={diagnosticsAlertSources}
                             onAcknowledgeQueueRejections={acknowledgeQueueRejections}
                             onOpenChange={handleSystemNotificationOpenChange}
                             onReadModelExpandedChange={setReadModelDiagnosticsExpanded}
@@ -1772,6 +1794,29 @@ const overviewPanelOptions: Array<{
 
 type SystemDiagnosticsViewState = RealtimeViewLoadable<WorkComponentQueryResult>;
 
+type DiagnosticsAlertTarget = {
+  apiUrl: string;
+  displayName: string;
+  hostId: string;
+  hostName: string;
+  realtimeHubPath: string;
+  systemId: string;
+  systemName?: string;
+};
+
+type DiagnosticsAlertSnapshot = {
+  connectionState: string;
+  data?: WorkComponentQueryResult;
+  enabled: boolean;
+  error?: string;
+  loading: boolean;
+  refreshing?: boolean;
+};
+
+type DiagnosticsAlertSource = DiagnosticsAlertSnapshot & {
+  target: DiagnosticsAlertTarget;
+};
+
 function SystemToolsMenu({
   eventViewerOpen,
   onEventViewerOpenChange,
@@ -1832,6 +1877,99 @@ function SystemToolsMenu({
       </PopoverContent>
     </Popover>
   );
+}
+
+function DiagnosticsAlertSubscriptions({
+  captureEnabled,
+  enabled,
+  maxMessages,
+  onSnapshot,
+  request,
+  targets,
+}: {
+  captureEnabled: boolean;
+  enabled: boolean;
+  maxMessages: number;
+  onSnapshot: (systemId: string, snapshot: DiagnosticsAlertSnapshot | null) => void;
+  request: unknown;
+  targets: DiagnosticsAlertTarget[];
+}) {
+  return (
+    <>
+      {targets.map((target) => (
+        <DiagnosticsAlertSubscription
+          captureEnabled={captureEnabled}
+          enabled={enabled}
+          key={target.systemId}
+          maxMessages={maxMessages}
+          onSnapshot={onSnapshot}
+          request={request}
+          target={target}
+        />
+      ))}
+    </>
+  );
+}
+
+function DiagnosticsAlertSubscription({
+  captureEnabled,
+  enabled,
+  maxMessages,
+  onSnapshot,
+  request,
+  target,
+}: {
+  captureEnabled: boolean;
+  enabled: boolean;
+  maxMessages: number;
+  onSnapshot: (systemId: string, snapshot: DiagnosticsAlertSnapshot | null) => void;
+  request: unknown;
+  target: DiagnosticsAlertTarget;
+}) {
+  const connection = useMemo<WorkableConnection>(
+    () => ({
+      apiUrl: target.apiUrl,
+      realtimeHubPath: target.realtimeHubPath,
+      systemName: target.systemName,
+    }),
+    [target.apiUrl, target.realtimeHubPath, target.systemName]
+  );
+  const diagnostics = useWorkableRealtimeView<WorkComponentQueryResult>(
+    connection,
+    "diagnostics",
+    request,
+    enabled,
+    captureEnabled,
+    maxMessages,
+    `diagnostics:alerts:${target.systemId}`
+  );
+
+  useEffect(() => {
+    onSnapshot(target.systemId, {
+      connectionState: diagnostics.connectionState,
+      data: diagnostics.data,
+      enabled: diagnostics.enabled,
+      error: diagnostics.error,
+      loading: diagnostics.loading,
+      refreshing: diagnostics.refreshing,
+    });
+  }, [
+    diagnostics.connectionState,
+    diagnostics.data,
+    diagnostics.enabled,
+    diagnostics.error,
+    diagnostics.loading,
+    diagnostics.refreshing,
+    onSnapshot,
+    target.systemId,
+  ]);
+
+  useEffect(
+    () => () => onSnapshot(target.systemId, null),
+    [onSnapshot, target.systemId]
+  );
+
+  return null;
 }
 
 function EventViewerWindow({
@@ -2683,13 +2821,16 @@ function eventTypeTone(eventType: string) {
 type SystemNotification = {
   description: string;
   id: string;
+  rejectedWorkCount?: number;
+  sourceId?: string;
   tone: "critical" | "warning";
   title: string;
 };
 
 function SystemNotificationTray({
-  acknowledgedRejectedWorkCount,
-  alertDiagnostics,
+  acknowledgedRejectedWorkCounts,
+  activeSystemId,
+  alertSources,
   onAcknowledgeQueueRejections,
   onOpenChange,
   onReadModelExpandedChange,
@@ -2702,9 +2843,10 @@ function SystemNotificationTray({
   systemName,
   trayDiagnostics,
 }: {
-  acknowledgedRejectedWorkCount: number;
-  alertDiagnostics: SystemDiagnosticsViewState;
-  onAcknowledgeQueueRejections: (count: number) => void;
+  acknowledgedRejectedWorkCounts: Record<string, number>;
+  activeSystemId: string;
+  alertSources: DiagnosticsAlertSource[];
+  onAcknowledgeQueueRejections: (systemId: string, count: number) => void;
   onOpenChange: (open: boolean) => void;
   onReadModelExpandedChange: (expanded: boolean) => void;
   onRetentionExpandedChange: (expanded: boolean) => void;
@@ -2716,16 +2858,9 @@ function SystemNotificationTray({
   systemName: string;
   trayDiagnostics: SystemDiagnosticsViewState;
 }) {
-  const alertQueueCompact = getWorkComponentData<WorkQueueDiagnosticsCompactComponent>(
-    alertDiagnostics.data,
-    "queueDiagnostics"
-  );
-  const trayQueueCompact = getWorkComponentData<WorkQueueDiagnosticsCompactComponent>(
-    trayDiagnostics.data,
-    "queueDiagnostics"
-  );
+  const activeAlertSource = alertSources.find((source) => source.target.systemId === activeSystemId);
   const alertReadModelCompact = getWorkComponentData<WorkReadModelDiagnosticsCompactComponent>(
-    alertDiagnostics.data,
+    activeAlertSource?.data,
     "readModelDiagnostics"
   );
   const trayReadModelCompact = getWorkComponentData<WorkReadModelDiagnosticsCompactComponent>(
@@ -2737,7 +2872,7 @@ function SystemNotificationTray({
     "readModelDiagnostics"
   );
   const alertRetentionCompact = getWorkComponentData<WorkRetentionDiagnosticsCompactComponent>(
-    alertDiagnostics.data,
+    activeAlertSource?.data,
     "retentionDiagnostics"
   );
   const trayRetentionCompact = getWorkComponentData<WorkRetentionDiagnosticsCompactComponent>(
@@ -2756,34 +2891,26 @@ function SystemNotificationTray({
   const retentionCompact = open
     ? (retentionExpanded ? retentionDetailCompact ?? trayRetentionCompact : trayRetentionCompact) ?? alertRetentionCompact
     : alertRetentionCompact;
-  const queueCompact = open
-    ? trayQueueCompact ?? alertQueueCompact
-    : alertQueueCompact;
-  const diagnosticsError = alertDiagnostics.error || (
-    readModelExpanded
-      ? readModelDetailDiagnostics.error
-      : retentionExpanded
-        ? retentionDetailDiagnostics.error
-        : open
-          ? trayDiagnostics.error
-          : undefined
-  );
-  const notifications = createSystemNotifications(
-    queueCompact,
-    acknowledgedRejectedWorkCount,
-    readModelCompact,
-    retentionCompact,
-    diagnosticsError
+  const notifications = alertSources.flatMap((source) =>
+    createSystemNotifications(
+      getWorkComponentData<WorkQueueDiagnosticsCompactComponent>(source.data, "queueDiagnostics"),
+      acknowledgedRejectedWorkCounts[source.target.systemId] ?? 0,
+      getWorkComponentData<WorkReadModelDiagnosticsCompactComponent>(source.data, "readModelDiagnostics"),
+      getWorkComponentData<WorkRetentionDiagnosticsCompactComponent>(source.data, "retentionDiagnostics"),
+      source.error,
+      source.target
+    )
   );
   const hasNotifications = notifications.length > 0;
   const hasCriticalNotifications = notifications.some((notification) => notification.tone === "critical");
-  const busy = alertDiagnostics.loading || alertDiagnostics.refreshing ||
+  const busy = alertSources.some((source) => source.loading || source.refreshing) ||
     (open && !readModelExpanded && !retentionExpanded && (trayDiagnostics.loading || trayDiagnostics.refreshing)) ||
     (readModelExpanded && (readModelDetailDiagnostics.loading || readModelDetailDiagnostics.refreshing)) ||
     (retentionExpanded && (retentionDetailDiagnostics.loading || retentionDetailDiagnostics.refreshing));
-  const connectionState = alertDiagnostics.enabled
-    ? alertDiagnostics.connectionState
-    : "disabled";
+  const connectedAlertCount = alertSources.filter((source) => source.connectionState === "connected").length;
+  const alertSubscriptionText = alertSources.length > 0
+    ? `${connectedAlertCount}/${alertSources.length} alert streams connected`
+    : "No realtime alert streams";
   const readModelLastUpdatedAt = readModelDetailDiagnostics.data?.generatedAt
     ? new Date(readModelDetailDiagnostics.data.generatedAt)
     : undefined;
@@ -2824,14 +2951,14 @@ function SystemNotificationTray({
           <div className="min-w-0">
             <div className="font-medium text-sm">System notifications</div>
             <div className="truncate text-muted-foreground text-xs">
-              {systemName} - {connectionState}
+              {alertSubscriptionText} - details: {systemName}
             </div>
           </div>
           {busy && <Loader2 className="size-4 shrink-0 animate-spin text-muted-foreground" />}
         </div>
         <div className="max-h-[70vh] overflow-auto">
           <div className="space-y-2 border-b p-3">
-            {alertDiagnostics.loading && !queueCompact && !readModelCompact && !retentionCompact ? (
+            {alertSources.some((source) => source.loading) && notifications.length === 0 ? (
               <div className="flex items-center gap-2 text-muted-foreground text-sm">
                 <Loader2 className="size-4 animate-spin" />
                 Loading diagnostics.
@@ -2847,10 +2974,14 @@ function SystemNotificationTray({
                     <div className="min-w-0">
                       <div className="font-medium text-sm">{notification.title}</div>
                       <div className="text-xs opacity-85">{notification.description}</div>
-                      {notification.id === "queue-rejections" && queueCompact ? (
+                      {notification.sourceId && notification.rejectedWorkCount !== undefined ? (
                         <Button
                           className="mt-2 border-red-500/30 bg-red-500/10 text-red-100 hover:bg-red-500/20 hover:text-red-50"
-                          onClick={() => onAcknowledgeQueueRejections(queueCompact.rejectedWorkCount)}
+                          onClick={() => {
+                            if (notification.sourceId && notification.rejectedWorkCount !== undefined) {
+                              onAcknowledgeQueueRejections(notification.sourceId, notification.rejectedWorkCount);
+                            }
+                          }}
                           size="xs"
                           variant="outline"
                         >
@@ -3107,16 +3238,19 @@ function createSystemNotifications(
   acknowledgedRejectedWorkCount = 0,
   readModel?: WorkReadModelDiagnosticsCompactComponent,
   retention?: WorkRetentionDiagnosticsCompactComponent,
-  error?: string
+  error?: string,
+  source?: DiagnosticsAlertTarget
 ): SystemNotification[] {
   const notifications: SystemNotification[] = [];
+  const sourcePrefix = source ? `${source.displayName}: ` : "";
+  const sourceSuffix = source ? ` on ${source.displayName}` : "";
 
   if (error) {
     notifications.push({
       description: error,
-      id: "diagnostics-unavailable",
+      id: `${source?.systemId ?? "active"}:diagnostics-unavailable`,
       tone: "warning",
-      title: "Diagnostics unavailable",
+      title: `${sourcePrefix}Diagnostics unavailable`,
     });
   }
 
@@ -3128,49 +3262,51 @@ function createSystemNotifications(
       : queue.rejectedWorkCount;
     notifications.push({
       description: `${formatNumber(rejectedWorkCount)} new rejected queue request${rejectedWorkCount === 1 ? "" : "s"} (${formatNumber(queue.rejectedWorkCount)} total)${queue.lastRejectedMessage ? `. Last: ${queue.lastRejectedMessage}` : "."}`,
-      id: "queue-rejections",
+      id: `${source?.systemId ?? "active"}:queue-rejections`,
+      rejectedWorkCount: queue.rejectedWorkCount,
+      sourceId: source?.systemId,
       tone: "critical",
-      title: "Work is being rejected",
+      title: `${sourcePrefix}Work is being rejected`,
     });
   }
 
   if (readModel?.hasProjectorFailure) {
     notifications.push({
       description: `${readModel.projectorFailureType ?? "Projector failure"}${readModel.projectorFailureMessage ? `: ${readModel.projectorFailureMessage}` : ""}`,
-      id: "read-model-failure",
+      id: `${source?.systemId ?? "active"}:read-model-failure`,
       tone: "critical",
-      title: "Read model projector failed",
+      title: `${sourcePrefix}Read model projector failed`,
     });
   }
 
   if (readModel?.isReadModelBehind) {
     notifications.push({
-      description: `${formatNumber(readModel.pendingUpdateCount)} update${readModel.pendingUpdateCount === 1 ? "" : "s"} waiting to be projected.`,
-      id: "read-model-lag",
+      description: `${formatNumber(readModel.pendingUpdateCount)} update${readModel.pendingUpdateCount === 1 ? "" : "s"} waiting to be projected${sourceSuffix}.`,
+      id: `${source?.systemId ?? "active"}:read-model-lag`,
       tone: readModel.pendingUpdateCount >= readModel.readModelLagWarningThreshold * 10
         ? "critical"
         : "warning",
-      title: "Read model is behind",
+      title: `${sourcePrefix}Read model is behind`,
     });
   }
 
   if (retention?.hasSchedulerFailure) {
     notifications.push({
       description: `${retention.schedulerFailureType ?? "Retention scheduler failure"}${retention.schedulerFailureMessage ? `: ${retention.schedulerFailureMessage}` : ""}`,
-      id: "retention-failure",
+      id: `${source?.systemId ?? "active"}:retention-failure`,
       tone: "critical",
-      title: "Retention scheduler failed",
+      title: `${sourcePrefix}Retention scheduler failed`,
     });
   }
 
   if (retention?.isRetentionBehind) {
     notifications.push({
-      description: `Oldest due purge is overdue by ${formatDuration(retention.oldestDuePurgeAge)}.`,
-      id: "retention-lag",
+      description: `Oldest due purge is overdue by ${formatDuration(retention.oldestDuePurgeAge)}${sourceSuffix}.`,
+      id: `${source?.systemId ?? "active"}:retention-lag`,
       tone: parseDurationSeconds(retention.oldestDuePurgeAge) >= retention.retentionLagWarningSeconds * 10
         ? "critical"
         : "warning",
-      title: "Retention is behind",
+      title: `${sourcePrefix}Retention is behind`,
     });
   }
 
@@ -3653,6 +3789,22 @@ function findSystemLocation(
   }
 
   return { host: fallbackHost, system: fallbackHost.systems[0] };
+}
+
+function createDiagnosticsAlertTargets(hosts: WorkableHostConnection[]): DiagnosticsAlertTarget[] {
+  return hosts.flatMap((host) =>
+    host.systems
+      .filter((system) => system.realtimeEnabled && !!system.realtimeHubPath)
+      .map((system) => ({
+        apiUrl: host.apiUrl,
+        displayName: `${system.name} @ ${host.name}`,
+        hostId: host.id,
+        hostName: host.name,
+        realtimeHubPath: system.realtimeHubPath!,
+        systemId: system.id,
+        systemName: system.systemName,
+      }))
+  );
 }
 
 function isServerView(value: unknown): value is ServerView {
