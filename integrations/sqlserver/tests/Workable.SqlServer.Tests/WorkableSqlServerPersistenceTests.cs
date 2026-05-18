@@ -384,7 +384,7 @@ WHERE SubjectType = N'order'
 
         await transaction.CommitAsync();
 
-        var completion = await handle.WaitForCompletion(new CancellationTokenSource(TimeSpan.FromSeconds(10)).Token);
+        var completion = await WaitForCompletion(handle);
         await system.Stop();
 
         Assert.True(ran.Task.IsCompleted);
@@ -466,8 +466,8 @@ VALUES (@OrderId, @Payload);
 
         await transaction.CommitAsync();
 
-        var completion = await handle.WaitForCompletion(new CancellationTokenSource(TimeSpan.FromSeconds(10)).Token);
-        var seenPayload = await observedPayload.Task.WaitAsync(new CancellationTokenSource(TimeSpan.FromSeconds(10)).Token);
+        var completion = await WaitForCompletion(handle);
+        var seenPayload = await WaitWithTimeout(observedPayload.Task);
         await system.Stop();
 
         Assert.True(completion.IsCompletedSuccessfully);
@@ -519,7 +519,7 @@ VALUES (@OrderId, @Payload);
 
         var input = WorkInput.Empty.WithSubject(new WorkSubjectId("order", orderId));
         var handle = await system.Queue.Enqueue("sql-durable-complete-business", input);
-        var completion = await handle.WaitForCompletion(new CancellationTokenSource(TimeSpan.FromSeconds(10)).Token);
+        var completion = await WaitForCompletion(handle);
 
         await using var verification = await this.OpenConnection();
         await WaitForEntryCount(verification, orderId, 0);
@@ -576,7 +576,7 @@ VALUES (@OrderId);
 
         var input = WorkInput.Empty.WithSubject(new WorkSubjectId("order", orderId));
         var handle = await system.Queue.Enqueue("sql-durable-complete-rollback", input);
-        var completion = await handle.WaitForCompletion(new CancellationTokenSource(TimeSpan.FromSeconds(10)).Token);
+        var completion = await WaitForCompletion(handle);
 
         await using var verification = await this.OpenConnection();
         await WaitForFailedEntryRetained(verification, orderId);
@@ -622,7 +622,7 @@ SET ANSI_NULLS OFF;
         var handle = await system.Queue.Enqueue("sql-quoted-identifier-off", input, options);
         await transaction.CommitAsync();
 
-        var completion = await handle.WaitForCompletion(new CancellationTokenSource(TimeSpan.FromSeconds(10)).Token);
+        var completion = await WaitForCompletion(handle);
         await system.Stop();
 
         Assert.True(handle.QueueOutcome.IsAccepted);
@@ -708,7 +708,7 @@ WHERE SubjectValue = N'rollback';
             configuration => configuration.QueueDurably());
 
         await secondSystem.Start();
-        await ran.Task.WaitAsync(new CancellationTokenSource(TimeSpan.FromSeconds(10)).Token);
+        await WaitWithTimeout(ran.Task);
         var replayed = await secondSystem.Query.Worker(workerId);
         await secondSystem.Stop();
 
@@ -837,7 +837,7 @@ WHERE WorkSystemName = N'background'
 
         var input = WorkInput.Empty.WithSubject(new WorkSubjectId("order", "final-delete"));
         var handle = await system.Queue.Enqueue("sql-final-delete", input);
-        var completion = await handle.WaitForCompletion(new CancellationTokenSource(TimeSpan.FromSeconds(10)).Token);
+        var completion = await WaitForCompletion(handle);
 
         await using var connection = await this.OpenConnection();
         await WaitForEntryCount(connection, "final-delete", 0);
@@ -865,7 +865,7 @@ WHERE WorkSystemName = N'background'
         var input = WorkInput.Empty.WithSubject(new WorkSubjectId("order", "failed-retention"));
         var handle = await system.Queue.Enqueue("sql-failed-retention", input);
         var workerId = RequiredWorkerId(handle);
-        var completion = await handle.WaitForCompletion(new CancellationTokenSource(TimeSpan.FromSeconds(10)).Token);
+        var completion = await WaitForCompletion(handle);
 
         await using var connection = await this.OpenConnection();
         await WaitForFailedEntryRetained(connection, "failed-retention");
@@ -917,11 +917,11 @@ WHERE WorkSystemName = N'background'
 
         var input = WorkInput.Empty.WithSubject(new WorkSubjectId("order", subjectValue));
         var handle = await firstSystem.Queue.Enqueue(workName, input);
-        await started.Task.WaitAsync(new CancellationTokenSource(TimeSpan.FromSeconds(10)).Token);
+        await WaitWithTimeout(started.Task);
 
         var stop = await firstSystem.Stop();
         var interrupted = Assert.Single(stop.CancellationRequestedWorkers);
-        await interruptedSeen.Task.WaitAsync(new CancellationTokenSource(TimeSpan.FromSeconds(10)).Token);
+        await WaitWithTimeout(interruptedSeen.Task);
 
         await using (var connection = await this.OpenConnection())
         {
@@ -939,7 +939,7 @@ WHERE WorkSystemName = N'background'
             },
             configuration => configuration.QueueDurably());
         await secondSystem.Start();
-        await replayed.Task.WaitAsync(new CancellationTokenSource(TimeSpan.FromSeconds(10)).Token);
+        await WaitWithTimeout(replayed.Task);
 
         await using (var verification = await this.OpenConnection())
         {
@@ -987,7 +987,7 @@ WHERE WorkSystemName = N'background'
             configuration => configuration.QueueDurably());
 
         await system.Start();
-        await ran.Task.WaitAsync(new CancellationTokenSource(TimeSpan.FromSeconds(10)).Token);
+        await WaitWithTimeout(ran.Task);
         var replayed = await system.Query.Worker(workerId);
         await system.Stop();
 
@@ -1721,8 +1721,8 @@ FROM workable.WorkEntries
             },
             configuration => configuration.QueueDurably());
 
-        await system.Start(new CancellationTokenSource(TimeSpan.FromSeconds(10)).Token);
-        await allRan.Task.WaitAsync(new CancellationTokenSource(TimeSpan.FromSeconds(10)).Token);
+        await StartWithTimeout(system);
+        await WaitWithTimeout(allRan.Task);
         await system.Stop();
 
         Assert.Equal(0, remaining);
@@ -1774,7 +1774,7 @@ FROM workable.WorkEntries
             DurableOrderedConfiguration);
 
         await secondSystem.Start();
-        await bothStarted.Task.WaitAsync(new CancellationTokenSource(TimeSpan.FromSeconds(10)).Token);
+        await WaitWithTimeout(bothStarted.Task);
         await secondSystem.Stop();
 
         Assert.Equal(["first", "second"], executionOrder);
@@ -2010,6 +2010,30 @@ VALUES
         => WorkInput.Empty
             .WithSubject(new WorkSubjectId("order", value))
             .WithConcurrencyKey(new WorkConcurrencyKey("startup-order", "shared"));
+
+    private static async Task StartWithTimeout(IWorkSystem system)
+    {
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        await system.Start(timeout.Token);
+    }
+
+    private static async Task<WorkCompletion> WaitForCompletion(IWorkerHandle handle)
+    {
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        return await handle.WaitForCompletion(timeout.Token);
+    }
+
+    private static async Task WaitWithTimeout(Task task)
+    {
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        await task.WaitAsync(timeout.Token);
+    }
+
+    private static async Task<T> WaitWithTimeout<T>(Task<T> task)
+    {
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        return await task.WaitAsync(timeout.Token);
+    }
 
     private static async Task<T> Scalar<T>(SqlConnection connection, string commandText)
     {
