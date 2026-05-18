@@ -500,6 +500,12 @@ export type WorkQueueDiagnosticsDetailedComponent =
     queue: WorkSystemQueueDiagnostics;
   };
 
+export type WorkSystemDiagnosticsCompactComponent = {
+  systemName?: string | null;
+  systemState: string;
+  isShuttingDown: boolean;
+};
+
 export type WorkReadModelDiagnosticsCompactComponent = {
   pendingUpdateCount: number;
   isReadModelBehind: boolean;

@@ -246,6 +246,7 @@ public class WorkableViewQueryAdapter
                 "throughput" => await CreateThroughputComponent(queries, criteria, request.Shape, request.Options, cancellationToken),
                 "workergrid" => await CreateWorkerGridComponent(queries, criteria, request.Options, cancellationToken),
                 "iterationgrid" => await CreateIterationGridComponent(queries, criteria, request.Options, cancellationToken),
+                "systemdiagnostics" => CreateSystemDiagnosticsComponent(system),
                 "queuemessages" => CreateQueueDiagnosticsComponent(system, request.Shape),
                 "queuediagnostics" => CreateQueueDiagnosticsComponent(system, request.Shape),
                 "readmodeldiagnostics" => CreateReadModelDiagnosticsComponent(system, request.Shape, request.Options),
@@ -634,6 +635,12 @@ public class WorkableViewQueryAdapter
             queue,
             hasRejectedWork);
     }
+
+    private static object CreateSystemDiagnosticsComponent(IWorkSystem system)
+        => new WorkSystemDiagnosticsCompactComponent(
+            system.Name,
+            system.State,
+            system.State == WorkSystemState.Stopping);
 
     private static object CreateReadModelDiagnosticsComponent(
         IWorkSystem system,

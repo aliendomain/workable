@@ -10,8 +10,75 @@ internal sealed class WorkableRealtimeBroadcaster(
     WorkableViewQueryAdapter views,
     WorkableRealtimeEventSubscriptions eventSubscriptions,
     WorkableRealtimeViewSubscriptions viewSubscriptions,
-    IOptions<WorkableSignalROptions> options) : BackgroundService
+    IHostApplicationLifetime lifetime,
+    IOptions<WorkableSignalROptions> options) : BackgroundService, IWorkSystemLifecycleObserver
 {
+    private IDisposable? stoppingRegistration;
+
+    public override Task StartAsync(CancellationToken cancellationToken)
+    {
+        this.stoppingRegistration = lifetime.ApplicationStopping.Register(this.BroadcastApplicationStopping);
+        return base.StartAsync(cancellationToken);
+    }
+
+    public override void Dispose()
+    {
+        this.stoppingRegistration?.Dispose();
+        base.Dispose();
+    }
+
+    public async Task SystemStopping(
+        IWorkSystem system,
+        WorkOrigin origin,
+        CancellationToken cancellationToken = default)
+    {
+        await this.BroadcastSystemStopping(system, cancellationToken);
+    }
+
+    private void BroadcastApplicationStopping()
+    {
+        try
+        {
+            this.BroadcastApplicationStoppingAsync()
+                .Wait(TimeSpan.FromSeconds(2));
+        }
+        catch
+        {
+            // Shutdown notifications are best-effort and must not block host shutdown.
+        }
+    }
+
+    private async Task BroadcastApplicationStoppingAsync()
+    {
+        foreach (var system in registry.Systems.Where(system => system.State != WorkSystemState.Stopped))
+        {
+            await this.BroadcastSystemStopping(system, CancellationToken.None, WorkSystemState.Stopping);
+        }
+    }
+
+    private async Task BroadcastSystemStopping(
+        IWorkSystem system,
+        CancellationToken cancellationToken,
+        WorkSystemState? systemState = null)
+    {
+        var subscriptions = viewSubscriptions
+            .GetActiveSubscriptions(system)
+            .Where(IsDiagnosticsView)
+            .ToArray();
+        if (subscriptions.Length == 0)
+        {
+            return;
+        }
+
+        foreach (var subscription in subscriptions)
+        {
+            await this.BroadcastDiagnosticsAlertView(
+                subscription,
+                CreateDiagnosticsAlertState(system, subscription, systemState),
+                cancellationToken);
+        }
+    }
+
     protected override Task ExecuteAsync(CancellationToken stoppingToken)
     {
         var tasks = registry.Systems
@@ -441,6 +508,16 @@ internal sealed class WorkableRealtimeBroadcaster(
                         alertState.SchedulerFailureMessage),
                     Shape: component.Shape);
             }
+            else if (string.Equals(component.Type, "systemDiagnostics", StringComparison.OrdinalIgnoreCase))
+            {
+                components[component.Id] = new WorkComponentResult(
+                    "ok",
+                    new WorkSystemDiagnosticsCompactComponent(
+                        alertState.SystemName,
+                        alertState.SystemState,
+                        alertState.IsShuttingDown),
+                    Shape: component.Shape);
+            }
         }
 
         if (components.Count == 0)
@@ -469,12 +546,14 @@ internal sealed class WorkableRealtimeBroadcaster(
     private static bool IsAlertDiagnosticsComponent(WorkComponentRequest component)
         => string.Equals(component.Type, "queueDiagnostics", StringComparison.OrdinalIgnoreCase) ||
             string.Equals(component.Type, "queueMessages", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(component.Type, "systemDiagnostics", StringComparison.OrdinalIgnoreCase) ||
             string.Equals(component.Type, "readModelDiagnostics", StringComparison.OrdinalIgnoreCase) ||
             string.Equals(component.Type, "retentionDiagnostics", StringComparison.OrdinalIgnoreCase);
 
     private static DiagnosticsAlertState CreateDiagnosticsAlertState(
         IWorkSystem system,
-        WorkableRealtimeViewSubscription subscription)
+        WorkableRealtimeViewSubscription subscription,
+        WorkSystemState? systemState = null)
     {
         var queue = system.Diagnostics.Queue;
         var readModel = system.Diagnostics.ReadModel;
@@ -493,6 +572,8 @@ internal sealed class WorkableRealtimeBroadcaster(
                 : DiagnosticsLagSeverity.Normal;
 
         return new DiagnosticsAlertState(
+            system.Name,
+            systemState ?? system.State,
             queue.RejectedWorkCount,
             queue.LastRejectedAt,
             queue.LastRejectedCode,
@@ -563,6 +644,8 @@ internal sealed class WorkableRealtimeBroadcaster(
     }
 
     private sealed record DiagnosticsAlertState(
+        string? SystemName,
+        WorkSystemState SystemState,
         long RejectedWorkCount,
         DateTimeOffset? LastRejectedAt,
         string? LastRejectedCode,
@@ -582,6 +665,8 @@ internal sealed class WorkableRealtimeBroadcaster(
         string? SchedulerFailureType,
         string? SchedulerFailureMessage)
     {
+        public bool IsShuttingDown => this.SystemState == WorkSystemState.Stopping;
+
         public bool HasRejectedWork => this.RejectedWorkCount > 0;
 
         public bool IsReadModelBehind => this.ReadModelLagSeverity != DiagnosticsLagSeverity.Normal;
@@ -593,7 +678,8 @@ internal sealed class WorkableRealtimeBroadcaster(
             this.IsReadModelBehind ||
             this.HasProjectorFailure ||
             this.IsRetentionBehind ||
-            this.HasSchedulerFailure;
+            this.HasSchedulerFailure ||
+            this.IsShuttingDown;
     }
 
     private sealed record EventPump(

@@ -100,6 +100,7 @@ import {
   type WorkReadModelDiagnosticsDetailedComponent,
   type WorkRetentionDiagnosticsCompactComponent,
   type WorkRetentionDiagnosticsDetailedComponent,
+  type WorkSystemDiagnosticsCompactComponent,
   type WorkSystemReadModelDiagnostics,
   type WorkSystemRetentionDiagnostics,
   type WorkSystemLifecycleResult,
@@ -356,6 +357,14 @@ export function WorkableConsole() {
     () => ({
       components: [
         {
+          id: "systemDiagnostics",
+          options: {
+            publishMode: "alertChanges",
+          },
+          shape: "compact",
+          type: "systemDiagnostics",
+        },
+        {
           id: "queueDiagnostics",
           options: {
             publishMode: "alertChanges",
@@ -388,6 +397,14 @@ export function WorkableConsole() {
   const diagnosticsTrayRequest = useMemo(
     () => ({
       components: [
+        {
+          id: "systemDiagnostics",
+          options: {
+            publishMode: "continuous",
+          },
+          shape: "compact",
+          type: "systemDiagnostics",
+        },
         {
           id: "queueDiagnostics",
           options: {
@@ -604,10 +621,70 @@ export function WorkableConsole() {
     }));
   }, []);
 
+  const updateSystemState = useCallback((systemId: string, state: string | null) => {
+    setConsoleState((current) => {
+      let changed = false;
+      const hosts = current.hosts.map((host) => ({
+        ...host,
+        systems: host.systems.map((system) => {
+          if (system.id !== systemId || system.state === state) {
+            return system;
+          }
+
+          changed = true;
+          return { ...system, state };
+        }),
+      }));
+
+      return changed ? { ...current, hosts } : current;
+    });
+  }, []);
+
+  const updateSystemStateFromDiagnosticsTarget = useCallback((
+    target: DiagnosticsAlertTarget,
+    state: string | null
+  ) => {
+    setConsoleState((current) => {
+      let changed = false;
+      const targetSystemName = target.systemName ?? "";
+      const hosts = current.hosts.map((host) => ({
+        ...host,
+        systems: host.systems.map((system) => {
+          const matchesTargetId = system.id === target.systemId;
+          const matchesTargetScope =
+            host.id === target.hostId &&
+            (system.systemName ?? "") === targetSystemName;
+
+          if ((!matchesTargetId && !matchesTargetScope) || system.state === state) {
+            return system;
+          }
+
+          changed = true;
+          return { ...system, state };
+        }),
+      }));
+
+      return changed ? { ...current, hosts } : current;
+    });
+  }, []);
+
   const updateDiagnosticsAlertSnapshot = useCallback((
     systemId: string,
     snapshot: DiagnosticsAlertSnapshot | null
   ) => {
+    const systemDiagnostics = getWorkComponentData<WorkSystemDiagnosticsCompactComponent>(
+      snapshot?.data,
+      "systemDiagnostics"
+    );
+    if (systemDiagnostics?.systemState) {
+      const target = diagnosticsAlertTargets.find((candidate) => candidate.systemId === systemId);
+      if (target) {
+        updateSystemStateFromDiagnosticsTarget(target, systemDiagnostics.systemState);
+      } else {
+        updateSystemState(systemId, systemDiagnostics.systemState);
+      }
+    }
+
     setDiagnosticsAlertsBySystemId((current) => {
       if (!snapshot) {
         const next = { ...current };
@@ -620,7 +697,7 @@ export function WorkableConsole() {
         [systemId]: snapshot,
       };
     });
-  }, []);
+  }, [diagnosticsAlertTargets, updateSystemState, updateSystemStateFromDiagnosticsTarget]);
 
   useEffect(() => {
     queueMicrotask(() => {
@@ -730,25 +807,6 @@ export function WorkableConsole() {
       ...current,
       [targetView]: current[targetView] + 1,
     }));
-  }, []);
-
-  const updateSystemState = useCallback((systemId: string, state: string | null) => {
-    setConsoleState((current) => {
-      let changed = false;
-      const hosts = current.hosts.map((host) => ({
-        ...host,
-        systems: host.systems.map((system) => {
-          if (system.id !== systemId || system.state === state) {
-            return system;
-          }
-
-          changed = true;
-          return { ...system, state };
-        }),
-      }));
-
-      return changed ? { ...current, hosts } : current;
-    });
   }, []);
 
   const setSystemOverviewScope = useCallback((
@@ -2893,6 +2951,7 @@ function SystemNotificationTray({
     : alertRetentionCompact;
   const notifications = alertSources.flatMap((source) =>
     createSystemNotifications(
+      getWorkComponentData<WorkSystemDiagnosticsCompactComponent>(source.data, "systemDiagnostics"),
       getWorkComponentData<WorkQueueDiagnosticsCompactComponent>(source.data, "queueDiagnostics"),
       acknowledgedRejectedWorkCounts[source.target.systemId] ?? 0,
       getWorkComponentData<WorkReadModelDiagnosticsCompactComponent>(source.data, "readModelDiagnostics"),
@@ -3234,6 +3293,7 @@ function DiagnosticsMetric({
 }
 
 function createSystemNotifications(
+  system?: WorkSystemDiagnosticsCompactComponent,
   queue?: WorkQueueDiagnosticsCompactComponent,
   acknowledgedRejectedWorkCount = 0,
   readModel?: WorkReadModelDiagnosticsCompactComponent,
@@ -3244,6 +3304,15 @@ function createSystemNotifications(
   const notifications: SystemNotification[] = [];
   const sourcePrefix = source ? `${source.displayName}: ` : "";
   const sourceSuffix = source ? ` on ${source.displayName}` : "";
+
+  if (system?.isShuttingDown) {
+    notifications.push({
+      description: `Workable is shutting down${sourceSuffix}. Active workers are being asked to stop.`,
+      id: `${source?.systemId ?? "active"}:system-stopping`,
+      tone: "warning",
+      title: `${sourcePrefix}System is shutting down`,
+    });
+  }
 
   if (error) {
     notifications.push({

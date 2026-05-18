@@ -138,6 +138,11 @@ public sealed record WorkQueueDiagnosticsDetailedComponent(
     WorkSystemQueueDiagnostics Queue,
     bool HasRejectedWork);
 
+public sealed record WorkSystemDiagnosticsCompactComponent(
+    string? SystemName,
+    WorkSystemState SystemState,
+    bool IsShuttingDown);
+
 public sealed record WorkReadModelDiagnosticsCompactComponent(
     long PendingUpdateCount,
     bool IsReadModelBehind,

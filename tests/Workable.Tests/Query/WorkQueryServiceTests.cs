@@ -803,6 +803,116 @@ public sealed class WorkQueryServiceTests
     }
 
     [Fact]
+    public async Task WorkersQuerySupportsTimeWindowsSortingAndPaging()
+    {
+        var definition = WorkDefinition.Create(
+            "query.window.workers",
+            "Queries worker windows.",
+            configuration: WorkConfiguration.Default with
+            {
+                Start = WorkStartConfiguration.DoNotStart,
+            });
+        await using var system = CreateSystem(definition, SuccessfulWork);
+
+        await system.Start();
+
+        var first = await system.Queue.Enqueue("query.window.workers");
+        await Task.Delay(20);
+        var fromSecondWorker = DateTimeOffset.UtcNow;
+        await Task.Delay(20);
+        var second = await system.Queue.Enqueue("query.window.workers");
+        await Task.Delay(20);
+        var third = await system.Queue.Enqueue("query.window.workers");
+
+        var ascending = await system.Query.Workers(new WorkerCriteria(
+            DefinitionName: "query.window.workers",
+            Sort: WorkerCriteriaSort.CreatedAt,
+            Direction: WorkCriteriaSortDirection.Ascending,
+            Take: 10));
+        var secondPage = await system.Query.Workers(new WorkerCriteria(
+            DefinitionName: "query.window.workers",
+            Sort: WorkerCriteriaSort.CreatedAt,
+            Direction: WorkCriteriaSortDirection.Ascending,
+            Skip: 1,
+            Take: 1));
+        var createdFrom = await system.Query.Workers(new WorkerCriteria(
+            DefinitionName: "query.window.workers",
+            CreatedFrom: fromSecondWorker,
+            Sort: WorkerCriteriaSort.CreatedAt,
+            Direction: WorkCriteriaSortDirection.Ascending,
+            Take: 10));
+        var createdTo = await system.Query.Workers(new WorkerCriteria(
+            DefinitionName: "query.window.workers",
+            CreatedTo: fromSecondWorker,
+            Sort: WorkerCriteriaSort.CreatedAt,
+            Direction: WorkCriteriaSortDirection.Ascending,
+            Take: 10));
+
+        Assert.Equal(
+            [RequiredWorkerId(first), RequiredWorkerId(second), RequiredWorkerId(third)],
+            ascending.Workers.Select(worker => worker.Id));
+        Assert.Equal(RequiredWorkerId(second), Assert.Single(secondPage.Workers).Id);
+        Assert.Equal(
+            [RequiredWorkerId(second), RequiredWorkerId(third)],
+            createdFrom.Workers.Select(worker => worker.Id));
+        Assert.Equal(RequiredWorkerId(first), Assert.Single(createdTo.Workers).Id);
+    }
+
+    [Fact]
+    public async Task WorkerIterationsQuerySupportsTimeWindowsSortingAndPaging()
+    {
+        await using var system = CreateSystem(
+            WorkDefinition.Create("query.window.iterations", "Queries iteration windows."),
+            SuccessfulWork);
+
+        await system.Start();
+
+        var first = await system.Queue.Enqueue("query.window.iterations");
+        await first.WaitForCompletion();
+        await Task.Delay(20);
+        var fromSecondIteration = DateTimeOffset.UtcNow;
+        await Task.Delay(20);
+        var second = await system.Queue.Enqueue("query.window.iterations");
+        await second.WaitForCompletion();
+        await Task.Delay(20);
+        var third = await system.Queue.Enqueue("query.window.iterations");
+        await third.WaitForCompletion();
+
+        var ascending = await system.Query.WorkerIterations(new WorkerIterationCriteria(
+            DefinitionName: "query.window.iterations",
+            Sort: WorkerIterationCriteriaSort.CompletedAt,
+            Direction: WorkCriteriaSortDirection.Ascending,
+            Take: 10));
+        var secondPage = await system.Query.WorkerIterations(new WorkerIterationCriteria(
+            DefinitionName: "query.window.iterations",
+            Sort: WorkerIterationCriteriaSort.CompletedAt,
+            Direction: WorkCriteriaSortDirection.Ascending,
+            Skip: 1,
+            Take: 1));
+        var completedFrom = await system.Query.WorkerIterations(new WorkerIterationCriteria(
+            DefinitionName: "query.window.iterations",
+            CompletedFrom: fromSecondIteration,
+            Sort: WorkerIterationCriteriaSort.CompletedAt,
+            Direction: WorkCriteriaSortDirection.Ascending,
+            Take: 10));
+        var completedTo = await system.Query.WorkerIterations(new WorkerIterationCriteria(
+            DefinitionName: "query.window.iterations",
+            CompletedTo: fromSecondIteration,
+            Sort: WorkerIterationCriteriaSort.CompletedAt,
+            Direction: WorkCriteriaSortDirection.Ascending,
+            Take: 10));
+
+        Assert.Equal(
+            [RequiredWorkerId(first), RequiredWorkerId(second), RequiredWorkerId(third)],
+            ascending.Iterations.Select(iteration => iteration.WorkerId));
+        Assert.Equal(RequiredWorkerId(second), Assert.Single(secondPage.Iterations).WorkerId);
+        Assert.Equal(
+            [RequiredWorkerId(second), RequiredWorkerId(third)],
+            completedFrom.Iterations.Select(iteration => iteration.WorkerId));
+        Assert.Equal(RequiredWorkerId(first), Assert.Single(completedTo.Iterations).WorkerId);
+    }
+
+    [Fact]
     public async Task WorkInfoQueryReturnsDefinitionStatusAndWorkerRollup()
     {
         var definition = WorkDefinition.Create("rollup.work", "Reports worker counts.",
@@ -965,6 +1075,79 @@ public sealed class WorkQueryServiceTests
     }
 
     [Fact]
+    public async Task WorkerStatusSummaryCanUseScopedReadModelCriteria()
+    {
+        var subject = new WorkSubjectId("account", "A-100");
+        var concurrencyKey = new WorkConcurrencyKey("tenant", "west");
+        var identifier = new WorkIdentifier("invoice", "INV-100");
+        var targetDefinition = WorkDefinition.Create(
+            "summary.scope.target",
+            category: "Summary:Billing",
+            configuration: WorkConfiguration.Default with
+            {
+                Start = WorkStartConfiguration.DoNotStart,
+            });
+        var otherBillingDefinition = WorkDefinition.Create(
+            "summary.scope.other",
+            category: "Summary:Billing",
+            configuration: WorkConfiguration.Default with
+            {
+                Start = WorkStartConfiguration.DoNotStart,
+            });
+        var shippingDefinition = WorkDefinition.Create(
+            "summary.scope.shipping",
+            category: "Summary:Shipping",
+            configuration: WorkConfiguration.Default with
+            {
+                Start = WorkStartConfiguration.DoNotStart,
+            });
+        await using var system = new ServiceCollection()
+            .AddWorkableSystem(builder =>
+            {
+                builder.AddWork(targetDefinition, SuccessfulWork);
+                builder.AddWork(otherBillingDefinition, SuccessfulWork);
+                builder.AddWork(shippingDefinition, SuccessfulWork);
+            })
+            .BuildServiceProvider()
+            .GetRequiredService<IWorkSystemRegistry>()
+            .Default;
+
+        await system.Start();
+
+        await system.Queue.Enqueue(
+            targetDefinition.Name,
+            WorkInput.Empty
+                .WithSubject(subject)
+                .WithConcurrencyKey(concurrencyKey)
+                .WithIdentifier(identifier));
+        await system.Queue.Enqueue(
+            targetDefinition.Name,
+            WorkInput.Empty.WithSubject(subject).WithIdentifier(new WorkIdentifier("invoice", "INV-200")));
+        await system.Queue.Enqueue(
+            otherBillingDefinition.Name,
+            WorkInput.Empty.WithSubject(subject).WithIdentifier(identifier));
+        await system.Queue.Enqueue(
+            shippingDefinition.Name,
+            WorkInput.Empty.WithSubject(subject).WithIdentifier(identifier));
+
+        var exact = await system.Query.WorkerStatusSummary(new WorkerCriteria(
+            DefinitionId: targetDefinition.Id,
+            SubjectId: subject,
+            ConcurrencyKey: concurrencyKey,
+            Identifier: identifier));
+        var billingQueued = await system.Query.WorkerStatusSummary(new WorkerCriteria(
+            Category: "Summary:Billing",
+            States: new HashSet<WorkerState> { WorkerState.Queued }));
+
+        Assert.Equal(1, exact.Total);
+        Assert.Equal(1, exact.Active);
+        Assert.Equal(1, exact.Counts[WorkerState.Queued]);
+        Assert.Equal(3, billingQueued.Total);
+        Assert.Equal(3, billingQueued.Active);
+        Assert.Equal(3, billingQueued.Counts[WorkerState.Queued]);
+    }
+
+    [Fact]
     public async Task SystemDetailsQueryReturnsCountsAndSlimFailedAndCompletedIterations()
     {
         await using var system = new ServiceCollection()
@@ -1012,6 +1195,60 @@ public sealed class WorkQueryServiceTests
         Assert.Equal(1, completedItem.Sequence);
         Assert.Equal("overview.complete", completedItem.DefinitionName);
         Assert.Equal("Overview", completedItem.Category);
+    }
+
+    [Fact]
+    public async Task SystemComponentQueriesMatchScopedSystemDetails()
+    {
+        var sharedIdentifier = new WorkIdentifier("tenant", "component-test");
+        await using var system = new ServiceCollection()
+            .AddWorkableSystem("component-queries", builder =>
+            {
+                builder.AddWork(
+                    WorkDefinition.Create("components.billing.complete", category: "Components:Billing"),
+                    SuccessfulWork);
+                builder.AddWork(
+                    WorkDefinition.Create("components.billing.failed", category: "Components:Billing"),
+                    (_, _, _) => Task.FromResult(WorkExecutionResult.Failure([WorkMessage.Error("components.failed", "Failed.")])));
+                builder.AddWork(
+                    WorkDefinition.Create("components.shipping.complete", category: "Components:Shipping"),
+                    SuccessfulWork);
+            })
+            .BuildServiceProvider()
+            .GetRequiredService<IWorkSystemRegistry>()
+            .Default;
+
+        await system.Start();
+        await (await system.Queue.Enqueue("components.billing.complete", WorkInput.Empty.WithIdentifier(sharedIdentifier))).WaitForCompletion();
+        var failed = await system.Queue.Enqueue("components.billing.failed", WorkInput.Empty.WithIdentifier(sharedIdentifier));
+        await failed.WaitForCompletion();
+        await (await system.Queue.Enqueue("components.shipping.complete", WorkInput.Empty.WithIdentifier(sharedIdentifier))).WaitForCompletion();
+
+        var criteria = new WorkSystemCriteria(Category: "Components:Billing");
+        var details = await system.Query.SystemDetails(criteria);
+        var workerCounts = await system.Query.SystemWorkerCounts(criteria);
+        var iterationCounts = await system.Query.SystemIterationCounts(criteria);
+        var keyTypes = await system.Query.SystemCommonKeyTypes(criteria);
+        var failedWorkers = await system.Query.SystemFailedWorkers(criteria);
+        var failedIterations = await system.Query.SystemFailedIterations(criteria);
+        var completedIterations = await system.Query.SystemCompletedIterations(criteria);
+
+        Assert.Equal(details.DefinitionCount, workerCounts.DefinitionCount);
+        Assert.Equal(details.ActiveWorkerCount, workerCounts.ActiveWorkerCount);
+        Assert.Equal(details.FinalWorkerCount, workerCounts.FinalWorkerCount);
+        Assert.Equal(details.FailedWorkerCount, workerCounts.FailedWorkerCount);
+        Assert.Equal(details.WorkerCountByState, workerCounts.WorkerCountByState);
+        Assert.Equal(details.OldestQueuedAt, workerCounts.OldestQueuedAt);
+        Assert.Equal(details.CurrentIterationCount, iterationCounts.CurrentIterationCount);
+        Assert.Equal(details.CompletedIterationCount, iterationCounts.CompletedIterationCount);
+        Assert.Equal(details.FailedIterationCount, iterationCounts.FailedIterationCount);
+        Assert.Equal(details.CanceledIterationCount, iterationCounts.CanceledIterationCount);
+        Assert.Equal(details.IterationCountByStatus, iterationCounts.IterationCountByStatus);
+        Assert.Equal(details.CommonKeyTypes.Select(key => key.Type), keyTypes.KeyTypes.Select(key => key.Type));
+        Assert.Equal(details.FailedWorkers.Select(worker => worker.Id), failedWorkers.FailedWorkers.Select(worker => worker.Id));
+        Assert.Equal(details.FailedIterations.Select(iteration => iteration.WorkerId), failedIterations.Iterations.Select(iteration => iteration.WorkerId));
+        Assert.Equal(details.CompletedIterations.Select(iteration => iteration.WorkerId), completedIterations.Iterations.Select(iteration => iteration.WorkerId));
+        Assert.Equal(RequiredWorkerId(failed), Assert.Single(failedWorkers.FailedWorkers).Id);
     }
 
     [Fact]
@@ -1558,6 +1795,30 @@ public sealed class WorkQueryServiceTests
         var pinned = await snapshotRead.Workers(new WorkerCriteria(DefinitionName: definitionName, Take: 10));
 
         Assert.Equal(RequiredWorkerId(first), Assert.Single(pinned.Workers).Id);
+    }
+
+    [Fact]
+    public async Task QuerySnapshotReadDoesNotSeeDetailsCreatedAfterCapture()
+    {
+        const string definitionName = "readmodel.snapshot.details";
+        var definition = WorkDefinition.Create(definitionName, category: "ReadModel");
+        await using var system = CreateSystem(definition, SuccessfulWork);
+
+        await system.Start();
+        var snapshotQueries = Assert.IsAssignableFrom<IWorkSnapshotQueryService>(system.Query);
+        var snapshotRead = snapshotQueries.BeginRead();
+
+        var handle = await system.Queue.Enqueue(definitionName);
+        await handle.WaitForCompletion();
+        var workerId = RequiredWorkerId(handle);
+        await Eventually(async () =>
+            (await system.Query.Workers(new WorkerCriteria(DefinitionName: definitionName, Take: 10))).Workers.Count == 1);
+
+        var pinnedWorker = await snapshotRead.Worker(workerId);
+        var pinnedIteration = await snapshotRead.WorkerIteration(new WorkerIterationReference(workerId, 1));
+
+        Assert.Null(pinnedWorker);
+        Assert.Null(pinnedIteration);
     }
 
     [Fact]

@@ -394,6 +394,35 @@ public sealed class WorkerStateTests
     }
 
     [Fact]
+    public async Task FailedWorkersCountAgainstSystemMaximumWorkers()
+    {
+        var definition = WorkDefinition.Create(
+            "system-capacity-failed",
+            "Failed workers remain non-final and block queue requests at system capacity.");
+        var system = CreateSystem(builder => builder
+            .ConfigureCapacity(maximumWorkers: 2)
+            .AddWork(definition, (context, input, cancellationToken) =>
+                Task.FromResult(WorkExecutionResult.Failure([WorkMessage.Error("test.failure", "The work failed.")]))));
+
+        await system.Start();
+
+        var first = await system.Queue.Enqueue("system-capacity-failed");
+        var firstCompletion = await first.WaitForCompletion();
+        var second = await system.Queue.Enqueue("system-capacity-failed");
+        var secondCompletion = await second.WaitForCompletion();
+        var third = await system.Queue.Enqueue("system-capacity-failed");
+
+        Assert.Equal(WorkQueueStatus.Accepted, first.QueueOutcome.Status);
+        Assert.Equal(WorkQueueStatus.Accepted, second.QueueOutcome.Status);
+        Assert.Equal(WorkerState.Failed, firstCompletion.Worker?.State);
+        Assert.Equal(WorkerState.Failed, secondCompletion.Worker?.State);
+        Assert.Equal(WorkQueueStatus.Invalid, third.QueueOutcome.Status);
+        Assert.Contains(third.QueueOutcome.Messages, message =>
+            message.Code == "workable.system.capacity_reached" &&
+            message.Target == "system.capacity.maximumWorkers");
+    }
+
+    [Fact]
     public async Task SystemStopResetsApproximateWorkerCapacityCount()
     {
         var definition = WorkDefinition.Create("system-capacity-reset", "Capacity count resets when worker memory is cleared.",

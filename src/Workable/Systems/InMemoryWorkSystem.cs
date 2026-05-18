@@ -188,6 +188,7 @@ internal sealed class InMemoryWorkSystem : IWorkSystem, IOriginAwareWorkSystem, 
             }
 
             this.State = WorkSystemState.Stopping;
+            await this.NotifyStopping(origin);
             var result = await this.workers.StopDispatching(origin, CancellationToken.None);
             this.metrics.Clear();
             this.State = WorkSystemState.Stopped;
@@ -196,6 +197,21 @@ internal sealed class InMemoryWorkSystem : IWorkSystem, IOriginAwareWorkSystem, 
         finally
         {
             this.lifecycleLock.Release();
+        }
+    }
+
+    private async Task NotifyStopping(WorkOrigin origin)
+    {
+        foreach (var observer in this.rootServices.GetServices<IWorkSystemLifecycleObserver>())
+        {
+            try
+            {
+                await observer.SystemStopping(this, origin, CancellationToken.None);
+            }
+            catch
+            {
+                // Lifecycle observers are best-effort and must not prevent shutdown.
+            }
         }
     }
 
