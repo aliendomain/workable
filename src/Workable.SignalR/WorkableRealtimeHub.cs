@@ -10,12 +10,19 @@ public sealed class WorkableRealtimeHub(
     public async Task WatchWorker(string workerId, string? systemName = null)
     {
         var system = ResolveSystem(systemName);
-        await eventSubscriptions.WatchWorker(
-            this.Context.ConnectionId,
-            this.Groups,
-            system,
-            ParseWorkerId(workerId),
-            this.Context.ConnectionAborted);
+        try
+        {
+            await eventSubscriptions.WatchWorker(
+                this.Context.ConnectionId,
+                this.Groups,
+                system,
+                ParseWorkerId(workerId),
+                this.Context.ConnectionAborted);
+        }
+        catch (OperationCanceledException) when (this.Context.ConnectionAborted.IsCancellationRequested)
+        {
+            // The client disconnected while the event pump was starting.
+        }
     }
 
     public async Task UnwatchWorker(string workerId, string? systemName = null)
@@ -60,10 +67,50 @@ public sealed class WorkableRealtimeHub(
     public async Task WatchSystem(string? systemName = null)
     {
         var system = ResolveSystem(systemName);
-        await eventSubscriptions.WatchSystem(
+        try
+        {
+            await eventSubscriptions.WatchSystem(
+                this.Context.ConnectionId,
+                this.Groups,
+                system,
+                this.Context.ConnectionAborted);
+        }
+        catch (OperationCanceledException) when (this.Context.ConnectionAborted.IsCancellationRequested)
+        {
+            // The client disconnected while the event pump was starting.
+        }
+    }
+
+    public async Task WatchEvents(
+        WorkableRealtimeEventCriteria? criteria = null,
+        string? systemName = null)
+    {
+        var system = ResolveSystem(systemName);
+        try
+        {
+            await eventSubscriptions.WatchEvents(
+                this.Context.ConnectionId,
+                this.Groups,
+                system,
+                criteria,
+                this.Context.ConnectionAborted);
+        }
+        catch (OperationCanceledException) when (this.Context.ConnectionAborted.IsCancellationRequested)
+        {
+            // The client disconnected while the event pump was starting.
+        }
+    }
+
+    public async Task UnwatchEvents(
+        WorkableRealtimeEventCriteria? criteria = null,
+        string? systemName = null)
+    {
+        var system = ResolveSystem(systemName);
+        await eventSubscriptions.UnwatchEvents(
             this.Context.ConnectionId,
             this.Groups,
             system,
+            criteria,
             this.Context.ConnectionAborted);
     }
 

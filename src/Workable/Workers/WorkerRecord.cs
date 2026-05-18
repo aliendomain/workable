@@ -1293,7 +1293,7 @@ internal sealed class WorkerRecord(
                 origin ?? this.Origin,
                 eventType,
                 this.CreateEventDataLocked(details),
-                this.Messages);
+                []);
         }
     }
 
@@ -1311,13 +1311,8 @@ internal sealed class WorkerRecord(
                 this.identifiers.ToHashSet(),
                 this.Origin,
                 "worker.log",
-                this.CreateEventDataLocked(new WorkerEventPayloadDetails(Log: entry)),
-                [new WorkMessage(
-                    "workable.worker.log",
-                    LogSeverity(entry.Level),
-                    entry.Message,
-                    "worker.log",
-                    LogMetadata(entry))]);
+                this.CreateEventDataLocked(null),
+                []);
         }
     }
 
@@ -1376,8 +1371,7 @@ internal sealed class WorkerRecord(
         details ??= new WorkerEventPayloadDetails();
         return WorkerEventPayloads.Create(
             this.ToSummaryLocked(),
-            details.IncludeInput ? this.Input : null,
-            details.IncludeOutput ? this.Output : null,
+            this.CreateEventKeysLocked(),
             details.Action,
             details.ActionStatus,
             details.ReconfigurationStatus,
@@ -1385,8 +1379,25 @@ internal sealed class WorkerRecord(
             details.CompletionStatus,
             details.IncludeLatestIteration ? this.GetLatestIterationLocked() : null,
             details.RecurrenceInterval,
-            details.RetryDelay,
-            details.Log);
+            details.RetryDelay);
+    }
+
+    private IReadOnlyList<WorkerEventKey> CreateEventKeysLocked()
+    {
+        var keys = new List<WorkerEventKey>();
+        if (this.SubjectId is { } subjectId)
+        {
+            keys.Add(new WorkerEventKey(WorkKeyKind.Subject, subjectId.Type, subjectId.Value));
+        }
+
+        if (this.ConcurrencyKey is { } concurrencyKey)
+        {
+            keys.Add(new WorkerEventKey(WorkKeyKind.ConcurrencyKey, concurrencyKey.Type, concurrencyKey.Value));
+        }
+
+        keys.AddRange(this.identifiers.Select(identifier =>
+            new WorkerEventKey(WorkKeyKind.Identifier, identifier.Type, identifier.Value)));
+        return keys;
     }
 
     private WorkerIterationSnapshot? GetLatestIterationLocked()
@@ -1420,37 +1431,6 @@ internal sealed class WorkerRecord(
     private sealed record CurrentWorkerIteration(long Sequence, DateTimeOffset StartedAt)
     {
         public List<WorkerLogEntry> Logs { get; } = [];
-    }
-
-    private static WorkMessageSeverity LogSeverity(LogLevel level)
-        => level switch
-        {
-            LogLevel.Trace or LogLevel.Debug or LogLevel.Information => WorkMessageSeverity.Info,
-            LogLevel.Warning => WorkMessageSeverity.Warning,
-            _ => WorkMessageSeverity.Error,
-        };
-
-    private static Dictionary<string, object?> LogMetadata(WorkerLogEntry entry)
-    {
-        var metadata = new Dictionary<string, object?>
-        {
-            ["category"] = entry.Category,
-            ["level"] = entry.Level.ToString(),
-            ["eventId"] = entry.EventId.Id,
-            ["eventName"] = entry.EventId.Name,
-            ["exceptionType"] = entry.ExceptionType,
-            ["exceptionMessage"] = entry.ExceptionMessage,
-        };
-
-        if (entry.Metadata is not null)
-        {
-            foreach (var item in entry.Metadata)
-            {
-                metadata[$"state.{item.Key}"] = item.Value;
-            }
-        }
-
-        return metadata;
     }
 
     private readonly record struct CheckedWorkerTransition(

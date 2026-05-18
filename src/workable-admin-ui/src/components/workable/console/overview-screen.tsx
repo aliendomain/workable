@@ -77,12 +77,16 @@ import {
   type WorkThroughputBucket,
   type WorkThroughputLiveSummary,
   type WorkableConnection,
+  type WorkableRealtimeEvent,
+  type WorkableRealtimeEventBatch,
+  type WorkableRealtimeEventCriteria,
   type WorkerOverviewItem,
   type WorkerState,
 } from "@/lib/workable";
 
 type ThroughputMode = "completion" | "execution";
 const throughputSeriesIds = ["started", "completed", "failed", "canceled"] as const;
+const jsonByteEncoder = new TextEncoder();
 type ThroughputSeriesId = "started" | "completed" | "failed" | "canceled";
 type ThroughputMetric = {
   description: string;
@@ -154,6 +158,29 @@ export type RealtimePayloadMessage = {
   subscription: string;
   value: unknown;
   viewName: string;
+};
+
+export type RealtimeEventMessage = {
+  batchId?: string;
+  batchSize?: number;
+  bytes: number;
+  bytesEstimated?: boolean;
+  events: WorkableRealtimeEvent[];
+  eventTypes: string[];
+  id: string;
+  receivedAt: number;
+  sentAt?: string;
+  value: WorkableRealtimeEvent | WorkableRealtimeEventBatch;
+};
+
+export type RealtimeEventLoadable = {
+  clearMessages: () => void;
+  connectionState: string;
+  enabled: boolean;
+  error?: string;
+  hubUrl?: string | null;
+  loading?: boolean;
+  messages: RealtimeEventMessage[];
 };
 type RealtimePayloadComponentData = {
   data: unknown;
@@ -2415,7 +2442,45 @@ function getThroughputBuckets(throughput?: WorkSystemThroughput) {
     return [];
   }
 
-  return throughput.buckets ?? [];
+  const buckets = throughput.buckets ?? [];
+  const bucketSeconds = throughput.bucketSeconds;
+  const toTime = parseChartTimestamp(throughput.to);
+  if (!bucketSeconds || toTime === null) {
+    return buckets;
+  }
+
+  const normalizedBucketSeconds = Math.max(1, bucketSeconds);
+  const windowSeconds = Math.max(normalizedBucketSeconds, throughput.windowSeconds);
+  const bucketCount = Math.max(1, Math.ceil(windowSeconds / normalizedBucketSeconds));
+  const toSecond = Math.floor(toTime / 1000);
+  const latestBucketSecond = toSecond - normalizedBucketSeconds + 1;
+  const firstBucketSecond = latestBucketSecond - (bucketCount - 1) * normalizedBucketSeconds;
+  const bucketsBySecond = new Map<number, WorkThroughputBucket>();
+
+  for (const bucket of buckets) {
+    const bucketTime = parseChartTimestamp(bucket.at);
+    if (bucketTime === null) {
+      continue;
+    }
+
+    bucketsBySecond.set(Math.floor(bucketTime / 1000), bucket);
+  }
+
+  return Array.from({ length: bucketCount }, (_, index) => {
+    const bucketSecond = firstBucketSecond + index * normalizedBucketSeconds;
+    return bucketsBySecond.get(bucketSecond) ?? createEmptyThroughputBucket(bucketSecond);
+  });
+}
+
+function createEmptyThroughputBucket(second: number): WorkThroughputBucket {
+  return {
+    at: new Date(second * 1000).toISOString(),
+    averageExecutionMilliseconds: 0,
+    canceled: 0,
+    completed: 0,
+    failed: 0,
+    started: 0,
+  };
 }
 
 function createThroughputSeries(
@@ -3474,13 +3539,15 @@ function RealtimePayloadWindow({
   );
 }
 
-function JsonValue({
+export function JsonValue({
   collapseToComponentLevel = false,
   indent = 0,
+  maxExpandedArrayItems,
   value,
 }: {
   collapseToComponentLevel?: boolean;
   indent?: number;
+  maxExpandedArrayItems?: number;
   value: unknown;
 }) {
   if (value === null) {
@@ -3492,6 +3559,7 @@ function JsonValue({
       <JsonArrayValue
         collapseToComponentLevel={collapseToComponentLevel}
         indent={indent}
+        maxExpandedArrayItems={maxExpandedArrayItems}
         value={value}
       />
     );
@@ -3502,6 +3570,7 @@ function JsonValue({
       <JsonObjectValue
         collapseToComponentLevel={collapseToComponentLevel}
         indent={indent}
+        maxExpandedArrayItems={maxExpandedArrayItems}
         value={value as Record<string, unknown>}
       />
     );
@@ -3529,15 +3598,24 @@ function JsonValue({
 function JsonArrayValue({
   collapseToComponentLevel,
   indent,
+  maxExpandedArrayItems,
   value,
 }: {
   collapseToComponentLevel: boolean;
   indent: number;
+  maxExpandedArrayItems?: number;
   value: unknown[];
 }) {
   const [manualExpanded, setManualExpanded] = useState<boolean | null>(null);
   const isCollapsedToComponent = collapseToComponentLevel && indent >= 2;
   const isExpanded = manualExpanded ?? !isCollapsedToComponent;
+  const expandedItemLimit = maxExpandedArrayItems && maxExpandedArrayItems > 0
+    ? maxExpandedArrayItems
+    : value.length;
+  const visibleItems = value.length > expandedItemLimit
+    ? value.slice(0, expandedItemLimit)
+    : value;
+  const hiddenItemCount = value.length - visibleItems.length;
 
   if (value.length === 0) {
     return <span>[]</span>;
@@ -3562,18 +3640,28 @@ function JsonArrayValue({
         onToggle={() => setManualExpanded(false)}
         opener="["
       />
-      {value.map((item, index) => (
+      {visibleItems.map((item, index) => (
         <span key={index}>
           {"\n"}
           {jsonIndent(indent + 1)}
           <JsonValue
             collapseToComponentLevel={collapseToComponentLevel}
             indent={indent + 1}
+            maxExpandedArrayItems={maxExpandedArrayItems}
             value={item}
           />
           {index < value.length - 1 ? <span>,</span> : null}
         </span>
       ))}
+      {hiddenItemCount > 0 && (
+        <span>
+          {"\n"}
+          {jsonIndent(indent + 1)}
+          <span className="text-muted-foreground">
+            ... {hiddenItemCount.toLocaleString()} more item{hiddenItemCount === 1 ? "" : "s"}
+          </span>
+        </span>
+      )}
       {"\n"}
       {jsonIndent(indent)}
       <span>]</span>
@@ -3584,10 +3672,12 @@ function JsonArrayValue({
 function JsonObjectValue({
   collapseToComponentLevel,
   indent,
+  maxExpandedArrayItems,
   value,
 }: {
   collapseToComponentLevel: boolean;
   indent: number;
+  maxExpandedArrayItems?: number;
   value: Record<string, unknown>;
 }) {
   const [manualExpanded, setManualExpanded] = useState<boolean | null>(null);
@@ -3627,6 +3717,7 @@ function JsonObjectValue({
           <JsonValue
             collapseToComponentLevel={collapseToComponentLevel}
             indent={indent + 1}
+            maxExpandedArrayItems={maxExpandedArrayItems}
             value={item}
           />
           {index < entries.length - 1 ? <span>,</span> : null}
@@ -3815,6 +3906,7 @@ export function useWorkableRealtimeView<T>(
     }
 
     let canceled = false;
+    let retryTimer: ReturnType<typeof setTimeout> | null = null;
     queueMicrotask(() => {
       if (!canceled) {
         setState((current) => ({
@@ -3832,6 +3924,69 @@ export function useWorkableRealtimeView<T>(
       .build();
 
     hubConnectionRef.current = hubConnection;
+    const subscribe = () =>
+      hubConnection.invoke(
+        "WatchView",
+        viewName,
+        JSON.parse(bodyKeyRef.current),
+        systemNameRef.current ?? null
+      );
+    const scheduleRestart = (error: unknown, delayMs = 1000) => {
+      if (canceled || retryTimer) {
+        return;
+      }
+
+      retryTimer = setTimeout(() => {
+        retryTimer = null;
+        if (!canceled && hubConnection.state === HubConnectionState.Disconnected) {
+          startConnection();
+        }
+      }, delayMs);
+      setState((current) => ({
+        ...current,
+        connectionState: "disconnected",
+        error: error && !isExpectedRealtimeDisconnect(error)
+          ? getRealtimeErrorMessage(error, "Realtime view connection closed.")
+          : undefined,
+        loading: false,
+        refreshing: false,
+      }));
+    };
+    const startConnection = () => {
+      if (canceled || hubConnection.state !== HubConnectionState.Disconnected) {
+        return;
+      }
+
+      queueMicrotask(() => {
+        if (!canceled) {
+          setState((current) => ({
+            ...current,
+            connectionState: current.data === undefined ? "connecting" : "reconnecting",
+            loading: current.data === undefined,
+            refreshing: current.data !== undefined,
+          }));
+        }
+      });
+      void hubConnection
+        .start()
+        .then(() => subscribe())
+        .then(() => {
+          if (!canceled) {
+            setState((current) => ({
+              ...current,
+              connectionState: "connected",
+              error: undefined,
+              loading: false,
+              refreshing: false,
+            }));
+          }
+        })
+        .catch((error) => {
+          if (!canceled) {
+            scheduleRestart(error, isExpectedRealtimeDisconnect(error) ? 1000 : 3000);
+          }
+        });
+    };
     hubConnection.on("workable.view", (result: T) => {
       if (!canceled) {
         const payloadJson = JSON.stringify(result);
@@ -3872,12 +4027,7 @@ export function useWorkableRealtimeView<T>(
           connectionState: "connected",
         }));
       }
-      void hubConnection.invoke(
-        "WatchView",
-        viewName,
-        JSON.parse(bodyKeyRef.current),
-        systemNameRef.current ?? null
-      ).catch((error) => {
+      void subscribe().catch((error) => {
         if (!canceled && !isExpectedRealtimeDisconnect(error)) {
           setState((current) => ({
             ...current,
@@ -3891,54 +4041,17 @@ export function useWorkableRealtimeView<T>(
     });
     hubConnection.onclose((error) => {
       if (!canceled) {
-        setState((current) => ({
-          ...current,
-          connectionState: error && !isExpectedRealtimeDisconnect(error) ? "error" : "disconnected",
-          error: error && !isExpectedRealtimeDisconnect(error)
-            ? getRealtimeErrorMessage(error, "Realtime connection closed.")
-            : undefined,
-          loading: false,
-          refreshing: false,
-        }));
+        scheduleRestart(error, isExpectedRealtimeDisconnect(error) ? 1000 : 3000);
       }
     });
 
-    hubConnection
-      .start()
-      .then(() =>
-        hubConnection
-          .invoke(
-            "WatchView",
-            viewName,
-            JSON.parse(bodyKeyRef.current),
-            systemNameRef.current ?? null
-          )
-          .then(() => {
-            if (!canceled) {
-              setState((current) => ({
-                ...current,
-                connectionState: "connected",
-              }));
-            }
-          })
-      )
-      .catch((error) => {
-        if (!canceled) {
-          setState((current) => ({
-            ...current,
-            connectionState: "error",
-            data: current.data,
-            enabled,
-            error: getRealtimeErrorMessage(error, "Realtime connection failed."),
-            hubUrl,
-            loading: false,
-            refreshing: false,
-          }));
-        }
-      });
+    startConnection();
 
     return () => {
       canceled = true;
+      if (retryTimer) {
+        clearTimeout(retryTimer);
+      }
       hubConnectionRef.current = null;
       void hubConnection.stop().catch(() => undefined);
     };
@@ -3989,6 +4102,334 @@ export function useWorkableRealtimeView<T>(
   }, [bodyKey, enabled, systemName, viewName]);
 
   return { ...state, clearMessages };
+}
+
+export function useWorkableRealtimeEvents(
+  connection: WorkableConnection | null,
+  criteria: WorkableRealtimeEventCriteria,
+  enabled: boolean,
+  maxMessages: number
+): RealtimeEventLoadable {
+  const [state, setState] = useState<RealtimeEventLoadable>({
+    clearMessages: () => undefined,
+    connectionState: enabled ? "connecting" : "disabled",
+    enabled,
+    hubUrl: connection ? createWorkableRealtimeUrl(connection) : null,
+    loading: false,
+    messages: [],
+  });
+  const hubConnectionRef = useRef<HubConnection | null>(null);
+  const apiUrl = connection?.apiUrl ?? "";
+  const hubUrl = connection ? createWorkableRealtimeUrl(connection) : null;
+  const systemName = connection?.systemName;
+  const criteriaKey = JSON.stringify(criteria);
+  const criteriaKeyRef = useRef(criteriaKey);
+  const maxMessagesRef = useRef(maxMessages);
+  const messageIdRef = useRef(0);
+  const systemNameRef = useRef(systemName);
+
+  useEffect(() => {
+    criteriaKeyRef.current = criteriaKey;
+    maxMessagesRef.current = maxMessages;
+    systemNameRef.current = systemName;
+  }, [criteriaKey, maxMessages, systemName]);
+
+  const clearMessages = useCallback(() => {
+    setState((current) => ({ ...current, messages: [] }));
+  }, []);
+
+  useEffect(() => {
+    queueMicrotask(() => {
+      setState((current) =>
+        current.messages.length > maxMessages
+          ? { ...current, messages: current.messages.slice(0, maxMessages) }
+          : current
+      );
+    });
+  }, [maxMessages]);
+
+  useEffect(() => {
+    if (!connection || !enabled || !hubUrl) {
+      queueMicrotask(() =>
+        setState((current) => ({
+          ...current,
+          connectionState: "disabled",
+          enabled,
+          hubUrl,
+          loading: false,
+        }))
+      );
+      return;
+    }
+
+    let canceled = false;
+    let retryTimer: ReturnType<typeof setTimeout> | null = null;
+    queueMicrotask(() => {
+      if (!canceled) {
+        setState((current) => ({
+          ...current,
+          connectionState: "connecting",
+          enabled,
+          hubUrl,
+          loading: current.messages.length === 0,
+        }));
+      }
+    });
+    const hubConnection = new HubConnectionBuilder()
+      .withUrl(hubUrl, { withCredentials: true })
+      .withAutomaticReconnect()
+      .configureLogging(LogLevel.None)
+      .build();
+
+    hubConnectionRef.current = hubConnection;
+    const subscribe = () =>
+      hubConnection.invoke(
+        "WatchEvents",
+        JSON.parse(criteriaKeyRef.current),
+        systemNameRef.current ?? null
+      );
+    const scheduleRestart = (error: unknown, delayMs = 1000) => {
+      if (canceled || retryTimer) {
+        return;
+      }
+
+      retryTimer = setTimeout(() => {
+        retryTimer = null;
+        if (!canceled && hubConnection.state === HubConnectionState.Disconnected) {
+          startConnection();
+        }
+      }, delayMs);
+      setState((current) => ({
+        ...current,
+        connectionState: "disconnected",
+        error: error && !isExpectedRealtimeDisconnect(error)
+          ? getRealtimeErrorMessage(error, "Realtime event connection closed.")
+          : undefined,
+        loading: false,
+      }));
+    };
+    const startConnection = () => {
+      if (canceled || hubConnection.state !== HubConnectionState.Disconnected) {
+        return;
+      }
+
+      queueMicrotask(() => {
+        if (!canceled) {
+          setState((current) => ({
+            ...current,
+            connectionState: current.messages.length === 0 ? "connecting" : "reconnecting",
+            loading: current.messages.length === 0,
+          }));
+        }
+      });
+      void hubConnection
+        .start()
+        .then(() => subscribe())
+        .then(() => {
+          if (!canceled) {
+            setState((current) => ({
+              ...current,
+              connectionState: "connected",
+              error: undefined,
+              loading: false,
+            }));
+          }
+        })
+        .catch((error) => {
+          if (!canceled) {
+            scheduleRestart(error, isExpectedRealtimeDisconnect(error) ? 1000 : 3000);
+          }
+        });
+    };
+    hubConnection.on("workable.event", (workEvent: WorkableRealtimeEvent) => {
+      if (!canceled) {
+        const message = createRealtimeEventMessage(
+          [workEvent],
+          `events:${++messageIdRef.current}`,
+          Date.now()
+        );
+        setState((current) => ({
+          ...current,
+          connectionState: "connected",
+          enabled,
+          hubUrl,
+          loading: false,
+          messages: [message, ...current.messages].slice(0, maxMessagesRef.current),
+        }));
+      }
+    });
+    hubConnection.on("workable.events", (batch: WorkableRealtimeEventBatch) => {
+      if (!canceled) {
+        const batchId = `batch:${++messageIdRef.current}`;
+        const message = createRealtimeEventMessage(
+          batch.events,
+          batchId,
+          Date.now(),
+          batch.sentAt
+        );
+        setState((current) => ({
+          ...current,
+          connectionState: "connected",
+          enabled,
+          hubUrl,
+          loading: false,
+          messages: [message, ...current.messages].slice(0, maxMessagesRef.current),
+        }));
+      }
+    });
+    hubConnection.onreconnecting(() => {
+      if (!canceled) {
+        setState((current) => ({
+          ...current,
+          connectionState: "reconnecting",
+        }));
+      }
+    });
+    hubConnection.onreconnected(() => {
+      if (!canceled) {
+        setState((current) => ({
+          ...current,
+          connectionState: "connected",
+        }));
+      }
+      void hubConnection.invoke(
+        "WatchEvents",
+        JSON.parse(criteriaKeyRef.current),
+        systemNameRef.current ?? null
+      ).catch((error) => {
+        if (!canceled && !isExpectedRealtimeDisconnect(error)) {
+          setState((current) => ({
+            ...current,
+            connectionState: "error",
+            error: getRealtimeErrorMessage(error, "Realtime event subscription failed."),
+            loading: false,
+          }));
+        }
+      });
+    });
+    hubConnection.onclose((error) => {
+      if (!canceled) {
+        scheduleRestart(error, isExpectedRealtimeDisconnect(error) ? 1000 : 3000);
+      }
+    });
+
+    startConnection();
+
+    return () => {
+      canceled = true;
+      if (retryTimer) {
+        clearTimeout(retryTimer);
+      }
+      hubConnectionRef.current = null;
+      void hubConnection.stop().catch(() => undefined);
+    };
+  }, [apiUrl, connection, criteriaKey, enabled, hubUrl, systemName]);
+
+  return { ...state, clearMessages };
+}
+
+function createRealtimeEventMessage(
+  events: WorkableRealtimeEvent[],
+  id: string,
+  receivedAt: number,
+  sentAt?: string
+): RealtimeEventMessage {
+  const isBatch = events.length > 1;
+  const value = !isBatch
+    ? events[0]
+    : {
+        sentAt: sentAt ?? new Date(receivedAt).toISOString(),
+        events,
+      };
+  const payloadSize = measureJsonBytes(value);
+
+  return {
+    batchId: isBatch ? id : undefined,
+    batchSize: isBatch ? events.length : undefined,
+    bytes: payloadSize.bytes,
+    bytesEstimated: payloadSize.estimated,
+    events,
+    eventTypes: [...new Set(events.map((workEvent) => workEvent.eventType))],
+    id,
+    receivedAt,
+    sentAt,
+    value,
+  };
+}
+
+function measureJsonBytes(value: unknown, budget = 250_000) {
+  const seen = new WeakSet<object>();
+  const state = {
+    bytes: 0,
+    estimated: false,
+  };
+
+  const add = (text: string) => {
+    if (state.bytes >= budget) {
+      state.estimated = true;
+      return;
+    }
+
+    state.bytes += jsonByteEncoder.encode(text).length;
+    if (state.bytes >= budget) {
+      state.bytes = budget;
+      state.estimated = true;
+    }
+  };
+
+  const visit = (current: unknown) => {
+    if (state.bytes >= budget) {
+      state.estimated = true;
+      return;
+    }
+
+    if (current === null) {
+      add("null");
+      return;
+    }
+
+    if (Array.isArray(current)) {
+      add("[");
+      for (let index = 0; index < current.length; index++) {
+        if (index > 0) {
+          add(",");
+        }
+        visit(current[index]);
+        if (state.bytes >= budget) {
+          state.estimated = true;
+          return;
+        }
+      }
+      add("]");
+      return;
+    }
+
+    if (typeof current === "object") {
+      if (seen.has(current)) {
+        add("\"[Circular]\"");
+        state.estimated = true;
+        return;
+      }
+
+      seen.add(current);
+      add("{");
+      Object.entries(current as Record<string, unknown>).forEach(([key, item], index) => {
+        if (index > 0) {
+          add(",");
+        }
+        add(JSON.stringify(key));
+        add(":");
+        visit(item);
+      });
+      add("}");
+      return;
+    }
+
+    add(JSON.stringify(current));
+  };
+
+  visit(value);
+  return state;
 }
 
 function createRealtimePayloadMessage<T>(

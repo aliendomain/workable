@@ -32,3 +32,17 @@ public sealed record WorkableRealtimeEvent(
             workEvent.Messages);
     }
 }
+
+public sealed record WorkableRealtimeEventBatch(
+    DateTimeOffset SentAt,
+    IReadOnlyList<WorkableRealtimeEvent> Events)
+{
+    public static WorkableRealtimeEventBatch From(IReadOnlyList<WorkEvent> workEvents)
+    {
+        ArgumentNullException.ThrowIfNull(workEvents);
+
+        return new WorkableRealtimeEventBatch(
+            DateTimeOffset.UtcNow,
+            workEvents.Select(WorkableRealtimeEvent.From).ToArray());
+    }
+}

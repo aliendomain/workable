@@ -1,4 +1,3 @@
-using System.Collections.Concurrent;
 using System.Diagnostics.CodeAnalysis;
 using System.Runtime.CompilerServices;
 using System.Threading.Channels;
@@ -76,13 +75,13 @@ internal sealed class WorkEventStream : IWorkEventStream, IAsyncDisposable
         WorkEvent? workEvent = null;
         foreach (var subscription in subscribers)
         {
-            if (!subscription.Matches(metadata))
+            if (!subscription.ShouldPublish(metadata))
             {
                 continue;
             }
 
             workEvent ??= createEvent(state);
-            subscription.Publish(workEvent);
+            subscription.PublishMatched(workEvent);
         }
     }
 
@@ -165,6 +164,8 @@ internal sealed class WorkEventStream : IWorkEventStream, IAsyncDisposable
         WorkEventFilter? filter,
         WorkEventSubscriptionOptions options) : IWorkEventSubscription
     {
+        private readonly int capacity = options.Capacity;
+        private readonly WorkEventOverflowBehavior overflowBehavior = options.OverflowBehavior;
         private readonly Channel<WorkEvent> events = Channel.CreateBounded<WorkEvent>(
             new BoundedChannelOptions(options.Capacity)
             {
@@ -173,6 +174,7 @@ internal sealed class WorkEventStream : IWorkEventStream, IAsyncDisposable
                 SingleWriter = false,
             });
         private int isDisposed;
+        private int queuedCount;
 
         public async IAsyncEnumerable<WorkEvent> Read([EnumeratorCancellation] CancellationToken cancellationToken = default)
         {
@@ -180,6 +182,7 @@ internal sealed class WorkEventStream : IWorkEventStream, IAsyncDisposable
             {
                 await foreach (var workEvent in this.events.Reader.ReadAllAsync(cancellationToken))
                 {
+                    Interlocked.Decrement(ref this.queuedCount);
                     yield return workEvent;
                 }
             }
@@ -211,23 +214,58 @@ internal sealed class WorkEventStream : IWorkEventStream, IAsyncDisposable
 
         internal void Publish(WorkEvent workEvent)
         {
-            if (Volatile.Read(ref this.isDisposed) == 1 || filter?.Matches(workEvent) == false)
+            if (Volatile.Read(ref this.isDisposed) == 1 ||
+                filter?.Matches(workEvent) == false ||
+                !this.CanAcceptWrite())
             {
                 return;
             }
 
-            this.events.Writer.TryWrite(workEvent);
+            this.PublishMatched(workEvent);
         }
 
-        internal bool Matches(WorkEventMetadata metadata)
+        internal void PublishMatched(WorkEvent workEvent)
+        {
+            if (this.events.Writer.TryWrite(workEvent))
+            {
+                this.TrackQueuedWrite();
+            }
+        }
+
+        internal bool ShouldPublish(WorkEventMetadata metadata)
             => Volatile.Read(ref this.isDisposed) == 0 &&
+                this.CanAcceptWrite() &&
                 (filter is null ||
                     ((filter.WorkerId is null || filter.WorkerId == metadata.WorkerId) &&
                         (filter.DefinitionId is null || filter.DefinitionId == metadata.DefinitionId) &&
+                        (filter.DefinitionIds is not { Count: > 0 } ||
+                            (metadata.DefinitionId is { } definitionId && filter.DefinitionIds.Contains(definitionId))) &&
                         (filter.SubjectId is null || filter.SubjectId == metadata.SubjectId) &&
                         (filter.ConcurrencyKey is null || filter.ConcurrencyKey == metadata.ConcurrencyKey) &&
                         (filter.Identifier is null || metadata.ContainsIdentifier(filter.Identifier.Value)) &&
-                        (filter.EventType is null || string.Equals(filter.EventType, metadata.EventType, StringComparison.OrdinalIgnoreCase))));
+                        metadata.ContainsAnyKey(filter.Keys) &&
+                        filter.EventTypeMatches(metadata.EventType)));
+
+        private bool CanAcceptWrite()
+            => this.overflowBehavior != WorkEventOverflowBehavior.DropWrite ||
+                Volatile.Read(ref this.queuedCount) < this.capacity;
+
+        private void TrackQueuedWrite()
+        {
+            while (true)
+            {
+                var current = Volatile.Read(ref this.queuedCount);
+                if (current >= this.capacity)
+                {
+                    return;
+                }
+
+                if (Interlocked.CompareExchange(ref this.queuedCount, current + 1, current) == current)
+                {
+                    return;
+                }
+            }
+        }
 
         private static BoundedChannelFullMode ToBoundedChannelFullMode(WorkEventOverflowBehavior behavior)
             => behavior switch

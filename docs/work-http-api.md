@@ -91,13 +91,21 @@ GET /workable/diagnostics
 GET /workable/systems/email/diagnostics
 ```
 
-The response includes read-model projection counters that can be used to monitor query freshness and projector pressure.
+The response includes queue, read-model, and retention diagnostics. Use it to monitor rejected work, query freshness, projector pressure, retention lag, and internal diagnostics failures.
 
 ```json
 {
   "id": { "value": "11111111-1111-1111-1111-111111111111" },
   "name": "email",
   "state": "Started",
+  "queue": {
+    "rejectedWorkCount": 0,
+    "lastRejectedAt": null,
+    "lastRejectedStatus": null,
+    "lastRejectedDefinitionId": null,
+    "lastRejectedCode": null,
+    "lastRejectedMessage": null
+  },
   "readModel": {
     "enqueuedSequence": 42,
     "appliedSequence": 42,
@@ -110,11 +118,29 @@ The response includes read-model projection counters that can be used to monitor
     "projectorFailureMessage": null,
     "pendingUpdateCount": 0,
     "hasProjectorFailure": false
+  },
+  "retention": {
+    "trackedFinalWorkerCount": 0,
+    "scheduledPurgeCount": 0,
+    "scheduledPurgeHighWaterMark": 0,
+    "oldestScheduledPurgeDueAt": null,
+    "oldestDuePurgeAge": "00:00:00",
+    "pendingCountRetentionDefinitionCount": 0,
+    "systemCountRetentionPending": false,
+    "lastRunAt": null,
+    "lastRunDuration": "00:00:00",
+    "lastPurgedCount": 0,
+    "totalPurgedCount": 0,
+    "schedulerFailureType": null,
+    "schedulerFailureMessage": null,
+    "hasSchedulerFailure": false
   }
 }
 ```
 
 `pendingUpdateCount` should usually return to `0`. Sustained growth means the read-model projector is falling behind accepted lifecycle updates.
+
+See [Work Diagnostics](work-diagnostics.md) for field meanings and warning guidance.
 
 ## System Lifecycle
 

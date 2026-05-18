@@ -6,6 +6,37 @@ export type WorkableConnection = {
   systemName?: string;
 };
 
+export type WorkableRealtimeEventCriteria = {
+  definitionIds?: string[] | null;
+  eventTypes?: string[] | null;
+  keys?: WorkableRealtimeEventKeyCriteria[] | null;
+};
+
+export type WorkableRealtimeEventKeyCriteria = {
+  kind?: WorkKeyKind | null;
+  type: string;
+  value: string;
+};
+
+export type WorkableRealtimeEvent = {
+  occurredAt: string;
+  workSystemId: { value: string };
+  workerId?: { value: string } | null;
+  definitionId?: { value: string } | null;
+  subjectId?: WorkTypedValue | null;
+  concurrencyKey?: WorkTypedValue | null;
+  identifiers: WorkTypedValue[];
+  origin?: Record<string, unknown> | null;
+  eventType: string;
+  data?: unknown;
+  messages: WorkMessage[];
+};
+
+export type WorkableRealtimeEventBatch = {
+  sentAt: string;
+  events: WorkableRealtimeEvent[];
+};
+
 export type WorkRealtimeCapability = {
   enabled: boolean;
   transport?: string | null;

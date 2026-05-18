@@ -10,10 +10,10 @@ internal sealed class WorkerEventPublisher(
     private static readonly IReadOnlySet<WorkIdentifier> EmptyIdentifiers = new HashSet<WorkIdentifier>();
 
     internal void Queued(WorkerRecord worker)
-        => this.PublishWithoutSynchronize(worker, "worker.queued", details: new WorkerEventPayloadDetails(IncludeInput: true));
+        => this.PublishWithoutSynchronize(worker, "worker.queued");
 
     internal void Started(WorkerRecord worker)
-        => this.Publish(worker, "worker.started", details: new WorkerEventPayloadDetails(IncludeInput: true));
+        => this.Publish(worker, "worker.started");
 
     internal void ActionApplied(WorkerRecord worker, WorkActionOutcome outcome, WorkOrigin origin)
     {
@@ -21,8 +21,7 @@ internal sealed class WorkerEventPublisher(
         var eventType = $"worker.{action.ToString().ToLowerInvariant()}";
         var details = new WorkerEventPayloadDetails(
             Action: action,
-            ActionStatus: outcome.Status,
-            IncludeOutput: true);
+            ActionStatus: outcome.Status);
         if (action == WorkAction.Purge)
         {
             if (outcome.IsAccepted)
@@ -54,7 +53,6 @@ internal sealed class WorkerEventPublisher(
             worker,
             EventTypeFor(status),
             details: new WorkerEventPayloadDetails(
-                IncludeOutput: true,
                 CompletionStatus: status));
 
     internal void Waiting(WorkerRecord worker)
@@ -99,7 +97,6 @@ internal sealed class WorkerEventPublisher(
             worker,
             "worker.failed",
             details: new WorkerEventPayloadDetails(
-                IncludeOutput: true,
                 CompletionStatus: WorkCompletionStatus.Failed));
 
     internal void Purged(WorkerRecord worker)

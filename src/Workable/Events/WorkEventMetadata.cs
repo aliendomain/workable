@@ -27,6 +27,9 @@ internal sealed class WorkEventMetadata(
     public bool ContainsIdentifier(WorkIdentifier identifier)
         => this.Identifiers.Contains(identifier);
 
+    public bool ContainsAnyKey(IReadOnlySet<WorkEventKeyFilter>? keys)
+        => WorkEventFilter.KeysMatch(keys, this.SubjectId, this.ConcurrencyKey, this.Identifiers);
+
     private IReadOnlySet<WorkIdentifier> Identifiers
         => this.identifiers ??= getIdentifiers?.Invoke() ?? EmptyIdentifiers;
 }

@@ -45,6 +45,15 @@ internal sealed class WorkableRealtimeBroadcaster(
         {
             while (!cancellationToken.IsCancellationRequested)
             {
+                foreach (var groupName in pumps.Keys.ToArray())
+                {
+                    if (pumps[groupName].Task.IsCompleted)
+                    {
+                        await StopEventPump(pumps[groupName]);
+                        pumps.Remove(groupName);
+                    }
+                }
+
                 var activeSubscriptions = eventSubscriptions
                     .GetActiveSubscriptions(system)
                     .ToDictionary(subscription => subscription.GroupName, StringComparer.Ordinal);
@@ -67,7 +76,11 @@ internal sealed class WorkableRealtimeBroadcaster(
                 }
 
                 var observedVersion = eventSubscriptions.Version;
-                await eventSubscriptions.WaitForChange(observedVersion, cancellationToken);
+                await WaitForEventSubscriptionChangeOrPumpCompletion(
+                    eventSubscriptions,
+                    observedVersion,
+                    pumps.Values,
+                    cancellationToken);
             }
         }
         finally
@@ -101,26 +114,127 @@ internal sealed class WorkableRealtimeBroadcaster(
                 options.Value.EventSubscriptionCapacity,
                 options.Value.EventOverflowBehavior));
         eventSubscriptions.SetStreaming(subscription.GroupName, isStreaming: true);
+        IAsyncEnumerator<WorkEvent>? reader = null;
+        Task<bool>? pendingRead = null;
         try
         {
-            await foreach (var workEvent in events.Read(cancellationToken))
+            reader = events.Read(cancellationToken).GetAsyncEnumerator(cancellationToken);
+            while (!cancellationToken.IsCancellationRequested)
             {
-                await hub.Clients
-                    .Group(subscription.GroupName)
-                    .SendAsync(
-                        WorkableRealtimeClientMethods.WorkEvent,
-                        WorkableRealtimeEvent.From(workEvent),
-                        cancellationToken);
+                pendingRead ??= reader.MoveNextAsync().AsTask();
+                if (!await pendingRead)
+                {
+                    break;
+                }
+
+                pendingRead = null;
+                var batch = await this.CollectEventBatch(reader, pendingRead, reader.Current, cancellationToken);
+                await this.SendEventBatch(
+                    subscription.GroupName,
+                    batch.Events,
+                    cancellationToken);
+                pendingRead = batch.PendingRead;
             }
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
             return;
         }
+        catch (NotSupportedException) when (cancellationToken.IsCancellationRequested)
+        {
+            // Async iterators can reject disposal while cancellation is unwinding a pending read.
+            return;
+        }
         finally
         {
+            if (pendingRead is not null && cancellationToken.IsCancellationRequested)
+            {
+                try
+                {
+                    await pendingRead;
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    // Expected when an event pump is stopped while a read is pending.
+                }
+                catch (NotSupportedException)
+                {
+                    // Expected when cancellation races async iterator disposal.
+                }
+            }
+
+            if (reader is not null && !cancellationToken.IsCancellationRequested)
+            {
+                await reader.DisposeAsync();
+            }
+
             eventSubscriptions.SetStreaming(subscription.GroupName, isStreaming: false);
         }
+    }
+
+    private async Task<EventBatch> CollectEventBatch(
+        IAsyncEnumerator<WorkEvent> reader,
+        Task<bool>? pendingRead,
+        WorkEvent firstEvent,
+        CancellationToken cancellationToken)
+    {
+        var batchWindow = NormalizeEventBatchWindow(options.Value);
+        var maxBatchSize = Math.Max(1, options.Value.EventMaxBatchSize);
+        if (maxBatchSize == 1 || batchWindow <= TimeSpan.Zero)
+        {
+            return new EventBatch([firstEvent], pendingRead);
+        }
+
+        var events = new List<WorkEvent> { firstEvent };
+        var delay = Task.Delay(batchWindow, cancellationToken);
+        while (events.Count < maxBatchSize)
+        {
+            pendingRead ??= reader.MoveNextAsync().AsTask();
+            var completed = await Task.WhenAny(pendingRead, delay);
+            if (completed != pendingRead)
+            {
+                break;
+            }
+
+            if (!await pendingRead)
+            {
+                return new EventBatch(events, null);
+            }
+
+            pendingRead = null;
+            events.Add(reader.Current);
+        }
+
+        if (!delay.IsCompleted)
+        {
+            await delay;
+        }
+
+        return new EventBatch(events, pendingRead);
+    }
+
+    private async Task SendEventBatch(
+        string groupName,
+        IReadOnlyList<WorkEvent> events,
+        CancellationToken cancellationToken)
+    {
+        if (events.Count == 1)
+        {
+            await hub.Clients
+                .Group(groupName)
+                .SendAsync(
+                    WorkableRealtimeClientMethods.WorkEvent,
+                    WorkableRealtimeEvent.From(events[0]),
+                    cancellationToken);
+            return;
+        }
+
+        await hub.Clients
+            .Group(groupName)
+            .SendAsync(
+                WorkableRealtimeClientMethods.WorkEvents,
+                WorkableRealtimeEventBatch.From(events),
+                cancellationToken);
     }
 
     private static async Task StopEventPump(EventPump pump)
@@ -134,8 +248,29 @@ internal sealed class WorkableRealtimeBroadcaster(
         {
             // Expected when the last SignalR event watcher leaves a group.
         }
+        catch (NotSupportedException) when (pump.Cancellation.IsCancellationRequested)
+        {
+            // Expected when an event reader is disposed while a pending read is canceled.
+        }
 
         pump.Cancellation.Dispose();
+    }
+
+    private static async Task WaitForEventSubscriptionChangeOrPumpCompletion(
+        WorkableRealtimeEventSubscriptions eventSubscriptions,
+        long observedVersion,
+        IEnumerable<EventPump> pumps,
+        CancellationToken cancellationToken)
+    {
+        var changeTask = eventSubscriptions.WaitForChange(observedVersion, cancellationToken);
+        var pumpTasks = pumps.Select(pump => pump.Task).ToArray();
+        if (pumpTasks.Length == 0)
+        {
+            await changeTask;
+            return;
+        }
+
+        await Task.WhenAny(changeTask, Task.WhenAny(pumpTasks));
     }
 
     private async Task BroadcastViews(
@@ -170,10 +305,13 @@ internal sealed class WorkableRealtimeBroadcaster(
 
             foreach (var subscription in subscriptions)
             {
+                var requiresIntervalPublish = views.RequiresIntervalPublish(
+                    subscription.ViewName,
+                    subscription.Criteria);
                 var lastPublishedSequence = lastPublishedSequencesByGroup.TryGetValue(subscription.GroupName, out var sequence)
                     ? sequence
                     : subscription.InitialReadModelSequence;
-                if (lastPublishedSequence == diagnostics.AppliedSequence)
+                if (!requiresIntervalPublish && lastPublishedSequence == diagnostics.AppliedSequence)
                 {
                     lastPublishedSequencesByGroup[subscription.GroupName] = diagnostics.AppliedSequence;
                     continue;
@@ -406,6 +544,17 @@ internal sealed class WorkableRealtimeBroadcaster(
     private static TimeSpan NormalizeInterval(TimeSpan interval, TimeSpan fallback)
         => interval > TimeSpan.Zero ? interval : fallback;
 
+    private static TimeSpan NormalizeEventBatchWindow(WorkableSignalROptions signalROptions)
+    {
+        var minimum = NormalizeInterval(
+            signalROptions.EventMinimumBatchWindow,
+            TimeSpan.FromMilliseconds(100));
+        var requested = NormalizeInterval(
+            signalROptions.EventBatchWindow,
+            TimeSpan.FromSeconds(1));
+        return requested < minimum ? minimum : requested;
+    }
+
     private enum DiagnosticsLagSeverity
     {
         Normal,
@@ -450,4 +599,8 @@ internal sealed class WorkableRealtimeBroadcaster(
     private sealed record EventPump(
         CancellationTokenSource Cancellation,
         Task Task);
+
+    private sealed record EventBatch(
+        IReadOnlyList<WorkEvent> Events,
+        Task<bool>? PendingRead);
 }

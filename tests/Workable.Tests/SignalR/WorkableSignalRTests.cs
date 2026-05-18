@@ -105,7 +105,7 @@ public sealed class WorkableSignalRTests
         var gate = host.Services.GetRequiredService<SignalRWorkGate>();
         await using var connection = CreateConnection(host);
         var events = Channel.CreateUnbounded<WorkableRealtimeEvent>();
-        connection.On<WorkableRealtimeEvent>(WorkableRealtimeClientMethods.WorkEvent, workEvent => events.Writer.TryWrite(workEvent));
+        CaptureRealtimeEvents(connection, events);
         await connection.StartAsync();
 
         var handle = await system.Queue.Enqueue("signalr.worker");
@@ -128,6 +128,146 @@ public sealed class WorkableSignalRTests
         Assert.Equal(
             "signalr.worker",
             completed.Data?.GetProperty("worker").GetProperty("definitionName").GetString());
+    }
+
+    [Fact]
+    public async Task EventWatcherReceivesOnlySelectedEventTypes()
+    {
+        using var host = await CreateHost(addSignalR: true);
+        var system = host.Services.GetRequiredService<IWorkSystemRegistry>().Default;
+        var gate = host.Services.GetRequiredService<SignalRWorkGate>();
+        await using var connection = CreateConnection(host);
+        var events = Channel.CreateUnbounded<WorkableRealtimeEvent>();
+        CaptureRealtimeEvents(connection, events);
+        await connection.StartAsync();
+        await connection.InvokeAsync(
+            "WatchEvents",
+            new WorkableRealtimeEventCriteria(["worker.completed"]),
+            null);
+
+        var handle = await system.Queue.Enqueue("signalr.view");
+        await gate.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        gate.Release.SetResult();
+        await handle.WaitForCompletion();
+
+        var completed = await ReadUntil(
+            events.Reader,
+            workEvent => workEvent.EventType == "worker.completed");
+        var receivedQueued = await TryReadUntil(
+            events.Reader,
+            workEvent => workEvent.EventType == "worker.queued",
+            TimeSpan.FromMilliseconds(250));
+
+        Assert.Equal(handle.WorkerId, completed.WorkerId);
+        Assert.False(receivedQueued);
+    }
+
+    [Fact]
+    public async Task EventWatcherReceivesAllEventsWhenCriteriaIsEmpty()
+    {
+        using var host = await CreateHost(addSignalR: true);
+        var system = host.Services.GetRequiredService<IWorkSystemRegistry>().Default;
+        var gate = host.Services.GetRequiredService<SignalRWorkGate>();
+        await using var connection = CreateConnection(host);
+        var events = Channel.CreateUnbounded<WorkableRealtimeEvent>();
+        CaptureRealtimeEvents(connection, events);
+        await connection.StartAsync();
+        await connection.InvokeAsync(
+            "WatchEvents",
+            new WorkableRealtimeEventCriteria(),
+            null);
+
+        var handle = await system.Queue.Enqueue("signalr.view");
+        await gate.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        gate.Release.SetResult();
+        await handle.WaitForCompletion();
+
+        var queued = await ReadUntil(
+            events.Reader,
+            workEvent => workEvent.WorkerId == handle.WorkerId && workEvent.EventType == "worker.queued");
+        var completed = await ReadUntil(
+            events.Reader,
+            workEvent => workEvent.WorkerId == handle.WorkerId && workEvent.EventType == "worker.completed");
+
+        Assert.Equal(handle.WorkerId, queued.WorkerId);
+        Assert.Equal(handle.WorkerId, completed.WorkerId);
+    }
+
+    [Fact]
+    public async Task EventWatcherFiltersByDefinitionAndKey()
+    {
+        using var host = await CreateHost(addSignalR: true);
+        var system = host.Services.GetRequiredService<IWorkSystemRegistry>().Default;
+        var gate = host.Services.GetRequiredService<SignalRWorkGate>();
+        var definition = system.Catalog.Definitions.Single(work => work.Name == "signalr.view");
+        var acceptedIdentifier = new WorkIdentifier("batch", "accepted");
+        await using var connection = CreateConnection(host);
+        var events = Channel.CreateUnbounded<WorkableRealtimeEvent>();
+        CaptureRealtimeEvents(connection, events);
+        await connection.StartAsync();
+        await connection.InvokeAsync(
+            "WatchEvents",
+            new WorkableRealtimeEventCriteria(
+                EventTypes: ["worker.completed"],
+                DefinitionIds: [definition.Id.Value.ToString("D")],
+                Keys:
+                [
+                    new WorkableRealtimeEventKeyCriteria(
+                        WorkKeyKind.Identifier,
+                        acceptedIdentifier.Type,
+                        acceptedIdentifier.Value),
+                ]),
+            null);
+
+        var accepted = await system.Queue.Enqueue("signalr.view", WorkInput.Empty.WithIdentifier(acceptedIdentifier));
+        var ignored = await system.Queue.Enqueue("signalr.view", WorkInput.Empty.WithIdentifier(new WorkIdentifier("batch", "ignored")));
+        await gate.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        gate.Release.SetResult();
+        await Task.WhenAll(accepted.WaitForCompletion(), ignored.WaitForCompletion());
+
+        var completed = await ReadUntil(
+            events.Reader,
+            workEvent => workEvent.EventType == "worker.completed");
+        var receivedIgnored = await TryReadUntil(
+            events.Reader,
+            workEvent => workEvent.WorkerId == ignored.WorkerId,
+            TimeSpan.FromMilliseconds(250));
+
+        Assert.Equal(accepted.WorkerId, completed.WorkerId);
+        Assert.False(receivedIgnored);
+    }
+
+    [Fact]
+    public async Task EventWatcherReceivesBurstsAsBatches()
+    {
+        using var host = await CreateHost(addSignalR: true, configureSignalR: options =>
+        {
+            options.EventBatchWindow = TimeSpan.FromMilliseconds(100);
+            options.EventMaxBatchSize = 10;
+        });
+        var system = host.Services.GetRequiredService<IWorkSystemRegistry>().Default;
+        var gate = host.Services.GetRequiredService<SignalRWorkGate>();
+        await using var connection = CreateConnection(host);
+        var batches = Channel.CreateUnbounded<WorkableRealtimeEventBatch>();
+        connection.On<WorkableRealtimeEventBatch>(
+            WorkableRealtimeClientMethods.WorkEvents,
+            batch => batches.Writer.TryWrite(batch));
+        await connection.StartAsync();
+        await connection.InvokeAsync(
+            "WatchEvents",
+            new WorkableRealtimeEventCriteria(["worker.completed"]),
+            null);
+
+        var handles = await Task.WhenAll(Enumerable.Range(0, 3).Select(_ => system.Queue.Enqueue("signalr.view")));
+        await gate.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        gate.Release.SetResult();
+        await Task.WhenAll(handles.Select(handle => handle.WaitForCompletion()));
+
+        var batch = await ReadUntil(
+            batches.Reader,
+            batch => batch.Events.Count >= 2);
+
+        Assert.All(batch.Events, workEvent => Assert.Equal("worker.completed", workEvent.EventType));
     }
 
     [Fact]
@@ -168,6 +308,38 @@ public sealed class WorkableSignalRTests
         Assert.Equal("compact", updated.Components["workers"].Shape);
         Assert.True(workers.TryGetProperty("activeWorkerCount", out _));
         Assert.False(workers.TryGetProperty("finalWorkerCount", out _));
+    }
+
+    [Fact]
+    public async Task ViewWatcherContinuesPublishingOverviewThroughputWithoutReadModelChanges()
+    {
+        using var host = await CreateHost(addSignalR: true);
+        await using var connection = CreateConnection(host);
+        var views = Channel.CreateUnbounded<WorkComponentQueryResult>();
+        connection.On<WorkComponentQueryResult>(
+            WorkableRealtimeClientMethods.ViewUpdated,
+            view => views.Writer.TryWrite(view));
+        await connection.StartAsync();
+        await connection.InvokeAsync(
+            "WatchView",
+            "overview",
+            new WorkViewCriteria(Components:
+            [
+                new WorkComponentRequest(
+                    "throughput",
+                    "throughput",
+                    JsonSerializer.SerializeToElement(new { windowSeconds = 60, bucketSeconds = 1 }),
+                    WorkComponentShapes.Standard),
+            ]),
+            null);
+
+        var initial = await ReadUntil(views.Reader, view => view.Components.ContainsKey("throughput"));
+        var updated = await ReadUntil(
+            views.Reader,
+            view => view.GeneratedAt > initial.GeneratedAt &&
+                view.Components.ContainsKey("throughput"));
+
+        Assert.Equal(["throughput"], updated.Components.Keys.ToArray());
     }
 
     [Fact]
@@ -391,7 +563,10 @@ public sealed class WorkableSignalRTests
         }
     }
 
-    private static async Task<IHost> CreateHost(bool addSignalR, string? hubPath = null)
+    private static async Task<IHost> CreateHost(
+        bool addSignalR,
+        string? hubPath = null,
+        Action<WorkableSignalROptions>? configureSignalR = null)
     {
         var host = new HostBuilder()
             .ConfigureWebHost(web =>
@@ -421,6 +596,7 @@ public sealed class WorkableSignalRTests
                         {
                             options.PublishInterval = TimeSpan.FromMilliseconds(50);
                             options.DiagnosticsPublishInterval = TimeSpan.FromMilliseconds(50);
+                            configureSignalR?.Invoke(options);
                         });
                     }
                 });
@@ -457,6 +633,24 @@ public sealed class WorkableSignalRTests
                 options.PayloadSerializerOptions.Converters.Add(new JsonStringEnumConverter());
             })
             .Build();
+
+    private static void CaptureRealtimeEvents(
+        HubConnection connection,
+        Channel<WorkableRealtimeEvent> events)
+    {
+        connection.On<WorkableRealtimeEvent>(
+            WorkableRealtimeClientMethods.WorkEvent,
+            workEvent => events.Writer.TryWrite(workEvent));
+        connection.On<WorkableRealtimeEventBatch>(
+            WorkableRealtimeClientMethods.WorkEvents,
+            batch =>
+            {
+                foreach (var workEvent in batch.Events)
+                {
+                    events.Writer.TryWrite(workEvent);
+                }
+            });
+    }
 
     private static async Task<T> ReadUntil<T>(
         ChannelReader<T> reader,

@@ -22,6 +22,11 @@ builder.Services.AddWorkableSignalR(options =>
     options.HubPath = "/internal/work/realtime";
     options.PublishInterval = TimeSpan.FromSeconds(2);
     options.DiagnosticsPublishInterval = TimeSpan.FromMilliseconds(250);
+    options.EventBatchWindow = TimeSpan.FromSeconds(1);
+    options.EventMinimumBatchWindow = TimeSpan.FromMilliseconds(100);
+    options.EventMaxBatchSize = 512;
+    options.EventSubscriptionCapacity = 16_384;
+    options.EventOverflowBehavior = WorkEventOverflowBehavior.DropWrite;
 });
 
 app.MapWorkableSignalR();
@@ -91,7 +96,7 @@ When `Workable.SignalR` is not registered:
 }
 ```
 
-## Worker Details
+## Worker Events
 
 Worker detail pages should load their initial snapshot through HTTP, then subscribe to realtime worker events.
 
@@ -103,6 +108,14 @@ HubConnection connection = new HubConnectionBuilder()
 connection.On<WorkableRealtimeEvent>("workable.event", workEvent =>
 {
     // Update the visible worker timeline, logs, action history, output, or state.
+});
+
+connection.On<WorkableRealtimeEventBatch>("workable.events", batch =>
+{
+    foreach (var workEvent in batch.Events)
+    {
+        // Handle each event in its original stream order.
+    }
 });
 
 await connection.StartAsync();
@@ -130,7 +143,7 @@ await connection.InvokeAsync(
     (string?)null);
 ```
 
-Worker messages are delivered through the `workable.event` client method with this shape:
+Worker messages are delivered through `workable.event` for single events and `workable.events` for batches.
 
 ```csharp
 public sealed record WorkableRealtimeEvent(
@@ -147,7 +160,67 @@ public sealed record WorkableRealtimeEvent(
     IReadOnlyList<WorkMessage> Messages);
 ```
 
+```csharp
+public sealed record WorkableRealtimeEventBatch(
+    DateTimeOffset SentAt,
+    IReadOnlyList<WorkableRealtimeEvent> Events);
+```
+
 The event data follows the payloads documented in [Work Observability](https://github.com/aliendomain/workable/blob/main/docs/work-observability.md).
+
+### Event Filters
+
+Use `WatchEvents` to subscribe to filtered event streams for a system.
+
+```csharp
+await connection.InvokeAsync(
+    "WatchEvents",
+    new WorkableRealtimeEventCriteria(
+        EventTypes: ["worker.completed", "worker.failed"],
+        DefinitionIds: [sendWelcomeEmail.Id.Value.ToString("D")],
+        Keys:
+        [
+            new WorkableRealtimeEventKeyCriteria(
+                WorkKeyKind.Identifier,
+                "order",
+                "order-789")
+        ]),
+    (string?)null);
+```
+
+The server applies definition, key, and event-type filters before constructing lazy event payloads when possible. This keeps filtered event viewers cheap during bursts.
+
+Stop watching with the same criteria:
+
+```csharp
+await connection.InvokeAsync(
+    "UnwatchEvents",
+    criteria,
+    (string?)null);
+```
+
+`WatchWorker` is a convenience subscription for one worker id. `WatchSystem` subscribes to all worker events for the selected system.
+
+### Event Batching
+
+The realtime broadcaster coalesces bursts into batches. This reduces SignalR send overhead during high-volume event spikes.
+
+- `EventBatchWindow` controls how long the broadcaster waits to collect additional events after receiving the first event in a burst.
+- `EventMinimumBatchWindow` prevents accidentally configuring an overly chatty event stream; smaller positive windows are raised to this value.
+- `EventMaxBatchSize` caps the number of events in one batch.
+- `EventSubscriptionCapacity` caps the number of individual events buffered by each active event subscription group before the configured overflow behavior applies.
+- `EventOverflowBehavior` controls what the per-subscription channel does when it reaches capacity.
+- A single collected event is sent through `workable.event`.
+- Multiple collected events are sent through `workable.events`.
+- Event order is preserved inside the batch.
+
+The defaults are a 1 second batch window, a 100ms minimum batch window, 512 events per batch, 16,384 buffered events per active event subscription group, and `DropWrite` overflow behavior.
+
+The batch window is also the send pace during bursts. If the batch reaches `EventMaxBatchSize` before the window expires, the broadcaster waits out the remaining window before sending. That gives the bounded event subscription channel room to absorb overflow according to `EventOverflowBehavior` instead of turning a large burst into a tight loop of SignalR sends.
+
+`DropWrite` is the default for SignalR because realtime event viewers are observational and bounded. When a SignalR event subscription is already full, lazy event payloads can be skipped before construction, which keeps high-throughput worker execution from paying to produce events the browser will never inspect. Use `DropOldest` only when keeping the newest event samples matters more than minimizing writer-path overhead.
+
+Batching changes transport shape, not event semantics. Clients should handle both methods and process each event individually.
 
 ## Component View Updates
 
@@ -184,6 +257,8 @@ SignalR view payloads use the same component efficiency contract as HTTP:
 - per-component errors are returned inside the component result
 - unknown views return an error component rather than failing the hub connection
 
+Most view groups publish only after the read-model sequence advances. View groups that include `throughput` publish on the normal view interval even when the read model is caught up, because zero-activity buckets are still meaningful chart data and need to advance the visible time window.
+
 Stop watching a view when the page no longer needs live updates.
 
 ```csharp
@@ -192,7 +267,7 @@ await connection.InvokeAsync("UnwatchView", "overview", (string?)null);
 
 ## Diagnostics View Updates
 
-System health chrome can subscribe to the `diagnostics` view without adding diagnostics data to the overview payload. The default diagnostics publish interval is 250ms and only active diagnostics view groups are published.
+System health chrome can subscribe to the `diagnostics` view without adding diagnostics data to the overview payload. The default diagnostics publish interval is 250ms and only active diagnostics view groups are published. See [Work Diagnostics](work-diagnostics.md) for field meanings and warning guidance.
 
 ```csharp
 await connection.InvokeAsync(
@@ -248,8 +323,48 @@ Task WatchWorker(string workerId, string? systemName = null);
 Task UnwatchWorker(string workerId, string? systemName = null);
 Task WatchView(string viewName, WorkViewCriteria? criteria = null, string? systemName = null);
 Task UnwatchView(string viewName, string? systemName = null);
+Task WatchEvents(WorkableRealtimeEventCriteria? criteria = null, string? systemName = null);
+Task UnwatchEvents(WorkableRealtimeEventCriteria? criteria = null, string? systemName = null);
 Task WatchSystem(string? systemName = null);
 Task UnwatchSystem(string? systemName = null);
 ```
 
-`WatchSystem` receives all realtime worker events for the selected system through the same `workable.event` client method.
+`WatchSystem` receives all realtime worker events for the selected system through the same `workable.event` and `workable.events` client methods.
+
+## Admin Event Viewer
+
+The Workable admin UI includes an event viewer in the system tools menu near the notification tray. It is intended for validating event shape, watching filtered event streams, and inspecting realtime traffic during performance work.
+
+The event viewer can:
+
+- enable or disable capture while the window is open
+- keep a bounded local list of received SignalR batches
+- clear captured batches
+- filter by multiple event types
+- filter by one or more definitions
+- filter by subject, concurrency key, identifier, or any key with a type/value pair
+- inspect colored JSON for one selected event
+- show batched events as selectable rows while preserving batch metadata
+- navigate the selected event with the keyboard
+- resize the batch/event/JSON workspace, collapse the batch and filter panes, compact the window, or maximize it
+
+The viewer only subscribes while it is open, capture is enabled, and at least one event type is selected. It starts with no event types selected so opening the tool does not accidentally subscribe to the full event stream. Closing the viewer or disabling capture removes the SignalR event subscription.
+
+Filters are sent to the server as SignalR criteria, so filtered-out events do not need to be sent to the browser and can often be skipped before payload construction. The catalog filter is navigational: category rows move through the catalog tree, and definition rows must be checked explicitly. Key filters are matched against subject, concurrency key, identifiers, or any key when the key kind is omitted.
+
+The left pane shows received SignalR messages. A `workable.event` message appears as a single-event batch, and a `workable.events` message appears as one batch row. Selecting a batch shows its events in a table above the JSON view. Selecting a row shows that individual event's JSON. Large arrays in the JSON viewer are capped in the expanded display so event inspection remains usable during large bursts.
+
+## Admin Realtime Payload Viewer
+
+The system tools menu also includes a realtime payload viewer for component-view traffic. It is separate from the worker event viewer.
+
+The payload viewer can:
+
+- capture only while its floating window is open and capture is enabled
+- keep a bounded local list of received component-view messages
+- clear captured messages
+- filter the local message list by realtime subscription source
+- inspect colored JSON for overview and diagnostics component-view payloads
+- collapse the message list, collapse JSON to the component level, compact the window, or maximize it
+
+This tool is for validating the `workable.view` payloads produced by overview and diagnostics subscriptions. It does not create worker event subscriptions and does not affect the event viewer's filters.

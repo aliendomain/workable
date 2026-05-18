@@ -5,17 +5,29 @@ import {
   Activity,
   Bell,
   Boxes,
+  ChevronLeft,
   ChevronRight,
   CircleAlert,
   Clock3,
+  FileCode2,
+  FileJson,
+  Folder,
+  Home,
   Loader2,
+  Maximize2,
+  Minimize2,
   Plus,
   RefreshCw,
   RotateCcw,
+  Rows2,
+  Rows4,
   Settings,
+  Wrench,
   Workflow,
+  X,
 } from "lucide-react";
-import { Fragment, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, type KeyboardEvent, type PointerEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { Button } from "@/components/ui/button";
 import {
   Popover,
@@ -45,7 +57,10 @@ import {
 } from "@/components/workable/console/query-screens";
 import {
   OverviewView,
+  JsonValue,
+  type RealtimeEventMessage,
   useWorkableRealtimeView,
+  useWorkableRealtimeEvents,
   type RealtimeViewLoadable,
 } from "@/components/workable/console/overview-screen";
 import {
@@ -75,7 +90,12 @@ import {
   type WorkCompletionStatus,
   type WorkComponentQueryResult,
   type WorkComponentShape,
+  type WorkDefinition,
+  type WorkKeyKind,
   type WorkQueueDiagnosticsCompactComponent,
+  type WorkableRealtimeEvent,
+  type WorkableRealtimeEventKeyCriteria,
+  type WorkableRealtimeEventCriteria,
   type WorkReadModelDiagnosticsCompactComponent,
   type WorkReadModelDiagnosticsDetailedComponent,
   type WorkRetentionDiagnosticsCompactComponent,
@@ -233,6 +253,25 @@ const initialRefreshTokens: Record<View, number> = {
 };
 const viewContentOffsetClass = "pt-2";
 const readModelLagWarningThreshold = 100;
+const eventViewerEventTypes = [
+  "worker.queued",
+  "worker.started",
+  "worker.completed",
+  "worker.failed",
+  "worker.canceled",
+  "worker.cancel",
+  "worker.pause",
+  "worker.start",
+  "worker.push",
+  "worker.waiting",
+  "worker.retrying",
+  "worker.iteration.completed",
+  "worker.iteration.failed",
+  "worker.recurrence.circuit_opened",
+  "worker.reconfigured",
+  "worker.purge",
+  "worker.log",
+] as const;
 
 export function WorkableConsole() {
   const initialConsoleState = useMemo(() => createDefaultConsoleStorage(), []);
@@ -259,6 +298,15 @@ export function WorkableConsole() {
   const [realtimePayloadCaptureEnabled, setRealtimePayloadCaptureEnabled] = useState(true);
   const [realtimePayloadMaxMessages, setRealtimePayloadMaxMessages] = useState(100);
   const [realtimePayloadOpen, setRealtimePayloadOpen] = useState(false);
+  const [eventViewerCaptureEnabled, setEventViewerCaptureEnabled] = useState(true);
+  const [eventViewerMaxMessages, setEventViewerMaxMessages] = useState(100);
+  const [eventViewerOpen, setEventViewerOpen] = useState(false);
+  const [eventViewerDefinitions, setEventViewerDefinitions] = useState<WorkDefinition[]>([]);
+  const [eventViewerDefinitionsLoading, setEventViewerDefinitionsLoading] = useState(false);
+  const [eventViewerDefinitionError, setEventViewerDefinitionError] = useState<string>();
+  const [selectedEventViewerDefinitionIds, setSelectedEventViewerDefinitionIds] = useState<string[]>([]);
+  const [selectedEventViewerEventTypes, setSelectedEventViewerEventTypes] = useState<string[]>([]);
+  const [selectedEventViewerKeys, setSelectedEventViewerKeys] = useState<WorkableRealtimeEventKeyCriteria[]>([]);
   const [refreshTokens, setRefreshTokens] = useState<Record<View, number>>(initialRefreshTokens);
   const [selectedDefinitionId, setSelectedDefinitionId] = useState<string | null>(null);
   const [selectedWorkerId, setSelectedWorkerId] = useState<string | null>(null);
@@ -456,6 +504,78 @@ export function WorkableConsole() {
       retentionDiagnosticsDetail.messages,
     ]
   );
+  const eventViewerCriteria = useMemo<WorkableRealtimeEventCriteria>(
+    () => ({
+      definitionIds: selectedEventViewerDefinitionIds.length > 0
+        ? selectedEventViewerDefinitionIds
+        : null,
+      eventTypes: selectedEventViewerEventTypes.length > 0
+        ? selectedEventViewerEventTypes
+        : null,
+      keys: selectedEventViewerKeys.length > 0
+        ? selectedEventViewerKeys
+        : null,
+    }),
+    [selectedEventViewerDefinitionIds, selectedEventViewerEventTypes, selectedEventViewerKeys]
+  );
+  const realtimeEvents = useWorkableRealtimeEvents(
+    connection,
+    eventViewerCriteria,
+    Boolean(connection?.realtimeHubPath) &&
+      eventViewerOpen &&
+      eventViewerCaptureEnabled &&
+      selectedEventViewerEventTypes.length > 0,
+    eventViewerMaxMessages
+  );
+  const toggleEventViewerEventType = useCallback((eventType: string) => {
+    setSelectedEventViewerEventTypes((current) =>
+      current.includes(eventType)
+        ? current.filter((candidate) => candidate !== eventType)
+        : [...current, eventType].sort((left, right) => left.localeCompare(right))
+    );
+  }, []);
+  const toggleEventViewerDefinition = useCallback((definitionId: string) => {
+    setSelectedEventViewerDefinitionIds((current) =>
+      current.includes(definitionId)
+        ? current.filter((candidate) => candidate !== definitionId)
+        : [...current, definitionId].sort((left, right) => left.localeCompare(right))
+    );
+  }, []);
+  const addEventViewerKey = useCallback((key: WorkableRealtimeEventKeyCriteria) => {
+    setSelectedEventViewerKeys((current) => {
+      const normalized = {
+        kind: key.kind ?? null,
+        type: key.type.trim(),
+        value: key.value.trim(),
+      };
+      if (!normalized.type || !normalized.value) {
+        return current;
+      }
+
+      if (current.some((candidate) =>
+        (candidate.kind ?? null) === normalized.kind &&
+        candidate.type === normalized.type &&
+        candidate.value === normalized.value
+      )) {
+        return current;
+      }
+
+      return [...current, normalized].sort((left, right) =>
+        `${left.kind ?? ""}:${left.type}:${left.value}`.localeCompare(`${right.kind ?? ""}:${right.type}:${right.value}`)
+      );
+    });
+  }, []);
+  const removeEventViewerKey = useCallback((key: WorkableRealtimeEventKeyCriteria) => {
+    setSelectedEventViewerKeys((current) =>
+      current.filter((candidate) =>
+        !(
+          (candidate.kind ?? null) === (key.kind ?? null) &&
+          candidate.type === key.type &&
+          candidate.value === key.value
+        )
+      )
+    );
+  }, []);
   const clearDiagnosticsAlertMessages = diagnosticsAlert.clearMessages;
   const clearDiagnosticsTrayMessages = diagnosticsTray.clearMessages;
   const clearReadModelDiagnosticsDetailMessages = readModelDiagnosticsDetail.clearMessages;
@@ -510,6 +630,39 @@ export function WorkableConsole() {
       window.localStorage.setItem(STORAGE_KEY, JSON.stringify(consoleState));
     }
   }, [consoleState, hasMounted]);
+
+  useEffect(() => {
+    if (!connection || !eventViewerOpen) {
+      return;
+    }
+
+    let canceled = false;
+    queueMicrotask(() => {
+      if (!canceled) {
+        setEventViewerDefinitionsLoading(true);
+        setEventViewerDefinitionError(undefined);
+      }
+    });
+    workableFetch<WorkDefinition[]>(connection, "definitions")
+      .then((definitions) => {
+        if (!canceled) {
+          setEventViewerDefinitions(definitions);
+          setEventViewerDefinitionsLoading(false);
+        }
+      })
+      .catch((error) => {
+        if (!canceled) {
+          setEventViewerDefinitionError(
+            error instanceof Error ? error.message : "Definitions could not be loaded."
+          );
+          setEventViewerDefinitionsLoading(false);
+        }
+      });
+
+    return () => {
+      canceled = true;
+    };
+  }, [connection, eventViewerOpen]);
 
   const currentNavigation = useCallback(
     (): NavigationEntry => ({
@@ -1272,21 +1425,54 @@ export function WorkableConsole() {
                       onOpenView={openView}
                       system={activeSystem}
                       systemNotifications={(
-                        <SystemNotificationTray
-                          acknowledgedRejectedWorkCount={acknowledgedRejectedWorkCount}
-                          alertDiagnostics={diagnosticsAlert}
-                          onAcknowledgeQueueRejections={acknowledgeQueueRejections}
-                          onOpenChange={handleSystemNotificationOpenChange}
-                          onReadModelExpandedChange={setReadModelDiagnosticsExpanded}
-                          onRetentionExpandedChange={setRetentionDiagnosticsExpanded}
-                          open={systemNotificationOpen}
-                          readModelDetailDiagnostics={readModelDiagnosticsDetail}
-                          readModelExpanded={readModelDiagnosticsExpanded}
-                          retentionDetailDiagnostics={retentionDiagnosticsDetail}
-                          retentionExpanded={retentionDiagnosticsExpanded}
-                          systemName={activeSystem.name}
-                          trayDiagnostics={diagnosticsTray}
-                        />
+                        <div className="flex items-center gap-1">
+                          <SystemToolsMenu
+                            eventViewerOpen={eventViewerOpen}
+                            onEventViewerOpenChange={setEventViewerOpen}
+                            onRealtimePayloadOpenChange={setRealtimePayloadOpen}
+                            realtimePayloadOpen={realtimePayloadOpen}
+                          />
+                          <SystemNotificationTray
+                            acknowledgedRejectedWorkCount={acknowledgedRejectedWorkCount}
+                            alertDiagnostics={diagnosticsAlert}
+                            onAcknowledgeQueueRejections={acknowledgeQueueRejections}
+                            onOpenChange={handleSystemNotificationOpenChange}
+                            onReadModelExpandedChange={setReadModelDiagnosticsExpanded}
+                            onRetentionExpandedChange={setRetentionDiagnosticsExpanded}
+                            open={systemNotificationOpen}
+                            readModelDetailDiagnostics={readModelDiagnosticsDetail}
+                            readModelExpanded={readModelDiagnosticsExpanded}
+                            retentionDetailDiagnostics={retentionDiagnosticsDetail}
+                            retentionExpanded={retentionDiagnosticsExpanded}
+                            systemName={activeSystem.name}
+                            trayDiagnostics={diagnosticsTray}
+                          />
+                          <EventViewerWindow
+                            captureEnabled={eventViewerCaptureEnabled}
+                            connectionState={realtimeEvents.connectionState}
+                            definitionError={eventViewerDefinitionError}
+                            definitions={eventViewerDefinitions}
+                            definitionsLoading={eventViewerDefinitionsLoading}
+                            enabled={realtimeEvents.enabled}
+                            eventTypes={eventViewerEventTypes}
+                            error={realtimeEvents.error}
+                            hubUrl={realtimeEvents.hubUrl ?? null}
+                            maxMessages={eventViewerMaxMessages}
+                            messages={realtimeEvents.messages}
+                            onAddKey={addEventViewerKey}
+                            onCaptureEnabledChange={setEventViewerCaptureEnabled}
+                            onClearMessages={realtimeEvents.clearMessages}
+                            onDefinitionToggle={toggleEventViewerDefinition}
+                            onEventTypeToggle={toggleEventViewerEventType}
+                            onMaxMessagesChange={setEventViewerMaxMessages}
+                            onOpenChange={setEventViewerOpen}
+                            onRemoveKey={removeEventViewerKey}
+                            open={eventViewerOpen}
+                            selectedDefinitionIds={selectedEventViewerDefinitionIds}
+                            selectedEventTypes={selectedEventViewerEventTypes}
+                            selectedKeys={selectedEventViewerKeys}
+                          />
+                        </div>
                       )}
                       view={view}
                       workerId={selectedWorkerId}
@@ -1323,7 +1509,7 @@ export function WorkableConsole() {
                         overviewScope={activeOverviewScope}
                         refreshToken={refreshTokens.overview}
                         onOpenWorker={openWorker}
-                        renderToolbar={({ loading, realtimePayloadControl, refreshing }) => (
+                        renderToolbar={({ loading, refreshing }) => (
                           <ViewActionLane>
                             <OverviewCatalogFilter
                               connection={connection}
@@ -1369,7 +1555,6 @@ export function WorkableConsole() {
                             <OverviewPanelSettings
                               hiddenPanelIds={consoleState.overviewHiddenPanels}
                               onPanelVisibilityChange={setOverviewPanelVisible}
-                              realtimePayloadControl={realtimePayloadControl}
                               onResetUi={resetOverviewUiToDefaults}
                             />
                           </ViewActionLane>
@@ -1586,6 +1771,914 @@ const overviewPanelOptions: Array<{
 ];
 
 type SystemDiagnosticsViewState = RealtimeViewLoadable<WorkComponentQueryResult>;
+
+function SystemToolsMenu({
+  eventViewerOpen,
+  onEventViewerOpenChange,
+  onRealtimePayloadOpenChange,
+  realtimePayloadOpen,
+}: {
+  eventViewerOpen: boolean;
+  onEventViewerOpenChange: (open: boolean) => void;
+  onRealtimePayloadOpenChange: (open: boolean) => void;
+  realtimePayloadOpen: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <Tooltip delayDuration={500} disableHoverableContent>
+        <TooltipTrigger asChild>
+          <PopoverTrigger asChild>
+            <Button
+              aria-label="System tools"
+              className="text-muted-foreground hover:bg-transparent hover:text-foreground dark:hover:bg-transparent"
+              size="icon-sm"
+              variant="ghost"
+            >
+              <Wrench className="size-4" />
+            </Button>
+          </PopoverTrigger>
+        </TooltipTrigger>
+        <TooltipContent side="bottom" sideOffset={6}>
+          System tools
+        </TooltipContent>
+      </Tooltip>
+      <PopoverContent align="end" className="w-56 p-1">
+        <button
+          className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm hover:bg-accent hover:text-accent-foreground"
+          onClick={() => {
+            onEventViewerOpenChange(!eventViewerOpen);
+            setOpen(false);
+          }}
+          type="button"
+        >
+          <FileJson className="size-4" />
+          <span className="flex-1">Event viewer</span>
+          <span className="text-muted-foreground text-xs">{eventViewerOpen ? "Open" : ""}</span>
+        </button>
+        <button
+          className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm hover:bg-accent hover:text-accent-foreground"
+          onClick={() => {
+            onRealtimePayloadOpenChange(!realtimePayloadOpen);
+            setOpen(false);
+          }}
+          type="button"
+        >
+          <Rows4 className="size-4" />
+          <span className="flex-1">Realtime payloads</span>
+          <span className="text-muted-foreground text-xs">{realtimePayloadOpen ? "Open" : ""}</span>
+        </button>
+      </PopoverContent>
+    </Popover>
+  );
+}
+
+function EventViewerWindow({
+  captureEnabled,
+  connectionState,
+  definitionError,
+  definitions,
+  definitionsLoading,
+  enabled,
+  error,
+  eventTypes,
+  hubUrl,
+  maxMessages,
+  messages,
+  onAddKey,
+  onCaptureEnabledChange,
+  onClearMessages,
+  onDefinitionToggle,
+  onEventTypeToggle,
+  onMaxMessagesChange,
+  onOpenChange,
+  onRemoveKey,
+  open,
+  selectedDefinitionIds,
+  selectedEventTypes,
+  selectedKeys,
+}: {
+  captureEnabled: boolean;
+  connectionState: string;
+  definitionError?: string;
+  definitions: WorkDefinition[];
+  definitionsLoading: boolean;
+  enabled: boolean;
+  error?: string;
+  eventTypes: readonly string[];
+  hubUrl: string | null;
+  maxMessages: number;
+  messages: RealtimeEventMessage[];
+  onAddKey: (key: WorkableRealtimeEventKeyCriteria) => void;
+  onCaptureEnabledChange: (enabled: boolean) => void;
+  onClearMessages: () => void;
+  onDefinitionToggle: (definitionId: string) => void;
+  onEventTypeToggle: (eventType: string) => void;
+  onMaxMessagesChange: (maxMessages: number) => void;
+  onOpenChange: (open: boolean) => void;
+  onRemoveKey: (key: WorkableRealtimeEventKeyCriteria) => void;
+  open: boolean;
+  selectedDefinitionIds: string[];
+  selectedEventTypes: string[];
+  selectedKeys: WorkableRealtimeEventKeyCriteria[];
+}) {
+  const [position, setPosition] = useState({ x: 0, y: 0 });
+  const [catalogPath, setCatalogPath] = useState("");
+  const [windowSize, setWindowSize] = useState<"compact" | "large">("large");
+  const [eventTableHeight, setEventTableHeight] = useState(208);
+  const [filtersCollapsed, setFiltersCollapsed] = useState(false);
+  const [maximized, setMaximized] = useState(false);
+  const [messagesCollapsed, setMessagesCollapsed] = useState(false);
+  const [selectedEventIndex, setSelectedEventIndex] = useState(0);
+  const [selectedMessageId, setSelectedMessageId] = useState<string | null>(null);
+  const [keyKind, setKeyKind] = useState<WorkKeyKind | "Any">("Any");
+  const [keyType, setKeyType] = useState("");
+  const [keyValue, setKeyValue] = useState("");
+  const dragRef = useRef<{
+    originX: number;
+    originY: number;
+    startX: number;
+    startY: number;
+  } | null>(null);
+  const eventRowRefs = useRef<Array<HTMLButtonElement | null>>([]);
+  const eventTableResizeRef = useRef<{
+    startHeight: number;
+    startY: number;
+  } | null>(null);
+  const panelRef = useRef<HTMLDivElement | null>(null);
+  const wasOpenRef = useRef(false);
+  const selectedMessage = messages.find((message) => message.id === selectedMessageId) ?? messages[0];
+  const selectedEvent = selectedMessage?.events[Math.min(selectedEventIndex, selectedMessage.events.length - 1)];
+  const selectedEventIndexInBounds = selectedEvent
+    ? Math.min(selectedEventIndex, (selectedMessage?.events.length ?? 1) - 1)
+    : 0;
+  const isCompactWindow = windowSize === "compact";
+  const selectedFilterText = formatEventViewerFilterSummary(
+    selectedEventTypes.length,
+    selectedDefinitionIds.length,
+    selectedKeys.length
+  );
+  const catalogLevel = useMemo(
+    () => createEventViewerCatalogLevel(definitions, catalogPath),
+    [catalogPath, definitions]
+  );
+  const catalogSegments = splitCatalogPath(catalogPath);
+  const catalogLabel = catalogSegments.at(-1) ?? "Catalog";
+  const canGoBackInCatalog = catalogSegments.length > 0;
+  const selectCatalogCategory = (category: string) => {
+    setCatalogPath(category);
+  };
+  const goBackInCatalog = () => {
+    setCatalogPath(catalogSegments.slice(0, -1).join(":"));
+  };
+  const selectedMessageBatchText = selectedMessage?.batchSize
+    ? `Batch ${selectedMessage.batchSize}`
+    : "Single";
+  const hasEventTable = Boolean(selectedMessage && selectedMessage.events.length > 1);
+  const addKey = () => {
+    const type = keyType.trim();
+    const value = keyValue.trim();
+    if (!type || !value) {
+      return;
+    }
+
+    onAddKey({
+      kind: keyKind === "Any" ? null : keyKind,
+      type,
+      value,
+    });
+    setKeyType("");
+    setKeyValue("");
+  };
+
+  useEffect(() => {
+    if (open && !wasOpenRef.current) {
+      setPosition(getCenteredEventViewerPosition(windowSize));
+    }
+    wasOpenRef.current = open;
+  }, [open, windowSize]);
+
+  useEffect(() => {
+    const row = eventRowRefs.current[selectedEventIndexInBounds];
+    row?.scrollIntoView({ block: "nearest" });
+    if (document.activeElement && eventRowRefs.current.includes(document.activeElement as HTMLButtonElement)) {
+      row?.focus();
+    }
+  }, [selectedEventIndexInBounds, selectedMessage?.id]);
+
+  const toggleWindowSize = () => {
+    const nextSize = isCompactWindow ? "large" : "compact";
+    setMaximized(false);
+    setWindowSize(nextSize);
+    setPosition(getCenteredEventViewerPosition(nextSize));
+  };
+
+  const toggleMaximized = () => {
+    setMaximized((current) => !current);
+  };
+
+  const startDrag = (event: PointerEvent<HTMLDivElement>) => {
+    event.currentTarget.setPointerCapture(event.pointerId);
+    dragRef.current = {
+      originX: position.x,
+      originY: position.y,
+      startX: event.clientX,
+      startY: event.clientY,
+    };
+  };
+
+  const drag = (event: PointerEvent<HTMLDivElement>) => {
+    if (!dragRef.current || maximized) {
+      return;
+    }
+
+    const nextX = dragRef.current.originX + event.clientX - dragRef.current.startX;
+    const nextY = dragRef.current.originY + event.clientY - dragRef.current.startY;
+    const viewportWidth = window.visualViewport?.width ?? window.innerWidth;
+    const viewportHeight = window.visualViewport?.height ?? window.innerHeight;
+    const panelWidth = panelRef.current?.offsetWidth ?? 0;
+    const panelHeight = panelRef.current?.offsetHeight ?? 0;
+
+    setPosition({
+      x: clampFloatingWindowPosition(nextX, viewportWidth, panelWidth),
+      y: clampFloatingWindowPosition(nextY, viewportHeight, panelHeight),
+    });
+  };
+
+  const stopDrag = (event: PointerEvent<HTMLDivElement>) => {
+    dragRef.current = null;
+    event.currentTarget.releasePointerCapture(event.pointerId);
+  };
+
+  const startEventTableResize = (event: PointerEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    eventTableResizeRef.current = {
+      startHeight: eventTableHeight,
+      startY: event.clientY,
+    };
+  };
+
+  const resizeEventTable = (event: PointerEvent<HTMLDivElement>) => {
+    if (!eventTableResizeRef.current) {
+      return;
+    }
+
+    const nextHeight = eventTableResizeRef.current.startHeight + event.clientY - eventTableResizeRef.current.startY;
+    setEventTableHeight(clampEventTableHeight(nextHeight));
+  };
+
+  const stopEventTableResize = (event: PointerEvent<HTMLDivElement>) => {
+    eventTableResizeRef.current = null;
+    event.currentTarget.releasePointerCapture(event.pointerId);
+  };
+
+  const moveSelectedEvent = (delta: number) => {
+    if (!selectedMessage) {
+      return;
+    }
+
+    setSelectedEventIndex((current) =>
+      Math.max(0, Math.min(selectedMessage.events.length - 1, current + delta))
+    );
+  };
+
+  const handleEventRowKeyDown = (event: KeyboardEvent<HTMLButtonElement>) => {
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      moveSelectedEvent(1);
+    } else if (event.key === "ArrowUp") {
+      event.preventDefault();
+      moveSelectedEvent(-1);
+    }
+  };
+
+  return (
+    <>
+      {open && typeof document !== "undefined"
+        ? createPortal(
+          <div
+            className={`fixed z-50 grid resize grid-rows-[auto_minmax(0,1fr)] overflow-hidden rounded-lg border bg-popover text-sm text-popover-foreground shadow-2xl ring-1 ring-foreground/10 ${
+              maximized ? "" : isCompactWindow ? "min-h-[28rem] min-w-[42rem]" : "min-h-[32rem] min-w-[48rem]"
+            }`}
+            ref={panelRef}
+            style={{
+              height: maximized
+                ? "calc(100vh - 16px)"
+                : isCompactWindow
+                  ? "min(82vh, 32rem)"
+                  : "min(88vh, 56rem)",
+              left: maximized ? 8 : position.x,
+              top: maximized ? 8 : position.y,
+              width: maximized
+                ? "calc(100vw - 16px)"
+                : isCompactWindow
+                  ? "min(96vw, 48rem)"
+                  : "min(96vw, 96rem)",
+            }}
+          >
+            <div
+              className={`flex items-center justify-between gap-3 border-b px-4 py-3 select-none ${maximized ? "" : "cursor-move"}`}
+              onPointerDown={startDrag}
+              onPointerMove={drag}
+              onPointerUp={stopDrag}
+            >
+              <div className="min-w-0">
+                <div className="font-medium text-base">Event viewer</div>
+                <div className="truncate text-muted-foreground text-xs">
+                  {enabled ? connectionState : "disabled"} - {messages.length}/{maxMessages} batches - {selectedFilterText}
+                </div>
+              </div>
+              <div className="flex shrink-0 items-center gap-1">
+                <Button
+                  aria-label={isCompactWindow ? "Expand event viewer" : "Compact event viewer"}
+                  className="cursor-pointer"
+                  onClick={toggleWindowSize}
+                  onPointerDown={(event) => event.stopPropagation()}
+                  size="icon-sm"
+                  variant="ghost"
+                >
+                  {isCompactWindow ? <Rows4 className="size-4" /> : <Rows2 className="size-4" />}
+                </Button>
+                <Button
+                  aria-label={maximized ? "Restore event viewer" : "Maximize event viewer"}
+                  className="cursor-pointer"
+                  onClick={toggleMaximized}
+                  onPointerDown={(event) => event.stopPropagation()}
+                  size="icon-sm"
+                  variant="ghost"
+                >
+                  {maximized ? <Minimize2 className="size-4" /> : <Maximize2 className="size-4" />}
+                </Button>
+                <Button
+                  aria-label="Close event viewer"
+                  className="cursor-pointer"
+                  onClick={() => onOpenChange(false)}
+                  onPointerDown={(event) => event.stopPropagation()}
+                  size="icon-sm"
+                  variant="ghost"
+                >
+                  <X className="size-4" />
+                </Button>
+              </div>
+            </div>
+            <div className="grid min-h-0 grid-rows-[auto_minmax(0,1fr)] gap-3 overflow-hidden p-3">
+              <div className="grid gap-2 rounded-md border px-3 py-2 xl:grid-cols-[minmax(0,1fr)_auto]">
+                <div className="flex min-w-0 flex-wrap items-center gap-x-4 gap-y-1 text-xs">
+                  <EventInlineMetric label="Received" value={selectedMessage ? formatEventViewerTime(selectedMessage.receivedAt) : "No events"} />
+                  <EventInlineMetric label="Batch" value={selectedMessage ? selectedMessageBatchText : "-"} />
+                  <EventInlineMetric label="Type" value={selectedEvent?.eventType ?? "-"} />
+                  <EventInlineMetric label="Worker" value={selectedEvent?.workerId?.value ?? "-"} />
+                  <EventInlineMetric label="Hub" value={hubUrl ?? "-"} wide />
+                </div>
+                <div className="flex flex-wrap items-center gap-3">
+                  <Button
+                    className="h-8 px-2 text-xs"
+                    disabled={messages.length === 0}
+                    onClick={() => {
+                      setSelectedMessageId(null);
+                      setSelectedEventIndex(0);
+                      onClearMessages();
+                    }}
+                    size="sm"
+                    variant="ghost"
+                  >
+                    Clear
+                  </Button>
+                  <label className="flex items-center gap-2 text-muted-foreground">
+                    <input
+                      checked={captureEnabled}
+                      className="size-4 accent-primary"
+                      onChange={(event) => onCaptureEnabledChange(event.currentTarget.checked)}
+                      type="checkbox"
+                    />
+                    <span>Capture incoming events</span>
+                  </label>
+                  <label className="flex items-center gap-2">
+                    <span className="text-muted-foreground">Max</span>
+                    <input
+                      className="h-8 w-20 rounded-md border bg-background px-2 font-mono text-foreground"
+                      max={1000}
+                      min={1}
+                      onChange={(event) =>
+                        onMaxMessagesChange(normalizeEventViewerMaxMessages(event.currentTarget.value))
+                      }
+                      type="number"
+                      value={maxMessages}
+                    />
+                  </label>
+                </div>
+                {error && (
+                  <div className="col-span-full rounded-md border border-red-500/30 bg-red-500/10 px-2 py-1.5 text-red-200 text-xs">
+                    {error}
+                  </div>
+                )}
+              </div>
+              <div
+                className={`grid min-h-0 gap-3 ${
+                  messagesCollapsed && filtersCollapsed
+                    ? "md:grid-cols-[2.75rem_2.75rem_minmax(0,1fr)]"
+                    : messagesCollapsed
+                      ? "md:grid-cols-[2.75rem_minmax(20rem,22rem)_minmax(0,1fr)]"
+                      : filtersCollapsed
+                        ? "md:grid-cols-[22rem_2.75rem_minmax(0,1fr)]"
+                        : "md:grid-cols-[22rem_minmax(20rem,22rem)_minmax(0,1fr)]"
+                }`}
+              >
+                <div className="grid min-h-0 grid-rows-[auto_minmax(0,1fr)] overflow-hidden rounded-md border">
+                  <div className="flex items-center justify-between gap-2 border-b px-2 py-1.5">
+                    {!messagesCollapsed && (
+                      <div className="font-medium text-muted-foreground text-xs">Batches</div>
+                    )}
+                    <Button
+                      aria-label={messagesCollapsed ? "Show events" : "Collapse events"}
+                      className="ml-auto"
+                      onClick={() => setMessagesCollapsed((current) => !current)}
+                      size="icon-sm"
+                      variant="ghost"
+                    >
+                      <ChevronRight
+                        className={`size-4 transition-transform ${
+                          messagesCollapsed ? "" : "rotate-180"
+                        }`}
+                      />
+                    </Button>
+                  </div>
+                  {messagesCollapsed ? (
+                    <div className="flex min-h-0 items-start justify-center overflow-hidden py-2">
+                      <div className="font-mono text-muted-foreground text-xs [writing-mode:vertical-rl]">
+                        {messages.length}
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="min-h-0 overflow-auto p-2">
+                      {messages.length === 0 ? (
+                        <div className="p-3 text-muted-foreground text-sm">
+                          {selectedEventTypes.length === 0
+                            ? "Select one or more event types to start capture."
+                            : "Waiting for realtime events."}
+                        </div>
+                      ) : (
+                        <div className="space-y-1">
+                          {messages.map((message) => (
+                            <button
+                              className={`grid w-full gap-1 rounded-md px-2 py-2 text-left text-xs transition-colors ${
+                                message.id === selectedMessage?.id
+                                  ? "bg-accent text-accent-foreground"
+                                  : "hover:bg-accent/50"
+                              }`}
+                              key={message.id}
+                              onClick={() => {
+                                setSelectedMessageId(message.id);
+                                setSelectedEventIndex(0);
+                              }}
+                              type="button"
+                            >
+                              <span className="flex items-center justify-between gap-2">
+                                <span className="truncate font-mono font-medium">
+                                  {message.batchSize ? `Batch of ${message.batchSize}` : "Single event"}
+                                </span>
+                                <span className="font-mono text-muted-foreground">
+                                  {message.bytesEstimated ? ">=" : ""}{message.bytes.toLocaleString()}b
+                                </span>
+                              </span>
+                              <span className="truncate text-muted-foreground">
+                                {formatEventBatchTypeSummary(message.eventTypes)}
+                              </span>
+                              <span className="truncate font-mono text-muted-foreground">
+                                {formatEventViewerTime(message.receivedAt)}
+                              </span>
+                              <span className="truncate text-muted-foreground">
+                                {formatEventBatchDefinitionSummary(message.events)}
+                              </span>
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+                <div className="grid min-h-0 grid-rows-[auto_minmax(0,1fr)] overflow-hidden rounded-md border">
+                  <div className="flex items-center justify-between gap-2 border-b px-3 py-2">
+                    {!filtersCollapsed && (
+                      <div className="font-medium text-muted-foreground text-xs">Filters</div>
+                    )}
+                    <Button
+                      aria-label={filtersCollapsed ? "Show filters" : "Collapse filters"}
+                      className="ml-auto"
+                      onClick={() => setFiltersCollapsed((current) => !current)}
+                      size="icon-sm"
+                      variant="ghost"
+                    >
+                      <ChevronRight
+                        className={`size-4 transition-transform ${
+                          filtersCollapsed ? "" : "rotate-180"
+                        }`}
+                      />
+                    </Button>
+                  </div>
+                  {filtersCollapsed ? (
+                    <div className="flex min-h-0 items-start justify-center overflow-hidden py-2">
+                      <div className="font-mono text-muted-foreground text-xs [writing-mode:vertical-rl]">
+                        filters
+                      </div>
+                    </div>
+                  ) : (
+                  <div className="min-h-0 space-y-3 overflow-auto overflow-x-hidden p-2">
+                    <div className="space-y-1">
+                      <div className="flex items-center justify-between gap-2 px-1">
+                        <div className="font-medium text-muted-foreground text-xs">Event types</div>
+                      </div>
+                      {eventTypes.map((eventType) => (
+                        <label
+                          className="flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-xs hover:bg-accent/50"
+                          key={eventType}
+                        >
+                          <input
+                            checked={selectedEventTypes.includes(eventType)}
+                            className="size-4 accent-primary"
+                            onChange={() => onEventTypeToggle(eventType)}
+                            type="checkbox"
+                          />
+                          <span className={`rounded-full px-1.5 py-0.5 font-mono ${eventTypeTone(eventType)}`}>
+                            {eventType}
+                          </span>
+                        </label>
+                      ))}
+                    </div>
+                    <div className="space-y-1 border-t pt-3">
+                      <div className="flex items-center justify-between gap-2 px-1">
+                        <div className="font-medium text-muted-foreground text-xs">Catalog</div>
+                      </div>
+                      {definitionError && (
+                        <div className="rounded-md border border-red-500/30 bg-red-500/10 px-2 py-1.5 text-red-200 text-xs">
+                          {definitionError}
+                        </div>
+                      )}
+                      {definitionsLoading && definitions.length === 0 ? (
+                        <div className="px-2 py-1.5 text-muted-foreground text-xs">Loading definitions.</div>
+                      ) : definitions.length === 0 ? (
+                        <div className="px-2 py-1.5 text-muted-foreground text-xs">No definitions loaded.</div>
+                      ) : (
+                        <div className="overflow-hidden rounded-md border">
+                          <div className="flex h-9 min-w-0 items-center gap-1 border-b px-2">
+                            <button
+                              aria-label={canGoBackInCatalog ? "Back to parent category" : "Catalog root"}
+                              className="flex size-7 shrink-0 items-center justify-center rounded-md hover:bg-accent hover:text-accent-foreground disabled:pointer-events-none disabled:opacity-40"
+                              disabled={!canGoBackInCatalog}
+                              onClick={goBackInCatalog}
+                              type="button"
+                            >
+                              {canGoBackInCatalog ? <ChevronLeft className="size-4" /> : <Home className="size-4" />}
+                            </button>
+                            <span className="min-w-0 flex-1 truncate font-medium text-xs">
+                              {catalogLabel}
+                            </span>
+                            <span className="shrink-0 text-muted-foreground text-[11px] tabular-nums">
+                              {selectedDefinitionIds.length}
+                            </span>
+                          </div>
+                          <div className="py-1">
+                            {catalogLevel.categories.map((category) => (
+                              <button
+                                className="flex h-8 w-full min-w-0 items-center gap-2 px-2 text-left text-xs hover:bg-accent hover:text-accent-foreground"
+                                key={category.path}
+                                onClick={() => selectCatalogCategory(category.path)}
+                                type="button"
+                              >
+                                <Folder className="size-4 shrink-0 text-muted-foreground" />
+                                <span className="min-w-0 flex-1 truncate">{category.label}</span>
+                                <span className="shrink-0 text-muted-foreground text-[11px] tabular-nums">
+                                  {category.count}
+                                </span>
+                              </button>
+                            ))}
+                            {catalogLevel.definitions.map((definition) => (
+                              <label
+                                className="flex cursor-pointer items-start gap-2 px-2 py-1.5 text-xs hover:bg-accent/50"
+                                key={definition.id.value}
+                              >
+                                <input
+                                  checked={selectedDefinitionIds.includes(definition.id.value)}
+                                  className="mt-0.5 size-4 accent-primary"
+                                  onChange={() => onDefinitionToggle(definition.id.value)}
+                                  type="checkbox"
+                                />
+                                <FileCode2 className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
+                                <span className="min-w-0">
+                                  <span className="block truncate font-medium">{definition.name}</span>
+                                  <span className="block truncate font-mono text-muted-foreground">{definition.id.value}</span>
+                                </span>
+                              </label>
+                            ))}
+                            {catalogLevel.categories.length === 0 && catalogLevel.definitions.length === 0 && (
+                              <div className="px-2 py-2 text-muted-foreground text-xs">No catalog entries.</div>
+                            )}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                    <div className="space-y-2 border-t pt-3">
+                      <div className="flex items-center justify-between gap-2 px-1">
+                        <div className="font-medium text-muted-foreground text-xs">Keys</div>
+                      </div>
+                      <div className="grid gap-2">
+                        <select
+                          className="h-8 rounded-md border bg-background px-2 text-xs"
+                          onChange={(event) => setKeyKind(event.currentTarget.value as WorkKeyKind | "Any")}
+                          value={keyKind}
+                        >
+                          <option value="Any">Any key</option>
+                          <option value="Subject">Subject</option>
+                          <option value="ConcurrencyKey">Concurrency key</option>
+                          <option value="Identifier">Identifier</option>
+                        </select>
+                        <input
+                          className="h-8 rounded-md border bg-background px-2 font-mono text-xs"
+                          onChange={(event) => setKeyType(event.currentTarget.value)}
+                          onKeyDown={(event) => {
+                            if (event.key === "Enter") {
+                              addKey();
+                            }
+                          }}
+                          placeholder="type"
+                          value={keyType}
+                        />
+                        <input
+                          className="h-8 rounded-md border bg-background px-2 font-mono text-xs"
+                          onChange={(event) => setKeyValue(event.currentTarget.value)}
+                          onKeyDown={(event) => {
+                            if (event.key === "Enter") {
+                              addKey();
+                            }
+                          }}
+                          placeholder="value"
+                          value={keyValue}
+                        />
+                        <Button className="h-8 text-xs" onClick={addKey} size="sm" variant="secondary">
+                          Add key
+                        </Button>
+                      </div>
+                      {selectedKeys.length > 0 && (
+                        <div className="flex flex-wrap gap-1">
+                          {selectedKeys.map((key) => (
+                            <button
+                              className="rounded-full border bg-muted/40 px-2 py-1 font-mono text-[11px] hover:bg-accent"
+                              key={`${key.kind ?? "Any"}:${key.type}:${key.value}`}
+                              onClick={() => onRemoveKey(key)}
+                              type="button"
+                            >
+                              {(key.kind ?? "Any")}:{key.type}:{key.value}
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                  )}
+                </div>
+                <div className={`grid min-h-0 overflow-hidden rounded-md border ${
+                  hasEventTable
+                    ? "grid-rows-[auto_auto_auto_minmax(0,1fr)]"
+                    : "grid-rows-[auto_minmax(0,1fr)]"
+                }`}>
+                  <div className="flex items-center justify-between gap-2 border-b px-3 py-2">
+                    <div className="font-medium text-muted-foreground text-xs">Event JSON</div>
+                    <div className="min-w-0 truncate font-mono text-muted-foreground text-xs">
+                      {selectedMessage && selectedMessage.events.length > 1
+                        ? `Event ${selectedEventIndexInBounds + 1}/${selectedMessage.events.length}`
+                        : selectedEvent?.eventType ?? "No event selected"}
+                    </div>
+                  </div>
+                  {hasEventTable && selectedMessage && (
+                    <div
+                      className="grid min-h-0 grid-rows-[auto_minmax(0,1fr)] border-b"
+                      style={{ height: eventTableHeight }}
+                    >
+                      <div className="grid grid-cols-[4rem_minmax(8rem,1fr)_minmax(11rem,1.4fr)_minmax(8rem,1fr)] gap-2 border-b bg-muted/30 px-3 py-1.5 font-medium text-muted-foreground text-[11px]">
+                        <span>#</span>
+                        <span>Type</span>
+                        <span>Worker</span>
+                        <span>Definition</span>
+                      </div>
+                      <div className="min-h-0 overflow-auto">
+                        {selectedMessage.events.map((workEvent, index) => (
+                          <button
+                            className={`grid w-full grid-cols-[4rem_minmax(8rem,1fr)_minmax(11rem,1.4fr)_minmax(8rem,1fr)] gap-2 px-3 py-1.5 text-left text-xs ${
+                              index === selectedEventIndexInBounds
+                                ? "bg-accent text-accent-foreground"
+                                : "hover:bg-accent/50"
+                            }`}
+                            key={`${workEvent.eventType}:${workEvent.workerId?.value ?? "system"}:${index}`}
+                            onClick={() => setSelectedEventIndex(index)}
+                            onKeyDown={handleEventRowKeyDown}
+                            ref={(element) => {
+                              eventRowRefs.current[index] = element;
+                            }}
+                            type="button"
+                          >
+                            <span className="font-mono text-muted-foreground">{index + 1}</span>
+                            <span className={`w-fit rounded-full px-1.5 py-0.5 font-mono ${eventTypeTone(workEvent.eventType)}`}>
+                              {workEvent.eventType}
+                            </span>
+                            <span className="truncate font-mono text-muted-foreground">
+                              {workEvent.workerId?.value ?? "-"}
+                            </span>
+                            <span className="truncate font-mono text-muted-foreground">
+                              {workEvent.definitionId?.value ?? "-"}
+                            </span>
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  {hasEventTable && (
+                    <div
+                      aria-label="Resize event table"
+                      className="group flex h-2 cursor-row-resize items-center justify-center border-b bg-muted/20 hover:bg-accent/40"
+                      onPointerDown={startEventTableResize}
+                      onPointerMove={resizeEventTable}
+                      onPointerUp={stopEventTableResize}
+                      role="separator"
+                    >
+                      <div className="h-px w-12 bg-border group-hover:bg-foreground/40" />
+                    </div>
+                  )}
+                  <pre className="min-h-0 overflow-auto whitespace-pre-wrap break-words bg-muted/30 p-3 font-mono text-xs leading-relaxed">
+                    {selectedEvent ? (
+                      <JsonValue maxExpandedArrayItems={100} value={selectedEvent} />
+                    ) : (
+                      "Waiting for the first realtime event."
+                    )}
+                  </pre>
+                </div>
+              </div>
+            </div>
+          </div>,
+          document.body
+        )
+        : null}
+    </>
+  );
+}
+
+function EventInlineMetric({
+  label,
+  value,
+  wide = false,
+}: {
+  label: string;
+  value: string;
+  wide?: boolean;
+}) {
+  return (
+    <div className={`flex min-w-0 gap-1 ${wide ? "basis-full" : ""}`}>
+      <span className="text-muted-foreground">{label}</span>
+      <span className="truncate font-mono text-foreground">{value}</span>
+    </div>
+  );
+}
+
+function createEventViewerCatalogLevel(definitions: WorkDefinition[], path: string) {
+  const normalizedPath = normalizeCategoryFilter(path);
+  const pathSegments = splitCatalogPath(normalizedPath);
+  const categoriesByPath = new Map<string, { count: number; label: string; path: string }>();
+  const levelDefinitions: WorkDefinition[] = [];
+
+  definitions.forEach((definition) => {
+    const categorySegments = splitCatalogPath(definition.category);
+    if (!startsWithEventViewerCatalogPath(categorySegments, pathSegments)) {
+      return;
+    }
+
+    if (categorySegments.length > pathSegments.length) {
+      const childSegments = categorySegments.slice(0, pathSegments.length + 1);
+      const childPath = childSegments.join(":");
+      const category = categoriesByPath.get(childPath) ?? {
+        count: 0,
+        label: childSegments.at(-1) ?? childPath,
+        path: childPath,
+      };
+      category.count++;
+      categoriesByPath.set(childPath, category);
+      return;
+    }
+
+    levelDefinitions.push(definition);
+  });
+
+  return {
+    categories: [...categoriesByPath.values()].sort((left, right) => left.label.localeCompare(right.label)),
+    definitions: levelDefinitions.sort((left, right) => left.name.localeCompare(right.name)),
+  };
+}
+
+function startsWithEventViewerCatalogPath(categorySegments: string[], pathSegments: string[]) {
+  return pathSegments.every((segment, index) => categorySegments[index] === segment);
+}
+
+function formatEventBatchTypeSummary(eventTypes: string[]) {
+  if (eventTypes.length === 0) {
+    return "No event types";
+  }
+
+  return eventTypes.length === 1
+    ? eventTypes[0]
+    : `${eventTypes.length} types: ${eventTypes.slice(0, 3).join(", ")}${eventTypes.length > 3 ? ", ..." : ""}`;
+}
+
+function formatEventBatchDefinitionSummary(events: WorkableRealtimeEvent[]) {
+  const definitionIds = [...new Set(events
+    .map((workEvent) => workEvent.definitionId?.value)
+    .filter((definitionId): definitionId is string => Boolean(definitionId)))];
+
+  if (definitionIds.length === 0) {
+    return "No definition";
+  }
+
+  return definitionIds.length === 1
+    ? definitionIds[0]
+    : `${definitionIds.length} definitions`;
+}
+
+function getCenteredEventViewerPosition(size: "compact" | "large") {
+  if (typeof window === "undefined") {
+    return { x: 0, y: 0 };
+  }
+
+  const viewportWidth = window.visualViewport?.width ?? window.innerWidth;
+  const viewportHeight = window.visualViewport?.height ?? window.innerHeight;
+  const width = size === "compact" ? Math.min(viewportWidth * 0.96, 768) : Math.min(viewportWidth * 0.96, 1536);
+  const height = size === "compact" ? Math.min(viewportHeight * 0.82, 512) : Math.min(viewportHeight * 0.88, 896);
+
+  return {
+    x: Math.max(8, (viewportWidth - width) / 2),
+    y: Math.max(8, (viewportHeight - height) / 2),
+  };
+}
+
+function clampFloatingWindowPosition(value: number, viewport: number, size: number) {
+  return Math.min(Math.max(8, value), Math.max(8, viewport - size - 8));
+}
+
+function clampEventTableHeight(value: number) {
+  return Math.min(Math.max(96, value), 520);
+}
+
+function formatEventViewerTime(value: number) {
+  return new Intl.DateTimeFormat(undefined, {
+    hour: "numeric",
+    minute: "2-digit",
+    second: "2-digit",
+  }).format(value);
+}
+
+function normalizeEventViewerMaxMessages(value: string) {
+  const parsed = Number.parseInt(value, 10);
+  if (Number.isNaN(parsed)) {
+    return 100;
+  }
+
+  return Math.max(1, Math.min(1000, parsed));
+}
+
+function formatEventViewerFilterSummary(
+  eventTypeCount: number,
+  definitionCount: number,
+  keyCount: number
+) {
+  const parts = [
+    eventTypeCount > 0
+      ? `${eventTypeCount} type${eventTypeCount === 1 ? "" : "s"}`
+      : "No event types selected",
+    definitionCount > 0 ? `${definitionCount} definition${definitionCount === 1 ? "" : "s"}` : null,
+    keyCount > 0 ? `${keyCount} key${keyCount === 1 ? "" : "s"}` : null,
+  ].filter(Boolean);
+
+  return parts.join(", ");
+}
+
+function eventTypeTone(eventType: string) {
+  if (eventType.includes("failed") || eventType === "worker.log") {
+    return "border border-red-500/30 bg-red-500/10 text-red-200";
+  }
+
+  if (eventType.includes("completed")) {
+    return "border border-emerald-500/30 bg-emerald-500/10 text-emerald-200";
+  }
+
+  if (eventType.includes("waiting") || eventType.includes("retrying")) {
+    return "border border-amber-500/30 bg-amber-500/10 text-amber-100";
+  }
+
+  if (eventType.includes("purge") || eventType.includes("cancel")) {
+    return "border border-sky-500/30 bg-sky-500/10 text-sky-200";
+  }
+
+  return "border border-border bg-muted/40 text-muted-foreground";
+}
 
 type SystemNotification = {
   description: string;
@@ -2185,12 +3278,10 @@ function parseDurationSeconds(value: string) {
 function OverviewPanelSettings({
   hiddenPanelIds,
   onPanelVisibilityChange,
-  realtimePayloadControl,
   onResetUi,
 }: {
   hiddenPanelIds: OverviewPanelId[];
   onPanelVisibilityChange: (panelId: OverviewPanelId, visible: boolean) => void;
-  realtimePayloadControl?: ReactNode;
   onResetUi: () => void;
 }) {
   return (
@@ -2256,7 +3347,6 @@ function OverviewPanelSettings({
           })}
         </div>
         <div className="border-t p-2">
-          {realtimePayloadControl}
           <Button
             className="h-9 w-full justify-start gap-2 text-muted-foreground"
             onClick={() => {

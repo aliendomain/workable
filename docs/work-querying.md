@@ -24,6 +24,8 @@ Control and correctness paths continue to read live worker records. This include
 
 The read-model channel is unbounded so accepted updates are not dropped. Treat sustained `PendingUpdateCount` growth or rising `LastProjectionDuration` as pressure signals for tuning projection batching, snapshot shape, or publish cadence.
 
+See [Work Diagnostics](work-diagnostics.md) for the full diagnostics model and warning guidance.
+
 ## Worker Queries
 
 Use `IWorkQueryService.Worker` when you need full worker detail.

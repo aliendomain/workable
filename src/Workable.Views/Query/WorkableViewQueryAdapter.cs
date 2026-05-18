@@ -9,6 +9,11 @@ public class WorkableViewQueryAdapter
     {
         Converters = { new JsonStringEnumConverter() },
     };
+    private static readonly IReadOnlyDictionary<string, WorkComponentDescriptor> ComponentDescriptors =
+        new Dictionary<string, WorkComponentDescriptor>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["throughput"] = new(RequiresIntervalPublish: true),
+        };
 
     public async Task<WorkComponentQueryResult> Components(
         IWorkSystem system,
@@ -193,6 +198,18 @@ public class WorkableViewQueryAdapter
         return requests is null
             ? query
             : new WorkViewCriteria(query.Scope, [.. requests.Select(NormalizeComponentRequest)]);
+    }
+
+    public bool RequiresIntervalPublish(
+        string name,
+        WorkViewCriteria? criteria = null)
+    {
+        var query = criteria ?? new WorkViewCriteria();
+        var requests = NormalizeViewComponentRequests(name, query.Components);
+        return requests is not null &&
+            requests
+                .Select(NormalizeComponentRequest)
+                .Any(ComponentRequiresIntervalPublish);
     }
 
     public WorkComponentCriteria NormalizeComponentCriteria(WorkComponentCriteria? criteria = null)
@@ -789,6 +806,10 @@ public class WorkableViewQueryAdapter
         return request with { Shape = shape };
     }
 
+    private static bool ComponentRequiresIntervalPublish(WorkComponentRequest request)
+        => ComponentDescriptors.TryGetValue(request.Type.Trim(), out var descriptor) &&
+            descriptor.RequiresIntervalPublish;
+
     private static string NormalizeComponentShape(string? shape)
     {
         if (string.IsNullOrWhiteSpace(shape))
@@ -934,4 +955,7 @@ public class WorkableViewQueryAdapter
     private sealed record WorkDefinitionCatalogLevel(
         IReadOnlyList<WorkSystemCatalogCategoryItem> Categories,
         IReadOnlyList<WorkDefinition> Definitions);
+
+    private sealed record WorkComponentDescriptor(
+        bool RequiresIntervalPublish = false);
 }

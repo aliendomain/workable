@@ -1,5 +1,4 @@
 using System.Text.Json;
-using Microsoft.Extensions.Logging;
 
 namespace Workable;
 
@@ -7,8 +6,7 @@ internal static class WorkerEventPayloads
 {
     public static JsonElement Create(
         WorkerSummary worker,
-        WorkInput? input = null,
-        WorkOutput? output = null,
+        IReadOnlyList<WorkerEventKey> keys,
         WorkAction? action = null,
         WorkActionStatus? actionStatus = null,
         WorkActionStatus? reconfigurationStatus = null,
@@ -16,23 +14,20 @@ internal static class WorkerEventPayloads
         WorkCompletionStatus? completionStatus = null,
         WorkerIterationSnapshot? iteration = null,
         TimeSpan? recurrenceInterval = null,
-        TimeSpan? retryDelay = null,
-        WorkerLogEntry? log = null)
+        TimeSpan? retryDelay = null)
     {
         return JsonSerializer.SerializeToElement(
             new WorkerEventPayload(
                 worker,
-                input,
-                output,
+                keys,
                 action,
                 actionStatus,
                 reconfigurationStatus,
                 reconfiguration,
                 completionStatus,
-                iteration,
+                iteration is null ? null : WorkerIterationEventPayload.From(iteration),
                 recurrenceInterval,
-                retryDelay,
-                log is null ? null : WorkerLogPayload.From(log)),
+                retryDelay),
             WorkEventJson.Options);
     }
 
@@ -47,43 +42,38 @@ internal static class WorkerEventPayloads
 
     private sealed record WorkerEventPayload(
         WorkerSummary Worker,
-        WorkInput? Input = null,
-        WorkOutput? Output = null,
+        IReadOnlyList<WorkerEventKey> Keys,
         WorkAction? Action = null,
         WorkActionStatus? ActionStatus = null,
         WorkActionStatus? ReconfigurationStatus = null,
         WorkerReconfiguration? Reconfiguration = null,
         WorkCompletionStatus? CompletionStatus = null,
-        WorkerIterationSnapshot? Iteration = null,
+        WorkerIterationEventPayload? Iteration = null,
         TimeSpan? RecurrenceInterval = null,
-        TimeSpan? RetryDelay = null,
-        WorkerLogPayload? Log = null);
+        TimeSpan? RetryDelay = null);
 
     private sealed record WorkerPurgePayload(
         DateTimeOffset PurgedAt,
         IReadOnlyList<WorkerId> WorkerIds);
 
-    private sealed record WorkerLogPayload(
-        DateTimeOffset OccurredAt,
-        string Category,
-        LogLevel Level,
-        int EventId,
-        string? EventName,
-        string Message,
-        string? ExceptionType,
-        string? ExceptionMessage,
-        IReadOnlyDictionary<string, object?>? Metadata)
+    private sealed record WorkerIterationEventPayload(
+        long Sequence,
+        DateTimeOffset StartedAt,
+        DateTimeOffset CompletedAt,
+        TimeSpan ExecutionDuration,
+        WorkCompletionStatus Status)
     {
-        public static WorkerLogPayload From(WorkerLogEntry entry)
+        public static WorkerIterationEventPayload From(WorkerIterationSnapshot iteration)
             => new(
-                entry.OccurredAt,
-                entry.Category,
-                entry.Level,
-                entry.EventId.Id,
-                entry.EventId.Name,
-                entry.Message,
-                entry.ExceptionType,
-                entry.ExceptionMessage,
-                entry.Metadata);
+                iteration.Sequence,
+                iteration.StartedAt,
+                iteration.CompletedAt,
+                iteration.ExecutionDuration,
+                iteration.Status);
     }
 }
+
+internal sealed record WorkerEventKey(
+    WorkKeyKind Kind,
+    string Type,
+    string Value);

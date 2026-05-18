@@ -14,7 +14,7 @@ The core API defines the public shape of Workable for discovering work, queueing
 - `IWorkerOperations` controls worker actions.
 - `IWorkQueryService` exposes the discoverable query facade. Each built-in query has a named method, with optional criteria and cancellation where applicable.
 - `IWorkEventStream` creates event subscriptions.
-- `IWorkSystemDiagnostics` exposes runtime diagnostics such as read-model projection progress.
+- `IWorkSystemDiagnostics` exposes runtime diagnostics for queue rejection, read-model projection, and retention cleanup.
 - `Start` and `Stop` control system lifecycle.
 - `Stop` returns the shutdown grace period plus workers that were force-canceled because the grace period elapsed, including compact worker summaries and definition names.
 - `Stop` clears in-memory worker and iteration records after shutdown cancellation completes.
@@ -82,7 +82,7 @@ Execution context also exposes the worker's `WorkOrigin`.
 - `IWorkQueryService.Worker` returns a full `WorkerSnapshot`.
 - `IWorkQueryService` reads worker and iteration state from the runtime read model snapshot; the in-memory model starts empty with the process and is cleared when the system stops.
 - Control and correctness paths use live worker records instead of the eventually consistent read model. This includes idempotency checks, concurrency decisions, worker actions, shutdown cancellation, retention purge selection, and bulk action execution.
-- `IWorkSystem.Diagnostics.ReadModel` exposes read-model projection counters, including enqueued sequence, applied sequence, pending update count, projection batches, projection timing, and projector failures.
+- `IWorkSystem.Diagnostics` exposes queue, read-model, and retention diagnostics. See [Work Diagnostics](work-diagnostics.md).
 - `IWorkQueryService.Workers` returns lightweight `WorkerOverviewItem` rows.
 - `IWorkQueryService.WorkerIteration` returns one full `WorkerIterationSnapshot` by worker id and iteration sequence.
 - `IWorkQueryService.WorkerIterations` returns lightweight `WorkerIterationOverviewItem` rows.
@@ -102,7 +102,8 @@ Execution context also exposes the worker's `WorkOrigin`.
 - Event streams are exposed from a single `IWorkSystem`.
 - Events include the publishing `WorkSystemId`.
 - Events can include a `WorkOrigin` for the trusted boundary that caused the event.
-- Event subscriptions can filter by worker id, work definition id, subject id, concurrency key, work identifier, and event type.
+- Event subscriptions can filter by worker id, one or more work definition ids, subject id, concurrency key, work identifier, key filters, and one or more event types.
+- Worker event payloads are intentionally thin. Use event data for notification and correlation, and query worker detail for input, output, messages, logs, iterations, action history, or profile data.
 - Each subscription owns a bounded event buffer.
 - Disposing a subscription or canceling its reader removes it from the stream.
 

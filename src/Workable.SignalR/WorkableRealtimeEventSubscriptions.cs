@@ -41,6 +41,40 @@ public sealed class WorkableRealtimeEventSubscriptions
             WorkableRealtimeGroups.SystemEvents(system),
             cancellationToken);
 
+    internal async Task WatchEvents(
+        string connectionId,
+        IGroupManager groupManager,
+        IWorkSystem system,
+        WorkableRealtimeEventCriteria? criteria,
+        CancellationToken cancellationToken)
+    {
+        var filter = CreateFilter(criteria);
+        var groupName = CreateSystemEventsGroupName(system, filter);
+        await this.WatchGroup(
+            connectionId,
+            groupManager,
+            system.Id,
+            groupName,
+            filter,
+            cancellationToken);
+        await this.WaitForStreaming(groupName, cancellationToken);
+    }
+
+    internal Task UnwatchEvents(
+        string connectionId,
+        IGroupManager groupManager,
+        IWorkSystem system,
+        WorkableRealtimeEventCriteria? criteria,
+        CancellationToken cancellationToken)
+    {
+        var filter = CreateFilter(criteria);
+        return this.UnwatchGroup(
+            connectionId,
+            groupManager,
+            CreateSystemEventsGroupName(system, filter),
+            cancellationToken);
+    }
+
     internal async Task WatchWorker(
         string connectionId,
         IGroupManager groupManager,
@@ -261,6 +295,95 @@ public sealed class WorkableRealtimeEventSubscriptions
 
     private static string ConnectionGroupKey(string connectionId, string groupName)
         => $"{connectionId}:{groupName}";
+
+    private static WorkEventFilter? CreateFilter(WorkableRealtimeEventCriteria? criteria)
+    {
+        var eventTypes = criteria?.EventTypes?
+            .Select(eventType => eventType.Trim())
+            .Where(eventType => eventType.Length > 0)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Order(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+        var definitionIds = criteria?.DefinitionIds?
+            .Select(definitionId => definitionId.Trim())
+            .Where(definitionId => Guid.TryParse(definitionId, out _))
+            .Select(definitionId => new WorkDefinitionId(Guid.Parse(definitionId)))
+            .Distinct()
+            .OrderBy(definitionId => definitionId.Value)
+            .ToArray();
+
+        var keys = criteria?.Keys?
+            .Select(NormalizeKey)
+            .Where(key => key is not null)
+            .Select(key => key!)
+            .Distinct()
+            .OrderBy(key => key.Kind?.ToString() ?? "", StringComparer.OrdinalIgnoreCase)
+            .ThenBy(key => key.Type, StringComparer.Ordinal)
+            .ThenBy(key => key.Value, StringComparer.Ordinal)
+            .ToArray();
+
+        return eventTypes is { Length: > 0 } ||
+            definitionIds is { Length: > 0 } ||
+            keys is { Length: > 0 }
+            ? new WorkEventFilter(
+                DefinitionIds: definitionIds?.ToHashSet(),
+                Keys: keys?.ToHashSet(),
+                EventTypes: eventTypes?.ToHashSet(StringComparer.OrdinalIgnoreCase))
+            : null;
+    }
+
+    private static string CreateSystemEventsGroupName(IWorkSystem system, WorkEventFilter? filter)
+    {
+        if (filter is null ||
+            (filter.EventTypes is not { Count: > 0 } &&
+                filter.DefinitionIds is not { Count: > 0 } &&
+                filter.Keys is not { Count: > 0 }))
+        {
+            return WorkableRealtimeGroups.SystemEvents(system);
+        }
+
+        var parts = new List<string>();
+        if (filter.EventTypes is { Count: > 0 })
+        {
+            parts.Add("types:" + string.Join(
+                ",",
+                filter.EventTypes
+                    .Order(StringComparer.OrdinalIgnoreCase)
+                    .Select(Uri.EscapeDataString)));
+        }
+
+        if (filter.DefinitionIds is { Count: > 0 })
+        {
+            parts.Add("definitions:" + string.Join(
+                ",",
+                filter.DefinitionIds
+                    .OrderBy(definitionId => definitionId.Value)
+                    .Select(definitionId => definitionId.Value.ToString("N"))));
+        }
+
+        if (filter.Keys is { Count: > 0 })
+        {
+            parts.Add("keys:" + string.Join(
+                ",",
+                filter.Keys
+                    .OrderBy(key => key.Kind?.ToString() ?? "", StringComparer.OrdinalIgnoreCase)
+                    .ThenBy(key => key.Type, StringComparer.Ordinal)
+                    .ThenBy(key => key.Value, StringComparer.Ordinal)
+                    .Select(key => Uri.EscapeDataString($"{key.Kind?.ToString() ?? "Any"}:{key.Type}:{key.Value}"))));
+        }
+
+        return WorkableRealtimeGroups.SystemEvents(system, string.Join("|", parts));
+    }
+
+    private static WorkEventKeyFilter? NormalizeKey(WorkableRealtimeEventKeyCriteria criteria)
+    {
+        var type = criteria.Type.Trim();
+        var value = criteria.Value.Trim();
+        return type.Length == 0 || value.Length == 0
+            ? null
+            : new WorkEventKeyFilter(criteria.Kind, type, value);
+    }
 
     private void ReleaseGroupLocked(string groupName)
     {

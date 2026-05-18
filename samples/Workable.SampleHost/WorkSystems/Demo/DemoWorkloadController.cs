@@ -13,6 +13,7 @@ public sealed class DemoWorkloadController(
     private static readonly TimeSpan MinimumQueueInterval = TimeSpan.FromMilliseconds(5);
     private static readonly TimeSpan MaximumQueueInterval = TimeSpan.FromSeconds(10);
     private static readonly TimeSpan FinishedWorkerCleanupInterval = TimeSpan.FromSeconds(1);
+    private const int MaximumTrackedWorkerCleanupScanCount = 10_000;
     private const int MaximumBurstWorkerCount = 10_000_000;
     private const int DefaultFailurePercentage = 8;
 
@@ -456,10 +457,6 @@ public sealed class DemoWorkloadController(
                 ]);
 
             var handle = await system.Queue.Enqueue(workName, input, cancellationToken: cancellationToken);
-            if (handle.QueueOutcome.IsAccepted && handle.WorkerId is { } workerId)
-            {
-                this.activeDemoWorkers[workerId] = 0;
-            }
 
             return handle.QueueOutcome.IsAccepted;
         }
@@ -534,9 +531,16 @@ public sealed class DemoWorkloadController(
 
     private async Task RemoveFinishedTrackedWorkers(CancellationToken cancellationToken)
     {
+        var scanned = 0;
         foreach (var workerId in this.activeDemoWorkers.Keys)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            if (++scanned > MaximumTrackedWorkerCleanupScanCount)
+            {
+                return;
+            }
+
+            var found = false;
             foreach (var system in registry.Systems)
             {
                 var worker = await system.Query.Worker(workerId, cancellationToken: cancellationToken);
@@ -545,12 +549,18 @@ public sealed class DemoWorkloadController(
                     continue;
                 }
 
+                found = true;
                 if (worker.State is WorkerState.Completed or WorkerState.Canceled or WorkerState.Failed)
                 {
                     this.activeDemoWorkers.TryRemove(workerId, out _);
                 }
 
                 break;
+            }
+
+            if (!found)
+            {
+                this.activeDemoWorkers.TryRemove(workerId, out _);
             }
         }
     }
