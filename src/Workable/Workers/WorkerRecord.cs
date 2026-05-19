@@ -525,7 +525,10 @@ internal sealed class WorkerRecord(
         }
     }
 
-    public WorkActionOutcome Reconfigure(WorkerReconfiguration changes, long expectedRevision)
+    public WorkActionOutcome Reconfigure(
+        WorkerReconfiguration changes,
+        long expectedRevision,
+        bool persistenceStoreAvailable = true)
     {
         lock (this.sync)
         {
@@ -580,19 +583,11 @@ internal sealed class WorkerRecord(
                 };
             }
 
-            if (changes.Concurrency is not null)
+            if (changes.Coordination is not null)
             {
                 configuration = configuration with
                 {
-                    Concurrency = changes.Concurrency,
-                };
-            }
-
-            if (changes.QueueDurability is not null)
-            {
-                configuration = configuration with
-                {
-                    QueueDurability = changes.QueueDurability,
+                    Coordination = changes.Coordination,
                 };
             }
 
@@ -604,22 +599,16 @@ internal sealed class WorkerRecord(
                 };
             }
 
-            if (changes.Idempotency is not null)
-            {
-                configuration = configuration with
-                {
-                    Idempotency = changes.Idempotency,
-                };
-            }
-
-            var configurationErrors = WorkConfigurationValidator.Validate(configuration);
+            var configurationErrors = WorkConfigurationValidator.Validate(configuration)
+                .Concat(WorkConfigurationValidator.ValidatePersistenceStore(configuration, persistenceStoreAvailable))
+                .ToList();
             if (configurationErrors.Count > 0)
             {
                 return WorkActionOutcome.Invalid(WorkAction.Start, this.ToSnapshotLocked(), configurationErrors);
             }
 
             var concurrencyInputErrors = WorkConfigurationValidator.ValidateConcurrencyInput(
-                concurrency: configuration.Concurrency,
+                coordination: configuration.Coordination,
                 input: this.Input);
             if (concurrencyInputErrors.Count > 0)
             {
@@ -628,7 +617,7 @@ internal sealed class WorkerRecord(
 
             this.Options = options;
             this.Configuration = configuration;
-            if (!this.Configuration.Concurrency.IsEnabled)
+            if (!this.Configuration.Coordination.IsConcurrencyEnabled)
             {
                 this.IsStartDeferred = false;
             }
@@ -851,7 +840,7 @@ internal sealed class WorkerRecord(
     {
         lock (this.sync)
         {
-            scope = this.Configuration.Concurrency.Scope;
+            scope = this.Configuration.Coordination.Concurrency.Scope;
             return TryGetConcurrencyCapacityBucketLocked(this.State, this.Configuration, this.IsStartDeferred, out bucket);
         }
     }
@@ -861,7 +850,7 @@ internal sealed class WorkerRecord(
         lock (this.sync)
         {
             return this.Work.Definition.Id == definitionId &&
-                this.Configuration.Concurrency.IsEnabled &&
+                this.Configuration.Coordination.IsConcurrencyEnabled &&
                 this.ShouldStartAutomatically() &&
                 this.State == WorkerState.Queued &&
                 this.IsStartDeferred;
@@ -885,7 +874,7 @@ internal sealed class WorkerRecord(
         {
             return this.State == WorkerState.Queued &&
                 this.ShouldStartAutomatically() &&
-                !this.Configuration.Concurrency.IsEnabled;
+                !this.Configuration.Coordination.IsConcurrencyEnabled;
         }
     }
 
@@ -895,7 +884,7 @@ internal sealed class WorkerRecord(
         {
             return this.State == WorkerState.Queued &&
                 this.ShouldStartAutomatically() &&
-                this.Configuration.Concurrency.IsEnabled &&
+                this.Configuration.Coordination.IsConcurrencyEnabled &&
                 !this.IsStartDeferred;
         }
     }
@@ -904,7 +893,7 @@ internal sealed class WorkerRecord(
     {
         lock (this.sync)
         {
-            if (this.State == WorkerState.Queued && this.Configuration.Concurrency.IsEnabled)
+            if (this.State == WorkerState.Queued && this.Configuration.Coordination.IsConcurrencyEnabled)
             {
                 this.IsStartDeferred = true;
             }
@@ -959,7 +948,7 @@ internal sealed class WorkerRecord(
         => WorkerReadModelWorker.From(
             this.ToOverviewItemLocked(),
             this.Configuration.Recurrence.IsEnabled,
-            this.Configuration.Concurrency.IsEnabled,
+            this.Configuration.Coordination.IsConcurrencyEnabled,
             this.Options.ProfilingEnabled);
 
     private WorkerReadModelIterationUpdate CreateReadModelIterationUpdateLocked(WorkerIterationSnapshot iteration)
@@ -1316,7 +1305,7 @@ internal sealed class WorkerRecord(
         bool isStartDeferred,
         [NotNullWhen(true)] out WorkConcurrencyCapacityBucket? bucket)
     {
-        if (!configuration.Concurrency.IsEnabled)
+        if (!configuration.Coordination.IsConcurrencyEnabled)
         {
             bucket = null;
             return false;

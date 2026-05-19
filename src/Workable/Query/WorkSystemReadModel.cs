@@ -986,7 +986,7 @@ internal sealed record WorkerReadModelWorker(
                 NextRunAt = snapshot.NextRunAt,
             },
             snapshot.Configuration.Recurrence.IsEnabled,
-            snapshot.Configuration.Concurrency.IsEnabled,
+            snapshot.Configuration.Coordination.IsConcurrencyEnabled,
             snapshot.Options.ProfilingEnabled);
 
     public static WorkerReadModelWorker From(

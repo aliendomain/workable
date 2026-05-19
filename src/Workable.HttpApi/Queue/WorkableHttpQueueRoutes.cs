@@ -8,8 +8,17 @@ internal static class WorkableHttpQueueRoutes
 {
     internal static void Map(RouteGroupBuilder group)
     {
-        group.MapGet("/queue-request/schema", ()
-            => Results.Ok(WorkableHttpQueueRequestDescriptor.Create()));
+        group.MapGet("/queue-request/schema", (
+            HttpContext httpContext,
+            WorkableHttpSystemResolver systems) =>
+        {
+            if (!WorkableHttpRouteResults.TryResolveSystem(httpContext, systems, out var system, out var notFound))
+            {
+                return notFound;
+            }
+
+            return Results.Ok(WorkableHttpQueueRequestDescriptor.Create(system));
+        });
 
         group.MapPost("/work/{name}", async (
             string name,

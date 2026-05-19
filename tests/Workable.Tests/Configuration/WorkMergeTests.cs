@@ -71,9 +71,18 @@ public sealed class WorkMergeTests
             {
                 Policy = WorkStartPolicy.StartAndReturnAfterCompleted,
             },
-            Idempotency = new WorkIdempotencyConfiguration
+            Coordination = WorkCoordinationConfiguration.Default with
             {
                 IsEnabled = true,
+                Idempotency = new WorkIdempotencyConfiguration
+                {
+                    IsEnabled = true,
+                },
+                Concurrency = WorkConcurrencyConfiguration.Default with
+                {
+                    IsEnabled = true,
+                    MaximumCapacity = 2,
+                },
             },
             Recurrence = WorkRecurrenceConfiguration.Every(TimeSpan.FromMinutes(1)),
             TransientRetry = WorkTransientRetryConfiguration.Default with
@@ -89,23 +98,17 @@ public sealed class WorkMergeTests
             {
                 PurgeInterval = TimeSpan.FromSeconds(30),
             },
-            Concurrency = WorkConcurrencyConfiguration.Default with
-            {
-                IsEnabled = true,
-                MaximumCapacity = 2,
-            },
             Invocation = WorkInvocationConfiguration.Allow(WorkInvocationChannel.DotNet),
         };
 
         var merged = original.MergeRuntimeOptions(overrides);
 
         Assert.Equal(overrides.Start, merged.Start);
-        Assert.Equal(overrides.Idempotency, merged.Idempotency);
+        Assert.Equal(overrides.Coordination, merged.Coordination);
         Assert.Equal(overrides.Recurrence, merged.Recurrence);
         Assert.Equal(overrides.TransientRetry, merged.TransientRetry);
         Assert.Equal(overrides.Logging, merged.Logging);
         Assert.Equal(overrides.Retention, merged.Retention);
-        Assert.Equal(overrides.Concurrency, merged.Concurrency);
         Assert.Equal(original.Invocation, merged.Invocation);
     }
 

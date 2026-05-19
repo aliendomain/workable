@@ -1219,7 +1219,7 @@ public sealed class WorkConcurrencyTests
 
         var reconfigure = await system.Workers.Reconfigure(
             secondWorker.Version,
-            new WorkerReconfiguration(Concurrency: WorkConcurrencyConfiguration.Default));
+            new WorkerReconfiguration(Coordination: WorkCoordinationConfiguration.Default));
         await secondStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
         release.SetResult();
 
@@ -1282,14 +1282,18 @@ public sealed class WorkConcurrencyTests
         WorkConcurrencyBlockingMode blockingMode = WorkConcurrencyBlockingMode.WhileExecutingPausedOrFailed)
         => WorkConfiguration.Default with
         {
-            Concurrency = WorkConcurrencyConfiguration.Default with
+            Coordination = WorkCoordinationConfiguration.Default with
             {
                 IsEnabled = true,
-                MaximumCapacity = maximumCapacity,
-                Scope = scope,
-                BlockingMode = blockingMode,
-                LimitReachedBehavior = limitReachedBehavior,
-                OverrideBehavior = overrideBehavior,
+                Concurrency = WorkConcurrencyConfiguration.Default with
+                {
+                    IsEnabled = true,
+                    MaximumCapacity = maximumCapacity,
+                    Scope = scope,
+                    BlockingMode = blockingMode,
+                    LimitReachedBehavior = limitReachedBehavior,
+                    OverrideBehavior = overrideBehavior,
+                },
             },
         };
 

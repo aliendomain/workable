@@ -12,7 +12,8 @@ Capacity is checked per configured scope, so unrelated work groups do not block 
 | `BlockingMode` | `WorkConcurrencyBlockingMode.WhileExecutingPausedOrFailed` | Worker states that count against capacity. The default counts running, pausing, interrupting, canceling, paused, and failed workers. |
 | `LimitReachedBehavior` | `WorkConcurrencyLimitReachedBehavior.Ignore` | Behavior when a queue request reaches capacity. `Ignore` rejects the queue request. `DeferStart` accepts the worker and leaves it queued until capacity is available. |
 | `OverrideBehavior` | `WorkConcurrencyOverrideBehavior.Flexible` | Behavior for manual start actions. `Flexible` allows a manual start to override capacity. `Strict` requires capacity even for manual start. |
-| `Storage` | `WorkConcurrencyStorage.Local` | Where concurrency is coordinated. `Local` coordinates inside one work system process. `Persistence` coordinates through the configured persistence integration. |
+
+Concurrency is part of coordination configuration. `WorkCoordinationConfiguration.Storage` decides where all enabled coordination features run. `Local` coordinates inside one work system process. `Persistent` coordinates through the configured persistence integration.
 
 When `Scope` is `PerSubject`, queue input must include a `WorkSubjectId`. When `Scope` is `PerConcurrencyKey`, queue input must include a `WorkConcurrencyKey`.
 
@@ -22,7 +23,7 @@ Persistence-backed concurrency is for durable work shared by more than one runti
 
 The first supported persistence-backed shape is intentionally narrow:
 
-- queue durability must be enabled
+- persistent coordination and queue durability must be enabled
 - `BlockingMode` must be `WhileExecuting`
 - `LimitReachedBehavior` must be `DeferStart`
 
@@ -33,8 +34,7 @@ configuration
         maximumCapacity: 1,
         scope: WorkConcurrencyScope.PerConcurrencyKey,
         blockingMode: WorkConcurrencyBlockingMode.WhileExecuting,
-        limitReachedBehavior: WorkConcurrencyLimitReachedBehavior.DeferStart,
-        storage: WorkConcurrencyStorage.Persistence);
+        limitReachedBehavior: WorkConcurrencyLimitReachedBehavior.DeferStart);
 ```
 
 Rows that are completed or explicitly canceled release capacity by deleting the durable row. Failed rows are retained for inspection, but they no longer hold persistence-backed `WhileExecuting` capacity after execution is retained.
@@ -43,15 +43,14 @@ Rows that are completed or explicitly canceled release capacity by deleting the 
 
 ```
 [WorkQueueDurability]
-[WorkIdempotency(storage: WorkIdempotencyStorage.Persistence)]
+[WorkIdempotency]
 [WorkConcurrency(
     isEnabled: true,
     maximumCapacity: 1,
     scope: WorkConcurrencyScope.PerConcurrencyKey,
     blockingMode: WorkConcurrencyBlockingMode.WhileExecuting,
     limitReachedBehavior: WorkConcurrencyLimitReachedBehavior.DeferStart,
-    overrideBehavior: WorkConcurrencyOverrideBehavior.Strict,
-    storage: WorkConcurrencyStorage.Persistence)]
+    overrideBehavior: WorkConcurrencyOverrideBehavior.Strict)]
 public sealed class RefreshCacheWork : IWorkExecutor
 {
     public Task<WorkExecutionResult> Execute(
@@ -89,11 +88,15 @@ var handle = await system.Queue.Enqueue(
     options: new WorkerOptions(
         Configuration: WorkConfiguration.Default with
         {
-            Concurrency = WorkConcurrencyConfiguration.Default with
+            Coordination = WorkCoordinationConfiguration.Default with
             {
                 IsEnabled = true,
-                MaximumCapacity = 2,
-                LimitReachedBehavior = WorkConcurrencyLimitReachedBehavior.DeferStart,
+                Concurrency = WorkConcurrencyConfiguration.Default with
+                {
+                    IsEnabled = true,
+                    MaximumCapacity = 2,
+                    LimitReachedBehavior = WorkConcurrencyLimitReachedBehavior.DeferStart,
+                },
             },
         }));
 ```
@@ -118,12 +121,16 @@ var worker = await system.Query.Worker(workerId)
 var outcome = await system.Workers.Reconfigure(
     worker.Version,
     new WorkerReconfiguration(
-        Concurrency: WorkConcurrencyConfiguration.Default with
+        Coordination: WorkCoordinationConfiguration.Default with
         {
             IsEnabled = true,
-            MaximumCapacity = 1,
-            LimitReachedBehavior = WorkConcurrencyLimitReachedBehavior.DeferStart,
-            OverrideBehavior = WorkConcurrencyOverrideBehavior.Strict,
+            Concurrency = WorkConcurrencyConfiguration.Default with
+            {
+                IsEnabled = true,
+                MaximumCapacity = 1,
+                LimitReachedBehavior = WorkConcurrencyLimitReachedBehavior.DeferStart,
+                OverrideBehavior = WorkConcurrencyOverrideBehavior.Strict,
+            },
         }));
 ```
 

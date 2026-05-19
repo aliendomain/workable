@@ -7,17 +7,22 @@ public sealed class WorkIdempotencyAttribute : Attribute
 {
     public WorkIdempotencyAttribute(
         bool isEnabled = true,
-        WorkIdempotencyConflictPolicy conflictPolicy = WorkIdempotencyConflictPolicy.RejectDuplicates,
-        WorkIdempotencyStorage storage = WorkIdempotencyStorage.Local)
+        WorkIdempotencyConflictPolicy conflictPolicy = WorkIdempotencyConflictPolicy.RejectDuplicates)
     {
         this.Configuration = new WorkIdempotencyConfiguration
         {
             IsEnabled = isEnabled,
-            Storage = storage,
             ConflictPolicy = conflictPolicy,
         };
 
-        WorkConfigurationValidator.ThrowIfInvalid(WorkConfiguration.Default with { Idempotency = this.Configuration });
+        WorkConfigurationValidator.ThrowIfInvalid(WorkConfiguration.Default with
+        {
+            Coordination = WorkCoordinationConfiguration.Default with
+            {
+                IsEnabled = isEnabled,
+                Idempotency = this.Configuration,
+            },
+        });
     }
 
     public WorkIdempotencyConfiguration Configuration { get; }

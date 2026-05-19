@@ -1,6 +1,6 @@
 # Execution Engine
 
-The execution engine owns runtime coordination after work is accepted: dispatch, capacity management, worker execution, and automatic retention. The queue acceptance, execution, and handle interaction lifecycle is described in [Work Lifecycle](work-lifecycle.md).
+The execution engine owns runtime coordination after work is accepted: queue coordination, dispatch, capacity management, durable materialization, worker execution, and automatic retention. The queue acceptance, execution, and handle interaction lifecycle is described in [Work Lifecycle](work-lifecycle.md).
 
 ## Engine Components
 
@@ -8,10 +8,18 @@ The execution engine owns runtime coordination after work is accepted: dispatch,
 flowchart TD
     Queue["WorkQueueService"] --> Ops["WorkerOperations"]
     Ops --> Record["WorkerRecord"]
+    Ops --> Persistence["WorkerPersistenceCoordinator"]
     Ops --> Dispatcher["WorkerDispatcher"]
     Ops --> Concurrency["WorkConcurrencyCoordinator"]
     Ops --> Retention["WorkerRetentionScheduler"]
     Ops --> Publisher["WorkerEventPublisher"]
+    Persistence --> Acceptance["WorkQueueAcceptanceCoordinator"]
+    Persistence --> Durability["WorkQueueDurabilityCoordinator"]
+    Acceptance --> Idempotency["WorkIdempotencyCoordinator"]
+    Acceptance --> Concurrency
+    Acceptance --> Durability
+    Durability --> Store["IWorkPersistenceStore"]
+    Durability --> Persistence
     Dispatcher --> Strategy["IWorkerExecutionStrategy"]
     Strategy --> Selector["ConfiguredWorkerExecutionStrategy"]
     Selector --> RunOnce["RunOnceWorkerExecutionStrategy"]
@@ -29,6 +37,7 @@ flowchart TD
     Recurring --> Publisher
     Invoker --> InitScope["Initialization DI Scope"]
     Invoker --> ExecScope["Execution DI Scope"]
+    Invoker --> Persistence
     InitScope --> Initializer["IWorkInitializer"]
     ExecScope --> Executor["IWorkExecutor"]
     Strategy --> Publisher
@@ -40,7 +49,15 @@ flowchart TD
     Concurrency --> Dispatcher
 ```
 
-`WorkerOperations` is the in-memory owner of worker records. It coordinates worker creation, dispatch, actions, execution completion, concurrency draining, retention scheduling, and event publication.
+`WorkerOperations` is the in-memory owner of worker records. It coordinates worker creation, dispatch, actions, execution completion, concurrency draining, retention scheduling, persistence synchronization, and event publication.
+
+`WorkerPersistenceCoordinator` is the boundary between in-memory workers and coordination features that may use persistence. It centralizes queue acceptance, local and persistent idempotency, durable queue materialization, durable completion, and final-state cleanup.
+
+`WorkQueueAcceptanceCoordinator` prepares a queue request after configuration has been resolved. It validates idempotency inputs, checks local concurrency when needed, decides whether the request can be accepted in memory, and creates durable queue or persistent idempotency requests when persistent coordination is selected.
+
+`WorkIdempotencyCoordinator` handles local duplicate-subject checks against active worker records. Persistent duplicate checks are performed by the durable persistence path so the reservation can be committed atomically with the persisted Workable row.
+
+`WorkQueueDurabilityCoordinator` owns the persistence store integration for durable queueing and persistence-backed idempotency. It initializes and drains persisted rows, writes durable queue entries, signals local materialization, renews leases for active durable workers, detects lost leases, and runs durable cleanup.
 
 `WorkerDispatcher` is the queue-to-execution boundary. It starts accepted workers outside the caller's queue request and caller execution context.
 
@@ -57,6 +74,8 @@ During shutdown, `WorkerOperations` flips the system into a non-accepting state 
 `ConfiguredWorkerExecutionStrategy` chooses the execution path for each worker. Recurring workers use `RecurringWorkerExecutionStrategy`. Non-recurring workers with transient retry `Count` greater than zero use `TransientRetryWorkerExecutionStrategy`; workers with transient retry disabled use `RunOnceWorkerExecutionStrategy`.
 
 `WorkerExecutionAttemptRunner` owns a single execution attempt. Transient retry is orchestrated by the execution strategy so each retry is a separate worker iteration. `WorkerExecutionInvoker` runs configured initializers in initialization scopes, then resolves and invokes the executor in a separate execution scope. Initializers and the executor do not share scoped service instances. Each iteration therefore gets new initialization and execution scoped service providers.
+
+When durable completion is enabled, executor code calls `IWorkExecutionContext.CompleteDurably(...)` with a developer-owned persistence transaction. `WorkerExecutionInvoker` routes that call through `WorkerPersistenceCoordinator` so Workable final cleanup and the caller's business writes can commit or roll back together.
 
 `OnceLazy` initialization uses a per-definition gate. The first worker to reach the initializer runs it while competing workers wait; after it succeeds, later workers skip it. Typed initializers cannot use `OnceLazy` because they depend on worker input.
 

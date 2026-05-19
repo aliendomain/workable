@@ -13,9 +13,14 @@ public sealed class DurableQueueTests
         var messages = WorkConfigurationValidator.Validate(
             WorkConfiguration.Default with
             {
-                QueueDurability = new WorkQueueDurabilityConfiguration
+                Coordination = WorkCoordinationConfiguration.Default with
                 {
                     IsEnabled = true,
+                    Storage = WorkCoordinationStorage.Persistent,
+                    Durability = new WorkQueueDurabilityConfiguration
+                    {
+                        IsEnabled = true,
+                    },
                 },
             });
 
@@ -23,23 +28,22 @@ public sealed class DurableQueueTests
     }
 
     [Fact]
-    public void DurableQueueingRequiresPersistenceBackedIdempotency()
+    public void DurableQueueingRequiresPersistentCoordination()
     {
         var messages = WorkConfigurationValidator.Validate(
             WorkConfiguration.Default with
             {
-                Idempotency = new WorkIdempotencyConfiguration
+                Coordination = WorkCoordinationConfiguration.Default with
                 {
                     IsEnabled = true,
-                    Storage = WorkIdempotencyStorage.Local,
-                },
-                QueueDurability = new WorkQueueDurabilityConfiguration
-                {
-                    IsEnabled = true,
+                    Durability = new WorkQueueDurabilityConfiguration
+                    {
+                        IsEnabled = true,
+                    },
                 },
             });
 
-        Assert.Contains(messages, message => message.Code == "workable.configuration.queue_durability.idempotency_persistence_required");
+        Assert.Contains(messages, message => message.Code == "workable.configuration.coordination.durability_requires_persistent_storage");
     }
 
     [Fact]
@@ -48,15 +52,19 @@ public sealed class DurableQueueTests
         var messages = WorkConfigurationValidator.Validate(
             WorkConfiguration.Default with
             {
-                Idempotency = new WorkIdempotencyConfiguration
+                Coordination = WorkCoordinationConfiguration.Default with
                 {
                     IsEnabled = true,
-                    Storage = WorkIdempotencyStorage.Persistence,
-                },
-                QueueDurability = new WorkQueueDurabilityConfiguration
-                {
-                    IsEnabled = true,
-                    FallbackPollingInterval = TimeSpan.FromMilliseconds(500),
+                    Storage = WorkCoordinationStorage.Persistent,
+                    Idempotency = new WorkIdempotencyConfiguration
+                    {
+                        IsEnabled = true,
+                    },
+                    Durability = new WorkQueueDurabilityConfiguration
+                    {
+                        IsEnabled = true,
+                        FallbackPollingInterval = TimeSpan.FromMilliseconds(500),
+                    },
                 },
             });
 
@@ -76,8 +84,8 @@ public sealed class DurableQueueTests
             .Default;
         var definition = Assert.Single(system.Catalog.Definitions);
 
-        Assert.True(definition.Configuration.QueueDurability.IsEnabled);
-        Assert.Equal(TimeSpan.FromSeconds(3), definition.Configuration.QueueDurability.FallbackPollingInterval);
+        Assert.True(definition.Configuration.Coordination.IsDurabilityEnabled);
+        Assert.Equal(TimeSpan.FromSeconds(3), definition.Configuration.Coordination.Durability.FallbackPollingInterval);
     }
 
     [Fact]
@@ -86,9 +94,14 @@ public sealed class DurableQueueTests
         var messages = WorkConfigurationValidator.Validate(
             WorkConfiguration.Default with
             {
-                QueueDurability = new WorkQueueDurabilityConfiguration
+                Coordination = WorkCoordinationConfiguration.Default with
                 {
-                    CompleteDurably = true,
+                    IsEnabled = true,
+                    Storage = WorkCoordinationStorage.Persistent,
+                    Durability = new WorkQueueDurabilityConfiguration
+                    {
+                        CompleteDurably = true,
+                    },
                 },
             });
 
@@ -101,20 +114,109 @@ public sealed class DurableQueueTests
         var messages = WorkConfigurationValidator.Validate(
             WorkConfiguration.Default with
             {
-                Idempotency = new WorkIdempotencyConfiguration
+                Coordination = WorkCoordinationConfiguration.Default with
                 {
                     IsEnabled = true,
-                    Storage = WorkIdempotencyStorage.Persistence,
-                },
-                QueueDurability = new WorkQueueDurabilityConfiguration
-                {
-                    IsEnabled = true,
-                    CompleteDurably = true,
+                    Storage = WorkCoordinationStorage.Persistent,
+                    Idempotency = new WorkIdempotencyConfiguration
+                    {
+                        IsEnabled = true,
+                    },
+                    Durability = new WorkQueueDurabilityConfiguration
+                    {
+                        IsEnabled = true,
+                        CompleteDurably = true,
+                    },
                 },
                 Recurrence = WorkRecurrenceConfiguration.Every(TimeSpan.FromMinutes(1)),
             });
 
         Assert.Contains(messages, message => message.Code == "workable.configuration.queue_durability.durable_completion_recurring_not_supported");
+    }
+
+    [Fact]
+    public async Task QueueRejectsPersistentCoordinationWhenNoPersistenceStoreIsRegistered()
+    {
+        var definition = WorkDefinition.Create("persistent-no-store", "Rejects persistent coordination without a store.");
+        var system = new ServiceCollection()
+            .AddWorkableSystem(builder => builder.AddWork(
+                definition,
+                (_, _, _) => Task.FromResult(WorkExecutionResult.Success()),
+                configuration => configuration
+                    .CoordinatePersistently()
+                    .RejectDuplicateSubjects()))
+            .BuildServiceProvider()
+            .GetRequiredService<IWorkSystemRegistry>()
+            .Default;
+
+        await system.Start();
+
+        var handle = await system.Queue.Enqueue(
+            "persistent-no-store",
+            WorkInput.Empty.WithSubject(new WorkSubjectId("order", "no-store")));
+
+        Assert.False(handle.QueueOutcome.IsAccepted);
+        Assert.Contains(handle.QueueOutcome.Messages, message =>
+            message.Code == "workable.configuration.coordination.persistence_store_required" &&
+            message.Target == "configuration.coordination.storage");
+    }
+
+    [Fact]
+    public async Task DefinitionReconfigurationRejectsPersistentCoordinationWhenNoPersistenceStoreIsRegistered()
+    {
+        var definition = WorkDefinition.Create("persistent-reconfigure-no-store", "Rejects persistent definition reconfiguration without a store.");
+        var system = new ServiceCollection()
+            .AddWorkableSystem(builder => builder.AddWork(
+                definition,
+                (_, _, _) => Task.FromResult(WorkExecutionResult.Success())))
+            .BuildServiceProvider()
+            .GetRequiredService<IWorkSystemRegistry>()
+            .Default;
+
+        var outcome = await system.Catalog.Reconfigure(
+            definition.Version,
+            new WorkDefinitionReconfiguration(Configuration: WorkConfiguration.Default with
+            {
+                Coordination = PersistentIdempotencyCoordination(),
+            }));
+
+        Assert.Equal(WorkDefinitionReconfigurationStatus.Invalid, outcome.Status);
+        Assert.Contains(outcome.Messages, message =>
+            message.Code == "workable.configuration.coordination.persistence_store_required" &&
+            message.Target == "configuration.coordination.storage");
+    }
+
+    [Fact]
+    public async Task WorkerReconfigurationRejectsPersistentCoordinationWhenNoPersistenceStoreIsRegistered()
+    {
+        var definition = WorkDefinition.Create(
+            "worker-persistent-reconfigure-no-store",
+            "Rejects persistent worker reconfiguration without a store.",
+            configuration: WorkConfiguration.Default with
+            {
+                Start = WorkStartConfiguration.DoNotStart,
+            });
+        var system = new ServiceCollection()
+            .AddWorkableSystem(builder => builder.AddWork(
+                definition,
+                (_, _, _) => Task.FromResult(WorkExecutionResult.Success())))
+            .BuildServiceProvider()
+            .GetRequiredService<IWorkSystemRegistry>()
+            .Default;
+
+        await system.Start();
+        var handle = await system.Queue.Enqueue("worker-persistent-reconfigure-no-store");
+        var worker = await system.Query.Worker(RequiredWorkerId(handle))
+            ?? throw new InvalidOperationException("Expected worker.");
+
+        var outcome = await system.Workers.Reconfigure(
+            worker.Version,
+            new WorkerReconfiguration(Coordination: PersistentIdempotencyCoordination()));
+
+        Assert.Equal(WorkActionStatus.Invalid, outcome.Status);
+        Assert.Contains(outcome.Messages, message =>
+            message.Code == "workable.configuration.coordination.persistence_store_required" &&
+            message.Target == "configuration.coordination.storage");
     }
 
     [Fact]
@@ -133,7 +235,7 @@ public sealed class DurableQueueTests
                     return Task.FromResult(WorkExecutionResult.Success());
                 },
                 configuration => configuration
-                    .RejectDuplicateSubjects(WorkIdempotencyStorage.Persistence)
+                    .CoordinatePersistently().RejectDuplicateSubjects()
                     .QueueDurably()))
             .BuildServiceProvider()
             .GetRequiredService<IWorkSystemRegistry>()
@@ -168,7 +270,7 @@ public sealed class DurableQueueTests
                 definition,
                 (_, _, _) => Task.FromResult(WorkExecutionResult.Success()),
                 configuration => configuration
-                    .RejectDuplicateSubjects(WorkIdempotencyStorage.Persistence)
+                    .CoordinatePersistently().RejectDuplicateSubjects()
                     .QueueDurably()))
             .BuildServiceProvider()
             .GetRequiredService<IWorkSystemRegistry>()
@@ -209,7 +311,7 @@ public sealed class DurableQueueTests
                     return WorkExecutionResult.Success();
                 },
                 configuration => configuration
-                    .RejectDuplicateSubjects(WorkIdempotencyStorage.Persistence)
+                    .CoordinatePersistently().RejectDuplicateSubjects()
                     .QueueDurably()
                     .CompleteDurably()))
             .BuildServiceProvider()
@@ -244,7 +346,7 @@ public sealed class DurableQueueTests
                     return WorkExecutionResult.Success();
                 },
                 configuration => configuration
-                    .RejectDuplicateSubjects(WorkIdempotencyStorage.Persistence)
+                    .CoordinatePersistently().RejectDuplicateSubjects()
                     .CompleteDurably()))
             .BuildServiceProvider()
             .GetRequiredService<IWorkSystemRegistry>()
@@ -289,7 +391,7 @@ public sealed class DurableQueueTests
                     return WorkExecutionResult.Success();
                 },
                 configuration => configuration
-                    .RejectDuplicateSubjects(WorkIdempotencyStorage.Persistence)
+                    .CoordinatePersistently().RejectDuplicateSubjects()
                     .QueueDurably()))
             .BuildServiceProvider()
             .GetRequiredService<IWorkSystemRegistry>()
@@ -321,7 +423,7 @@ public sealed class DurableQueueTests
                 definition,
                 (_, _, _) => Task.FromResult(WorkExecutionResult.Success()),
                 configuration => configuration
-                    .RejectDuplicateSubjects(WorkIdempotencyStorage.Persistence)
+                    .CoordinatePersistently().RejectDuplicateSubjects()
                     .QueueDurably()
                     .CompleteDurably()))
             .BuildServiceProvider()
@@ -354,7 +456,7 @@ public sealed class DurableQueueTests
                 (_, _, _) => Task.FromResult(WorkExecutionResult.Failure(
                     [WorkMessage.Error("durable.complete.failed", "Nope.")])),
                 configuration => configuration
-                    .RejectDuplicateSubjects(WorkIdempotencyStorage.Persistence)
+                    .CoordinatePersistently().RejectDuplicateSubjects()
                     .QueueDurably()
                     .CompleteDurably()))
             .BuildServiceProvider()
@@ -458,7 +560,7 @@ public sealed class DurableQueueTests
                 (_, _, _) => Task.FromResult(WorkExecutionResult.Failure(
                     [WorkMessage.Error("test.failure", "The durable worker failed.")])),
                 configuration => configuration
-                    .RejectDuplicateSubjects(WorkIdempotencyStorage.Persistence)
+                    .CoordinatePersistently().RejectDuplicateSubjects()
                     .QueueDurably()))
             .BuildServiceProvider()
             .GetRequiredService<IWorkSystemRegistry>()
@@ -499,7 +601,7 @@ public sealed class DurableQueueTests
                     return WorkExecutionResult.Success();
                 },
                 configuration => configuration
-                    .RejectDuplicateSubjects(WorkIdempotencyStorage.Persistence)
+                    .CoordinatePersistently().RejectDuplicateSubjects()
                     .QueueDurably()))
             .BuildServiceProvider()
             .GetRequiredService<IWorkSystemRegistry>()
@@ -537,7 +639,7 @@ public sealed class DurableQueueTests
                     await release.Task.WaitAsync(cancellationToken);
                     return WorkExecutionResult.Success();
                 },
-                configuration => configuration.RejectDuplicateSubjects(WorkIdempotencyStorage.Persistence)))
+                configuration => configuration.CoordinatePersistently().RejectDuplicateSubjects()))
             .BuildServiceProvider()
             .GetRequiredService<IWorkSystemRegistry>()
             .Default;
@@ -576,7 +678,7 @@ public sealed class DurableQueueTests
                     ran.TrySetResult();
                     return Task.FromResult(WorkExecutionResult.Success());
                 },
-                configuration => configuration.RejectDuplicateSubjects(WorkIdempotencyStorage.Persistence)))
+                configuration => configuration.CoordinatePersistently().RejectDuplicateSubjects()))
             .BuildServiceProvider()
             .GetRequiredService<IWorkSystemRegistry>()
             .Default;
@@ -692,9 +794,14 @@ public sealed class DurableQueueTests
             "Rejects durable queue requests when the persistence store is unavailable.",
             configuration: WorkConfiguration.Default with
             {
-                QueueDurability = new WorkQueueDurabilityConfiguration
+                Coordination = WorkCoordinationConfiguration.Default with
                 {
                     IsEnabled = true,
+                    Storage = WorkCoordinationStorage.Persistent,
+                    Durability = new WorkQueueDurabilityConfiguration
+                    {
+                        IsEnabled = true,
+                    },
                 },
             });
         var coordinator = CreateCoordinator(
@@ -734,9 +841,14 @@ public sealed class DurableQueueTests
             "Bubbles unexpected store exceptions.",
             configuration: WorkConfiguration.Default with
             {
-                QueueDurability = new WorkQueueDurabilityConfiguration
+                Coordination = WorkCoordinationConfiguration.Default with
                 {
                     IsEnabled = true,
+                    Storage = WorkCoordinationStorage.Persistent,
+                    Durability = new WorkQueueDurabilityConfiguration
+                    {
+                        IsEnabled = true,
+                    },
                 },
             });
         var expected = new InvalidOperationException("Unexpected store failure.");
@@ -883,6 +995,17 @@ public sealed class DurableQueueTests
 
     private static WorkerId RequiredWorkerId(IWorkerHandle handle)
         => handle.WorkerId ?? throw new InvalidOperationException("Expected worker id.");
+
+    private static WorkCoordinationConfiguration PersistentIdempotencyCoordination()
+        => WorkCoordinationConfiguration.Default with
+        {
+            IsEnabled = true,
+            Storage = WorkCoordinationStorage.Persistent,
+            Idempotency = WorkIdempotencyConfiguration.Default with
+            {
+                IsEnabled = true,
+            },
+        };
 
     private static async Task<WorkCompletion> WaitForCompletion(IWorkerHandle handle, TimeSpan timeoutAfter)
     {
@@ -1342,7 +1465,6 @@ public sealed class DurableQueueTests
 
     private sealed class TestQueueDurabilityTransaction : IWorkQueueDurabilityTransaction;
 }
-
 internal static class DurableQueueTestExtensions
 {
     public static async Task WaitForWorkerState(

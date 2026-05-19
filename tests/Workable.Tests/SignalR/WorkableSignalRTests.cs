@@ -630,15 +630,20 @@ public sealed class WorkableSignalRTests
             views.Reader,
             view => view.Components.ContainsKey("readModelDiagnostics"));
 
-        try
-        {
-            var enqueueBurst = Task.Run(async () =>
+        using var enqueueCancellation = new CancellationTokenSource();
+        var enqueuePressure = Enumerable.Range(0, 4)
+            .Select(index => Task.Run(async () =>
             {
-                for (var index = 0; index < 5_000; index++)
+                while (!enqueueCancellation.IsCancellationRequested)
                 {
                     _ = await system.Queue.Enqueue("signalr.view");
                 }
-            });
+            }))
+            .ToArray();
+
+        try
+        {
+            await Eventually(() => system.Diagnostics.ReadModel.PendingUpdateCount >= 1);
 
             var updated = await ReadUntil(
                 views.Reader,
@@ -656,11 +661,13 @@ public sealed class WorkableSignalRTests
                 });
             var data = Assert.IsType<JsonElement>(updated.Components["readModelDiagnostics"].Data);
 
-            await enqueueBurst.WaitAsync(TimeSpan.FromSeconds(5));
             Assert.True(data.GetProperty("pendingUpdateCount").GetInt64() >= 1);
         }
         finally
         {
+            enqueueCancellation.Cancel();
+            await Task.WhenAll(enqueuePressure).WaitAsync(TimeSpan.FromSeconds(5));
+
             if (!gate.Release.Task.IsCompleted)
             {
                 gate.Release.SetResult();

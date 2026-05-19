@@ -19,13 +19,13 @@ internal sealed class WorkConfigurationBuilder(WorkConfiguration configuration) 
         return this;
     }
 
-    public IWorkConfigurationBuilder UseIdempotency(WorkIdempotencyConfiguration idempotency)
+    public IWorkConfigurationBuilder UseCoordination(WorkCoordinationConfiguration coordination)
     {
-        ArgumentNullException.ThrowIfNull(idempotency);
+        ArgumentNullException.ThrowIfNull(coordination);
 
         this.configuration = this.configuration with
         {
-            Idempotency = idempotency,
+            Coordination = coordination,
         };
         return this;
     }
@@ -74,28 +74,6 @@ internal sealed class WorkConfigurationBuilder(WorkConfiguration configuration) 
         return this;
     }
 
-    public IWorkConfigurationBuilder UseConcurrency(WorkConcurrencyConfiguration concurrency)
-    {
-        ArgumentNullException.ThrowIfNull(concurrency);
-
-        this.configuration = this.configuration with
-        {
-            Concurrency = concurrency,
-        };
-        return this;
-    }
-
-    public IWorkConfigurationBuilder UseQueueDurability(WorkQueueDurabilityConfiguration durability)
-    {
-        ArgumentNullException.ThrowIfNull(durability);
-
-        this.configuration = this.configuration with
-        {
-            QueueDurability = durability,
-        };
-        return this;
-    }
-
     public IWorkConfigurationBuilder UseInvocation(WorkInvocationConfiguration invocation)
     {
         ArgumentNullException.ThrowIfNull(invocation);
@@ -107,15 +85,33 @@ internal sealed class WorkConfigurationBuilder(WorkConfiguration configuration) 
         return this;
     }
 
+    public IWorkConfigurationBuilder CoordinatePersistently()
+    {
+        this.configuration = this.configuration with
+        {
+            Coordination = this.configuration.Coordination with
+            {
+                IsEnabled = true,
+                Storage = WorkCoordinationStorage.Persistent,
+            },
+        };
+        return this;
+    }
+
     public IWorkConfigurationBuilder QueueDurably(TimeSpan? fallbackPollingInterval = null)
     {
         this.configuration = this.configuration with
         {
-            QueueDurability = new WorkQueueDurabilityConfiguration
+            Coordination = this.configuration.Coordination with
             {
                 IsEnabled = true,
-                CompleteDurably = this.configuration.QueueDurability.CompleteDurably,
-                FallbackPollingInterval = fallbackPollingInterval ?? WorkQueueDurabilityConfiguration.DefaultFallbackPollingInterval,
+                Storage = WorkCoordinationStorage.Persistent,
+                Durability = new WorkQueueDurabilityConfiguration
+                {
+                    IsEnabled = true,
+                    CompleteDurably = this.configuration.Coordination.Durability.CompleteDurably,
+                    FallbackPollingInterval = fallbackPollingInterval ?? WorkQueueDurabilityConfiguration.DefaultFallbackPollingInterval,
+                },
             },
         };
         return this;
@@ -125,9 +121,14 @@ internal sealed class WorkConfigurationBuilder(WorkConfiguration configuration) 
     {
         this.configuration = this.configuration with
         {
-            QueueDurability = this.configuration.QueueDurability with
+            Coordination = this.configuration.Coordination with
             {
-                CompleteDurably = true,
+                IsEnabled = true,
+                Storage = WorkCoordinationStorage.Persistent,
+                Durability = this.configuration.Coordination.Durability with
+                {
+                    CompleteDurably = true,
+                },
             },
         };
         return this;
@@ -200,20 +201,22 @@ internal sealed class WorkConfigurationBuilder(WorkConfiguration configuration) 
         WorkConcurrencyScope scope = WorkConcurrencyScope.PerDefinition,
         WorkConcurrencyBlockingMode blockingMode = WorkConcurrencyBlockingMode.WhileExecutingPausedOrFailed,
         WorkConcurrencyLimitReachedBehavior limitReachedBehavior = WorkConcurrencyLimitReachedBehavior.Ignore,
-        WorkConcurrencyOverrideBehavior overrideBehavior = WorkConcurrencyOverrideBehavior.Flexible,
-        WorkConcurrencyStorage storage = WorkConcurrencyStorage.Local)
+        WorkConcurrencyOverrideBehavior overrideBehavior = WorkConcurrencyOverrideBehavior.Flexible)
     {
         this.configuration = this.configuration with
         {
-            Concurrency = this.configuration.Concurrency with
+            Coordination = this.configuration.Coordination with
             {
                 IsEnabled = true,
-                MaximumCapacity = maximumCapacity,
-                Scope = scope,
-                BlockingMode = blockingMode,
-                LimitReachedBehavior = limitReachedBehavior,
-                OverrideBehavior = overrideBehavior,
-                Storage = storage,
+                Concurrency = this.configuration.Coordination.Concurrency with
+                {
+                    IsEnabled = true,
+                    MaximumCapacity = maximumCapacity,
+                    Scope = scope,
+                    BlockingMode = blockingMode,
+                    LimitReachedBehavior = limitReachedBehavior,
+                    OverrideBehavior = overrideBehavior,
+                },
             },
         };
         return this;
@@ -253,25 +256,22 @@ internal sealed class WorkConfigurationBuilder(WorkConfiguration configuration) 
     }
 
     public IWorkConfigurationBuilder RejectDuplicateSubjects(
-        WorkIdempotencyConflictPolicy conflictPolicy = WorkIdempotencyConflictPolicy.RejectDuplicates,
-        WorkIdempotencyStorage storage = WorkIdempotencyStorage.Local)
+        WorkIdempotencyConflictPolicy conflictPolicy = WorkIdempotencyConflictPolicy.RejectDuplicates)
     {
         this.configuration = this.configuration with
         {
-            Idempotency = new WorkIdempotencyConfiguration
+            Coordination = this.configuration.Coordination with
             {
                 IsEnabled = true,
-                Storage = storage,
-                ConflictPolicy = conflictPolicy,
+                Idempotency = new WorkIdempotencyConfiguration
+                {
+                    IsEnabled = true,
+                    ConflictPolicy = conflictPolicy,
+                },
             },
         };
         return this;
     }
-
-    public IWorkConfigurationBuilder RejectDuplicateSubjects(WorkIdempotencyStorage storage)
-        => this.RejectDuplicateSubjects(
-            WorkIdempotencyConflictPolicy.RejectDuplicates,
-            storage);
 
     public IWorkConfigurationBuilder WithAutomaticStart(int instanceCount = 1)
     {

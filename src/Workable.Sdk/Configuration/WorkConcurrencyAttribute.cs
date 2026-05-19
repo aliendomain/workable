@@ -11,8 +11,7 @@ public sealed class WorkConcurrencyAttribute : Attribute
         WorkConcurrencyScope scope = WorkConcurrencyScope.PerDefinition,
         WorkConcurrencyBlockingMode blockingMode = WorkConcurrencyBlockingMode.WhileExecutingPausedOrFailed,
         WorkConcurrencyLimitReachedBehavior limitReachedBehavior = WorkConcurrencyLimitReachedBehavior.Ignore,
-        WorkConcurrencyOverrideBehavior overrideBehavior = WorkConcurrencyOverrideBehavior.Flexible,
-        WorkConcurrencyStorage storage = WorkConcurrencyStorage.Local)
+        WorkConcurrencyOverrideBehavior overrideBehavior = WorkConcurrencyOverrideBehavior.Flexible)
     {
         this.Configuration = new WorkConcurrencyConfiguration
         {
@@ -22,15 +21,15 @@ public sealed class WorkConcurrencyAttribute : Attribute
             BlockingMode = blockingMode,
             LimitReachedBehavior = limitReachedBehavior,
             OverrideBehavior = overrideBehavior,
-            Storage = storage,
         };
 
         var validationConfiguration = WorkConfiguration.Default with
         {
-            Concurrency = this.Configuration,
-            QueueDurability = storage == WorkConcurrencyStorage.Persistence
-                ? WorkQueueDurabilityConfiguration.Default with { IsEnabled = true }
-                : WorkQueueDurabilityConfiguration.Default,
+            Coordination = WorkCoordinationConfiguration.Default with
+            {
+                IsEnabled = isEnabled,
+                Concurrency = this.Configuration,
+            },
         };
         WorkConfigurationValidator.ThrowIfInvalid(validationConfiguration);
     }

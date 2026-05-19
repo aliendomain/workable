@@ -17,6 +17,4 @@ public sealed record WorkConcurrencyConfiguration
     public WorkConcurrencyLimitReachedBehavior LimitReachedBehavior { get; init; } = WorkConcurrencyLimitReachedBehavior.Ignore;
 
     public WorkConcurrencyOverrideBehavior OverrideBehavior { get; init; } = WorkConcurrencyOverrideBehavior.Flexible;
-
-    public WorkConcurrencyStorage Storage { get; init; } = WorkConcurrencyStorage.Local;
 }

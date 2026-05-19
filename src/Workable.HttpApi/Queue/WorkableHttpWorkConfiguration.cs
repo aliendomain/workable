@@ -2,13 +2,11 @@ namespace Workable;
 
 public sealed record WorkableHttpWorkConfiguration(
     WorkStartConfiguration Start,
-    WorkIdempotencyConfiguration Idempotency,
+    WorkCoordinationConfiguration Coordination,
     WorkRecurrenceConfiguration Recurrence,
     WorkTransientRetryConfiguration TransientRetry,
     WorkLoggingConfiguration Logging,
-    WorkRetentionConfiguration Retention,
-    WorkConcurrencyConfiguration Concurrency,
-    WorkQueueDurabilityConfiguration QueueDurability)
+    WorkRetentionConfiguration Retention)
 {
     public static WorkableHttpWorkConfiguration Default { get; } = From(WorkConfiguration.Default);
 
@@ -18,26 +16,20 @@ public sealed record WorkableHttpWorkConfiguration(
 
         return new WorkableHttpWorkConfiguration(
             configuration.Start,
-            configuration.Idempotency,
+            configuration.Coordination,
             configuration.Recurrence,
             configuration.TransientRetry,
             configuration.Logging,
-            configuration.Retention,
-            configuration.Concurrency,
-            configuration.QueueDurability);
+            configuration.Retention);
     }
 
     internal WorkConfiguration ToWorkConfiguration()
         => new(
             Start,
-            Idempotency,
+            Coordination,
             Recurrence,
             TransientRetry,
             Logging,
             Retention,
-            Concurrency,
-            WorkInvocationConfiguration.Default)
-        {
-            QueueDurability = QueueDurability,
-        };
+            WorkInvocationConfiguration.Default);
 }

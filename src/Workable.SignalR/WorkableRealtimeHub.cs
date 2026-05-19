@@ -42,15 +42,22 @@ public sealed class WorkableRealtimeHub(
         string? systemName = null)
     {
         var system = ResolveSystem(systemName);
-        var subscription = await viewSubscriptions.WatchView(
-            this.Context.ConnectionId,
-            this.Groups,
-            system,
-            viewName,
-            views.NormalizeViewCriteria(viewName, criteria),
-            this.Context.ConnectionAborted);
+        try
+        {
+            var subscription = await viewSubscriptions.WatchView(
+                this.Context.ConnectionId,
+                this.Groups,
+                system,
+                viewName,
+                views.NormalizeViewCriteria(viewName, criteria),
+                this.Context.ConnectionAborted);
 
-        await SendView(system, subscription.ViewName, subscription.Criteria, this.Clients.Caller);
+            await SendView(system, subscription.ViewName, subscription.Criteria, this.Clients.Caller);
+        }
+        catch (OperationCanceledException) when (this.Context.ConnectionAborted.IsCancellationRequested)
+        {
+            // The client disconnected while the initial view payload was being prepared.
+        }
     }
 
     public Task UnwatchView(string viewName, string? systemName = null)

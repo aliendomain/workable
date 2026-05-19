@@ -14,7 +14,7 @@ The core API defines the public shape of Workable for discovering work, queueing
 - `IWorkerOperations` controls worker actions.
 - `IWorkQueryService` exposes the discoverable query facade. Each built-in query has a named method, with optional criteria and cancellation where applicable.
 - `IWorkEventStream` creates event subscriptions.
-- `IWorkSystemDiagnostics` exposes runtime diagnostics for queue rejection, read-model projection, and retention cleanup.
+- `IWorkSystemDiagnostics` exposes runtime diagnostics for queue rejection, read-model projection, retention cleanup, concurrency backlog, durability loops, and idempotency duplicate rejection.
 - `Start` and `Stop` control system lifecycle.
 - `Stop` returns the shutdown grace period plus workers that were force-completed because the grace period elapsed, including compact worker summaries and definition names. The stop result keeps the existing `ForceCanceled*` property names for compatibility; during shutdown interruption those entries represent workers force-completed as `Interrupted`.
 - `Stop` clears in-memory worker and iteration records after shutdown interruption completes.
@@ -73,6 +73,7 @@ Execution context also exposes the worker's `WorkOrigin`, whether interruption i
 - Worker snapshots expose `CurrentIterationSequence` and `LastIterationSequence` so callers can cheaply locate the active or most recently completed iteration.
 - Direct .NET queueing and worker operations use `IDotNetWorkOriginProvider` to create trusted `DotNet` origins.
 - Start configuration controls whether queued work starts automatically and when queue calls return control to the caller.
+- Coordination configuration selects local or persistent coordination state, then enables duplicate protection, capacity limits, durable queueing, and durable completion under that mode.
 - Idempotency configuration controls whether workers with the same subject are rejected.
 - Concurrency configuration controls whether workers share capacity by definition, subject, or concurrency key.
 - Worker handles can be awaited for completion and final result details.
@@ -82,7 +83,7 @@ Execution context also exposes the worker's `WorkOrigin`, whether interruption i
 - `IWorkQueryService.Worker` returns a full `WorkerSnapshot`.
 - `IWorkQueryService` reads worker and iteration state from the runtime read model snapshot; the in-memory model starts empty with the process and is cleared when the system stops.
 - Control and correctness paths use live worker records instead of the eventually consistent read model. This includes idempotency checks, concurrency decisions, worker actions, shutdown interruption, retention purge selection, and bulk action execution.
-- `IWorkSystem.Diagnostics` exposes queue, read-model, and retention diagnostics. See [Work Diagnostics](work-diagnostics.md).
+- `IWorkSystem.Diagnostics` exposes queue, read-model, retention, concurrency, durability, and idempotency diagnostics. See [Work Diagnostics](work-diagnostics.md).
 - `IWorkQueryService.Workers` returns lightweight `WorkerOverviewItem` rows.
 - `IWorkQueryService.WorkerIteration` returns one full `WorkerIterationSnapshot` by worker id and iteration sequence.
 - `IWorkQueryService.WorkerIterations` returns lightweight `WorkerIterationOverviewItem` rows.

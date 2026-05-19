@@ -55,6 +55,7 @@ The response includes each system's id, optional name, state, default-system mar
       "state": "Started",
       "isDefault": true,
       "capabilities": {
+        "persistentCoordinationAvailable": true,
         "realtime": {
           "enabled": true,
           "transport": "signalr",
@@ -67,10 +68,11 @@ The response includes each system's id, optional name, state, default-system mar
 }
 ```
 
-The `capabilities` object lets clients discover optional adapter features for each system. The `realtime` section reports whether `Workable.SignalR` is registered.
+The `capabilities` object lets clients discover optional adapter and host features for each system. `persistentCoordinationAvailable` tells clients whether this system can accept persistent coordination settings. The `realtime` section reports whether `Workable.SignalR` is registered.
 
 ```json
 {
+  "persistentCoordinationAvailable": true,
   "realtime": {
     "enabled": true,
     "transport": "signalr",
@@ -91,7 +93,7 @@ GET /workable/diagnostics
 GET /workable/systems/email/diagnostics
 ```
 
-The response includes queue, read-model, and retention diagnostics. Use it to monitor rejected work, query freshness, projector pressure, retention lag, and internal diagnostics failures.
+The response includes queue, read-model, retention, concurrency, durability, and idempotency diagnostics. Use it to monitor alertable queue rejections, query freshness, projector pressure, retention lag, deferred-start backlog, durable coordination lag, duplicate rejection, and internal diagnostics failures.
 
 ```json
 {
@@ -104,7 +106,10 @@ The response includes queue, read-model, and retention diagnostics. Use it to mo
     "lastRejectedStatus": null,
     "lastRejectedDefinitionId": null,
     "lastRejectedCode": null,
-    "lastRejectedMessage": null
+    "lastRejectedMessage": null,
+    "alertableRejectedWorkCount": 0,
+    "lastAlertableRejectedCode": null,
+    "lastAlertableRejectedMessage": null
   },
   "readModel": {
     "enqueuedSequence": 42,
@@ -134,6 +139,30 @@ The response includes queue, read-model, and retention diagnostics. Use it to mo
     "schedulerFailureType": null,
     "schedulerFailureMessage": null,
     "hasSchedulerFailure": false
+  },
+  "concurrency": {
+    "deferredStartCount": 0,
+    "oldestDeferredStartAge": "00:00:00",
+    "lastDrainReleasedCount": 0
+  },
+  "durability": {
+    "acceptedWaiterCount": 0,
+    "oldestAcceptedWaiterAge": "00:00:00",
+    "pendingCleanupCount": 0,
+    "oldestPendingCleanupAge": "00:00:00",
+    "readerFailureType": null,
+    "readerFailureMessage": null,
+    "leaseRenewalFailureType": null,
+    "leaseRenewalFailureMessage": null,
+    "cleanupFailureType": null,
+    "cleanupFailureMessage": null,
+    "hasReaderFailure": false,
+    "hasLeaseRenewalFailure": false,
+    "hasCleanupFailure": false
+  },
+  "idempotency": {
+    "duplicateRejectionCount": 0,
+    "lastDuplicateRejectedStorage": null
   }
 }
 ```
@@ -298,7 +327,7 @@ Queue requests can include HTTP worker options and input identity metadata.
 }
 ```
 
-HTTP queue options use `WorkableHttpWorkerOptions`. Its `configuration` shape includes start behavior, idempotency, recurrence, transient retry, logging, retention, and concurrency. Retention includes `purgeInterval` and the asynchronously enforced `maximumFinalWorkers` target. Invocation channels are not part of the HTTP queue request because they are definition-level configuration.
+HTTP queue options use `WorkableHttpWorkerOptions`. Its `configuration` shape includes start behavior, coordination, recurrence, transient retry, logging, and retention. Coordination selects local or persistent coordination state, then enables duplicate protection, capacity limits, durable queueing, and durable completion under that mode. Retention includes `purgeInterval` and the asynchronously enforced `maximumFinalWorkers` target. Invocation channels are not part of the HTTP queue request because they are definition-level configuration.
 
 The accepted worker remains owned by Workable and can be queried, observed, or controlled through Workable.
 

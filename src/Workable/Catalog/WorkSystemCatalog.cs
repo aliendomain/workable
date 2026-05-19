@@ -14,9 +14,13 @@ internal sealed class WorkSystemCatalog : IWorkCatalog
     private Dictionary<string, RegisteredWork> workByName = new(StringComparer.OrdinalIgnoreCase);
     private IReadOnlyDictionary<string, IReadOnlyList<WorkDefinition>> definitionsByCategory = new Dictionary<string, IReadOnlyList<WorkDefinition>>(StringComparer.OrdinalIgnoreCase);
     private IReadOnlyDictionary<string, IReadOnlyList<WorkDefinition>> definitionsByCategoryPath = new Dictionary<string, IReadOnlyList<WorkDefinition>>(StringComparer.OrdinalIgnoreCase);
+    private readonly bool persistenceStoreAvailable;
 
-    public WorkSystemCatalog(IReadOnlyList<RegisteredWork> work)
+    public WorkSystemCatalog(
+        IReadOnlyList<RegisteredWork> work,
+        bool persistenceStoreAvailable)
     {
+        this.persistenceStoreAvailable = persistenceStoreAvailable;
         this.work.AddRange(work);
         this.RebuildIndexes();
     }
@@ -103,7 +107,7 @@ internal sealed class WorkSystemCatalog : IWorkCatalog
 
             var updatedOptions = changes.DefaultOptions ?? registeredWork.Definition.DefaultOptions;
             var updatedConfiguration = changes.Configuration ?? registeredWork.Definition.Configuration;
-            var messages = ValidateReconfiguration(updatedOptions, updatedConfiguration);
+            var messages = this.ValidateReconfiguration(updatedOptions, updatedConfiguration);
             if (messages.Count > 0)
             {
                 return Task.FromResult(WorkDefinitionReconfigurationOutcome.Invalid(registeredWork.Definition, messages));
@@ -127,15 +131,17 @@ internal sealed class WorkSystemCatalog : IWorkCatalog
         }
     }
 
-    private static List<WorkMessage> ValidateReconfiguration(
+    private List<WorkMessage> ValidateReconfiguration(
         WorkerOptions options,
         WorkConfiguration configuration)
     {
         var messages = new List<WorkMessage>();
         messages.AddRange(WorkConfigurationValidator.Validate(configuration));
+        messages.AddRange(WorkConfigurationValidator.ValidatePersistenceStore(configuration, this.persistenceStoreAvailable));
         if (options.Configuration is { } optionConfiguration)
         {
             messages.AddRange(WorkConfigurationValidator.Validate(optionConfiguration));
+            messages.AddRange(WorkConfigurationValidator.ValidatePersistenceStore(optionConfiguration, this.persistenceStoreAvailable));
         }
 
         return messages;

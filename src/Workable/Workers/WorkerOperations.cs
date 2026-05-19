@@ -28,6 +28,7 @@ internal sealed class WorkerOperations : IWorkerOperations, IDisposable
     private readonly TimeSpan shutdownGracePeriod;
     private readonly WorkSystemCapacityConfiguration capacity;
     private readonly WorkSystemQueueDiagnosticsTracker queueDiagnostics;
+    private readonly bool persistenceStoreAvailable;
     private CancellationTokenSource systemExecutionLifetime = new();
     private volatile bool acceptingWork;
     private long workerCount;
@@ -60,6 +61,7 @@ internal sealed class WorkerOperations : IWorkerOperations, IDisposable
         this.capacity = capacity;
         this.metrics = metrics;
         this.queueDiagnostics = queueDiagnostics;
+        this.persistenceStoreAvailable = persistenceStore is not null;
         this.readModel = readModel;
         this.concurrency = new WorkConcurrencyCoordinator();
         var persistenceLogger = rootServices.GetService<ILoggerFactory>()?.CreateLogger("Workable.Persistence");
@@ -141,8 +143,16 @@ internal sealed class WorkerOperations : IWorkerOperations, IDisposable
             return this.RejectQueue(WorkQueueOutcome.Invalid(registeredWork.Definition.Id, runtimePlan.ConfigurationErrors));
         }
 
+        var persistenceStoreErrors = WorkConfigurationValidator.ValidatePersistenceStore(
+            runtimePlan.Configuration,
+            this.persistenceStoreAvailable);
+        if (persistenceStoreErrors.Count > 0)
+        {
+            return this.RejectQueue(WorkQueueOutcome.Invalid(registeredWork.Definition.Id, persistenceStoreErrors));
+        }
+
         var concurrencyInputErrors = WorkConfigurationValidator.ValidateConcurrencyInput(
-            concurrency: runtimePlan.Configuration.Concurrency,
+            coordination: runtimePlan.Configuration.Coordination,
             input: input);
         if (concurrencyInputErrors.Count > 0)
         {
@@ -552,7 +562,7 @@ internal sealed class WorkerOperations : IWorkerOperations, IDisposable
             return Task.FromResult(WorkActionOutcome.NotFound(WorkAction.Start, worker.WorkerId));
         }
 
-        var outcome = record.Reconfigure(changes, worker.Revision);
+        var outcome = record.Reconfigure(changes, worker.Revision, this.persistenceStoreAvailable);
         record.RecordReconfigurationHistory(changes, outcome, origin);
         if (outcome.IsAccepted)
         {
@@ -770,7 +780,7 @@ internal sealed class WorkerOperations : IWorkerOperations, IDisposable
         CancellationToken systemExecutionCancellationToken,
         bool bypassConcurrencyWhenFlexible = false)
     {
-        var outcome = worker.Configuration.Concurrency.IsEnabled
+        var outcome = worker.Configuration.Coordination.IsConcurrencyEnabled
             ? this.concurrency.TryStart(
                 worker,
                 expectedRevision,

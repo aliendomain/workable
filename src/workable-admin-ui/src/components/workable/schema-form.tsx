@@ -136,6 +136,14 @@ export function createDefaultValue(schema: JsonSchemaNode | null): unknown {
     return [];
   }
 
+  if (schema.format === "date") {
+    return formatDateOnlyInputValue(new Date());
+  }
+
+  if (schema.format === "date-time") {
+    return new Date().toISOString();
+  }
+
   if (type === "boolean") {
     return false;
   }
@@ -763,6 +771,10 @@ function formatInputValue(schema: JsonSchemaNode, value: unknown) {
     return "";
   }
 
+  if (schema.format === "date") {
+    return String(value).slice(0, 10);
+  }
+
   if (schema.format === "date-time") {
     const parsed = new Date(String(value));
     if (!Number.isNaN(parsed.getTime())) {
@@ -779,6 +791,14 @@ function formatStringValue(schema: JsonSchemaNode, value: string) {
   }
 
   return value;
+}
+
+function formatDateOnlyInputValue(value: Date) {
+  const year = value.getFullYear();
+  const month = String(value.getMonth() + 1).padStart(2, "0");
+  const day = String(value.getDate()).padStart(2, "0");
+
+  return `${year}-${month}-${day}`;
 }
 
 function placeholderFor(schema: JsonSchemaNode, label: string) {

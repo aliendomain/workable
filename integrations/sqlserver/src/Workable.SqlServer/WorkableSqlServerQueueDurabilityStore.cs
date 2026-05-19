@@ -169,8 +169,8 @@ BEGIN TRY
             WHERE entries.WorkSystemName = @WorkSystemName
               AND entries.IsDurableQueued = 1
               AND (entries.LeaseExpiresAt IS NULL OR entries.LeaseExpiresAt <= @Now)
-              AND JSON_VALUE(entries.ConfigurationJson, '$.concurrency.isEnabled') = 'true'
-              AND JSON_VALUE(entries.ConfigurationJson, '$.concurrency.storage') = 'Persistence'
+              AND JSON_VALUE(entries.ConfigurationJson, '$.coordination.concurrency.isEnabled') = 'true'
+              AND JSON_VALUE(entries.ConfigurationJson, '$.coordination.storage') = 'Persistent'
         )
         THEN 1
         ELSE 0
@@ -220,13 +220,13 @@ BEGIN TRY
     (
         SELECT entries.*,
             CASE
-                WHEN JSON_VALUE(entries.ConfigurationJson, '$.concurrency.isEnabled') = 'true'
-                 AND JSON_VALUE(entries.ConfigurationJson, '$.concurrency.storage') = 'Persistence'
+                WHEN JSON_VALUE(entries.ConfigurationJson, '$.coordination.concurrency.isEnabled') = 'true'
+                 AND JSON_VALUE(entries.ConfigurationJson, '$.coordination.storage') = 'Persistent'
                 THEN 1
                 ELSE 0
             END AS HasPersistenceConcurrency,
-            TRY_CONVERT(int, JSON_VALUE(entries.ConfigurationJson, '$.concurrency.maximumCapacity')) AS ConcurrencyMaximumCapacity,
-            JSON_VALUE(entries.ConfigurationJson, '$.concurrency.scope') AS ConcurrencyScope
+            TRY_CONVERT(int, JSON_VALUE(entries.ConfigurationJson, '$.coordination.concurrency.maximumCapacity')) AS ConcurrencyMaximumCapacity,
+            JSON_VALUE(entries.ConfigurationJson, '$.coordination.concurrency.scope') AS ConcurrencyScope
         FROM {this.entriesTable} entries WITH (UPDLOCK, READPAST, ROWLOCK)
         WHERE entries.WorkSystemName = @WorkSystemName
           AND entries.IsDurableQueued = 1
@@ -235,8 +235,8 @@ BEGIN TRY
           (
               @RequiresClaimLock = 1
               OR CASE
-                  WHEN JSON_VALUE(entries.ConfigurationJson, '$.concurrency.isEnabled') = 'true'
-                   AND JSON_VALUE(entries.ConfigurationJson, '$.concurrency.storage') = 'Persistence'
+                  WHEN JSON_VALUE(entries.ConfigurationJson, '$.coordination.concurrency.isEnabled') = 'true'
+                   AND JSON_VALUE(entries.ConfigurationJson, '$.coordination.storage') = 'Persistent'
                   THEN 1
                   ELSE 0
               END = 0

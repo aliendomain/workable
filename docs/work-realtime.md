@@ -285,14 +285,25 @@ await connection.InvokeAsync(
     (string?)null);
 ```
 
-Use the compact shape for alert indicators and the detailed shape for an expanded read-model diagnostics panel. The compact payload includes `pendingUpdateCount`, `isReadModelBehind`, `readModelLagWarningThreshold`, and projector failure fields. The detailed payload also includes the full `readModel` diagnostics object.
+Use the compact shape for alert indicators and the detailed shape for expanded diagnostics panels. Supported diagnostics components are `systemDiagnostics`, `queueDiagnostics`, `readModelDiagnostics`, `retentionDiagnostics`, `concurrencyDiagnostics`, `durabilityDiagnostics`, and `idempotencyDiagnostics`.
+
+Compact component payloads include the values needed for the notification tray:
+
+- `queueDiagnostics`: rejected-work counts, alertable rejected-work counts, and last rejection details.
+- `readModelDiagnostics`: pending update count, read-model lag state, threshold, and projector failure fields.
+- `retentionDiagnostics`: tracked final worker count, scheduled purge count, oldest due purge age, threshold, and scheduler failure fields.
+- `concurrencyDiagnostics`: deferred start count, oldest deferred start age, last released count, and threshold.
+- `durabilityDiagnostics`: accepted waiter count, pending cleanup count, their oldest ages, thresholds, and durable reader, lease renewal, and cleanup failure fields.
+- `idempotencyDiagnostics`: duplicate rejection count and the storage mode that rejected the latest duplicate.
 
 Diagnostics components can set `publishMode` in their options:
 
-- `alertChanges` only pushes compact diagnostics when the alert state changes, such as normal-to-behind, behind-to-normal, severity band changes, or projector failure changes. This is intended for always-on notification indicators.
+- `alertChanges` only pushes compact diagnostics when the alert state changes, such as normal-to-behind, behind-to-normal, severity band changes, queue rejection changes, or background-loop failure changes. This is intended for always-on notification indicators.
 - `continuous` pushes on every diagnostics publish tick while the subscription is active. This is intended for visible diagnostics panels.
 
-In the admin UI, the notification bell uses `alertChanges` subscriptions for every realtime-enabled system configured across all hosts. Those subscriptions are compact and quiet while healthy, and the client aggregates their alert states into one bell indicator. Detailed diagnostics are not aggregated this way: opening the tray and expanding read-model or retention diagnostics uses `continuous` or `detailed` diagnostics only for the active system. To inspect another server or system in detail, switch the admin UI to that system first.
+Threshold options are component-specific: `warningThreshold` controls read-model pending updates, `warningSeconds` controls retention lag and concurrency lag, and durability accepts `acceptedWorkerWarningSeconds` and `cleanupWarningSeconds`.
+
+In the admin UI, the notification bell uses `alertChanges` subscriptions for every realtime-enabled system configured across all hosts. Those subscriptions are compact and quiet while healthy, and the client aggregates their alert states into one bell indicator. Detailed diagnostics are not aggregated this way: opening the tray and expanding a diagnostics section uses `continuous` or `detailed` diagnostics only for the active system. To inspect another server or system in detail, switch the admin UI to that system first.
 
 For example, an always-on alert indicator can stay quiet while healthy:
 

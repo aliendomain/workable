@@ -19,18 +19,20 @@ Polling remains as the cross-process and caller-transaction fallback. If another
 configuration.QueueDurably(fallbackPollingInterval: TimeSpan.FromSeconds(5));
 ```
 
-Durable queueing does not imply idempotency. `QueueDurably()` persists the queue entry and gives at-least-once acceptance; execution remains recoverable with lease-based replay if a process stops before final cleanup.
+Durable queueing does not imply idempotency. `QueueDurably()` persists the queue entry and gives at-least-once acceptance; execution remains recoverable with lease-based replay if a process stops before final cleanup. It also selects persistent coordination storage, so any enabled idempotency or concurrency feature in the same configuration is persistence-backed.
 
-Idempotency storage is explicit. Local idempotency is the default for non-durable work:
+Local idempotency is the default for non-durable work:
 
 ```csharp
-configuration.RejectDuplicateSubjects(WorkIdempotencyStorage.Local);
+configuration.RejectDuplicateSubjects();
 ```
 
-Persistence-backed idempotency is selected with:
+Persistence-backed idempotency without durable queueing is selected with:
 
 ```csharp
-configuration.RejectDuplicateSubjects(WorkIdempotencyStorage.Persistence);
+configuration
+    .CoordinatePersistently()
+    .RejectDuplicateSubjects();
 ```
 
 When queue durability and persistence-backed idempotency are both enabled, the durable store owns the active duplicate check as part of the same database write that persists the queue row. SQL Server does this with a conditional unique index on idempotent work entries, so the hot queue path is a single insert rather than a separate idempotency read followed by enqueue persistence.
@@ -38,7 +40,7 @@ When queue durability and persistence-backed idempotency are both enabled, the d
 ```csharp
 configuration
     .QueueDurably()
-    .RejectDuplicateSubjects(WorkIdempotencyStorage.Persistence);
+    .RejectDuplicateSubjects();
 ```
 
 The database provider is configured separately from work configuration. SQL Server is provided by `Workable.SqlServer`:
@@ -85,7 +87,8 @@ Durable completion requires a persisted Workable row to complete. That row can c
 
 ```csharp
 configuration
-    .RejectDuplicateSubjects(WorkIdempotencyStorage.Persistence)
+    .CoordinatePersistently()
+    .RejectDuplicateSubjects()
     .CompleteDurably();
 ```
 

@@ -6,7 +6,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 
 namespace Workable;
-internal sealed class InMemoryWorkSystem : IWorkSystem, IOriginAwareWorkSystem, IWorkSystemShutdownMetadata
+internal sealed class InMemoryWorkSystem : IWorkSystem, IOriginAwareWorkSystem, IWorkSystemShutdownMetadata, IWorkSystemCoordinationCapabilities
 {
     private readonly IServiceProvider rootServices;
     private readonly IReadOnlyList<Func<IServiceProvider, IWorkDefinitionSource>> workDefinitionSourceFactories;
@@ -38,13 +38,14 @@ internal sealed class InMemoryWorkSystem : IWorkSystem, IOriginAwareWorkSystem, 
         this.rootServices = rootServices;
         this.workDefinitionSourceFactories = workDefinitionSourceFactories;
         this.startupWorkSourceFactories = startupWorkSourceFactories;
-        this.catalog = new WorkSystemCatalog(work);
         this.ShutdownGracePeriod = shutdownGracePeriod;
         var dotNetOriginProvider = registration.DotNetOriginProviderFactory?.Invoke(rootServices)
             ?? rootServices.GetService<IDotNetWorkOriginProvider>()
             ?? new DefaultDotNetWorkOriginProvider();
         var persistenceStore = rootServices.GetService<IWorkPersistenceStore>()
             ?? rootServices.GetService<IWorkQueueDurabilityStore>();
+        this.PersistentCoordinationAvailable = persistenceStore is not null;
+        this.catalog = new WorkSystemCatalog(work, this.PersistentCoordinationAvailable);
         this.readModel = new WorkSystemReadModel(this.catalog, () => this.State, this.Name, this.metrics);
         this.workers = new WorkerOperations(
             this.catalog,
@@ -77,6 +78,8 @@ internal sealed class InMemoryWorkSystem : IWorkSystem, IOriginAwareWorkSystem, 
     public WorkSystemState State { get; private set; } = WorkSystemState.Created;
 
     public TimeSpan ShutdownGracePeriod { get; }
+
+    public bool PersistentCoordinationAvailable { get; }
 
     public IWorkCatalog Catalog => this.catalog;
 

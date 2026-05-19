@@ -4,7 +4,7 @@ internal sealed class WorkSystemIdempotencyDiagnosticsTracker
 {
     private readonly Lock sync = new();
     private long duplicateRejectionCount;
-    private WorkIdempotencyStorage? lastDuplicateRejectedStorage;
+    private WorkCoordinationStorage? lastDuplicateRejectedStorage;
 
     public WorkSystemIdempotencyDiagnostics Diagnostics()
     {
@@ -19,7 +19,7 @@ internal sealed class WorkSystemIdempotencyDiagnosticsTracker
     public void RecordDuplicateRejected(
         WorkDefinitionId definitionId,
         WorkSubjectId subjectId,
-        WorkIdempotencyStorage storage)
+        WorkCoordinationStorage storage)
     {
         lock (this.sync)
         {

@@ -69,10 +69,10 @@ Add persistence-backed idempotency when durable acceptance should reject duplica
 ```csharp
 configuration
     .QueueDurably()
-    .RejectDuplicateSubjects(WorkIdempotencyStorage.Persistence);
+    .RejectDuplicateSubjects();
 ```
 
-Durable queueing rejects local idempotency when idempotency is enabled. A local duplicate check cannot coordinate with durable rows written by another process or by the same process after restart.
+Durable queueing selects persistent coordination storage. If idempotency is enabled in the same configuration, duplicate detection is persistence-backed automatically. A local duplicate check cannot coordinate with durable rows written by another process or by the same process after restart, so Workable no longer models durable queueing with local idempotency as a separate shape.
 
 ## Durable Queue And Concurrency
 
@@ -83,7 +83,6 @@ Persistence-backed concurrency is for durable work shared by multiple runtimes. 
 The supported persistence-backed concurrency shape is:
 
 - `QueueDurably()` must be enabled.
-- `storage: WorkConcurrencyStorage.Persistence` must be selected.
 - `blockingMode` must be `WorkConcurrencyBlockingMode.WhileExecuting`.
 - `limitReachedBehavior` must be `WorkConcurrencyLimitReachedBehavior.DeferStart`.
 
@@ -94,8 +93,7 @@ configuration
         maximumCapacity: 1,
         scope: WorkConcurrencyScope.PerConcurrencyKey,
         blockingMode: WorkConcurrencyBlockingMode.WhileExecuting,
-        limitReachedBehavior: WorkConcurrencyLimitReachedBehavior.DeferStart,
-        storage: WorkConcurrencyStorage.Persistence);
+        limitReachedBehavior: WorkConcurrencyLimitReachedBehavior.DeferStart);
 ```
 
 Completed workers and explicitly canceled workers release durable concurrency by deleting the durable row. Failed workers are retained for inspection, but they do not continue holding `WhileExecuting` persistence-backed capacity after failure retention clears the execution bucket. Shutdown interruption is not explicit cancellation; interrupted durable work remains replayable after its lease expires.
@@ -108,7 +106,7 @@ Workable does not create the developer's transaction. Executor code creates the 
 
 If durable completion is enabled and executor code returns success without calling `CompleteDurably(...)`, Workable fails the execution instead of marking it completed. That failure is intentional because otherwise the durable row could be replayed even though the in-memory execution reported success.
 
-Durable completion requires durable queueing or persistence-backed idempotency, and it is not supported for recurring work.
+Durable completion requires durable queueing or persistent coordination with idempotency enabled, and it is not supported for recurring work.
 
 ## Retention And Failure
 
