@@ -102,6 +102,7 @@ public sealed class DemoDurabilityWarningController(
                     }
                     catch (OperationCanceledException) when (waitingCancellation.IsCancellationRequested)
                     {
+                        logger.LogDebug("Durability warning sample waiter canceled during intentional cleanup.");
                     }
                 }, CancellationToken.None));
             }
@@ -132,6 +133,7 @@ public sealed class DemoDurabilityWarningController(
             }
             catch (Exception exception) when (!IsCriticalException(exception))
             {
+                logger.LogDebug(exception, "Durability warning sample ignored a non-critical waiter error while cleaning up startup failure.");
             }
 
             if (openedTransaction is not null)
@@ -193,8 +195,9 @@ public sealed class DemoDurabilityWarningController(
             {
                 await transactionToDispose.RollbackAsync(cancellationToken);
             }
-            catch (InvalidOperationException)
+            catch (InvalidOperationException exception)
             {
+                logger.LogDebug(exception, "Durability warning sample rollback was skipped because the transaction was already completed.");
             }
             finally
             {

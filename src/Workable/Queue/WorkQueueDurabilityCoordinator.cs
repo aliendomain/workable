@@ -42,7 +42,7 @@ internal sealed class WorkQueueDurabilityCoordinator(
     private readonly TimeSpan leaseDuration = leaseDuration ?? TimeSpan.FromMinutes(1);
     private readonly string ownerId = $"{Environment.MachineName}:{Guid.NewGuid():N}";
     private readonly int claimBatchSize = batchSize;
-    private IWorkPersistenceStore? activeStore = store;
+    private readonly IWorkPersistenceStore? activeStore = store;
     private long readerPollIntervalTicks = (readerPollInterval ?? WorkQueueDurabilityConfiguration.DefaultFallbackPollingInterval).Ticks;
     private int readerSignalPending;
     private Task? readerTask;

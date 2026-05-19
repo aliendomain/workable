@@ -867,6 +867,7 @@ public sealed class DurableQueueTests
             }
             catch (OperationCanceledException)
             {
+                // Expected when waitCancellation is canceled.
             }
         });
 
