@@ -16,8 +16,10 @@ public sealed record WorkerSnapshot(
     WorkerOptions Options,
     WorkConfiguration Configuration,
     IReadOnlyList<WorkMessage> Messages,
+    WorkInterruptionReason? InterruptionReason,
     DateTimeOffset CreatedAt,
-    DateTimeOffset UpdatedAt)
+    DateTimeOffset StateChangedAt,
+    DateTimeOffset UpdatedAt) : IWorkQueryResult
 {
     public WorkerVersion Version => new(this.Id, this.Revision);
 

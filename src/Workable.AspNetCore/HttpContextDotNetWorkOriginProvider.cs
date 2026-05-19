@@ -10,15 +10,25 @@ public sealed class HttpContextDotNetWorkOriginProvider(IHttpContextAccessor htt
         var httpContext = httpContextAccessor.HttpContext;
         if (httpContext is null)
         {
-            return WorkOrigin.Create(WorkInvocationChannel.DotNet, description: description);
+            return CreateDotNetOrigin(description);
         }
 
-        return WorkOrigin.Create(
-            WorkInvocationChannel.DotNet,
-            CreateActor(httpContext.User),
-            description,
-            $"{httpContext.Request.PathBase}{httpContext.Request.Path}{httpContext.Request.QueryString}");
+        try
+        {
+            return WorkOrigin.Create(
+                WorkInvocationChannel.DotNet,
+                CreateActor(httpContext.User),
+                description,
+                $"{httpContext.Request.PathBase}{httpContext.Request.Path}{httpContext.Request.QueryString}");
+        }
+        catch (ObjectDisposedException)
+        {
+            return CreateDotNetOrigin(description);
+        }
     }
+
+    private static WorkOrigin CreateDotNetOrigin(string description)
+        => WorkOrigin.Create(WorkInvocationChannel.DotNet, description: description);
 
     private static WorkActor CreateActor(ClaimsPrincipal user)
     {

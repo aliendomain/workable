@@ -8,4 +8,5 @@ public sealed record WorkerReconfiguration(
     WorkTransientRetryConfiguration? TransientRetry = null,
     WorkLoggingConfiguration? Logging = null,
     WorkRetentionConfiguration? Retention = null,
-    WorkConcurrencyConfiguration? Concurrency = null);
+    WorkConcurrencyConfiguration? Concurrency = null,
+    WorkQueueDurabilityConfiguration? QueueDurability = null);

@@ -59,7 +59,7 @@ public sealed class WorkStartConfigurationTests
         await system.Start();
 
         var handle = await system.Queue.Enqueue("manual-start");
-        var worker = RequiredWorker(await system.Query.GetWorker(RequiredWorkerId(handle)));
+        var worker = RequiredWorker(await system.Query.Worker(RequiredWorkerId(handle)));
 
         Assert.True(handle.QueueOutcome.IsAccepted);
         Assert.Equal(WorkerState.Queued, worker.State);
@@ -188,12 +188,12 @@ public sealed class WorkStartConfigurationTests
 
         await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => await queueTask);
 
-        var worker = Assert.Single((await system.Query.QueryWorkers(new WorkerQuery(Take: 10))).Workers);
+        var worker = Assert.Single((await system.Query.Workers(new WorkerCriteria(Take: 10))).Workers);
 
         release.SetResult();
         await Eventually(async () =>
         {
-            var snapshot = await system.Query.GetWorker(worker.Id);
+            var snapshot = await system.Query.Worker(worker.Id);
             return snapshot?.State == WorkerState.Completed;
         });
     }
@@ -208,7 +208,7 @@ public sealed class WorkStartConfigurationTests
         await system.Start();
 
         var handle = await system.Queue.Enqueue("runtime-start");
-        var worker = RequiredWorker(await system.Query.GetWorker(RequiredWorkerId(handle)));
+        var worker = RequiredWorker(await system.Query.Worker(RequiredWorkerId(handle)));
 
         var outcome = await system.Workers.Reconfigure(
             worker.Version,
@@ -238,7 +238,7 @@ public sealed class WorkStartConfigurationTests
         await system.Start();
 
         var handle = await system.Queue.Enqueue("runtime-concurrency-start");
-        var worker = RequiredWorker(await system.Query.GetWorker(RequiredWorkerId(handle)));
+        var worker = RequiredWorker(await system.Query.Worker(RequiredWorkerId(handle)));
 
         var outcome = await system.Workers.Reconfigure(
             worker.Version,
@@ -286,8 +286,8 @@ public sealed class WorkStartConfigurationTests
 
         var first = await system.Queue.Enqueue("runtime-concurrency-deferred-start");
         var second = await system.Queue.Enqueue("runtime-concurrency-deferred-start");
-        var firstWorker = RequiredWorker(await system.Query.GetWorker(RequiredWorkerId(first)));
-        var secondWorker = RequiredWorker(await system.Query.GetWorker(RequiredWorkerId(second)));
+        var firstWorker = RequiredWorker(await system.Query.Worker(RequiredWorkerId(first)));
+        var secondWorker = RequiredWorker(await system.Query.Worker(RequiredWorkerId(second)));
 
         var firstStart = await system.Workers.Execute(firstWorker.Version, WorkAction.Start);
         await firstStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));

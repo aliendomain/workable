@@ -84,6 +84,40 @@ public sealed class WorkSystemLifecycleTests
     }
 
     [Fact]
+    public void SystemRetentionDefaultsMatchConfiguredValues()
+    {
+        var retention = WorkSystemRetentionConfiguration.Default;
+
+        Assert.Equal(10_000, retention.MaximumFinalWorkers);
+    }
+
+    [Fact]
+    public void SystemCapacityDefaultsMatchConfiguredValues()
+    {
+        var capacity = WorkSystemCapacityConfiguration.Default;
+
+        Assert.Equal(1_000_000, capacity.MaximumWorkers);
+    }
+
+    [Fact]
+    public void SystemRetentionRejectsInvalidMaximumFinalWorkers()
+    {
+        var exception = Assert.Throws<InvalidOperationException>(() => new ServiceCollection()
+            .AddWorkableSystem(builder => builder.ConfigureRetention(maximumFinalWorkers: 0)));
+
+        Assert.Contains("maximum final workers", exception.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void SystemCapacityRejectsInvalidMaximumWorkers()
+    {
+        var exception = Assert.Throws<InvalidOperationException>(() => new ServiceCollection()
+            .AddWorkableSystem(builder => builder.ConfigureCapacity(maximumWorkers: 0)));
+
+        Assert.Contains("maximum workers", exception.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public async Task SystemStartAndStopAreIdempotent()
     {
         var system = new ServiceCollection()
@@ -153,7 +187,7 @@ public sealed class WorkSystemLifecycleTests
 
         Assert.Null(exception);
         Assert.Equal(WorkSystemState.Stopped, registry.Default.State);
-        Assert.Equal(WorkCompletionStatus.Canceled, completion.Status);
+        Assert.Equal(WorkCompletionStatus.Interrupted, completion.Status);
     }
 
     [Fact]
@@ -183,8 +217,8 @@ public sealed class WorkSystemLifecycleTests
         await hostedService.StopAsync(CancellationToken.None);
         var elapsed = Stopwatch.GetElapsedTime(startedAt);
 
-        Assert.Equal(WorkCompletionStatus.Canceled, (await first.WaitForCompletion()).Status);
-        Assert.Equal(WorkCompletionStatus.Canceled, (await second.WaitForCompletion()).Status);
+        Assert.Equal(WorkCompletionStatus.Interrupted, (await first.WaitForCompletion()).Status);
+        Assert.Equal(WorkCompletionStatus.Interrupted, (await second.WaitForCompletion()).Status);
         Assert.True(elapsed < TimeSpan.FromMilliseconds(550), $"Expected systems to stop concurrently, but elapsed was {elapsed}.");
     }
 
@@ -256,7 +290,7 @@ public sealed class WorkSystemLifecycleTests
     }
 
     [Fact]
-    public async Task StopRequestsCancellationAndWaitsForCooperativeWork()
+    public async Task StopRequestsInterruptionAndWaitsForCooperativeWork()
     {
         var tracker = new ShutdownTracker();
         var system = new ServiceCollection()
@@ -275,7 +309,7 @@ public sealed class WorkSystemLifecycleTests
         await system.Stop();
         var completion = await handle.WaitForCompletion();
 
-        Assert.Equal(WorkCompletionStatus.Canceled, completion.Status);
+        Assert.Equal(WorkCompletionStatus.Interrupted, completion.Status);
         Assert.True(tracker.CancellationObserved.Task.IsCompletedSuccessfully);
     }
 
@@ -313,12 +347,12 @@ public sealed class WorkSystemLifecycleTests
         var queued = await system.Queue.Enqueue("shutdown.queued");
 
         await system.Stop();
-        var completedWorker = await system.Query.GetWorker(completed.WorkerId ?? throw new InvalidOperationException("Expected completed worker id."));
-        var failedWorker = await system.Query.GetWorker(handle.WorkerId ?? throw new InvalidOperationException("Expected failed worker id."));
-        var queuedWorker = await system.Query.GetWorker(queued.WorkerId ?? throw new InvalidOperationException("Expected queued worker id."));
-        var overview = await system.Query.GetSystemOverview();
-        var query = await system.Query.QueryWorkers(new WorkerQuery());
-        var keys = await system.Query.QueryWorkerKeys(new WorkerKeyQuery(Search: "shutdown-test"));
+        var completedWorker = await system.Query.Worker(completed.WorkerId ?? throw new InvalidOperationException("Expected completed worker id."));
+        var failedWorker = await system.Query.Worker(handle.WorkerId ?? throw new InvalidOperationException("Expected failed worker id."));
+        var queuedWorker = await system.Query.Worker(queued.WorkerId ?? throw new InvalidOperationException("Expected queued worker id."));
+        var overview = await system.Query.SystemDetails();
+        var query = await system.Query.Workers(new WorkerCriteria());
+        var keys = await system.Query.WorkerKeys(new WorkerKeyCriteria(Search: "shutdown-test"));
 
         Assert.Equal(WorkCompletionStatus.Failed, failed.Status);
         Assert.Null(completedWorker);
@@ -336,7 +370,42 @@ public sealed class WorkSystemLifecycleTests
     }
 
     [Fact]
-    public async Task StopForceCancelsWorkAfterGracePeriod()
+    public async Task StopClearsThroughputMetricsAfterShutdown()
+    {
+        var system = new ServiceCollection()
+            .AddWorkableSystem(builder =>
+            {
+                builder.AddWork(WorkDefinition.Create("shutdown.metrics"), (context, input, cancellationToken) =>
+                    Task.FromResult(WorkExecutionResult.Success()));
+            })
+            .BuildServiceProvider()
+            .GetRequiredService<IWorkSystemRegistry>()
+            .Default;
+
+        await system.Start();
+        var handle = await system.Queue.Enqueue("shutdown.metrics");
+        await handle.WaitForCompletion();
+
+        var beforeStop = await system.Query.SystemThroughput(
+            new WorkSystemCriteria(),
+            new WorkThroughputCriteria(WindowSeconds: 60, BucketSeconds: 1));
+
+        await system.Stop();
+
+        var afterStop = await system.Query.SystemThroughput(
+            new WorkSystemCriteria(),
+            new WorkThroughputCriteria(WindowSeconds: 60, BucketSeconds: 1));
+
+        Assert.Equal(1 / 60.0, beforeStop.LiveSummary.StartedPerSecond, precision: 6);
+        Assert.Equal(1 / 60.0, beforeStop.LiveSummary.CompletedPerSecond, precision: 6);
+        Assert.Empty(afterStop.Buckets);
+        Assert.Equal(0, afterStop.ExecutionSummary.ExecutionCount);
+        Assert.Equal(0, afterStop.LiveSummary.StartedPerSecond);
+        Assert.Equal(0, afterStop.LiveSummary.CompletedPerSecond);
+    }
+
+    [Fact]
+    public async Task StopForceInterruptsWorkAfterGracePeriod()
     {
         var tracker = new ShutdownTracker();
         var system = new ServiceCollection()
@@ -364,9 +433,9 @@ public sealed class WorkSystemLifecycleTests
         Assert.Equal("shutdown.ignores-cancel", forceCanceledSummary.DefinitionName);
         Assert.Equal(["shutdown.ignores-cancel"], stop.ForceCanceledWorkerNames);
         Assert.Equal(TimeSpan.FromMilliseconds(20), stop.ShutdownGracePeriod);
-        Assert.Equal(WorkCompletionStatus.Canceled, completion.Status);
-        Assert.Equal(WorkerState.Canceled, completion.Worker?.State);
-        Assert.Contains(completion.Messages, message => message.Code == "workable.worker.shutdown_forced");
+        Assert.Equal(WorkCompletionStatus.Interrupted, completion.Status);
+        Assert.Equal(WorkerState.Interrupted, completion.Worker?.State);
+        Assert.Contains(completion.Messages, message => message.Code == "workable.worker.shutdown_interrupted_forced");
     }
 
     [Fact]
@@ -390,7 +459,7 @@ public sealed class WorkSystemLifecycleTests
         var elapsed = Stopwatch.GetElapsedTime(startedAt);
 
         Assert.Single(stop.ForceCanceledWorkers);
-        Assert.Equal(WorkCompletionStatus.Canceled, (await handle.WaitForCompletion()).Status);
+        Assert.Equal(WorkCompletionStatus.Interrupted, (await handle.WaitForCompletion()).Status);
         Assert.True(elapsed >= TimeSpan.FromMilliseconds(120), $"Expected host-relative grace wait, but elapsed was {elapsed}.");
         Assert.True(elapsed < TimeSpan.FromSeconds(2), $"Expected bounded shutdown, but elapsed was {elapsed}.");
     }
@@ -417,7 +486,7 @@ public sealed class WorkSystemLifecycleTests
         var elapsed = Stopwatch.GetElapsedTime(startedAt);
 
         Assert.Single(stop.ForceCanceledWorkers);
-        Assert.Equal(WorkCompletionStatus.Canceled, (await handle.WaitForCompletion()).Status);
+        Assert.Equal(WorkCompletionStatus.Interrupted, (await handle.WaitForCompletion()).Status);
         Assert.True(elapsed < TimeSpan.FromSeconds(1), $"Expected explicit grace period to win, but elapsed was {elapsed}.");
     }
 
@@ -431,7 +500,7 @@ public sealed class WorkSystemLifecycleTests
     }
 
     [Fact]
-    public async Task StopCancelsLargeDeferredConcurrencyBacklog()
+    public async Task StopInterruptsLargeDeferredConcurrencyBacklog()
     {
         var tracker = new ShutdownTracker();
         var system = new ServiceCollection()
@@ -466,10 +535,10 @@ public sealed class WorkSystemLifecycleTests
 
         await system.Stop().WaitAsync(TimeSpan.FromSeconds(5));
 
-        Assert.Equal(WorkCompletionStatus.Canceled, (await running.WaitForCompletion()).Status);
+        Assert.Equal(WorkCompletionStatus.Interrupted, (await running.WaitForCompletion()).Status);
         foreach (var handle in deferred)
         {
-            Assert.Equal(WorkCompletionStatus.Canceled, (await handle.WaitForCompletion()).Status);
+            Assert.Equal(WorkCompletionStatus.Interrupted, (await handle.WaitForCompletion()).Status);
         }
     }
 
@@ -505,7 +574,7 @@ public sealed class WorkSystemLifecycleTests
             CancellationToken cancellationToken)
         {
             tracker.SignalStarted();
-            await Task.Delay(Timeout.InfiniteTimeSpan);
+            await Task.Delay(Timeout.InfiniteTimeSpan, CancellationToken.None);
             return WorkExecutionResult.Success();
         }
     }
@@ -561,7 +630,7 @@ public sealed class WorkSystemLifecycleTests
             CancellationToken cancellationToken)
         {
             tracker.Started.TrySetResult();
-            await Task.Delay(Timeout.InfiniteTimeSpan);
+            await Task.Delay(Timeout.InfiniteTimeSpan, CancellationToken.None);
             return WorkExecutionResult.Success();
         }
     }

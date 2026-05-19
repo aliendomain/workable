@@ -2,7 +2,39 @@ export const DEFAULT_WORKABLE_API_URL = "http://localhost:61932/workable";
 
 export type WorkableConnection = {
   apiUrl: string;
+  realtimeHubPath?: string | null;
   systemName?: string;
+};
+
+export type WorkableRealtimeEventCriteria = {
+  definitionIds?: string[] | null;
+  eventTypes?: string[] | null;
+  keys?: WorkableRealtimeEventKeyCriteria[] | null;
+};
+
+export type WorkableRealtimeEventKeyCriteria = {
+  kind?: WorkKeyKind | null;
+  type: string;
+  value: string;
+};
+
+export type WorkableRealtimeEvent = {
+  occurredAt: string;
+  workSystemId: { value: string };
+  workerId?: { value: string } | null;
+  definitionId?: { value: string } | null;
+  subjectId?: WorkTypedValue | null;
+  concurrencyKey?: WorkTypedValue | null;
+  identifiers: WorkTypedValue[];
+  origin?: Record<string, unknown> | null;
+  eventType: string;
+  data?: unknown;
+  messages: WorkMessage[];
+};
+
+export type WorkableRealtimeEventBatch = {
+  sentAt: string;
+  events: WorkableRealtimeEvent[];
 };
 
 export type WorkRealtimeCapability = {
@@ -26,6 +58,55 @@ export type WorkableHttpSystemInfo = {
   state: string;
   isDefault: boolean;
   capabilities: WorkableHttpCapabilities;
+};
+
+export type WorkableHttpSystemDiagnostics = {
+  id: { value: string };
+  name?: string | null;
+  state: string;
+  queue: WorkSystemQueueDiagnostics;
+  readModel: WorkSystemReadModelDiagnostics;
+  retention: WorkSystemRetentionDiagnostics;
+};
+
+export type WorkSystemQueueDiagnostics = {
+  rejectedWorkCount: number;
+  lastRejectedAt?: string | null;
+  lastRejectedStatus?: string | null;
+  lastRejectedDefinitionId?: { value: string } | null;
+  lastRejectedCode?: string | null;
+  lastRejectedMessage?: string | null;
+};
+
+export type WorkSystemReadModelDiagnostics = {
+  enqueuedSequence: number;
+  appliedSequence: number;
+  appliedUpdateCount: number;
+  publishedSnapshotCount: number;
+  lastBatchSize: number;
+  lastProjectionDuration: string;
+  lastProjectedAt?: string | null;
+  projectorFailureType?: string | null;
+  projectorFailureMessage?: string | null;
+  pendingUpdateCount: number;
+  hasProjectorFailure: boolean;
+};
+
+export type WorkSystemRetentionDiagnostics = {
+  trackedFinalWorkerCount: number;
+  scheduledPurgeCount: number;
+  scheduledPurgeHighWaterMark: number;
+  oldestScheduledPurgeDueAt?: string | null;
+  oldestDuePurgeAge: string;
+  pendingCountRetentionDefinitionCount: number;
+  systemCountRetentionPending: boolean;
+  lastRunAt?: string | null;
+  lastRunDuration: string;
+  lastPurgedCount: number;
+  totalPurgedCount: number;
+  schedulerFailureType?: string | null;
+  schedulerFailureMessage?: string | null;
+  hasSchedulerFailure: boolean;
 };
 
 export type WorkDefinition = {
@@ -83,6 +164,7 @@ export type WorkerSummary = {
   identifiers?: WorkTypedValue[];
   state: WorkerState;
   createdAt: string;
+  stateChangedAt?: string;
   updatedAt: string;
   version: WorkerVersion;
 };
@@ -98,11 +180,37 @@ export type WorkerOverviewItem = {
   category?: string | null;
   state: WorkerState;
   createdAt: string;
+  stateChangedAt?: string;
   updatedAt: string;
   queueDuration?: string | null;
   totalExecutionDuration?: string;
   nextRunAt?: string | null;
 };
+
+export type WorkOverviewFailedWorkerStandard = {
+  id: { value: string };
+  definitionName: string;
+  revision: number;
+  updatedAt: string;
+  totalExecutionDuration?: string;
+};
+
+export type WorkOverviewFailedWorkerDetailed = WorkOverviewFailedWorkerStandard & {
+  subjectId?: WorkTypedValue | null;
+  identifiers?: WorkTypedValue[];
+  state: WorkerState;
+};
+
+export type WorkViewWorkerGridDetailed = WorkOverviewFailedWorkerStandard & {
+  subjectId?: WorkTypedValue | null;
+  identifiers?: WorkTypedValue[];
+  state: WorkerState;
+};
+
+export type WorkOverviewFailedWorker =
+  | WorkOverviewFailedWorkerStandard
+  | WorkOverviewFailedWorkerDetailed
+  | WorkerOverviewItem;
 
 export type WorkerSnapshot = WorkerSummary & {
   input?: WorkData | null;
@@ -134,6 +242,7 @@ export type WorkConfiguration = {
   };
   idempotency: {
     isEnabled: boolean;
+    storage: "Local" | "Persistence";
     conflictPolicy: "RejectDuplicates";
   };
   recurrence: {
@@ -166,6 +275,7 @@ export type WorkConfiguration = {
   };
   retention: {
     purgeInterval: string;
+    maximumFinalWorkers: number;
   };
   concurrency: {
     isEnabled: boolean;
@@ -178,6 +288,10 @@ export type WorkConfiguration = {
       | "WhileExecuting";
     limitReachedBehavior: "Ignore" | "DeferStart";
     overrideBehavior: "Flexible" | "Strict";
+  };
+  queueDurability?: {
+    isEnabled: boolean;
+    completeDurably?: boolean;
   };
   invocation?: Record<string, unknown> | null;
 };
@@ -240,15 +354,38 @@ export type WorkerIterationOverviewItem = {
   identifiers?: WorkTypedValue[];
 };
 
+export type WorkOverviewIterationStandard = {
+  workerId: { value: string };
+  sequence: number;
+  definitionName: string;
+  completedAt: string;
+  executionDuration: string;
+};
+
+export type WorkOverviewIterationDetailed = WorkOverviewIterationStandard & {
+  workerState: WorkerState;
+  subjectId?: WorkTypedValue | null;
+  identifiers?: WorkTypedValue[];
+};
+
+export type WorkViewIterationGridDetailed = WorkOverviewIterationDetailed & {
+  status: WorkCompletionStatus;
+};
+
+export type WorkOverviewIteration =
+  | WorkOverviewIterationStandard
+  | WorkOverviewIterationDetailed
+  | WorkerIterationOverviewItem;
+
 export type WorkerQueryResult = {
-  workers: WorkerOverviewItem[];
+  workers: WorkViewWorkerGridDetailed[];
   totalCount: number;
   skip: number;
   take: number;
 };
 
 export type WorkerIterationQueryResult = {
-  iterations: WorkerIterationOverviewItem[];
+  iterations: WorkViewIterationGridDetailed[];
   totalCount: number;
   skip: number;
   take: number;
@@ -267,6 +404,7 @@ export type WorkCompletionStatus =
   | "Completed"
   | "Failed"
   | "Paused"
+  | "Interrupted"
   | "Canceled"
   | "Invalid"
   | "NotFound";
@@ -321,6 +459,7 @@ export type WorkSystemOverview = {
   finalWorkerCount: number;
   failedWorkerCount: number;
   workerCountByState: Partial<Record<WorkerState, number>>;
+  oldestQueuedAt?: string | null;
   currentIterationCount: number;
   completedIterationCount: number;
   failedIterationCount: number;
@@ -338,11 +477,70 @@ export type WorkComponentQueryResult = {
   components: Record<string, WorkComponentResult>;
 };
 
+export type WorkComponentShape = "compact" | "standard" | "detailed";
+
+export type WorkComponentRequest = {
+  id: string;
+  type: string;
+  options?: unknown;
+  shape?: WorkComponentShape;
+};
+
 export type WorkComponentResult<TData = unknown> = {
   status: string;
   data?: TData;
   error?: string | null;
+  shape?: WorkComponentShape;
 };
+
+export type WorkQueueDiagnosticsCompactComponent = {
+  rejectedWorkCount: number;
+  hasRejectedWork: boolean;
+  lastRejectedAt?: string | null;
+  lastRejectedCode?: string | null;
+  lastRejectedMessage?: string | null;
+};
+
+export type WorkQueueDiagnosticsDetailedComponent =
+  WorkQueueDiagnosticsCompactComponent & {
+    queue: WorkSystemQueueDiagnostics;
+  };
+
+export type WorkSystemDiagnosticsCompactComponent = {
+  systemName?: string | null;
+  systemState: string;
+  isShuttingDown: boolean;
+};
+
+export type WorkReadModelDiagnosticsCompactComponent = {
+  pendingUpdateCount: number;
+  isReadModelBehind: boolean;
+  readModelLagWarningThreshold: number;
+  hasProjectorFailure: boolean;
+  projectorFailureType?: string | null;
+  projectorFailureMessage?: string | null;
+};
+
+export type WorkReadModelDiagnosticsDetailedComponent =
+  WorkReadModelDiagnosticsCompactComponent & {
+    readModel: WorkSystemReadModelDiagnostics;
+  };
+
+export type WorkRetentionDiagnosticsCompactComponent = {
+  trackedFinalWorkerCount: number;
+  scheduledPurgeCount: number;
+  oldestDuePurgeAge: string;
+  isRetentionBehind: boolean;
+  retentionLagWarningSeconds: number;
+  hasSchedulerFailure: boolean;
+  schedulerFailureType?: string | null;
+  schedulerFailureMessage?: string | null;
+};
+
+export type WorkRetentionDiagnosticsDetailedComponent =
+  WorkRetentionDiagnosticsCompactComponent & {
+    retention: WorkSystemRetentionDiagnostics;
+  };
 
 export type WorkOverviewThroughputComponent = {
   activeWorkerCount: number;
@@ -350,29 +548,40 @@ export type WorkOverviewThroughputComponent = {
 };
 
 export type WorkSystemThroughput = {
-  from: string;
-  to: string;
+  from?: string;
+  to?: string;
   windowSeconds: number;
-  bucketSeconds: number;
-  buckets: WorkThroughputBucket[];
+  bucketSeconds?: number;
+  settledCount: number;
+  buckets?: WorkThroughputBucket[];
+  executionSummary: WorkThroughputExecutionSummary;
   liveSummary: WorkThroughputLiveSummary;
+};
+
+export type WorkThroughputExecutionSummary = {
+  executionCount: number;
+  averageExecutionMilliseconds: number;
+  slowestExecutionMilliseconds: number;
+  p95ExecutionMilliseconds: number;
+  p99ExecutionMilliseconds: number;
 };
 
 export type WorkThroughputBucket = {
   at: string;
-  queued: number;
-  succeeded: number;
+  started: number;
+  completed: number;
   failed: number;
+  canceled: number;
   averageExecutionMilliseconds: number;
 };
 
 export type WorkThroughputLiveSummary = {
-  windowSeconds: number;
-  queuedPerSecond: number;
-  succeededPerSecond: number;
+  rateWindowSeconds: number;
+  startedPerSecond: number;
+  completedPerSecond: number;
   failedPerSecond: number;
-  queueDeltaPerSecond: number;
-  averageExecutionMilliseconds: number;
+  canceledPerSecond: number;
+  inFlightDeltaPerSecond: number;
 };
 
 export type WorkOverviewCatalogCategoryItem = {
@@ -392,7 +601,8 @@ export type WorkSystemFailedWorkersOverview = {
   finalWorkerCount: number;
   failedWorkerCount: number;
   workerCountByState: Partial<Record<WorkerState, number>>;
-  failedWorkers: WorkerOverviewItem[];
+  oldestQueuedAt?: string | null;
+  failedWorkers: WorkOverviewFailedWorker[];
 };
 
 export type WorkSystemLifecycleResult = {
@@ -433,6 +643,8 @@ export type WorkerState =
   | "Retrying"
   | "Pausing"
   | "Paused"
+  | "Interrupting"
+  | "Interrupted"
   | "Canceling"
   | "Failed"
   | "Canceled"
@@ -508,6 +720,8 @@ export function stateTone(state: string) {
     case "Queued":
     case "Retrying":
     case "Paused":
+    case "Interrupting":
+    case "Interrupted":
       return "bg-sky-500/15 text-sky-300 border-sky-500/30";
     case "Failed":
     case "Canceled":
@@ -583,14 +797,78 @@ async function fetchWorkable<T>(
     : responseText;
 
   if (!response.ok) {
-    const message =
-      typeof body === "object" && body && "error" in body
-        ? String((body as { error: unknown }).error)
-        : `Workable request failed with ${response.status}.`;
+    const message = getWorkableErrorMessage(response.status, body);
     throw new WorkableApiError(message, response.status, body);
   }
 
   return body as T;
+}
+
+export function createWorkableRealtimeUrl(connection: WorkableConnection) {
+  const hubPath = connection.realtimeHubPath?.trim();
+  if (!hubPath) {
+    return null;
+  }
+
+  try {
+    if (/^https?:\/\//i.test(hubPath)) {
+      return hubPath;
+    }
+
+    const apiUrl = new URL(connection.apiUrl);
+    return `${apiUrl.origin}${hubPath.startsWith("/") ? hubPath : `/${hubPath}`}`;
+  } catch {
+    return null;
+  }
+}
+
+function getWorkableErrorMessage(status: number, body: unknown) {
+  if (typeof body === "object" && body) {
+    if ("error" in body && typeof body.error === "string" && body.error.trim()) {
+      return body.error;
+    }
+
+    if ("messages" in body && Array.isArray(body.messages)) {
+      const details = body.messages
+        .map((message) => {
+          if (typeof message === "object" && message && "text" in message) {
+            return String(message.text ?? "").trim();
+          }
+
+          return "";
+        })
+        .filter(Boolean)
+        .join(" ");
+      if (details) {
+        return details;
+      }
+    }
+
+    if ("detail" in body && typeof body.detail === "string" && body.detail.trim()) {
+      return body.detail;
+    }
+
+    if ("errors" in body && typeof body.errors === "object" && body.errors) {
+      const details = Object.values(body.errors)
+        .flatMap((value) => Array.isArray(value) ? value : [value])
+        .map((value) => String(value ?? "").trim())
+        .filter(Boolean)
+        .join(" ");
+      if (details) {
+        return details;
+      }
+    }
+
+    if ("title" in body && typeof body.title === "string" && body.title.trim()) {
+      return body.title;
+    }
+  }
+
+  if (typeof body === "string" && body.trim()) {
+    return body.trim();
+  }
+
+  return `Workable request failed with ${status}.`;
 }
 
 function createScopedWorkablePath(connection: WorkableConnection, path: string) {

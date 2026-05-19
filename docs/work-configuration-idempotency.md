@@ -8,6 +8,7 @@ Idempotency configuration controls whether Workable rejects duplicate work for t
 | --- | --- | --- |
 | `IsEnabled` | `false` | Enables duplicate prevention by subject id. |
 | `ConflictPolicy` | `RejectDuplicates` | Rejects queue requests when another worker for the same definition and subject is not reusable. |
+| `Storage` | `Local` | Uses in-memory duplicate tracking by default. `Persistence` stores the active idempotency reservation in the configured persistence provider. |
 
 When idempotency is enabled:
 
@@ -71,10 +72,30 @@ var handle = await system.Queue.Enqueue(
         }));
 ```
 
+## Persistence-Backed Idempotency
+
+Persistence-backed idempotency can be used without durable queueing when the host has registered a persistence provider:
+
+```
+configuration.RejectDuplicateSubjects(WorkIdempotencyStorage.Persistence);
+```
+
+Without durable queueing, persistence-backed idempotency uses the provider's own transaction for the reservation and then materializes the worker in memory. A queue request that supplies a caller-owned persistence transaction is rejected in this mode, because Workable cannot safely wait for that transaction to commit before starting an in-memory worker. Use `QueueDurably()` when enqueue acceptance must participate in the caller's transaction.
+
+Because persistence-backed idempotency creates a persisted Workable row, it can also be paired with durable completion:
+
+```
+configuration
+    .RejectDuplicateSubjects(WorkIdempotencyStorage.Persistence)
+    .CompleteDurably();
+```
+
+In that mode, executor code must call `IWorkExecutionContext.CompleteDurably(...)` with the developer-owned transaction before returning success. See [Queue Durability Configuration](work-configuration-queue-durability.md#durable-completion) for the transaction pattern.
+
 ## Reconfiguration
 
 ```
-var worker = await system.Query.GetWorker(workerId)
+var worker = await system.Query.Worker(workerId)
     ?? throw new InvalidOperationException("Worker was not found.");
 
 var outcome = await system.Workers.Reconfigure(
@@ -86,3 +107,4 @@ var outcome = await system.Workers.Reconfigure(
 ## Related Interactions
 
 - [Idempotency And Recurrence](work-configuration-interactions.md#idempotency-and-recurrence): recurring workers keep the same subject across iterations and can block duplicate work while waiting.
+- [Durable Queue And Idempotency](work-configuration-interactions.md#durable-queue-and-idempotency): durable queueing and persistence-backed idempotency can commit duplicate detection and queue persistence together.

@@ -19,6 +19,7 @@ public sealed class WorkConcurrencyConfigurationTests
         Assert.Equal(WorkConcurrencyBlockingMode.WhileExecutingPausedOrFailed, concurrency.BlockingMode);
         Assert.Equal(WorkConcurrencyLimitReachedBehavior.Ignore, concurrency.LimitReachedBehavior);
         Assert.Equal(WorkConcurrencyOverrideBehavior.Flexible, concurrency.OverrideBehavior);
+        Assert.Equal(WorkConcurrencyStorage.Local, concurrency.Storage);
     }
 
     [Fact]
@@ -55,6 +56,25 @@ public sealed class WorkConcurrencyConfigurationTests
         var configured = RequiredDefinition(system, "concurrency-attribute");
 
         AssertConcurrency(FullConcurrencyConfiguration(), configured.Configuration.Concurrency);
+    }
+
+    [Fact]
+    public void AttributeCanSetPersistenceBackedConcurrencyWhenDurabilityIsEnabled()
+    {
+        var definition = WorkDefinition.Create("persistent-concurrency-attribute", "Uses persistent concurrency.");
+        var system = new ServiceCollection()
+            .AddWorkableSystem(builder => builder.AddWork<PersistentAttributedConcurrencyWork>(definition))
+            .BuildServiceProvider()
+            .GetRequiredService<IWorkSystemRegistry>()
+            .Default;
+
+        var configured = RequiredDefinition(system, "persistent-concurrency-attribute");
+
+        Assert.True(configured.Configuration.QueueDurability.IsEnabled);
+        Assert.True(configured.Configuration.Idempotency.IsEnabled);
+        Assert.Equal(WorkIdempotencyStorage.Persistence, configured.Configuration.Idempotency.Storage);
+        Assert.True(configured.Configuration.Concurrency.IsEnabled);
+        Assert.Equal(WorkConcurrencyStorage.Persistence, configured.Configuration.Concurrency.Storage);
     }
 
     [Fact]
@@ -104,7 +124,7 @@ public sealed class WorkConcurrencyConfigurationTests
                 {
                     Concurrency = FullConcurrencyConfiguration(),
                 }));
-        var worker = RequiredWorker(await system.Query.GetWorker(RequiredWorkerId(handle)));
+        var worker = RequiredWorker(await system.Query.Worker(RequiredWorkerId(handle)));
 
         AssertConcurrency(FullConcurrencyConfiguration(), worker.Configuration.Concurrency);
     }
@@ -146,7 +166,7 @@ public sealed class WorkConcurrencyConfigurationTests
         await system.Start();
 
         var handle = await system.Queue.Enqueue("runtime-concurrency");
-        var worker = RequiredWorker(await system.Query.GetWorker(RequiredWorkerId(handle)));
+        var worker = RequiredWorker(await system.Query.Worker(RequiredWorkerId(handle)));
 
         var outcome = await system.Workers.Reconfigure(
             worker.Version,
@@ -166,7 +186,7 @@ public sealed class WorkConcurrencyConfigurationTests
         await system.Start();
 
         var handle = await system.Queue.Enqueue("runtime-invalid-concurrency");
-        var worker = RequiredWorker(await system.Query.GetWorker(RequiredWorkerId(handle)));
+        var worker = RequiredWorker(await system.Query.Worker(RequiredWorkerId(handle)));
 
         var outcome = await system.Workers.Reconfigure(
             worker.Version,
@@ -191,7 +211,7 @@ public sealed class WorkConcurrencyConfigurationTests
         await system.Start();
 
         var handle = await system.Queue.Enqueue("runtime-missing-subject");
-        var worker = RequiredWorker(await system.Query.GetWorker(RequiredWorkerId(handle)));
+        var worker = RequiredWorker(await system.Query.Worker(RequiredWorkerId(handle)));
 
         var outcome = await system.Workers.Reconfigure(
             worker.Version,
@@ -218,7 +238,7 @@ public sealed class WorkConcurrencyConfigurationTests
         await system.Start();
 
         var handle = await system.Queue.Enqueue("runtime-missing-key");
-        var worker = RequiredWorker(await system.Query.GetWorker(RequiredWorkerId(handle)));
+        var worker = RequiredWorker(await system.Query.Worker(RequiredWorkerId(handle)));
 
         var outcome = await system.Workers.Reconfigure(
             worker.Version,
@@ -269,6 +289,53 @@ public sealed class WorkConcurrencyConfigurationTests
         Assert.Equal("input.concurrencyKey", message.Target);
     }
 
+    [Fact]
+    public void PersistenceBackedConcurrencyRequiresDurableQueue()
+    {
+        var messages = WorkConfigurationValidator.Validate(WorkConfiguration.Default with
+        {
+            Concurrency = PersistenceConcurrencyConfiguration(),
+        });
+
+        Assert.Contains(messages, message =>
+            message.Code == "workable.configuration.concurrency.persistence_requires_durable_queue" &&
+            message.Target == "configuration.concurrency.storage");
+    }
+
+    [Fact]
+    public void PersistenceBackedConcurrencyRequiresWhileExecutingBlocking()
+    {
+        var messages = WorkConfigurationValidator.Validate(WorkConfiguration.Default with
+        {
+            QueueDurability = WorkQueueDurabilityConfiguration.Default with { IsEnabled = true },
+            Concurrency = PersistenceConcurrencyConfiguration() with
+            {
+                BlockingMode = WorkConcurrencyBlockingMode.WhileExecutingPausedOrFailed,
+            },
+        });
+
+        Assert.Contains(messages, message =>
+            message.Code == "workable.configuration.concurrency.persistence_blocking_mode_not_supported" &&
+            message.Target == "configuration.concurrency.blockingMode");
+    }
+
+    [Fact]
+    public void PersistenceBackedConcurrencyRequiresDeferredStart()
+    {
+        var messages = WorkConfigurationValidator.Validate(WorkConfiguration.Default with
+        {
+            QueueDurability = WorkQueueDurabilityConfiguration.Default with { IsEnabled = true },
+            Concurrency = PersistenceConcurrencyConfiguration() with
+            {
+                LimitReachedBehavior = WorkConcurrencyLimitReachedBehavior.Ignore,
+            },
+        });
+
+        Assert.Contains(messages, message =>
+            message.Code == "workable.configuration.concurrency.persistence_requires_deferred_start" &&
+            message.Target == "configuration.concurrency.limitReachedBehavior");
+    }
+
     private static WorkConcurrencyConfiguration FullConcurrencyConfiguration()
         => new()
         {
@@ -278,6 +345,16 @@ public sealed class WorkConcurrencyConfigurationTests
             BlockingMode = WorkConcurrencyBlockingMode.WhileExecuting,
             LimitReachedBehavior = WorkConcurrencyLimitReachedBehavior.DeferStart,
             OverrideBehavior = WorkConcurrencyOverrideBehavior.Strict,
+        };
+
+    private static WorkConcurrencyConfiguration PersistenceConcurrencyConfiguration()
+        => WorkConcurrencyConfiguration.Default with
+        {
+            IsEnabled = true,
+            MaximumCapacity = 1,
+            BlockingMode = WorkConcurrencyBlockingMode.WhileExecuting,
+            LimitReachedBehavior = WorkConcurrencyLimitReachedBehavior.DeferStart,
+            Storage = WorkConcurrencyStorage.Persistence,
         };
 
     private static IWorkSystem CreateSystem(
@@ -308,6 +385,7 @@ public sealed class WorkConcurrencyConfigurationTests
         Assert.Equal(expected.BlockingMode, actual.BlockingMode);
         Assert.Equal(expected.LimitReachedBehavior, actual.LimitReachedBehavior);
         Assert.Equal(expected.OverrideBehavior, actual.OverrideBehavior);
+        Assert.Equal(expected.Storage, actual.Storage);
     }
 
     private static Task<WorkExecutionResult> ExecuteSuccessfulWork(IWorkExecutionContext context, WorkInput? input, CancellationToken cancellationToken)
@@ -321,6 +399,20 @@ public sealed class WorkConcurrencyConfigurationTests
         limitReachedBehavior: WorkConcurrencyLimitReachedBehavior.DeferStart,
         overrideBehavior: WorkConcurrencyOverrideBehavior.Strict)]
     private sealed class FullAttributedConcurrencyWork : IWorkExecutor
+    {
+        public Task<WorkExecutionResult> Execute(IWorkExecutionContext context, WorkInput? input, CancellationToken cancellationToken)
+            => Task.FromResult(WorkExecutionResult.Success());
+    }
+
+    [WorkQueueDurability]
+    [WorkIdempotency(storage: WorkIdempotencyStorage.Persistence)]
+    [WorkConcurrency(
+        isEnabled: true,
+        maximumCapacity: 1,
+        blockingMode: WorkConcurrencyBlockingMode.WhileExecuting,
+        limitReachedBehavior: WorkConcurrencyLimitReachedBehavior.DeferStart,
+        storage: WorkConcurrencyStorage.Persistence)]
+    private sealed class PersistentAttributedConcurrencyWork : IWorkExecutor
     {
         public Task<WorkExecutionResult> Execute(IWorkExecutionContext context, WorkInput? input, CancellationToken cancellationToken)
             => Task.FromResult(WorkExecutionResult.Success());

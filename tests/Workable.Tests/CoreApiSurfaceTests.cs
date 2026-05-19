@@ -10,7 +10,7 @@ public sealed class CoreApiSurfaceTests
     public void ConsumerContractsLiveInAbstractionsAssembly()
     {
         Assert.Equal("Workable.Abstractions", typeof(IWorkSystem).Assembly.GetName().Name);
-        Assert.Equal("Workable.Abstractions", typeof(IWorkQueue).Assembly.GetName().Name);
+        Assert.Equal("Workable.Abstractions", typeof(IWorkQueueService).Assembly.GetName().Name);
         Assert.Equal("Workable.Abstractions", typeof(WorkerSnapshot).Assembly.GetName().Name);
     }
 
@@ -47,9 +47,9 @@ public sealed class CoreApiSurfaceTests
     [Fact]
     public void WorkQueueExposesRawAndTypedEnqueueMethods()
     {
-        var methods = typeof(IWorkQueue)
+        var methods = typeof(IWorkQueueService)
             .GetMethods(BindingFlags.Instance | BindingFlags.Public)
-            .Where(method => method.Name == nameof(IWorkQueue.Enqueue))
+            .Where(method => method.Name == nameof(IWorkQueueService.Enqueue))
             .ToList();
 
         Assert.Contains(methods, method =>

@@ -10,6 +10,7 @@ public sealed class WorkIdempotencyTests
     public void DefaultIdempotencyIsDisabled()
     {
         Assert.False(WorkIdempotencyConfiguration.Default.IsEnabled);
+        Assert.Equal(WorkIdempotencyStorage.Local, WorkIdempotencyConfiguration.Default.Storage);
         Assert.Equal(WorkIdempotencyConflictPolicy.RejectDuplicates, WorkIdempotencyConfiguration.Default.ConflictPolicy);
     }
 
@@ -26,6 +27,7 @@ public sealed class WorkIdempotencyTests
         var configured = RequiredDefinition(system, "attributed-idempotency");
 
         Assert.True(configured.Configuration.Idempotency.IsEnabled);
+        Assert.Equal(WorkIdempotencyStorage.Local, configured.Configuration.Idempotency.Storage);
     }
 
     [Fact]
@@ -43,6 +45,25 @@ public sealed class WorkIdempotencyTests
         var configured = RequiredDefinition(system, "bootstrap-idempotency");
 
         Assert.True(configured.Configuration.Idempotency.IsEnabled);
+        Assert.Equal(WorkIdempotencyStorage.Local, configured.Configuration.Idempotency.Storage);
+    }
+
+    [Fact]
+    public void BootstrapConfigurationCanUsePersistenceBackedIdempotency()
+    {
+        var definition = WorkDefinition.Create("bootstrap-persistent-idempotency", "Uses persistence-backed idempotency.");
+        var system = new ServiceCollection()
+            .AddWorkableSystem(builder => builder.AddWork<SuccessfulExecutor>(
+                definition,
+                configuration => configuration.RejectDuplicateSubjects(WorkIdempotencyStorage.Persistence)))
+            .BuildServiceProvider()
+            .GetRequiredService<IWorkSystemRegistry>()
+            .Default;
+
+        var configured = RequiredDefinition(system, "bootstrap-persistent-idempotency");
+
+        Assert.True(configured.Configuration.Idempotency.IsEnabled);
+        Assert.Equal(WorkIdempotencyStorage.Persistence, configured.Configuration.Idempotency.Storage);
     }
 
     [Fact]
@@ -56,7 +77,7 @@ public sealed class WorkIdempotencyTests
 
         var first = await system.Queue.Enqueue("subject-only", SubjectInput(subject));
         var second = await system.Queue.Enqueue("subject-only", SubjectInput(subject));
-        var matches = (await system.Query.QueryWorkers(new WorkerQuery(DefinitionId: definition.Id, SubjectId: subject, Take: 10))).Workers;
+        var matches = (await system.Query.Workers(new WorkerCriteria(DefinitionId: definition.Id, SubjectId: subject, Take: 10))).Workers;
 
         Assert.True(first.QueueOutcome.IsAccepted);
         Assert.True(second.QueueOutcome.IsAccepted);
@@ -175,10 +196,10 @@ public sealed class WorkIdempotencyTests
         await system.Start();
 
         var first = await system.Queue.Enqueue("duplicate-canceled", SubjectInput(subject));
-        var firstWorker = RequiredWorker(await system.Query.GetWorker(RequiredWorkerId(first)));
+        var firstWorker = RequiredWorker(await system.Query.Worker(RequiredWorkerId(first)));
         var cancel = await system.Workers.Execute(firstWorker.Version, WorkAction.Cancel);
         var second = await system.Queue.Enqueue("duplicate-canceled", SubjectInput(subject));
-        var matches = (await system.Query.QueryWorkers(new WorkerQuery(DefinitionId: definition.Id, SubjectId: subject, Take: 10))).Workers;
+        var matches = (await system.Query.Workers(new WorkerCriteria(DefinitionId: definition.Id, SubjectId: subject, Take: 10))).Workers;
 
         Assert.True(cancel.IsAccepted);
         Assert.True(second.QueueOutcome.IsAccepted);
@@ -187,7 +208,7 @@ public sealed class WorkIdempotencyTests
     }
 
     [Fact]
-    public async Task QueryBySubjectReturnsWorkersAcrossDefinitionsNewestFirst()
+    public async Task WorkersQueryBySubjectReturnsWorkersAcrossDefinitionsNewestFirst()
     {
         var subject = Subject("shared");
         var firstDefinition = WorkDefinition.Create("subject-query-one", "First work.");
@@ -208,8 +229,8 @@ public sealed class WorkIdempotencyTests
         await Task.Delay(TimeSpan.FromMilliseconds(5));
         var second = await system.Queue.Enqueue("subject-query-two", SubjectInput(subject));
 
-        var allMatches = (await system.Query.QueryWorkers(new WorkerQuery(SubjectId: subject, Take: 10))).Workers;
-        var definitionMatches = (await system.Query.QueryWorkers(new WorkerQuery(DefinitionId: firstDefinition.Id, SubjectId: subject, Take: 10))).Workers;
+        var allMatches = (await system.Query.Workers(new WorkerCriteria(SubjectId: subject, Take: 10))).Workers;
+        var definitionMatches = (await system.Query.Workers(new WorkerCriteria(DefinitionId: firstDefinition.Id, SubjectId: subject, Take: 10))).Workers;
 
         Assert.Equal([RequiredWorkerId(second), RequiredWorkerId(first)], allMatches.Select(worker => worker.Id));
         Assert.Equal([RequiredWorkerId(first)], definitionMatches.Select(worker => worker.Id));

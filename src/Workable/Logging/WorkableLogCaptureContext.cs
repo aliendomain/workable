@@ -66,7 +66,7 @@ internal sealed class WorkableLogCaptureContext : IDisposable
         CurrentContext.Value = this.previous;
     }
 
-    private static IReadOnlyDictionary<string, object?>? ExtractMetadata<TState>(TState state)
+    private static Dictionary<string, object?>? ExtractMetadata<TState>(TState state)
     {
         if (state is not IEnumerable<KeyValuePair<string, object?>> values)
         {

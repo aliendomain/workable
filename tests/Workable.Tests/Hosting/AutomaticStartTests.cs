@@ -20,10 +20,11 @@ public sealed class AutomaticStartTests
 
         await system.Start();
         await tracker.Completed.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await WaitForWorkers(system, expectedCount: 1, WorkerState.Completed);
 
-        var workers = (await system.Query.QueryWorkers(new WorkerQuery())).Workers;
+        var workers = (await system.Query.Workers(new WorkerCriteria())).Workers;
         var worker = Assert.Single(workers);
-        var snapshot = await system.Query.GetWorker(worker.Id)
+        var snapshot = await system.Query.Worker(worker.Id)
             ?? throw new InvalidOperationException("Expected worker snapshot.");
         Assert.Equal("automatic.start", worker.DefinitionName);
         Assert.Equal(WorkerState.Completed, worker.State);
@@ -44,8 +45,9 @@ public sealed class AutomaticStartTests
 
         await system.Start();
         await tracker.WaitForCount(3);
+        await WaitForWorkers(system, expectedCount: 3, WorkerState.Completed);
 
-        var workers = (await system.Query.QueryWorkers(new WorkerQuery())).Workers;
+        var workers = (await system.Query.Workers(new WorkerCriteria())).Workers;
         Assert.Equal(3, workers.Count);
         Assert.All(workers, worker => Assert.Equal(WorkerState.Completed, worker.State));
     }
@@ -161,6 +163,25 @@ public sealed class AutomaticStartTests
         {
             tracker.RecordMessage(input.Message);
             return Task.FromResult(WorkExecutionResult.Success());
+        }
+    }
+
+    private static async Task WaitForWorkers(
+        IWorkSystem system,
+        int expectedCount,
+        WorkerState state)
+    {
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        while (!timeout.IsCancellationRequested)
+        {
+            var workers = (await system.Query.Workers(new WorkerCriteria(), timeout.Token)).Workers;
+            if (workers.Count == expectedCount &&
+                workers.All(worker => worker.State == state))
+            {
+                return;
+            }
+
+            await Task.Delay(TimeSpan.FromMilliseconds(10), timeout.Token);
         }
     }
 }

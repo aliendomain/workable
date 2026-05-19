@@ -82,7 +82,7 @@ public sealed class QueueAndResultTests
         Assert.False(completionTask.IsCompleted);
 
         var workerId = RequiredWorkerId(handle);
-        var worker = RequiredWorker(await system.Query.GetWorker(workerId));
+        var worker = RequiredWorker(await system.Query.Worker(workerId));
         var start = await system.Workers.Execute(worker.Version, WorkAction.Start);
         var completion = await completionTask;
 
@@ -173,9 +173,9 @@ public sealed class QueueAndResultTests
     [Fact]
     public void QueueApiDoesNotRouteByArgumentType()
     {
-        var enqueueMethods = typeof(IWorkQueue)
+        var enqueueMethods = typeof(IWorkQueueService)
             .GetMethods(BindingFlags.Instance | BindingFlags.Public)
-            .Where(method => method.Name == nameof(IWorkQueue.Enqueue))
+            .Where(method => method.Name == nameof(IWorkQueueService.Enqueue))
             .ToList();
 
         Assert.All(enqueueMethods, method =>

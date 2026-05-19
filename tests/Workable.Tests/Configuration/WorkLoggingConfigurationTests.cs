@@ -95,7 +95,7 @@ public sealed class WorkLoggingConfigurationTests
                         MaximumBufferedEntries = 5,
                     },
                 }));
-        var worker = RequiredWorker(await system.Query.GetWorker(RequiredWorkerId(handle)));
+        var worker = RequiredWorker(await system.Query.Worker(RequiredWorkerId(handle)));
 
         Assert.True(worker.Configuration.Logging.IsEnabled);
         Assert.Equal(LogLevel.Error, worker.Configuration.Logging.Level);
@@ -112,7 +112,7 @@ public sealed class WorkLoggingConfigurationTests
         await system.Start();
 
         var handle = await system.Queue.Enqueue("runtime-logging");
-        var worker = RequiredWorker(await system.Query.GetWorker(RequiredWorkerId(handle)));
+        var worker = RequiredWorker(await system.Query.Worker(RequiredWorkerId(handle)));
 
         var outcome = await system.Workers.Reconfigure(
             worker.Version,

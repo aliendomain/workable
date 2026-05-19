@@ -20,8 +20,8 @@ public sealed class WorkerBulkActionTests
 
         Assert.Equal(2, outcome.MatchedWorkerCount);
         Assert.Equal(2, outcome.AcceptedCount);
-        Assert.Equal(WorkerState.Canceled, (await system.Query.GetWorker(first.WorkerId!.Value))?.State);
-        Assert.Equal(WorkerState.Canceled, (await system.Query.GetWorker(second.WorkerId!.Value))?.State);
+        Assert.Equal(WorkerState.Canceled, (await system.Query.Worker(first.WorkerId!.Value))?.State);
+        Assert.Equal(WorkerState.Canceled, (await system.Query.Worker(second.WorkerId!.Value))?.State);
     }
 
     [Fact]
@@ -40,8 +40,8 @@ public sealed class WorkerBulkActionTests
 
         Assert.Equal(1, outcome.MatchedWorkerCount);
         Assert.Equal(1, outcome.AcceptedCount);
-        Assert.Equal(WorkerState.Canceled, (await system.Query.GetWorker(invoice.WorkerId!.Value))?.State);
-        Assert.Equal(WorkerState.Queued, (await system.Query.GetWorker(email.WorkerId!.Value))?.State);
+        Assert.Equal(WorkerState.Canceled, (await system.Query.Worker(invoice.WorkerId!.Value))?.State);
+        Assert.Equal(WorkerState.Queued, (await system.Query.Worker(email.WorkerId!.Value))?.State);
     }
 
     [Fact]
@@ -95,7 +95,7 @@ public sealed class WorkerBulkActionTests
         var outcome = await system.Workers.ExecuteAll(WorkAction.Purge);
 
         Assert.Equal(1, outcome.AcceptedCount);
-        Assert.Null(await system.Query.GetWorker(worker.WorkerId!.Value));
+        Assert.Null(await system.Query.Worker(worker.WorkerId!.Value));
     }
 
     [Fact]
@@ -195,7 +195,7 @@ public sealed class WorkerBulkActionTests
         => Task.FromResult(WorkExecutionResult.Success());
 
     private static async Task<bool> WorkerIsWaiting(IWorkSystem system, WorkerId workerId)
-        => (await system.Query.GetWorker(workerId))?.State == WorkerState.Waiting;
+        => (await system.Query.Worker(workerId))?.State == WorkerState.Waiting;
 
     private static async Task Eventually(Func<Task<bool>> condition)
     {
@@ -215,7 +215,7 @@ public sealed class WorkerBulkActionTests
 
     private static async Task CancelIfActive(IWorkSystem system, WorkerId workerId)
     {
-        var worker = await system.Query.GetWorker(workerId);
+        var worker = await system.Query.Worker(workerId);
         if (worker is null || WorkerStateMachineIsFinal(worker.State))
         {
             return;

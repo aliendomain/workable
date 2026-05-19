@@ -15,9 +15,17 @@ public interface IWorkExecutionContext
 
     WorkConfiguration Configuration { get; }
 
+    bool IsInterrupted { get; }
+
+    WorkInterruptionReason? InterruptionReason { get; }
+
     IWorkProfiler Profile { get; }
 
     IServiceProvider Services { get; }
 
     bool AddIdentifier(WorkIdentifier identifier);
+
+    Task CompleteDurably(
+        IWorkQueueDurabilityTransaction transaction,
+        CancellationToken cancellationToken = default);
 }

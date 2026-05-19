@@ -28,7 +28,7 @@ public sealed class WorkerStateTests
         var handle = await system.Queue.Enqueue("pausable");
         await running.Task;
         var workerId = RequiredWorkerId(handle);
-        var runningWorker = RequiredWorker(await system.Query.GetWorker(workerId));
+        var runningWorker = RequiredWorker(await system.Query.Worker(workerId));
 
         var pause = await system.Workers.Execute(runningWorker.Version, WorkAction.Pause);
         var paused = await handle.WaitForCompletion();
@@ -64,7 +64,7 @@ public sealed class WorkerStateTests
         var handle = await system.Queue.Enqueue("cancelable");
         await running.Task;
         var workerId = RequiredWorkerId(handle);
-        var runningWorker = RequiredWorker(await system.Query.GetWorker(workerId));
+        var runningWorker = RequiredWorker(await system.Query.Worker(workerId));
 
         var cancel = await system.Workers.Execute(runningWorker.Version, WorkAction.Cancel);
         var canceled = await handle.WaitForCompletion();
@@ -98,7 +98,7 @@ public sealed class WorkerStateTests
         var handle = await system.Queue.Enqueue("pause-token");
         await running.Task;
         var workerId = RequiredWorkerId(handle);
-        var runningWorker = RequiredWorker(await system.Query.GetWorker(workerId));
+        var runningWorker = RequiredWorker(await system.Query.Worker(workerId));
 
         var pause = await system.Workers.Execute(runningWorker.Version, WorkAction.Pause);
         await tokenCanceled.Task.WaitAsync(TimeSpan.FromSeconds(5));
@@ -128,7 +128,7 @@ public sealed class WorkerStateTests
         var handle = await system.Queue.Enqueue("cancel-token");
         await running.Task;
         var workerId = RequiredWorkerId(handle);
-        var runningWorker = RequiredWorker(await system.Query.GetWorker(workerId));
+        var runningWorker = RequiredWorker(await system.Query.Worker(workerId));
 
         var cancel = await system.Workers.Execute(runningWorker.Version, WorkAction.Cancel);
         await tokenCanceled.Task.WaitAsync(TimeSpan.FromSeconds(5));
@@ -136,6 +136,51 @@ public sealed class WorkerStateTests
 
         Assert.True(cancel.IsAccepted);
         Assert.Equal(WorkCompletionStatus.Canceled, completion.Status);
+    }
+
+    [Fact]
+    public async Task ShutdownInterruptionCancelsExecutorTokenCompletesAsInterruptedAndPublishesEvent()
+    {
+        var running = CreateSignal();
+        var interruptedSeen = CreateSignal();
+        var definition = WorkDefinition.Create("shutdown-interrupted", "Observes shutdown interruption.");
+        var system = CreateSystem(definition, async (context, input, cancellationToken) =>
+        {
+            running.SetResult();
+            try
+            {
+                await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+                return WorkExecutionResult.Success();
+            }
+            catch (OperationCanceledException)
+            {
+                if (context.IsInterrupted)
+                {
+                    Assert.Equal(WorkInterruptionReason.Shutdown, context.InterruptionReason);
+                    interruptedSeen.SetResult();
+                }
+
+                throw;
+            }
+        });
+
+        await system.Start();
+
+        var handle = await system.Queue.Enqueue("shutdown-interrupted");
+        await running.Task;
+        var workerId = RequiredWorkerId(handle);
+        await using var subscription = system.Events.Subscribe(new WorkEventFilter(WorkerId: workerId, EventType: "worker.interrupted"));
+        await using var reader = subscription.Read().GetAsyncEnumerator();
+
+        await system.Stop();
+        var completion = await handle.WaitForCompletion();
+        var interruptedEvent = await ReadNext(reader);
+
+        await interruptedSeen.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Equal(WorkCompletionStatus.Interrupted, completion.Status);
+        Assert.Equal(WorkerState.Interrupted, completion.Worker?.State);
+        Assert.Equal(WorkInterruptionReason.Shutdown, completion.Worker?.InterruptionReason);
+        Assert.Equal("worker.interrupted", interruptedEvent.EventType);
     }
 
     [Fact]
@@ -166,7 +211,7 @@ public sealed class WorkerStateTests
         var handle = await system.Queue.Enqueue("slow-pause");
         await running.Task;
         var workerId = RequiredWorkerId(handle);
-        var runningWorker = RequiredWorker(await system.Query.GetWorker(workerId));
+        var runningWorker = RequiredWorker(await system.Query.Worker(workerId));
 
         var firstPause = await system.Workers.Execute(runningWorker.Version, WorkAction.Pause);
         var firstPauseWorker = RequiredOutcomeWorker(firstPause);
@@ -194,7 +239,7 @@ public sealed class WorkerStateTests
         var completedWorker = RequiredCompletionWorker(completed);
 
         var purge = await system.Workers.Execute(completedWorker.Version, WorkAction.Purge);
-        var snapshot = await system.Query.GetWorker(completedWorker.Id);
+        var snapshot = await system.Query.Worker(completedWorker.Id);
 
         Assert.True(purge.IsAccepted);
         Assert.Null(snapshot);
@@ -244,7 +289,7 @@ public sealed class WorkerStateTests
         var completed = await handle.WaitForCompletion();
         var completedWorker = RequiredCompletionWorker(completed);
 
-        await Eventually(async () => await system.Query.GetWorker(completedWorker.Id) is null);
+        await Eventually(async () => await system.Query.Worker(completedWorker.Id) is null);
 
         Assert.Equal(WorkCompletionStatus.Completed, completed.Status);
     }
@@ -267,13 +312,181 @@ public sealed class WorkerStateTests
         await system.Start();
 
         var handle = await system.Queue.Enqueue("canceled-auto-purge");
-        var worker = RequiredWorker(await system.Query.GetWorker(RequiredWorkerId(handle)));
+        var worker = RequiredWorker(await system.Query.Worker(RequiredWorkerId(handle)));
         var cancel = await system.Workers.Execute(worker.Version, WorkAction.Cancel);
 
-        await Eventually(async () => await system.Query.GetWorker(worker.Id) is null);
+        await Eventually(async () => await system.Query.Worker(worker.Id) is null);
 
         Assert.True(cancel.IsAccepted);
         Assert.Equal(WorkerState.Canceled, cancel.Worker?.State);
+    }
+
+    [Fact]
+    public async Task CompletedWorkersArePurgedWhenMaximumFinalWorkersIsExceeded()
+    {
+        var definition = WorkDefinition.Create("auto-purge-count", "Purges final workers when count is exceeded.",
+            configuration: WorkConfiguration.Default with
+            {
+                Retention = WorkRetentionConfiguration.Default with
+                {
+                    PurgeInterval = TimeSpan.FromMinutes(10),
+                    MaximumFinalWorkers = 2,
+                },
+            });
+        var system = CreateSystem(definition, (context, input, cancellationToken) =>
+            Task.FromResult(WorkExecutionResult.Success()));
+
+        await system.Start();
+
+        var first = RequiredCompletionWorker(await (await system.Queue.Enqueue("auto-purge-count")).WaitForCompletion());
+        await Task.Delay(TimeSpan.FromMilliseconds(20));
+        var second = RequiredCompletionWorker(await (await system.Queue.Enqueue("auto-purge-count")).WaitForCompletion());
+        await Task.Delay(TimeSpan.FromMilliseconds(20));
+        var third = RequiredCompletionWorker(await (await system.Queue.Enqueue("auto-purge-count")).WaitForCompletion());
+        var workers = new[] { first, second, third };
+
+        await Eventually(async () => await system.Query.Worker(first.Id) is null);
+
+        Assert.Equal(2, await CountExistingWorkers(system, workers));
+        Assert.Null(await system.Query.Worker(first.Id));
+        Assert.NotNull(await system.Query.Worker(second.Id));
+        Assert.NotNull(await system.Query.Worker(third.Id));
+    }
+
+    [Fact]
+    public async Task CompletedWorkersArePurgedWhenSystemMaximumFinalWorkersIsExceeded()
+    {
+        var firstDefinition = WorkDefinition.Create("auto-purge-system-a", "First definition for system purge cap.");
+        var secondDefinition = WorkDefinition.Create("auto-purge-system-b", "Second definition for system purge cap.");
+        var system = CreateSystem(builder => builder
+            .ConfigureRetention(maximumFinalWorkers: 3)
+            .AddWork(firstDefinition, (context, input, cancellationToken) => Task.FromResult(WorkExecutionResult.Success()))
+            .AddWork(secondDefinition, (context, input, cancellationToken) => Task.FromResult(WorkExecutionResult.Success())));
+
+        await system.Start();
+
+        var first = RequiredCompletionWorker(await (await system.Queue.Enqueue("auto-purge-system-a")).WaitForCompletion());
+        await Task.Delay(TimeSpan.FromMilliseconds(20));
+        var second = RequiredCompletionWorker(await (await system.Queue.Enqueue("auto-purge-system-b")).WaitForCompletion());
+        await Task.Delay(TimeSpan.FromMilliseconds(20));
+        var third = RequiredCompletionWorker(await (await system.Queue.Enqueue("auto-purge-system-a")).WaitForCompletion());
+        await Task.Delay(TimeSpan.FromMilliseconds(20));
+        var fourth = RequiredCompletionWorker(await (await system.Queue.Enqueue("auto-purge-system-b")).WaitForCompletion());
+        var workers = new[] { first, second, third, fourth };
+
+        await Eventually(async () => await system.Query.Worker(first.Id) is null);
+
+        Assert.Equal(3, await CountExistingWorkers(system, workers));
+        Assert.Null(await system.Query.Worker(first.Id));
+        Assert.NotNull(await system.Query.Worker(second.Id));
+        Assert.NotNull(await system.Query.Worker(third.Id));
+        Assert.NotNull(await system.Query.Worker(fourth.Id));
+    }
+
+    [Fact]
+    public async Task QueueRejectsWhenSystemMaximumWorkersIsReached()
+    {
+        var definition = WorkDefinition.Create("system-capacity", "Rejects when system worker count reaches the configured limit.",
+            defaultOptions: WorkerOptionFixtures.DoNotStart());
+        var system = CreateSystem(builder => builder
+            .ConfigureCapacity(maximumWorkers: 2)
+            .AddWork(definition, (context, input, cancellationToken) => Task.FromResult(WorkExecutionResult.Success())));
+
+        await system.Start();
+
+        var first = await system.Queue.Enqueue("system-capacity");
+        var second = await system.Queue.Enqueue("system-capacity");
+        var third = await system.Queue.Enqueue("system-capacity");
+
+        Assert.Equal(WorkQueueStatus.Accepted, first.QueueOutcome.Status);
+        Assert.Equal(WorkQueueStatus.Accepted, second.QueueOutcome.Status);
+        Assert.Equal(WorkQueueStatus.Invalid, third.QueueOutcome.Status);
+        Assert.Contains(third.QueueOutcome.Messages, message =>
+            message.Code == "workable.system.capacity_reached" &&
+            message.Target == "system.capacity.maximumWorkers");
+    }
+
+    [Fact]
+    public async Task FinalWorkersDoNotCountAgainstSystemMaximumWorkers()
+    {
+        var definition = WorkDefinition.Create(
+            "system-capacity-final",
+            "Retained final workers do not block new queue requests.",
+            configuration: WorkConfiguration.Default with
+            {
+                Start = new WorkStartConfiguration
+                {
+                    Policy = WorkStartPolicy.StartAndReturnAfterCompleted,
+                },
+                Retention = WorkRetentionConfiguration.Default with
+                {
+                    PurgeInterval = TimeSpan.FromMinutes(10),
+                },
+            });
+        var system = CreateSystem(builder => builder
+            .ConfigureCapacity(maximumWorkers: 1)
+            .AddWork(definition, (context, input, cancellationToken) => Task.FromResult(WorkExecutionResult.Success())));
+
+        await system.Start();
+
+        var first = await system.Queue.Enqueue("system-capacity-final");
+        var retained = await system.Query.Worker(RequiredWorkerId(first));
+        var second = await system.Queue.Enqueue("system-capacity-final");
+
+        Assert.Equal(WorkQueueStatus.Accepted, first.QueueOutcome.Status);
+        Assert.Equal(WorkerState.Completed, retained?.State);
+        Assert.Equal(WorkQueueStatus.Accepted, second.QueueOutcome.Status);
+    }
+
+    [Fact]
+    public async Task FailedWorkersCountAgainstSystemMaximumWorkers()
+    {
+        var definition = WorkDefinition.Create(
+            "system-capacity-failed",
+            "Failed workers remain non-final and block queue requests at system capacity.");
+        var system = CreateSystem(builder => builder
+            .ConfigureCapacity(maximumWorkers: 2)
+            .AddWork(definition, (context, input, cancellationToken) =>
+                Task.FromResult(WorkExecutionResult.Failure([WorkMessage.Error("test.failure", "The work failed.")]))));
+
+        await system.Start();
+
+        var first = await system.Queue.Enqueue("system-capacity-failed");
+        var firstCompletion = await first.WaitForCompletion();
+        var second = await system.Queue.Enqueue("system-capacity-failed");
+        var secondCompletion = await second.WaitForCompletion();
+        var third = await system.Queue.Enqueue("system-capacity-failed");
+
+        Assert.Equal(WorkQueueStatus.Accepted, first.QueueOutcome.Status);
+        Assert.Equal(WorkQueueStatus.Accepted, second.QueueOutcome.Status);
+        Assert.Equal(WorkerState.Failed, firstCompletion.Worker?.State);
+        Assert.Equal(WorkerState.Failed, secondCompletion.Worker?.State);
+        Assert.Equal(WorkQueueStatus.Invalid, third.QueueOutcome.Status);
+        Assert.Contains(third.QueueOutcome.Messages, message =>
+            message.Code == "workable.system.capacity_reached" &&
+            message.Target == "system.capacity.maximumWorkers");
+    }
+
+    [Fact]
+    public async Task SystemStopResetsApproximateWorkerCapacityCount()
+    {
+        var definition = WorkDefinition.Create("system-capacity-reset", "Capacity count resets when worker memory is cleared.",
+            defaultOptions: WorkerOptionFixtures.DoNotStart());
+        var system = CreateSystem(builder => builder
+            .ConfigureCapacity(maximumWorkers: 1)
+            .AddWork(definition, (context, input, cancellationToken) => Task.FromResult(WorkExecutionResult.Success())));
+
+        await system.Start();
+
+        var first = await system.Queue.Enqueue("system-capacity-reset");
+        var rejected = await system.Queue.Enqueue("system-capacity-reset");
+        await system.Stop();
+        await system.Start();
+        var afterRestart = await system.Queue.Enqueue("system-capacity-reset");
+
+        Assert.Equal(WorkQueueStatus.Accepted, first.QueueOutcome.Status);
+        Assert.Equal(WorkQueueStatus.Invalid, rejected.QueueOutcome.Status);
+        Assert.Equal(WorkQueueStatus.Accepted, afterRestart.QueueOutcome.Status);
     }
 
     [Fact]
@@ -297,7 +510,7 @@ public sealed class WorkerStateTests
         var workerId = RequiredWorkerId(handle);
 
         await system.Stop();
-        var cleared = await system.Query.GetWorker(workerId);
+        var cleared = await system.Query.Worker(workerId);
 
         Assert.Null(cleared);
     }
@@ -323,7 +536,7 @@ public sealed class WorkerStateTests
         var failedWorker = RequiredCompletionWorker(failed);
 
         await Task.Delay(TimeSpan.FromMilliseconds(100));
-        var snapshot = await system.Query.GetWorker(failedWorker.Id);
+        var snapshot = await system.Query.Worker(failedWorker.Id);
 
         Assert.Equal(WorkCompletionStatus.Failed, failed.Status);
         Assert.NotNull(snapshot);
@@ -347,7 +560,7 @@ public sealed class WorkerStateTests
         var handle = await system.Queue.Enqueue("versioned");
         await running.Task;
         var workerId = RequiredWorkerId(handle);
-        var worker = RequiredWorker(await system.Query.GetWorker(workerId));
+        var worker = RequiredWorker(await system.Query.Worker(workerId));
 
         Assert.Equal(0, worker.Revision);
         Assert.Equal(1, worker.StateSequence);
@@ -383,7 +596,7 @@ public sealed class WorkerStateTests
         var handle = await system.Queue.Enqueue("completes");
         await running.Task;
         var workerId = RequiredWorkerId(handle);
-        var runningWorker = RequiredWorker(await system.Query.GetWorker(workerId));
+        var runningWorker = RequiredWorker(await system.Query.Worker(workerId));
 
         release.SetResult();
         var completed = await handle.WaitForCompletion();
@@ -408,7 +621,7 @@ public sealed class WorkerStateTests
 
         var handle = await system.Queue.Enqueue("configurable");
         var workerId = RequiredWorkerId(handle);
-        var worker = RequiredWorker(await system.Query.GetWorker(workerId));
+        var worker = RequiredWorker(await system.Query.Worker(workerId));
 
         Assert.Equal(0, worker.Revision);
 
@@ -435,6 +648,13 @@ public sealed class WorkerStateTests
             .GetRequiredService<IWorkSystemRegistry>()
             .Default;
 
+    private static IWorkSystem CreateSystem(Action<IWorkSystemBuilder> configure)
+        => new ServiceCollection()
+            .AddWorkableSystem(configure)
+            .BuildServiceProvider()
+            .GetRequiredService<IWorkSystemRegistry>()
+            .Default;
+
     private static TaskCompletionSource CreateSignal()
         => new(TaskCreationOptions.RunContinuationsAsynchronously);
 
@@ -450,6 +670,12 @@ public sealed class WorkerStateTests
     private static WorkerSnapshot RequiredCompletionWorker(WorkCompletion completion)
         => completion.Worker ?? throw new InvalidOperationException("Expected completion to include worker.");
 
+    private static async Task<int> CountExistingWorkers(IWorkSystem system, IEnumerable<WorkerSnapshot> workers)
+    {
+        var existing = await Task.WhenAll(workers.Select(async worker => await system.Query.Worker(worker.Id) is not null));
+        return existing.Count(exists => exists);
+    }
+
     private static async Task Eventually(Func<Task<bool>> condition)
     {
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
@@ -464,5 +690,12 @@ public sealed class WorkerStateTests
         }
 
         throw new TimeoutException("The expected condition did not happen.");
+    }
+
+    private static async Task<WorkEvent> ReadNext(IAsyncEnumerator<WorkEvent> reader)
+    {
+        var hasEvent = await reader.MoveNextAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.True(hasEvent);
+        return reader.Current;
     }
 }

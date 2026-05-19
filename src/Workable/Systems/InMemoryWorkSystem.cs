@@ -12,10 +12,14 @@ internal sealed class InMemoryWorkSystem : IWorkSystem, IOriginAwareWorkSystem, 
     private readonly IReadOnlyList<Func<IServiceProvider, IWorkDefinitionSource>> workDefinitionSourceFactories;
     private readonly IReadOnlyList<Func<IServiceProvider, IStartupWorkSource>> startupWorkSourceFactories;
     private readonly WorkSystemCatalog catalog;
-    private readonly WorkQueue queue;
+    private readonly WorkQueueService queue;
     private readonly WorkerOperations workers;
+    private readonly WorkSystemReadModel readModel;
+    private readonly IWorkQueryService query;
+    private readonly IWorkSystemDiagnostics diagnostics;
     private readonly InMemoryWorkMetricsSink metrics = new();
     private readonly WorkEventStream events = new();
+    private readonly WorkSystemQueueDiagnosticsTracker queueDiagnostics = new();
     private readonly SemaphoreSlim lifecycleLock = new(1, 1);
     private bool runtimeWorkDefined;
 
@@ -38,8 +42,30 @@ internal sealed class InMemoryWorkSystem : IWorkSystem, IOriginAwareWorkSystem, 
         var dotNetOriginProvider = registration.DotNetOriginProviderFactory?.Invoke(rootServices)
             ?? rootServices.GetService<IDotNetWorkOriginProvider>()
             ?? new DefaultDotNetWorkOriginProvider();
-        this.workers = new WorkerOperations(this.catalog, () => this.State, this.Id, this.Name, rootServices, this.events, dotNetOriginProvider, registration.ExceptionClassifiers, globalExceptionClassifiers, this.ShutdownGracePeriod, this.metrics);
-        this.queue = new WorkQueue(this.catalog, this.workers, dotNetOriginProvider);
+        var persistenceStore = rootServices.GetService<IWorkPersistenceStore>()
+            ?? rootServices.GetService<IWorkQueueDurabilityStore>();
+        this.readModel = new WorkSystemReadModel(this.catalog, () => this.State, this.Name, this.metrics);
+        this.workers = new WorkerOperations(
+            this.catalog,
+            () => this.State,
+            this.Id,
+            this.Name,
+            rootServices,
+            this.events,
+            this.readModel,
+            dotNetOriginProvider,
+            registration.ExceptionClassifiers,
+            globalExceptionClassifiers,
+            this.ShutdownGracePeriod,
+            registration.Retention,
+            registration.Capacity,
+            this.metrics,
+            this.queueDiagnostics,
+            persistenceStore);
+        this.diagnostics = new WorkSystemDiagnostics(this.queueDiagnostics, this.readModel, this.workers);
+        this.readModel.UseDetailReaders(this.workers.GetAuthoritative, this.workers.GetIterationAuthoritative);
+        this.query = this.readModel.Query;
+        this.queue = new WorkQueueService(this.catalog, this.workers, dotNetOriginProvider, this.queueDiagnostics);
     }
 
     public WorkSystemId Id { get; }
@@ -52,13 +78,15 @@ internal sealed class InMemoryWorkSystem : IWorkSystem, IOriginAwareWorkSystem, 
 
     public IWorkCatalog Catalog => this.catalog;
 
-    public IWorkQueue Queue => this.queue;
+    public IWorkQueueService Queue => this.queue;
 
     public IWorkerOperations Workers => this.workers;
 
-    public IWorkQuery Query => this.workers;
+    public IWorkQueryService Query => this.query;
 
     public IWorkEventStream Events => this.events;
+
+    public IWorkSystemDiagnostics Diagnostics => this.diagnostics;
 
     Task<IWorkerHandle> IOriginAwareWorkSystem.Enqueue(
         string name,
@@ -81,7 +109,10 @@ internal sealed class InMemoryWorkSystem : IWorkSystem, IOriginAwareWorkSystem, 
         WorkAction action,
         WorkOrigin origin,
         CancellationToken cancellationToken)
-        => this.workers.Execute(worker, action, origin, cancellationToken);
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        return this.workers.Execute(worker, action, origin);
+    }
 
     Task<WorkerBulkActionOutcome> IOriginAwareWorkSystem.ExecuteAll(
         WorkAction action,
@@ -95,7 +126,10 @@ internal sealed class InMemoryWorkSystem : IWorkSystem, IOriginAwareWorkSystem, 
         WorkerReconfiguration changes,
         WorkOrigin origin,
         CancellationToken cancellationToken)
-        => this.workers.Reconfigure(worker, changes, origin, cancellationToken);
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        return this.workers.Reconfigure(worker, changes, origin);
+    }
 
     Task<WorkSystemStopResult> IOriginAwareWorkSystem.Stop(
         WorkOrigin origin,
@@ -121,7 +155,7 @@ internal sealed class InMemoryWorkSystem : IWorkSystem, IOriginAwareWorkSystem, 
             }
 
             this.catalog.Freeze();
-            this.workers.StartDispatching();
+            await this.workers.StartDispatching(cancellationToken);
             dispatchingStarted = true;
             this.State = WorkSystemState.Started;
             await this.QueueAutomaticallyStartedWork(cancellationToken);
@@ -163,7 +197,9 @@ internal sealed class InMemoryWorkSystem : IWorkSystem, IOriginAwareWorkSystem, 
             }
 
             this.State = WorkSystemState.Stopping;
-            var result = await this.workers.StopDispatching(origin, CancellationToken.None);
+            await this.NotifyStopping(origin);
+            var result = await this.workers.StopDispatching(origin, cancellationToken);
+            this.metrics.Clear();
             this.State = WorkSystemState.Stopped;
             return result;
         }
@@ -173,11 +209,27 @@ internal sealed class InMemoryWorkSystem : IWorkSystem, IOriginAwareWorkSystem, 
         }
     }
 
+    private async Task NotifyStopping(WorkOrigin origin)
+    {
+        foreach (var observer in this.rootServices.GetServices<IWorkSystemLifecycleObserver>())
+        {
+            try
+            {
+                await observer.SystemStopping(this, origin, CancellationToken.None);
+            }
+            catch
+            {
+                // Lifecycle observers are best-effort and must not prevent shutdown.
+            }
+        }
+    }
+
     public async ValueTask DisposeAsync()
     {
         await this.Stop();
         this.workers.Dispose();
         this.lifecycleLock.Dispose();
+        await this.readModel.DisposeAsync();
         await this.events.DisposeAsync();
     }
 
@@ -214,10 +266,10 @@ internal sealed class InMemoryWorkSystem : IWorkSystem, IOriginAwareWorkSystem, 
             foreach (var request in requests)
             {
                 var registeredWork = this.GetStartupRegisteredWork(request);
-                var configuration = registeredWork.Definition.Configuration
-                    .Merge(registeredWork.Definition.DefaultOptions.Configuration)
-                    .Merge(request.Options?.Configuration);
-                if (configuration.Start.Policy == WorkStartPolicy.StartAndReturnAfterCompleted)
+                var runtimePlan = request.Options is null
+                    ? registeredWork.DefaultRuntimePlan
+                    : RegisteredWorkRuntimePlan.Create(registeredWork.Definition, request.Options);
+                if (runtimePlan.StartPolicy == WorkStartPolicy.StartAndReturnAfterCompleted)
                 {
                     throw new InvalidOperationException(
                         $"Startup work '{registeredWork.Definition.Name}' cannot use '{nameof(WorkStartPolicy.StartAndReturnAfterCompleted)}'. Startup work is queued during system start and cannot wait for worker completion.");
@@ -269,9 +321,7 @@ internal sealed class InMemoryWorkSystem : IWorkSystem, IOriginAwareWorkSystem, 
         IServiceProvider services,
         CancellationToken cancellationToken)
     {
-        var configuration = registeredWork.Definition.Configuration
-            .Merge(registeredWork.Definition.DefaultOptions.Configuration);
-        if (configuration.Start.Policy == WorkStartPolicy.StartAndReturnAfterCompleted)
+        if (registeredWork.DefaultRuntimePlan.StartPolicy == WorkStartPolicy.StartAndReturnAfterCompleted)
         {
             throw new InvalidOperationException(
                 $"Automatically started work '{registeredWork.Definition.Name}' cannot use '{nameof(WorkStartPolicy.StartAndReturnAfterCompleted)}'. Automatically started work is queued during system start and cannot wait for worker completion.");

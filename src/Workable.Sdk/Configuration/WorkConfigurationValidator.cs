@@ -21,7 +21,8 @@ internal static class WorkConfigurationValidator
         ValidateTransientRetry(configuration.TransientRetry, messages);
         ValidateLogging(configuration.Logging, messages);
         ValidateRetention(configuration.Retention, messages);
-        ValidateConcurrency(configuration.Concurrency, messages);
+        ValidateConcurrency(configuration.Concurrency, configuration.QueueDurability, messages);
+        ValidateQueueDurability(configuration.QueueDurability, configuration.Idempotency, configuration.Recurrence, messages);
         ValidateInvocation(configuration.Invocation, messages);
         return messages;
     }
@@ -138,6 +139,14 @@ internal static class WorkConfigurationValidator
                 "Retention purge interval must be greater than zero.",
                 "configuration.retention.purgeInterval"));
         }
+
+        if (retention.MaximumFinalWorkers <= 0)
+        {
+            messages.Add(WorkMessage.Error(
+                "workable.configuration.retention.maximum_final_workers_required",
+                "Retention maximum final workers must be greater than zero.",
+                "configuration.retention.maximumFinalWorkers"));
+        }
     }
 
     private static void ValidateLogging(WorkLoggingConfiguration logging, List<WorkMessage> messages)
@@ -151,7 +160,10 @@ internal static class WorkConfigurationValidator
         }
     }
 
-    private static void ValidateConcurrency(WorkConcurrencyConfiguration concurrency, List<WorkMessage> messages)
+    private static void ValidateConcurrency(
+        WorkConcurrencyConfiguration concurrency,
+        WorkQueueDurabilityConfiguration durability,
+        List<WorkMessage> messages)
     {
         if (concurrency.MaximumCapacity < 0)
         {
@@ -172,6 +184,94 @@ internal static class WorkConfigurationValidator
                 "workable.configuration.concurrency.maximum_capacity_required",
                 "Enabled concurrency requires maximum capacity greater than zero.",
                 "configuration.concurrency.maximumCapacity"));
+        }
+
+        if (concurrency.Storage != WorkConcurrencyStorage.Persistence)
+        {
+            return;
+        }
+
+        if (!durability.IsEnabled)
+        {
+            messages.Add(WorkMessage.Error(
+                "workable.configuration.concurrency.persistence_requires_durable_queue",
+                "Persistence-backed concurrency currently requires durable queueing.",
+                "configuration.concurrency.storage"));
+        }
+
+        if (concurrency.BlockingMode != WorkConcurrencyBlockingMode.WhileExecuting)
+        {
+            messages.Add(WorkMessage.Error(
+                "workable.configuration.concurrency.persistence_blocking_mode_not_supported",
+                "Persistence-backed concurrency currently supports only WhileExecuting blocking mode.",
+                "configuration.concurrency.blockingMode"));
+        }
+
+        if (concurrency.LimitReachedBehavior != WorkConcurrencyLimitReachedBehavior.DeferStart)
+        {
+            messages.Add(WorkMessage.Error(
+                "workable.configuration.concurrency.persistence_requires_deferred_start",
+                "Persistence-backed concurrency currently requires DeferStart limit behavior.",
+                "configuration.concurrency.limitReachedBehavior"));
+        }
+
+    }
+
+    private static void ValidateQueueDurability(
+        WorkQueueDurabilityConfiguration durability,
+        WorkIdempotencyConfiguration idempotency,
+        WorkRecurrenceConfiguration recurrence,
+        List<WorkMessage> messages)
+    {
+        if (!durability.IsEnabled && !idempotency.IsEnabled)
+        {
+            if (durability.CompleteDurably)
+            {
+                messages.Add(WorkMessage.Error(
+                    "workable.configuration.queue_durability.durable_completion_requires_persistence",
+                    "Durable completion requires durable queueing or persistence-backed idempotency.",
+                    "configuration.queueDurability.completeDurably"));
+            }
+
+            return;
+        }
+
+        if (durability.CompleteDurably &&
+            !durability.IsEnabled &&
+            idempotency.Storage != WorkIdempotencyStorage.Persistence)
+        {
+            messages.Add(WorkMessage.Error(
+                "workable.configuration.queue_durability.durable_completion_requires_persistence",
+                "Durable completion requires durable queueing or persistence-backed idempotency.",
+                "configuration.queueDurability.completeDurably"));
+        }
+
+        if (durability.IsEnabled &&
+            durability.FallbackPollingInterval < WorkQueueDurabilityConfiguration.MinimumFallbackPollingInterval)
+        {
+            messages.Add(WorkMessage.Error(
+                "workable.configuration.queue_durability.fallback_polling_interval_too_short",
+                "Durable queue fallback polling interval must be at least one second.",
+                "configuration.queueDurability.fallbackPollingInterval"));
+        }
+
+        if (durability.CompleteDurably && recurrence.IsEnabled)
+        {
+            messages.Add(WorkMessage.Error(
+                "workable.configuration.queue_durability.durable_completion_recurring_not_supported",
+                "Durable completion is not supported for recurring work.",
+                "configuration.queueDurability.completeDurably"));
+        }
+
+        if (durability.IsEnabled &&
+            idempotency.IsEnabled &&
+            idempotency.Storage != WorkIdempotencyStorage.Persistence)
+        {
+            messages.Add(WorkMessage.Error(
+                "workable.configuration.queue_durability.idempotency_persistence_required",
+                "Durable queueing with idempotency requires persistence-backed idempotency so durable queue persistence and duplicate detection can be committed together.",
+                "configuration.idempotency.storage"));
+            return;
         }
 
     }

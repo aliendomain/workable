@@ -1,6 +1,6 @@
 # Start Configuration
 
-Start configuration controls whether queued work starts automatically and when `IWorkQueue.Enqueue` returns control to the caller.
+Start configuration controls whether queued work starts automatically and when `IWorkQueueService.Enqueue` returns control to the caller.
 
 This is separate from `WithAutomaticStart`, which queues a new worker when the Workable system starts. Start configuration controls what happens after any worker is queued.
 
@@ -65,7 +65,7 @@ var handle = await system.Queue.Enqueue(
 ## Reconfiguration
 
 ```
-var worker = await system.Query.GetWorker(workerId)
+var worker = await system.Query.Worker(workerId)
     ?? throw new InvalidOperationException("Worker was not found.");
 
 var outcome = await system.Workers.Reconfigure(

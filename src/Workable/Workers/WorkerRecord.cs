@@ -35,6 +35,7 @@ internal sealed class WorkerRecord(
     private WorkProfileSnapshot? profile;
     private WorkProfileSnapshot? pendingIterationProfile;
     private CurrentWorkerIteration? currentIteration;
+    private WorkInterruptionReason? interruptionReason;
     private DateTimeOffset? firstStartedAt;
     private DateTimeOffset? nextRunAt;
     private TimeSpan totalExecutionDuration;
@@ -82,13 +83,48 @@ internal sealed class WorkerRecord(
 
     public DateTimeOffset CreatedAt { get; } = createdAt;
 
+    public DateTimeOffset StateChangedAt { get; private set; } = updatedAt;
+
     public DateTimeOffset UpdatedAt { get; private set; } = updatedAt;
 
-    public Action<WorkerRecord, WorkerIterationSnapshot>? IterationRecorded { get; set; }
+    public Action<WorkerReadModelIterationUpdate>? IterationRecorded { get; set; }
 
-    public Action<WorkerRecord, WorkerIterationReference>? IterationForgotten { get; set; }
+    public Action<WorkerIterationReference>? IterationForgotten { get; set; }
 
     public bool IsFinal => WorkerStateMachine.IsFinal(this.State);
+
+    public bool IsInterrupted
+    {
+        get
+        {
+            lock (this.sync)
+            {
+                return this.State is WorkerState.Interrupting or WorkerState.Interrupted;
+            }
+        }
+    }
+
+    public WorkInterruptionReason? InterruptionReason
+    {
+        get
+        {
+            lock (this.sync)
+            {
+                return this.interruptionReason;
+            }
+        }
+    }
+
+    public bool IsCompletionSignaled
+    {
+        get
+        {
+            lock (this.sync)
+            {
+                return this.completion.Task.IsCompleted;
+            }
+        }
+    }
 
     public WorkerSummary ToSummary()
     {
@@ -108,6 +144,8 @@ internal sealed class WorkerRecord(
 
     public bool AddIdentifier(WorkIdentifier identifier)
     {
+        WorkerReadModelIterationUpdate? currentIteration = null;
+        Action<WorkerReadModelIterationUpdate>? iterationRecorded = null;
         lock (this.sync)
         {
             if (!this.identifiers.Add(identifier))
@@ -116,8 +154,20 @@ internal sealed class WorkerRecord(
             }
 
             this.MarkUpdated();
-            return true;
+            if (this.currentIteration is not null)
+            {
+                currentIteration = this.CreateReadModelIterationUpdateLocked(
+                    this.CreateCurrentIterationSnapshotLocked(DateTimeOffset.UtcNow));
+                iterationRecorded = this.IterationRecorded;
+            }
         }
+
+        if (currentIteration is not null)
+        {
+            iterationRecorded?.Invoke(currentIteration);
+        }
+
+        return true;
     }
 
     public bool IsInitializationComplete(WorkInitializationId initializationId)
@@ -139,7 +189,7 @@ internal sealed class WorkerRecord(
         }
     }
 
-    public WorkActionOutcome Start(CancellationToken cancellationToken, long expectedRevision, bool advancesRevision, out CancellationToken executionToken)
+    public WorkActionOutcome Start(long expectedRevision, bool advancesRevision, out CancellationToken executionToken, CancellationToken cancellationToken)
     {
         WorkerStateTransition transition;
         lock (this.sync)
@@ -305,7 +355,7 @@ internal sealed class WorkerRecord(
                 return transition.CompletionStatus;
             }
 
-            this.State = transition.NextState;
+            this.SetStateLocked(transition.NextState);
             this.Output = null;
             this.RecordIterationLocked(null, this.Messages, transition.CompletionStatus);
             this.nextRunAt = null;
@@ -315,40 +365,28 @@ internal sealed class WorkerRecord(
         }
     }
 
-    public WorkActionOutcome ForceCancelForSystemStop()
+    public WorkCompletionStatus CompleteInterruption()
     {
         lock (this.sync)
         {
-            if (this.IsFinal)
+            if (this.completion.Task.IsCompleted)
             {
-                return WorkActionOutcome.Invalid(
-                    WorkAction.Cancel,
-                    this.ToSnapshotLocked(),
-                    [WorkMessage.Error("workable.worker.final", $"Worker cannot be force-canceled from state '{this.State}'.", "worker")]);
+                return WorkCompletionStatus.Invalid;
             }
 
-            this.Messages =
-            [
-                .. this.Messages,
-                WorkMessage.Warning(
-                    "workable.worker.shutdown_forced",
-                    "Worker did not stop within the shutdown grace period and was force-canceled by Workable.",
-                    "worker"),
-            ];
-            this.State = WorkerState.Canceled;
+            var transition = WorkerStateMachine.CompleteInterruption(this.State);
+            if (transition.CompletionStatus == WorkCompletionStatus.Invalid)
+            {
+                return transition.CompletionStatus;
+            }
+
+            this.SetStateLocked(transition.NextState);
             this.Output = null;
-            this.RecordIterationLocked(null, this.Messages, WorkCompletionStatus.Canceled);
+            this.RecordIterationLocked(null, this.Messages, transition.CompletionStatus);
+            this.nextRunAt = null;
             this.AdvanceStateSequence();
             this.ReleaseExecutionCancellationLocked();
-            this.SignalRecurrenceWaitLocked();
-
-            return WorkActionOutcome.Accepted(
-                WorkAction.Cancel,
-                this.ToSnapshotLocked(),
-                [WorkMessage.Warning(
-                    "workable.worker.shutdown_forced",
-                    "Worker did not stop within the shutdown grace period and was force-canceled by Workable.",
-                    "worker")]);
+            return transition.CompletionStatus;
         }
     }
 
@@ -366,7 +404,7 @@ internal sealed class WorkerRecord(
                 return WorkCompletionStatus.Invalid;
             }
 
-            this.State = WorkerState.Waiting;
+            this.SetStateLocked(WorkerState.Waiting);
             this.Output = result.Output;
             this.Messages = result.Messages;
             this.recurrenceWaitSignal = CreateSignalSource();
@@ -391,7 +429,7 @@ internal sealed class WorkerRecord(
                 return WorkCompletionStatus.Invalid;
             }
 
-            this.State = WorkerState.Retrying;
+            this.SetStateLocked(WorkerState.Retrying);
             this.Output = result.Output;
             this.Messages = result.Messages;
             this.recurrenceWaitSignal = CreateSignalSource();
@@ -414,9 +452,9 @@ internal sealed class WorkerRecord(
             var status = this.Messages.Any(message => message.Severity == WorkMessageSeverity.Error)
                 ? WorkCompletionStatus.Failed
                 : WorkCompletionStatus.Completed;
-            this.State = status == WorkCompletionStatus.Failed
+            this.SetStateLocked(status == WorkCompletionStatus.Failed
                 ? WorkerState.Failed
-                : WorkerState.Completed;
+                : WorkerState.Completed);
             this.nextRunAt = null;
             this.AdvanceStateSequence();
             this.ReleaseExecutionCancellationLocked();
@@ -445,7 +483,7 @@ internal sealed class WorkerRecord(
                 return false;
             }
 
-            this.State = WorkerState.Running;
+            this.SetStateLocked(WorkerState.Running);
             this.Output = null;
             this.Messages = [];
             this.nextRunAt = null;
@@ -464,7 +502,7 @@ internal sealed class WorkerRecord(
                 return false;
             }
 
-            this.State = WorkerState.Running;
+            this.SetStateLocked(WorkerState.Running);
             this.Output = null;
             this.Messages = [];
             this.nextRunAt = null;
@@ -479,7 +517,7 @@ internal sealed class WorkerRecord(
         lock (this.sync)
         {
             this.Messages = [message];
-            this.State = WorkerState.Failed;
+            this.SetStateLocked(WorkerState.Failed);
             this.RecordIterationLocked(null, this.Messages, WorkCompletionStatus.Failed);
             this.nextRunAt = null;
             this.AdvanceStateSequence();
@@ -547,6 +585,14 @@ internal sealed class WorkerRecord(
                 configuration = configuration with
                 {
                     Concurrency = changes.Concurrency,
+                };
+            }
+
+            if (changes.QueueDurability is not null)
+            {
+                configuration = configuration with
+                {
+                    QueueDurability = changes.QueueDurability,
                 };
             }
 
@@ -652,6 +698,53 @@ internal sealed class WorkerRecord(
         }
     }
 
+    public WorkerSnapshot? ForceInterrupt(WorkInterruptionReason reason)
+    {
+        lock (this.sync)
+        {
+            if (this.completion.Task.IsCompleted)
+            {
+                return null;
+            }
+
+            this.Messages =
+            [
+                .. this.Messages,
+                CreateInterruptionMessage(reason, forced: true),
+            ];
+            this.interruptionReason = reason;
+            this.SetStateLocked(WorkerState.Interrupted);
+            this.Output = null;
+            this.RecordIterationLocked(null, this.Messages, WorkCompletionStatus.Interrupted);
+            this.nextRunAt = null;
+            this.AdvanceStateSequence();
+            this.ReleaseExecutionCancellationLocked();
+            this.SignalRecurrenceWaitLocked();
+            this.SetCompletionLocked(WorkCompletionStatus.Interrupted);
+
+            return this.ToSnapshotLocked();
+        }
+    }
+
+    public WorkerSnapshot? ForceInterruptForSystemStop()
+        => this.ForceInterrupt(WorkInterruptionReason.Shutdown);
+
+    public WorkerReadModelWorker ToReadModelWorker()
+    {
+        lock (this.sync)
+        {
+            return this.CreateReadModelWorkerLocked();
+        }
+    }
+
+    public WorkerIterationSnapshot? GetIterationSnapshot(long sequence)
+    {
+        lock (this.sync)
+        {
+            return this.GetIterationSnapshotLocked(sequence);
+        }
+    }
+
     public bool ShouldCaptureLog(LogLevel level)
     {
         lock (this.sync)
@@ -742,24 +835,24 @@ internal sealed class WorkerRecord(
     {
         lock (this.sync)
         {
-            if (!this.Configuration.Concurrency.IsEnabled)
+            if (!TryGetConcurrencyCapacityBucketLocked(this.State, this.Configuration, this.IsStartDeferred, out var bucket) ||
+                bucket is null)
             {
                 return false;
             }
 
-            if (this.State == WorkerState.Queued)
-            {
-                return this.ShouldStartAutomatically() && !this.IsStartDeferred;
-            }
+            return bucket.Value.CountsFor(blockingMode);
+        }
+    }
 
-            return blockingMode switch
-            {
-                WorkConcurrencyBlockingMode.WhileExecuting => this.State is WorkerState.Running or WorkerState.Waiting or WorkerState.Retrying or WorkerState.Pausing or WorkerState.Canceling,
-                WorkConcurrencyBlockingMode.WhileExecutingOrPaused => this.State is WorkerState.Running or WorkerState.Waiting or WorkerState.Retrying or WorkerState.Pausing or WorkerState.Canceling or WorkerState.Paused,
-                WorkConcurrencyBlockingMode.WhileExecutingOrFailed => this.State is WorkerState.Running or WorkerState.Waiting or WorkerState.Retrying or WorkerState.Pausing or WorkerState.Canceling or WorkerState.Failed,
-                WorkConcurrencyBlockingMode.WhileExecutingPausedOrFailed => this.State is WorkerState.Running or WorkerState.Waiting or WorkerState.Retrying or WorkerState.Pausing or WorkerState.Canceling or WorkerState.Paused or WorkerState.Failed,
-                _ => false,
-            };
+    internal bool TryGetConcurrencyCapacityContribution(
+        out WorkConcurrencyScope scope,
+        [NotNullWhen(true)] out WorkConcurrencyCapacityBucket? bucket)
+    {
+        lock (this.sync)
+        {
+            scope = this.Configuration.Concurrency.Scope;
+            return TryGetConcurrencyCapacityBucketLocked(this.State, this.Configuration, this.IsStartDeferred, out bucket);
         }
     }
 
@@ -844,7 +937,9 @@ internal sealed class WorkerRecord(
             this.Options,
             this.Configuration,
             this.Messages,
+            this.interruptionReason,
             this.CreatedAt,
+            this.StateChangedAt,
             this.UpdatedAt)
         {
             Iterations = iterations,
@@ -858,6 +953,22 @@ internal sealed class WorkerRecord(
             TotalExecutionDuration = this.TotalExecutionDurationLocked(),
             NextRunAt = this.nextRunAt,
         };
+    }
+
+    private WorkerReadModelWorker CreateReadModelWorkerLocked()
+        => WorkerReadModelWorker.From(
+            this.ToOverviewItemLocked(),
+            this.Configuration.Recurrence.IsEnabled,
+            this.Configuration.Concurrency.IsEnabled,
+            this.Options.ProfilingEnabled);
+
+    private WorkerReadModelIterationUpdate CreateReadModelIterationUpdateLocked(WorkerIterationSnapshot iteration)
+    {
+        var worker = this.CreateReadModelWorkerLocked();
+        return new WorkerReadModelIterationUpdate(
+            worker,
+            WorkerReadModelIteration.From(worker, iteration),
+            iteration);
     }
 
     private static TaskCompletionSource<WorkCompletion> CreateCompletionSource()
@@ -915,7 +1026,7 @@ internal sealed class WorkerRecord(
             return transition.CompletionStatus;
         }
 
-        this.State = transition.NextState;
+        this.SetStateLocked(transition.NextState);
         this.Output = transition.CompletionStatus is WorkCompletionStatus.Completed or WorkCompletionStatus.Failed ? result.Output : null;
         this.Messages = result.Messages;
         this.RecordIterationLocked(result, transition.CompletionStatus);
@@ -953,7 +1064,6 @@ internal sealed class WorkerRecord(
         this.pendingIterationProfile = null;
         this.currentIteration = null;
         this.lastIterationSequence = iteration.Sequence;
-        this.IterationRecorded?.Invoke(this, iteration);
         var retained = status switch
         {
             WorkCompletionStatus.Completed => this.successfulIterations,
@@ -965,11 +1075,18 @@ internal sealed class WorkerRecord(
         var maximum = status == WorkCompletionStatus.Completed
             ? this.Configuration.Recurrence.RetainedSuccessfulIterations
             : this.Configuration.Recurrence.RetainedFailedIterations;
+        var forgottenIterations = new List<WorkerIterationReference>();
         while (retained.Count > maximum)
         {
             var forgotten = retained[0];
             retained.RemoveAt(0);
-            this.IterationForgotten?.Invoke(this, new WorkerIterationReference(this.Id, forgotten.Sequence));
+            forgottenIterations.Add(new WorkerIterationReference(this.Id, forgotten.Sequence));
+        }
+
+        this.IterationRecorded?.Invoke(this.CreateReadModelIterationUpdateLocked(iteration));
+        foreach (var forgotten in forgottenIterations)
+        {
+            this.IterationForgotten?.Invoke(forgotten);
         }
     }
 
@@ -979,7 +1096,8 @@ internal sealed class WorkerRecord(
         this.currentIteration = new CurrentWorkerIteration(++this.iterationSequence, startedAt);
         this.pendingIterationProfile = null;
         this.firstStartedAt ??= startedAt;
-        this.IterationRecorded?.Invoke(this, this.CreateCurrentIterationSnapshotLocked(startedAt));
+        this.IterationRecorded?.Invoke(this.CreateReadModelIterationUpdateLocked(
+            this.CreateCurrentIterationSnapshotLocked(startedAt)));
     }
 
     private WorkerIterationSnapshot CreateCurrentIterationSnapshotLocked(DateTimeOffset observedAt)
@@ -1040,7 +1158,7 @@ internal sealed class WorkerRecord(
 
         if (changesState && !transition.RemovesWorker)
         {
-            this.State = transition.RequiredNextState;
+            this.SetStateLocked(transition.RequiredNextState);
         }
 
         if (advancesRevision)
@@ -1055,11 +1173,11 @@ internal sealed class WorkerRecord(
         => transition.Status switch
         {
             WorkActionStatus.Accepted => WorkActionOutcome.Accepted(transition.Action, this.ToSnapshotLocked(), acceptedMessages),
-            WorkActionStatus.Conflict => WorkActionOutcome.Conflict(transition.Action, this.ToSnapshotLocked(), [this.ToMessage(transition)]),
-            _ => WorkActionOutcome.Invalid(transition.Action, this.ToSnapshotLocked(), [this.ToMessage(transition)]),
+            WorkActionStatus.Conflict => WorkActionOutcome.Conflict(transition.Action, this.ToSnapshotLocked(), [ToMessage(transition)]),
+            _ => WorkActionOutcome.Invalid(transition.Action, this.ToSnapshotLocked(), [ToMessage(transition)]),
         };
 
-    private WorkMessage ToMessage(WorkerStateTransition transition)
+    private static WorkMessage ToMessage(WorkerStateTransition transition)
     {
         if (transition.MessageCode is null || transition.MessageText is null)
         {
@@ -1069,29 +1187,65 @@ internal sealed class WorkerRecord(
         return WorkMessage.Error(transition.MessageCode, transition.MessageText, "worker");
     }
 
-    public WorkActionOutcome RequestCancelForSystemStop()
+    public bool RequestInterrupt(WorkInterruptionReason reason)
     {
-        CancellationTokenSource? cancellation;
-        WorkActionOutcome outcome;
-
+        CancellationTokenSource? cancellation = null;
         lock (this.sync)
         {
-            var transition = WorkerStateMachine.Apply(this.State, WorkAction.Cancel);
-            if (!transition.IsAccepted)
+            if (!CanInterrupt(this.State, reason))
             {
-                return this.ToOutcomeLocked(transition);
+                return false;
             }
 
-            this.ApplyAcceptedTransitionLocked(transition, advancesRevision: false);
-            cancellation = transition.CancelsExecution ? this.executionCancellation : null;
+            var currentState = this.State;
+            this.Messages =
+            [
+                .. this.Messages,
+                CreateInterruptionMessage(reason, forced: false),
+            ];
+            this.interruptionReason = reason;
+            this.SetStateLocked(currentState == WorkerState.Running
+                ? WorkerState.Interrupting
+                : WorkerState.Interrupted);
+            this.AdvanceStateSequence();
+
+            cancellation = currentState == WorkerState.Running ? this.executionCancellation : null;
             this.SignalRecurrenceWaitLocked();
-            outcome = this.ToOutcomeLocked(transition);
         }
 
         CancelIfAvailable(cancellation);
 
-        return outcome;
+        return true;
     }
+
+    public bool RequestInterruptForSystemStop()
+        => this.RequestInterrupt(WorkInterruptionReason.Shutdown);
+
+    private static bool CanInterrupt(WorkerState state, WorkInterruptionReason reason)
+        => reason == WorkInterruptionReason.LeaseLost
+            ? state is WorkerState.Queued or WorkerState.Running or WorkerState.Waiting or WorkerState.Retrying or WorkerState.Paused
+            : state is WorkerState.Queued or WorkerState.Running or WorkerState.Waiting or WorkerState.Retrying;
+
+    private static WorkMessage CreateInterruptionMessage(WorkInterruptionReason reason, bool forced)
+        => reason switch
+        {
+            WorkInterruptionReason.LeaseLost => WorkMessage.Warning(
+                forced
+                    ? "workable.worker.lease_lost_interrupted_forced"
+                    : "workable.worker.lease_lost_interrupted",
+                forced
+                    ? "Worker was marked interrupted because this runtime lost its durable queue lease."
+                    : "Worker execution was interrupted because this runtime lost its durable queue lease.",
+                "worker"),
+            _ => WorkMessage.Warning(
+                forced
+                    ? "workable.worker.shutdown_interrupted_forced"
+                    : "workable.worker.shutdown_interrupted",
+                forced
+                    ? "Worker did not stop within the shutdown grace period and was marked interrupted by Workable."
+                    : "Worker execution was interrupted because the Workable system is stopping.",
+                "worker"),
+        };
 
     private static bool CancelIfAvailable(CancellationTokenSource? cancellation)
     {
@@ -1133,6 +1287,17 @@ internal sealed class WorkerRecord(
         this.MarkUpdated();
     }
 
+    private void SetStateLocked(WorkerState state)
+    {
+        if (this.State == state)
+        {
+            return;
+        }
+
+        this.State = state;
+        this.StateChangedAt = DateTimeOffset.UtcNow;
+    }
+
     private void AdvanceStateSequence()
     {
         this.StateSequence++;
@@ -1144,6 +1309,41 @@ internal sealed class WorkerRecord(
 
     private bool ShouldStartAutomatically()
         => this.Configuration.Start.Policy != WorkStartPolicy.DoNotStart;
+
+    private static bool TryGetConcurrencyCapacityBucketLocked(
+        WorkerState state,
+        WorkConfiguration configuration,
+        bool isStartDeferred,
+        [NotNullWhen(true)] out WorkConcurrencyCapacityBucket? bucket)
+    {
+        if (!configuration.Concurrency.IsEnabled)
+        {
+            bucket = null;
+            return false;
+        }
+
+        if (state == WorkerState.Queued)
+        {
+            if (configuration.Start.Policy == WorkStartPolicy.DoNotStart || isStartDeferred)
+            {
+                bucket = null;
+                return false;
+            }
+
+            bucket = WorkConcurrencyCapacityBucket.Executing;
+            return true;
+        }
+
+        bucket = state switch
+        {
+            WorkerState.Running or WorkerState.Waiting or WorkerState.Retrying or WorkerState.Pausing or WorkerState.Interrupting or WorkerState.Canceling => WorkConcurrencyCapacityBucket.Executing,
+            WorkerState.Paused => WorkConcurrencyCapacityBucket.Paused,
+            WorkerState.Failed => WorkConcurrencyCapacityBucket.Failed,
+            _ => null,
+        };
+
+        return bucket is not null;
+    }
 
     private void ReleaseExecutionCancellationLocked()
     {
@@ -1165,6 +1365,18 @@ internal sealed class WorkerRecord(
     private WorkCompletion ToCompletionLocked(WorkCompletionStatus status)
         => new(status, this.ToSnapshotLocked(), this.Output, this.Messages);
 
+    public WorkEventMetadata ToEventMetadata(
+        WorkSystemId workSystemId,
+        string eventType)
+        => new(
+            workSystemId,
+            this.Id,
+            this.Work.Definition.Id,
+            this.SubjectId,
+            this.ConcurrencyKey,
+            eventType,
+            this.GetIdentifierSnapshot);
+
     public WorkEvent ToEvent(
         WorkSystemId workSystemId,
         string eventType,
@@ -1184,7 +1396,7 @@ internal sealed class WorkerRecord(
                 origin ?? this.Origin,
                 eventType,
                 this.CreateEventDataLocked(details),
-                this.Messages);
+                []);
         }
     }
 
@@ -1202,13 +1414,16 @@ internal sealed class WorkerRecord(
                 this.identifiers.ToHashSet(),
                 this.Origin,
                 "worker.log",
-                this.CreateEventDataLocked(new WorkerEventPayloadDetails(Log: entry)),
-                [new WorkMessage(
-                    "workable.worker.log",
-                    LogSeverity(entry.Level),
-                    entry.Message,
-                    "worker.log",
-                    LogMetadata(entry))]);
+                this.CreateEventDataLocked(null),
+                []);
+        }
+    }
+
+    private IReadOnlySet<WorkIdentifier> GetIdentifierSnapshot()
+    {
+        lock (this.sync)
+        {
+            return this.identifiers.ToHashSet();
         }
     }
 
@@ -1225,7 +1440,9 @@ internal sealed class WorkerRecord(
             this.identifiers.ToHashSet(),
             this.Origin,
             this.State,
+            this.interruptionReason,
             this.CreatedAt,
+            this.StateChangedAt,
             this.UpdatedAt)
         {
             QueueDuration = this.QueueDurationLocked(),
@@ -1244,7 +1461,9 @@ internal sealed class WorkerRecord(
             this.Revision,
             this.Work.Definition.Category,
             this.State,
+            this.interruptionReason,
             this.CreatedAt,
+            this.StateChangedAt,
             this.UpdatedAt)
         {
             QueueDuration = this.QueueDurationLocked(),
@@ -1257,8 +1476,7 @@ internal sealed class WorkerRecord(
         details ??= new WorkerEventPayloadDetails();
         return WorkerEventPayloads.Create(
             this.ToSummaryLocked(),
-            details.IncludeInput ? this.Input : null,
-            details.IncludeOutput ? this.Output : null,
+            this.CreateEventKeysLocked(),
             details.Action,
             details.ActionStatus,
             details.ReconfigurationStatus,
@@ -1266,8 +1484,25 @@ internal sealed class WorkerRecord(
             details.CompletionStatus,
             details.IncludeLatestIteration ? this.GetLatestIterationLocked() : null,
             details.RecurrenceInterval,
-            details.RetryDelay,
-            details.Log);
+            details.RetryDelay);
+    }
+
+    private IReadOnlyList<WorkerEventKey> CreateEventKeysLocked()
+    {
+        var keys = new List<WorkerEventKey>();
+        if (this.SubjectId is { } subjectId)
+        {
+            keys.Add(new WorkerEventKey(WorkKeyKind.Subject, subjectId.Type, subjectId.Value));
+        }
+
+        if (this.ConcurrencyKey is { } concurrencyKey)
+        {
+            keys.Add(new WorkerEventKey(WorkKeyKind.ConcurrencyKey, concurrencyKey.Type, concurrencyKey.Value));
+        }
+
+        keys.AddRange(this.identifiers.Select(identifier =>
+            new WorkerEventKey(WorkKeyKind.Identifier, identifier.Type, identifier.Value)));
+        return keys;
     }
 
     private WorkerIterationSnapshot? GetLatestIterationLocked()
@@ -1276,6 +1511,19 @@ internal sealed class WorkerRecord(
             .Concat(this.interruptedIterations)
             .OrderByDescending(iteration => iteration.Sequence)
             .FirstOrDefault();
+
+    private WorkerIterationSnapshot? GetIterationSnapshotLocked(long sequence)
+    {
+        if (this.currentIteration?.Sequence == sequence)
+        {
+            return this.CreateCurrentIterationSnapshotLocked(DateTimeOffset.UtcNow);
+        }
+
+        return this.successfulIterations
+            .Concat(this.failedIterations)
+            .Concat(this.interruptedIterations)
+            .FirstOrDefault(iteration => iteration.Sequence == sequence);
+    }
 
     private TimeSpan? QueueDurationLocked()
         => this.firstStartedAt is null ? null : this.firstStartedAt.Value - this.CreatedAt;
@@ -1288,37 +1536,6 @@ internal sealed class WorkerRecord(
     private sealed record CurrentWorkerIteration(long Sequence, DateTimeOffset StartedAt)
     {
         public List<WorkerLogEntry> Logs { get; } = [];
-    }
-
-    private static WorkMessageSeverity LogSeverity(LogLevel level)
-        => level switch
-        {
-            LogLevel.Trace or LogLevel.Debug or LogLevel.Information => WorkMessageSeverity.Info,
-            LogLevel.Warning => WorkMessageSeverity.Warning,
-            _ => WorkMessageSeverity.Error,
-        };
-
-    private static IReadOnlyDictionary<string, object?> LogMetadata(WorkerLogEntry entry)
-    {
-        var metadata = new Dictionary<string, object?>
-        {
-            ["category"] = entry.Category,
-            ["level"] = entry.Level.ToString(),
-            ["eventId"] = entry.EventId.Id,
-            ["eventName"] = entry.EventId.Name,
-            ["exceptionType"] = entry.ExceptionType,
-            ["exceptionMessage"] = entry.ExceptionMessage,
-        };
-
-        if (entry.Metadata is not null)
-        {
-            foreach (var item in entry.Metadata)
-            {
-                metadata[$"state.{item.Key}"] = item.Value;
-            }
-        }
-
-        return metadata;
     }
 
     private readonly record struct CheckedWorkerTransition(

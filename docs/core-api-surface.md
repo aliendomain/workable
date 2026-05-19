@@ -10,19 +10,20 @@ The core API defines the public shape of Workable for discovering work, queueing
 
 - `Id`, `Name`, and `State` expose system identity and lifecycle state.
 - `IWorkCatalog` exposes available work definitions.
-- `IWorkQueue` accepts work by explicit identity.
+- `IWorkQueueService` accepts work by explicit identity.
 - `IWorkerOperations` controls worker actions.
-- `IWorkQuery` exposes worker snapshots, worker iteration snapshots, slim worker and iteration query rows, work definition browsing, work key search, work info, status summaries, and system overviews.
+- `IWorkQueryService` exposes the discoverable query facade. Each built-in query has a named method, with optional criteria and cancellation where applicable.
 - `IWorkEventStream` creates event subscriptions.
+- `IWorkSystemDiagnostics` exposes runtime diagnostics for queue rejection, read-model projection, and retention cleanup.
 - `Start` and `Stop` control system lifecycle.
-- `Stop` returns the shutdown grace period plus workers that were force-canceled because the grace period elapsed, including compact worker summaries and definition names.
-- `Stop` clears in-memory worker and iteration records after shutdown cancellation completes.
+- `Stop` returns the shutdown grace period plus workers that were force-completed because the grace period elapsed, including compact worker summaries and definition names. The stop result keeps the existing `ForceCanceled*` property names for compatibility; during shutdown interruption those entries represent workers force-completed as `Interrupted`.
+- `Stop` clears in-memory worker and iteration records after shutdown interruption completes.
 - `IWorkSystem` is asynchronously disposable.
 
 `IWorkSystemRegistry` exposes the default system, lookup by `WorkSystemId`, optional lookup by name, and enumeration of registered systems.
 
 Work execution receives scoped services and profile access through `IWorkExecutionContext`.
-Execution context also exposes the worker's `WorkOrigin`.
+Execution context also exposes the worker's `WorkOrigin`, whether interruption is currently being applied through `IsInterrupted`, and the nullable `InterruptionReason` (`Shutdown` or `LeaseLost`).
 
 ## Definition Rules
 
@@ -60,7 +61,7 @@ Execution context also exposes the worker's `WorkOrigin`.
 
 ## Queue Rules
 
-- Queue work by passing a `WorkDefinitionId` or name to `IWorkQueue`.
+- Queue work by passing a `WorkDefinitionId` or name to `IWorkQueueService`.
 - `IStartupWorkSource` can return startup queue requests after the catalog is ready.
 - Starting a stopped system runs automatic starts and startup work sources again without rebuilding work definitions that were already added by work definition sources.
 - Queue input can be supplied as `WorkInput` or as a typed CLR value that Workable serializes into `WorkInput`.
@@ -78,16 +79,19 @@ Execution context also exposes the worker's `WorkOrigin`.
 - Completed work results are exposed as `WorkOutput`.
 - Worker snapshots can expose captured logs and profile snapshots.
 - Worker snapshots expose the `WorkOrigin` that queued the worker.
-- `IWorkQuery.GetWorker` returns a full `WorkerSnapshot`.
-- `IWorkQuery.QueryWorkers` returns lightweight `WorkerOverviewItem` rows.
-- `IWorkQuery.GetWorkerIteration` returns one full `WorkerIterationSnapshot` by worker id and iteration sequence.
-- `IWorkQuery.QueryWorkerIterations` returns lightweight `WorkerIterationOverviewItem` rows.
-- `IWorkQuery.QueryWorkerKeys` and `IWorkQuery.QueryWorkerKeyTypes` expose searchable subject, concurrency key, and identifier indexes with matching worker overview rows.
-- `IWorkQuery.QueryWorkIterationKeys` and `IWorkQuery.QueryWorkIterationKeyTypes` expose the same key search shape for worker iteration overview rows.
-- `IWorkQuery.GetSystemOverview` returns system state, active-or-queued definition count, worker counts by state, current executing iteration count, iteration counts by completion status, common iteration key type facets, the five most recently updated failed workers, and the five most recent failed/completed iterations.
-- `IWorkQuery` also exposes overview slice methods for counts, worker counts, iteration counts, common key types, failed workers with worker counts, failed iterations, and completed iterations.
-- Worker queries can filter by definition, definition name, subject id, concurrency key, work identifier, state, selected configuration flags, and timestamps.
-- Work definition queries can filter by id, name, category, and search text.
+- `IWorkQueryService.Worker` returns a full `WorkerSnapshot`.
+- `IWorkQueryService` reads worker and iteration state from the runtime read model snapshot; the in-memory model starts empty with the process and is cleared when the system stops.
+- Control and correctness paths use live worker records instead of the eventually consistent read model. This includes idempotency checks, concurrency decisions, worker actions, shutdown interruption, retention purge selection, and bulk action execution.
+- `IWorkSystem.Diagnostics` exposes queue, read-model, and retention diagnostics. See [Work Diagnostics](work-diagnostics.md).
+- `IWorkQueryService.Workers` returns lightweight `WorkerOverviewItem` rows.
+- `IWorkQueryService.WorkerIteration` returns one full `WorkerIterationSnapshot` by worker id and iteration sequence.
+- `IWorkQueryService.WorkerIterations` returns lightweight `WorkerIterationOverviewItem` rows.
+- `IWorkQueryService.WorkerKeys` and `IWorkQueryService.WorkerKeyTypes` expose searchable subject, concurrency key, and identifier indexes with matching worker overview rows.
+- `IWorkQueryService.WorkIterationKeys` and `IWorkQueryService.WorkIterationKeyTypes` expose the same key search shape for worker iteration overview rows.
+- `IWorkQueryService.SystemDetails` exposes the typed whole-system aggregate query, including scoped queue pressure through `OldestQueuedAt`.
+- `IWorkQueryService` also exposes system slice methods for throughput, worker counts with queue pressure, iteration counts, common key types, failed workers with worker counts, failed iterations, and completed iterations.
+- Worker criteria can filter by definition, definition name, subject id, concurrency key, work identifier, state, selected configuration flags, and timestamps.
+- Work definition criteria can filter by id, name, category, and search text.
 - `IWorkCatalog.ListByCategory` returns definitions by category path.
 - Bulk worker actions can target all workers in a system or workers whose definitions belong to a category path.
 
@@ -98,7 +102,8 @@ Execution context also exposes the worker's `WorkOrigin`.
 - Event streams are exposed from a single `IWorkSystem`.
 - Events include the publishing `WorkSystemId`.
 - Events can include a `WorkOrigin` for the trusted boundary that caused the event.
-- Event subscriptions can filter by worker id, work definition id, subject id, concurrency key, work identifier, and event type.
+- Event subscriptions can filter by worker id, one or more work definition ids, subject id, concurrency key, work identifier, key filters, and one or more event types.
+- Worker event payloads are intentionally thin. Use event data for notification and correlation, and query worker detail for input, output, messages, logs, iterations, action history, or profile data.
 - Each subscription owns a bounded event buffer.
 - Disposing a subscription or canceling its reader removes it from the stream.
 
@@ -109,10 +114,11 @@ Execution context also exposes the worker's `WorkOrigin`.
 - Workers enter `Waiting` between scheduled iterations.
 - Pause requests move running workers through `Pausing` before they become `Paused`.
 - Cancel requests move running workers through `Canceling` before they become `Canceled`.
+- Shutdown interruption moves running workers through `Interrupting` before they become `Interrupted`.
 - Workers become `Completed` when execution succeeds.
 - Workers become `Failed` when execution returns errors or fails unexpectedly.
 - Final workers are `Completed` or `Canceled`.
-- Failed workers are not final; they can be started again or canceled.
+- Failed and interrupted workers are not final. Failed workers can be started again or canceled; interrupted durable workers can be replayed after lease expiry or explicitly canceled when materialized.
 - Purging removes a final worker from memory.
 
 ## Worker Action Rules

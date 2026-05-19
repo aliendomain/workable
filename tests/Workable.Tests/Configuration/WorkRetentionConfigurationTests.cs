@@ -11,7 +11,8 @@ public sealed class WorkRetentionConfigurationTests
     {
         var retention = WorkRetentionConfiguration.Default;
 
-        Assert.Equal(TimeSpan.FromMinutes(5), retention.PurgeInterval);
+        Assert.Equal(TimeSpan.FromMinutes(10), retention.PurgeInterval);
+        Assert.Equal(1_000, retention.MaximumFinalWorkers);
     }
 
     [Fact]
@@ -57,7 +58,7 @@ public sealed class WorkRetentionConfigurationTests
         var system = new ServiceCollection()
             .AddWorkableSystem(builder => builder.AddWork<FullAttributedRetentionWork>(
                 definition,
-                configuration => configuration.ConfigureRetention(TimeSpan.FromMinutes(2))))
+                configuration => configuration.ConfigureRetention(TimeSpan.FromMinutes(2), maximumFinalWorkers: 20)))
             .BuildServiceProvider()
             .GetRequiredService<IWorkSystemRegistry>()
             .Default;
@@ -65,6 +66,7 @@ public sealed class WorkRetentionConfigurationTests
         var configured = RequiredDefinition(system, "retention-bootstrap-override");
 
         Assert.Equal(TimeSpan.FromMinutes(2), configured.Configuration.Retention.PurgeInterval);
+        Assert.Equal(20, configured.Configuration.Retention.MaximumFinalWorkers);
     }
 
     [Fact]
@@ -76,6 +78,7 @@ public sealed class WorkRetentionConfigurationTests
                 Retention = WorkRetentionConfiguration.Default with
                 {
                     PurgeInterval = TimeSpan.FromMinutes(1),
+                    MaximumFinalWorkers = 100,
                 },
             });
         var system = CreateSystem(definition, SuccessfulWork);
@@ -90,11 +93,13 @@ public sealed class WorkRetentionConfigurationTests
                     Retention = WorkRetentionConfiguration.Default with
                     {
                         PurgeInterval = TimeSpan.FromMinutes(4),
+                        MaximumFinalWorkers = 40,
                     },
                 }));
-        var worker = RequiredWorker(await system.Query.GetWorker(RequiredWorkerId(handle)));
+        var worker = RequiredWorker(await system.Query.Worker(RequiredWorkerId(handle)));
 
         Assert.Equal(TimeSpan.FromMinutes(4), worker.Configuration.Retention.PurgeInterval);
+        Assert.Equal(40, worker.Configuration.Retention.MaximumFinalWorkers);
     }
 
     [Fact]
@@ -125,6 +130,33 @@ public sealed class WorkRetentionConfigurationTests
     }
 
     [Fact]
+    public async Task QueueOptionsWithInvalidMaximumFinalWorkersReturnInvalidOutcome()
+    {
+        var definition = WorkDefinition.Create("invalid-retention-count-queue", "Queue override count is invalid.");
+        var system = CreateSystem(definition, SuccessfulWork);
+
+        await system.Start();
+
+        var handle = await system.Queue.Enqueue(
+            "invalid-retention-count-queue",
+            options: new WorkerOptions(
+                Configuration: WorkConfiguration.Default with
+                {
+                    Retention = WorkRetentionConfiguration.Default with
+                    {
+                        MaximumFinalWorkers = 0,
+                    },
+                }));
+        var completion = await handle.WaitForCompletion();
+
+        Assert.Equal(WorkQueueStatus.Invalid, handle.QueueOutcome.Status);
+        Assert.Equal(WorkCompletionStatus.Invalid, completion.Status);
+        Assert.Contains(handle.QueueOutcome.Messages, message =>
+            message.Code == "workable.configuration.retention.maximum_final_workers_required" &&
+            message.Target == "configuration.retention.maximumFinalWorkers");
+    }
+
+    [Fact]
     public async Task RuntimeReconfigurationCanUpdateConfiguration()
     {
         var definition = WorkDefinition.Create("runtime-retention", "Can change retention configuration while queued.",
@@ -134,7 +166,7 @@ public sealed class WorkRetentionConfigurationTests
         await system.Start();
 
         var handle = await system.Queue.Enqueue("runtime-retention");
-        var worker = RequiredWorker(await system.Query.GetWorker(RequiredWorkerId(handle)));
+        var worker = RequiredWorker(await system.Query.Worker(RequiredWorkerId(handle)));
 
         var outcome = await system.Workers.Reconfigure(
             worker.Version,
@@ -154,7 +186,7 @@ public sealed class WorkRetentionConfigurationTests
         await system.Start();
 
         var handle = await system.Queue.Enqueue("runtime-invalid-retention");
-        var worker = RequiredWorker(await system.Query.GetWorker(RequiredWorkerId(handle)));
+        var worker = RequiredWorker(await system.Query.Worker(RequiredWorkerId(handle)));
 
         var outcome = await system.Workers.Reconfigure(
             worker.Version,
@@ -173,6 +205,7 @@ public sealed class WorkRetentionConfigurationTests
         => new()
         {
             PurgeInterval = TimeSpan.FromSeconds(90),
+            MaximumFinalWorkers = 42,
         };
 
     private static IWorkSystem CreateSystem(
@@ -198,12 +231,13 @@ public sealed class WorkRetentionConfigurationTests
     private static void AssertRetention(WorkRetentionConfiguration expected, WorkRetentionConfiguration actual)
     {
         Assert.Equal(expected.PurgeInterval, actual.PurgeInterval);
+        Assert.Equal(expected.MaximumFinalWorkers, actual.MaximumFinalWorkers);
     }
 
     private static Task<WorkExecutionResult> SuccessfulWork(IWorkExecutionContext context, WorkInput? input, CancellationToken cancellationToken)
         => Task.FromResult(WorkExecutionResult.Success());
 
-    [WorkRetention(purgeIntervalSeconds: 90)]
+    [WorkRetention(purgeIntervalSeconds: 90, maximumFinalWorkers: 42)]
     private sealed class FullAttributedRetentionWork : IWorkExecutor
     {
         public Task<WorkExecutionResult> Execute(IWorkExecutionContext context, WorkInput? input, CancellationToken cancellationToken)

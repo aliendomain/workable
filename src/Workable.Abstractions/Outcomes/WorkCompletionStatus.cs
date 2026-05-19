@@ -5,6 +5,7 @@ public enum WorkCompletionStatus
     Completed,
     Failed,
     Paused,
+    Interrupted,
     Canceled,
     Invalid,
     NotFound,

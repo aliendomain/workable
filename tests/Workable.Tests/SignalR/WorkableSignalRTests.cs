@@ -1,4 +1,5 @@
 using System.Net.Http.Json;
+using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
 using System.Threading.Channels;
@@ -44,7 +45,8 @@ public sealed class WorkableSignalRTests
         Assert.Equal("signalr", capabilities.Realtime.Transport);
         Assert.Equal("/workable/realtime", capabilities.Realtime.HubPath);
         Assert.Contains("worker-events", capabilities.Realtime.Features ?? []);
-        Assert.Contains("system-dashboard", capabilities.Realtime.Features ?? []);
+        Assert.Contains("component-views", capabilities.Realtime.Features ?? []);
+        Assert.Contains("diagnostics-view", capabilities.Realtime.Features ?? []);
     }
 
     [Fact]
@@ -76,6 +78,26 @@ public sealed class WorkableSignalRTests
     }
 
     [Fact]
+    public async Task SignalREventStreamSubscribesOnlyWhileEventWatchersAreActive()
+    {
+        using var host = await CreateHost(addSignalR: true);
+        var system = host.Services.GetRequiredService<IWorkSystemRegistry>().Default;
+        var stream = Assert.IsType<WorkEventStream>(system.Events);
+        await using var connection = CreateConnection(host);
+
+        await connection.StartAsync();
+
+        Assert.Equal(0, stream.ActiveSubscriptionCount);
+        var watchedWorkerId = WorkerId.New();
+        await connection.InvokeAsync("WatchWorker", watchedWorkerId.Value.ToString("D"), null);
+        await Eventually(() => stream.ActiveSubscriptionCount == 1);
+
+        await connection.InvokeAsync("UnwatchWorker", watchedWorkerId.Value.ToString("D"), null);
+
+        await Eventually(() => stream.ActiveSubscriptionCount == 0);
+    }
+
+    [Fact]
     public async Task WorkerWatcherReceivesEventsForThatWorker()
     {
         using var host = await CreateHost(addSignalR: true);
@@ -83,14 +105,14 @@ public sealed class WorkableSignalRTests
         var gate = host.Services.GetRequiredService<SignalRWorkGate>();
         await using var connection = CreateConnection(host);
         var events = Channel.CreateUnbounded<WorkableRealtimeEvent>();
-        connection.On<WorkableRealtimeEvent>(WorkableRealtimeClientMethods.WorkEvent, workEvent => events.Writer.TryWrite(workEvent));
+        CaptureRealtimeEvents(connection, events);
         await connection.StartAsync();
 
         var handle = await system.Queue.Enqueue("signalr.worker");
         var workerId = handle.WorkerId ?? throw new InvalidOperationException("Expected worker id.");
         await connection.InvokeAsync("WatchWorker", workerId.Value.ToString("D"), null);
 
-        var worker = await system.Query.GetWorker(workerId)
+        var worker = await system.Query.Worker(workerId)
             ?? throw new InvalidOperationException("Expected worker.");
         var start = await system.Workers.Execute(worker.Version, WorkAction.Start);
         Assert.True(start.IsAccepted);
@@ -109,44 +131,442 @@ public sealed class WorkableSignalRTests
     }
 
     [Fact]
-    public async Task DashboardWatcherReceivesInitialAndCoalescedOverviewUpdates()
+    public async Task EventWatcherReceivesOnlySelectedEventTypes()
     {
         using var host = await CreateHost(addSignalR: true);
         var system = host.Services.GetRequiredService<IWorkSystemRegistry>().Default;
         var gate = host.Services.GetRequiredService<SignalRWorkGate>();
         await using var connection = CreateConnection(host);
-        var dashboards = Channel.CreateUnbounded<WorkableRealtimeDashboard>();
-        connection.On<WorkableRealtimeDashboard>(
-            WorkableRealtimeClientMethods.DashboardUpdated,
-            dashboard => dashboards.Writer.TryWrite(dashboard));
+        var events = Channel.CreateUnbounded<WorkableRealtimeEvent>();
+        CaptureRealtimeEvents(connection, events);
         await connection.StartAsync();
-        await connection.InvokeAsync("WatchDashboard", null);
+        await connection.InvokeAsync(
+            "WatchEvents",
+            new WorkableRealtimeEventCriteria(["worker.completed"]),
+            null);
 
-        var initial = await ReadUntil(dashboards.Reader, dashboard => dashboard.CompletedIterationCount == 0);
+        var handle = await system.Queue.Enqueue("signalr.view");
+        await gate.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        gate.Release.SetResult();
+        await handle.WaitForCompletion();
 
-        var handle = await system.Queue.Enqueue("signalr.dashboard");
+        var completed = await ReadUntil(
+            events.Reader,
+            workEvent => workEvent.EventType == "worker.completed");
+        var receivedQueued = await TryReadUntil(
+            events.Reader,
+            workEvent => workEvent.EventType == "worker.queued",
+            TimeSpan.FromMilliseconds(250));
+
+        Assert.Equal(handle.WorkerId, completed.WorkerId);
+        Assert.False(receivedQueued);
+    }
+
+    [Fact]
+    public async Task EventWatcherReceivesAllEventsWhenCriteriaIsEmpty()
+    {
+        using var host = await CreateHost(addSignalR: true);
+        var system = host.Services.GetRequiredService<IWorkSystemRegistry>().Default;
+        var gate = host.Services.GetRequiredService<SignalRWorkGate>();
+        await using var connection = CreateConnection(host);
+        var events = Channel.CreateUnbounded<WorkableRealtimeEvent>();
+        CaptureRealtimeEvents(connection, events);
+        await connection.StartAsync();
+        await connection.InvokeAsync(
+            "WatchEvents",
+            new WorkableRealtimeEventCriteria(),
+            null);
+
+        var handle = await system.Queue.Enqueue("signalr.view");
+        await gate.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        gate.Release.SetResult();
+        await handle.WaitForCompletion();
+
+        var queued = await ReadUntil(
+            events.Reader,
+            workEvent => workEvent.WorkerId == handle.WorkerId && workEvent.EventType == "worker.queued");
+        var completed = await ReadUntil(
+            events.Reader,
+            workEvent => workEvent.WorkerId == handle.WorkerId && workEvent.EventType == "worker.completed");
+
+        Assert.Equal(handle.WorkerId, queued.WorkerId);
+        Assert.Equal(handle.WorkerId, completed.WorkerId);
+    }
+
+    [Fact]
+    public async Task EventWatcherFiltersByDefinitionAndKey()
+    {
+        using var host = await CreateHost(addSignalR: true);
+        var system = host.Services.GetRequiredService<IWorkSystemRegistry>().Default;
+        var gate = host.Services.GetRequiredService<SignalRWorkGate>();
+        var definition = system.Catalog.Definitions.Single(work => work.Name == "signalr.view");
+        var acceptedIdentifier = new WorkIdentifier("batch", "accepted");
+        await using var connection = CreateConnection(host);
+        var events = Channel.CreateUnbounded<WorkableRealtimeEvent>();
+        CaptureRealtimeEvents(connection, events);
+        await connection.StartAsync();
+        await connection.InvokeAsync(
+            "WatchEvents",
+            new WorkableRealtimeEventCriteria(
+                EventTypes: ["worker.completed"],
+                DefinitionIds: [definition.Id.Value.ToString("D")],
+                Keys:
+                [
+                    new WorkableRealtimeEventKeyCriteria(
+                        WorkKeyKind.Identifier,
+                        acceptedIdentifier.Type,
+                        acceptedIdentifier.Value),
+                ]),
+            null);
+
+        var accepted = await system.Queue.Enqueue("signalr.view", WorkInput.Empty.WithIdentifier(acceptedIdentifier));
+        var ignored = await system.Queue.Enqueue("signalr.view", WorkInput.Empty.WithIdentifier(new WorkIdentifier("batch", "ignored")));
+        await gate.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        gate.Release.SetResult();
+        await Task.WhenAll(accepted.WaitForCompletion(), ignored.WaitForCompletion());
+
+        var completed = await ReadUntil(
+            events.Reader,
+            workEvent => workEvent.EventType == "worker.completed");
+        var receivedIgnored = await TryReadUntil(
+            events.Reader,
+            workEvent => workEvent.WorkerId == ignored.WorkerId,
+            TimeSpan.FromMilliseconds(250));
+
+        Assert.Equal(accepted.WorkerId, completed.WorkerId);
+        Assert.False(receivedIgnored);
+    }
+
+    [Fact]
+    public async Task EventWatcherReceivesBurstsAsBatches()
+    {
+        using var host = await CreateHost(addSignalR: true, configureSignalR: options =>
+        {
+            options.EventBatchWindow = TimeSpan.FromMilliseconds(100);
+            options.EventMaxBatchSize = 10;
+        });
+        var system = host.Services.GetRequiredService<IWorkSystemRegistry>().Default;
+        var gate = host.Services.GetRequiredService<SignalRWorkGate>();
+        await using var connection = CreateConnection(host);
+        var batches = Channel.CreateUnbounded<WorkableRealtimeEventBatch>();
+        connection.On<WorkableRealtimeEventBatch>(
+            WorkableRealtimeClientMethods.WorkEvents,
+            batch => batches.Writer.TryWrite(batch));
+        await connection.StartAsync();
+        await connection.InvokeAsync(
+            "WatchEvents",
+            new WorkableRealtimeEventCriteria(["worker.completed"]),
+            null);
+
+        var handles = await Task.WhenAll(Enumerable.Range(0, 3).Select(_ => system.Queue.Enqueue("signalr.view")));
+        await gate.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        gate.Release.SetResult();
+        await Task.WhenAll(handles.Select(handle => handle.WaitForCompletion()));
+
+        var batch = await ReadUntil(
+            batches.Reader,
+            batch => batch.Events.Count >= 2);
+
+        Assert.All(batch.Events, workEvent => Assert.Equal("worker.completed", workEvent.EventType));
+    }
+
+    [Fact]
+    public async Task ViewWatcherReceivesRequestedOverviewComponentsOnly()
+    {
+        using var host = await CreateHost(addSignalR: true);
+        var system = host.Services.GetRequiredService<IWorkSystemRegistry>().Default;
+        var gate = host.Services.GetRequiredService<SignalRWorkGate>();
+        await using var connection = CreateConnection(host);
+        var views = Channel.CreateUnbounded<WorkComponentQueryResult>();
+        connection.On<WorkComponentQueryResult>(
+            WorkableRealtimeClientMethods.ViewUpdated,
+            view => views.Writer.TryWrite(view));
+        await connection.StartAsync();
+        await connection.InvokeAsync(
+            "WatchView",
+            "overview",
+            new WorkViewCriteria(Components:
+            [
+                new WorkComponentRequest("system", "system"),
+                new WorkComponentRequest("workers", "workers", Shape: WorkComponentShapes.Compact),
+            ]),
+            null);
+
+        var initial = await ReadUntil(views.Reader, view => view.Components.ContainsKey("workers"));
+
+        var handle = await system.Queue.Enqueue("signalr.view");
         await gate.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
         gate.Release.SetResult();
         var completion = await handle.WaitForCompletion();
         Assert.True(completion.IsCompletedSuccessfully);
 
-        var updated = await ReadUntil(dashboards.Reader, dashboard => dashboard.CompletedIterationCount == 1);
+        var updated = await ReadUntil(views.Reader, view => view.GeneratedAt > initial.GeneratedAt);
+        var workers = Assert.IsType<JsonElement>(updated.Components["workers"].Data);
 
-        Assert.Equal(system.Id, initial.SystemId);
-        Assert.Equal(system.Id, updated.SystemId);
-        Assert.Equal(WorkSystemState.Started, updated.SystemState);
-        Assert.Equal(0, updated.DefinitionCount);
-        Assert.Equal(0, updated.ActiveWorkerCount);
-        Assert.Equal(1, updated.FinalWorkerCount);
-        Assert.Equal(0, updated.FailedWorkerCount);
-        Assert.Equal(1, updated.WorkerCountByState[WorkerState.Completed]);
-        Assert.Equal(0, updated.FailedIterationCount);
-        Assert.Equal(1, updated.IterationCountByStatus[WorkCompletionStatus.Completed]);
-        Assert.Empty(updated.FailedWorkers);
-        Assert.Equal("signalr.dashboard", Assert.Single(updated.CompletedIterations).DefinitionName);
+        Assert.Equal(["system", "workers"], initial.Components.Keys.Order().ToArray());
+        Assert.Equal(["system", "workers"], updated.Components.Keys.Order().ToArray());
+        Assert.Equal("compact", updated.Components["workers"].Shape);
+        Assert.True(workers.TryGetProperty("activeWorkerCount", out _));
+        Assert.False(workers.TryGetProperty("finalWorkerCount", out _));
     }
 
-    private static async Task<IHost> CreateHost(bool addSignalR, string? hubPath = null)
+    [Fact]
+    public async Task ViewWatcherContinuesPublishingOverviewThroughputWithoutReadModelChanges()
+    {
+        using var host = await CreateHost(addSignalR: true);
+        await using var connection = CreateConnection(host);
+        var views = Channel.CreateUnbounded<WorkComponentQueryResult>();
+        connection.On<WorkComponentQueryResult>(
+            WorkableRealtimeClientMethods.ViewUpdated,
+            view => views.Writer.TryWrite(view));
+        await connection.StartAsync();
+        await connection.InvokeAsync(
+            "WatchView",
+            "overview",
+            new WorkViewCriteria(Components:
+            [
+                new WorkComponentRequest(
+                    "throughput",
+                    "throughput",
+                    JsonSerializer.SerializeToElement(new { windowSeconds = 60, bucketSeconds = 1 }),
+                    WorkComponentShapes.Standard),
+            ]),
+            null);
+
+        var initial = await ReadUntil(views.Reader, view => view.Components.ContainsKey("throughput"));
+        var updated = await ReadUntil(
+            views.Reader,
+            view => view.GeneratedAt > initial.GeneratedAt &&
+                view.Components.ContainsKey("throughput"));
+
+        Assert.Equal(["throughput"], updated.Components.Keys.ToArray());
+    }
+
+    [Fact]
+    public async Task ViewWatcherReceivesDiagnosticsViewOnDiagnosticsInterval()
+    {
+        using var host = await CreateHost(addSignalR: true);
+        await using var connection = CreateConnection(host);
+        var views = Channel.CreateUnbounded<WorkComponentQueryResult>();
+        connection.On<WorkComponentQueryResult>(
+            WorkableRealtimeClientMethods.ViewUpdated,
+            view => views.Writer.TryWrite(view));
+        await connection.StartAsync();
+        await connection.InvokeAsync(
+            "WatchView",
+            "diagnostics",
+            new WorkViewCriteria(Components:
+            [
+                new WorkComponentRequest(
+                    "queueDiagnostics",
+                    "queueDiagnostics",
+                    JsonSerializer.SerializeToElement(new { publishMode = "continuous" }),
+                    WorkComponentShapes.Compact),
+                new WorkComponentRequest(
+                    "readModelDiagnostics",
+                    "readModelDiagnostics",
+                    JsonSerializer.SerializeToElement(new { warningThreshold = 100 }),
+                    WorkComponentShapes.Compact),
+                new WorkComponentRequest(
+                    "retentionDiagnostics",
+                    "retentionDiagnostics",
+                    JsonSerializer.SerializeToElement(new { warningSeconds = 30 }),
+                    WorkComponentShapes.Compact),
+            ]),
+            null);
+
+        var initial = await ReadUntil(
+            views.Reader,
+            view => view.Components.ContainsKey("readModelDiagnostics"));
+        var updated = await ReadUntil(
+            views.Reader,
+            view => view.GeneratedAt > initial.GeneratedAt &&
+                view.Components.ContainsKey("queueDiagnostics") &&
+                view.Components.ContainsKey("readModelDiagnostics") &&
+                view.Components.ContainsKey("retentionDiagnostics"));
+        var queue = Assert.IsType<JsonElement>(updated.Components["queueDiagnostics"].Data);
+        var diagnostics = Assert.IsType<JsonElement>(updated.Components["readModelDiagnostics"].Data);
+        var retention = Assert.IsType<JsonElement>(updated.Components["retentionDiagnostics"].Data);
+
+        Assert.Equal(["queueDiagnostics", "readModelDiagnostics", "retentionDiagnostics"], updated.Components.Keys.ToArray());
+        Assert.Equal("compact", updated.Components["queueDiagnostics"].Shape);
+        Assert.True(queue.TryGetProperty("rejectedWorkCount", out _));
+        Assert.True(queue.TryGetProperty("hasRejectedWork", out _));
+        Assert.Equal("compact", updated.Components["readModelDiagnostics"].Shape);
+        Assert.True(diagnostics.TryGetProperty("pendingUpdateCount", out _));
+        Assert.True(diagnostics.TryGetProperty("isReadModelBehind", out _));
+        Assert.True(diagnostics.TryGetProperty("readModelLagWarningThreshold", out _));
+        Assert.Equal("compact", updated.Components["retentionDiagnostics"].Shape);
+        Assert.True(retention.TryGetProperty("scheduledPurgeCount", out _));
+        Assert.True(retention.TryGetProperty("isRetentionBehind", out _));
+        Assert.True(retention.TryGetProperty("retentionLagWarningSeconds", out _));
+    }
+
+    [Fact]
+    public async Task DiagnosticsAlertChangeWatcherDoesNotReceiveHealthyTimerPayloads()
+    {
+        using var host = await CreateHost(addSignalR: true);
+        await using var connection = CreateConnection(host);
+        var views = Channel.CreateUnbounded<WorkComponentQueryResult>();
+        connection.On<WorkComponentQueryResult>(
+            WorkableRealtimeClientMethods.ViewUpdated,
+            view => views.Writer.TryWrite(view));
+        await connection.StartAsync();
+        await connection.InvokeAsync(
+            "WatchView",
+            "diagnostics",
+            new WorkViewCriteria(Components:
+            [
+                new WorkComponentRequest(
+                    "readModelDiagnostics",
+                    "readModelDiagnostics",
+                    JsonSerializer.SerializeToElement(new
+                    {
+                        publishMode = "alertChanges",
+                        warningThreshold = 100,
+                    }),
+                    WorkComponentShapes.Compact),
+            ]),
+            null);
+
+        var initial = await ReadUntil(
+            views.Reader,
+            view => view.Components.ContainsKey("readModelDiagnostics"));
+        var receivedHealthyTick = await TryReadUntil(
+            views.Reader,
+            view => view.GeneratedAt > initial.GeneratedAt,
+            TimeSpan.FromMilliseconds(250));
+
+        Assert.False(receivedHealthyTick);
+    }
+
+    [Fact]
+    public async Task DiagnosticsAlertChangeWatcherReceivesAlertPayloadWhenWorkIsRejected()
+    {
+        using var host = await CreateHost(addSignalR: true);
+        var system = host.Services.GetRequiredService<IWorkSystemRegistry>().Default;
+        await using var connection = CreateConnection(host);
+        var views = Channel.CreateUnbounded<WorkComponentQueryResult>();
+        connection.On<WorkComponentQueryResult>(
+            WorkableRealtimeClientMethods.ViewUpdated,
+            view => views.Writer.TryWrite(view));
+        await connection.StartAsync();
+        await connection.InvokeAsync(
+            "WatchView",
+            "diagnostics",
+            new WorkViewCriteria(Components:
+            [
+                new WorkComponentRequest(
+                    "queueDiagnostics",
+                    "queueDiagnostics",
+                    JsonSerializer.SerializeToElement(new
+                    {
+                        publishMode = "alertChanges",
+                    }),
+                    WorkComponentShapes.Compact),
+            ]),
+            null);
+        var initial = await ReadUntil(
+            views.Reader,
+            view => view.Components.ContainsKey("queueDiagnostics"));
+
+        var rejected = await system.Queue.Enqueue("signalr.missing");
+        Assert.False(rejected.QueueOutcome.IsAccepted);
+
+        var updated = await ReadUntil(
+            views.Reader,
+            view =>
+            {
+                if (view.GeneratedAt <= initial.GeneratedAt ||
+                    !view.Components.TryGetValue("queueDiagnostics", out var component))
+                {
+                    return false;
+                }
+
+                var diagnostics = Assert.IsType<JsonElement>(component.Data);
+                return diagnostics.TryGetProperty("hasRejectedWork", out var hasRejectedWork) &&
+                    hasRejectedWork.GetBoolean();
+            });
+        var data = Assert.IsType<JsonElement>(updated.Components["queueDiagnostics"].Data);
+
+        Assert.Equal(1, data.GetProperty("rejectedWorkCount").GetInt64());
+        Assert.Equal(rejected.QueueOutcome.Messages[0].Code, data.GetProperty("lastRejectedCode").GetString());
+    }
+
+    [Fact]
+    public async Task DiagnosticsAlertChangeWatcherReceivesAlertPayloadWhenReadModelFallsBehind()
+    {
+        using var host = await CreateHost(addSignalR: true);
+        var system = host.Services.GetRequiredService<IWorkSystemRegistry>().Default;
+        var gate = host.Services.GetRequiredService<SignalRWorkGate>();
+        await using var connection = CreateConnection(host);
+        var views = Channel.CreateUnbounded<WorkComponentQueryResult>();
+        connection.On<WorkComponentQueryResult>(
+            WorkableRealtimeClientMethods.ViewUpdated,
+            view => views.Writer.TryWrite(view));
+        await connection.StartAsync();
+        await connection.InvokeAsync(
+            "WatchView",
+            "diagnostics",
+            new WorkViewCriteria(Components:
+            [
+                new WorkComponentRequest(
+                    "readModelDiagnostics",
+                    "readModelDiagnostics",
+                    JsonSerializer.SerializeToElement(new
+                    {
+                        publishMode = "alertChanges",
+                        warningThreshold = 1,
+                    }),
+                    WorkComponentShapes.Compact),
+            ]),
+            null);
+        var initial = await ReadUntil(
+            views.Reader,
+            view => view.Components.ContainsKey("readModelDiagnostics"));
+
+        try
+        {
+            var enqueueBurst = Task.Run(async () =>
+            {
+                for (var index = 0; index < 5_000; index++)
+                {
+                    _ = await system.Queue.Enqueue("signalr.view");
+                }
+            });
+
+            var updated = await ReadUntil(
+                views.Reader,
+                view =>
+                {
+                    if (view.GeneratedAt <= initial.GeneratedAt ||
+                        !view.Components.TryGetValue("readModelDiagnostics", out var component))
+                    {
+                        return false;
+                    }
+
+                    var diagnostics = Assert.IsType<JsonElement>(component.Data);
+                    return diagnostics.TryGetProperty("isReadModelBehind", out var behind) &&
+                        behind.GetBoolean();
+                });
+            var data = Assert.IsType<JsonElement>(updated.Components["readModelDiagnostics"].Data);
+
+            await enqueueBurst.WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.True(data.GetProperty("pendingUpdateCount").GetInt64() >= 1);
+        }
+        finally
+        {
+            if (!gate.Release.Task.IsCompleted)
+            {
+                gate.Release.SetResult();
+            }
+        }
+    }
+
+    private static async Task<IHost> CreateHost(
+        bool addSignalR,
+        string? hubPath = null,
+        Action<WorkableSignalROptions>? configureSignalR = null)
     {
         var host = new HostBuilder()
             .ConfigureWebHost(web =>
@@ -167,14 +587,16 @@ public sealed class WorkableSignalRTests
                                     Start = WorkStartConfiguration.DoNotStart,
                                 }),
                             SuccessfulWork);
-                        builder.AddWork(WorkDefinition.Create("signalr.dashboard"), SuccessfulWork);
+                        builder.AddWork(WorkDefinition.Create("signalr.view"), SuccessfulWork);
                     });
                     services.AddWorkableHttpApi();
                     if (addSignalR)
                     {
                         services.AddWorkableSignalR(options =>
                         {
-                            options.DashboardPublishInterval = TimeSpan.FromMilliseconds(50);
+                            options.PublishInterval = TimeSpan.FromMilliseconds(50);
+                            options.DiagnosticsPublishInterval = TimeSpan.FromMilliseconds(50);
+                            configureSignalR?.Invoke(options);
                         });
                     }
                 });
@@ -212,6 +634,24 @@ public sealed class WorkableSignalRTests
             })
             .Build();
 
+    private static void CaptureRealtimeEvents(
+        HubConnection connection,
+        Channel<WorkableRealtimeEvent> events)
+    {
+        connection.On<WorkableRealtimeEvent>(
+            WorkableRealtimeClientMethods.WorkEvent,
+            workEvent => events.Writer.TryWrite(workEvent));
+        connection.On<WorkableRealtimeEventBatch>(
+            WorkableRealtimeClientMethods.WorkEvents,
+            batch =>
+            {
+                foreach (var workEvent in batch.Events)
+                {
+                    events.Writer.TryWrite(workEvent);
+                }
+            });
+    }
+
     private static async Task<T> ReadUntil<T>(
         ChannelReader<T> reader,
         Func<T, bool> predicate)
@@ -226,6 +666,46 @@ public sealed class WorkableSignalRTests
         }
 
         throw new InvalidOperationException("Expected item was not received.");
+    }
+
+    private static async Task<bool> TryReadUntil<T>(
+        ChannelReader<T> reader,
+        Func<T, bool> predicate,
+        TimeSpan timeout)
+    {
+        using var cancellation = new CancellationTokenSource(timeout);
+        try
+        {
+            await foreach (var item in reader.ReadAllAsync(cancellation.Token))
+            {
+                if (predicate(item))
+                {
+                    return true;
+                }
+            }
+        }
+        catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
+        {
+            return false;
+        }
+
+        return false;
+    }
+
+    private static async Task Eventually(Func<bool> condition)
+    {
+        var deadline = DateTimeOffset.UtcNow.AddSeconds(5);
+        while (DateTimeOffset.UtcNow < deadline)
+        {
+            if (condition())
+            {
+                return;
+            }
+
+            await Task.Delay(10);
+        }
+
+        Assert.True(condition(), "Expected condition to become true.");
     }
 
     private static System.Text.Json.JsonSerializerOptions JsonOptions()

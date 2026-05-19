@@ -20,7 +20,9 @@ internal sealed class WorkerExecutionCompletionRecorder(WorkerEventPublisher wor
 
     public WorkCompletion CompleteCancellation(WorkerRecord worker)
     {
-        var status = worker.CompleteCancellation();
+        var status = worker.IsInterrupted
+            ? worker.CompleteInterruption()
+            : worker.CompleteCancellation();
         if (status != WorkCompletionStatus.Invalid)
         {
             workerEvents.CompletionRecorded(worker, status);

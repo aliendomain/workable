@@ -157,7 +157,7 @@ internal sealed class WorkProfile(string rootName) : IWorkProfiler
         public void AddInfo(string name, object? context = null)
             => this.entries.Enqueue(new ProfileInfo(name, context));
 
-        public IWorkProfileScope StartTiming(string name, object? context = null)
+        public ProfileTiming StartTiming(string name, object? context = null)
         {
             var timing = new ProfileTiming(name, context);
             this.entries.Enqueue(timing);

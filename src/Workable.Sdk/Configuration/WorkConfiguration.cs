@@ -9,6 +9,8 @@ public sealed record WorkConfiguration(
     WorkConcurrencyConfiguration Concurrency,
     WorkInvocationConfiguration Invocation)
 {
+    public WorkQueueDurabilityConfiguration QueueDurability { get; init; } = WorkQueueDurabilityConfiguration.Default;
+
     public static WorkConfiguration Default { get; } = new(
         WorkStartConfiguration.Default,
         WorkIdempotencyConfiguration.Default,
@@ -19,7 +21,7 @@ public sealed record WorkConfiguration(
         WorkConcurrencyConfiguration.Default,
         WorkInvocationConfiguration.Default);
 
-    public WorkConfiguration Merge(WorkConfiguration? overrides)
+    public WorkConfiguration MergeRuntimeOptions(WorkConfiguration? overrides)
         => overrides is null
             ? this
             : this with
@@ -31,5 +33,11 @@ public sealed record WorkConfiguration(
                 Logging = overrides.Logging,
                 Retention = overrides.Retention,
                 Concurrency = overrides.Concurrency,
+                QueueDurability = overrides.QueueDurability,
+                // Invocation is intentionally excluded. Allowed invocation channels are a
+                // design-time contract for the work definition, not a runtime worker option.
             };
+
+    public WorkConfiguration Merge(WorkConfiguration? overrides)
+        => this.MergeRuntimeOptions(overrides);
 }

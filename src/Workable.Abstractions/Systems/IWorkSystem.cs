@@ -11,13 +11,15 @@ public interface IWorkSystem : IAsyncDisposable
 
     IWorkCatalog Catalog { get; }
 
-    IWorkQueue Queue { get; }
+    IWorkQueueService Queue { get; }
 
     IWorkerOperations Workers { get; }
 
-    IWorkQuery Query { get; }
+    IWorkQueryService Query { get; }
 
     IWorkEventStream Events { get; }
+
+    IWorkSystemDiagnostics Diagnostics { get; }
 
     Task Start(CancellationToken cancellationToken = default);
 

@@ -93,6 +93,15 @@ internal static class WorkConfigurationComposer
             };
         }
 
+        var durabilityAttribute = executorType?.GetCustomAttribute<WorkQueueDurabilityAttribute>(inherit: true);
+        if (durabilityAttribute is not null)
+        {
+            configuration = configuration with
+            {
+                QueueDurability = durabilityAttribute.Configuration,
+            };
+        }
+
         var invocationAttribute = executorType?.GetCustomAttribute<WorkInvocationAttribute>(inherit: true);
         if (invocationAttribute is not null)
         {

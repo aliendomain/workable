@@ -33,13 +33,7 @@ public sealed class WorkerLoggingCaptureTests
 
         Assert.True(completion.IsCompletedSuccessfully);
         Assert.All(logEvents, workEvent => Assert.Equal("worker.log", workEvent.EventType));
-        Assert.Contains(logEvents, workEvent => SingleMessage(workEvent).Text == "dependency constructed");
-        Assert.Contains(logEvents, workEvent => SingleMessage(workEvent).Text == "executor guarded debug");
-        Assert.Contains(logEvents, workEvent => SingleMessage(workEvent).Text == "dependency executed");
-        Assert.Contains(logEvents, workEvent => SingleMessage(workEvent).Metadata?["category"]?.ToString() == typeof(LoggedDependency).FullName);
-        Assert.Contains(logEvents, workEvent => SingleMessage(workEvent).Metadata?["category"]?.ToString() == typeof(LoggedExecutor).FullName);
-        Assert.Contains(logEvents, workEvent => RequiredData(workEvent).GetProperty("log").GetProperty("message").GetString() == "dependency executed");
-        Assert.Contains(logEvents, workEvent => RequiredData(workEvent).GetProperty("log").GetProperty("category").GetString() == typeof(LoggedDependency).FullName);
+        Assert.All(logEvents, AssertThinLogEvent);
 
         var worker = RequiredWorker(completion.Worker);
         Assert.Equal(2, worker.Logs.Count);
@@ -90,17 +84,26 @@ public sealed class WorkerLoggingCaptureTests
         var completion = await handle.WaitForCompletion();
         var warning = await ReadNext(reader);
 
-        Assert.Equal("visible warning", SingleMessage(warning).Text);
+        AssertThinLogEvent(warning);
         var worker = RequiredWorker(completion.Worker);
         Assert.Single(worker.Logs);
         Assert.Equal("visible warning", worker.Logs[0].Message);
     }
 
-    private static WorkMessage SingleMessage(WorkEvent workEvent)
-        => Assert.Single(workEvent.Messages);
-
     private static JsonElement RequiredData(WorkEvent workEvent)
         => workEvent.Data ?? throw new InvalidOperationException($"Expected data for event '{workEvent.EventType}'.");
+
+    private static void AssertThinLogEvent(WorkEvent workEvent)
+    {
+        var data = RequiredData(workEvent);
+        Assert.Empty(workEvent.Messages);
+        Assert.Equal("worker.log", workEvent.EventType);
+        Assert.False(data.TryGetProperty("input", out _));
+        Assert.False(data.TryGetProperty("output", out _));
+        Assert.False(data.TryGetProperty("messages", out _));
+        Assert.False(data.TryGetProperty("log", out _));
+        Assert.False(data.TryGetProperty("logs", out _));
+    }
 
     private static WorkerSnapshot RequiredWorker(WorkerSnapshot? worker)
         => worker ?? throw new InvalidOperationException("Expected worker to exist.");

@@ -7,7 +7,7 @@ public sealed record WorkerIterationSnapshot(
     TimeSpan ExecutionDuration,
     WorkCompletionStatus Status,
     WorkOutput? Output,
-    IReadOnlyList<WorkMessage> Messages)
+    IReadOnlyList<WorkMessage> Messages) : IWorkQueryResult
 {
     public DateTimeOffset OccurredAt => this.CompletedAt;
 

@@ -15,6 +15,9 @@ namespace Workable.Tests;
 [Trait("Category", "HttpApi")]
 public sealed class WorkableHttpApiTests
 {
+    private static readonly string[] CompletedFailedStates = ["Completed", "Failed"];
+    private static readonly string[] CompletedStatuses = ["Completed"];
+
     [Fact]
     public async Task HttpApiReturnsAfterAcceptedByDefault()
     {
@@ -23,7 +26,7 @@ public sealed class WorkableHttpApiTests
         await system.Start();
 
         using var input = JsonDocument.Parse("""{"id":"123"}""");
-        var result = await http.Queue("http.default", new WorkableHttpWorkRequest(input.RootElement));
+        var result = await http.Queue.Queue(system, "http.default", new WorkableHttpWorkRequest(input.RootElement));
 
         Assert.Equal(WorkableHttpWorkStatus.Accepted, result.Status);
         Assert.True(result.QueueOutcome.IsAccepted);
@@ -40,7 +43,7 @@ public sealed class WorkableHttpApiTests
         await system.Start();
 
         using var input = JsonDocument.Parse("""{"id":"123"}""");
-        var result = await http.Queue(
+        var result = await http.Queue.Queue(system,
             "http.wait",
             new WorkableHttpWorkRequest(input.RootElement, WorkableHttpCompletion.WaitForCompletion));
 
@@ -57,7 +60,7 @@ public sealed class WorkableHttpApiTests
         await system.Start();
 
         using var input = JsonDocument.Parse("""{"id":"by-id"}""");
-        var result = await http.Queue(
+        var result = await http.Queue.Queue(system,
             definition.Id,
             new WorkableHttpWorkRequest(input.RootElement, WorkableHttpCompletion.WaitForCompletion));
 
@@ -79,7 +82,7 @@ public sealed class WorkableHttpApiTests
         await system.Start();
 
         using var input = JsonDocument.Parse("""{"id":"metadata"}""");
-        var result = await http.Queue(
+        var result = await http.Queue.Queue(system,
             "http.metadata",
             new WorkableHttpWorkRequest(
                 input.RootElement,
@@ -87,7 +90,7 @@ public sealed class WorkableHttpApiTests
                 SubjectId: new WorkSubjectId("user", "123"),
                 ConcurrencyKey: new WorkConcurrencyKey("tenant", "abc"),
                 Identifiers: new HashSet<WorkIdentifier> { new("invoice", "456") }));
-        var worker = await system.Query.GetWorker(result.WorkerId ?? throw new InvalidOperationException("Expected worker id."));
+        var worker = await system.Query.Worker(result.WorkerId ?? throw new InvalidOperationException("Expected worker id."));
 
         Assert.Equal(WorkableHttpWorkStatus.Accepted, result.Status);
         Assert.NotNull(worker);
@@ -109,7 +112,7 @@ public sealed class WorkableHttpApiTests
         var (system, http) = CreateHost(definition, SuccessfulWork);
         await system.Start();
 
-        var result = await http.Queue("dotnet.only");
+        var result = await http.Queue.Queue(system, "dotnet.only");
 
         Assert.Equal(WorkableHttpWorkStatus.Rejected, result.Status);
         Assert.Contains(result.Messages, message => message.Code == "workable.invocation.channel_not_allowed");
@@ -127,7 +130,7 @@ public sealed class WorkableHttpApiTests
         var (system, http) = CreateHost(definition, SuccessfulWork);
         await system.Start();
 
-        var definitions = http.GetDefinitions();
+        var definitions = http.Catalog.GetDefinitions(system);
         var listed = Assert.Single(definitions);
 
         Assert.Equal("dotnet.visible", listed.Name);
@@ -148,6 +151,7 @@ public sealed class WorkableHttpApiTests
                 nameof(WorkableHttpWorkConfiguration.Logging),
                 nameof(WorkableHttpWorkConfiguration.Retention),
                 nameof(WorkableHttpWorkConfiguration.Concurrency),
+                nameof(WorkableHttpWorkConfiguration.QueueDurability),
             ],
             typeof(WorkableHttpWorkConfiguration)
                 .GetProperties()
@@ -163,7 +167,7 @@ public sealed class WorkableHttpApiTests
         var (system, http) = CreateHost(definition, SuccessfulWork);
         await system.Start();
 
-        var result = await http.Queue(
+        var result = await http.Queue.Queue(system,
             "http.invocation.dto",
             new WorkableHttpWorkRequest(
                 Options: new WorkableHttpWorkerOptions(
@@ -171,7 +175,7 @@ public sealed class WorkableHttpApiTests
                     {
                         Start = WorkStartConfiguration.DoNotStart,
                     }))));
-        var worker = await system.Query.GetWorker(result.WorkerId ?? throw new InvalidOperationException("Expected worker id."));
+        var worker = await system.Query.Worker(result.WorkerId ?? throw new InvalidOperationException("Expected worker id."));
 
         Assert.Equal(WorkableHttpWorkStatus.Accepted, result.Status);
         Assert.NotNull(worker);
@@ -189,7 +193,7 @@ public sealed class WorkableHttpApiTests
         var (system, http) = CreateHost(definition, SuccessfulWork);
         await system.Start();
 
-        var result = await http.Queue(
+        var result = await http.Queue.Queue(system,
             "manual.http",
             new WorkableHttpWorkRequest(Completion: WorkableHttpCompletion.ReturnAfterAccepted));
 
@@ -213,13 +217,13 @@ public sealed class WorkableHttpApiTests
         Assert.True(completion.IsCompletedSuccessfully);
 
         var workerId = handle.WorkerId ?? throw new InvalidOperationException("Expected worker id.");
-        var worker = await http.GetWorker(workerId);
-        var workers = await http.QueryWorkers(new WorkerQuery(Identifier: new WorkIdentifier("batch", "1")));
-        var byName = await http.GetWorkInfo("http.query.one");
-        var byId = await http.GetWorkInfo(byName?.Definition.Id ?? throw new InvalidOperationException("Expected work info."));
-        var definitions = await http.QueryWorkDefinitions(new WorkDefinitionQuery(Category: "Http"));
-        var summary = await http.GetWorkerStatusSummary(new WorkerQuery(DefinitionName: "http.query.one"));
-        var systemSummary = await http.GetWorkerStatusSummary();
+        var worker = await http.Query.Worker(system, workerId);
+        var workers = await http.Query.Workers(system, new WorkerCriteria(Identifier: new WorkIdentifier("batch", "1")));
+        var byName = await http.Query.WorkInfo(system, "http.query.one");
+        var byId = await http.Query.WorkInfo(system, byName?.Definition.Id ?? throw new InvalidOperationException("Expected work info."));
+        var definitions = await http.Query.WorkDefinitions(system, new WorkDefinitionCriteria(Category: "Http"));
+        var summary = await http.Query.WorkerStatusSummary(system, new WorkerCriteria(DefinitionName: "http.query.one"));
+        var systemSummary = await http.Query.WorkerStatusSummary(system);
 
         Assert.NotNull(worker);
         Assert.Single(workers.Workers);
@@ -261,6 +265,7 @@ public sealed class WorkableHttpApiTests
         await (await system.Queue.Enqueue(
             "http.overview.failed",
             WorkInput.Empty.WithIdentifier(new WorkIdentifier("case", "failed")))).WaitForCompletion();
+        await WaitForThroughputBucketToClose();
 
         var viewResponse = await client.PostAsJsonAsync(
             "/workable/views/overview",
@@ -271,11 +276,23 @@ public sealed class WorkableHttpApiTests
                     category = "Http",
                     definitionName = "http.overview.complete",
                 },
-                components = new[]
+                components = new object[]
                 {
-                    new { id = "system", type = "system" },
-                    new { id = "workers", type = "workers" },
-                    new { id = "relationships", type = "relationships" },
+                    new { id = "system", type = "system", shape = "detailed" },
+                    new { id = "workers", type = "workers", shape = "standard" },
+                    new { id = "workersCompact", type = "workers", shape = "compact" },
+                    new { id = "iterations", type = "iterations", shape = "compact" },
+                    new
+                    {
+                        id = "throughput",
+                        type = "throughput",
+                        shape = "standard",
+                        options = new
+                        {
+                            bucketSeconds = 1,
+                            windowSeconds = 60,
+                        },
+                    },
                 },
             });
         viewResponse.EnsureSuccessStatusCode();
@@ -283,28 +300,30 @@ public sealed class WorkableHttpApiTests
             ?? throw new InvalidOperationException("Expected view JSON response.");
         var viewComponents = view["components"]?.AsObject()
             ?? throw new InvalidOperationException("Expected view components.");
-
-        var throughputResponse = await client.PostAsJsonAsync(
-            "/workable/components/throughput",
+        var throughputComponent = viewComponents["throughput"]
+            ?? throw new InvalidOperationException("Expected throughput component.");
+        var throughputBuckets = throughputComponent["data"]?["throughput"]?["buckets"]?.AsArray()
+            ?? throw new InvalidOperationException("Expected throughput buckets.");
+        var throughputExecutionSummary = throughputComponent["data"]?["throughput"]?["executionSummary"]
+            ?? throw new InvalidOperationException("Expected throughput execution summary.");
+        var throughputLiveSummary = throughputComponent["data"]?["throughput"]?["liveSummary"]
+            ?? throw new InvalidOperationException("Expected throughput live summary.");
+        var catalogResponse = await client.PostAsJsonAsync(
+            "/workable/components/catalog",
             new
             {
                 scope = new
                 {
                     category = "Http",
                 },
-                options = new
-                {
-                    bucketSeconds = 1,
-                    windowSeconds = 60,
-                },
             });
-        throughputResponse.EnsureSuccessStatusCode();
-        var throughput = JsonNode.Parse(await throughputResponse.Content.ReadAsStringAsync())
-            ?? throw new InvalidOperationException("Expected throughput JSON response.");
-        var throughputComponent = throughput["components"]?["throughput"]
-            ?? throw new InvalidOperationException("Expected throughput component.");
-        var throughputBuckets = throughputComponent["data"]?["throughput"]?["buckets"]?.AsArray()
-            ?? throw new InvalidOperationException("Expected throughput buckets.");
+        catalogResponse.EnsureSuccessStatusCode();
+        var catalog = JsonNode.Parse(await catalogResponse.Content.ReadAsStringAsync())
+            ?? throw new InvalidOperationException("Expected catalog JSON response.");
+        var catalogComponent = catalog["components"]?["catalog"]
+            ?? throw new InvalidOperationException("Expected catalog component.");
+        var catalogDefinitions = catalogComponent["data"]?["catalogDefinitions"]?.AsArray()
+            ?? throw new InvalidOperationException("Expected catalog definitions.");
         var defaultViewResponse = await client.PostAsJsonAsync(
             "/workable/views/overview",
             new
@@ -319,27 +338,181 @@ public sealed class WorkableHttpApiTests
             ?? throw new InvalidOperationException("Expected default view JSON response.");
         var defaultComponents = defaultView["components"]?.AsObject()
             ?? throw new InvalidOperationException("Expected default view components.");
+        var failedWorkersResponse = await client.PostAsJsonAsync(
+            "/workable/components/failedWorkers",
+            new
+            {
+                scope = new
+                {
+                    category = "Http",
+                },
+                shape = "standard",
+            });
+        failedWorkersResponse.EnsureSuccessStatusCode();
+        var failedWorkersQuery = JsonNode.Parse(await failedWorkersResponse.Content.ReadAsStringAsync())
+            ?? throw new InvalidOperationException("Expected failed workers JSON response.");
+        var failedWorkersComponent = failedWorkersQuery["components"]?["failedWorkers"]
+            ?? throw new InvalidOperationException("Expected failed workers component.");
+        var failedWorker = Assert.Single(failedWorkersComponent["data"]?.AsArray()
+            ?? throw new InvalidOperationException("Expected failed workers component data."));
+        var detailedFailedWorkersResponse = await client.PostAsJsonAsync(
+            "/workable/components/failedWorkers",
+            new
+            {
+                scope = new
+                {
+                    category = "Http",
+                },
+                shape = "detailed",
+            });
+        detailedFailedWorkersResponse.EnsureSuccessStatusCode();
+        var detailedFailedWorkersQuery = JsonNode.Parse(await detailedFailedWorkersResponse.Content.ReadAsStringAsync())
+            ?? throw new InvalidOperationException("Expected detailed failed workers JSON response.");
+        var detailedFailedWorkersComponent = detailedFailedWorkersQuery["components"]?["failedWorkers"]
+            ?? throw new InvalidOperationException("Expected detailed failed workers component.");
+        var detailedFailedWorker = Assert.Single(detailedFailedWorkersComponent["data"]?.AsArray()
+            ?? throw new InvalidOperationException("Expected detailed failed workers component data."));
+        var detailedFailedIterationsResponse = await client.PostAsJsonAsync(
+            "/workable/components/failedIterations",
+            new
+            {
+                scope = new
+                {
+                    category = "Http",
+                },
+                shape = "detailed",
+            });
+        detailedFailedIterationsResponse.EnsureSuccessStatusCode();
+        var detailedFailedIterationsQuery = JsonNode.Parse(await detailedFailedIterationsResponse.Content.ReadAsStringAsync())
+            ?? throw new InvalidOperationException("Expected detailed failed iterations JSON response.");
+        var detailedFailedIterationsComponent = detailedFailedIterationsQuery["components"]?["failedIterations"]
+            ?? throw new InvalidOperationException("Expected detailed failed iterations component.");
+        var detailedFailedIteration = Assert.Single(detailedFailedIterationsComponent["data"]?.AsArray()
+            ?? throw new InvalidOperationException("Expected detailed failed iterations component data."));
+        var compactThroughputResponse = await client.PostAsJsonAsync(
+            "/workable/components/throughput",
+            new
+            {
+                scope = new
+                {
+                    category = "Http",
+                },
+                shape = "compact",
+                options = new
+                {
+                    bucketSeconds = 1,
+                    windowSeconds = 60,
+                },
+            });
+        compactThroughputResponse.EnsureSuccessStatusCode();
+        var compactThroughputQuery = JsonNode.Parse(await compactThroughputResponse.Content.ReadAsStringAsync())
+            ?? throw new InvalidOperationException("Expected compact throughput JSON response.");
+        var compactThroughputComponent = compactThroughputQuery["components"]?["throughput"]
+            ?? throw new InvalidOperationException("Expected compact throughput component.");
 
-        Assert.Equal(["relationships", "system", "workers"], viewComponents.Select(component => component.Key).Order().ToArray());
+        Assert.Equal(["iterations", "system", "throughput", "workers", "workersCompact"], viewComponents.Select(component => component.Key).Order().ToArray());
         Assert.Equal("ok", viewComponents["system"]?["status"]?.GetValue<string>());
+        Assert.Equal("detailed", viewComponents["system"]?["shape"]?.GetValue<string>());
         Assert.Equal("Started", viewComponents["system"]?["data"]?["systemState"]?.GetValue<string>());
         Assert.Equal("ok", viewComponents["workers"]?["status"]?.GetValue<string>());
+        Assert.Equal("standard", viewComponents["workers"]?["shape"]?.GetValue<string>());
         Assert.Equal(1, viewComponents["workers"]?["data"]?["finalWorkerCount"]?.GetValue<int>());
         Assert.Equal(0, viewComponents["workers"]?["data"]?["failedWorkerCount"]?.GetValue<int>());
         Assert.Equal(1, viewComponents["workers"]?["data"]?["workerCountByState"]?["Completed"]?.GetValue<int>());
         Assert.Null(viewComponents["workers"]?["data"]?["workerCountByState"]?["Failed"]);
-        Assert.Equal("ok", viewComponents["relationships"]?["status"]?.GetValue<string>());
-        Assert.Equal(1, viewComponents["relationships"]?["data"]?["completedIterationCount"]?.GetValue<int>());
-        Assert.Equal(0, viewComponents["relationships"]?["data"]?["failedIterationCount"]?.GetValue<int>());
+        Assert.Equal("ok", viewComponents["workersCompact"]?["status"]?.GetValue<string>());
+        Assert.Equal("compact", viewComponents["workersCompact"]?["shape"]?.GetValue<string>());
+        Assert.Equal(0, viewComponents["workersCompact"]?["data"]?["activeWorkerCount"]?.GetValue<int>());
+        Assert.Equal(0, viewComponents["workersCompact"]?["data"]?["failedWorkerCount"]?.GetValue<int>());
+        Assert.Null(viewComponents["workersCompact"]?["data"]?["definitionCount"]);
+        Assert.Null(viewComponents["workersCompact"]?["data"]?["finalWorkerCount"]);
+        Assert.Null(viewComponents["workersCompact"]?["data"]?["workerCountByState"]);
+        Assert.Equal("ok", viewComponents["iterations"]?["status"]?.GetValue<string>());
+        Assert.Equal("compact", viewComponents["iterations"]?["shape"]?.GetValue<string>());
+        Assert.Equal(1, viewComponents["iterations"]?["data"]?["iterationCountByStatus"]?["Completed"]?.GetValue<int>());
+        Assert.Null(viewComponents["iterations"]?["data"]?["iterationCountByStatus"]?["Failed"]);
+        Assert.Null(viewComponents["iterations"]?["data"]?["completedIterationCount"]);
+        Assert.Null(viewComponents["iterations"]?["data"]?["failedIterationCount"]);
+        Assert.Null(viewComponents["iterations"]?["data"]?["commonKeyTypes"]);
         Assert.Equal("ok", throughputComponent["status"]?.GetValue<string>());
-        Assert.Equal(2, throughputBuckets.Sum(bucket => bucket?["queued"]?.GetValue<int>() ?? 0));
-        Assert.Equal(1, throughputBuckets.Sum(bucket => bucket?["succeeded"]?.GetValue<int>() ?? 0));
-        Assert.Equal(1, throughputBuckets.Sum(bucket => bucket?["failed"]?.GetValue<int>() ?? 0));
+        Assert.Equal("standard", throughputComponent["shape"]?.GetValue<string>());
+        Assert.Equal(1, throughputBuckets.Sum(bucket => bucket?["started"]?.GetValue<int>() ?? 0));
+        Assert.Equal(1, throughputBuckets.Sum(bucket => bucket?["completed"]?.GetValue<int>() ?? 0));
+        Assert.Equal(0, throughputBuckets.Sum(bucket => bucket?["failed"]?.GetValue<int>() ?? 0));
+        Assert.Null(throughputBuckets.FirstOrDefault()?["executionCount"]);
+        Assert.Null(throughputBuckets.FirstOrDefault()?["slowestExecutionMilliseconds"]);
+        Assert.Null(throughputBuckets.FirstOrDefault()?["p95ExecutionMilliseconds"]);
+        Assert.Null(throughputBuckets.FirstOrDefault()?["p99ExecutionMilliseconds"]);
+        Assert.Equal(1, throughputComponent["data"]?["throughput"]?["settledCount"]?.GetValue<int>());
+        Assert.Equal(1, throughputExecutionSummary["executionCount"]?.GetValue<int>());
+        Assert.True(throughputExecutionSummary["averageExecutionMilliseconds"]?.GetValue<double>() >= 0);
+        Assert.True(throughputExecutionSummary["slowestExecutionMilliseconds"]?.GetValue<double>() >= 0);
+        Assert.True(throughputExecutionSummary["p95ExecutionMilliseconds"]?.GetValue<double>() >= 0);
+        Assert.True(throughputExecutionSummary["p99ExecutionMilliseconds"]?.GetValue<double>() >= 0);
+        Assert.Equal(60, throughputLiveSummary["rateWindowSeconds"]?.GetValue<int>());
+        Assert.Null(throughputLiveSummary["windowSeconds"]);
+        Assert.NotNull(throughputLiveSummary["startedPerSecond"]);
+        Assert.NotNull(throughputLiveSummary["completedPerSecond"]);
+        Assert.NotNull(throughputLiveSummary["failedPerSecond"]);
+        Assert.NotNull(throughputLiveSummary["inFlightDeltaPerSecond"]);
+        Assert.Null(throughputLiveSummary["executionCount"]);
+        Assert.Null(throughputLiveSummary["averageExecutionMilliseconds"]);
+        Assert.Null(throughputLiveSummary["slowestExecutionMilliseconds"]);
+        Assert.Null(throughputLiveSummary["p95ExecutionMilliseconds"]);
+        Assert.Null(throughputLiveSummary["p99ExecutionMilliseconds"]);
+        Assert.Equal("ok", compactThroughputComponent["status"]?.GetValue<string>());
+        Assert.Equal("compact", compactThroughputComponent["shape"]?.GetValue<string>());
+        Assert.Null(compactThroughputComponent["data"]?["throughput"]?["buckets"]);
+        Assert.Null(compactThroughputComponent["data"]?["throughput"]?["bucketSeconds"]);
+        Assert.True(compactThroughputComponent["data"]?["throughput"]?["settledCount"]?.GetValue<int>() >= 1);
+        Assert.NotNull(compactThroughputComponent["data"]?["throughput"]?["executionSummary"]);
+        Assert.NotNull(compactThroughputComponent["data"]?["throughput"]?["liveSummary"]);
+        Assert.Equal("ok", catalogComponent["status"]?.GetValue<string>());
+        Assert.Equal("detailed", catalogComponent["shape"]?.GetValue<string>());
+        Assert.Contains(catalogDefinitions, definition => definition?["name"]?.GetValue<string>() == "http.overview.complete");
+        Assert.Equal("ok", failedWorkersComponent["status"]?.GetValue<string>());
+        Assert.Equal("standard", failedWorkersComponent["shape"]?.GetValue<string>());
+        Assert.Equal("http.overview.failed", failedWorker?["definitionName"]?.GetValue<string>());
+        Assert.Null(failedWorker?["state"]);
+        Assert.NotNull(failedWorker?["id"]);
+        Assert.NotNull(failedWorker?["revision"]);
+        Assert.NotNull(failedWorker?["updatedAt"]);
+        Assert.NotNull(failedWorker?["totalExecutionDuration"]);
+        Assert.Null(failedWorker?["definitionId"]);
+        Assert.Null(failedWorker?["subjectId"]);
+        Assert.Null(failedWorker?["identifiers"]);
+        Assert.Equal("ok", detailedFailedWorkersComponent["status"]?.GetValue<string>());
+        Assert.Equal("detailed", detailedFailedWorkersComponent["shape"]?.GetValue<string>());
+        Assert.Equal("http.overview.failed", detailedFailedWorker?["definitionName"]?.GetValue<string>());
+        Assert.Equal("Failed", detailedFailedWorker?["state"]?.GetValue<string>());
+        Assert.Null(detailedFailedWorker?["definitionId"]);
+        Assert.Null(detailedFailedWorker?["createdAt"]);
+        Assert.NotNull(detailedFailedWorker?["identifiers"]);
+        Assert.Equal("standard", defaultComponents["failedIterations"]?["shape"]?.GetValue<string>());
+        Assert.Equal("standard", defaultComponents["completedIterations"]?["shape"]?.GetValue<string>());
+        var defaultFailedIteration = Assert.Single(defaultComponents["failedIterations"]?["data"]?.AsArray()
+            ?? throw new InvalidOperationException("Expected default failed iterations data."));
+        Assert.Equal("http.overview.failed", defaultFailedIteration?["definitionName"]?.GetValue<string>());
+        Assert.NotNull(defaultFailedIteration?["workerId"]);
+        Assert.NotNull(defaultFailedIteration?["sequence"]);
+        Assert.NotNull(defaultFailedIteration?["completedAt"]);
+        Assert.NotNull(defaultFailedIteration?["executionDuration"]);
+        Assert.Null(defaultFailedIteration?["workerState"]);
+        Assert.Null(defaultFailedIteration?["subjectId"]);
+        Assert.Null(defaultFailedIteration?["identifiers"]);
+        Assert.Equal("ok", detailedFailedIterationsComponent["status"]?.GetValue<string>());
+        Assert.Equal("detailed", detailedFailedIterationsComponent["shape"]?.GetValue<string>());
+        Assert.Equal("http.overview.failed", detailedFailedIteration?["definitionName"]?.GetValue<string>());
+        Assert.NotNull(detailedFailedIteration?["workerState"]);
+        Assert.NotNull(detailedFailedIteration?["identifiers"]);
+        Assert.Equal("standard", defaultComponents["workers"]?["shape"]?.GetValue<string>());
+        Assert.Equal("standard", defaultComponents["failedWorkers"]?["shape"]?.GetValue<string>());
+        Assert.DoesNotContain("catalog", defaultComponents.Select(component => component.Key));
         Assert.DoesNotContain("throughput", defaultComponents.Select(component => component.Key));
     }
 
     [Fact]
-    public async Task MappedHttpRouteCanQueryWorkersByMultipleStates()
+    public async Task MappedHttpRouteCanQueryWorkerGridView()
     {
         using var host = await CreateOverviewHttpHost();
         var client = host.GetTestClient();
@@ -351,23 +524,47 @@ public sealed class WorkableHttpApiTests
             options: new WorkerOptions(ProfilingEnabled: true))).WaitForCompletion();
 
         var response = await client.PostAsJsonAsync(
-            "/workable/workers/query",
+            "/workable/views/workers",
             new
             {
-                states = new[] { "Completed", "Failed" },
-                skip = 0,
-                take = 50,
+                components = new object[]
+                {
+                    new
+                    {
+                        id = "workerGrid",
+                        type = "workerGrid",
+                        shape = "detailed",
+                        options = new
+                        {
+                            states = CompletedFailedStates,
+                            skip = 0,
+                            take = 50,
+                        },
+                    },
+                },
             });
         var configurationResponse = await client.PostAsJsonAsync(
-            "/workable/workers/query",
+            "/workable/views/workers",
             new
             {
-                configuration = new
+                components = new object[]
                 {
-                    profilingEnabled = true,
+                    new
+                    {
+                        id = "workerGrid",
+                        type = "workerGrid",
+                        shape = "detailed",
+                        options = new
+                        {
+                            configuration = new
+                            {
+                                profilingEnabled = true,
+                            },
+                            skip = 0,
+                            take = 50,
+                        },
+                    },
                 },
-                skip = 0,
-                take = 50,
             });
         response.EnsureSuccessStatusCode();
         configurationResponse.EnsureSuccessStatusCode();
@@ -375,20 +572,25 @@ public sealed class WorkableHttpApiTests
             ?? throw new InvalidOperationException("Expected JSON response.");
         var configurationJson = JsonNode.Parse(await configurationResponse.Content.ReadAsStringAsync())
             ?? throw new InvalidOperationException("Expected configuration JSON response.");
+        var grid = json["components"]?["workerGrid"]?["data"]
+            ?? throw new InvalidOperationException("Expected worker grid component.");
+        var configurationGrid = configurationJson["components"]?["workerGrid"]?["data"]
+            ?? throw new InvalidOperationException("Expected configured worker grid component.");
 
-        Assert.Equal(3, json["totalCount"]?.GetValue<int>());
-        var workers = json["workers"]?.AsArray()
+        Assert.Equal(3, grid["totalCount"]?.GetValue<int>());
+        var workers = grid["workers"]?.AsArray()
             ?? throw new InvalidOperationException("Expected workers array.");
-        var configuredWorkers = configurationJson["workers"]?.AsArray()
+        var configuredWorkers = configurationGrid["workers"]?.AsArray()
             ?? throw new InvalidOperationException("Expected configured workers array.");
         Assert.Contains(workers, worker => worker?["state"]?.GetValue<string>() == "Completed");
         Assert.Contains(workers, worker => worker?["state"]?.GetValue<string>() == "Failed");
-        Assert.Equal(1, configurationJson["totalCount"]?.GetValue<int>());
+        Assert.NotNull(workers.FirstOrDefault()?["identifiers"]);
+        Assert.Equal(1, configurationGrid["totalCount"]?.GetValue<int>());
         Assert.Equal("http.overview.complete", Assert.Single(configuredWorkers)?["definitionName"]?.GetValue<string>());
     }
 
     [Fact]
-    public async Task MappedHttpRouteCanGetAndQueryWorkerIterations()
+    public async Task MappedHttpRouteCanGetAndQueryIterationGridView()
     {
         using var host = await CreateHttpHost();
         var client = host.GetTestClient();
@@ -404,16 +606,29 @@ public sealed class WorkableHttpApiTests
 
         var getResponse = await client.GetAsync($"/workable/workers/{workerId:D}/iterations/1");
         var queryResponse = await client.PostAsJsonAsync(
-            "/workable/iterations/query",
+            "/workable/views/iterations",
             new
             {
-                definitionName = "http.route.case",
-                identifier = new
+                scope = new
                 {
-                    type = "batch",
-                    value = "iteration",
+                    definitionName = "http.route.case",
                 },
-                statuses = new[] { "Completed" },
+                components = new object[]
+                {
+                    new
+                    {
+                        id = "iterationGrid",
+                        type = "iterationGrid",
+                        shape = "detailed",
+                        options = new
+                        {
+                            keyType = "batch",
+                            statuses = CompletedStatuses,
+                            skip = 0,
+                            take = 50,
+                        },
+                    },
+                },
             });
 
         getResponse.EnsureSuccessStatusCode();
@@ -422,13 +637,19 @@ public sealed class WorkableHttpApiTests
             ?? throw new InvalidOperationException("Expected iteration JSON response.");
         var queryJson = JsonNode.Parse(await queryResponse.Content.ReadAsStringAsync())
             ?? throw new InvalidOperationException("Expected iteration query JSON response.");
-        var iterations = queryJson["iterations"]?.AsArray()
+        var grid = queryJson["components"]?["iterationGrid"]?["data"]
+            ?? throw new InvalidOperationException("Expected iteration grid component.");
+        var iterations = grid["iterations"]?.AsArray()
             ?? throw new InvalidOperationException("Expected iterations array.");
 
         Assert.Equal(1, getJson["sequence"]?.GetValue<int>());
         Assert.Equal("Completed", getJson["status"]?.GetValue<string>());
-        Assert.Equal(1, queryJson["totalCount"]?.GetValue<int>());
-        Assert.Equal(workerId.ToString("D"), Assert.Single(iterations)?["workerId"]?["value"]?.GetValue<string>());
+        Assert.Equal(1, grid["totalCount"]?.GetValue<int>());
+        var iteration = Assert.Single(iterations);
+        Assert.Equal(workerId.ToString("D"), iteration?["workerId"]?["value"]?.GetValue<string>());
+        Assert.Equal("Completed", iteration?["status"]?.GetValue<string>());
+        Assert.NotNull(iteration?["workerState"]);
+        Assert.NotNull(iteration?["identifiers"]);
     }
 
     [Fact]
@@ -459,7 +680,7 @@ public sealed class WorkableHttpApiTests
             new
             {
                 type = "claim",
-                states = new[] { "Completed" },
+                states = CompletedStatuses,
                 skip = 0,
                 take = 10,
             });
@@ -475,7 +696,7 @@ public sealed class WorkableHttpApiTests
             new
             {
                 type = "claim",
-                statuses = new[] { "Completed" },
+                statuses = CompletedStatuses,
                 skip = 0,
                 take = 10,
             });
@@ -553,13 +774,13 @@ public sealed class WorkableHttpApiTests
         var (system, http) = CreateHost(definition, SuccessfulWork);
         await system.Start();
 
-        var queue = await http.Queue("http.action");
-        var worker = await http.GetWorker(queue.WorkerId ?? throw new InvalidOperationException("Expected worker id."));
-        var outcome = await http.Execute(
+        var queue = await http.Queue.Queue(system, "http.action");
+        var worker = await http.Query.Worker(system, queue.WorkerId ?? throw new InvalidOperationException("Expected worker id."));
+        var outcome = await http.Workers.Execute(system,
             worker!.Id,
             WorkAction.Cancel,
             new WorkableHttpWorkerActionRequest(worker.Revision));
-        var canceled = await http.GetWorker(worker.Id);
+        var canceled = await http.Query.Worker(system, worker.Id);
 
         Assert.True(outcome.IsAccepted);
         Assert.Equal(WorkerState.Canceled, canceled?.State);
@@ -577,9 +798,9 @@ public sealed class WorkableHttpApiTests
         var (system, http) = CreateHost(definition, SuccessfulWork);
         await system.Start();
 
-        var queue = await http.Queue("http.reconfigure");
-        var worker = await http.GetWorker(queue.WorkerId ?? throw new InvalidOperationException("Expected worker id."));
-        var outcome = await http.Reconfigure(
+        var queue = await http.Queue.Queue(system, "http.reconfigure");
+        var worker = await http.Query.Worker(system, queue.WorkerId ?? throw new InvalidOperationException("Expected worker id."));
+        var outcome = await http.Workers.Reconfigure(system,
             worker!.Id,
             new WorkableHttpWorkerReconfigurationRequest(
                 worker.Revision,
@@ -601,7 +822,7 @@ public sealed class WorkableHttpApiTests
         var (system, http) = CreateHost(definition, SuccessfulWork);
         await system.Start();
 
-        var outcome = await http.ReconfigureDefinition(
+        var outcome = await http.Catalog.ReconfigureDefinition(system,
             definition.Id,
             new WorkableHttpDefinitionReconfigurationRequest(
                 definition.Revision,
@@ -609,7 +830,7 @@ public sealed class WorkableHttpApiTests
                     DefaultOptions: new WorkerOptions(ProfilingEnabled: true))));
 
         var handle = await system.Queue.Enqueue(definition.Id);
-        var worker = await system.Query.GetWorker(handle.WorkerId ?? throw new InvalidOperationException("Expected worker id."));
+        var worker = await system.Query.Worker(handle.WorkerId ?? throw new InvalidOperationException("Expected worker id."));
 
         Assert.True(outcome.IsAccepted);
         Assert.Equal(1, outcome.Definition?.Revision);
@@ -693,7 +914,7 @@ public sealed class WorkableHttpApiTests
             ?? throw new InvalidOperationException("Expected JSON response.");
         var workerId = Guid.Parse(queueJson["workerId"]?["value"]?.GetValue<string>()
             ?? throw new InvalidOperationException("Expected worker id."));
-        var worker = await system.Query.GetWorker(new WorkerId(workerId))
+        var worker = await system.Query.Worker(new WorkerId(workerId))
             ?? throw new InvalidOperationException("Expected worker.");
         await using var actionSubscription = system.Events.Subscribe(new WorkEventFilter(WorkerId: worker.Id, EventType: "worker.cancel"));
         await using var actionReader = actionSubscription.Read().GetAsyncEnumerator();
@@ -715,7 +936,7 @@ public sealed class WorkableHttpApiTests
         var summaryJson = JsonNode.Parse(await summaryResponse.Content.ReadAsStringAsync())
             ?? throw new InvalidOperationException("Expected JSON response.");
 
-        var canceled = await system.Query.GetWorker(new WorkerId(workerId));
+        var canceled = await system.Query.Worker(new WorkerId(workerId));
         var actionEvent = await ReadNext(actionReader);
         Assert.Equal(WorkerState.Canceled, canceled?.State);
         Assert.Equal(WorkInvocationChannel.HttpApi, actionEvent.Origin?.Channel);
@@ -770,7 +991,7 @@ public sealed class WorkableHttpApiTests
         var workerId = Guid.Parse(json["workerId"]?["value"]?.GetValue<string>()
             ?? throw new InvalidOperationException("Expected worker id."));
 
-        var worker = await system.Query.GetWorker(new WorkerId(workerId))
+        var worker = await system.Query.Worker(new WorkerId(workerId))
             ?? throw new InvalidOperationException("Expected worker.");
 
         Assert.Equal(WorkInvocationChannel.HttpApi, worker.Origin.Channel);
@@ -875,7 +1096,7 @@ public sealed class WorkableHttpApiTests
         var workerId = Guid.Parse(json["workerId"]?["value"]?.GetValue<string>()
             ?? throw new InvalidOperationException("Expected worker id."));
 
-        var worker = await system.Query.GetWorker(new WorkerId(workerId))
+        var worker = await system.Query.Worker(new WorkerId(workerId))
             ?? throw new InvalidOperationException("Expected worker.");
 
         Assert.Equal(WorkInvocationChannel.HttpApi, worker.Origin.Channel);
@@ -900,7 +1121,7 @@ public sealed class WorkableHttpApiTests
             ?? throw new InvalidOperationException("Expected JSON response.");
         var workerId = Guid.Parse(queueJson["workerId"]?["value"]?.GetValue<string>()
             ?? throw new InvalidOperationException("Expected worker id."));
-        var worker = await system.Query.GetWorker(new WorkerId(workerId))
+        var worker = await system.Query.Worker(new WorkerId(workerId))
             ?? throw new InvalidOperationException("Expected worker.");
         await using var reconfigureSubscription = system.Events.Subscribe(new WorkEventFilter(WorkerId: worker.Id, EventType: "worker.reconfigured"));
         await using var reconfigureReader = reconfigureSubscription.Read().GetAsyncEnumerator();
@@ -951,7 +1172,7 @@ public sealed class WorkableHttpApiTests
         var workerId = Guid.Parse(queueJson["workerId"]?["value"]?.GetValue<string>()
             ?? throw new InvalidOperationException("Expected worker id."));
 
-        var worker = await background.Query.GetWorker(new WorkerId(workerId))
+        var worker = await background.Query.Worker(new WorkerId(workerId))
             ?? throw new InvalidOperationException("Expected worker.");
 
         Assert.Equal("http.named", worker.DefinitionName);
@@ -981,6 +1202,51 @@ public sealed class WorkableHttpApiTests
             system?["name"]?.GetValue<string>() == "background" &&
             system?["isDefault"]?.GetValue<bool>() == false &&
             system?["capabilities"]?["realtime"]?["enabled"]?.GetValue<bool>() == false);
+    }
+
+    [Fact]
+    public async Task MappedHttpDiagnosticsRouteReturnsSystemCounters()
+    {
+        using var host = await CreateHttpHost();
+        var client = host.GetTestClient();
+        var system = host.Services.GetRequiredService<IWorkSystemRegistry>().Default;
+
+        var queueResponse = await client.PostAsJsonAsync(
+            "/workable/work/http.route.case",
+            new
+            {
+                completion = "returnAfterAccepted",
+            });
+        queueResponse.EnsureSuccessStatusCode();
+        await system.Query.Workers();
+
+        var response = await client.GetAsync("/workable/diagnostics");
+        response.EnsureSuccessStatusCode();
+        var json = JsonNode.Parse(await response.Content.ReadAsStringAsync())
+            ?? throw new InvalidOperationException("Expected JSON response.");
+        var readModel = json["readModel"]
+            ?? throw new InvalidOperationException("Expected read model diagnostics.");
+        var queue = json["queue"]
+            ?? throw new InvalidOperationException("Expected queue diagnostics.");
+        var retention = json["retention"]
+            ?? throw new InvalidOperationException("Expected retention diagnostics.");
+
+        Assert.Equal(system.Id.Value.ToString(), json["id"]?["value"]?.GetValue<string>());
+        Assert.Equal("Started", json["state"]?.GetValue<string>());
+        Assert.Equal(0, queue["rejectedWorkCount"]?.GetValue<long>());
+        Assert.Null(queue["lastRejectedAt"]);
+        Assert.True(readModel["enqueuedSequence"]?.GetValue<long>() > 0);
+        Assert.Equal(
+            readModel["enqueuedSequence"]?.GetValue<long>(),
+            readModel["appliedSequence"]?.GetValue<long>());
+        Assert.Equal(0, readModel["pendingUpdateCount"]?.GetValue<long>());
+        Assert.True(readModel["appliedUpdateCount"]?.GetValue<long>() > 0);
+        Assert.True(readModel["publishedSnapshotCount"]?.GetValue<long>() > 0);
+        Assert.False(readModel["hasProjectorFailure"]?.GetValue<bool>());
+        Assert.True(retention["trackedFinalWorkerCount"]?.GetValue<int>() >= 0);
+        Assert.True(retention["scheduledPurgeCount"]?.GetValue<int>() >= 0);
+        Assert.True(retention["scheduledPurgeHighWaterMark"]?.GetValue<int>() >= 0);
+        Assert.False(retention["hasSchedulerFailure"]?.GetValue<bool>());
     }
 
     [Fact]
@@ -1060,17 +1326,17 @@ public sealed class WorkableHttpApiTests
         var actionJson = JsonNode.Parse(await actionResponse.Content.ReadAsStringAsync())
             ?? throw new InvalidOperationException("Expected JSON response.");
 
-        var billing = await system.Query.GetWorker(new WorkerId(billingQueue))
+        var billing = await system.Query.Worker(new WorkerId(billingQueue))
             ?? throw new InvalidOperationException("Expected billing worker.");
-        var email = await system.Query.GetWorker(new WorkerId(emailQueue))
+        var email = await system.Query.Worker(new WorkerId(emailQueue))
             ?? throw new InvalidOperationException("Expected email worker.");
 
         Assert.Equal(1, actionJson["matchedWorkerCount"]?.GetValue<int>());
         Assert.Equal(1, actionJson["acceptedCount"]?.GetValue<int>());
         Assert.Equal(WorkerState.Canceled, billing.State);
         Assert.Equal(WorkerState.Queued, email.State);
-        Assert.Equal(WorkInvocationChannel.HttpApi, billing.ActionHistory.Last().Origin.Channel);
-        Assert.Contains("/workable/workers/actions/cancel", billing.ActionHistory.Last().Origin.Url, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(WorkInvocationChannel.HttpApi, billing.ActionHistory[^1].Origin.Channel);
+        Assert.Contains("/workable/workers/actions/cancel", billing.ActionHistory[^1].Origin.Url, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -1101,7 +1367,7 @@ public sealed class WorkableHttpApiTests
         var namedWorkerJson = await namedGetResponse.Content.ReadAsStringAsync();
         Assert.Contains("http.named", namedWorkerJson);
 
-        var worker = await background.Query.GetWorker(new WorkerId(workerId))
+        var worker = await background.Query.Worker(new WorkerId(workerId))
             ?? throw new InvalidOperationException("Expected worker.");
         var defaultActionResponse = await client.PostAsJsonAsync(
             $"/workable/workers/{workerId:D}/actions/cancel",
@@ -1123,7 +1389,7 @@ public sealed class WorkableHttpApiTests
                 },
             });
         reconfigureResponse.EnsureSuccessStatusCode();
-        worker = await background.Query.GetWorker(new WorkerId(workerId))
+        worker = await background.Query.Worker(new WorkerId(workerId))
             ?? throw new InvalidOperationException("Expected worker.");
         Assert.True(worker.Options.ProfilingEnabled);
 
@@ -1135,11 +1401,11 @@ public sealed class WorkableHttpApiTests
             });
         actionResponse.EnsureSuccessStatusCode();
 
-        var canceled = await background.Query.GetWorker(new WorkerId(workerId))
+        var canceled = await background.Query.Worker(new WorkerId(workerId))
             ?? throw new InvalidOperationException("Expected worker.");
         Assert.Equal(WorkerState.Canceled, canceled.State);
-        Assert.Equal(WorkInvocationChannel.HttpApi, canceled.ActionHistory.Last().Origin.Channel);
-        Assert.Contains("/workable/systems/background/workers/", canceled.ActionHistory.Last().Origin.Url, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(WorkInvocationChannel.HttpApi, canceled.ActionHistory[^1].Origin.Channel);
+        Assert.Contains("/workable/systems/background/workers/", canceled.ActionHistory[^1].Origin.Url, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -1155,12 +1421,12 @@ public sealed class WorkableHttpApiTests
         Assert.Contains("workable.http.system.not_found", json);
     }
 
-    private static (IWorkSystem System, WorkableHttpWorkService Http) CreateHost(
+    private static (IWorkSystem System, HttpAdapterServices Http) CreateHost(
         WorkDefinition definition,
         Func<IWorkExecutionContext, WorkInput?, CancellationToken, Task<WorkExecutionResult>> execute)
         => CreateHost(builder => builder.AddWork(definition, execute));
 
-    private static (IWorkSystem System, WorkableHttpWorkService Http) CreateHost(
+    private static (IWorkSystem System, HttpAdapterServices Http) CreateHost(
         Action<IWorkSystemBuilder> configure)
     {
         var provider = new ServiceCollection()
@@ -1168,8 +1434,20 @@ public sealed class WorkableHttpApiTests
             .AddWorkableHttpApi()
             .BuildServiceProvider();
         var system = provider.GetRequiredService<IWorkSystemRegistry>().Default;
-        return (system, provider.GetRequiredService<WorkableHttpWorkService>());
+        return (system, new HttpAdapterServices(
+            provider.GetRequiredService<WorkableHttpSystemResolver>(),
+            provider.GetRequiredService<WorkableHttpCatalogAdapter>(),
+            provider.GetRequiredService<WorkableHttpQueueAdapter>(),
+            provider.GetRequiredService<WorkableHttpQueryAdapter>(),
+            provider.GetRequiredService<WorkableHttpWorkerAdapter>()));
     }
+
+    private sealed record HttpAdapterServices(
+        WorkableHttpSystemResolver Systems,
+        WorkableHttpCatalogAdapter Catalog,
+        WorkableHttpQueueAdapter Queue,
+        WorkableHttpQueryAdapter Query,
+        WorkableHttpWorkerAdapter Workers);
 
     private static async Task<IHost> CreateHttpHost(bool authenticated = true)
     {
@@ -1318,7 +1596,7 @@ public sealed class WorkableHttpApiTests
                             async (context, input, cancellationToken) =>
                             {
                                 context.Services.GetRequiredService<HttpShutdownTracker>().Started.TrySetResult();
-                                await Task.Delay(Timeout.InfiniteTimeSpan);
+                                await Task.Delay(Timeout.InfiniteTimeSpan, CancellationToken.None);
                                 return WorkExecutionResult.Success();
                             });
                     });
@@ -1521,5 +1799,14 @@ public sealed class WorkableHttpApiTests
         var hasEvent = await reader.MoveNextAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(5));
         Assert.True(hasEvent);
         return reader.Current;
+    }
+
+    private static async Task WaitForThroughputBucketToClose()
+    {
+        var currentSecond = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        while (DateTimeOffset.UtcNow.ToUnixTimeSeconds() <= currentSecond)
+        {
+            await Task.Delay(10);
+        }
     }
 }

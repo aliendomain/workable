@@ -32,12 +32,12 @@ jobs:
         run: dotnet build ./Workable.slnx --configuration Release --no-restore -maxcpucount:1 -p:UseSharedCompilation=false
 
       - name: Test
-        run: dotnet test ./tests/Workable.Tests/Workable.Tests.csproj --configuration Release --no-build --logger "trx;LogFileName=test-results.trx" --blame-hang --blame-hang-timeout 5s --blame-hang-dump-type none
+        run: dotnet test ./Workable.slnx --configuration Release --no-build --filter "Category!=PersistenceIntegration" --logger "trx;LogFileName=test-results.trx" --blame-hang --blame-hang-timeout 5s --blame-hang-dump-type none
 
       - name: Upload test results
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: test-results
-          path: ./tests/Workable.Tests/TestResults/**/*.trx
+          path: ./**/TestResults/**/*.trx
           if-no-files-found: ignore

@@ -76,7 +76,7 @@ public sealed class WorkDataTests
     [Fact]
     public void WorkIdentityTypesShareWorkKeyShapeWithoutSharingSemantics()
     {
-        IWorkKey subject = new WorkSubjectId("customer", "customer-123");
+        var subject = new WorkSubjectId("customer", "customer-123");
         IWorkKey concurrencyKey = new WorkConcurrencyKey("tenant", "tenant-456");
         IWorkKey identifier = new WorkIdentifier("invoice", "invoice-789");
 

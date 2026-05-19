@@ -1,55 +1,150 @@
 using Microsoft.AspNetCore.SignalR;
 
 namespace Workable;
-public sealed class WorkableRealtimeHub(IWorkSystemRegistry registry) : Hub
+public sealed class WorkableRealtimeHub(
+    IWorkSystemRegistry registry,
+    WorkableViewQueryAdapter views,
+    WorkableRealtimeEventSubscriptions eventSubscriptions,
+    WorkableRealtimeViewSubscriptions viewSubscriptions) : Hub
 {
     public async Task WatchWorker(string workerId, string? systemName = null)
     {
         var system = ResolveSystem(systemName);
-        await this.Groups.AddToGroupAsync(
-            this.Context.ConnectionId,
-            WorkableRealtimeGroups.Worker(system, ParseWorkerId(workerId)));
+        try
+        {
+            await eventSubscriptions.WatchWorker(
+                this.Context.ConnectionId,
+                this.Groups,
+                system,
+                ParseWorkerId(workerId),
+                this.Context.ConnectionAborted);
+        }
+        catch (OperationCanceledException) when (this.Context.ConnectionAborted.IsCancellationRequested)
+        {
+            // The client disconnected while the event pump was starting.
+        }
     }
 
     public async Task UnwatchWorker(string workerId, string? systemName = null)
     {
         var system = ResolveSystem(systemName);
-        await this.Groups.RemoveFromGroupAsync(
+        await eventSubscriptions.UnwatchWorker(
             this.Context.ConnectionId,
-            WorkableRealtimeGroups.Worker(system, ParseWorkerId(workerId)));
+            this.Groups,
+            system,
+            ParseWorkerId(workerId),
+            this.Context.ConnectionAborted);
     }
 
-    public async Task WatchDashboard(string? systemName = null)
+    public async Task WatchView(
+        string viewName,
+        WorkViewCriteria? criteria = null,
+        string? systemName = null)
     {
         var system = ResolveSystem(systemName);
-        await this.Groups.AddToGroupAsync(this.Context.ConnectionId, WorkableRealtimeGroups.Dashboard(system));
-        await SendDashboard(system, this.Clients.Caller);
+        var subscription = await viewSubscriptions.WatchView(
+            this.Context.ConnectionId,
+            this.Groups,
+            system,
+            viewName,
+            views.NormalizeViewCriteria(viewName, criteria),
+            this.Context.ConnectionAborted);
+
+        await SendView(system, subscription.ViewName, subscription.Criteria, this.Clients.Caller);
     }
 
-    public async Task UnwatchDashboard(string? systemName = null)
+    public Task UnwatchView(string viewName, string? systemName = null)
     {
         var system = ResolveSystem(systemName);
-        await this.Groups.RemoveFromGroupAsync(this.Context.ConnectionId, WorkableRealtimeGroups.Dashboard(system));
+        return viewSubscriptions.UnwatchView(
+            this.Context.ConnectionId,
+            this.Groups,
+            system,
+            viewName,
+            this.Context.ConnectionAborted);
     }
 
     public async Task WatchSystem(string? systemName = null)
     {
         var system = ResolveSystem(systemName);
-        await this.Groups.AddToGroupAsync(this.Context.ConnectionId, WorkableRealtimeGroups.SystemEvents(system));
+        try
+        {
+            await eventSubscriptions.WatchSystem(
+                this.Context.ConnectionId,
+                this.Groups,
+                system,
+                this.Context.ConnectionAborted);
+        }
+        catch (OperationCanceledException) when (this.Context.ConnectionAborted.IsCancellationRequested)
+        {
+            // The client disconnected while the event pump was starting.
+        }
+    }
+
+    public async Task WatchEvents(
+        WorkableRealtimeEventCriteria? criteria = null,
+        string? systemName = null)
+    {
+        var system = ResolveSystem(systemName);
+        try
+        {
+            await eventSubscriptions.WatchEvents(
+                this.Context.ConnectionId,
+                this.Groups,
+                system,
+                criteria,
+                this.Context.ConnectionAborted);
+        }
+        catch (OperationCanceledException) when (this.Context.ConnectionAborted.IsCancellationRequested)
+        {
+            // The client disconnected while the event pump was starting.
+        }
+    }
+
+    public async Task UnwatchEvents(
+        WorkableRealtimeEventCriteria? criteria = null,
+        string? systemName = null)
+    {
+        var system = ResolveSystem(systemName);
+        await eventSubscriptions.UnwatchEvents(
+            this.Context.ConnectionId,
+            this.Groups,
+            system,
+            criteria,
+            this.Context.ConnectionAborted);
     }
 
     public async Task UnwatchSystem(string? systemName = null)
     {
         var system = ResolveSystem(systemName);
-        await this.Groups.RemoveFromGroupAsync(this.Context.ConnectionId, WorkableRealtimeGroups.SystemEvents(system));
+        await eventSubscriptions.UnwatchSystem(
+            this.Context.ConnectionId,
+            this.Groups,
+            system,
+            this.Context.ConnectionAborted);
     }
 
-    private async Task SendDashboard(IWorkSystem system, IClientProxy client)
+    public override async Task OnDisconnectedAsync(Exception? exception)
     {
-        var overview = await system.Query.GetSystemOverview(cancellationToken: this.Context.ConnectionAborted);
+        await eventSubscriptions.RemoveConnection(this.Context.ConnectionId, this.Groups, this.Context.ConnectionAborted);
+        await viewSubscriptions.RemoveConnection(this.Context.ConnectionId, this.Groups, this.Context.ConnectionAborted);
+        await base.OnDisconnectedAsync(exception);
+    }
+
+    private async Task SendView(
+        IWorkSystem system,
+        string viewName,
+        WorkViewCriteria criteria,
+        IClientProxy client)
+    {
+        var result = await views.View(
+            system,
+            viewName,
+            criteria,
+            cancellationToken: this.Context.ConnectionAborted);
         await client.SendAsync(
-            WorkableRealtimeClientMethods.DashboardUpdated,
-            WorkableRealtimeDashboard.From(system, overview),
+            WorkableRealtimeClientMethods.ViewUpdated,
+            result,
             this.Context.ConnectionAborted);
     }
 

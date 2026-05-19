@@ -163,9 +163,9 @@ public sealed class DynamicWorkSourceTests
         await tracker.StartupWorkCompleted.Task.WaitAsync(TimeSpan.FromSeconds(5));
         await ReadNext(completedReader);
 
-        var workers = (await system.Query.QueryWorkers(new WorkerQuery())).Workers;
+        var workers = (await system.Query.Workers(new WorkerCriteria())).Workers;
         var worker = Assert.Single(workers, worker => worker.DefinitionName == "runtime.generated");
-        var snapshot = await system.Query.GetWorker(worker.Id)
+        var snapshot = await system.Query.Worker(worker.Id)
             ?? throw new InvalidOperationException("Expected worker snapshot.");
         Assert.Equal(WorkerState.Completed, worker.State);
         Assert.Equal(WorkInvocationChannel.DotNet, snapshot.Origin.Channel);
@@ -188,7 +188,7 @@ public sealed class DynamicWorkSourceTests
         await system.Stop();
         await system.Start();
 
-        var workers = await system.Query.QueryWorkers(new WorkerQuery(DefinitionName: "runtime.generated", Take: 10));
+        var workers = await system.Query.Workers(new WorkerCriteria(DefinitionName: "runtime.generated", Take: 10));
 
         Assert.Equal(1, tracker.DefinitionSourceRuns);
         Assert.Equal(2, tracker.StartupSourceRuns);
@@ -216,7 +216,7 @@ public sealed class DynamicWorkSourceTests
         await system.Start();
         await tracker.StartupWorkCompleted.Task.WaitAsync(TimeSpan.FromSeconds(5));
 
-        var workers = (await system.Query.QueryWorkers(new WorkerQuery())).Workers;
+        var workers = (await system.Query.Workers(new WorkerCriteria())).Workers;
         Assert.Contains(workers, worker => worker.DefinitionId == StartupByIdSource.DefinitionId);
     }
 
@@ -420,6 +420,7 @@ public sealed class DynamicWorkSourceTests
     {
         public void Use()
         {
+            GC.KeepAlive(tracker);
         }
 
         public ValueTask DisposeAsync()

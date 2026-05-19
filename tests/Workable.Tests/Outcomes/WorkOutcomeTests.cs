@@ -148,6 +148,8 @@ public sealed class WorkOutcomeTests
             WorkerOptions.Default,
             WorkConfiguration.Default,
             Messages: [],
+            InterruptionReason: null,
+            DateTimeOffset.UtcNow,
             DateTimeOffset.UtcNow,
             DateTimeOffset.UtcNow);
 }

@@ -27,7 +27,7 @@ Workable also gives applications a path to expose the same authored work through
 - `Workable.AspNetCore`: ASP.NET Core origin enrichment for direct .NET queue calls.
 - `Workable.HttpApi`: standard HTTP endpoints for queueing, querying, and controlling work.
 - `Workable.Mcp`: MCP server adapter for authored work, query tools, and worker action tools.
-- `Workable.SignalR`: realtime worker events and dashboard summaries for ASP.NET Core clients.
+- `Workable.SignalR`: realtime worker events and component-view updates for ASP.NET Core clients.
 
 ## Documentation
 
@@ -44,14 +44,16 @@ Workable also gives applications a path to expose the same authored work through
   - [Logging](https://github.com/aliendomain/workable/blob/main/docs/work-configuration-logging.md): worker-scoped logging behavior.
   - [Retention](https://github.com/aliendomain/workable/blob/main/docs/work-configuration-retention.md): automatic purge timing for completed and canceled workers.
   - [Concurrency](https://github.com/aliendomain/workable/blob/main/docs/work-configuration-concurrency.md): capacity limits by definition, subject, or concurrency key.
+  - [Queue Durability](https://github.com/aliendomain/workable/blob/main/docs/work-configuration-queue-durability.md): persist accepted queue requests and replay interrupted durable work.
   - [Invocation](https://github.com/aliendomain/workable/blob/main/docs/work-configuration-invocation.md): channels allowed to start a work definition.
   - [Interactions](https://github.com/aliendomain/workable/blob/main/docs/work-configuration-interactions.md): non-obvious behavior when configuration types are combined.
 - [Work Querying](https://github.com/aliendomain/workable/blob/main/docs/work-querying.md): build admin views, status summaries, and definition browsers.
 - [Work Observability](https://github.com/aliendomain/workable/blob/main/docs/work-observability.md): subscribe to work events.
+- [Work Diagnostics](https://github.com/aliendomain/workable/blob/main/docs/work-diagnostics.md): understand queue rejection, read-model lag, retention lag, and system warning signals.
 - [Work Profiling](https://github.com/aliendomain/workable/blob/main/docs/work-profiling.md): capture per-worker execution profile trees.
 - [Workable HTTP API](https://github.com/aliendomain/workable/blob/main/docs/work-http-api.md): expose registered work through HTTP endpoints.
 - [Workable MCP](https://github.com/aliendomain/workable/blob/main/docs/work-mcp.md): expose registered work and read-only query tools through an MCP server.
-- [Workable Realtime](https://github.com/aliendomain/workable/blob/main/docs/work-realtime.md): stream worker events and dashboard summaries through SignalR.
+- [Workable Realtime](https://github.com/aliendomain/workable/blob/main/docs/work-realtime.md): stream worker events, component-view updates, diagnostics, and admin event-viewer traffic through SignalR.
 - [Sample Host](https://github.com/aliendomain/workable/blob/main/samples/Workable.SampleHost/README.md): run HTTP and MCP adapters together in one ASP.NET Core app.
 
 ### Under The Hood
@@ -62,3 +64,4 @@ These docs explain what happens inside Workable after work is registered or queu
 - [Project Structure](https://github.com/aliendomain/workable/blob/main/docs/project-structure.md): source layout, package boundary, and namespace convention.
 - [Work Lifecycle](https://github.com/aliendomain/workable/blob/main/docs/work-lifecycle.md): queue acceptance, execution, worker handles, and lifecycle diagrams.
 - [Execution Engine](https://github.com/aliendomain/workable/blob/main/docs/execution-engine.md): dispatcher, execution strategies, concurrency coordination, event stream, and retention behavior.
+- [Work Diagnostics](https://github.com/aliendomain/workable/blob/main/docs/work-diagnostics.md): runtime diagnostics, warning thresholds, and admin UI notification behavior.

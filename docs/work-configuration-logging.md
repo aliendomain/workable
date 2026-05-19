@@ -2,7 +2,7 @@
 
 Logging configuration controls worker-scoped log capture.
 
-Workable decorates `ILogger<>` in the host service provider. During worker execution, logs written by the executor and by scoped or transient services created for that execution are still forwarded to the host logger. When worker logging is enabled, matching log entries are also captured as `worker.log` events and retained on the worker snapshot.
+Workable decorates `ILogger<>` in the host service provider. During worker execution, logs written by the executor and by scoped or transient services created for that execution are still forwarded to the host logger. When worker logging is enabled, matching log entries are retained on the worker snapshot and a thin `worker.log` event is published.
 
 | Setting | Default | Behavior |
 | --- | --- | --- |
@@ -10,10 +10,12 @@ Workable decorates `ILogger<>` in the host service provider. During worker execu
 | `Level` | `LogLevel.Information` | Minimum log level captured by Workable. Host logging still uses the host's normal logging rules. |
 | `MaximumBufferedEntries` | `100` | Maximum number of captured log entries retained on the worker snapshot. Older entries are removed first. |
 
-Captured logs are exposed in two places:
+Captured logs are exposed in two related places:
 
-- `worker.log` events on `IWorkEventStream`.
+- `worker.log` events on `IWorkEventStream`, which notify subscribers that a log was captured.
 - `WorkerSnapshot.Logs`, which contains the most recent captured entries for that worker.
+
+The event payload is intentionally thin and does not include the log message or metadata. Query the worker snapshot when a UI needs the retained log details.
 
 ## Attribute
 
@@ -70,7 +72,7 @@ var handle = await system.Queue.Enqueue(
 ## Reconfiguration
 
 ```
-var worker = await system.Query.GetWorker(workerId)
+var worker = await system.Query.Worker(workerId)
     ?? throw new InvalidOperationException("Worker was not found.");
 
 var outcome = await system.Workers.Reconfigure(

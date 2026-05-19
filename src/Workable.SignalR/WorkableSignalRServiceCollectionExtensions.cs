@@ -1,6 +1,7 @@
 using System.Text.Json.Serialization;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Hosting;
 
 namespace Workable;
 public static class WorkableSignalRServiceCollectionExtensions
@@ -25,7 +26,12 @@ public static class WorkableSignalRServiceCollectionExtensions
             });
 
         services.TryAddSingleton<IWorkRealtimeCapabilityProvider, WorkableRealtimeCapabilityProvider>();
-        services.AddHostedService<WorkableRealtimeBroadcaster>();
+        services.TryAddSingleton<WorkableViewQueryAdapter>();
+        services.TryAddSingleton<WorkableRealtimeEventSubscriptions>();
+        services.TryAddSingleton<WorkableRealtimeViewSubscriptions>();
+        services.TryAddSingleton<WorkableRealtimeBroadcaster>();
+        services.AddSingleton<IHostedService>(services => services.GetRequiredService<WorkableRealtimeBroadcaster>());
+        services.AddSingleton<IWorkSystemLifecycleObserver>(services => services.GetRequiredService<WorkableRealtimeBroadcaster>());
         return services;
     }
 }

@@ -6,5 +6,6 @@ public enum WorkableMcpInvocationStatus
     Accepted,
     Completed,
     Failed,
+    Interrupted,
     Canceled,
 }

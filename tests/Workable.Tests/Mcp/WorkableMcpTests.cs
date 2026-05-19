@@ -313,8 +313,8 @@ public sealed class WorkableMcpTests
         Assert.Contains("hello over mcp", json);
 
         var system = host.Services.GetRequiredService<IWorkSystemRegistry>().Default;
-        var workers = await system.Query.QueryWorkers(new WorkerQuery(DefinitionName: "echo.message"));
-        var worker = await system.Query.GetWorker(Assert.Single(workers.Workers).Id)
+        var workers = await system.Query.Workers(new WorkerCriteria(DefinitionName: "echo.message"));
+        var worker = await system.Query.Worker(Assert.Single(workers.Workers).Id)
             ?? throw new InvalidOperationException("Expected worker.");
 
         Assert.Equal(WorkInvocationChannel.Mcp, worker.Origin.Channel);
@@ -355,8 +355,8 @@ public sealed class WorkableMcpTests
             });
         var registry = host.Services.GetRequiredService<IWorkSystemRegistry>();
         Assert.True(registry.TryGet("remote", out var remote));
-        var workers = await remote.Query.QueryWorkers(new WorkerQuery(DefinitionName: "remote.echo"));
-        var worker = await remote.Query.GetWorker(Assert.Single(workers.Workers).Id)
+        var workers = await remote.Query.Workers(new WorkerCriteria(DefinitionName: "remote.echo"));
+        var worker = await remote.Query.Worker(Assert.Single(workers.Workers).Id)
             ?? throw new InvalidOperationException("Expected worker.");
 
         Assert.False(result.IsError);
@@ -378,7 +378,7 @@ public sealed class WorkableMcpTests
         var registry = host.Services.GetRequiredService<IWorkSystemRegistry>();
         Assert.True(registry.TryGet("remote", out var remote));
         var queue = await remote.Queue.Enqueue("remote.manual");
-        var worker = await remote.Query.GetWorker(queue.WorkerId ?? throw new InvalidOperationException("Expected worker."))
+        var worker = await remote.Query.Worker(queue.WorkerId ?? throw new InvalidOperationException("Expected worker."))
             ?? throw new InvalidOperationException("Expected worker.");
         var httpClient = host.GetTestClient();
         var transport = new HttpClientTransport(
@@ -399,7 +399,7 @@ public sealed class WorkableMcpTests
                 ["revision"] = worker.Revision,
             });
 
-        var updated = await remote.Query.GetWorker(worker.Id)
+        var updated = await remote.Query.Worker(worker.Id)
             ?? throw new InvalidOperationException("Expected worker.");
         var history = Assert.Single(updated.ActionHistory);
 
@@ -433,8 +433,8 @@ public sealed class WorkableMcpTests
             });
 
         var system = host.Services.GetRequiredService<IWorkSystemRegistry>().Default;
-        var workers = await system.Query.QueryWorkers(new WorkerQuery(DefinitionName: "echo.message"));
-        var worker = await system.Query.GetWorker(Assert.Single(workers.Workers).Id)
+        var workers = await system.Query.Workers(new WorkerCriteria(DefinitionName: "echo.message"));
+        var worker = await system.Query.Worker(Assert.Single(workers.Workers).Id)
             ?? throw new InvalidOperationException("Expected worker.");
 
         Assert.False(result.IsError);
@@ -456,7 +456,7 @@ public sealed class WorkableMcpTests
                 }));
         var system = host.Services.GetRequiredService<IWorkSystemRegistry>().Default;
         var queue = await system.Queue.Enqueue("manual.mcp");
-        var worker = await system.Query.GetWorker(queue.WorkerId ?? throw new InvalidOperationException("Expected worker."))
+        var worker = await system.Query.Worker(queue.WorkerId ?? throw new InvalidOperationException("Expected worker."))
             ?? throw new InvalidOperationException("Expected worker.");
         var httpClient = host.GetTestClient();
         var transport = new HttpClientTransport(
@@ -477,7 +477,7 @@ public sealed class WorkableMcpTests
                 ["revision"] = worker.Revision,
             });
 
-        var updated = await system.Query.GetWorker(worker.Id)
+        var updated = await system.Query.Worker(worker.Id)
             ?? throw new InvalidOperationException("Expected worker.");
         var history = Assert.Single(updated.ActionHistory);
         var json = JsonSerializer.Serialize(result);
@@ -644,7 +644,7 @@ public sealed class WorkableMcpTests
             """);
         var result = await router.CallTool("workable_reconfigure_work_definition", arguments.RootElement);
         var handle = await system.Queue.Enqueue(definition.Id);
-        var worker = await system.Query.GetWorker(handle.WorkerId ?? throw new InvalidOperationException("Expected worker."));
+        var worker = await system.Query.Worker(handle.WorkerId ?? throw new InvalidOperationException("Expected worker."));
 
         Assert.False(result.IsError);
         Assert.Contains("\"status\":\"Accepted\"", result.Json);

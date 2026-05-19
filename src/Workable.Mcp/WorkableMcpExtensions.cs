@@ -168,6 +168,7 @@ public static class WorkableMcpExtensions
         => status switch
         {
             WorkCompletionStatus.Completed => WorkableMcpInvocationStatus.Completed,
+            WorkCompletionStatus.Interrupted => WorkableMcpInvocationStatus.Interrupted,
             WorkCompletionStatus.Canceled => WorkableMcpInvocationStatus.Canceled,
             WorkCompletionStatus.Failed => WorkableMcpInvocationStatus.Failed,
             _ => WorkableMcpInvocationStatus.Failed,

@@ -16,4 +16,6 @@ internal sealed record WorkSystemRegistration(
     Func<IServiceProvider, IDotNetWorkOriginProvider>? DotNetOriginProviderFactory,
     bool IncludeContributedWork,
     bool StartWithHost,
-    WorkSystemShutdownGracePeriod ShutdownGracePeriod);
+    WorkSystemShutdownGracePeriod ShutdownGracePeriod,
+    WorkSystemRetentionConfiguration Retention,
+    WorkSystemCapacityConfiguration Capacity);

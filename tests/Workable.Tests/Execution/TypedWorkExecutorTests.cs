@@ -40,7 +40,7 @@ public sealed class TypedWorkExecutorTests
         await system.Start();
 
         var definition = RequiredDefinition(system, "typed.echo");
-        IWorkQueue queue = system.Queue;
+        IWorkQueueService queue = system.Queue;
 
         var byName = await queue.Enqueue("typed.echo", new EchoInput("name"));
         var byId = await queue.Enqueue(definition.Id, new EchoInput("id"));

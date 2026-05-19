@@ -1,6 +1,4 @@
-using System.Collections.Concurrent;
 using System.Diagnostics.CodeAnalysis;
-using System.Runtime.CompilerServices;
 using System.Threading.Channels;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -40,15 +38,49 @@ internal sealed class WorkEventStream : IWorkEventStream, IAsyncDisposable
     {
         ArgumentNullException.ThrowIfNull(workEvent);
 
-        if (Volatile.Read(ref this.isDisposed))
+        if (!this.TryGetActiveSubscribers(out var subscribers))
         {
             return;
         }
 
-        var subscribers = Volatile.Read(ref this.subscriptions);
+        PublishToSubscribers(subscribers, workEvent);
+    }
+
+    internal void Publish<TState>(TState state, Func<TState, WorkEvent> createEvent)
+    {
+        ArgumentNullException.ThrowIfNull(createEvent);
+
+        if (!this.TryGetActiveSubscribers(out var subscribers))
+        {
+            return;
+        }
+
+        PublishToSubscribers(subscribers, createEvent(state));
+    }
+
+    internal void Publish<TState>(
+        WorkEventMetadata metadata,
+        TState state,
+        Func<TState, WorkEvent> createEvent)
+    {
+        ArgumentNullException.ThrowIfNull(metadata);
+        ArgumentNullException.ThrowIfNull(createEvent);
+
+        if (!this.TryGetActiveSubscribers(out var subscribers))
+        {
+            return;
+        }
+
+        WorkEvent? workEvent = null;
         foreach (var subscription in subscribers)
         {
-            subscription.Publish(workEvent);
+            if (!subscription.ShouldPublish(metadata))
+            {
+                continue;
+            }
+
+            workEvent ??= createEvent(state);
+            subscription.PublishMatched(workEvent);
         }
     }
 
@@ -106,11 +138,33 @@ internal sealed class WorkEventStream : IWorkEventStream, IAsyncDisposable
         }
     }
 
+    private bool TryGetActiveSubscribers([NotNullWhen(true)] out WorkEventSubscription[]? subscribers)
+    {
+        if (Volatile.Read(ref this.isDisposed))
+        {
+            subscribers = null;
+            return false;
+        }
+
+        subscribers = Volatile.Read(ref this.subscriptions);
+        return subscribers.Length > 0;
+    }
+
+    private static void PublishToSubscribers(WorkEventSubscription[] subscribers, WorkEvent workEvent)
+    {
+        foreach (var subscription in subscribers)
+        {
+            subscription.Publish(workEvent);
+        }
+    }
+
     private sealed class WorkEventSubscription(
         WorkEventStream owner,
         WorkEventFilter? filter,
         WorkEventSubscriptionOptions options) : IWorkEventSubscription
     {
+        private readonly int capacity = options.Capacity;
+        private readonly WorkEventOverflowBehavior overflowBehavior = options.OverflowBehavior;
         private readonly Channel<WorkEvent> events = Channel.CreateBounded<WorkEvent>(
             new BoundedChannelOptions(options.Capacity)
             {
@@ -119,32 +173,26 @@ internal sealed class WorkEventStream : IWorkEventStream, IAsyncDisposable
                 SingleWriter = false,
             });
         private int isDisposed;
+        private int queuedCount;
 
-        public async IAsyncEnumerable<WorkEvent> Read([EnumeratorCancellation] CancellationToken cancellationToken = default)
-        {
-            try
-            {
-                await foreach (var workEvent in this.events.Reader.ReadAllAsync(cancellationToken))
-                {
-                    yield return workEvent;
-                }
-            }
-            finally
-            {
-                await this.DisposeAsync();
-            }
-        }
+        public IAsyncEnumerable<WorkEvent> Read(CancellationToken cancellationToken = default)
+            => new WorkEventSubscriptionEnumerable(this, cancellationToken);
 
         public ValueTask DisposeAsync()
         {
+            this.DisposeSubscription();
+            return ValueTask.CompletedTask;
+        }
+
+        private void DisposeSubscription()
+        {
             if (Interlocked.Exchange(ref this.isDisposed, 1) == 1)
             {
-                return ValueTask.CompletedTask;
+                return;
             }
 
             this.events.Writer.TryComplete();
             owner.Remove(this);
-            return ValueTask.CompletedTask;
         }
 
         internal void DisposeFromOwner()
@@ -157,12 +205,57 @@ internal sealed class WorkEventStream : IWorkEventStream, IAsyncDisposable
 
         internal void Publish(WorkEvent workEvent)
         {
-            if (Volatile.Read(ref this.isDisposed) == 1 || filter?.Matches(workEvent) == false)
+            if (Volatile.Read(ref this.isDisposed) == 1 ||
+                filter?.Matches(workEvent) == false ||
+                !this.CanAcceptWrite())
             {
                 return;
             }
 
-            this.events.Writer.TryWrite(workEvent);
+            this.PublishMatched(workEvent);
+        }
+
+        internal void PublishMatched(WorkEvent workEvent)
+        {
+            if (this.events.Writer.TryWrite(workEvent))
+            {
+                this.TrackQueuedWrite();
+            }
+        }
+
+        internal bool ShouldPublish(WorkEventMetadata metadata)
+            => Volatile.Read(ref this.isDisposed) == 0 &&
+                this.CanAcceptWrite() &&
+                (filter is null ||
+                    ((filter.WorkerId is null || filter.WorkerId == metadata.WorkerId) &&
+                        (filter.DefinitionId is null || filter.DefinitionId == metadata.DefinitionId) &&
+                        (filter.DefinitionIds is not { Count: > 0 } ||
+                            (metadata.DefinitionId is { } definitionId && filter.DefinitionIds.Contains(definitionId))) &&
+                        (filter.SubjectId is null || filter.SubjectId == metadata.SubjectId) &&
+                        (filter.ConcurrencyKey is null || filter.ConcurrencyKey == metadata.ConcurrencyKey) &&
+                        (filter.Identifier is null || metadata.ContainsIdentifier(filter.Identifier.Value)) &&
+                        metadata.ContainsAnyKey(filter.Keys) &&
+                        filter.EventTypeMatches(metadata.EventType)));
+
+        private bool CanAcceptWrite()
+            => this.overflowBehavior != WorkEventOverflowBehavior.DropWrite ||
+                Volatile.Read(ref this.queuedCount) < this.capacity;
+
+        private void TrackQueuedWrite()
+        {
+            while (true)
+            {
+                var current = Volatile.Read(ref this.queuedCount);
+                if (current >= this.capacity)
+                {
+                    return;
+                }
+
+                if (Interlocked.CompareExchange(ref this.queuedCount, current + 1, current) == current)
+                {
+                    return;
+                }
+            }
         }
 
         private static BoundedChannelFullMode ToBoundedChannelFullMode(WorkEventOverflowBehavior behavior)
@@ -172,5 +265,71 @@ internal sealed class WorkEventStream : IWorkEventStream, IAsyncDisposable
                 WorkEventOverflowBehavior.DropWrite => BoundedChannelFullMode.DropWrite,
                 _ => BoundedChannelFullMode.DropOldest,
             };
+
+        private sealed class WorkEventSubscriptionEnumerable(
+            WorkEventSubscription subscription,
+            CancellationToken cancellationToken) : IAsyncEnumerable<WorkEvent>
+        {
+            public IAsyncEnumerator<WorkEvent> GetAsyncEnumerator(CancellationToken enumeratorCancellationToken = default)
+                => new WorkEventSubscriptionEnumerator(
+                    subscription,
+                    CreateEffectiveCancellation(cancellationToken, enumeratorCancellationToken, out var linkedCancellation),
+                    linkedCancellation);
+
+            private static CancellationToken CreateEffectiveCancellation(
+                CancellationToken subscriptionCancellationToken,
+                CancellationToken enumeratorCancellationToken,
+                out CancellationTokenSource? linkedCancellation)
+            {
+                linkedCancellation = null;
+                if (!subscriptionCancellationToken.CanBeCanceled)
+                {
+                    return enumeratorCancellationToken;
+                }
+
+                if (!enumeratorCancellationToken.CanBeCanceled ||
+                    subscriptionCancellationToken == enumeratorCancellationToken)
+                {
+                    return subscriptionCancellationToken;
+                }
+
+                linkedCancellation = CancellationTokenSource.CreateLinkedTokenSource(
+                    subscriptionCancellationToken,
+                    enumeratorCancellationToken);
+                return linkedCancellation.Token;
+            }
+        }
+
+        private sealed class WorkEventSubscriptionEnumerator(
+            WorkEventSubscription subscription,
+            CancellationToken cancellationToken,
+            CancellationTokenSource? linkedCancellation) : IAsyncEnumerator<WorkEvent>
+        {
+            public WorkEvent Current { get; private set; } = null!;
+
+            public async ValueTask<bool> MoveNextAsync()
+            {
+                while (await subscription.events.Reader.WaitToReadAsync(cancellationToken))
+                {
+                    if (!subscription.events.Reader.TryRead(out var workEvent))
+                    {
+                        continue;
+                    }
+
+                    Interlocked.Decrement(ref subscription.queuedCount);
+                    this.Current = workEvent;
+                    return true;
+                }
+
+                return false;
+            }
+
+            public ValueTask DisposeAsync()
+            {
+                linkedCancellation?.Dispose();
+                subscription.DisposeSubscription();
+                return ValueTask.CompletedTask;
+            }
+        }
     }
 }

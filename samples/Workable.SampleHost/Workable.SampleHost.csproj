@@ -12,6 +12,7 @@
     <ProjectReference Include="..\..\src\Workable.HttpApi\Workable.HttpApi.csproj" />
     <ProjectReference Include="..\..\src\Workable.Mcp\Workable.Mcp.csproj" />
     <ProjectReference Include="..\..\src\Workable.SignalR\Workable.SignalR.csproj" />
+    <ProjectReference Include="..\..\integrations\sqlserver\src\Workable.SqlServer\Workable.SqlServer.csproj" />
   </ItemGroup>
 
 </Project>

@@ -65,7 +65,7 @@ public sealed record WorkInput(
         };
     }
 
-    private static IReadOnlySet<WorkIdentifier> AddIdentifier(
+    private static HashSet<WorkIdentifier> AddIdentifier(
         IReadOnlySet<WorkIdentifier>? identifiers,
         WorkIdentifier identifier)
     {
@@ -74,7 +74,7 @@ public sealed record WorkInput(
         return normalized;
     }
 
-    private static IReadOnlySet<WorkIdentifier>? NormalizeIdentifiers(IEnumerable<WorkIdentifier>? identifiers)
+    private static HashSet<WorkIdentifier>? NormalizeIdentifiers(IEnumerable<WorkIdentifier>? identifiers)
     {
         if (identifiers is null)
         {

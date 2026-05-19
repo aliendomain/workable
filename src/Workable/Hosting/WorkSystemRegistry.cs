@@ -8,8 +8,8 @@ using Microsoft.Extensions.Hosting;
 namespace Workable;
 internal sealed class WorkSystemRegistry : IWorkSystemRegistry
 {
-    private readonly IReadOnlyDictionary<WorkSystemId, IWorkSystem> byId;
-    private readonly IReadOnlyDictionary<string, IWorkSystem> byName;
+    private readonly Dictionary<WorkSystemId, IWorkSystem> byId;
+    private readonly Dictionary<string, IWorkSystem> byName;
 
     public WorkSystemRegistry(
         IServiceProvider services,

@@ -44,9 +44,11 @@ internal static class WorkerStateMachine
         => state switch
         {
             WorkerState.Pausing => new(WorkerState.Paused, WorkCompletionStatus.Paused),
+            WorkerState.Interrupting => new(WorkerState.Interrupted, WorkCompletionStatus.Interrupted),
             WorkerState.Canceling => new(WorkerState.Canceled, WorkCompletionStatus.Canceled),
             WorkerState.Running when hasErrors => new(WorkerState.Failed, WorkCompletionStatus.Failed),
             WorkerState.Running => new(WorkerState.Completed, WorkCompletionStatus.Completed),
+            WorkerState.Interrupted => new(WorkerState.Interrupted, WorkCompletionStatus.Interrupted),
             WorkerState.Canceled => new(WorkerState.Canceled, WorkCompletionStatus.Canceled),
             WorkerState.Completed => new(WorkerState.Completed, WorkCompletionStatus.Completed),
             WorkerState.Failed => new(WorkerState.Failed, WorkCompletionStatus.Failed),
@@ -62,10 +64,20 @@ internal static class WorkerStateMachine
             _ => new(state, CompletionStatusFor(state)),
         };
 
+    public static WorkerCompletionTransition CompleteInterruption(WorkerState state)
+        => state switch
+        {
+            WorkerState.Pausing => new(WorkerState.Paused, WorkCompletionStatus.Paused),
+            WorkerState.Running or WorkerState.Interrupting => new(WorkerState.Interrupted, WorkCompletionStatus.Interrupted),
+            WorkerState.Waiting or WorkerState.Retrying => new(WorkerState.Interrupted, WorkCompletionStatus.Interrupted),
+            _ => new(state, CompletionStatusFor(state)),
+        };
+
     public static WorkCompletionStatus CompletionStatusFor(WorkerState state)
         => state switch
         {
             WorkerState.Paused => WorkCompletionStatus.Paused,
+            WorkerState.Interrupted => WorkCompletionStatus.Interrupted,
             WorkerState.Canceled => WorkCompletionStatus.Canceled,
             WorkerState.Completed => WorkCompletionStatus.Completed,
             WorkerState.Failed => WorkCompletionStatus.Failed,
@@ -76,7 +88,7 @@ internal static class WorkerStateMachine
         => state is WorkerState.Canceled or WorkerState.Completed;
 
     public static bool IsTransitioning(WorkerState state)
-        => state is WorkerState.Pausing or WorkerState.Canceling;
+        => state is WorkerState.Pausing or WorkerState.Interrupting or WorkerState.Canceling;
 }
 
 internal sealed record WorkerStateTransition(

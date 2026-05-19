@@ -44,7 +44,7 @@ IWorkerHandle handle = await workSystem.Queue.Enqueue(
     cancellationToken: cancellationToken);
 ```
 
-When queueing from C#, typed input can be passed directly to `IWorkQueue`. Workable serializes it into `WorkInput`.
+When queueing from C#, typed input can be passed directly to `IWorkQueueService`. Workable serializes it into `WorkInput`.
 
 ```csharp
 IWorkerHandle handle = await workSystem.Queue.Enqueue(
@@ -283,7 +283,7 @@ IWorkerHandle handle = await workSystem.Queue.Enqueue(
 Use worker actions to control an accepted worker.
 
 ```csharp
-WorkerSnapshot? worker = await workSystem.Query.GetWorker(handle.WorkerId!.Value);
+WorkerSnapshot? worker = await workSystem.Query.Worker(handle.WorkerId!.Value);
 
 if (worker is not null)
 {
@@ -312,6 +312,6 @@ See [Start Configuration](work-configuration-start.md) for the available policie
 
 ## Configuration
 
-Queueing applies definition configuration, contributed configuration, and queue options before accepting the worker. Workable has configuration options for start behavior, idempotency, recurrence, transient retry, logging, retention, and concurrency.
+Queueing applies definition configuration, contributed configuration, and queue options before accepting the worker. Workable has configuration options for start behavior, idempotency, recurrence, transient retry, logging, retention, concurrency, and queue durability. At the system level, `MaximumWorkers` is checked before accepting a worker so an in-memory system can reject new queue requests when the approximate non-final worker record count is at capacity. Completed and canceled workers are retained for history but do not block admission; interrupted and failed workers are not final.
 
 See [Work Configuration](work-configuration.md) for the configuration surface and the per-feature configuration documents.

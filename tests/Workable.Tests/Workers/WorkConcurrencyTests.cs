@@ -100,7 +100,7 @@ public sealed class WorkConcurrencyTests
         var first = await system.Queue.Enqueue("deferred-limit");
         await firstStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
         var second = await system.Queue.Enqueue("deferred-limit");
-        var secondWorker = RequiredWorker(await system.Query.GetWorker(RequiredWorkerId(second)));
+        var secondWorker = RequiredWorker(await system.Query.Worker(RequiredWorkerId(second)));
 
         await Task.Delay(TimeSpan.FromMilliseconds(50));
         Assert.Equal(WorkerState.Queued, secondWorker.State);
@@ -144,7 +144,7 @@ public sealed class WorkConcurrencyTests
         await Task.Delay(TimeSpan.FromMilliseconds(50));
         Assert.Equal(WorkCompletionStatus.Failed, failed.Status);
         Assert.False(secondStarted.Task.IsCompleted);
-        Assert.Equal(WorkerState.Queued, RequiredWorker(await system.Query.GetWorker(RequiredWorkerId(second))).State);
+        Assert.Equal(WorkerState.Queued, RequiredWorker(await system.Query.Worker(RequiredWorkerId(second))).State);
 
         var cancelFailed = await system.Workers.Execute(failedWorker.Version, WorkAction.Cancel);
         await secondStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
@@ -184,7 +184,7 @@ public sealed class WorkConcurrencyTests
         var first = await system.Queue.Enqueue("strict-limit");
         await firstStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
         var second = await system.Queue.Enqueue("strict-limit");
-        var secondWorker = RequiredWorker(await system.Query.GetWorker(RequiredWorkerId(second)));
+        var secondWorker = RequiredWorker(await system.Query.Worker(RequiredWorkerId(second)));
 
         var start = await system.Workers.Execute(secondWorker.Version, WorkAction.Start);
 
@@ -227,7 +227,7 @@ public sealed class WorkConcurrencyTests
         var first = await system.Queue.Enqueue("flexible-limit");
         await firstStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
         var second = await system.Queue.Enqueue("flexible-limit");
-        var secondWorker = RequiredWorker(await system.Query.GetWorker(RequiredWorkerId(second)));
+        var secondWorker = RequiredWorker(await system.Query.Worker(RequiredWorkerId(second)));
 
         var start = await system.Workers.Execute(secondWorker.Version, WorkAction.Start);
         await secondStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
@@ -308,7 +308,7 @@ public sealed class WorkConcurrencyTests
 
         await Task.Delay(TimeSpan.FromMilliseconds(50));
         Assert.False(thirdStarted.Task.IsCompleted);
-        Assert.Equal(WorkerState.Queued, RequiredWorker(await system.Query.GetWorker(RequiredWorkerId(third))).State);
+        Assert.Equal(WorkerState.Queued, RequiredWorker(await system.Query.Worker(RequiredWorkerId(third))).State);
 
         release.SetResult();
         await thirdStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
@@ -427,7 +427,7 @@ public sealed class WorkConcurrencyTests
 
         await Task.Delay(TimeSpan.FromMilliseconds(50));
         Assert.False(secondStarted.Task.IsCompleted);
-        Assert.Equal(WorkerState.Queued, RequiredWorker(await system.Query.GetWorker(RequiredWorkerId(second))).State);
+        Assert.Equal(WorkerState.Queued, RequiredWorker(await system.Query.Worker(RequiredWorkerId(second))).State);
 
         release.SetResult();
         await secondStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
@@ -466,7 +466,7 @@ public sealed class WorkConcurrencyTests
         var third = await system.Queue.Enqueue("subject-drain", SubjectInput("free"));
         await started[1].Task.WaitAsync(TimeSpan.FromSeconds(5));
 
-        Assert.Equal(WorkerState.Queued, RequiredWorker(await system.Query.GetWorker(RequiredWorkerId(second))).State);
+        Assert.Equal(WorkerState.Queued, RequiredWorker(await system.Query.Worker(RequiredWorkerId(second))).State);
         release.SetResult();
 
         Assert.True((await first.WaitForCompletion()).IsCompletedSuccessfully);
@@ -546,7 +546,7 @@ public sealed class WorkConcurrencyTests
 
         await Task.Delay(TimeSpan.FromMilliseconds(50));
         Assert.False(secondStarted.Task.IsCompleted);
-        Assert.Equal(WorkerState.Queued, RequiredWorker(await system.Query.GetWorker(RequiredWorkerId(second))).State);
+        Assert.Equal(WorkerState.Queued, RequiredWorker(await system.Query.Worker(RequiredWorkerId(second))).State);
 
         release.SetResult();
         await secondStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
@@ -665,7 +665,7 @@ public sealed class WorkConcurrencyTests
 
         await Task.Delay(TimeSpan.FromMilliseconds(50));
         Assert.False(thirdStarted.Task.IsCompleted);
-        Assert.Equal(WorkerState.Queued, RequiredWorker(await system.Query.GetWorker(RequiredWorkerId(third))).State);
+        Assert.Equal(WorkerState.Queued, RequiredWorker(await system.Query.Worker(RequiredWorkerId(third))).State);
 
         release.SetResult();
         await thirdStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
@@ -742,8 +742,8 @@ public sealed class WorkConcurrencyTests
 
         var first = await system.Queue.Enqueue($"strict-manual-{scope}".ToLowerInvariant(), ScopedInput(scope, "same"));
         var second = await system.Queue.Enqueue($"strict-manual-{scope}".ToLowerInvariant(), ScopedInput(scope, "same"));
-        var firstWorker = RequiredWorker(await system.Query.GetWorker(RequiredWorkerId(first)));
-        var secondWorker = RequiredWorker(await system.Query.GetWorker(RequiredWorkerId(second)));
+        var firstWorker = RequiredWorker(await system.Query.Worker(RequiredWorkerId(first)));
+        var secondWorker = RequiredWorker(await system.Query.Worker(RequiredWorkerId(second)));
 
         var firstStart = await system.Workers.Execute(firstWorker.Version, WorkAction.Start);
         await firstStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
@@ -793,8 +793,8 @@ public sealed class WorkConcurrencyTests
 
         var first = await system.Queue.Enqueue($"flexible-manual-{scope}".ToLowerInvariant(), ScopedInput(scope, "same"));
         var second = await system.Queue.Enqueue($"flexible-manual-{scope}".ToLowerInvariant(), ScopedInput(scope, "same"));
-        var firstWorker = RequiredWorker(await system.Query.GetWorker(RequiredWorkerId(first)));
-        var secondWorker = RequiredWorker(await system.Query.GetWorker(RequiredWorkerId(second)));
+        var firstWorker = RequiredWorker(await system.Query.Worker(RequiredWorkerId(first)));
+        var secondWorker = RequiredWorker(await system.Query.Worker(RequiredWorkerId(second)));
 
         var firstStart = await system.Workers.Execute(firstWorker.Version, WorkAction.Start);
         await firstStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
@@ -888,7 +888,7 @@ public sealed class WorkConcurrencyTests
 
         await Task.Delay(TimeSpan.FromMilliseconds(50));
         Assert.False(secondStarted.Task.IsCompleted);
-        Assert.Equal(WorkerState.Queued, RequiredWorker(await system.Query.GetWorker(RequiredWorkerId(second))).State);
+        Assert.Equal(WorkerState.Queued, RequiredWorker(await system.Query.Worker(RequiredWorkerId(second))).State);
         release.SetResult();
         await secondStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
 
@@ -926,7 +926,7 @@ public sealed class WorkConcurrencyTests
         var third = await system.Queue.Enqueue("key-drain", ConcurrencyKeyInput("free"));
         await started[1].Task.WaitAsync(TimeSpan.FromSeconds(5));
 
-        Assert.Equal(WorkerState.Queued, RequiredWorker(await system.Query.GetWorker(RequiredWorkerId(second))).State);
+        Assert.Equal(WorkerState.Queued, RequiredWorker(await system.Query.Worker(RequiredWorkerId(second))).State);
         release.SetResult();
 
         Assert.True((await first.WaitForCompletion()).IsCompletedSuccessfully);
@@ -949,7 +949,7 @@ public sealed class WorkConcurrencyTests
         await using var reader = subscription.Read().GetAsyncEnumerator();
 
         var handle = await system.Queue.Enqueue("key-metadata", WorkInput.Empty.WithConcurrencyKey(key));
-        var worker = RequiredWorker(await system.Query.GetWorker(RequiredWorkerId(handle)));
+        var worker = RequiredWorker(await system.Query.Worker(RequiredWorkerId(handle)));
         var workEvent = await ReadNext(reader);
 
         Assert.Equal(key, worker.ConcurrencyKey);
@@ -980,15 +980,15 @@ public sealed class WorkConcurrencyTests
 
         var first = await system.Queue.Enqueue("manual-capacity");
         var second = await system.Queue.Enqueue("manual-capacity");
-        var firstWorker = RequiredWorker(await system.Query.GetWorker(RequiredWorkerId(first)));
-        var secondWorker = RequiredWorker(await system.Query.GetWorker(RequiredWorkerId(second)));
+        var firstWorker = RequiredWorker(await system.Query.Worker(RequiredWorkerId(first)));
+        var secondWorker = RequiredWorker(await system.Query.Worker(RequiredWorkerId(second)));
 
         var firstStart = await system.Workers.Execute(firstWorker.Version, WorkAction.Start);
         await firstStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
         var secondStartWhileFull = await system.Workers.Execute(secondWorker.Version, WorkAction.Start);
         release.SetResult();
         Assert.True((await first.WaitForCompletion()).IsCompletedSuccessfully);
-        var refreshedSecond = RequiredWorker(await system.Query.GetWorker(RequiredWorkerId(second)));
+        var refreshedSecond = RequiredWorker(await system.Query.Worker(RequiredWorkerId(second)));
         var secondStartAfterCapacity = await system.Workers.Execute(refreshedSecond.Version, WorkAction.Start);
 
         Assert.True(firstStart.IsAccepted);
@@ -1023,7 +1023,7 @@ public sealed class WorkConcurrencyTests
         var first = await system.Queue.Enqueue("cancel-frees-capacity");
         await firstStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
         var second = await system.Queue.Enqueue("cancel-frees-capacity");
-        var firstWorker = RequiredWorker(await system.Query.GetWorker(RequiredWorkerId(first)));
+        var firstWorker = RequiredWorker(await system.Query.Worker(RequiredWorkerId(first)));
 
         var cancel = await system.Workers.Execute(firstWorker.Version, WorkAction.Cancel);
         await secondStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
@@ -1109,7 +1109,7 @@ public sealed class WorkConcurrencyTests
 
         var first = await system.Queue.Enqueue($"paused-{blockingMode}".ToLowerInvariant());
         await firstStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
-        var firstWorker = RequiredWorker(await system.Query.GetWorker(RequiredWorkerId(first)));
+        var firstWorker = RequiredWorker(await system.Query.Worker(RequiredWorkerId(first)));
         var pause = await system.Workers.Execute(firstWorker.Version, WorkAction.Pause);
         var paused = await first.WaitForCompletion();
         var second = await system.Queue.Enqueue($"paused-{blockingMode}".ToLowerInvariant());
@@ -1215,7 +1215,7 @@ public sealed class WorkConcurrencyTests
         var first = await system.Queue.Enqueue("disable-deferred");
         await firstStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
         var second = await system.Queue.Enqueue("disable-deferred");
-        var secondWorker = RequiredWorker(await system.Query.GetWorker(RequiredWorkerId(second)));
+        var secondWorker = RequiredWorker(await system.Query.Worker(RequiredWorkerId(second)));
 
         var reconfigure = await system.Workers.Reconfigure(
             secondWorker.Version,

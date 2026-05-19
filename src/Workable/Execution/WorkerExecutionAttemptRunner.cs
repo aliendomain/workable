@@ -23,7 +23,7 @@ internal sealed class WorkerExecutionAttemptRunner(
         var exception = execution.Exception ?? new InvalidOperationException("Worker execution failed without an exception.");
         var classification = exceptionHandler.Classify(worker, exception);
         return WorkerExecutionAttempt.ExceptionFailed(
-            exceptionHandler.CreateExceptionFailureMessage(exception, classification, retryAttempts),
+            WorkerExecutionExceptionHandler.CreateExceptionFailureMessage(exception, classification, retryAttempts),
             exception,
             classification);
     }

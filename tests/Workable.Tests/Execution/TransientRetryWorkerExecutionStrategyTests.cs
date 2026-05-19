@@ -75,7 +75,7 @@ public sealed class TransientRetryWorkerExecutionStrategyTests
         var workerId = handle.WorkerId!.Value;
         var retrying = await Eventually(async () =>
         {
-            var worker = await system.Query.GetWorker(workerId);
+            var worker = await system.Query.Worker(workerId);
             return worker?.State == WorkerState.Retrying ? worker : null;
         });
 

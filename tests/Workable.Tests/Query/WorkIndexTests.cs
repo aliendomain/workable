@@ -59,16 +59,16 @@ public sealed class WorkIndexTests
         var runningWorkerId = RequiredWorkerId(running);
         var queuedWorkerId = RequiredWorkerId(queued);
 
-        var activeBilling = await system.Query.GetSystemOverview(new WorkOverviewQuery(Category: "Billing"));
-        var exactBillingQueued = await system.Query.QueryWorkers(new WorkerQuery(
+        var activeBilling = await system.Query.SystemDetails(new WorkSystemCriteria(Category: "Billing"));
+        var exactBillingQueued = await system.Query.Workers(new WorkerCriteria(
             Category: "Billing",
             IncludeSubcategories: false,
             States: new HashSet<WorkerState> { WorkerState.Queued }));
-        var runningBilling = await system.Query.QueryWorkers(new WorkerQuery(
+        var runningBilling = await system.Query.Workers(new WorkerCriteria(
             Category: "Billing",
             States: new HashSet<WorkerState> { WorkerState.Running },
             Identifier: new WorkIdentifier("runtime", "running")));
-        var executingIterations = await system.Query.QueryWorkerIterations(new WorkerIterationQuery(
+        var executingIterations = await system.Query.WorkerIterations(new WorkerIterationCriteria(
             Category: "Billing",
             Statuses: new HashSet<WorkCompletionStatus> { WorkCompletionStatus.Executing }));
 
@@ -79,15 +79,15 @@ public sealed class WorkIndexTests
         Assert.Equal(queuedWorkerId, Assert.Single(exactBillingQueued.Workers).Id);
         Assert.Equal(runningWorkerId, Assert.Single(executingIterations.Iterations).WorkerId);
 
-        var queuedWorker = RequiredWorker(await system.Query.GetWorker(queuedWorkerId));
+        var queuedWorker = RequiredWorker(await system.Query.Worker(queuedWorkerId));
         var cancelQueued = await system.Workers.Execute(queuedWorker.Version, WorkAction.Cancel);
         Assert.True(cancelQueued.IsAccepted);
 
         release.TrySetResult();
         await running.WaitForCompletion();
 
-        var settledBilling = await system.Query.GetSystemOverview(new WorkOverviewQuery(Category: "Billing"));
-        var noExecutingIterations = await system.Query.QueryWorkerIterations(new WorkerIterationQuery(
+        var settledBilling = await system.Query.SystemDetails(new WorkSystemCriteria(Category: "Billing"));
+        var noExecutingIterations = await system.Query.WorkerIterations(new WorkerIterationCriteria(
             Category: "Billing",
             Statuses: new HashSet<WorkCompletionStatus> { WorkCompletionStatus.Executing }));
 
@@ -101,10 +101,12 @@ public sealed class WorkIndexTests
         await Purge(system, runningWorkerId);
         await Purge(system, queuedWorkerId);
 
-        var afterPurgeWorkers = await system.Query.QueryWorkers(new WorkerQuery(Category: "Billing"));
-        var afterPurgeIterations = await system.Query.QueryWorkerIterations(new WorkerIterationQuery(Category: "Billing"));
-        var afterPurgeKeys = await system.Query.QueryWorkerKeys(new WorkerKeyQuery(Search: "request"));
-        var afterPurgeOverview = await system.Query.GetSystemOverview(new WorkOverviewQuery(Category: "Billing"));
+        var afterPurgeWorkers = await system.Query.Workers(new WorkerCriteria(Category: "Billing"));
+        var afterPurgeIterations = await system.Query.WorkerIterations(new WorkerIterationCriteria(Category: "Billing"));
+        var afterPurgeKeys = await system.Query.WorkerKeys(new WorkerKeyCriteria(Search: "request"));
+        var afterPurgeOverview = await system.Query.SystemDetails(new WorkSystemCriteria(Category: "Billing"));
+        var afterPurgeSystemOverview = await system.Query.SystemDetails();
+        var afterPurgeStatusSummary = await system.Query.WorkerStatusSummary();
 
         Assert.Empty(afterPurgeWorkers.Workers);
         Assert.Empty(afterPurgeIterations.Iterations);
@@ -114,6 +116,10 @@ public sealed class WorkIndexTests
         Assert.Equal(0, afterPurgeOverview.CompletedIterationCount);
         Assert.Empty(afterPurgeOverview.WorkerCountByState);
         Assert.Empty(afterPurgeOverview.CommonKeyTypes);
+        Assert.False(afterPurgeSystemOverview.WorkerCountByState.ContainsKey(WorkerState.Running));
+        Assert.Equal(
+            afterPurgeSystemOverview.WorkerCountByState.GetValueOrDefault(WorkerState.Running),
+            afterPurgeStatusSummary.Counts.GetValueOrDefault(WorkerState.Running));
     }
 
     [Fact]
@@ -165,9 +171,9 @@ public sealed class WorkIndexTests
                 .WithConcurrencyKey(new WorkConcurrencyKey("shared", "shipping"))
                 .WithIdentifier(new WorkIdentifier("shared", "shipping")))).WaitForCompletion();
 
-        var wholeSystem = await system.Query.GetSystemOverview();
-        var billingScope = await system.Query.GetSystemOverview(new WorkOverviewQuery(Category: "Billing"));
-        var shippingScope = await system.Query.GetSystemOverview(new WorkOverviewQuery(Category: "Shipping"));
+        var wholeSystem = await system.Query.SystemDetails();
+        var billingScope = await system.Query.SystemDetails(new WorkSystemCriteria(Category: "Billing"));
+        var shippingScope = await system.Query.SystemDetails(new WorkSystemCriteria(Category: "Shipping"));
 
         AssertKeyType(wholeSystem.CommonKeyTypes, "shared", 3, subject: 3, concurrency: 3, identifier: 3);
         AssertKeyType(billingScope.CommonKeyTypes, "shared", 2, subject: 2, concurrency: 2, identifier: 2);
@@ -175,8 +181,8 @@ public sealed class WorkIndexTests
 
         await Purge(system, RequiredWorkerId(billing));
 
-        var wholeSystemAfterPurge = await system.Query.GetSystemOverview();
-        var billingAfterPurge = await system.Query.GetSystemOverview(new WorkOverviewQuery(Category: "Billing"));
+        var wholeSystemAfterPurge = await system.Query.SystemDetails();
+        var billingAfterPurge = await system.Query.SystemDetails(new WorkSystemCriteria(Category: "Billing"));
 
         AssertKeyType(wholeSystemAfterPurge.CommonKeyTypes, "shared", 1, subject: 1, concurrency: 1, identifier: 1);
         Assert.DoesNotContain(billingAfterPurge.CommonKeyTypes, keyType => keyType.Type == "shared");
@@ -235,29 +241,29 @@ public sealed class WorkIndexTests
         await handle.WaitForCompletion();
         var workerId = RequiredWorkerId(handle);
 
-        var retained = await system.Query.QueryWorkerIterations(new WorkerIterationQuery(WorkerId: workerId, Take: 10));
-        var failed = await system.Query.QueryWorkerIterations(new WorkerIterationQuery(
+        var retained = await system.Query.WorkerIterations(new WorkerIterationCriteria(WorkerId: workerId, Take: 10));
+        var failed = await system.Query.WorkerIterations(new WorkerIterationCriteria(
             WorkerId: workerId,
             Statuses: new HashSet<WorkCompletionStatus> { WorkCompletionStatus.Failed },
             Take: 10));
-        var completed = await system.Query.QueryWorkerIterations(new WorkerIterationQuery(
+        var completed = await system.Query.WorkerIterations(new WorkerIterationCriteria(
             WorkerId: workerId,
             Statuses: new HashSet<WorkCompletionStatus> { WorkCompletionStatus.Completed },
             Take: 10));
-        var key = Assert.Single((await system.Query.QueryWorkIterationKeys(new WorkIterationKeyQuery(
+        var key = Assert.Single((await system.Query.WorkIterationKeys(new WorkIterationKeyCriteria(
             Kind: WorkKeyKind.Identifier,
             Type: "retention",
             Value: "shared"))).Keys);
-        var overview = await system.Query.GetSystemOverview(new WorkOverviewQuery(Category: "Index:Retention"));
+        var overview = await system.Query.SystemDetails(new WorkSystemCriteria(Category: "Index:Retention"));
 
         Assert.Equal(2, retained.TotalCount);
         Assert.Equal([3L, 4L], retained.Iterations.Select(iteration => iteration.Sequence).Order());
         Assert.Equal(3, Assert.Single(failed.Iterations).Sequence);
         Assert.Equal(4, Assert.Single(completed.Iterations).Sequence);
-        Assert.Null(await system.Query.GetWorkerIteration(new WorkerIterationReference(workerId, 1)));
-        Assert.Null(await system.Query.GetWorkerIteration(new WorkerIterationReference(workerId, 2)));
-        Assert.NotNull(await system.Query.GetWorkerIteration(new WorkerIterationReference(workerId, 3)));
-        Assert.NotNull(await system.Query.GetWorkerIteration(new WorkerIterationReference(workerId, 4)));
+        Assert.Null(await system.Query.WorkerIteration(new WorkerIterationReference(workerId, 1)));
+        Assert.Null(await system.Query.WorkerIteration(new WorkerIterationReference(workerId, 2)));
+        Assert.NotNull(await system.Query.WorkerIteration(new WorkerIterationReference(workerId, 3)));
+        Assert.NotNull(await system.Query.WorkerIteration(new WorkerIterationReference(workerId, 4)));
         Assert.Equal([3L, 4L], key.Iterations.Select(iteration => iteration.Sequence).Order());
         Assert.Equal(1, overview.FailedIterationCount);
         Assert.Equal(1, overview.CompletedIterationCount);
@@ -304,7 +310,7 @@ public sealed class WorkIndexTests
             WorkInput.Empty.WithSubject(sharedSubject).WithIdentifier(targetIdentifier));
         await Cancel(system, RequiredWorkerId(sameKeysCanceled));
 
-        var matches = await system.Query.QueryWorkers(new WorkerQuery(
+        var matches = await system.Query.Workers(new WorkerCriteria(
             DefinitionId: targetDefinition.Id,
             SubjectId: sharedSubject,
             Identifier: targetIdentifier,
@@ -337,14 +343,14 @@ public sealed class WorkIndexTests
                 .WithSubject(new WorkSubjectId("account", "A-1"))
                 .WithIdentifier(new WorkIdentifier("invoice", "INV-1")))).WaitForCompletion();
 
-        var workers = await system.Query.QueryWorkers(new WorkerQuery(
+        var workers = await system.Query.Workers(new WorkerCriteria(
             SubjectId: new WorkSubjectId("account", "missing"),
             States: new HashSet<WorkerState> { WorkerState.Completed }));
-        var iterations = await system.Query.QueryWorkerIterations(new WorkerIterationQuery(
+        var iterations = await system.Query.WorkerIterations(new WorkerIterationCriteria(
             Identifier: new WorkIdentifier("invoice", "missing"),
             Statuses: new HashSet<WorkCompletionStatus> { WorkCompletionStatus.Completed }));
-        var categoryWorkers = await system.Query.QueryWorkers(new WorkerQuery(Category: "Does:Not:Exist"));
-        var categoryIterations = await system.Query.QueryWorkerIterations(new WorkerIterationQuery(Category: "Does:Not:Exist"));
+        var categoryWorkers = await system.Query.Workers(new WorkerCriteria(Category: "Does:Not:Exist"));
+        var categoryIterations = await system.Query.WorkerIterations(new WorkerIterationCriteria(Category: "Does:Not:Exist"));
 
         Assert.Empty(workers.Workers);
         Assert.Empty(iterations.Iterations);
@@ -375,18 +381,18 @@ public sealed class WorkIndexTests
         await handle.WaitForCompletion();
         var workerId = RequiredWorkerId(handle);
 
-        var workerKeys = await system.Query.QueryWorkerKeys(new WorkerKeyQuery(
+        var workerKeys = await system.Query.WorkerKeys(new WorkerKeyCriteria(
             Kind: WorkKeyKind.Identifier,
             Type: "CLAIM",
             Value: "clm-1"));
-        var workerKeyTypes = await system.Query.QueryWorkerKeyTypes(new WorkerKeyTypeQuery(
+        var workerKeyTypes = await system.Query.WorkerKeyTypes(new WorkerKeyTypeCriteria(
             Kind: WorkKeyKind.Subject,
             Type: "CLAIM"));
-        var iterationKeys = await system.Query.QueryWorkIterationKeys(new WorkIterationKeyQuery(
+        var iterationKeys = await system.Query.WorkIterationKeys(new WorkIterationKeyCriteria(
             Kind: WorkKeyKind.Identifier,
             Type: "CLAIM",
             Value: "clm-1"));
-        var iterationKeyTypes = await system.Query.QueryWorkIterationKeyTypes(new WorkIterationKeyTypeQuery(
+        var iterationKeyTypes = await system.Query.WorkIterationKeyTypes(new WorkIterationKeyTypeCriteria(
             Kind: WorkKeyKind.Subject,
             Type: "CLAIM"));
 
@@ -409,6 +415,124 @@ public sealed class WorkIndexTests
         Assert.Equal(1, iterationKeyType.IterationCount);
         Assert.Equal(1, Assert.Single(iterationKeyType.IterationCountByKind).Value);
         Assert.Equal(WorkKeyKind.Subject, Assert.Single(iterationKeyType.IterationCountByKind).Key);
+    }
+
+    [Fact]
+    public async Task WorkerKeyTypeFacetsStayAlignedWithKeyMembershipAfterDuplicateIdentifiersAndPurge()
+    {
+        await using var system = new ServiceCollection()
+            .AddWorkableSystem("index-worker-key-type-consistency", builder =>
+            {
+                builder.AddWork(
+                    WorkDefinition.Create("index.worker.key.consistency", category: "Index:Keys"),
+                    (context, input, cancellationToken) =>
+                    {
+                        var runtimeIdentifier = new WorkIdentifier("claim", $"runtime-{context.WorkerId}");
+                        Assert.True(context.AddIdentifier(runtimeIdentifier));
+                        Assert.False(context.AddIdentifier(runtimeIdentifier));
+                        return Task.FromResult(WorkExecutionResult.Success());
+                    });
+            })
+            .BuildServiceProvider()
+            .GetRequiredService<IWorkSystemRegistry>()
+            .Default;
+
+        await system.Start();
+
+        var first = await system.Queue.Enqueue(
+            "index.worker.key.consistency",
+            WorkInput.Empty
+                .WithSubject(new WorkSubjectId("claim", "CLM-1"))
+                .WithConcurrencyKey(new WorkConcurrencyKey("claim", "CLM-1"))
+                .WithIdentifier(new WorkIdentifier("claim", "input-1")));
+        var second = await system.Queue.Enqueue(
+            "index.worker.key.consistency",
+            WorkInput.Empty
+                .WithSubject(new WorkSubjectId("claim", "CLM-2"))
+                .WithConcurrencyKey(new WorkConcurrencyKey("claim", "CLM-2"))
+                .WithIdentifier(new WorkIdentifier("claim", "input-2")));
+        await first.WaitForCompletion();
+        await second.WaitForCompletion();
+
+        await AssertWorkerKeyTypeMatchesKeys(
+            system,
+            "CLAIM",
+            expectedWorkers: 2,
+            expectedSubject: 2,
+            expectedConcurrency: 2,
+            expectedIdentifier: 2);
+
+        await Purge(system, RequiredWorkerId(first));
+
+        await AssertWorkerKeyTypeMatchesKeys(
+            system,
+            "claim",
+            expectedWorkers: 1,
+            expectedSubject: 1,
+            expectedConcurrency: 1,
+            expectedIdentifier: 1);
+    }
+
+    [Fact]
+    public async Task IterationKeyTypeFacetsStayAlignedWithKeyMembershipAcrossRetriesAndPurge()
+    {
+        var attempts = 0;
+        await using var system = new ServiceCollection()
+            .AddWorkableSystem("index-iteration-key-type-consistency", builder =>
+            {
+                builder.AddWork(
+                    WorkDefinition.Create("index.iteration.key.consistency", category: "Index:Keys"),
+                    (context, input, cancellationToken) =>
+                    {
+                        attempts++;
+                        var runtimeIdentifier = new WorkIdentifier("claim", $"runtime-{attempts}");
+                        Assert.True(context.AddIdentifier(runtimeIdentifier));
+                        Assert.False(context.AddIdentifier(runtimeIdentifier));
+                        if (attempts == 1)
+                        {
+                            throw new TimeoutException("Retry this work.");
+                        }
+
+                        return Task.FromResult(WorkExecutionResult.Success());
+                    },
+                    configuration => configuration
+                        .RetryTransientFailures(
+                            count: 1,
+                            initialDelay: TimeSpan.FromMilliseconds(1),
+                            jitter: TimeSpan.Zero)
+                        .ClassifyExceptions(exception => exception is TimeoutException
+                            ? WorkExceptionClassification.Transient
+                            : WorkExceptionClassification.Unknown));
+            })
+            .BuildServiceProvider()
+            .GetRequiredService<IWorkSystemRegistry>()
+            .Default;
+
+        await system.Start();
+
+        var handle = await system.Queue.Enqueue(
+            "index.iteration.key.consistency",
+            WorkInput.Empty
+                .WithSubject(new WorkSubjectId("claim", "CLM-1"))
+                .WithConcurrencyKey(new WorkConcurrencyKey("claim", "CLM-1"))
+                .WithIdentifier(new WorkIdentifier("claim", "input-1")));
+        await handle.WaitForCompletion();
+
+        await AssertIterationKeyTypeMatchesKeys(
+            system,
+            "CLAIM",
+            expectedIterations: 2,
+            expectedSubject: 2,
+            expectedConcurrency: 2,
+            expectedIdentifier: 2);
+
+        await Purge(system, RequiredWorkerId(handle));
+
+        var keyTypesAfterPurge = await system.Query.WorkIterationKeyTypes(new WorkIterationKeyTypeCriteria(Type: "claim"));
+        var keysAfterPurge = await system.Query.WorkIterationKeys(new WorkIterationKeyCriteria(Type: "claim"));
+
+        Assert.Empty(keyTypesAfterPurge.Types);
+        Assert.Empty(keysAfterPurge.Keys);
     }
 
     [Fact]
@@ -440,8 +564,8 @@ public sealed class WorkIndexTests
             WorkInput.Empty.WithSubject(new WorkSubjectId("status", "replace")));
         await entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
 
-        var executingOverview = await system.Query.GetSystemOverview(new WorkOverviewQuery(Category: "Index"));
-        var executingQuery = await system.Query.QueryWorkerIterations(new WorkerIterationQuery(
+        var executingOverview = await system.Query.SystemDetails(new WorkSystemCriteria(Category: "Index"));
+        var executingQuery = await system.Query.WorkerIterations(new WorkerIterationCriteria(
             Category: "Index",
             Statuses: new HashSet<WorkCompletionStatus> { WorkCompletionStatus.Executing }));
 
@@ -452,11 +576,11 @@ public sealed class WorkIndexTests
         release.TrySetResult();
         await handle.WaitForCompletion();
 
-        var completedOverview = await system.Query.GetSystemOverview(new WorkOverviewQuery(Category: "Index"));
-        var executingAfterCompletion = await system.Query.QueryWorkerIterations(new WorkerIterationQuery(
+        var completedOverview = await system.Query.SystemDetails(new WorkSystemCriteria(Category: "Index"));
+        var executingAfterCompletion = await system.Query.WorkerIterations(new WorkerIterationCriteria(
             Category: "Index",
             Statuses: new HashSet<WorkCompletionStatus> { WorkCompletionStatus.Executing }));
-        var completedAfterCompletion = await system.Query.QueryWorkerIterations(new WorkerIterationQuery(
+        var completedAfterCompletion = await system.Query.WorkerIterations(new WorkerIterationCriteria(
             Category: "Index",
             Statuses: new HashSet<WorkCompletionStatus> { WorkCompletionStatus.Completed }));
 
@@ -494,7 +618,7 @@ public sealed class WorkIndexTests
             "index.recent.shipping",
             WorkInput.Empty.WithIdentifier(new WorkIdentifier("sequence", "shipping")))).WaitForCompletion();
 
-        var billing = await system.Query.GetSystemOverview(new WorkOverviewQuery(Category: "Billing"));
+        var billing = await system.Query.SystemDetails(new WorkSystemCriteria(Category: "Billing"));
 
         Assert.Equal(5, billing.CompletedIterations.Count);
         Assert.All(billing.CompletedIterations, iteration => Assert.Equal("index.recent.billing", iteration.DefinitionName));
@@ -504,16 +628,52 @@ public sealed class WorkIndexTests
                 .Select(iteration => Assert.Single(iteration.Identifiers, identifier => identifier.Type == "sequence").Value));
     }
 
+    [Fact]
+    public async Task RecentIterationIndexesBackfillAfterRecentWorkersArePurged()
+    {
+        await using var system = new ServiceCollection()
+            .AddWorkableSystem("index-recent-backfill", builder =>
+            {
+                builder.AddWork(WorkDefinition.Create("index.recent.backfill", category: "Index:Recent"), SuccessfulWork);
+            })
+            .BuildServiceProvider()
+            .GetRequiredService<IWorkSystemRegistry>()
+            .Default;
+
+        await system.Start();
+
+        var workerIds = new List<WorkerId>();
+        for (var index = 0; index < 7; index++)
+        {
+            var handle = await system.Queue.Enqueue(
+                "index.recent.backfill",
+                WorkInput.Empty.WithIdentifier(new WorkIdentifier("sequence", index.ToString())));
+            await handle.WaitForCompletion();
+            workerIds.Add(RequiredWorkerId(handle));
+        }
+
+        await Purge(system, workerIds[6]);
+        await Purge(system, workerIds[5]);
+
+        var overview = await system.Query.SystemDetails(new WorkSystemCriteria(Category: "Index:Recent"));
+
+        Assert.Equal(5, overview.CompletedIterations.Count);
+        Assert.Equal(
+            ["4", "3", "2", "1", "0"],
+            overview.CompletedIterations
+                .Select(iteration => Assert.Single(iteration.Identifiers, identifier => identifier.Type == "sequence").Value));
+    }
+
     private static async Task Purge(IWorkSystem system, WorkerId workerId)
     {
-        var worker = RequiredWorker(await system.Query.GetWorker(workerId));
+        var worker = RequiredWorker(await system.Query.Worker(workerId));
         var purge = await system.Workers.Execute(worker.Version, WorkAction.Purge);
         Assert.True(purge.IsAccepted);
     }
 
     private static async Task Cancel(IWorkSystem system, WorkerId workerId)
     {
-        var worker = RequiredWorker(await system.Query.GetWorker(workerId));
+        var worker = RequiredWorker(await system.Query.Worker(workerId));
         var cancel = await system.Workers.Execute(worker.Version, WorkAction.Cancel);
         Assert.True(cancel.IsAccepted);
     }
@@ -532,6 +692,80 @@ public sealed class WorkIndexTests
         Assert.Equal(concurrency, keyType.IterationCountByKind[WorkKeyKind.ConcurrencyKey]);
         Assert.Equal(identifier, keyType.IterationCountByKind[WorkKeyKind.Identifier]);
     }
+
+    private static async Task AssertWorkerKeyTypeMatchesKeys(
+        IWorkSystem system,
+        string type,
+        int expectedWorkers,
+        int expectedSubject,
+        int expectedConcurrency,
+        int expectedIdentifier)
+    {
+        var keyTypes = await system.Query.WorkerKeyTypes(new WorkerKeyTypeCriteria(Type: type));
+        var keys = await system.Query.WorkerKeys(new WorkerKeyCriteria(Type: type));
+        var keyType = Assert.Single(keyTypes.Types);
+        var expectedCountsByKind = CountWorkerKeysByKind(keys.Keys);
+        var expectedWorkerIds = keys.Keys
+            .SelectMany(key => key.Workers.Select(worker => worker.Id))
+            .Distinct()
+            .ToHashSet();
+
+        Assert.Equal(expectedWorkerIds.Count, keyType.WorkerCount);
+        Assert.Equal(expectedWorkerIds, keyType.Workers.Select(worker => worker.Id).ToHashSet());
+        Assert.Equal(expectedCountsByKind, keyType.WorkerCountByKind);
+        Assert.Equal(expectedWorkers, keyType.WorkerCount);
+        Assert.Equal(expectedSubject, keyType.WorkerCountByKind[WorkKeyKind.Subject]);
+        Assert.Equal(expectedConcurrency, keyType.WorkerCountByKind[WorkKeyKind.ConcurrencyKey]);
+        Assert.Equal(expectedIdentifier, keyType.WorkerCountByKind[WorkKeyKind.Identifier]);
+    }
+
+    private static async Task AssertIterationKeyTypeMatchesKeys(
+        IWorkSystem system,
+        string type,
+        int expectedIterations,
+        int expectedSubject,
+        int expectedConcurrency,
+        int expectedIdentifier)
+    {
+        var keyTypes = await system.Query.WorkIterationKeyTypes(new WorkIterationKeyTypeCriteria(Type: type));
+        var keys = await system.Query.WorkIterationKeys(new WorkIterationKeyCriteria(Type: type));
+        var keyType = Assert.Single(keyTypes.Types);
+        var expectedCountsByKind = CountIterationKeysByKind(keys.Keys);
+        var expectedIterationReferences = keys.Keys
+            .SelectMany(key => key.Iterations.Select(iteration => new WorkerIterationReference(iteration.WorkerId, iteration.Sequence)))
+            .Distinct()
+            .ToHashSet();
+
+        Assert.Equal(expectedIterationReferences.Count, keyType.IterationCount);
+        Assert.Equal(
+            expectedIterationReferences,
+            keyType.Iterations.Select(iteration => new WorkerIterationReference(iteration.WorkerId, iteration.Sequence)).ToHashSet());
+        Assert.Equal(expectedCountsByKind, keyType.IterationCountByKind);
+        Assert.Equal(expectedIterations, keyType.IterationCount);
+        Assert.Equal(expectedSubject, keyType.IterationCountByKind[WorkKeyKind.Subject]);
+        Assert.Equal(expectedConcurrency, keyType.IterationCountByKind[WorkKeyKind.ConcurrencyKey]);
+        Assert.Equal(expectedIdentifier, keyType.IterationCountByKind[WorkKeyKind.Identifier]);
+    }
+
+    private static Dictionary<WorkKeyKind, int> CountWorkerKeysByKind(IReadOnlyList<WorkerKeyDescriptor> keys)
+        => keys
+            .GroupBy(key => key.Kind)
+            .ToDictionary(
+                group => group.Key,
+                group => group
+                    .SelectMany(key => key.Workers.Select(worker => worker.Id))
+                    .Distinct()
+                    .Count());
+
+    private static Dictionary<WorkKeyKind, int> CountIterationKeysByKind(IReadOnlyList<WorkIterationKeyDescriptor> keys)
+        => keys
+            .GroupBy(key => key.Kind)
+            .ToDictionary(
+                group => group.Key,
+                group => group
+                    .SelectMany(key => key.Iterations.Select(iteration => new WorkerIterationReference(iteration.WorkerId, iteration.Sequence)))
+                    .Distinct()
+                    .Count());
 
     private static WorkerSnapshot RequiredWorker(WorkerSnapshot? worker)
         => worker ?? throw new InvalidOperationException("Expected worker.");
