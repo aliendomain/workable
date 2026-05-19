@@ -403,12 +403,11 @@ internal sealed class WorkableRealtimeBroadcaster(
             var activeGroups = subscriptions
                 .Select(subscription => subscription.GroupName)
                 .ToHashSet(StringComparer.Ordinal);
-            foreach (var groupName in alertStatesByGroup.Keys.ToArray())
+            foreach (var groupName in alertStatesByGroup.Keys
+                .Where(groupName => !activeGroups.Contains(groupName))
+                .ToArray())
             {
-                if (!activeGroups.Contains(groupName))
-                {
-                    alertStatesByGroup.Remove(groupName);
-                }
+                alertStatesByGroup.Remove(groupName);
             }
 
             foreach (var subscription in subscriptions)

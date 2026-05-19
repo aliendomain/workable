@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Linq;
 using System.Threading.Channels;
 
 namespace Workable;
@@ -554,9 +555,8 @@ internal sealed class WorkSystemReadModelState
         var workerIterations = this.iterationsByWorker.TryGetValue(workerId, out var indexed)
             ? indexed.ToArray()
             : [];
-        foreach (var iteration in workerIterations)
+        foreach (var reference in workerIterations.Select(iteration => iteration.Reference))
         {
-            var reference = iteration.Reference;
             if (this.iterationSequences.TryGetValue(reference, out var iterationSequence) && iterationSequence > sequence)
             {
                 continue;

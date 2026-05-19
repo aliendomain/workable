@@ -672,16 +672,8 @@ public sealed class WorkerStateTests
 
     private static async Task<int> CountExistingWorkers(IWorkSystem system, IEnumerable<WorkerSnapshot> workers)
     {
-        var count = 0;
-        foreach (var worker in workers)
-        {
-            if (await system.Query.Worker(worker.Id) is not null)
-            {
-                count++;
-            }
-        }
-
-        return count;
+        var existing = await Task.WhenAll(workers.Select(async worker => await system.Query.Worker(worker.Id) is not null));
+        return existing.Count(exists => exists);
     }
 
     private static async Task Eventually(Func<Task<bool>> condition)
