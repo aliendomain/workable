@@ -52,7 +52,10 @@ public sealed class WorkableHttpSystemResolver(
             system.State,
             system.Diagnostics.Queue,
             system.Diagnostics.ReadModel,
-            system.Diagnostics.Retention);
+            system.Diagnostics.Retention,
+            system.Diagnostics.Concurrency,
+            system.Diagnostics.Durability,
+            system.Diagnostics.Idempotency);
     }
 
     internal static async Task<WorkableHttpSystemStopResult> Stop(

@@ -10,4 +10,10 @@ internal sealed class WorkSystemDiagnostics(
     public WorkSystemReadModelDiagnostics ReadModel => readModel.Diagnostics;
 
     public WorkSystemRetentionDiagnostics Retention => workers.RetentionDiagnostics;
+
+    public WorkSystemConcurrencyDiagnostics Concurrency => workers.ConcurrencyDiagnostics;
+
+    public WorkSystemDurabilityDiagnostics Durability => workers.DurabilityDiagnostics;
+
+    public WorkSystemIdempotencyDiagnostics Idempotency => workers.IdempotencyDiagnostics;
 }

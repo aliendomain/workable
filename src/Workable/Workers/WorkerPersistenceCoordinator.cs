@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using Microsoft.Extensions.Logging;
 
 namespace Workable;
 
@@ -38,6 +39,7 @@ internal sealed class WorkerPersistenceCoordinator : IWorkerPersistenceCoordinat
     private readonly Lock sync = new();
     private readonly WorkSystemCatalog catalog;
     private readonly ConcurrentDictionary<WorkerId, WorkerRecord> workers;
+    private readonly WorkSystemIdempotencyDiagnosticsTracker idempotencyDiagnostics;
     private readonly WorkIdempotencyCoordinator idempotency;
     private readonly WorkConcurrencyCoordinator concurrency;
     private readonly WorkQueueDurabilityCoordinator durability;
@@ -54,24 +56,28 @@ internal sealed class WorkerPersistenceCoordinator : IWorkerPersistenceCoordinat
         WorkSystemId workSystemId,
         string? workSystemName,
         IWorkPersistenceStore? persistenceStore,
+        WorkSystemIdempotencyDiagnosticsTracker idempotencyDiagnostics,
         Func<bool> isAcceptingWork,
         Func<CancellationToken> getSystemExecutionToken,
         Action<WorkerRecord> acceptWorkerIntoMemory,
         Func<WorkerId, WorkerRecord?> getTrackedWorker,
         Func<WorkerPersistenceMaterializedWorker, CancellationToken, Task> persistedWorkerMaterialized,
-        Action<WorkerRecord, WorkInterruptionReason> interruptWorker)
+        Action<WorkerRecord, WorkInterruptionReason> interruptWorker,
+        ILogger? logger)
     {
         this.catalog = catalog;
         this.workers = workers;
+        this.idempotencyDiagnostics = idempotencyDiagnostics;
         this.concurrency = concurrency;
         this.acceptWorkerIntoMemory = acceptWorkerIntoMemory;
         this.getTrackedWorker = getTrackedWorker;
         this.persistedWorkerMaterialized = persistedWorkerMaterialized;
-        this.idempotency = new WorkIdempotencyCoordinator(index, workers);
+        this.idempotency = new WorkIdempotencyCoordinator(index, workers, idempotencyDiagnostics);
         this.durability = new WorkQueueDurabilityCoordinator(
             persistenceStore,
             workSystemId,
             workSystemName,
+            idempotencyDiagnostics,
             isAcceptingWork,
             getSystemExecutionToken,
             this.AcceptPersistedQueueEntry,
@@ -81,7 +87,8 @@ internal sealed class WorkerPersistenceCoordinator : IWorkerPersistenceCoordinat
                 {
                     interruptWorker(worker, WorkInterruptionReason.LeaseLost);
                 }
-            });
+            },
+            logger);
         this.queueAcceptance = new WorkQueueAcceptanceCoordinator(
             this.idempotency,
             concurrency,
@@ -96,6 +103,11 @@ internal sealed class WorkerPersistenceCoordinator : IWorkerPersistenceCoordinat
 
     public Task StopBackgroundTasks(CancellationToken cancellationToken)
         => this.durability.StopBackgroundTasks(cancellationToken);
+
+    internal WorkSystemDurabilityDiagnostics DurabilityDiagnostics => this.durability.Diagnostics;
+
+    internal WorkSystemIdempotencyDiagnostics IdempotencyDiagnostics
+        => this.idempotencyDiagnostics.Diagnostics();
 
     public async Task<WorkerPersistenceQueueAcceptance> AcceptQueuedWorker(
         WorkerId workerId,

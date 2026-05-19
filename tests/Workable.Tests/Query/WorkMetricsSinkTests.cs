@@ -8,10 +8,11 @@ public sealed class WorkMetricsSinkTests
     [Fact]
     public void ThroughputUsesMinuteRollupsAfterSecondBucketsArePruned()
     {
-        var metrics = new InMemoryWorkMetricsSink();
+        var context = CreateMetricsContext();
+        var metrics = context.Metrics;
         var oldDefinitionId = new WorkDefinitionId(Guid.NewGuid());
         var currentDefinitionId = new WorkDefinitionId(Guid.NewGuid());
-        var now = DateTimeOffset.UtcNow;
+        var now = context.Now;
         var old = now.AddMinutes(-20);
 
         metrics.IterationRecorded(oldDefinitionId, StartedIteration(old.AddMilliseconds(-50)));
@@ -42,9 +43,10 @@ public sealed class WorkMetricsSinkTests
     [Fact]
     public void ThroughputSummarizesExecutionDistribution()
     {
-        var metrics = new InMemoryWorkMetricsSink();
+        var context = CreateMetricsContext();
+        var metrics = context.Metrics;
         var definitionId = new WorkDefinitionId(Guid.NewGuid());
-        var now = ClosedSecond();
+        var now = context.ClosedSecond();
         TimeSpan[] durations =
         [
             TimeSpan.FromMilliseconds(50),
@@ -89,9 +91,10 @@ public sealed class WorkMetricsSinkTests
     [Fact]
     public void ThroughputCountsFailedAndCanceledIterationsButExcludesThemFromExecutionDistribution()
     {
-        var metrics = new InMemoryWorkMetricsSink();
+        var context = CreateMetricsContext();
+        var metrics = context.Metrics;
         var definitionId = new WorkDefinitionId(Guid.NewGuid());
-        var now = ClosedSecond();
+        var now = context.ClosedSecond();
 
         metrics.IterationRecorded(definitionId, StartedIteration(now));
         metrics.IterationRecorded(definitionId, Iteration(now, TimeSpan.FromMilliseconds(100), WorkCompletionStatus.Completed));
@@ -120,10 +123,11 @@ public sealed class WorkMetricsSinkTests
     [Fact]
     public void ThroughputDistributionIsScopedByDefinition()
     {
-        var metrics = new InMemoryWorkMetricsSink();
+        var context = CreateMetricsContext();
+        var metrics = context.Metrics;
         var includedDefinitionId = new WorkDefinitionId(Guid.NewGuid());
         var excludedDefinitionId = new WorkDefinitionId(Guid.NewGuid());
-        var now = ClosedSecond();
+        var now = context.ClosedSecond();
 
         metrics.IterationRecorded(includedDefinitionId, CompletedIteration(now, TimeSpan.FromMilliseconds(100)));
         metrics.IterationRecorded(includedDefinitionId, CompletedIteration(now, TimeSpan.FromMilliseconds(900)));
@@ -154,9 +158,10 @@ public sealed class WorkMetricsSinkTests
     [Fact]
     public void ThroughputDistributionReportsZeroWhenOnlyIterationsStarted()
     {
-        var metrics = new InMemoryWorkMetricsSink();
+        var context = CreateMetricsContext();
+        var metrics = context.Metrics;
         var definitionId = new WorkDefinitionId(Guid.NewGuid());
-        var now = ClosedSecond();
+        var now = context.ClosedSecond();
 
         metrics.IterationRecorded(definitionId, StartedIteration(now));
 
@@ -176,9 +181,10 @@ public sealed class WorkMetricsSinkTests
     [Fact]
     public void ThroughputDistributionPreservesZeroDurationExecutions()
     {
-        var metrics = new InMemoryWorkMetricsSink();
+        var context = CreateMetricsContext();
+        var metrics = context.Metrics;
         var definitionId = new WorkDefinitionId(Guid.NewGuid());
-        var now = ClosedSecond();
+        var now = context.ClosedSecond();
 
         metrics.IterationRecorded(definitionId, CompletedIteration(now, TimeSpan.Zero));
 
@@ -197,9 +203,10 @@ public sealed class WorkMetricsSinkTests
     [Fact]
     public void ThroughputDistributionCapsPercentilesAtSlowestExecution()
     {
-        var metrics = new InMemoryWorkMetricsSink();
+        var context = CreateMetricsContext();
+        var metrics = context.Metrics;
         var definitionId = new WorkDefinitionId(Guid.NewGuid());
-        var now = ClosedSecond();
+        var now = context.ClosedSecond();
 
         for (var index = 0; index < 100; index++)
         {
@@ -221,9 +228,10 @@ public sealed class WorkMetricsSinkTests
     [Fact]
     public void ThroughputDistributionUsesFastWorkOptimizedHistogramBuckets()
     {
-        var metrics = new InMemoryWorkMetricsSink();
+        var context = CreateMetricsContext();
+        var metrics = context.Metrics;
         var definitionId = new WorkDefinitionId(Guid.NewGuid());
-        var now = ClosedSecond();
+        var now = context.ClosedSecond();
 
         for (var index = 0; index < 95; index++)
         {
@@ -247,9 +255,10 @@ public sealed class WorkMetricsSinkTests
     [Fact]
     public void ThroughputDistributionHandlesConcurrentRecording()
     {
-        var metrics = new InMemoryWorkMetricsSink();
+        var context = CreateMetricsContext();
+        var metrics = context.Metrics;
         var definitionId = new WorkDefinitionId(Guid.NewGuid());
-        var now = ClosedSecond();
+        var now = context.ClosedSecond();
         const int iterationCount = 1_000;
 
         Parallel.For(0, iterationCount, index =>
@@ -279,10 +288,11 @@ public sealed class WorkMetricsSinkTests
     [Fact]
     public void ThroughputBucketsExcludeCurrentOpenBucket()
     {
-        var metrics = new InMemoryWorkMetricsSink();
+        var context = CreateMetricsContext();
+        var metrics = context.Metrics;
         var definitionId = new WorkDefinitionId(Guid.NewGuid());
 
-        metrics.IterationRecorded(definitionId, CompletedIteration(DateTimeOffset.UtcNow, TimeSpan.FromMilliseconds(100)));
+        metrics.IterationRecorded(definitionId, CompletedIteration(context.Now, TimeSpan.FromMilliseconds(100)));
 
         var throughput = metrics.GetThroughput(
             new WorkThroughputCriteria(WindowSeconds: 3_600, BucketSeconds: 3_600),
@@ -294,8 +304,18 @@ public sealed class WorkMetricsSinkTests
         Assert.Equal(100, throughput.LiveSummary.AverageExecutionMilliseconds);
     }
 
-    private static DateTimeOffset ClosedSecond()
-        => DateTimeOffset.FromUnixTimeSeconds(DateTimeOffset.UtcNow.ToUnixTimeSeconds() - 1);
+    private static MetricsTestContext CreateMetricsContext()
+        => new(DateTimeOffset.UtcNow);
+
+    private sealed class MetricsTestContext(DateTimeOffset now)
+    {
+        public DateTimeOffset Now { get; } = now;
+
+        public InMemoryWorkMetricsSink Metrics { get; } = new(() => now);
+
+        public DateTimeOffset ClosedSecond()
+            => DateTimeOffset.FromUnixTimeSeconds(this.Now.ToUnixTimeSeconds() - 1);
+    }
 
     private static WorkerIterationSnapshot StartedIteration(DateTimeOffset startedAt)
         => new(

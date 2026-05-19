@@ -23,11 +23,16 @@ internal sealed class TypedDelegateWorkExecutor<TInput>(
         out TInput? typedInput,
         out WorkExecutionResult failure)
     {
+        if (string.IsNullOrWhiteSpace(input?.Json))
+        {
+            typedInput = default;
+            failure = TypedWorkExecutorAdapter.CreateMissingInputFailure(typeof(TInput));
+            return false;
+        }
+
         try
         {
-            typedInput = string.IsNullOrWhiteSpace(input?.Json)
-                ? default
-                : JsonSerializer.Deserialize<TInput>(input.Json, WorkData.DefaultJsonOptions);
+            typedInput = JsonSerializer.Deserialize<TInput>(input.Json, WorkData.DefaultJsonOptions);
             failure = WorkExecutionResult.Success();
             return true;
         }

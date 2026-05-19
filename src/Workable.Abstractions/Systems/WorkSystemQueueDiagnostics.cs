@@ -6,4 +6,7 @@ public sealed record WorkSystemQueueDiagnostics(
     WorkQueueStatus? LastRejectedStatus,
     WorkDefinitionId? LastRejectedDefinitionId,
     string? LastRejectedCode,
-    string? LastRejectedMessage);
+    string? LastRejectedMessage,
+    long AlertableRejectedWorkCount,
+    string? LastAlertableRejectedCode,
+    string? LastAlertableRejectedMessage);

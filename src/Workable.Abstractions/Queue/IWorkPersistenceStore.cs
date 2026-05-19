@@ -84,6 +84,9 @@ public sealed record WorkQueueDurabilityCleanupRequest(
     WorkerId WorkerId,
     WorkQueueDurabilityLease? Lease);
 
+public sealed class WorkPersistenceStoreUnavailableException(string message, Exception innerException)
+    : InvalidOperationException(message, innerException);
+
 public sealed class WorkQueueDurabilityDuplicateException(string message) : Exception(message);
 
 public sealed class WorkQueueDurabilityLeaseLostException : Exception

@@ -45,6 +45,13 @@ SET NUMERIC_ROUNDABORT OFF;
 
             await WorkableSqlServerSchema.ValidateInstalled(options.ConnectionString, options.SchemaName, cancellationToken);
         }
+        catch (SqlException exception) when (IsStoreUnavailable(exception))
+        {
+            var action = options.AutoDeploySchema ? "deploying or validating" : "validating";
+            throw new WorkPersistenceStoreUnavailableException(
+                $"Workable.SqlServer could not reach SQL Server while {action} schema '{options.SchemaName}'.",
+                exception);
+        }
         catch (Exception exception) when (exception is SqlException or InvalidOperationException)
         {
             var action = options.AutoDeploySchema ? "deploy" : "validate";
@@ -58,60 +65,84 @@ SET NUMERIC_ROUNDABORT OFF;
     {
         if (request.Transaction is WorkableSqlServerQueueDurabilityTransaction existing)
         {
-            await ApplyRequiredDmlSetOptions(existing.Connection, existing.Transaction, cancellationToken);
-            await Insert(request, existing.Connection, existing.Transaction, cancellationToken);
+            await ExecuteWithStoreUnavailableHandling(
+                "enqueueing durable work",
+                async () =>
+                {
+                    await ApplyRequiredDmlSetOptions(existing.Connection, existing.Transaction, cancellationToken);
+                    await Insert(request, existing.Connection, existing.Transaction, cancellationToken);
+                });
             return;
         }
 
-        await using var connection = new SqlConnection(options.ConnectionString);
-        await connection.OpenAsync(cancellationToken);
-        await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
-        try
-        {
-            await Insert(request, connection, transaction, cancellationToken);
-            await transaction.CommitAsync(cancellationToken);
-        }
-        catch
-        {
-            await transaction.RollbackAsync(CancellationToken.None);
-            throw;
-        }
+        await ExecuteWithStoreUnavailableHandling(
+            "enqueueing durable work",
+            async () =>
+            {
+                await using var connection = new SqlConnection(options.ConnectionString);
+                await connection.OpenAsync(cancellationToken);
+                await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+                try
+                {
+                    await Insert(request, connection, transaction, cancellationToken);
+                    await transaction.CommitAsync(cancellationToken);
+                }
+                catch
+                {
+                    await transaction.RollbackAsync(CancellationToken.None);
+                    throw;
+                }
+            });
     }
 
     public async Task ReserveIdempotency(WorkIdempotencyPersistenceRequest request, CancellationToken cancellationToken = default)
     {
         if (request.Transaction is WorkableSqlServerQueueDurabilityTransaction existing)
         {
-            await ApplyRequiredDmlSetOptions(existing.Connection, existing.Transaction, cancellationToken);
-            await InsertIdempotencyReservation(request, existing.Connection, existing.Transaction, cancellationToken);
+            await ExecuteWithStoreUnavailableHandling(
+                "reserving persistence-backed idempotency",
+                async () =>
+                {
+                    await ApplyRequiredDmlSetOptions(existing.Connection, existing.Transaction, cancellationToken);
+                    await InsertIdempotencyReservation(request, existing.Connection, existing.Transaction, cancellationToken);
+                });
             return;
         }
 
-        await using var connection = new SqlConnection(options.ConnectionString);
-        await connection.OpenAsync(cancellationToken);
-        await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
-        try
-        {
-            await InsertIdempotencyReservation(request, connection, transaction, cancellationToken);
-            await transaction.CommitAsync(cancellationToken);
-        }
-        catch
-        {
-            await transaction.RollbackAsync(CancellationToken.None);
-            throw;
-        }
+        await ExecuteWithStoreUnavailableHandling(
+            "reserving persistence-backed idempotency",
+            async () =>
+            {
+                await using var connection = new SqlConnection(options.ConnectionString);
+                await connection.OpenAsync(cancellationToken);
+                await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+                try
+                {
+                    await InsertIdempotencyReservation(request, connection, transaction, cancellationToken);
+                    await transaction.CommitAsync(cancellationToken);
+                }
+                catch
+                {
+                    await transaction.RollbackAsync(CancellationToken.None);
+                    throw;
+                }
+            });
     }
 
     public async IAsyncEnumerable<WorkQueueDurabilityEntry> ClaimReady(
         WorkQueueDurabilityClaimRequest request,
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
-        await using var connection = new SqlConnection(options.ConnectionString);
-        await connection.OpenAsync(cancellationToken);
-        var leaseId = Guid.NewGuid().ToString("N");
-        var expiresAt = DateTimeOffset.UtcNow.Add(request.LeaseDuration);
-        await using var command = connection.CreateCommand();
-        command.CommandText = RequiredDmlSetOptions + $"""
+        var entries = await ExecuteWithStoreUnavailableHandling(
+            "claiming durable work",
+            async () =>
+            {
+                await using var connection = new SqlConnection(options.ConnectionString);
+                await connection.OpenAsync(cancellationToken);
+                var leaseId = Guid.NewGuid().ToString("N");
+                var expiresAt = DateTimeOffset.UtcNow.Add(request.LeaseDuration);
+                await using var command = connection.CreateCommand();
+                command.CommandText = RequiredDmlSetOptions + $"""
 DECLARE @Claimed TABLE
 (
     WorkerId uniqueidentifier NOT NULL,
@@ -309,29 +340,32 @@ SELECT WorkerId,
 FROM @Claimed
 ORDER BY CreatedAt, WorkerId;
 """;
-        Add(command, "@BatchSize", request.BatchSize);
-        Add(command, "@WorkSystemName", NormalizeWorkSystemName(request.WorkSystemName));
-        Add(command, "@OwnerId", request.OwnerId);
-        Add(command, "@LeaseId", leaseId);
-        Add(command, "@LeaseExpiresAt", expiresAt);
-        Add(command, "@ClaimLockResource", $"WorkableQueueClaim:{NormalizeWorkSystemName(request.WorkSystemName)}");
+                Add(command, "@BatchSize", request.BatchSize);
+                Add(command, "@WorkSystemName", NormalizeWorkSystemName(request.WorkSystemName));
+                Add(command, "@OwnerId", request.OwnerId);
+                Add(command, "@LeaseId", leaseId);
+                Add(command, "@LeaseExpiresAt", expiresAt);
+                Add(command, "@ClaimLockResource", $"WorkableQueueClaim:{NormalizeWorkSystemName(request.WorkSystemName)}");
 
-        var entries = new List<WorkQueueDurabilityEntry>();
-        await using (var reader = await command.ExecuteReaderAsync(cancellationToken))
-        {
-            while (await reader.ReadAsync(cancellationToken))
-            {
-                var workerId = new WorkerId(reader.GetGuid(0));
-                entries.Add(new WorkQueueDurabilityEntry(
-                    new WorkQueueDurabilityLease(workerId, request.OwnerId, leaseId),
-                    reader.GetString(1),
-                    Deserialize<WorkInput>(reader, 2),
-                    Deserialize<WorkerOptions>(reader, 3) ?? WorkerOptions.Default,
-                    Deserialize<WorkConfiguration>(reader, 4) ?? WorkConfiguration.Default,
-                    Deserialize<WorkOrigin>(reader, 5) ?? WorkOrigin.Create(WorkInvocationChannel.DotNet, description: "Durable queue replay."),
-                    reader.GetFieldValue<DateTimeOffset>(6)));
-            }
-        }
+                var entries = new List<WorkQueueDurabilityEntry>();
+                await using (var reader = await command.ExecuteReaderAsync(cancellationToken))
+                {
+                    while (await reader.ReadAsync(cancellationToken))
+                    {
+                        var workerId = new WorkerId(reader.GetGuid(0));
+                        entries.Add(new WorkQueueDurabilityEntry(
+                            new WorkQueueDurabilityLease(workerId, request.OwnerId, leaseId),
+                            reader.GetString(1),
+                            Deserialize<WorkInput>(reader, 2),
+                            Deserialize<WorkerOptions>(reader, 3) ?? WorkerOptions.Default,
+                            Deserialize<WorkConfiguration>(reader, 4) ?? WorkConfiguration.Default,
+                            Deserialize<WorkOrigin>(reader, 5) ?? WorkOrigin.Create(WorkInvocationChannel.DotNet, description: "Durable queue replay."),
+                            reader.GetFieldValue<DateTimeOffset>(6)));
+                    }
+                }
+
+                return entries;
+            });
 
         foreach (var entry in entries)
         {
@@ -535,9 +569,13 @@ WHERE submitted.LeaseId IS NOT NULL
                 $"Workable.SqlServer durable completion requires a {nameof(WorkableSqlServerQueueDurabilityTransaction)}.");
         }
 
-        await using var command = sqlServerTransaction.Connection.CreateCommand();
-        command.Transaction = sqlServerTransaction.Transaction;
-        command.CommandText = RequiredDmlSetOptions + $"""
+        await ExecuteWithStoreUnavailableHandling(
+            "completing durable work",
+            async () =>
+            {
+                await using var command = sqlServerTransaction.Connection.CreateCommand();
+                command.Transaction = sqlServerTransaction.Transaction;
+                command.CommandText = RequiredDmlSetOptions + $"""
 DECLARE @CleanupWorkers TABLE
 (
     WorkerId uniqueidentifier NOT NULL,
@@ -574,7 +612,8 @@ LEFT JOIN @DeletedWorkers deleted
 WHERE submitted.LeaseId IS NOT NULL
   AND deleted.WorkerId IS NULL;
 """;
-        await ExecuteCleanup(command, workers, cancellationToken);
+                await ExecuteCleanup(command, workers, cancellationToken);
+            });
     }
 
     private async Task Insert(
@@ -709,12 +748,17 @@ VALUES
         Action<DbCommand> configure,
         CancellationToken cancellationToken)
     {
-        await using var connection = new SqlConnection(options.ConnectionString);
-        await connection.OpenAsync(cancellationToken);
-        await using var command = connection.CreateCommand();
-        command.CommandText = commandText;
-        configure(command);
-        await command.ExecuteNonQueryAsync(cancellationToken);
+        await ExecuteWithStoreUnavailableHandling(
+            "executing a persistence store command",
+            async () =>
+            {
+                await using var connection = new SqlConnection(options.ConnectionString);
+                await connection.OpenAsync(cancellationToken);
+                await using var command = connection.CreateCommand();
+                command.CommandText = commandText;
+                configure(command);
+                await command.ExecuteNonQueryAsync(cancellationToken);
+            });
     }
 
     private async Task ExecuteOwned(
@@ -722,12 +766,53 @@ VALUES
         Func<DbCommand, Task> execute,
         CancellationToken cancellationToken)
     {
-        await using var connection = new SqlConnection(options.ConnectionString);
-        await connection.OpenAsync(cancellationToken);
-        await using var command = connection.CreateCommand();
-        command.CommandText = commandText;
-        await execute(command);
+        await ExecuteWithStoreUnavailableHandling(
+            "executing a persistence store command",
+            async () =>
+            {
+                await using var connection = new SqlConnection(options.ConnectionString);
+                await connection.OpenAsync(cancellationToken);
+                await using var command = connection.CreateCommand();
+                command.CommandText = commandText;
+                await execute(command);
+            });
     }
+
+    private static async Task ExecuteWithStoreUnavailableHandling(
+        string operation,
+        Func<Task> action)
+    {
+        try
+        {
+            await action();
+        }
+        catch (SqlException exception) when (IsStoreUnavailable(exception))
+        {
+            throw new WorkPersistenceStoreUnavailableException(
+                $"Workable.SqlServer could not reach SQL Server while {operation}.",
+                exception);
+        }
+    }
+
+    private static async Task<T> ExecuteWithStoreUnavailableHandling<T>(
+        string operation,
+        Func<Task<T>> action)
+    {
+        try
+        {
+            return await action();
+        }
+        catch (SqlException exception) when (IsStoreUnavailable(exception))
+        {
+            throw new WorkPersistenceStoreUnavailableException(
+                $"Workable.SqlServer could not reach SQL Server while {operation}.",
+                exception);
+        }
+    }
+
+    private static bool IsStoreUnavailable(SqlException exception)
+        => exception.Number is -2 or 2 or 53 or 64 or 233 or 4060 or 18456 ||
+            exception.Class >= 20;
 
     private static async Task ApplyRequiredDmlSetOptions(
         DbConnection connection,

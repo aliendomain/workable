@@ -472,7 +472,11 @@ internal sealed class WorkableRealtimeBroadcaster(
                         alertState.HasRejectedWork,
                         alertState.LastRejectedAt,
                         alertState.LastRejectedCode,
-                        alertState.LastRejectedMessage),
+                        alertState.LastRejectedMessage,
+                        alertState.AlertableRejectedWorkCount,
+                        alertState.HasAlertableRejectedWork,
+                        alertState.LastAlertableRejectedCode,
+                        alertState.LastAlertableRejectedMessage),
                     Shape: component.Shape);
             }
             else if (string.Equals(component.Type, "readModelDiagnostics", StringComparison.OrdinalIgnoreCase))
@@ -501,6 +505,42 @@ internal sealed class WorkableRealtimeBroadcaster(
                         alertState.HasSchedulerFailure,
                         alertState.SchedulerFailureType,
                         alertState.SchedulerFailureMessage),
+                    Shape: component.Shape);
+            }
+            else if (string.Equals(component.Type, "concurrencyDiagnostics", StringComparison.OrdinalIgnoreCase))
+            {
+                components[component.Id] = new WorkComponentResult(
+                    "ok",
+                    new WorkConcurrencyDiagnosticsCompactComponent(
+                        alertState.DeferredStartCount,
+                        alertState.OldestDeferredStartAge,
+                        alertState.LastDrainReleasedCount,
+                        alertState.IsConcurrencyBehind,
+                        alertState.ConcurrencyWarningSeconds),
+                    Shape: component.Shape);
+            }
+            else if (string.Equals(component.Type, "durabilityDiagnostics", StringComparison.OrdinalIgnoreCase))
+            {
+                components[component.Id] = new WorkComponentResult(
+                    "ok",
+                    new WorkDurabilityDiagnosticsCompactComponent(
+                        alertState.AcceptedWaiterCount,
+                        alertState.OldestAcceptedWaiterAge,
+                        alertState.PendingCleanupCount,
+                        alertState.OldestPendingCleanupAge,
+                        alertState.IsAcceptedWorkerMaterializationBehind,
+                        alertState.AcceptedWorkerWarningSeconds,
+                        alertState.IsCleanupBehind,
+                        alertState.CleanupWarningSeconds,
+                        alertState.HasReaderFailure,
+                        alertState.ReaderFailureType,
+                        alertState.ReaderFailureMessage,
+                        alertState.HasLeaseRenewalFailure,
+                        alertState.LeaseRenewalFailureType,
+                        alertState.LeaseRenewalFailureMessage,
+                        alertState.HasCleanupFailure,
+                        alertState.CleanupFailureType,
+                        alertState.CleanupFailureMessage),
                     Shape: component.Shape);
             }
             else if (string.Equals(component.Type, "systemDiagnostics", StringComparison.OrdinalIgnoreCase))
@@ -543,7 +583,9 @@ internal sealed class WorkableRealtimeBroadcaster(
             string.Equals(component.Type, "queueMessages", StringComparison.OrdinalIgnoreCase) ||
             string.Equals(component.Type, "systemDiagnostics", StringComparison.OrdinalIgnoreCase) ||
             string.Equals(component.Type, "readModelDiagnostics", StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(component.Type, "retentionDiagnostics", StringComparison.OrdinalIgnoreCase);
+            string.Equals(component.Type, "retentionDiagnostics", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(component.Type, "concurrencyDiagnostics", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(component.Type, "durabilityDiagnostics", StringComparison.OrdinalIgnoreCase);
 
     private static DiagnosticsAlertState CreateDiagnosticsAlertState(
         IWorkSystem system,
@@ -565,6 +607,32 @@ internal sealed class WorkableRealtimeBroadcaster(
             : retention.OldestDuePurgeAge >= TimeSpan.FromSeconds(retentionWarningSeconds)
                 ? DiagnosticsLagSeverity.Warning
                 : DiagnosticsLagSeverity.Normal;
+        var concurrency = system.Diagnostics.Concurrency;
+        var concurrencyWarningSeconds = GetConcurrencyDiagnosticsWarningSeconds(subscription);
+        var concurrencyLagSeverity = concurrency.DeferredStartCount > 0 &&
+            concurrency.OldestDeferredStartAge >= TimeSpan.FromSeconds(concurrencyWarningSeconds * 10L)
+            ? DiagnosticsLagSeverity.Critical
+            : concurrency.DeferredStartCount > 0 &&
+                concurrency.OldestDeferredStartAge >= TimeSpan.FromSeconds(concurrencyWarningSeconds)
+                ? DiagnosticsLagSeverity.Warning
+                : DiagnosticsLagSeverity.Normal;
+        var durability = system.Diagnostics.Durability;
+        var acceptedWorkerWarningSeconds = GetDurabilityAcceptedWorkerWarningSeconds(subscription);
+        var cleanupWarningSeconds = GetDurabilityCleanupWarningSeconds(subscription);
+        var acceptedWorkerLagSeverity = durability.AcceptedWaiterCount > 0 &&
+            durability.OldestAcceptedWaiterAge >= TimeSpan.FromSeconds(acceptedWorkerWarningSeconds * 10L)
+            ? DiagnosticsLagSeverity.Critical
+            : durability.AcceptedWaiterCount > 0 &&
+                durability.OldestAcceptedWaiterAge >= TimeSpan.FromSeconds(acceptedWorkerWarningSeconds)
+                ? DiagnosticsLagSeverity.Warning
+                : DiagnosticsLagSeverity.Normal;
+        var cleanupLagSeverity = durability.PendingCleanupCount > 0 &&
+            durability.OldestPendingCleanupAge >= TimeSpan.FromSeconds(cleanupWarningSeconds * 10L)
+            ? DiagnosticsLagSeverity.Critical
+            : durability.PendingCleanupCount > 0 &&
+                durability.OldestPendingCleanupAge >= TimeSpan.FromSeconds(cleanupWarningSeconds)
+                ? DiagnosticsLagSeverity.Warning
+                : DiagnosticsLagSeverity.Normal;
 
         return new DiagnosticsAlertState(
             system.Name,
@@ -573,6 +641,9 @@ internal sealed class WorkableRealtimeBroadcaster(
             queue.LastRejectedAt,
             queue.LastRejectedCode,
             queue.LastRejectedMessage,
+            queue.AlertableRejectedWorkCount,
+            queue.LastAlertableRejectedCode,
+            queue.LastAlertableRejectedMessage,
             readModel.PendingUpdateCount,
             readModelThreshold,
             readModelLagSeverity,
@@ -586,7 +657,29 @@ internal sealed class WorkableRealtimeBroadcaster(
             retentionLagSeverity,
             retention.HasSchedulerFailure,
             retention.SchedulerFailureType,
-            retention.SchedulerFailureMessage);
+            retention.SchedulerFailureMessage,
+            concurrency.DeferredStartCount,
+            concurrency.OldestDeferredStartAge,
+            concurrency.LastDrainReleasedCount,
+            concurrencyWarningSeconds,
+            concurrencyLagSeverity,
+            durability.AcceptedWaiterCount,
+            durability.OldestAcceptedWaiterAge,
+            acceptedWorkerWarningSeconds,
+            acceptedWorkerLagSeverity,
+            durability.PendingCleanupCount,
+            durability.OldestPendingCleanupAge,
+            cleanupWarningSeconds,
+            cleanupLagSeverity,
+            durability.HasReaderFailure,
+            durability.ReaderFailureType,
+            durability.ReaderFailureMessage,
+            durability.HasLeaseRenewalFailure,
+            durability.LeaseRenewalFailureType,
+            durability.LeaseRenewalFailureMessage,
+            durability.HasCleanupFailure,
+            durability.CleanupFailureType,
+            durability.CleanupFailureMessage);
     }
 
     private static int GetReadModelDiagnosticsWarningThreshold(WorkableRealtimeViewSubscription subscription)
@@ -599,6 +692,24 @@ internal sealed class WorkableRealtimeBroadcaster(
         => Math.Max(1, subscription.Criteria.Components?
             .Where(component => string.Equals(component.Type, "retentionDiagnostics", StringComparison.OrdinalIgnoreCase))
             .Select(component => GetInt32Option(component.Options, "warningSeconds"))
+            .FirstOrDefault(value => value.HasValue) ?? 30);
+
+    private static int GetConcurrencyDiagnosticsWarningSeconds(WorkableRealtimeViewSubscription subscription)
+        => Math.Max(1, subscription.Criteria.Components?
+            .Where(component => string.Equals(component.Type, "concurrencyDiagnostics", StringComparison.OrdinalIgnoreCase))
+            .Select(component => GetInt32Option(component.Options, "warningSeconds"))
+            .FirstOrDefault(value => value.HasValue) ?? 30);
+
+    private static int GetDurabilityAcceptedWorkerWarningSeconds(WorkableRealtimeViewSubscription subscription)
+        => Math.Max(1, subscription.Criteria.Components?
+            .Where(component => string.Equals(component.Type, "durabilityDiagnostics", StringComparison.OrdinalIgnoreCase))
+            .Select(component => GetInt32Option(component.Options, "acceptedWorkerWarningSeconds"))
+            .FirstOrDefault(value => value.HasValue) ?? 30);
+
+    private static int GetDurabilityCleanupWarningSeconds(WorkableRealtimeViewSubscription subscription)
+        => Math.Max(1, subscription.Criteria.Components?
+            .Where(component => string.Equals(component.Type, "durabilityDiagnostics", StringComparison.OrdinalIgnoreCase))
+            .Select(component => GetInt32Option(component.Options, "cleanupWarningSeconds"))
             .FirstOrDefault(value => value.HasValue) ?? 30);
 
     private static string? GetStringOption(JsonElement? options, string propertyName)
@@ -645,6 +756,9 @@ internal sealed class WorkableRealtimeBroadcaster(
         DateTimeOffset? LastRejectedAt,
         string? LastRejectedCode,
         string? LastRejectedMessage,
+        long AlertableRejectedWorkCount,
+        string? LastAlertableRejectedCode,
+        string? LastAlertableRejectedMessage,
         long ReadModelPendingUpdateCount,
         int ReadModelWarningThreshold,
         DiagnosticsLagSeverity ReadModelLagSeverity,
@@ -658,22 +772,58 @@ internal sealed class WorkableRealtimeBroadcaster(
         DiagnosticsLagSeverity RetentionLagSeverity,
         bool HasSchedulerFailure,
         string? SchedulerFailureType,
-        string? SchedulerFailureMessage)
+        string? SchedulerFailureMessage,
+        int DeferredStartCount,
+        TimeSpan OldestDeferredStartAge,
+        int LastDrainReleasedCount,
+        int ConcurrencyWarningSeconds,
+        DiagnosticsLagSeverity ConcurrencyLagSeverity,
+        int AcceptedWaiterCount,
+        TimeSpan OldestAcceptedWaiterAge,
+        int AcceptedWorkerWarningSeconds,
+        DiagnosticsLagSeverity AcceptedWorkerLagSeverity,
+        int PendingCleanupCount,
+        TimeSpan OldestPendingCleanupAge,
+        int CleanupWarningSeconds,
+        DiagnosticsLagSeverity CleanupLagSeverity,
+        bool HasReaderFailure,
+        string? ReaderFailureType,
+        string? ReaderFailureMessage,
+        bool HasLeaseRenewalFailure,
+        string? LeaseRenewalFailureType,
+        string? LeaseRenewalFailureMessage,
+        bool HasCleanupFailure,
+        string? CleanupFailureType,
+        string? CleanupFailureMessage)
     {
         public bool IsShuttingDown => this.SystemState == WorkSystemState.Stopping;
 
         public bool HasRejectedWork => this.RejectedWorkCount > 0;
 
+        public bool HasAlertableRejectedWork => this.AlertableRejectedWorkCount > 0;
+
         public bool IsReadModelBehind => this.ReadModelLagSeverity != DiagnosticsLagSeverity.Normal;
 
         public bool IsRetentionBehind => this.RetentionLagSeverity != DiagnosticsLagSeverity.Normal;
 
+        public bool IsConcurrencyBehind => this.ConcurrencyLagSeverity != DiagnosticsLagSeverity.Normal;
+
+        public bool IsAcceptedWorkerMaterializationBehind => this.AcceptedWorkerLagSeverity != DiagnosticsLagSeverity.Normal;
+
+        public bool IsCleanupBehind => this.CleanupLagSeverity != DiagnosticsLagSeverity.Normal;
+
         public bool IsAlerting =>
-            this.HasRejectedWork ||
+            this.HasAlertableRejectedWork ||
             this.IsReadModelBehind ||
             this.HasProjectorFailure ||
             this.IsRetentionBehind ||
             this.HasSchedulerFailure ||
+            this.IsConcurrencyBehind ||
+            this.IsAcceptedWorkerMaterializationBehind ||
+            this.IsCleanupBehind ||
+            this.HasReaderFailure ||
+            this.HasLeaseRenewalFailure ||
+            this.HasCleanupFailure ||
             this.IsShuttingDown;
     }
 

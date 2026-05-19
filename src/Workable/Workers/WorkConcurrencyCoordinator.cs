@@ -4,6 +4,11 @@ namespace Workable;
 internal sealed class WorkConcurrencyCoordinator
 {
     private readonly ConcurrentDictionary<WorkDefinitionId, WorkDefinitionConcurrencyManager> managers = [];
+    private readonly WorkSystemConcurrencyDiagnosticsTracker diagnostics = new();
+
+    public WorkSystemConcurrencyDiagnostics Diagnostics
+        => this.diagnostics.Snapshot(
+            [.. this.managers.Values.Select(manager => manager.GetDiagnosticsSnapshot())]);
 
     public WorkConcurrencyReservation QueueWorker(
         WorkDefinitionId definitionId,
@@ -44,9 +49,11 @@ internal sealed class WorkConcurrencyCoordinator
 
     public List<WorkerRecord> ReserveDeferredStarts(WorkDefinitionId definitionId)
     {
-        return this.managers.TryGetValue(definitionId, out var manager)
+        var scheduled = this.managers.TryGetValue(definitionId, out var manager)
             ? manager.ReserveDeferredStarts()
             : [];
+        this.diagnostics.RecordDrain(scheduled.Count);
+        return scheduled;
     }
 
     public void Synchronize(WorkerRecord worker)
@@ -69,7 +76,10 @@ internal sealed class WorkConcurrencyCoordinator
     }
 
     public void Clear()
-        => this.managers.Clear();
+    {
+        this.managers.Clear();
+        this.diagnostics.Clear();
+    }
 
     private WorkDefinitionConcurrencyManager GetManager(WorkDefinitionId definitionId)
         => this.managers.GetOrAdd(definitionId, static id => new WorkDefinitionConcurrencyManager(id));
@@ -315,6 +325,22 @@ internal sealed class WorkConcurrencyCoordinator
             while (retained.TryDequeue(out var current))
             {
                 this.deferredStarts.Enqueue(current);
+            }
+        }
+
+        public WorkDefinitionConcurrencyDiagnosticsSnapshot GetDiagnosticsSnapshot()
+        {
+            lock (this.sync)
+            {
+                var oldestDeferredStartAt = this.deferredStarts
+                    .Select(workerId => this.workers.TryGetValue(workerId, out var worker)
+                        ? worker.CreatedAt
+                        : (DateTimeOffset?)null)
+                    .Where(createdAt => createdAt is not null)
+                    .Min();
+                return new WorkDefinitionConcurrencyDiagnosticsSnapshot(
+                    this.deferredStarts.Count,
+                    oldestDeferredStartAt);
             }
         }
     }

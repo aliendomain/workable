@@ -4,7 +4,8 @@ namespace Workable;
 
 internal sealed class WorkIdempotencyCoordinator(
     WorkerIndex index,
-    ConcurrentDictionary<WorkerId, WorkerRecord> workers)
+    ConcurrentDictionary<WorkerId, WorkerRecord> workers,
+    WorkSystemIdempotencyDiagnosticsTracker diagnostics)
 {
     public IReadOnlyList<WorkMessage> Validate(
         WorkDefinitionId definitionId,
@@ -34,9 +35,13 @@ internal sealed class WorkIdempotencyCoordinator(
             .Where(worker => worker.State is not WorkerState.Canceled and not WorkerState.Interrupted)
             .ToList();
 
-        return conflicts.Count == 0
-            ? []
-            : [WorkMessage.Error(
+        if (conflicts.Count == 0)
+        {
+            return [];
+        }
+
+        diagnostics.RecordDuplicateRejected(definitionId, requiredSubjectId, idempotency.Storage);
+        return [WorkMessage.Error(
                 "workable.idempotency.duplicate_subject",
                 $"A worker already exists for work subject '{requiredSubjectId}'.",
                 "input.subjectId")];

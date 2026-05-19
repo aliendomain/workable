@@ -132,7 +132,11 @@ public sealed record WorkQueueDiagnosticsCompactComponent(
     bool HasRejectedWork,
     DateTimeOffset? LastRejectedAt,
     string? LastRejectedCode,
-    string? LastRejectedMessage);
+    string? LastRejectedMessage,
+    long AlertableRejectedWorkCount,
+    bool HasAlertableRejectedWork,
+    string? LastAlertableRejectedCode,
+    string? LastAlertableRejectedMessage);
 
 public sealed record WorkQueueDiagnosticsDetailedComponent(
     WorkSystemQueueDiagnostics Queue,
@@ -170,3 +174,48 @@ public sealed record WorkRetentionDiagnosticsDetailedComponent(
     WorkSystemRetentionDiagnostics Retention,
     bool IsRetentionBehind,
     int RetentionLagWarningSeconds);
+
+public sealed record WorkConcurrencyDiagnosticsCompactComponent(
+    int DeferredStartCount,
+    TimeSpan OldestDeferredStartAge,
+    int LastDrainReleasedCount,
+    bool IsConcurrencyBehind,
+    int ConcurrencyLagWarningSeconds);
+
+public sealed record WorkConcurrencyDiagnosticsDetailedComponent(
+    WorkSystemConcurrencyDiagnostics Concurrency,
+    bool IsConcurrencyBehind,
+    int ConcurrencyLagWarningSeconds);
+
+public sealed record WorkDurabilityDiagnosticsCompactComponent(
+    int AcceptedWaiterCount,
+    TimeSpan OldestAcceptedWaiterAge,
+    int PendingCleanupCount,
+    TimeSpan OldestPendingCleanupAge,
+    bool IsAcceptedWorkerMaterializationBehind,
+    int AcceptedWorkerWarningSeconds,
+    bool IsCleanupBehind,
+    int CleanupWarningSeconds,
+    bool HasReaderFailure,
+    string? ReaderFailureType,
+    string? ReaderFailureMessage,
+    bool HasLeaseRenewalFailure,
+    string? LeaseRenewalFailureType,
+    string? LeaseRenewalFailureMessage,
+    bool HasCleanupFailure,
+    string? CleanupFailureType,
+    string? CleanupFailureMessage);
+
+public sealed record WorkDurabilityDiagnosticsDetailedComponent(
+    WorkSystemDurabilityDiagnostics Durability,
+    bool IsAcceptedWorkerMaterializationBehind,
+    int AcceptedWorkerWarningSeconds,
+    bool IsCleanupBehind,
+    int CleanupWarningSeconds);
+
+public sealed record WorkIdempotencyDiagnosticsCompactComponent(
+    long DuplicateRejectionCount,
+    string? LastDuplicateRejectedStorage);
+
+public sealed record WorkIdempotencyDiagnosticsDetailedComponent(
+    WorkSystemIdempotencyDiagnostics Idempotency);

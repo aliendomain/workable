@@ -6,4 +6,7 @@ public sealed record WorkableHttpSystemDiagnostics(
     WorkSystemState State,
     WorkSystemQueueDiagnostics Queue,
     WorkSystemReadModelDiagnostics ReadModel,
-    WorkSystemRetentionDiagnostics Retention);
+    WorkSystemRetentionDiagnostics Retention,
+    WorkSystemConcurrencyDiagnostics Concurrency,
+    WorkSystemDurabilityDiagnostics Durability,
+    WorkSystemIdempotencyDiagnostics Idempotency);

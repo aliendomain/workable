@@ -61,6 +61,9 @@ builder.Services.AddWorkableSystem(workable =>
         DemoDefinition("sample.demo.durable", "Samples:Demo", "Durable sample work persisted through SQL Server LocalDB."),
         configuration => configuration.QueueDurably());
     workable.AddWork<DemoTimedWork>(
+        DemoDefinition("sample.demo.idempotent", "Samples:Demo", "Idempotent sample work that rejects duplicate subjects to demonstrate diagnostics."),
+        configuration => configuration.RejectDuplicateSubjects());
+    workable.AddWork<DemoTimedWork>(
         DemoDefinition("sample.demo.queue-pressure", "Samples:Demo", "Queues faster than concurrency capacity to demonstrate queue pressure."),
         configuration => configuration.LimitConcurrency(
             maximumCapacity: 1,
@@ -92,6 +95,11 @@ builder.Services.AddHostedService(static services => services.GetRequiredService
 builder.Services.AddSingleton<DemoSampleSystemSelection>();
 builder.Services.AddSingleton<DemoQueuePressureController>();
 builder.Services.AddSingleton<DemoTightLoopController>();
+builder.Services.AddSingleton<DemoDurabilityWarningController>(services => new DemoDurabilityWarningController(
+    services.GetRequiredService<IWorkSystemRegistry>(),
+    services.GetRequiredService<DemoSampleSystemSelection>(),
+    samplePersistenceConnectionString,
+    services.GetRequiredService<ILogger<DemoDurabilityWarningController>>()));
 builder.Services.AddWorkableHttpApi();
 builder.Services.AddWorkableMcpServer();
 builder.Services.AddWorkableSignalR(options =>
@@ -265,6 +273,31 @@ app.MapGet("/", (HttpContext context) =>
                     </tr>
                     <tr>
                         <td>
+                            <div class="action-name">Durability warning</div>
+                            <div class="action-description">Hold durable enqueues inside an uncommitted SQL transaction so accepted waiters age into the durability warning state.</div>
+                        </td>
+                        <td>
+                            <div class="action-controls">
+                                <button id="durability-warning-start" type="button">Start durability waiters</button>
+                                <button id="durability-warning-stop" class="running" type="button">Stop durability waiters</button>
+                            </div>
+                        </td>
+                        <td><p class="status" id="durability-warning-status">Loading durability warning status...</p></td>
+                    </tr>
+                    <tr>
+                        <td>
+                            <div class="action-name">Idempotency duplicates</div>
+                            <div class="action-description">Queue the same idempotent subject twice so the idempotency diagnostics panel has duplicate rejections to show.</div>
+                        </td>
+                        <td>
+                            <div class="action-controls">
+                                <button id="idempotency-warning" type="button">Trigger duplicate rejection</button>
+                            </div>
+                        </td>
+                        <td><p class="status" id="idempotency-warning-status">Ready.</p></td>
+                    </tr>
+                    <tr>
+                        <td>
                             <div class="action-name">Tight queue loops</div>
                             <div class="action-description">Continuously submit demo workers as fast as the selected systems accept them.</div>
                         </td>
@@ -314,6 +347,9 @@ app.MapGet("/", (HttpContext context) =>
                 const burstQueue = document.getElementById('burst-queue');
                 const durableBurstCount = document.getElementById('durable-burst-count');
                 const durableBurstQueue = document.getElementById('durable-burst-queue');
+                const durabilityWarningStart = document.getElementById('durability-warning-start');
+                const durabilityWarningStop = document.getElementById('durability-warning-stop');
+                const idempotencyWarning = document.getElementById('idempotency-warning');
                 const pressureStart = document.getElementById('pressure-start');
                 const pressureStop = document.getElementById('pressure-stop');
                 const tightLoopStart = document.getElementById('tight-loop-start');
@@ -327,6 +363,8 @@ app.MapGet("/", (HttpContext context) =>
                 const status = document.getElementById('status');
                 const burstStatus = document.getElementById('burst-status');
                 const durableBurstStatus = document.getElementById('durable-burst-status');
+                const durabilityWarningStatus = document.getElementById('durability-warning-status');
+                const idempotencyWarningStatus = document.getElementById('idempotency-warning-status');
                 const pressureStatus = document.getElementById('pressure-status');
                 const tightLoopStatus = document.getElementById('tight-loop-status');
                 const forceCancelStatus = document.getElementById('force-cancel-status');
@@ -336,6 +374,7 @@ app.MapGet("/", (HttpContext context) =>
                 let selectedFulfillment = true;
                 let sampleWorkloadRunning = false;
                 let pressureRunning = false;
+                let durabilityWarningRunning = false;
                 let tightLoopRunning = false;
 
                 function selectedSystemLabel() {
@@ -350,6 +389,9 @@ app.MapGet("/", (HttpContext context) =>
                     button.disabled = !sampleWorkloadRunning && !anySelected;
                     burstQueue.disabled = !anySelected;
                     durableBurstQueue.disabled = !selectedOperations;
+                    durabilityWarningStart.disabled = durabilityWarningRunning || !selectedOperations;
+                    durabilityWarningStop.disabled = !durabilityWarningRunning;
+                    idempotencyWarning.disabled = !selectedOperations;
                     pressureStart.disabled = pressureRunning || !selectedOperations;
                     forceCancel.disabled = !selectedOperations;
                     tightLoopStart.disabled = tightLoopRunning || !anySelected;
@@ -382,6 +424,16 @@ app.MapGet("/", (HttpContext context) =>
                     pressureStart.disabled = pressureRunning || !selectedOperations;
                     pressureStop.disabled = !data.isRunning;
                     pressureStatus.textContent = `${data.isRunning ? 'Running' : 'Stopped'} - queued ${data.queuedCount} - tracking ${data.trackedWorkerCount} - ${data.workerDelayMilliseconds}ms work every ${data.queueIntervalMilliseconds}ms`;
+                }
+
+                async function refreshDurabilityWarning() {
+                    const response = await fetch('/sample-workload/durability-warning');
+                    const data = await response.json();
+                    durabilityWarningRunning = data.isRunning;
+                    durabilityWarningStart.disabled = data.isRunning || !selectedOperations;
+                    durabilityWarningStop.disabled = !data.isRunning;
+                    const startedAt = data.startedAt ? ` - started ${new Date(data.startedAt).toLocaleTimeString()}` : '';
+                    durabilityWarningStatus.textContent = `${data.isRunning ? 'Running' : 'Stopped'} - waiters ${data.workerCount}${startedAt} - ${data.message}`;
                 }
 
                 async function refreshTightLoops() {
@@ -477,6 +529,49 @@ app.MapGet("/", (HttpContext context) =>
                     }
                 });
 
+                durabilityWarningStart.addEventListener('click', async () => {
+                    durabilityWarningStart.disabled = true;
+                    durabilityWarningStatus.textContent = 'Starting durability waiters...';
+                    try {
+                        await fetch('/sample-workload/durability-warning/start', { method: 'POST' });
+                    } finally {
+                        await refreshDurabilityWarning();
+                        await refresh();
+                    }
+                });
+
+                durabilityWarningStop.addEventListener('click', async () => {
+                    durabilityWarningStop.disabled = true;
+                    durabilityWarningStatus.textContent = 'Stopping durability waiters...';
+                    try {
+                        await fetch('/sample-workload/durability-warning/stop', { method: 'POST' });
+                    } finally {
+                        await refreshDurabilityWarning();
+                        await refresh();
+                    }
+                });
+
+                idempotencyWarning.addEventListener('click', async () => {
+                    idempotencyWarning.disabled = true;
+                    idempotencyWarningStatus.textContent = 'Queueing duplicate idempotent work...';
+                    try {
+                        const response = await fetch('/sample-workload/idempotency-warning', { method: 'POST' });
+                        const data = await response.json();
+                        if (data.status === 'Skipped' || data.status === 'Failed') {
+                            idempotencyWarningStatus.textContent = data.message;
+                        } else {
+                            idempotencyWarningStatus.textContent =
+                                `Subject ${data.subjectValue}: accepted ${data.acceptedCount}, rejected ${data.rejectedCount}${data.rejectionCode ? ` (${data.rejectionCode})` : ''}. Open the idempotency diagnostics section in the system popover to see it.`;
+                        }
+                        await refresh();
+                    } catch (error) {
+                        idempotencyWarningStatus.textContent = 'Unable to trigger idempotency warning.';
+                    } finally {
+                        idempotencyWarning.disabled = false;
+                        updateFeatureAvailability();
+                    }
+                });
+
                 pressureStart.addEventListener('click', async () => {
                     pressureStart.disabled = true;
                     try {
@@ -517,6 +612,7 @@ app.MapGet("/", (HttpContext context) =>
                     });
                     await refresh();
                     await refreshPressure();
+                    await refreshDurabilityWarning();
                     await refreshTightLoops();
                 }
 
@@ -585,10 +681,12 @@ app.MapGet("/", (HttpContext context) =>
 
                 refresh();
                 refreshPressure();
+                refreshDurabilityWarning();
                 refreshTightLoops();
                 setInterval(() => {
                     refresh();
                     refreshPressure();
+                    refreshDurabilityWarning();
                     refreshTightLoops();
                 }, 2000);
             </script>
@@ -612,6 +710,14 @@ app.MapPost("/sample-workload/burst", async (DemoWorkloadController controller, 
     => Results.Ok(await controller.QueueBurst(request.Count, cancellationToken)));
 app.MapPost("/sample-workload/durable-burst", async (DemoWorkloadController controller, DemoBurstRequest request, CancellationToken cancellationToken)
     => Results.Ok(await controller.QueueDurableBurst(request.Count, cancellationToken)));
+app.MapGet("/sample-workload/durability-warning", (DemoDurabilityWarningController controller)
+    => Results.Ok(controller.Status()));
+app.MapPost("/sample-workload/durability-warning/start", async (DemoDurabilityWarningController controller, CancellationToken cancellationToken)
+    => Results.Ok(await controller.Start(cancellationToken)));
+app.MapPost("/sample-workload/durability-warning/stop", async (DemoDurabilityWarningController controller, CancellationToken cancellationToken)
+    => Results.Ok(await controller.Stop(cancellationToken)));
+app.MapPost("/sample-workload/idempotency-warning", async (DemoWorkloadController controller, CancellationToken cancellationToken)
+    => Results.Ok(await controller.QueueIdempotencyWarning(cancellationToken)));
 app.MapGet("/sample-workload/queue-pressure", (DemoQueuePressureController controller)
     => Results.Ok(controller.Status()));
 app.MapPost("/sample-workload/queue-pressure/start", (DemoQueuePressureController controller)

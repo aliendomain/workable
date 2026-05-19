@@ -67,6 +67,9 @@ export type WorkableHttpSystemDiagnostics = {
   queue: WorkSystemQueueDiagnostics;
   readModel: WorkSystemReadModelDiagnostics;
   retention: WorkSystemRetentionDiagnostics;
+  concurrency: WorkSystemConcurrencyDiagnostics;
+  durability: WorkSystemDurabilityDiagnostics;
+  idempotency: WorkSystemIdempotencyDiagnostics;
 };
 
 export type WorkSystemQueueDiagnostics = {
@@ -76,6 +79,9 @@ export type WorkSystemQueueDiagnostics = {
   lastRejectedDefinitionId?: { value: string } | null;
   lastRejectedCode?: string | null;
   lastRejectedMessage?: string | null;
+  alertableRejectedWorkCount: number;
+  lastAlertableRejectedCode?: string | null;
+  lastAlertableRejectedMessage?: string | null;
 };
 
 export type WorkSystemReadModelDiagnostics = {
@@ -107,6 +113,33 @@ export type WorkSystemRetentionDiagnostics = {
   schedulerFailureType?: string | null;
   schedulerFailureMessage?: string | null;
   hasSchedulerFailure: boolean;
+};
+
+export type WorkSystemConcurrencyDiagnostics = {
+  deferredStartCount: number;
+  oldestDeferredStartAge: string;
+  lastDrainReleasedCount: number;
+};
+
+export type WorkSystemDurabilityDiagnostics = {
+  acceptedWaiterCount: number;
+  oldestAcceptedWaiterAge: string;
+  pendingCleanupCount: number;
+  oldestPendingCleanupAge: string;
+  readerFailureType?: string | null;
+  readerFailureMessage?: string | null;
+  leaseRenewalFailureType?: string | null;
+  leaseRenewalFailureMessage?: string | null;
+  cleanupFailureType?: string | null;
+  cleanupFailureMessage?: string | null;
+  hasReaderFailure: boolean;
+  hasLeaseRenewalFailure: boolean;
+  hasCleanupFailure: boolean;
+};
+
+export type WorkSystemIdempotencyDiagnostics = {
+  duplicateRejectionCount: number;
+  lastDuplicateRejectedStorage?: string | null;
 };
 
 export type WorkDefinition = {
@@ -500,6 +533,10 @@ export type WorkQueueDiagnosticsCompactComponent = {
   lastRejectedAt?: string | null;
   lastRejectedCode?: string | null;
   lastRejectedMessage?: string | null;
+  alertableRejectedWorkCount: number;
+  hasAlertableRejectedWork: boolean;
+  lastAlertableRejectedCode?: string | null;
+  lastAlertableRejectedMessage?: string | null;
 };
 
 export type WorkQueueDiagnosticsDetailedComponent =
@@ -541,6 +578,54 @@ export type WorkRetentionDiagnosticsCompactComponent = {
 export type WorkRetentionDiagnosticsDetailedComponent =
   WorkRetentionDiagnosticsCompactComponent & {
     retention: WorkSystemRetentionDiagnostics;
+  };
+
+export type WorkConcurrencyDiagnosticsCompactComponent = {
+  deferredStartCount: number;
+  oldestDeferredStartAge: string;
+  lastDrainReleasedCount: number;
+  isConcurrencyBehind: boolean;
+  concurrencyLagWarningSeconds: number;
+};
+
+export type WorkConcurrencyDiagnosticsDetailedComponent =
+  WorkConcurrencyDiagnosticsCompactComponent & {
+    concurrency: WorkSystemConcurrencyDiagnostics;
+  };
+
+export type WorkDurabilityDiagnosticsCompactComponent = {
+  acceptedWaiterCount: number;
+  oldestAcceptedWaiterAge: string;
+  pendingCleanupCount: number;
+  oldestPendingCleanupAge: string;
+  isAcceptedWorkerMaterializationBehind: boolean;
+  acceptedWorkerWarningSeconds: number;
+  isCleanupBehind: boolean;
+  cleanupWarningSeconds: number;
+  hasReaderFailure: boolean;
+  readerFailureType?: string | null;
+  readerFailureMessage?: string | null;
+  hasLeaseRenewalFailure: boolean;
+  leaseRenewalFailureType?: string | null;
+  leaseRenewalFailureMessage?: string | null;
+  hasCleanupFailure: boolean;
+  cleanupFailureType?: string | null;
+  cleanupFailureMessage?: string | null;
+};
+
+export type WorkDurabilityDiagnosticsDetailedComponent =
+  WorkDurabilityDiagnosticsCompactComponent & {
+    durability: WorkSystemDurabilityDiagnostics;
+  };
+
+export type WorkIdempotencyDiagnosticsCompactComponent = {
+  duplicateRejectionCount: number;
+  lastDuplicateRejectedStorage?: string | null;
+};
+
+export type WorkIdempotencyDiagnosticsDetailedComponent =
+  WorkIdempotencyDiagnosticsCompactComponent & {
+    idempotency: WorkSystemIdempotencyDiagnostics;
   };
 
 export type WorkOverviewThroughputComponent = {
