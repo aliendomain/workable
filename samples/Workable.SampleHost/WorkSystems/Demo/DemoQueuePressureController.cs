@@ -196,7 +196,7 @@ public sealed class DemoQueuePressureController(
         {
             throw;
         }
-        catch (Exception exception)
+        catch (InvalidOperationException exception)
         {
             logger.LogWarning(exception, "Failed to queue pressure sample worker {SequenceNumber}.", current);
         }

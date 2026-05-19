@@ -123,7 +123,10 @@ public sealed class DemoTightLoopController(
         catch (OperationCanceledException)
         {
         }
-        catch (Exception exception)
+        catch (AggregateException exception) when (exception.InnerExceptions.All(static inner => inner is OperationCanceledException))
+        {
+        }
+        catch (AggregateException exception)
         {
             logger.LogWarning(exception, "Tight-loop sample queueing stopped unexpectedly.");
         }
@@ -192,7 +195,7 @@ public sealed class DemoTightLoopController(
         {
             throw;
         }
-        catch (Exception exception)
+        catch (Exception exception) when (!IsCriticalException(exception))
         {
             Interlocked.Increment(ref this.failedCount);
             logger.LogWarning(exception, "Failed to queue operations tight-loop sample worker {SequenceNumber}.", sequenceNumber);
@@ -235,7 +238,7 @@ public sealed class DemoTightLoopController(
         {
             throw;
         }
-        catch (Exception exception)
+        catch (Exception exception) when (!IsCriticalException(exception))
         {
             Interlocked.Increment(ref this.failedCount);
             logger.LogWarning(exception, "Failed to queue fulfillment tight-loop sample worker {SequenceNumber}.", sequenceNumber);
@@ -296,6 +299,15 @@ public sealed class DemoTightLoopController(
             return false;
         }
     }
+
+    private static bool IsCriticalException(Exception exception)
+        => exception is OutOfMemoryException or
+            StackOverflowException or
+            AccessViolationException or
+            AppDomainUnloadedException or
+            BadImageFormatException or
+            CannotUnloadAppDomainException or
+            InvalidProgramException;
 }
 
 public sealed record DemoTightLoopRequest(bool UseTaskYield = false);
