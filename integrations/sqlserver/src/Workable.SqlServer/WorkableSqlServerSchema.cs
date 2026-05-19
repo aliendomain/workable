@@ -70,18 +70,51 @@ BEGIN
         LeaseExpiresAt datetimeoffset NULL,
         ConcurrencyBucket nvarchar(32) NULL
     );
-
-    CREATE INDEX IX_WorkableWorkEntries_Ready
-        ON {entriesTable} (WorkSystemName, LeaseExpiresAt, CreatedAt, WorkerId)
-        WHERE IsDurableQueued = 1;
-
-    CREATE INDEX IX_WorkableWorkEntries_Concurrency
-        ON {entriesTable} (WorkSystemName, DefinitionName, ConcurrencyBucket, LeaseExpiresAt, SubjectType, SubjectValue, ConcurrencyType, ConcurrencyValue)
-        WHERE ConcurrencyBucket IS NOT NULL;
-
-    CREATE UNIQUE INDEX UX_WorkableWorkEntries_Idempotency
-        ON {entriesTable} (WorkSystemName, DefinitionName, SubjectType, SubjectValue)
-        WHERE HasIdempotencyReservation = 1 AND SubjectType IS NOT NULL AND SubjectValue IS NOT NULL;
+END
+""",
+            $"""
+IF OBJECT_ID(N'{escapedSchemaName}.WorkEntries', N'U') IS NOT NULL
+   AND COL_LENGTH(N'{escapedSchemaName}.WorkEntries', N'IsDurableQueued') IS NOT NULL
+   AND NOT EXISTS (
+       SELECT 1
+       FROM sys.indexes indexes
+       INNER JOIN sys.tables tables ON tables.object_id = indexes.object_id
+       INNER JOIN sys.schemas schemas ON schemas.schema_id = tables.schema_id
+       WHERE schemas.name = N'{escapedSchemaName}'
+         AND tables.name = N'WorkEntries'
+         AND indexes.name = N'IX_WorkableWorkEntries_Ready')
+BEGIN
+    EXEC(N'CREATE INDEX IX_WorkableWorkEntries_Ready ON {entriesTable} (WorkSystemName, LeaseExpiresAt, CreatedAt, WorkerId) WHERE IsDurableQueued = 1;');
+END
+""",
+            $"""
+IF OBJECT_ID(N'{escapedSchemaName}.WorkEntries', N'U') IS NOT NULL
+   AND COL_LENGTH(N'{escapedSchemaName}.WorkEntries', N'ConcurrencyBucket') IS NOT NULL
+   AND NOT EXISTS (
+       SELECT 1
+       FROM sys.indexes indexes
+       INNER JOIN sys.tables tables ON tables.object_id = indexes.object_id
+       INNER JOIN sys.schemas schemas ON schemas.schema_id = tables.schema_id
+       WHERE schemas.name = N'{escapedSchemaName}'
+         AND tables.name = N'WorkEntries'
+         AND indexes.name = N'IX_WorkableWorkEntries_Concurrency')
+BEGIN
+    EXEC(N'CREATE INDEX IX_WorkableWorkEntries_Concurrency ON {entriesTable} (WorkSystemName, DefinitionName, ConcurrencyBucket, LeaseExpiresAt, SubjectType, SubjectValue, ConcurrencyType, ConcurrencyValue) WHERE ConcurrencyBucket IS NOT NULL;');
+END
+""",
+            $"""
+IF OBJECT_ID(N'{escapedSchemaName}.WorkEntries', N'U') IS NOT NULL
+   AND COL_LENGTH(N'{escapedSchemaName}.WorkEntries', N'HasIdempotencyReservation') IS NOT NULL
+   AND NOT EXISTS (
+       SELECT 1
+       FROM sys.indexes indexes
+       INNER JOIN sys.tables tables ON tables.object_id = indexes.object_id
+       INNER JOIN sys.schemas schemas ON schemas.schema_id = tables.schema_id
+       WHERE schemas.name = N'{escapedSchemaName}'
+         AND tables.name = N'WorkEntries'
+         AND indexes.name = N'UX_WorkableWorkEntries_Idempotency')
+BEGIN
+    EXEC(N'CREATE UNIQUE INDEX UX_WorkableWorkEntries_Idempotency ON {entriesTable} (WorkSystemName, DefinitionName, SubjectType, SubjectValue) WHERE HasIdempotencyReservation = 1 AND SubjectType IS NOT NULL AND SubjectValue IS NOT NULL;');
 END
 """,
             $"""
