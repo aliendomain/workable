@@ -1,3 +1,4 @@
+using System.Linq;
 using Microsoft.AspNetCore.SignalR;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Options;
@@ -112,26 +113,24 @@ internal sealed class WorkableRealtimeBroadcaster(
         {
             while (!cancellationToken.IsCancellationRequested)
             {
-                foreach (var groupName in pumps.Keys.ToArray())
+                foreach (var groupName in pumps.Keys
+                    .Where(groupName => pumps[groupName].Task.IsCompleted)
+                    .ToArray())
                 {
-                    if (pumps[groupName].Task.IsCompleted)
-                    {
-                        await StopEventPump(pumps[groupName]);
-                        pumps.Remove(groupName);
-                    }
+                    await StopEventPump(pumps[groupName]);
+                    pumps.Remove(groupName);
                 }
 
                 var activeSubscriptions = eventSubscriptions
                     .GetActiveSubscriptions(system)
                     .ToDictionary(subscription => subscription.GroupName, StringComparer.Ordinal);
 
-                foreach (var groupName in pumps.Keys.ToArray())
+                foreach (var groupName in pumps.Keys
+                    .Where(groupName => !activeSubscriptions.ContainsKey(groupName))
+                    .ToArray())
                 {
-                    if (!activeSubscriptions.ContainsKey(groupName))
-                    {
-                        await StopEventPump(pumps[groupName]);
-                        pumps.Remove(groupName);
-                    }
+                    await StopEventPump(pumps[groupName]);
+                    pumps.Remove(groupName);
                 }
 
                 foreach (var subscription in activeSubscriptions.Values)

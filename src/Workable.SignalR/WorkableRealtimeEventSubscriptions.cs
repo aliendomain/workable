@@ -1,3 +1,4 @@
+using System.Linq;
 using Microsoft.AspNetCore.SignalR;
 
 namespace Workable;
@@ -123,12 +124,11 @@ public sealed class WorkableRealtimeEventSubscriptions
                 .Select(key => this.connectionGroups[key])
                 .ToArray();
 
-            foreach (var key in keys)
+            foreach (var key in keys.Where(this.connectionGroups.ContainsKey))
             {
-                if (this.connectionGroups.Remove(key, out var subscription))
-                {
-                    this.ReleaseGroupLocked(subscription.GroupName);
-                }
+                var subscription = this.connectionGroups[key];
+                this.connectionGroups.Remove(key);
+                this.ReleaseGroupLocked(subscription.GroupName);
             }
         }
 
