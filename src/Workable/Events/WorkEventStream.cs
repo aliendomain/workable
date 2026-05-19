@@ -188,20 +188,25 @@ internal sealed class WorkEventStream : IWorkEventStream, IAsyncDisposable
             }
             finally
             {
-                await this.DisposeAsync();
+                this.DisposeSubscription();
             }
         }
 
         public ValueTask DisposeAsync()
         {
+            this.DisposeSubscription();
+            return ValueTask.CompletedTask;
+        }
+
+        private void DisposeSubscription()
+        {
             if (Interlocked.Exchange(ref this.isDisposed, 1) == 1)
             {
-                return ValueTask.CompletedTask;
+                return;
             }
 
             this.events.Writer.TryComplete();
             owner.Remove(this);
-            return ValueTask.CompletedTask;
         }
 
         internal void DisposeFromOwner()
