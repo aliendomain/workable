@@ -968,6 +968,17 @@ public sealed class WorkableHttpApiTests
 
         Assert.Contains(fields, field => field?["path"]?.GetValue<string>() == "subjectId.type");
         Assert.Contains(fields, field => field?["path"]?.GetValue<string>() == "subjectId.value");
+        var concurrency = json["tabs"]?.AsArray().FirstOrDefault(tab => tab?["id"]?.GetValue<string>() == "concurrency")
+            ?? throw new InvalidOperationException("Expected concurrency tab.");
+        var concurrencyFields = concurrency["fields"]?.AsArray()
+            ?? throw new InvalidOperationException("Expected concurrency fields.");
+        Assert.Contains(concurrencyFields, field => field?["path"]?.GetValue<string>() == "options.configuration.concurrency.storage");
+        var durability = json["tabs"]?.AsArray().FirstOrDefault(tab => tab?["id"]?.GetValue<string>() == "durability")
+            ?? throw new InvalidOperationException("Expected durability tab.");
+        var durabilityFields = durability["fields"]?.AsArray()
+            ?? throw new InvalidOperationException("Expected durability fields.");
+        Assert.DoesNotContain(durabilityFields, field => field?["path"]?.GetValue<string>() == "options.configuration.idempotency.isEnabled");
+        Assert.DoesNotContain(durabilityFields, field => field?["path"]?.GetValue<string>() == "options.configuration.idempotency.storage");
         Assert.DoesNotContain("invocation", json.ToJsonString(), StringComparison.OrdinalIgnoreCase);
     }
 

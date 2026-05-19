@@ -192,6 +192,37 @@ WHERE schemas.name = N'workable'
     }
 
     [Fact]
+    public async Task AutoDeploySchemaFailsClearlyWhenExistingWorkEntriesSchemaIsIncomplete()
+    {
+        if (this.SkipIfUnavailable())
+        {
+            return;
+        }
+
+        await using var connection = await this.OpenConnection();
+        await Execute(connection, "CREATE SCHEMA workable;");
+        await Execute(connection, """
+CREATE TABLE workable.WorkEntries
+(
+    WorkerId uniqueidentifier NOT NULL CONSTRAINT PK_WorkableWorkEntries PRIMARY KEY,
+    WorkSystemName nvarchar(256) NOT NULL,
+    DefinitionName nvarchar(450) NOT NULL
+);
+""");
+
+        var system = this.CreateSystem(
+            "sql-schema-incomplete",
+            (_, _, _) => Task.FromResult(WorkExecutionResult.Success()),
+            configuration => configuration.QueueDurably().DoNotStart());
+
+        var exception = await Assert.ThrowsAsync<WorkableSqlServerSchemaDeploymentException>(() => system.Start());
+
+        Assert.Contains("could not deploy schema", exception.Message);
+        var validation = Assert.IsType<InvalidOperationException>(exception.InnerException);
+        Assert.Contains("IsDurableQueued", validation.Message);
+    }
+
+    [Fact]
     public async Task DurableIdempotentQueueWritesOneCombinedEntryAndRejectsDuplicate()
     {
         if (this.SkipIfUnavailable())

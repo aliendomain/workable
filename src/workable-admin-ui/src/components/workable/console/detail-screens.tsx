@@ -27,7 +27,7 @@ import {
 } from "@/components/ui/breadcrumb";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -776,6 +776,9 @@ export function QueueDialog({
               {definition?.name ?? "worker"}
             </span>
           </DialogTitle>
+          <DialogDescription className="sr-only">
+            Queue a worker by setting request input, queue behavior, and optional runtime configuration overrides.
+          </DialogDescription>
         </DialogHeader>
         <div className="min-h-0 space-y-4 px-4">
           {error && (
@@ -1470,6 +1473,7 @@ const defaultWorkConfiguration: WorkConfiguration = {
     blockingMode: "WhileExecutingPausedOrFailed",
     limitReachedBehavior: "Ignore",
     overrideBehavior: "Flexible",
+    storage: "Local",
   },
   queueDurability: {
     isEnabled: false,
