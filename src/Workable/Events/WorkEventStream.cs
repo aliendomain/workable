@@ -1,5 +1,4 @@
 using System.Diagnostics.CodeAnalysis;
-using System.Runtime.CompilerServices;
 using System.Threading.Channels;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -176,21 +175,8 @@ internal sealed class WorkEventStream : IWorkEventStream, IAsyncDisposable
         private int isDisposed;
         private int queuedCount;
 
-        public async IAsyncEnumerable<WorkEvent> Read([EnumeratorCancellation] CancellationToken cancellationToken = default)
-        {
-            try
-            {
-                await foreach (var workEvent in this.events.Reader.ReadAllAsync(cancellationToken))
-                {
-                    Interlocked.Decrement(ref this.queuedCount);
-                    yield return workEvent;
-                }
-            }
-            finally
-            {
-                this.DisposeSubscription();
-            }
-        }
+        public IAsyncEnumerable<WorkEvent> Read(CancellationToken cancellationToken = default)
+            => new WorkEventSubscriptionEnumerable(this, cancellationToken);
 
         public ValueTask DisposeAsync()
         {
@@ -279,5 +265,71 @@ internal sealed class WorkEventStream : IWorkEventStream, IAsyncDisposable
                 WorkEventOverflowBehavior.DropWrite => BoundedChannelFullMode.DropWrite,
                 _ => BoundedChannelFullMode.DropOldest,
             };
+
+        private sealed class WorkEventSubscriptionEnumerable(
+            WorkEventSubscription subscription,
+            CancellationToken cancellationToken) : IAsyncEnumerable<WorkEvent>
+        {
+            public IAsyncEnumerator<WorkEvent> GetAsyncEnumerator(CancellationToken enumeratorCancellationToken = default)
+                => new WorkEventSubscriptionEnumerator(
+                    subscription,
+                    CreateEffectiveCancellation(cancellationToken, enumeratorCancellationToken, out var linkedCancellation),
+                    linkedCancellation);
+
+            private static CancellationToken CreateEffectiveCancellation(
+                CancellationToken subscriptionCancellationToken,
+                CancellationToken enumeratorCancellationToken,
+                out CancellationTokenSource? linkedCancellation)
+            {
+                linkedCancellation = null;
+                if (!subscriptionCancellationToken.CanBeCanceled)
+                {
+                    return enumeratorCancellationToken;
+                }
+
+                if (!enumeratorCancellationToken.CanBeCanceled ||
+                    subscriptionCancellationToken == enumeratorCancellationToken)
+                {
+                    return subscriptionCancellationToken;
+                }
+
+                linkedCancellation = CancellationTokenSource.CreateLinkedTokenSource(
+                    subscriptionCancellationToken,
+                    enumeratorCancellationToken);
+                return linkedCancellation.Token;
+            }
+        }
+
+        private sealed class WorkEventSubscriptionEnumerator(
+            WorkEventSubscription subscription,
+            CancellationToken cancellationToken,
+            CancellationTokenSource? linkedCancellation) : IAsyncEnumerator<WorkEvent>
+        {
+            public WorkEvent Current { get; private set; } = null!;
+
+            public async ValueTask<bool> MoveNextAsync()
+            {
+                while (await subscription.events.Reader.WaitToReadAsync(cancellationToken))
+                {
+                    if (!subscription.events.Reader.TryRead(out var workEvent))
+                    {
+                        continue;
+                    }
+
+                    Interlocked.Decrement(ref subscription.queuedCount);
+                    this.Current = workEvent;
+                    return true;
+                }
+
+                return false;
+            }
+
+            public ValueTask DisposeAsync()
+            {
+                linkedCancellation?.Dispose();
+                subscription.DisposeSubscription();
+                return ValueTask.CompletedTask;
+            }
+        }
     }
 }
