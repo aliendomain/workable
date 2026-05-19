@@ -1220,15 +1220,23 @@ public sealed class WorkableHttpApiTests
 
         Assert.Equal(2, systems.Count);
         Assert.Contains(systems, system =>
-            system?["name"] is null &&
-            system?["isDefault"]?.GetValue<bool>() == true &&
-            system?["capabilities"]?["realtime"]?["enabled"]?.GetValue<bool>() == false &&
-            system?["capabilities"]?["persistentCoordinationAvailable"]?.GetValue<bool>() == false);
+            system is JsonObject candidate &&
+            candidate["name"] is null &&
+            candidate["isDefault"] is JsonValue isDefault &&
+            isDefault.GetValue<bool>() &&
+            candidate["capabilities"]?["realtime"]?["enabled"] is JsonValue realtimeEnabled &&
+            !realtimeEnabled.GetValue<bool>() &&
+            candidate["capabilities"]?["persistentCoordinationAvailable"] is JsonValue persistentCoordinationAvailable &&
+            !persistentCoordinationAvailable.GetValue<bool>());
         Assert.Contains(systems, system =>
-            system?["name"]?.GetValue<string>() == "background" &&
-            system?["isDefault"]?.GetValue<bool>() == false &&
-            system?["capabilities"]?["realtime"]?["enabled"]?.GetValue<bool>() == false &&
-            system?["capabilities"]?["persistentCoordinationAvailable"]?.GetValue<bool>() == false);
+            system is JsonObject candidate &&
+            candidate["name"]?.GetValue<string>() == "background" &&
+            candidate["isDefault"] is JsonValue isDefault &&
+            !isDefault.GetValue<bool>() &&
+            candidate["capabilities"]?["realtime"]?["enabled"] is JsonValue realtimeEnabled &&
+            !realtimeEnabled.GetValue<bool>() &&
+            candidate["capabilities"]?["persistentCoordinationAvailable"] is JsonValue persistentCoordinationAvailable &&
+            !persistentCoordinationAvailable.GetValue<bool>());
     }
 
     [Fact]
