@@ -89,7 +89,7 @@ public sealed record WorkableHttpQueueRequestDescriptor(
                 Field("options.configuration.concurrency.blockingMode", "Blocking mode", "Which states occupy capacity. WhileExecuting counts running execution; broader modes also count paused or failed workers."),
                 Field("options.configuration.concurrency.limitReachedBehavior", "Limit reached", "When capacity is full, either reject the queue request or accept it and leave it queued until a slot opens."),
                 Field("options.configuration.concurrency.overrideBehavior", "Override behavior", "For manual starts and reconfiguration, choose whether Workable may temporarily exceed capacity or must enforce it strictly."),
-                Field("options.configuration.concurrency.storage", "Storage", "Local enforces capacity within this host. Persistence enforces capacity in the shared store while durable workers are dispatched."),
+                Field("options.configuration.concurrency.storage", "Storage", "Local counts active workers in this host. Persistence counts active durable workers in the shared store, so multiple hosts using the same durable queue share one capacity limit."),
             ]),
         new(
             "durability",
