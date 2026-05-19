@@ -1,3 +1,4 @@
+using System.Linq;
 using Microsoft.Data.SqlClient;
 
 namespace Workable.SqlServer;
@@ -166,20 +167,10 @@ WHERE schemas.name = @SchemaName AND tables.name = N'SchemaVersion';
             missing.Add($"{schemaName}.SchemaVersion");
         }
 
-        foreach (var column in requiredColumns)
+        var existingColumns = await ReadExistingColumns(connection, schemaName, cancellationToken);
+        foreach (var column in requiredColumns.Where(column => !existingColumns.Contains(column)))
         {
-            if (await Scalar<int>(connection, """
-SELECT COUNT(*)
-FROM sys.columns columns
-INNER JOIN sys.tables tables ON tables.object_id = columns.object_id
-INNER JOIN sys.schemas schemas ON schemas.schema_id = tables.schema_id
-WHERE schemas.name = @SchemaName
-  AND tables.name = N'WorkEntries'
-  AND columns.name = @Name;
-""", schemaName, cancellationToken, column) == 0)
-            {
-                missing.Add($"{schemaName}.WorkEntries.{column}");
-            }
+            missing.Add($"{schemaName}.WorkEntries.{column}");
         }
 
         if (await Scalar<int>(connection, """
@@ -257,6 +248,32 @@ WHERE schemas.name = @SchemaName
         }
 
         return (T)Convert.ChangeType(value, typeof(T));
+    }
+
+    private static async Task<HashSet<string>> ReadExistingColumns(
+        SqlConnection connection,
+        string schemaName,
+        CancellationToken cancellationToken)
+    {
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+SELECT columns.name
+FROM sys.columns columns
+INNER JOIN sys.tables tables ON tables.object_id = columns.object_id
+INNER JOIN sys.schemas schemas ON schemas.schema_id = tables.schema_id
+WHERE schemas.name = @SchemaName
+  AND tables.name = N'WorkEntries';
+""";
+        command.Parameters.AddWithValue("@SchemaName", schemaName);
+
+        var columns = new HashSet<string>(StringComparer.Ordinal);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            columns.Add(reader.GetString(0));
+        }
+
+        return columns;
     }
 }
 

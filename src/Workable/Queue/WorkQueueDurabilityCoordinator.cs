@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Linq;
 using System.Threading.Channels;
 
 namespace Workable;
@@ -469,13 +470,11 @@ internal sealed class WorkQueueDurabilityCoordinator(
         }
 
         var latestByWorker = new Dictionary<WorkerId, WorkQueueDurabilityCleanupKind>();
-        foreach (var item in pending)
+        foreach (var item in pending.Where(item =>
+            item.Kind == WorkQueueDurabilityCleanupKind.DeleteFinal ||
+            !latestByWorker.ContainsKey(item.WorkerId)))
         {
-            if (item.Kind == WorkQueueDurabilityCleanupKind.DeleteFinal ||
-                !latestByWorker.ContainsKey(item.WorkerId))
-            {
-                latestByWorker[item.WorkerId] = item.Kind;
-            }
+            latestByWorker[item.WorkerId] = item.Kind;
         }
 
         var delete = CreateCleanupRequests(latestByWorker, WorkQueueDurabilityCleanupKind.DeleteFinal);
@@ -664,12 +663,9 @@ internal sealed class WorkQueueDurabilityCoordinator(
 
     private void HandleLostLeases(IReadOnlyList<WorkQueueDurabilityLease> lostLeases)
     {
-        foreach (var lostLease in lostLeases)
+        foreach (var lostLease in lostLeases.Where(this.RemoveLeaseIfCurrent))
         {
-            if (this.RemoveLeaseIfCurrent(lostLease))
-            {
-                leaseLost(lostLease.WorkerId);
-            }
+            leaseLost(lostLease.WorkerId);
         }
     }
 
