@@ -136,10 +136,6 @@ public sealed class DemoQueuePressureController(
             catch (OperationCanceledException)
             {
             }
-            catch (Exception exception)
-            {
-                logger.LogWarning(exception, "Queue pressure sample stopped unexpectedly.");
-            }
         }
 
         source?.Dispose();

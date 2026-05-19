@@ -70,17 +70,12 @@ public sealed class WorkableHttpCatalogAdapter
 
             var childSegments = pathSegments.Append(remainingSegments[0]).ToArray();
             var childPath = string.Join(':', childSegments);
-            if (categories.TryGetValue(childPath, out var existing))
-            {
-                categories[childPath] = existing with { Count = existing.Count + 1 };
-            }
-            else
-            {
-                categories[childPath] = new WorkSystemCatalogCategoryItem(
+            categories[childPath] = categories.TryGetValue(childPath, out var existing)
+                ? existing with { Count = existing.Count + 1 }
+                : new WorkSystemCatalogCategoryItem(
                     remainingSegments[0],
                     childPath,
                     1);
-            }
         }
 
         return new WorkableHttpDefinitionCatalogLevel(
