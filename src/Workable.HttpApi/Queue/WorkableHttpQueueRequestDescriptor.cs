@@ -29,7 +29,7 @@ public sealed record WorkableHttpQueueRequestDescriptor(
         new(
             "idempotency",
             "Idempotency",
-            "Uses the subject fields to decide whether a queue request is a duplicate of work that already exists.",
+            "Rejects duplicate queue requests for the same work definition and subject.",
             [
                 Field("options.configuration.idempotency.isEnabled", "Enabled", "Reject a second worker with the same work definition and subject while the first worker is still protected."),
                 Field("options.configuration.idempotency.storage", "Storage", "Local checks only this running host. Persistence stores the reservation so restarts and other hosts share the duplicate check."),
@@ -94,14 +94,10 @@ public sealed record WorkableHttpQueueRequestDescriptor(
         new(
             "durability",
             "Durability",
-            "Stores accepted queue requests before returning, so durable work can survive process shutdown and restart.",
+            "Stores accepted queue requests so work can survive process shutdown and restart. Duplicate protection is configured on the Idempotency tab.",
             [
                 Field("options.configuration.queueDurability.isEnabled", "Enabled", "Store the queued worker before returning accepted. If the caller supplies a transaction, the worker starts only after that transaction commits."),
                 Field("options.configuration.queueDurability.completeDurably", "Complete durably", "Executor code must complete with its persistence transaction, so business data and Workable completion commit or roll back together."),
-                Field("options.configuration.idempotency.isEnabled", "Idempotency", "Also reserve the subject so duplicate durable queue requests can be rejected."),
-                Field("options.configuration.idempotency.storage", "Idempotency storage", "Use Persistence when duplicate checks must share the same store as durable queue rows."),
-                Field("subjectId.type", "Subject type", "The subject namespace used for duplicate detection, such as order or tenant."),
-                Field("subjectId.value", "Subject value", "The specific subject id used to detect another queued worker for the same thing."),
             ]),
     ];
 
