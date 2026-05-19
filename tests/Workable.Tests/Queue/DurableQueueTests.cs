@@ -146,7 +146,7 @@ public sealed class DurableQueueTests
         Assert.True(handle.QueueOutcome.IsAccepted);
         Assert.Single(store.Enqueued);
 
-        var completion = await handle.WaitForCompletion(new CancellationTokenSource(TimeSpan.FromSeconds(5)).Token);
+        var completion = await WaitForCompletion(handle, TimeSpan.FromSeconds(5));
         await store.WaitForDeletedFinalWorker(RequiredWorkerId(handle), TimeSpan.FromSeconds(2));
 
         Assert.True(completion.IsCompletedSuccessfully);
@@ -179,10 +179,10 @@ public sealed class DurableQueueTests
             "durable-stop-cleanup",
             WorkInput.Empty.WithSubject(new WorkSubjectId("order", "stop-cleanup")));
         var workerId = RequiredWorkerId(handle);
-        await handle.WaitForCompletion(new CancellationTokenSource(TimeSpan.FromSeconds(2)).Token);
+        await WaitForCompletion(handle, TimeSpan.FromSeconds(2));
         await store.WaitForDeleteFinalStarted(TimeSpan.FromSeconds(2));
 
-        var stop = system.Stop(new CancellationTokenSource(TimeSpan.FromSeconds(2)).Token);
+        var stop = StopWithTimeout(system, TimeSpan.FromSeconds(2));
         await Task.Delay(TimeSpan.FromMilliseconds(100));
 
         Assert.False(stop.IsCompleted);
@@ -221,7 +221,7 @@ public sealed class DurableQueueTests
             "durable-complete",
             WorkInput.Empty.WithSubject(new WorkSubjectId("order", "complete")));
         var workerId = RequiredWorkerId(handle);
-        var completion = await handle.WaitForCompletion(new CancellationTokenSource(TimeSpan.FromSeconds(2)).Token);
+        var completion = await WaitForCompletion(handle, TimeSpan.FromSeconds(2));
 
         Assert.True(completion.IsCompletedSuccessfully);
         Assert.Equal(1, store.TransactionalDeleteFinals);
@@ -255,7 +255,7 @@ public sealed class DurableQueueTests
             "durable-complete-idempotency",
             WorkInput.Empty.WithSubject(new WorkSubjectId("order", "complete-idempotency")));
         var workerId = RequiredWorkerId(handle);
-        var completion = await handle.WaitForCompletion(new CancellationTokenSource(TimeSpan.FromSeconds(2)).Token);
+        var completion = await WaitForCompletion(handle, TimeSpan.FromSeconds(2));
 
         Assert.True(completion.IsCompletedSuccessfully);
         Assert.Equal(0, store.EnqueueAttempts);
@@ -300,7 +300,7 @@ public sealed class DurableQueueTests
             "durable-complete-not-configured",
             WorkInput.Empty.WithSubject(new WorkSubjectId("order", "complete-not-configured")));
         var workerId = RequiredWorkerId(handle);
-        var completion = await handle.WaitForCompletion(new CancellationTokenSource(TimeSpan.FromSeconds(2)).Token);
+        var completion = await WaitForCompletion(handle, TimeSpan.FromSeconds(2));
         await store.WaitForDeletedFinalWorker(workerId, TimeSpan.FromSeconds(2));
 
         var exception = await observed.Task.WaitAsync(TimeSpan.FromSeconds(2));
@@ -333,7 +333,7 @@ public sealed class DurableQueueTests
             "durable-complete-missing",
             WorkInput.Empty.WithSubject(new WorkSubjectId("order", "complete-missing")));
         var workerId = RequiredWorkerId(handle);
-        var completion = await handle.WaitForCompletion(new CancellationTokenSource(TimeSpan.FromSeconds(2)).Token);
+        var completion = await WaitForCompletion(handle, TimeSpan.FromSeconds(2));
         await store.WaitForRetainedFailedWorker(workerId, TimeSpan.FromSeconds(2));
 
         Assert.Equal(WorkCompletionStatus.Failed, completion.Status);
@@ -366,7 +366,7 @@ public sealed class DurableQueueTests
             "durable-complete-failure",
             WorkInput.Empty.WithSubject(new WorkSubjectId("order", "complete-failure")));
         var workerId = RequiredWorkerId(handle);
-        var completion = await handle.WaitForCompletion(new CancellationTokenSource(TimeSpan.FromSeconds(2)).Token);
+        var completion = await WaitForCompletion(handle, TimeSpan.FromSeconds(2));
         await store.WaitForRetainedFailedWorker(workerId, TimeSpan.FromSeconds(2));
 
         Assert.Equal(WorkCompletionStatus.Failed, completion.Status);
@@ -400,7 +400,7 @@ public sealed class DurableQueueTests
 
         var handle = await system.Queue.Enqueue("durable-signal");
         await ran.Task.WaitAsync(TimeSpan.FromSeconds(1));
-        await handle.WaitForCompletion(new CancellationTokenSource(TimeSpan.FromSeconds(2)).Token);
+        await WaitForCompletion(handle, TimeSpan.FromSeconds(2));
         await system.Stop();
 
         Assert.True(handle.QueueOutcome.IsAccepted);
@@ -439,7 +439,7 @@ public sealed class DurableQueueTests
         Assert.False(ran.Task.IsCompleted);
         Assert.Equal(0, store.ClaimReadyAttempts);
 
-        var completion = await handle.WaitForCompletion(new CancellationTokenSource(TimeSpan.FromSeconds(3)).Token);
+        var completion = await WaitForCompletion(handle, TimeSpan.FromSeconds(3));
         await system.Stop();
 
         Assert.True(completion.IsCompletedSuccessfully);
@@ -616,7 +616,8 @@ public sealed class DurableQueueTests
                 return Task.CompletedTask;
             });
 
-        await coordinator.InitializeAndDrain([definition], new CancellationTokenSource(TimeSpan.FromSeconds(2)).Token);
+        using var drainTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+        await coordinator.InitializeAndDrain([definition], drainTimeout.Token);
 
         Assert.Single(accepted);
         Assert.Equal(workerId, accepted[0].Lease.WorkerId);
@@ -697,6 +698,18 @@ public sealed class DurableQueueTests
 
     private static WorkerId RequiredWorkerId(IWorkerHandle handle)
         => handle.WorkerId ?? throw new InvalidOperationException("Expected worker id.");
+
+    private static async Task<WorkCompletion> WaitForCompletion(IWorkerHandle handle, TimeSpan timeoutAfter)
+    {
+        using var timeout = new CancellationTokenSource(timeoutAfter);
+        return await handle.WaitForCompletion(timeout.Token);
+    }
+
+    private static async Task StopWithTimeout(IWorkSystem system, TimeSpan timeoutAfter)
+    {
+        using var timeout = new CancellationTokenSource(timeoutAfter);
+        await system.Stop(timeout.Token);
+    }
 
     private static WorkQueueDurabilityCoordinator CreateCoordinator(
         InMemoryDurableQueueStore store,
@@ -1005,7 +1018,10 @@ public sealed class DurableQueueTests
         }
 
         public async Task WaitForDeleteFinalStarted(TimeSpan timeout)
-            => await this.DeleteFinalStarted.Task.WaitAsync(new CancellationTokenSource(timeout).Token);
+        {
+            using var timeoutCancellation = new CancellationTokenSource(timeout);
+            await this.DeleteFinalStarted.Task.WaitAsync(timeoutCancellation.Token);
+        }
     }
 
     private sealed class TestQueueDurabilityTransaction : IWorkQueueDurabilityTransaction;
