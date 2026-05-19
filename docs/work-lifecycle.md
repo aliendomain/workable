@@ -6,11 +6,11 @@ Work begins when a caller queues a known work definition. The queue resolves the
 
 The queue cancellation token applies only to accepting the queue request. Execution uses Workable's system lifetime and per-worker cancellation, so caller-scoped cancellation, for example from a controller action, does not cancel already accepted work.
 
-These diagrams show the normal run-once path in smaller parts. The execution engine also includes dispatch, concurrency, and retention coordinators; those are described in [Execution Engine](execution-engine.md).
+These diagrams show the normal run-once path in smaller parts. The execution engine also includes dispatch, idempotency, concurrency, durability, and retention coordinators; those are described in [Execution Engine](execution-engine.md).
 
 ## Queue Acceptance
 
-Queue acceptance resolves work, creates a queued worker record, publishes the queued event, submits a scheduling request when the start policy starts work automatically, and returns according to the configured start policy. The scheduling request is not execution; execution begins later when the dispatcher reads the scheduled worker.
+Queue acceptance resolves work, validates the effective runtime configuration, and applies coordination before returning to the caller. Non-durable acceptance creates a queued worker record, publishes the queued event, submits a scheduling request when the start policy starts work automatically, and returns according to the configured start policy. Durable acceptance persists the queue entry first; the durable reader publishes the queued event and schedules the worker when the persisted row materializes in memory.
 
 ```mermaid
 sequenceDiagram
@@ -18,6 +18,8 @@ sequenceDiagram
     participant Queue as IWorkQueueService / WorkQueueService
     participant Catalog as WorkSystemCatalog
     participant Ops as WorkerOperations
+    participant Persistence as WorkerPersistenceCoordinator
+    participant Durability as WorkQueueDurabilityCoordinator
     participant Record as WorkerRecord
     participant Events as WorkEventStream
     participant Dispatcher as WorkerDispatcher
@@ -27,14 +29,23 @@ sequenceDiagram
     Queue->>Catalog: TryGetWork(...)
     Catalog-->>Queue: RegisteredWork
     Queue->>Ops: CreateWorker(RegisteredWork, input, options)
+    Ops->>Persistence: AcceptQueuedWorker(...)
 
-    Ops->>Record: new WorkerRecord(state: Queued, revision: 0)
-    Ops->>Events: Publish worker.queued to active subscriptions
-    opt Start policy starts automatically
-    Ops->>Dispatcher: Schedule(worker)
-    end
-    opt Start policy waits past acceptance
-    Ops->>Record: Wait for started or completed milestone
+    alt Durable queueing
+        Persistence->>Durability: Enqueue durable row
+        Durability-->>Persistence: Durable handle
+        Persistence-->>Ops: Durable handle
+        Note over Durability,Dispatcher: Durable reader materializes the row later, then publishes queued and schedules
+    else In-memory queueing
+        Persistence-->>Ops: WorkerRecord and scheduling flags
+        Ops->>Record: Track WorkerRecord(state: Queued, revision: 0)
+        Ops->>Events: Publish worker.queued to active subscriptions
+        opt Start policy starts automatically
+            Ops->>Dispatcher: Schedule(worker)
+        end
+        opt Start policy waits past acceptance
+            Ops->>Record: Wait for started or completed milestone
+        end
     end
     Ops-->>Queue: WorkerHandle
     Queue-->>Caller: IWorkerHandle
@@ -189,6 +200,10 @@ sequenceDiagram
 - `WorkSystemCatalog` stores the system's immutable work definitions.
 - `RegisteredWork` connects a `WorkDefinition` to an executor factory.
 - `WorkerOperations` creates workers, owns in-memory dispatch, and applies worker actions.
+- `WorkerPersistenceCoordinator` centralizes in-memory and persistence-backed coordination for queue acceptance, durable materialization, durable completion, idempotency lookup, and final-state cleanup.
+- `WorkQueueAcceptanceCoordinator` prepares queue acceptance by applying idempotency, concurrency, and durability decisions to the resolved runtime plan.
+- `WorkIdempotencyCoordinator` performs local duplicate-subject checks and active subject lookup.
+- `WorkQueueDurabilityCoordinator` integrates with the persistence store for durable queue entries, lease renewal, replay, and cleanup.
 - `WorkerDispatcher` schedules accepted workers for execution outside the caller's queue request.
 - `WorkConcurrencyCoordinator` manages per-definition concurrency managers for work that opts into concurrency.
 - `WorkerRetentionScheduler` schedules automatic purge for completed and canceled workers.

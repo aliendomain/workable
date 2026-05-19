@@ -69,6 +69,14 @@ type OverviewScope = {
   definitionName?: string;
   includeSubcategories?: boolean;
 };
+type QueueConfigurationField = QueueRequestSchemaDescriptor["tabs"][number]["fields"][number];
+type QueueConfigurationTab = QueueRequestSchemaDescriptor["tabs"][number];
+type QueueConfigurationFieldSection = {
+  id: string;
+  label: string;
+  description?: string;
+  fields: QueueConfigurationField[];
+};
 type Loadable<T> = {
   data?: T;
   error?: string;
@@ -763,10 +771,10 @@ export function QueueDialog({
   return (
     <Dialog onOpenChange={onOpenChange} open={!!definition}>
       <DialogContent
-        className="max-h-[88vh] overflow-hidden p-0 sm:max-w-5xl"
+        className="flex h-[calc(100vh-2rem)] max-h-[calc(100vh-2rem)] flex-col overflow-hidden p-0 sm:h-[88vh] sm:max-h-[88vh] sm:max-w-5xl"
         onInteractOutside={(event) => event.preventDefault()}
       >
-        <DialogHeader>
+        <DialogHeader className="shrink-0">
           <DialogTitle className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1 px-4 pt-4">
             <span>Configure input, behavior, and runtime options for</span>
             <span
@@ -780,7 +788,7 @@ export function QueueDialog({
             Queue a worker by setting request input, queue behavior, and optional runtime configuration overrides.
           </DialogDescription>
         </DialogHeader>
-        <div className="min-h-0 space-y-4 px-4">
+        <div className="flex min-h-0 flex-1 flex-col gap-4 px-4">
           {error && (
             <ErrorBanner key={error} message={error} title="Queue failed" />
           )}
@@ -813,10 +821,10 @@ export function QueueDialog({
               }
               setActiveTab(value as "input" | "config" | "manual");
             }}
-            className="min-h-[62vh]"
+            className="flex min-h-0 flex-1 flex-col"
             value={activeTab}
           >
-            <div className="flex flex-wrap items-center justify-between gap-3 border-b pb-3">
+            <div className="shrink-0 flex flex-wrap items-center justify-between gap-3 border-b pb-3">
               <TabsList className="grid w-full grid-cols-3 sm:w-[30rem]">
                 <TabsTrigger disabled={!inputSchema} value="input">
                   Input
@@ -834,14 +842,14 @@ export function QueueDialog({
                 </Button>
               )}
             </div>
-            <TabsContent className="mt-4 h-[54vh] overflow-y-auto pr-2" value="input">
+            <TabsContent className="mt-4 min-h-0 flex-1 overflow-y-auto pr-2" value="input">
               <SchemaForm
                 onChange={updateFormValue}
                 schema={inputSchema}
                 value={formValue}
               />
             </TabsContent>
-            <TabsContent className="mt-4 h-[54vh] overflow-y-auto pr-2" value="config">
+            <TabsContent className="mt-4 min-h-0 flex-1 overflow-y-auto pr-2" value="config">
               <QueueConfigurationTabs
                 descriptor={queueSchemaDescriptor}
                 onRequestChange={setQueueRequest}
@@ -849,7 +857,7 @@ export function QueueDialog({
                 schema={queueRequestSchema}
               />
             </TabsContent>
-            <TabsContent className="mt-4 h-[54vh] overflow-y-auto pr-2" value="manual">
+            <TabsContent className="mt-4 min-h-0 flex-1 overflow-y-auto pr-2" value="manual">
               <JsonTextEditor
                 label="Request JSON"
                 onChange={setManualRequestJson}
@@ -857,7 +865,7 @@ export function QueueDialog({
               />
             </TabsContent>
           </Tabs>
-          <div className="-mx-4 flex items-center justify-between gap-3 border-t bg-muted/30 px-4 py-3">
+          <div className="-mx-4 shrink-0 flex items-center justify-between gap-3 border-t bg-muted/30 px-4 py-3">
             <div className="min-w-0 text-sm">
               <span className="text-muted-foreground">Queue a worker for </span>
               <span className="font-mono font-semibold text-sky-300">
@@ -901,8 +909,8 @@ function QueueConfigurationTabs({
   const firstTab = descriptor.tabs[0]?.id ?? "queue";
 
   return (
-    <Tabs className="min-h-full" defaultValue={firstTab}>
-      <TabsList className="flex h-auto w-full flex-wrap justify-start">
+    <Tabs className="flex min-h-full flex-col" defaultValue={firstTab}>
+      <TabsList className="shrink-0 flex h-auto w-full flex-wrap justify-start">
         {descriptor.tabs.map((tab) => (
           <TabsTrigger key={tab.id} value={tab.id}>
             {tab.label}
@@ -911,26 +919,235 @@ function QueueConfigurationTabs({
       </TabsList>
 
       {descriptor.tabs.map((tab) => (
-        <TabsContent className="mt-4 space-y-4" key={tab.id} value={tab.id}>
+        <TabsContent className="mt-4 min-h-0 flex-1 space-y-4" key={tab.id} value={tab.id}>
           <ConfigTabHeader description={tab.description} title={tab.label} />
-          <div className="grid max-w-5xl gap-4 md:grid-cols-2">
-            {tab.fields.map((field) => (
-              <SchemaPathField
-                description={field.description}
-                key={`${tab.id}:${field.path}`}
-                label={field.label}
-                onChange={(next) => onRequestChange(next as QueueWorkRequest)}
-                path={field.path}
-                schema={schema}
-                value={request}
-              />
-            ))}
-          </div>
+          <ConfigFieldSections
+            onRequestChange={onRequestChange}
+            request={request}
+            schema={schema}
+            tab={tab}
+          />
         </TabsContent>
       ))}
     </Tabs>
   );
 }
+
+function ConfigFieldSections({
+  onRequestChange,
+  request,
+  schema,
+  tab,
+}: {
+  onRequestChange: Dispatch<SetStateAction<QueueWorkRequest>>;
+  request: QueueWorkRequest;
+  schema: ReturnType<typeof parseJsonSchema>;
+  tab: QueueConfigurationTab;
+}) {
+  const sections = createConfigurationFieldSections(tab);
+
+  if (sections.length === 1 && sections[0]?.id === "root") {
+    return (
+      <div className="grid max-w-5xl gap-4 md:grid-cols-2">
+        {sections[0].fields.map((field) => (
+          <QueueConfigurationPathField
+            field={field}
+            key={`${tab.id}:${field.path}`}
+            onRequestChange={onRequestChange}
+            request={request}
+            schema={schema}
+            tabId={tab.id}
+          />
+        ))}
+      </div>
+    );
+  }
+
+  return (
+    <div className="grid max-w-5xl gap-4">
+      {sections.map((section) => (
+        <section className="rounded-xl border bg-muted/10 p-4" key={section.id}>
+          <div className="mb-3 max-w-2xl space-y-1">
+            <h4 className="font-medium text-sm">{section.label}</h4>
+            {section.description ? (
+              <p className="text-muted-foreground text-xs">{section.description}</p>
+            ) : null}
+          </div>
+          <div className="grid gap-4 md:grid-cols-2">
+            {section.fields.map((field) => (
+              <QueueConfigurationPathField
+                field={field}
+                key={`${tab.id}:${field.path}`}
+                onRequestChange={onRequestChange}
+                request={request}
+                schema={schema}
+                tabId={tab.id}
+              />
+            ))}
+          </div>
+        </section>
+      ))}
+    </div>
+  );
+}
+
+function QueueConfigurationPathField({
+  field,
+  onRequestChange,
+  request,
+  schema,
+  tabId,
+}: {
+  field: QueueConfigurationField;
+  onRequestChange: Dispatch<SetStateAction<QueueWorkRequest>>;
+  request: QueueWorkRequest;
+  schema: ReturnType<typeof parseJsonSchema>;
+  tabId: string;
+}) {
+  const constraint = getQueueConfigurationFieldConstraint(request, field.path);
+  if (constraint) {
+    return (
+      <LockedConfigurationField
+        description={field.description}
+        label={field.label}
+        reason={constraint.reason}
+        value={constraint.value}
+      />
+    );
+  }
+
+  return (
+    <SchemaPathField
+      description={field.description}
+      key={`${tabId}:${field.path}`}
+      label={field.label}
+      onChange={(next) => onRequestChange(applyQueueConfigurationRules(next as QueueWorkRequest))}
+      path={field.path}
+      schema={schema}
+      value={request}
+    />
+  );
+}
+
+function LockedConfigurationField({
+  description,
+  label,
+  reason,
+  value,
+}: {
+  description?: string;
+  label: string;
+  reason: string;
+  value: string | boolean;
+}) {
+  return (
+    <div className="w-full max-w-md space-y-2">
+      <div className="space-y-1">
+        <Label className="flex items-center gap-1.5">
+          {label}
+          <Info className="size-3.5 text-muted-foreground" />
+        </Label>
+        {description ? (
+          <p className="text-muted-foreground text-xs">{description}</p>
+        ) : null}
+      </div>
+      <div className="rounded-lg border bg-muted/30 px-3 py-2 font-mono text-sm">
+        {String(value)}
+      </div>
+      <p className="text-amber-200 text-xs">{reason}</p>
+    </div>
+  );
+}
+
+function createConfigurationFieldSections(tab: QueueConfigurationTab): QueueConfigurationFieldSection[] {
+  const tabBasePath = findTabBasePath(tab);
+  const sections = new Map<string, QueueConfigurationFieldSection>();
+
+  for (const field of tab.fields) {
+    const sectionId = getFieldSectionId(field.path, tabBasePath);
+    const existing = sections.get(sectionId);
+    if (existing) {
+      existing.fields.push(field);
+      continue;
+    }
+
+    sections.set(sectionId, {
+      id: sectionId,
+      label: labelForFieldSection(sectionId, tab),
+      description: descriptionForFieldSection(sectionId, tab),
+      fields: [field],
+    });
+  }
+
+  return Array.from(sections.values());
+}
+
+function findTabBasePath(tab: QueueConfigurationTab) {
+  const configurationPrefix = `options.configuration.${tab.id}`;
+  if (tab.fields.some((field) => field.path === configurationPrefix || field.path.startsWith(`${configurationPrefix}.`))) {
+    return configurationPrefix;
+  }
+
+  return "";
+}
+
+function getFieldSectionId(path: string, tabBasePath: string) {
+  if (tabBasePath && (path === tabBasePath || path.startsWith(`${tabBasePath}.`))) {
+    const remaining = path === tabBasePath
+      ? []
+      : path.slice(tabBasePath.length + 1).split(".");
+    return remaining.length > 1 ? `${tabBasePath}.${remaining[0]}` : "root";
+  }
+
+  const segments = path.split(".").filter(Boolean);
+  return segments.length > 1 ? segments[0] ?? "root" : "root";
+}
+
+function labelForFieldSection(sectionId: string, tab: QueueConfigurationTab) {
+  if (sectionId === "root") {
+    return `${tab.label} settings`;
+  }
+
+  const segment = sectionId.split(".").at(-1) ?? sectionId;
+  return fieldSectionLabels[segment] ?? humanizePathSegment(segment);
+}
+
+function descriptionForFieldSection(sectionId: string, tab: QueueConfigurationTab) {
+  if (sectionId === "root") {
+    return rootFieldSectionDescriptions[tab.id];
+  }
+
+  const segment = sectionId.split(".").at(-1) ?? sectionId;
+  return fieldSectionDescriptions[segment];
+}
+
+function humanizePathSegment(value: string) {
+  return value
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .replace(/[_-]+/g, " ")
+    .replace(/\b\w/g, (character) => character.toUpperCase());
+}
+
+const fieldSectionLabels: Record<string, string> = {
+  concurrencyKey: "Concurrency key",
+  idempotency: "Idempotency",
+  durability: "Durability",
+  subjectId: "Queue subject",
+  transientRetry: "Transient retry",
+};
+
+const fieldSectionDescriptions: Record<string, string> = {
+  concurrency: "Capacity rules that decide how many workers may occupy the same group and whether extra work waits or is rejected.",
+  concurrencyKey: "Optional queue identity used when concurrency scope is configured per key.",
+  durability: "Persistence-backed queueing and completion settings.",
+  idempotency: "Duplicate-subject protection for this work definition.",
+  subjectId: "Optional queue-time subject you supply when starting the worker. Idempotency, querying, and subject-scoped concurrency can use it.",
+};
+
+const rootFieldSectionDescriptions: Record<string, string> = {
+  coordination: "Turn coordination on and choose where Workable keeps the state used by duplicate protection, capacity limits, and durable queueing.",
+  queue: "How the queue request returns and which worker-level options are applied.",
+};
 
 function createDefinitionConfigurationDescriptor(
   descriptor: QueueRequestSchemaDescriptor | null
@@ -1415,6 +1632,79 @@ function sanitizeQueueWorkRequest(request: QueueWorkRequest): QueueWorkRequest {
   };
 }
 
+function applyQueueConfigurationRules(request: QueueWorkRequest): QueueWorkRequest {
+  const configuration = request.options?.configuration;
+  const coordination = configuration?.coordination;
+  if (
+    !configuration ||
+    !coordination ||
+    coordination.storage !== "Persistent" ||
+    !coordination.concurrency.isEnabled
+  ) {
+    return request;
+  }
+
+  if (
+    coordination.durability.isEnabled &&
+    coordination.concurrency.blockingMode === "WhileExecuting" &&
+    coordination.concurrency.limitReachedBehavior === "DeferStart"
+  ) {
+    return request;
+  }
+
+  return {
+    ...request,
+    options: {
+      ...request.options,
+      configuration: {
+        ...configuration,
+        coordination: {
+          ...coordination,
+          concurrency: {
+            ...coordination.concurrency,
+            blockingMode: "WhileExecuting",
+            limitReachedBehavior: "DeferStart",
+          },
+          durability: {
+            ...coordination.durability,
+            isEnabled: true,
+          },
+        },
+      },
+    },
+  };
+}
+
+function getQueueConfigurationFieldConstraint(
+  request: QueueWorkRequest,
+  path: string
+): { reason: string; value: string | boolean } | null {
+  if (!isPersistentConcurrencyActive(request)) {
+    return null;
+  }
+
+  const reason = "Required while coordination storage is Persistent and concurrency is enabled.";
+  switch (path) {
+    case "options.configuration.coordination.concurrency.blockingMode":
+      return { reason, value: "WhileExecuting" };
+    case "options.configuration.coordination.concurrency.limitReachedBehavior":
+      return { reason, value: "DeferStart" };
+    case "options.configuration.coordination.durability.isEnabled":
+      return {
+        reason: "Persistent concurrency requires durable queueing so accepted workers can wait safely for capacity.",
+        value: true,
+      };
+    default:
+      return null;
+  }
+}
+
+function isPersistentConcurrencyActive(request: QueueWorkRequest) {
+  const coordination = request.options?.configuration?.coordination;
+  return coordination?.storage === "Persistent" &&
+    coordination.concurrency.isEnabled;
+}
+
 function cloneConfiguration(configuration: WorkConfiguration): WorkConfiguration {
   return JSON.parse(JSON.stringify(configuration)) as WorkConfiguration;
 }
@@ -1436,10 +1726,25 @@ const defaultWorkConfiguration: WorkConfiguration = {
   start: {
     policy: "StartAndReturnAfterAccepted",
   },
-  idempotency: {
+  coordination: {
     isEnabled: false,
     storage: "Local",
-    conflictPolicy: "RejectDuplicates",
+    idempotency: {
+      isEnabled: false,
+      conflictPolicy: "RejectDuplicates",
+    },
+    concurrency: {
+      isEnabled: false,
+      maximumCapacity: 0,
+      scope: "PerDefinition",
+      blockingMode: "WhileExecutingPausedOrFailed",
+      limitReachedBehavior: "Ignore",
+      overrideBehavior: "Flexible",
+    },
+    durability: {
+      isEnabled: false,
+      completeDurably: false,
+    },
   },
   recurrence: {
     isEnabled: false,
@@ -1465,19 +1770,6 @@ const defaultWorkConfiguration: WorkConfiguration = {
   retention: {
     purgeInterval: "00:10:00",
     maximumFinalWorkers: 1000,
-  },
-  concurrency: {
-    isEnabled: false,
-    maximumCapacity: 0,
-    scope: "PerDefinition",
-    blockingMode: "WhileExecutingPausedOrFailed",
-    limitReachedBehavior: "Ignore",
-    overrideBehavior: "Flexible",
-    storage: "Local",
-  },
-  queueDurability: {
-    isEnabled: false,
-    completeDurably: false,
   },
 };
 

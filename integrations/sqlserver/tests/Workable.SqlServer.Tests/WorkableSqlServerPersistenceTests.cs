@@ -235,7 +235,7 @@ CREATE TABLE workable.WorkEntries
             (_, _, _) => Task.FromResult(WorkExecutionResult.Success()),
             configuration => configuration
                 .QueueDurably()
-                .RejectDuplicateSubjects(WorkIdempotencyStorage.Persistence)
+                .CoordinatePersistently().RejectDuplicateSubjects()
                 .DoNotStart());
         await system.Start();
 
@@ -310,7 +310,7 @@ WHERE SubjectType = N'order'
                 await release.Task.WaitAsync(cancellationToken);
                 return WorkExecutionResult.Success();
             },
-            configuration => configuration.RejectDuplicateSubjects(WorkIdempotencyStorage.Persistence));
+            configuration => configuration.CoordinatePersistently().RejectDuplicateSubjects());
         await system.Start();
 
         var input = WorkInput.Empty.WithSubject(new WorkSubjectId("order", "reservation-only"));
@@ -355,7 +355,7 @@ WHERE SubjectType = N'order'
                 ran.TrySetResult();
                 return Task.FromResult(WorkExecutionResult.Success());
             },
-            configuration => configuration.RejectDuplicateSubjects(WorkIdempotencyStorage.Persistence));
+            configuration => configuration.CoordinatePersistently().RejectDuplicateSubjects());
         await system.Start();
 
         await using var connection = await this.OpenConnection();
@@ -760,7 +760,7 @@ WHERE SubjectValue = N'rollback';
             workName,
             (_, _, _) => Task.FromResult(WorkExecutionResult.Success()),
             configuration => configuration
-                .RejectDuplicateSubjects(WorkIdempotencyStorage.Persistence)
+                .CoordinatePersistently().RejectDuplicateSubjects()
                 .DoNotStart());
         await firstSystem.Start();
 
@@ -772,7 +772,7 @@ WHERE SubjectValue = N'rollback';
             workName,
             (_, _, _) => Task.FromResult(WorkExecutionResult.Success()),
             configuration => configuration
-                .RejectDuplicateSubjects(WorkIdempotencyStorage.Persistence)
+                .CoordinatePersistently().RejectDuplicateSubjects()
                 .DoNotStart());
         await secondSystem.Start();
 
@@ -800,14 +800,14 @@ WHERE SubjectValue = N'rollback';
                     (_, _, _) => Task.FromResult(WorkExecutionResult.Success()),
                     configuration => configuration
                         .QueueDurably()
-                        .RejectDuplicateSubjects(WorkIdempotencyStorage.Persistence)
+                        .CoordinatePersistently().RejectDuplicateSubjects()
                         .DoNotStart()))
                 .AddWorkableSystem("background", builder => builder.AddWork(
                     WorkDefinition.Create(workName, "Named system shared durable work."),
                     (_, _, _) => Task.FromResult(WorkExecutionResult.Success()),
                     configuration => configuration
                         .QueueDurably()
-                        .RejectDuplicateSubjects(WorkIdempotencyStorage.Persistence)
+                        .CoordinatePersistently().RejectDuplicateSubjects()
                         .DoNotStart())));
         var defaultSystem = registry.Default;
         Assert.True(registry.TryGet("background", out var backgroundSystem));
@@ -1913,14 +1913,18 @@ FROM workable.WorkEntries
         var rowInput = input ?? WorkInput.Empty.WithSubject(new WorkSubjectId("order", subjectValue));
         var rowConfiguration = configuration ?? WorkConfiguration.Default with
         {
-            QueueDurability = new WorkQueueDurabilityConfiguration
+            Coordination = WorkCoordinationConfiguration.Default with
             {
                 IsEnabled = true,
-            },
-            Idempotency = WorkIdempotencyConfiguration.Default with
-            {
-                IsEnabled = true,
-                Storage = WorkIdempotencyStorage.Persistence,
+                Storage = WorkCoordinationStorage.Persistent,
+                Durability = new WorkQueueDurabilityConfiguration
+                {
+                    IsEnabled = true,
+                },
+                Idempotency = WorkIdempotencyConfiguration.Default with
+                {
+                    IsEnabled = true,
+                },
             },
         };
 
@@ -2014,23 +2018,26 @@ VALUES
         bool enableIdempotency = true)
         => WorkConfiguration.Default with
         {
-            QueueDurability = new WorkQueueDurabilityConfiguration
+            Coordination = WorkCoordinationConfiguration.Default with
             {
                 IsEnabled = true,
-            },
-            Idempotency = WorkIdempotencyConfiguration.Default with
-            {
-                IsEnabled = enableIdempotency,
-                Storage = WorkIdempotencyStorage.Persistence,
-            },
-            Concurrency = WorkConcurrencyConfiguration.Default with
-            {
-                IsEnabled = true,
-                MaximumCapacity = maximumCapacity,
-                Scope = scope,
-                BlockingMode = WorkConcurrencyBlockingMode.WhileExecuting,
-                LimitReachedBehavior = WorkConcurrencyLimitReachedBehavior.DeferStart,
-                Storage = WorkConcurrencyStorage.Persistence,
+                Storage = WorkCoordinationStorage.Persistent,
+                Durability = new WorkQueueDurabilityConfiguration
+                {
+                    IsEnabled = true,
+                },
+                Idempotency = WorkIdempotencyConfiguration.Default with
+                {
+                    IsEnabled = enableIdempotency,
+                },
+                Concurrency = WorkConcurrencyConfiguration.Default with
+                {
+                    IsEnabled = true,
+                    MaximumCapacity = maximumCapacity,
+                    Scope = scope,
+                    BlockingMode = WorkConcurrencyBlockingMode.WhileExecuting,
+                    LimitReachedBehavior = WorkConcurrencyLimitReachedBehavior.DeferStart,
+                },
             },
         };
 

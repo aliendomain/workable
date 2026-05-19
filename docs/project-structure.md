@@ -33,7 +33,7 @@ Libraries reference `Workable.Abstractions` when they need to queue, query, obse
 `src/Workable` contains the host/runtime surface:
 
 - in-memory system implementation
-- worker lifecycle, queueing, dispatch, retention, concurrency, and event-stream behavior
+- worker lifecycle, queueing, dispatch, retention, coordination, durability, concurrency, and event-stream behavior
 - `AddWorkableSystem`
 
 Host applications reference `Workable` when they need to create systems and run the in-process runtime. `Workable` also references the abstractions package, so host applications can inject and use `IWorkSystem` directly.

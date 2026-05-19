@@ -21,6 +21,8 @@ Some registration-time behavior is attached with the same fluent builder but is 
 
 ## Configuration Types
 
+`WorkCoordinationConfiguration` controls where Workable keeps coordination state and which coordination protections are enabled for a worker. `IsEnabled` turns coordination on, `Storage` selects `Local` or `Persistent`, and the nested idempotency, concurrency, and durability settings decide whether duplicate protection, capacity limits, durable queueing, or durable completion participate in that mode. `Local` is the default and keeps coordination inside one process. `Persistent` uses a registered persistence store and is required for durable queueing, cross-process idempotency, cross-process concurrency, and durable completion without queue durability.
+
 - [Start Configuration](work-configuration-start.md): automatic start behavior and when queue calls return.
 - [Idempotency Configuration](work-configuration-idempotency.md): duplicate prevention by `WorkSubjectId`.
 - [Recurrence Configuration](work-configuration-recurrence.md): repeated execution, iteration waits, and recurrence circuit behavior.
@@ -56,3 +58,5 @@ WorkDefinitionReconfigurationOutcome outcome =
 Runtime reconfiguration updates a worker's options and effective configuration, then advances the worker revision. Every reconfiguration call requires the current `WorkerVersion`. If another control operation changes the worker first, the reconfiguration returns a conflict outcome.
 
 Invalid definition default reconfiguration returns `WorkDefinitionReconfigurationStatus.Invalid`. Invalid queue-time configuration returns `WorkQueueStatus.Invalid`. Invalid runtime reconfiguration returns `WorkActionStatus.Invalid`.
+
+Persistent coordination is also validated against the host system. If a work definition, queue override, or worker reconfiguration asks for `WorkCoordinationStorage.Persistent` but the system has no registered persistence store, Workable rejects the operation instead of accepting work that cannot be coordinated safely.

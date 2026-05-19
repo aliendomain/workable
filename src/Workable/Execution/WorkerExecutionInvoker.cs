@@ -47,7 +47,7 @@ internal sealed class WorkerExecutionInvoker(
                 MessageCount = result.Messages.Count,
             });
 
-            if (worker.Configuration.QueueDurability.CompleteDurably &&
+            if (worker.Configuration.Coordination.Durability.CompleteDurably &&
                 !result.HasErrors &&
                 worker.State == WorkerState.Running &&
                 !context.IsDurableCompletionRecorded)

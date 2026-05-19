@@ -93,12 +93,16 @@ public sealed class WorkStartConfigurationTests
         var definition = WorkDefinition.Create("return-after-started", "Waits for deferred start.",
             configuration: StartConfiguration(WorkStartPolicy.StartAndReturnAfterStarted) with
             {
-                Concurrency = WorkConcurrencyConfiguration.Default with
+                Coordination = WorkCoordinationConfiguration.Default with
                 {
                     IsEnabled = true,
-                    MaximumCapacity = 1,
-                    LimitReachedBehavior = WorkConcurrencyLimitReachedBehavior.DeferStart,
-                    OverrideBehavior = WorkConcurrencyOverrideBehavior.Strict,
+                    Concurrency = WorkConcurrencyConfiguration.Default with
+                    {
+                        IsEnabled = true,
+                        MaximumCapacity = 1,
+                        LimitReachedBehavior = WorkConcurrencyLimitReachedBehavior.DeferStart,
+                        OverrideBehavior = WorkConcurrencyOverrideBehavior.Strict,
+                    },
                 },
             });
         var system = CreateSystem(definition, async (context, input, cancellationToken) =>
@@ -225,12 +229,16 @@ public sealed class WorkStartConfigurationTests
         var definition = WorkDefinition.Create("runtime-concurrency-start", "Can change start policy while queued with concurrency enabled.",
             configuration: StartConfiguration(WorkStartPolicy.DoNotStart) with
             {
-                Concurrency = WorkConcurrencyConfiguration.Default with
+                Coordination = WorkCoordinationConfiguration.Default with
                 {
                     IsEnabled = true,
-                    MaximumCapacity = 1,
-                    LimitReachedBehavior = WorkConcurrencyLimitReachedBehavior.DeferStart,
-                    OverrideBehavior = WorkConcurrencyOverrideBehavior.Strict,
+                    Concurrency = WorkConcurrencyConfiguration.Default with
+                    {
+                        IsEnabled = true,
+                        MaximumCapacity = 1,
+                        LimitReachedBehavior = WorkConcurrencyLimitReachedBehavior.DeferStart,
+                        OverrideBehavior = WorkConcurrencyOverrideBehavior.Strict,
+                    },
                 },
             });
         var system = CreateSystem(definition, SuccessfulWork);
@@ -259,12 +267,16 @@ public sealed class WorkStartConfigurationTests
         var definition = WorkDefinition.Create("runtime-concurrency-deferred-start", "Defers start reconfiguration until capacity is available.",
             configuration: StartConfiguration(WorkStartPolicy.DoNotStart) with
             {
-                Concurrency = WorkConcurrencyConfiguration.Default with
+                Coordination = WorkCoordinationConfiguration.Default with
                 {
                     IsEnabled = true,
-                    MaximumCapacity = 1,
-                    LimitReachedBehavior = WorkConcurrencyLimitReachedBehavior.DeferStart,
-                    OverrideBehavior = WorkConcurrencyOverrideBehavior.Strict,
+                    Concurrency = WorkConcurrencyConfiguration.Default with
+                    {
+                        IsEnabled = true,
+                        MaximumCapacity = 1,
+                        LimitReachedBehavior = WorkConcurrencyLimitReachedBehavior.DeferStart,
+                        OverrideBehavior = WorkConcurrencyOverrideBehavior.Strict,
+                    },
                 },
             });
         var system = CreateSystem(definition, async (context, input, cancellationToken) =>

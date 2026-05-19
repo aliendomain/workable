@@ -46,6 +46,7 @@ export type WorkRealtimeCapability = {
 
 export type WorkableHttpCapabilities = {
   realtime: WorkRealtimeCapability;
+  persistentCoordinationAvailable: boolean;
 };
 
 export type WorkableHttpSystems = {
@@ -273,10 +274,29 @@ export type WorkConfiguration = {
       | "StartAndReturnAfterStarted"
       | "StartAndReturnAfterCompleted";
   };
-  idempotency: {
+  coordination: {
     isEnabled: boolean;
-    storage: "Local" | "Persistence";
-    conflictPolicy: "RejectDuplicates";
+    storage: "Local" | "Persistent";
+    idempotency: {
+      isEnabled: boolean;
+      conflictPolicy: "RejectDuplicates";
+    };
+    concurrency: {
+      isEnabled: boolean;
+      maximumCapacity: number;
+      scope: "PerDefinition" | "PerSubject" | "PerConcurrencyKey";
+      blockingMode:
+        | "WhileExecutingPausedOrFailed"
+        | "WhileExecutingOrPaused"
+        | "WhileExecutingOrFailed"
+        | "WhileExecuting";
+      limitReachedBehavior: "Ignore" | "DeferStart";
+      overrideBehavior: "Flexible" | "Strict";
+    };
+    durability: {
+      isEnabled: boolean;
+      completeDurably?: boolean;
+    };
   };
   recurrence: {
     isEnabled: boolean;
@@ -309,23 +329,6 @@ export type WorkConfiguration = {
   retention: {
     purgeInterval: string;
     maximumFinalWorkers: number;
-  };
-  concurrency: {
-    isEnabled: boolean;
-    maximumCapacity: number;
-    scope: "PerDefinition" | "PerSubject" | "PerConcurrencyKey";
-    blockingMode:
-      | "WhileExecutingPausedOrFailed"
-      | "WhileExecutingOrPaused"
-      | "WhileExecutingOrFailed"
-      | "WhileExecuting";
-    limitReachedBehavior: "Ignore" | "DeferStart";
-    overrideBehavior: "Flexible" | "Strict";
-    storage: "Local" | "Persistence";
-  };
-  queueDurability?: {
-    isEnabled: boolean;
-    completeDurably?: boolean;
   };
   invocation?: Record<string, unknown> | null;
 };

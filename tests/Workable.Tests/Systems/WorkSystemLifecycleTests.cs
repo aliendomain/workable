@@ -512,12 +512,16 @@ public sealed class WorkSystemLifecycleTests
                         "shutdown.deferred-backlog",
                         configuration: WorkConfiguration.Default with
                         {
-                            Concurrency = WorkConcurrencyConfiguration.Default with
+                            Coordination = WorkCoordinationConfiguration.Default with
                             {
                                 IsEnabled = true,
-                                MaximumCapacity = 1,
-                                BlockingMode = WorkConcurrencyBlockingMode.WhileExecuting,
-                                LimitReachedBehavior = WorkConcurrencyLimitReachedBehavior.DeferStart,
+                                Concurrency = WorkConcurrencyConfiguration.Default with
+                                {
+                                    IsEnabled = true,
+                                    MaximumCapacity = 1,
+                                    BlockingMode = WorkConcurrencyBlockingMode.WhileExecuting,
+                                    LimitReachedBehavior = WorkConcurrencyLimitReachedBehavior.DeferStart,
+                                },
                             },
                         })))
             .BuildServiceProvider()

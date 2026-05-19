@@ -44,7 +44,11 @@ internal static class WorkConfigurationComposer
         {
             configuration = configuration with
             {
-                Idempotency = idempotencyAttribute.Configuration,
+                Coordination = configuration.Coordination with
+                {
+                    IsEnabled = idempotencyAttribute.Configuration.IsEnabled || configuration.Coordination.IsEnabled,
+                    Idempotency = idempotencyAttribute.Configuration,
+                },
             };
         }
 
@@ -89,7 +93,11 @@ internal static class WorkConfigurationComposer
         {
             configuration = configuration with
             {
-                Concurrency = concurrencyAttribute.Configuration,
+                Coordination = configuration.Coordination with
+                {
+                    IsEnabled = concurrencyAttribute.Configuration.IsEnabled || configuration.Coordination.IsEnabled,
+                    Concurrency = concurrencyAttribute.Configuration,
+                },
             };
         }
 
@@ -98,7 +106,12 @@ internal static class WorkConfigurationComposer
         {
             configuration = configuration with
             {
-                QueueDurability = durabilityAttribute.Configuration,
+                Coordination = configuration.Coordination with
+                {
+                    IsEnabled = durabilityAttribute.Configuration.IsEnabled || durabilityAttribute.Configuration.CompleteDurably || configuration.Coordination.IsEnabled,
+                    Storage = WorkCoordinationStorage.Persistent,
+                    Durability = durabilityAttribute.Configuration,
+                },
             };
         }
 

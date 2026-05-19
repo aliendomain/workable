@@ -225,8 +225,8 @@ internal sealed class WorkerPersistenceCoordinator : IWorkerPersistenceCoordinat
             this.acceptWorkerIntoMemory(record);
 
             shouldScheduleStart = entry.Configuration.Start.Policy != WorkStartPolicy.DoNotStart;
-            shouldDrainQueuedWorkers = entry.Configuration.Concurrency.IsEnabled && shouldScheduleStart;
-            if (entry.Configuration.Concurrency.IsEnabled && shouldScheduleStart)
+            shouldDrainQueuedWorkers = entry.Configuration.Coordination.IsConcurrencyEnabled && shouldScheduleStart;
+            if (entry.Configuration.Coordination.IsConcurrencyEnabled && shouldScheduleStart)
             {
                 var reservation = this.concurrency.QueueExistingWorkerForStart(record);
                 shouldScheduleStart = reservation == WorkConcurrencyReservationStatus.Reserved;
@@ -263,7 +263,7 @@ internal sealed class WorkerPersistenceCoordinator : IWorkerPersistenceCoordinat
         IWorkQueueDurabilityTransaction transaction,
         CancellationToken cancellationToken)
     {
-        if (!worker.Configuration.QueueDurability.CompleteDurably)
+        if (!worker.Configuration.Coordination.Durability.CompleteDurably)
         {
             throw new InvalidOperationException(
                 "Durable completion is not enabled for this worker. Configure the work with CompleteDurably before calling IWorkExecutionContext.CompleteDurably.");

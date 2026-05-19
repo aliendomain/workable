@@ -304,6 +304,24 @@ public sealed class TypedWorkExecutorTests
     }
 
     [Fact]
+    public async Task TypedExecutorDateOnlyInputUsesDateSchemaAndAcceptsDateJson()
+    {
+        await using var system = new ServiceCollection()
+            .AddWorkableSystem(builder => builder.AddWork<DateOnlyWork>())
+            .BuildServiceProvider()
+            .GetRequiredService<IWorkSystemRegistry>()
+            .Default;
+        await system.Start();
+
+        var definition = RequiredDefinition(system, "typed.date-only");
+        var handle = await system.Queue.Enqueue("typed.date-only", WorkInput.FromJson("""{"day":"2026-05-19"}"""));
+        var completion = await handle.WaitForCompletion();
+
+        Assert.Contains("\"format\": \"date\"", definition.InputSchema.JsonSchema);
+        Assert.Equal(WorkCompletionStatus.Completed, completion.Status);
+    }
+
+    [Fact]
     public async Task ExplicitSchemasAreNotReplacedByTypedRegistration()
     {
         var explicitInput = new WorkSchema("""{"type":"object","properties":{"custom":{"type":"string"}}}""");
@@ -341,6 +359,8 @@ public sealed class TypedWorkExecutorTests
     private sealed record EchoInput(string Message);
 
     private sealed record EchoOutput(int Echoed);
+
+    private sealed record DateOnlyInput(DateOnly Day);
 
     private sealed class NotAnExecutor;
 
@@ -383,6 +403,16 @@ public sealed class TypedWorkExecutorTests
         public Task<WorkExecutionResult> Execute(
             IWorkExecutionContext context,
             EchoInput input,
+            CancellationToken cancellationToken)
+            => Task.FromResult(WorkExecutionResult.Success());
+    }
+
+    [WorkMetadata("typed.date-only", "Typed", "Accepts a DateOnly input.")]
+    private sealed class DateOnlyWork : IWorkExecutor<DateOnlyInput>
+    {
+        public Task<WorkExecutionResult> Execute(
+            IWorkExecutionContext context,
+            DateOnlyInput input,
             CancellationToken cancellationToken)
             => Task.FromResult(WorkExecutionResult.Success());
     }

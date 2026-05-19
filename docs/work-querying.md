@@ -486,9 +486,25 @@ The examples below show the serialized JSON shape returned by HTTP and MCP adapt
     "start": {
       "policy": "StartAndReturnAfterAccepted"
     },
-    "idempotency": {
+    "coordination": {
       "isEnabled": false,
-      "conflictPolicy": "RejectDuplicates"
+      "storage": "Local",
+      "idempotency": {
+        "isEnabled": false,
+        "conflictPolicy": "RejectDuplicates"
+      },
+      "concurrency": {
+        "isEnabled": false,
+        "maximumCapacity": 0,
+        "scope": "PerDefinition",
+        "blockingMode": "WhileExecutingPausedOrFailed",
+        "limitReachedBehavior": "Ignore",
+        "overrideBehavior": "Flexible"
+      },
+      "durability": {
+        "isEnabled": false,
+        "completeDurably": false
+      }
     },
     "recurrence": {
       "isEnabled": false,
@@ -514,14 +530,6 @@ The examples below show the serialized JSON shape returned by HTTP and MCP adapt
     "retention": {
       "purgeInterval": "00:10:00",
       "maximumFinalWorkers": 1000
-    },
-    "concurrency": {
-      "isEnabled": false,
-      "maximumCapacity": 0,
-      "scope": "PerDefinition",
-      "blockingMode": "WhileExecutingPausedOrFailed",
-      "limitReachedBehavior": "Ignore",
-      "overrideBehavior": "Flexible"
     },
     "invocation": {
       "allowedChannels": ["DotNet", "HttpApi"]
@@ -671,9 +679,25 @@ The examples below show the serialized JSON shape returned by HTTP and MCP adapt
       "start": {
         "policy": "StartAndReturnAfterAccepted"
       },
-      "idempotency": {
+      "coordination": {
         "isEnabled": false,
-        "conflictPolicy": "RejectDuplicates"
+        "storage": "Local",
+        "idempotency": {
+          "isEnabled": false,
+          "conflictPolicy": "RejectDuplicates"
+        },
+        "concurrency": {
+          "isEnabled": false,
+          "maximumCapacity": 0,
+          "scope": "PerDefinition",
+          "blockingMode": "WhileExecutingPausedOrFailed",
+          "limitReachedBehavior": "Ignore",
+          "overrideBehavior": "Flexible"
+        },
+        "durability": {
+          "isEnabled": false,
+          "completeDurably": false
+        }
       },
       "recurrence": {
         "isEnabled": false,
@@ -699,14 +723,6 @@ The examples below show the serialized JSON shape returned by HTTP and MCP adapt
       "retention": {
         "purgeInterval": "00:10:00",
         "maximumFinalWorkers": 1000
-      },
-      "concurrency": {
-        "isEnabled": false,
-        "maximumCapacity": 0,
-        "scope": "PerDefinition",
-        "blockingMode": "WhileExecutingPausedOrFailed",
-        "limitReachedBehavior": "Ignore",
-        "overrideBehavior": "Flexible"
       },
       "invocation": {
         "allowedChannels": ["DotNet", "HttpApi"]
@@ -752,9 +768,25 @@ The examples below show the serialized JSON shape returned by HTTP and MCP adapt
       "start": {
         "policy": "StartAndReturnAfterAccepted"
       },
-      "idempotency": {
+      "coordination": {
         "isEnabled": false,
-        "conflictPolicy": "RejectDuplicates"
+        "storage": "Local",
+        "idempotency": {
+          "isEnabled": false,
+          "conflictPolicy": "RejectDuplicates"
+        },
+        "concurrency": {
+          "isEnabled": false,
+          "maximumCapacity": 0,
+          "scope": "PerDefinition",
+          "blockingMode": "WhileExecutingPausedOrFailed",
+          "limitReachedBehavior": "Ignore",
+          "overrideBehavior": "Flexible"
+        },
+        "durability": {
+          "isEnabled": false,
+          "completeDurably": false
+        }
       },
       "recurrence": {
         "isEnabled": false,
@@ -780,14 +812,6 @@ The examples below show the serialized JSON shape returned by HTTP and MCP adapt
       "retention": {
         "purgeInterval": "00:10:00",
         "maximumFinalWorkers": 1000
-      },
-      "concurrency": {
-        "isEnabled": false,
-        "maximumCapacity": 0,
-        "scope": "PerDefinition",
-        "blockingMode": "WhileExecutingPausedOrFailed",
-        "limitReachedBehavior": "Ignore",
-        "overrideBehavior": "Flexible"
       },
       "invocation": {
         "allowedChannels": ["DotNet", "HttpApi"]

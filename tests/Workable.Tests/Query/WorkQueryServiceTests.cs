@@ -636,10 +636,14 @@ public sealed class WorkQueryServiceTests
                         configuration: WorkConfiguration.Default with
                         {
                             Start = WorkStartConfiguration.DoNotStart,
-                            Concurrency = WorkConcurrencyConfiguration.Default with
+                            Coordination = WorkCoordinationConfiguration.Default with
                             {
                                 IsEnabled = true,
-                                MaximumCapacity = 1,
+                                Concurrency = WorkConcurrencyConfiguration.Default with
+                                {
+                                    IsEnabled = true,
+                                    MaximumCapacity = 1,
+                                },
                             },
                         }),
                     SuccessfulWork);
@@ -702,10 +706,14 @@ public sealed class WorkQueryServiceTests
             new WorkerReconfiguration(
                 ProfilingEnabled: true,
                 Recurrence: WorkRecurrenceConfiguration.Every(TimeSpan.FromMinutes(1)),
-                Concurrency: WorkConcurrencyConfiguration.Default with
+                Coordination: WorkCoordinationConfiguration.Default with
                 {
                     IsEnabled = true,
-                    MaximumCapacity = 1,
+                    Concurrency = WorkConcurrencyConfiguration.Default with
+                    {
+                        IsEnabled = true,
+                        MaximumCapacity = 1,
+                    },
                 }));
         var afterEnabled = await system.Query.Workers(new WorkerCriteria(
             Configuration: new WorkerConfigurationCriteria(
@@ -1794,13 +1802,17 @@ public sealed class WorkQueryServiceTests
                 category: "Concurrency",
                 configuration: WorkConfiguration.Default with
                 {
-                    Concurrency = new WorkConcurrencyConfiguration
+                    Coordination = WorkCoordinationConfiguration.Default with
                     {
                         IsEnabled = true,
-                        MaximumCapacity = 1,
-                        Scope = WorkConcurrencyScope.PerDefinition,
-                        BlockingMode = WorkConcurrencyBlockingMode.WhileExecuting,
-                        LimitReachedBehavior = WorkConcurrencyLimitReachedBehavior.DeferStart,
+                        Concurrency = new WorkConcurrencyConfiguration
+                        {
+                            IsEnabled = true,
+                            MaximumCapacity = 1,
+                            Scope = WorkConcurrencyScope.PerDefinition,
+                            BlockingMode = WorkConcurrencyBlockingMode.WhileExecuting,
+                            LimitReachedBehavior = WorkConcurrencyLimitReachedBehavior.DeferStart,
+                        },
                     },
                 }),
             async (_, _, cancellationToken) =>
@@ -1837,10 +1849,13 @@ public sealed class WorkQueryServiceTests
                 category: "Idempotency",
                 configuration: WorkConfiguration.Default with
                 {
-                    Idempotency = new WorkIdempotencyConfiguration
+                    Coordination = WorkCoordinationConfiguration.Default with
                     {
                         IsEnabled = true,
-                        Storage = WorkIdempotencyStorage.Local,
+                        Idempotency = new WorkIdempotencyConfiguration
+                        {
+                            IsEnabled = true,
+                        },
                     },
                 }),
             SuccessfulWork);
@@ -1855,7 +1870,7 @@ public sealed class WorkQueryServiceTests
 
         Assert.False(duplicate.QueueOutcome.IsAccepted);
         Assert.Equal(1, diagnostics.DuplicateRejectionCount);
-        Assert.Equal(WorkIdempotencyStorage.Local, diagnostics.LastDuplicateRejectedStorage);
+        Assert.Equal(WorkCoordinationStorage.Local, diagnostics.LastDuplicateRejectedStorage);
     }
 
     [Fact]

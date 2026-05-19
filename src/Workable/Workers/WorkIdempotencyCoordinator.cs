@@ -40,7 +40,7 @@ internal sealed class WorkIdempotencyCoordinator(
             return [];
         }
 
-        diagnostics.RecordDuplicateRejected(definitionId, requiredSubjectId, idempotency.Storage);
+        diagnostics.RecordDuplicateRejected(definitionId, requiredSubjectId, WorkCoordinationStorage.Local);
         return [WorkMessage.Error(
                 "workable.idempotency.duplicate_subject",
                 $"A worker already exists for work subject '{requiredSubjectId}'.",

@@ -145,13 +145,11 @@ public sealed class WorkableHttpApiTests
         Assert.Equal(
             [
                 nameof(WorkableHttpWorkConfiguration.Start),
-                nameof(WorkableHttpWorkConfiguration.Idempotency),
+                nameof(WorkableHttpWorkConfiguration.Coordination),
                 nameof(WorkableHttpWorkConfiguration.Recurrence),
                 nameof(WorkableHttpWorkConfiguration.TransientRetry),
                 nameof(WorkableHttpWorkConfiguration.Logging),
                 nameof(WorkableHttpWorkConfiguration.Retention),
-                nameof(WorkableHttpWorkConfiguration.Concurrency),
-                nameof(WorkableHttpWorkConfiguration.QueueDurability),
             ],
             typeof(WorkableHttpWorkConfiguration)
                 .GetProperties()
@@ -961,24 +959,32 @@ public sealed class WorkableHttpApiTests
             ?? throw new InvalidOperationException("Expected queue request schema JSON.");
         Assert.NotNull(schema["properties"]?["completion"]);
         Assert.NotNull(schema["properties"]?["options"]);
-        var idempotency = json["tabs"]?.AsArray().FirstOrDefault(tab => tab?["id"]?.GetValue<string>() == "idempotency")
-            ?? throw new InvalidOperationException("Expected idempotency tab.");
-        var fields = idempotency["fields"]?.AsArray()
-            ?? throw new InvalidOperationException("Expected idempotency fields.");
+        Assert.False(json["capabilities"]?["persistentCoordinationAvailable"]?.GetValue<bool>());
+        var queue = json["tabs"]?.AsArray().FirstOrDefault(tab => tab?["id"]?.GetValue<string>() == "queue")
+            ?? throw new InvalidOperationException("Expected queue tab.");
+        var queueFields = queue["fields"]?.AsArray()
+            ?? throw new InvalidOperationException("Expected queue fields.");
+        var coordination = json["tabs"]?.AsArray().FirstOrDefault(tab => tab?["id"]?.GetValue<string>() == "coordination")
+            ?? throw new InvalidOperationException("Expected coordination tab.");
+        var fields = coordination["fields"]?.AsArray()
+            ?? throw new InvalidOperationException("Expected coordination fields.");
+        var schemaJson = schema.ToJsonString();
 
-        Assert.Contains(fields, field => field?["path"]?.GetValue<string>() == "subjectId.type");
-        Assert.Contains(fields, field => field?["path"]?.GetValue<string>() == "subjectId.value");
-        var concurrency = json["tabs"]?.AsArray().FirstOrDefault(tab => tab?["id"]?.GetValue<string>() == "concurrency")
-            ?? throw new InvalidOperationException("Expected concurrency tab.");
-        var concurrencyFields = concurrency["fields"]?.AsArray()
-            ?? throw new InvalidOperationException("Expected concurrency fields.");
-        Assert.Contains(concurrencyFields, field => field?["path"]?.GetValue<string>() == "options.configuration.concurrency.storage");
-        var durability = json["tabs"]?.AsArray().FirstOrDefault(tab => tab?["id"]?.GetValue<string>() == "durability")
-            ?? throw new InvalidOperationException("Expected durability tab.");
-        var durabilityFields = durability["fields"]?.AsArray()
-            ?? throw new InvalidOperationException("Expected durability fields.");
-        Assert.DoesNotContain(durabilityFields, field => field?["path"]?.GetValue<string>() == "options.configuration.idempotency.isEnabled");
-        Assert.DoesNotContain(durabilityFields, field => field?["path"]?.GetValue<string>() == "options.configuration.idempotency.storage");
+        Assert.Contains(queueFields, field => field?["path"]?.GetValue<string>() == "subjectId.type");
+        Assert.Contains(queueFields, field => field?["path"]?.GetValue<string>() == "subjectId.value");
+        Assert.DoesNotContain(fields, field => field?["path"]?.GetValue<string>() == "subjectId.type");
+        Assert.DoesNotContain(fields, field => field?["path"]?.GetValue<string>() == "subjectId.value");
+        Assert.Contains(fields, field => field?["path"]?.GetValue<string>() == "options.configuration.coordination.storage");
+        Assert.Contains(fields, field => field?["path"]?.GetValue<string>() == "options.configuration.coordination.idempotency.isEnabled");
+        Assert.Contains(fields, field => field?["path"]?.GetValue<string>() == "options.configuration.coordination.concurrency.isEnabled");
+        Assert.Contains(fields, field => field?["path"]?.GetValue<string>() == "options.configuration.coordination.durability.isEnabled");
+        Assert.DoesNotContain("usesPersistentStorage", schemaJson, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("isIdempotencyEnabled", schemaJson, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("isPersistentIdempotencyEnabled", schemaJson, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("isConcurrencyEnabled", schemaJson, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("isPersistentConcurrencyEnabled", schemaJson, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("isDurabilityEnabled", schemaJson, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("requiresPersistenceStore", schemaJson, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("invocation", json.ToJsonString(), StringComparison.OrdinalIgnoreCase);
     }
 
@@ -1027,9 +1033,17 @@ public sealed class WorkableHttpApiTests
             ?? throw new InvalidOperationException("Expected dotnet-only definition.");
         var channels = dotNetOnly["configuration"]?["invocation"]?["allowedChannels"]?.AsArray()
             ?? throw new InvalidOperationException("Expected invocation channels.");
+        var jsonText = dotNetOnly.ToJsonString();
 
         Assert.Contains(channels, channel => channel?.GetValue<string>() == "DotNet");
         Assert.DoesNotContain(channels, channel => channel?.GetValue<string>() == "HttpApi");
+        Assert.DoesNotContain("usesPersistentStorage", jsonText, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("isIdempotencyEnabled", jsonText, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("isPersistentIdempotencyEnabled", jsonText, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("isConcurrencyEnabled", jsonText, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("isPersistentConcurrencyEnabled", jsonText, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("isDurabilityEnabled", jsonText, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("requiresPersistenceStore", jsonText, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -1208,11 +1222,13 @@ public sealed class WorkableHttpApiTests
         Assert.Contains(systems, system =>
             system?["name"] is null &&
             system?["isDefault"]?.GetValue<bool>() == true &&
-            system?["capabilities"]?["realtime"]?["enabled"]?.GetValue<bool>() == false);
+            system?["capabilities"]?["realtime"]?["enabled"]?.GetValue<bool>() == false &&
+            system?["capabilities"]?["persistentCoordinationAvailable"]?.GetValue<bool>() == false);
         Assert.Contains(systems, system =>
             system?["name"]?.GetValue<string>() == "background" &&
             system?["isDefault"]?.GetValue<bool>() == false &&
-            system?["capabilities"]?["realtime"]?["enabled"]?.GetValue<bool>() == false);
+            system?["capabilities"]?["realtime"]?["enabled"]?.GetValue<bool>() == false &&
+            system?["capabilities"]?["persistentCoordinationAvailable"]?.GetValue<bool>() == false);
     }
 
     [Fact]

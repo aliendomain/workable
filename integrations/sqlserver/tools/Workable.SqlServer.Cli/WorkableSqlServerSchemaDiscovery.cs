@@ -131,30 +131,29 @@ internal static partial class WorkableSqlServerSchemaDiscovery
                 maximumWindowLength: 600);
 
     private static bool ContainsPersistenceBackedIdempotencyConfiguration(string source)
-        => source.Contains("RejectDuplicateSubjects(WorkIdempotencyStorage.Persistence", StringComparison.Ordinal)
-            || source.Contains("RejectDuplicateSubjects(storage: WorkIdempotencyStorage.Persistence", StringComparison.Ordinal)
+        => source.Contains(".CoordinatePersistently(", StringComparison.Ordinal)
             || ContainsInWindow(
                 source,
-                "UseIdempotency(new WorkIdempotencyConfiguration",
-                "Storage = WorkIdempotencyStorage.Persistence",
+                "UseCoordination(new WorkCoordinationConfiguration",
+                "Storage = WorkCoordinationStorage.Persistent",
                 maximumWindowLength: 600)
             || ContainsInWindow(
                 source,
-                "new WorkIdempotencyConfiguration",
-                "Storage = WorkIdempotencyStorage.Persistence",
+                "new WorkCoordinationConfiguration",
+                "Storage = WorkCoordinationStorage.Persistent",
                 maximumWindowLength: 600);
 
     private static bool ContainsPersistenceBackedConcurrencyConfiguration(string source)
-        => source.Contains("storage: WorkConcurrencyStorage.Persistence", StringComparison.Ordinal)
+        => source.Contains(".CoordinatePersistently(", StringComparison.Ordinal)
             || ContainsInWindow(
                 source,
-                "UseConcurrency(new WorkConcurrencyConfiguration",
-                "Storage = WorkConcurrencyStorage.Persistence",
+                "UseCoordination(new WorkCoordinationConfiguration",
+                "Storage = WorkCoordinationStorage.Persistent",
                 maximumWindowLength: 800)
             || ContainsInWindow(
                 source,
-                "new WorkConcurrencyConfiguration",
-                "Storage = WorkConcurrencyStorage.Persistence",
+                "new WorkCoordinationConfiguration",
+                "Storage = WorkCoordinationStorage.Persistent",
                 maximumWindowLength: 800);
 
     private static bool ContainsInWindow(

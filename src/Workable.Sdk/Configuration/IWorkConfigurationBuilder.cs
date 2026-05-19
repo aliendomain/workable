@@ -5,7 +5,7 @@ public interface IWorkConfigurationBuilder
 {
     IWorkConfigurationBuilder UseStart(WorkStartConfiguration start);
 
-    IWorkConfigurationBuilder UseIdempotency(WorkIdempotencyConfiguration idempotency);
+    IWorkConfigurationBuilder UseCoordination(WorkCoordinationConfiguration coordination);
 
     IWorkConfigurationBuilder UseRecurrence(WorkRecurrenceConfiguration recurrence);
 
@@ -15,11 +15,9 @@ public interface IWorkConfigurationBuilder
 
     IWorkConfigurationBuilder UseRetention(WorkRetentionConfiguration retention);
 
-    IWorkConfigurationBuilder UseConcurrency(WorkConcurrencyConfiguration concurrency);
-
-    IWorkConfigurationBuilder UseQueueDurability(WorkQueueDurabilityConfiguration durability);
-
     IWorkConfigurationBuilder UseInvocation(WorkInvocationConfiguration invocation);
+
+    IWorkConfigurationBuilder CoordinatePersistently();
 
     IWorkConfigurationBuilder RecurEvery(TimeSpan interval);
 
@@ -46,8 +44,7 @@ public interface IWorkConfigurationBuilder
         WorkConcurrencyScope scope = WorkConcurrencyScope.PerDefinition,
         WorkConcurrencyBlockingMode blockingMode = WorkConcurrencyBlockingMode.WhileExecutingPausedOrFailed,
         WorkConcurrencyLimitReachedBehavior limitReachedBehavior = WorkConcurrencyLimitReachedBehavior.Ignore,
-        WorkConcurrencyOverrideBehavior overrideBehavior = WorkConcurrencyOverrideBehavior.Flexible,
-        WorkConcurrencyStorage storage = WorkConcurrencyStorage.Local);
+        WorkConcurrencyOverrideBehavior overrideBehavior = WorkConcurrencyOverrideBehavior.Flexible);
 
     IWorkConfigurationBuilder QueueDurably(TimeSpan? fallbackPollingInterval = null);
 
@@ -71,10 +68,7 @@ public interface IWorkConfigurationBuilder
         where TInitializer : class;
 
     IWorkConfigurationBuilder RejectDuplicateSubjects(
-        WorkIdempotencyConflictPolicy conflictPolicy = WorkIdempotencyConflictPolicy.RejectDuplicates,
-        WorkIdempotencyStorage storage = WorkIdempotencyStorage.Local);
-
-    IWorkConfigurationBuilder RejectDuplicateSubjects(WorkIdempotencyStorage storage);
+        WorkIdempotencyConflictPolicy conflictPolicy = WorkIdempotencyConflictPolicy.RejectDuplicates);
 
     IWorkConfigurationBuilder AllowInvocationFrom(params WorkInvocationChannel[] channels);
 

@@ -21,22 +21,40 @@ internal static class WorkConfigurationValidator
         ValidateTransientRetry(configuration.TransientRetry, messages);
         ValidateLogging(configuration.Logging, messages);
         ValidateRetention(configuration.Retention, messages);
-        ValidateConcurrency(configuration.Concurrency, configuration.QueueDurability, messages);
-        ValidateQueueDurability(configuration.QueueDurability, configuration.Idempotency, configuration.Recurrence, messages);
+        ValidateCoordination(configuration.Coordination, configuration.Recurrence, messages);
         ValidateInvocation(configuration.Invocation, messages);
         return messages;
     }
 
-    public static IReadOnlyList<WorkMessage> ValidateConcurrencyInput(
-        WorkConcurrencyConfiguration concurrency,
-        WorkInput? input)
+    public static IReadOnlyList<WorkMessage> ValidatePersistenceStore(
+        WorkConfiguration configuration,
+        bool persistenceStoreAvailable)
     {
-        if (!concurrency.IsEnabled)
+        ArgumentNullException.ThrowIfNull(configuration);
+        if (persistenceStoreAvailable || !configuration.Coordination.RequiresPersistenceStore)
         {
             return [];
         }
 
-        return concurrency.Scope switch
+        return
+        [
+            WorkMessage.Error(
+                "workable.configuration.coordination.persistence_store_required",
+                "Persistent coordination requires a registered Workable persistence store.",
+                "configuration.coordination.storage"),
+        ];
+    }
+
+    public static IReadOnlyList<WorkMessage> ValidateConcurrencyInput(
+        WorkCoordinationConfiguration coordination,
+        WorkInput? input)
+    {
+        if (!coordination.IsConcurrencyEnabled)
+        {
+            return [];
+        }
+
+        return coordination.Concurrency.Scope switch
         {
             WorkConcurrencyScope.PerSubject when input?.SubjectId is null =>
                 [ConcurrencyInputError(
@@ -160,20 +178,46 @@ internal static class WorkConfigurationValidator
         }
     }
 
-    private static void ValidateConcurrency(
-        WorkConcurrencyConfiguration concurrency,
-        WorkQueueDurabilityConfiguration durability,
+    private static void ValidateCoordination(
+        WorkCoordinationConfiguration coordination,
+        WorkRecurrenceConfiguration recurrence,
         List<WorkMessage> messages)
     {
+        if (!coordination.IsEnabled)
+        {
+            if (coordination.Idempotency.IsEnabled ||
+                coordination.Concurrency.IsEnabled ||
+                coordination.Durability.IsEnabled ||
+                coordination.Durability.CompleteDurably)
+            {
+                messages.Add(WorkMessage.Error(
+                    "workable.configuration.coordination.disabled_with_features",
+                    "Coordination must be enabled before idempotency, concurrency, or durability can be enabled.",
+                    "configuration.coordination.isEnabled"));
+            }
+
+            ValidateConcurrency(coordination, messages);
+            return;
+        }
+
+        ValidateConcurrency(coordination, messages);
+        ValidateDurability(coordination, recurrence, messages);
+    }
+
+    private static void ValidateConcurrency(
+        WorkCoordinationConfiguration coordination,
+        List<WorkMessage> messages)
+    {
+        var concurrency = coordination.Concurrency;
         if (concurrency.MaximumCapacity < 0)
         {
             messages.Add(WorkMessage.Error(
                 "workable.configuration.concurrency.maximum_capacity_negative",
                 "Concurrency maximum capacity cannot be negative.",
-                "configuration.concurrency.maximumCapacity"));
+                "configuration.coordination.concurrency.maximumCapacity"));
         }
 
-        if (!concurrency.IsEnabled)
+        if (!coordination.IsConcurrencyEnabled)
         {
             return;
         }
@@ -183,20 +227,20 @@ internal static class WorkConfigurationValidator
             messages.Add(WorkMessage.Error(
                 "workable.configuration.concurrency.maximum_capacity_required",
                 "Enabled concurrency requires maximum capacity greater than zero.",
-                "configuration.concurrency.maximumCapacity"));
+                "configuration.coordination.concurrency.maximumCapacity"));
         }
 
-        if (concurrency.Storage != WorkConcurrencyStorage.Persistence)
+        if (coordination.Storage != WorkCoordinationStorage.Persistent)
         {
             return;
         }
 
-        if (!durability.IsEnabled)
+        if (!coordination.Durability.IsEnabled)
         {
             messages.Add(WorkMessage.Error(
                 "workable.configuration.concurrency.persistence_requires_durable_queue",
                 "Persistence-backed concurrency currently requires durable queueing.",
-                "configuration.concurrency.storage"));
+                "configuration.coordination.durability.isEnabled"));
         }
 
         if (concurrency.BlockingMode != WorkConcurrencyBlockingMode.WhileExecuting)
@@ -204,7 +248,7 @@ internal static class WorkConfigurationValidator
             messages.Add(WorkMessage.Error(
                 "workable.configuration.concurrency.persistence_blocking_mode_not_supported",
                 "Persistence-backed concurrency currently supports only WhileExecuting blocking mode.",
-                "configuration.concurrency.blockingMode"));
+                "configuration.coordination.concurrency.blockingMode"));
         }
 
         if (concurrency.LimitReachedBehavior != WorkConcurrencyLimitReachedBehavior.DeferStart)
@@ -212,25 +256,25 @@ internal static class WorkConfigurationValidator
             messages.Add(WorkMessage.Error(
                 "workable.configuration.concurrency.persistence_requires_deferred_start",
                 "Persistence-backed concurrency currently requires DeferStart limit behavior.",
-                "configuration.concurrency.limitReachedBehavior"));
+                "configuration.coordination.concurrency.limitReachedBehavior"));
         }
 
     }
 
-    private static void ValidateQueueDurability(
-        WorkQueueDurabilityConfiguration durability,
-        WorkIdempotencyConfiguration idempotency,
+    private static void ValidateDurability(
+        WorkCoordinationConfiguration coordination,
         WorkRecurrenceConfiguration recurrence,
         List<WorkMessage> messages)
     {
-        if (!durability.IsEnabled && !idempotency.IsEnabled)
+        var durability = coordination.Durability;
+        if (coordination.Storage != WorkCoordinationStorage.Persistent)
         {
-            if (durability.CompleteDurably)
+            if (durability.IsEnabled || durability.CompleteDurably)
             {
                 messages.Add(WorkMessage.Error(
-                    "workable.configuration.queue_durability.durable_completion_requires_persistence",
-                    "Durable completion requires durable queueing or persistence-backed idempotency.",
-                    "configuration.queueDurability.completeDurably"));
+                    "workable.configuration.coordination.durability_requires_persistent_storage",
+                    "Durability requires persistent coordination storage.",
+                    "configuration.coordination.storage"));
             }
 
             return;
@@ -238,12 +282,12 @@ internal static class WorkConfigurationValidator
 
         if (durability.CompleteDurably &&
             !durability.IsEnabled &&
-            idempotency.Storage != WorkIdempotencyStorage.Persistence)
+            !coordination.Idempotency.IsEnabled)
         {
             messages.Add(WorkMessage.Error(
                 "workable.configuration.queue_durability.durable_completion_requires_persistence",
                 "Durable completion requires durable queueing or persistence-backed idempotency.",
-                "configuration.queueDurability.completeDurably"));
+                "configuration.coordination.durability.completeDurably"));
         }
 
         if (durability.IsEnabled &&
@@ -252,7 +296,7 @@ internal static class WorkConfigurationValidator
             messages.Add(WorkMessage.Error(
                 "workable.configuration.queue_durability.fallback_polling_interval_too_short",
                 "Durable queue fallback polling interval must be at least one second.",
-                "configuration.queueDurability.fallbackPollingInterval"));
+                "configuration.coordination.durability.fallbackPollingInterval"));
         }
 
         if (durability.CompleteDurably && recurrence.IsEnabled)
@@ -260,20 +304,8 @@ internal static class WorkConfigurationValidator
             messages.Add(WorkMessage.Error(
                 "workable.configuration.queue_durability.durable_completion_recurring_not_supported",
                 "Durable completion is not supported for recurring work.",
-                "configuration.queueDurability.completeDurably"));
+                "configuration.coordination.durability.completeDurably"));
         }
-
-        if (durability.IsEnabled &&
-            idempotency.IsEnabled &&
-            idempotency.Storage != WorkIdempotencyStorage.Persistence)
-        {
-            messages.Add(WorkMessage.Error(
-                "workable.configuration.queue_durability.idempotency_persistence_required",
-                "Durable queueing with idempotency requires persistence-backed idempotency so durable queue persistence and duplicate detection can be committed together.",
-                "configuration.idempotency.storage"));
-            return;
-        }
-
     }
 
     private static void ValidateInvocation(WorkInvocationConfiguration invocation, List<WorkMessage> messages)

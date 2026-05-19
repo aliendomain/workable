@@ -120,7 +120,7 @@ internal sealed class WorkQueueDurabilityCoordinator(
                 [WorkMessage.Error(
                     "workable.queue_durability.store_required",
                     "Durable queueing is enabled for this work, but no durable queue store is registered.",
-                    "configuration.queueDurability")]);
+                    "configuration.coordination.durability")]);
         }
 
         try
@@ -134,7 +134,7 @@ internal sealed class WorkQueueDurabilityCoordinator(
                 idempotencyDiagnostics.RecordDuplicateRejected(
                     request.Definition.Id,
                     subjectId,
-                    WorkIdempotencyStorage.Persistence);
+                    WorkCoordinationStorage.Persistent);
             }
 
             return WorkQueueOutcome.Invalid(
@@ -151,7 +151,7 @@ internal sealed class WorkQueueDurabilityCoordinator(
                 [WorkMessage.Error(
                     "workable.queue_durability.store_unreachable",
                     this.CreateStoreUnreachableMessage(exception),
-                    "configuration.queueDurability")]);
+                    "configuration.coordination.durability")]);
         }
 
         return WorkQueueOutcome.Accepted(
@@ -160,7 +160,7 @@ internal sealed class WorkQueueDurabilityCoordinator(
             [WorkMessage.Info(
                 "workable.queue_durability.persisted",
                 "Worker enqueue was persisted to the durable queue store and will start after the durable row is visible to the queue reader.",
-                "configuration.queueDurability")]);
+                "configuration.coordination.durability")]);
     }
 
     public async Task<WorkQueueOutcome> ReserveIdempotency(
@@ -174,7 +174,7 @@ internal sealed class WorkQueueDurabilityCoordinator(
                 [WorkMessage.Error(
                     "workable.idempotency.persistence_store_required",
                     "Persistence-backed idempotency is enabled for this work, but no work persistence store is registered.",
-                    "configuration.idempotency.storage")]);
+                    "configuration.coordination.storage")]);
         }
 
         try
@@ -187,7 +187,7 @@ internal sealed class WorkQueueDurabilityCoordinator(
             idempotencyDiagnostics.RecordDuplicateRejected(
                 request.Definition.Id,
                 request.SubjectId,
-                WorkIdempotencyStorage.Persistence);
+                WorkCoordinationStorage.Persistent);
             return WorkQueueOutcome.Invalid(
                 request.Definition.Id,
                 [WorkMessage.Error(
@@ -202,7 +202,7 @@ internal sealed class WorkQueueDurabilityCoordinator(
                 [WorkMessage.Error(
                     "workable.idempotency.persistence_store_unreachable",
                     this.CreateStoreUnreachableMessage(exception),
-                    "configuration.idempotency.storage")]);
+                    "configuration.coordination.storage")]);
         }
 
         return WorkQueueOutcome.Accepted(request.Definition.Id, request.WorkerId);
@@ -752,8 +752,8 @@ internal sealed class WorkQueueDurabilityCoordinator(
     private void ConfigureFallbackPolling(IReadOnlyList<WorkDefinition> definitions)
     {
         var configuredInterval = definitions
-            .Where(definition => definition.Configuration.QueueDurability.IsEnabled)
-            .Select(definition => definition.Configuration.QueueDurability.FallbackPollingInterval)
+            .Where(definition => definition.Configuration.Coordination.IsDurabilityEnabled)
+            .Select(definition => definition.Configuration.Coordination.Durability.FallbackPollingInterval)
             .DefaultIfEmpty(this.defaultReaderPollInterval)
             .Min();
 

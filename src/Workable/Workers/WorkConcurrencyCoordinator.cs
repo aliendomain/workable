@@ -28,7 +28,7 @@ internal sealed class WorkConcurrencyCoordinator
         out CancellationToken executionToken,
         CancellationToken cancellationToken)
     {
-        var configuration = worker.Configuration.Concurrency;
+        var configuration = worker.Configuration.Coordination.Concurrency;
         var manager = this.GetManager(worker.Work.Definition.Id);
         return manager.TryStart(
             worker,
@@ -42,7 +42,7 @@ internal sealed class WorkConcurrencyCoordinator
 
     public WorkConcurrencyReservationStatus QueueExistingWorkerForStart(WorkerRecord worker)
     {
-        var configuration = worker.Configuration.Concurrency;
+        var configuration = worker.Configuration.Coordination.Concurrency;
         var manager = this.GetManager(worker.Work.Definition.Id);
         return manager.QueueExistingWorkerForStart(worker, configuration);
     }
@@ -58,7 +58,7 @@ internal sealed class WorkConcurrencyCoordinator
 
     public void Synchronize(WorkerRecord worker)
     {
-        if (worker.Configuration.Concurrency.IsEnabled)
+        if (worker.Configuration.Coordination.IsConcurrencyEnabled)
         {
             this.GetManager(worker.Work.Definition.Id).Track(worker);
             return;
@@ -172,7 +172,7 @@ internal sealed class WorkConcurrencyCoordinator
                         return WorkActionOutcome.Invalid(
                             WorkAction.Start,
                             worker.ToSnapshot(),
-                            [WorkMessage.Info("workable.concurrency.capacity_reached", "Concurrency capacity has been reached for this work group.", "configuration.concurrency.maximumCapacity")]);
+                            [WorkMessage.Info("workable.concurrency.capacity_reached", "Concurrency capacity has been reached for this work group.", "configuration.coordination.concurrency.maximumCapacity")]);
                     }
                 }
 
@@ -202,7 +202,7 @@ internal sealed class WorkConcurrencyCoordinator
                         continue;
                     }
 
-                    var configuration = worker.Configuration.Concurrency;
+                    var configuration = worker.Configuration.Coordination.Concurrency;
                     var groupKey = WorkConcurrencyGroupKey.From(configuration.Scope, worker.Input);
                     if (!this.HasCapacity(configuration, groupKey))
                     {

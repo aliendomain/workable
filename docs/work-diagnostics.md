@@ -2,12 +2,15 @@
 
 ## Intent
 
-Workable diagnostics describe the health of the in-memory work system itself. They are meant for operators, admin UI chrome, performance testing, and alerting. They answer questions such as:
+Workable diagnostics describe the health of the work system itself. They are meant for operators, admin UI chrome, performance testing, and alerting. They answer questions such as:
 
 - Is the query read model keeping up with lifecycle updates?
 - Is work being rejected before it is accepted?
 - Is retention falling behind final-worker cleanup?
-- Did an internal projector or scheduler fail?
+- Are concurrency-deferred workers waiting too long?
+- Are durable workers failing to materialize or clean up?
+- Are duplicate idempotency rejections happening?
+- Did an internal projector, scheduler, or durability loop fail?
 
 Diagnostics are available from `IWorkSystem.Diagnostics`, the HTTP diagnostics endpoint, and realtime diagnostics component views.
 
@@ -15,6 +18,9 @@ Diagnostics are available from `IWorkSystem.Diagnostics`, the HTTP diagnostics e
 WorkSystemQueueDiagnostics queue = workSystem.Diagnostics.Queue;
 WorkSystemReadModelDiagnostics readModel = workSystem.Diagnostics.ReadModel;
 WorkSystemRetentionDiagnostics retention = workSystem.Diagnostics.Retention;
+WorkSystemConcurrencyDiagnostics concurrency = workSystem.Diagnostics.Concurrency;
+WorkSystemDurabilityDiagnostics durability = workSystem.Diagnostics.Durability;
+WorkSystemIdempotencyDiagnostics idempotency = workSystem.Diagnostics.Idempotency;
 ```
 
 ```http
@@ -33,7 +39,10 @@ public sealed record WorkSystemQueueDiagnostics(
     WorkQueueStatus? LastRejectedStatus,
     WorkDefinitionId? LastRejectedDefinitionId,
     string? LastRejectedCode,
-    string? LastRejectedMessage);
+    string? LastRejectedMessage,
+    long AlertableRejectedWorkCount,
+    string? LastAlertableRejectedCode,
+    string? LastAlertableRejectedMessage);
 ```
 
 `RejectedWorkCount` increments when work is not accepted. Rejections can happen because a definition is missing, invocation is not allowed, the system is stopping, validation fails, idempotency rejects a duplicate, or system capacity rejects a request.
@@ -43,7 +52,20 @@ Think of queue rejection as an error signal for the caller, not read-model lag. 
 - Check `LastRejectedCode` and `LastRejectedMessage` first.
 - If the status is capacity-related, the system is protecting itself from accepting more in-memory work.
 - If the status is invalid or not found, a caller may be targeting the wrong definition, system, or channel.
-- In the admin UI, acknowledged rejection alerts stay quiet until `RejectedWorkCount` increases again.
+- `AlertableRejectedWorkCount` only tracks rejection codes that usually indicate infrastructure or system-capacity problems.
+- In the admin UI, acknowledged rejection alerts stay quiet until `AlertableRejectedWorkCount` increases again.
+
+Alertable queue rejection codes are:
+
+- `workable.system.capacity_reached`
+- `workable.system.not_started`
+- `workable.system.stopping`
+- `workable.queue_durability.store_required`
+- `workable.queue_durability.store_unreachable`
+- `workable.idempotency.persistence_store_required`
+- `workable.idempotency.persistence_store_unreachable`
+
+Expected caller or configuration outcomes, such as missing definitions, invalid input, duplicate idempotency rejections, and concurrency group capacity rejections, still increment `RejectedWorkCount` but do not light the admin UI tray by themselves.
 
 ## Read-Model Diagnostics
 
@@ -140,15 +162,103 @@ When retention is behind:
 - Work acceptance is not necessarily blocked unless system capacity or memory pressure is also involved.
 - If `HasSchedulerFailure` is true, inspect the scheduler exception fields.
 
+## Concurrency Diagnostics
+
+Concurrency diagnostics describe workers accepted with `DeferStart` that are waiting for capacity.
+
+```csharp
+public sealed record WorkSystemConcurrencyDiagnostics(
+    int DeferredStartCount,
+    TimeSpan OldestDeferredStartAge,
+    int LastDrainReleasedCount);
+```
+
+Important fields:
+
+- `DeferredStartCount`: workers currently blocked by concurrency and waiting to start.
+- `OldestDeferredStartAge`: how long the longest-waiting deferred worker has been blocked.
+- `LastDrainReleasedCount`: workers released by the most recent concurrency drain.
+
+A nonzero `DeferredStartCount` can be normal during bursts. A warning means deferred workers have been waiting longer than the configured threshold. The default concurrency warning threshold used by diagnostics components is `30` seconds. SignalR alert severity treats age at 10x the threshold as critical.
+
+When concurrency is behind:
+
+- Work has been accepted but is not starting because configured capacity is full.
+- If `LastDrainReleasedCount` remains low or zero while age grows, capacity may not be freeing.
+- Check work duration, failed or paused workers that hold capacity, and whether `MaximumCapacity` is too low for the traffic shape.
+
+## Durability Diagnostics
+
+Durability diagnostics describe the durable queue reader, lease renewal loop, and cleanup loop.
+
+```csharp
+public sealed record WorkSystemDurabilityDiagnostics(
+    int AcceptedWaiterCount,
+    TimeSpan OldestAcceptedWaiterAge,
+    int PendingCleanupCount,
+    TimeSpan OldestPendingCleanupAge,
+    string? ReaderFailureType,
+    string? ReaderFailureMessage,
+    string? LeaseRenewalFailureType,
+    string? LeaseRenewalFailureMessage,
+    string? CleanupFailureType,
+    string? CleanupFailureMessage)
+{
+    public bool HasReaderFailure => this.ReaderFailureType is not null;
+    public bool HasLeaseRenewalFailure => this.LeaseRenewalFailureType is not null;
+    public bool HasCleanupFailure => this.CleanupFailureType is not null;
+}
+```
+
+Important fields:
+
+- `AcceptedWaiterCount`: accepted durable queue requests waiting to materialize into in-memory workers.
+- `OldestAcceptedWaiterAge`: how long the oldest accepted durable request has been waiting to materialize.
+- `PendingCleanupCount`: durable cleanup actions queued for completed, canceled, purged, or lost durable rows.
+- `OldestPendingCleanupAge`: how long the oldest cleanup item has been waiting.
+- `HasReaderFailure`: whether the durable reader loop saw an internal or persistence exception.
+- `HasLeaseRenewalFailure`: whether active durable lease renewal failed.
+- `HasCleanupFailure`: whether durable cleanup failed.
+
+The default warning thresholds used by diagnostics components are `30` seconds for accepted worker materialization and `30` seconds for cleanup age. SignalR alert severity treats either age at 10x its threshold as critical. Reader, lease renewal, and cleanup failures are critical because durable coordination may stop progressing until the loop recovers.
+
+When durability is behind:
+
+- Accepted durable queue calls may be waiting for Workable to materialize workers.
+- Durable rows for completed or canceled work may remain in the persistence store longer than expected.
+- Lease renewal failures can allow another runtime to replay durable work after the lease expires.
+- Persistence connectivity errors should be treated as infrastructure issues, especially if they repeat.
+
+## Idempotency Diagnostics
+
+Idempotency diagnostics describe duplicate-subject queue requests rejected by local or persistent coordination.
+
+```csharp
+public sealed record WorkSystemIdempotencyDiagnostics(
+    long DuplicateRejectionCount,
+    WorkCoordinationStorage? LastDuplicateRejectedStorage);
+```
+
+Important fields:
+
+- `DuplicateRejectionCount`: queue requests rejected because an idempotency reservation already existed for the same definition and subject.
+- `LastDuplicateRejectedStorage`: whether the most recent duplicate was rejected by `Local` or `Persistent` coordination.
+
+Duplicate rejections can be healthy when callers intentionally retry the same subject. Unexpected growth can indicate client retries, duplicate events, or replay traffic. Idempotency diagnostics appear in the admin UI popover, but duplicate rejections do not create a notification bell warning by themselves.
+
 ## Realtime Diagnostics Views
 
 The SignalR diagnostics view is separate from overview component subscriptions. This keeps always-on alert indicators small and keeps detailed diagnostics traffic off the overview path.
 
 Diagnostics components are:
 
+- `systemDiagnostics`
 - `queueDiagnostics`
 - `readModelDiagnostics`
 - `retentionDiagnostics`
+- `concurrencyDiagnostics`
+- `durabilityDiagnostics`
+- `idempotencyDiagnostics`
 
 Each supports `compact` and `detailed` shapes. Compact is for notification indicators and small trays. Detailed includes the full diagnostics object.
 
@@ -157,7 +267,9 @@ Diagnostics component options:
 - `publishMode: "alertChanges"` pushes only when the alert state changes. This is useful for always-on warning indicators.
 - `publishMode: "continuous"` pushes every diagnostics publish interval while the panel is open.
 - `warningThreshold` sets the read-model pending update warning threshold.
-- `warningSeconds` sets the retention overdue-age warning threshold.
+- `warningSeconds` sets the retention overdue-age or concurrency deferred-start-age warning threshold.
+- `acceptedWorkerWarningSeconds` sets the durability accepted-worker materialization warning threshold.
+- `cleanupWarningSeconds` sets the durability cleanup-age warning threshold.
 
 Example:
 
@@ -185,10 +297,14 @@ await connection.InvokeAsync(
 
 The admin UI notification tray uses compact diagnostics to show system warnings without polling.
 
-- Queue rejections are shown as critical because accepted work was denied.
+- Alertable queue rejections are shown as critical because system state, capacity, or persistence infrastructure denied work.
 - Read-model lag is shown when `PendingUpdateCount` crosses the configured threshold.
 - Retention lag is shown when `OldestDuePurgeAge` crosses the configured threshold.
-- Projector and scheduler failures are shown as errors because an internal background component failed.
+- Concurrency backlog is shown when `OldestDeferredStartAge` crosses the configured threshold.
+- Durable materialization lag is shown when `OldestAcceptedWaiterAge` crosses the configured threshold.
+- Durable cleanup lag is shown when `OldestPendingCleanupAge` crosses the configured threshold.
+- Projector, scheduler, durable reader, lease renewal, and cleanup failures are shown as critical because an internal background component failed.
+- Idempotency duplicate rejections are visible in the popover but do not create notification warnings by themselves.
 
 The always-on bell indicator subscribes to compact `alertChanges` diagnostics for every realtime-enabled system configured in the admin UI, across all configured hosts. Each subscription is still scoped to one Workable system because the SignalR hub resolves diagnostics by system name. The client aggregates those compact alert states into one tray indicator and labels warnings with the system and host that produced them.
 
@@ -204,6 +320,6 @@ To inspect detailed diagnostics for a different host or system, switch the admin
 
 Healthy systems should be quiet. The always-on alert subscription uses `alertChanges`, so it does not continually push "everything is fine" messages.
 
-Acknowledging queue rejection warnings stores the current `RejectedWorkCount` for that system in the admin UI. The critical warning stays quiet until that same system reports a larger rejection count.
+Acknowledging queue rejection warnings stores the current `AlertableRejectedWorkCount` for that system in the admin UI. The critical warning stays quiet until that same system reports a larger alertable rejection count.
 
 The system tools menu near the tray opens the realtime payload viewer and event viewer. The payload viewer can show diagnostics `workable.view` messages when diagnostics subscriptions are active, which is useful for verifying compact alert payloads, tray payloads, and detailed diagnostics payloads separately.

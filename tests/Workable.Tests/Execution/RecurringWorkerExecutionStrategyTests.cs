@@ -452,12 +452,16 @@ public sealed class RecurringWorkerExecutionStrategyTests
             configuration: WorkConfiguration.Default with
             {
                 Recurrence = WorkRecurrenceConfiguration.Every(TimeSpan.FromMinutes(5)),
-                Concurrency = new WorkConcurrencyConfiguration
+                Coordination = WorkCoordinationConfiguration.Default with
                 {
                     IsEnabled = true,
-                    MaximumCapacity = 1,
-                    LimitReachedBehavior = WorkConcurrencyLimitReachedBehavior.DeferStart,
-                    BlockingMode = WorkConcurrencyBlockingMode.WhileExecuting,
+                    Concurrency = new WorkConcurrencyConfiguration
+                    {
+                        IsEnabled = true,
+                        MaximumCapacity = 1,
+                        LimitReachedBehavior = WorkConcurrencyLimitReachedBehavior.DeferStart,
+                        BlockingMode = WorkConcurrencyBlockingMode.WhileExecuting,
+                    },
                 },
             });
         var system = CreateSystem(definition, (context, input, cancellationToken) =>

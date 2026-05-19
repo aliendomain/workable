@@ -85,6 +85,9 @@ public sealed class WorkableHttpSystemResolver(
     {
         var realtime = realtimeCapabilityProviders.FirstOrDefault()?.GetCapability(system)
             ?? WorkRealtimeCapability.Disabled;
-        return new WorkableHttpCapabilities(realtime);
+        var persistentCoordinationAvailable = system is IWorkSystemCoordinationCapabilities capabilities &&
+            capabilities.PersistentCoordinationAvailable;
+
+        return new WorkableHttpCapabilities(realtime, persistentCoordinationAvailable);
     }
 }

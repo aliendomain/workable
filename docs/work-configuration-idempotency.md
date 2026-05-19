@@ -8,7 +8,8 @@ Idempotency configuration controls whether Workable rejects duplicate work for t
 | --- | --- | --- |
 | `IsEnabled` | `false` | Enables duplicate prevention by subject id. |
 | `ConflictPolicy` | `RejectDuplicates` | Rejects queue requests when another worker for the same definition and subject is not reusable. |
-| `Storage` | `Local` | Uses in-memory duplicate tracking by default. `Persistence` stores the active idempotency reservation in the configured persistence provider. |
+
+Idempotency is part of coordination configuration. `WorkCoordinationConfiguration.Storage` decides where all enabled coordination features run. `Local` uses in-memory duplicate tracking. `Persistent` stores the active idempotency reservation in the configured persistence provider.
 
 When idempotency is enabled:
 
@@ -65,9 +66,13 @@ var handle = await system.Queue.Enqueue(
     options: new WorkerOptions(
         Configuration: WorkConfiguration.Default with
         {
-            Idempotency = new WorkIdempotencyConfiguration
+            Coordination = WorkCoordinationConfiguration.Default with
             {
                 IsEnabled = true,
+                Idempotency = new WorkIdempotencyConfiguration
+                {
+                    IsEnabled = true,
+                },
             },
         }));
 ```
@@ -77,8 +82,12 @@ var handle = await system.Queue.Enqueue(
 Persistence-backed idempotency can be used without durable queueing when the host has registered a persistence provider:
 
 ```
-configuration.RejectDuplicateSubjects(WorkIdempotencyStorage.Persistence);
+configuration
+    .CoordinatePersistently()
+    .RejectDuplicateSubjects();
 ```
+
+Persistent coordination is rejected at queue time, definition reconfiguration time, and worker reconfiguration time when the Workable system does not have a registered persistence store.
 
 Without durable queueing, persistence-backed idempotency uses the provider's own transaction for the reservation and then materializes the worker in memory. A queue request that supplies a caller-owned persistence transaction is rejected in this mode, because Workable cannot safely wait for that transaction to commit before starting an in-memory worker. Use `QueueDurably()` when enqueue acceptance must participate in the caller's transaction.
 
@@ -86,7 +95,8 @@ Because persistence-backed idempotency creates a persisted Workable row, it can 
 
 ```
 configuration
-    .RejectDuplicateSubjects(WorkIdempotencyStorage.Persistence)
+    .CoordinatePersistently()
+    .RejectDuplicateSubjects()
     .CompleteDurably();
 ```
 
@@ -101,7 +111,7 @@ var worker = await system.Query.Worker(workerId)
 var outcome = await system.Workers.Reconfigure(
     worker.Version,
     new WorkerReconfiguration(
-        Idempotency: WorkIdempotencyConfiguration.Default));
+        Coordination: WorkCoordinationConfiguration.Default));
 ```
 
 ## Related Interactions

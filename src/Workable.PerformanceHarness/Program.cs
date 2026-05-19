@@ -86,8 +86,8 @@ static Action<IWorkConfigurationBuilder> ConfigureQueueMode(HarnessQueueMode que
     {
         HarnessQueueMode.InMemory => _ => { },
         HarnessQueueMode.DurableIdempotent => configuration => configuration
-            .RejectDuplicateSubjects(WorkIdempotencyStorage.Persistence)
-            .QueueDurably(),
+            .QueueDurably()
+            .RejectDuplicateSubjects(),
         HarnessQueueMode.DurableNonIdempotent => configuration => configuration.QueueDurably(),
         _ => throw new ArgumentOutOfRangeException(nameof(queueMode), queueMode, "Unknown queue mode."),
     };
