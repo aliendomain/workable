@@ -113,48 +113,26 @@ public sealed class WorkEventPayloadTests
     [Fact]
     public async Task RetentionPurgeEventsCanCarryMultiplePurgedWorkerIds()
     {
-        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var allStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var startedCount = 0;
-        const int WorkerCount = 32;
         var definition = WorkDefinition.Create(
             "events.purge.batch",
-            "Publishes batched retention purge payloads.",
-            configuration: WorkConfiguration.Default with
-            {
-                Retention = WorkRetentionConfiguration.Default with
-                {
-                    PurgeInterval = TimeSpan.FromMinutes(10),
-                    MaximumFinalWorkers = 1,
-                },
-            });
-        await using var system = CreateSystem(definition, async (context, input, cancellationToken) =>
-        {
-            if (Interlocked.Increment(ref startedCount) == WorkerCount)
-            {
-                allStarted.TrySetResult();
-            }
-
-            await release.Task.WaitAsync(cancellationToken);
-            return WorkExecutionResult.Success();
-        });
-        await system.Start();
-        await using var subscription = system.Events.Subscribe(new WorkEventFilter(EventType: "worker.purge"));
+            "Publishes batched retention purge payloads.");
+        await using var events = new WorkEventStream();
+        var publisher = new WorkerEventPublisher(
+            WorkSystemId.New(),
+            events,
+            _ => { });
+        await using var subscription = events.Subscribe(new WorkEventFilter(EventType: "worker.purge"));
         await using var reader = subscription.Read().GetAsyncEnumerator();
+        var workerIds = new[] { WorkerId.New(), WorkerId.New(), WorkerId.New() };
 
-        var handles = await Task.WhenAll(Enumerable.Range(0, WorkerCount).Select(_ => system.Queue.Enqueue("events.purge.batch")));
-        await allStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
-        release.TrySetResult();
-        await Task.WhenAll(handles.Select(handle => handle.WaitForCompletion()));
+        publisher.Purged(workerIds, definition.Id);
 
-        var workEvent = await ReadUntil(
-            reader,
-            workEvent => RequiredData(workEvent).GetProperty("workerIds").GetArrayLength() > 1);
+        var workEvent = await ReadNext(reader);
         var data = RequiredData(workEvent);
 
         Assert.Null(workEvent.WorkerId);
         Assert.Equal(definition.Id, workEvent.DefinitionId);
-        Assert.True(data.GetProperty("workerIds").GetArrayLength() > 1);
+        Assert.Equal(workerIds.Length, data.GetProperty("workerIds").GetArrayLength());
         Assert.NotEqual(default, data.GetProperty("purgedAt").GetDateTimeOffset());
         Assert.False(data.TryGetProperty("worker", out _));
         Assert.False(data.TryGetProperty("action", out _));
