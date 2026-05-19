@@ -288,6 +288,7 @@ export type WorkConfiguration = {
       | "WhileExecuting";
     limitReachedBehavior: "Ignore" | "DeferStart";
     overrideBehavior: "Flexible" | "Strict";
+    storage: "Local" | "Persistence";
   };
   queueDurability?: {
     isEnabled: boolean;

@@ -89,6 +89,7 @@ public sealed record WorkableHttpQueueRequestDescriptor(
                 Field("options.configuration.concurrency.blockingMode", "Blocking mode", "Selects which worker states count against the active capacity limit."),
                 Field("options.configuration.concurrency.limitReachedBehavior", "Limit reached", "Controls what happens when a queued worker would exceed the capacity limit."),
                 Field("options.configuration.concurrency.overrideBehavior", "Override behavior", "Controls whether runtime configuration changes may temporarily exceed capacity."),
+                Field("options.configuration.concurrency.storage", "Storage", "Choose whether concurrency is local to this runtime or backed by the configured persistence provider."),
             ]),
         new(
             "durability",

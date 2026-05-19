@@ -1470,6 +1470,7 @@ const defaultWorkConfiguration: WorkConfiguration = {
     blockingMode: "WhileExecutingPausedOrFailed",
     limitReachedBehavior: "Ignore",
     overrideBehavior: "Flexible",
+    storage: "Local",
   },
   queueDurability: {
     isEnabled: false,
