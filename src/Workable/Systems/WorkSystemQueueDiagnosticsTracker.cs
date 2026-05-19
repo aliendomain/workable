@@ -48,6 +48,8 @@ internal sealed class WorkSystemQueueDiagnosticsTracker
     {
         var primaryMessage = outcome.Messages.FirstOrDefault(message => message.Severity is WorkMessageSeverity.Error) ??
             outcome.Messages.FirstOrDefault();
+        var primaryCode = primaryMessage?.Code;
+        var primaryText = primaryMessage?.Text;
 
         lock (this.sync)
         {
@@ -55,13 +57,13 @@ internal sealed class WorkSystemQueueDiagnosticsTracker
             this.lastRejectedAt = DateTimeOffset.UtcNow;
             this.lastRejectedStatus = outcome.Status;
             this.lastRejectedDefinitionId = outcome.DefinitionId;
-            this.lastRejectedCode = primaryMessage?.Code;
-            this.lastRejectedMessage = primaryMessage?.Text;
-            if (IsAlertableRejectionCode(primaryMessage?.Code))
+            this.lastRejectedCode = primaryCode;
+            this.lastRejectedMessage = primaryText;
+            if (IsAlertableRejectionCode(primaryCode))
             {
                 this.alertableRejectedWorkCount++;
-                this.lastAlertableRejectedCode = primaryMessage?.Code;
-                this.lastAlertableRejectedMessage = primaryMessage?.Text;
+                this.lastAlertableRejectedCode = primaryCode;
+                this.lastAlertableRejectedMessage = primaryText;
             }
         }
     }

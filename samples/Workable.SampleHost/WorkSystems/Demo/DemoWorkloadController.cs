@@ -274,7 +274,7 @@ public sealed class DemoWorkloadController(
         {
             throw;
         }
-        catch (Exception exception)
+        catch (Exception exception) when (!IsCriticalException(exception))
         {
             logger.LogWarning(exception, "Failed to queue idempotency sample workload item.");
             return DemoIdempotencySampleResult.Failed("Unable to trigger the idempotency sample.");
@@ -637,6 +637,15 @@ public sealed class DemoWorkloadController(
             systems.Fulfillment,
             this.failurePercentage);
     }
+
+    private static bool IsCriticalException(Exception exception)
+        => exception is OutOfMemoryException or
+            StackOverflowException or
+            AccessViolationException or
+            AppDomainUnloadedException or
+            BadImageFormatException or
+            CannotUnloadAppDomainException or
+            InvalidProgramException;
 
     private DemoWorkloadSystems GetEnabledSystems()
         => systemSelection.Current;

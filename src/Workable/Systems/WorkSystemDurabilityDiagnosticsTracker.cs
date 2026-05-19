@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Linq;
 
 namespace Workable;
 
@@ -73,30 +74,15 @@ internal sealed class WorkSystemDurabilityDiagnosticsTracker
 
     private PendingCleanupSnapshot GetPendingCleanupSnapshot(DateTimeOffset now)
     {
-        var pendingCleanupCount = this.pendingCleanupQueuedAtUnixTimeMilliseconds.Count;
-        if (pendingCleanupCount == 0)
+        var queuedAtSnapshot = this.pendingCleanupQueuedAtUnixTimeMilliseconds.Values.ToArray();
+        if (queuedAtSnapshot.Length == 0)
         {
             return PendingCleanupSnapshot.Empty;
         }
 
-        long? oldestQueuedAtUnixTimeMilliseconds = null;
-        foreach (var queuedAtUnixTimeMilliseconds in this.pendingCleanupQueuedAtUnixTimeMilliseconds.Values)
-        {
-            if (oldestQueuedAtUnixTimeMilliseconds is null ||
-                queuedAtUnixTimeMilliseconds < oldestQueuedAtUnixTimeMilliseconds.Value)
-            {
-                oldestQueuedAtUnixTimeMilliseconds = queuedAtUnixTimeMilliseconds;
-            }
-        }
-
-        if (oldestQueuedAtUnixTimeMilliseconds is null)
-        {
-            return PendingCleanupSnapshot.Empty;
-        }
-
-        var oldestAt = DateTimeOffset.FromUnixTimeMilliseconds(oldestQueuedAtUnixTimeMilliseconds.Value);
+        var oldestAt = DateTimeOffset.FromUnixTimeMilliseconds(queuedAtSnapshot.Min());
         return new PendingCleanupSnapshot(
-            pendingCleanupCount,
+            queuedAtSnapshot.Length,
             oldestAt < now ? now - oldestAt : TimeSpan.Zero);
     }
 

@@ -54,15 +54,16 @@ internal sealed class WorkQueueDurabilityCoordinator(
         get
         {
             var now = DateTimeOffset.UtcNow;
-            var oldestAcceptedWaiterAt = this.acceptedWorkerWaiters.Count == 0
+            var acceptedWaiterSnapshot = this.acceptedWorkerWaiters.Values.ToArray();
+            var oldestAcceptedWaiterAt = acceptedWaiterSnapshot.Length == 0
                 ? (DateTimeOffset?)null
-                : this.acceptedWorkerWaiters.Values.Min(waiter => waiter.CreatedAt);
+                : acceptedWaiterSnapshot.Min(waiter => waiter.CreatedAt);
             var oldestAcceptedWaiterAge = oldestAcceptedWaiterAt is { } acceptedAt && acceptedAt < now
                 ? now - acceptedAt
                 : TimeSpan.Zero;
 
             return this.diagnostics.Snapshot(
-                this.acceptedWorkerWaiters.Count,
+                acceptedWaiterSnapshot.Length,
                 oldestAcceptedWaiterAge);
         }
     }

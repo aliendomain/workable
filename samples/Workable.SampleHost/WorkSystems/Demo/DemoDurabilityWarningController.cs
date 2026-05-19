@@ -130,7 +130,7 @@ public sealed class DemoDurabilityWarningController(
             {
                 await Task.WhenAll(waitingTasks);
             }
-            catch
+            catch (Exception exception) when (!IsCriticalException(exception))
             {
             }
 
@@ -181,7 +181,7 @@ public sealed class DemoDurabilityWarningController(
             {
                 throw;
             }
-            catch (Exception exception)
+            catch (Exception exception) when (!IsCriticalException(exception))
             {
                 logger.LogWarning(exception, "Durability warning sample waiter tasks stopped with an error.");
             }
@@ -228,11 +228,20 @@ public sealed class DemoDurabilityWarningController(
             using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
             await this.Stop(timeout.Token);
         }
-        catch (Exception exception)
+        catch (Exception exception) when (!IsCriticalException(exception))
         {
             logger.LogWarning(exception, "Durability warning sample failed to stop cleanly during disposal.");
         }
     }
+
+    private static bool IsCriticalException(Exception exception)
+        => exception is OutOfMemoryException or
+            StackOverflowException or
+            AccessViolationException or
+            AppDomainUnloadedException or
+            BadImageFormatException or
+            CannotUnloadAppDomainException or
+            InvalidProgramException;
 }
 
 public sealed record DemoDurabilityWarningStatus(
