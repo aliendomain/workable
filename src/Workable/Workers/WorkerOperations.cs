@@ -50,6 +50,7 @@ internal sealed class WorkerOperations : IWorkerOperations, IDisposable
         WorkSystemCapacityConfiguration capacity,
         InMemoryWorkMetricsSink metrics,
         WorkSystemQueueDiagnosticsTracker queueDiagnostics,
+        WorkSystemIdempotencyDiagnosticsTracker idempotencyDiagnostics,
         IWorkPersistenceStore? persistenceStore)
     {
         this.catalog = catalog;
@@ -61,6 +62,7 @@ internal sealed class WorkerOperations : IWorkerOperations, IDisposable
         this.queueDiagnostics = queueDiagnostics;
         this.readModel = readModel;
         this.concurrency = new WorkConcurrencyCoordinator();
+        var persistenceLogger = rootServices.GetService<ILoggerFactory>()?.CreateLogger("Workable.Persistence");
         this.persistence = new WorkerPersistenceCoordinator(
             catalog,
             this.workers,
@@ -69,12 +71,14 @@ internal sealed class WorkerOperations : IWorkerOperations, IDisposable
             workSystemId,
             workSystemName,
             persistenceStore,
+            idempotencyDiagnostics,
             this.IsAcceptingWork,
             this.GetSystemExecutionLifetimeToken,
             this.AcceptWorkerIntoMemory,
             this.GetTrackedWorker,
             this.OnPersistedWorkerMaterialized,
-            this.InterruptWorker);
+            this.InterruptWorker,
+            persistenceLogger);
         this.workerEvents = new WorkerEventPublisher(workSystemId, events, this.SynchronizeWorkerIfTracked, readModel);
         var logger = rootServices.GetService<ILoggerFactory>()?.CreateLogger("Workable.WorkerExecution");
         var invoker = new WorkerExecutionInvoker(
@@ -107,6 +111,12 @@ internal sealed class WorkerOperations : IWorkerOperations, IDisposable
     }
 
     internal WorkSystemRetentionDiagnostics RetentionDiagnostics => this.retention.Diagnostics;
+
+    internal WorkSystemConcurrencyDiagnostics ConcurrencyDiagnostics => this.concurrency.Diagnostics;
+
+    internal WorkSystemDurabilityDiagnostics DurabilityDiagnostics => this.persistence.DurabilityDiagnostics;
+
+    internal WorkSystemIdempotencyDiagnostics IdempotencyDiagnostics => this.persistence.IdempotencyDiagnostics;
 
     internal async Task<IWorkerHandle> CreateWorker(
         RegisteredWork registeredWork,

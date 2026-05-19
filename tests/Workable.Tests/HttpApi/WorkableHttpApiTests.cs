@@ -1241,6 +1241,12 @@ public sealed class WorkableHttpApiTests
             ?? throw new InvalidOperationException("Expected queue diagnostics.");
         var retention = json["retention"]
             ?? throw new InvalidOperationException("Expected retention diagnostics.");
+        var concurrency = json["concurrency"]
+            ?? throw new InvalidOperationException("Expected concurrency diagnostics.");
+        var durability = json["durability"]
+            ?? throw new InvalidOperationException("Expected durability diagnostics.");
+        var idempotency = json["idempotency"]
+            ?? throw new InvalidOperationException("Expected idempotency diagnostics.");
 
         Assert.Equal(system.Id.Value.ToString(), json["id"]?["value"]?.GetValue<string>());
         Assert.Equal("Started", json["state"]?.GetValue<string>());
@@ -1258,6 +1264,15 @@ public sealed class WorkableHttpApiTests
         Assert.True(retention["scheduledPurgeCount"]?.GetValue<int>() >= 0);
         Assert.True(retention["scheduledPurgeHighWaterMark"]?.GetValue<int>() >= 0);
         Assert.False(retention["hasSchedulerFailure"]?.GetValue<bool>());
+        Assert.True(concurrency["deferredStartCount"]?.GetValue<int>() >= 0);
+        Assert.True(concurrency["lastDrainReleasedCount"]?.GetValue<int>() >= 0);
+        Assert.True(durability["acceptedWaiterCount"]?.GetValue<int>() >= 0);
+        Assert.True(durability["pendingCleanupCount"]?.GetValue<int>() >= 0);
+        Assert.False(durability["hasReaderFailure"]?.GetValue<bool>());
+        Assert.False(durability["hasLeaseRenewalFailure"]?.GetValue<bool>());
+        Assert.False(durability["hasCleanupFailure"]?.GetValue<bool>());
+        Assert.True(idempotency["duplicateRejectionCount"]?.GetValue<long>() >= 0);
+        Assert.True(idempotency.AsObject().ContainsKey("lastDuplicateRejectedStorage"));
     }
 
     [Fact]

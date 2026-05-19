@@ -180,6 +180,43 @@ public sealed class TypedWorkExecutorTests
     }
 
     [Fact]
+    public async Task TypedExecutorMissingInputReturnsStructuredFailure()
+    {
+        await using var system = new ServiceCollection()
+            .AddWorkableSystem(builder => builder.AddWork<EchoTypedWork>())
+            .BuildServiceProvider()
+            .GetRequiredService<IWorkSystemRegistry>()
+            .Default;
+        await system.Start();
+
+        var handle = await system.Queue.Enqueue("typed.echo");
+        var completion = await handle.WaitForCompletion();
+
+        Assert.Equal(WorkCompletionStatus.Failed, completion.Status);
+        Assert.Contains(completion.Messages, message => message.Code == "workable.input.required");
+    }
+
+    [Fact]
+    public async Task TypedDelegateMissingInputReturnsStructuredFailure()
+    {
+        await using var system = new ServiceCollection()
+            .AddWorkableSystem(builder => builder.AddWork(
+                WorkDefinition.Create("typed.delegate.missing.input"),
+                (IWorkExecutionContext context, EchoInput input, CancellationToken cancellationToken) =>
+                    Task.FromResult(WorkExecutionResult<EchoOutput>.Success(new EchoOutput(input.Message.Length)))))
+            .BuildServiceProvider()
+            .GetRequiredService<IWorkSystemRegistry>()
+            .Default;
+        await system.Start();
+
+        var handle = await system.Queue.Enqueue("typed.delegate.missing.input");
+        var completion = await handle.WaitForCompletion();
+
+        Assert.Equal(WorkCompletionStatus.Failed, completion.Status);
+        Assert.Contains(completion.Messages, message => message.Code == "workable.input.required");
+    }
+
+    [Fact]
     public async Task RawDelegateRegistrationStillAcceptsJsonInput()
     {
         await using var system = new ServiceCollection()

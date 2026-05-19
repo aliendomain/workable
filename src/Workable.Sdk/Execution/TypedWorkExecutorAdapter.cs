@@ -14,12 +14,15 @@ internal sealed class TypedWorkExecutorAdapter(
         WorkInput? input,
         CancellationToken cancellationToken)
     {
+        if (string.IsNullOrWhiteSpace(input?.Json))
+        {
+            return CreateMissingInputFailure(inputType);
+        }
+
         object? typedInput;
         try
         {
-            typedInput = string.IsNullOrWhiteSpace(input?.Json)
-                ? null
-                : input.ToValue(inputType);
+            typedInput = input.ToValue(inputType);
         }
         catch (System.Text.Json.JsonException ex)
         {
@@ -50,6 +53,15 @@ internal sealed class TypedWorkExecutorAdapter(
             throw;
         }
     }
+
+    internal static WorkExecutionResult CreateMissingInputFailure(Type inputType)
+        => WorkExecutionResult.Failure(
+        [
+            WorkMessage.Error(
+                "workable.input.required",
+                $"Work input is required for typed work '{inputType.FullName}'.",
+                "input"),
+        ]);
 
     private static object GetTaskResult(Task task)
     {

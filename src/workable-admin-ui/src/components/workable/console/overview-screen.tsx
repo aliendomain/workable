@@ -3879,7 +3879,9 @@ export function useWorkableRealtimeView<T>(
   }, [bodyKey, captureEnabled, maxMessages, systemName]);
 
   const clearMessages = useCallback(() => {
-    setState((current) => ({ ...current, messages: [] }));
+    setState((current) =>
+      current.messages.length === 0 ? current : { ...current, messages: [] }
+    );
   }, []);
 
   useEffect(() => {
@@ -3895,14 +3897,22 @@ export function useWorkableRealtimeView<T>(
   useEffect(() => {
     if (!connection || !enabled || !hubUrl) {
       queueMicrotask(() =>
-        setState((current) => ({
-          ...current,
-          connectionState: "disabled",
-          enabled,
-          hubUrl,
-          loading: false,
-          refreshing: false,
-        }))
+        setState((current) =>
+          current.connectionState === "disabled" &&
+          current.enabled === enabled &&
+          current.hubUrl === hubUrl &&
+          !current.loading &&
+          !current.refreshing
+            ? current
+            : {
+                ...current,
+                connectionState: "disabled",
+                enabled,
+                hubUrl,
+                loading: false,
+                refreshing: false,
+              }
+        )
       );
       return;
     }
@@ -4137,7 +4147,9 @@ export function useWorkableRealtimeEvents(
   }, [criteriaKey, maxMessages, systemName]);
 
   const clearMessages = useCallback(() => {
-    setState((current) => ({ ...current, messages: [] }));
+    setState((current) =>
+      current.messages.length === 0 ? current : { ...current, messages: [] }
+    );
   }, []);
 
   useEffect(() => {
@@ -4153,13 +4165,20 @@ export function useWorkableRealtimeEvents(
   useEffect(() => {
     if (!connection || !enabled || !hubUrl) {
       queueMicrotask(() =>
-        setState((current) => ({
-          ...current,
-          connectionState: "disabled",
-          enabled,
-          hubUrl,
-          loading: false,
-        }))
+        setState((current) =>
+          current.connectionState === "disabled" &&
+          current.enabled === enabled &&
+          current.hubUrl === hubUrl &&
+          !current.loading
+            ? current
+            : {
+                ...current,
+                connectionState: "disabled",
+                enabled,
+                hubUrl,
+                loading: false,
+              }
+        )
       );
       return;
     }
@@ -4491,7 +4510,13 @@ function useWorkablePostResource<T>(
   useEffect(() => {
     if (!path) {
       previousRequestKey.current = requestKey;
-      queueMicrotask(() => setState({ loading: false }));
+      queueMicrotask(() =>
+        setState((current) =>
+          !current.data && !current.error && !current.loading && !current.refreshing
+            ? current
+            : { loading: false }
+        )
+      );
       return;
     }
 

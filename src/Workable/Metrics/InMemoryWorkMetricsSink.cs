@@ -41,7 +41,18 @@ internal sealed class InMemoryWorkMetricsSink : IWorkMetricsSink
 
     private readonly MetricStore secondBuckets = new();
     private readonly MetricStore minuteBuckets = new();
+    private readonly Func<DateTimeOffset> utcNow;
     private long lastPrunedSecond;
+
+    public InMemoryWorkMetricsSink()
+        : this(static () => DateTimeOffset.UtcNow)
+    {
+    }
+
+    internal InMemoryWorkMetricsSink(Func<DateTimeOffset> utcNow)
+    {
+        this.utcNow = utcNow;
+    }
 
     public void IterationRecorded(WorkDefinitionId definitionId, WorkerIterationSnapshot iteration)
     {
@@ -87,7 +98,7 @@ internal sealed class InMemoryWorkMetricsSink : IWorkMetricsSink
         IReadOnlySet<WorkDefinitionId>? definitionIds = null)
     {
         var normalized = Normalize(query);
-        var nowSecond = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        var nowSecond = this.utcNow().ToUnixTimeSeconds();
         var toSecond = GetLastClosedBucketEndSecond(nowSecond, normalized.BucketSeconds);
         var fromSecond = toSecond - normalized.WindowSeconds + 1;
         var requestedFirstBucketSecond = FloorToBucket(fromSecond, normalized.BucketSeconds);
@@ -142,7 +153,7 @@ internal sealed class InMemoryWorkMetricsSink : IWorkMetricsSink
         IReadOnlySet<WorkDefinitionId>? definitionIds = null)
     {
         var normalized = Normalize(query);
-        var nowSecond = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        var nowSecond = this.utcNow().ToUnixTimeSeconds();
         var toSecond = GetLastClosedBucketEndSecond(nowSecond, normalized.BucketSeconds);
         var fromSecond = toSecond - normalized.WindowSeconds + 1;
         var requestedFirstBucketSecond = FloorToBucket(fromSecond, normalized.BucketSeconds);

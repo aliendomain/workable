@@ -372,6 +372,25 @@ public sealed class WorkableSignalRTests
                     "retentionDiagnostics",
                     JsonSerializer.SerializeToElement(new { warningSeconds = 30 }),
                     WorkComponentShapes.Compact),
+                new WorkComponentRequest(
+                    "concurrencyDiagnostics",
+                    "concurrencyDiagnostics",
+                    JsonSerializer.SerializeToElement(new { warningSeconds = 30 }),
+                    WorkComponentShapes.Compact),
+                new WorkComponentRequest(
+                    "durabilityDiagnostics",
+                    "durabilityDiagnostics",
+                    JsonSerializer.SerializeToElement(new
+                    {
+                        acceptedWorkerWarningSeconds = 30,
+                        cleanupWarningSeconds = 30,
+                    }),
+                    WorkComponentShapes.Compact),
+                new WorkComponentRequest(
+                    "idempotencyDiagnostics",
+                    "idempotencyDiagnostics",
+                    JsonSerializer.SerializeToElement(new { publishMode = "continuous" }),
+                    WorkComponentShapes.Compact),
             ]),
             null);
 
@@ -383,15 +402,30 @@ public sealed class WorkableSignalRTests
             view => view.GeneratedAt > initial.GeneratedAt &&
                 view.Components.ContainsKey("queueDiagnostics") &&
                 view.Components.ContainsKey("readModelDiagnostics") &&
-                view.Components.ContainsKey("retentionDiagnostics"));
+                view.Components.ContainsKey("retentionDiagnostics") &&
+                view.Components.ContainsKey("concurrencyDiagnostics") &&
+                view.Components.ContainsKey("durabilityDiagnostics") &&
+                view.Components.ContainsKey("idempotencyDiagnostics"));
         var queue = Assert.IsType<JsonElement>(updated.Components["queueDiagnostics"].Data);
         var diagnostics = Assert.IsType<JsonElement>(updated.Components["readModelDiagnostics"].Data);
         var retention = Assert.IsType<JsonElement>(updated.Components["retentionDiagnostics"].Data);
+        var concurrency = Assert.IsType<JsonElement>(updated.Components["concurrencyDiagnostics"].Data);
+        var durability = Assert.IsType<JsonElement>(updated.Components["durabilityDiagnostics"].Data);
+        var idempotency = Assert.IsType<JsonElement>(updated.Components["idempotencyDiagnostics"].Data);
 
-        Assert.Equal(["queueDiagnostics", "readModelDiagnostics", "retentionDiagnostics"], updated.Components.Keys.ToArray());
+        Assert.Equal([
+            "queueDiagnostics",
+            "readModelDiagnostics",
+            "retentionDiagnostics",
+            "concurrencyDiagnostics",
+            "durabilityDiagnostics",
+            "idempotencyDiagnostics",
+        ], updated.Components.Keys.ToArray());
         Assert.Equal("compact", updated.Components["queueDiagnostics"].Shape);
         Assert.True(queue.TryGetProperty("rejectedWorkCount", out _));
         Assert.True(queue.TryGetProperty("hasRejectedWork", out _));
+        Assert.True(queue.TryGetProperty("alertableRejectedWorkCount", out _));
+        Assert.True(queue.TryGetProperty("hasAlertableRejectedWork", out _));
         Assert.Equal("compact", updated.Components["readModelDiagnostics"].Shape);
         Assert.True(diagnostics.TryGetProperty("pendingUpdateCount", out _));
         Assert.True(diagnostics.TryGetProperty("isReadModelBehind", out _));
@@ -400,6 +434,18 @@ public sealed class WorkableSignalRTests
         Assert.True(retention.TryGetProperty("scheduledPurgeCount", out _));
         Assert.True(retention.TryGetProperty("isRetentionBehind", out _));
         Assert.True(retention.TryGetProperty("retentionLagWarningSeconds", out _));
+        Assert.Equal("compact", updated.Components["concurrencyDiagnostics"].Shape);
+        Assert.True(concurrency.TryGetProperty("deferredStartCount", out _));
+        Assert.True(concurrency.TryGetProperty("lastDrainReleasedCount", out _));
+        Assert.True(concurrency.TryGetProperty("isConcurrencyBehind", out _));
+        Assert.True(concurrency.TryGetProperty("concurrencyLagWarningSeconds", out _));
+        Assert.Equal("compact", updated.Components["durabilityDiagnostics"].Shape);
+        Assert.True(durability.TryGetProperty("acceptedWaiterCount", out _));
+        Assert.True(durability.TryGetProperty("pendingCleanupCount", out _));
+        Assert.True(durability.TryGetProperty("hasReaderFailure", out _));
+        Assert.Equal("compact", updated.Components["idempotencyDiagnostics"].Shape);
+        Assert.True(idempotency.TryGetProperty("duplicateRejectionCount", out _));
+        Assert.True(idempotency.TryGetProperty("lastDuplicateRejectedStorage", out _));
     }
 
     [Fact]
@@ -441,7 +487,7 @@ public sealed class WorkableSignalRTests
     }
 
     [Fact]
-    public async Task DiagnosticsAlertChangeWatcherReceivesAlertPayloadWhenWorkIsRejected()
+    public async Task DiagnosticsAlertChangeWatcherDoesNotReceiveAlertPayloadWhenRejectedWorkIsNotAlertable()
     {
         using var host = await CreateHost(addSignalR: true);
         var system = host.Services.GetRequiredService<IWorkSystemRegistry>().Default;
@@ -473,6 +519,64 @@ public sealed class WorkableSignalRTests
         var rejected = await system.Queue.Enqueue("signalr.missing");
         Assert.False(rejected.QueueOutcome.IsAccepted);
 
+        var receivedAlert = await TryReadUntil(
+            views.Reader,
+            view =>
+            {
+                if (view.GeneratedAt <= initial.GeneratedAt ||
+                    !view.Components.TryGetValue("queueDiagnostics", out var component))
+                {
+                    return false;
+                }
+
+                var diagnostics = Assert.IsType<JsonElement>(component.Data);
+                return diagnostics.TryGetProperty("hasAlertableRejectedWork", out var hasRejectedWork) &&
+                    hasRejectedWork.GetBoolean();
+            },
+            TimeSpan.FromMilliseconds(250));
+
+        Assert.False(receivedAlert);
+    }
+
+    [Fact]
+    public async Task DiagnosticsAlertChangeWatcherReceivesAlertPayloadWhenSystemCapacityIsReached()
+    {
+        using var host = await CreateHost(
+            addSignalR: true,
+            configureWorkable: builder => builder.UseCapacity(new WorkSystemCapacityConfiguration
+            {
+                MaximumWorkers = 1,
+            }));
+        var system = host.Services.GetRequiredService<IWorkSystemRegistry>().Default;
+        await using var connection = CreateConnection(host);
+        var views = Channel.CreateUnbounded<WorkComponentQueryResult>();
+        connection.On<WorkComponentQueryResult>(
+            WorkableRealtimeClientMethods.ViewUpdated,
+            view => views.Writer.TryWrite(view));
+        await connection.StartAsync();
+        await connection.InvokeAsync(
+            "WatchView",
+            "diagnostics",
+            new WorkViewCriteria(Components:
+            [
+                new WorkComponentRequest(
+                    "queueDiagnostics",
+                    "queueDiagnostics",
+                    JsonSerializer.SerializeToElement(new
+                    {
+                        publishMode = "alertChanges",
+                    }),
+                    WorkComponentShapes.Compact),
+            ]),
+            null);
+        var initial = await ReadUntil(
+            views.Reader,
+            view => view.Components.ContainsKey("queueDiagnostics"));
+
+        _ = await system.Queue.Enqueue("signalr.worker");
+        var rejected = await system.Queue.Enqueue("signalr.worker");
+        Assert.False(rejected.QueueOutcome.IsAccepted);
+
         var updated = await ReadUntil(
             views.Reader,
             view =>
@@ -484,13 +588,14 @@ public sealed class WorkableSignalRTests
                 }
 
                 var diagnostics = Assert.IsType<JsonElement>(component.Data);
-                return diagnostics.TryGetProperty("hasRejectedWork", out var hasRejectedWork) &&
+                return diagnostics.TryGetProperty("hasAlertableRejectedWork", out var hasRejectedWork) &&
                     hasRejectedWork.GetBoolean();
             });
         var data = Assert.IsType<JsonElement>(updated.Components["queueDiagnostics"].Data);
 
         Assert.Equal(1, data.GetProperty("rejectedWorkCount").GetInt64());
-        Assert.Equal(rejected.QueueOutcome.Messages[0].Code, data.GetProperty("lastRejectedCode").GetString());
+        Assert.Equal(1, data.GetProperty("alertableRejectedWorkCount").GetInt64());
+        Assert.Equal("workable.system.capacity_reached", data.GetProperty("lastAlertableRejectedCode").GetString());
     }
 
     [Fact]
@@ -566,7 +671,8 @@ public sealed class WorkableSignalRTests
     private static async Task<IHost> CreateHost(
         bool addSignalR,
         string? hubPath = null,
-        Action<WorkableSignalROptions>? configureSignalR = null)
+        Action<WorkableSignalROptions>? configureSignalR = null,
+        Action<IWorkSystemBuilder>? configureWorkable = null)
     {
         var host = new HostBuilder()
             .ConfigureWebHost(web =>
@@ -579,6 +685,7 @@ public sealed class WorkableSignalRTests
                     services.AddWorkableSystem(builder =>
                     {
                         builder.StartWithHost();
+                        configureWorkable?.Invoke(builder);
                         builder.AddWork(
                             WorkDefinition.Create(
                                 "signalr.worker",

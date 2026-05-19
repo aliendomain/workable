@@ -20,6 +20,7 @@ internal sealed class InMemoryWorkSystem : IWorkSystem, IOriginAwareWorkSystem, 
     private readonly InMemoryWorkMetricsSink metrics = new();
     private readonly WorkEventStream events = new();
     private readonly WorkSystemQueueDiagnosticsTracker queueDiagnostics = new();
+    private readonly WorkSystemIdempotencyDiagnosticsTracker idempotencyDiagnostics = new();
     private readonly SemaphoreSlim lifecycleLock = new(1, 1);
     private bool runtimeWorkDefined;
 
@@ -61,6 +62,7 @@ internal sealed class InMemoryWorkSystem : IWorkSystem, IOriginAwareWorkSystem, 
             registration.Capacity,
             this.metrics,
             this.queueDiagnostics,
+            this.idempotencyDiagnostics,
             persistenceStore);
         this.diagnostics = new WorkSystemDiagnostics(this.queueDiagnostics, this.readModel, this.workers);
         this.readModel.UseDetailReaders(this.workers.GetAuthoritative, this.workers.GetIterationAuthoritative);

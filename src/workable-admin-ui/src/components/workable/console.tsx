@@ -13,6 +13,7 @@ import {
   FileJson,
   Folder,
   Home,
+  Info,
   Loader2,
   Maximize2,
   Minimize2,
@@ -90,7 +91,13 @@ import {
   type WorkCompletionStatus,
   type WorkComponentQueryResult,
   type WorkComponentShape,
+  type WorkConcurrencyDiagnosticsCompactComponent,
+  type WorkConcurrencyDiagnosticsDetailedComponent,
   type WorkDefinition,
+  type WorkDurabilityDiagnosticsCompactComponent,
+  type WorkDurabilityDiagnosticsDetailedComponent,
+  type WorkIdempotencyDiagnosticsCompactComponent,
+  type WorkIdempotencyDiagnosticsDetailedComponent,
   type WorkKeyKind,
   type WorkQueueDiagnosticsCompactComponent,
   type WorkableRealtimeEvent,
@@ -100,7 +107,10 @@ import {
   type WorkReadModelDiagnosticsDetailedComponent,
   type WorkRetentionDiagnosticsCompactComponent,
   type WorkRetentionDiagnosticsDetailedComponent,
+  type WorkSystemConcurrencyDiagnostics,
   type WorkSystemDiagnosticsCompactComponent,
+  type WorkSystemDurabilityDiagnostics,
+  type WorkSystemIdempotencyDiagnostics,
   type WorkSystemReadModelDiagnostics,
   type WorkSystemRetentionDiagnostics,
   type WorkSystemLifecycleResult,
@@ -256,6 +266,9 @@ const initialRefreshTokens: Record<View, number> = {
 };
 const viewContentOffsetClass = "pt-2";
 const readModelLagWarningThreshold = 100;
+const concurrencyLagWarningSeconds = 30;
+const durabilityAcceptedWorkerWarningSeconds = 30;
+const durabilityCleanupWarningSeconds = 30;
 const eventViewerEventTypes = [
   "worker.queued",
   "worker.started",
@@ -299,6 +312,9 @@ export function WorkableConsole() {
   const [diagnosticsAlertsBySystemId, setDiagnosticsAlertsBySystemId] = useState<Record<string, DiagnosticsAlertSnapshot>>({});
   const [readModelDiagnosticsExpanded, setReadModelDiagnosticsExpanded] = useState(false);
   const [retentionDiagnosticsExpanded, setRetentionDiagnosticsExpanded] = useState(false);
+  const [concurrencyDiagnosticsExpanded, setConcurrencyDiagnosticsExpanded] = useState(false);
+  const [durabilityDiagnosticsExpanded, setDurabilityDiagnosticsExpanded] = useState(false);
+  const [idempotencyDiagnosticsExpanded, setIdempotencyDiagnosticsExpanded] = useState(false);
   const [realtimePayloadCaptureEnabled, setRealtimePayloadCaptureEnabled] = useState(true);
   const [realtimePayloadMaxMessages, setRealtimePayloadMaxMessages] = useState(100);
   const [realtimePayloadOpen, setRealtimePayloadOpen] = useState(false);
@@ -334,8 +350,11 @@ export function WorkableConsole() {
   const activeLocation = findSystemLocation(consoleState, consoleState.activeSystemId);
   const activeHost = activeLocation?.host;
   const activeSystem = activeLocation?.system;
+  const activeSystemId = activeSystem?.id ?? "";
   const activeApiUrl = activeHost?.apiUrl;
   const activeSystemName = activeSystem?.systemName;
+  const activeRealtimeEnabled = activeSystem?.realtimeEnabled ?? false;
+  const activeRealtimeHubPath = activeSystem?.realtimeHubPath ?? null;
   const activeCatalogScope = activeSystem
     ? catalogScopeBySystemId[activeSystem.id] ?? null
     : null;
@@ -347,13 +366,13 @@ export function WorkableConsole() {
       activeApiUrl
         ? {
             apiUrl: activeApiUrl,
-            realtimeHubPath: activeSystem?.realtimeEnabled
-              ? activeSystem.realtimeHubPath
+            realtimeHubPath: activeRealtimeEnabled
+              ? activeRealtimeHubPath
               : null,
             systemName: activeSystemName,
           }
         : null,
-    [activeApiUrl, activeSystem, activeSystemName]
+    [activeApiUrl, activeRealtimeEnabled, activeRealtimeHubPath, activeSystemName]
   );
   const diagnosticsAlertRequest = useMemo(
     () => ({
@@ -391,6 +410,25 @@ export function WorkableConsole() {
           },
           shape: "compact",
           type: "retentionDiagnostics",
+        },
+        {
+          id: "concurrencyDiagnostics",
+          options: {
+            publishMode: "alertChanges",
+            warningSeconds: concurrencyLagWarningSeconds,
+          },
+          shape: "compact",
+          type: "concurrencyDiagnostics",
+        },
+        {
+          id: "durabilityDiagnostics",
+          options: {
+            publishMode: "alertChanges",
+            acceptedWorkerWarningSeconds: durabilityAcceptedWorkerWarningSeconds,
+            cleanupWarningSeconds: durabilityCleanupWarningSeconds,
+          },
+          shape: "compact",
+          type: "durabilityDiagnostics",
         },
       ],
     }),
@@ -433,6 +471,33 @@ export function WorkableConsole() {
           shape: "compact",
           type: "retentionDiagnostics",
         },
+        {
+          id: "concurrencyDiagnostics",
+          options: {
+            publishMode: "continuous",
+            warningSeconds: concurrencyLagWarningSeconds,
+          },
+          shape: "compact",
+          type: "concurrencyDiagnostics",
+        },
+        {
+          id: "durabilityDiagnostics",
+          options: {
+            publishMode: "continuous",
+            acceptedWorkerWarningSeconds: durabilityAcceptedWorkerWarningSeconds,
+            cleanupWarningSeconds: durabilityCleanupWarningSeconds,
+          },
+          shape: "compact",
+          type: "durabilityDiagnostics",
+        },
+        {
+          id: "idempotencyDiagnostics",
+          options: {
+            publishMode: "continuous",
+          },
+          shape: "compact",
+          type: "idempotencyDiagnostics",
+        },
       ],
     }),
     []
@@ -464,6 +529,54 @@ export function WorkableConsole() {
           },
           shape: "detailed",
           type: "retentionDiagnostics",
+        },
+      ],
+    }),
+    []
+  );
+  const concurrencyDiagnosticsDetailRequest = useMemo(
+    () => ({
+      components: [
+        {
+          id: "concurrencyDiagnostics",
+          options: {
+            publishMode: "continuous",
+            warningSeconds: concurrencyLagWarningSeconds,
+          },
+          shape: "detailed",
+          type: "concurrencyDiagnostics",
+        },
+      ],
+    }),
+    []
+  );
+  const durabilityDiagnosticsDetailRequest = useMemo(
+    () => ({
+      components: [
+        {
+          id: "durabilityDiagnostics",
+          options: {
+            publishMode: "continuous",
+            acceptedWorkerWarningSeconds: durabilityAcceptedWorkerWarningSeconds,
+            cleanupWarningSeconds: durabilityCleanupWarningSeconds,
+          },
+          shape: "detailed",
+          type: "durabilityDiagnostics",
+        },
+      ],
+    }),
+    []
+  );
+  const idempotencyDiagnosticsDetailRequest = useMemo(
+    () => ({
+      components: [
+        {
+          id: "idempotencyDiagnostics",
+          options: {
+            publishMode: "continuous",
+          },
+          shape: "detailed",
+          type: "idempotencyDiagnostics",
         },
       ],
     }),
@@ -513,16 +626,49 @@ export function WorkableConsole() {
     realtimePayloadMaxMessages,
     "diagnostics:retention"
   );
+  const concurrencyDiagnosticsDetail = useWorkableRealtimeView<WorkComponentQueryResult>(
+    connection,
+    "diagnostics",
+    concurrencyDiagnosticsDetailRequest,
+    diagnosticsRealtimeEnabled && systemNotificationOpen && concurrencyDiagnosticsExpanded,
+    captureRealtimePayloads,
+    realtimePayloadMaxMessages,
+    "diagnostics:concurrency"
+  );
+  const durabilityDiagnosticsDetail = useWorkableRealtimeView<WorkComponentQueryResult>(
+    connection,
+    "diagnostics",
+    durabilityDiagnosticsDetailRequest,
+    diagnosticsRealtimeEnabled && systemNotificationOpen && durabilityDiagnosticsExpanded,
+    captureRealtimePayloads,
+    realtimePayloadMaxMessages,
+    "diagnostics:durability"
+  );
+  const idempotencyDiagnosticsDetail = useWorkableRealtimeView<WorkComponentQueryResult>(
+    connection,
+    "diagnostics",
+    idempotencyDiagnosticsDetailRequest,
+    diagnosticsRealtimeEnabled && systemNotificationOpen && idempotencyDiagnosticsExpanded,
+    captureRealtimePayloads,
+    realtimePayloadMaxMessages,
+    "diagnostics:idempotency"
+  );
   const diagnosticsRealtimeMessages = useMemo(
     () => [
       ...diagnosticsTray.messages,
       ...readModelDiagnosticsDetail.messages,
       ...retentionDiagnosticsDetail.messages,
+      ...concurrencyDiagnosticsDetail.messages,
+      ...durabilityDiagnosticsDetail.messages,
+      ...idempotencyDiagnosticsDetail.messages,
     ],
     [
       diagnosticsTray.messages,
       readModelDiagnosticsDetail.messages,
       retentionDiagnosticsDetail.messages,
+      concurrencyDiagnosticsDetail.messages,
+      durabilityDiagnosticsDetail.messages,
+      idempotencyDiagnosticsDetail.messages,
     ]
   );
   const eventViewerCriteria = useMemo<WorkableRealtimeEventCriteria>(
@@ -600,20 +746,32 @@ export function WorkableConsole() {
   const clearDiagnosticsTrayMessages = diagnosticsTray.clearMessages;
   const clearReadModelDiagnosticsDetailMessages = readModelDiagnosticsDetail.clearMessages;
   const clearRetentionDiagnosticsDetailMessages = retentionDiagnosticsDetail.clearMessages;
+  const clearConcurrencyDiagnosticsDetailMessages = concurrencyDiagnosticsDetail.clearMessages;
+  const clearDurabilityDiagnosticsDetailMessages = durabilityDiagnosticsDetail.clearMessages;
+  const clearIdempotencyDiagnosticsDetailMessages = idempotencyDiagnosticsDetail.clearMessages;
   const clearDiagnosticsRealtimeMessages = useCallback(() => {
     clearDiagnosticsTrayMessages();
     clearReadModelDiagnosticsDetailMessages();
     clearRetentionDiagnosticsDetailMessages();
+    clearConcurrencyDiagnosticsDetailMessages();
+    clearDurabilityDiagnosticsDetailMessages();
+    clearIdempotencyDiagnosticsDetailMessages();
   }, [
     clearDiagnosticsTrayMessages,
     clearReadModelDiagnosticsDetailMessages,
     clearRetentionDiagnosticsDetailMessages,
+    clearConcurrencyDiagnosticsDetailMessages,
+    clearDurabilityDiagnosticsDetailMessages,
+    clearIdempotencyDiagnosticsDetailMessages,
   ]);
   const handleSystemNotificationOpenChange = useCallback((open: boolean) => {
     setSystemNotificationOpen(open);
     if (!open) {
       setReadModelDiagnosticsExpanded(false);
       setRetentionDiagnosticsExpanded(false);
+      setConcurrencyDiagnosticsExpanded(false);
+      setDurabilityDiagnosticsExpanded(false);
+      setIdempotencyDiagnosticsExpanded(false);
     }
   }, []);
   const acknowledgeQueueRejections = useCallback((systemId: string, count: number) => {
@@ -689,9 +847,17 @@ export function WorkableConsole() {
 
     setDiagnosticsAlertsBySystemId((current) => {
       if (!snapshot) {
+        if (!(systemId in current)) {
+          return current;
+        }
+
         const next = { ...current };
         delete next[systemId];
         return next;
+      }
+
+      if (diagnosticsAlertSnapshotsEqual(current[systemId], snapshot)) {
+        return current;
       }
 
       return {
@@ -1210,17 +1376,22 @@ export function WorkableConsole() {
     setNavigationHistory((current) => current.slice(0, -1));
   }, [navigationHistory, restoreNavigation]);
 
-  const markViewReady = (readyView: ServerView) => {
-    if (!activeSystem) {
+  const markViewReady = useCallback((readyView: ServerView) => {
+    if (!activeSystemId) {
       return;
     }
 
-    readyViews.current.add(getViewReadinessKey(activeSystem.id, readyView));
+    readyViews.current.add(getViewReadinessKey(activeSystemId, readyView));
     if (pendingView === readyView) {
-      setVisibleView(readyView);
-      setPendingView(null);
+      setVisibleView((current) => (current === readyView ? current : readyView));
+      setPendingView((current) => (current === readyView ? null : current));
     }
-  };
+  }, [activeSystemId, pendingView]);
+  const markOverviewReady = useCallback(() => markViewReady("overview"), [markViewReady]);
+  const markDefinitionsReady = useCallback(() => markViewReady("definitions"), [markViewReady]);
+  const markDefinitionReady = useCallback(() => markViewReady("definition"), [markViewReady]);
+  const markWorkersReady = useCallback(() => markViewReady("workers"), [markViewReady]);
+  const markIterationsReady = useCallback(() => markViewReady("iterations"), [markViewReady]);
 
   useEffect(() => {
     if (visibleView === "worker") {
@@ -1270,17 +1441,17 @@ export function WorkableConsole() {
 
   const handleOverviewStateLoaded = useCallback((state: string) => {
     setLifecycleError(undefined);
-    if (activeSystem) {
-      updateSystemState(activeSystem.id, state);
+    if (activeSystemId) {
+      updateSystemState(activeSystemId, state);
     }
-  }, [activeSystem, updateSystemState]);
+  }, [activeSystemId, updateSystemState]);
 
   const handleOverviewConnectionError = useCallback(() => {
     setLifecycleError(undefined);
-    if (activeSystem) {
-      updateSystemState(activeSystem.id, null);
+    if (activeSystemId) {
+      updateSystemState(activeSystemId, null);
     }
-  }, [activeSystem, updateSystemState]);
+  }, [activeSystemId, updateSystemState]);
 
   const toggleHostExpanded = (hostId: string) => {
     setConsoleState((current) => {
@@ -1517,7 +1688,16 @@ export function WorkableConsole() {
                             acknowledgedRejectedWorkCounts={acknowledgedRejectedWorkCounts}
                             activeSystemId={activeSystem.id}
                             alertSources={diagnosticsAlertSources}
+                            concurrencyDetailDiagnostics={concurrencyDiagnosticsDetail}
+                            concurrencyExpanded={concurrencyDiagnosticsExpanded}
+                            durabilityDetailDiagnostics={durabilityDiagnosticsDetail}
+                            durabilityExpanded={durabilityDiagnosticsExpanded}
+                            idempotencyDetailDiagnostics={idempotencyDiagnosticsDetail}
+                            idempotencyExpanded={idempotencyDiagnosticsExpanded}
                             onAcknowledgeQueueRejections={acknowledgeQueueRejections}
+                            onConcurrencyExpandedChange={setConcurrencyDiagnosticsExpanded}
+                            onDurabilityExpandedChange={setDurabilityDiagnosticsExpanded}
+                            onIdempotencyExpandedChange={setIdempotencyDiagnosticsExpanded}
                             onOpenChange={handleSystemNotificationOpenChange}
                             onReadModelExpandedChange={setReadModelDiagnosticsExpanded}
                             onRetentionExpandedChange={setRetentionDiagnosticsExpanded}
@@ -1575,7 +1755,7 @@ export function WorkableConsole() {
                         onOpenCatalog={() => openView("definitions")}
                         onOpenIterations={openIterations}
                         onOpenKeyType={openIterationsByKeyType}
-                        onReady={() => markViewReady("overview")}
+                        onReady={markOverviewReady}
                         onPanelShapeChange={setOverviewPanelShape}
                         onPanelVisibilityChange={setOverviewPanelVisible}
                         onThroughputSeriesToggle={toggleOverviewThroughputSeries}
@@ -1658,7 +1838,7 @@ export function WorkableConsole() {
                           openDefinition(definitionId, activeSystem?.id ?? "")
                         }
                         onOpenWorker={openWorker}
-                        onReady={() => markViewReady("definitions")}
+                        onReady={markDefinitionsReady}
                         refreshToken={refreshTokens.definitions}
                       />
                     </div>
@@ -1669,7 +1849,7 @@ export function WorkableConsole() {
                         connection={connection}
                         definitionId={selectedDefinitionId}
                         onOpenWorker={openWorker}
-                        onReady={() => markViewReady("definition")}
+                        onReady={markDefinitionReady}
                         refreshToken={refreshTokens.definition}
                       />
                     </div>
@@ -1708,7 +1888,7 @@ export function WorkableConsole() {
                         isLoadingTarget={visibleView === "workers" || pendingView === "workers"}
                         isVisible={visibleView === "workers"}
                         onOpenWorker={openWorker}
-                        onReady={() => markViewReady("workers")}
+                        onReady={markWorkersReady}
                         definitionFilter={workerDefinitionFilter}
                         keyTypeFilter={keyTypeFilter}
                         stateFilter={workerStateFilter}
@@ -1752,7 +1932,7 @@ export function WorkableConsole() {
                         isVisible={visibleView === "iterations"}
                         keyTypeFilter={iterationKeyTypeFilter}
                         onOpenWorker={openWorker}
-                        onReady={() => markViewReady("iterations")}
+                        onReady={markIterationsReady}
                         refreshToken={refreshTokens.iterations}
                         statusFilter={iterationStatusFilter}
                       />
@@ -2003,16 +2183,24 @@ function DiagnosticsAlertSubscription({
     maxMessages,
     `diagnostics:alerts:${target.systemId}`
   );
+  const lastSnapshotRef = useRef<DiagnosticsAlertSnapshot | null>(null);
 
   useEffect(() => {
-    onSnapshot(target.systemId, {
+    const snapshot = {
       connectionState: diagnostics.connectionState,
       data: diagnostics.data,
       enabled: diagnostics.enabled,
       error: diagnostics.error,
       loading: diagnostics.loading,
       refreshing: diagnostics.refreshing,
-    });
+    };
+
+    if (diagnosticsAlertSnapshotsEqual(lastSnapshotRef.current, snapshot)) {
+      return;
+    }
+
+    lastSnapshotRef.current = snapshot;
+    onSnapshot(target.systemId, snapshot);
   }, [
     diagnostics.connectionState,
     diagnostics.data,
@@ -2025,7 +2213,10 @@ function DiagnosticsAlertSubscription({
   ]);
 
   useEffect(
-    () => () => onSnapshot(target.systemId, null),
+    () => () => {
+      lastSnapshotRef.current = null;
+      onSnapshot(target.systemId, null);
+    },
     [onSnapshot, target.systemId]
   );
 
@@ -2891,7 +3082,16 @@ function SystemNotificationTray({
   acknowledgedRejectedWorkCounts,
   activeSystemId,
   alertSources,
+  concurrencyDetailDiagnostics,
+  concurrencyExpanded,
+  durabilityDetailDiagnostics,
+  durabilityExpanded,
+  idempotencyDetailDiagnostics,
+  idempotencyExpanded,
   onAcknowledgeQueueRejections,
+  onConcurrencyExpandedChange,
+  onDurabilityExpandedChange,
+  onIdempotencyExpandedChange,
   onOpenChange,
   onReadModelExpandedChange,
   onRetentionExpandedChange,
@@ -2906,7 +3106,16 @@ function SystemNotificationTray({
   acknowledgedRejectedWorkCounts: Record<string, number>;
   activeSystemId: string;
   alertSources: DiagnosticsAlertSource[];
+  concurrencyDetailDiagnostics: SystemDiagnosticsViewState;
+  concurrencyExpanded: boolean;
+  durabilityDetailDiagnostics: SystemDiagnosticsViewState;
+  durabilityExpanded: boolean;
+  idempotencyDetailDiagnostics: SystemDiagnosticsViewState;
+  idempotencyExpanded: boolean;
   onAcknowledgeQueueRejections: (systemId: string, count: number) => void;
+  onConcurrencyExpandedChange: (expanded: boolean) => void;
+  onDurabilityExpandedChange: (expanded: boolean) => void;
+  onIdempotencyExpandedChange: (expanded: boolean) => void;
   onOpenChange: (open: boolean) => void;
   onReadModelExpandedChange: (expanded: boolean) => void;
   onRetentionExpandedChange: (expanded: boolean) => void;
@@ -2943,14 +3152,58 @@ function SystemNotificationTray({
     retentionDetailDiagnostics.data,
     "retentionDiagnostics"
   );
+  const alertConcurrencyCompact = getWorkComponentData<WorkConcurrencyDiagnosticsCompactComponent>(
+    activeAlertSource?.data,
+    "concurrencyDiagnostics"
+  );
+  const trayConcurrencyCompact = getWorkComponentData<WorkConcurrencyDiagnosticsCompactComponent>(
+    trayDiagnostics.data,
+    "concurrencyDiagnostics"
+  );
+  const detailedConcurrency = getWorkComponentData<WorkConcurrencyDiagnosticsDetailedComponent>(
+    concurrencyDetailDiagnostics.data,
+    "concurrencyDiagnostics"
+  );
+  const alertDurabilityCompact = getWorkComponentData<WorkDurabilityDiagnosticsCompactComponent>(
+    activeAlertSource?.data,
+    "durabilityDiagnostics"
+  );
+  const trayDurabilityCompact = getWorkComponentData<WorkDurabilityDiagnosticsCompactComponent>(
+    trayDiagnostics.data,
+    "durabilityDiagnostics"
+  );
+  const detailedDurability = getWorkComponentData<WorkDurabilityDiagnosticsDetailedComponent>(
+    durabilityDetailDiagnostics.data,
+    "durabilityDiagnostics"
+  );
+  const trayIdempotencyCompact = getWorkComponentData<WorkIdempotencyDiagnosticsCompactComponent>(
+    trayDiagnostics.data,
+    "idempotencyDiagnostics"
+  );
+  const detailedIdempotency = getWorkComponentData<WorkIdempotencyDiagnosticsDetailedComponent>(
+    idempotencyDetailDiagnostics.data,
+    "idempotencyDiagnostics"
+  );
   const readModelDetailCompact = createCompactReadModelDiagnosticsFromDetailed(detailedReadModel);
   const retentionDetailCompact = createCompactRetentionDiagnosticsFromDetailed(detailedRetention);
+  const concurrencyDetailCompact = createCompactConcurrencyDiagnosticsFromDetailed(detailedConcurrency);
+  const durabilityDetailCompact = createCompactDurabilityDiagnosticsFromDetailed(detailedDurability);
+  const idempotencyDetailCompact = createCompactIdempotencyDiagnosticsFromDetailed(detailedIdempotency);
   const readModelCompact = open
     ? (readModelExpanded ? readModelDetailCompact ?? trayReadModelCompact : trayReadModelCompact) ?? alertReadModelCompact
     : alertReadModelCompact;
   const retentionCompact = open
     ? (retentionExpanded ? retentionDetailCompact ?? trayRetentionCompact : trayRetentionCompact) ?? alertRetentionCompact
     : alertRetentionCompact;
+  const concurrencyCompact = open
+    ? (concurrencyExpanded ? concurrencyDetailCompact ?? trayConcurrencyCompact : trayConcurrencyCompact) ?? alertConcurrencyCompact
+    : alertConcurrencyCompact;
+  const durabilityCompact = open
+    ? (durabilityExpanded ? durabilityDetailCompact ?? trayDurabilityCompact : trayDurabilityCompact) ?? alertDurabilityCompact
+    : alertDurabilityCompact;
+  const idempotencyCompact = open
+    ? (idempotencyExpanded ? idempotencyDetailCompact ?? trayIdempotencyCompact : trayIdempotencyCompact) ?? trayIdempotencyCompact
+    : trayIdempotencyCompact;
   const notifications = alertSources.flatMap((source) =>
     createSystemNotifications(
       getWorkComponentData<WorkSystemDiagnosticsCompactComponent>(source.data, "systemDiagnostics"),
@@ -2958,6 +3211,8 @@ function SystemNotificationTray({
       acknowledgedRejectedWorkCounts[source.target.systemId] ?? 0,
       getWorkComponentData<WorkReadModelDiagnosticsCompactComponent>(source.data, "readModelDiagnostics"),
       getWorkComponentData<WorkRetentionDiagnosticsCompactComponent>(source.data, "retentionDiagnostics"),
+      getWorkComponentData<WorkConcurrencyDiagnosticsCompactComponent>(source.data, "concurrencyDiagnostics"),
+      getWorkComponentData<WorkDurabilityDiagnosticsCompactComponent>(source.data, "durabilityDiagnostics"),
       source.error,
       source.target
     )
@@ -2965,9 +3220,12 @@ function SystemNotificationTray({
   const hasNotifications = notifications.length > 0;
   const hasCriticalNotifications = notifications.some((notification) => notification.tone === "critical");
   const busy = alertSources.some((source) => source.loading || source.refreshing) ||
-    (open && !readModelExpanded && !retentionExpanded && (trayDiagnostics.loading || trayDiagnostics.refreshing)) ||
+    (open && !readModelExpanded && !retentionExpanded && !concurrencyExpanded && !durabilityExpanded && !idempotencyExpanded && (trayDiagnostics.loading || trayDiagnostics.refreshing)) ||
     (readModelExpanded && (readModelDetailDiagnostics.loading || readModelDetailDiagnostics.refreshing)) ||
-    (retentionExpanded && (retentionDetailDiagnostics.loading || retentionDetailDiagnostics.refreshing));
+    (retentionExpanded && (retentionDetailDiagnostics.loading || retentionDetailDiagnostics.refreshing)) ||
+    (concurrencyExpanded && (concurrencyDetailDiagnostics.loading || concurrencyDetailDiagnostics.refreshing)) ||
+    (durabilityExpanded && (durabilityDetailDiagnostics.loading || durabilityDetailDiagnostics.refreshing)) ||
+    (idempotencyExpanded && (idempotencyDetailDiagnostics.loading || idempotencyDetailDiagnostics.refreshing));
   const connectedAlertCount = alertSources.filter((source) => source.connectionState === "connected").length;
   const alertSubscriptionText = alertSources.length > 0
     ? `${connectedAlertCount}/${alertSources.length} alert streams connected`
@@ -2977,6 +3235,15 @@ function SystemNotificationTray({
     : undefined;
   const retentionLastUpdatedAt = retentionDetailDiagnostics.data?.generatedAt
     ? new Date(retentionDetailDiagnostics.data.generatedAt)
+    : undefined;
+  const concurrencyLastUpdatedAt = concurrencyDetailDiagnostics.data?.generatedAt
+    ? new Date(concurrencyDetailDiagnostics.data.generatedAt)
+    : undefined;
+  const durabilityLastUpdatedAt = durabilityDetailDiagnostics.data?.generatedAt
+    ? new Date(durabilityDetailDiagnostics.data.generatedAt)
+    : undefined;
+  const idempotencyLastUpdatedAt = idempotencyDetailDiagnostics.data?.generatedAt
+    ? new Date(idempotencyDetailDiagnostics.data.generatedAt)
     : undefined;
 
   return (
@@ -3075,6 +3342,30 @@ function SystemNotificationTray({
             onExpandedChange={onRetentionExpandedChange}
             retention={detailedRetention?.retention}
           />
+          <ConcurrencyDiagnosticsSummary
+            compact={concurrencyCompact}
+            concurrency={detailedConcurrency?.concurrency}
+            expanded={concurrencyExpanded}
+            lastUpdatedAt={concurrencyLastUpdatedAt}
+            loading={concurrencyDetailDiagnostics.loading && !detailedConcurrency}
+            onExpandedChange={onConcurrencyExpandedChange}
+          />
+          <DurabilityDiagnosticsSummary
+            compact={durabilityCompact}
+            durability={detailedDurability?.durability}
+            expanded={durabilityExpanded}
+            lastUpdatedAt={durabilityLastUpdatedAt}
+            loading={durabilityDetailDiagnostics.loading && !detailedDurability}
+            onExpandedChange={onDurabilityExpandedChange}
+          />
+          <IdempotencyDiagnosticsSummary
+            compact={idempotencyCompact}
+            expanded={idempotencyExpanded}
+            idempotency={detailedIdempotency?.idempotency}
+            lastUpdatedAt={idempotencyLastUpdatedAt}
+            loading={idempotencyDetailDiagnostics.loading && !detailedIdempotency}
+            onExpandedChange={onIdempotencyExpandedChange}
+          />
         </div>
       </PopoverContent>
     </Popover>
@@ -3137,33 +3428,44 @@ function ReadModelDiagnosticsSummary({
               <div className="grid grid-cols-2 gap-2 text-xs">
                 <DiagnosticsMetric
                   label="Pending"
+                  description="How many read-model updates are still waiting to be projected. If this keeps growing, queries may be looking at stale projected data."
                   tone={compact?.isReadModelBehind ? "warning" : undefined}
                   value={formatNumber(readModel?.pendingUpdateCount)}
                 />
                 <DiagnosticsMetric
                   label="Last batch"
+                  description="How many updates were applied in the most recent projection batch. This helps show whether the projector is making meaningful progress."
                   value={formatNumber(readModel?.lastBatchSize)}
                 />
                 <DiagnosticsMetric
                   label="Enqueued"
+                  description="The latest sequence number handed to the read-model pipeline. Compare this with Applied to understand how much projection work is still outstanding."
                   value={formatNumber(readModel?.enqueuedSequence)}
                 />
                 <DiagnosticsMetric
                   label="Applied"
+                  description="The latest sequence number successfully projected into the read model. If this lags behind Enqueued, the projector is behind."
                   value={formatNumber(readModel?.appliedSequence)}
                 />
                 <DiagnosticsMetric
                   label="Snapshots"
+                  description="How many read-model snapshots have been published. This is mostly useful for confirming the projection pipeline has been actively emitting updated views."
                   value={formatNumber(readModel?.publishedSnapshotCount)}
                 />
                 <DiagnosticsMetric
                   label="Last projection"
+                  description="How long the most recent projection pass took. Rising durations can hint at expensive projection work or downstream pressure."
                   value={formatDuration(readModel?.lastProjectionDuration)}
                 />
               </div>
               <div className="rounded-md border border-border px-3 py-2 text-xs">
                 <div className="flex items-center justify-between gap-3">
-                  <span className="text-muted-foreground">Last projected</span>
+                  <span className="text-muted-foreground">
+                    <TooltipLabel
+                      description="When the projector last finished applying updates. If this goes stale while Pending grows, the read-model pipeline may be stuck."
+                      label="Last projected"
+                    />
+                  </span>
                   <span className="min-w-0 truncate font-mono">
                     {formatDateTimeShort(readModel?.lastProjectedAt)}
                   </span>
@@ -3230,40 +3532,56 @@ function RetentionDiagnosticsSummary({
               <div className="grid grid-cols-2 gap-2 text-xs">
                 <DiagnosticsMetric
                   label="Tracked final"
+                  description="How many final workers retention is still tracking. This is the pool retention may purge from over time."
                   value={formatNumber(retention.trackedFinalWorkerCount)}
                 />
                 <DiagnosticsMetric
                   label="Scheduled"
+                  description="How many purge operations are currently scheduled. Growth here can be normal briefly, but a large lingering queue means retention may be behind."
                   tone={compact?.isRetentionBehind ? "warning" : undefined}
                   value={formatNumber(retention.scheduledPurgeCount)}
                 />
                 <DiagnosticsMetric
                   label="High water"
+                  description="The largest scheduled purge queue size seen so far. Useful for understanding how large retention backlog has gotten under load."
                   value={formatNumber(retention.scheduledPurgeHighWaterMark)}
                 />
                 <DiagnosticsMetric
                   label="Overdue age"
+                  description="How late the oldest due purge currently is. This is the clearest signal that retention cleanup is falling behind."
                   tone={compact?.isRetentionBehind ? "warning" : undefined}
                   value={formatDuration(retention.oldestDuePurgeAge)}
                 />
                 <DiagnosticsMetric
                   label="Last purged"
+                  description="How many workers were purged in the most recent retention run. This helps show whether the scheduler is actively clearing backlog."
                   value={formatNumber(retention.lastPurgedCount)}
                 />
                 <DiagnosticsMetric
                   label="Total purged"
+                  description="Lifetime total of workers purged by retention. Useful for rough workload context, but less important than current backlog."
                   value={formatNumber(retention.totalPurgedCount)}
                 />
               </div>
               <div className="rounded-md border border-border px-3 py-2 text-xs">
                 <div className="flex items-center justify-between gap-3">
-                  <span className="text-muted-foreground">Oldest scheduled purge</span>
+                  <span className="text-muted-foreground">
+                    <TooltipLabel
+                      description="When the oldest queued purge was originally due. If this is far in the past, retention work is overdue."
+                      label="Oldest scheduled purge"
+                    />
+                  </span>
                   <span className="min-w-0 truncate font-mono">
                     {formatDateTimeShort(retention.oldestScheduledPurgeDueAt)}
                   </span>
                 </div>
                 <div className="mt-1 flex items-center justify-between gap-3">
-                  <span className="text-muted-foreground">Last run</span>
+                  <span className="text-muted-foreground">
+                    <TooltipLabel
+                      description="When the retention scheduler last completed a run. If this goes stale while Scheduled or Overdue age grows, the scheduler may be stalled."
+                      label="Last run"
+                    />
+                  </span>
                   <span className="min-w-0 truncate font-mono">
                     {formatDateTimeShort(retention.lastRunAt)}
                   </span>
@@ -3277,20 +3595,342 @@ function RetentionDiagnosticsSummary({
   );
 }
 
+function ConcurrencyDiagnosticsSummary({
+  compact,
+  concurrency,
+  expanded,
+  lastUpdatedAt,
+  loading,
+  onExpandedChange,
+}: {
+  compact?: WorkConcurrencyDiagnosticsCompactComponent;
+  concurrency?: WorkSystemConcurrencyDiagnostics;
+  expanded: boolean;
+  lastUpdatedAt?: Date;
+  loading: boolean;
+  onExpandedChange: (expanded: boolean) => void;
+}) {
+  return (
+    <div className="border-b p-3 last:border-b-0">
+      <button
+        className="flex w-full items-center justify-between gap-3 text-left"
+        onClick={() => onExpandedChange(!expanded)}
+        type="button"
+      >
+        <div className="flex min-w-0 items-center gap-2">
+          <ChevronRight className={`size-4 shrink-0 transition-transform ${expanded ? "rotate-90" : ""}`} />
+          <div className="min-w-0">
+            <div className="font-medium text-sm">Concurrency diagnostics</div>
+            <div className="truncate text-muted-foreground text-xs">
+              Deferred {formatNumber(compact?.deferredStartCount)}, oldest {formatDuration(compact?.oldestDeferredStartAge)}
+            </div>
+          </div>
+        </div>
+        <div className="shrink-0 text-muted-foreground text-xs">
+          {expanded && lastUpdatedAt ? formatLocalTime(lastUpdatedAt) : expanded ? "Waiting" : "Collapsed"}
+        </div>
+      </button>
+      {expanded && (
+        <div className="mt-3 space-y-2">
+          {loading && !concurrency ? (
+            <div className="flex items-center gap-2 rounded-md border border-border px-3 py-2 text-muted-foreground text-sm">
+              <Loader2 className="size-4 animate-spin" />
+              Loading concurrency diagnostics.
+            </div>
+          ) : null}
+          {!loading && !concurrency ? (
+            <div className="rounded-md border border-border bg-muted/20 px-3 py-2 text-muted-foreground text-sm">
+              Expand this section while realtime is connected to load concurrency diagnostics.
+            </div>
+          ) : null}
+          {concurrency && (
+            <>
+              <div className="grid grid-cols-2 gap-2 text-xs">
+                <DiagnosticsMetric
+                  label="Deferred"
+                  description="How many workers are currently blocked by concurrency and waiting to start. Rising counts usually mean capacity is saturated or work is not draining."
+                  tone={compact?.isConcurrencyBehind ? "warning" : undefined}
+                  value={formatNumber(concurrency.deferredStartCount)}
+                />
+                <DiagnosticsMetric
+                  label="Oldest age"
+                  description="How long the longest-waiting deferred worker has been stuck. This is the clearest signal that concurrency backlog is becoming unhealthy."
+                  tone={compact?.isConcurrencyBehind ? "warning" : undefined}
+                  value={formatDuration(concurrency.oldestDeferredStartAge)}
+                />
+                <DiagnosticsMetric
+                  label="Last released"
+                  description="How many deferred workers were released in the most recent drain. Low or zero release counts can explain why backlog is not shrinking."
+                  value={formatNumber(concurrency.lastDrainReleasedCount)}
+                />
+              </div>
+              <div className={`rounded-md border px-3 py-2 text-xs ${
+                compact?.isConcurrencyBehind
+                  ? "border-amber-500/30 bg-amber-500/10"
+                  : "border-border bg-muted/10"
+              }`}>
+                <div className="flex items-center justify-between gap-3">
+                  <TooltipLabel
+                    description="A quick status view of whether deferred workers are waiting longer than the configured warning threshold."
+                    label="Backlog state"
+                  />
+                  <span className="font-medium">
+                    {compact?.isConcurrencyBehind ? "Warning" : "Healthy"}
+                  </span>
+                </div>
+                <div className="mt-1 text-muted-foreground">
+                  {compact?.isConcurrencyBehind
+                    ? `Oldest deferred start has been waiting longer than ${formatNumber(compact?.concurrencyLagWarningSeconds)} seconds.`
+                    : "Deferred starts are within the warning threshold."}
+                </div>
+              </div>
+              <div className="rounded-md border border-border px-3 py-2 text-xs">
+                Concurrency diagnostics are intentionally limited to current backlog and the most recent drain result.
+              </div>
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function DurabilityDiagnosticsSummary({
+  compact,
+  durability,
+  expanded,
+  lastUpdatedAt,
+  loading,
+  onExpandedChange,
+}: {
+  compact?: WorkDurabilityDiagnosticsCompactComponent;
+  durability?: WorkSystemDurabilityDiagnostics;
+  expanded: boolean;
+  lastUpdatedAt?: Date;
+  loading: boolean;
+  onExpandedChange: (expanded: boolean) => void;
+}) {
+  return (
+    <div className="border-b p-3 last:border-b-0">
+      <button
+        className="flex w-full items-center justify-between gap-3 text-left"
+        onClick={() => onExpandedChange(!expanded)}
+        type="button"
+      >
+        <div className="flex min-w-0 items-center gap-2">
+          <ChevronRight className={`size-4 shrink-0 transition-transform ${expanded ? "rotate-90" : ""}`} />
+          <div className="min-w-0">
+            <div className="font-medium text-sm">Durability diagnostics</div>
+            <div className="truncate text-muted-foreground text-xs">
+              Waiters {formatNumber(compact?.acceptedWaiterCount)}, cleanup {formatNumber(compact?.pendingCleanupCount)}
+            </div>
+          </div>
+        </div>
+        <div className="shrink-0 text-muted-foreground text-xs">
+          {expanded && lastUpdatedAt ? formatLocalTime(lastUpdatedAt) : expanded ? "Waiting" : "Collapsed"}
+        </div>
+      </button>
+      {expanded && (
+        <div className="mt-3 space-y-2">
+          {loading && !durability ? (
+            <div className="flex items-center gap-2 rounded-md border border-border px-3 py-2 text-muted-foreground text-sm">
+              <Loader2 className="size-4 animate-spin" />
+              Loading durability diagnostics.
+            </div>
+          ) : null}
+          {!loading && !durability ? (
+            <div className="rounded-md border border-border bg-muted/20 px-3 py-2 text-muted-foreground text-sm">
+              Expand this section while realtime is connected to load durability diagnostics.
+            </div>
+          ) : null}
+          {durability && (
+            <>
+              <div className="grid grid-cols-2 gap-2 text-xs">
+                <DiagnosticsMetric
+                  label="Accepted waiters"
+                  description="How many accepted durable requests are still waiting to materialize into in-memory workers. If this grows, callers are waiting on the durability path."
+                  tone={compact?.isAcceptedWorkerMaterializationBehind ? "warning" : undefined}
+                  value={formatNumber(durability.acceptedWaiterCount)}
+                />
+                <DiagnosticsMetric
+                  label="Waiter age"
+                  description="How long the oldest accepted durable request has been waiting to materialize. This is the main signal that durable worker creation is unhealthy."
+                  tone={compact?.isAcceptedWorkerMaterializationBehind ? "warning" : undefined}
+                  value={formatDuration(durability.oldestAcceptedWaiterAge)}
+                />
+                <DiagnosticsMetric
+                  label="Pending cleanup"
+                  description="How many durable cleanup actions are queued. If this climbs, final durable rows are not being cleaned up promptly."
+                  tone={compact?.isCleanupBehind ? "warning" : undefined}
+                  value={formatNumber(durability.pendingCleanupCount)}
+                />
+                <DiagnosticsMetric
+                  label="Cleanup age"
+                  description="How long the oldest queued durable cleanup item has been waiting. This is the clearest signal that cleanup is falling behind."
+                  tone={compact?.isCleanupBehind ? "warning" : undefined}
+                  value={formatDuration(durability.oldestPendingCleanupAge)}
+                />
+              </div>
+              <div className={`rounded-md border px-3 py-2 text-xs ${
+                compact?.hasReaderFailure || compact?.hasLeaseRenewalFailure || compact?.hasCleanupFailure ||
+                compact?.isAcceptedWorkerMaterializationBehind || compact?.isCleanupBehind
+                  ? "border-amber-500/30 bg-amber-500/10"
+                  : "border-border bg-muted/10"
+              }`}>
+                <div className="flex items-center justify-between gap-3">
+                  <TooltipLabel
+                    description="Summarizes whether the durability background loops are healthy. Reader, lease renewal, or cleanup failures here usually need investigation."
+                    label="Health"
+                  />
+                  <span className="font-medium">
+                    {compact?.hasReaderFailure || compact?.hasLeaseRenewalFailure || compact?.hasCleanupFailure ||
+                    compact?.isAcceptedWorkerMaterializationBehind || compact?.isCleanupBehind
+                      ? "Warning"
+                      : "Healthy"}
+                  </span>
+                </div>
+                <div className="mt-1 text-muted-foreground">
+                  Reader {compact?.hasReaderFailure ? "failed" : "ok"}; lease renewal {compact?.hasLeaseRenewalFailure ? "failed" : "ok"}; cleanup {compact?.hasCleanupFailure ? "failed" : "ok"}.
+                </div>
+                {compact?.isAcceptedWorkerMaterializationBehind ? (
+                  <div className="mt-1 text-muted-foreground">
+                    Accepted workers are waiting longer than {formatNumber(compact?.acceptedWorkerWarningSeconds)} seconds to materialize.
+                  </div>
+                ) : null}
+                {compact?.isCleanupBehind ? (
+                  <div className="mt-1 text-muted-foreground">
+                    Cleanup backlog is older than {formatNumber(compact?.cleanupWarningSeconds)} seconds.
+                  </div>
+                ) : null}
+              </div>
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function IdempotencyDiagnosticsSummary({
+  compact,
+  expanded,
+  idempotency,
+  lastUpdatedAt,
+  loading,
+  onExpandedChange,
+}: {
+  compact?: WorkIdempotencyDiagnosticsCompactComponent;
+  expanded: boolean;
+  idempotency?: WorkSystemIdempotencyDiagnostics;
+  lastUpdatedAt?: Date;
+  loading: boolean;
+  onExpandedChange: (expanded: boolean) => void;
+}) {
+  return (
+    <div className="border-b p-3 last:border-b-0">
+      <button
+        className="flex w-full items-center justify-between gap-3 text-left"
+        onClick={() => onExpandedChange(!expanded)}
+        type="button"
+      >
+        <div className="flex min-w-0 items-center gap-2">
+          <ChevronRight className={`size-4 shrink-0 transition-transform ${expanded ? "rotate-90" : ""}`} />
+          <div className="min-w-0">
+            <div className="font-medium text-sm">Idempotency diagnostics</div>
+            <div className="truncate text-muted-foreground text-xs">
+              Duplicate rejects {formatNumber(compact?.duplicateRejectionCount)}, storage {compact?.lastDuplicateRejectedStorage ?? "-"}
+            </div>
+          </div>
+        </div>
+        <div className="shrink-0 text-muted-foreground text-xs">
+          {expanded && lastUpdatedAt ? formatLocalTime(lastUpdatedAt) : expanded ? "Waiting" : "Collapsed"}
+        </div>
+      </button>
+      {expanded && (
+        <div className="mt-3 space-y-2">
+          {loading && !idempotency ? (
+            <div className="flex items-center gap-2 rounded-md border border-border px-3 py-2 text-muted-foreground text-sm">
+              <Loader2 className="size-4 animate-spin" />
+              Loading idempotency diagnostics.
+            </div>
+          ) : null}
+          {!loading && !idempotency ? (
+            <div className="rounded-md border border-border bg-muted/20 px-3 py-2 text-muted-foreground text-sm">
+              Expand this section while realtime is connected to load idempotency diagnostics.
+            </div>
+          ) : null}
+          {idempotency && (
+            <>
+              <div className="grid grid-cols-2 gap-2 text-xs">
+                <DiagnosticsMetric
+                  label="Duplicate rejects"
+                  description="How many queue requests were rejected as duplicates by idempotency protection. Useful for spotting duplicate traffic or unexpected replays."
+                  value={formatNumber(idempotency.duplicateRejectionCount)}
+                />
+                <DiagnosticsMetric
+                  label="Last storage"
+                  description="Where the most recent duplicate rejection was detected. This tells you whether local or persistence-backed idempotency caught it."
+                  value={idempotency.lastDuplicateRejectedStorage ?? "-"}
+                />
+              </div>
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function DiagnosticsMetric({
+  description,
   label,
   tone,
   value,
 }: {
+  description?: string;
   label: string;
   tone?: "warning";
   value: string;
 }) {
   return (
     <div className={`rounded-md border px-3 py-2 ${tone === "warning" ? "border-amber-500/30 bg-amber-500/10" : "border-border"}`}>
-      <div className="text-muted-foreground">{label}</div>
+      <div className="text-muted-foreground">
+        <TooltipLabel description={description} label={label} />
+      </div>
       <div className="truncate font-mono text-foreground">{value}</div>
     </div>
+  );
+}
+
+function TooltipLabel({
+  description,
+  label,
+}: {
+  description?: string;
+  label: string;
+}) {
+  if (!description) {
+    return <span>{label}</span>;
+  }
+
+  return (
+    <span className="inline-flex items-center gap-1">
+      <span>{label}</span>
+      <Tooltip delayDuration={500} disableHoverableContent>
+        <TooltipTrigger asChild>
+          <button
+            aria-label={`${label} explanation`}
+            className="inline-flex size-3.5 items-center justify-center rounded text-muted-foreground transition-colors hover:text-foreground"
+            type="button"
+          >
+            <Info className="size-3" />
+          </button>
+        </TooltipTrigger>
+        <TooltipContent className="max-w-64 whitespace-normal text-left" side="top" sideOffset={6}>
+          {description}
+        </TooltipContent>
+      </Tooltip>
+    </span>
   );
 }
 
@@ -3300,6 +3940,8 @@ function createSystemNotifications(
   acknowledgedRejectedWorkCount = 0,
   readModel?: WorkReadModelDiagnosticsCompactComponent,
   retention?: WorkRetentionDiagnosticsCompactComponent,
+  concurrency?: WorkConcurrencyDiagnosticsCompactComponent,
+  durability?: WorkDurabilityDiagnosticsCompactComponent,
   error?: string,
   source?: DiagnosticsAlertTarget
 ): SystemNotification[] {
@@ -3325,16 +3967,16 @@ function createSystemNotifications(
     });
   }
 
-  const hasUnacknowledgedRejectedWork = queue?.hasRejectedWork &&
-    queue.rejectedWorkCount !== acknowledgedRejectedWorkCount;
+  const hasUnacknowledgedRejectedWork = queue?.hasAlertableRejectedWork &&
+    queue.alertableRejectedWorkCount !== acknowledgedRejectedWorkCount;
   if (queue && hasUnacknowledgedRejectedWork) {
-    const rejectedWorkCount = queue.rejectedWorkCount > acknowledgedRejectedWorkCount
-      ? queue.rejectedWorkCount - acknowledgedRejectedWorkCount
-      : queue.rejectedWorkCount;
+    const rejectedWorkCount = queue.alertableRejectedWorkCount > acknowledgedRejectedWorkCount
+      ? queue.alertableRejectedWorkCount - acknowledgedRejectedWorkCount
+      : queue.alertableRejectedWorkCount;
     notifications.push({
-      description: `${formatNumber(rejectedWorkCount)} new rejected queue request${rejectedWorkCount === 1 ? "" : "s"} (${formatNumber(queue.rejectedWorkCount)} total)${queue.lastRejectedMessage ? `. Last: ${queue.lastRejectedMessage}` : "."}`,
+      description: `${formatNumber(rejectedWorkCount)} new alertable queue rejection${rejectedWorkCount === 1 ? "" : "s"} (${formatNumber(queue.alertableRejectedWorkCount)} total)${queue.lastAlertableRejectedMessage ? `. Last: ${queue.lastAlertableRejectedMessage}` : "."}`,
       id: `${source?.systemId ?? "active"}:queue-rejections`,
-      rejectedWorkCount: queue.rejectedWorkCount,
+      rejectedWorkCount: queue.alertableRejectedWorkCount,
       sourceId: source?.systemId,
       tone: "critical",
       title: `${sourcePrefix}Work is being rejected`,
@@ -3381,48 +4023,195 @@ function createSystemNotifications(
     });
   }
 
+  if (concurrency?.isConcurrencyBehind) {
+    notifications.push({
+      description: `${formatNumber(concurrency.deferredStartCount)} deferred worker${concurrency.deferredStartCount === 1 ? "" : "s"} waiting, oldest deferred for ${formatDuration(concurrency.oldestDeferredStartAge)}${sourceSuffix}.`,
+      id: `${source?.systemId ?? "active"}:concurrency-lag`,
+      tone: parseDurationSeconds(concurrency.oldestDeferredStartAge) >= concurrency.concurrencyLagWarningSeconds * 10
+        ? "critical"
+        : "warning",
+      title: `${sourcePrefix}Concurrency is backed up`,
+    });
+  }
+
+  if (durability?.hasReaderFailure) {
+    notifications.push({
+      description: `${durability.readerFailureType ?? "Durable reader failure"}${durability.readerFailureMessage ? `: ${durability.readerFailureMessage}` : ""}`,
+      id: `${source?.systemId ?? "active"}:durability-reader-failure`,
+      tone: "critical",
+      title: `${sourcePrefix}Durable reader failed`,
+    });
+  }
+
+  if (durability?.hasLeaseRenewalFailure) {
+    notifications.push({
+      description: `${durability.leaseRenewalFailureType ?? "Lease renewal failure"}${durability.leaseRenewalFailureMessage ? `: ${durability.leaseRenewalFailureMessage}` : ""}`,
+      id: `${source?.systemId ?? "active"}:durability-renewal-failure`,
+      tone: "critical",
+      title: `${sourcePrefix}Durable lease renewal failed`,
+    });
+  }
+
+  if (durability?.hasCleanupFailure) {
+    notifications.push({
+      description: `${durability.cleanupFailureType ?? "Cleanup failure"}${durability.cleanupFailureMessage ? `: ${durability.cleanupFailureMessage}` : ""}`,
+      id: `${source?.systemId ?? "active"}:durability-cleanup-failure`,
+      tone: "critical",
+      title: `${sourcePrefix}Durable cleanup failed`,
+    });
+  }
+
+  if (durability?.isAcceptedWorkerMaterializationBehind) {
+    notifications.push({
+      description: `${formatNumber(durability.acceptedWaiterCount)} accepted durable worker${durability.acceptedWaiterCount === 1 ? "" : "s"} waiting to materialize, oldest wait ${formatDuration(durability.oldestAcceptedWaiterAge)}${sourceSuffix}.`,
+      id: `${source?.systemId ?? "active"}:durability-waiters`,
+      tone: parseDurationSeconds(durability.oldestAcceptedWaiterAge) >= durability.acceptedWorkerWarningSeconds * 10
+        ? "critical"
+        : "warning",
+      title: `${sourcePrefix}Durable worker materialization is behind`,
+    });
+  }
+
+  if (durability?.isCleanupBehind) {
+    notifications.push({
+      description: `${formatNumber(durability.pendingCleanupCount)} durable cleanup item${durability.pendingCleanupCount === 1 ? "" : "s"} pending, oldest waiting ${formatDuration(durability.oldestPendingCleanupAge)}${sourceSuffix}.`,
+      id: `${source?.systemId ?? "active"}:durability-cleanup-lag`,
+      tone: parseDurationSeconds(durability.oldestPendingCleanupAge) >= durability.cleanupWarningSeconds * 10
+        ? "critical"
+        : "warning",
+      title: `${sourcePrefix}Durable cleanup is behind`,
+    });
+  }
+
   return notifications;
 }
 
 function createCompactReadModelDiagnosticsFromDetailed(
-  detailed?: WorkReadModelDiagnosticsDetailedComponent
+  detailed?: WorkReadModelDiagnosticsDetailedComponent | WorkReadModelDiagnosticsCompactComponent
 ): WorkReadModelDiagnosticsCompactComponent | undefined {
   if (!detailed) {
     return undefined;
   }
 
+  const readModel = "readModel" in detailed ? detailed.readModel : undefined;
+
   return {
-    hasProjectorFailure: detailed.readModel.hasProjectorFailure,
+    hasProjectorFailure: readModel?.hasProjectorFailure ?? detailed.hasProjectorFailure ?? false,
     isReadModelBehind: detailed.isReadModelBehind,
-    pendingUpdateCount: detailed.readModel.pendingUpdateCount,
-    projectorFailureMessage: detailed.readModel.projectorFailureMessage,
-    projectorFailureType: detailed.readModel.projectorFailureType,
+    pendingUpdateCount: readModel?.pendingUpdateCount ?? detailed.pendingUpdateCount ?? 0,
+    projectorFailureMessage: readModel?.projectorFailureMessage ?? detailed.projectorFailureMessage,
+    projectorFailureType: readModel?.projectorFailureType ?? detailed.projectorFailureType,
     readModelLagWarningThreshold: detailed.readModelLagWarningThreshold,
   };
 }
 
 function createCompactRetentionDiagnosticsFromDetailed(
-  detailed?: WorkRetentionDiagnosticsDetailedComponent
+  detailed?: WorkRetentionDiagnosticsDetailedComponent | WorkRetentionDiagnosticsCompactComponent
 ): WorkRetentionDiagnosticsCompactComponent | undefined {
   if (!detailed) {
     return undefined;
   }
 
+  const retention = "retention" in detailed ? detailed.retention : undefined;
+
   return {
-    hasSchedulerFailure: detailed.retention.hasSchedulerFailure,
+    hasSchedulerFailure: retention?.hasSchedulerFailure ?? detailed.hasSchedulerFailure ?? false,
     isRetentionBehind: detailed.isRetentionBehind,
-    oldestDuePurgeAge: detailed.retention.oldestDuePurgeAge,
+    oldestDuePurgeAge: retention?.oldestDuePurgeAge ?? detailed.oldestDuePurgeAge ?? "00:00:00",
     retentionLagWarningSeconds: detailed.retentionLagWarningSeconds,
-    scheduledPurgeCount: detailed.retention.scheduledPurgeCount,
-    schedulerFailureMessage: detailed.retention.schedulerFailureMessage,
-    schedulerFailureType: detailed.retention.schedulerFailureType,
-    trackedFinalWorkerCount: detailed.retention.trackedFinalWorkerCount,
+    scheduledPurgeCount: retention?.scheduledPurgeCount ?? detailed.scheduledPurgeCount ?? 0,
+    schedulerFailureMessage: retention?.schedulerFailureMessage ?? detailed.schedulerFailureMessage,
+    schedulerFailureType: retention?.schedulerFailureType ?? detailed.schedulerFailureType,
+    trackedFinalWorkerCount: retention?.trackedFinalWorkerCount ?? detailed.trackedFinalWorkerCount ?? 0,
+  };
+}
+
+function createCompactConcurrencyDiagnosticsFromDetailed(
+  detailed?: WorkConcurrencyDiagnosticsDetailedComponent | WorkConcurrencyDiagnosticsCompactComponent
+): WorkConcurrencyDiagnosticsCompactComponent | undefined {
+  if (!detailed) {
+    return undefined;
+  }
+
+  const concurrency = "concurrency" in detailed ? detailed.concurrency : undefined;
+
+  return {
+    concurrencyLagWarningSeconds: detailed.concurrencyLagWarningSeconds,
+    deferredStartCount: concurrency?.deferredStartCount ?? detailed.deferredStartCount ?? 0,
+    isConcurrencyBehind: detailed.isConcurrencyBehind,
+    lastDrainReleasedCount: concurrency?.lastDrainReleasedCount ?? detailed.lastDrainReleasedCount ?? 0,
+    oldestDeferredStartAge: concurrency?.oldestDeferredStartAge ?? detailed.oldestDeferredStartAge ?? "00:00:00",
+  };
+}
+
+function createCompactDurabilityDiagnosticsFromDetailed(
+  detailed?: WorkDurabilityDiagnosticsDetailedComponent | WorkDurabilityDiagnosticsCompactComponent
+): WorkDurabilityDiagnosticsCompactComponent | undefined {
+  if (!detailed) {
+    return undefined;
+  }
+
+  const durability = "durability" in detailed ? detailed.durability : undefined;
+
+  return {
+    acceptedWaiterCount: durability?.acceptedWaiterCount ?? detailed.acceptedWaiterCount ?? 0,
+    acceptedWorkerWarningSeconds: detailed.acceptedWorkerWarningSeconds,
+    cleanupFailureMessage: durability?.cleanupFailureMessage ?? detailed.cleanupFailureMessage,
+    cleanupFailureType: durability?.cleanupFailureType ?? detailed.cleanupFailureType,
+    cleanupWarningSeconds: detailed.cleanupWarningSeconds,
+    hasCleanupFailure: durability?.hasCleanupFailure ?? detailed.hasCleanupFailure ?? false,
+    hasLeaseRenewalFailure: durability?.hasLeaseRenewalFailure ?? detailed.hasLeaseRenewalFailure ?? false,
+    hasReaderFailure: durability?.hasReaderFailure ?? detailed.hasReaderFailure ?? false,
+    isAcceptedWorkerMaterializationBehind: detailed.isAcceptedWorkerMaterializationBehind,
+    isCleanupBehind: detailed.isCleanupBehind,
+    leaseRenewalFailureMessage: durability?.leaseRenewalFailureMessage ?? detailed.leaseRenewalFailureMessage,
+    leaseRenewalFailureType: durability?.leaseRenewalFailureType ?? detailed.leaseRenewalFailureType,
+    oldestAcceptedWaiterAge: durability?.oldestAcceptedWaiterAge ?? detailed.oldestAcceptedWaiterAge ?? "00:00:00",
+    oldestPendingCleanupAge: durability?.oldestPendingCleanupAge ?? detailed.oldestPendingCleanupAge ?? "00:00:00",
+    pendingCleanupCount: durability?.pendingCleanupCount ?? detailed.pendingCleanupCount ?? 0,
+    readerFailureMessage: durability?.readerFailureMessage ?? detailed.readerFailureMessage,
+    readerFailureType: durability?.readerFailureType ?? detailed.readerFailureType,
+  };
+}
+
+function createCompactIdempotencyDiagnosticsFromDetailed(
+  detailed?: WorkIdempotencyDiagnosticsDetailedComponent | WorkIdempotencyDiagnosticsCompactComponent
+): WorkIdempotencyDiagnosticsCompactComponent | undefined {
+  if (!detailed) {
+    return undefined;
+  }
+
+  const idempotency = "idempotency" in detailed ? detailed.idempotency : undefined;
+
+  return {
+    duplicateRejectionCount: idempotency?.duplicateRejectionCount ?? detailed.duplicateRejectionCount ?? 0,
+    lastDuplicateRejectedStorage: idempotency?.lastDuplicateRejectedStorage ?? detailed.lastDuplicateRejectedStorage,
   };
 }
 
 function getWorkComponentData<T>(result: WorkComponentQueryResult | undefined, id: string) {
   const component = result?.components?.[id];
   return component?.status?.toLowerCase() === "ok" ? component.data as T : undefined;
+}
+
+function diagnosticsAlertSnapshotsEqual(
+  left: DiagnosticsAlertSnapshot | null | undefined,
+  right: DiagnosticsAlertSnapshot | null | undefined
+) {
+  if (left === right) {
+    return true;
+  }
+
+  if (!left || !right) {
+    return false;
+  }
+
+  return left.connectionState === right.connectionState &&
+    left.data === right.data &&
+    left.enabled === right.enabled &&
+    left.error === right.error &&
+    left.loading === right.loading &&
+    left.refreshing === right.refreshing;
 }
 
 function formatNumber(value?: number | null) {
@@ -3813,15 +4602,32 @@ function normalizeStoredSystem(
   hostId: string,
   system: WorkableSystemConnection
 ): WorkableSystemConnection {
+  const isDefaultLocalSampleSystem =
+    hostId === "local-sample-host" &&
+    (system.id === "local-sample-default" || !system.id) &&
+    !normalizeOptional(system.systemName);
+  const realtimeHubPath = isDefaultLocalSampleSystem
+    ? system.realtimeHubPath ?? "/workable/realtime"
+    : system.realtimeHubPath ?? null;
+  const realtimeSupported = isDefaultLocalSampleSystem
+    ? true
+    : Boolean(system.realtimeSupported);
+  const realtimeEnabled = isDefaultLocalSampleSystem
+    ? true
+    : Boolean(system.realtimeEnabled && realtimeSupported);
+  const realtimeTransport = isDefaultLocalSampleSystem
+    ? system.realtimeTransport ?? "signalr"
+    : system.realtimeTransport ?? null;
+
   return {
     id: system.id || createServerId(),
     hostId,
     name: system.name || "Default",
     systemName: normalizeOptional(system.systemName),
-    realtimeEnabled: Boolean(system.realtimeEnabled && system.realtimeSupported),
-    realtimeHubPath: system.realtimeHubPath ?? null,
-    realtimeSupported: Boolean(system.realtimeSupported),
-    realtimeTransport: system.realtimeTransport ?? null,
+    realtimeEnabled,
+    realtimeHubPath,
+    realtimeSupported,
+    realtimeTransport,
     state: system.state ?? null,
   };
 }
@@ -3906,10 +4712,10 @@ function createDefaultSystem(hostId: string): WorkableSystemConnection {
     id: "local-sample-default",
     hostId,
     name: "Default",
-    realtimeEnabled: false,
-    realtimeHubPath: null,
-    realtimeSupported: false,
-    realtimeTransport: null,
+    realtimeEnabled: true,
+    realtimeHubPath: "/workable/realtime",
+    realtimeSupported: true,
+    realtimeTransport: "signalr",
     state: null,
   };
 }

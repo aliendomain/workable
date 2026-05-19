@@ -1706,6 +1706,45 @@ public sealed class WorkQueryServiceTests
         Assert.Equal(WorkQueueStatus.NotFound, diagnostics.LastRejectedStatus);
         Assert.Equal(rejected.QueueOutcome.Messages[0].Code, diagnostics.LastRejectedCode);
         Assert.Equal(rejected.QueueOutcome.Messages[0].Text, diagnostics.LastRejectedMessage);
+        Assert.Equal(0, diagnostics.AlertableRejectedWorkCount);
+        Assert.Null(diagnostics.LastAlertableRejectedCode);
+        Assert.Null(diagnostics.LastAlertableRejectedMessage);
+    }
+
+    [Fact]
+    public async Task QueryQueueDiagnosticsReportAlertableRejectedQueueRequestsSeparately()
+    {
+        var definition = WorkDefinition.Create(
+            "queue.capacity",
+            category: "Queue",
+            configuration: WorkConfiguration.Default with
+            {
+                Start = WorkStartConfiguration.DoNotStart,
+            });
+        await using var system = new ServiceCollection()
+            .AddWorkableSystem(builder =>
+            {
+                builder.UseCapacity(new WorkSystemCapacityConfiguration
+                {
+                    MaximumWorkers = 1,
+                });
+                builder.AddWork(definition, SuccessfulWork);
+            })
+            .BuildServiceProvider()
+            .GetRequiredService<IWorkSystemRegistry>()
+            .Default;
+
+        await system.Start();
+        _ = await system.Queue.Enqueue("queue.capacity", WorkInput.Empty);
+        var rejected = await system.Queue.Enqueue("queue.capacity", WorkInput.Empty);
+        var diagnostics = system.Diagnostics.Queue;
+
+        Assert.False(rejected.QueueOutcome.IsAccepted);
+        Assert.Equal(1, diagnostics.RejectedWorkCount);
+        Assert.Equal(1, diagnostics.AlertableRejectedWorkCount);
+        Assert.Equal("workable.system.capacity_reached", diagnostics.LastRejectedCode);
+        Assert.Equal("workable.system.capacity_reached", diagnostics.LastAlertableRejectedCode);
+        Assert.Equal(rejected.QueueOutcome.Messages[0].Text, diagnostics.LastAlertableRejectedMessage);
     }
 
     [Fact]
@@ -1741,6 +1780,82 @@ public sealed class WorkQueryServiceTests
         Assert.False(diagnostics.HasSchedulerFailure);
         Assert.Null(diagnostics.SchedulerFailureType);
         Assert.Null(diagnostics.SchedulerFailureMessage);
+    }
+
+    [Fact]
+    public async Task QueryConcurrencyDiagnosticsReportDeferredStarts()
+    {
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        const string definitionName = "concurrency.diagnostics";
+        await using var system = CreateSystem(
+            WorkDefinition.Create(
+                definitionName,
+                category: "Concurrency",
+                configuration: WorkConfiguration.Default with
+                {
+                    Concurrency = new WorkConcurrencyConfiguration
+                    {
+                        IsEnabled = true,
+                        MaximumCapacity = 1,
+                        Scope = WorkConcurrencyScope.PerDefinition,
+                        BlockingMode = WorkConcurrencyBlockingMode.WhileExecuting,
+                        LimitReachedBehavior = WorkConcurrencyLimitReachedBehavior.DeferStart,
+                    },
+                }),
+            async (_, _, cancellationToken) =>
+            {
+                entered.TrySetResult();
+                await release.Task.WaitAsync(cancellationToken);
+                return WorkExecutionResult.Success();
+            });
+
+        await system.Start();
+        var first = await system.Queue.Enqueue(definitionName);
+        await entered.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        var second = await system.Queue.Enqueue(definitionName);
+        var diagnostics = system.Diagnostics.Concurrency;
+
+        Assert.NotNull(first.WorkerId);
+        Assert.NotNull(second.WorkerId);
+        Assert.True(diagnostics.DeferredStartCount >= 1);
+        Assert.True(diagnostics.OldestDeferredStartAge >= TimeSpan.Zero);
+        Assert.True(diagnostics.LastDrainReleasedCount >= 0);
+
+        release.TrySetResult();
+        await first.WaitForCompletion();
+        await second.WaitForCompletion();
+    }
+
+    [Fact]
+    public async Task QueryIdempotencyDiagnosticsReportRejectedDuplicates()
+    {
+        const string definitionName = "idempotency.diagnostics";
+        await using var system = CreateSystem(
+            WorkDefinition.Create(
+                definitionName,
+                category: "Idempotency",
+                configuration: WorkConfiguration.Default with
+                {
+                    Idempotency = new WorkIdempotencyConfiguration
+                    {
+                        IsEnabled = true,
+                        Storage = WorkIdempotencyStorage.Local,
+                    },
+                }),
+            SuccessfulWork);
+
+        await system.Start();
+        var subjectId = new WorkSubjectId("order", "duplicate");
+        var first = await system.Queue.Enqueue(definitionName, WorkInput.Empty.WithSubject(subjectId));
+        await first.WaitForCompletion();
+
+        var duplicate = await system.Queue.Enqueue(definitionName, WorkInput.Empty.WithSubject(subjectId));
+        var diagnostics = system.Diagnostics.Idempotency;
+
+        Assert.False(duplicate.QueueOutcome.IsAccepted);
+        Assert.Equal(1, diagnostics.DuplicateRejectionCount);
+        Assert.Equal(WorkIdempotencyStorage.Local, diagnostics.LastDuplicateRejectedStorage);
     }
 
     [Fact]

@@ -1,4 +1,5 @@
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using Workable;
 
 namespace Workable.Tests;
@@ -625,6 +626,133 @@ public sealed class DurableQueueTests
     }
 
     [Fact]
+    public async Task InitializationFailureDoesNotPreventStartupDrain()
+    {
+        var store = new InMemoryDurableQueueStore
+        {
+            InitializeFailuresRemaining = 1,
+        };
+        var definition = WorkDefinition.Create("init-failure-drain", "Still drains after an initialization failure.");
+        var workerId = WorkerId.New();
+        await store.Enqueue(CreateDurableRequest(definition, workerId));
+        List<WorkQueueDurabilityEntry> accepted = [];
+        var coordinator = CreateCoordinator(
+            store,
+            (entry, _) =>
+            {
+                accepted.Add(entry);
+                return Task.CompletedTask;
+            });
+
+        await coordinator.InitializeAndDrain([definition], CancellationToken.None);
+
+        Assert.Equal(1, store.InitializeAttempts);
+        Assert.Single(accepted);
+        Assert.Equal(workerId, accepted[0].Lease.WorkerId);
+        Assert.True(store.ClaimReadyAttempts >= 1);
+    }
+
+    [Fact]
+    public async Task StartupDrainUnavailabilityDoesNotBlockStartup()
+    {
+        var logger = new TestLogger();
+        var store = new InMemoryDurableQueueStore
+        {
+            ClaimReadyUnavailableFailuresRemaining = 1,
+        };
+        var definition = WorkDefinition.Create("startup-drain-unavailable", "Continues startup when the initial drain cannot reach persistence.");
+        var coordinator = CreateCoordinator(
+            store,
+            (_, _) => Task.CompletedTask,
+            logger: logger);
+
+        await coordinator.InitializeAndDrain([definition], CancellationToken.None);
+
+        Assert.Equal(1, store.ClaimReadyAttempts);
+        Assert.Contains(
+            logger.Entries,
+            entry => entry.Level == LogLevel.Information &&
+                entry.Message.Contains("initializing the persistence store", StringComparison.Ordinal));
+        Assert.Contains(
+            logger.Entries,
+            entry => entry.Level == LogLevel.Warning &&
+                entry.Message.Contains("startup drain could not reach the persistence store", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task InitializationFailureLogsWarningAndRejectsDurableQueueRequestsWhenStoreRemainsUnreachable()
+    {
+        var logger = new TestLogger();
+        var store = new FailingInitializeDurableQueueStore(
+            new WorkPersistenceStoreUnavailableException(
+                "The test persistence store is unavailable.",
+                new InvalidOperationException("LocalDB runtime is unavailable.")));
+        var definition = WorkDefinition.Create(
+            "durable-store-unavailable",
+            "Rejects durable queue requests when the persistence store is unavailable.",
+            configuration: WorkConfiguration.Default with
+            {
+                QueueDurability = new WorkQueueDurabilityConfiguration
+                {
+                    IsEnabled = true,
+                },
+            });
+        var coordinator = CreateCoordinator(
+            store,
+            (_, _) => Task.CompletedTask,
+            logger: logger);
+
+        await coordinator.InitializeAndDrain([definition], CancellationToken.None);
+
+        var outcome = await coordinator.Enqueue(
+            CreateDurableRequest(definition, WorkerId.New()),
+            CancellationToken.None);
+
+        Assert.False(outcome.IsAccepted);
+        Assert.Contains(
+            outcome.Messages,
+            message => message.Code == "workable.queue_durability.store_unreachable" &&
+                message.Text.Contains("currently unreachable", StringComparison.Ordinal) &&
+                message.Text.Contains("The test persistence store is unavailable.", StringComparison.Ordinal));
+
+        Assert.Contains(
+            logger.Entries,
+            entry => entry.Level == LogLevel.Information &&
+                entry.Message.Contains("initializing the persistence store", StringComparison.Ordinal));
+        var warning = Assert.Single(logger.Entries, entry => entry.Level == LogLevel.Warning);
+        Assert.Equal(LogLevel.Warning, warning.Level);
+        Assert.Contains("durable-tests", warning.Message, StringComparison.Ordinal);
+        Assert.Contains("The test persistence store is unavailable.", warning.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain("System.InvalidOperationException", warning.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task UnexpectedStoreExceptionIsNotReportedAsPersistenceUnreachable()
+    {
+        var definition = WorkDefinition.Create(
+            "durable-store-bug",
+            "Bubbles unexpected store exceptions.",
+            configuration: WorkConfiguration.Default with
+            {
+                QueueDurability = new WorkQueueDurabilityConfiguration
+                {
+                    IsEnabled = true,
+                },
+            });
+        var expected = new InvalidOperationException("Unexpected store failure.");
+        var coordinator = CreateCoordinator(
+            new FailingEnqueueDurableQueueStore(expected),
+            (_, _) => Task.CompletedTask);
+
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            coordinator.Enqueue(
+                CreateDurableRequest(definition, WorkerId.New()),
+                CancellationToken.None));
+
+        Assert.Same(expected, exception);
+    }
+
+    [Fact]
     public async Task BackgroundReaderRetriesAfterClaimFailure()
     {
         using var lifetime = new CancellationTokenSource();
@@ -696,6 +824,62 @@ public sealed class DurableQueueTests
         Assert.Equal(workerId, lostWorkerId);
     }
 
+    [Fact]
+    public async Task DiagnosticsReportPendingDurableCleanup()
+    {
+        using var lifetime = new CancellationTokenSource();
+        var store = new InMemoryDurableQueueStore
+        {
+            BlockDeleteFinal = true,
+        };
+        var workerId = WorkerId.New();
+        var coordinator = CreateCoordinator(store, (_, _) => Task.CompletedTask, lifetime.Token);
+        coordinator.TrackLease(workerId, new WorkQueueDurabilityLease(workerId, "test-owner", "cleanup-lease"));
+
+        coordinator.StartBackgroundTasks();
+        coordinator.DeleteFinal(workerId);
+        await store.WaitForDeleteFinalStarted(TimeSpan.FromSeconds(2));
+        var diagnostics = coordinator.Diagnostics;
+
+        Assert.Equal(1, diagnostics.PendingCleanupCount);
+        Assert.True(diagnostics.OldestPendingCleanupAge >= TimeSpan.Zero);
+
+        store.ReleaseDeleteFinal.TrySetResult();
+        using var stopTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+        await coordinator.StopBackgroundTasks(stopTimeout.Token);
+        lifetime.Cancel();
+    }
+
+    [Fact]
+    public async Task DiagnosticsReportAcceptedWorkerWaiters()
+    {
+        var store = new InMemoryDurableQueueStore();
+        var coordinator = CreateCoordinator(store, (_, _) => Task.CompletedTask);
+        var workerId = WorkerId.New();
+        var outcome = WorkQueueOutcome.Accepted(WorkDefinitionId.New(), workerId);
+        var handle = coordinator.CreateHandle(outcome, _ => null);
+        using var waitCancellation = new CancellationTokenSource();
+        var waiting = Task.Run(async () =>
+        {
+            try
+            {
+                await handle.WaitForCompletion(waitCancellation.Token);
+            }
+            catch (OperationCanceledException)
+            {
+            }
+        });
+
+        await WaitUntil(() => coordinator.Diagnostics.AcceptedWaiterCount == 1, TimeSpan.FromSeconds(2));
+        var diagnostics = coordinator.Diagnostics;
+
+        Assert.Equal(1, diagnostics.AcceptedWaiterCount);
+        Assert.True(diagnostics.OldestAcceptedWaiterAge >= TimeSpan.Zero);
+
+        waitCancellation.Cancel();
+        await waiting.WaitAsync(TimeSpan.FromSeconds(2));
+    }
+
     private static WorkerId RequiredWorkerId(IWorkerHandle handle)
         => handle.WorkerId ?? throw new InvalidOperationException("Expected worker id.");
 
@@ -712,24 +896,36 @@ public sealed class DurableQueueTests
     }
 
     private static WorkQueueDurabilityCoordinator CreateCoordinator(
-        InMemoryDurableQueueStore store,
+        IWorkPersistenceStore store,
         Func<WorkQueueDurabilityEntry, CancellationToken, Task> acceptPersistedEntry,
         CancellationToken lifetimeToken = default,
-        Action<WorkerId>? leaseLost = null)
+        Action<WorkerId>? leaseLost = null,
+        ILogger? logger = null)
         => new(
             store,
             WorkSystemId.New(),
             "durable-tests",
+            new WorkSystemIdempotencyDiagnosticsTracker(),
             () => !lifetimeToken.IsCancellationRequested,
             () => lifetimeToken,
             acceptPersistedEntry,
             leaseLost ?? (_ => { }),
+            logger,
             readerPollInterval: TimeSpan.FromMilliseconds(10),
             leaseRenewalInterval: TimeSpan.FromMilliseconds(10),
             retryDelay: TimeSpan.FromMilliseconds(10),
             readerSignalDebounce: TimeSpan.FromMilliseconds(10),
             leaseDuration: TimeSpan.FromSeconds(1),
             batchSize: 10);
+
+    private static async Task WaitUntil(Func<bool> condition, TimeSpan timeout)
+    {
+        using var timeoutCancellation = new CancellationTokenSource(timeout);
+        while (!condition())
+        {
+            await Task.Delay(10, timeoutCancellation.Token);
+        }
+    }
 
     private static WorkQueueDurabilityEnqueueRequest CreateDurableRequest(
         WorkDefinition definition,
@@ -764,7 +960,13 @@ public sealed class DurableQueueTests
 
         public int IdempotencyAttempts { get; private set; }
 
+        public int InitializeFailuresRemaining { get; set; }
+
+        public int InitializeAttempts { get; private set; }
+
         public int ClaimReadyFailuresRemaining { get; set; }
+
+        public int ClaimReadyUnavailableFailuresRemaining { get; set; }
 
         public int ClaimReadyAttempts { get; private set; }
 
@@ -783,7 +985,21 @@ public sealed class DurableQueueTests
         public TaskCompletionSource ReleaseDeleteFinal { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         public Task Initialize(WorkQueueDurabilityInitializationContext context, CancellationToken cancellationToken = default)
-            => Task.CompletedTask;
+        {
+            lock (this.sync)
+            {
+                this.InitializeAttempts++;
+                if (this.InitializeFailuresRemaining > 0)
+                {
+                    this.InitializeFailuresRemaining--;
+                    throw new WorkPersistenceStoreUnavailableException(
+                        "Transient durable initialization failure.",
+                        new InvalidOperationException("Transient durable initialization failure."));
+                }
+            }
+
+            return Task.CompletedTask;
+        }
 
         public void ResetClaimReadyAttempts()
         {
@@ -840,6 +1056,14 @@ public sealed class DurableQueueTests
             lock (this.sync)
             {
                 this.ClaimReadyAttempts++;
+                if (this.ClaimReadyUnavailableFailuresRemaining > 0)
+                {
+                    this.ClaimReadyUnavailableFailuresRemaining--;
+                    throw new WorkPersistenceStoreUnavailableException(
+                        "Transient durable claim unavailability.",
+                        new InvalidOperationException("Transient durable claim unavailability."));
+                }
+
                 if (this.ClaimReadyFailuresRemaining > 0)
                 {
                     this.ClaimReadyFailuresRemaining--;
@@ -1023,6 +1247,97 @@ public sealed class DurableQueueTests
             await this.DeleteFinalStarted.Task.WaitAsync(timeoutCancellation.Token);
         }
     }
+
+    private sealed class FailingInitializeDurableQueueStore(Exception exception) : IWorkPersistenceStore
+    {
+        public Task Initialize(WorkQueueDurabilityInitializationContext context, CancellationToken cancellationToken = default)
+            => Task.FromException(exception);
+
+        public Task Enqueue(WorkQueueDurabilityEnqueueRequest request, CancellationToken cancellationToken = default)
+            => Task.FromException(exception);
+
+        public Task ReserveIdempotency(WorkIdempotencyPersistenceRequest request, CancellationToken cancellationToken = default)
+            => Task.FromException(exception);
+
+        public async IAsyncEnumerable<WorkQueueDurabilityEntry> ClaimReady(
+            WorkQueueDurabilityClaimRequest request,
+            [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
+            await Task.CompletedTask;
+            yield break;
+        }
+
+        public Task RenewLeases(IReadOnlyList<WorkQueueDurabilityLease> leases, TimeSpan leaseDuration, CancellationToken cancellationToken = default)
+            => Task.CompletedTask;
+
+        public Task RetainFailed(IReadOnlyList<WorkQueueDurabilityCleanupRequest> workers, CancellationToken cancellationToken = default)
+            => Task.CompletedTask;
+
+        public Task DeleteFinal(IReadOnlyList<WorkQueueDurabilityCleanupRequest> workers, CancellationToken cancellationToken = default)
+            => Task.CompletedTask;
+
+        public Task DeleteFinal(
+            IReadOnlyList<WorkQueueDurabilityCleanupRequest> workers,
+            IWorkQueueDurabilityTransaction transaction,
+            CancellationToken cancellationToken = default)
+            => Task.CompletedTask;
+    }
+
+    private sealed class FailingEnqueueDurableQueueStore(Exception exception) : IWorkPersistenceStore
+    {
+        public Task Initialize(WorkQueueDurabilityInitializationContext context, CancellationToken cancellationToken = default)
+            => Task.CompletedTask;
+
+        public Task Enqueue(WorkQueueDurabilityEnqueueRequest request, CancellationToken cancellationToken = default)
+            => Task.FromException(exception);
+
+        public Task ReserveIdempotency(WorkIdempotencyPersistenceRequest request, CancellationToken cancellationToken = default)
+            => Task.CompletedTask;
+
+        public async IAsyncEnumerable<WorkQueueDurabilityEntry> ClaimReady(
+            WorkQueueDurabilityClaimRequest request,
+            [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
+            await Task.CompletedTask;
+            yield break;
+        }
+
+        public Task RenewLeases(IReadOnlyList<WorkQueueDurabilityLease> leases, TimeSpan leaseDuration, CancellationToken cancellationToken = default)
+            => Task.CompletedTask;
+
+        public Task RetainFailed(IReadOnlyList<WorkQueueDurabilityCleanupRequest> workers, CancellationToken cancellationToken = default)
+            => Task.CompletedTask;
+
+        public Task DeleteFinal(IReadOnlyList<WorkQueueDurabilityCleanupRequest> workers, CancellationToken cancellationToken = default)
+            => Task.CompletedTask;
+
+        public Task DeleteFinal(
+            IReadOnlyList<WorkQueueDurabilityCleanupRequest> workers,
+            IWorkQueueDurabilityTransaction transaction,
+            CancellationToken cancellationToken = default)
+            => Task.CompletedTask;
+    }
+
+    private sealed class TestLogger : ILogger
+    {
+        public List<TestLogEntry> Entries { get; } = [];
+
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull
+            => null;
+
+        public bool IsEnabled(LogLevel logLevel)
+            => true;
+
+        public void Log<TState>(
+            LogLevel logLevel,
+            EventId eventId,
+            TState state,
+            Exception? exception,
+            Func<TState, Exception?, string> formatter)
+            => this.Entries.Add(new TestLogEntry(logLevel, formatter(state, exception), exception));
+    }
+
+    private sealed record TestLogEntry(LogLevel Level, string Message, Exception? Exception);
 
     private sealed class TestQueueDurabilityTransaction : IWorkQueueDurabilityTransaction;
 }

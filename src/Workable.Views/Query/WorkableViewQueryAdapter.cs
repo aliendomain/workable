@@ -251,6 +251,9 @@ public class WorkableViewQueryAdapter
                 "queuediagnostics" => CreateQueueDiagnosticsComponent(system, request.Shape),
                 "readmodeldiagnostics" => CreateReadModelDiagnosticsComponent(system, request.Shape, request.Options),
                 "retentiondiagnostics" => CreateRetentionDiagnosticsComponent(system, request.Shape, request.Options),
+                "concurrencydiagnostics" => CreateConcurrencyDiagnosticsComponent(system, request.Shape, request.Options),
+                "durabilitydiagnostics" => CreateDurabilityDiagnosticsComponent(system, request.Shape, request.Options),
+                "idempotencydiagnostics" => CreateIdempotencyDiagnosticsComponent(system, request.Shape),
                 _ => null,
             };
 
@@ -615,6 +618,7 @@ public class WorkableViewQueryAdapter
     {
         var queue = system.Diagnostics.Queue;
         var hasRejectedWork = queue.RejectedWorkCount > 0;
+        var hasAlertableRejectedWork = queue.AlertableRejectedWorkCount > 0;
 
         if (shape == WorkComponentShapes.Compact)
         {
@@ -623,7 +627,11 @@ public class WorkableViewQueryAdapter
                 hasRejectedWork,
                 queue.LastRejectedAt,
                 queue.LastRejectedCode,
-                queue.LastRejectedMessage);
+                queue.LastRejectedMessage,
+                queue.AlertableRejectedWorkCount,
+                hasAlertableRejectedWork,
+                queue.LastAlertableRejectedCode,
+                queue.LastAlertableRejectedMessage);
         }
 
         return new WorkQueueDiagnosticsDetailedComponent(
@@ -691,6 +699,90 @@ public class WorkableViewQueryAdapter
             warningSeconds);
     }
 
+    private static object CreateConcurrencyDiagnosticsComponent(
+        IWorkSystem system,
+        string shape,
+        JsonElement? options)
+    {
+        var concurrency = system.Diagnostics.Concurrency;
+        var warningSeconds = Math.Max(1, TryGetInt32(options, "warningSeconds") ?? 30);
+        var isBehind = concurrency.DeferredStartCount > 0 &&
+            concurrency.OldestDeferredStartAge >= TimeSpan.FromSeconds(warningSeconds);
+
+        if (shape == WorkComponentShapes.Compact)
+        {
+            return new WorkConcurrencyDiagnosticsCompactComponent(
+                concurrency.DeferredStartCount,
+                concurrency.OldestDeferredStartAge,
+                concurrency.LastDrainReleasedCount,
+                isBehind,
+                warningSeconds);
+        }
+
+        return new WorkConcurrencyDiagnosticsDetailedComponent(
+            concurrency,
+            isBehind,
+            warningSeconds);
+    }
+
+    private static object CreateDurabilityDiagnosticsComponent(
+        IWorkSystem system,
+        string shape,
+        JsonElement? options)
+    {
+        var durability = system.Diagnostics.Durability;
+        var acceptedWorkerWarningSeconds = Math.Max(1, TryGetInt32(options, "acceptedWorkerWarningSeconds") ?? 30);
+        var cleanupWarningSeconds = Math.Max(1, TryGetInt32(options, "cleanupWarningSeconds") ?? 30);
+        var isAcceptedWorkerMaterializationBehind = durability.AcceptedWaiterCount > 0 &&
+            durability.OldestAcceptedWaiterAge >= TimeSpan.FromSeconds(acceptedWorkerWarningSeconds);
+        var isCleanupBehind = durability.PendingCleanupCount > 0 &&
+            durability.OldestPendingCleanupAge >= TimeSpan.FromSeconds(cleanupWarningSeconds);
+
+        if (shape == WorkComponentShapes.Compact)
+        {
+            return new WorkDurabilityDiagnosticsCompactComponent(
+                durability.AcceptedWaiterCount,
+                durability.OldestAcceptedWaiterAge,
+                durability.PendingCleanupCount,
+                durability.OldestPendingCleanupAge,
+                isAcceptedWorkerMaterializationBehind,
+                acceptedWorkerWarningSeconds,
+                isCleanupBehind,
+                cleanupWarningSeconds,
+                durability.HasReaderFailure,
+                durability.ReaderFailureType,
+                durability.ReaderFailureMessage,
+                durability.HasLeaseRenewalFailure,
+                durability.LeaseRenewalFailureType,
+                durability.LeaseRenewalFailureMessage,
+                durability.HasCleanupFailure,
+                durability.CleanupFailureType,
+                durability.CleanupFailureMessage);
+        }
+
+        return new WorkDurabilityDiagnosticsDetailedComponent(
+            durability,
+            isAcceptedWorkerMaterializationBehind,
+            acceptedWorkerWarningSeconds,
+            isCleanupBehind,
+            cleanupWarningSeconds);
+    }
+
+    private static object CreateIdempotencyDiagnosticsComponent(
+        IWorkSystem system,
+        string shape)
+    {
+        var idempotency = system.Diagnostics.Idempotency;
+        if (shape == WorkComponentShapes.Compact)
+        {
+            return new WorkIdempotencyDiagnosticsCompactComponent(
+                idempotency.DuplicateRejectionCount,
+                idempotency.LastDuplicateRejectedStorage?.ToString());
+        }
+
+        return new WorkIdempotencyDiagnosticsDetailedComponent(idempotency);
+    }
+
     private static WorkViewWorkerGridDetailed CreateWorkerGridDetailed(WorkerOverviewItem worker)
         => new(
             worker.Id,
@@ -745,6 +837,9 @@ public class WorkableViewQueryAdapter
                     new("queueDiagnostics", "queueDiagnostics", Shape: WorkComponentShapes.Compact),
                     new("readModelDiagnostics", "readModelDiagnostics", Shape: WorkComponentShapes.Compact),
                     new("retentionDiagnostics", "retentionDiagnostics", Shape: WorkComponentShapes.Compact),
+                    new("concurrencyDiagnostics", "concurrencyDiagnostics", Shape: WorkComponentShapes.Compact),
+                    new("durabilityDiagnostics", "durabilityDiagnostics", Shape: WorkComponentShapes.Compact),
+                    new("idempotencyDiagnostics", "idempotencyDiagnostics", Shape: WorkComponentShapes.Compact),
                 ];
         }
 
@@ -794,6 +889,13 @@ public class WorkableViewQueryAdapter
             shape = WorkComponentShapes.Detailed;
         }
         else if (string.Equals(request.Type, "retentionDiagnostics", StringComparison.OrdinalIgnoreCase) &&
+            shape == WorkComponentShapes.Standard)
+        {
+            shape = WorkComponentShapes.Detailed;
+        }
+        else if ((string.Equals(request.Type, "concurrencyDiagnostics", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(request.Type, "durabilityDiagnostics", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(request.Type, "idempotencyDiagnostics", StringComparison.OrdinalIgnoreCase)) &&
             shape == WorkComponentShapes.Standard)
         {
             shape = WorkComponentShapes.Detailed;

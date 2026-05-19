@@ -23,6 +23,7 @@ public sealed class DemoWorkloadController(
     private readonly string durableBurstRunId = Guid.NewGuid().ToString("N");
     private CancellationTokenSource? cancellation;
     private Task? runTask;
+    private int idempotencySequence;
     private TimeSpan queueInterval = DefaultQueueInterval;
     private int sequence;
     private int failurePercentage = DefaultFailurePercentage;
@@ -218,6 +219,66 @@ public sealed class DemoWorkloadController(
             accepted.Count(wasAccepted => wasAccepted),
             accepted.Count(wasAccepted => !wasAccepted),
             stopwatch.ElapsedMilliseconds);
+    }
+
+    public async Task<DemoIdempotencySampleResult> QueueIdempotencyWarning(CancellationToken cancellationToken)
+    {
+        if (!systemSelection.Current.Operations)
+        {
+            return DemoIdempotencySampleResult.Skipped("Operations is disabled.");
+        }
+
+        var subjectValue = $"sample-{Interlocked.Increment(ref this.idempotencySequence)}";
+        var input = WorkInput.FromValue(
+            new DemoTimedInput(
+                $"idempotency duplicate sample {subjectValue}",
+                1_500,
+                DiscoveredIdentifierType: "sample-idempotency",
+                DiscoveredIdentifierValue: subjectValue),
+            subjectId: new WorkSubjectId("sample-idempotency", subjectValue),
+            identifiers:
+            [
+                new WorkIdentifier("sample-workload", "idempotency"),
+                new WorkIdentifier("sample-idempotency", subjectValue),
+            ]);
+
+        try
+        {
+            var first = await registry.Default.Queue.Enqueue(
+                "sample.demo.idempotent",
+                input,
+                cancellationToken: cancellationToken);
+            if (first.QueueOutcome.IsAccepted && first.WorkerId is { } workerId)
+            {
+                this.activeDemoWorkers[workerId] = 0;
+            }
+
+            var duplicate = await registry.Default.Queue.Enqueue(
+                "sample.demo.idempotent",
+                input,
+                cancellationToken: cancellationToken);
+            var duplicateMessage = duplicate.QueueOutcome.Messages.FirstOrDefault();
+
+            return new DemoIdempotencySampleResult(
+                SubjectValue: subjectValue,
+                AcceptedCount: (first.QueueOutcome.IsAccepted ? 1 : 0) + (duplicate.QueueOutcome.IsAccepted ? 1 : 0),
+                RejectedCount: (!first.QueueOutcome.IsAccepted ? 1 : 0) + (!duplicate.QueueOutcome.IsAccepted ? 1 : 0),
+                FirstStatus: first.QueueOutcome.Status.ToString(),
+                SecondStatus: duplicate.QueueOutcome.Status.ToString(),
+                RejectionCode: duplicateMessage?.Code,
+                RejectionMessage: duplicateMessage?.Text,
+                Status: "Completed",
+                Message: "Queued an idempotent worker and immediately retried the same subject.");
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception exception)
+        {
+            logger.LogWarning(exception, "Failed to queue idempotency sample workload item.");
+            return DemoIdempotencySampleResult.Failed("Unable to trigger the idempotency sample.");
+        }
     }
 
     public Task StartAsync(CancellationToken cancellationToken)
@@ -730,6 +791,24 @@ public sealed record DemoBurstResult(
 
     public static DemoBurstResult Empty(int requestedCount)
         => new(requestedCount, 0, 0, 0, 0);
+}
+
+public sealed record DemoIdempotencySampleResult(
+    string? SubjectValue,
+    int AcceptedCount,
+    int RejectedCount,
+    string? FirstStatus,
+    string? SecondStatus,
+    string? RejectionCode,
+    string? RejectionMessage,
+    string Status,
+    string Message)
+{
+    public static DemoIdempotencySampleResult Skipped(string message)
+        => new(null, 0, 0, null, null, null, null, "Skipped", message);
+
+    public static DemoIdempotencySampleResult Failed(string message)
+        => new(null, 0, 0, null, null, null, null, "Failed", message);
 }
 
 internal sealed record DemoRelationshipKeys(
