@@ -1762,7 +1762,8 @@ FROM workable.WorkEntries
             {
                 lock (orderSync)
                 {
-                    executionOrder.Add(input?.SubjectId?.Value ?? string.Empty);
+                    var subjectId = input?.SubjectId;
+                    executionOrder.Add(subjectId is null ? string.Empty : subjectId.Value.Value);
                     if (executionOrder.Count == 2)
                     {
                         bothStarted.TrySetResult();
@@ -1942,8 +1943,9 @@ VALUES
         command.Parameters.AddWithValue("@HasIdempotencyReservation", hasIdempotencyReservation);
         command.Parameters.AddWithValue("@SubjectType", "order");
         command.Parameters.AddWithValue("@SubjectValue", subjectValue);
-        command.Parameters.AddWithValue("@ConcurrencyType", (object?)rowInput.ConcurrencyKey?.Type ?? DBNull.Value);
-        command.Parameters.AddWithValue("@ConcurrencyValue", (object?)rowInput.ConcurrencyKey?.Value ?? DBNull.Value);
+        var concurrencyKey = rowInput.ConcurrencyKey;
+        command.Parameters.AddWithValue("@ConcurrencyType", concurrencyKey is null ? DBNull.Value : concurrencyKey.Value.Type);
+        command.Parameters.AddWithValue("@ConcurrencyValue", concurrencyKey is null ? DBNull.Value : concurrencyKey.Value.Value);
         command.Parameters.AddWithValue(
             "@InputJson",
             JsonSerializer.Serialize(

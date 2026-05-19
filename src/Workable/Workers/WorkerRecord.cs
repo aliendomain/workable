@@ -835,8 +835,13 @@ internal sealed class WorkerRecord(
     {
         lock (this.sync)
         {
-            return TryGetConcurrencyCapacityBucketLocked(this.State, this.Configuration, this.IsStartDeferred, out var bucket) &&
-                bucket.Value.CountsFor(blockingMode);
+            if (!TryGetConcurrencyCapacityBucketLocked(this.State, this.Configuration, this.IsStartDeferred, out var bucket) ||
+                bucket is null)
+            {
+                return false;
+            }
+
+            return bucket.Value.CountsFor(blockingMode);
         }
     }
 

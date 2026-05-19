@@ -643,8 +643,9 @@ VALUES
         }
         catch (SqlException exception) when (exception.Number is 2601 or 2627)
         {
+            var duplicateSubject = subjectId?.ToString() ?? "<none>";
             throw new WorkQueueDurabilityDuplicateException(
-                $"A durable worker for subject '{subjectId}' already exists.");
+                $"A durable worker for subject '{duplicateSubject}' already exists.");
         }
     }
 

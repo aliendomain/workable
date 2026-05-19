@@ -40,6 +40,7 @@ public sealed class WorkableRealtimeViewSubscriptions
         lock (this.gate)
         {
             if (this.connectionViewGroups.TryGetValue(connectionViewKey, out oldSubscription) &&
+                oldSubscription is not null &&
                 oldSubscription.GroupName == subscription.GroupName)
             {
                 return oldSubscription;
@@ -93,7 +94,8 @@ public sealed class WorkableRealtimeViewSubscriptions
 
         lock (this.gate)
         {
-            if (this.connectionViewGroups.Remove(connectionViewKey, out subscription))
+            if (this.connectionViewGroups.Remove(connectionViewKey, out subscription) &&
+                subscription is not null)
             {
                 ReleaseGroupLocked(subscription.GroupName);
             }

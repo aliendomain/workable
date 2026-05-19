@@ -253,7 +253,8 @@ internal sealed class WorkConcurrencyCoordinator
         {
             this.workers[worker.Id] = worker;
             this.RemoveCapacityEntryLocked(worker.Id);
-            if (!worker.TryGetConcurrencyCapacityContribution(out var scope, out var bucket))
+            if (!worker.TryGetConcurrencyCapacityContribution(out var scope, out var bucket) ||
+                bucket is null)
             {
                 return;
             }
