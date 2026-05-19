@@ -133,12 +133,10 @@ internal sealed class WorkableRealtimeBroadcaster(
                     pumps.Remove(groupName);
                 }
 
-                foreach (var subscription in activeSubscriptions.Values)
+                foreach (var subscription in activeSubscriptions.Values
+                    .Where(subscription => !pumps.ContainsKey(subscription.GroupName)))
                 {
-                    if (!pumps.ContainsKey(subscription.GroupName))
-                    {
-                        pumps[subscription.GroupName] = this.StartEventPump(system, subscription, cancellationToken);
-                    }
+                    pumps[subscription.GroupName] = this.StartEventPump(system, subscription, cancellationToken);
                 }
 
                 var observedVersion = eventSubscriptions.Version;
@@ -354,12 +352,11 @@ internal sealed class WorkableRealtimeBroadcaster(
             var activeGroups = subscriptions
                 .Select(subscription => subscription.GroupName)
                 .ToHashSet(StringComparer.Ordinal);
-            foreach (var groupName in lastPublishedSequencesByGroup.Keys.ToArray())
+            foreach (var groupName in lastPublishedSequencesByGroup.Keys
+                .Where(groupName => !activeGroups.Contains(groupName))
+                .ToArray())
             {
-                if (!activeGroups.Contains(groupName))
-                {
-                    lastPublishedSequencesByGroup.Remove(groupName);
-                }
+                lastPublishedSequencesByGroup.Remove(groupName);
             }
 
             if (subscriptions.Length == 0)

@@ -125,12 +125,12 @@ public sealed class WorkableRealtimeViewSubscriptions
                 .Select(key => this.connectionViewGroups[key])
                 .ToArray();
 
-            foreach (var key in keys)
+            var removedSubscriptions = keys
+                .Select(key => this.connectionViewGroups.Remove(key, out var subscription) ? subscription : null)
+                .OfType<WorkableRealtimeViewSubscription>();
+            foreach (var subscription in removedSubscriptions)
             {
-                if (this.connectionViewGroups.Remove(key, out var subscription))
-                {
-                    ReleaseGroupLocked(subscription.GroupName);
-                }
+                ReleaseGroupLocked(subscription.GroupName);
             }
         }
 
