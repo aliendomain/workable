@@ -11,32 +11,6 @@ public sealed class WorkableHttpQueueAdapter
         ArgumentNullException.ThrowIfNull(session);
         ArgumentException.ThrowIfNullOrWhiteSpace(name);
 
-        if (!session.TryGetDefinition(name, out var definition))
-        {
-            var notFound = WorkQueueOutcome.NotFound(name);
-            return new WorkableHttpWorkResult(
-                WorkableHttpWorkStatus.Rejected,
-                notFound,
-                WorkerId: null,
-                Completion: null,
-                Output: null,
-                notFound.Messages);
-        }
-
-        if (!definition.Configuration.Invocation.Allows(WorkInvocationChannel.HttpApi))
-        {
-            var outcome = WorkQueueOutcome.Invalid(
-                definition.Id,
-                [WorkMessage.Error("workable.invocation.channel_not_allowed", $"Work '{name}' cannot be invoked through the HTTP API.", "invocation.channel")]);
-            return new WorkableHttpWorkResult(
-                WorkableHttpWorkStatus.Rejected,
-                outcome,
-                WorkerId: null,
-                Completion: null,
-                Output: null,
-                outcome.Messages);
-        }
-
         var handle = await session.Queue.Enqueue(name, CreateInput(request), request?.Options?.ToWorkerOptions(), cancellationToken);
         return await CreateQueueResult(handle, request, cancellationToken);
     }
@@ -48,32 +22,6 @@ public sealed class WorkableHttpQueueAdapter
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(session);
-
-        if (!session.TryGetDefinition(definitionId, out var definition))
-        {
-            var notFound = WorkQueueOutcome.NotFound(definitionId.ToString());
-            return new WorkableHttpWorkResult(
-                WorkableHttpWorkStatus.Rejected,
-                notFound,
-                WorkerId: null,
-                Completion: null,
-                Output: null,
-                notFound.Messages);
-        }
-
-        if (!definition.Configuration.Invocation.Allows(WorkInvocationChannel.HttpApi))
-        {
-            var outcome = WorkQueueOutcome.Invalid(
-                definition.Id,
-                [WorkMessage.Error("workable.invocation.channel_not_allowed", $"Work '{definition.Name}' cannot be invoked through the HTTP API.", "invocation.channel")]);
-            return new WorkableHttpWorkResult(
-                WorkableHttpWorkStatus.Rejected,
-                outcome,
-                WorkerId: null,
-                Completion: null,
-                Output: null,
-                outcome.Messages);
-        }
 
         var handle = await session.Queue.Enqueue(definitionId, CreateInput(request), request?.Options?.ToWorkerOptions(), cancellationToken);
         return await CreateQueueResult(handle, request, cancellationToken);

@@ -13,7 +13,6 @@ internal sealed record WorkSystemRegistration(
     IReadOnlyList<Func<IServiceProvider, IWorkDefinitionSource>> WorkDefinitionSourceFactories,
     IReadOnlyList<Func<IServiceProvider, IStartupWorkSource>> StartupWorkSourceFactories,
     IReadOnlyList<WorkExceptionClassifier> ExceptionClassifiers,
-    Func<IServiceProvider, IDotNetWorkOriginProvider>? DotNetOriginProviderFactory,
     bool IncludeContributedWork,
     bool RequiresAuthorization,
     WorkSystemAuthorizationConfiguration Authorization,

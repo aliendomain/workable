@@ -6,6 +6,10 @@ The HTTP API adapter uses the same Workable catalog and queueing system as direc
 
 HTTP queueing, worker actions, and worker reconfiguration record a `WorkOrigin` from the request. The origin uses `HttpContext.User` for actor identity and records the HTTP path as the origin URL.
 
+`Workable.HttpApi` is an authenticated transport. Anonymous callers are rejected before Workable routes run, and mapped systems must have `RequireAuthorization(true)`.
+
+Each request creates a `WorkRequestContext` and an `IWorkSystemSession` for the selected system. Work-definition read access filters catalog, query, event, and view results. Work-definition operate access controls queueing, worker actions, and reconfiguration.
+
 ## Map Endpoints
 
 Map the default Workable API endpoints from the host application.
@@ -70,6 +74,8 @@ The response includes each system's id, optional name, state, default-system mar
 
 The `capabilities` object lets clients discover optional adapter and host features for each system. `persistentCoordinationAvailable` tells clients whether this system can accept persistent coordination settings. The `realtime` section reports whether `Workable.SignalR` is registered.
 
+The systems list is filtered by the system-level `Connect` permission. Callers only see systems they are allowed to discover.
+
 ```json
 {
   "persistentCoordinationAvailable": true,
@@ -94,6 +100,8 @@ GET /workable/systems/email/diagnostics
 ```
 
 The response includes queue, read-model, retention, concurrency, durability, and idempotency diagnostics. Use it to monitor alertable queue rejections, query freshness, projector pressure, retention lag, deferred-start backlog, durable coordination lag, duplicate rejection, and internal diagnostics failures.
+
+Diagnostics require the system-level `Diagnostics` permission or `SystemAdministrator`.
 
 ```json
 {
@@ -189,6 +197,8 @@ POST /workable/systems/email/lifecycle/stop
 
 Starting a system runs the normal system startup behavior. Work definition sources are not run again after the catalog has already been built, but automatic starts and startup work sources run each time a stopped system is started.
 
+Lifecycle routes require the system-level `ControlSystem` permission or `SystemAdministrator`.
+
 Stopping a system stops accepting new work, interrupts active workers, waits for the configured shutdown grace period, and then force-completes workers that did not finish cooperatively as `Interrupted`. After shutdown work completes, Workable clears in-memory worker and iteration records for that system. The stop response includes the shutdown grace period, summaries for workers asked to stop, and the names and summaries of workers that were force-completed after the grace period elapsed.
 
 The response keeps the existing `forceCanceled*` JSON property names for compatibility. During shutdown interruption, those lists contain workers force-completed as `Interrupted`.
@@ -207,13 +217,13 @@ The response keeps the existing `forceCanceled*` JSON property names for compati
 
 ## Definition Listing
 
-The definitions endpoint returns all work definitions in the selected system.
+The definitions endpoint returns the work definitions visible to the current caller in the selected system.
 
 ```http
 GET /workable/definitions
 ```
 
-Definitions include their invocation configuration. A definition that does not allow `WorkInvocationChannel.HttpApi` still appears in discovery responses so clients can display it as unavailable through HTTP. Queueing that work through HTTP returns a validation response.
+Definitions include their invocation configuration and authorization metadata. Definitions that the caller cannot read are filtered out entirely. Definitions that allow read but not operate access still appear in discovery responses so clients can display them as unavailable through HTTP queueing. Queueing that work through HTTP returns an authorization response.
 
 Filter work definitions with the same criteria shape as `IWorkQueryService.WorkDefinitions` and `WorkDefinitionCriteria`.
 

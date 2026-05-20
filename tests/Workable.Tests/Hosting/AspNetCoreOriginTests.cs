@@ -15,7 +15,7 @@ namespace Workable.Tests;
 public sealed class AspNetCoreOriginTests
 {
     [Fact]
-    public async Task DirectDotNetQueueInsideAspNetCoreRequestCanUseHttpContextOriginWithoutWorkableHttpApi()
+    public async Task ExplicitRequestContextInsideAspNetCoreRequestCanUseHttpContextOriginWithoutWorkableHttpApi()
     {
         using var host = await CreateHost();
         var client = host.GetTestClient();
@@ -28,34 +28,11 @@ public sealed class AspNetCoreOriginTests
         var worker = await system.Query.Worker(new WorkerId(workerId))
             ?? throw new InvalidOperationException("Expected worker.");
 
-        Assert.Equal(WorkInvocationChannel.DotNet, worker.Origin.Channel);
+        Assert.Equal(WorkInvocationChannel.HttpApi, worker.Origin.Channel);
         Assert.Equal("user-123", worker.Origin.Actor.Id);
         Assert.Equal("greya@example.test", worker.Origin.Actor.Email);
-        Assert.Equal("Queue work 'direct.http' through .NET.", worker.Origin.Description);
+        Assert.Equal("Queue work 'direct.http' through custom HTTP endpoint.", worker.Origin.Description);
         Assert.Equal("/custom/queue", worker.Origin.Url);
-    }
-
-    [Fact]
-    public void HttpContextOriginProviderFallsBackWhenAmbientContextIsDisposed()
-    {
-        var accessor = new HttpContextAccessor
-        {
-            HttpContext = new DisposedRequestHttpContext(),
-        };
-        var services = new ServiceCollection();
-        services.AddOptions<WorkableAspNetCoreAuthorizationOptions>();
-        services.AddSingleton<IWorkActorFactory, HttpContextWorkActorFactory>();
-        services.AddSingleton<IWorkRequestContextFactory, HttpContextWorkRequestContextFactory>();
-        using var providerServices = services.BuildServiceProvider();
-        var provider = new HttpContextDotNetWorkOriginProvider(
-            providerServices.GetRequiredService<IWorkRequestContextFactory>(),
-            accessor);
-
-        var origin = provider.CreateOrigin("Queue after request.");
-
-        Assert.Equal(WorkInvocationChannel.DotNet, origin.Channel);
-        Assert.Equal("Queue after request.", origin.Description);
-        Assert.Null(origin.Url);
     }
 
     private static async Task<IHost> CreateHost()
@@ -79,7 +56,7 @@ public sealed class AspNetCoreOriginTests
                                 }),
                             SuccessfulWork);
                     });
-                    services.AddWorkableAspNetCoreOrigins();
+                    services.AddWorkableAspNetCoreAuthorization();
                 });
                 web.Configure(app =>
                 {
@@ -97,9 +74,16 @@ public sealed class AspNetCoreOriginTests
                     });
                     app.UseEndpoints(endpoints =>
                     {
-                        endpoints.MapPost("/custom/queue", async (IWorkSystemRegistry registry) =>
+                        endpoints.MapPost("/custom/queue", async (HttpContext httpContext, IWorkSystemRegistry registry, IWorkRequestContextFactory requestContexts) =>
                         {
-                            var handle = await registry.Default.Queue.Enqueue("direct.http");
+                            var requestContext = requestContexts.Create(
+                                httpContext,
+                                WorkInvocationChannel.HttpApi,
+                                "Queue work 'direct.http' through custom HTTP endpoint.");
+                            var handle = await registry.Default
+                                .CreateSession(requestContext)
+                                .Queue
+                                .Enqueue("direct.http");
                             return handle.WorkerId?.Value ?? throw new InvalidOperationException("Expected worker.");
                         });
                     });
@@ -116,33 +100,4 @@ public sealed class AspNetCoreOriginTests
         WorkInput? input,
         CancellationToken cancellationToken)
         => Task.FromResult(WorkExecutionResult.Success());
-
-    private sealed class DisposedRequestHttpContext : HttpContext
-    {
-        public override IFeatureCollection Features => new FeatureCollection();
-
-        public override HttpRequest Request => throw new ObjectDisposedException("IFeatureCollection");
-
-        public override HttpResponse Response => throw new ObjectDisposedException("IFeatureCollection");
-
-        public override ConnectionInfo Connection => throw new ObjectDisposedException("IFeatureCollection");
-
-        public override WebSocketManager WebSockets => throw new ObjectDisposedException("IFeatureCollection");
-
-        public override ClaimsPrincipal User { get; set; } = new(new ClaimsIdentity());
-
-        public override IDictionary<object, object?> Items { get; set; } = new Dictionary<object, object?>();
-
-        public override IServiceProvider RequestServices { get; set; } = new ServiceCollection().BuildServiceProvider();
-
-        public override CancellationToken RequestAborted { get; set; }
-
-        public override string TraceIdentifier { get; set; } = "disposed";
-
-        public override ISession Session { get; set; } = null!;
-
-        public override void Abort()
-        {
-        }
-    }
 }

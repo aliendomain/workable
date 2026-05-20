@@ -20,7 +20,6 @@ internal sealed class WorkSystemBuilder(IServiceCollection services, string? nam
     private WorkSystemShutdownGracePeriod shutdownGracePeriod = WorkSystemShutdownGracePeriod.HostRelative();
     private WorkSystemRetentionConfiguration retention = WorkSystemRetentionConfiguration.Default;
     private WorkSystemCapacityConfiguration capacity = WorkSystemCapacityConfiguration.Default;
-    private Func<IServiceProvider, IDotNetWorkOriginProvider>? dotNetOriginProviderFactory;
 
     public IWorkSystemBuilder AddWork(
         WorkDefinition definition,
@@ -291,22 +290,6 @@ internal sealed class WorkSystemBuilder(IServiceCollection services, string? nam
         return this;
     }
 
-    public IWorkSystemBuilder UseDotNetOriginProvider<TProvider>()
-        where TProvider : class, IDotNetWorkOriginProvider
-    {
-        services.AddSingleton<TProvider>();
-        this.dotNetOriginProviderFactory = serviceProvider => serviceProvider.GetRequiredService<TProvider>();
-        return this;
-    }
-
-    public IWorkSystemBuilder UseDotNetOriginProvider(Func<IServiceProvider, IDotNetWorkOriginProvider> factory)
-    {
-        ArgumentNullException.ThrowIfNull(factory);
-
-        this.dotNetOriginProviderFactory = factory;
-        return this;
-    }
-
     internal WorkSystemRegistration BuildRegistration()
         => new(
             WorkSystemId.New(),
@@ -315,7 +298,6 @@ internal sealed class WorkSystemBuilder(IServiceCollection services, string? nam
             [.. this.workDefinitionSourceFactories],
             [.. this.startupWorkSourceFactories],
             [.. this.exceptionClassifiers],
-            this.dotNetOriginProviderFactory,
             this.includeContributedWork,
             this.requiresAuthorization,
             this.authorization,

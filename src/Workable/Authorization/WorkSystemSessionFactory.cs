@@ -4,12 +4,12 @@ internal sealed class WorkSystemSessionFactory(
     WorkSystemId systemId,
     string? systemName,
     Func<WorkSystemState> getSystemState,
-    IWorkSystemDiagnostics diagnostics,
-    IWorkCatalog catalog,
-    IRequestContextWorkQueueService queue,
-    IRequestContextWorkerOperations workers,
-    IWorkQueryService query,
-    IWorkEventStream events,
+    WorkSystemDiagnostics diagnostics,
+    WorkSystemCatalog catalog,
+    WorkQueueService queue,
+    WorkerOperations workers,
+    WorkSystemReadModelQueryService query,
+    WorkEventStream events,
     WorkSystemAuthorizationConfiguration systemAuthorizationConfiguration,
     IWorkAuthorizationGroupProvider groupProvider)
 {
@@ -17,20 +17,23 @@ internal sealed class WorkSystemSessionFactory(
     {
         ArgumentNullException.ThrowIfNull(requestContext);
 
+        var sessionDiagnostics = new SessionWorkSystemDiagnostics(diagnostics, requestContext);
+        var sessionCatalog = new SessionWorkCatalog(catalog, requestContext);
         var sessionQueue = new SessionWorkQueueService(queue, requestContext);
         var sessionWorkers = new SessionWorkerOperations(workers, requestContext);
+        var sessionQuery = new SessionWorkQueryService(query, requestContext);
+        var sessionEvents = new SessionWorkEventStream(events, requestContext);
         if (!requiresAuthorization)
         {
             return new WorkSystemSession(
                 systemName,
                 getSystemState,
-                diagnostics,
-                catalog,
-                catalog,
+                sessionDiagnostics,
+                sessionCatalog,
                 sessionQueue,
                 sessionWorkers,
-                query,
-                events);
+                sessionQuery,
+                sessionEvents);
         }
 
         var groups = requestContext.Authorization?.Groups
@@ -42,13 +45,12 @@ internal sealed class WorkSystemSessionFactory(
             systemName,
             getSystemState,
             systemAuthorization.CanViewDiagnostics()
-                ? diagnostics
+                ? sessionDiagnostics
                 : new UnauthorizedWorkSystemDiagnostics(systemId, systemName),
-            catalog,
-            new AuthorizedWorkCatalog(catalog, authorization),
-            new AuthorizedWorkQueueService(catalog, sessionQueue, authorization),
-            new AuthorizedWorkerOperations(sessionWorkers, query, authorization),
-            new AuthorizedWorkQueryService(catalog, query, authorization),
-            new AuthorizedWorkEventStream(events, authorization));
+            new AuthorizedWorkCatalog(sessionCatalog, authorization),
+            new AuthorizedWorkQueueService(sessionCatalog, sessionQueue, authorization),
+            new AuthorizedWorkerOperations(sessionWorkers, sessionQuery, authorization),
+            new AuthorizedWorkQueryService(sessionCatalog, sessionQuery, authorization),
+            new AuthorizedWorkEventStream(sessionEvents, authorization));
     }
 }

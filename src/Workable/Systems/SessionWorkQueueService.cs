@@ -1,7 +1,7 @@
 namespace Workable;
 
 internal sealed class SessionWorkQueueService(
-    IRequestContextWorkQueueService inner,
+    WorkQueueService inner,
     WorkRequestContext requestContext) : IWorkQueueService
 {
     public Task<IWorkerHandle> Enqueue(

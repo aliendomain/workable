@@ -6,9 +6,6 @@ namespace Workable;
 
 public static class WorkableAspNetCoreServiceCollectionExtensions
 {
-    public static IServiceCollection AddWorkableAspNetCoreOrigins(this IServiceCollection services)
-        => services.AddWorkableAspNetCoreAuthorization();
-
     public static IServiceCollection AddWorkableAspNetCoreAuthorization(
         this IServiceCollection services,
         Action<WorkableAspNetCoreAuthorizationOptions>? configure = null)
@@ -25,7 +22,6 @@ public static class WorkableAspNetCoreServiceCollectionExtensions
         services.TryAddSingleton<IWorkActorFactory, HttpContextWorkActorFactory>();
         services.TryAddSingleton<IWorkRequestContextFactory, HttpContextWorkRequestContextFactory>();
         UseHttpContextAuthorizationGroupProvider(services);
-        UseHttpContextDotNetOriginProvider(services);
         return services;
     }
 
@@ -39,17 +35,5 @@ public static class WorkableAspNetCoreServiceCollectionExtensions
 
         services.RemoveAll<IWorkAuthorizationGroupProvider>();
         services.AddSingleton<IWorkAuthorizationGroupProvider, HttpContextClaimsWorkAuthorizationGroupProvider>();
-    }
-
-    private static void UseHttpContextDotNetOriginProvider(IServiceCollection services)
-    {
-        var existing = services.LastOrDefault(descriptor => descriptor.ServiceType == typeof(IDotNetWorkOriginProvider));
-        if (existing is not null && existing.ImplementationType != typeof(DefaultDotNetWorkOriginProvider))
-        {
-            return;
-        }
-
-        services.RemoveAll<IDotNetWorkOriginProvider>();
-        services.AddSingleton<IDotNetWorkOriginProvider, HttpContextDotNetWorkOriginProvider>();
     }
 }

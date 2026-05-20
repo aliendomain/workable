@@ -1,7 +1,7 @@
 namespace Workable;
 
 internal sealed class SessionWorkerOperations(
-    IRequestContextWorkerOperations inner,
+    WorkerOperations inner,
     WorkRequestContext requestContext) : IWorkerOperations
 {
     public Task<WorkActionOutcome> Execute(

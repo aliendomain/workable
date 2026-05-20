@@ -9,7 +9,6 @@ using Microsoft.Extensions.Logging;
 namespace Workable;
 internal sealed class WorkerOperations :
     IWorkerOperations,
-    IRequestContextWorkerOperations,
     IDisposable
 {
     private readonly WorkSystemCatalog catalog;
@@ -27,7 +26,6 @@ internal sealed class WorkerOperations :
     private readonly WorkerDispatcher dispatcher;
     private readonly WorkConcurrencyCoordinator concurrency;
     private readonly WorkerRetentionScheduler retention;
-    private readonly IDotNetWorkOriginProvider dotNetOriginProvider;
     private readonly TimeSpan shutdownGracePeriod;
     private readonly WorkSystemCapacityConfiguration capacity;
     private readonly WorkSystemQueueDiagnosticsTracker queueDiagnostics;
@@ -46,7 +44,6 @@ internal sealed class WorkerOperations :
         IServiceProvider rootServices,
         WorkEventStream events,
         IWorkSystemReadModelStore readModel,
-        IDotNetWorkOriginProvider dotNetOriginProvider,
         IReadOnlyList<WorkExceptionClassifier> systemExceptionClassifiers,
         IReadOnlyList<WorkExceptionClassifier> globalExceptionClassifiers,
         TimeSpan shutdownGracePeriod,
@@ -59,7 +56,6 @@ internal sealed class WorkerOperations :
     {
         this.catalog = catalog;
         this.getSystemState = getSystemState;
-        this.dotNetOriginProvider = dotNetOriginProvider;
         this.shutdownGracePeriod = shutdownGracePeriod;
         this.capacity = capacity;
         this.metrics = metrics;
@@ -449,15 +445,16 @@ internal sealed class WorkerOperations :
         CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        return ((IRequestContextWorkerOperations)this).Execute(
+        return this.Execute(
             worker,
             action,
-            new WorkRequestContext(
-                this.dotNetOriginProvider.CreateOrigin($"Apply worker action '{action}' through .NET.")),
+            WorkRequestContext.Create(
+                WorkInvocationChannel.DotNet,
+                description: $"Apply worker action '{action}' through .NET."),
             cancellationToken);
     }
 
-    Task<WorkActionOutcome> IRequestContextWorkerOperations.Execute(
+    internal Task<WorkActionOutcome> Execute(
         WorkerVersion worker,
         WorkAction action,
         WorkRequestContext requestContext,
@@ -472,14 +469,15 @@ internal sealed class WorkerOperations :
         WorkAction action,
         WorkerBulkActionFilter? filter = null,
         CancellationToken cancellationToken = default)
-        => ((IRequestContextWorkerOperations)this).ExecuteAll(
+        => this.ExecuteAll(
             action,
             filter,
-            new WorkRequestContext(
-                this.dotNetOriginProvider.CreateOrigin($"Apply worker action '{action}' to multiple workers through .NET.")),
+            WorkRequestContext.Create(
+                WorkInvocationChannel.DotNet,
+                description: $"Apply worker action '{action}' to multiple workers through .NET."),
             cancellationToken);
 
-    Task<WorkerBulkActionOutcome> IRequestContextWorkerOperations.ExecuteAll(
+    internal Task<WorkerBulkActionOutcome> ExecuteAll(
         WorkAction action,
         WorkerBulkActionFilter? filter,
         WorkRequestContext requestContext,
@@ -552,15 +550,16 @@ internal sealed class WorkerOperations :
         CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        return ((IRequestContextWorkerOperations)this).Reconfigure(
+        return this.Reconfigure(
             worker,
             changes,
-            new WorkRequestContext(
-                this.dotNetOriginProvider.CreateOrigin("Reconfigure worker through .NET.")),
+            WorkRequestContext.Create(
+                WorkInvocationChannel.DotNet,
+                description: "Reconfigure worker through .NET."),
             cancellationToken);
     }
 
-    Task<WorkActionOutcome> IRequestContextWorkerOperations.Reconfigure(
+    internal Task<WorkActionOutcome> Reconfigure(
         WorkerVersion worker,
         WorkerReconfiguration changes,
         WorkRequestContext requestContext,

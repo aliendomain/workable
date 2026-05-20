@@ -20,8 +20,8 @@ internal sealed class InMemoryWorkSystem :
     private readonly WorkQueueService queue;
     private readonly WorkerOperations workers;
     private readonly WorkSystemReadModel readModel;
-    private readonly IWorkQueryService query;
-    private readonly IWorkSystemDiagnostics diagnostics;
+    private readonly WorkSystemReadModelQueryService query;
+    private readonly WorkSystemDiagnostics diagnostics;
     private readonly WorkSystemSessionFactory sessions;
     private readonly InMemoryWorkMetricsSink metrics = new();
     private readonly WorkEventStream events = new();
@@ -47,9 +47,6 @@ internal sealed class InMemoryWorkSystem :
         this.workDefinitionSourceFactories = workDefinitionSourceFactories;
         this.startupWorkSourceFactories = startupWorkSourceFactories;
         this.ShutdownGracePeriod = shutdownGracePeriod;
-        var dotNetOriginProvider = registration.DotNetOriginProviderFactory?.Invoke(rootServices)
-            ?? rootServices.GetService<IDotNetWorkOriginProvider>()
-            ?? new DefaultDotNetWorkOriginProvider();
         var persistenceStore = rootServices.GetService<IWorkPersistenceStore>()
             ?? rootServices.GetService<IWorkQueueDurabilityStore>();
         this.PersistentCoordinationAvailable = persistenceStore is not null;
@@ -63,7 +60,6 @@ internal sealed class InMemoryWorkSystem :
             rootServices,
             this.events,
             this.readModel,
-            dotNetOriginProvider,
             registration.ExceptionClassifiers,
             globalExceptionClassifiers,
             this.ShutdownGracePeriod,
@@ -76,7 +72,7 @@ internal sealed class InMemoryWorkSystem :
         this.diagnostics = new WorkSystemDiagnostics(this.queueDiagnostics, this.readModel, this.workers);
         this.readModel.UseDetailReaders(this.workers.GetAuthoritative, this.workers.GetIterationAuthoritative);
         this.query = this.readModel.Query;
-        this.queue = new WorkQueueService(this.catalog, this.workers, dotNetOriginProvider, this.queueDiagnostics);
+        this.queue = new WorkQueueService(this.catalog, this.workers, this.queueDiagnostics);
         this.groupProvider = rootServices.GetService<IWorkAuthorizationGroupProvider>() ?? EmptyWorkAuthorizationGroupProvider.Instance;
         this.sessions = new WorkSystemSessionFactory(
             this.Id,
@@ -354,8 +350,8 @@ internal sealed class InMemoryWorkSystem :
                     WorkInvocationChannel.DotNet,
                     description: $"Queue startup work from '{source.GetType().FullName}'.");
                 var handle = request.DefinitionId is { } definitionId
-                    ? await ((IRequestContextWorkQueueService)this.queue).Enqueue(definitionId, request.Input, request.Options, requestContext, cancellationToken)
-                    : await ((IRequestContextWorkQueueService)this.queue).Enqueue(request.Name ?? throw new InvalidOperationException("Startup work requests must provide a work definition id or name."), request.Input, request.Options, requestContext, cancellationToken);
+                    ? await this.queue.Enqueue(definitionId, request.Input, request.Options, requestContext, cancellationToken)
+                    : await this.queue.Enqueue(request.Name ?? throw new InvalidOperationException("Startup work requests must provide a work definition id or name."), request.Input, request.Options, requestContext, cancellationToken);
 
                 if (!handle.QueueOutcome.IsAccepted)
                 {
@@ -409,7 +405,7 @@ internal sealed class InMemoryWorkSystem :
             var requestContext = WorkRequestContext.Create(
                 WorkInvocationChannel.DotNet,
                 description: $"Queue automatically started work '{registeredWork.Definition.Name}'.");
-            var handle = await ((IRequestContextWorkQueueService)this.queue).Enqueue(
+            var handle = await this.queue.Enqueue(
                 registeredWork.Definition.Id,
                 input,
                 null,

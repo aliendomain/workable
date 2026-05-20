@@ -71,7 +71,7 @@ Execution context also exposes the worker's `WorkOrigin`, whether interruption i
 - Bulk worker actions return `WorkerBulkActionOutcome` with one `WorkActionOutcome` per matched worker.
 - Worker snapshots expose durable action history for worker actions and reconfiguration attempts that reached an existing worker.
 - Worker snapshots expose `CurrentIterationSequence` and `LastIterationSequence` so callers can cheaply locate the active or most recently completed iteration.
-- Direct .NET queueing and worker operations use `IDotNetWorkOriginProvider` to create trusted `DotNet` origins.
+- Direct `IWorkSystem.Queue` and `IWorkSystem.Workers` calls use `WorkInvocationChannel.DotNet` and an unknown actor unless the caller creates a `WorkRequestContext` and works through `IWorkSystem.CreateSession(...)`.
 - Start configuration controls whether queued work starts automatically and when queue calls return control to the caller.
 - Coordination configuration selects local or persistent coordination state, then enables duplicate protection, capacity limits, durable queueing, and durable completion under that mode.
 - Idempotency configuration controls whether workers with the same subject are rejected.

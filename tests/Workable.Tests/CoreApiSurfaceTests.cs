@@ -15,9 +15,9 @@ public sealed class CoreApiSurfaceTests
     }
 
     [Fact]
-    public void AspNetCoreOriginAdapterDoesNotReferenceRuntimeHostPackage()
+    public void AspNetCoreRequestContextAdapterDoesNotReferenceRuntimeHostPackage()
     {
-        var references = typeof(HttpContextDotNetWorkOriginProvider)
+        var references = typeof(HttpContextWorkRequestContextFactory)
             .Assembly
             .GetReferencedAssemblies()
             .Select(reference => reference.Name)

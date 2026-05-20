@@ -40,7 +40,6 @@ public static class WorkableServiceCollectionExtensions
         configure(builder);
 
         services.UseWorkableLogging();
-        services.TryAddSingleton<IDotNetWorkOriginProvider, DefaultDotNetWorkOriginProvider>();
         services.AddSingleton(builder.BuildRegistration());
         services.AddSingleton<IWorkSystemRegistry, WorkSystemRegistry>();
         services.TryAddSingleton(services => services.GetRequiredService<IWorkSystemRegistry>().Default);

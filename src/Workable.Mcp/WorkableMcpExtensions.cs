@@ -32,32 +32,6 @@ public static class WorkableMcpExtensions
         ArgumentException.ThrowIfNullOrWhiteSpace(name);
 
         options ??= WorkableMcpInvocationOptions.Default;
-        if (!session.TryGetDefinition(name, out var definition))
-        {
-            var outcome = WorkQueueOutcome.NotFound(name);
-            return new WorkableMcpInvocationResult(
-                WorkableMcpInvocationStatus.Rejected,
-                outcome,
-                WorkerId: null,
-                Completion: null,
-                Output: null,
-                outcome.Messages);
-        }
-
-        if (!definition.Configuration.Invocation.Allows(WorkInvocationChannel.Mcp))
-        {
-            var outcome = WorkQueueOutcome.Invalid(
-                definition.Id,
-                [WorkMessage.Error("workable.invocation.channel_not_allowed", $"Work '{name}' cannot be invoked through MCP.", "invocation.channel")]);
-            return new WorkableMcpInvocationResult(
-                WorkableMcpInvocationStatus.Rejected,
-                outcome,
-                WorkerId: null,
-                Completion: null,
-                Output: null,
-                outcome.Messages);
-        }
-
         var workInput = input.HasValue
             ? WorkInput.FromJson(input.Value.GetRawText())
             : WorkInput.Empty;

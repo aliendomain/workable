@@ -108,8 +108,4 @@ public interface IWorkSystemBuilder
 
     IWorkSystemBuilder ClassifyExceptions(WorkExceptionClassifier classifier);
 
-    IWorkSystemBuilder UseDotNetOriginProvider<TProvider>()
-        where TProvider : class, IDotNetWorkOriginProvider;
-
-    IWorkSystemBuilder UseDotNetOriginProvider(Func<IServiceProvider, IDotNetWorkOriginProvider> factory);
 }
