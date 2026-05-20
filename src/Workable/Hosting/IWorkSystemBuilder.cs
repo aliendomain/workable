@@ -59,6 +59,8 @@ public interface IWorkSystemBuilder
 
     IWorkSystemBuilder IncludeContributedWork(bool enabled = true);
 
+    IWorkSystemBuilder RequireAuthorization(bool required = true);
+
     IWorkSystemBuilder StartWithHost(bool enabled = true);
 
     IWorkSystemBuilder UseShutdownGracePeriod(TimeSpan gracePeriod);

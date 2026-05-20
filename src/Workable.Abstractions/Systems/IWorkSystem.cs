@@ -7,6 +7,8 @@ public interface IWorkSystem : IAsyncDisposable
 
     string? Name { get; }
 
+    bool RequiresAuthorization { get; }
+
     WorkSystemState State { get; }
 
     IWorkCatalog Catalog { get; }
@@ -20,6 +22,8 @@ public interface IWorkSystem : IAsyncDisposable
     IWorkEventStream Events { get; }
 
     IWorkSystemDiagnostics Diagnostics { get; }
+
+    IWorkSystemSession CreateSession(WorkActor actor);
 
     Task Start(CancellationToken cancellationToken = default);
 

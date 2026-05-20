@@ -130,10 +130,15 @@ internal sealed class WorkableHostedService(
 
     private static async Task<IReadOnlyList<WorkSystemShutdownWorker>> GetShutdownWorkers(IWorkSystem system)
     {
+        if (system is not IWorkSystemShutdownInspection inspection)
+        {
+            return [];
+        }
+
         var workers = new List<WorkSystemShutdownWorker>();
         while (true)
         {
-            var result = await system.Query.Workers(new WorkerCriteria(
+            var result = await inspection.Workers(new WorkerCriteria(
                     States: ShutdownWorkerStates,
                     Sort: WorkerCriteriaSort.CreatedAt,
                     Direction: WorkCriteriaSortDirection.Ascending,

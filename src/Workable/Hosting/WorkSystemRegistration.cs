@@ -15,6 +15,7 @@ internal sealed record WorkSystemRegistration(
     IReadOnlyList<WorkExceptionClassifier> ExceptionClassifiers,
     Func<IServiceProvider, IDotNetWorkOriginProvider>? DotNetOriginProviderFactory,
     bool IncludeContributedWork,
+    bool RequiresAuthorization,
     bool StartWithHost,
     WorkSystemShutdownGracePeriod ShutdownGracePeriod,
     WorkSystemRetentionConfiguration Retention,

@@ -6,7 +6,12 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 
 namespace Workable;
-internal sealed class InMemoryWorkSystem : IWorkSystem, IOriginAwareWorkSystem, IWorkSystemShutdownMetadata, IWorkSystemCoordinationCapabilities
+internal sealed class InMemoryWorkSystem :
+    IWorkSystem,
+    IOriginAwareWorkSystem,
+    IWorkSystemShutdownMetadata,
+    IWorkSystemCoordinationCapabilities,
+    IWorkSystemShutdownInspection
 {
     private readonly IServiceProvider rootServices;
     private readonly IReadOnlyList<Func<IServiceProvider, IWorkDefinitionSource>> workDefinitionSourceFactories;
@@ -17,6 +22,7 @@ internal sealed class InMemoryWorkSystem : IWorkSystem, IOriginAwareWorkSystem, 
     private readonly WorkSystemReadModel readModel;
     private readonly IWorkQueryService query;
     private readonly IWorkSystemDiagnostics diagnostics;
+    private readonly WorkSystemSessionFactory sessions;
     private readonly InMemoryWorkMetricsSink metrics = new();
     private readonly WorkEventStream events = new();
     private readonly WorkSystemQueueDiagnosticsTracker queueDiagnostics = new();
@@ -35,6 +41,7 @@ internal sealed class InMemoryWorkSystem : IWorkSystem, IOriginAwareWorkSystem, 
     {
         this.Id = registration.Id;
         this.Name = registration.Name;
+        this.RequiresAuthorization = registration.RequiresAuthorization;
         this.rootServices = rootServices;
         this.workDefinitionSourceFactories = workDefinitionSourceFactories;
         this.startupWorkSourceFactories = startupWorkSourceFactories;
@@ -69,11 +76,22 @@ internal sealed class InMemoryWorkSystem : IWorkSystem, IOriginAwareWorkSystem, 
         this.readModel.UseDetailReaders(this.workers.GetAuthoritative, this.workers.GetIterationAuthoritative);
         this.query = this.readModel.Query;
         this.queue = new WorkQueueService(this.catalog, this.workers, dotNetOriginProvider, this.queueDiagnostics);
+        this.sessions = new WorkSystemSessionFactory(
+            this.Id,
+            this.Name,
+            this.catalog,
+            this.queue,
+            this.workers,
+            this.query,
+            this.events,
+            rootServices.GetService<IWorkAuthorizationScopeProvider>() ?? DenyAllWorkAuthorizationScopeProvider.Instance);
     }
 
     public WorkSystemId Id { get; }
 
     public string? Name { get; }
+
+    public bool RequiresAuthorization { get; }
 
     public WorkSystemState State { get; private set; } = WorkSystemState.Created;
 
@@ -81,17 +99,66 @@ internal sealed class InMemoryWorkSystem : IWorkSystem, IOriginAwareWorkSystem, 
 
     public bool PersistentCoordinationAvailable { get; }
 
-    public IWorkCatalog Catalog => this.catalog;
+    public IWorkCatalog Catalog
+    {
+        get
+        {
+            this.ThrowIfAuthorizationRequiredForDirectAccess();
+            return this.catalog;
+        }
+    }
 
-    public IWorkQueueService Queue => this.queue;
+    public IWorkQueueService Queue
+    {
+        get
+        {
+            this.ThrowIfAuthorizationRequiredForDirectAccess();
+            return this.queue;
+        }
+    }
 
-    public IWorkerOperations Workers => this.workers;
+    public IWorkerOperations Workers
+    {
+        get
+        {
+            this.ThrowIfAuthorizationRequiredForDirectAccess();
+            return this.workers;
+        }
+    }
 
-    public IWorkQueryService Query => this.query;
+    public IWorkQueryService Query
+    {
+        get
+        {
+            this.ThrowIfAuthorizationRequiredForDirectAccess();
+            return this.query;
+        }
+    }
 
-    public IWorkEventStream Events => this.events;
+    public IWorkEventStream Events
+    {
+        get
+        {
+            this.ThrowIfAuthorizationRequiredForDirectAccess();
+            return this.events;
+        }
+    }
 
     public IWorkSystemDiagnostics Diagnostics => this.diagnostics;
+
+    public IWorkSystemSession CreateSession(WorkActor actor)
+    {
+        ArgumentNullException.ThrowIfNull(actor);
+
+        return this.RequiresAuthorization
+            ? this.sessions.CreateAuthorizedSession(actor)
+            : this.sessions.CreateDirectSession();
+    }
+
+    Task<WorkerQueryResult> IWorkSystemShutdownInspection.Workers(
+        WorkerCriteria criteria,
+        CancellationToken cancellationToken)
+        => this.query.Workers(criteria, cancellationToken);
 
     Task<IWorkerHandle> IOriginAwareWorkSystem.Enqueue(
         string name,
@@ -140,6 +207,14 @@ internal sealed class InMemoryWorkSystem : IWorkSystem, IOriginAwareWorkSystem, 
         WorkOrigin origin,
         CancellationToken cancellationToken)
         => this.Stop(origin, cancellationToken);
+
+    private void ThrowIfAuthorizationRequiredForDirectAccess()
+    {
+        if (this.RequiresAuthorization)
+        {
+            throw new WorkSystemAuthorizationRequiredException(this.Id, this.Name);
+        }
+    }
 
     public async Task Start(CancellationToken cancellationToken = default)
     {

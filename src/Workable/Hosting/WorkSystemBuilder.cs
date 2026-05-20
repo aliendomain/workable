@@ -14,6 +14,7 @@ internal sealed class WorkSystemBuilder(IServiceCollection services, string? nam
     private readonly List<Func<IServiceProvider, IStartupWorkSource>> startupWorkSourceFactories = [];
     private readonly List<WorkExceptionClassifier> exceptionClassifiers = [];
     private bool includeContributedWork = true;
+    private bool requiresAuthorization = true;
     private bool startWithHost;
     private WorkSystemShutdownGracePeriod shutdownGracePeriod = WorkSystemShutdownGracePeriod.HostRelative();
     private WorkSystemRetentionConfiguration retention = WorkSystemRetentionConfiguration.Default;
@@ -188,6 +189,12 @@ internal sealed class WorkSystemBuilder(IServiceCollection services, string? nam
         return this;
     }
 
+    public IWorkSystemBuilder RequireAuthorization(bool required = true)
+    {
+        this.requiresAuthorization = required;
+        return this;
+    }
+
     public IWorkSystemBuilder AddWork<TExecutor>(Action<IWorkConfigurationBuilder> configure)
         where TExecutor : class
         => this.AddWork<TExecutor>(
@@ -260,6 +267,7 @@ internal sealed class WorkSystemBuilder(IServiceCollection services, string? nam
             [.. this.exceptionClassifiers],
             this.dotNetOriginProviderFactory,
             this.includeContributedWork,
+            this.requiresAuthorization,
             this.startWithHost,
             this.shutdownGracePeriod,
             this.retention,
