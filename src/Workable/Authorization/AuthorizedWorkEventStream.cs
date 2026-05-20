@@ -1,6 +1,6 @@
 namespace Workable;
 
-internal sealed class AuthorizedWorkEventStream(IWorkEventStream inner, WorkAuthorizationScope scope) : IWorkEventStream
+internal sealed class AuthorizedWorkEventStream(IWorkEventStream inner, WorkAuthorizationEvaluator authorization) : IWorkEventStream
 {
     public IWorkEventSubscription Subscribe(
         WorkEventFilter? filter = null,
@@ -14,7 +14,7 @@ internal sealed class AuthorizedWorkEventStream(IWorkEventStream inner, WorkAuth
 
     private WorkEventFilter? CreateAuthorizedFilter(WorkEventFilter? filter)
     {
-        var readable = scope.ReadDefinitionIds;
+        var readable = authorization.ReadableDefinitionIds();
         if (readable.Count == 0)
         {
             return null;

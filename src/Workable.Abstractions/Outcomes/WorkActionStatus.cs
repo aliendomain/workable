@@ -4,5 +4,6 @@ public enum WorkActionStatus
     Accepted,
     Invalid,
     Conflict,
+    Unauthorized,
     NotFound,
 }

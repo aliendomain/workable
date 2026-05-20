@@ -8,6 +8,10 @@ internal sealed class WorkableHostedService(
     IEnumerable<WorkSystemRegistration> registrations,
     ILogger<WorkableHostedService> logger) : IHostedService
 {
+    private static readonly WorkActor HostActor = new(
+        Id: "workable.host",
+        Name: "Workable Host");
+
     private static readonly IReadOnlySet<WorkerState> ShutdownWorkerStates = new HashSet<WorkerState>
     {
         WorkerState.Queued,
@@ -27,7 +31,10 @@ internal sealed class WorkableHostedService(
 
         foreach (var system in registry.Systems.Where(system => autoStartIds.Contains(system.Id)))
         {
-            await system.Start(cancellationToken);
+            await system.Start(
+                CreateSystemAdministratorRequestContext(
+                    "Start Workable system with the application host."),
+                cancellationToken);
         }
     }
 
@@ -46,7 +53,10 @@ internal sealed class WorkableHostedService(
         {
             return new SystemShutdownResult(
                 plan,
-                await plan.System.Stop(CancellationToken.None),
+                await plan.System.Stop(
+                    CreateSystemAdministratorRequestContext(
+                        "Stop Workable system with the application host."),
+                    CancellationToken.None),
                 Exception: null);
         }
         catch (Exception exception)
@@ -56,11 +66,16 @@ internal sealed class WorkableHostedService(
     }
 
     private static async Task<SystemShutdownPlan> CreateShutdownPlan(IWorkSystem system)
-        => new(
+    {
+        var requestContext = CreateSystemAdministratorRequestContext(
+            "Inspect Workable system shutdown state with the application host.");
+        var session = system.CreateSession(requestContext);
+        return new(
             system,
             FormatSystemName(system),
             GetShutdownGracePeriod(system),
-            await GetShutdownWorkers(system));
+            await GetShutdownWorkers(session));
+    }
 
     private void LogShutdownStart(IReadOnlyList<SystemShutdownPlan> plans)
     {
@@ -128,17 +143,12 @@ internal sealed class WorkableHostedService(
         }
     }
 
-    private static async Task<IReadOnlyList<WorkSystemShutdownWorker>> GetShutdownWorkers(IWorkSystem system)
+    private static async Task<IReadOnlyList<WorkSystemShutdownWorker>> GetShutdownWorkers(IWorkSystemSession session)
     {
-        if (system is not IWorkSystemShutdownInspection inspection)
-        {
-            return [];
-        }
-
         var workers = new List<WorkSystemShutdownWorker>();
         while (true)
         {
-            var result = await inspection.Workers(new WorkerCriteria(
+            var result = await session.Query.Workers(new WorkerCriteria(
                     States: ShutdownWorkerStates,
                     Sort: WorkerCriteriaSort.CreatedAt,
                     Direction: WorkCriteriaSortDirection.Ascending,
@@ -191,6 +201,18 @@ internal sealed class WorkableHostedService(
         => duration is { } value
             ? value.ToString("g")
             : "unknown";
+
+    private static WorkRequestContext CreateSystemAdministratorRequestContext(string description)
+        => new(
+            HostActor,
+            WorkOrigin.Create(
+                WorkInvocationChannel.DotNet,
+                HostActor,
+                description),
+            WorkAuthorizationSnapshot.Create(
+                HostActor,
+                [InternalWorkAuthorizationGroups.SystemAdministrator],
+                readableDefinitionIds: null));
 
     private sealed record SystemShutdownPlan(
         IWorkSystem System,

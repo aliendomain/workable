@@ -13,6 +13,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\Workable.Abstractions\Workable.Abstractions.csproj" />
+    <ProjectReference Include="..\Workable.AspNetCore\Workable.AspNetCore.csproj" />
     <ProjectReference Include="..\Workable.Views\Workable.Views.csproj" />
   </ItemGroup>
 

@@ -42,7 +42,14 @@ public sealed class AspNetCoreOriginTests
         {
             HttpContext = new DisposedRequestHttpContext(),
         };
-        var provider = new HttpContextDotNetWorkOriginProvider(accessor);
+        var services = new ServiceCollection();
+        services.AddOptions<WorkableAspNetCoreAuthorizationOptions>();
+        services.AddSingleton<IWorkActorFactory, HttpContextWorkActorFactory>();
+        services.AddSingleton<IWorkRequestContextFactory, HttpContextWorkRequestContextFactory>();
+        using var providerServices = services.BuildServiceProvider();
+        var provider = new HttpContextDotNetWorkOriginProvider(
+            providerServices.GetRequiredService<IWorkRequestContextFactory>(),
+            accessor);
 
         var origin = provider.CreateOrigin("Queue after request.");
 

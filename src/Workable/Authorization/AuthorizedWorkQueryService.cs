@@ -3,14 +3,14 @@ namespace Workable;
 internal sealed class AuthorizedWorkQueryService(
     IWorkCatalog catalog,
     IWorkQueryService inner,
-    WorkAuthorizationScope scope) : IWorkQueryService
+    WorkAuthorizationEvaluator authorization) : IWorkQueryService
 {
     public async Task<WorkerSnapshot?> Worker(
         WorkerId workerId,
         CancellationToken cancellationToken = default)
     {
         var worker = await inner.Worker(workerId, cancellationToken);
-        return worker is not null && scope.CanRead(worker.DefinitionId) ? worker : null;
+        return worker is not null && authorization.CanRead(worker.DefinitionId) ? worker : null;
     }
 
     public async Task<WorkerIterationSnapshot?> WorkerIteration(
@@ -48,7 +48,7 @@ internal sealed class AuthorizedWorkQueryService(
     public Task<WorkInfo?> WorkInfo(
         WorkDefinitionId definitionId,
         CancellationToken cancellationToken = default)
-        => scope.CanRead(definitionId)
+        => authorization.CanRead(definitionId)
             ? inner.WorkInfo(definitionId, cancellationToken)
             : Task.FromResult<WorkInfo?>(null);
 
@@ -56,7 +56,7 @@ internal sealed class AuthorizedWorkQueryService(
         string name,
         CancellationToken cancellationToken = default)
     {
-        if (!catalog.TryGet(name, out var definition) || !scope.CanRead(definition.Id))
+        if (!catalog.TryGet(name, out var definition) || !authorization.CanRead(definition))
         {
             return null;
         }
@@ -69,7 +69,7 @@ internal sealed class AuthorizedWorkQueryService(
         CancellationToken cancellationToken = default)
     {
         var result = await inner.WorkDefinitions(criteria, cancellationToken);
-        return new WorkDefinitionQueryResult([.. result.Definitions.Where(definition => scope.CanRead(definition.Id))]);
+        return new WorkDefinitionQueryResult([.. result.Definitions.Where(authorization.CanRead)]);
     }
 
     public async Task<WorkerKeyQueryResult> WorkerKeys(
@@ -80,7 +80,7 @@ internal sealed class AuthorizedWorkQueryService(
         var keys = result.Keys
             .Select(key => key with
             {
-                Workers = [.. key.Workers.Where(worker => scope.CanRead(worker.DefinitionId))],
+                Workers = [.. key.Workers.Where(worker => authorization.CanRead(worker.DefinitionId))],
             })
             .Where(key => key.Workers.Count > 0)
             .ToArray();
@@ -96,7 +96,7 @@ internal sealed class AuthorizedWorkQueryService(
         var types = result.Types
             .Select(type =>
             {
-                var workers = type.Workers.Where(worker => scope.CanRead(worker.DefinitionId)).ToArray();
+                var workers = type.Workers.Where(worker => authorization.CanRead(worker.DefinitionId)).ToArray();
                 return type with
                 {
                     WorkerCount = workers.Length,
@@ -118,7 +118,7 @@ internal sealed class AuthorizedWorkQueryService(
         var keys = result.Keys
             .Select(key => key with
             {
-                Iterations = [.. key.Iterations.Where(iteration => scope.CanRead(iteration.DefinitionId))],
+                Iterations = [.. key.Iterations.Where(iteration => authorization.CanRead(iteration.DefinitionId))],
             })
             .Where(key => key.Iterations.Count > 0)
             .ToArray();
@@ -134,7 +134,7 @@ internal sealed class AuthorizedWorkQueryService(
         var types = result.Types
             .Select(type =>
             {
-                var iterations = type.Iterations.Where(iteration => scope.CanRead(iteration.DefinitionId)).ToArray();
+                var iterations = type.Iterations.Where(iteration => authorization.CanRead(iteration.DefinitionId)).ToArray();
                 return type with
                 {
                     IterationCount = iterations.Length,
@@ -298,7 +298,7 @@ internal sealed class AuthorizedWorkQueryService(
         WorkerCriteria criteria,
         CancellationToken cancellationToken)
     {
-        if (criteria.DefinitionId is { } definitionId && !scope.CanRead(definitionId))
+        if (criteria.DefinitionId is { } definitionId && !authorization.CanRead(definitionId))
         {
             return [];
         }
@@ -317,7 +317,7 @@ internal sealed class AuthorizedWorkQueryService(
                 break;
             }
 
-            workers.AddRange(page.Workers.Where(worker => scope.CanRead(worker.DefinitionId)));
+            workers.AddRange(page.Workers.Where(worker => authorization.CanRead(worker.DefinitionId)));
             if (page.Workers.Count < WorkerCriteria.MaximumTake)
             {
                 break;
@@ -333,7 +333,7 @@ internal sealed class AuthorizedWorkQueryService(
         WorkerIterationCriteria criteria,
         CancellationToken cancellationToken)
     {
-        if (criteria.DefinitionId is { } definitionId && !scope.CanRead(definitionId))
+        if (criteria.DefinitionId is { } definitionId && !authorization.CanRead(definitionId))
         {
             return [];
         }
@@ -352,7 +352,7 @@ internal sealed class AuthorizedWorkQueryService(
                 break;
             }
 
-            iterations.AddRange(page.Iterations.Where(iteration => scope.CanRead(iteration.DefinitionId)));
+            iterations.AddRange(page.Iterations.Where(iteration => authorization.CanRead(iteration.DefinitionId)));
             if (page.Iterations.Count < WorkerIterationCriteria.MaximumTake)
             {
                 break;
@@ -366,22 +366,22 @@ internal sealed class AuthorizedWorkQueryService(
 
     private bool CanDelegateSystemAggregate(WorkSystemCriteria? criteria)
         => this.AllDefinitionsReadable() ||
-            (criteria?.DefinitionId is { } definitionId && scope.CanRead(definitionId));
+            (criteria?.DefinitionId is { } definitionId && authorization.CanRead(definitionId));
 
     private bool AllDefinitionsReadable()
     {
         var definitionIds = catalog.Definitions.Select(definition => definition.Id).ToArray();
-        return definitionIds.Length > 0 && definitionIds.All(scope.CanRead);
+        return definitionIds.Length > 0 && definitionIds.All(authorization.CanRead);
     }
 
     private int ReadableDefinitionCount(WorkSystemCriteria? criteria)
     {
         if (criteria?.DefinitionId is { } definitionId)
         {
-            return scope.CanRead(definitionId) ? 1 : 0;
+            return authorization.CanRead(definitionId) ? 1 : 0;
         }
 
-        return catalog.Definitions.Count(definition => scope.CanRead(definition.Id));
+        return catalog.Definitions.Count(authorization.CanRead);
     }
 
     private static WorkerStatusSummary CreateWorkerStatusSummary(IReadOnlyList<WorkerOverviewItem> workers)

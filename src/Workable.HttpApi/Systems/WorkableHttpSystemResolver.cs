@@ -15,10 +15,13 @@ public sealed class WorkableHttpSystemResolver(
         return registry.TryGet(systemName, out system);
     }
 
-    public WorkableHttpSystems GetSystems()
+    public WorkableHttpSystems GetSystems(WorkRequestContext requestContext)
     {
+        ArgumentNullException.ThrowIfNull(requestContext);
+
         var defaultSystemId = registry.Default.Id;
         var systems = registry.Systems
+            .Where(system => system.CanConnect(requestContext))
             .OrderBy(system => system.Name is null ? 0 : 1)
             .ThenBy(system => system.Name, StringComparer.OrdinalIgnoreCase)
             .Select(system => new WorkableHttpSystemInfo(
@@ -34,39 +37,44 @@ public sealed class WorkableHttpSystemResolver(
 
     internal static async Task<WorkableHttpSystemLifecycleResult> Start(
         IWorkSystem system,
+        WorkRequestContext requestContext,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(system);
+        ArgumentNullException.ThrowIfNull(requestContext);
 
-        await system.Start(cancellationToken);
+        await system.Start(requestContext, cancellationToken);
         return new WorkableHttpSystemLifecycleResult(system.Id, system.Name, system.State);
     }
 
-    internal static WorkableHttpSystemDiagnostics Diagnostics(IWorkSystem system)
+    internal static WorkableHttpSystemDiagnostics Diagnostics(
+        IWorkSystem system,
+        IWorkSystemSession session)
     {
         ArgumentNullException.ThrowIfNull(system);
+        ArgumentNullException.ThrowIfNull(session);
 
         return new WorkableHttpSystemDiagnostics(
             system.Id,
             system.Name,
             system.State,
-            system.Diagnostics.Queue,
-            system.Diagnostics.ReadModel,
-            system.Diagnostics.Retention,
-            system.Diagnostics.Concurrency,
-            system.Diagnostics.Durability,
-            system.Diagnostics.Idempotency);
+            session.Diagnostics.Queue,
+            session.Diagnostics.ReadModel,
+            session.Diagnostics.Retention,
+            session.Diagnostics.Concurrency,
+            session.Diagnostics.Durability,
+            session.Diagnostics.Idempotency);
     }
 
     internal static async Task<WorkableHttpSystemStopResult> Stop(
         IWorkSystem system,
-        WorkOrigin origin,
+        WorkRequestContext requestContext,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(system);
-        ArgumentNullException.ThrowIfNull(origin);
+        ArgumentNullException.ThrowIfNull(requestContext);
 
-        var result = await WorkableHttpOriginAwareSystem.Required(system).Stop(origin, cancellationToken);
+        var result = await system.Stop(requestContext, cancellationToken);
         return new WorkableHttpSystemStopResult(
             system.Id,
             system.Name,

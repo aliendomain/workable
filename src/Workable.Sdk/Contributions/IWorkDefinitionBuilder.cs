@@ -11,6 +11,12 @@ public interface IWorkDefinitionBuilder
         Func<IWorkExecutionContext, WorkInput?, CancellationToken, Task<WorkExecutionResult>> execute,
         Action<IWorkConfigurationBuilder> configure);
 
+    IWorkDefinitionBuilder AddWork(
+        WorkDefinition definition,
+        Func<IWorkExecutionContext, WorkInput?, CancellationToken, Task<WorkExecutionResult>> execute,
+        Action<IWorkConfigurationBuilder>? configure,
+        Action<IWorkAuthorizationBuilder>? authorize);
+
     IWorkDefinitionBuilder AddWork<TInput>(
         WorkDefinition definition,
         Func<IWorkExecutionContext, TInput, CancellationToken, Task<WorkExecutionResult>> execute);
@@ -20,6 +26,12 @@ public interface IWorkDefinitionBuilder
         Func<IWorkExecutionContext, TInput, CancellationToken, Task<WorkExecutionResult>> execute,
         Action<IWorkConfigurationBuilder> configure);
 
+    IWorkDefinitionBuilder AddWork<TInput>(
+        WorkDefinition definition,
+        Func<IWorkExecutionContext, TInput, CancellationToken, Task<WorkExecutionResult>> execute,
+        Action<IWorkConfigurationBuilder>? configure,
+        Action<IWorkAuthorizationBuilder>? authorize);
+
     IWorkDefinitionBuilder AddWork<TInput, TOutput>(
         WorkDefinition definition,
         Func<IWorkExecutionContext, TInput, CancellationToken, Task<WorkExecutionResult<TOutput>>> execute);
@@ -28,6 +40,12 @@ public interface IWorkDefinitionBuilder
         WorkDefinition definition,
         Func<IWorkExecutionContext, TInput, CancellationToken, Task<WorkExecutionResult<TOutput>>> execute,
         Action<IWorkConfigurationBuilder> configure);
+
+    IWorkDefinitionBuilder AddWork<TInput, TOutput>(
+        WorkDefinition definition,
+        Func<IWorkExecutionContext, TInput, CancellationToken, Task<WorkExecutionResult<TOutput>>> execute,
+        Action<IWorkConfigurationBuilder>? configure,
+        Action<IWorkAuthorizationBuilder>? authorize);
 
     IWorkDefinitionBuilder AddWork<TExecutor>(WorkDefinition definition)
         where TExecutor : class;
@@ -41,6 +59,17 @@ public interface IWorkDefinitionBuilder
         where TExecutor : class;
 
     IWorkDefinitionBuilder AddWork<TExecutor>(
+        WorkDefinition definition,
+        Action<IWorkConfigurationBuilder>? configure,
+        Action<IWorkAuthorizationBuilder>? authorize)
+        where TExecutor : class;
+
+    IWorkDefinitionBuilder AddWork<TExecutor>(
         Action<IWorkConfigurationBuilder> configure)
+        where TExecutor : class;
+
+    IWorkDefinitionBuilder AddWork<TExecutor>(
+        Action<IWorkConfigurationBuilder>? configure,
+        Action<IWorkAuthorizationBuilder>? authorize)
         where TExecutor : class;
 }

@@ -12,6 +12,12 @@ public interface IWorkSystemBuilder
         Func<IWorkExecutionContext, WorkInput?, CancellationToken, Task<WorkExecutionResult>> execute,
         Action<IWorkConfigurationBuilder> configure);
 
+    IWorkSystemBuilder AddWork(
+        WorkDefinition definition,
+        Func<IWorkExecutionContext, WorkInput?, CancellationToken, Task<WorkExecutionResult>> execute,
+        Action<IWorkConfigurationBuilder>? configure,
+        Action<IWorkAuthorizationBuilder>? authorize);
+
     IWorkSystemBuilder AddWork<TInput>(
         WorkDefinition definition,
         Func<IWorkExecutionContext, TInput, CancellationToken, Task<WorkExecutionResult>> execute);
@@ -21,6 +27,12 @@ public interface IWorkSystemBuilder
         Func<IWorkExecutionContext, TInput, CancellationToken, Task<WorkExecutionResult>> execute,
         Action<IWorkConfigurationBuilder> configure);
 
+    IWorkSystemBuilder AddWork<TInput>(
+        WorkDefinition definition,
+        Func<IWorkExecutionContext, TInput, CancellationToken, Task<WorkExecutionResult>> execute,
+        Action<IWorkConfigurationBuilder>? configure,
+        Action<IWorkAuthorizationBuilder>? authorize);
+
     IWorkSystemBuilder AddWork<TInput, TOutput>(
         WorkDefinition definition,
         Func<IWorkExecutionContext, TInput, CancellationToken, Task<WorkExecutionResult<TOutput>>> execute);
@@ -29,6 +41,12 @@ public interface IWorkSystemBuilder
         WorkDefinition definition,
         Func<IWorkExecutionContext, TInput, CancellationToken, Task<WorkExecutionResult<TOutput>>> execute,
         Action<IWorkConfigurationBuilder> configure);
+
+    IWorkSystemBuilder AddWork<TInput, TOutput>(
+        WorkDefinition definition,
+        Func<IWorkExecutionContext, TInput, CancellationToken, Task<WorkExecutionResult<TOutput>>> execute,
+        Action<IWorkConfigurationBuilder>? configure,
+        Action<IWorkAuthorizationBuilder>? authorize);
 
     IWorkSystemBuilder AddWork<TExecutor>(WorkDefinition definition)
         where TExecutor : class;
@@ -42,7 +60,18 @@ public interface IWorkSystemBuilder
         where TExecutor : class;
 
     IWorkSystemBuilder AddWork<TExecutor>(
+        WorkDefinition definition,
+        Action<IWorkConfigurationBuilder>? configure,
+        Action<IWorkAuthorizationBuilder>? authorize)
+        where TExecutor : class;
+
+    IWorkSystemBuilder AddWork<TExecutor>(
         Action<IWorkConfigurationBuilder> configure)
+        where TExecutor : class;
+
+    IWorkSystemBuilder AddWork<TExecutor>(
+        Action<IWorkConfigurationBuilder>? configure,
+        Action<IWorkAuthorizationBuilder>? authorize)
         where TExecutor : class;
 
     IWorkSystemBuilder AddWorkDefinitionSource<TSource>()
@@ -60,6 +89,8 @@ public interface IWorkSystemBuilder
     IWorkSystemBuilder IncludeContributedWork(bool enabled = true);
 
     IWorkSystemBuilder RequireAuthorization(bool required = true);
+
+    IWorkSystemBuilder ConfigureAuthorization(Action<IWorkSystemAuthorizationBuilder> configure);
 
     IWorkSystemBuilder StartWithHost(bool enabled = true);
 

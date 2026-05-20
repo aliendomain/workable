@@ -7,13 +7,13 @@ public static class WorkableMcpExtensions
     private const string JsonSchemaContentTypeSuffix = "+json";
 
     public static IReadOnlyList<WorkableMcpToolDescriptor> GetMcpToolDescriptors(
-        this IWorkSystem system,
+        this IWorkSystemSession session,
         WorkableMcpToolCatalogOptions? options = null)
     {
-        ArgumentNullException.ThrowIfNull(system);
+        ArgumentNullException.ThrowIfNull(session);
 
         options ??= WorkableMcpToolCatalogOptions.Default;
-        return [.. system.Catalog.Definitions
+        return [.. session.Catalog.Definitions
             .Where(definition => definition.Configuration.Invocation.Allows(WorkInvocationChannel.Mcp))
             .Select(definition => CreateDescriptor(definition, options))
             .OfType<WorkableMcpToolDescriptor>()
@@ -22,35 +22,17 @@ public static class WorkableMcpExtensions
     }
 
     public static async Task<WorkableMcpInvocationResult> InvokeMcpTool(
-        this IWorkSystem system,
+        this IWorkSystemSession session,
         string name,
         JsonElement? input = null,
         WorkableMcpInvocationOptions? options = null,
         CancellationToken cancellationToken = default)
-        => await InvokeMcpToolCore(system, name, input, options, origin: null, cancellationToken);
-
-    internal static async Task<WorkableMcpInvocationResult> InvokeMcpTool(
-        this IWorkSystem system,
-        string name,
-        JsonElement? input,
-        WorkableMcpInvocationOptions? options,
-        WorkOrigin origin,
-        CancellationToken cancellationToken = default)
-        => await InvokeMcpToolCore(system, name, input, options, origin, cancellationToken);
-
-    private static async Task<WorkableMcpInvocationResult> InvokeMcpToolCore(
-        IWorkSystem system,
-        string name,
-        JsonElement? input,
-        WorkableMcpInvocationOptions? options,
-        WorkOrigin? origin,
-        CancellationToken cancellationToken)
     {
-        ArgumentNullException.ThrowIfNull(system);
+        ArgumentNullException.ThrowIfNull(session);
         ArgumentException.ThrowIfNullOrWhiteSpace(name);
 
         options ??= WorkableMcpInvocationOptions.Default;
-        if (!system.Catalog.TryGet(name, out var definition))
+        if (!session.TryGetDefinition(name, out var definition))
         {
             var outcome = WorkQueueOutcome.NotFound(name);
             return new WorkableMcpInvocationResult(
@@ -79,9 +61,7 @@ public static class WorkableMcpExtensions
         var workInput = input.HasValue
             ? WorkInput.FromJson(input.Value.GetRawText())
             : WorkInput.Empty;
-        var handle = origin is null
-            ? await system.Queue.Enqueue(name, workInput, options.WorkerOptions, cancellationToken)
-            : await RequiredOriginAwareSystem(system).Enqueue(name, workInput, options.WorkerOptions, origin, cancellationToken);
+        var handle = await session.Queue.Enqueue(name, workInput, options.WorkerOptions, cancellationToken);
         if (!handle.QueueOutcome.IsAccepted)
         {
             return new WorkableMcpInvocationResult(
@@ -107,7 +87,14 @@ public static class WorkableMcpExtensions
         using var timeout = CreateTimeout(options.CompletionTimeout, cancellationToken);
         var completion = await handle.WaitForCompletion(timeout?.Token ?? cancellationToken);
         return new WorkableMcpInvocationResult(
-            ToInvocationStatus(completion.Status),
+            completion.Status switch
+            {
+                WorkCompletionStatus.Completed => WorkableMcpInvocationStatus.Completed,
+                WorkCompletionStatus.Interrupted => WorkableMcpInvocationStatus.Interrupted,
+                WorkCompletionStatus.Canceled => WorkableMcpInvocationStatus.Canceled,
+                WorkCompletionStatus.Failed => WorkableMcpInvocationStatus.Failed,
+                _ => WorkableMcpInvocationStatus.Failed,
+            },
             handle.QueueOutcome,
             handle.WorkerId,
             completion,
@@ -115,15 +102,13 @@ public static class WorkableMcpExtensions
             completion.Messages);
     }
 
-    private static IOriginAwareWorkSystem RequiredOriginAwareSystem(IWorkSystem system)
-        => system as IOriginAwareWorkSystem
-            ?? throw new InvalidOperationException("The configured Workable system does not support trusted origin-aware operations.");
-
     private static WorkableMcpToolDescriptor? CreateDescriptor(
         WorkDefinition definition,
         WorkableMcpToolCatalogOptions options)
     {
-        var inputSchema = GetJsonSchema(definition.InputSchema);
+        var inputSchema = HasJsonSchema(definition.InputSchema)
+            ? definition.InputSchema.JsonSchema
+            : null;
         var usesFallbackInputSchema = inputSchema is null;
         if (usesFallbackInputSchema && !options.IncludeDefinitionsWithoutJsonSchema)
         {
@@ -137,14 +122,11 @@ public static class WorkableMcpExtensions
             definition.Category,
             inputSchema ?? options.FallbackInputSchemaJson,
             "application/schema+json",
-            GetJsonSchema(definition.OutputSchema),
+            HasJsonSchema(definition.OutputSchema) ? definition.OutputSchema.JsonSchema : null,
             HasJsonSchema(definition.OutputSchema) ? "application/schema+json" : null,
             usesFallbackInputSchema,
             definition.Metadata);
     }
-
-    private static string? GetJsonSchema(WorkSchema schema)
-        => HasJsonSchema(schema) ? schema.JsonSchema : null;
 
     private static bool HasJsonSchema(WorkSchema schema)
         => !string.IsNullOrWhiteSpace(schema.JsonSchema) &&
@@ -164,13 +146,4 @@ public static class WorkableMcpExtensions
         return source;
     }
 
-    private static WorkableMcpInvocationStatus ToInvocationStatus(WorkCompletionStatus status)
-        => status switch
-        {
-            WorkCompletionStatus.Completed => WorkableMcpInvocationStatus.Completed,
-            WorkCompletionStatus.Interrupted => WorkableMcpInvocationStatus.Interrupted,
-            WorkCompletionStatus.Canceled => WorkableMcpInvocationStatus.Canceled,
-            WorkCompletionStatus.Failed => WorkableMcpInvocationStatus.Failed,
-            _ => WorkableMcpInvocationStatus.Failed,
-        };
 }

@@ -23,9 +23,15 @@ public interface IWorkSystem : IAsyncDisposable
 
     IWorkSystemDiagnostics Diagnostics { get; }
 
-    IWorkSystemSession CreateSession(WorkActor actor);
+    bool CanConnect(WorkRequestContext requestContext);
 
-    Task Start(CancellationToken cancellationToken = default);
+    IWorkSystemSession CreateSession(WorkRequestContext requestContext);
 
-    Task<WorkSystemStopResult> Stop(CancellationToken cancellationToken = default);
+    Task Start(
+        WorkRequestContext requestContext,
+        CancellationToken cancellationToken = default);
+
+    Task<WorkSystemStopResult> Stop(
+        WorkRequestContext requestContext,
+        CancellationToken cancellationToken = default);
 }

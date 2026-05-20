@@ -3,98 +3,42 @@ namespace Workable;
 public sealed class WorkableHttpWorkerAdapter
 {
     public Task<WorkActionOutcome> Execute(
-        IWorkSystem system,
+        IWorkSystemSession session,
         WorkerId workerId,
         WorkAction action,
         WorkableHttpWorkerActionRequest request,
         CancellationToken cancellationToken = default)
     {
-        ArgumentNullException.ThrowIfNull(system);
+        ArgumentNullException.ThrowIfNull(session);
         ArgumentNullException.ThrowIfNull(request);
 
-        return system.Workers.Execute(new WorkerVersion(workerId, request.Revision), action, cancellationToken);
+        return session.Workers.Execute(new WorkerVersion(workerId, request.Revision), action, cancellationToken);
     }
 
-    internal Task<WorkActionOutcome> Execute(
-        IWorkSystem system,
-        WorkerId workerId,
-        WorkAction action,
-        WorkableHttpWorkerActionRequest request,
-        WorkOrigin origin,
-        CancellationToken cancellationToken = default)
-    {
-        ArgumentNullException.ThrowIfNull(system);
-        ArgumentNullException.ThrowIfNull(request);
-
-        return WorkableHttpOriginAwareSystem.Required(system).Execute(new WorkerVersion(workerId, request.Revision), action, origin, cancellationToken);
-    }
-
-    internal static Task<WorkActionOutcome> ExecuteCore(
-        IWorkSystem system,
-        WorkerId workerId,
-        WorkAction action,
-        WorkableHttpWorkerActionRequest request,
-        WorkOrigin origin,
-        CancellationToken cancellationToken = default)
-    {
-        ArgumentNullException.ThrowIfNull(system);
-        ArgumentNullException.ThrowIfNull(request);
-
-        return WorkableHttpOriginAwareSystem.Required(system).Execute(new WorkerVersion(workerId, request.Revision), action, origin, cancellationToken);
-    }
-
-    internal static Task<WorkerBulkActionOutcome> ExecuteAllCore(
-        IWorkSystem system,
+    public Task<WorkerBulkActionOutcome> ExecuteAll(
+        IWorkSystemSession session,
         WorkAction action,
         WorkableHttpWorkerBulkActionRequest? request,
-        WorkOrigin origin,
         CancellationToken cancellationToken = default)
     {
-        ArgumentNullException.ThrowIfNull(system);
-        ArgumentNullException.ThrowIfNull(origin);
+        ArgumentNullException.ThrowIfNull(session);
 
-        return WorkableHttpOriginAwareSystem.Required(system).ExecuteAll(
+        return session.Workers.ExecuteAll(
             action,
             request?.ToFilter(),
-            origin,
             cancellationToken);
     }
 
     public Task<WorkActionOutcome> Reconfigure(
-        IWorkSystem system,
+        IWorkSystemSession session,
         WorkerId workerId,
         WorkableHttpWorkerReconfigurationRequest request,
         CancellationToken cancellationToken = default)
     {
-        ArgumentNullException.ThrowIfNull(system);
+        ArgumentNullException.ThrowIfNull(session);
         ArgumentNullException.ThrowIfNull(request);
 
-        return system.Workers.Reconfigure(new WorkerVersion(workerId, request.Revision), request.Changes, cancellationToken);
+        return session.Workers.Reconfigure(new WorkerVersion(workerId, request.Revision), request.Changes, cancellationToken);
     }
 
-    internal Task<WorkActionOutcome> Reconfigure(
-        IWorkSystem system,
-        WorkerId workerId,
-        WorkableHttpWorkerReconfigurationRequest request,
-        WorkOrigin origin,
-        CancellationToken cancellationToken = default)
-    {
-        ArgumentNullException.ThrowIfNull(system);
-        ArgumentNullException.ThrowIfNull(request);
-
-        return WorkableHttpOriginAwareSystem.Required(system).Reconfigure(new WorkerVersion(workerId, request.Revision), request.Changes, origin, cancellationToken);
-    }
-
-    internal static Task<WorkActionOutcome> ReconfigureCore(
-        IWorkSystem system,
-        WorkerId workerId,
-        WorkableHttpWorkerReconfigurationRequest request,
-        WorkOrigin origin,
-        CancellationToken cancellationToken = default)
-    {
-        ArgumentNullException.ThrowIfNull(system);
-        ArgumentNullException.ThrowIfNull(request);
-
-        return WorkableHttpOriginAwareSystem.Required(system).Reconfigure(new WorkerVersion(workerId, request.Revision), request.Changes, origin, cancellationToken);
-    }
 }

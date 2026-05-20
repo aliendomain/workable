@@ -8,6 +8,7 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <ProjectReference Include="..\Workable.AspNetCore\Workable.AspNetCore.csproj" />
     <ProjectReference Include="..\Workable\Workable.csproj" />
   </ItemGroup>
 

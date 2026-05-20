@@ -3,6 +3,8 @@ using Microsoft.AspNetCore.SignalR;
 namespace Workable;
 public sealed class WorkableRealtimeHub(
     IWorkSystemRegistry registry,
+    IWorkAuthorizationGroupProvider groupProvider,
+    IWorkRequestContextFactory requestContexts,
     WorkableViewQueryAdapter views,
     WorkableRealtimeEventSubscriptions eventSubscriptions,
     WorkableRealtimeViewSubscriptions viewSubscriptions) : Hub
@@ -12,11 +14,13 @@ public sealed class WorkableRealtimeHub(
         var system = ResolveSystem(systemName);
         try
         {
+            var authorization = CreateAuthorization(system, out _);
             await eventSubscriptions.WatchWorker(
                 this.Context.ConnectionId,
                 this.Groups,
                 system,
                 ParseWorkerId(workerId),
+                authorization,
                 this.Context.ConnectionAborted);
         }
         catch (OperationCanceledException) when (this.Context.ConnectionAborted.IsCancellationRequested)
@@ -44,15 +48,17 @@ public sealed class WorkableRealtimeHub(
         var system = ResolveSystem(systemName);
         try
         {
+            var authorization = CreateAuthorization(system, out var session);
             var subscription = await viewSubscriptions.WatchView(
                 this.Context.ConnectionId,
                 this.Groups,
                 system,
                 viewName,
                 views.NormalizeViewCriteria(viewName, criteria),
+                authorization,
                 this.Context.ConnectionAborted);
 
-            await SendView(system, subscription.ViewName, subscription.Criteria, this.Clients.Caller);
+            await SendView(session, subscription.ViewName, subscription.Criteria, this.Clients.Caller);
         }
         catch (OperationCanceledException) when (this.Context.ConnectionAborted.IsCancellationRequested)
         {
@@ -76,10 +82,12 @@ public sealed class WorkableRealtimeHub(
         var system = ResolveSystem(systemName);
         try
         {
+            var authorization = CreateAuthorization(system, out _);
             await eventSubscriptions.WatchSystem(
                 this.Context.ConnectionId,
                 this.Groups,
                 system,
+                authorization,
                 this.Context.ConnectionAborted);
         }
         catch (OperationCanceledException) when (this.Context.ConnectionAborted.IsCancellationRequested)
@@ -95,11 +103,13 @@ public sealed class WorkableRealtimeHub(
         var system = ResolveSystem(systemName);
         try
         {
+            var authorization = CreateAuthorization(system, out _);
             await eventSubscriptions.WatchEvents(
                 this.Context.ConnectionId,
                 this.Groups,
                 system,
                 criteria,
+                authorization,
                 this.Context.ConnectionAborted);
         }
         catch (OperationCanceledException) when (this.Context.ConnectionAborted.IsCancellationRequested)
@@ -139,13 +149,13 @@ public sealed class WorkableRealtimeHub(
     }
 
     private async Task SendView(
-        IWorkSystem system,
+        IWorkSystemSession session,
         string viewName,
         WorkViewCriteria criteria,
         IClientProxy client)
     {
         var result = await views.View(
-            system,
+            session,
             viewName,
             criteria,
             cancellationToken: this.Context.ConnectionAborted);
@@ -153,6 +163,29 @@ public sealed class WorkableRealtimeHub(
             WorkableRealtimeClientMethods.ViewUpdated,
             result,
             this.Context.ConnectionAborted);
+    }
+
+    private WorkAuthorizationSnapshot CreateAuthorization(
+        IWorkSystem system,
+        out IWorkSystemSession session)
+    {
+        var requestContext = requestContexts.Create(
+            this.Context.GetHttpContext(),
+            WorkInvocationChannel.SignalR,
+            "Authorize Workable SignalR subscription.");
+        var groups = groupProvider.GetGroups(requestContext.Actor, system.Name);
+        session = system.CreateSession(requestContext with
+        {
+            Authorization = WorkAuthorizationSnapshot.Create(
+                requestContext.Actor,
+                groups,
+                readableDefinitionIds: null),
+        });
+
+        return WorkAuthorizationSnapshot.Create(
+            requestContext.Actor,
+            groups,
+            session.Catalog.Definitions.Select(static definition => definition.Id));
     }
 
     private IWorkSystem ResolveSystem(string? systemName)

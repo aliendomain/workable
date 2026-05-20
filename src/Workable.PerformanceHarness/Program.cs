@@ -28,8 +28,12 @@ await using var provider = CreateProvider(options);
 var system = provider.GetRequiredService<IWorkSystemRegistry>().Default;
 var views = new WorkableViewQueryAdapter();
 var readModelLag = new ReadModelLagTracker();
+var lifecycleContext = WorkRequestContext.Create(
+    WorkInvocationChannel.DotNet,
+    new WorkActor(Id: "performance-harness", Name: "Performance Harness"),
+    "Control Workable performance harness.");
 
-await system.Start();
+await system.Start(lifecycleContext);
 try
 {
     await WarmUp(system, views, options);
@@ -55,7 +59,7 @@ try
 }
 finally
 {
-    await system.Stop();
+    await system.Stop(lifecycleContext);
 }
 
 return 0;
@@ -75,6 +79,7 @@ static ServiceProvider CreateProvider(HarnessOptions options)
     return services
         .AddWorkableSystem(builder =>
         {
+            builder.RequireAuthorization(false);
             builder.AddWork(even, CreateWorkExecutor(options.WorkDelay), ConfigureQueueMode(options.QueueMode));
             builder.AddWork(odd, CreateWorkExecutor(options.WorkDelay), ConfigureQueueMode(options.QueueMode));
         })
@@ -155,6 +160,7 @@ static async Task WarmUp(
     WorkableViewQueryAdapter views,
     HarnessOptions options)
 {
+    var session = system.CreateSession(CreateHarnessRequestContext());
     if (options.WarmupWorkers > 0)
     {
         for (var index = 0; index < options.WarmupWorkers; index++)
@@ -169,7 +175,7 @@ static async Task WarmUp(
     var criteria = CreateViewCriteria(0, options);
     for (var index = 0; index < options.WarmupViews; index++)
     {
-        await views.View(system, "overview", criteria);
+        await views.View(session, "overview", criteria);
     }
 }
 
@@ -266,6 +272,7 @@ static async Task<ViewFanoutResult> RunOverviewFanout(
     ReadModelLagTracker readModelLag,
     CancellationToken cancellationToken)
 {
+    var session = system.CreateSession(CreateHarnessRequestContext());
     var durations = new DurationRecorder();
     var payloadBytes = 0L;
     var calls = 0;
@@ -281,7 +288,7 @@ static async Task<ViewFanoutResult> RunOverviewFanout(
         {
             var callStopwatch = Stopwatch.StartNew();
             var result = await views.View(
-                system,
+                session,
                 "overview",
                 viewCriteria,
                 cancellationToken);
@@ -463,6 +470,14 @@ static double Average(long total, long count)
 
 static string FormatDuration(TimeSpan duration)
     => $"{duration.TotalMilliseconds:N1} ms";
+
+static WorkRequestContext CreateHarnessRequestContext()
+    => WorkRequestContext.Create(
+        WorkInvocationChannel.DotNet,
+        actor: new WorkActor(
+            Id: "workable.perf.harness",
+            Name: "Workable Performance Harness"),
+        description: "Run Workable performance harness view queries.");
 
 internal static class HarnessJson
 {

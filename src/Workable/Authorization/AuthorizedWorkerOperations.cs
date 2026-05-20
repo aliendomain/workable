@@ -3,7 +3,7 @@ namespace Workable;
 internal sealed class AuthorizedWorkerOperations(
     IWorkerOperations inner,
     IWorkQueryService query,
-    WorkAuthorizationScope scope) : IWorkerOperations
+    WorkAuthorizationEvaluator authorization) : IWorkerOperations
 {
     public async Task<WorkActionOutcome> Execute(
         WorkerVersion worker,
@@ -12,7 +12,7 @@ internal sealed class AuthorizedWorkerOperations(
     {
         if (!await this.CanOperate(worker.WorkerId, cancellationToken))
         {
-            return WorkActionOutcome.NotFound(action, worker.WorkerId);
+            return WorkActionOutcome.Unauthorized(action, worker.WorkerId);
         }
 
         return await inner.Execute(worker, action, cancellationToken);
@@ -40,7 +40,7 @@ internal sealed class AuthorizedWorkerOperations(
                 break;
             }
 
-            foreach (var worker in result.Workers.Where(worker => scope.CanOperate(worker.DefinitionId)))
+            foreach (var worker in result.Workers.Where(worker => authorization.CanOperate(worker.DefinitionId)))
             {
                 outcomes.Add(await inner.Execute(new WorkerVersion(worker.Id, worker.Revision), action, cancellationToken));
             }
@@ -63,7 +63,7 @@ internal sealed class AuthorizedWorkerOperations(
     {
         if (!await this.CanOperate(worker.WorkerId, cancellationToken))
         {
-            return WorkActionOutcome.NotFound(WorkAction.Start, worker.WorkerId);
+            return WorkActionOutcome.Unauthorized(WorkAction.Start, worker.WorkerId);
         }
 
         return await inner.Reconfigure(worker, changes, cancellationToken);
@@ -72,6 +72,6 @@ internal sealed class AuthorizedWorkerOperations(
     private async Task<bool> CanOperate(WorkerId workerId, CancellationToken cancellationToken)
     {
         var worker = await query.Worker(workerId, cancellationToken);
-        return worker is not null && scope.CanOperate(worker.DefinitionId);
+        return worker is not null && authorization.CanOperate(worker.DefinitionId);
     }
 }

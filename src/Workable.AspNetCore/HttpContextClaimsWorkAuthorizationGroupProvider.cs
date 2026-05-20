@@ -1,0 +1,55 @@
+using Microsoft.AspNetCore.Http;
+using Microsoft.Extensions.Options;
+
+namespace Workable;
+
+public sealed class HttpContextClaimsWorkAuthorizationGroupProvider(
+    IHttpContextAccessor httpContextAccessor,
+    IOptions<WorkableAspNetCoreAuthorizationOptions> options) : IWorkAuthorizationGroupProvider
+{
+    private static readonly object GroupsCacheKey = new();
+    private const string DefaultSystemCacheKey = "<default>";
+
+    public IReadOnlySet<string> GetGroups(WorkActor actor, string? systemName)
+    {
+        var httpContext = httpContextAccessor.HttpContext;
+        var user = httpContext?.User;
+        var cacheKey = string.IsNullOrWhiteSpace(systemName) ? DefaultSystemCacheKey : systemName;
+        if (user?.Identity?.IsAuthenticated != true)
+        {
+            return new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        }
+
+        Dictionary<string, IReadOnlySet<string>>? cache = null;
+        if (httpContext?.Items[GroupsCacheKey] is Dictionary<string, IReadOnlySet<string>> existingCache)
+        {
+            cache = existingCache;
+        }
+
+        if (cache is not null && cache.TryGetValue(cacheKey, out var cachedGroups))
+        {
+            return cachedGroups;
+        }
+
+        var groups = user.Claims
+            .Where(claim => options.Value.GroupClaimTypes.Contains(claim.Type, StringComparer.OrdinalIgnoreCase))
+            .SelectMany(claim => SplitGroups(claim.Value))
+            .Where(group => !string.IsNullOrWhiteSpace(group))
+            .Select(group => group.Trim())
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        if (httpContext is not null)
+        {
+            cache ??= new Dictionary<string, IReadOnlySet<string>>(StringComparer.OrdinalIgnoreCase);
+            cache[cacheKey] = groups;
+            httpContext.Items[GroupsCacheKey] = cache;
+        }
+
+        return groups;
+    }
+
+    private static string[] SplitGroups(string value)
+        => value.Contains(',', StringComparison.Ordinal)
+            ? value.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            : [value];
+}

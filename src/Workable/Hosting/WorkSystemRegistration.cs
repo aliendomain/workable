@@ -16,6 +16,7 @@ internal sealed record WorkSystemRegistration(
     Func<IServiceProvider, IDotNetWorkOriginProvider>? DotNetOriginProviderFactory,
     bool IncludeContributedWork,
     bool RequiresAuthorization,
+    WorkSystemAuthorizationConfiguration Authorization,
     bool StartWithHost,
     WorkSystemShutdownGracePeriod ShutdownGracePeriod,
     WorkSystemRetentionConfiguration Retention,

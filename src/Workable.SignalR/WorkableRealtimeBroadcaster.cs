@@ -172,7 +172,11 @@ internal sealed class WorkableRealtimeBroadcaster(
         WorkableRealtimeEventSubscriptions.EventSubscription subscription,
         CancellationToken cancellationToken)
     {
-        await using var events = system.Events.Subscribe(
+        var session = CreateAuthorizedSession(
+            system,
+            subscription.Authorization,
+            "Stream Workable realtime events through SignalR.");
+        await using var events = session.Events.Subscribe(
             subscription.Filter,
             new WorkEventSubscriptionOptions(
                 options.Value.EventSubscriptionCapacity,
@@ -441,8 +445,12 @@ internal sealed class WorkableRealtimeBroadcaster(
         WorkableRealtimeViewSubscription subscription,
         CancellationToken cancellationToken)
     {
-        var view = await views.View(
+        var session = CreateAuthorizedSession(
             system,
+            subscription.Authorization,
+            $"Broadcast Workable view '{subscription.ViewName}' through SignalR.");
+        var view = await views.View(
+            session,
             subscription.ViewName,
             subscription.Criteria,
             cancellationToken: cancellationToken);
@@ -570,6 +578,23 @@ internal sealed class WorkableRealtimeBroadcaster(
 
     private static bool IsDiagnosticsView(WorkableRealtimeViewSubscription subscription)
         => string.Equals(subscription.ViewName, "diagnostics", StringComparison.OrdinalIgnoreCase);
+
+    private static IWorkSystemSession CreateAuthorizedSession(
+        IWorkSystem system,
+        WorkAuthorizationSnapshot authorization,
+        string description)
+    {
+        ArgumentNullException.ThrowIfNull(system);
+        ArgumentNullException.ThrowIfNull(authorization);
+
+        return system.CreateSession(new WorkRequestContext(
+            authorization.Actor,
+            WorkOrigin.Create(
+                WorkInvocationChannel.SignalR,
+                authorization.Actor,
+                description),
+            authorization));
+    }
 
     private static bool IsDiagnosticsAlertChangesSubscription(WorkableRealtimeViewSubscription subscription)
         => subscription.Criteria.Components?

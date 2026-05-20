@@ -18,15 +18,19 @@ public sealed class WorkableRealtimeEventSubscriptions
         string connectionId,
         IGroupManager groupManager,
         IWorkSystem system,
+        WorkAuthorizationSnapshot authorization,
         CancellationToken cancellationToken)
     {
-        var groupName = WorkableRealtimeGroups.SystemEvents(system);
+        ArgumentNullException.ThrowIfNull(authorization);
+
+        var groupName = CreateSystemEventsGroupName(system, null, authorization.ReadFingerprint);
         await this.WatchGroup(
             connectionId,
             groupManager,
             system.Id,
             groupName,
             filter: null,
+            authorization,
             cancellationToken);
         await this.WaitForStreaming(groupName, cancellationToken);
     }
@@ -39,7 +43,8 @@ public sealed class WorkableRealtimeEventSubscriptions
         => this.UnwatchGroup(
             connectionId,
             groupManager,
-            WorkableRealtimeGroups.SystemEvents(system),
+            system.Id,
+            filter: null,
             cancellationToken);
 
     internal async Task WatchEvents(
@@ -47,16 +52,20 @@ public sealed class WorkableRealtimeEventSubscriptions
         IGroupManager groupManager,
         IWorkSystem system,
         WorkableRealtimeEventCriteria? criteria,
+        WorkAuthorizationSnapshot authorization,
         CancellationToken cancellationToken)
     {
+        ArgumentNullException.ThrowIfNull(authorization);
+
         var filter = CreateFilter(criteria);
-        var groupName = CreateSystemEventsGroupName(system, filter);
+        var groupName = CreateSystemEventsGroupName(system, filter, authorization.ReadFingerprint);
         await this.WatchGroup(
             connectionId,
             groupManager,
             system.Id,
             groupName,
             filter,
+            authorization,
             cancellationToken);
         await this.WaitForStreaming(groupName, cancellationToken);
     }
@@ -72,7 +81,8 @@ public sealed class WorkableRealtimeEventSubscriptions
         return this.UnwatchGroup(
             connectionId,
             groupManager,
-            CreateSystemEventsGroupName(system, filter),
+            system.Id,
+            filter,
             cancellationToken);
     }
 
@@ -81,15 +91,19 @@ public sealed class WorkableRealtimeEventSubscriptions
         IGroupManager groupManager,
         IWorkSystem system,
         WorkerId workerId,
+        WorkAuthorizationSnapshot authorization,
         CancellationToken cancellationToken)
     {
-        var groupName = WorkableRealtimeGroups.Worker(system, workerId);
+        ArgumentNullException.ThrowIfNull(authorization);
+
+        var groupName = WorkableRealtimeGroups.Worker(system, workerId, authorization.ReadFingerprint);
         await this.WatchGroup(
             connectionId,
             groupManager,
             system.Id,
             groupName,
             new WorkEventFilter(WorkerId: workerId),
+            authorization,
             cancellationToken);
         await this.WaitForStreaming(groupName, cancellationToken);
     }
@@ -103,7 +117,8 @@ public sealed class WorkableRealtimeEventSubscriptions
         => this.UnwatchGroup(
             connectionId,
             groupManager,
-            WorkableRealtimeGroups.Worker(system, workerId),
+            system.Id,
+            new WorkEventFilter(WorkerId: workerId),
             cancellationToken);
 
     internal async Task RemoveConnection(
@@ -209,23 +224,33 @@ public sealed class WorkableRealtimeEventSubscriptions
         WorkSystemId systemId,
         string groupName,
         WorkEventFilter? filter,
+        WorkAuthorizationSnapshot authorization,
         CancellationToken cancellationToken)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(connectionId);
         ArgumentNullException.ThrowIfNull(groupManager);
         ArgumentException.ThrowIfNullOrWhiteSpace(groupName);
+        ArgumentNullException.ThrowIfNull(authorization);
 
-        var connectionGroupKey = ConnectionGroupKey(connectionId, groupName);
+        var connectionGroupKey = ConnectionGroupKey(connectionId, systemId, filter);
+        EventSubscription? oldSubscription = null;
         var addToGroup = false;
 
         lock (this.gate)
         {
-            if (this.connectionGroups.ContainsKey(connectionGroupKey))
+            if (this.connectionGroups.TryGetValue(connectionGroupKey, out oldSubscription) &&
+                oldSubscription is not null &&
+                oldSubscription.GroupName == groupName)
             {
                 return;
             }
 
-            var subscription = new EventSubscription(systemId, groupName, filter);
+            if (oldSubscription is not null)
+            {
+                this.ReleaseGroupLocked(oldSubscription.GroupName);
+            }
+
+            var subscription = new EventSubscription(systemId, groupName, filter, authorization);
             this.connectionGroups[connectionGroupKey] = subscription;
             if (this.groups.TryGetValue(groupName, out var group))
             {
@@ -237,6 +262,11 @@ public sealed class WorkableRealtimeEventSubscriptions
             }
 
             addToGroup = true;
+        }
+
+        if (oldSubscription is not null)
+        {
+            await groupManager.RemoveFromGroupAsync(connectionId, oldSubscription.GroupName, cancellationToken);
         }
 
         if (addToGroup)
@@ -268,21 +298,23 @@ public sealed class WorkableRealtimeEventSubscriptions
     private async Task UnwatchGroup(
         string connectionId,
         IGroupManager groupManager,
-        string groupName,
+        WorkSystemId systemId,
+        WorkEventFilter? filter,
         CancellationToken cancellationToken)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(connectionId);
         ArgumentNullException.ThrowIfNull(groupManager);
-        ArgumentException.ThrowIfNullOrWhiteSpace(groupName);
 
-        var connectionGroupKey = ConnectionGroupKey(connectionId, groupName);
+        var connectionGroupKey = ConnectionGroupKey(connectionId, systemId, filter);
         var removeFromGroup = false;
+        var groupName = string.Empty;
 
         lock (this.gate)
         {
             if (this.connectionGroups.Remove(connectionGroupKey, out var subscription))
             {
                 this.ReleaseGroupLocked(subscription.GroupName);
+                groupName = subscription.GroupName;
                 removeFromGroup = true;
             }
         }
@@ -293,8 +325,11 @@ public sealed class WorkableRealtimeEventSubscriptions
         }
     }
 
-    private static string ConnectionGroupKey(string connectionId, string groupName)
-        => $"{connectionId}:{groupName}";
+    private static string ConnectionGroupKey(
+        string connectionId,
+        WorkSystemId systemId,
+        WorkEventFilter? filter)
+        => $"{connectionId}:{systemId.Value:N}:{CreateFilterKey(filter)}";
 
     private static WorkEventFilter? CreateFilter(WorkableRealtimeEventCriteria? criteria)
     {
@@ -333,14 +368,17 @@ public sealed class WorkableRealtimeEventSubscriptions
             : null;
     }
 
-    private static string CreateSystemEventsGroupName(IWorkSystem system, WorkEventFilter? filter)
+    private static string CreateSystemEventsGroupName(
+        IWorkSystem system,
+        WorkEventFilter? filter,
+        string readFingerprint)
     {
         if (filter is null ||
             (filter.EventTypes is not { Count: > 0 } &&
                 filter.DefinitionIds is not { Count: > 0 } &&
                 filter.Keys is not { Count: > 0 }))
         {
-            return WorkableRealtimeGroups.SystemEvents(system);
+            return WorkableRealtimeGroups.SystemEvents(system, readFingerprint);
         }
 
         var parts = new List<string>();
@@ -373,6 +411,7 @@ public sealed class WorkableRealtimeEventSubscriptions
                     .Select(key => Uri.EscapeDataString($"{key.Kind?.ToString() ?? "Any"}:{key.Type}:{key.Value}"))));
         }
 
+        parts.Add($"read:{readFingerprint}");
         return WorkableRealtimeGroups.SystemEvents(system, string.Join("|", parts));
     }
 
@@ -383,6 +422,57 @@ public sealed class WorkableRealtimeEventSubscriptions
         return type.Length == 0 || value.Length == 0
             ? null
             : new WorkEventKeyFilter(criteria.Kind, type, value);
+    }
+
+    private static string CreateFilterKey(WorkEventFilter? filter)
+    {
+        if (filter is null ||
+            filter == new WorkEventFilter())
+        {
+            return "system";
+        }
+
+        var parts = new List<string>();
+        if (filter.WorkerId is { } workerId)
+        {
+            parts.Add($"worker:{workerId.Value:N}");
+        }
+
+        if (filter.DefinitionId is { } definitionId)
+        {
+            parts.Add($"definition:{definitionId.Value:N}");
+        }
+
+        if (filter.DefinitionIds is { Count: > 0 })
+        {
+            parts.Add("definitions:" + string.Join(
+                ",",
+                filter.DefinitionIds
+                    .OrderBy(static definition => definition.Value)
+                    .Select(static definition => definition.Value.ToString("N"))));
+        }
+
+        if (filter.Keys is { Count: > 0 })
+        {
+            parts.Add("keys:" + string.Join(
+                ",",
+                filter.Keys
+                    .OrderBy(static key => key.Kind?.ToString() ?? "", StringComparer.OrdinalIgnoreCase)
+                    .ThenBy(static key => key.Type, StringComparer.Ordinal)
+                    .ThenBy(static key => key.Value, StringComparer.Ordinal)
+                    .Select(static key => $"{key.Kind?.ToString() ?? "Any"}:{key.Type}:{key.Value}")));
+        }
+
+        if (filter.EventTypes is { Count: > 0 })
+        {
+            parts.Add("types:" + string.Join(
+                ",",
+                filter.EventTypes.Order(StringComparer.OrdinalIgnoreCase)));
+        }
+
+        return parts.Count == 0
+            ? "system"
+            : string.Join("|", parts);
     }
 
     private void ReleaseGroupLocked(string groupName)
@@ -415,7 +505,8 @@ public sealed class WorkableRealtimeEventSubscriptions
     internal sealed record EventSubscription(
         WorkSystemId SystemId,
         string GroupName,
-        WorkEventFilter? Filter);
+        WorkEventFilter? Filter,
+        WorkAuthorizationSnapshot Authorization);
 
     private sealed class EventSubscriptionGroup(
         EventSubscription subscription,

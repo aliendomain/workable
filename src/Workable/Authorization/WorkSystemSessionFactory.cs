@@ -3,28 +3,52 @@ namespace Workable;
 internal sealed class WorkSystemSessionFactory(
     WorkSystemId systemId,
     string? systemName,
+    Func<WorkSystemState> getSystemState,
+    IWorkSystemDiagnostics diagnostics,
     IWorkCatalog catalog,
-    IWorkQueueService queue,
-    IWorkerOperations workers,
+    IRequestContextWorkQueueService queue,
+    IRequestContextWorkerOperations workers,
     IWorkQueryService query,
     IWorkEventStream events,
-    IWorkAuthorizationScopeProvider scopeProvider)
+    WorkSystemAuthorizationConfiguration systemAuthorizationConfiguration,
+    IWorkAuthorizationGroupProvider groupProvider)
 {
-    private readonly IWorkSystemSession directSession = new WorkSystemSession(catalog, queue, workers, query, events);
-
-    public IWorkSystemSession CreateDirectSession()
-        => this.directSession;
-
-    public IWorkSystemSession CreateAuthorizedSession(WorkActor actor)
+    public IWorkSystemSession CreateSession(WorkRequestContext requestContext, bool requiresAuthorization)
     {
-        ArgumentNullException.ThrowIfNull(actor);
+        ArgumentNullException.ThrowIfNull(requestContext);
 
-        var scope = scopeProvider.GetScope(actor, systemId, systemName) ?? WorkAuthorizationScope.Empty;
+        var sessionQueue = new SessionWorkQueueService(queue, requestContext);
+        var sessionWorkers = new SessionWorkerOperations(workers, requestContext);
+        if (!requiresAuthorization)
+        {
+            return new WorkSystemSession(
+                systemName,
+                getSystemState,
+                diagnostics,
+                catalog,
+                catalog,
+                sessionQueue,
+                sessionWorkers,
+                query,
+                events);
+        }
+
+        var groups = requestContext.Authorization?.Groups
+            ?? groupProvider.GetGroups(requestContext.Actor, systemName)
+            ?? new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var systemAuthorization = new WorkSystemAuthorizationEvaluator(systemAuthorizationConfiguration, groups);
+        var authorization = new WorkAuthorizationEvaluator(catalog, groups, systemAuthorization);
         return new WorkSystemSession(
-            new AuthorizedWorkCatalog(catalog, scope),
-            new AuthorizedWorkQueueService(catalog, queue, scope),
-            new AuthorizedWorkerOperations(workers, query, scope),
-            new AuthorizedWorkQueryService(catalog, query, scope),
-            new AuthorizedWorkEventStream(events, scope));
+            systemName,
+            getSystemState,
+            systemAuthorization.CanViewDiagnostics()
+                ? diagnostics
+                : new UnauthorizedWorkSystemDiagnostics(systemId, systemName),
+            catalog,
+            new AuthorizedWorkCatalog(catalog, authorization),
+            new AuthorizedWorkQueueService(catalog, sessionQueue, authorization),
+            new AuthorizedWorkerOperations(sessionWorkers, query, authorization),
+            new AuthorizedWorkQueryService(catalog, query, authorization),
+            new AuthorizedWorkEventStream(events, authorization));
     }
 }

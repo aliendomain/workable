@@ -13,6 +13,7 @@ internal static class WorkableHttpQueryRoutes
             WorkComponentCriteria? query,
             WorkableHttpSystemResolver systems,
             WorkableHttpQueryAdapter queries,
+            IWorkRequestContextFactory requestContexts,
             CancellationToken cancellationToken) =>
         {
             if (!WorkableHttpRouteResults.TryResolveSystem(httpContext, systems, out var system, out var notFound))
@@ -20,7 +21,8 @@ internal static class WorkableHttpQueryRoutes
                 return Task.FromResult(notFound);
             }
 
-            return WorkableHttpRouteResults.ToOk(queries.Components(system, query, cancellationToken: cancellationToken));
+            var session = WorkableHttpRequestContext.CreateSession(httpContext, system, requestContexts, "Query Workable components through HTTP API.");
+            return WorkableHttpRouteResults.ToOk(queries.Components(session, query, cancellationToken: cancellationToken));
         });
 
         group.MapPost("/components/{componentName}", (
@@ -29,6 +31,7 @@ internal static class WorkableHttpQueryRoutes
             WorkSingleComponentCriteria? query,
             WorkableHttpSystemResolver systems,
             WorkableHttpQueryAdapter queries,
+            IWorkRequestContextFactory requestContexts,
             CancellationToken cancellationToken) =>
         {
             if (!WorkableHttpRouteResults.TryResolveSystem(httpContext, systems, out var system, out var notFound))
@@ -36,7 +39,8 @@ internal static class WorkableHttpQueryRoutes
                 return Task.FromResult(notFound);
             }
 
-            return WorkableHttpRouteResults.ToOk(queries.Components(system, new WorkComponentCriteria(
+            var session = WorkableHttpRequestContext.CreateSession(httpContext, system, requestContexts, "Query a Workable component through HTTP API.");
+            return WorkableHttpRouteResults.ToOk(queries.Components(session, new WorkComponentCriteria(
                     query?.Scope,
                     [new WorkComponentRequest(
                         componentName,
@@ -51,6 +55,7 @@ internal static class WorkableHttpQueryRoutes
             WorkViewCriteria? query,
             WorkableHttpSystemResolver systems,
             WorkableHttpQueryAdapter queries,
+            IWorkRequestContextFactory requestContexts,
             CancellationToken cancellationToken) =>
         {
             if (!WorkableHttpRouteResults.TryResolveSystem(httpContext, systems, out var system, out var notFound))
@@ -58,7 +63,8 @@ internal static class WorkableHttpQueryRoutes
                 return Task.FromResult(notFound);
             }
 
-            return WorkableHttpRouteResults.ToOk(queries.View(system, viewName, query, cancellationToken: cancellationToken));
+            var session = WorkableHttpRequestContext.CreateSession(httpContext, system, requestContexts, $"Query Workable view '{viewName}' through HTTP API.");
+            return WorkableHttpRouteResults.ToOk(queries.View(session, viewName, query, cancellationToken: cancellationToken));
         });
 
         group.MapPost("/definitions/query", async (
@@ -66,6 +72,7 @@ internal static class WorkableHttpQueryRoutes
             WorkDefinitionCriteria? query,
             WorkableHttpSystemResolver systems,
             WorkableHttpQueryAdapter queries,
+            IWorkRequestContextFactory requestContexts,
             CancellationToken cancellationToken) =>
         {
             if (!WorkableHttpRouteResults.TryResolveSystem(httpContext, systems, out var system, out var notFound))
@@ -73,7 +80,8 @@ internal static class WorkableHttpQueryRoutes
                 return notFound;
             }
 
-            var definitions = await queries.WorkDefinitions(system, query, cancellationToken: cancellationToken);
+            var session = WorkableHttpRequestContext.CreateSession(httpContext, system, requestContexts, "Query work definitions through HTTP API.");
+            var definitions = await queries.WorkDefinitions(session, query, cancellationToken: cancellationToken);
             return Results.Ok(definitions);
         });
 
@@ -82,6 +90,7 @@ internal static class WorkableHttpQueryRoutes
             Guid definitionId,
             WorkableHttpSystemResolver systems,
             WorkableHttpQueryAdapter queries,
+            IWorkRequestContextFactory requestContexts,
             CancellationToken cancellationToken) =>
         {
             if (!WorkableHttpRouteResults.TryResolveSystem(httpContext, systems, out var system, out var notFound))
@@ -89,7 +98,8 @@ internal static class WorkableHttpQueryRoutes
                 return notFound;
             }
 
-            var info = await queries.WorkInfo(system, new WorkDefinitionId(definitionId), cancellationToken: cancellationToken);
+            var session = WorkableHttpRequestContext.CreateSession(httpContext, system, requestContexts, "Query work information through HTTP API.");
+            var info = await queries.WorkInfo(session, new WorkDefinitionId(definitionId), cancellationToken: cancellationToken);
             return info is null ? Results.NotFound() : Results.Ok(info);
         });
 
@@ -98,6 +108,7 @@ internal static class WorkableHttpQueryRoutes
             Guid definitionId,
             WorkableHttpSystemResolver systems,
             WorkableHttpQueryAdapter queries,
+            IWorkRequestContextFactory requestContexts,
             CancellationToken cancellationToken) =>
         {
             if (!WorkableHttpRouteResults.TryResolveSystem(httpContext, systems, out var system, out var notFound))
@@ -105,7 +116,8 @@ internal static class WorkableHttpQueryRoutes
                 return notFound;
             }
 
-            var info = await queries.WorkInfo(system, new WorkDefinitionId(definitionId), cancellationToken: cancellationToken);
+            var session = WorkableHttpRequestContext.CreateSession(httpContext, system, requestContexts, "Query work information through HTTP API.");
+            var info = await queries.WorkInfo(session, new WorkDefinitionId(definitionId), cancellationToken: cancellationToken);
             return info is null ? Results.NotFound() : Results.Ok(info);
         });
 
@@ -114,6 +126,7 @@ internal static class WorkableHttpQueryRoutes
             string name,
             WorkableHttpSystemResolver systems,
             WorkableHttpQueryAdapter queries,
+            IWorkRequestContextFactory requestContexts,
             CancellationToken cancellationToken) =>
         {
             if (!WorkableHttpRouteResults.TryResolveSystem(httpContext, systems, out var system, out var notFound))
@@ -121,7 +134,8 @@ internal static class WorkableHttpQueryRoutes
                 return notFound;
             }
 
-            var info = await queries.WorkInfo(system, name, cancellationToken: cancellationToken);
+            var session = WorkableHttpRequestContext.CreateSession(httpContext, system, requestContexts, $"Query work '{name}' information through HTTP API.");
+            var info = await queries.WorkInfo(session, name, cancellationToken: cancellationToken);
             return info is null ? Results.NotFound() : Results.Ok(info);
         });
 
@@ -130,6 +144,7 @@ internal static class WorkableHttpQueryRoutes
             Guid workerId,
             WorkableHttpSystemResolver systems,
             WorkableHttpQueryAdapter queries,
+            IWorkRequestContextFactory requestContexts,
             CancellationToken cancellationToken) =>
         {
             if (!WorkableHttpRouteResults.TryResolveSystem(httpContext, systems, out var system, out var notFound))
@@ -137,7 +152,8 @@ internal static class WorkableHttpQueryRoutes
                 return notFound;
             }
 
-            var worker = await queries.Worker(system, new WorkerId(workerId), cancellationToken: cancellationToken);
+            var session = WorkableHttpRequestContext.CreateSession(httpContext, system, requestContexts, "Query a worker through HTTP API.");
+            var worker = await queries.Worker(session, new WorkerId(workerId), cancellationToken: cancellationToken);
             return worker is null ? Results.NotFound() : Results.Ok(worker);
         });
 
@@ -147,6 +163,7 @@ internal static class WorkableHttpQueryRoutes
             long sequence,
             WorkableHttpSystemResolver systems,
             WorkableHttpQueryAdapter queries,
+            IWorkRequestContextFactory requestContexts,
             CancellationToken cancellationToken) =>
         {
             if (!WorkableHttpRouteResults.TryResolveSystem(httpContext, systems, out var system, out var notFound))
@@ -154,7 +171,8 @@ internal static class WorkableHttpQueryRoutes
                 return notFound;
             }
 
-            var iteration = await queries.WorkerIteration(system, new WorkerIterationReference(new WorkerId(workerId), sequence), cancellationToken: cancellationToken);
+            var session = WorkableHttpRequestContext.CreateSession(httpContext, system, requestContexts, "Query a worker iteration through HTTP API.");
+            var iteration = await queries.WorkerIteration(session, new WorkerIterationReference(new WorkerId(workerId), sequence), cancellationToken: cancellationToken);
             return iteration is null ? Results.NotFound() : Results.Ok(iteration);
         });
 
@@ -162,6 +180,7 @@ internal static class WorkableHttpQueryRoutes
             HttpContext httpContext,
             WorkableHttpSystemResolver systems,
             WorkableHttpQueryAdapter queries,
+            IWorkRequestContextFactory requestContexts,
             CancellationToken cancellationToken) =>
         {
             if (!WorkableHttpRouteResults.TryResolveSystem(httpContext, systems, out var system, out var notFound))
@@ -169,7 +188,8 @@ internal static class WorkableHttpQueryRoutes
                 return Task.FromResult(notFound);
             }
 
-            return WorkableHttpRouteResults.ToOk(queries.WorkerStatusSummary(system, cancellationToken: cancellationToken));
+            var session = WorkableHttpRequestContext.CreateSession(httpContext, system, requestContexts, "Query worker status summary through HTTP API.");
+            return WorkableHttpRouteResults.ToOk(queries.WorkerStatusSummary(session, cancellationToken: cancellationToken));
         });
 
         group.MapPost("/workers/status-summary", (
@@ -177,6 +197,7 @@ internal static class WorkableHttpQueryRoutes
             WorkableHttpWorkerCriteria? query,
             WorkableHttpSystemResolver systems,
             WorkableHttpQueryAdapter queries,
+            IWorkRequestContextFactory requestContexts,
             CancellationToken cancellationToken) =>
         {
             if (!WorkableHttpRouteResults.TryResolveSystem(httpContext, systems, out var system, out var notFound))
@@ -184,7 +205,8 @@ internal static class WorkableHttpQueryRoutes
                 return Task.FromResult(notFound);
             }
 
-            return WorkableHttpRouteResults.ToOk(queries.WorkerStatusSummary(system, query?.ToWorkerCriteria(), cancellationToken: cancellationToken));
+            var session = WorkableHttpRequestContext.CreateSession(httpContext, system, requestContexts, "Query worker status summary through HTTP API.");
+            return WorkableHttpRouteResults.ToOk(queries.WorkerStatusSummary(session, query?.ToWorkerCriteria(), cancellationToken: cancellationToken));
         });
 
         group.MapPost("/work-keys/query", (
@@ -192,6 +214,7 @@ internal static class WorkableHttpQueryRoutes
             WorkerKeyCriteria? query,
             WorkableHttpSystemResolver systems,
             WorkableHttpQueryAdapter queries,
+            IWorkRequestContextFactory requestContexts,
             CancellationToken cancellationToken) =>
         {
             if (!WorkableHttpRouteResults.TryResolveSystem(httpContext, systems, out var system, out var notFound))
@@ -199,7 +222,8 @@ internal static class WorkableHttpQueryRoutes
                 return Task.FromResult(notFound);
             }
 
-            return WorkableHttpRouteResults.ToOk(queries.WorkerKeys(system, query, cancellationToken: cancellationToken));
+            var session = WorkableHttpRequestContext.CreateSession(httpContext, system, requestContexts, "Query worker keys through HTTP API.");
+            return WorkableHttpRouteResults.ToOk(queries.WorkerKeys(session, query, cancellationToken: cancellationToken));
         });
 
         group.MapGet("/work-keys/types", (
@@ -211,6 +235,7 @@ internal static class WorkableHttpQueryRoutes
             int? take,
             WorkableHttpSystemResolver systems,
             WorkableHttpQueryAdapter queries,
+            IWorkRequestContextFactory requestContexts,
             CancellationToken cancellationToken) =>
         {
             if (!WorkableHttpRouteResults.TryResolveSystem(httpContext, systems, out var system, out var notFound))
@@ -218,7 +243,8 @@ internal static class WorkableHttpQueryRoutes
                 return Task.FromResult(notFound);
             }
 
-            return WorkableHttpRouteResults.ToOk(queries.WorkerKeyTypes(system, new WorkerKeyTypeCriteria(
+            var session = WorkableHttpRequestContext.CreateSession(httpContext, system, requestContexts, "Query worker key types through HTTP API.");
+            return WorkableHttpRouteResults.ToOk(queries.WorkerKeyTypes(session, new WorkerKeyTypeCriteria(
                     Kind: kind,
                     Search: search,
                     Type: type,
@@ -231,6 +257,7 @@ internal static class WorkableHttpQueryRoutes
             WorkableHttpWorkerKeyTypeCriteria? query,
             WorkableHttpSystemResolver systems,
             WorkableHttpQueryAdapter queries,
+            IWorkRequestContextFactory requestContexts,
             CancellationToken cancellationToken) =>
         {
             if (!WorkableHttpRouteResults.TryResolveSystem(httpContext, systems, out var system, out var notFound))
@@ -238,7 +265,8 @@ internal static class WorkableHttpQueryRoutes
                 return Task.FromResult(notFound);
             }
 
-            return WorkableHttpRouteResults.ToOk(queries.WorkerKeyTypes(system, query?.ToWorkerKeyTypeCriteria(), cancellationToken: cancellationToken));
+            var session = WorkableHttpRequestContext.CreateSession(httpContext, system, requestContexts, "Query worker key types through HTTP API.");
+            return WorkableHttpRouteResults.ToOk(queries.WorkerKeyTypes(session, query?.ToWorkerKeyTypeCriteria(), cancellationToken: cancellationToken));
         });
 
         group.MapPost("/work-iteration-keys/query", (
@@ -246,6 +274,7 @@ internal static class WorkableHttpQueryRoutes
             WorkIterationKeyCriteria? query,
             WorkableHttpSystemResolver systems,
             WorkableHttpQueryAdapter queries,
+            IWorkRequestContextFactory requestContexts,
             CancellationToken cancellationToken) =>
         {
             if (!WorkableHttpRouteResults.TryResolveSystem(httpContext, systems, out var system, out var notFound))
@@ -253,7 +282,8 @@ internal static class WorkableHttpQueryRoutes
                 return Task.FromResult(notFound);
             }
 
-            return WorkableHttpRouteResults.ToOk(queries.WorkIterationKeys(system, query, cancellationToken: cancellationToken));
+            var session = WorkableHttpRequestContext.CreateSession(httpContext, system, requestContexts, "Query work iteration keys through HTTP API.");
+            return WorkableHttpRouteResults.ToOk(queries.WorkIterationKeys(session, query, cancellationToken: cancellationToken));
         });
 
         group.MapGet("/work-iteration-keys/types", (
@@ -265,6 +295,7 @@ internal static class WorkableHttpQueryRoutes
             int? take,
             WorkableHttpSystemResolver systems,
             WorkableHttpQueryAdapter queries,
+            IWorkRequestContextFactory requestContexts,
             CancellationToken cancellationToken) =>
         {
             if (!WorkableHttpRouteResults.TryResolveSystem(httpContext, systems, out var system, out var notFound))
@@ -272,7 +303,8 @@ internal static class WorkableHttpQueryRoutes
                 return Task.FromResult(notFound);
             }
 
-            return WorkableHttpRouteResults.ToOk(queries.WorkIterationKeyTypes(system, new WorkIterationKeyTypeCriteria(
+            var session = WorkableHttpRequestContext.CreateSession(httpContext, system, requestContexts, "Query work iteration key types through HTTP API.");
+            return WorkableHttpRouteResults.ToOk(queries.WorkIterationKeyTypes(session, new WorkIterationKeyTypeCriteria(
                     Kind: kind,
                     Search: search,
                     Type: type,
@@ -285,6 +317,7 @@ internal static class WorkableHttpQueryRoutes
             WorkableHttpWorkIterationKeyTypeCriteria? query,
             WorkableHttpSystemResolver systems,
             WorkableHttpQueryAdapter queries,
+            IWorkRequestContextFactory requestContexts,
             CancellationToken cancellationToken) =>
         {
             if (!WorkableHttpRouteResults.TryResolveSystem(httpContext, systems, out var system, out var notFound))
@@ -292,7 +325,8 @@ internal static class WorkableHttpQueryRoutes
                 return Task.FromResult(notFound);
             }
 
-            return WorkableHttpRouteResults.ToOk(queries.WorkIterationKeyTypes(system, query?.ToWorkIterationKeyTypeCriteria(), cancellationToken: cancellationToken));
+            var session = WorkableHttpRequestContext.CreateSession(httpContext, system, requestContexts, "Query work iteration key types through HTTP API.");
+            return WorkableHttpRouteResults.ToOk(queries.WorkIterationKeyTypes(session, query?.ToWorkIterationKeyTypeCriteria(), cancellationToken: cancellationToken));
         });
     }
 }

@@ -17,14 +17,22 @@ internal static class WorkConfigurationComposer
         WorkDefinition definition,
         Type? executorType,
         Action<IWorkConfigurationBuilder>? configure)
-        => ApplyRegistration(definition, executorType, configure).Definition;
+        => ApplyRegistration(definition, executorType, configure, authorize: null).Definition;
 
     public static WorkRegistrationConfiguration ApplyRegistration(
         WorkDefinition definition,
         Type? executorType,
         Action<IWorkConfigurationBuilder>? configure)
+        => ApplyRegistration(definition, executorType, configure, authorize: null);
+
+    public static WorkRegistrationConfiguration ApplyRegistration(
+        WorkDefinition definition,
+        Type? executorType,
+        Action<IWorkConfigurationBuilder>? configure,
+        Action<IWorkAuthorizationBuilder>? authorize)
     {
         definition = ApplyMetadata(definition, executorType);
+        definition = ApplyAuthorization(definition, executorType, authorize);
         definition = WorkExecutorAdapterFactory.ApplyTypedSchemas(definition, executorType);
         var configuration = definition.Configuration;
         IReadOnlyList<WorkExceptionClassifier> exceptionClassifiers = [];
@@ -157,6 +165,32 @@ internal static class WorkConfigurationComposer
             Name = metadataAttribute.Name,
             Description = metadataAttribute.Description,
             Category = metadataAttribute.Category,
+        };
+    }
+
+    private static WorkDefinition ApplyAuthorization(
+        WorkDefinition definition,
+        Type? executorType,
+        Action<IWorkAuthorizationBuilder>? authorize)
+    {
+        var attribute = executorType?.GetCustomAttribute<WorkAuthorizationAttribute>(inherit: true);
+        var authorization = attribute is null
+            ? WorkDefinitionAuthorization.None
+            : WorkDefinitionAuthorization.Create(
+                attribute.ReadGroups,
+                attribute.OperateGroups,
+                WorkAuthorizationRegistrationSource.Attribute);
+
+        if (authorize is not null)
+        {
+            var builder = new WorkAuthorizationBuilder();
+            authorize(builder);
+            authorization = builder.Build();
+        }
+
+        return definition with
+        {
+            Authorization = authorization,
         };
     }
 

@@ -10,29 +10,32 @@ internal sealed class WorkQueueService(
     WorkSystemCatalog catalog,
     WorkerOperations workers,
     IDotNetWorkOriginProvider dotNetOriginProvider,
-    WorkSystemQueueDiagnosticsTracker queueDiagnostics) : IWorkQueueService
+    WorkSystemQueueDiagnosticsTracker queueDiagnostics) :
+    IWorkQueueService,
+    IRequestContextWorkQueueService
 {
     public Task<IWorkerHandle> Enqueue(
         WorkDefinitionId definitionId,
         WorkInput? input = null,
         WorkerOptions? options = null,
         CancellationToken cancellationToken = default)
-        => this.Enqueue(
+        => ((IRequestContextWorkQueueService)this).Enqueue(
             definitionId,
             input,
             options,
-            dotNetOriginProvider.CreateOrigin($"Queue work definition '{definitionId.Value:D}' through .NET."),
+            new WorkRequestContext(
+                dotNetOriginProvider.CreateOrigin($"Queue work definition '{definitionId.Value:D}' through .NET.")),
             cancellationToken);
 
-    internal Task<IWorkerHandle> Enqueue(
+    Task<IWorkerHandle> IRequestContextWorkQueueService.Enqueue(
         WorkDefinitionId definitionId,
         WorkInput? input,
         WorkerOptions? options,
-        WorkOrigin origin,
-        CancellationToken cancellationToken = default)
+        WorkRequestContext requestContext,
+        CancellationToken cancellationToken)
         => !catalog.TryGetWork(definitionId, out var registeredWork)
             ? Task.FromResult<IWorkerHandle>(Reject(WorkQueueOutcome.NotFound(definitionId.ToString())))
-            : workers.CreateWorker(registeredWork, input, options, origin, cancellationToken);
+            : workers.CreateWorker(registeredWork, input, options, requestContext, cancellationToken);
 
     public Task<IWorkerHandle> Enqueue<TInput>(
         WorkDefinitionId definitionId,
@@ -49,26 +52,27 @@ internal sealed class WorkQueueService(
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(name);
 
-        return this.Enqueue(
+        return ((IRequestContextWorkQueueService)this).Enqueue(
             name,
             input,
             options,
-            dotNetOriginProvider.CreateOrigin($"Queue work '{name}' through .NET."),
+            new WorkRequestContext(
+                dotNetOriginProvider.CreateOrigin($"Queue work '{name}' through .NET.")),
             cancellationToken);
     }
 
-    internal Task<IWorkerHandle> Enqueue(
+    Task<IWorkerHandle> IRequestContextWorkQueueService.Enqueue(
         string name,
         WorkInput? input,
         WorkerOptions? options,
-        WorkOrigin origin,
-        CancellationToken cancellationToken = default)
+        WorkRequestContext requestContext,
+        CancellationToken cancellationToken)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(name);
 
         return !catalog.TryGetWork(name, out var registeredWork)
             ? Task.FromResult<IWorkerHandle>(Reject(WorkQueueOutcome.NotFound(name)))
-            : workers.CreateWorker(registeredWork, input, options, origin, cancellationToken);
+            : workers.CreateWorker(registeredWork, input, options, requestContext, cancellationToken);
     }
 
     public Task<IWorkerHandle> Enqueue<TInput>(

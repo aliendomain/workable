@@ -54,6 +54,8 @@ internal sealed class WorkerHandle : IWorkerHandle
         {
             var status = this.QueueOutcome.Status == WorkQueueStatus.NotFound
                 ? WorkCompletionStatus.NotFound
+                : this.QueueOutcome.Status == WorkQueueStatus.Unauthorized
+                    ? WorkCompletionStatus.Invalid
                 : WorkCompletionStatus.Invalid;
 
             return new WorkCompletion(status, null, null, this.QueueOutcome.Messages);

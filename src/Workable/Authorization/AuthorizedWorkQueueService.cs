@@ -3,14 +3,14 @@ namespace Workable;
 internal sealed class AuthorizedWorkQueueService(
     IWorkCatalog catalog,
     IWorkQueueService inner,
-    WorkAuthorizationScope scope) : IWorkQueueService
+    WorkAuthorizationEvaluator authorization) : IWorkQueueService
 {
     public Task<IWorkerHandle> Enqueue(
         WorkDefinitionId definitionId,
         WorkInput? input = null,
         WorkerOptions? options = null,
         CancellationToken cancellationToken = default)
-        => scope.CanOperate(definitionId)
+        => authorization.CanOperate(definitionId)
             ? inner.Enqueue(definitionId, input, options, cancellationToken)
             : Rejected(definitionId);
 
@@ -19,7 +19,7 @@ internal sealed class AuthorizedWorkQueueService(
         TInput input,
         WorkerOptions? options = null,
         CancellationToken cancellationToken = default)
-        => scope.CanOperate(definitionId)
+        => authorization.CanOperate(definitionId)
             ? inner.Enqueue(definitionId, input, options, cancellationToken)
             : Rejected(definitionId);
 
@@ -42,11 +42,11 @@ internal sealed class AuthorizedWorkQueueService(
             : Rejected(name);
 
     private bool CanOperate(string name)
-        => catalog.TryGet(name, out var definition) && scope.CanOperate(definition.Id);
+        => catalog.TryGet(name, out var definition) && authorization.CanOperate(definition);
 
     private static Task<IWorkerHandle> Rejected(WorkDefinitionId definitionId)
-        => Task.FromResult<IWorkerHandle>(WorkerHandle.Rejected(WorkQueueOutcome.NotFound(definitionId.ToString())));
+        => Task.FromResult<IWorkerHandle>(WorkerHandle.Rejected(WorkQueueOutcome.Unauthorized(definitionId.ToString(), definitionId)));
 
     private static Task<IWorkerHandle> Rejected(string name)
-        => Task.FromResult<IWorkerHandle>(WorkerHandle.Rejected(WorkQueueOutcome.NotFound(name)));
+        => Task.FromResult<IWorkerHandle>(WorkerHandle.Rejected(WorkQueueOutcome.Unauthorized(name)));
 }

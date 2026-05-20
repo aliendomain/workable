@@ -2,6 +2,7 @@ using System.Text.Json.Serialization;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
+using Microsoft.AspNetCore.SignalR;
 
 namespace Workable;
 public static class WorkableSignalRServiceCollectionExtensions
@@ -13,6 +14,7 @@ public static class WorkableSignalRServiceCollectionExtensions
         ArgumentNullException.ThrowIfNull(services);
 
         services.AddOptions<WorkableSignalROptions>();
+        services.AddWorkableAspNetCoreAuthorization();
         if (configure is not null)
         {
             services.Configure(configure);
@@ -20,12 +22,17 @@ public static class WorkableSignalRServiceCollectionExtensions
 
         services
             .AddSignalR()
+            .AddHubOptions<WorkableRealtimeHub>(options =>
+            {
+                options.AddFilter<WorkableSignalRAuthenticationFilter>();
+            })
             .AddJsonProtocol(options =>
             {
                 options.PayloadSerializerOptions.Converters.Add(new JsonStringEnumConverter());
             });
 
         services.TryAddSingleton<IWorkRealtimeCapabilityProvider, WorkableRealtimeCapabilityProvider>();
+        services.TryAddSingleton<WorkableSignalRAuthenticationFilter>();
         services.TryAddSingleton<WorkableViewQueryAdapter>();
         services.TryAddSingleton<WorkableRealtimeEventSubscriptions>();
         services.TryAddSingleton<WorkableRealtimeViewSubscriptions>();
