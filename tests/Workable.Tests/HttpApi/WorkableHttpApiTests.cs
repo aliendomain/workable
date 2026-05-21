@@ -1132,10 +1132,9 @@ public sealed class WorkableHttpApiTests
     {
         using var host = await CreateHttpHost(authenticated: false);
         var client = host.GetTestClient();
+        using var content = new StringContent("{", System.Text.Encoding.UTF8, "application/json");
 
-        var response = await client.PostAsync(
-            "/workable/work/http.route.case",
-            new StringContent("{", System.Text.Encoding.UTF8, "application/json"));
+        using var response = await client.PostAsync("/workable/work/http.route.case", content);
 
         Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
     }

@@ -466,10 +466,9 @@ public sealed class WorkableMcpTests
     {
         using var host = await CreateMcpHttpHost(authenticated: false);
         var httpClient = host.GetTestClient();
+        using var content = new StringContent("{", System.Text.Encoding.UTF8, "application/json");
 
-        var response = await httpClient.PostAsync(
-            "/workable/mcp",
-            new StringContent("{", System.Text.Encoding.UTF8, "application/json"));
+        using var response = await httpClient.PostAsync("/workable/mcp", content);
 
         Assert.Equal(System.Net.HttpStatusCode.Unauthorized, response.StatusCode);
     }
