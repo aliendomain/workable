@@ -10,6 +10,16 @@ var builder = WebApplication.CreateBuilder(args);
 const string sampleCorsPolicy = "WorkableSampleUi";
 const int sampleHttpPort = 61932;
 const string samplePersistenceConnectionString = "Server=(localdb)\\MSSQLLocalDB;Database=WorkableSampleHost;Integrated Security=true;TrustServerCertificate=true";
+const string sampleTargetConnectGroup = "sample.target.connect";
+const string sampleTargetDiagnosticsGroup = "sample.target.diagnostics";
+const string sampleTargetControlGroup = "sample.target.control";
+const string sampleTargetReadAllGroup = "sample.target.read-all";
+const string sampleTargetOperateAllGroup = "sample.target.operate-all";
+const string sampleTargetSystemAdministratorGroup = "sample.target.system-admin";
+const string sampleTargetWorkAdministratorGroup = "sample.target.work-admin";
+
+var sampleAuthenticationMode = builder.Configuration["Workable:SampleHost:Authentication"] ?? "Fake";
+var useEntraAuthentication = string.Equals(sampleAuthenticationMode, "Entra", StringComparison.OrdinalIgnoreCase);
 
 builder.Logging.ClearProviders();
 builder.Logging.AddConsole(options => options.FormatterName = WorkableSampleConsoleFormatter.FormatterName);
@@ -40,17 +50,23 @@ builder.Services.AddCors(options =>
 });
 
 builder.Services.AddWorkableSqlServerDurableQueue(samplePersistenceConnectionString);
+if (useEntraAuthentication)
+{
+    builder.Services.AddWorkableEntraAuthorization(
+        builder.Configuration.GetSection(WorkableEntraAuthorizationDefaults.ConfigurationSectionName));
+}
 
 builder.Services.AddWorkableSystem(workable =>
 {
     workable.StartWithHost();
-    workable.ConfigureOperationsSystemAuthorization();
+    ConfigureSampleSystemAuthorization(workable, useEntraAuthentication, isFulfillment: false);
     workable.AddWork<HealthSnapshotWork>();
     workable.AddWork<SampleEchoWork>(
         configure: null,
-        authorize: authorize => authorize.RequireGroups(
-            readGroups: [SampleFakeAuth.OperationsCustomReadGroup],
-            operateGroups: [SampleFakeAuth.OperationsCustomOperateGroup]));
+        authorize: CreateSampleWorkAuthorization(
+            useEntraAuthentication,
+            SampleFakeAuth.OperationsCustomReadGroup,
+            SampleFakeAuth.OperationsCustomOperateGroup));
     workable.AddWork<SampleDelayWork>();
     workable.AddWork<WelcomeEmailWork>();
     workable.AddWork<InvoiceGenerateWork>();
@@ -82,12 +98,13 @@ builder.Services.AddWorkableSystem(workable =>
 builder.Services.AddWorkableSystem("fulfillment", workable =>
 {
     workable.StartWithHost();
-    workable.ConfigureFulfillmentSystemAuthorization();
+    ConfigureSampleSystemAuthorization(workable, useEntraAuthentication, isFulfillment: true);
     workable.AddWork<OrderPickListWork>(
         configure: null,
-        authorize: authorize => authorize.RequireGroups(
-            readGroups: [SampleFakeAuth.FulfillmentCustomReadGroup],
-            operateGroups: [SampleFakeAuth.FulfillmentCustomOperateGroup]));
+        authorize: CreateSampleWorkAuthorization(
+            useEntraAuthentication,
+            SampleFakeAuth.FulfillmentCustomReadGroup,
+            SampleFakeAuth.FulfillmentCustomOperateGroup));
     workable.AddWork<ShipmentLabelWork>();
     workable.AddWork<CarrierRateShopWork>();
     workable.AddWork<WarehouseSlottingWork>();
@@ -137,16 +154,24 @@ app.Use(async (context, next) =>
 });
 
 app.UseCors(sampleCorsPolicy);
-app.Use((context, next) =>
+if (!useEntraAuthentication)
 {
-    if (!SampleFakeAuth.TryApplyPathProfile(context))
+    app.Use((context, next) =>
     {
-        context.User = new System.Security.Claims.ClaimsPrincipal(new System.Security.Claims.ClaimsIdentity());
-    }
+        if (!SampleFakeAuth.TryApplyPathProfile(context))
+        {
+            context.User = new System.Security.Claims.ClaimsPrincipal(new System.Security.Claims.ClaimsIdentity());
+        }
 
-    return next();
-});
+        return next();
+    });
+}
+
 app.UseRouting();
+if (useEntraAuthentication)
+{
+    app.UseWorkableEntraAuthorization();
+}
 
 app.MapGet("/", (HttpContext context) =>
 {
@@ -158,7 +183,18 @@ app.MapGet("/", (HttpContext context) =>
         SampleFakeAuth.Profiles,
         new JsonSerializerOptions(JsonSerializerDefaults.Web));
     var selectedProfile = SampleFakeAuth.Resolve(context.Request.Query[SampleFakeAuth.QueryParameterName]);
-    var selectedWorkableUrl = SampleFakeAuth.BuildWorkableApiUrl(workableUrlBase, selectedProfile.Id);
+    var selectedWorkableUrl = useEntraAuthentication
+        ? $"{workableUrlBase}/workable"
+        : SampleFakeAuth.BuildWorkableApiUrl(workableUrlBase, selectedProfile.Id);
+    var authIntro = useEntraAuthentication
+        ? "This host is using Microsoft Entra bearer-token target authentication. Add the Workable URL below in the admin UI; the target app will validate the target-audience access token."
+        : "Use the fake auth selector below, then add the generated Workable URL in the admin UI.";
+    var authTitle = useEntraAuthentication
+        ? "Microsoft Entra Target Authentication"
+        : "Fake Authentication";
+    var authDescription = useEntraAuthentication
+        ? "The sample host is acting like a protected target application. Workable HTTP, MCP, and SignalR requests require an authenticated Entra access token whose audience matches Workable:Entra:Audience, and Workable authorization comes from the configured system groups."
+        : "Switch between sample users to exercise Workable authorization from the admin UI without standing up a real identity provider.";
     return Results.Content(
         $$"""
         <!doctype html>
@@ -231,10 +267,10 @@ app.MapGet("/", (HttpContext context) =>
         </head>
         <body>
             <h1>Workable Sample Host</h1>
-            <p>Use the fake auth selector below, then add the generated Workable URL in the admin UI.</p>
-            <section class="auth-frame" aria-label="Fake authentication profiles">
-                <h2>Fake Authentication</h2>
-                <p>Switch between sample users to exercise Workable authorization from the admin UI without standing up a real identity provider.</p>
+            <p>{{authIntro}}</p>
+            <section class="auth-frame" aria-label="Workable authentication">
+                <h2>{{authTitle}}</h2>
+                <p>{{authDescription}}</p>
                 <div class="auth-grid">
                     <div class="auth-meta">
                         <label for="fake-auth-profile">
@@ -407,6 +443,7 @@ app.MapGet("/", (HttpContext context) =>
             </table>
             <script>
                 const authProfiles = {{authProfilesJson}};
+                const useEntraAuthentication = {{JsonSerializer.Serialize(useEntraAuthentication)}};
                 const fakeAuthQueryParameter = {{JsonSerializer.Serialize(SampleFakeAuth.QueryParameterName)}};
                 const workableApiBaseUrl = {{JsonSerializer.Serialize(workableUrlBase)}};
                 const defaultAuthProfileId = {{JsonSerializer.Serialize(selectedProfile.Id)}};
@@ -425,11 +462,24 @@ app.MapGet("/", (HttpContext context) =>
                 }
 
                 function buildWorkableApiUrl(profileId) {
+                    if (useEntraAuthentication) {
+                        return `${workableApiBaseUrl}/workable`;
+                    }
+
                     const encodedProfileId = encodeURIComponent(profileId);
                     return `${workableApiBaseUrl}/fake-auth/${encodedProfileId}/workable`;
                 }
 
                 function updateAuthProfile(profileId, replaceHistory = true) {
+                    if (useEntraAuthentication) {
+                        authProfileSelect.disabled = true;
+                        authDescription.textContent = 'Entra mode is active. The admin UI must send a target-audience bearer token to this host.';
+                        authExpected.textContent = 'Discovery and operations should follow the configured Workable authorization groups resolved from the Entra access token.';
+                        authGroups.textContent = 'sample.target.connect, sample.target.read-all, sample.target.operate-all, sample.target.diagnostics, sample.target.control, sample.target.system-admin, sample.target.work-admin';
+                        workableApiUrl.value = buildWorkableApiUrl(profileId);
+                        return;
+                    }
+
                     const profile = authProfiles.find((candidate) => candidate.id === profileId) ?? authProfiles[0];
                     authProfileSelect.value = profile.id;
                     authDescription.textContent = profile.description;
@@ -819,41 +869,47 @@ app.MapGet("/", (HttpContext context) =>
         "text/html");
 });
 
-app.MapGet("/sample-workload", (DemoWorkloadController controller)
+var sampleWorkload = app.MapGroup("/sample-workload");
+if (useEntraAuthentication)
+{
+    sampleWorkload.RequireAuthorization();
+}
+
+sampleWorkload.MapGet("", (DemoWorkloadController controller)
     => Results.Ok(controller.Status()));
-app.MapPost("/sample-workload/toggle", async (DemoWorkloadController controller, CancellationToken cancellationToken)
+sampleWorkload.MapPost("/toggle", async (DemoWorkloadController controller, CancellationToken cancellationToken)
     => Results.Ok(await controller.Toggle(cancellationToken)));
-app.MapPost("/sample-workload/interval", (DemoWorkloadController controller, DemoWorkloadIntervalRequest request)
+sampleWorkload.MapPost("/interval", (DemoWorkloadController controller, DemoWorkloadIntervalRequest request)
     => Results.Ok(controller.SetQueueInterval(request.Milliseconds)));
-app.MapPost("/sample-workload/failures", (DemoWorkloadController controller, DemoWorkloadFailureRequest request)
+sampleWorkload.MapPost("/failures", (DemoWorkloadController controller, DemoWorkloadFailureRequest request)
     => Results.Ok(controller.SetFailurePercentage(request.Percentage)));
-app.MapPost("/sample-workload/systems", (DemoWorkloadController controller, DemoWorkloadSystemsRequest request)
+sampleWorkload.MapPost("/systems", (DemoWorkloadController controller, DemoWorkloadSystemsRequest request)
     => Results.Ok(controller.SetEnabledSystems(request)));
-app.MapPost("/sample-workload/burst", async (DemoWorkloadController controller, DemoBurstRequest request, CancellationToken cancellationToken)
+sampleWorkload.MapPost("/burst", async (DemoWorkloadController controller, DemoBurstRequest request, CancellationToken cancellationToken)
     => Results.Ok(await controller.QueueBurst(request.Count, cancellationToken)));
-app.MapPost("/sample-workload/durable-burst", async (DemoWorkloadController controller, DemoBurstRequest request, CancellationToken cancellationToken)
+sampleWorkload.MapPost("/durable-burst", async (DemoWorkloadController controller, DemoBurstRequest request, CancellationToken cancellationToken)
     => Results.Ok(await controller.QueueDurableBurst(request.Count, cancellationToken)));
-app.MapGet("/sample-workload/durability-warning", (DemoDurabilityWarningController controller)
+sampleWorkload.MapGet("/durability-warning", (DemoDurabilityWarningController controller)
     => Results.Ok(controller.Status()));
-app.MapPost("/sample-workload/durability-warning/start", async (DemoDurabilityWarningController controller, CancellationToken cancellationToken)
+sampleWorkload.MapPost("/durability-warning/start", async (DemoDurabilityWarningController controller, CancellationToken cancellationToken)
     => Results.Ok(await controller.Start(cancellationToken)));
-app.MapPost("/sample-workload/durability-warning/stop", async (DemoDurabilityWarningController controller, CancellationToken cancellationToken)
+sampleWorkload.MapPost("/durability-warning/stop", async (DemoDurabilityWarningController controller, CancellationToken cancellationToken)
     => Results.Ok(await controller.Stop(cancellationToken)));
-app.MapPost("/sample-workload/idempotency-warning", async (DemoWorkloadController controller, CancellationToken cancellationToken)
+sampleWorkload.MapPost("/idempotency-warning", async (DemoWorkloadController controller, CancellationToken cancellationToken)
     => Results.Ok(await controller.QueueIdempotencyWarning(cancellationToken)));
-app.MapGet("/sample-workload/queue-pressure", (DemoQueuePressureController controller)
+sampleWorkload.MapGet("/queue-pressure", (DemoQueuePressureController controller)
     => Results.Ok(controller.Status()));
-app.MapPost("/sample-workload/queue-pressure/start", (DemoQueuePressureController controller)
+sampleWorkload.MapPost("/queue-pressure/start", (DemoQueuePressureController controller)
     => Results.Ok(controller.Start()));
-app.MapPost("/sample-workload/queue-pressure/stop", async (DemoQueuePressureController controller, CancellationToken cancellationToken)
+sampleWorkload.MapPost("/queue-pressure/stop", async (DemoQueuePressureController controller, CancellationToken cancellationToken)
     => Results.Ok(await controller.Stop(cancellationToken)));
-app.MapGet("/sample-workload/tight-loops", (DemoTightLoopController controller)
+sampleWorkload.MapGet("/tight-loops", (DemoTightLoopController controller)
     => Results.Ok(controller.Status()));
-app.MapPost("/sample-workload/tight-loops/start", (DemoTightLoopController controller, DemoTightLoopRequest request)
+sampleWorkload.MapPost("/tight-loops/start", (DemoTightLoopController controller, DemoTightLoopRequest request)
     => Results.Ok(controller.Start(request)));
-app.MapPost("/sample-workload/tight-loops/stop", async (DemoTightLoopController controller, CancellationToken cancellationToken)
+sampleWorkload.MapPost("/tight-loops/stop", async (DemoTightLoopController controller, CancellationToken cancellationToken)
     => Results.Ok(await controller.Stop(cancellationToken)));
-app.MapPost("/sample-workload/force-cancel", async (
+sampleWorkload.MapPost("/force-cancel", async (
     IWorkSystemRegistry registry,
     DemoSampleSystemSelection systemSelection,
     CancellationToken cancellationToken) =>
@@ -889,6 +945,49 @@ app.MapWorkableMcp();
 app.MapWorkableSignalR("/workable/realtime");
 
 await app.RunAsync();
+
+static void ConfigureSampleSystemAuthorization(
+    IWorkSystemBuilder builder,
+    bool useEntraAuthentication,
+    bool isFulfillment)
+{
+    if (useEntraAuthentication)
+    {
+        builder.ConfigureAuthorization(authorization => authorization
+            .SystemAdministrators(sampleTargetSystemAdministratorGroup)
+            .WorkAdministrators(sampleTargetWorkAdministratorGroup)
+            .AllowConnectToGroups(sampleTargetConnectGroup)
+            .AllowDiagnosticsToGroups(sampleTargetDiagnosticsGroup)
+            .AllowControlSystemToGroups(sampleTargetControlGroup)
+            .AllowReadAllWorkToGroups(sampleTargetReadAllGroup)
+            .AllowOperateAllWorkToGroups(sampleTargetOperateAllGroup));
+        return;
+    }
+
+    if (isFulfillment)
+    {
+        builder.ConfigureFulfillmentSystemAuthorization();
+    }
+    else
+    {
+        builder.ConfigureOperationsSystemAuthorization();
+    }
+}
+
+static Action<IWorkAuthorizationBuilder>? CreateSampleWorkAuthorization(
+    bool useEntraAuthentication,
+    string readGroup,
+    string operateGroup)
+{
+    if (useEntraAuthentication)
+    {
+        return null;
+    }
+
+    return authorization => authorization.RequireGroups(
+        readGroups: [readGroup],
+        operateGroups: [operateGroup]);
+}
 
 static WorkDefinition DemoDefinition(string name, string category, string description)
     => WorkDefinition.Create(name, description, category);

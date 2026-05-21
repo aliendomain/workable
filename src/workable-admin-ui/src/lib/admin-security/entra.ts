@@ -30,6 +30,11 @@ import {
   createSignedAdminSessionCookie,
   sessionSecret,
 } from "./session.ts";
+import {
+  createEntraTargetTokenCookieHeaders,
+  createExpiredEntraTargetTokenCookies,
+  createInteractiveEntraScopes,
+} from "./entra-downstream.ts";
 
 const STATE_COOKIE_NAME = "workable_admin_entra_state";
 const NONCE_COOKIE_NAME = "workable_admin_entra_nonce";
@@ -40,7 +45,12 @@ const OAUTH_COOKIE_MAX_AGE_SECONDS = 10 * 60;
 type FetchLike = typeof fetch;
 
 type EntraTokenResponse = {
+  access_token?: string;
+  expires_in?: number;
   id_token?: string;
+  refresh_token?: string;
+  scope?: string;
+  token_type?: string;
   error?: string;
   error_description?: string;
 };
@@ -219,6 +229,9 @@ export async function completeEntraLogin(
     const nextPath = normalizeNextPath(cookies.get(NEXT_COOKIE_NAME));
     const response = createRedirectResponse(new URL(nextPath, request.url), 303);
     response.headers.append("set-cookie", sessionCookie.header);
+    for (const cookie of createEntraTargetTokenCookieHeaders(tokens, request, settings)) {
+      response.headers.append("set-cookie", cookie);
+    }
     appendExpiredEntraCookies(response);
     return response;
   } catch {
@@ -284,7 +297,7 @@ function createAuthorizationUrl(
   authorizationUrl.searchParams.set("response_type", "code");
   authorizationUrl.searchParams.set("redirect_uri", getRedirectUri(settings, request));
   authorizationUrl.searchParams.set("response_mode", "query");
-  authorizationUrl.searchParams.set("scope", "openid profile email");
+  authorizationUrl.searchParams.set("scope", createInteractiveEntraScopes(settings));
   authorizationUrl.searchParams.set("state", values.state);
   authorizationUrl.searchParams.set("nonce", values.nonce);
   authorizationUrl.searchParams.set("code_challenge", sha256Base64Url(values.verifier));
@@ -324,6 +337,7 @@ async function exchangeAuthorizationCode(
     code_verifier: verifier,
     grant_type: "authorization_code",
     redirect_uri: getRedirectUri(settings, request),
+    scope: createInteractiveEntraScopes(settings),
   });
 
   if (settings.entraId.clientSecret) {
@@ -518,6 +532,9 @@ function createFailedEntraCallbackResponse(
   const response = createRedirectResponse(loginUrl, 303);
   appendExpiredEntraCookies(response);
   response.headers.append("set-cookie", serializeExpiredCookie(settings.sessionCookieName));
+  for (const cookie of createExpiredEntraTargetTokenCookies()) {
+    response.headers.append("set-cookie", cookie);
+  }
   return response;
 }
 

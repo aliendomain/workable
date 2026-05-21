@@ -58,6 +58,7 @@ import {
 import { IdentifierSummary, TypedValueSummary } from "@/components/workable/console/query-screens";
 import {
   createWorkableRealtimeUrl,
+  getWorkableRealtimeAccessToken,
   stateTone,
   workableFetch,
   type WorkAction,
@@ -3974,7 +3975,10 @@ export function useWorkableRealtimeView<T>(
       }
     });
     const hubConnection = new HubConnectionBuilder()
-      .withUrl(hubUrl, { withCredentials: true })
+      .withUrl(hubUrl, {
+        accessTokenFactory: () => getWorkableRealtimeAccessToken(apiUrl),
+        withCredentials: true,
+      })
       .withAutomaticReconnect()
       .configureLogging(LogLevel.None)
       .build();
@@ -4242,7 +4246,10 @@ export function useWorkableRealtimeEvents(
       }
     });
     const hubConnection = new HubConnectionBuilder()
-      .withUrl(hubUrl, { withCredentials: true })
+      .withUrl(hubUrl, {
+        accessTokenFactory: () => getWorkableRealtimeAccessToken(apiUrl),
+        withCredentials: true,
+      })
       .withAutomaticReconnect()
       .configureLogging(LogLevel.None)
       .build();

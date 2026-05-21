@@ -12,6 +12,11 @@ import {
   validateUnsafeRequestOrigin,
   type AdminSecurityEnvironment,
 } from "./admin-security.ts";
+import { getAdminSecuritySettings } from "./admin-security/config.ts";
+import {
+  createExpiredEntraTargetTokenCookies,
+  createEntraTargetTokenCookieHeaders,
+} from "./admin-security/entra-downstream.ts";
 import { createWorkableRealtimeUrl } from "./workable.ts";
 import { proxyWorkableRequest } from "./workable-proxy.ts";
 
@@ -142,6 +147,57 @@ test("Entra login redirects to Microsoft with state, nonce, and PKCE cookies", (
   assert.ok(setCookies.some((cookie) => cookie.startsWith("workable_admin_entra_next=")));
 });
 
+test("Entra login requests offline access and the configured hosted API scope", () => {
+  const response = createEntraAuthorizationResponse(
+    new Request("https://admin.example.com/api/auth/entra/login"),
+    entraEnv({
+      WORKABLE_ADMIN_ENTRA_TARGET_APIS_JSON: JSON.stringify([
+        {
+          apiUrl: "https://workable.example.com/workable",
+          scope: "api://actually-client-id/workable.access",
+        },
+      ]),
+    })
+  );
+
+  const location = response.headers.get("location");
+  assert.ok(location);
+  if (!location) {
+    return;
+  }
+
+  const scope = new URL(location).searchParams.get("scope") ?? "";
+  assert.match(scope, /\boffline_access\b/);
+  assert.match(scope, /\bapi:\/\/actually-client-id\/workable\.access\b/);
+});
+
+test("Entra login with multiple hosted APIs requests offline access without pinning one target scope", () => {
+  const response = createEntraAuthorizationResponse(
+    new Request("https://admin.example.com/api/auth/entra/login"),
+    entraEnv({
+      WORKABLE_ADMIN_ENTRA_TARGET_APIS_JSON: JSON.stringify([
+        {
+          apiUrl: "https://workable.example.com/workable",
+          scope: "api://actually-client-id/workable.access",
+        },
+        {
+          apiUrl: "https://ops.example.com/workable",
+          scope: "api://ops-client-id/workable.access",
+        },
+      ]),
+    })
+  );
+
+  const location = response.headers.get("location");
+  assert.ok(location);
+  if (!location) {
+    return;
+  }
+
+  const scope = new URL(location).searchParams.get("scope") ?? "";
+  assert.equal(scope, "openid profile email offline_access");
+});
+
 test("authenticated proxy access does not require local operation-role configuration", () => {
   const authentication = authenticateAdminRequest(
     new Headers({ authorization: basic("admin", "correct horse battery staple") }),
@@ -195,6 +251,334 @@ test("proxy preserves hosted Workable API authorization failures", async () => {
   assert.deepEqual(await response.json(), {
     error: "denied by hosted Workable API",
   });
+});
+
+test("proxy forwards the configured Entra target API token to the configured host", async () => {
+  const env = entraEnv({
+    WORKABLE_ADMIN_ENTRA_TARGET_APIS_JSON: JSON.stringify([
+      {
+        apiUrl: "https://workable.example.com/workable",
+        scope: "api://actually-client-id/workable.access",
+      },
+    ]),
+  });
+  const cookieHeader = createEntraAuthenticatedCookieHeader(env, new Request("https://admin.example.com/"));
+  let authorizationHeader: string | null | undefined;
+
+  const response = await proxyWorkableRequest(
+    new Request("https://admin.example.com/api/workable/systems", {
+      headers: {
+        cookie: cookieHeader,
+      },
+    }),
+    ["systems"],
+    {
+      env,
+      fetch: async (_url, init) => {
+        authorizationHeader = new Headers(init?.headers).get("authorization");
+        return new Response(JSON.stringify({ systems: [] }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      },
+    }
+  );
+
+  assert.equal(response.status, 200);
+  assert.equal(authorizationHeader, "Bearer hosted-api-access-token");
+});
+
+test("proxy does not forward the configured Entra token to a different allowed host", async () => {
+  const env = entraEnv({
+    WORKABLE_ALLOWED_API_URLS: "https://ops.example.com/workable",
+    WORKABLE_ADMIN_ENTRA_TARGET_APIS_JSON: JSON.stringify([
+      {
+        apiUrl: "https://workable.example.com/workable",
+        scope: "api://actually-client-id/workable.access",
+      },
+    ]),
+  });
+  const cookieHeader = createEntraAuthenticatedCookieHeader(env, new Request("https://admin.example.com/"));
+  let authorizationHeader: string | null | undefined;
+
+  const response = await proxyWorkableRequest(
+    new Request("https://admin.example.com/api/workable/systems", {
+      headers: {
+        cookie: cookieHeader,
+        "x-workable-api-url": "https://ops.example.com/workable",
+      },
+    }),
+    ["systems"],
+    {
+      env,
+      fetch: async (_url, init) => {
+        authorizationHeader = new Headers(init?.headers).get("authorization");
+        return new Response(JSON.stringify({ systems: [] }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      },
+    }
+  );
+
+  assert.equal(response.status, 200);
+  assert.equal(authorizationHeader, null);
+});
+
+test("proxy refreshes an expired Entra target API token before forwarding", async () => {
+  const env = entraEnv({
+    WORKABLE_ADMIN_ENTRA_TARGET_APIS_JSON: JSON.stringify([
+      {
+        apiUrl: "https://workable.example.com/workable",
+        scope: "api://actually-client-id/workable.access",
+      },
+    ]),
+  });
+  const cookieHeader = createEntraAuthenticatedCookieHeader(
+    env,
+    new Request("https://admin.example.com/"),
+    {
+      access_token: "expired-access-token",
+      expires_in: 1,
+      refresh_token: "refresh-me",
+      token_type: "Bearer",
+    }
+  );
+  const requestedUrls: string[] = [];
+  let authorizationHeader: string | null | undefined;
+
+  const response = await proxyWorkableRequest(
+    new Request("https://admin.example.com/api/workable/systems", {
+      headers: {
+        cookie: cookieHeader,
+      },
+    }),
+    ["systems"],
+    {
+      env,
+      fetch: async (url, init) => {
+        requestedUrls.push(String(url));
+        if (String(url).includes(".well-known/openid-configuration")) {
+          return new Response(JSON.stringify({
+            token_endpoint: "https://login.microsoftonline.com/tenant-id/oauth2/v2.0/token",
+          }), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          });
+        }
+
+        if (String(url).endsWith("/oauth2/v2.0/token")) {
+          const body = init?.body instanceof URLSearchParams
+            ? init.body.toString()
+            : String(init?.body ?? "");
+          assert.match(body, /grant_type=refresh_token/);
+          assert.match(body, /scope=api%3A%2F%2Factually-client-id%2Fworkable.access/);
+          return new Response(JSON.stringify({
+            access_token: "refreshed-access-token",
+            expires_in: 3600,
+            refresh_token: "refreshed-refresh-token",
+            token_type: "Bearer",
+          }), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          });
+        }
+
+        authorizationHeader = new Headers(init?.headers).get("authorization");
+        return new Response(JSON.stringify({ systems: [] }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      },
+    }
+  );
+
+  assert.equal(response.status, 200);
+  assert.equal(authorizationHeader, "Bearer refreshed-access-token");
+  assert.ok(requestedUrls.some((url) => url.includes(".well-known/openid-configuration")));
+  assert.ok(requestedUrls.some((url) => url.endsWith("/oauth2/v2.0/token")));
+  assert.ok(
+    getSetCookies(response.headers).some((cookie) =>
+      cookie.startsWith("workable_admin_entra_target_token.parts=")
+    )
+  );
+});
+
+test("proxy refreshes and forwards the correct token for each configured hosted API", async () => {
+  const env = entraEnv({
+    WORKABLE_ALLOWED_API_URLS: "https://ops.example.com/workable",
+    WORKABLE_ADMIN_ENTRA_TARGET_APIS_JSON: JSON.stringify([
+      {
+        apiUrl: "https://workable.example.com/workable",
+        scope: "api://actually-client-id/workable.access",
+      },
+      {
+        apiUrl: "https://ops.example.com/workable",
+        scope: "api://ops-client-id/workable.access",
+      },
+    ]),
+  });
+  const cookieHeader = createEntraAuthenticatedCookieHeader(
+    env,
+    new Request("https://admin.example.com/"),
+    {
+      refresh_token: "refresh-me",
+    }
+  );
+  const tokenBodies: string[] = [];
+  let authorizationHeader: string | null | undefined;
+
+  const response = await proxyWorkableRequest(
+    new Request("https://admin.example.com/api/workable/systems", {
+      headers: {
+        cookie: cookieHeader,
+        "x-workable-api-url": "https://ops.example.com/workable",
+      },
+    }),
+    ["systems"],
+    {
+      env,
+      fetch: async (url, init) => {
+        if (String(url).includes(".well-known/openid-configuration")) {
+          return new Response(JSON.stringify({
+            token_endpoint: "https://login.microsoftonline.com/tenant-id/oauth2/v2.0/token",
+          }), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          });
+        }
+
+        if (String(url).endsWith("/oauth2/v2.0/token")) {
+          const body = init?.body instanceof URLSearchParams
+            ? init.body.toString()
+            : String(init?.body ?? "");
+          tokenBodies.push(body);
+          return new Response(JSON.stringify({
+            access_token: "ops-access-token",
+            expires_in: 3600,
+            refresh_token: "ops-refresh-token",
+            token_type: "Bearer",
+          }), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          });
+        }
+
+        authorizationHeader = new Headers(init?.headers).get("authorization");
+        return new Response(JSON.stringify({ systems: [] }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      },
+    }
+  );
+
+  assert.equal(response.status, 200);
+  assert.equal(authorizationHeader, "Bearer ops-access-token");
+  assert.equal(tokenBodies.length, 1);
+  assert.match(tokenBodies[0] ?? "", /scope=api%3A%2F%2Fops-client-id%2Fworkable.access/);
+});
+
+test("proxy binds Entra target token refresh to the actual proxied host", async () => {
+  const env = entraEnv({
+    WORKABLE_ALLOWED_API_URLS: "https://ops.example.com/workable",
+    WORKABLE_ADMIN_ENTRA_TARGET_APIS_JSON: JSON.stringify([
+      {
+        apiUrl: "https://workable.example.com/workable",
+        scope: "api://actually-client-id/workable.access",
+      },
+      {
+        apiUrl: "https://ops.example.com/workable",
+        scope: "api://ops-client-id/workable.access",
+      },
+    ]),
+  });
+  const cookieHeader = createEntraAuthenticatedCookieHeader(
+    env,
+    new Request("https://admin.example.com/"),
+    {
+      refresh_token: "refresh-me",
+    }
+  );
+  const tokenBodies: string[] = [];
+  let proxiedUrl: string | null = null;
+
+  const response = await proxyWorkableRequest(
+    new Request(
+      "https://admin.example.com/api/workable/systems?apiUrl=https%3A%2F%2Fworkable.example.com%2Fworkable",
+      {
+        headers: {
+          cookie: cookieHeader,
+          "x-workable-api-url": "https://ops.example.com/workable",
+        },
+      }
+    ),
+    ["systems"],
+    {
+      env,
+      fetch: async (url, init) => {
+        if (String(url).includes(".well-known/openid-configuration")) {
+          return new Response(JSON.stringify({
+            token_endpoint: "https://login.microsoftonline.com/tenant-id/oauth2/v2.0/token",
+          }), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          });
+        }
+
+        if (String(url).endsWith("/oauth2/v2.0/token")) {
+          const body = init?.body instanceof URLSearchParams
+            ? init.body.toString()
+            : String(init?.body ?? "");
+          tokenBodies.push(body);
+          return new Response(JSON.stringify({
+            access_token: "ops-access-token",
+            expires_in: 3600,
+            refresh_token: "ops-refresh-token",
+            token_type: "Bearer",
+          }), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          });
+        }
+
+        proxiedUrl = String(url);
+        return new Response(JSON.stringify({ systems: [] }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      },
+    }
+  );
+
+  assert.equal(response.status, 200);
+  assert.equal(proxiedUrl, "https://ops.example.com/workable/systems?apiUrl=https%3A%2F%2Fworkable.example.com%2Fworkable");
+  assert.equal(tokenBodies.length, 1);
+  assert.match(tokenBodies[0] ?? "", /scope=api%3A%2F%2Fops-client-id%2Fworkable.access/);
+});
+
+test("oversized Entra target token state expires cookies instead of writing unreadable chunks", () => {
+  const env = entraEnv({
+    WORKABLE_ADMIN_ENTRA_TARGET_APIS_JSON: JSON.stringify([
+      {
+        apiUrl: "https://workable.example.com/workable",
+        scope: "api://actually-client-id/workable.access",
+      },
+    ]),
+  });
+
+  const cookies = createEntraTargetTokenCookieHeaders(
+    {
+      access_token: "a".repeat(80_000),
+      expires_in: 3600,
+      refresh_token: "b".repeat(80_000),
+      token_type: "Bearer",
+    },
+    new Request("https://admin.example.com/"),
+    getAdminSecuritySettings(env)
+  );
+
+  assert.deepEqual(cookies, createExpiredEntraTargetTokenCookies());
 });
 
 test("proxy explains trusted certificate requirements for local HTTPS loopback failures", async () => {
@@ -366,4 +750,40 @@ function getSetCookies(headers: Headers) {
     getSetCookie?: () => string[];
   };
   return extended.getSetCookie?.() ?? [headers.get("set-cookie") ?? ""];
+}
+
+function createEntraAuthenticatedCookieHeader(
+  env: AdminSecurityEnvironment,
+  request: Request,
+  tokens: {
+    access_token?: string;
+    expires_in?: number;
+    refresh_token?: string;
+    token_type?: string;
+  } = {
+    access_token: "hosted-api-access-token",
+    expires_in: 3600,
+    refresh_token: "hosted-api-refresh-token",
+    token_type: "Bearer",
+  }
+) {
+  const sessionCookie = createAdminSessionCookie("admin", request, env, "entra");
+  assert.equal(sessionCookie.ok, true);
+  if (!sessionCookie.ok) {
+    throw new Error("Expected Entra session cookie.");
+  }
+
+  const tokenCookies = createEntraTargetTokenCookieHeaders(
+    tokens,
+    request,
+    getAdminSecuritySettings(env)
+  );
+
+  return [
+    sessionCookie.header,
+    ...tokenCookies,
+  ]
+    .map((header) => header.split(";")[0] ?? "")
+    .filter(Boolean)
+    .join("; ");
 }

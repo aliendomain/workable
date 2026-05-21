@@ -44,6 +44,7 @@
   </Folder>
   <Project Path="src/Workable.Abstractions/Workable.Abstractions.csproj" />
   <Project Path="src/Workable.AspNetCore/Workable.AspNetCore.csproj" />
+  <Project Path="src/Workable.Entra/Workable.Entra.csproj" />
   <Project Path="src/Workable.HttpApi/Workable.HttpApi.csproj" />
   <Project Path="src/Workable.Mcp/Workable.Mcp.csproj" />
   <Project Path="src/Workable.Sdk/Workable.Sdk.csproj" />

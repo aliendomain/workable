@@ -12,6 +12,11 @@ export const DEFAULT_SESSION_COOKIE_NAME = "workable_admin_session";
 export const DEFAULT_SESSION_MAX_AGE_SECONDS = 8 * 60 * 60;
 const DEFAULT_ENTRA_AUTHORITY_HOST = "https://login.microsoftonline.com";
 
+type EntraTargetApiBindingConfig = {
+  apiUrl?: string;
+  scope?: string;
+};
+
 export type WorkableAdminConfig = {
   authProvider?: string;
   apiUrl?: string;
@@ -27,6 +32,7 @@ export type WorkableAdminConfig = {
     clientSecret?: string;
     redirectUri?: string;
     authorityHost?: string;
+    targetApis?: EntraTargetApiBindingConfig[];
     allowedEmails?: string[];
     allowedEmailDomains?: string[];
   };
@@ -42,6 +48,7 @@ export type EntraIdSettings = {
   clientSecret?: string;
   redirectUri?: string;
   authorityHost: string;
+  targetApis: ReadonlyArray<EntraTargetApiBindingConfig>;
   allowedEmails: readonly string[];
   allowedEmailDomains: readonly string[];
 };
@@ -160,6 +167,10 @@ function getEntraIdSettings(
         config?.entraId?.authorityHost?.trim() ||
         DEFAULT_ENTRA_AUTHORITY_HOST
     ),
+    targetApis: normalizeTargetApis(
+      env.WORKABLE_ADMIN_ENTRA_TARGET_APIS_JSON?.trim(),
+      config?.entraId?.targetApis
+    ),
     allowedEmails: env.WORKABLE_ADMIN_ENTRA_ALLOWED_EMAILS
       ? parseList(env.WORKABLE_ADMIN_ENTRA_ALLOWED_EMAILS)
       : config?.entraId?.allowedEmails ?? [],
@@ -175,6 +186,37 @@ function inferAuthProvider(hasBasicCredentials: boolean, hasEntra: boolean): Adm
 
 function hasEntraSettings(settings: EntraIdSettings) {
   return Boolean(settings.tenantId || settings.clientId || settings.clientSecret);
+}
+
+function normalizeTargetApis(
+  jsonValue: string | undefined,
+  configuredValue?: EntraTargetApiBindingConfig[]
+) {
+  const parsed = parseTargetApisJson(jsonValue);
+  const value = parsed ?? configuredValue;
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value
+    .filter((item) => item && typeof item === "object")
+    .map((item) => ({
+      apiUrl: typeof item.apiUrl === "string" ? item.apiUrl.trim() : undefined,
+      scope: typeof item.scope === "string" ? item.scope.trim() : undefined,
+    }));
+}
+
+function parseTargetApisJson(value?: string) {
+  if (!value) {
+    return undefined;
+  }
+
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    return Array.isArray(parsed) ? parsed : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 function parseAuthProvider(value?: string): {

@@ -67,6 +67,14 @@ Adapter packages reference `Workable.Views` when they need to expose the compone
 
 ASP.NET Core applications reference `Workable.AspNetCore` when their own controllers, minimal API routes, or custom transports need authenticated `WorkRequestContext` values and default claims-based group resolution from `HttpContext`.
 
+`src/Workable.Entra` contains Microsoft Entra ID target-app integration:
+
+- JWT bearer setup for Microsoft Entra ID
+- Entra `scp`, `roles`, and `groups` claim mapping into Workable authorization groups
+- SignalR browser token handling for the Workable realtime hub
+
+ASP.NET Core applications reference `Workable.Entra` when Workable adapter requests should validate Entra bearer tokens and map target-token claims into Workable authorization groups.
+
 `src/Workable.Mcp` contains the MCP adapter surface:
 
 - MCP-style tool descriptors for work definitions
@@ -164,6 +172,8 @@ The admin UI follows Next.js conventions rather than the .NET domain folder voca
 `Workable` references `Workable.Abstractions`.
 
 `Workable.AspNetCore` references `Workable.Abstractions`.
+
+`Workable.Entra` references `Workable.AspNetCore` and `Workable`.
 
 `Workable.Views` references `Workable.Abstractions`.
 

@@ -59,7 +59,7 @@ public static class WorkableSignalREndpointRouteBuilderExtensions
             endpointBuilder.RequestDelegate = async httpContext =>
             {
                 if (!HttpMethods.IsOptions(httpContext.Request.Method) &&
-                    !WorkableAspNetCoreAuthentication.IsAuthenticated(httpContext))
+                    !await WorkableAspNetCoreAuthentication.EnsureAuthenticatedAsync(httpContext))
                 {
                     httpContext.Response.StatusCode = StatusCodes.Status401Unauthorized;
                     return;

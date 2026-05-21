@@ -2,6 +2,7 @@ import {
   authenticateAdminRequest,
   createWorkableTargetUrl,
   failureHeaders,
+  getEntraTargetAccessToken,
   getMaxProxyBodyBytes,
   validateUnsafeRequestOrigin,
   type AdminSecurityEnvironment,
@@ -51,11 +52,35 @@ export async function proxyWorkableRequest(
     return Response.json({ error: target.error }, { status: 400 });
   }
 
+  const targetAccessToken = await getEntraTargetAccessToken(
+    request,
+    env,
+    options.fetch ?? fetch,
+    {
+      requestedApiUrl: target.baseUrl,
+    }
+  );
+  if (!targetAccessToken.ok) {
+    return Response.json(
+      { error: targetAccessToken.error },
+      {
+        status: targetAccessToken.status,
+        headers: withCookies(
+          failureHeaders(targetAccessToken),
+          targetAccessToken.setCookieHeaders
+        ),
+      }
+    );
+  }
+
   try {
     const response = await (options.fetch ?? fetch)(target.url, {
       method: request.method,
       headers: {
         accept: "application/json",
+        ...(targetAccessToken.accessToken
+          ? { authorization: `Bearer ${targetAccessToken.accessToken}` }
+          : {}),
         "content-type": request.headers.get("content-type") ?? "application/json",
       },
       body: body.text,
@@ -66,9 +91,12 @@ export async function proxyWorkableRequest(
     return new Response(responseBody, {
       status: response.status,
       statusText: response.statusText,
-      headers: {
-        "content-type": response.headers.get("content-type") ?? "application/json",
-      },
+      headers: withCookies(
+        {
+          "content-type": response.headers.get("content-type") ?? "application/json",
+        },
+        targetAccessToken.setCookieHeaders
+      ),
     });
   } catch {
     return Response.json(
@@ -134,4 +162,16 @@ function isLoopbackHost(hostname: string) {
     normalized === "127.0.0.1" ||
     normalized === "::1" ||
     normalized === "[::1]";
+}
+
+function withCookies(
+  headers: Record<string, string>,
+  cookies: readonly string[]
+) {
+  const responseHeaders = new Headers(headers);
+  for (const cookie of cookies) {
+    responseHeaders.append("set-cookie", cookie);
+  }
+
+  return responseHeaders;
 }

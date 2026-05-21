@@ -1,5 +1,6 @@
 import {
   createExpiredAdminSessionCookie,
+  createExpiredEntraTargetTokenCookies,
   failureHeaders,
   validateUnsafeRequestOrigin,
 } from "@/lib/admin-security";
@@ -16,12 +17,16 @@ export async function POST(request: Request) {
     );
   }
 
+  const headers = new Headers();
+  headers.append("set-cookie", createExpiredAdminSessionCookie());
+  for (const cookie of createExpiredEntraTargetTokenCookies()) {
+    headers.append("set-cookie", cookie);
+  }
+
   return Response.json(
     { ok: true },
     {
-      headers: {
-        "set-cookie": createExpiredAdminSessionCookie(),
-      },
+      headers,
     }
   );
 }

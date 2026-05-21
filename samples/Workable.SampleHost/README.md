@@ -6,6 +6,8 @@ This sample hosts two in-process Workable systems with the standard adapters ena
 - MCP server at `/workable/mcp`
 - SignalR realtime hub at `/workable/realtime`
 
+By default the sample uses fake path-based authentication so local authorization scenarios are easy to exercise without an identity provider. It can also run like a Microsoft Entra protected target app by setting `Workable:SampleHost:Authentication` to `Entra` and configuring `Workable:Entra`.
+
 Run it from the repository root:
 
 ```powershell
@@ -42,6 +44,46 @@ Invoke-RestMethod http://localhost:61932/sample-workload/tight-loops
 Invoke-RestMethod http://localhost:61932/sample-workload/tight-loops/start -Method Post -ContentType application/json -Body '{"useTaskYield":true}'
 Invoke-RestMethod http://localhost:61932/sample-workload/tight-loops/stop -Method Post
 ```
+
+## Running As An Entra Target App
+
+The sample references `Workable.Entra`, so it can validate target-audience Microsoft Entra access tokens the same way a hosted application would.
+
+Set configuration with user secrets, environment variables, or `appsettings.json`:
+
+```json
+{
+  "Workable": {
+    "SampleHost": {
+      "Authentication": "Entra"
+    },
+    "Entra": {
+      "TenantId": "00000000-0000-0000-0000-000000000000",
+      "Audience": "api://target-app-client-id"
+    }
+  }
+}
+```
+
+Configure the target app so access tokens include the claim values you want Workable to authorize against. This sample uses these Workable authorization group values:
+
+- `sample.target.connect`
+- `sample.target.read-all`
+- `sample.target.operate-all`
+- `sample.target.diagnostics`
+- `sample.target.control`
+- `sample.target.system-admin`
+- `sample.target.work-admin`
+
+In a real host, those values can be Entra security group object IDs, app role values, or delegated scope values. Workable just consumes the claim values that appear in the token.
+
+When Entra mode is active, the sample Workable URL is:
+
+```text
+http://localhost:61932/workable
+```
+
+Requests to `/workable`, `/workable/mcp`, `/workable/realtime`, and the sample `/sample-workload/*` helper endpoints must include a valid bearer token for the configured audience. The token's `scp`, `roles`, or `groups` claims become Workable authorization groups, and the sample relies on normal Workable system authorization to decide what that caller can do.
 
 MCP exposes work definitions with protocol-safe names such as:
 
