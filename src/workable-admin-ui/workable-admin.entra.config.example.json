@@ -7,8 +7,13 @@
   "entraId": {
     "tenantId": "<tenant-id-or-domain>",
     "clientId": "<application-client-id>",
-    "clientSecret": "<client-secret>",
     "redirectUri": "http://localhost:3000/api/auth/entra/callback",
+    "targetApis": [
+      {
+        "apiUrl": "<url here>",
+        "scope": "api://<target-app-client-id>/workable.access"
+      }
+    ],
     "allowedEmails": [],
     "allowedEmailDomains": [
       "<company-domain.example>"

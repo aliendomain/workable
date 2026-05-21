@@ -8,7 +8,7 @@ internal sealed class WorkableSignalRAuthenticationFilter : IHubFilter
         HubLifetimeContext context,
         Func<HubLifetimeContext, Task> next)
     {
-        EnsureAuthenticated(context.Context.GetHttpContext());
+        await EnsureAuthenticatedAsync(context.Context.GetHttpContext());
         await next(context);
     }
 
@@ -16,13 +16,13 @@ internal sealed class WorkableSignalRAuthenticationFilter : IHubFilter
         HubInvocationContext invocationContext,
         Func<HubInvocationContext, ValueTask<object?>> next)
     {
-        EnsureAuthenticated(invocationContext.Context.GetHttpContext());
+        await EnsureAuthenticatedAsync(invocationContext.Context.GetHttpContext());
         return await next(invocationContext);
     }
 
-    private static void EnsureAuthenticated(Microsoft.AspNetCore.Http.HttpContext? httpContext)
+    private static async Task EnsureAuthenticatedAsync(Microsoft.AspNetCore.Http.HttpContext? httpContext)
     {
-        if (!WorkableAspNetCoreAuthentication.IsAuthenticated(httpContext))
+        if (!await WorkableAspNetCoreAuthentication.EnsureAuthenticatedAsync(httpContext))
         {
             throw new HubException("Authentication is required.");
         }

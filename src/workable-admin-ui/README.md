@@ -79,8 +79,13 @@ For a local-only Entra setup, copy `workable-admin.entra.config.example.json` to
   "entraId": {
     "tenantId": "00000000-0000-0000-0000-000000000000",
     "clientId": "00000000-0000-0000-0000-000000000000",
-    "clientSecret": "replace-with-client-secret",
     "redirectUri": "https://admin.example.com/api/auth/entra/callback",
+    "targetApis": [
+      {
+        "apiUrl": "https://workable.example.com/workable",
+        "scope": "api://00000000-0000-0000-0000-000000000000/workable.access"
+      }
+    ],
     "allowedEmailDomains": ["example.com"]
   },
   "sessionSecret": "replace-with-a-long-random-session-signing-secret"
@@ -97,13 +102,28 @@ For a checked-in Entra config, use `workable-admin.config.json` and omit secrets
     "tenantId": "00000000-0000-0000-0000-000000000000",
     "clientId": "00000000-0000-0000-0000-000000000000",
     "redirectUri": "https://admin.example.com/api/auth/entra/callback",
+    "targetApis": [
+      {
+        "apiUrl": "https://workable.example.com/workable",
+        "scope": "api://00000000-0000-0000-0000-000000000000/workable.access"
+      }
+    ],
     "allowedEmailDomains": ["example.com"]
   },
   "sessionMaxAgeSeconds": 28800
 }
 ```
 
-Put `clientSecret` and `sessionSecret` in environment variables or `workable-admin.config.local.json`. `sessionSecret` is required for Entra because there is no Basic password to use as a local session-signing fallback. The Entra integration authenticates access to this admin UI; the hosted Workable API still decides whether each proxied operation is allowed. This implementation does not forward Entra tokens to the hosted Workable API.
+`clientSecret` is optional. `sessionSecret` is required for Entra because there is no Basic password to use as a local session-signing fallback.
+
+If you also want the admin UI to call Entra-protected hosted Workable APIs, configure `entraId.targetApis` with one entry per host:
+
+- `apiUrl`: the exact Workable HTTP API base URL for that host
+- `scope`: the delegated scope string for that API, for example `api://<actually-client-id>/workable.access`
+
+That forwarding is explicit and host-bound. The admin UI only forwards a delegated token to a URL that has a matching `targetApis` entry, even if other URLs are allow-listed for the proxy. The token stays out of `localStorage` and `sessionStorage`; the Next.js server keeps refresh/access state in encrypted HttpOnly cookies and uses a same-origin token endpoint only to feed SignalR's in-memory `accessTokenFactory`.
+
+The Entra integration authenticates access to this admin UI; the hosted Workable API still decides whether each proxied operation is allowed.
 
 Environment variable equivalents are:
 
@@ -113,6 +133,7 @@ WORKABLE_ADMIN_ENTRA_TENANT_ID=00000000-0000-0000-0000-000000000000
 WORKABLE_ADMIN_ENTRA_CLIENT_ID=00000000-0000-0000-0000-000000000000
 WORKABLE_ADMIN_ENTRA_CLIENT_SECRET=replace-with-client-secret
 WORKABLE_ADMIN_ENTRA_REDIRECT_URI=https://admin.example.com/api/auth/entra/callback
+WORKABLE_ADMIN_ENTRA_TARGET_APIS_JSON=[{"apiUrl":"https://workable.example.com/workable","scope":"api://00000000-0000-0000-0000-000000000000/workable.access"}]
 WORKABLE_ADMIN_ENTRA_ALLOWED_EMAIL_DOMAINS=example.com
 WORKABLE_ADMIN_UI_SESSION_SECRET=replace-with-a-long-random-session-signing-secret
 ```
@@ -154,6 +175,6 @@ WORKABLE_ALLOWED_API_URLS=https://workable.example.com/workable,https://ops.exam
 
 The proxy rejects browser-supplied `x-workable-api-url` values that are not configured. This keeps the admin UI from becoming an open server-side HTTP proxy when deployed.
 
-Unsafe proxy requests also require a same-origin `Origin` header to reduce CSRF risk when browser credentials are used. The proxy does not forward the admin UI `Authorization` header to the hosted Workable API; the hosted system must continue to enforce its own authentication and authorization on every Workable adapter surface. If the hosted API rejects a request with `401` or `403`, the admin UI returns that response instead of overriding it with local operation-role logic.
+Unsafe proxy requests also require a same-origin `Origin` header to reduce CSRF risk when browser credentials are used. The proxy does not forward the admin UI `Authorization` header to the hosted Workable API. When `entraId.targetApis` is configured, the proxy instead forwards a delegated Entra bearer token only to a configured matching hosted API URL. The hosted system must continue to enforce its own authentication and authorization on every Workable adapter surface. If the hosted API rejects a request with `401` or `403`, the admin UI returns that response instead of overriding it with local operation-role logic.
 
-The admin UI accepts realtime hub paths only when the hosted system reports an HTTP(S) hub URL on the same origin as the configured Workable API URL. Cross-origin or non-HTTP(S) hub metadata is ignored by default so a hostile hosted system cannot silently make the browser connect to an arbitrary realtime endpoint.
+The admin UI accepts realtime hub paths only when the hosted system reports an HTTP(S) hub URL on the same origin as the configured Workable API URL. Cross-origin or non-HTTP(S) hub metadata is ignored by default so a hostile hosted system cannot silently make the browser connect to an arbitrary realtime endpoint. When Entra target-token forwarding is configured, SignalR connections fetch that token from a same-origin admin UI endpoint and keep it only in memory on the browser side.

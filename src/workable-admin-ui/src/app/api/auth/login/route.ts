@@ -1,5 +1,6 @@
 import {
   createAdminSessionCookie,
+  createExpiredEntraTargetTokenCookies,
   failureHeaders,
   validateUnsafeRequestOrigin,
   verifyAdminCredentials,
@@ -50,14 +51,18 @@ export async function POST(request: Request) {
     );
   }
 
+  const headers = new Headers();
+  headers.append("set-cookie", cookie.header);
+  for (const staleCookie of createExpiredEntraTargetTokenCookies()) {
+    headers.append("set-cookie", staleCookie);
+  }
+
   return Response.json(
     {
       userName: verification.identity.name,
     },
     {
-      headers: {
-        "set-cookie": cookie.header,
-      },
+      headers,
     }
   );
 }

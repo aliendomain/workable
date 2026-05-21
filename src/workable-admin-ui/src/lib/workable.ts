@@ -803,6 +803,10 @@ export class WorkableApiError extends Error {
 }
 
 const inFlightGetRequests = new Map<string, Promise<unknown>>();
+const realtimeAccessTokenCache = new Map<string, {
+  accessToken: string;
+  expiresAt: number;
+}>();
 
 export function formatDateTime(value?: string | null) {
   if (!value) {
@@ -936,6 +940,46 @@ export function createWorkableRealtimeUrl(connection: WorkableConnection) {
   } catch {
     return null;
   }
+}
+
+export async function getWorkableRealtimeAccessToken(apiUrl: string) {
+  const cached = realtimeAccessTokenCache.get(apiUrl);
+  const now = Date.now();
+  if (cached && cached.expiresAt > now + 30_000) {
+    return cached.accessToken;
+  }
+
+  const response = await fetch(
+    `/api/auth/entra/workable-token?apiUrl=${encodeURIComponent(apiUrl)}`,
+    {
+      cache: "no-store",
+      credentials: "same-origin",
+    }
+  );
+  if (response.status === 404) {
+    realtimeAccessTokenCache.delete(apiUrl);
+    return undefined;
+  }
+
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const message = typeof body?.error === "string" && body.error.trim()
+      ? body.error
+      : "Unable to acquire a hosted Workable API access token.";
+    throw new Error(message);
+  }
+
+  const accessToken = typeof body?.accessToken === "string" ? body.accessToken.trim() : "";
+  if (!accessToken) {
+    realtimeAccessTokenCache.delete(apiUrl);
+    return undefined;
+  }
+
+  realtimeAccessTokenCache.set(apiUrl, {
+    accessToken,
+    expiresAt: now + 55 * 60 * 1000,
+  });
+  return accessToken;
 }
 
 function createDirectoryUrl(url: URL) {

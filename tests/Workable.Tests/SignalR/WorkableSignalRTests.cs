@@ -865,7 +865,7 @@ public sealed class WorkableSignalRTests
         return host;
     }
 
-    private static HubConnection CreateConnection(IHost host)
+    private static HubConnection CreateConnection(IHost host, string? accessToken = null)
         => new HubConnectionBuilder()
             .WithUrl(
                 "http://localhost/workable/realtime",
@@ -873,6 +873,10 @@ public sealed class WorkableSignalRTests
                 {
                     options.Transports = HttpTransportType.LongPolling;
                     options.HttpMessageHandlerFactory = _ => host.GetTestServer().CreateHandler();
+                    if (accessToken is not null)
+                    {
+                        options.AccessTokenProvider = () => Task.FromResult<string?>(accessToken);
+                    }
                 })
             .AddJsonProtocol(options =>
             {
@@ -887,6 +891,72 @@ public sealed class WorkableSignalRTests
         await using var connection = CreateConnection(host);
 
         await Assert.ThrowsAnyAsync<Exception>(() => connection.StartAsync());
+    }
+
+    [Fact]
+    public async Task SignalRCanUseExplicitWorkableAuthenticationSchemeWithoutChangingHostDefaultScheme()
+    {
+        using var host = await CreateExplicitSchemeSignalRHost();
+        await using var unauthorized = CreateConnection(host);
+
+        await Assert.ThrowsAnyAsync<Exception>(() => unauthorized.StartAsync());
+
+        await using var authorized = CreateConnection(
+            host,
+            accessToken: WorkableSchemeAuthenticationTestSupport.WorkableToken);
+        await authorized.StartAsync();
+        await authorized.InvokeAsync("WatchSystem", null);
+    }
+
+    private static async Task<IHost> CreateExplicitSchemeSignalRHost()
+    {
+        var host = new HostBuilder()
+            .ConfigureWebHost(web =>
+            {
+                web.UseTestServer();
+                web.ConfigureServices(services =>
+                {
+                    services.AddRouting();
+                    services.AddWorkableSchemeTestAuthentication();
+                    services.AddTransportTestAuthorization();
+                    services.AddSingleton<SignalRWorkGate>();
+                    services.AddWorkableSystem(builder =>
+                    {
+                        builder.StartWithHost();
+                        builder.RequireAuthorization();
+                        builder.ConfigureTransportSystemAuthorization();
+                        builder.AddAuthorizedTransportWork(
+                            WorkDefinition.Create(
+                                "signalr.worker",
+                                configuration: WorkConfiguration.Default with
+                                {
+                                    Start = WorkStartConfiguration.DoNotStart,
+                                }),
+                            SuccessfulWork);
+                        builder.AddAuthorizedTransportWork(WorkDefinition.Create("signalr.view"), SuccessfulWork);
+                    });
+                    services.AddWorkableHttpApi();
+                    services.AddWorkableSignalR(options =>
+                    {
+                        options.PublishInterval = TimeSpan.FromMilliseconds(50);
+                        options.DiagnosticsPublishInterval = TimeSpan.FromMilliseconds(50);
+                    });
+                });
+                web.Configure(app =>
+                {
+                    app.UseRouting();
+                    app.UseAuthentication();
+                    app.UseEndpoints(endpoints =>
+                    {
+                        endpoints.MapWorkableApi("/workable");
+                        endpoints.MapWorkableSignalR();
+                    });
+                });
+            })
+            .Build();
+
+        await host.StartAsync();
+        return host;
     }
 
     private static void CaptureRealtimeEvents(

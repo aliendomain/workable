@@ -65,15 +65,16 @@ public static class WorkableHttpApiExtensions
         {
             var next = endpointBuilder.RequestDelegate
                 ?? throw new InvalidOperationException("Workable HTTP API endpoint did not provide a request delegate.");
-            endpointBuilder.RequestDelegate = httpContext =>
+            endpointBuilder.RequestDelegate = async httpContext =>
             {
                 if (!HttpMethods.IsOptions(httpContext.Request.Method) &&
-                    !WorkableAspNetCoreAuthentication.IsAuthenticated(httpContext))
+                    !await WorkableAspNetCoreAuthentication.EnsureAuthenticatedAsync(httpContext))
                 {
-                    return WorkableHttpRouteResults.AuthenticationRequired().ExecuteAsync(httpContext);
+                    await WorkableHttpRouteResults.AuthenticationRequired().ExecuteAsync(httpContext);
+                    return;
                 }
 
-                return next(httpContext);
+                await next(httpContext);
             };
         });
     }

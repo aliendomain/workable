@@ -24,7 +24,7 @@ export type AdminSecuritySuccess = {
 export type AdminSecurityResult = AdminSecuritySuccess | AdminSecurityFailure;
 
 export type TargetUrlResult =
-  | { ok: true; url: URL }
+  | { ok: true; url: URL; baseUrl: URL }
   | { ok: false; error: string };
 
 export type AdminSessionCookieResult =

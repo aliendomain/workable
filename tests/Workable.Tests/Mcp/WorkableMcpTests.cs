@@ -474,6 +474,31 @@ public sealed class WorkableMcpTests
     }
 
     [Fact]
+    public async Task MappedHttpMcpCanUseExplicitWorkableAuthenticationSchemeWithoutChangingHostDefaultScheme()
+    {
+        using var host = await CreateExplicitSchemeMcpHttpHost();
+        var httpClient = host.GetTestClient();
+
+        using var unauthorized = await httpClient.PostAsync("/workable/mcp", new StringContent("{", System.Text.Encoding.UTF8, "application/json"));
+        Assert.Equal(System.Net.HttpStatusCode.Unauthorized, unauthorized.StatusCode);
+
+        httpClient.DefaultRequestHeaders.Authorization = WorkableSchemeAuthenticationTestSupport.CreateBearerHeader();
+        var transport = new HttpClientTransport(
+            new HttpClientTransportOptions
+            {
+                Endpoint = new Uri("http://localhost/workable/mcp"),
+            },
+            httpClient,
+            loggerFactory: null,
+            ownsHttpClient: false);
+        await using var client = await McpClient.CreateAsync(transport);
+
+        var tools = await client.ListToolsAsync();
+
+        Assert.Contains(tools, tool => tool.Name == "workable_work_echo_message");
+    }
+
+    [Fact]
     public async Task MappedHttpMcpServerCanApplyWorkerActionsWithMcpOrigin()
     {
         using var host = await CreateMcpHttpHost(
@@ -1004,6 +1029,41 @@ public sealed class WorkableMcpTests
                             "Test"));
                         await next();
                     });
+                    app.UseEndpoints(endpoints => endpoints.MapWorkableMcp());
+                });
+            })
+            .Build();
+
+        await host.StartAsync();
+        return host;
+    }
+
+    private static async Task<IHost> CreateExplicitSchemeMcpHttpHost()
+    {
+        var host = new HostBuilder()
+            .ConfigureWebHost(web =>
+            {
+                web.UseTestServer();
+                web.ConfigureServices(services =>
+                {
+                    services.AddRouting();
+                    services.AddWorkableSchemeTestAuthentication();
+                    services.AddTransportTestAuthorization();
+                    services.AddWorkableSystem(builder =>
+                    {
+                        builder.StartWithHost();
+                        builder.RequireAuthorization();
+                        builder.ConfigureTransportSystemAuthorization();
+                        builder.AddAuthorizedTransportWork(
+                            WorkDefinition.Create("echo.message", configuration: AllowMcp()),
+                            SuccessfulWork);
+                    });
+                    services.AddWorkableMcpServer();
+                });
+                web.Configure(app =>
+                {
+                    app.UseAuthentication();
+                    app.UseRouting();
                     app.UseEndpoints(endpoints => endpoints.MapWorkableMcp());
                 });
             })

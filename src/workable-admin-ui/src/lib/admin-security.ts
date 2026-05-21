@@ -8,6 +8,9 @@ import {
   isSafeMethod,
 } from "./admin-security/config.ts";
 import {
+  validateEntraTargetTokenConfiguration,
+} from "./admin-security/entra-downstream.ts";
+import {
   createExpiredSessionCookie,
   createSignedAdminSessionCookie,
   readAdminSession,
@@ -31,6 +34,11 @@ export {
   completeEntraLogin,
   getAdminAuthProvider,
 } from "./admin-security/entra.ts";
+export {
+  createEntraTargetAccessTokenResponse,
+  createExpiredEntraTargetTokenCookies,
+  getEntraTargetAccessToken,
+} from "./admin-security/entra-downstream.ts";
 
 export type {
   AdminAuthProvider,
@@ -62,6 +70,11 @@ export function authenticateAdminRequest(
     return serviceUnavailable(
       "Microsoft Entra ID authentication requires entraId.tenantId, entraId.clientId, and sessionSecret."
     );
+  }
+
+  const targetTokenConfiguration = validateEntraTargetTokenConfiguration(settings);
+  if (!targetTokenConfiguration.ok) {
+    return targetTokenConfiguration;
   }
 
   const session = readAdminSession(headers, settings);
@@ -183,9 +196,10 @@ export function createWorkableTargetUrl(
 
     const requestUrl = new URL(request.url);
     const normalizedBase = baseUrl.pathname.replace(/\/+$/, "");
-    baseUrl.pathname = `${normalizedBase}/${path.map(encodeURIComponent).join("/")}`;
-    baseUrl.search = requestUrl.search;
-    return { ok: true, url: baseUrl };
+    const targetUrl = new URL(baseUrl.toString());
+    targetUrl.pathname = `${normalizedBase}/${path.map(encodeURIComponent).join("/")}`;
+    targetUrl.search = requestUrl.search;
+    return { ok: true, url: targetUrl, baseUrl };
   } catch {
     return { ok: false, error: "Workable API URL is not valid." };
   }

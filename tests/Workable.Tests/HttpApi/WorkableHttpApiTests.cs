@@ -1,6 +1,7 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Net;
+using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Security.Claims;
 using Microsoft.AspNetCore.Builder;
@@ -1140,6 +1141,21 @@ public sealed class WorkableHttpApiTests
     }
 
     [Fact]
+    public async Task MappedHttpCanUseExplicitWorkableAuthenticationSchemeWithoutChangingHostDefaultScheme()
+    {
+        using var host = await CreateExplicitSchemeHttpHost();
+        var client = host.GetTestClient();
+
+        using var unauthorized = await client.GetAsync("/workable/systems");
+        Assert.Equal(HttpStatusCode.Unauthorized, unauthorized.StatusCode);
+
+        client.DefaultRequestHeaders.Authorization = WorkableSchemeAuthenticationTestSupport.CreateBearerHeader();
+        using var authorized = await client.GetAsync("/workable/systems");
+
+        authorized.EnsureSuccessStatusCode();
+    }
+
+    [Fact]
     public async Task MappedHttpReconfigureEventUsesHttpOrigin()
     {
         using var host = await CreateHttpHost();
@@ -2049,6 +2065,39 @@ public sealed class WorkableHttpApiTests
                             "Test"));
                         await next();
                     });
+                    app.UseEndpoints(endpoints => endpoints.MapWorkableApi("/workable"));
+                });
+            })
+            .Build();
+
+        await host.StartAsync();
+        return host;
+    }
+
+    private static async Task<IHost> CreateExplicitSchemeHttpHost()
+    {
+        var host = new HostBuilder()
+            .ConfigureWebHost(web =>
+            {
+                web.UseTestServer();
+                web.ConfigureServices(services =>
+                {
+                    services.AddRouting();
+                    services.AddWorkableSchemeTestAuthentication();
+                    services.AddTransportTestAuthorization();
+                    services.AddWorkableSystem(builder =>
+                    {
+                        builder.StartWithHost();
+                        builder.RequireAuthorization();
+                        builder.ConfigureTransportSystemAuthorization();
+                        builder.AddAuthorizedTransportWork(WorkDefinition.Create("http.scheme"), SuccessfulWork);
+                    });
+                    services.AddWorkableHttpApi();
+                });
+                web.Configure(app =>
+                {
+                    app.UseAuthentication();
+                    app.UseRouting();
                     app.UseEndpoints(endpoints => endpoints.MapWorkableApi("/workable"));
                 });
             })

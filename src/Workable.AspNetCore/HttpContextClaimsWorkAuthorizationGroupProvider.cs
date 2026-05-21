@@ -33,7 +33,7 @@ public sealed class HttpContextClaimsWorkAuthorizationGroupProvider(
 
         var groups = user.Claims
             .Where(claim => options.Value.GroupClaimTypes.Contains(claim.Type, StringComparer.OrdinalIgnoreCase))
-            .SelectMany(claim => SplitGroups(claim.Value))
+            .SelectMany(claim => SplitGroups(claim.Value, options.Value.GroupClaimValueSeparators))
             .Where(group => !string.IsNullOrWhiteSpace(group))
             .Select(group => group.Trim())
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
@@ -45,8 +45,10 @@ public sealed class HttpContextClaimsWorkAuthorizationGroupProvider(
         return groups;
     }
 
-    private static string[] SplitGroups(string value)
-        => value.Contains(',', StringComparison.Ordinal)
-            ? value.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+    private static string[] SplitGroups(
+        string value,
+        IReadOnlyList<char> separators)
+        => separators.Count > 0 && value.IndexOfAny([.. separators]) >= 0
+            ? value.Split([.. separators], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
             : [value];
 }

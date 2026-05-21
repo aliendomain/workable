@@ -180,6 +180,59 @@ builder.Services.AddWorkableAspNetCoreAuthorization(options =>
 
 If the host already has a custom group resolver, register `IWorkAuthorizationGroupProvider` yourself before calling the transport package setup or as your final override.
 
+## Microsoft Entra Target Apps
+
+Use `Workable.Entra` when the hosted application should act as the protected target API for Workable admin UI or other Entra-authenticated clients.
+
+```csharp
+builder.Services.AddWorkableEntraAuthorization(
+    builder.Configuration.GetSection(WorkableEntraAuthorizationDefaults.ConfigurationSectionName));
+
+builder.Services.AddWorkableSystem(workable =>
+{
+    workable.ConfigureAuthorization(auth => auth
+        .AllowConnectToGroups("11111111-2222-3333-4444-555555555555")
+        .AllowReadAllWorkToGroups("11111111-2222-3333-4444-555555555555")
+        .AllowOperateAllWorkToGroups("11111111-2222-3333-4444-555555555555"));
+
+    workable.AddWork<SyncInvoicesWork>();
+});
+
+var app = builder.Build();
+app.UseRouting();
+app.UseWorkableEntraAuthorization();
+app.MapWorkableApi("/workable");
+```
+
+The target app still remains the authority. `Workable.Entra` validates bearer tokens for the configured tenant and API audience, maps Entra `scp`, `roles`, and `groups` claims into Workable authorization groups, and then Workable's normal authorization model decides what those group values can do.
+
+For browser SignalR clients, `Workable.Entra` also accepts the standard `access_token` query string token only on the Workable SignalR hub path (`/workable/realtime` by default, including negotiate requests). HTTP API and MCP requests must use the `Authorization` header, so URL tokens are not accepted on those surfaces.
+
+Minimal configuration:
+
+```json
+{
+  "Workable": {
+    "Entra": {
+      "TenantId": "00000000-0000-0000-0000-000000000000",
+      "Audience": "api://target-app-client-id"
+    }
+  }
+}
+```
+
+Configure Workable with the exact claim values your target token emits. In practice that is often:
+
+- Entra security group object IDs from the `groups` claim
+- app role values from the `roles` claim
+- delegated scope values from the `scp` claim when that fits the host's model
+
+The admin UI should acquire a target-audience token, such as through an on-behalf-of flow, and send it to the hosted Workable API as `Authorization: Bearer <token>`. For SignalR, browser clients should pass that same target-audience token through the SignalR access token factory.
+
+`Workable.Entra` does not add a separate Entra-specific authorization DSL for individual work definitions.
+
+`AddWorkableEntraAuthorization` registers the Workable bearer handler without replacing the host application's default authentication scheme. That lets cookie/OIDC web-app auth and Workable bearer-token auth coexist in the same ASP.NET Core host.
+
 ### Custom Endpoint Example
 
 For custom ASP.NET Core endpoints, create a request context explicitly and queue through a session.

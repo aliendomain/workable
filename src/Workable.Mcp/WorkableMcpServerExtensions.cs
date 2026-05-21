@@ -56,7 +56,7 @@ public static class WorkableMcpServerExtensions
         return builder;
     }
 
-    private static ValueTask<ListToolsResult> ListTools(
+    private static async ValueTask<ListToolsResult> ListTools(
         RequestContext<ListToolsRequestParams> request,
         CancellationToken cancellationToken)
     {
@@ -64,7 +64,7 @@ public static class WorkableMcpServerExtensions
         var router = services.GetRequiredService<WorkableMcpToolRouter>();
         var options = services.GetRequiredService<IOptions<WorkableMcpServerOptions>>().Value;
         var systemName = GetSystemName(services);
-        var requestContext = GetRequestContext(services, "List Workable MCP tools.");
+        var requestContext = await GetRequestContext(services, "List Workable MCP tools.");
         var tools = GetTools(router, requestContext, options, systemName)
             .Select(descriptor =>
             {
@@ -84,10 +84,10 @@ public static class WorkableMcpServerExtensions
             })
             .ToList();
 
-        return ValueTask.FromResult(new ListToolsResult
+        return new ListToolsResult
         {
             Tools = tools,
-        });
+        };
     }
 
     private static async ValueTask<CallToolResult> CallTool(
@@ -101,7 +101,7 @@ public static class WorkableMcpServerExtensions
             ? null
             : JsonSerializer.SerializeToElement(request.Params.Arguments);
         var toolName = request.Params?.Name ?? string.Empty;
-        var requestContext = GetRequestContext(services, $"MCP tool '{toolName}'");
+        var requestContext = await GetRequestContext(services, $"MCP tool '{toolName}'");
         var result = await router.CallTool(toolName, arguments, options, GetSystemName(services), requestContext, cancellationToken);
 
         return new CallToolResult
@@ -142,7 +142,7 @@ public static class WorkableMcpServerExtensions
         }
     }
 
-    private static WorkRequestContext GetRequestContext(
+    private static async Task<WorkRequestContext> GetRequestContext(
         IServiceProvider services,
         string description)
     {
@@ -152,7 +152,7 @@ public static class WorkableMcpServerExtensions
             throw new InvalidOperationException("Workable MCP requires an HTTP request context.");
         }
 
-        if (!WorkableAspNetCoreAuthentication.IsAuthenticated(httpContext))
+        if (!await WorkableAspNetCoreAuthentication.EnsureAuthenticatedAsync(httpContext))
         {
             throw new InvalidOperationException("Workable MCP requires an authenticated user.");
         }
@@ -187,15 +187,15 @@ public static class WorkableMcpServerExtensions
         {
             var next = endpointBuilder.RequestDelegate
                 ?? throw new InvalidOperationException("Workable MCP endpoint did not provide a request delegate.");
-            endpointBuilder.RequestDelegate = httpContext =>
+            endpointBuilder.RequestDelegate = async httpContext =>
             {
-                if (!WorkableAspNetCoreAuthentication.IsAuthenticated(httpContext))
+                if (!await WorkableAspNetCoreAuthentication.EnsureAuthenticatedAsync(httpContext))
                 {
                     httpContext.Response.StatusCode = StatusCodes.Status401Unauthorized;
-                    return Task.CompletedTask;
+                    return;
                 }
 
-                return next(httpContext);
+                await next(httpContext);
             };
         });
     }
