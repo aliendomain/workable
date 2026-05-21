@@ -11,6 +11,7 @@ All three packages use the `Workable` namespace.
 Optional adapter packages connect Workable to the edges of an application:
 
 - Use `Workable.AspNetCore` when the host needs to create authenticated `WorkRequestContext` values from `HttpContext` for its own controllers, minimal APIs, or custom transports.
+- `Workable.Views` provides shared component-view contracts and projections used by HTTP and SignalR adapters. Most applications receive it transitively through those adapters.
 - Use `Workable.HttpApi` when the host wants Workable to provide standard HTTP routes for queueing work, querying workers, and sending worker actions such as pause, cancel, push, and purge.
 - Use `Workable.Mcp` when the host wants authored work definitions, work-system query tools, and worker action tools to be available to an MCP client, such as an LLM tool host.
 - Use `Workable.SignalR` when the host wants browser clients to receive realtime worker events and component-view updates.

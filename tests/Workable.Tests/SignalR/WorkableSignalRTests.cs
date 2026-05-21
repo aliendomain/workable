@@ -336,6 +336,48 @@ public sealed class WorkableSignalRTests
     }
 
     [Fact]
+    public async Task ViewWatcherSkipsOverviewPublishUntilReadModelChanges()
+    {
+        using var host = await CreateHost(addSignalR: true);
+        var system = host.Services.GetRequiredService<IWorkSystemRegistry>().Default;
+        var gate = host.Services.GetRequiredService<SignalRWorkGate>();
+        var session = Session(system);
+        await Eventually(() => session.Diagnostics.ReadModel.PendingUpdateCount == 0);
+        await using var connection = CreateConnection(host);
+        var views = Channel.CreateUnbounded<WorkComponentQueryResult>();
+        connection.On<WorkComponentQueryResult>(
+            WorkableRealtimeClientMethods.ViewUpdated,
+            view => views.Writer.TryWrite(view));
+        await connection.StartAsync();
+        await connection.InvokeAsync(
+            "WatchView",
+            "overview",
+            new WorkViewCriteria(Components:
+            [
+                new WorkComponentRequest("workers", "workers", Shape: WorkComponentShapes.Compact),
+            ]),
+            null);
+
+        var initial = await ReadUntil(views.Reader, view => view.Components.ContainsKey("workers"));
+        var unchanged = await TryReadUntil(
+            views.Reader,
+            view => view.GeneratedAt > initial.GeneratedAt,
+            TimeSpan.FromMilliseconds(250));
+        Assert.False(unchanged);
+
+        var handle = await session.Queue.Enqueue("signalr.view");
+        await gate.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        gate.Release.SetResult();
+        await handle.WaitForCompletion();
+        var updated = await ReadUntil(
+            views.Reader,
+            view => view.GeneratedAt > initial.GeneratedAt &&
+                view.Components.ContainsKey("workers"));
+
+        Assert.Equal(["workers"], updated.Components.Keys.ToArray());
+    }
+
+    [Fact]
     public async Task ViewWatcherContinuesPublishingOverviewThroughputWithoutReadModelChanges()
     {
         using var host = await CreateHost(addSignalR: true);
@@ -670,7 +712,7 @@ public sealed class WorkableSignalRTests
 
         try
         {
-            await Eventually(() => system.Diagnostics.ReadModel.PendingUpdateCount >= 1);
+            await Eventually(() => session.Diagnostics.ReadModel.PendingUpdateCount >= 1);
 
             var updated = await ReadUntil(
                 views.Reader,

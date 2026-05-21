@@ -1,0 +1,13 @@
+{
+  "authProvider": "basic",
+  "apiUrl": "<url here>",
+  "allowedApiUrls": [
+    "<other urls here, if any>"
+  ],
+  "basicAuth": {
+    "username": "admin",
+    "password": "replace-with-a-long-random-password"
+  },
+  "sessionSecret": "replace-with-a-different-long-random-secret",
+  "sessionMaxAgeSeconds": 28800
+}

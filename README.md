@@ -25,6 +25,7 @@ Workable also gives applications a path to expose the same authored work through
 - `Workable.Abstractions`: contracts for libraries that consume an already-hosted work system.
 - `Workable`: in-process host and runtime for Workable systems.
 - `Workable.AspNetCore`: ASP.NET Core request-context and authorization integration for custom endpoints and hosts.
+- `Workable.Views`: shared component-view contracts and projections used by HTTP and SignalR adapters.
 - `Workable.HttpApi`: standard HTTP endpoints for queueing, querying, and controlling work.
 - `Workable.Mcp`: MCP server adapter for authored work, query tools, and worker action tools.
 - `Workable.SignalR`: realtime worker events and component-view updates for ASP.NET Core clients.

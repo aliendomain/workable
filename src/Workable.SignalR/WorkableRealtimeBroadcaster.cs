@@ -372,7 +372,17 @@ internal sealed class WorkableRealtimeBroadcaster(
                 continue;
             }
 
-            var diagnostics = system.Diagnostics.ReadModel;
+            if (system is not IWorkSystemReadModelClock readModelClock)
+            {
+                foreach (var subscription in subscriptions)
+                {
+                    await this.BroadcastView(system, subscription, cancellationToken);
+                }
+
+                continue;
+            }
+
+            var appliedSequence = readModelClock.AppliedSequence;
 
             foreach (var subscription in subscriptions)
             {
@@ -382,14 +392,14 @@ internal sealed class WorkableRealtimeBroadcaster(
                 var lastPublishedSequence = lastPublishedSequencesByGroup.TryGetValue(subscription.GroupName, out var sequence)
                     ? sequence
                     : subscription.InitialReadModelSequence;
-                if (!requiresIntervalPublish && lastPublishedSequence == diagnostics.AppliedSequence)
+                if (!requiresIntervalPublish && lastPublishedSequence == appliedSequence)
                 {
-                    lastPublishedSequencesByGroup[subscription.GroupName] = diagnostics.AppliedSequence;
+                    lastPublishedSequencesByGroup[subscription.GroupName] = appliedSequence;
                     continue;
                 }
 
                 await this.BroadcastView(system, subscription, cancellationToken);
-                lastPublishedSequencesByGroup[subscription.GroupName] = diagnostics.AppliedSequence;
+                lastPublishedSequencesByGroup[subscription.GroupName] = appliedSequence;
             }
         }
     }

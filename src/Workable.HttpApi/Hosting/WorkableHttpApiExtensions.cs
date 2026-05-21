@@ -61,15 +61,20 @@ public static class WorkableHttpApiExtensions
 
     private static void RequireAuthenticated(RouteGroupBuilder group)
     {
-        group.AddEndpointFilter(static (context, next) =>
+        ((IEndpointConventionBuilder)group).Add(endpointBuilder =>
         {
-            if (!HttpMethods.IsOptions(context.HttpContext.Request.Method) &&
-                !WorkableAspNetCoreAuthentication.IsAuthenticated(context.HttpContext))
+            var next = endpointBuilder.RequestDelegate
+                ?? throw new InvalidOperationException("Workable HTTP API endpoint did not provide a request delegate.");
+            endpointBuilder.RequestDelegate = httpContext =>
             {
-                return ValueTask.FromResult<object?>(WorkableHttpRouteResults.AuthenticationRequired());
-            }
+                if (!HttpMethods.IsOptions(httpContext.Request.Method) &&
+                    !WorkableAspNetCoreAuthentication.IsAuthenticated(httpContext))
+                {
+                    return WorkableHttpRouteResults.AuthenticationRequired().ExecuteAsync(httpContext);
+                }
 
-            return next(context);
+                return next(httpContext);
+            };
         });
     }
 

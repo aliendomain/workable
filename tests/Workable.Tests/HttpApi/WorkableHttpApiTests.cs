@@ -1128,6 +1128,19 @@ public sealed class WorkableHttpApiTests
     }
 
     [Fact]
+    public async Task MappedHttpAnonymousRequestIsRejectedBeforeBodyBinding()
+    {
+        using var host = await CreateHttpHost(authenticated: false);
+        var client = host.GetTestClient();
+
+        var response = await client.PostAsync(
+            "/workable/work/http.route.case",
+            new StringContent("{", System.Text.Encoding.UTF8, "application/json"));
+
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+    }
+
+    [Fact]
     public async Task MappedHttpReconfigureEventUsesHttpOrigin()
     {
         using var host = await CreateHttpHost();
@@ -2175,10 +2188,11 @@ public sealed class WorkableHttpApiTests
 
     private static async Task WaitForReadModel(IWorkSystem system)
     {
+        var session = DiagnosticsSession(system);
         var deadline = DateTimeOffset.UtcNow.AddSeconds(5);
         while (DateTimeOffset.UtcNow < deadline)
         {
-            if (system.Diagnostics.ReadModel.PendingUpdateCount == 0)
+            if (session.Diagnostics.ReadModel.PendingUpdateCount == 0)
             {
                 return;
             }
@@ -2186,6 +2200,25 @@ public sealed class WorkableHttpApiTests
             await Task.Delay(10);
         }
 
-        Assert.Equal(0, system.Diagnostics.ReadModel.PendingUpdateCount);
+        Assert.Equal(0, session.Diagnostics.ReadModel.PendingUpdateCount);
+    }
+
+    private static IWorkSystemSession DiagnosticsSession(IWorkSystem system)
+    {
+        var actor = TransportAuthorizationTestSupport.CreateActor(
+            id: "http-diagnostics-user-1",
+            name: "HTTP Diagnostics User",
+            email: "http.diagnostics@example.test");
+        var requestContext = WorkRequestContext.Create(
+            WorkInvocationChannel.HttpApi,
+            actor,
+            "Wait for HTTP API test read model projection.") with
+        {
+            Authorization = WorkAuthorizationSnapshot.Create(
+                actor,
+                [InternalWorkAuthorizationGroups.SystemAdministrator],
+                readableDefinitionIds: null),
+        };
+        return system.CreateSession(requestContext);
     }
 }

@@ -185,20 +185,18 @@ public static class WorkableMcpServerExtensions
     {
         builder.Add(endpointBuilder =>
         {
-            if (endpointBuilder is not RouteEndpointBuilder routeEndpointBuilder)
+            var next = endpointBuilder.RequestDelegate
+                ?? throw new InvalidOperationException("Workable MCP endpoint did not provide a request delegate.");
+            endpointBuilder.RequestDelegate = httpContext =>
             {
-                return;
-            }
-
-            routeEndpointBuilder.FilterFactories.Add(static (context, next) => invocationContext =>
-            {
-                if (!WorkableAspNetCoreAuthentication.IsAuthenticated(invocationContext.HttpContext))
+                if (!WorkableAspNetCoreAuthentication.IsAuthenticated(httpContext))
                 {
-                    return ValueTask.FromResult<object?>(Results.Unauthorized());
+                    httpContext.Response.StatusCode = StatusCodes.Status401Unauthorized;
+                    return Task.CompletedTask;
                 }
 
-                return next(invocationContext);
-            });
+                return next(httpContext);
+            };
         });
     }
 

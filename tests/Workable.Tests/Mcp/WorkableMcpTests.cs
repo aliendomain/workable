@@ -462,6 +462,19 @@ public sealed class WorkableMcpTests
     }
 
     [Fact]
+    public async Task MappedHttpMcpAnonymousRequestIsRejectedBeforeBodyHandling()
+    {
+        using var host = await CreateMcpHttpHost(authenticated: false);
+        var httpClient = host.GetTestClient();
+
+        var response = await httpClient.PostAsync(
+            "/workable/mcp",
+            new StringContent("{", System.Text.Encoding.UTF8, "application/json"));
+
+        Assert.Equal(System.Net.HttpStatusCode.Unauthorized, response.StatusCode);
+    }
+
+    [Fact]
     public async Task MappedHttpMcpServerCanApplyWorkerActionsWithMcpOrigin()
     {
         using var host = await CreateMcpHttpHost(
@@ -541,6 +554,54 @@ public sealed class WorkableMcpTests
         Assert.False(result.IsError);
         Assert.Contains("allowed.authorization", json);
         Assert.DoesNotContain("hidden.authorization", json);
+    }
+
+    [Fact]
+    public async Task MappedHttpMcpServerRejectsUnauthorizedWorkerActions()
+    {
+        using var host = await CreateAuthorizedMcpHttpHost(
+            groups: ["billing.read"],
+            allowedDefinition: WorkDefinition.Create(
+                "allowed.authorization",
+                configuration: AllowMcp() with
+                {
+                    Start = WorkStartConfiguration.DoNotStart,
+                }));
+        var system = host.Services.GetRequiredService<IWorkSystemRegistry>().Default;
+        var seedSession = CreateMcpSessionWithGroups(
+            system,
+            "Seed MCP unauthorized action test worker.",
+            "billing.read",
+            "billing.ops");
+        var queue = await seedSession.Queue.Enqueue("allowed.authorization");
+        await WaitForReadModel(system);
+        var worker = await seedSession.Query.Worker(queue.WorkerId ?? throw new InvalidOperationException("Expected worker."))
+            ?? throw new InvalidOperationException("Expected worker.");
+        var httpClient = host.GetTestClient();
+        var transport = new HttpClientTransport(
+            new HttpClientTransportOptions
+            {
+                Endpoint = new Uri("http://localhost/workable/mcp"),
+            },
+            httpClient,
+            loggerFactory: null,
+            ownsHttpClient: false);
+        await using var client = await McpClient.CreateAsync(transport);
+
+        var result = await client.CallToolAsync(
+            "workable_cancel_worker",
+            new Dictionary<string, object?>
+            {
+                ["workerId"] = worker.Id.Value.ToString("D"),
+                ["revision"] = worker.Revision,
+            });
+        var json = JsonSerializer.Serialize(result);
+        var updated = await seedSession.Query.Worker(worker.Id)
+            ?? throw new InvalidOperationException("Expected worker.");
+
+        Assert.True(result.IsError);
+        Assert.Contains("Unauthorized", json);
+        Assert.Equal(WorkerState.Queued, updated.State);
     }
 
     [Fact]
@@ -757,6 +818,23 @@ public sealed class WorkableMcpTests
         Assert.Contains("workable.mcp.tool_not_found", result.Json);
     }
 
+    [Fact]
+    public async Task McpServerReturnsToolErrorForInvalidArguments()
+    {
+        await using var provider = CreateProvider(WorkDefinition.Create("known", configuration: AllowMcp()), SuccessfulWork);
+        var router = provider.GetRequiredService<WorkableMcpToolRouter>();
+
+        var result = await router.CallTool(
+            "workable_cancel_worker",
+            arguments: null,
+            options: null,
+            systemName: null,
+            requestContext: CreateMcpRequestContext("Invoke MCP action tool with invalid arguments."));
+
+        Assert.True(result.IsError);
+        Assert.Contains("workable.mcp.arguments_invalid", result.Json);
+    }
+
     private static IWorkSystem CreateSystem(
         WorkDefinition definition,
         Func<IWorkExecutionContext, WorkInput?, CancellationToken, Task<WorkExecutionResult>> execute)
@@ -883,8 +961,12 @@ public sealed class WorkableMcpTests
         return host;
     }
 
-    private static async Task<IHost> CreateAuthorizedMcpHttpHost()
+    private static async Task<IHost> CreateAuthorizedMcpHttpHost(
+        IEnumerable<string>? groups = null,
+        WorkDefinition? allowedDefinition = null)
     {
+        groups ??= ["billing.read", "billing.ops"];
+        allowedDefinition ??= WorkDefinition.Create("allowed.authorization", configuration: AllowMcp());
         var host = new HostBuilder()
             .ConfigureWebHost(web =>
             {
@@ -897,7 +979,7 @@ public sealed class WorkableMcpTests
                         builder.StartWithHost();
                         builder.RequireAuthorization();
                         builder.AddWork(
-                            WorkDefinition.Create("allowed.authorization", configuration: AllowMcp()),
+                            allowedDefinition,
                             SuccessfulWork,
                             configure: null,
                             authorize: authorize => authorize.RequireGroups(
@@ -919,11 +1001,8 @@ public sealed class WorkableMcpTests
                     app.Use(async (context, next) =>
                     {
                         context.User = new ClaimsPrincipal(new ClaimsIdentity(
-                        [
-                            new Claim(ClaimTypes.NameIdentifier, "mcp-auth-user-1"),
-                            new Claim("groups", "billing.read"),
-                            new Claim("groups", "billing.ops"),
-                        ], "Test"));
+                            CreateAuthenticatedClaims(groups),
+                            "Test"));
                         await next();
                     });
                     app.UseEndpoints(endpoints => endpoints.MapWorkableMcp());
@@ -958,12 +1037,45 @@ public sealed class WorkableMcpTests
                 email: "mcp.router@example.test"),
             description);
 
+    private static IWorkSystemSession CreateMcpSessionWithGroups(
+        IWorkSystem system,
+        string description,
+        params string[] groups)
+    {
+        var actor = TransportAuthorizationTestSupport.CreateActor(
+            id: "mcp-seed-user-1",
+            name: "MCP Seed User",
+            email: "mcp.seed@example.test");
+        var requestContext = WorkRequestContext.Create(
+            WorkInvocationChannel.Mcp,
+            actor,
+            description) with
+        {
+            Authorization = WorkAuthorizationSnapshot.Create(actor, groups, readableDefinitionIds: null),
+        };
+        return system.CreateSession(requestContext);
+    }
+
+    private static IEnumerable<Claim> CreateAuthenticatedClaims(IEnumerable<string> groups)
+    {
+        yield return new Claim(ClaimTypes.NameIdentifier, "mcp-auth-user-1");
+
+        foreach (var group in groups)
+        {
+            yield return new Claim("groups", group);
+        }
+    }
+
     private static async Task WaitForReadModel(IWorkSystem system)
     {
+        var session = CreateMcpSessionWithGroups(
+            system,
+            "Wait for MCP test read model projection.",
+            InternalWorkAuthorizationGroups.SystemAdministrator);
         var deadline = DateTimeOffset.UtcNow.AddSeconds(5);
         while (DateTimeOffset.UtcNow < deadline)
         {
-            if (system.Diagnostics.ReadModel.PendingUpdateCount == 0)
+            if (session.Diagnostics.ReadModel.PendingUpdateCount == 0)
             {
                 return;
             }
@@ -971,7 +1083,7 @@ public sealed class WorkableMcpTests
             await Task.Delay(10);
         }
 
-        Assert.Equal(0, system.Diagnostics.ReadModel.PendingUpdateCount);
+        Assert.Equal(0, session.Diagnostics.ReadModel.PendingUpdateCount);
     }
 
     private static WorkConfiguration AllowMcp()
