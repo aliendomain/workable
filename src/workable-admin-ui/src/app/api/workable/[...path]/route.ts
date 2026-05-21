@@ -1,4 +1,5 @@
 const DEFAULT_API_URL = process.env.WORKABLE_API_URL ?? "http://localhost:61932/workable";
+const LOCAL_HTTPS_HOSTS = new Set(["localhost", "127.0.0.1", "::1"]);
 
 type RouteContext = {
   params: Promise<{ path: string[] }>;
@@ -26,7 +27,7 @@ async function proxyWorkable(request: Request, context: RouteContext) {
       : await request.text();
 
   try {
-    const response = await fetch(target.url, {
+    const response = await fetchWorkable(target.url, {
       method: request.method,
       headers: {
         accept: "application/json",
@@ -54,6 +55,31 @@ async function proxyWorkable(request: Request, context: RouteContext) {
       },
       { status: 502 }
     );
+  }
+}
+
+function shouldAllowInsecureLocalHttps(url: URL) {
+  return process.env.NODE_ENV !== "production" &&
+    url.protocol === "https:" &&
+    LOCAL_HTTPS_HOSTS.has(url.hostname);
+}
+
+async function fetchWorkable(url: URL, init: RequestInit) {
+  if (!shouldAllowInsecureLocalHttps(url)) {
+    return fetch(url, init);
+  }
+
+  const previous = process.env.NODE_TLS_REJECT_UNAUTHORIZED;
+  process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
+
+  try {
+    return await fetch(url, init);
+  } finally {
+    if (previous === undefined) {
+      delete process.env.NODE_TLS_REJECT_UNAUTHORIZED;
+    } else {
+      process.env.NODE_TLS_REJECT_UNAUTHORIZED = previous;
+    }
   }
 }
 
