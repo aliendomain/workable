@@ -65,7 +65,7 @@ public static class WorkableMcpServerExtensions
         var options = services.GetRequiredService<IOptions<WorkableMcpServerOptions>>().Value;
         var systemName = GetSystemName(services);
         var requestContext = GetRequestContext(services, "List Workable MCP tools.");
-        var tools = router.GetTools(requestContext, options, systemName)
+        var tools = GetTools(router, requestContext, options, systemName)
             .Select(descriptor =>
             {
                 var tool = new Tool
@@ -125,6 +125,22 @@ public static class WorkableMcpServerExtensions
             ?.Metadata
             .GetMetadata<WorkableMcpEndpointMetadata>()
             ?.SystemName;
+
+    private static IReadOnlyList<WorkableMcpServerToolDescriptor> GetTools(
+        WorkableMcpToolRouter router,
+        WorkRequestContext requestContext,
+        WorkableMcpServerOptions options,
+        string? systemName)
+    {
+        try
+        {
+            return router.GetTools(requestContext, options, systemName);
+        }
+        catch (WorkSystemAccessDeniedException)
+        {
+            return [];
+        }
+    }
 
     private static WorkRequestContext GetRequestContext(
         IServiceProvider services,

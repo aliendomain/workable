@@ -73,9 +73,13 @@ internal sealed class WorkableRealtimeBroadcaster(
 
         foreach (var subscription in subscriptions)
         {
+            var session = CreateAuthorizedSession(
+                system,
+                subscription.Authorization,
+                "Broadcast Workable diagnostics alerts through SignalR.");
             await this.BroadcastDiagnosticsAlertView(
                 subscription,
-                CreateDiagnosticsAlertState(system, subscription, systemState),
+                CreateDiagnosticsAlertState(session, subscription, systemState),
                 cancellationToken);
         }
     }
@@ -397,7 +401,7 @@ internal sealed class WorkableRealtimeBroadcaster(
         var alertStatesByGroup = new Dictionary<string, DiagnosticsAlertState>(StringComparer.Ordinal);
         using var timer = new PeriodicTimer(NormalizeInterval(
             options.Value.DiagnosticsPublishInterval,
-            TimeSpan.FromMilliseconds(250)));
+            TimeSpan.FromMilliseconds(750)));
         while (await timer.WaitForNextTickAsync(cancellationToken))
         {
             var subscriptions = viewSubscriptions
@@ -418,7 +422,11 @@ internal sealed class WorkableRealtimeBroadcaster(
             {
                 if (IsDiagnosticsAlertChangesSubscription(subscription))
                 {
-                    var alertState = CreateDiagnosticsAlertState(system, subscription);
+                    var session = CreateAuthorizedSession(
+                        system,
+                        subscription.Authorization,
+                        "Broadcast Workable diagnostics alerts through SignalR.");
+                    var alertState = CreateDiagnosticsAlertState(session, subscription);
                     if (alertStatesByGroup.TryGetValue(subscription.GroupName, out var previous) &&
                         previous == alertState)
                     {
@@ -613,26 +621,26 @@ internal sealed class WorkableRealtimeBroadcaster(
             string.Equals(component.Type, "durabilityDiagnostics", StringComparison.OrdinalIgnoreCase);
 
     private static DiagnosticsAlertState CreateDiagnosticsAlertState(
-        IWorkSystem system,
+        IWorkSystemSession session,
         WorkableRealtimeViewSubscription subscription,
         WorkSystemState? systemState = null)
     {
-        var queue = system.Diagnostics.Queue;
-        var readModel = system.Diagnostics.ReadModel;
+        var queue = session.Diagnostics.Queue;
+        var readModel = session.Diagnostics.ReadModel;
         var readModelThreshold = GetReadModelDiagnosticsWarningThreshold(subscription);
         var readModelLagSeverity = readModel.PendingUpdateCount >= readModelThreshold * 10L
             ? DiagnosticsLagSeverity.Critical
             : readModel.PendingUpdateCount >= readModelThreshold
                 ? DiagnosticsLagSeverity.Warning
                 : DiagnosticsLagSeverity.Normal;
-        var retention = system.Diagnostics.Retention;
+        var retention = session.Diagnostics.Retention;
         var retentionWarningSeconds = GetRetentionDiagnosticsWarningSeconds(subscription);
         var retentionLagSeverity = retention.OldestDuePurgeAge >= TimeSpan.FromSeconds(retentionWarningSeconds * 10L)
             ? DiagnosticsLagSeverity.Critical
             : retention.OldestDuePurgeAge >= TimeSpan.FromSeconds(retentionWarningSeconds)
                 ? DiagnosticsLagSeverity.Warning
                 : DiagnosticsLagSeverity.Normal;
-        var concurrency = system.Diagnostics.Concurrency;
+        var concurrency = session.Diagnostics.Concurrency;
         var concurrencyWarningSeconds = GetConcurrencyDiagnosticsWarningSeconds(subscription);
         var concurrencyLagSeverity = concurrency.DeferredStartCount > 0 &&
             concurrency.OldestDeferredStartAge >= TimeSpan.FromSeconds(concurrencyWarningSeconds * 10L)
@@ -641,7 +649,7 @@ internal sealed class WorkableRealtimeBroadcaster(
                 concurrency.OldestDeferredStartAge >= TimeSpan.FromSeconds(concurrencyWarningSeconds)
                 ? DiagnosticsLagSeverity.Warning
                 : DiagnosticsLagSeverity.Normal;
-        var durability = system.Diagnostics.Durability;
+        var durability = session.Diagnostics.Durability;
         var acceptedWorkerWarningSeconds = GetDurabilityAcceptedWorkerWarningSeconds(subscription);
         var cleanupWarningSeconds = GetDurabilityCleanupWarningSeconds(subscription);
         var acceptedWorkerLagSeverity = durability.AcceptedWaiterCount > 0 &&
@@ -660,8 +668,8 @@ internal sealed class WorkableRealtimeBroadcaster(
                 : DiagnosticsLagSeverity.Normal;
 
         return new DiagnosticsAlertState(
-            system.Name,
-            systemState ?? system.State,
+            session.SystemName,
+            systemState ?? session.SystemState,
             queue.RejectedWorkCount,
             queue.LastRejectedAt,
             queue.LastRejectedCode,

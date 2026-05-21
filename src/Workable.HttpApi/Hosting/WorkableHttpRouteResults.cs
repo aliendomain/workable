@@ -34,8 +34,8 @@ internal static class WorkableHttpRouteResults
         }, statusCode: StatusCodes.Status403Forbidden);
     }
 
-    internal static async Task<IResult> ToOk<T>(Task<T> task)
-        => Results.Ok(await task);
+    internal static async Task<IResult> ToOk<T>(Func<Task<T>> action)
+        => Results.Ok(await action());
 
     internal static bool TryResolveSystem(
         HttpContext httpContext,

@@ -1,3 +1,5 @@
+using Workable.SampleHost;
+
 namespace Workable.SampleHost.Demo;
 
 public sealed class DemoTightLoopController(
@@ -184,7 +186,8 @@ public sealed class DemoTightLoopController(
                     new WorkIdentifier("tight-loop-sequence", sequenceNumber.ToString()),
                 ]);
 
-            var handle = await registry.Default.Queue.Enqueue(
+            var session = registry.Default.CreateSession("Queue tight-loop operations sample work from the sample host.");
+            var handle = await session.Queue.Enqueue(
                 "sample.demo.quick",
                 input,
                 cancellationToken: cancellationToken);
@@ -227,7 +230,8 @@ public sealed class DemoTightLoopController(
                     new WorkIdentifier("tight-loop-sequence", sequenceNumber.ToString()),
                 ]);
 
-            var handle = await system.Queue.Enqueue(
+            var session = system.CreateSession("Queue tight-loop fulfillment sample work from the sample host.");
+            var handle = await session.Queue.Enqueue(
                 "fulfillment.demo.quick",
                 input,
                 cancellationToken: cancellationToken);

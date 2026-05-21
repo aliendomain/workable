@@ -5,4 +5,5 @@ public sealed record WorkSystemCriteria(
     string? DefinitionName = null,
     string? Category = null,
     bool IncludeSubcategories = true,
-    bool IncludeThroughput = false);
+    bool IncludeThroughput = false,
+    IReadOnlySet<WorkDefinitionId>? DefinitionIds = null);

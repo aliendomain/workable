@@ -79,7 +79,9 @@ import {
   ConsoleNavigationHeader,
   DelayedLoadingOverlay,
   DeleteTargetDialog,
+  discoverSystems,
   EmptyServerState,
+  reconcileStoredSystemsWithDiscovery,
   ServerDialog,
   ServerTree,
   StopSystemDialog,
@@ -114,6 +116,7 @@ import {
   type WorkSystemReadModelDiagnostics,
   type WorkSystemRetentionDiagnostics,
   type WorkSystemLifecycleResult,
+  type WorkSystemAccessSummary,
   type WorkableConnection,
   type WorkerState,
 } from "@/lib/workable";
@@ -178,7 +181,9 @@ type WorkableSystemConnection = {
   hostId: string;
   name: string;
   systemName?: string;
+  access?: WorkSystemAccessSummary;
   realtimeEnabled: boolean;
+  realtimeFeatures?: string[] | null;
   realtimeHubPath?: string | null;
   realtimeSupported?: boolean;
   realtimeTransport?: string | null;
@@ -309,7 +314,7 @@ export function WorkableConsole() {
   const [lifecycleError, setLifecycleError] = useState<string>();
   const [systemNotificationOpen, setSystemNotificationOpen] = useState(false);
   const [acknowledgedRejectedWorkCounts, setAcknowledgedRejectedWorkCounts] = useState<Record<string, number>>({});
-  const [diagnosticsAlertsBySystemId, setDiagnosticsAlertsBySystemId] = useState<Record<string, DiagnosticsAlertSnapshot>>({});
+  const [diagnosticsAlertsByTargetId, setDiagnosticsAlertsByTargetId] = useState<Record<string, DiagnosticsAlertSnapshot>>({});
   const [readModelDiagnosticsExpanded, setReadModelDiagnosticsExpanded] = useState(false);
   const [retentionDiagnosticsExpanded, setRetentionDiagnosticsExpanded] = useState(false);
   const [concurrencyDiagnosticsExpanded, setConcurrencyDiagnosticsExpanded] = useState(false);
@@ -347,14 +352,16 @@ export function WorkableConsole() {
   const [navigationHistory, setNavigationHistory] = useState<NavigationEntry[]>([]);
   const viewScrollPositions = useRef<Partial<Record<ServerView, number>>>({});
   const readyViews = useRef<Set<string>>(new Set());
+  const restoredHostsRef = useRef<WorkableHostConnection[] | null>(null);
   const activeLocation = findSystemLocation(consoleState, consoleState.activeSystemId);
   const activeHost = activeLocation?.host;
   const activeSystem = activeLocation?.system;
   const activeSystemId = activeSystem?.id ?? "";
-  const activeApiUrl = activeHost?.apiUrl;
-  const activeSystemName = activeSystem?.systemName;
-  const activeRealtimeEnabled = activeSystem?.realtimeEnabled ?? false;
-  const activeRealtimeHubPath = activeSystem?.realtimeHubPath ?? null;
+  const activeRealtimeFeatures = activeSystem?.realtimeFeatures ?? null;
+  const activeCanViewDiagnostics = activeSystem?.access?.canViewDiagnostics ?? false;
+  const activeCanUseRealtimeEvents = hasRealtimeFeature(activeRealtimeFeatures, "worker-events");
+  const activeCanUseRealtimeDiagnostics = hasRealtimeFeature(activeRealtimeFeatures, "diagnostics-view");
+  const activeCanUseRealtimeDiagnosticsUi = activeCanViewDiagnostics && activeCanUseRealtimeDiagnostics;
   const activeCatalogScope = activeSystem
     ? catalogScopeBySystemId[activeSystem.id] ?? null
     : null;
@@ -363,17 +370,18 @@ export function WorkableConsole() {
     : null;
   const connection = useMemo<WorkableConnection | null>(
     () =>
-      activeApiUrl
+      activeHost?.apiUrl
         ? {
-            apiUrl: activeApiUrl,
-            realtimeHubPath: activeRealtimeEnabled
-              ? activeRealtimeHubPath
+            apiUrl: activeHost.apiUrl,
+            realtimeHubPath: activeSystem?.realtimeEnabled
+              ? activeSystem.realtimeHubPath ?? null
               : null,
-            systemName: activeSystemName,
+            systemName: activeSystem?.systemName,
           }
         : null,
-    [activeApiUrl, activeRealtimeEnabled, activeRealtimeHubPath, activeSystemName]
+    [activeHost, activeSystem]
   );
+  const hydratedConnection = hasMounted ? connection : null;
   const diagnosticsAlertRequest = useMemo(
     () => ({
       components: [
@@ -582,25 +590,35 @@ export function WorkableConsole() {
     }),
     []
   );
-  const diagnosticsRealtimeEnabled = Boolean(connection?.realtimeHubPath);
+  const diagnosticsRealtimeEnabled =
+    Boolean(hydratedConnection?.realtimeHubPath) &&
+    activeCanUseRealtimeDiagnosticsUi;
   const diagnosticsAlertTargets = useMemo(
     () => createDiagnosticsAlertTargets(consoleState.hosts),
     [consoleState.hosts]
   );
+  const hasDiagnosticsAlertTargets = diagnosticsAlertTargets.length > 0;
   const diagnosticsAlertSources = useMemo<DiagnosticsAlertSource[]>(
     () => diagnosticsAlertTargets.map((target) => ({
-      ...(diagnosticsAlertsBySystemId[target.systemId] ?? {
+      ...(diagnosticsAlertsByTargetId[target.id] ?? {
         connectionState: "connecting",
         enabled: true,
         loading: true,
       }),
       target,
     })),
-    [diagnosticsAlertTargets, diagnosticsAlertsBySystemId]
+    [diagnosticsAlertTargets, diagnosticsAlertsByTargetId]
   );
+  const activeDiagnosticsAlertTargetId = activeHost && activeSystem
+    ? createDiagnosticsAlertTargetId(
+        activeHost.apiUrl,
+        activeSystem.realtimeHubPath ?? null,
+        activeSystem.systemName
+      )
+    : null;
   const captureRealtimePayloads = realtimePayloadOpen && realtimePayloadCaptureEnabled;
   const diagnosticsTray = useWorkableRealtimeView<WorkComponentQueryResult>(
-    connection,
+    hydratedConnection,
     "diagnostics",
     diagnosticsTrayRequest,
     diagnosticsRealtimeEnabled && systemNotificationOpen,
@@ -609,7 +627,7 @@ export function WorkableConsole() {
     "diagnostics:tray"
   );
   const readModelDiagnosticsDetail = useWorkableRealtimeView<WorkComponentQueryResult>(
-    connection,
+    hydratedConnection,
     "diagnostics",
     readModelDiagnosticsDetailRequest,
     diagnosticsRealtimeEnabled && systemNotificationOpen && readModelDiagnosticsExpanded,
@@ -618,7 +636,7 @@ export function WorkableConsole() {
     "diagnostics:read-model"
   );
   const retentionDiagnosticsDetail = useWorkableRealtimeView<WorkComponentQueryResult>(
-    connection,
+    hydratedConnection,
     "diagnostics",
     retentionDiagnosticsDetailRequest,
     diagnosticsRealtimeEnabled && systemNotificationOpen && retentionDiagnosticsExpanded,
@@ -627,7 +645,7 @@ export function WorkableConsole() {
     "diagnostics:retention"
   );
   const concurrencyDiagnosticsDetail = useWorkableRealtimeView<WorkComponentQueryResult>(
-    connection,
+    hydratedConnection,
     "diagnostics",
     concurrencyDiagnosticsDetailRequest,
     diagnosticsRealtimeEnabled && systemNotificationOpen && concurrencyDiagnosticsExpanded,
@@ -636,7 +654,7 @@ export function WorkableConsole() {
     "diagnostics:concurrency"
   );
   const durabilityDiagnosticsDetail = useWorkableRealtimeView<WorkComponentQueryResult>(
-    connection,
+    hydratedConnection,
     "diagnostics",
     durabilityDiagnosticsDetailRequest,
     diagnosticsRealtimeEnabled && systemNotificationOpen && durabilityDiagnosticsExpanded,
@@ -645,7 +663,7 @@ export function WorkableConsole() {
     "diagnostics:durability"
   );
   const idempotencyDiagnosticsDetail = useWorkableRealtimeView<WorkComponentQueryResult>(
-    connection,
+    hydratedConnection,
     "diagnostics",
     idempotencyDiagnosticsDetailRequest,
     diagnosticsRealtimeEnabled && systemNotificationOpen && idempotencyDiagnosticsExpanded,
@@ -686,9 +704,10 @@ export function WorkableConsole() {
     [selectedEventViewerDefinitionIds, selectedEventViewerEventTypes, selectedEventViewerKeys]
   );
   const realtimeEvents = useWorkableRealtimeEvents(
-    connection,
+    hydratedConnection,
     eventViewerCriteria,
-    Boolean(connection?.realtimeHubPath) &&
+    Boolean(hydratedConnection?.realtimeHubPath) &&
+      activeCanUseRealtimeEvents &&
       eventViewerOpen &&
       eventViewerCaptureEnabled &&
       selectedEventViewerEventTypes.length > 0,
@@ -774,6 +793,15 @@ export function WorkableConsole() {
       setIdempotencyDiagnosticsExpanded(false);
     }
   }, []);
+  useEffect(() => {
+    if (!hasDiagnosticsAlertTargets && systemNotificationOpen) {
+      const timeoutId = window.setTimeout(() => {
+        handleSystemNotificationOpenChange(false);
+      }, 0);
+
+      return () => window.clearTimeout(timeoutId);
+    }
+  }, [handleSystemNotificationOpenChange, hasDiagnosticsAlertTargets, systemNotificationOpen]);
   const acknowledgeQueueRejections = useCallback((systemId: string, count: number) => {
     setAcknowledgedRejectedWorkCounts((current) => ({
       ...current,
@@ -810,12 +838,11 @@ export function WorkableConsole() {
       const hosts = current.hosts.map((host) => ({
         ...host,
         systems: host.systems.map((system) => {
-          const matchesTargetId = system.id === target.systemId;
           const matchesTargetScope =
-            host.id === target.hostId &&
+            host.apiUrl === target.apiUrl &&
             (system.systemName ?? "") === targetSystemName;
 
-          if ((!matchesTargetId && !matchesTargetScope) || system.state === state) {
+          if (!matchesTargetScope || system.state === state) {
             return system;
           }
 
@@ -829,47 +856,46 @@ export function WorkableConsole() {
   }, []);
 
   const updateDiagnosticsAlertSnapshot = useCallback((
-    systemId: string,
+    targetId: string,
     snapshot: DiagnosticsAlertSnapshot | null
   ) => {
+    const target = diagnosticsAlertTargets.find((candidate) => candidate.id === targetId);
     const systemDiagnostics = getWorkComponentData<WorkSystemDiagnosticsCompactComponent>(
       snapshot?.data,
       "systemDiagnostics"
     );
     if (systemDiagnostics?.systemState) {
-      const target = diagnosticsAlertTargets.find((candidate) => candidate.systemId === systemId);
       if (target) {
         updateSystemStateFromDiagnosticsTarget(target, systemDiagnostics.systemState);
-      } else {
-        updateSystemState(systemId, systemDiagnostics.systemState);
       }
     }
 
-    setDiagnosticsAlertsBySystemId((current) => {
+    setDiagnosticsAlertsByTargetId((current) => {
       if (!snapshot) {
-        if (!(systemId in current)) {
+        if (!(targetId in current)) {
           return current;
         }
 
         const next = { ...current };
-        delete next[systemId];
+        delete next[targetId];
         return next;
       }
 
-      if (diagnosticsAlertSnapshotsEqual(current[systemId], snapshot)) {
+      if (diagnosticsAlertSnapshotsEqual(current[targetId], snapshot)) {
         return current;
       }
 
       return {
         ...current,
-        [systemId]: snapshot,
+        [targetId]: snapshot,
       };
     });
-  }, [diagnosticsAlertTargets, updateSystemState, updateSystemStateFromDiagnosticsTarget]);
+  }, [diagnosticsAlertTargets, updateSystemStateFromDiagnosticsTarget]);
 
   useEffect(() => {
     queueMicrotask(() => {
       const loaded = loadConsoleStorage();
+      restoredHostsRef.current = loaded.hosts;
       setConsoleState(loaded);
       setView(loaded.view);
       setVisibleView(loaded.view);
@@ -878,6 +904,100 @@ export function WorkableConsole() {
       setHasMounted(true);
     });
   }, []);
+
+  useEffect(() => {
+    const hostsToRevalidate = restoredHostsRef.current ?? [];
+    if (!hasMounted || hostsToRevalidate.length === 0) {
+      return;
+    }
+
+    let canceled = false;
+
+    void (async () => {
+      const discoveries = await Promise.all(
+        hostsToRevalidate.map(async (host) => {
+          try {
+            const result = await discoverSystems(host.apiUrl);
+            return {
+              apiUrl: result.apiUrl,
+              hostId: host.id,
+              systems: reconcileStoredSystemsWithDiscovery(host, result.systems ?? []),
+            };
+          } catch {
+            return null;
+          }
+        })
+      );
+
+      if (canceled) {
+        return;
+      }
+
+      let resetNavigation = false;
+      setConsoleState((current) => {
+        const updates = new Map(
+          discoveries
+            .filter((discovery): discovery is {
+              apiUrl: string;
+              hostId: string;
+              systems: WorkableSystemConnection[];
+            } => discovery !== null)
+            .map((discovery) => [discovery.hostId, discovery])
+        );
+
+        if (updates.size === 0) {
+          return current;
+        }
+
+        const hosts = current.hosts.map((host) => {
+          const update = updates.get(host.id);
+          return update
+            ? {
+                ...host,
+                apiUrl: update.apiUrl,
+                systems: update.systems,
+              }
+            : host;
+        });
+        const availableSystemIds = new Set(
+          hosts.flatMap((host) => host.systems.map((system) => system.id))
+        );
+        const nextActiveSystemId =
+          current.activeSystemId && availableSystemIds.has(current.activeSystemId)
+            ? current.activeSystemId
+            : getFirstAvailableSystemId(hosts);
+        const expandedSystemIds = current.expandedSystemIds.filter((id) =>
+          availableSystemIds.has(id)
+        );
+
+        resetNavigation = nextActiveSystemId !== current.activeSystemId;
+
+        return {
+          ...current,
+          activeSystemId: nextActiveSystemId,
+          expandedHostIds: current.expandedHostIds.filter((id) =>
+            hosts.some((host) => host.id === id)
+          ),
+          expandedSystemIds,
+          hosts,
+        };
+      });
+
+      if (resetNavigation) {
+        setSelectedDefinitionId(null);
+        setSelectedWorkerId(null);
+        setNavigationHistory([]);
+        setView("overview");
+        setVisibleView("overview");
+        setPendingView("overview");
+        setMountedViews(new Set(["overview"]));
+      }
+    })();
+
+    return () => {
+      canceled = true;
+    };
+  }, [hasMounted]);
 
   useEffect(() => {
     if (!hasMounted) {
@@ -890,7 +1010,7 @@ export function WorkableConsole() {
   }, [consoleState, hasMounted]);
 
   useEffect(() => {
-    if (!connection || !eventViewerOpen) {
+    if (!hydratedConnection || !eventViewerOpen) {
       return;
     }
 
@@ -901,7 +1021,7 @@ export function WorkableConsole() {
         setEventViewerDefinitionError(undefined);
       }
     });
-    workableFetch<WorkDefinition[]>(connection, "definitions")
+    workableFetch<WorkDefinition[]>(hydratedConnection, "definitions")
       .then((definitions) => {
         if (!canceled) {
           setEventViewerDefinitions(definitions);
@@ -920,7 +1040,7 @@ export function WorkableConsole() {
     return () => {
       canceled = true;
     };
-  }, [connection, eventViewerOpen]);
+  }, [eventViewerOpen, hydratedConnection]);
 
   const currentNavigation = useCallback(
     (): NavigationEntry => ({
@@ -1663,10 +1783,18 @@ export function WorkableConsole() {
       <SidebarInset>
         <main className="flex-1 bg-background">
           <div className="relative mx-auto w-full max-w-7xl p-4 md:p-6" data-view-content>
-              {!connection && (
-                <EmptyServerState onAddServer={() => setServerDialog({ mode: "add" })} />
+              {!hydratedConnection && (
+                <EmptyServerState
+                  description={
+                    consoleState.hosts.length > 0
+                      ? "Your saved servers are still configured, but the current user cannot Connect to any currently discovered Workable systems."
+                      : undefined
+                  }
+                  onAddServer={() => setServerDialog({ mode: "add" })}
+                  title={consoleState.hosts.length > 0 ? "No accessible systems" : undefined}
+                />
               )}
-              {connection && (
+              {hydratedConnection && (
                 <>
                   {activeHost && activeSystem && (
                     <ConsoleNavigationHeader
@@ -1684,31 +1812,34 @@ export function WorkableConsole() {
                             onRealtimePayloadOpenChange={setRealtimePayloadOpen}
                             realtimePayloadOpen={realtimePayloadOpen}
                           />
-                          <SystemNotificationTray
-                            acknowledgedRejectedWorkCounts={acknowledgedRejectedWorkCounts}
-                            activeSystemId={activeSystem.id}
-                            alertSources={diagnosticsAlertSources}
-                            concurrencyDetailDiagnostics={concurrencyDiagnosticsDetail}
-                            concurrencyExpanded={concurrencyDiagnosticsExpanded}
-                            durabilityDetailDiagnostics={durabilityDiagnosticsDetail}
-                            durabilityExpanded={durabilityDiagnosticsExpanded}
-                            idempotencyDetailDiagnostics={idempotencyDiagnosticsDetail}
-                            idempotencyExpanded={idempotencyDiagnosticsExpanded}
-                            onAcknowledgeQueueRejections={acknowledgeQueueRejections}
-                            onConcurrencyExpandedChange={setConcurrencyDiagnosticsExpanded}
-                            onDurabilityExpandedChange={setDurabilityDiagnosticsExpanded}
-                            onIdempotencyExpandedChange={setIdempotencyDiagnosticsExpanded}
-                            onOpenChange={handleSystemNotificationOpenChange}
-                            onReadModelExpandedChange={setReadModelDiagnosticsExpanded}
-                            onRetentionExpandedChange={setRetentionDiagnosticsExpanded}
-                            open={systemNotificationOpen}
-                            readModelDetailDiagnostics={readModelDiagnosticsDetail}
-                            readModelExpanded={readModelDiagnosticsExpanded}
-                            retentionDetailDiagnostics={retentionDiagnosticsDetail}
-                            retentionExpanded={retentionDiagnosticsExpanded}
-                            systemName={activeSystem.name}
-                            trayDiagnostics={diagnosticsTray}
-                          />
+                          {hasDiagnosticsAlertTargets && (
+                            <SystemNotificationTray
+                              acknowledgedRejectedWorkCounts={acknowledgedRejectedWorkCounts}
+                              activeDiagnosticsAlertTargetId={activeDiagnosticsAlertTargetId}
+                              activeSystemDiagnosticsAvailable={activeCanUseRealtimeDiagnosticsUi}
+                              alertSources={diagnosticsAlertSources}
+                              concurrencyDetailDiagnostics={concurrencyDiagnosticsDetail}
+                              concurrencyExpanded={concurrencyDiagnosticsExpanded}
+                              durabilityDetailDiagnostics={durabilityDiagnosticsDetail}
+                              durabilityExpanded={durabilityDiagnosticsExpanded}
+                              idempotencyDetailDiagnostics={idempotencyDiagnosticsDetail}
+                              idempotencyExpanded={idempotencyDiagnosticsExpanded}
+                              onAcknowledgeQueueRejections={acknowledgeQueueRejections}
+                              onConcurrencyExpandedChange={setConcurrencyDiagnosticsExpanded}
+                              onDurabilityExpandedChange={setDurabilityDiagnosticsExpanded}
+                              onIdempotencyExpandedChange={setIdempotencyDiagnosticsExpanded}
+                              onOpenChange={handleSystemNotificationOpenChange}
+                              onReadModelExpandedChange={setReadModelDiagnosticsExpanded}
+                              onRetentionExpandedChange={setRetentionDiagnosticsExpanded}
+                              open={systemNotificationOpen}
+                              readModelDetailDiagnostics={readModelDiagnosticsDetail}
+                              readModelExpanded={readModelDiagnosticsExpanded}
+                              retentionDetailDiagnostics={retentionDiagnosticsDetail}
+                              retentionExpanded={retentionDiagnosticsExpanded}
+                              systemName={activeSystem.name}
+                              trayDiagnostics={diagnosticsTray}
+                            />
+                          )}
                           <EventViewerWindow
                             captureEnabled={eventViewerCaptureEnabled}
                             connectionState={realtimeEvents.connectionState}
@@ -1744,7 +1875,8 @@ export function WorkableConsole() {
                   {mountedViews.has("overview") && (
                     <div className={visibleView === "overview" ? viewContentOffsetClass : "hidden"}>
                       <OverviewView
-                        connection={connection}
+                        access={activeSystem?.access}
+                        connection={hydratedConnection}
                         externalRealtimeMessages={diagnosticsRealtimeMessages}
                         hiddenPanelIds={consoleState.overviewHiddenPanels}
                         hiddenThroughputSeries={consoleState.overviewHiddenThroughputSeries}
@@ -1769,12 +1901,13 @@ export function WorkableConsole() {
                         onViewIterationsByStatus={openIterationsFiltered}
                         onViewWorkersByState={openWorkersFiltered}
                         overviewScope={activeOverviewScope}
+                        realtimeFeatures={activeRealtimeFeatures}
                         refreshToken={refreshTokens.overview}
                         onOpenWorker={openWorker}
                         renderToolbar={({ loading, refreshing }) => (
                           <ViewActionLane>
                             <OverviewCatalogFilter
-                              connection={connection}
+                              connection={hydratedConnection}
                               loading={loading || refreshing}
                               onClear={() => {
                                 if (activeSystem) {
@@ -1828,7 +1961,7 @@ export function WorkableConsole() {
                     <div className={visibleView === "definitions" ? viewContentOffsetClass : "hidden"}>
                       <DefinitionsView
                         catalogScope={activeCatalogScope}
-                        connection={connection}
+                        connection={hydratedConnection}
                         onCatalogScopeChange={(scope) => {
                           if (activeSystem) {
                             openCatalogScope(activeSystem.id, scope);
@@ -1846,7 +1979,7 @@ export function WorkableConsole() {
                   {mountedViews.has("definition") && selectedDefinitionId && (
                     <div className={visibleView === "definition" ? viewContentOffsetClass : "hidden"}>
                       <DefinitionView
-                        connection={connection}
+                        connection={hydratedConnection}
                         definitionId={selectedDefinitionId}
                         onOpenWorker={openWorker}
                         onReady={markDefinitionReady}
@@ -1858,12 +1991,12 @@ export function WorkableConsole() {
                     <div className={visibleView === "workers" ? viewContentOffsetClass : "hidden"}>
                       <WorkersView
                         categoryFilter={workerCategoryFilter}
-                        connection={connection}
+                        connection={hydratedConnection}
                         filterControls={(
                           <QueryFilterPopover
                             allFacetLabel="All states"
                             catalogScope={createQueryCatalogScope(workerCategoryFilter, workerDefinitionFilter)}
-                            connection={connection}
+                            connection={hydratedConnection}
                             facetLabel="Worker states"
                             facetOptions={states}
                             facetValue={workerStateFilter}
@@ -1900,13 +2033,13 @@ export function WorkableConsole() {
                     <div className={visibleView === "iterations" ? viewContentOffsetClass : "hidden"}>
                       <IterationsView
                         categoryFilter={iterationCategoryFilter}
-                        connection={connection}
+                        connection={hydratedConnection}
                         definitionFilter={iterationDefinitionFilter}
                         filterControls={(
                           <QueryFilterPopover
                             allFacetLabel="All statuses"
                             catalogScope={createQueryCatalogScope(iterationCategoryFilter, iterationDefinitionFilter)}
-                            connection={connection}
+                            connection={hydratedConnection}
                             facetLabel="Iteration statuses"
                             facetOptions={iterationStatuses}
                             facetValue={iterationStatusFilter}
@@ -1944,11 +2077,11 @@ export function WorkableConsole() {
                   />
                 </>
               )}
-              {connection && view === "worker" && selectedWorkerId && (
+              {hydratedConnection && view === "worker" && selectedWorkerId && (
                 <div className={viewContentOffsetClass}>
                   <WorkerConsoleView
                     backLabel={`Back to ${navTitle(getWorkerParentView(navigationHistory))}`}
-                    connection={connection}
+                    connection={hydratedConnection}
                     onBack={navigationHistory.length > 0 ? navigateBack : () => openView(getWorkerParentView(navigationHistory))}
                     refreshToken={refreshTokens.worker}
                     workerId={selectedWorkerId}
@@ -2035,12 +2168,12 @@ const overviewPanelOptions: Array<{
 type SystemDiagnosticsViewState = RealtimeViewLoadable<WorkComponentQueryResult>;
 
 type DiagnosticsAlertTarget = {
+  id: string;
   apiUrl: string;
   displayName: string;
   hostId: string;
   hostName: string;
   realtimeHubPath: string;
-  systemId: string;
   systemName?: string;
 };
 
@@ -2130,7 +2263,7 @@ function DiagnosticsAlertSubscriptions({
   captureEnabled: boolean;
   enabled: boolean;
   maxMessages: number;
-  onSnapshot: (systemId: string, snapshot: DiagnosticsAlertSnapshot | null) => void;
+  onSnapshot: (targetId: string, snapshot: DiagnosticsAlertSnapshot | null) => void;
   request: unknown;
   targets: DiagnosticsAlertTarget[];
 }) {
@@ -2140,7 +2273,7 @@ function DiagnosticsAlertSubscriptions({
         <DiagnosticsAlertSubscription
           captureEnabled={captureEnabled}
           enabled={enabled}
-          key={target.systemId}
+          key={target.id}
           maxMessages={maxMessages}
           onSnapshot={onSnapshot}
           request={request}
@@ -2162,7 +2295,7 @@ function DiagnosticsAlertSubscription({
   captureEnabled: boolean;
   enabled: boolean;
   maxMessages: number;
-  onSnapshot: (systemId: string, snapshot: DiagnosticsAlertSnapshot | null) => void;
+  onSnapshot: (targetId: string, snapshot: DiagnosticsAlertSnapshot | null) => void;
   request: unknown;
   target: DiagnosticsAlertTarget;
 }) {
@@ -2181,7 +2314,7 @@ function DiagnosticsAlertSubscription({
     enabled,
     captureEnabled,
     maxMessages,
-    `diagnostics:alerts:${target.systemId}`
+    `diagnostics:alerts:${target.id}`
   );
   const lastSnapshotRef = useRef<DiagnosticsAlertSnapshot | null>(null);
 
@@ -2200,7 +2333,7 @@ function DiagnosticsAlertSubscription({
     }
 
     lastSnapshotRef.current = snapshot;
-    onSnapshot(target.systemId, snapshot);
+    onSnapshot(target.id, snapshot);
   }, [
     diagnostics.connectionState,
     diagnostics.data,
@@ -2209,15 +2342,15 @@ function DiagnosticsAlertSubscription({
     diagnostics.loading,
     diagnostics.refreshing,
     onSnapshot,
-    target.systemId,
+    target.id,
   ]);
 
   useEffect(
     () => () => {
       lastSnapshotRef.current = null;
-      onSnapshot(target.systemId, null);
+      onSnapshot(target.id, null);
     },
-    [onSnapshot, target.systemId]
+    [onSnapshot, target.id]
   );
 
   return null;
@@ -3080,7 +3213,8 @@ type SystemNotification = {
 
 function SystemNotificationTray({
   acknowledgedRejectedWorkCounts,
-  activeSystemId,
+  activeDiagnosticsAlertTargetId,
+  activeSystemDiagnosticsAvailable,
   alertSources,
   concurrencyDetailDiagnostics,
   concurrencyExpanded,
@@ -3104,7 +3238,8 @@ function SystemNotificationTray({
   trayDiagnostics,
 }: {
   acknowledgedRejectedWorkCounts: Record<string, number>;
-  activeSystemId: string;
+  activeDiagnosticsAlertTargetId: string | null;
+  activeSystemDiagnosticsAvailable: boolean;
   alertSources: DiagnosticsAlertSource[];
   concurrencyDetailDiagnostics: SystemDiagnosticsViewState;
   concurrencyExpanded: boolean;
@@ -3127,7 +3262,9 @@ function SystemNotificationTray({
   systemName: string;
   trayDiagnostics: SystemDiagnosticsViewState;
 }) {
-  const activeAlertSource = alertSources.find((source) => source.target.systemId === activeSystemId);
+  const activeAlertSource = activeDiagnosticsAlertTargetId
+    ? alertSources.find((source) => source.target.id === activeDiagnosticsAlertTargetId)
+    : undefined;
   const alertReadModelCompact = getWorkComponentData<WorkReadModelDiagnosticsCompactComponent>(
     activeAlertSource?.data,
     "readModelDiagnostics"
@@ -3208,7 +3345,7 @@ function SystemNotificationTray({
     createSystemNotifications(
       getWorkComponentData<WorkSystemDiagnosticsCompactComponent>(source.data, "systemDiagnostics"),
       getWorkComponentData<WorkQueueDiagnosticsCompactComponent>(source.data, "queueDiagnostics"),
-      acknowledgedRejectedWorkCounts[source.target.systemId] ?? 0,
+      acknowledgedRejectedWorkCounts[source.target.id] ?? 0,
       getWorkComponentData<WorkReadModelDiagnosticsCompactComponent>(source.data, "readModelDiagnostics"),
       getWorkComponentData<WorkRetentionDiagnosticsCompactComponent>(source.data, "retentionDiagnostics"),
       getWorkComponentData<WorkConcurrencyDiagnosticsCompactComponent>(source.data, "concurrencyDiagnostics"),
@@ -3278,9 +3415,7 @@ function SystemNotificationTray({
         <div className="flex items-center justify-between gap-3 border-b px-3 py-2">
           <div className="min-w-0">
             <div className="font-medium text-sm">System notifications</div>
-            <div className="truncate text-muted-foreground text-xs">
-              {alertSubscriptionText} - details: {systemName}
-            </div>
+            <div className="truncate text-muted-foreground text-xs">{alertSubscriptionText}</div>
           </div>
           {busy && <Loader2 className="size-4 shrink-0 animate-spin text-muted-foreground" />}
         </div>
@@ -3326,46 +3461,64 @@ function SystemNotificationTray({
               </div>
             )}
           </div>
-          <ReadModelDiagnosticsSummary
-            compact={readModelCompact}
-            expanded={readModelExpanded}
-            lastUpdatedAt={readModelLastUpdatedAt}
-            loading={readModelDetailDiagnostics.loading && !detailedReadModel}
-            onExpandedChange={onReadModelExpandedChange}
-            readModel={detailedReadModel?.readModel}
-          />
-          <RetentionDiagnosticsSummary
-            compact={retentionCompact}
-            expanded={retentionExpanded}
-            lastUpdatedAt={retentionLastUpdatedAt}
-            loading={retentionDetailDiagnostics.loading && !detailedRetention}
-            onExpandedChange={onRetentionExpandedChange}
-            retention={detailedRetention?.retention}
-          />
-          <ConcurrencyDiagnosticsSummary
-            compact={concurrencyCompact}
-            concurrency={detailedConcurrency?.concurrency}
-            expanded={concurrencyExpanded}
-            lastUpdatedAt={concurrencyLastUpdatedAt}
-            loading={concurrencyDetailDiagnostics.loading && !detailedConcurrency}
-            onExpandedChange={onConcurrencyExpandedChange}
-          />
-          <DurabilityDiagnosticsSummary
-            compact={durabilityCompact}
-            durability={detailedDurability?.durability}
-            expanded={durabilityExpanded}
-            lastUpdatedAt={durabilityLastUpdatedAt}
-            loading={durabilityDetailDiagnostics.loading && !detailedDurability}
-            onExpandedChange={onDurabilityExpandedChange}
-          />
-          <IdempotencyDiagnosticsSummary
-            compact={idempotencyCompact}
-            expanded={idempotencyExpanded}
-            idempotency={detailedIdempotency?.idempotency}
-            lastUpdatedAt={idempotencyLastUpdatedAt}
-            loading={idempotencyDetailDiagnostics.loading && !detailedIdempotency}
-            onExpandedChange={onIdempotencyExpandedChange}
-          />
+          {activeSystemDiagnosticsAvailable ? (
+            <>
+              <div className="border-b bg-muted/10 px-3 py-2">
+                <div className="font-medium text-sm">Detailed diagnostics for {systemName}</div>
+                <div className="text-muted-foreground text-xs">
+                  The five diagnostic sections below belong to the active system only.
+                </div>
+              </div>
+              <ReadModelDiagnosticsSummary
+                compact={readModelCompact}
+                expanded={readModelExpanded}
+                lastUpdatedAt={readModelLastUpdatedAt}
+                loading={readModelDetailDiagnostics.loading && !detailedReadModel}
+                onExpandedChange={onReadModelExpandedChange}
+                readModel={detailedReadModel?.readModel}
+              />
+              <RetentionDiagnosticsSummary
+                compact={retentionCompact}
+                expanded={retentionExpanded}
+                lastUpdatedAt={retentionLastUpdatedAt}
+                loading={retentionDetailDiagnostics.loading && !detailedRetention}
+                onExpandedChange={onRetentionExpandedChange}
+                retention={detailedRetention?.retention}
+              />
+              <ConcurrencyDiagnosticsSummary
+                compact={concurrencyCompact}
+                concurrency={detailedConcurrency?.concurrency}
+                expanded={concurrencyExpanded}
+                lastUpdatedAt={concurrencyLastUpdatedAt}
+                loading={concurrencyDetailDiagnostics.loading && !detailedConcurrency}
+                onExpandedChange={onConcurrencyExpandedChange}
+              />
+              <DurabilityDiagnosticsSummary
+                compact={durabilityCompact}
+                durability={detailedDurability?.durability}
+                expanded={durabilityExpanded}
+                lastUpdatedAt={durabilityLastUpdatedAt}
+                loading={durabilityDetailDiagnostics.loading && !detailedDurability}
+                onExpandedChange={onDurabilityExpandedChange}
+              />
+              <IdempotencyDiagnosticsSummary
+                compact={idempotencyCompact}
+                expanded={idempotencyExpanded}
+                idempotency={detailedIdempotency?.idempotency}
+                lastUpdatedAt={idempotencyLastUpdatedAt}
+                loading={idempotencyDetailDiagnostics.loading && !detailedIdempotency}
+                onExpandedChange={onIdempotencyExpandedChange}
+              />
+            </>
+          ) : (
+            <div className="border-t bg-muted/10 px-3 py-3">
+              <div className="font-medium text-sm">Detailed diagnostics unavailable</div>
+              <div className="text-muted-foreground text-xs">
+                Notifications still include systems you can access, but the active system does not
+                expose detailed diagnostics for this user.
+              </div>
+            </div>
+          )}
         </div>
       </PopoverContent>
     </Popover>
@@ -3952,7 +4105,7 @@ function createSystemNotifications(
   if (system?.isShuttingDown) {
     notifications.push({
       description: `Workable is shutting down${sourceSuffix}. Active workers are being asked to stop.`,
-      id: `${source?.systemId ?? "active"}:system-stopping`,
+      id: `${source?.id ?? "active"}:system-stopping`,
       tone: "warning",
       title: `${sourcePrefix}System is shutting down`,
     });
@@ -3961,7 +4114,7 @@ function createSystemNotifications(
   if (error) {
     notifications.push({
       description: error,
-      id: `${source?.systemId ?? "active"}:diagnostics-unavailable`,
+      id: `${source?.id ?? "active"}:diagnostics-unavailable`,
       tone: "warning",
       title: `${sourcePrefix}Diagnostics unavailable`,
     });
@@ -3975,9 +4128,9 @@ function createSystemNotifications(
       : queue.alertableRejectedWorkCount;
     notifications.push({
       description: `${formatNumber(rejectedWorkCount)} new alertable queue rejection${rejectedWorkCount === 1 ? "" : "s"} (${formatNumber(queue.alertableRejectedWorkCount)} total)${queue.lastAlertableRejectedMessage ? `. Last: ${queue.lastAlertableRejectedMessage}` : "."}`,
-      id: `${source?.systemId ?? "active"}:queue-rejections`,
+      id: `${source?.id ?? "active"}:queue-rejections`,
       rejectedWorkCount: queue.alertableRejectedWorkCount,
-      sourceId: source?.systemId,
+      sourceId: source?.id,
       tone: "critical",
       title: `${sourcePrefix}Work is being rejected`,
     });
@@ -3986,7 +4139,7 @@ function createSystemNotifications(
   if (readModel?.hasProjectorFailure) {
     notifications.push({
       description: `${readModel.projectorFailureType ?? "Projector failure"}${readModel.projectorFailureMessage ? `: ${readModel.projectorFailureMessage}` : ""}`,
-      id: `${source?.systemId ?? "active"}:read-model-failure`,
+      id: `${source?.id ?? "active"}:read-model-failure`,
       tone: "critical",
       title: `${sourcePrefix}Read model projector failed`,
     });
@@ -3995,7 +4148,7 @@ function createSystemNotifications(
   if (readModel?.isReadModelBehind) {
     notifications.push({
       description: `${formatNumber(readModel.pendingUpdateCount)} update${readModel.pendingUpdateCount === 1 ? "" : "s"} waiting to be projected${sourceSuffix}.`,
-      id: `${source?.systemId ?? "active"}:read-model-lag`,
+      id: `${source?.id ?? "active"}:read-model-lag`,
       tone: readModel.pendingUpdateCount >= readModel.readModelLagWarningThreshold * 10
         ? "critical"
         : "warning",
@@ -4006,7 +4159,7 @@ function createSystemNotifications(
   if (retention?.hasSchedulerFailure) {
     notifications.push({
       description: `${retention.schedulerFailureType ?? "Retention scheduler failure"}${retention.schedulerFailureMessage ? `: ${retention.schedulerFailureMessage}` : ""}`,
-      id: `${source?.systemId ?? "active"}:retention-failure`,
+      id: `${source?.id ?? "active"}:retention-failure`,
       tone: "critical",
       title: `${sourcePrefix}Retention scheduler failed`,
     });
@@ -4015,7 +4168,7 @@ function createSystemNotifications(
   if (retention?.isRetentionBehind) {
     notifications.push({
       description: `Oldest due purge is overdue by ${formatDuration(retention.oldestDuePurgeAge)}${sourceSuffix}.`,
-      id: `${source?.systemId ?? "active"}:retention-lag`,
+      id: `${source?.id ?? "active"}:retention-lag`,
       tone: parseDurationSeconds(retention.oldestDuePurgeAge) >= retention.retentionLagWarningSeconds * 10
         ? "critical"
         : "warning",
@@ -4026,7 +4179,7 @@ function createSystemNotifications(
   if (concurrency?.isConcurrencyBehind) {
     notifications.push({
       description: `${formatNumber(concurrency.deferredStartCount)} deferred worker${concurrency.deferredStartCount === 1 ? "" : "s"} waiting, oldest deferred for ${formatDuration(concurrency.oldestDeferredStartAge)}${sourceSuffix}.`,
-      id: `${source?.systemId ?? "active"}:concurrency-lag`,
+      id: `${source?.id ?? "active"}:concurrency-lag`,
       tone: parseDurationSeconds(concurrency.oldestDeferredStartAge) >= concurrency.concurrencyLagWarningSeconds * 10
         ? "critical"
         : "warning",
@@ -4037,7 +4190,7 @@ function createSystemNotifications(
   if (durability?.hasReaderFailure) {
     notifications.push({
       description: `${durability.readerFailureType ?? "Durable reader failure"}${durability.readerFailureMessage ? `: ${durability.readerFailureMessage}` : ""}`,
-      id: `${source?.systemId ?? "active"}:durability-reader-failure`,
+      id: `${source?.id ?? "active"}:durability-reader-failure`,
       tone: "critical",
       title: `${sourcePrefix}Durable reader failed`,
     });
@@ -4046,7 +4199,7 @@ function createSystemNotifications(
   if (durability?.hasLeaseRenewalFailure) {
     notifications.push({
       description: `${durability.leaseRenewalFailureType ?? "Lease renewal failure"}${durability.leaseRenewalFailureMessage ? `: ${durability.leaseRenewalFailureMessage}` : ""}`,
-      id: `${source?.systemId ?? "active"}:durability-renewal-failure`,
+      id: `${source?.id ?? "active"}:durability-renewal-failure`,
       tone: "critical",
       title: `${sourcePrefix}Durable lease renewal failed`,
     });
@@ -4055,7 +4208,7 @@ function createSystemNotifications(
   if (durability?.hasCleanupFailure) {
     notifications.push({
       description: `${durability.cleanupFailureType ?? "Cleanup failure"}${durability.cleanupFailureMessage ? `: ${durability.cleanupFailureMessage}` : ""}`,
-      id: `${source?.systemId ?? "active"}:durability-cleanup-failure`,
+      id: `${source?.id ?? "active"}:durability-cleanup-failure`,
       tone: "critical",
       title: `${sourcePrefix}Durable cleanup failed`,
     });
@@ -4064,7 +4217,7 @@ function createSystemNotifications(
   if (durability?.isAcceptedWorkerMaterializationBehind) {
     notifications.push({
       description: `${formatNumber(durability.acceptedWaiterCount)} accepted durable worker${durability.acceptedWaiterCount === 1 ? "" : "s"} waiting to materialize, oldest wait ${formatDuration(durability.oldestAcceptedWaiterAge)}${sourceSuffix}.`,
-      id: `${source?.systemId ?? "active"}:durability-waiters`,
+      id: `${source?.id ?? "active"}:durability-waiters`,
       tone: parseDurationSeconds(durability.oldestAcceptedWaiterAge) >= durability.acceptedWorkerWarningSeconds * 10
         ? "critical"
         : "warning",
@@ -4075,7 +4228,7 @@ function createSystemNotifications(
   if (durability?.isCleanupBehind) {
     notifications.push({
       description: `${formatNumber(durability.pendingCleanupCount)} durable cleanup item${durability.pendingCleanupCount === 1 ? "" : "s"} pending, oldest waiting ${formatDuration(durability.oldestPendingCleanupAge)}${sourceSuffix}.`,
-      id: `${source?.systemId ?? "active"}:durability-cleanup-lag`,
+      id: `${source?.id ?? "active"}:durability-cleanup-lag`,
       tone: parseDurationSeconds(durability.oldestPendingCleanupAge) >= durability.cleanupWarningSeconds * 10
         ? "critical"
         : "warning",
@@ -4405,16 +4558,16 @@ function loadConsoleStorage(): ConsoleStorage {
         const systemIds = new Set(hosts.flatMap((host) => host.systems.map((system) => system.id)));
         const activeSystemId = parsed.activeSystemId && systemIds.has(parsed.activeSystemId)
           ? parsed.activeSystemId
-          : hosts[0].systems[0].id;
+          : getFirstAvailableSystemId(hosts);
 
         return {
           activeSystemId,
           expandedHostIds: parsed.expandedHostIds?.filter((id) =>
             hosts.some((host) => host.id === id)
           ) ?? [hosts[0].id],
-          expandedSystemIds: parsed.expandedSystemIds?.filter((id) => systemIds.has(id)) ?? [
-            activeSystemId,
-          ],
+          expandedSystemIds: parsed.expandedSystemIds?.filter((id) => systemIds.has(id)) ?? (
+            activeSystemId ? [activeSystemId] : []
+          ),
           hosts,
           overviewHiddenPanels: normalizeOverviewHiddenPanels(
             parsed.overviewHiddenPanels,
@@ -4435,14 +4588,14 @@ function loadConsoleStorage(): ConsoleStorage {
       if (Array.isArray(parsed.servers) && parsed.servers.length > 0) {
         const hosts = parsed.servers.map((server) => migrateFlatServer(server));
         const activeSystemId =
-          parsed.activeServerId && hosts.some((host) => host.systems[0].id === parsed.activeServerId)
+          parsed.activeServerId && hosts.some((host) => host.systems[0]?.id === parsed.activeServerId)
             ? parsed.activeServerId
-            : hosts[0].systems[0].id;
+            : getFirstAvailableSystemId(hosts);
 
         return {
           activeSystemId,
           expandedHostIds: hosts.map((host) => host.id),
-          expandedSystemIds: parsed.expandedServerIds ?? [activeSystemId],
+          expandedSystemIds: parsed.expandedServerIds ?? (activeSystemId ? [activeSystemId] : []),
           hosts,
           overviewHiddenPanels: [],
           overviewPanelShapes: createDefaultOverviewPanelShapes(),
@@ -4586,7 +4739,7 @@ function normalizeOverviewPanelIds(value: unknown): OverviewPanelId[] {
 
 function normalizeStoredHost(host: WorkableHostConnection): WorkableHostConnection {
   const hostId = host.id || createServerId();
-  const systems = host.systems?.length
+  const systems = Array.isArray(host.systems)
     ? host.systems.map((system) => normalizeStoredSystem(hostId, system))
     : [createDefaultSystem(hostId)];
 
@@ -4624,7 +4777,13 @@ function normalizeStoredSystem(
     hostId,
     name: system.name || "Default",
     systemName: normalizeOptional(system.systemName),
+    access: system.access ?? (isDefaultLocalSampleSystem ? createFullAccessSummary() : undefined),
     realtimeEnabled,
+    realtimeFeatures: normalizeRealtimeFeatures(
+      isDefaultLocalSampleSystem
+        ? system.realtimeFeatures ?? ["system-view", "work-views", "worker-events", "diagnostics-view"]
+        : system.realtimeFeatures
+    ),
     realtimeHubPath,
     realtimeSupported,
     realtimeTransport,
@@ -4660,7 +4819,7 @@ function findSystemLocation(
     }
   }
 
-  const fallbackHost = state.hosts[0];
+  const fallbackHost = state.hosts.find((host) => host.systems.length > 0);
   if (!fallbackHost) {
     return null;
   }
@@ -4668,20 +4827,54 @@ function findSystemLocation(
   return { host: fallbackHost, system: fallbackHost.systems[0] };
 }
 
+function getFirstAvailableSystemId(hosts: WorkableHostConnection[]) {
+  return hosts.find((host) => host.systems.length > 0)?.systems[0]?.id ?? "";
+}
+
 function createDiagnosticsAlertTargets(hosts: WorkableHostConnection[]): DiagnosticsAlertTarget[] {
-  return hosts.flatMap((host) =>
-    host.systems
-      .filter((system) => system.realtimeEnabled && !!system.realtimeHubPath)
-      .map((system) => ({
+  const targetsById = new Map<string, DiagnosticsAlertTarget>();
+
+  for (const host of hosts) {
+    for (const system of host.systems) {
+      if (
+        !system.realtimeEnabled ||
+        !system.realtimeHubPath ||
+        system.access?.canViewDiagnostics !== true ||
+        !hasRealtimeFeature(system.realtimeFeatures, "diagnostics-view")
+      ) {
+        continue;
+      }
+
+      const id = createDiagnosticsAlertTargetId(
+        host.apiUrl,
+        system.realtimeHubPath,
+        system.systemName
+      );
+      if (targetsById.has(id)) {
+        continue;
+      }
+
+      targetsById.set(id, {
+        id,
         apiUrl: host.apiUrl,
         displayName: `${system.name} @ ${host.name}`,
         hostId: host.id,
         hostName: host.name,
-        realtimeHubPath: system.realtimeHubPath!,
-        systemId: system.id,
+        realtimeHubPath: system.realtimeHubPath,
         systemName: system.systemName,
-      }))
-  );
+      });
+    }
+  }
+
+  return [...targetsById.values()];
+}
+
+function createDiagnosticsAlertTargetId(
+  apiUrl: string,
+  realtimeHubPath: string | null | undefined,
+  systemName: string | undefined
+) {
+  return `${apiUrl}\n${realtimeHubPath ?? ""}\n${systemName ?? ""}`;
 }
 
 function isServerView(value: unknown): value is ServerView {
@@ -4712,7 +4905,9 @@ function createDefaultSystem(hostId: string): WorkableSystemConnection {
     id: "local-sample-default",
     hostId,
     name: "Default",
+    access: createFullAccessSummary(),
     realtimeEnabled: true,
+    realtimeFeatures: ["system-view", "work-views", "worker-events", "diagnostics-view"],
     realtimeHubPath: "/workable/realtime",
     realtimeSupported: true,
     realtimeTransport: "signalr",
@@ -4726,6 +4921,39 @@ function createServerId() {
   }
 
   return `server-${Date.now().toString(36)}`;
+}
+
+function createFullAccessSummary(): WorkSystemAccessSummary {
+  return {
+    canConnect: true,
+    isSystemAdministrator: true,
+    isWorkAdministrator: true,
+    canViewDiagnostics: true,
+    canControlSystem: true,
+    canReadAllWork: true,
+    canOperateAllWork: true,
+    totalDefinitionCount: 0,
+    readableDefinitionCount: 0,
+    operableDefinitionCount: 0,
+  };
+}
+
+function hasRealtimeFeature(features: string[] | null | undefined, feature: string) {
+  return Array.isArray(features) && features.includes(feature);
+}
+
+function normalizeRealtimeFeatures(features?: string[] | null) {
+  if (!Array.isArray(features)) {
+    return null;
+  }
+
+  const normalized = [...new Set(
+    features
+      .filter((feature) => typeof feature === "string" && feature.trim())
+      .map((feature) => feature.trim())
+  )];
+
+  return normalized.length > 0 ? normalized : null;
 }
 
 function normalizeOptional(value?: string | null) {

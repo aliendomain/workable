@@ -24,7 +24,8 @@ public class WorkableViewQueryAdapter
 
         var query = criteria ?? new WorkComponentCriteria();
         var requests = NormalizeComponentRequests(query.Components);
-        var queryService = BeginRead(session.Query);
+        EnsureAuthorizedComponentAccess(session, requests);
+        var queryService = session.Query.BeginRead();
         var components = new Dictionary<string, WorkComponentResult>(StringComparer.OrdinalIgnoreCase);
         foreach (var request in requests)
         {
@@ -172,11 +173,6 @@ public class WorkableViewQueryAdapter
             query.Scope,
             [.. NormalizeComponentRequests(query.Components).Select(NormalizeComponentRequest)]);
     }
-
-    private static IWorkQueryService BeginRead(IWorkQueryService queries)
-        => queries is IWorkSnapshotQueryService snapshotQueries
-            ? snapshotQueries.BeginRead()
-            : queries;
 
     private async Task<WorkComponentResult> CreateComponent(
         IWorkSystemSession session,
@@ -867,6 +863,34 @@ public class WorkableViewQueryAdapter
     private static bool ComponentRequiresIntervalPublish(WorkComponentRequest request)
         => ComponentDescriptors.TryGetValue(request.Type.Trim(), out var descriptor) &&
             descriptor.RequiresIntervalPublish;
+
+    private static void EnsureAuthorizedComponentAccess(
+        IWorkSystemSession session,
+        IReadOnlyList<WorkComponentRequest> requests)
+    {
+        foreach (var request in requests)
+        {
+            if (!IsDiagnosticsComponent(request))
+            {
+                continue;
+            }
+
+            // Diagnostics access is all-or-nothing at the system boundary, so touching any
+            // diagnostics facet is enough to trigger the authorization guard for this session.
+            _ = session.Diagnostics.Queue;
+            return;
+        }
+    }
+
+    private static bool IsDiagnosticsComponent(WorkComponentRequest request)
+        => string.Equals(request.Type, "systemDiagnostics", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(request.Type, "queueDiagnostics", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(request.Type, "queueMessages", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(request.Type, "readModelDiagnostics", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(request.Type, "retentionDiagnostics", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(request.Type, "concurrencyDiagnostics", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(request.Type, "durabilityDiagnostics", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(request.Type, "idempotencyDiagnostics", StringComparison.OrdinalIgnoreCase);
 
     private static string NormalizeComponentShape(string? shape)
     {

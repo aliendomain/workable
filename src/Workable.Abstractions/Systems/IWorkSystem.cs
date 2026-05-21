@@ -23,6 +23,8 @@ public interface IWorkSystem : IAsyncDisposable
 
     IWorkSystemDiagnostics Diagnostics { get; }
 
+    WorkSystemAccessSummary DescribeAccess(WorkRequestContext requestContext);
+
     bool CanConnect(WorkRequestContext requestContext);
 
     IWorkSystemSession CreateSession(WorkRequestContext requestContext);

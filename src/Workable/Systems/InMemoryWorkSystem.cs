@@ -147,11 +147,50 @@ internal sealed class InMemoryWorkSystem :
 
     public IWorkSystemDiagnostics Diagnostics => this.diagnostics;
 
+    public WorkSystemAccessSummary DescribeAccess(WorkRequestContext requestContext)
+    {
+        ArgumentNullException.ThrowIfNull(requestContext);
+
+        var totalDefinitionCount = this.catalog.Definitions.Count;
+        if (!this.RequiresAuthorization)
+        {
+            return new WorkSystemAccessSummary(
+                CanConnect: true,
+                IsSystemAdministrator: false,
+                IsWorkAdministrator: false,
+                CanViewDiagnostics: true,
+                CanControlSystem: true,
+                CanReadAllWork: true,
+                CanOperateAllWork: true,
+                TotalDefinitionCount: totalDefinitionCount,
+                ReadableDefinitionCount: totalDefinitionCount,
+                OperableDefinitionCount: totalDefinitionCount);
+        }
+
+        var groups = this.ResolveGroups(requestContext);
+        var systemAuthorization = new WorkSystemAuthorizationEvaluator(this.authorization, groups);
+        var authorization = new WorkAuthorizationEvaluator(this.catalog, groups, systemAuthorization);
+        var readableDefinitionCount = this.catalog.Definitions.Count(authorization.CanRead);
+        var operableDefinitionCount = this.catalog.Definitions.Count(authorization.CanOperate);
+
+        return new WorkSystemAccessSummary(
+            systemAuthorization.CanConnect(),
+            systemAuthorization.IsSystemAdministrator(),
+            systemAuthorization.IsWorkAdministrator(),
+            systemAuthorization.CanViewDiagnostics(),
+            systemAuthorization.CanControlSystem(),
+            systemAuthorization.HasReadAllWorkAccess(),
+            systemAuthorization.HasOperateAllWorkAccess(),
+            totalDefinitionCount,
+            readableDefinitionCount,
+            operableDefinitionCount);
+    }
+
     public bool CanConnect(WorkRequestContext requestContext)
     {
         ArgumentNullException.ThrowIfNull(requestContext);
 
-        return !this.RequiresAuthorization || this.ResolveAuthorization(requestContext).CanConnect();
+        return this.DescribeAccess(requestContext).CanConnect;
     }
 
     public IWorkSystemSession CreateSession(WorkRequestContext requestContext)
@@ -193,12 +232,12 @@ internal sealed class InMemoryWorkSystem :
     }
 
     private WorkSystemAuthorizationEvaluator ResolveAuthorization(WorkRequestContext requestContext)
-    {
-        var groups = requestContext.Authorization?.Groups
+        => new(this.authorization, this.ResolveGroups(requestContext));
+
+    private IReadOnlySet<string> ResolveGroups(WorkRequestContext requestContext)
+        => requestContext.Authorization?.Groups
             ?? this.groupProvider.GetGroups(requestContext.Actor, this.Name)
             ?? new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        return new WorkSystemAuthorizationEvaluator(this.authorization, groups);
-    }
 
     private async Task StartCore(CancellationToken cancellationToken = default)
     {

@@ -18,19 +18,12 @@ internal static class WorkableHttpSystemRoutes
                 return notFound;
             }
 
-            try
-            {
-                var session = WorkableHttpRequestContext.CreateSession(
-                    httpContext,
-                    system,
-                    requestContexts,
-                    "View Workable system diagnostics through HTTP API.");
-                return Results.Ok(WorkableHttpSystemResolver.Diagnostics(system, session));
-            }
-            catch (WorkSystemAccessDeniedException denied)
-            {
-                return WorkableHttpRouteResults.AuthorizationDenied(denied);
-            }
+            var session = WorkableHttpRequestContext.CreateSession(
+                httpContext,
+                system,
+                requestContexts,
+                "View Workable system diagnostics through HTTP API.");
+            return Results.Ok(WorkableHttpSystemResolver.Diagnostics(system, session));
         });
 
         group.MapPost("/lifecycle/start", async (
@@ -44,19 +37,12 @@ internal static class WorkableHttpSystemRoutes
                 return notFound;
             }
 
-            try
-            {
-                var requestContext = WorkableHttpRequestContext.Create(
-                    httpContext,
-                    requestContexts,
-                    "Start Workable system through HTTP API.");
-                var result = await WorkableHttpSystemResolver.Start(system, requestContext, cancellationToken);
-                return Results.Ok(result);
-            }
-            catch (WorkSystemAccessDeniedException denied)
-            {
-                return WorkableHttpRouteResults.AuthorizationDenied(denied);
-            }
+            var requestContext = WorkableHttpRequestContext.Create(
+                httpContext,
+                requestContexts,
+                "Start Workable system through HTTP API.");
+            var result = await WorkableHttpSystemResolver.Start(system, requestContext, cancellationToken);
+            return Results.Ok(result);
         });
 
         group.MapPost("/lifecycle/stop", async (
@@ -70,19 +56,12 @@ internal static class WorkableHttpSystemRoutes
                 return notFound;
             }
 
-            try
-            {
-                var requestContext = WorkableHttpRequestContext.Create(
-                    httpContext,
-                    requestContexts,
-                    "Stop Workable system through HTTP API.");
-                var result = await WorkableHttpSystemResolver.Stop(system, requestContext, cancellationToken);
-                return Results.Ok(result);
-            }
-            catch (WorkSystemAccessDeniedException denied)
-            {
-                return WorkableHttpRouteResults.AuthorizationDenied(denied);
-            }
+            var requestContext = WorkableHttpRequestContext.Create(
+                httpContext,
+                requestContexts,
+                "Stop Workable system through HTTP API.");
+            var result = await WorkableHttpSystemResolver.Stop(system, requestContext, cancellationToken);
+            return Results.Ok(result);
         });
     }
 }

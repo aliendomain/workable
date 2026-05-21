@@ -22,11 +22,11 @@ internal sealed class WorkSystemAuthorizationEvaluator(
         => this.IsWorkAdministrator()
             || this.IsSatisfied(configuration.OperateAllWorkGroups);
 
-    private bool IsSystemAdministrator()
+    public bool IsSystemAdministrator()
         => groups.Contains(InternalWorkAuthorizationGroups.SystemAdministrator)
             || this.IsSatisfied(configuration.SystemAdministratorGroups);
 
-    private bool IsWorkAdministrator()
+    public bool IsWorkAdministrator()
         => this.IsSatisfied(configuration.WorkAdministratorGroups);
 
     private bool IsSatisfied(IReadOnlySet<string> allowedGroups)

@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using Workable.SampleHost;
 
 namespace Workable.SampleHost.Demo;
 
@@ -183,7 +184,8 @@ public sealed class DemoQueuePressureController(
                     new WorkIdentifier("queue-pressure-sequence", current.ToString()),
                 ]);
 
-            var handle = await registry.Default.Queue.Enqueue(
+            var session = registry.Default.CreateSession("Queue queue-pressure sample work from the sample host.");
+            var handle = await session.Queue.Enqueue(
                 DefinitionName,
                 input,
                 cancellationToken: cancellationToken);
@@ -207,7 +209,8 @@ public sealed class DemoQueuePressureController(
         foreach (var workerId in this.trackedWorkers.Keys)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var worker = await registry.Default.Query.Worker(workerId, cancellationToken: cancellationToken);
+            var session = registry.Default.CreateSession("Cancel queue-pressure sample work from the sample host.");
+            var worker = await session.Query.Worker(workerId, cancellationToken: cancellationToken);
             if (worker is null)
             {
                 continue;
@@ -215,7 +218,7 @@ public sealed class DemoQueuePressureController(
 
             if (ShouldCancelWhenStopping(worker.State))
             {
-                await registry.Default.Workers.Execute(
+                await session.Workers.Execute(
                     new WorkerVersion(worker.Id, worker.Revision),
                     WorkAction.Cancel,
                     cancellationToken);

@@ -76,6 +76,7 @@ import {
   type WorkSystemThroughput,
   type WorkThroughputBucket,
   type WorkThroughputLiveSummary,
+  type WorkSystemAccessSummary,
   type WorkableConnection,
   type WorkableRealtimeEvent,
   type WorkableRealtimeEventBatch,
@@ -280,6 +281,7 @@ function overviewComponent(
   return options === undefined ? { id, shape, type } : { id, options, shape, type };
 }
 export function OverviewView({
+  access,
   connection,
   externalRealtimeMessages,
   hiddenPanelIds,
@@ -303,12 +305,14 @@ export function OverviewView({
   onViewWorkersByState,
   overviewScope,
   panelShapes,
+  realtimeFeatures,
   realtimePayloadCaptureEnabled,
   realtimePayloadMaxMessages,
   realtimePayloadOpen,
   refreshToken,
   renderToolbar,
 }: {
+  access?: WorkSystemAccessSummary;
   connection: WorkableConnection;
   externalRealtimeMessages?: RealtimePayloadMessage[];
   hiddenPanelIds: OverviewPanelId[];
@@ -332,6 +336,7 @@ export function OverviewView({
   onViewWorkersByState: (states: WorkerState[]) => void;
   overviewScope: OverviewScope | null;
   panelShapes: OverviewPanelShapeMap;
+  realtimeFeatures?: string[] | null;
   realtimePayloadCaptureEnabled?: boolean;
   realtimePayloadMaxMessages?: number;
   realtimePayloadOpen?: boolean;
@@ -356,6 +361,13 @@ export function OverviewView({
   const setPayloadOpen = onRealtimePayloadOpenChange ?? (() => undefined);
   const setPayloadCaptureEnabled = onRealtimePayloadCaptureEnabledChange ?? (() => undefined);
   const setPayloadMaxMessages = onRealtimePayloadMaxMessagesChange ?? (() => undefined);
+  const lacksReadableWorkAccess =
+    access !== undefined &&
+    !access.canReadAllWork &&
+    access.readableDefinitionCount === 0;
+  const canUseRealtimeOverview = lacksReadableWorkAccess
+    ? hasRealtimeFeature(realtimeFeatures, "system-view")
+    : hasRealtimeFeature(realtimeFeatures, "work-views");
   const throughputWindow =
     throughputWindows.find((window) => window.seconds === throughputWindowSeconds) ??
     throughputWindows[0];
@@ -432,6 +444,16 @@ export function OverviewView({
     }),
     [overviewComponents, overviewScope]
   );
+  const systemOnlyOverviewRequest = useMemo(
+    () => ({
+      components: [overviewComponent("system")],
+      scope: createOverviewComponentScope(overviewScope),
+    }),
+    [overviewScope]
+  );
+  const effectiveOverviewRequest = lacksReadableWorkAccess
+    ? systemOnlyOverviewRequest
+    : overviewRequest;
   const failedWorkersRefreshRequest = useMemo(
     () => ({
       components: [
@@ -446,14 +468,14 @@ export function OverviewView({
   const overview = useWorkablePostResource<WorkComponentQueryResult>(
     connection,
     isVisible ? "views/overview" : null,
-    overviewRequest,
+    effectiveOverviewRequest,
     refreshToken
   );
   const realtimeOverview = useWorkableRealtimeView<WorkComponentQueryResult>(
     connection,
     "overview",
-    overviewRequest,
-    isVisible && Boolean(connection.realtimeHubPath),
+    effectiveOverviewRequest,
+    isVisible && canUseRealtimeOverview && Boolean(connection.realtimeHubPath),
     payloadCaptureEnabled && payloadOpen,
     payloadMaxMessages,
     "overview"
@@ -643,6 +665,21 @@ export function OverviewView({
         realtimePayloadControl,
         refreshing: !!overview.refreshing || !!realtimeOverview.refreshing,
       })}
+      {lacksReadableWorkAccess && (
+        <Card>
+          <CardHeader>
+            <div className="space-y-1">
+              <h2 className="font-semibold leading-none tracking-tight">No work access</h2>
+              <p className="text-muted-foreground text-sm">
+                You can connect to this system, but you do not have permission to read work.
+                Work overview panels are hidden, but system state can still update live.
+              </p>
+            </div>
+          </CardHeader>
+        </Card>
+      )}
+      {!lacksReadableWorkAccess && (
+        <>
       {isPanelVisible("workers") && (
         <OverviewPanelShell
           actions={workersShape === "compact" ? (
@@ -868,8 +905,14 @@ export function OverviewView({
           />
         )}
       </div>
+        </>
+      )}
     </div>
   );
+}
+
+function hasRealtimeFeature(features: string[] | null | undefined, feature: string) {
+  return Array.isArray(features) && features.includes(feature);
 }
 
 function OverviewPanelShell({
@@ -3861,6 +3904,7 @@ export function useWorkableRealtimeView<T>(
     messages: [],
   });
   const hubConnectionRef = useRef<HubConnection | null>(null);
+  const hasConnection = connection !== null;
   const apiUrl = connection?.apiUrl ?? "";
   const hubUrl = connection ? createWorkableRealtimeUrl(connection) : null;
   const systemName = connection?.systemName;
@@ -3895,7 +3939,7 @@ export function useWorkableRealtimeView<T>(
   }, [maxMessages]);
 
   useEffect(() => {
-    if (!connection || !enabled || !hubUrl) {
+    if (!hasConnection || !enabled || !hubUrl) {
       queueMicrotask(() =>
         setState((current) =>
           current.connectionState === "disabled" &&
@@ -4067,7 +4111,7 @@ export function useWorkableRealtimeView<T>(
       hubConnectionRef.current = null;
       void hubConnection.stop().catch(() => undefined);
     };
-  }, [apiUrl, connection, enabled, hubUrl, subscription, systemName, viewName]);
+  }, [apiUrl, enabled, hasConnection, hubUrl, subscription, systemName, viewName]);
 
   useEffect(() => {
     const hubConnection = hubConnectionRef.current;
@@ -4131,6 +4175,7 @@ export function useWorkableRealtimeEvents(
     messages: [],
   });
   const hubConnectionRef = useRef<HubConnection | null>(null);
+  const hasConnection = connection !== null;
   const apiUrl = connection?.apiUrl ?? "";
   const hubUrl = connection ? createWorkableRealtimeUrl(connection) : null;
   const systemName = connection?.systemName;
@@ -4163,7 +4208,7 @@ export function useWorkableRealtimeEvents(
   }, [maxMessages]);
 
   useEffect(() => {
-    if (!connection || !enabled || !hubUrl) {
+    if (!hasConnection || !enabled || !hubUrl) {
       queueMicrotask(() =>
         setState((current) =>
           current.connectionState === "disabled" &&
@@ -4344,7 +4389,7 @@ export function useWorkableRealtimeEvents(
       hubConnectionRef.current = null;
       void hubConnection.stop().catch(() => undefined);
     };
-  }, [apiUrl, connection, criteriaKey, enabled, hubUrl, systemName]);
+  }, [apiUrl, criteriaKey, enabled, hasConnection, hubUrl, systemName]);
 
   return { ...state, clearMessages };
 }

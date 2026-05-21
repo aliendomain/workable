@@ -5,8 +5,9 @@ internal sealed class WorkableRealtimeCapabilityProvider(IOptions<WorkableSignal
 {
     private static readonly string[] Features =
     [
+        "system-view",
+        "work-views",
         "worker-events",
-        "component-views",
         "diagnostics-view",
     ];
 

@@ -22,7 +22,8 @@ internal static class WorkableHttpQueryRoutes
             }
 
             var session = WorkableHttpRequestContext.CreateSession(httpContext, system, requestContexts, "Query Workable components through HTTP API.");
-            return WorkableHttpRouteResults.ToOk(queries.Components(session, query, cancellationToken: cancellationToken));
+            return WorkableHttpRouteResults.ToOk(
+                () => queries.Components(session, query, cancellationToken: cancellationToken));
         });
 
         group.MapPost("/components/{componentName}", (
@@ -40,7 +41,8 @@ internal static class WorkableHttpQueryRoutes
             }
 
             var session = WorkableHttpRequestContext.CreateSession(httpContext, system, requestContexts, "Query a Workable component through HTTP API.");
-            return WorkableHttpRouteResults.ToOk(queries.Components(session, new WorkComponentCriteria(
+            return WorkableHttpRouteResults.ToOk(
+                () => queries.Components(session, new WorkComponentCriteria(
                     query?.Scope,
                     [new WorkComponentRequest(
                         componentName,
@@ -64,7 +66,8 @@ internal static class WorkableHttpQueryRoutes
             }
 
             var session = WorkableHttpRequestContext.CreateSession(httpContext, system, requestContexts, $"Query Workable view '{viewName}' through HTTP API.");
-            return WorkableHttpRouteResults.ToOk(queries.View(session, viewName, query, cancellationToken: cancellationToken));
+            return WorkableHttpRouteResults.ToOk(
+                () => queries.View(session, viewName, query, cancellationToken: cancellationToken));
         });
 
         group.MapPost("/definitions/query", async (
@@ -189,7 +192,8 @@ internal static class WorkableHttpQueryRoutes
             }
 
             var session = WorkableHttpRequestContext.CreateSession(httpContext, system, requestContexts, "Query worker status summary through HTTP API.");
-            return WorkableHttpRouteResults.ToOk(queries.WorkerStatusSummary(session, cancellationToken: cancellationToken));
+            return WorkableHttpRouteResults.ToOk(
+                () => queries.WorkerStatusSummary(session, cancellationToken: cancellationToken));
         });
 
         group.MapPost("/workers/status-summary", (
@@ -206,7 +210,8 @@ internal static class WorkableHttpQueryRoutes
             }
 
             var session = WorkableHttpRequestContext.CreateSession(httpContext, system, requestContexts, "Query worker status summary through HTTP API.");
-            return WorkableHttpRouteResults.ToOk(queries.WorkerStatusSummary(session, query?.ToWorkerCriteria(), cancellationToken: cancellationToken));
+            return WorkableHttpRouteResults.ToOk(
+                () => queries.WorkerStatusSummary(session, query?.ToWorkerCriteria(), cancellationToken: cancellationToken));
         });
 
         group.MapPost("/work-keys/query", (
@@ -223,7 +228,8 @@ internal static class WorkableHttpQueryRoutes
             }
 
             var session = WorkableHttpRequestContext.CreateSession(httpContext, system, requestContexts, "Query worker keys through HTTP API.");
-            return WorkableHttpRouteResults.ToOk(queries.WorkerKeys(session, query, cancellationToken: cancellationToken));
+            return WorkableHttpRouteResults.ToOk(
+                () => queries.WorkerKeys(session, query, cancellationToken: cancellationToken));
         });
 
         group.MapGet("/work-keys/types", (
@@ -244,7 +250,7 @@ internal static class WorkableHttpQueryRoutes
             }
 
             var session = WorkableHttpRequestContext.CreateSession(httpContext, system, requestContexts, "Query worker key types through HTTP API.");
-            return WorkableHttpRouteResults.ToOk(queries.WorkerKeyTypes(session, new WorkerKeyTypeCriteria(
+            return WorkableHttpRouteResults.ToOk(() => queries.WorkerKeyTypes(session, new WorkerKeyTypeCriteria(
                     Kind: kind,
                     Search: search,
                     Type: type,
@@ -266,7 +272,8 @@ internal static class WorkableHttpQueryRoutes
             }
 
             var session = WorkableHttpRequestContext.CreateSession(httpContext, system, requestContexts, "Query worker key types through HTTP API.");
-            return WorkableHttpRouteResults.ToOk(queries.WorkerKeyTypes(session, query?.ToWorkerKeyTypeCriteria(), cancellationToken: cancellationToken));
+            return WorkableHttpRouteResults.ToOk(
+                () => queries.WorkerKeyTypes(session, query?.ToWorkerKeyTypeCriteria(), cancellationToken: cancellationToken));
         });
 
         group.MapPost("/work-iteration-keys/query", (
@@ -283,7 +290,8 @@ internal static class WorkableHttpQueryRoutes
             }
 
             var session = WorkableHttpRequestContext.CreateSession(httpContext, system, requestContexts, "Query work iteration keys through HTTP API.");
-            return WorkableHttpRouteResults.ToOk(queries.WorkIterationKeys(session, query, cancellationToken: cancellationToken));
+            return WorkableHttpRouteResults.ToOk(
+                () => queries.WorkIterationKeys(session, query, cancellationToken: cancellationToken));
         });
 
         group.MapGet("/work-iteration-keys/types", (
@@ -304,7 +312,7 @@ internal static class WorkableHttpQueryRoutes
             }
 
             var session = WorkableHttpRequestContext.CreateSession(httpContext, system, requestContexts, "Query work iteration key types through HTTP API.");
-            return WorkableHttpRouteResults.ToOk(queries.WorkIterationKeyTypes(session, new WorkIterationKeyTypeCriteria(
+            return WorkableHttpRouteResults.ToOk(() => queries.WorkIterationKeyTypes(session, new WorkIterationKeyTypeCriteria(
                     Kind: kind,
                     Search: search,
                     Type: type,
@@ -326,7 +334,8 @@ internal static class WorkableHttpQueryRoutes
             }
 
             var session = WorkableHttpRequestContext.CreateSession(httpContext, system, requestContexts, "Query work iteration key types through HTTP API.");
-            return WorkableHttpRouteResults.ToOk(queries.WorkIterationKeyTypes(session, query?.ToWorkIterationKeyTypeCriteria(), cancellationToken: cancellationToken));
+            return WorkableHttpRouteResults.ToOk(
+                () => queries.WorkIterationKeyTypes(session, query?.ToWorkIterationKeyTypeCriteria(), cancellationToken: cancellationToken));
         });
     }
 }

@@ -5,4 +5,5 @@ public sealed record WorkDefinitionCriteria(
     string? Name = null,
     string? Category = null,
     string? Search = null,
-    bool IncludeSubcategories = true);
+    bool IncludeSubcategories = true,
+    IReadOnlySet<WorkDefinitionId>? DefinitionIds = null);

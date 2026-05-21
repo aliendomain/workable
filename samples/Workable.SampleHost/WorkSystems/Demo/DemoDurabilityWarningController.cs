@@ -1,4 +1,5 @@
 using Microsoft.Data.SqlClient;
+using Workable.SampleHost;
 using Workable.SqlServer;
 
 namespace Workable.SampleHost.Demo;
@@ -70,7 +71,8 @@ public sealed class DemoDurabilityWarningController(
             for (var index = 0; index < DefaultWorkerCount; index++)
             {
                 var subjectValue = $"{Guid.NewGuid():N}:{index}";
-                var handle = await registry.Default.Queue.Enqueue(
+                var session = registry.Default.CreateSession("Queue durability-warning sample work from the sample host.");
+                var handle = await session.Queue.Enqueue(
                     "sample.demo.durable",
                     WorkInput.FromValue(
                         new DemoTimedInput(

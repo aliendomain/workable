@@ -1,10 +1,13 @@
 namespace Workable;
 
 internal sealed class SessionWorkQueryService(
-    WorkSystemReadModelQueryService inner,
+    IWorkQueryService inner,
     WorkRequestContext requestContext) : IWorkQueryService
 {
     public WorkRequestContext RequestContext { get; } = requestContext;
+
+    public IWorkQueryService BeginRead()
+        => new SessionWorkQueryService(inner.BeginRead(), this.RequestContext);
 
     public Task<WorkerSnapshot?> Worker(
         WorkerId workerId,

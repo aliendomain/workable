@@ -17,6 +17,7 @@ public static class WorkableHttpApiExtensions
 
         var group = endpoints.MapGroup(prefix);
         RequireAuthenticated(group);
+        HandleAuthorizationDenied(group);
         group.MapGet("/systems", (
             HttpContext httpContext,
             WorkableHttpSystemResolver systems,
@@ -41,6 +42,21 @@ public static class WorkableHttpApiExtensions
         WorkableHttpQueueRoutes.Map(group);
         WorkableHttpQueryRoutes.Map(group);
         WorkableHttpWorkerRoutes.Map(group);
+    }
+
+    private static void HandleAuthorizationDenied(RouteGroupBuilder group)
+    {
+        group.AddEndpointFilter(async (context, next) =>
+        {
+            try
+            {
+                return await next(context);
+            }
+            catch (WorkSystemAccessDeniedException denied)
+            {
+                return WorkableHttpRouteResults.AuthorizationDenied(denied);
+            }
+        });
     }
 
     private static void RequireAuthenticated(RouteGroupBuilder group)

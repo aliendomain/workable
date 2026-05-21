@@ -46,9 +46,29 @@ public sealed class WorkableSignalRTests
         Assert.True(capabilities.Realtime.Enabled);
         Assert.Equal("signalr", capabilities.Realtime.Transport);
         Assert.Equal("/workable/realtime", capabilities.Realtime.HubPath);
+        Assert.Contains("system-view", capabilities.Realtime.Features ?? []);
+        Assert.Contains("work-views", capabilities.Realtime.Features ?? []);
         Assert.Contains("worker-events", capabilities.Realtime.Features ?? []);
-        Assert.Contains("component-views", capabilities.Realtime.Features ?? []);
         Assert.Contains("diagnostics-view", capabilities.Realtime.Features ?? []);
+    }
+
+    [Fact]
+    public async Task SystemsEndpointFiltersRealtimeFeaturesForConnectOnlyCaller()
+    {
+        using var host = await CreateHost(
+            addSignalR: true,
+            groups: TransportAuthorizationTestSupport.ConnectGroups);
+        var client = host.GetTestClient();
+
+        var systems = await client.GetFromJsonAsync<WorkableHttpSystems>("/workable/systems", JsonOptions());
+        var system = Assert.Single(systems?.Systems ?? []);
+        var features = system.Capabilities.Realtime.Features ?? [];
+
+        Assert.True(system.Capabilities.Realtime.Enabled);
+        Assert.Contains("system-view", features);
+        Assert.DoesNotContain("work-views", features);
+        Assert.DoesNotContain("worker-events", features);
+        Assert.DoesNotContain("diagnostics-view", features);
     }
 
     [Fact]
@@ -682,12 +702,62 @@ public sealed class WorkableSignalRTests
         }
     }
 
+    [Fact]
+    public async Task DiagnosticsAlertChangeWatcherRequiresDiagnosticsPermission()
+    {
+        using var host = await CreateHost(
+            addSignalR: true,
+            configureWorkable: builder => builder.UseCapacity(new WorkSystemCapacityConfiguration
+            {
+                MaximumWorkers = 1,
+            }),
+            groups: TransportAuthorizationTestSupport.ConnectGroups);
+        var system = host.Services.GetRequiredService<IWorkSystemRegistry>().Default;
+        await using var connection = CreateConnection(host);
+        var views = Channel.CreateUnbounded<WorkComponentQueryResult>();
+        connection.On<WorkComponentQueryResult>(
+            WorkableRealtimeClientMethods.ViewUpdated,
+            view => views.Writer.TryWrite(view));
+        await connection.StartAsync();
+
+        var exception = await Assert.ThrowsAnyAsync<Exception>(() => connection.InvokeAsync(
+            "WatchView",
+            "diagnostics",
+            new WorkViewCriteria(Components:
+            [
+                new WorkComponentRequest(
+                    "queueDiagnostics",
+                    "queueDiagnostics",
+                    JsonSerializer.SerializeToElement(new
+                    {
+                        publishMode = "alertChanges",
+                    }),
+                    WorkComponentShapes.Compact),
+            ]),
+            null));
+
+        Assert.Contains("diagnostics permission", exception.Message, StringComparison.OrdinalIgnoreCase);
+
+        var session = Session(system);
+        _ = await session.Queue.Enqueue("signalr.worker");
+        var rejected = await session.Queue.Enqueue("signalr.worker");
+        Assert.False(rejected.QueueOutcome.IsAccepted);
+
+        var receivedView = await TryReadUntil(
+            views.Reader,
+            static _ => true,
+            TimeSpan.FromMilliseconds(250));
+
+        Assert.False(receivedView);
+    }
+
     private static async Task<IHost> CreateHost(
         bool addSignalR,
         string? hubPath = null,
         Action<WorkableSignalROptions>? configureSignalR = null,
         Action<IWorkSystemBuilder>? configureWorkable = null,
-        bool authenticated = true)
+        bool authenticated = true,
+        IEnumerable<string>? groups = null)
     {
         var host = new HostBuilder()
             .ConfigureWebHost(web =>
@@ -696,7 +766,7 @@ public sealed class WorkableSignalRTests
                 web.ConfigureServices(services =>
                 {
                     services.AddRouting();
-                    services.AddTransportTestAuthorization();
+                    services.AddTransportTestAuthorization(groups);
                     services.AddSingleton<SignalRWorkGate>();
                     services.AddWorkableSystem(builder =>
                     {
@@ -731,7 +801,7 @@ public sealed class WorkableSignalRTests
                     {
                         app.Use(async (context, next) =>
                         {
-                            context.User = CreateTransportPrincipal();
+                            context.User = CreateTransportPrincipal(groups: groups);
                             await next();
                         });
                     }
@@ -857,11 +927,12 @@ public sealed class WorkableSignalRTests
             WorkInvocationChannel.DotNet,
             description: "Use SignalR test session.");
 
-    private static ClaimsPrincipal CreateTransportPrincipal()
+    private static ClaimsPrincipal CreateTransportPrincipal(IEnumerable<string>? groups = null)
         => TransportAuthorizationTestSupport.CreateTransportPrincipal(
             id: "signalr-user-1",
             name: "SignalR User",
-            email: "signalr.user@example.test");
+            email: "signalr.user@example.test",
+            groups: groups);
 
     private static WorkEventStream GetEventStream(IWorkSystem system)
     {

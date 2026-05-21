@@ -62,9 +62,11 @@ import { QueueDialog } from "@/components/workable/console/detail-screens";
 import { ErrorBanner } from "@/components/workable/console/feedback-panel";
 import {
   workableFetch,
+  WorkableApiError,
   type WorkDefinition,
   type WorkOverviewCatalogCategoryItem,
   type WorkableConnection,
+  type WorkSystemAccessSummary,
   type WorkableHttpSystemInfo,
   type WorkableHttpSystems,
 } from "@/lib/workable";
@@ -87,7 +89,9 @@ type WorkableSystemConnection = {
   hostId: string;
   name: string;
   systemName?: string;
+  access?: WorkSystemAccessSummary;
   realtimeEnabled: boolean;
+  realtimeFeatures?: string[] | null;
   realtimeHubPath?: string | null;
   realtimeSupported?: boolean;
   realtimeTransport?: string | null;
@@ -221,6 +225,13 @@ export function ServerTree({
             </div>
             {isHostExpanded && (
               <SidebarMenuSub>
+                {host.systems.length === 0 && (
+                  <SidebarMenuSubItem>
+                    <div className="px-3 py-2 text-muted-foreground text-xs">
+                      No Workable systems are currently available for this user on that host.
+                    </div>
+                  </SidebarMenuSubItem>
+                )}
                 {host.systems.map((system) => {
                   const isActiveSystem = system.id === activeSystemId;
                   const isSystemExpanded = expandedSystemIds.includes(system.id);
@@ -585,17 +596,23 @@ function CatalogExplorer({
   );
 }
 
-export function EmptyServerState({ onAddServer }: { onAddServer: () => void }) {
+export function EmptyServerState({
+  description = "Add a Workable HTTP host to discover its systems.",
+  onAddServer,
+  title = "No servers",
+}: {
+  description?: string;
+  onAddServer: () => void;
+  title?: string;
+}) {
   return (
     <div className="flex min-h-[calc(100vh-8rem)] items-center justify-center">
       <div className="max-w-md rounded-lg border border-dashed p-8 text-center">
         <div className="mx-auto flex size-10 items-center justify-center rounded-md bg-muted">
           <Server className="size-5 text-muted-foreground" />
         </div>
-        <h1 className="mt-4 font-semibold text-xl">No servers</h1>
-        <p className="mt-2 text-muted-foreground text-sm">
-          Add a Workable HTTP host to discover its systems.
-        </p>
+        <h1 className="mt-4 font-semibold text-xl">{title}</h1>
+        <p className="mt-2 text-muted-foreground text-sm">{description}</p>
         <Button className="mt-4" onClick={onAddServer}>
           <Plus className="size-4" />
           Add server
@@ -748,6 +765,7 @@ export function ServerDialog({
     () => new Set(host?.systems.filter((system) => system.realtimeEnabled).map((system) => system.systemName ?? ""))
   );
   const [isLoadingSystems, setIsLoadingSystems] = useState(false);
+  const [hasLoadedSystems, setHasLoadedSystems] = useState(false);
   const [systemsError, setSystemsError] = useState<string | undefined>();
 
   const fetchSystems = useCallback(async () => {
@@ -760,7 +778,8 @@ export function ServerDialog({
 
     try {
       const result = await discoverSystems(apiUrl);
-      const systems = mergeDiscoveredSystemsWithStored(result.systems ?? [], host?.systems);
+      const systems = result.systems ?? [];
+      setHasLoadedSystems(true);
       setApiUrl(result.apiUrl);
       setDiscovered(systems);
 
@@ -782,6 +801,7 @@ export function ServerDialog({
         return next;
       });
     } catch (caught) {
+      setHasLoadedSystems(false);
       setDiscovered([]);
       setSystemsError(
         caught instanceof Error ? caught.message : "Unable to load Workable systems."
@@ -789,7 +809,7 @@ export function ServerDialog({
     } finally {
       setIsLoadingSystems(false);
     }
-  }, [apiUrl, host]);
+  }, [apiUrl]);
 
   useEffect(() => {
     if (!open || mode !== "edit" || !host?.apiUrl) {
@@ -883,6 +903,7 @@ export function ServerDialog({
                   setDiscovered([]);
                   setSelectedSystemIds(new Set());
                   setRealtimeSystemIds(new Set());
+                  setHasLoadedSystems(false);
                   setSystemsError(undefined);
                 }}
                 value={apiUrl}
@@ -917,16 +938,19 @@ export function ServerDialog({
                 </div>
               ) : discovered.length === 0 ? (
                 <div className="p-6 text-center text-muted-foreground text-sm">
-                  Enter a URL and load systems.
+                  {hasLoadedSystems && !systemsError
+                    ? "Connected to the host, but this signed-in user does not have Connect permission for any Workable systems exposed there."
+                    : "Enter a URL and load systems."}
                 </div>
               ) : (
                 discovered.map((system) => {
                   const key = getSystemStorageKey(system);
                   const realtimeAvailable = system.capabilities.realtime.enabled;
+                  const accessBadges = getSystemAccessBadges(system.access);
 
                   return (
                     <div
-                      className="grid grid-cols-[1fr_7rem] items-center gap-3 border-b px-3 py-3 last:border-b-0"
+                      className="grid grid-cols-[1fr_7rem] items-start gap-3 border-b px-3 py-3 last:border-b-0"
                       key={key}
                     >
                       <label className="flex min-w-0 items-start gap-3">
@@ -940,8 +964,23 @@ export function ServerDialog({
                           <span className="block truncate font-medium text-sm">
                             {getSystemDisplayName(system)}
                           </span>
-                          <span className="block text-muted-foreground text-xs">
-                            {system.isDefault ? "Default system" : system.state}
+                          {getSystemSecondaryText(system) && (
+                            <span className="block text-muted-foreground text-xs">
+                              {getSystemSecondaryText(system)}
+                            </span>
+                          )}
+                          <span className="mt-2 flex flex-wrap items-center gap-1.5">
+                            <span className="mr-1 text-[11px] font-medium uppercase tracking-[0.12em] text-muted-foreground/80">
+                              Permissions
+                            </span>
+                            {accessBadges.map((badge) => (
+                              <span
+                                className="rounded-full border border-border/70 bg-muted/40 px-2 py-0.5 text-[11px] text-muted-foreground"
+                                key={badge}
+                              >
+                                {badge}
+                              </span>
+                            ))}
                           </span>
                         </span>
                       </label>
@@ -998,13 +1037,13 @@ function RealtimeCheckbox({
   );
 
   if (!disabled) {
-    return <label className="flex items-center justify-center">{checkbox}</label>;
+    return <label className="flex justify-center pt-0.5">{checkbox}</label>;
   }
 
   return (
     <Tooltip delayDuration={500} disableHoverableContent>
       <TooltipTrigger asChild>
-        <span className="flex cursor-not-allowed items-center justify-center">
+        <span className="flex cursor-not-allowed justify-center pt-0.5">
           {checkbox}
         </span>
       </TooltipTrigger>
@@ -1123,34 +1162,14 @@ function createStoredSystem(
     hostId,
     name: getSystemDisplayName(system),
     systemName: normalizeOptional(system.name),
+    access: system.access,
     realtimeEnabled: realtimeSupported && realtimeSystemIds.has(key),
+    realtimeFeatures: normalizeRealtimeFeatures(system.capabilities.realtime.features),
     realtimeHubPath: system.capabilities.realtime.hubPath ?? null,
     realtimeSupported,
     realtimeTransport: system.capabilities.realtime.transport ?? null,
     state: system.state,
   };
-}
-
-function mergeDiscoveredSystemsWithStored(
-  discovered: WorkableHttpSystemInfo[],
-  storedSystems?: WorkableSystemConnection[]
-) {
-  if (!storedSystems?.length) {
-    return discovered;
-  }
-
-  const merged = [...discovered];
-  const discoveredKeys = new Set(discovered.map(getSystemStorageKey));
-  for (const storedSystem of storedSystems) {
-    const storedDiscovery = createDiscoveredSystemFromStored(storedSystem);
-    const key = getSystemStorageKey(storedDiscovery);
-    if (!discoveredKeys.has(key)) {
-      merged.push(storedDiscovery);
-      discoveredKeys.add(key);
-    }
-  }
-
-  return merged;
 }
 
 function findStoredSystemByKey(
@@ -1163,7 +1182,103 @@ function findStoredSystemByKey(
   );
 }
 
-async function discoverSystems(apiUrl: string): Promise<WorkableHttpSystems & { apiUrl: string }> {
+function getSystemAccessBadges(access: WorkSystemAccessSummary) {
+  const badges = ["Connect"];
+
+  if (access.isSystemAdministrator) {
+    badges.push("System admin");
+  }
+
+  if (access.isWorkAdministrator) {
+    badges.push("Work admin");
+  }
+
+  if (access.canViewDiagnostics) {
+    badges.push("Diagnostics");
+  }
+
+  if (access.canControlSystem) {
+    badges.push("Control system");
+  }
+
+  const readBadge = getWorkAccessBadge(
+    "Read",
+    access.readableDefinitionCount,
+    access.totalDefinitionCount,
+    access.canReadAllWork
+  );
+  if (readBadge) {
+    badges.push(readBadge);
+  }
+
+  const operateBadge = getWorkAccessBadge(
+    "Operate",
+    access.operableDefinitionCount,
+    access.totalDefinitionCount,
+    access.canOperateAllWork
+  );
+  if (operateBadge) {
+    badges.push(operateBadge);
+  }
+
+  if (access.readableDefinitionCount === 0 && access.operableDefinitionCount === 0) {
+    badges.push("No work access");
+  }
+
+  return badges;
+}
+
+function createUnknownAccessSummary(): WorkSystemAccessSummary {
+  return {
+    canConnect: true,
+    isSystemAdministrator: false,
+    isWorkAdministrator: false,
+    canViewDiagnostics: false,
+    canControlSystem: false,
+    canReadAllWork: false,
+    canOperateAllWork: false,
+    totalDefinitionCount: 0,
+    readableDefinitionCount: 0,
+    operableDefinitionCount: 0,
+  };
+}
+
+function normalizeRealtimeFeatures(features?: string[] | null) {
+  if (!Array.isArray(features)) {
+    return null;
+  }
+
+  const normalized = [...new Set(
+    features
+      .filter((feature) => typeof feature === "string" && feature.trim())
+      .map((feature) => feature.trim())
+  )];
+
+  return normalized.length > 0 ? normalized : null;
+}
+
+function getWorkAccessBadge(
+  label: "Read" | "Operate",
+  count: number,
+  total: number,
+  allAccess: boolean
+) {
+  if (total === 0 || count === 0) {
+    return null;
+  }
+
+  if (allAccess || count >= total) {
+    return `${label} all work`;
+  }
+
+  return `${label} ${formatCompactCount(count)}/${formatCompactCount(total)} defs`;
+}
+
+function formatCompactCount(value: number) {
+  return new Intl.NumberFormat("en-US", { notation: value >= 1000 ? "compact" : "standard" }).format(value);
+}
+
+export async function discoverSystems(apiUrl: string): Promise<WorkableHttpSystems & { apiUrl: string }> {
   const candidates = createWorkableApiUrlCandidates(apiUrl);
   let lastError: unknown;
 
@@ -1186,6 +1301,26 @@ async function discoverSystems(apiUrl: string): Promise<WorkableHttpSystems & { 
   }
 
   const attempted = candidates.map(formatSystemsEndpoint).join(", ");
+  if (lastError instanceof WorkableApiError) {
+    if (lastError.status === 401) {
+      throw new Error(
+        "This Workable host requires authentication before its systems can be discovered. Sign in and try again."
+      );
+    }
+
+    if (lastError.status === 403) {
+      throw new Error(
+        "This user cannot discover systems on that host. Workable Connect access is required to add the server."
+      );
+    }
+
+    if (lastError.status === 404) {
+      throw new Error(
+        `No Workable systems endpoint was found at that address. Make sure the URL points to the Workable HTTP API root, usually ending in /workable. Tried ${attempted}.`
+      );
+    }
+  }
+
   const detail =
     lastError instanceof Error && lastError.message !== "fetch failed"
       ? ` ${lastError.message}`
@@ -1260,11 +1395,37 @@ function createDiscoveredSystemFromStored(
     capabilities: {
       realtime: {
         enabled: Boolean(system.realtimeSupported),
+        features: normalizeRealtimeFeatures(system.realtimeFeatures),
         hubPath: system.realtimeHubPath,
         transport: system.realtimeTransport,
       },
+      persistentCoordinationAvailable: false,
     },
+    access: system.access ?? createUnknownAccessSummary(),
   };
+}
+
+export function reconcileStoredSystemsWithDiscovery(
+  host: WorkableHostConnection,
+  systems: WorkableHttpSystemInfo[]
+): WorkableSystemConnection[] {
+  const realtimeSystemIds = new Set(
+    host.systems
+      .filter((system) => system.realtimeEnabled)
+      .map((system) => system.systemName ?? "")
+  );
+
+  return host.systems.flatMap((storedSystem) => {
+    const discoveredSystem = systems.find(
+      (system) =>
+        getSystemStorageKey(system) ===
+        getSystemStorageKey(createDiscoveredSystemFromStored(storedSystem))
+    );
+
+    return discoveredSystem
+      ? [createStoredSystem(host.id, discoveredSystem, realtimeSystemIds, storedSystem)]
+      : [];
+  });
 }
 
 function getSystemStorageKey(system: WorkableHttpSystemInfo) {
@@ -1273,6 +1434,10 @@ function getSystemStorageKey(system: WorkableHttpSystemInfo) {
 
 function getSystemDisplayName(system: WorkableHttpSystemInfo) {
   return normalizeOptional(system.name) ?? "Default";
+}
+
+function getSystemSecondaryText(system: WorkableHttpSystemInfo) {
+  return system.isDefault ? "Default system" : null;
 }
 
 function createServerId() {

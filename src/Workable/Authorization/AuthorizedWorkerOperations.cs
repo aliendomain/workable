@@ -24,6 +24,14 @@ internal sealed class AuthorizedWorkerOperations(
         CancellationToken cancellationToken = default)
     {
         filter ??= WorkerBulkActionFilter.All;
+        var definitionIds = authorization.HasOperateAllWorkAccess()
+            ? null
+            : authorization.OperableDefinitionIds();
+        if (definitionIds is { Count: 0 })
+        {
+            return new WorkerBulkActionOutcome(action, filter, 0, []);
+        }
+
         var outcomes = new List<WorkActionOutcome>();
         var skip = 0;
 
@@ -33,14 +41,15 @@ internal sealed class AuthorizedWorkerOperations(
                 Category: filter.Category,
                 IncludeSubcategories: filter.IncludeSubcategories,
                 Skip: skip,
-                Take: WorkerCriteria.MaximumTake);
+                Take: WorkerCriteria.MaximumTake,
+                DefinitionIds: definitionIds);
             var result = await query.Workers(criteria, cancellationToken);
             if (result.Workers.Count == 0)
             {
                 break;
             }
 
-            foreach (var worker in result.Workers.Where(worker => authorization.CanOperate(worker.DefinitionId)))
+            foreach (var worker in result.Workers)
             {
                 outcomes.Add(await inner.Execute(new WorkerVersion(worker.Id, worker.Revision), action, cancellationToken));
             }

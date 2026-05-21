@@ -16,7 +16,8 @@ public sealed record WorkerIterationCriteria(
     WorkerIterationCriteriaSort Sort = WorkerIterationCriteriaSort.CompletedAt,
     WorkCriteriaSortDirection Direction = WorkCriteriaSortDirection.Descending,
     int Skip = 0,
-    int Take = WorkerIterationCriteria.DefaultTake)
+    int Take = WorkerIterationCriteria.DefaultTake,
+    IReadOnlySet<WorkDefinitionId>? DefinitionIds = null)
 {
     public const int DefaultTake = 50;
     public const int MaximumTake = 50;

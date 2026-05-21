@@ -17,7 +17,8 @@ public sealed record WorkerCriteria(
     int Skip = 0,
     int Take = 50,
     string? Category = null,
-    bool IncludeSubcategories = true)
+    bool IncludeSubcategories = true,
+    IReadOnlySet<WorkDefinitionId>? DefinitionIds = null)
 {
     public const int DefaultTake = 50;
     public const int MaximumTake = 50;

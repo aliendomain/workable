@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
+using Workable.SampleHost;
 using Workable.SampleHost.Fulfillment;
 using Workable.SampleHost.Operations;
 
@@ -244,7 +245,8 @@ public sealed class DemoWorkloadController(
 
         try
         {
-            var first = await registry.Default.Queue.Enqueue(
+            var session = registry.Default.CreateSession("Queue idempotency sample work from the sample host.");
+            var first = await session.Queue.Enqueue(
                 "sample.demo.idempotent",
                 input,
                 cancellationToken: cancellationToken);
@@ -253,7 +255,7 @@ public sealed class DemoWorkloadController(
                 this.activeDemoWorkers[workerId] = 0;
             }
 
-            var duplicate = await registry.Default.Queue.Enqueue(
+            var duplicate = await session.Queue.Enqueue(
                 "sample.demo.idempotent",
                 input,
                 cancellationToken: cancellationToken);
@@ -508,7 +510,8 @@ public sealed class DemoWorkloadController(
                 identifiers: keys.Identifier is null
                     ? [new WorkIdentifier("sample-workload", "home-toggle")]
                     : [new WorkIdentifier("sample-workload", "home-toggle"), keys.Identifier.Value]);
-            var handle = await system.Queue.Enqueue(workName, input, cancellationToken: cancellationToken);
+            var session = system.CreateSession($"Queue sample workload '{workName}' from the sample host.");
+            var handle = await session.Queue.Enqueue(workName, input, cancellationToken: cancellationToken);
             if (handle.WorkerId is { } workerId)
             {
                 this.activeDemoWorkers[workerId] = 0;
@@ -558,7 +561,8 @@ public sealed class DemoWorkloadController(
                     new WorkIdentifier("burst-sequence", sequenceNumber.ToString()),
                 ]);
 
-            var handle = await system.Queue.Enqueue(workName, input, cancellationToken: cancellationToken);
+            var session = system.CreateSession($"Queue burst sample workload '{workName}' from the sample host.");
+            var handle = await session.Queue.Enqueue(workName, input, cancellationToken: cancellationToken);
 
             return handle.QueueOutcome.IsAccepted;
         }
@@ -590,7 +594,8 @@ public sealed class DemoWorkloadController(
                     new WorkIdentifier("durable-burst-sequence", sequenceNumber.ToString()),
                 ]);
 
-            var handle = await registry.Default.Queue.Enqueue("sample.demo.durable", input, cancellationToken: cancellationToken);
+            var session = registry.Default.CreateSession("Queue durable-burst sample work from the sample host.");
+            var handle = await session.Queue.Enqueue("sample.demo.durable", input, cancellationToken: cancellationToken);
             if (handle.QueueOutcome.IsAccepted && handle.WorkerId is { } workerId)
             {
                 this.activeDemoWorkers[workerId] = 0;
@@ -657,7 +662,8 @@ public sealed class DemoWorkloadController(
             cancellationToken.ThrowIfCancellationRequested();
             foreach (var system in registry.Systems)
             {
-                var worker = await system.Query.Worker(workerId, cancellationToken: cancellationToken);
+                var session = system.CreateSession("Cancel tracked sample workload from the sample host.");
+                var worker = await session.Query.Worker(workerId, cancellationToken: cancellationToken);
                 if (worker is null)
                 {
                     continue;
@@ -665,7 +671,7 @@ public sealed class DemoWorkloadController(
 
                 if (ShouldCancelWhenStoppingDemoWorkload(worker.State))
                 {
-                    await system.Workers.Execute(new WorkerVersion(worker.Id, worker.Revision), WorkAction.Cancel, cancellationToken);
+                    await session.Workers.Execute(new WorkerVersion(worker.Id, worker.Revision), WorkAction.Cancel, cancellationToken);
                 }
 
                 break;
@@ -689,7 +695,8 @@ public sealed class DemoWorkloadController(
             var found = false;
             foreach (var system in registry.Systems)
             {
-                var worker = await system.Query.Worker(workerId, cancellationToken: cancellationToken);
+                var session = system.CreateSession("Read tracked sample workload from the sample host.");
+                var worker = await session.Query.Worker(workerId, cancellationToken: cancellationToken);
                 if (worker is null)
                 {
                     continue;
