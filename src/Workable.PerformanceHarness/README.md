@@ -37,3 +37,34 @@ Server=(localdb)\MSSQLLocalDB;Database=WorkablePerformanceHarness;Integrated Sec
 The harness creates that database when possible, deploys the `workable_perf` schema, and deletes existing durable rows before each run by default. Override those with `--durability-connection-string`, `--durability-schema`, and `--durability-reset-store false`.
 
 Use `--help` to see all options.
+
+## BenchmarkDotNet baselines
+
+The project also includes focused BenchmarkDotNet baselines for the hot paths identified during performance review. These are separate from the scenario harness above.
+
+Run the default baseline set:
+
+```powershell
+dotnet run --project src\Workable.PerformanceHarness --configuration Release -- --benchmarks
+```
+
+The default `--benchmarks` command runs only benchmark classes whose names contain `Baseline`. That keeps the million-worker stress benchmark opt-in.
+
+Run a single benchmark group:
+
+```powershell
+dotnet run --project src\Workable.PerformanceHarness --configuration Release -- --benchmarks --filter *BaselineWorkerQuery*
+```
+
+Run the opt-in million-worker query stress benchmark:
+
+```powershell
+dotnet run --project src\Workable.PerformanceHarness --configuration Release -- --benchmarks --filter *StressMillionWorkerQuery*
+```
+
+Current benchmark groups:
+
+- `BaselineWorkerQueryBenchmarks` measures broad first-page worker queries, exact identifier-index queries, and identifier key-type facets at 100, 10,000, and 100,000 queued workers.
+- `BaselineReadModelPublishBenchmarks` measures the cost of flushing one new worker update into already-large read-model snapshots at 100, 5,000, and 25,000 queued workers.
+- `BaselineAuthorizedBulkActionBenchmarks` measures authorized `ExecuteAll(Cancel)` over queued workers at 100, 1,000, and 5,000 workers.
+- `StressMillionWorkerQueryBenchmarks` measures broad and indexed first-page queries over 1,000,000 queued workers. This benchmark is intentionally excluded from the default filter.

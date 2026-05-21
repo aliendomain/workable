@@ -3,10 +3,17 @@ using System.Diagnostics;
 using System.Globalization;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using BenchmarkDotNet.Running;
 using Microsoft.Data.SqlClient;
 using Microsoft.Extensions.DependencyInjection;
 using Workable;
+using Workable.PerformanceHarness;
 using Workable.SqlServer;
+
+if (TryRunBenchmarks(args, out var benchmarkExitCode))
+{
+    return benchmarkExitCode;
+}
 
 var options = HarnessOptions.Parse(args);
 if (options.ShowHelp)
@@ -63,6 +70,26 @@ finally
 }
 
 return 0;
+
+static bool TryRunBenchmarks(string[] args, out int exitCode)
+{
+    exitCode = 0;
+    if (args.Length == 0 || args[0] is not ("--benchmark" or "--benchmarks"))
+    {
+        return false;
+    }
+
+    var benchmarkArgs = args[1..];
+    if (benchmarkArgs.Length == 0)
+    {
+        benchmarkArgs = ["--filter", "*Baseline*"];
+    }
+
+    BenchmarkSwitcher
+        .FromAssembly(typeof(BaselineWorkerQueryBenchmarks).Assembly)
+        .Run(benchmarkArgs);
+    return true;
+}
 
 static ServiceProvider CreateProvider(HarnessOptions options)
 {
@@ -586,6 +613,7 @@ internal sealed record HarnessOptions(
         Console.WriteLine();
         Console.WriteLine("Usage:");
         Console.WriteLine("  dotnet run --project src/Workable.PerformanceHarness -- [options]");
+        Console.WriteLine("  dotnet run --project src/Workable.PerformanceHarness -c Release -- --benchmarks [BenchmarkDotNet options]");
         Console.WriteLine();
         Console.WriteLine("Options:");
         Console.WriteLine("  --queue-mode <mode>               Queue mode: in-memory, durable-idempotent, durable-non-idempotent. Default: in-memory");
@@ -602,6 +630,7 @@ internal sealed record HarnessOptions(
         Console.WriteLine("  --durability-connection-string <s> SQL Server connection string for durable modes. Default: LocalDB WorkablePerformanceHarness");
         Console.WriteLine("  --durability-schema <s>           SQL schema for durable modes. Default: workable_perf");
         Console.WriteLine("  --durability-reset-store <true|false> Delete durable rows before measurement. Default: true");
+        Console.WriteLine("  --benchmarks                      Run BenchmarkDotNet baselines. Default filter: *Baseline*");
         Console.WriteLine("  -h|--help                         Show help.");
     }
 
