@@ -1915,8 +1915,7 @@ public sealed class WorkQueryServiceTests
         await first.WaitForCompletion();
         await Eventually(async () =>
             (await system.Query.Workers(new WorkerCriteria(DefinitionName: definitionName, Take: 10))).Workers.Count == 1);
-        var snapshotQueries = Assert.IsAssignableFrom<IWorkSnapshotQueryService>(system.Query);
-        var snapshotRead = snapshotQueries.BeginRead();
+        var snapshotRead = system.Query.BeginRead();
 
         var second = await system.Queue.Enqueue(definitionName);
         await second.WaitForCompletion();
@@ -1935,8 +1934,7 @@ public sealed class WorkQueryServiceTests
         await using var system = CreateSystem(definition, SuccessfulWork);
 
         await system.Start();
-        var snapshotQueries = Assert.IsAssignableFrom<IWorkSnapshotQueryService>(system.Query);
-        var snapshotRead = snapshotQueries.BeginRead();
+        var snapshotRead = system.Query.BeginRead();
 
         var handle = await system.Queue.Enqueue(definitionName);
         await handle.WaitForCompletion();

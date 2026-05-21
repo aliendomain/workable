@@ -5,6 +5,9 @@ internal sealed class AuthorizedWorkQueryService(
     IWorkQueryService inner,
     WorkAuthorizationEvaluator authorization) : IWorkQueryService
 {
+    public IWorkQueryService BeginRead()
+        => new AuthorizedWorkQueryService(catalog, inner.BeginRead(), authorization);
+
     public async Task<WorkerSnapshot?> Worker(
         WorkerId workerId,
         CancellationToken cancellationToken = default)
@@ -28,9 +31,10 @@ internal sealed class AuthorizedWorkQueryService(
         var query = criteria ?? new WorkerCriteria();
         var skip = Math.Max(0, query.Skip);
         var take = NormalizeTake(query.Take, WorkerCriteria.DefaultTake, WorkerCriteria.MaximumTake);
-        var workers = await this.ReadAllWorkers(query, cancellationToken);
-        var page = workers.Skip(skip).Take(take).ToArray();
-        return new WorkerQueryResult(page, workers.Count, skip, take);
+        var authorized = this.AuthorizeWorkerCriteria(query);
+        return authorized is null
+            ? new WorkerQueryResult([], 0, skip, take)
+            : await inner.Workers(authorized with { Skip = skip, Take = take }, cancellationToken);
     }
 
     public async Task<WorkerIterationQueryResult> WorkerIterations(
@@ -40,9 +44,10 @@ internal sealed class AuthorizedWorkQueryService(
         var query = criteria ?? new WorkerIterationCriteria();
         var skip = Math.Max(0, query.Skip);
         var take = NormalizeTake(query.Take, WorkerIterationCriteria.DefaultTake, WorkerIterationCriteria.MaximumTake);
-        var iterations = await this.ReadAllIterations(query, cancellationToken);
-        var page = iterations.Skip(skip).Take(take).ToArray();
-        return new WorkerIterationQueryResult(page, iterations.Count, skip, take);
+        var authorized = this.AuthorizeIterationCriteria(query);
+        return authorized is null
+            ? new WorkerIterationQueryResult([], 0, skip, take)
+            : await inner.WorkerIterations(authorized with { Skip = skip, Take = take }, cancellationToken);
     }
 
     public Task<WorkInfo?> WorkInfo(
@@ -68,375 +73,264 @@ internal sealed class AuthorizedWorkQueryService(
         WorkDefinitionCriteria? criteria = null,
         CancellationToken cancellationToken = default)
     {
-        var result = await inner.WorkDefinitions(criteria, cancellationToken);
-        return new WorkDefinitionQueryResult([.. result.Definitions.Where(authorization.CanRead)]);
+        var authorized = this.AuthorizeDefinitionCriteria(criteria ?? new WorkDefinitionCriteria());
+        return authorized is null
+            ? new WorkDefinitionQueryResult([])
+            : await inner.WorkDefinitions(authorized, cancellationToken);
     }
 
     public async Task<WorkerKeyQueryResult> WorkerKeys(
         WorkerKeyCriteria? criteria = null,
         CancellationToken cancellationToken = default)
     {
-        var result = await inner.WorkerKeys(criteria, cancellationToken);
-        var keys = result.Keys
-            .Select(key => key with
-            {
-                Workers = [.. key.Workers.Where(worker => authorization.CanRead(worker.DefinitionId))],
-            })
-            .Where(key => key.Workers.Count > 0)
-            .ToArray();
-
-        return new WorkerKeyQueryResult(keys, keys.Length, result.Skip, result.Take);
+        var query = criteria ?? new WorkerKeyCriteria();
+        var authorized = this.AuthorizeWorkerKeyCriteria(query);
+        return authorized is null
+            ? new WorkerKeyQueryResult([], 0, Math.Max(0, query.Skip), NormalizeTake(query.Take, WorkerKeyCriteria.DefaultTake, WorkerKeyCriteria.MaximumTake))
+            : await inner.WorkerKeys(authorized, cancellationToken);
     }
 
     public async Task<WorkerKeyTypeQueryResult> WorkerKeyTypes(
         WorkerKeyTypeCriteria? criteria = null,
         CancellationToken cancellationToken = default)
     {
-        var result = await inner.WorkerKeyTypes(criteria, cancellationToken);
-        var types = result.Types
-            .Select(type =>
-            {
-                var workers = type.Workers.Where(worker => authorization.CanRead(worker.DefinitionId)).ToArray();
-                return type with
-                {
-                    WorkerCount = workers.Length,
-                    WorkerCountByKind = new Dictionary<WorkKeyKind, int>(),
-                    Workers = workers,
-                };
-            })
-            .Where(type => type.WorkerCount > 0)
-            .ToArray();
-
-        return new WorkerKeyTypeQueryResult(types, types.Length, result.Skip, result.Take);
+        var query = criteria ?? new WorkerKeyTypeCriteria();
+        var authorized = this.AuthorizeWorkerKeyTypeCriteria(query);
+        return authorized is null
+            ? new WorkerKeyTypeQueryResult([], 0, Math.Max(0, query.Skip), NormalizeTake(query.Take, WorkerKeyCriteria.DefaultTake, WorkerKeyCriteria.MaximumTake))
+            : await inner.WorkerKeyTypes(authorized, cancellationToken);
     }
 
     public async Task<WorkIterationKeyQueryResult> WorkIterationKeys(
         WorkIterationKeyCriteria? criteria = null,
         CancellationToken cancellationToken = default)
     {
-        var result = await inner.WorkIterationKeys(criteria, cancellationToken);
-        var keys = result.Keys
-            .Select(key => key with
-            {
-                Iterations = [.. key.Iterations.Where(iteration => authorization.CanRead(iteration.DefinitionId))],
-            })
-            .Where(key => key.Iterations.Count > 0)
-            .ToArray();
-
-        return new WorkIterationKeyQueryResult(keys, keys.Length, result.Skip, result.Take);
+        var query = criteria ?? new WorkIterationKeyCriteria();
+        var authorized = this.AuthorizeIterationKeyCriteria(query);
+        return authorized is null
+            ? new WorkIterationKeyQueryResult([], 0, Math.Max(0, query.Skip), NormalizeTake(query.Take, WorkIterationKeyCriteria.DefaultTake, WorkIterationKeyCriteria.MaximumTake))
+            : await inner.WorkIterationKeys(authorized, cancellationToken);
     }
 
     public async Task<WorkIterationKeyTypeQueryResult> WorkIterationKeyTypes(
         WorkIterationKeyTypeCriteria? criteria = null,
         CancellationToken cancellationToken = default)
     {
-        var result = await inner.WorkIterationKeyTypes(criteria, cancellationToken);
-        var types = result.Types
-            .Select(type =>
-            {
-                var iterations = type.Iterations.Where(iteration => authorization.CanRead(iteration.DefinitionId)).ToArray();
-                return type with
-                {
-                    IterationCount = iterations.Length,
-                    IterationCountByKind = new Dictionary<WorkKeyKind, int>(),
-                    Iterations = iterations,
-                };
-            })
-            .Where(type => type.IterationCount > 0)
-            .ToArray();
-
-        return new WorkIterationKeyTypeQueryResult(types, types.Length, result.Skip, result.Take);
+        var query = criteria ?? new WorkIterationKeyTypeCriteria();
+        var authorized = this.AuthorizeIterationKeyTypeCriteria(query);
+        return authorized is null
+            ? new WorkIterationKeyTypeQueryResult([], 0, Math.Max(0, query.Skip), NormalizeTake(query.Take, WorkIterationKeyCriteria.DefaultTake, WorkIterationKeyCriteria.MaximumTake))
+            : await inner.WorkIterationKeyTypes(authorized, cancellationToken);
     }
 
     public async Task<WorkerStatusSummary> WorkerStatusSummary(
         WorkerCriteria? criteria = null,
         CancellationToken cancellationToken = default)
     {
-        var workers = await this.ReadAllWorkers(criteria ?? new WorkerCriteria(), cancellationToken);
-        return CreateWorkerStatusSummary(workers);
+        var authorized = this.AuthorizeWorkerCriteria(criteria ?? new WorkerCriteria());
+        return authorized is null
+            ? new WorkerStatusSummary(0, 0, 0, new Dictionary<WorkerState, int>())
+            : await inner.WorkerStatusSummary(authorized, cancellationToken);
     }
 
     public async Task<WorkSystemDetails> SystemDetails(
         WorkSystemCriteria? criteria = null,
         CancellationToken cancellationToken = default)
     {
-        var innerDetails = await inner.SystemDetails(criteria, cancellationToken);
-        var workerCounts = await this.SystemWorkerCounts(criteria, cancellationToken);
-        var iterationCounts = await this.SystemIterationCounts(criteria, cancellationToken);
-        var failedWorkers = await this.SystemFailedWorkers(criteria, cancellationToken);
-        var failedIterations = await this.SystemFailedIterations(criteria, cancellationToken);
-        var completedIterations = await this.SystemCompletedIterations(criteria, cancellationToken);
-
-        return innerDetails with
-        {
-            DefinitionCount = workerCounts.DefinitionCount,
-            ActiveWorkerCount = workerCounts.ActiveWorkerCount,
-            FinalWorkerCount = workerCounts.FinalWorkerCount,
-            FailedWorkerCount = workerCounts.FailedWorkerCount,
-            WorkerCountByState = workerCounts.WorkerCountByState,
-            OldestQueuedAt = workerCounts.OldestQueuedAt,
-            CurrentIterationCount = iterationCounts.CurrentIterationCount,
-            CompletedIterationCount = iterationCounts.CompletedIterationCount,
-            FailedIterationCount = iterationCounts.FailedIterationCount,
-            CanceledIterationCount = iterationCounts.CanceledIterationCount,
-            IterationCountByStatus = iterationCounts.IterationCountByStatus,
-            CommonKeyTypes = (await this.SystemCommonKeyTypes(criteria, cancellationToken)).KeyTypes,
-            Throughput = await this.SystemThroughput(criteria, cancellationToken: cancellationToken),
-            FailedWorkers = failedWorkers.FailedWorkers,
-            FailedIterations = failedIterations.Iterations,
-            CompletedIterations = completedIterations.Iterations,
-        };
+        return await inner.SystemDetails(this.AuthorizeSystemCriteria(criteria), cancellationToken);
     }
 
     public Task<WorkSystemThroughput> SystemThroughput(
         WorkSystemCriteria? criteria = null,
         WorkThroughputCriteria? throughput = null,
         CancellationToken cancellationToken = default)
-        => this.CanDelegateSystemAggregate(criteria)
-            ? inner.SystemThroughput(criteria, throughput, cancellationToken)
-            : Task.FromResult(CreateEmptyThroughput(throughput));
+        => inner.SystemThroughput(this.AuthorizeSystemCriteria(criteria), throughput, cancellationToken);
 
     public Task<WorkSystemThroughputSummary> SystemThroughputSummary(
         WorkSystemCriteria? criteria = null,
         WorkThroughputCriteria? throughput = null,
         CancellationToken cancellationToken = default)
-        => this.CanDelegateSystemAggregate(criteria)
-            ? inner.SystemThroughputSummary(criteria, throughput, cancellationToken)
-            : Task.FromResult(CreateEmptyThroughputSummary(throughput));
+        => inner.SystemThroughputSummary(this.AuthorizeSystemCriteria(criteria), throughput, cancellationToken);
 
     public async Task<WorkSystemWorkerCounts> SystemWorkerCounts(
         WorkSystemCriteria? criteria = null,
         CancellationToken cancellationToken = default)
-    {
-        var workers = await this.ReadAllWorkers(ToWorkerCriteria(criteria), cancellationToken);
-        var byState = workers
-            .GroupBy(worker => worker.State)
-            .ToDictionary(group => group.Key, group => group.Count());
-        var active = workers.Count(worker => !IsFinal(worker.State));
-        var final = workers.Count - active;
-        var failed = byState.GetValueOrDefault(WorkerState.Failed);
-        var oldestQueued = workers
-            .Where(worker => worker.State == WorkerState.Queued)
-            .Select(worker => (DateTimeOffset?)worker.CreatedAt)
-            .OrderBy(value => value)
-            .FirstOrDefault();
-
-        return new WorkSystemWorkerCounts(
-            this.ReadableDefinitionCount(criteria),
-            active,
-            final,
-            failed,
-            byState,
-            oldestQueued);
-    }
+        => await inner.SystemWorkerCounts(this.AuthorizeSystemCriteria(criteria), cancellationToken);
 
     public async Task<WorkSystemIterationCounts> SystemIterationCounts(
         WorkSystemCriteria? criteria = null,
         CancellationToken cancellationToken = default)
-    {
-        var iterations = await this.ReadAllIterations(ToIterationCriteria(criteria), cancellationToken);
-        var byStatus = iterations
-            .GroupBy(iteration => iteration.Status)
-            .ToDictionary(group => group.Key, group => group.Count());
-
-        return new WorkSystemIterationCounts(
-            byStatus.Where(pair => pair.Key is not WorkCompletionStatus.Completed and not WorkCompletionStatus.Failed and not WorkCompletionStatus.Canceled)
-                .Sum(pair => pair.Value),
-            byStatus.GetValueOrDefault(WorkCompletionStatus.Completed),
-            byStatus.GetValueOrDefault(WorkCompletionStatus.Failed),
-            byStatus.GetValueOrDefault(WorkCompletionStatus.Canceled),
-            byStatus);
-    }
+        => await inner.SystemIterationCounts(this.AuthorizeSystemCriteria(criteria), cancellationToken);
 
     public Task<WorkIterationKeyTypeFacetQueryResult> SystemCommonKeyTypes(
         WorkSystemCriteria? criteria = null,
         CancellationToken cancellationToken = default)
-        => this.CanDelegateSystemAggregate(criteria)
-            ? inner.SystemCommonKeyTypes(criteria, cancellationToken)
-            : Task.FromResult(new WorkIterationKeyTypeFacetQueryResult([]));
+        => inner.SystemCommonKeyTypes(this.AuthorizeSystemCriteria(criteria), cancellationToken);
 
     public async Task<WorkSystemFailedWorkers> SystemFailedWorkers(
         WorkSystemCriteria? criteria = null,
         CancellationToken cancellationToken = default)
-    {
-        var workers = await this.ReadAllWorkers(ToWorkerCriteria(criteria) with
-        {
-            States = new HashSet<WorkerState> { WorkerState.Failed },
-        }, cancellationToken);
-        var counts = await this.SystemWorkerCounts(criteria, cancellationToken);
-        return new WorkSystemFailedWorkers(
-            counts.ActiveWorkerCount,
-            counts.FinalWorkerCount,
-            counts.FailedWorkerCount,
-            counts.WorkerCountByState,
-            [.. workers.Take(5)]);
-    }
+        => await inner.SystemFailedWorkers(this.AuthorizeSystemCriteria(criteria), cancellationToken);
 
     public async Task<WorkerIterationOverviewQueryResult> SystemFailedIterations(
         WorkSystemCriteria? criteria = null,
         CancellationToken cancellationToken = default)
-    {
-        var iterations = await this.ReadAllIterations(ToIterationCriteria(criteria) with
-        {
-            Statuses = new HashSet<WorkCompletionStatus> { WorkCompletionStatus.Failed },
-        }, cancellationToken);
-        return new WorkerIterationOverviewQueryResult([.. iterations.Take(5)]);
-    }
+        => await inner.SystemFailedIterations(this.AuthorizeSystemCriteria(criteria), cancellationToken);
 
     public async Task<WorkerIterationOverviewQueryResult> SystemCompletedIterations(
         WorkSystemCriteria? criteria = null,
         CancellationToken cancellationToken = default)
+        => await inner.SystemCompletedIterations(this.AuthorizeSystemCriteria(criteria), cancellationToken);
+
+    private WorkDefinitionCriteria? AuthorizeDefinitionCriteria(WorkDefinitionCriteria criteria)
+        => ApplyDefinitionScope(
+            criteria,
+            this.ResolveReadableDefinitionScope(criteria.Id, criteria.Name, criteria.DefinitionIds));
+
+    private WorkerCriteria? AuthorizeWorkerCriteria(WorkerCriteria criteria)
+        => ApplyDefinitionScope(
+            criteria,
+            this.ResolveReadableDefinitionScope(criteria.DefinitionId, criteria.DefinitionName, criteria.DefinitionIds));
+
+    private WorkerIterationCriteria? AuthorizeIterationCriteria(WorkerIterationCriteria criteria)
+        => ApplyDefinitionScope(
+            criteria,
+            this.ResolveReadableDefinitionScope(criteria.DefinitionId, criteria.DefinitionName, criteria.DefinitionIds));
+
+    private WorkerKeyCriteria? AuthorizeWorkerKeyCriteria(WorkerKeyCriteria criteria)
+        => ApplyDefinitionScope(criteria, this.ResolveReadableDefinitionScope(criteria.DefinitionIds));
+
+    private WorkerKeyTypeCriteria? AuthorizeWorkerKeyTypeCriteria(WorkerKeyTypeCriteria criteria)
+        => ApplyDefinitionScope(criteria, this.ResolveReadableDefinitionScope(criteria.DefinitionIds));
+
+    private WorkIterationKeyCriteria? AuthorizeIterationKeyCriteria(WorkIterationKeyCriteria criteria)
+        => ApplyDefinitionScope(criteria, this.ResolveReadableDefinitionScope(criteria.DefinitionIds));
+
+    private WorkIterationKeyTypeCriteria? AuthorizeIterationKeyTypeCriteria(WorkIterationKeyTypeCriteria criteria)
+        => ApplyDefinitionScope(criteria, this.ResolveReadableDefinitionScope(criteria.DefinitionIds));
+
+    private WorkSystemCriteria? AuthorizeSystemCriteria(WorkSystemCriteria? criteria)
     {
-        var iterations = await this.ReadAllIterations(ToIterationCriteria(criteria) with
-        {
-            Statuses = new HashSet<WorkCompletionStatus> { WorkCompletionStatus.Completed },
-        }, cancellationToken);
-        return new WorkerIterationOverviewQueryResult([.. iterations.Take(5)]);
+        var query = criteria ?? new WorkSystemCriteria();
+        var definitionIds = this.ResolveReadableDefinitionScope(
+            query.DefinitionId,
+            query.DefinitionName,
+            query.DefinitionIds);
+
+        return definitionIds is null
+            ? criteria
+            : query with { DefinitionIds = definitionIds };
     }
 
-    private async Task<IReadOnlyList<WorkerOverviewItem>> ReadAllWorkers(
+    private IReadOnlySet<WorkDefinitionId>? ResolveReadableDefinitionScope(
+        IReadOnlySet<WorkDefinitionId>? requestedDefinitionIds)
+        => this.ResolveReadableDefinitionScope(null, null, requestedDefinitionIds);
+
+    private IReadOnlySet<WorkDefinitionId>? ResolveReadableDefinitionScope(
+        WorkDefinitionId? definitionId,
+        string? definitionName,
+        IReadOnlySet<WorkDefinitionId>? requestedDefinitionIds)
+    {
+        var hasAllDefinitions = authorization.HasReadAllWorkAccess();
+        return this.ResolveDefinitionScope(
+            definitionId,
+            definitionName,
+            requestedDefinitionIds,
+            hasAllDefinitions,
+            hasAllDefinitions ? new HashSet<WorkDefinitionId>() : authorization.ReadableDefinitionIds());
+    }
+
+    private IReadOnlySet<WorkDefinitionId>? ResolveDefinitionScope(
+        WorkDefinitionId? definitionId,
+        string? definitionName,
+        IReadOnlySet<WorkDefinitionId>? requestedDefinitionIds,
+        bool hasAllDefinitions,
+        IReadOnlySet<WorkDefinitionId> allowedDefinitionIds)
+    {
+        HashSet<WorkDefinitionId>? definitionIds = requestedDefinitionIds?.ToHashSet();
+        if (definitionId is { } id)
+        {
+            definitionIds = IntersectDefinitionScope(definitionIds, [id]);
+        }
+
+        if (!string.IsNullOrWhiteSpace(definitionName))
+        {
+            if (!catalog.TryGet(definitionName, out var definition))
+            {
+                return new HashSet<WorkDefinitionId>();
+            }
+
+            definitionIds = IntersectDefinitionScope(definitionIds, [definition.Id]);
+        }
+
+        return hasAllDefinitions
+            ? definitionIds
+            : IntersectDefinitionScope(definitionIds, allowedDefinitionIds);
+    }
+
+    private static WorkDefinitionCriteria? ApplyDefinitionScope(
+        WorkDefinitionCriteria criteria,
+        IReadOnlySet<WorkDefinitionId>? definitionIds)
+        => definitionIds is null
+            ? criteria
+            : definitionIds.Count == 0 ? null : criteria with { DefinitionIds = definitionIds };
+
+    private static WorkerCriteria? ApplyDefinitionScope(
         WorkerCriteria criteria,
-        CancellationToken cancellationToken)
-    {
-        if (criteria.DefinitionId is { } definitionId && !authorization.CanRead(definitionId))
-        {
-            return [];
-        }
+        IReadOnlySet<WorkDefinitionId>? definitionIds)
+        => definitionIds is null
+            ? criteria
+            : definitionIds.Count == 0 ? null : criteria with { DefinitionIds = definitionIds };
 
-        var workers = new List<WorkerOverviewItem>();
-        var skip = 0;
-        while (true)
-        {
-            var page = await inner.Workers(criteria with
-            {
-                Skip = skip,
-                Take = WorkerCriteria.MaximumTake,
-            }, cancellationToken);
-            if (page.Workers.Count == 0)
-            {
-                break;
-            }
-
-            workers.AddRange(page.Workers.Where(worker => authorization.CanRead(worker.DefinitionId)));
-            if (page.Workers.Count < WorkerCriteria.MaximumTake)
-            {
-                break;
-            }
-
-            skip += page.Workers.Count;
-        }
-
-        return workers;
-    }
-
-    private async Task<IReadOnlyList<WorkerIterationOverviewItem>> ReadAllIterations(
+    private static WorkerIterationCriteria? ApplyDefinitionScope(
         WorkerIterationCriteria criteria,
-        CancellationToken cancellationToken)
+        IReadOnlySet<WorkDefinitionId>? definitionIds)
+        => definitionIds is null
+            ? criteria
+            : definitionIds.Count == 0 ? null : criteria with { DefinitionIds = definitionIds };
+
+    private static WorkerKeyCriteria? ApplyDefinitionScope(
+        WorkerKeyCriteria criteria,
+        IReadOnlySet<WorkDefinitionId>? definitionIds)
+        => definitionIds is null
+            ? criteria
+            : definitionIds.Count == 0 ? null : criteria with { DefinitionIds = definitionIds };
+
+    private static WorkerKeyTypeCriteria? ApplyDefinitionScope(
+        WorkerKeyTypeCriteria criteria,
+        IReadOnlySet<WorkDefinitionId>? definitionIds)
+        => definitionIds is null
+            ? criteria
+            : definitionIds.Count == 0 ? null : criteria with { DefinitionIds = definitionIds };
+
+    private static WorkIterationKeyCriteria? ApplyDefinitionScope(
+        WorkIterationKeyCriteria criteria,
+        IReadOnlySet<WorkDefinitionId>? definitionIds)
+        => definitionIds is null
+            ? criteria
+            : definitionIds.Count == 0 ? null : criteria with { DefinitionIds = definitionIds };
+
+    private static WorkIterationKeyTypeCriteria? ApplyDefinitionScope(
+        WorkIterationKeyTypeCriteria criteria,
+        IReadOnlySet<WorkDefinitionId>? definitionIds)
+        => definitionIds is null
+            ? criteria
+            : definitionIds.Count == 0 ? null : criteria with { DefinitionIds = definitionIds };
+
+    private static HashSet<WorkDefinitionId> IntersectDefinitionScope(
+        HashSet<WorkDefinitionId>? current,
+        IEnumerable<WorkDefinitionId> requested)
     {
-        if (criteria.DefinitionId is { } definitionId && !authorization.CanRead(definitionId))
+        var requestedSet = requested.ToHashSet();
+        if (current is null)
         {
-            return [];
+            return requestedSet;
         }
 
-        var iterations = new List<WorkerIterationOverviewItem>();
-        var skip = 0;
-        while (true)
-        {
-            var page = await inner.WorkerIterations(criteria with
-            {
-                Skip = skip,
-                Take = WorkerIterationCriteria.MaximumTake,
-            }, cancellationToken);
-            if (page.Iterations.Count == 0)
-            {
-                break;
-            }
-
-            iterations.AddRange(page.Iterations.Where(iteration => authorization.CanRead(iteration.DefinitionId)));
-            if (page.Iterations.Count < WorkerIterationCriteria.MaximumTake)
-            {
-                break;
-            }
-
-            skip += page.Iterations.Count;
-        }
-
-        return iterations;
+        current.IntersectWith(requestedSet);
+        return current;
     }
-
-    private bool CanDelegateSystemAggregate(WorkSystemCriteria? criteria)
-        => this.AllDefinitionsReadable() ||
-            (criteria?.DefinitionId is { } definitionId && authorization.CanRead(definitionId));
-
-    private bool AllDefinitionsReadable()
-    {
-        var definitionIds = catalog.Definitions.Select(definition => definition.Id).ToArray();
-        return definitionIds.Length > 0 && definitionIds.All(authorization.CanRead);
-    }
-
-    private int ReadableDefinitionCount(WorkSystemCriteria? criteria)
-    {
-        if (criteria?.DefinitionId is { } definitionId)
-        {
-            return authorization.CanRead(definitionId) ? 1 : 0;
-        }
-
-        return catalog.Definitions.Count(authorization.CanRead);
-    }
-
-    private static WorkerStatusSummary CreateWorkerStatusSummary(IReadOnlyList<WorkerOverviewItem> workers)
-    {
-        var counts = workers
-            .GroupBy(worker => worker.State)
-            .ToDictionary(group => group.Key, group => group.Count());
-        var active = workers.Count(worker => !IsFinal(worker.State));
-        var final = workers.Count - active;
-        return new WorkerStatusSummary(workers.Count, active, final, counts);
-    }
-
-    private static WorkerCriteria ToWorkerCriteria(WorkSystemCriteria? criteria)
-        => new(
-            DefinitionId: criteria?.DefinitionId,
-            DefinitionName: criteria?.DefinitionName,
-            Category: criteria?.Category,
-            IncludeSubcategories: criteria?.IncludeSubcategories ?? true,
-            Take: WorkerCriteria.MaximumTake);
-
-    private static WorkerIterationCriteria ToIterationCriteria(WorkSystemCriteria? criteria)
-        => new(
-            DefinitionId: criteria?.DefinitionId,
-            DefinitionName: criteria?.DefinitionName,
-            Category: criteria?.Category,
-            Take: WorkerIterationCriteria.MaximumTake);
 
     private static int NormalizeTake(int take, int defaultTake, int maximumTake)
         => take <= 0 ? defaultTake : Math.Min(take, maximumTake);
-
-    private static bool IsFinal(WorkerState state)
-        => state is WorkerState.Completed or WorkerState.Failed or WorkerState.Canceled;
-
-    private static WorkSystemThroughput CreateEmptyThroughput(WorkThroughputCriteria? throughput)
-    {
-        throughput ??= new WorkThroughputCriteria();
-        var now = DateTimeOffset.UtcNow;
-        return new WorkSystemThroughput(
-            now.AddSeconds(-throughput.WindowSeconds),
-            now,
-            throughput.WindowSeconds,
-            throughput.BucketSeconds,
-            0,
-            [],
-            new WorkThroughputExecutionSummary(0, 0, 0, 0, 0),
-            new WorkThroughputLiveSummary(throughput.WindowSeconds, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0));
-    }
-
-    private static WorkSystemThroughputSummary CreateEmptyThroughputSummary(WorkThroughputCriteria? throughput)
-    {
-        throughput ??= new WorkThroughputCriteria();
-        return new WorkSystemThroughputSummary(
-            throughput.WindowSeconds,
-            0,
-            new WorkThroughputExecutionSummary(0, 0, 0, 0, 0),
-            new WorkThroughputLiveSummary(throughput.WindowSeconds, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0));
-    }
 }

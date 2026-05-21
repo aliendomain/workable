@@ -21,15 +21,17 @@ public sealed class WorkableHttpSystemResolver(
 
         var defaultSystemId = registry.Default.Id;
         var systems = registry.Systems
-            .Where(system => system.CanConnect(requestContext))
-            .OrderBy(system => system.Name is null ? 0 : 1)
-            .ThenBy(system => system.Name, StringComparer.OrdinalIgnoreCase)
-            .Select(system => new WorkableHttpSystemInfo(
-                system.Id,
-                system.Name,
-                system.State,
-                system.Id == defaultSystemId,
-                this.CreateCapabilities(system)))
+            .Select(system => (System: system, Access: system.DescribeAccess(requestContext)))
+            .Where(result => result.Access.CanConnect)
+            .OrderBy(result => result.System.Name is null ? 0 : 1)
+            .ThenBy(result => result.System.Name, StringComparer.OrdinalIgnoreCase)
+            .Select(result => new WorkableHttpSystemInfo(
+                result.System.Id,
+                result.System.Name,
+                result.System.State,
+                result.System.Id == defaultSystemId,
+                this.CreateCapabilities(result.System, result.Access),
+                result.Access))
             .ToList();
 
         return new WorkableHttpSystems(systems);
@@ -89,13 +91,50 @@ public sealed class WorkableHttpSystemResolver(
         };
     }
 
-    private WorkableHttpCapabilities CreateCapabilities(IWorkSystem system)
+    private WorkableHttpCapabilities CreateCapabilities(
+        IWorkSystem system,
+        WorkSystemAccessSummary access)
     {
         var realtime = realtimeCapabilityProviders.FirstOrDefault()?.GetCapability(system)
             ?? WorkRealtimeCapability.Disabled;
         var persistentCoordinationAvailable = system is IWorkSystemCoordinationCapabilities capabilities &&
             capabilities.PersistentCoordinationAvailable;
 
-        return new WorkableHttpCapabilities(realtime, persistentCoordinationAvailable);
+        return new WorkableHttpCapabilities(
+            FilterRealtimeCapability(realtime, access),
+            persistentCoordinationAvailable);
     }
+
+    private static WorkRealtimeCapability FilterRealtimeCapability(
+        WorkRealtimeCapability realtime,
+        WorkSystemAccessSummary access)
+    {
+        if (!realtime.Enabled || realtime.Features is not { Count: > 0 })
+        {
+            return realtime;
+        }
+
+        var features = realtime.Features
+            .Where(feature => IsRealtimeFeatureAllowed(feature, access))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+        return realtime with
+        {
+            Enabled = features.Length > 0,
+            Features = features,
+        };
+    }
+
+    private static bool IsRealtimeFeatureAllowed(
+        string feature,
+        WorkSystemAccessSummary access)
+        => feature switch
+        {
+            "system-view" => access.CanConnect,
+            "work-views" => access.CanReadAllWork || access.ReadableDefinitionCount > 0,
+            "worker-events" => access.CanReadAllWork || access.ReadableDefinitionCount > 0,
+            "diagnostics-view" => access.CanViewDiagnostics,
+            _ => true,
+        };
 }

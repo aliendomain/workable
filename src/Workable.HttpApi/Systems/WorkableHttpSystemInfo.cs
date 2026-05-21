@@ -4,4 +4,5 @@ public sealed record WorkableHttpSystemInfo(
     string? Name,
     WorkSystemState State,
     bool IsDefault,
-    WorkableHttpCapabilities Capabilities);
+    WorkableHttpCapabilities Capabilities,
+    WorkSystemAccessSummary Access);

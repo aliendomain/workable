@@ -5,7 +5,7 @@ public sealed class WorkableSignalROptions
 
     public TimeSpan PublishInterval { get; set; } = TimeSpan.FromSeconds(2);
 
-    public TimeSpan DiagnosticsPublishInterval { get; set; } = TimeSpan.FromMilliseconds(250);
+    public TimeSpan DiagnosticsPublishInterval { get; set; } = TimeSpan.FromMilliseconds(750);
 
     public int EventSubscriptionCapacity { get; set; } = 16_384;
 

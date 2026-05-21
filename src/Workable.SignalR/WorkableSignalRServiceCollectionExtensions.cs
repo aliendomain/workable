@@ -25,6 +25,7 @@ public static class WorkableSignalRServiceCollectionExtensions
             .AddHubOptions<WorkableRealtimeHub>(options =>
             {
                 options.AddFilter<WorkableSignalRAuthenticationFilter>();
+                options.AddFilter<WorkableSignalRAuthorizationFilter>();
             })
             .AddJsonProtocol(options =>
             {
@@ -33,6 +34,7 @@ public static class WorkableSignalRServiceCollectionExtensions
 
         services.TryAddSingleton<IWorkRealtimeCapabilityProvider, WorkableRealtimeCapabilityProvider>();
         services.TryAddSingleton<WorkableSignalRAuthenticationFilter>();
+        services.TryAddSingleton<WorkableSignalRAuthorizationFilter>();
         services.TryAddSingleton<WorkableViewQueryAdapter>();
         services.TryAddSingleton<WorkableRealtimeEventSubscriptions>();
         services.TryAddSingleton<WorkableRealtimeViewSubscriptions>();

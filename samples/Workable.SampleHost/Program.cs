@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Workable;
 using Workable.SampleHost;
 using Workable.SampleHost.Demo;
@@ -43,8 +44,13 @@ builder.Services.AddWorkableSqlServerDurableQueue(samplePersistenceConnectionStr
 builder.Services.AddWorkableSystem(workable =>
 {
     workable.StartWithHost();
+    workable.ConfigureOperationsSystemAuthorization();
     workable.AddWork<HealthSnapshotWork>();
-    workable.AddWork<SampleEchoWork>();
+    workable.AddWork<SampleEchoWork>(
+        configure: null,
+        authorize: authorize => authorize.RequireGroups(
+            readGroups: [SampleFakeAuth.OperationsCustomReadGroup],
+            operateGroups: [SampleFakeAuth.OperationsCustomOperateGroup]));
     workable.AddWork<SampleDelayWork>();
     workable.AddWork<WelcomeEmailWork>();
     workable.AddWork<InvoiceGenerateWork>();
@@ -76,7 +82,12 @@ builder.Services.AddWorkableSystem(workable =>
 builder.Services.AddWorkableSystem("fulfillment", workable =>
 {
     workable.StartWithHost();
-    workable.AddWork<OrderPickListWork>();
+    workable.ConfigureFulfillmentSystemAuthorization();
+    workable.AddWork<OrderPickListWork>(
+        configure: null,
+        authorize: authorize => authorize.RequireGroups(
+            readGroups: [SampleFakeAuth.FulfillmentCustomReadGroup],
+            operateGroups: [SampleFakeAuth.FulfillmentCustomOperateGroup]));
     workable.AddWork<ShipmentLabelWork>();
     workable.AddWork<CarrierRateShopWork>();
     workable.AddWork<WarehouseSlottingWork>();
@@ -126,13 +137,28 @@ app.Use(async (context, next) =>
 });
 
 app.UseCors(sampleCorsPolicy);
+app.Use((context, next) =>
+{
+    if (!SampleFakeAuth.TryApplyPathProfile(context))
+    {
+        context.User = new System.Security.Claims.ClaimsPrincipal(new System.Security.Claims.ClaimsIdentity());
+    }
+
+    return next();
+});
+app.UseRouting();
 
 app.MapGet("/", (HttpContext context) =>
 {
-    var workableHost = string.IsNullOrWhiteSpace(context.Request.Host.Host)
-        ? "localhost"
-        : context.Request.Host.Host;
-    var workableUrl = $"http://{workableHost}:{sampleHttpPort}/workable";
+    var requestHost = string.IsNullOrWhiteSpace(context.Request.Host.Value)
+        ? $"localhost:{sampleHttpPort}"
+        : context.Request.Host.Value;
+    var workableUrlBase = $"{context.Request.Scheme}://{requestHost}";
+    var authProfilesJson = JsonSerializer.Serialize(
+        SampleFakeAuth.Profiles,
+        new JsonSerializerOptions(JsonSerializerDefaults.Web));
+    var selectedProfile = SampleFakeAuth.Resolve(context.Request.Query[SampleFakeAuth.QueryParameterName]);
+    var selectedWorkableUrl = SampleFakeAuth.BuildWorkableApiUrl(workableUrlBase, selectedProfile.Id);
     return Results.Content(
         $$"""
         <!doctype html>
@@ -165,6 +191,19 @@ app.MapGet("/", (HttpContext context) =>
                 .percentage-control { display: grid; grid-template-columns: max-content 5rem max-content; gap: .5rem; align-items: center; }
                 .system-controls { display: flex; flex-wrap: wrap; gap: .75rem; align-items: center; }
                 .system-toggle { display: inline-flex; gap: .35rem; align-items: center; white-space: nowrap; }
+                .auth-frame { margin: 1.25rem 0 1.5rem; padding: 1rem 1.1rem; border: 1px solid #ddd; background: #fafafa; border-radius: .75rem; }
+                .auth-frame h2 { margin: 0 0 .35rem; font-size: 1rem; }
+                .auth-frame p { margin: .2rem 0; }
+                .auth-grid { display: grid; grid-template-columns: minmax(14rem, 18rem) 1fr; gap: 1rem; align-items: start; margin-top: .75rem; }
+                .auth-meta { display: grid; gap: .65rem; }
+                .auth-meta label { display: grid; gap: .35rem; font-weight: 600; }
+                .auth-meta select,
+                .auth-meta input { font: inherit; padding: .6rem .7rem; width: 100%; box-sizing: border-box; }
+                .auth-copy-row { display: flex; gap: .5rem; }
+                .auth-copy-row button { white-space: nowrap; }
+                .auth-summary { display: grid; gap: .6rem; padding: .1rem 0; }
+                .auth-summary strong { display: inline-block; margin-right: .35rem; }
+                .auth-groups { word-break: break-word; }
                 .system-toggle input { width: auto; padding: 0; }
                 .interval-control input { width: 100%; box-sizing: border-box; }
                 .number-control input { width: 100%; box-sizing: border-box; }
@@ -177,6 +216,8 @@ app.MapGet("/", (HttpContext context) =>
                     tr { border-bottom: 1px solid #ddd; }
                     tr:last-child { border-bottom: 0; }
                     td { border-bottom: 0; }
+                    .auth-grid { grid-template-columns: 1fr; }
+                    .auth-copy-row { flex-direction: column; }
                     .sample-workload-controls { grid-template-columns: 1fr; align-items: stretch; }
                     .pressure-controls { grid-template-columns: 1fr; align-items: stretch; }
                     .burst-controls { grid-template-columns: 1fr; align-items: stretch; }
@@ -190,7 +231,31 @@ app.MapGet("/", (HttpContext context) =>
         </head>
         <body>
             <h1>Workable Sample Host</h1>
-            <p>Start the Workable UI and add this server: <code>{{workableUrl}}</code></p>
+            <p>Use the fake auth selector below, then add the generated Workable URL in the admin UI.</p>
+            <section class="auth-frame" aria-label="Fake authentication profiles">
+                <h2>Fake Authentication</h2>
+                <p>Switch between sample users to exercise Workable authorization from the admin UI without standing up a real identity provider.</p>
+                <div class="auth-grid">
+                    <div class="auth-meta">
+                        <label for="fake-auth-profile">
+                            Sample user
+                            <select id="fake-auth-profile"></select>
+                        </label>
+                        <label for="workable-api-url">
+                            Workable API URL
+                            <div class="auth-copy-row">
+                                <input id="workable-api-url" readonly type="text" value="{{selectedWorkableUrl}}">
+                                <button id="copy-workable-api-url" type="button">Copy</button>
+                            </div>
+                        </label>
+                    </div>
+                    <div class="auth-summary">
+                        <p id="fake-auth-description"></p>
+                        <p><strong>Expected result:</strong><span id="fake-auth-expected"></span></p>
+                        <p><strong>Groups:</strong><span class="auth-groups" id="fake-auth-groups"></span></p>
+                    </div>
+                </div>
+            </section>
             <div class="system-selection" aria-label="Sample systems">
                 <span class="system-selection-title">Enabled systems</span>
                 <label class="system-toggle">
@@ -341,6 +406,64 @@ app.MapGet("/", (HttpContext context) =>
                 </tbody>
             </table>
             <script>
+                const authProfiles = {{authProfilesJson}};
+                const fakeAuthQueryParameter = {{JsonSerializer.Serialize(SampleFakeAuth.QueryParameterName)}};
+                const workableApiBaseUrl = {{JsonSerializer.Serialize(workableUrlBase)}};
+                const defaultAuthProfileId = {{JsonSerializer.Serialize(selectedProfile.Id)}};
+                const authProfileSelect = document.getElementById('fake-auth-profile');
+                const authDescription = document.getElementById('fake-auth-description');
+                const authExpected = document.getElementById('fake-auth-expected');
+                const authGroups = document.getElementById('fake-auth-groups');
+                const workableApiUrl = document.getElementById('workable-api-url');
+                const copyWorkableApiUrl = document.getElementById('copy-workable-api-url');
+
+                for (const profile of authProfiles) {
+                    const option = document.createElement('option');
+                    option.value = profile.id;
+                    option.textContent = profile.label;
+                    authProfileSelect.appendChild(option);
+                }
+
+                function buildWorkableApiUrl(profileId) {
+                    const encodedProfileId = encodeURIComponent(profileId);
+                    return `${workableApiBaseUrl}/fake-auth/${encodedProfileId}/workable`;
+                }
+
+                function updateAuthProfile(profileId, replaceHistory = true) {
+                    const profile = authProfiles.find((candidate) => candidate.id === profileId) ?? authProfiles[0];
+                    authProfileSelect.value = profile.id;
+                    authDescription.textContent = profile.description;
+                    authExpected.textContent = profile.expectedDiscovery;
+                    authGroups.textContent = profile.groups.length > 0 ? profile.groups.join(', ') : 'None';
+                    workableApiUrl.value = buildWorkableApiUrl(profile.id);
+
+                    if (replaceHistory) {
+                        const pageUrl = new URL(window.location.href);
+                        pageUrl.searchParams.set(fakeAuthQueryParameter, profile.id);
+                        window.history.replaceState({}, '', pageUrl);
+                    }
+                }
+
+                authProfileSelect.addEventListener('change', () => {
+                    updateAuthProfile(authProfileSelect.value);
+                });
+
+                copyWorkableApiUrl.addEventListener('click', async () => {
+                    workableApiUrl.select();
+                    workableApiUrl.setSelectionRange(0, workableApiUrl.value.length);
+                    try {
+                        await navigator.clipboard.writeText(workableApiUrl.value);
+                        copyWorkableApiUrl.textContent = 'Copied';
+                        window.setTimeout(() => {
+                            copyWorkableApiUrl.textContent = 'Copy';
+                        }, 1200);
+                    } catch {
+                        document.execCommand('copy');
+                    }
+                });
+
+                updateAuthProfile(defaultAuthProfileId, false);
+
                 const button = document.getElementById('toggle');
                 const forceCancel = document.getElementById('force-cancel');
                 const burstCount = document.getElementById('burst-count');
@@ -746,7 +869,8 @@ app.MapPost("/sample-workload/force-cancel", async (
         });
     }
 
-    var handle = await registry.Default.Queue.Enqueue(
+    var session = registry.Default.CreateSession("Queue force-cancel sample work from the sample host.");
+    var handle = await session.Queue.Enqueue(
         "sample.demo.force-cancel",
         WorkInput.FromValue(new DemoForceCancelInput(), identifiers: [new WorkIdentifier("sample-workload", "force-cancel")]),
         cancellationToken: cancellationToken);

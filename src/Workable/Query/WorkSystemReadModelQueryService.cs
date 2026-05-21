@@ -8,7 +8,7 @@ internal sealed class WorkSystemReadModelQueryService(
     InMemoryWorkMetricsSink metrics,
     Func<WorkerId, CancellationToken, Task<WorkerSnapshot?>>? getWorkerDetail = null,
     Func<WorkerIterationReference, CancellationToken, Task<WorkerIterationSnapshot?>>? getIterationDetail = null,
-    WorkSystemReadModelSnapshot? snapshot = null) : IWorkSnapshotQueryService
+    WorkSystemReadModelSnapshot? snapshot = null) : IWorkQueryService
 {
     private const int SystemWorkerListSize = 5;
     private const int SystemIterationListSize = 5;
@@ -654,74 +654,98 @@ internal sealed class WorkSystemReadModelQueryService(
 
     private HashSet<WorkDefinitionId>? ResolveWorkerDefinitionScope(WorkerCriteria query)
     {
+        var definitionIds = NormalizeDefinitionScope(query.DefinitionIds);
         if (query.DefinitionId is { } definitionId)
         {
-            return [definitionId];
+            definitionIds = IntersectDefinitionScope(definitionIds, [definitionId]);
         }
 
         if (!string.IsNullOrWhiteSpace(query.Category))
         {
-            return this.catalog
+            definitionIds = IntersectDefinitionScope(
+                definitionIds,
+                this.catalog
                 .ListByCategory(query.Category, query.IncludeSubcategories)
-                .Select(definition => definition.Id)
-                .ToHashSet();
+                    .Select(definition => definition.Id));
         }
 
-        return null;
+        return definitionIds;
     }
 
     private HashSet<WorkDefinitionId>? ResolveIterationDefinitionScope(WorkerIterationCriteria query)
     {
+        var definitionIds = NormalizeDefinitionScope(query.DefinitionIds);
         if (query.DefinitionId is { } definitionId)
         {
-            return [definitionId];
+            definitionIds = IntersectDefinitionScope(definitionIds, [definitionId]);
         }
 
         if (!string.IsNullOrWhiteSpace(query.Category))
         {
-            return this.catalog
+            definitionIds = IntersectDefinitionScope(
+                definitionIds,
+                this.catalog
                 .ListByCategory(query.Category, includeSubcategories: true)
-                .Select(definition => definition.Id)
-                .ToHashSet();
+                    .Select(definition => definition.Id));
         }
 
-        return null;
+        return definitionIds;
     }
 
     private HashSet<WorkDefinitionId>? ResolveDefinitionScope(WorkSystemCriteria? query)
     {
-        if (query is null ||
-            (query.DefinitionId is null &&
-            string.IsNullOrWhiteSpace(query.DefinitionName) &&
-            string.IsNullOrWhiteSpace(query.Category)))
+        if (query is null)
         {
             return null;
         }
 
-        return this.GetDefinitionScopeCandidates(query)
-            .Where(definition => Matches(definition, query))
-            .Select(definition => definition.Id)
-            .ToHashSet();
-    }
-
-    private IEnumerable<WorkDefinition> GetDefinitionScopeCandidates(WorkSystemCriteria query)
-    {
+        var definitionIds = NormalizeDefinitionScope(query.DefinitionIds);
         if (query.DefinitionId is { } definitionId)
         {
-            return this.catalog.TryGet(definitionId, out var definition) ? [definition] : [];
+            definitionIds = IntersectDefinitionScope(definitionIds, [definitionId]);
         }
 
         if (!string.IsNullOrWhiteSpace(query.DefinitionName))
         {
-            return this.catalog.TryGet(query.DefinitionName, out var definition) ? [definition] : [];
+            definitionIds = this.catalog.TryGet(query.DefinitionName, out var definition)
+                ? IntersectDefinitionScope(definitionIds, [definition.Id])
+                : [];
         }
 
         if (!string.IsNullOrWhiteSpace(query.Category))
         {
-            return this.catalog.ListByCategory(query.Category, query.IncludeSubcategories);
+            definitionIds = IntersectDefinitionScope(
+                definitionIds,
+                this.catalog
+                    .ListByCategory(query.Category, query.IncludeSubcategories)
+                    .Select(definition => definition.Id));
         }
 
-        return this.catalog.Definitions;
+        return definitionIds;
+    }
+
+    private static HashSet<WorkDefinitionId>? NormalizeDefinitionScope(IReadOnlySet<WorkDefinitionId>? definitionIds)
+    {
+        if (definitionIds is null)
+        {
+            return null;
+        }
+
+        return definitionIds.Count == 0 ? [] : definitionIds.ToHashSet();
+    }
+
+    private static HashSet<WorkDefinitionId> IntersectDefinitionScope(
+        HashSet<WorkDefinitionId>? current,
+        IEnumerable<WorkDefinitionId> requested)
+    {
+        var requestedSet = requested.ToHashSet();
+        if (current is null)
+        {
+            return requestedSet;
+        }
+
+        current.IntersectWith(requestedSet);
+        return current;
     }
 
     private WorkInfo CreateWorkInfo(
@@ -744,7 +768,7 @@ internal sealed class WorkSystemReadModelQueryService(
         WorkSystemReadModelSnapshot snapshot,
         IReadOnlySet<WorkDefinitionId>? definitionIds)
     {
-        var workers = FilterByDefinition(snapshot.Workers, definitionIds).ToArray();
+        var workers = GetWorkersByDefinition(snapshot, definitionIds).ToArray();
         var counts = CountWorkersByState(workers, definitionIds: null);
         return new WorkSystemWorkerCounts(
             workers
@@ -770,7 +794,7 @@ internal sealed class WorkSystemReadModelQueryService(
         WorkSystemReadModelSnapshot snapshot,
         IReadOnlySet<WorkDefinitionId>? definitionIds)
     {
-        var counts = FilterByDefinition(snapshot.Iterations, definitionIds)
+        var counts = GetIterationsByDefinition(snapshot, definitionIds)
             .GroupBy(iteration => iteration.Status)
             .ToDictionary(group => group.Key, group => group.Count());
         return new WorkSystemIterationCounts(
@@ -784,8 +808,10 @@ internal sealed class WorkSystemReadModelQueryService(
     private static IReadOnlyList<WorkIterationKeyTypeFacet> CreateSystemCommonKeyTypes(
         WorkSystemReadModelSnapshot snapshot,
         IReadOnlySet<WorkDefinitionId>? definitionIds)
-        => [.. snapshot.IterationKeys
-            .Where(key => definitionIds is null || definitionIds.Contains(key.Iteration.DefinitionId))
+        => definitionIds is { Count: 0 }
+            ? []
+            : [.. snapshot.IterationKeys
+            .Where(key => DefinitionScopeMatches(definitionIds, key.Iteration.DefinitionId))
             .GroupBy(key => NormalizeType(key.Type))
             .Select(group => new WorkIterationKeyTypeFacet(
                 group.First().Type,
@@ -799,7 +825,7 @@ internal sealed class WorkSystemReadModelQueryService(
     private static IReadOnlyList<WorkerOverviewItem> CreateSystemFailedWorkers(
         WorkSystemReadModelSnapshot snapshot,
         IReadOnlySet<WorkDefinitionId>? definitionIds)
-        => [.. FilterByDefinition(snapshot.Workers, definitionIds)
+        => [.. GetWorkersByDefinition(snapshot, definitionIds)
             .Where(worker => worker.State == WorkerState.Failed)
             .OrderByDescending(worker => worker.UpdatedAt)
             .Take(SystemWorkerListSize)
@@ -810,26 +836,26 @@ internal sealed class WorkSystemReadModelQueryService(
         WorkCompletionStatus status,
         int take,
         IReadOnlySet<WorkDefinitionId>? definitionIds)
-        => [.. FilterByDefinition(snapshot.Iterations, definitionIds)
+        => [.. GetIterationsByDefinition(snapshot, definitionIds)
             .Where(iteration => iteration.Status == status)
             .OrderByDescending(iteration => iteration.CompletedAt)
             .ThenByDescending(iteration => iteration.Sequence)
             .Take(Math.Max(0, take))
             .Select(iteration => iteration.Overview)];
 
-    private static IEnumerable<WorkerReadModelWorker> FilterByDefinition(
-        IEnumerable<WorkerReadModelWorker> workers,
+    private static IEnumerable<WorkerReadModelWorker> GetWorkersByDefinition(
+        WorkSystemReadModelSnapshot snapshot,
         IReadOnlySet<WorkDefinitionId>? definitionIds)
         => definitionIds is null
-            ? workers
-            : definitionIds.Count == 0 ? [] : workers.Where(worker => definitionIds.Contains(worker.DefinitionId));
+            ? snapshot.Workers
+            : Combine(snapshot.WorkersByDefinition, definitionIds, worker => worker.Id);
 
-    private static IEnumerable<WorkerReadModelIteration> FilterByDefinition(
-        IEnumerable<WorkerReadModelIteration> iterations,
+    private static IEnumerable<WorkerReadModelIteration> GetIterationsByDefinition(
+        WorkSystemReadModelSnapshot snapshot,
         IReadOnlySet<WorkDefinitionId>? definitionIds)
         => definitionIds is null
-            ? iterations
-            : definitionIds.Count == 0 ? [] : iterations.Where(iteration => definitionIds.Contains(iteration.DefinitionId));
+            ? snapshot.Iterations
+            : Combine(snapshot.IterationsByDefinition, definitionIds, iteration => iteration.Reference);
 
     private static WorkerRollup CreateRollup(IReadOnlyList<WorkerReadModelWorker> workers)
     {
@@ -883,7 +909,9 @@ internal sealed class WorkSystemReadModelQueryService(
     private static Dictionary<WorkerState, int> CountWorkersByState(
         IEnumerable<WorkerReadModelWorker> workers,
         IReadOnlySet<WorkDefinitionId>? definitionIds)
-        => FilterByDefinition(workers, definitionIds)
+        => (definitionIds is null
+                ? workers
+                : workers.Where(worker => definitionIds.Contains(worker.DefinitionId)))
             .GroupBy(worker => worker.State)
             .ToDictionary(group => group.Key, group => group.Count());
 
@@ -941,6 +969,7 @@ internal sealed class WorkSystemReadModelQueryService(
 
     private static bool Matches(WorkerReadModelWorker worker, WorkerCriteria query)
         => (query.DefinitionId is null || worker.DefinitionId == query.DefinitionId) &&
+            DefinitionScopeMatches(query.DefinitionIds, worker.DefinitionId) &&
             (string.IsNullOrWhiteSpace(query.DefinitionName) || string.Equals(worker.DefinitionName, query.DefinitionName, StringComparison.OrdinalIgnoreCase)) &&
             (string.IsNullOrWhiteSpace(query.Category) || CategoryMatches(worker.Category, query.Category, query.IncludeSubcategories)) &&
             (query.SubjectId is null || worker.SubjectId == query.SubjectId) &&
@@ -961,6 +990,7 @@ internal sealed class WorkSystemReadModelQueryService(
     private static bool Matches(WorkerReadModelIteration iteration, WorkerIterationCriteria query)
         => (query.WorkerId is null || iteration.WorkerId == query.WorkerId) &&
             (query.DefinitionId is null || iteration.DefinitionId == query.DefinitionId) &&
+            DefinitionScopeMatches(query.DefinitionIds, iteration.DefinitionId) &&
             (string.IsNullOrWhiteSpace(query.DefinitionName) || string.Equals(iteration.DefinitionName, query.DefinitionName, StringComparison.OrdinalIgnoreCase)) &&
             (string.IsNullOrWhiteSpace(query.Category) || CategoryMatches(iteration.Category, query.Category, includeSubcategories: true)) &&
             (query.SubjectId is null || iteration.SubjectId == query.SubjectId) &&
@@ -974,6 +1004,7 @@ internal sealed class WorkSystemReadModelQueryService(
 
     private static bool Matches(WorkDefinition definition, WorkDefinitionCriteria query)
         => (query.Id is null || definition.Id == query.Id) &&
+            DefinitionScopeMatches(query.DefinitionIds, definition.Id) &&
             (string.IsNullOrWhiteSpace(query.Name) || string.Equals(definition.Name, query.Name, StringComparison.OrdinalIgnoreCase)) &&
             (string.IsNullOrWhiteSpace(query.Category) || CategoryMatches(definition.Category, query.Category, query.IncludeSubcategories)) &&
             (string.IsNullOrWhiteSpace(query.Search) ||
@@ -982,28 +1013,33 @@ internal sealed class WorkSystemReadModelQueryService(
 
     private static bool Matches(WorkDefinition definition, WorkSystemCriteria query)
         => (query.DefinitionId is null || definition.Id == query.DefinitionId) &&
+            DefinitionScopeMatches(query.DefinitionIds, definition.Id) &&
             (string.IsNullOrWhiteSpace(query.DefinitionName) || string.Equals(definition.Name, query.DefinitionName, StringComparison.OrdinalIgnoreCase)) &&
             (string.IsNullOrWhiteSpace(query.Category) || CategoryMatches(definition.Category, query.Category, query.IncludeSubcategories));
 
     private static bool Matches(WorkerReadModelKey key, WorkerKeyCriteria query)
         => (query.Kind is null || key.Kind == query.Kind) &&
+            DefinitionScopeMatches(query.DefinitionIds, key.Worker.DefinitionId) &&
             (string.IsNullOrWhiteSpace(query.Type) || string.Equals(key.Type, query.Type, StringComparison.OrdinalIgnoreCase)) &&
             (string.IsNullOrWhiteSpace(query.Value) || string.Equals(key.Value, query.Value, StringComparison.OrdinalIgnoreCase)) &&
             MatchesWorkKeySearch(key.Type, key.Value, query.Search, includeValue: true);
 
     private static bool Matches(WorkerReadModelKey key, WorkerKeyTypeCriteria query)
         => (query.Kind is null || key.Kind == query.Kind) &&
+            DefinitionScopeMatches(query.DefinitionIds, key.Worker.DefinitionId) &&
             (string.IsNullOrWhiteSpace(query.Type) || string.Equals(key.Type, query.Type, StringComparison.OrdinalIgnoreCase)) &&
             MatchesWorkKeySearch(key.Type, key.Value, query.Search, includeValue: false);
 
     private static bool Matches(WorkerIterationReadModelKey key, WorkIterationKeyCriteria query)
         => (query.Kind is null || key.Kind == query.Kind) &&
+            DefinitionScopeMatches(query.DefinitionIds, key.Iteration.DefinitionId) &&
             (string.IsNullOrWhiteSpace(query.Type) || string.Equals(key.Type, query.Type, StringComparison.OrdinalIgnoreCase)) &&
             (string.IsNullOrWhiteSpace(query.Value) || string.Equals(key.Value, query.Value, StringComparison.OrdinalIgnoreCase)) &&
             MatchesWorkKeySearch(key.Type, key.Value, query.Search, includeValue: true);
 
     private static bool Matches(WorkerIterationReadModelKey key, WorkIterationKeyTypeCriteria query)
         => (query.Kind is null || key.Kind == query.Kind) &&
+            DefinitionScopeMatches(query.DefinitionIds, key.Iteration.DefinitionId) &&
             (string.IsNullOrWhiteSpace(query.Type) || string.Equals(key.Type, query.Type, StringComparison.OrdinalIgnoreCase)) &&
             MatchesWorkKeySearch(key.Type, key.Value, query.Search, includeValue: false);
 
@@ -1012,6 +1048,7 @@ internal sealed class WorkSystemReadModelQueryService(
 
     private static bool IsWholeSystemStatusSummary(WorkerCriteria query)
         => query.DefinitionId is null &&
+            query.DefinitionIds is null &&
             string.IsNullOrWhiteSpace(query.DefinitionName) &&
             string.IsNullOrWhiteSpace(query.Category) &&
             query.SubjectId is null &&
@@ -1029,6 +1066,11 @@ internal sealed class WorkSystemReadModelQueryService(
             ? actual.Equals(expected, StringComparison.OrdinalIgnoreCase) ||
                 actual.StartsWith($"{expected}:", StringComparison.OrdinalIgnoreCase)
             : actual.Equals(expected, StringComparison.OrdinalIgnoreCase);
+
+    private static bool DefinitionScopeMatches(
+        IReadOnlySet<WorkDefinitionId>? definitionIds,
+        WorkDefinitionId definitionId)
+        => definitionIds is null || definitionIds.Contains(definitionId);
 
     private static IEnumerable<WorkerOverviewItem> Sort(
         IEnumerable<WorkerOverviewItem> workers,

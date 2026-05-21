@@ -33,9 +33,23 @@ internal sealed class WorkAuthorizationEvaluator(
         return this.CanOperate(definition);
     }
 
+    public bool HasReadAllWorkAccess()
+        => systemAuthorization?.HasReadAllWorkAccess() == true ||
+            this.ReadableDefinitionIds().Count == catalog.Definitions.Count;
+
+    public bool HasOperateAllWorkAccess()
+        => systemAuthorization?.HasOperateAllWorkAccess() == true ||
+            this.OperableDefinitionIds().Count == catalog.Definitions.Count;
+
     public IReadOnlySet<WorkDefinitionId> ReadableDefinitionIds()
         => catalog.Definitions
             .Where(this.CanRead)
+            .Select(definition => definition.Id)
+            .ToHashSet();
+
+    public IReadOnlySet<WorkDefinitionId> OperableDefinitionIds()
+        => catalog.Definitions
+            .Where(this.CanOperate)
             .Select(definition => definition.Id)
             .ToHashSet();
 

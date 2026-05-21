@@ -1227,7 +1227,27 @@ public sealed class WorkableHttpApiTests
             candidate["capabilities"]?["realtime"]?["enabled"] is JsonValue realtimeEnabled &&
             !realtimeEnabled.GetValue<bool>() &&
             candidate["capabilities"]?["persistentCoordinationAvailable"] is JsonValue persistentCoordinationAvailable &&
-            !persistentCoordinationAvailable.GetValue<bool>());
+            !persistentCoordinationAvailable.GetValue<bool>() &&
+            candidate["access"]?["canConnect"] is JsonValue canConnect &&
+            canConnect.GetValue<bool>() &&
+            candidate["access"]?["isSystemAdministrator"] is JsonValue isSystemAdministrator &&
+            isSystemAdministrator.GetValue<bool>() &&
+            candidate["access"]?["isWorkAdministrator"] is JsonValue isWorkAdministrator &&
+            isWorkAdministrator.GetValue<bool>() &&
+            candidate["access"]?["canViewDiagnostics"] is JsonValue canViewDiagnostics &&
+            canViewDiagnostics.GetValue<bool>() &&
+            candidate["access"]?["canControlSystem"] is JsonValue canControlSystem &&
+            canControlSystem.GetValue<bool>() &&
+            candidate["access"]?["canReadAllWork"] is JsonValue canReadAllWork &&
+            canReadAllWork.GetValue<bool>() &&
+            candidate["access"]?["canOperateAllWork"] is JsonValue canOperateAllWork &&
+            canOperateAllWork.GetValue<bool>() &&
+            candidate["access"]?["totalDefinitionCount"] is JsonValue totalDefinitionCount &&
+            totalDefinitionCount.GetValue<int>() == 1 &&
+            candidate["access"]?["readableDefinitionCount"] is JsonValue readableDefinitionCount &&
+            readableDefinitionCount.GetValue<int>() == 1 &&
+            candidate["access"]?["operableDefinitionCount"] is JsonValue operableDefinitionCount &&
+            operableDefinitionCount.GetValue<int>() == 1);
         Assert.Contains(systems, system =>
             system is JsonObject candidate &&
             candidate["name"]?.GetValue<string>() == "background" &&
@@ -1253,6 +1273,38 @@ public sealed class WorkableHttpApiTests
             ?? throw new InvalidOperationException("Expected systems array.");
 
         Assert.Empty(systems);
+    }
+
+    [Fact]
+    public async Task MappedHttpRouteIncludesConnectOnlyAccessSummary()
+    {
+        using var host = await CreateMultiSystemHttpHost(TransportAuthorizationTestSupport.ConnectGroups);
+        var client = host.GetTestClient();
+
+        var response = await client.GetAsync("/workable/systems");
+        response.EnsureSuccessStatusCode();
+        var json = JsonNode.Parse(await response.Content.ReadAsStringAsync())
+            ?? throw new InvalidOperationException("Expected JSON response.");
+        var systems = json["systems"]?.AsArray()
+            ?? throw new InvalidOperationException("Expected systems array.");
+
+        Assert.Equal(2, systems.Count);
+        Assert.All(systems, system =>
+        {
+            var access = system?["access"]?.AsObject()
+                ?? throw new InvalidOperationException("Expected access object.");
+
+            Assert.True(access["canConnect"]?.GetValue<bool>());
+            Assert.False(access["isSystemAdministrator"]?.GetValue<bool>());
+            Assert.False(access["isWorkAdministrator"]?.GetValue<bool>());
+            Assert.False(access["canViewDiagnostics"]?.GetValue<bool>());
+            Assert.False(access["canControlSystem"]?.GetValue<bool>());
+            Assert.False(access["canReadAllWork"]?.GetValue<bool>());
+            Assert.False(access["canOperateAllWork"]?.GetValue<bool>());
+            Assert.Equal(1, access["totalDefinitionCount"]?.GetValue<int>());
+            Assert.Equal(0, access["readableDefinitionCount"]?.GetValue<int>());
+            Assert.Equal(0, access["operableDefinitionCount"]?.GetValue<int>());
+        });
     }
 
     [Fact]
@@ -1322,6 +1374,30 @@ public sealed class WorkableHttpApiTests
         var client = host.GetTestClient();
 
         var response = await client.GetAsync("/workable/diagnostics");
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+        Assert.Contains("diagnostics", await response.Content.ReadAsStringAsync(), StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task MappedHttpDiagnosticsViewRouteRequiresDiagnosticsPermission()
+    {
+        using var host = await CreateHttpHost(groups: TransportAuthorizationTestSupport.ReadGroups);
+        var client = host.GetTestClient();
+
+        var response = await client.PostAsJsonAsync("/workable/views/diagnostics", new { });
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+        Assert.Contains("diagnostics", await response.Content.ReadAsStringAsync(), StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task MappedHttpDiagnosticsComponentRouteRequiresDiagnosticsPermission()
+    {
+        using var host = await CreateHttpHost(groups: TransportAuthorizationTestSupport.ReadGroups);
+        var client = host.GetTestClient();
+
+        var response = await client.PostAsJsonAsync("/workable/components/readModelDiagnostics", new { });
 
         Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
         Assert.Contains("diagnostics", await response.Content.ReadAsStringAsync(), StringComparison.OrdinalIgnoreCase);

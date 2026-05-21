@@ -49,6 +49,19 @@ export type WorkableHttpCapabilities = {
   persistentCoordinationAvailable: boolean;
 };
 
+export type WorkSystemAccessSummary = {
+  canConnect: boolean;
+  isSystemAdministrator: boolean;
+  isWorkAdministrator: boolean;
+  canViewDiagnostics: boolean;
+  canControlSystem: boolean;
+  canReadAllWork: boolean;
+  canOperateAllWork: boolean;
+  totalDefinitionCount: number;
+  readableDefinitionCount: number;
+  operableDefinitionCount: number;
+};
+
 export type WorkableHttpSystems = {
   systems: WorkableHttpSystemInfo[];
 };
@@ -59,6 +72,7 @@ export type WorkableHttpSystemInfo = {
   state: string;
   isDefault: boolean;
   capabilities: WorkableHttpCapabilities;
+  access: WorkSystemAccessSummary;
 };
 
 export type WorkableHttpSystemDiagnostics = {
@@ -905,10 +919,32 @@ export function createWorkableRealtimeUrl(connection: WorkableConnection) {
     }
 
     const apiUrl = new URL(connection.apiUrl);
-    return `${apiUrl.origin}${hubPath.startsWith("/") ? hubPath : `/${hubPath}`}`;
+    const hubUrl = hubPath.startsWith("/")
+      ? new URL(resolveRootedHubPath(apiUrl, hubPath), apiUrl.origin)
+      : new URL(hubPath, createDirectoryUrl(apiUrl));
+    return hubUrl.toString();
   } catch {
     return null;
   }
+}
+
+function createDirectoryUrl(url: URL) {
+  return new URL(url.pathname.endsWith("/") ? url.pathname : `${url.pathname}/`, url.origin);
+}
+
+function resolveRootedHubPath(apiUrl: URL, hubPath: string) {
+  const normalizedApiPath = apiUrl.pathname.replace(/\/+$/, "");
+  const apiWorkableSuffix = "/workable";
+
+  if (
+    normalizedApiPath.length > apiWorkableSuffix.length &&
+    normalizedApiPath.toLowerCase().endsWith(apiWorkableSuffix) &&
+    hubPath.toLowerCase().startsWith(apiWorkableSuffix)
+  ) {
+    return `${normalizedApiPath.slice(0, -apiWorkableSuffix.length)}${hubPath}`;
+  }
+
+  return hubPath;
 }
 
 function getWorkableErrorMessage(status: number, body: unknown) {
