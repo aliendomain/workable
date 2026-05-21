@@ -250,7 +250,7 @@ The session factory resolves groups from either:
 
 ### HTTP, MCP, And SignalR
 
-The ASP.NET Core adapters all build `WorkRequestContext` values from the incoming request and reject anonymous callers up front.
+The ASP.NET Core adapters all build `WorkRequestContext` values from the incoming request and reject anonymous callers before adapter handlers process request bodies or hub/tool methods.
 
 - `HTTP` uses `WorkInvocationChannel.HttpApi`
 - `MCP` uses `WorkInvocationChannel.Mcp`

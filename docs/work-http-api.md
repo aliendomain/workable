@@ -6,7 +6,7 @@ The HTTP API adapter uses the same Workable catalog and queueing system as direc
 
 HTTP queueing, worker actions, and worker reconfiguration record a `WorkOrigin` from the request. The origin uses `HttpContext.User` for actor identity and records the HTTP path as the origin URL.
 
-`Workable.HttpApi` is an authenticated transport. Anonymous callers are rejected before Workable routes run, and mapped systems must have `RequireAuthorization(true)`.
+`Workable.HttpApi` is an authenticated transport. Anonymous callers are rejected before Workable routes run or request bodies are bound, and mapped systems must have `RequireAuthorization(true)`.
 
 Each request creates a `WorkRequestContext` and an `IWorkSystemSession` for the selected system. Work-definition read access filters catalog, query, event, and view results. Work-definition operate access controls queueing, worker actions, and reconfiguration.
 

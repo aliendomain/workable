@@ -166,9 +166,14 @@ public sealed class WorkableRealtimeViewSubscriptions
             viewName,
             criteria,
             WorkableRealtimeGroups.View(system, key),
-            system.Diagnostics.ReadModel.AppliedSequence,
+            GetAppliedSequence(system),
             authorization);
     }
+
+    private static long GetAppliedSequence(IWorkSystem system)
+        => system is IWorkSystemReadModelClock clock
+            ? clock.AppliedSequence
+            : 0;
 
     private static string CreateGroupKey(
         WorkSystemId systemId,

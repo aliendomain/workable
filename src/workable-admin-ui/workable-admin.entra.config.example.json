@@ -1,0 +1,19 @@
+{
+  "authProvider": "entra",
+  "apiUrl": "<url here>",
+  "allowedApiUrls": [
+    "<other urls here, if any>"
+  ],
+  "entraId": {
+    "tenantId": "<tenant-id-or-domain>",
+    "clientId": "<application-client-id>",
+    "clientSecret": "<client-secret>",
+    "redirectUri": "http://localhost:3000/api/auth/entra/callback",
+    "allowedEmails": [],
+    "allowedEmailDomains": [
+      "<company-domain.example>"
+    ]
+  },
+  "sessionSecret": "replace-with-a-long-random-session-signing-secret",
+  "sessionMaxAgeSeconds": 28800
+}

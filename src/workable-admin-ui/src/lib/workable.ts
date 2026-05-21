@@ -914,14 +914,24 @@ export function createWorkableRealtimeUrl(connection: WorkableConnection) {
   }
 
   try {
+    const apiUrl = new URL(connection.apiUrl);
+    let hubUrl: URL;
     if (/^https?:\/\//i.test(hubPath)) {
-      return hubPath;
+      hubUrl = new URL(hubPath);
+    } else {
+      if (/^[a-z][a-z0-9+.-]*:/i.test(hubPath) || hubPath.startsWith("//")) {
+        return null;
+      }
+
+      hubUrl = hubPath.startsWith("/")
+        ? new URL(resolveRootedHubPath(apiUrl, hubPath), apiUrl.origin)
+        : new URL(hubPath, createDirectoryUrl(apiUrl));
     }
 
-    const apiUrl = new URL(connection.apiUrl);
-    const hubUrl = hubPath.startsWith("/")
-      ? new URL(resolveRootedHubPath(apiUrl, hubPath), apiUrl.origin)
-      : new URL(hubPath, createDirectoryUrl(apiUrl));
+    if (!["http:", "https:"].includes(hubUrl.protocol) || hubUrl.origin !== apiUrl.origin) {
+      return null;
+    }
+
     return hubUrl.toString();
   } catch {
     return null;

@@ -70,6 +70,8 @@ internal sealed class WorkSystemReadModel : IWorkSystemReadModelStore, IAsyncDis
 
     public WorkSystemReadModelSnapshot Current => Volatile.Read(ref this.snapshot);
 
+    public long AppliedSequence => Volatile.Read(ref this.appliedSequence);
+
     public void UseDetailReaders(
         Func<WorkerId, CancellationToken, Task<WorkerSnapshot?>> getWorker,
         Func<WorkerIterationReference, CancellationToken, Task<WorkerIterationSnapshot?>> getIteration)
