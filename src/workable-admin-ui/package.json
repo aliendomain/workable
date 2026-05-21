@@ -6,7 +6,8 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "test": "node --experimental-transform-types --test --test-isolation=none \"src/**/*.test.ts\""
   },
   "dependencies": {
     "@microsoft/signalr": "^10.0.0",

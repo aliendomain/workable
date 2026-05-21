@@ -244,6 +244,14 @@ public sealed class WorkableMcpToolRouter(IWorkSystemRegistry registry)
         {
             return AuthorizationDenied(denied);
         }
+        catch (ArgumentException invalidArguments)
+        {
+            return InvalidArguments(invalidArguments.Message);
+        }
+        catch (JsonException invalidArguments)
+        {
+            return InvalidArguments(invalidArguments.Message);
+        }
     }
 
     public static string CreateWorkToolName(string workName)
@@ -545,6 +553,12 @@ public sealed class WorkableMcpToolRouter(IWorkSystemRegistry registry)
         return new WorkableMcpToolResult(json, ToJsonObject(json), isError);
     }
 
+    private static WorkableMcpToolResult ToToolResult(WorkActionOutcome outcome)
+        => ToToolResult((object)outcome, isError: !outcome.IsAccepted);
+
+    private static WorkableMcpToolResult ToToolResult(WorkDefinitionReconfigurationOutcome outcome)
+        => ToToolResult((object)outcome, isError: !outcome.IsAccepted);
+
     private static WorkableMcpToolResult UnknownTool(string toolName)
         => ToToolResult(new
         {
@@ -552,6 +566,16 @@ public sealed class WorkableMcpToolRouter(IWorkSystemRegistry registry)
             messages = new[]
             {
                 WorkMessage.Error("workable.mcp.tool_not_found", $"MCP tool '{toolName}' was not found.", "toolName"),
+            },
+        }, isError: true);
+
+    private static WorkableMcpToolResult InvalidArguments(string message)
+        => ToToolResult(new
+        {
+            status = "rejected",
+            messages = new[]
+            {
+                WorkMessage.Error("workable.mcp.arguments_invalid", message, "arguments"),
             },
         }, isError: true);
 

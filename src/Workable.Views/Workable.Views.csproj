@@ -4,7 +4,8 @@
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
-    <Description>Compose Workable query views from reusable components for transports such as HTTP and SignalR.</Description>
+    <PackageId>Workable.Views</PackageId>
+    <Description>Shared Workable component-view contracts and query view composition used by HTTP API and SignalR adapters to project catalogs, workers, iterations, diagnostics, and overview data.</Description>
   </PropertyGroup>
 
   <ItemGroup>

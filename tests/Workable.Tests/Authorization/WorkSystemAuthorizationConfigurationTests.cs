@@ -56,6 +56,7 @@ public sealed class WorkSystemAuthorizationConfigurationTests
         Assert.Throws<WorkSystemAuthorizationRequiredException>(() => system.Workers);
         Assert.Throws<WorkSystemAuthorizationRequiredException>(() => system.Query);
         Assert.Throws<WorkSystemAuthorizationRequiredException>(() => system.Events);
+        Assert.Throws<WorkSystemAuthorizationRequiredException>(() => system.Diagnostics);
     }
 
     [Fact]
@@ -73,6 +74,7 @@ public sealed class WorkSystemAuthorizationConfigurationTests
         Assert.NotNull(system.Workers);
         Assert.NotNull(system.Query);
         Assert.NotNull(system.Events);
+        Assert.NotNull(system.Diagnostics);
     }
 
     [Fact]
@@ -272,6 +274,35 @@ public sealed class WorkSystemAuthorizationConfigurationTests
         var queued = await session.Queue.Enqueue(definition.Id);
 
         Assert.Single(session.Catalog.Definitions);
+        Assert.True(queued.QueueOutcome.IsAccepted);
+    }
+
+    [Fact]
+    public async Task ExplicitDefinitionAuthorizationIsPreservedWhenRegistered()
+    {
+        var definition = PausedDefinition("explicit.definition.authorization") with
+        {
+            Authorization = WorkDefinitionAuthorization.Create(
+                readGroups: ["explicit.read"],
+                operateGroups: ["explicit.operate"],
+                source: WorkAuthorizationRegistrationSource.Fluent),
+        };
+        var provider = new ServiceCollection()
+            .AddSingleton<IWorkAuthorizationGroupProvider>(new TestGroupProvider(new Dictionary<string, IReadOnlySet<string>>
+            {
+                ["operator"] = Groups("explicit.read", "explicit.operate"),
+            }))
+            .AddDefaultWorkableSystemForAuthorizationTests(builder => builder.AddWork(definition, SuccessfulWork))
+            .BuildServiceProvider();
+        var system = provider.GetRequiredService<IWorkSystem>();
+        await system.Start();
+
+        var session = system.CreateSession(CreateRequestContext("operator"));
+        var registeredDefinition = Assert.Single(session.Catalog.Definitions);
+        var queued = await session.Queue.Enqueue(definition.Id);
+
+        Assert.Equal(WorkAuthorizationRegistrationSource.Fluent, registeredDefinition.Authorization.Read.Source);
+        Assert.Equal(["explicit.read"], registeredDefinition.Authorization.Read.Groups.OrderBy(group => group).ToArray());
         Assert.True(queued.QueueOutcome.IsAccepted);
     }
 

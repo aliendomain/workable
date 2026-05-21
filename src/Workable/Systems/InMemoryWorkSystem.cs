@@ -8,6 +8,7 @@ using Microsoft.Extensions.Hosting;
 namespace Workable;
 internal sealed class InMemoryWorkSystem :
     IWorkSystem,
+    IWorkSystemReadModelClock,
     IWorkSystemShutdownMetadata,
     IWorkSystemCoordinationCapabilities
 {
@@ -100,6 +101,8 @@ internal sealed class InMemoryWorkSystem :
 
     public bool PersistentCoordinationAvailable { get; }
 
+    long IWorkSystemReadModelClock.AppliedSequence => this.readModel.AppliedSequence;
+
     public IWorkCatalog Catalog
     {
         get
@@ -145,7 +148,14 @@ internal sealed class InMemoryWorkSystem :
         }
     }
 
-    public IWorkSystemDiagnostics Diagnostics => this.diagnostics;
+    public IWorkSystemDiagnostics Diagnostics
+    {
+        get
+        {
+            this.ThrowIfAuthorizationRequiredForDirectAccess();
+            return this.diagnostics;
+        }
+    }
 
     public WorkSystemAccessSummary DescribeAccess(WorkRequestContext requestContext)
     {

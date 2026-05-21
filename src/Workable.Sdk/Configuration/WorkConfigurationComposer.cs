@@ -174,12 +174,14 @@ internal static class WorkConfigurationComposer
         Action<IWorkAuthorizationBuilder>? authorize)
     {
         var attribute = executorType?.GetCustomAttribute<WorkAuthorizationAttribute>(inherit: true);
-        var authorization = attribute is null
-            ? WorkDefinitionAuthorization.None
-            : WorkDefinitionAuthorization.Create(
+        var authorization = definition.Authorization;
+        if (attribute is not null)
+        {
+            authorization = WorkDefinitionAuthorization.Create(
                 attribute.ReadGroups,
                 attribute.OperateGroups,
                 WorkAuthorizationRegistrationSource.Attribute);
+        }
 
         if (authorize is not null)
         {

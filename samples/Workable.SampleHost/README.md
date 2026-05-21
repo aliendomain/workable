@@ -74,18 +74,45 @@ The launch profile exposes:
 - `http://localhost:61932/workable/realtime`
 - `http://localhost:61932/workable/mcp`
 
+## Testing The Admin UI Locally
+
+The admin UI is secure by default and will not proxy requests until you configure admin authentication. The hosted sample Workable API remains responsible for deciding which authenticated profile may read, operate, configure, run lifecycle actions, or inspect diagnostics. For local sample testing, copy `src/workable-admin-ui/workable-admin.basic.config.example.json` to `src/workable-admin-ui/workable-admin.config.local.json`, keep it uncommitted, and use this sample-oriented configuration:
+
+```json
+{
+  "authProvider": "basic",
+  "apiUrl": "http://localhost:61932/fake-auth/system-admin/workable",
+  "basicAuth": {
+    "username": "admin",
+    "password": "replace-with-a-long-random-password"
+  },
+  "sessionSecret": "replace-with-a-different-long-random-secret",
+  "sessionMaxAgeSeconds": 28800
+}
+```
+
+This sample configuration uses `authProvider: "basic"` for local convenience. The admin UI can also use `authProvider: "entra"` with Microsoft Entra ID; see `src/workable-admin-ui/README.md` for the Entra app registration and config shape.
+
+Then start the admin UI:
+
+```powershell
+npm --prefix .\src\workable-admin-ui run dev
+```
+
+Open the admin UI and sign in with the configured username and password. Use the sample host root page to copy a fake-auth Workable URL for a lower-privilege profile when you want to verify the hosted Workable system still rejects restricted operations.
+
 Check that the host is running:
 
 ```powershell
-Invoke-RestMethod http://localhost:61932/workable/definitions
-Invoke-RestMethod http://localhost:61932/workable/workers/status-summary
-Invoke-RestMethod http://localhost:61932/workable/systems
+Invoke-RestMethod http://localhost:61932/fake-auth/system-admin/workable/definitions
+Invoke-RestMethod http://localhost:61932/fake-auth/system-admin/workable/workers/status-summary
+Invoke-RestMethod http://localhost:61932/fake-auth/system-admin/workable/systems
 ```
 
 Point an MCP client that supports HTTP transport at:
 
 ```text
-http://localhost:61932/workable/mcp
+http://localhost:61932/fake-auth/system-admin/workable/mcp
 ```
 
 List tools and call `workable_work_sample_echo` with:

@@ -6,7 +6,7 @@ The adapter does not change how work is authored or executed. It projects an `IW
 
 MCP exposure is opt-in. A work definition must allow `WorkInvocationChannel.Mcp` to appear as an MCP tool or be invoked through the MCP adapter.
 
-`Workable.Mcp` is an authenticated transport. Anonymous callers are rejected, and mapped systems must have `RequireAuthorization(true)`.
+`Workable.Mcp` is an authenticated transport. Anonymous callers are rejected before the MCP request handler runs, and mapped systems must have `RequireAuthorization(true)`.
 
 Each MCP request creates a `WorkRequestContext` and an `IWorkSystemSession` for the selected system. Work-definition read access filters tool discovery and query results. Work-definition operate access controls work tools and worker action tools.
 
