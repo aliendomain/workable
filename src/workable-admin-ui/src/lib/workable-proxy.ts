@@ -73,7 +73,7 @@ export async function proxyWorkableRequest(
   } catch {
     return Response.json(
       {
-        error: "Unable to reach the Workable HTTP API.",
+        error: createProxyReachabilityError(target.url),
       },
       { status: 502 }
     );
@@ -118,4 +118,20 @@ async function readBody(request: Request, maximumBytes: number) {
   }
 
   return { ok: true as const, text: new TextDecoder().decode(buffer) };
+}
+
+function createProxyReachabilityError(url: URL) {
+  if (url.protocol === "https:" && isLoopbackHost(url.hostname)) {
+    return "Unable to reach the Workable HTTP API. Local HTTPS loopback hosts must present a trusted development certificate to the admin UI proxy.";
+  }
+
+  return "Unable to reach the Workable HTTP API.";
+}
+
+function isLoopbackHost(hostname: string) {
+  const normalized = hostname.toLowerCase();
+  return normalized === "localhost" ||
+    normalized === "127.0.0.1" ||
+    normalized === "::1" ||
+    normalized === "[::1]";
 }

@@ -197,6 +197,32 @@ test("proxy preserves hosted Workable API authorization failures", async () => {
   });
 });
 
+test("proxy explains trusted certificate requirements for local HTTPS loopback failures", async () => {
+  const response = await proxyWorkableRequest(
+    new Request("https://admin.example.com/api/workable/systems", {
+      headers: {
+        authorization: basic("admin", "correct horse battery staple"),
+      },
+    }),
+    ["systems"],
+    {
+      env: secureEnv({
+        NODE_ENV: "development",
+        WORKABLE_API_URL: "https://localhost:7058/workable",
+      }),
+      fetch: async () => {
+        throw new Error("fetch failed");
+      },
+    }
+  );
+
+  assert.equal(response.status, 502);
+  assert.deepEqual(await response.json(), {
+    error:
+      "Unable to reach the Workable HTTP API. Local HTTPS loopback hosts must present a trusted development certificate to the admin UI proxy.",
+  });
+});
+
 test("unsafe admin API requests require a same-origin Origin header", () => {
   const missingOrigin = validateUnsafeRequestOrigin(
     new Request("https://admin.example.com/api/workable/work/example", {

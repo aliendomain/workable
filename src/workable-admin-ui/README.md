@@ -137,6 +137,14 @@ http://localhost:61932/workable
 
 Local development also allows loopback hosts such as `localhost`, `127.0.0.1`, and `::1` so the sample host can be tested without extra setup.
 
+For local HTTPS loopback hosts such as `https://localhost:7058/workable`, the target certificate must be trusted by the machine running the Next.js admin UI server. The proxy does not disable TLS verification for local development targets. If a local ASP.NET Core host uses the default developer certificate, trust it before connecting the admin UI:
+
+```bash
+dotnet dev-certs https --trust
+```
+
+If a local host still fails after trusting the certificate, inspect the target directly in a browser first and make sure the certificate chain is accepted there.
+
 For deployed environments, add every allowed Workable API base URL explicitly:
 
 ```bash
