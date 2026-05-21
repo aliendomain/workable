@@ -46,10 +46,11 @@ public sealed class WorkableRealtimeHub(
         string? systemName = null)
     {
         var system = ResolveSystem(systemName);
+        WorkableRealtimeViewSubscription? subscription = null;
         try
         {
             var authorization = CreateAuthorization(system, out var session);
-            var subscription = await viewSubscriptions.WatchView(
+            subscription = await viewSubscriptions.WatchView(
                 this.Context.ConnectionId,
                 this.Groups,
                 system,
@@ -63,6 +64,20 @@ public sealed class WorkableRealtimeHub(
         catch (OperationCanceledException) when (this.Context.ConnectionAborted.IsCancellationRequested)
         {
             // The client disconnected while the initial view payload was being prepared.
+        }
+        catch
+        {
+            if (subscription is not null)
+            {
+                await viewSubscriptions.UnwatchView(
+                    this.Context.ConnectionId,
+                    this.Groups,
+                    system,
+                    subscription.ViewName,
+                    CancellationToken.None);
+            }
+
+            throw;
         }
     }
 

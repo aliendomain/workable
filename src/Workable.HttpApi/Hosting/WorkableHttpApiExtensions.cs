@@ -47,7 +47,8 @@ public static class WorkableHttpApiExtensions
     {
         group.AddEndpointFilter(static (context, next) =>
         {
-            if (!WorkableAspNetCoreAuthentication.IsAuthenticated(context.HttpContext))
+            if (!HttpMethods.IsOptions(context.HttpContext.Request.Method) &&
+                !WorkableAspNetCoreAuthentication.IsAuthenticated(context.HttpContext))
             {
                 return ValueTask.FromResult<object?>(WorkableHttpRouteResults.AuthenticationRequired());
             }

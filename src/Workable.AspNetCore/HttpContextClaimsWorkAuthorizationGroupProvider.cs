@@ -13,15 +13,15 @@ public sealed class HttpContextClaimsWorkAuthorizationGroupProvider(
     public IReadOnlySet<string> GetGroups(WorkActor actor, string? systemName)
     {
         var httpContext = httpContextAccessor.HttpContext;
-        var user = httpContext?.User;
         var cacheKey = string.IsNullOrWhiteSpace(systemName) ? DefaultSystemCacheKey : systemName;
-        if (user?.Identity?.IsAuthenticated != true)
+        if (httpContext is null || httpContext.User.Identity?.IsAuthenticated != true)
         {
             return new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         }
 
+        var user = httpContext.User;
         Dictionary<string, IReadOnlySet<string>>? cache = null;
-        if (httpContext?.Items[GroupsCacheKey] is Dictionary<string, IReadOnlySet<string>> existingCache)
+        if (httpContext.Items[GroupsCacheKey] is Dictionary<string, IReadOnlySet<string>> existingCache)
         {
             cache = existingCache;
         }
@@ -38,12 +38,9 @@ public sealed class HttpContextClaimsWorkAuthorizationGroupProvider(
             .Select(group => group.Trim())
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
-        if (httpContext is not null)
-        {
-            cache ??= new Dictionary<string, IReadOnlySet<string>>(StringComparer.OrdinalIgnoreCase);
-            cache[cacheKey] = groups;
-            httpContext.Items[GroupsCacheKey] = cache;
-        }
+        cache ??= new Dictionary<string, IReadOnlySet<string>>(StringComparer.OrdinalIgnoreCase);
+        cache[cacheKey] = groups;
+        httpContext.Items[GroupsCacheKey] = cache;
 
         return groups;
     }
