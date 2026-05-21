@@ -1,147 +1,29 @@
 namespace Workable;
 
-public sealed class WorkableHttpQueueAdapter(IDotNetWorkOriginProvider dotNetOriginProvider)
+public sealed class WorkableHttpQueueAdapter
 {
-    public Task<WorkableHttpWorkResult> Queue(
-        IWorkSystem system,
+    public async Task<WorkableHttpWorkResult> Enqueue(
+        IWorkSystemSession session,
         string name,
         WorkableHttpWorkRequest? request = null,
-        CancellationToken cancellationToken = default)
-        => QueueCore(
-            system,
-            name,
-            request,
-            dotNetOriginProvider.CreateOrigin($"Queue HTTP-adapter work '{name}' through .NET."),
-            cancellationToken);
-
-    internal Task<WorkableHttpWorkResult> Queue(
-        IWorkSystem system,
-        string name,
-        WorkableHttpWorkRequest? request,
-        WorkOrigin origin,
-        CancellationToken cancellationToken = default)
-        => QueueCore(system, name, request, origin, cancellationToken);
-
-    public Task<WorkableHttpWorkResult> Queue(
-        IWorkSystem system,
-        WorkDefinitionId definitionId,
-        WorkableHttpWorkRequest? request = null,
-        CancellationToken cancellationToken = default)
-        => QueueCore(
-            system,
-            definitionId,
-            request,
-            dotNetOriginProvider.CreateOrigin($"Queue HTTP-adapter work definition '{definitionId.Value:D}' through .NET."),
-            cancellationToken);
-
-    internal Task<WorkableHttpWorkResult> Queue(
-        IWorkSystem system,
-        WorkDefinitionId definitionId,
-        WorkableHttpWorkRequest? request,
-        WorkOrigin origin,
-        CancellationToken cancellationToken = default)
-        => QueueCore(system, definitionId, request, origin, cancellationToken);
-
-    internal static async Task<WorkableHttpWorkResult> QueueCore(
-        IWorkSystem system,
-        string name,
-        WorkableHttpWorkRequest? request = null,
-        CancellationToken cancellationToken = default)
-        => await QueueCore(
-            system,
-            name,
-            request,
-            WorkOrigin.Create(WorkInvocationChannel.DotNet, description: $"Queue HTTP-adapter work '{name}' through .NET."),
-            cancellationToken);
-
-    internal static async Task<WorkableHttpWorkResult> QueueCore(
-        IWorkSystem system,
-        string name,
-        WorkableHttpWorkRequest? request,
-        WorkOrigin origin,
         CancellationToken cancellationToken = default)
     {
-        ArgumentNullException.ThrowIfNull(system);
+        ArgumentNullException.ThrowIfNull(session);
         ArgumentException.ThrowIfNullOrWhiteSpace(name);
 
-        if (!system.Catalog.TryGet(name, out var definition))
-        {
-            var notFound = WorkQueueOutcome.NotFound(name);
-            return new WorkableHttpWorkResult(
-                WorkableHttpWorkStatus.Rejected,
-                notFound,
-                WorkerId: null,
-                Completion: null,
-                Output: null,
-                notFound.Messages);
-        }
-
-        if (!definition.Configuration.Invocation.Allows(WorkInvocationChannel.HttpApi))
-        {
-            var outcome = WorkQueueOutcome.Invalid(
-                definition.Id,
-                [WorkMessage.Error("workable.invocation.channel_not_allowed", $"Work '{name}' cannot be invoked through the HTTP API.", "invocation.channel")]);
-            return new WorkableHttpWorkResult(
-                WorkableHttpWorkStatus.Rejected,
-                outcome,
-                WorkerId: null,
-                Completion: null,
-                Output: null,
-                outcome.Messages);
-        }
-
-        var handle = await WorkableHttpOriginAwareSystem.Required(system).Enqueue(name, CreateInput(request), request?.Options?.ToWorkerOptions(), origin, cancellationToken);
+        var handle = await session.Queue.Enqueue(name, CreateInput(request), request?.Options?.ToWorkerOptions(), cancellationToken);
         return await CreateQueueResult(handle, request, cancellationToken);
     }
 
-    internal static async Task<WorkableHttpWorkResult> QueueCore(
-        IWorkSystem system,
+    public async Task<WorkableHttpWorkResult> Enqueue(
+        IWorkSystemSession session,
         WorkDefinitionId definitionId,
         WorkableHttpWorkRequest? request = null,
         CancellationToken cancellationToken = default)
-        => await QueueCore(
-            system,
-            definitionId,
-            request,
-            WorkOrigin.Create(WorkInvocationChannel.DotNet, description: $"Queue HTTP-adapter work definition '{definitionId.Value:D}' through .NET."),
-            cancellationToken);
-
-    internal static async Task<WorkableHttpWorkResult> QueueCore(
-        IWorkSystem system,
-        WorkDefinitionId definitionId,
-        WorkableHttpWorkRequest? request,
-        WorkOrigin origin,
-        CancellationToken cancellationToken = default)
     {
-        ArgumentNullException.ThrowIfNull(system);
+        ArgumentNullException.ThrowIfNull(session);
 
-        if (!system.Catalog.TryGet(definitionId, out var definition))
-        {
-            var notFound = WorkQueueOutcome.NotFound(definitionId.ToString());
-            return new WorkableHttpWorkResult(
-                WorkableHttpWorkStatus.Rejected,
-                notFound,
-                WorkerId: null,
-                Completion: null,
-                Output: null,
-                notFound.Messages);
-        }
-
-        if (!definition.Configuration.Invocation.Allows(WorkInvocationChannel.HttpApi))
-        {
-            var outcome = WorkQueueOutcome.Invalid(
-                definition.Id,
-                [WorkMessage.Error("workable.invocation.channel_not_allowed", $"Work '{definition.Name}' cannot be invoked through the HTTP API.", "invocation.channel")]);
-            return new WorkableHttpWorkResult(
-                WorkableHttpWorkStatus.Rejected,
-                outcome,
-                WorkerId: null,
-                Completion: null,
-                Output: null,
-                outcome.Messages);
-        }
-
-        var handle = await WorkableHttpOriginAwareSystem.Required(system).Enqueue(definitionId, CreateInput(request), request?.Options?.ToWorkerOptions(), origin, cancellationToken);
+        var handle = await session.Queue.Enqueue(definitionId, CreateInput(request), request?.Options?.ToWorkerOptions(), cancellationToken);
         return await CreateQueueResult(handle, request, cancellationToken);
     }
 

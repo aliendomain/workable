@@ -28,7 +28,7 @@ public static class WorkableMcpServerExtensions
         }
 
         services.TryAddSingleton<WorkableMcpToolRouter>();
-        services.TryAddSingleton<IHttpContextAccessor, HttpContextAccessor>();
+        services.AddWorkableAspNetCoreAuthorization();
 
         services
             .AddMcpServer()
@@ -46,8 +46,12 @@ public static class WorkableMcpServerExtensions
     {
         ArgumentNullException.ThrowIfNull(endpoints);
         ArgumentException.ThrowIfNullOrWhiteSpace(pattern);
+        EnsureSystemRequiresAuthorization(
+            endpoints.ServiceProvider.GetRequiredService<IWorkSystemRegistry>(),
+            systemName);
 
         var builder = endpoints.MapMcp(pattern);
+        RequireAuthenticated(builder);
         builder.WithMetadata(new WorkableMcpEndpointMetadata(systemName));
         return builder;
     }
@@ -60,8 +64,24 @@ public static class WorkableMcpServerExtensions
         var router = services.GetRequiredService<WorkableMcpToolRouter>();
         var options = services.GetRequiredService<IOptions<WorkableMcpServerOptions>>().Value;
         var systemName = GetSystemName(services);
-        var tools = router.GetTools(options, systemName)
-            .Select(ToProtocolTool)
+        var requestContext = GetRequestContext(services, "List Workable MCP tools.");
+        var tools = router.GetTools(requestContext, options, systemName)
+            .Select(descriptor =>
+            {
+                var tool = new Tool
+                {
+                    Name = descriptor.ToolName,
+                    Description = descriptor.Description,
+                    InputSchema = JsonSerializer.Deserialize<JsonElement>(descriptor.InputSchemaJson),
+                };
+
+                if (!string.IsNullOrWhiteSpace(descriptor.OutputSchemaJson))
+                {
+                    tool.OutputSchema = JsonSerializer.Deserialize<JsonElement>(descriptor.OutputSchemaJson);
+                }
+
+                return tool;
+            })
             .ToList();
 
         return ValueTask.FromResult(new ListToolsResult
@@ -77,11 +97,12 @@ public static class WorkableMcpServerExtensions
         var services = request.Services ?? throw new InvalidOperationException("MCP request services were not available.");
         var router = services.GetRequiredService<WorkableMcpToolRouter>();
         var options = services.GetRequiredService<IOptions<WorkableMcpServerOptions>>().Value;
-        var arguments = ToJsonElement(request.Params?.Arguments);
+        JsonElement? arguments = request.Params?.Arguments is null
+            ? null
+            : JsonSerializer.SerializeToElement(request.Params.Arguments);
         var toolName = request.Params?.Name ?? string.Empty;
-        var httpContext = services.GetService<IHttpContextAccessor>()?.HttpContext;
-        var origin = WorkableMcpOrigin.Create(httpContext, $"MCP tool '{toolName}'");
-        var result = await router.CallTool(toolName, arguments, options, GetSystemName(services), origin, cancellationToken);
+        var requestContext = GetRequestContext(services, $"MCP tool '{toolName}'");
+        var result = await router.CallTool(toolName, arguments, options, GetSystemName(services), requestContext, cancellationToken);
 
         return new CallToolResult
         {
@@ -97,36 +118,6 @@ public static class WorkableMcpServerExtensions
         };
     }
 
-    private static Tool ToProtocolTool(WorkableMcpServerToolDescriptor descriptor)
-    {
-        var tool = new Tool
-        {
-            Name = descriptor.ToolName,
-            Description = descriptor.Description,
-            InputSchema = ParseJsonObject(descriptor.InputSchemaJson),
-        };
-
-        if (!string.IsNullOrWhiteSpace(descriptor.OutputSchemaJson))
-        {
-            tool.OutputSchema = ParseJsonObject(descriptor.OutputSchemaJson);
-        }
-
-        return tool;
-    }
-
-    private static JsonElement ParseJsonObject(string json)
-        => JsonSerializer.Deserialize<JsonElement>(json);
-
-    private static JsonElement? ToJsonElement(object? arguments)
-    {
-        if (arguments is null)
-        {
-            return null;
-        }
-
-        return JsonSerializer.SerializeToElement(arguments);
-    }
-
     private static string? GetSystemName(IServiceProvider services)
         => services.GetService<IHttpContextAccessor>()
             ?.HttpContext
@@ -134,6 +125,66 @@ public static class WorkableMcpServerExtensions
             ?.Metadata
             .GetMetadata<WorkableMcpEndpointMetadata>()
             ?.SystemName;
+
+    private static WorkRequestContext GetRequestContext(
+        IServiceProvider services,
+        string description)
+    {
+        var httpContext = services.GetService<IHttpContextAccessor>()?.HttpContext;
+        if (httpContext is null)
+        {
+            throw new InvalidOperationException("Workable MCP requires an HTTP request context.");
+        }
+
+        if (!WorkableAspNetCoreAuthentication.IsAuthenticated(httpContext))
+        {
+            throw new InvalidOperationException("Workable MCP requires an authenticated user.");
+        }
+
+        return services.GetRequiredService<IWorkRequestContextFactory>()
+            .Create(httpContext, WorkInvocationChannel.Mcp, description);
+    }
+
+    private static void EnsureSystemRequiresAuthorization(
+        IWorkSystemRegistry registry,
+        string? systemName)
+    {
+        ArgumentNullException.ThrowIfNull(registry);
+
+        var system = string.IsNullOrWhiteSpace(systemName)
+            ? registry.Default
+            : registry.TryGet(systemName, out var namedSystem)
+                ? namedSystem
+                : throw new InvalidOperationException($"Workable system '{systemName}' was not found.");
+        if (system.RequiresAuthorization)
+        {
+            return;
+        }
+
+        throw new InvalidOperationException(
+            $"Workable MCP requires authorization-enabled systems. System '{system.Name ?? "<default>"}' does not require authorization.");
+    }
+
+    private static void RequireAuthenticated(IEndpointConventionBuilder builder)
+    {
+        builder.Add(endpointBuilder =>
+        {
+            if (endpointBuilder is not RouteEndpointBuilder routeEndpointBuilder)
+            {
+                return;
+            }
+
+            routeEndpointBuilder.FilterFactories.Add(static (context, next) => invocationContext =>
+            {
+                if (!WorkableAspNetCoreAuthentication.IsAuthenticated(invocationContext.HttpContext))
+                {
+                    return ValueTask.FromResult<object?>(Results.Unauthorized());
+                }
+
+                return next(invocationContext);
+            });
+        });
+    }
 
     private sealed record WorkableMcpEndpointMetadata(string? SystemName);
 }

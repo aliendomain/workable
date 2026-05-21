@@ -6,24 +6,34 @@ namespace Workable;
 
 public static class WorkableAspNetCoreServiceCollectionExtensions
 {
-    public static IServiceCollection AddWorkableAspNetCoreOrigins(this IServiceCollection services)
+    public static IServiceCollection AddWorkableAspNetCoreAuthorization(
+        this IServiceCollection services,
+        Action<WorkableAspNetCoreAuthorizationOptions>? configure = null)
     {
         ArgumentNullException.ThrowIfNull(services);
 
         services.TryAddSingleton<IHttpContextAccessor, HttpContextAccessor>();
-        UseHttpContextDotNetOriginProvider(services);
+        services.AddOptions<WorkableAspNetCoreAuthorizationOptions>();
+        if (configure is not null)
+        {
+            services.Configure(configure);
+        }
+
+        services.TryAddSingleton<IWorkActorFactory, HttpContextWorkActorFactory>();
+        services.TryAddSingleton<IWorkRequestContextFactory, HttpContextWorkRequestContextFactory>();
+        UseHttpContextAuthorizationGroupProvider(services);
         return services;
     }
 
-    private static void UseHttpContextDotNetOriginProvider(IServiceCollection services)
+    private static void UseHttpContextAuthorizationGroupProvider(IServiceCollection services)
     {
-        var existing = services.LastOrDefault(descriptor => descriptor.ServiceType == typeof(IDotNetWorkOriginProvider));
-        if (existing is not null && existing.ImplementationType != typeof(DefaultDotNetWorkOriginProvider))
+        var existing = services.LastOrDefault(descriptor => descriptor.ServiceType == typeof(IWorkAuthorizationGroupProvider));
+        if (existing is not null && existing.ImplementationType != typeof(HttpContextClaimsWorkAuthorizationGroupProvider))
         {
             return;
         }
 
-        services.RemoveAll<IDotNetWorkOriginProvider>();
-        services.AddSingleton<IDotNetWorkOriginProvider, HttpContextDotNetWorkOriginProvider>();
+        services.RemoveAll<IWorkAuthorizationGroupProvider>();
+        services.AddSingleton<IWorkAuthorizationGroupProvider, HttpContextClaimsWorkAuthorizationGroupProvider>();
     }
 }

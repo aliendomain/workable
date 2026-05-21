@@ -1,4 +1,6 @@
 using System.Net.Http.Json;
+using System.Reflection;
+using System.Security.Claims;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
@@ -82,7 +84,7 @@ public sealed class WorkableSignalRTests
     {
         using var host = await CreateHost(addSignalR: true);
         var system = host.Services.GetRequiredService<IWorkSystemRegistry>().Default;
-        var stream = Assert.IsType<WorkEventStream>(system.Events);
+        var stream = GetEventStream(system);
         await using var connection = CreateConnection(host);
 
         await connection.StartAsync();
@@ -108,13 +110,14 @@ public sealed class WorkableSignalRTests
         CaptureRealtimeEvents(connection, events);
         await connection.StartAsync();
 
-        var handle = await system.Queue.Enqueue("signalr.worker");
+        var handle = await Session(system).Queue.Enqueue("signalr.worker");
         var workerId = handle.WorkerId ?? throw new InvalidOperationException("Expected worker id.");
         await connection.InvokeAsync("WatchWorker", workerId.Value.ToString("D"), null);
 
-        var worker = await system.Query.Worker(workerId)
+        var session = Session(system);
+        var worker = await session.Query.Worker(workerId)
             ?? throw new InvalidOperationException("Expected worker.");
-        var start = await system.Workers.Execute(worker.Version, WorkAction.Start);
+        var start = await session.Workers.Execute(worker.Version, WorkAction.Start);
         Assert.True(start.IsAccepted);
 
         await gate.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
@@ -145,7 +148,7 @@ public sealed class WorkableSignalRTests
             new WorkableRealtimeEventCriteria(["worker.completed"]),
             null);
 
-        var handle = await system.Queue.Enqueue("signalr.view");
+        var handle = await Session(system).Queue.Enqueue("signalr.view");
         await gate.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
         gate.Release.SetResult();
         await handle.WaitForCompletion();
@@ -177,7 +180,7 @@ public sealed class WorkableSignalRTests
             new WorkableRealtimeEventCriteria(),
             null);
 
-        var handle = await system.Queue.Enqueue("signalr.view");
+        var handle = await Session(system).Queue.Enqueue("signalr.view");
         await gate.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
         gate.Release.SetResult();
         await handle.WaitForCompletion();
@@ -199,7 +202,7 @@ public sealed class WorkableSignalRTests
         using var host = await CreateHost(addSignalR: true);
         var system = host.Services.GetRequiredService<IWorkSystemRegistry>().Default;
         var gate = host.Services.GetRequiredService<SignalRWorkGate>();
-        var definition = system.Catalog.Definitions.Single(work => work.Name == "signalr.view");
+        var definition = Session(system).Catalog.Definitions.Single(work => work.Name == "signalr.view");
         var acceptedIdentifier = new WorkIdentifier("batch", "accepted");
         await using var connection = CreateConnection(host);
         var events = Channel.CreateUnbounded<WorkableRealtimeEvent>();
@@ -219,8 +222,9 @@ public sealed class WorkableSignalRTests
                 ]),
             null);
 
-        var accepted = await system.Queue.Enqueue("signalr.view", WorkInput.Empty.WithIdentifier(acceptedIdentifier));
-        var ignored = await system.Queue.Enqueue("signalr.view", WorkInput.Empty.WithIdentifier(new WorkIdentifier("batch", "ignored")));
+        var session = Session(system);
+        var accepted = await session.Queue.Enqueue("signalr.view", WorkInput.Empty.WithIdentifier(acceptedIdentifier));
+        var ignored = await session.Queue.Enqueue("signalr.view", WorkInput.Empty.WithIdentifier(new WorkIdentifier("batch", "ignored")));
         await gate.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
         gate.Release.SetResult();
         await Task.WhenAll(accepted.WaitForCompletion(), ignored.WaitForCompletion());
@@ -258,7 +262,8 @@ public sealed class WorkableSignalRTests
             new WorkableRealtimeEventCriteria(["worker.completed"]),
             null);
 
-        var handles = await Task.WhenAll(Enumerable.Range(0, 3).Select(_ => system.Queue.Enqueue("signalr.view")));
+        var session = Session(system);
+        var handles = await Task.WhenAll(Enumerable.Range(0, 3).Select(_ => session.Queue.Enqueue("signalr.view")));
         await gate.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
         gate.Release.SetResult();
         await Task.WhenAll(handles.Select(handle => handle.WaitForCompletion()));
@@ -294,7 +299,7 @@ public sealed class WorkableSignalRTests
 
         var initial = await ReadUntil(views.Reader, view => view.Components.ContainsKey("workers"));
 
-        var handle = await system.Queue.Enqueue("signalr.view");
+        var handle = await Session(system).Queue.Enqueue("signalr.view");
         await gate.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
         gate.Release.SetResult();
         var completion = await handle.WaitForCompletion();
@@ -516,7 +521,7 @@ public sealed class WorkableSignalRTests
             views.Reader,
             view => view.Components.ContainsKey("queueDiagnostics"));
 
-        var rejected = await system.Queue.Enqueue("signalr.missing");
+        var rejected = await Session(system).Queue.Enqueue("signalr.missing");
         Assert.False(rejected.QueueOutcome.IsAccepted);
 
         var receivedAlert = await TryReadUntil(
@@ -573,8 +578,9 @@ public sealed class WorkableSignalRTests
             views.Reader,
             view => view.Components.ContainsKey("queueDiagnostics"));
 
-        _ = await system.Queue.Enqueue("signalr.worker");
-        var rejected = await system.Queue.Enqueue("signalr.worker");
+        var session = Session(system);
+        _ = await session.Queue.Enqueue("signalr.worker");
+        var rejected = await session.Queue.Enqueue("signalr.worker");
         Assert.False(rejected.QueueOutcome.IsAccepted);
 
         var updated = await ReadUntil(
@@ -631,12 +637,13 @@ public sealed class WorkableSignalRTests
             view => view.Components.ContainsKey("readModelDiagnostics"));
 
         using var enqueueCancellation = new CancellationTokenSource();
+        var session = Session(system);
         var enqueuePressure = Enumerable.Range(0, 4)
             .Select(index => Task.Run(async () =>
             {
                 while (!enqueueCancellation.IsCancellationRequested)
                 {
-                    _ = await system.Queue.Enqueue("signalr.view");
+                    _ = await session.Queue.Enqueue("signalr.view");
                 }
             }))
             .ToArray();
@@ -679,7 +686,8 @@ public sealed class WorkableSignalRTests
         bool addSignalR,
         string? hubPath = null,
         Action<WorkableSignalROptions>? configureSignalR = null,
-        Action<IWorkSystemBuilder>? configureWorkable = null)
+        Action<IWorkSystemBuilder>? configureWorkable = null,
+        bool authenticated = true)
     {
         var host = new HostBuilder()
             .ConfigureWebHost(web =>
@@ -688,12 +696,15 @@ public sealed class WorkableSignalRTests
                 web.ConfigureServices(services =>
                 {
                     services.AddRouting();
+                    services.AddTransportTestAuthorization();
                     services.AddSingleton<SignalRWorkGate>();
                     services.AddWorkableSystem(builder =>
                     {
                         builder.StartWithHost();
+                        builder.RequireAuthorization();
+                        builder.ConfigureTransportSystemAuthorization();
                         configureWorkable?.Invoke(builder);
-                        builder.AddWork(
+                        builder.AddAuthorizedTransportWork(
                             WorkDefinition.Create(
                                 "signalr.worker",
                                 configuration: WorkConfiguration.Default with
@@ -701,7 +712,7 @@ public sealed class WorkableSignalRTests
                                     Start = WorkStartConfiguration.DoNotStart,
                                 }),
                             SuccessfulWork);
-                        builder.AddWork(WorkDefinition.Create("signalr.view"), SuccessfulWork);
+                        builder.AddAuthorizedTransportWork(WorkDefinition.Create("signalr.view"), SuccessfulWork);
                     });
                     services.AddWorkableHttpApi();
                     if (addSignalR)
@@ -716,6 +727,15 @@ public sealed class WorkableSignalRTests
                 });
                 web.Configure(app =>
                 {
+                    if (authenticated)
+                    {
+                        app.Use(async (context, next) =>
+                        {
+                            context.User = CreateTransportPrincipal();
+                            await next();
+                        });
+                    }
+
                     app.UseRouting();
                     app.UseEndpoints(endpoints =>
                     {
@@ -747,6 +767,15 @@ public sealed class WorkableSignalRTests
                 options.PayloadSerializerOptions.Converters.Add(new JsonStringEnumConverter());
             })
             .Build();
+
+    [Fact]
+    public async Task AnonymousSignalRConnectionIsRejected()
+    {
+        using var host = await CreateHost(addSignalR: true, authenticated: false);
+        await using var connection = CreateConnection(host);
+
+        await Assert.ThrowsAnyAsync<Exception>(() => connection.StartAsync());
+    }
 
     private static void CaptureRealtimeEvents(
         HubConnection connection,
@@ -820,6 +849,27 @@ public sealed class WorkableSignalRTests
         }
 
         Assert.True(condition(), "Expected condition to become true.");
+    }
+
+    private static IWorkSystemSession Session(IWorkSystem system)
+        => TransportAuthorizationTestSupport.CreateTransportSession(
+            system,
+            WorkInvocationChannel.DotNet,
+            description: "Use SignalR test session.");
+
+    private static ClaimsPrincipal CreateTransportPrincipal()
+        => TransportAuthorizationTestSupport.CreateTransportPrincipal(
+            id: "signalr-user-1",
+            name: "SignalR User",
+            email: "signalr.user@example.test");
+
+    private static WorkEventStream GetEventStream(IWorkSystem system)
+    {
+        ArgumentNullException.ThrowIfNull(system);
+
+        var field = system.GetType().GetField("events", BindingFlags.Instance | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("Expected in-memory event stream field.");
+        return Assert.IsType<WorkEventStream>(field.GetValue(system));
     }
 
     private static System.Text.Json.JsonSerializerOptions JsonOptions()

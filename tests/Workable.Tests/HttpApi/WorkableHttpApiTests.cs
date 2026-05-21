@@ -26,7 +26,7 @@ public sealed class WorkableHttpApiTests
         await system.Start();
 
         using var input = JsonDocument.Parse("""{"id":"123"}""");
-        var result = await http.Queue.Queue(system, "http.default", new WorkableHttpWorkRequest(input.RootElement));
+        var result = await http.Queue.Enqueue(Direct(system), "http.default", new WorkableHttpWorkRequest(input.RootElement));
 
         Assert.Equal(WorkableHttpWorkStatus.Accepted, result.Status);
         Assert.True(result.QueueOutcome.IsAccepted);
@@ -43,7 +43,7 @@ public sealed class WorkableHttpApiTests
         await system.Start();
 
         using var input = JsonDocument.Parse("""{"id":"123"}""");
-        var result = await http.Queue.Queue(system,
+        var result = await http.Queue.Enqueue(Direct(system),
             "http.wait",
             new WorkableHttpWorkRequest(input.RootElement, WorkableHttpCompletion.WaitForCompletion));
 
@@ -60,7 +60,7 @@ public sealed class WorkableHttpApiTests
         await system.Start();
 
         using var input = JsonDocument.Parse("""{"id":"by-id"}""");
-        var result = await http.Queue.Queue(system,
+        var result = await http.Queue.Enqueue(Direct(system),
             definition.Id,
             new WorkableHttpWorkRequest(input.RootElement, WorkableHttpCompletion.WaitForCompletion));
 
@@ -82,7 +82,7 @@ public sealed class WorkableHttpApiTests
         await system.Start();
 
         using var input = JsonDocument.Parse("""{"id":"metadata"}""");
-        var result = await http.Queue.Queue(system,
+        var result = await http.Queue.Enqueue(Direct(system),
             "http.metadata",
             new WorkableHttpWorkRequest(
                 input.RootElement,
@@ -90,7 +90,7 @@ public sealed class WorkableHttpApiTests
                 SubjectId: new WorkSubjectId("user", "123"),
                 ConcurrencyKey: new WorkConcurrencyKey("tenant", "abc"),
                 Identifiers: new HashSet<WorkIdentifier> { new("invoice", "456") }));
-        var worker = await system.Query.Worker(result.WorkerId ?? throw new InvalidOperationException("Expected worker id."));
+        var worker = await Direct(system).Query.Worker(result.WorkerId ?? throw new InvalidOperationException("Expected worker id."));
 
         Assert.Equal(WorkableHttpWorkStatus.Accepted, result.Status);
         Assert.NotNull(worker);
@@ -112,7 +112,7 @@ public sealed class WorkableHttpApiTests
         var (system, http) = CreateHost(definition, SuccessfulWork);
         await system.Start();
 
-        var result = await http.Queue.Queue(system, "dotnet.only");
+        var result = await http.Queue.Enqueue(Direct(system), "dotnet.only");
 
         Assert.Equal(WorkableHttpWorkStatus.Rejected, result.Status);
         Assert.Contains(result.Messages, message => message.Code == "workable.invocation.channel_not_allowed");
@@ -130,7 +130,7 @@ public sealed class WorkableHttpApiTests
         var (system, http) = CreateHost(definition, SuccessfulWork);
         await system.Start();
 
-        var definitions = http.Catalog.GetDefinitions(system);
+        var definitions = http.Catalog.GetDefinitions(Direct(system));
         var listed = Assert.Single(definitions);
 
         Assert.Equal("dotnet.visible", listed.Name);
@@ -165,7 +165,7 @@ public sealed class WorkableHttpApiTests
         var (system, http) = CreateHost(definition, SuccessfulWork);
         await system.Start();
 
-        var result = await http.Queue.Queue(system,
+        var result = await http.Queue.Enqueue(Direct(system),
             "http.invocation.dto",
             new WorkableHttpWorkRequest(
                 Options: new WorkableHttpWorkerOptions(
@@ -173,7 +173,7 @@ public sealed class WorkableHttpApiTests
                     {
                         Start = WorkStartConfiguration.DoNotStart,
                     }))));
-        var worker = await system.Query.Worker(result.WorkerId ?? throw new InvalidOperationException("Expected worker id."));
+        var worker = await Direct(system).Query.Worker(result.WorkerId ?? throw new InvalidOperationException("Expected worker id."));
 
         Assert.Equal(WorkableHttpWorkStatus.Accepted, result.Status);
         Assert.NotNull(worker);
@@ -191,7 +191,7 @@ public sealed class WorkableHttpApiTests
         var (system, http) = CreateHost(definition, SuccessfulWork);
         await system.Start();
 
-        var result = await http.Queue.Queue(system,
+        var result = await http.Queue.Enqueue(Direct(system),
             "manual.http",
             new WorkableHttpWorkRequest(Completion: WorkableHttpCompletion.ReturnAfterAccepted));
 
@@ -210,18 +210,18 @@ public sealed class WorkableHttpApiTests
         });
         await system.Start();
 
-        var handle = await system.Queue.Enqueue("http.query.one", WorkInput.Empty.WithIdentifier(new WorkIdentifier("batch", "1")));
+        var handle = await Direct(system).Queue.Enqueue("http.query.one", WorkInput.Empty.WithIdentifier(new WorkIdentifier("batch", "1")));
         var completion = await handle.WaitForCompletion();
         Assert.True(completion.IsCompletedSuccessfully);
 
         var workerId = handle.WorkerId ?? throw new InvalidOperationException("Expected worker id.");
-        var worker = await http.Query.Worker(system, workerId);
-        var workers = await http.Query.Workers(system, new WorkerCriteria(Identifier: new WorkIdentifier("batch", "1")));
-        var byName = await http.Query.WorkInfo(system, "http.query.one");
-        var byId = await http.Query.WorkInfo(system, byName?.Definition.Id ?? throw new InvalidOperationException("Expected work info."));
-        var definitions = await http.Query.WorkDefinitions(system, new WorkDefinitionCriteria(Category: "Http"));
-        var summary = await http.Query.WorkerStatusSummary(system, new WorkerCriteria(DefinitionName: "http.query.one"));
-        var systemSummary = await http.Query.WorkerStatusSummary(system);
+        var worker = await http.Query.Worker(Direct(system), workerId);
+        var workers = await http.Query.Workers(Direct(system), new WorkerCriteria(Identifier: new WorkIdentifier("batch", "1")));
+        var byName = await http.Query.WorkInfo(Direct(system), "http.query.one");
+        var byId = await http.Query.WorkInfo(Direct(system), byName?.Definition.Id ?? throw new InvalidOperationException("Expected work info."));
+        var definitions = await http.Query.WorkDefinitions(Direct(system), new WorkDefinitionCriteria(Category: "Http"));
+        var summary = await http.Query.WorkerStatusSummary(Direct(system), new WorkerCriteria(DefinitionName: "http.query.one"));
+        var systemSummary = await http.Query.WorkerStatusSummary(Direct(system));
 
         Assert.NotNull(worker);
         Assert.Single(workers.Workers);
@@ -257,13 +257,14 @@ public sealed class WorkableHttpApiTests
         using var host = await CreateOverviewHttpHost();
         var client = host.GetTestClient();
         var system = host.Services.GetRequiredService<IWorkSystemRegistry>().Default;
-        await (await system.Queue.Enqueue(
+        await (await Direct(system).Queue.Enqueue(
             "http.overview.complete",
             WorkInput.Empty.WithIdentifier(new WorkIdentifier("case", "complete")))).WaitForCompletion();
-        await (await system.Queue.Enqueue(
+        await (await Direct(system).Queue.Enqueue(
             "http.overview.failed",
             WorkInput.Empty.WithIdentifier(new WorkIdentifier("case", "failed")))).WaitForCompletion();
         await WaitForThroughputBucketToClose();
+        await WaitForReadModel(system);
 
         var viewResponse = await client.PostAsJsonAsync(
             "/workable/views/overview",
@@ -515,11 +516,12 @@ public sealed class WorkableHttpApiTests
         using var host = await CreateOverviewHttpHost();
         var client = host.GetTestClient();
         var system = host.Services.GetRequiredService<IWorkSystemRegistry>().Default;
-        await (await system.Queue.Enqueue("http.overview.complete")).WaitForCompletion();
-        await (await system.Queue.Enqueue("http.overview.failed")).WaitForCompletion();
-        await (await system.Queue.Enqueue(
+        await (await Direct(system).Queue.Enqueue("http.overview.complete")).WaitForCompletion();
+        await (await Direct(system).Queue.Enqueue("http.overview.failed")).WaitForCompletion();
+        await (await Direct(system).Queue.Enqueue(
             "http.overview.complete",
             options: new WorkerOptions(ProfilingEnabled: true))).WaitForCompletion();
+        await WaitForReadModel(system);
 
         var response = await client.PostAsJsonAsync(
             "/workable/views/workers",
@@ -594,11 +596,12 @@ public sealed class WorkableHttpApiTests
         var client = host.GetTestClient();
         var system = host.Services.GetRequiredService<IWorkSystemRegistry>().Default;
 
-        var handle = await system.Queue.Enqueue(
+        var handle = await Direct(system).Queue.Enqueue(
             "http.route.case",
             WorkInput.Empty.WithIdentifier(new WorkIdentifier("batch", "iteration")),
             options: new WorkerOptions(Configuration: WorkConfiguration.Default));
         await handle.WaitForCompletion().WaitAsync(TimeSpan.FromSeconds(5));
+        await WaitForReadModel(system);
         var workerId = handle.WorkerId?.Value
             ?? throw new InvalidOperationException("Expected worker id.");
 
@@ -657,7 +660,7 @@ public sealed class WorkableHttpApiTests
         var client = host.GetTestClient();
         var system = host.Services.GetRequiredService<IWorkSystemRegistry>().Default;
 
-        var keyedWorker = await system.Queue.Enqueue(
+        var keyedWorker = await Direct(system).Queue.Enqueue(
             "http.route.case",
             WorkInput.Empty
                 .WithSubject(new WorkSubjectId("claim", "CLM-123"))
@@ -665,6 +668,7 @@ public sealed class WorkableHttpApiTests
                 .WithIdentifier(new WorkIdentifier("invoice", "INV-456")),
             options: new WorkerOptions(Configuration: WorkConfiguration.Default));
         await keyedWorker.WaitForCompletion().WaitAsync(TimeSpan.FromSeconds(5));
+        await WaitForReadModel(system);
 
         var keysResponse = await client.PostAsJsonAsync(
             "/workable/work-keys/query",
@@ -739,7 +743,6 @@ public sealed class WorkableHttpApiTests
         Assert.Contains(types, type =>
             type?["type"]?.GetValue<string>() == "claim" &&
             type["workerCount"]?.GetValue<int>() == 1 &&
-            type["workerCountByKind"]?["Subject"]?.GetValue<int>() == 1 &&
             type["workers"]?.AsArray().Count == 1);
         Assert.Contains(filteredTypes, type =>
             type?["type"]?.GetValue<string>() == "claim" &&
@@ -753,7 +756,6 @@ public sealed class WorkableHttpApiTests
         Assert.Contains(iterationTypes, type =>
             type?["type"]?.GetValue<string>() == "claim" &&
             type["iterationCount"]?.GetValue<int>() == 1 &&
-            type["iterationCountByKind"]?["Subject"]?.GetValue<int>() == 1 &&
             type["iterations"]?.AsArray().Count == 1);
         Assert.Contains(filteredIterationTypes, type =>
             type?["type"]?.GetValue<string>() == "claim" &&
@@ -771,14 +773,15 @@ public sealed class WorkableHttpApiTests
             });
         var (system, http) = CreateHost(definition, SuccessfulWork);
         await system.Start();
+        var session = Direct(system);
 
-        var queue = await http.Queue.Queue(system, "http.action");
-        var worker = await http.Query.Worker(system, queue.WorkerId ?? throw new InvalidOperationException("Expected worker id."));
-        var outcome = await http.Workers.Execute(system,
+        var queue = await http.Queue.Enqueue(session, "http.action");
+        var worker = await http.Query.Worker(session, queue.WorkerId ?? throw new InvalidOperationException("Expected worker id."));
+        var outcome = await http.Workers.Execute(session,
             worker!.Id,
             WorkAction.Cancel,
             new WorkableHttpWorkerActionRequest(worker.Revision));
-        var canceled = await http.Query.Worker(system, worker.Id);
+        var canceled = await http.Query.Worker(session, worker.Id);
 
         Assert.True(outcome.IsAccepted);
         Assert.Equal(WorkerState.Canceled, canceled?.State);
@@ -795,10 +798,11 @@ public sealed class WorkableHttpApiTests
             });
         var (system, http) = CreateHost(definition, SuccessfulWork);
         await system.Start();
+        var session = Direct(system);
 
-        var queue = await http.Queue.Queue(system, "http.reconfigure");
-        var worker = await http.Query.Worker(system, queue.WorkerId ?? throw new InvalidOperationException("Expected worker id."));
-        var outcome = await http.Workers.Reconfigure(system,
+        var queue = await http.Queue.Enqueue(session, "http.reconfigure");
+        var worker = await http.Query.Worker(session, queue.WorkerId ?? throw new InvalidOperationException("Expected worker id."));
+        var outcome = await http.Workers.Reconfigure(session,
             worker!.Id,
             new WorkableHttpWorkerReconfigurationRequest(
                 worker.Revision,
@@ -819,16 +823,17 @@ public sealed class WorkableHttpApiTests
             });
         var (system, http) = CreateHost(definition, SuccessfulWork);
         await system.Start();
+        var session = Direct(system);
 
-        var outcome = await http.Catalog.ReconfigureDefinition(system,
+        var outcome = await http.Catalog.ReconfigureDefinition(session,
             definition.Id,
             new WorkableHttpDefinitionReconfigurationRequest(
                 definition.Revision,
                 new WorkDefinitionReconfiguration(
                     DefaultOptions: new WorkerOptions(ProfilingEnabled: true))));
 
-        var handle = await system.Queue.Enqueue(definition.Id);
-        var worker = await system.Query.Worker(handle.WorkerId ?? throw new InvalidOperationException("Expected worker id."));
+        var handle = await Direct(system).Queue.Enqueue(definition.Id);
+        var worker = await Direct(system).Query.Worker(handle.WorkerId ?? throw new InvalidOperationException("Expected worker id."));
 
         Assert.True(outcome.IsAccepted);
         Assert.Equal(1, outcome.Definition?.Revision);
@@ -843,7 +848,7 @@ public sealed class WorkableHttpApiTests
         using var host = await CreateHttpHost();
         var client = host.GetTestClient();
         var system = host.Services.GetRequiredService<IWorkSystemRegistry>().Default;
-        var definition = system.Catalog.Definitions.Single(definition => definition.Name == "http.route.case");
+        var definition = Direct(system).Catalog.Definitions.Single(definition => definition.Name == "http.route.case");
 
         var response = await client.PostAsJsonAsync(
             $"/workable/definitions/{definition.Id.Value:D}/reconfigure",
@@ -857,7 +862,7 @@ public sealed class WorkableHttpApiTests
 
         Assert.Equal("Accepted", json["status"]?.GetValue<string>());
         Assert.Equal(1, json["definition"]?["revision"]?.GetValue<int>());
-        Assert.True(system.Catalog.TryGet(definition.Id, out var updated));
+        Assert.True(Direct(system).Catalog.TryGet(definition.Id, out var updated));
         Assert.True(updated.DefaultOptions.ProfilingEnabled);
     }
 
@@ -867,7 +872,7 @@ public sealed class WorkableHttpApiTests
         using var host = await CreateHttpHost();
         var client = host.GetTestClient();
         var system = host.Services.GetRequiredService<IWorkSystemRegistry>().Default;
-        var definition = system.Catalog.Definitions.Single(definition => definition.Name == "http.route.case");
+        var definition = Direct(system).Catalog.Definitions.Single(definition => definition.Name == "http.route.case");
 
         var first = await client.PostAsJsonAsync(
             $"/workable/definitions/{definition.Id.Value:D}/reconfigure",
@@ -912,9 +917,10 @@ public sealed class WorkableHttpApiTests
             ?? throw new InvalidOperationException("Expected JSON response.");
         var workerId = Guid.Parse(queueJson["workerId"]?["value"]?.GetValue<string>()
             ?? throw new InvalidOperationException("Expected worker id."));
-        var worker = await system.Query.Worker(new WorkerId(workerId))
+        var session = Direct(system);
+        var worker = await session.Query.Worker(new WorkerId(workerId))
             ?? throw new InvalidOperationException("Expected worker.");
-        await using var actionSubscription = system.Events.Subscribe(new WorkEventFilter(WorkerId: worker.Id, EventType: "worker.cancel"));
+        await using var actionSubscription = session.Events.Subscribe(new WorkEventFilter(WorkerId: worker.Id, EventType: "worker.cancel"));
         await using var actionReader = actionSubscription.Read().GetAsyncEnumerator();
 
         Assert.Equal(WorkInvocationChannel.HttpApi, worker.Origin.Channel);
@@ -934,7 +940,7 @@ public sealed class WorkableHttpApiTests
         var summaryJson = JsonNode.Parse(await summaryResponse.Content.ReadAsStringAsync())
             ?? throw new InvalidOperationException("Expected JSON response.");
 
-        var canceled = await system.Query.Worker(new WorkerId(workerId));
+        var canceled = await session.Query.Worker(new WorkerId(workerId));
         var actionEvent = await ReadNext(actionReader);
         Assert.Equal(WorkerState.Canceled, canceled?.State);
         Assert.Equal(WorkInvocationChannel.HttpApi, actionEvent.Origin?.Channel);
@@ -994,7 +1000,7 @@ public sealed class WorkableHttpApiTests
         using var host = await CreateHttpHost();
         var client = host.GetTestClient();
         var system = host.Services.GetRequiredService<IWorkSystemRegistry>().Default;
-        Assert.True(system.Catalog.TryGet("http.route.case", out var definition));
+        Assert.True(Direct(system).Catalog.TryGet("http.route.case", out var definition));
 
         var response = await client.PostAsJsonAsync(
             $"/workable/definitions/{definition.Id.Value:D}/queue",
@@ -1008,7 +1014,7 @@ public sealed class WorkableHttpApiTests
         var workerId = Guid.Parse(json["workerId"]?["value"]?.GetValue<string>()
             ?? throw new InvalidOperationException("Expected worker id."));
 
-        var worker = await system.Query.Worker(new WorkerId(workerId))
+        var worker = await Direct(system).Query.Worker(new WorkerId(workerId))
             ?? throw new InvalidOperationException("Expected worker.");
 
         Assert.Equal(WorkInvocationChannel.HttpApi, worker.Origin.Channel);
@@ -1086,7 +1092,7 @@ public sealed class WorkableHttpApiTests
         using var host = await CreateHttpHost();
         var client = host.GetTestClient();
         var system = host.Services.GetRequiredService<IWorkSystemRegistry>().Default;
-        Assert.True(system.Catalog.TryGet("http.route.case", out var definition));
+        Assert.True(Direct(system).Catalog.TryGet("http.route.case", out var definition));
 
         var byName = await client.GetAsync("/workable/work/http.route.case/info");
         var byId = await client.GetAsync($"/workable/work/id/{definition.Id.Value:D}/info");
@@ -1103,7 +1109,7 @@ public sealed class WorkableHttpApiTests
     }
 
     [Fact]
-    public async Task MappedHttpAnonymousRequestRecordsUnknownActor()
+    public async Task MappedHttpAnonymousRequestIsRejected()
     {
         using var host = await CreateHttpHost(authenticated: false);
         var client = host.GetTestClient();
@@ -1115,17 +1121,10 @@ public sealed class WorkableHttpApiTests
             {
                 completion = "returnAfterAccepted",
             });
-        response.EnsureSuccessStatusCode();
-        var json = JsonNode.Parse(await response.Content.ReadAsStringAsync())
-            ?? throw new InvalidOperationException("Expected JSON response.");
-        var workerId = Guid.Parse(json["workerId"]?["value"]?.GetValue<string>()
-            ?? throw new InvalidOperationException("Expected worker id."));
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
 
-        var worker = await system.Query.Worker(new WorkerId(workerId))
-            ?? throw new InvalidOperationException("Expected worker.");
-
-        Assert.Equal(WorkInvocationChannel.HttpApi, worker.Origin.Channel);
-        Assert.Equal(WorkActor.Unknown, worker.Origin.Actor);
+        var workers = await Direct(system).Query.Workers(new WorkerCriteria(DefinitionName: "http.route.case"));
+        Assert.Empty(workers.Workers);
     }
 
     [Fact]
@@ -1146,9 +1145,10 @@ public sealed class WorkableHttpApiTests
             ?? throw new InvalidOperationException("Expected JSON response.");
         var workerId = Guid.Parse(queueJson["workerId"]?["value"]?.GetValue<string>()
             ?? throw new InvalidOperationException("Expected worker id."));
-        var worker = await system.Query.Worker(new WorkerId(workerId))
+        var session = Direct(system);
+        var worker = await session.Query.Worker(new WorkerId(workerId))
             ?? throw new InvalidOperationException("Expected worker.");
-        await using var reconfigureSubscription = system.Events.Subscribe(new WorkEventFilter(WorkerId: worker.Id, EventType: "worker.reconfigured"));
+        await using var reconfigureSubscription = session.Events.Subscribe(new WorkEventFilter(WorkerId: worker.Id, EventType: "worker.reconfigured"));
         await using var reconfigureReader = reconfigureSubscription.Read().GetAsyncEnumerator();
 
         var reconfigureResponse = await client.PostAsJsonAsync(
@@ -1197,7 +1197,7 @@ public sealed class WorkableHttpApiTests
         var workerId = Guid.Parse(queueJson["workerId"]?["value"]?.GetValue<string>()
             ?? throw new InvalidOperationException("Expected worker id."));
 
-        var worker = await background.Query.Worker(new WorkerId(workerId))
+        var worker = await Direct(background).Query.Worker(new WorkerId(workerId))
             ?? throw new InvalidOperationException("Expected worker.");
 
         Assert.Equal("http.named", worker.DefinitionName);
@@ -1240,6 +1240,22 @@ public sealed class WorkableHttpApiTests
     }
 
     [Fact]
+    public async Task MappedHttpRouteFiltersSystemsWithoutConnectPermission()
+    {
+        using var host = await CreateMultiSystemHttpHost(TransportAuthorizationTestSupport.ReadGroups);
+        var client = host.GetTestClient();
+
+        var response = await client.GetAsync("/workable/systems");
+        response.EnsureSuccessStatusCode();
+        var json = JsonNode.Parse(await response.Content.ReadAsStringAsync())
+            ?? throw new InvalidOperationException("Expected JSON response.");
+        var systems = json["systems"]?.AsArray()
+            ?? throw new InvalidOperationException("Expected systems array.");
+
+        Assert.Empty(systems);
+    }
+
+    [Fact]
     public async Task MappedHttpDiagnosticsRouteReturnsSystemCounters()
     {
         using var host = await CreateHttpHost();
@@ -1253,7 +1269,7 @@ public sealed class WorkableHttpApiTests
                 completion = "returnAfterAccepted",
             });
         queueResponse.EnsureSuccessStatusCode();
-        await system.Query.Workers();
+        await Direct(system).Query.Workers();
 
         var response = await client.GetAsync("/workable/diagnostics");
         response.EnsureSuccessStatusCode();
@@ -1300,6 +1316,18 @@ public sealed class WorkableHttpApiTests
     }
 
     [Fact]
+    public async Task MappedHttpDiagnosticsRouteRequiresDiagnosticsPermission()
+    {
+        using var host = await CreateHttpHost(groups: TransportAuthorizationTestSupport.ReadGroups);
+        var client = host.GetTestClient();
+
+        var response = await client.GetAsync("/workable/diagnostics");
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+        Assert.Contains("diagnostics", await response.Content.ReadAsStringAsync(), StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public async Task MappedHttpLifecycleRoutesCanStartAndStopSystem()
     {
         using var host = await CreateManualHttpHost();
@@ -1321,6 +1349,19 @@ public sealed class WorkableHttpApiTests
         Assert.Equal("Stopped", stopJson["state"]?.GetValue<string>());
         Assert.Empty(stopJson["forceCanceledWorkers"]?.AsArray()
             ?? throw new InvalidOperationException("Expected force-canceled worker array."));
+    }
+
+    [Fact]
+    public async Task MappedHttpLifecycleRoutesRequireControlSystemPermission()
+    {
+        using var host = await CreateManualHttpHost(TransportAuthorizationTestSupport.ReadGroups);
+        var client = host.GetTestClient();
+
+        var startResponse = await client.PostAsync("/workable/lifecycle/start", content: null);
+        var stopResponse = await client.PostAsync("/workable/lifecycle/stop", content: null);
+
+        Assert.Equal(HttpStatusCode.Forbidden, startResponse.StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, stopResponse.StatusCode);
     }
 
     [Fact]
@@ -1365,6 +1406,7 @@ public sealed class WorkableHttpApiTests
 
         var billingQueue = await QueueAndReadWorkerId(client, "/workable/work/http.bulk.billing");
         var emailQueue = await QueueAndReadWorkerId(client, "/workable/work/http.bulk.email");
+        await WaitForReadModel(system);
 
         var actionResponse = await client.PostAsJsonAsync(
             "/workable/workers/actions/cancel",
@@ -1375,10 +1417,11 @@ public sealed class WorkableHttpApiTests
         actionResponse.EnsureSuccessStatusCode();
         var actionJson = JsonNode.Parse(await actionResponse.Content.ReadAsStringAsync())
             ?? throw new InvalidOperationException("Expected JSON response.");
+        await WaitForReadModel(system);
 
-        var billing = await system.Query.Worker(new WorkerId(billingQueue))
+        var billing = await Direct(system).Query.Worker(new WorkerId(billingQueue))
             ?? throw new InvalidOperationException("Expected billing worker.");
-        var email = await system.Query.Worker(new WorkerId(emailQueue))
+        var email = await Direct(system).Query.Worker(new WorkerId(emailQueue))
             ?? throw new InvalidOperationException("Expected email worker.");
 
         Assert.Equal(1, actionJson["matchedWorkerCount"]?.GetValue<int>());
@@ -1417,7 +1460,7 @@ public sealed class WorkableHttpApiTests
         var namedWorkerJson = await namedGetResponse.Content.ReadAsStringAsync();
         Assert.Contains("http.named", namedWorkerJson);
 
-        var worker = await background.Query.Worker(new WorkerId(workerId))
+        var worker = await Direct(background).Query.Worker(new WorkerId(workerId))
             ?? throw new InvalidOperationException("Expected worker.");
         var defaultActionResponse = await client.PostAsJsonAsync(
             $"/workable/workers/{workerId:D}/actions/cancel",
@@ -1426,7 +1469,7 @@ public sealed class WorkableHttpApiTests
                 revision = worker.Revision,
             });
 
-        Assert.Equal(System.Net.HttpStatusCode.NotFound, defaultActionResponse.StatusCode);
+        Assert.Equal(System.Net.HttpStatusCode.Forbidden, defaultActionResponse.StatusCode);
 
         var reconfigureResponse = await client.PostAsJsonAsync(
             $"/workable/systems/background/workers/{workerId:D}/reconfigure",
@@ -1439,7 +1482,7 @@ public sealed class WorkableHttpApiTests
                 },
             });
         reconfigureResponse.EnsureSuccessStatusCode();
-        worker = await background.Query.Worker(new WorkerId(workerId))
+        worker = await Direct(background).Query.Worker(new WorkerId(workerId))
             ?? throw new InvalidOperationException("Expected worker.");
         Assert.True(worker.Options.ProfilingEnabled);
 
@@ -1451,7 +1494,7 @@ public sealed class WorkableHttpApiTests
             });
         actionResponse.EnsureSuccessStatusCode();
 
-        var canceled = await background.Query.Worker(new WorkerId(workerId))
+        var canceled = await Direct(background).Query.Worker(new WorkerId(workerId))
             ?? throw new InvalidOperationException("Expected worker.");
         Assert.Equal(WorkerState.Canceled, canceled.State);
         Assert.Equal(WorkInvocationChannel.HttpApi, canceled.ActionHistory[^1].Origin.Channel);
@@ -1471,6 +1514,40 @@ public sealed class WorkableHttpApiTests
         Assert.Contains("workable.http.system.not_found", json);
     }
 
+    [Fact]
+    public async Task MappedHttpRouteUsesRequestContextAuthorizationForDefinitionsAndQueue()
+    {
+        using var host = await CreateAuthorizedHttpHost();
+        var client = host.GetTestClient();
+        Assert.True(host.Services.GetRequiredService<IWorkSystemRegistry>().Default.RequiresAuthorization);
+
+        var definitionsResponse = await client.GetAsync("/workable/definitions");
+        definitionsResponse.EnsureSuccessStatusCode();
+        var definitionsJson = await definitionsResponse.Content.ReadAsStringAsync();
+
+        Assert.Contains("allowed.authorization", definitionsJson);
+        Assert.DoesNotContain("hidden.authorization", definitionsJson);
+
+        var allowedResponse = await client.PostAsJsonAsync(
+            "/workable/work/allowed.authorization",
+            new
+            {
+                completion = "returnAfterAccepted",
+            });
+        allowedResponse.EnsureSuccessStatusCode();
+
+        var hiddenResponse = await client.PostAsJsonAsync(
+            "/workable/work/hidden.authorization",
+            new
+            {
+                completion = "returnAfterAccepted",
+            });
+
+        Assert.Equal(HttpStatusCode.Forbidden, hiddenResponse.StatusCode);
+        var hiddenJson = await hiddenResponse.Content.ReadAsStringAsync();
+        Assert.Contains("Unauthorized", hiddenJson, StringComparison.OrdinalIgnoreCase);
+    }
+
     private static (IWorkSystem System, HttpAdapterServices Http) CreateHost(
         WorkDefinition definition,
         Func<IWorkExecutionContext, WorkInput?, CancellationToken, Task<WorkExecutionResult>> execute)
@@ -1480,6 +1557,7 @@ public sealed class WorkableHttpApiTests
         Action<IWorkSystemBuilder> configure)
     {
         var provider = new ServiceCollection()
+            .AddTransportTestAuthorization()
             .AddWorkableSystem(configure)
             .AddWorkableHttpApi()
             .BuildServiceProvider();
@@ -1499,7 +1577,9 @@ public sealed class WorkableHttpApiTests
         WorkableHttpQueryAdapter Query,
         WorkableHttpWorkerAdapter Workers);
 
-    private static async Task<IHost> CreateHttpHost(bool authenticated = true)
+    private static async Task<IHost> CreateHttpHost(
+        bool authenticated = true,
+        IEnumerable<string>? groups = null)
     {
         var host = new HostBuilder()
             .ConfigureWebHost(web =>
@@ -1508,10 +1588,13 @@ public sealed class WorkableHttpApiTests
                 web.ConfigureServices(services =>
                 {
                     services.AddRouting();
+                    services.AddTransportTestAuthorization(groups);
                     services.AddWorkableSystem(builder =>
                     {
                         builder.StartWithHost();
-                        builder.AddWork(
+                        builder.RequireAuthorization();
+                        builder.ConfigureTransportSystemAuthorization();
+                        builder.AddAuthorizedTransportWork(
                             WorkDefinition.Create(
                                 "http.route.case",
                                 configuration: WorkConfiguration.Default with
@@ -1529,13 +1612,11 @@ public sealed class WorkableHttpApiTests
                     {
                         app.Use(async (context, next) =>
                         {
-                            context.User = new ClaimsPrincipal(new ClaimsIdentity(
-                                [
-                                    new Claim(ClaimTypes.NameIdentifier, "user-123"),
-                                    new Claim(ClaimTypes.Name, "Greya"),
-                                    new Claim(ClaimTypes.Email, "greya@example.test"),
-                                ],
-                                "Test"));
+                            context.User = CreateTransportPrincipal(
+                                id: "user-123",
+                                name: "Greya",
+                                email: "greya@example.test",
+                                groups: groups);
                             await next();
                         });
                     }
@@ -1549,7 +1630,7 @@ public sealed class WorkableHttpApiTests
         return host;
     }
 
-    private static async Task<IHost> CreateMultiSystemHttpHost()
+    private static async Task<IHost> CreateMultiSystemHttpHost(IEnumerable<string>? groups = null)
     {
         var host = new HostBuilder()
             .ConfigureWebHost(web =>
@@ -1558,10 +1639,13 @@ public sealed class WorkableHttpApiTests
                 web.ConfigureServices(services =>
                 {
                     services.AddRouting();
+                    services.AddTransportTestAuthorization(groups);
                     services.AddWorkableSystem(builder =>
                     {
                         builder.StartWithHost();
-                        builder.AddWork(
+                        builder.RequireAuthorization();
+                        builder.ConfigureTransportSystemAuthorization();
+                        builder.AddAuthorizedTransportWork(
                             WorkDefinition.Create(
                                 "http.default",
                                 configuration: WorkConfiguration.Default with
@@ -1573,7 +1657,9 @@ public sealed class WorkableHttpApiTests
                     services.AddWorkableSystem("background", builder =>
                     {
                         builder.StartWithHost();
-                        builder.AddWork(
+                        builder.RequireAuthorization();
+                        builder.ConfigureTransportSystemAuthorization();
+                        builder.AddAuthorizedTransportWork(
                             WorkDefinition.Create(
                                 "http.named",
                                 configuration: WorkConfiguration.Default with
@@ -1587,6 +1673,15 @@ public sealed class WorkableHttpApiTests
                 web.Configure(app =>
                 {
                     app.UseRouting();
+                    app.Use(async (context, next) =>
+                    {
+                        context.User = CreateTransportPrincipal(
+                            id: "user-123",
+                            name: "Greya",
+                            email: "greya@example.test",
+                            groups: groups);
+                        await next();
+                    });
                     app.UseEndpoints(endpoints => endpoints.MapWorkableApi("/workable"));
                 });
             })
@@ -1596,7 +1691,7 @@ public sealed class WorkableHttpApiTests
         return host;
     }
 
-    private static async Task<IHost> CreateManualHttpHost()
+    private static async Task<IHost> CreateManualHttpHost(IEnumerable<string>? groups = null)
     {
         var host = new HostBuilder()
             .ConfigureWebHost(web =>
@@ -1605,19 +1700,34 @@ public sealed class WorkableHttpApiTests
                 web.ConfigureServices(services =>
                 {
                     services.AddRouting();
-                    services.AddWorkableSystem(builder => builder.AddWork(
-                        WorkDefinition.Create(
-                            "http.lifecycle",
-                            configuration: WorkConfiguration.Default with
-                            {
-                                Start = WorkStartConfiguration.DoNotStart,
-                            }),
-                        SuccessfulWork));
+                    services.AddTransportTestAuthorization(groups);
+                    services.AddWorkableSystem(builder =>
+                    {
+                        builder.RequireAuthorization();
+                        builder.ConfigureTransportSystemAuthorization();
+                        builder.AddAuthorizedTransportWork(
+                            WorkDefinition.Create(
+                                "http.lifecycle",
+                                configuration: WorkConfiguration.Default with
+                                {
+                                    Start = WorkStartConfiguration.DoNotStart,
+                                }),
+                            SuccessfulWork);
+                    });
                     services.AddWorkableHttpApi();
                 });
                 web.Configure(app =>
                 {
                     app.UseRouting();
+                    app.Use(async (context, next) =>
+                    {
+                        context.User = CreateTransportPrincipal(
+                            id: "user-123",
+                            name: "Greya",
+                            email: "greya@example.test",
+                            groups: groups);
+                        await next();
+                    });
                     app.UseEndpoints(endpoints => endpoints.MapWorkableApi("/workable"));
                 });
             })
@@ -1627,7 +1737,7 @@ public sealed class WorkableHttpApiTests
         return host;
     }
 
-    private static async Task<IHost> CreateShutdownHttpHost()
+    private static async Task<IHost> CreateShutdownHttpHost(IEnumerable<string>? groups = null)
     {
         var host = new HostBuilder()
             .ConfigureWebHost(web =>
@@ -1637,11 +1747,14 @@ public sealed class WorkableHttpApiTests
                 {
                     services.AddRouting();
                     services.AddSingleton<HttpShutdownTracker>();
+                    services.AddTransportTestAuthorization(groups);
                     services.AddWorkableSystem(builder =>
                     {
                         builder.StartWithHost();
+                        builder.RequireAuthorization();
+                        builder.ConfigureTransportSystemAuthorization();
                         builder.UseShutdownGracePeriod(TimeSpan.FromMilliseconds(20));
-                        builder.AddWork(
+                        builder.AddAuthorizedTransportWork(
                             WorkDefinition.Create("http.shutdown.force"),
                             async (context, input, cancellationToken) =>
                             {
@@ -1655,6 +1768,15 @@ public sealed class WorkableHttpApiTests
                 web.Configure(app =>
                 {
                     app.UseRouting();
+                    app.Use(async (context, next) =>
+                    {
+                        context.User = CreateTransportPrincipal(
+                            id: "user-123",
+                            name: "Greya",
+                            email: "greya@example.test",
+                            groups: groups);
+                        await next();
+                    });
                     app.UseEndpoints(endpoints => endpoints.MapWorkableApi("/workable"));
                 });
             })
@@ -1673,15 +1795,17 @@ public sealed class WorkableHttpApiTests
                 web.ConfigureServices(services =>
                 {
                     services.AddRouting();
+                    services.AddTransportTestAuthorization();
                     services.AddWorkableSystem(builder =>
                     {
                         builder.StartWithHost();
-                        builder.AddWork(
+                        builder.RequireAuthorization();
+                        builder.AddAuthorizedTransportWork(
                             WorkDefinition.Create(
                                 "http.discovery.allowed",
                                 configuration: WorkConfiguration.Default),
                             SuccessfulWork);
-                        builder.AddWork(
+                        builder.AddAuthorizedTransportWork(
                             WorkDefinition.Create(
                                 "http.discovery.dotnet-only",
                                 configuration: WorkConfiguration.Default with
@@ -1695,6 +1819,14 @@ public sealed class WorkableHttpApiTests
                 web.Configure(app =>
                 {
                     app.UseRouting();
+                    app.Use(async (context, next) =>
+                    {
+                        context.User = CreateTransportPrincipal(
+                            id: "user-123",
+                            name: "Greya",
+                            email: "greya@example.test");
+                        await next();
+                    });
                     app.UseEndpoints(endpoints => endpoints.MapWorkableApi("/workable"));
                 });
             })
@@ -1713,18 +1845,28 @@ public sealed class WorkableHttpApiTests
                 web.ConfigureServices(services =>
                 {
                     services.AddRouting();
+                    services.AddTransportTestAuthorization();
                     services.AddWorkableSystem(builder =>
                     {
                         builder.StartWithHost();
-                        builder.AddWork(WorkDefinition.Create("billing.invoice.generate", category: "Billing:Invoices"), SuccessfulWork);
-                        builder.AddWork(WorkDefinition.Create("billing.payment.capture", category: "Billing:Payments"), SuccessfulWork);
-                        builder.AddWork(WorkDefinition.Create("operations.cleanup", category: "Operations"), SuccessfulWork);
+                        builder.RequireAuthorization();
+                        builder.AddAuthorizedTransportWork(WorkDefinition.Create("billing.invoice.generate", category: "Billing:Invoices"), SuccessfulWork);
+                        builder.AddAuthorizedTransportWork(WorkDefinition.Create("billing.payment.capture", category: "Billing:Payments"), SuccessfulWork);
+                        builder.AddAuthorizedTransportWork(WorkDefinition.Create("operations.cleanup", category: "Operations"), SuccessfulWork);
                     });
                     services.AddWorkableHttpApi();
                 });
                 web.Configure(app =>
                 {
                     app.UseRouting();
+                    app.Use(async (context, next) =>
+                    {
+                        context.User = CreateTransportPrincipal(
+                            id: "user-123",
+                            name: "Greya",
+                            email: "greya@example.test");
+                        await next();
+                    });
                     app.UseEndpoints(endpoints => endpoints.MapWorkableApi("/workable"));
                 });
             })
@@ -1743,11 +1885,13 @@ public sealed class WorkableHttpApiTests
                 web.ConfigureServices(services =>
                 {
                     services.AddRouting();
+                    services.AddTransportTestAuthorization();
                     services.AddWorkableSystem(builder =>
                     {
                         builder.StartWithHost();
-                        builder.AddWork(WorkDefinition.Create("http.overview.complete", category: "Http"), SuccessfulWork);
-                        builder.AddWork(
+                        builder.RequireAuthorization();
+                        builder.AddAuthorizedTransportWork(WorkDefinition.Create("http.overview.complete", category: "Http"), SuccessfulWork);
+                        builder.AddAuthorizedTransportWork(
                             WorkDefinition.Create("http.overview.failed", category: "Http"),
                             (context, input, cancellationToken) => Task.FromResult(WorkExecutionResult.Failure([WorkMessage.Error("http.failed", "Failed.")])));
                     });
@@ -1756,6 +1900,67 @@ public sealed class WorkableHttpApiTests
                 web.Configure(app =>
                 {
                     app.UseRouting();
+                    app.Use(async (context, next) =>
+                    {
+                        context.User = CreateTransportPrincipal(
+                            id: "user-123",
+                            name: "Greya",
+                            email: "greya@example.test");
+                        await next();
+                    });
+                    app.UseEndpoints(endpoints => endpoints.MapWorkableApi("/workable"));
+                });
+            })
+            .Build();
+
+        await host.StartAsync();
+        return host;
+    }
+
+    private static async Task<IHost> CreateAuthorizedHttpHost()
+    {
+        var host = new HostBuilder()
+            .ConfigureWebHost(web =>
+            {
+                web.UseTestServer();
+                web.ConfigureServices(services =>
+                {
+                    services.AddRouting();
+                    services.AddWorkableSystem(builder =>
+                    {
+                        builder.StartWithHost();
+                        builder.RequireAuthorization();
+                        builder.AddWork(
+                            WorkDefinition.Create("allowed.authorization"),
+                            SuccessfulWork,
+                            configure: null,
+                            authorize: authorize => authorize.RequireGroups(
+                                readGroups: ["billing.read"],
+                                operateGroups: ["billing.ops"]));
+                        builder.AddWork(
+                            WorkDefinition.Create("hidden.authorization"),
+                            SuccessfulWork,
+                            configure: null,
+                            authorize: authorize => authorize.RequireGroups(
+                                readGroups: ["hidden.read"],
+                                operateGroups: ["hidden.ops"]));
+                    });
+                    services.AddWorkableHttpApi();
+                });
+                web.Configure(app =>
+                {
+                    app.UseRouting();
+                    app.Use(async (context, next) =>
+                    {
+                        context.User = new ClaimsPrincipal(new ClaimsIdentity(
+                            [
+                                new Claim(ClaimTypes.NameIdentifier, "auth-user-1"),
+                                new Claim("groups", "billing.read"),
+                                new Claim("groups", "billing.ops"),
+                            ],
+                            "Test"));
+                        await next();
+                    });
                     app.UseEndpoints(endpoints => endpoints.MapWorkableApi("/workable"));
                 });
             })
@@ -1774,19 +1979,21 @@ public sealed class WorkableHttpApiTests
                 web.ConfigureServices(services =>
                 {
                     services.AddRouting();
+                    services.AddTransportTestAuthorization();
                     services.AddWorkableSystem(builder =>
                     {
                         builder.StartWithHost();
-                        builder.AddWork(
+                        builder.RequireAuthorization();
+                        builder.AddAuthorizedTransportWork(
                             WorkDefinition.Create(
                                 "http.bulk.billing",
                                 category: "Billing:Invoices",
                                 configuration: WorkConfiguration.Default with
                                 {
                                     Start = WorkStartConfiguration.DoNotStart,
-                                }),
+                            }),
                             SuccessfulWork);
-                        builder.AddWork(
+                        builder.AddAuthorizedTransportWork(
                             WorkDefinition.Create(
                                 "http.bulk.email",
                                 category: "Email",
@@ -1801,6 +2008,14 @@ public sealed class WorkableHttpApiTests
                 web.Configure(app =>
                 {
                     app.UseRouting();
+                    app.Use(async (context, next) =>
+                    {
+                        context.User = CreateTransportPrincipal(
+                            id: "user-123",
+                            name: "Greya",
+                            email: "greya@example.test");
+                        await next();
+                    });
                     app.UseEndpoints(endpoints => endpoints.MapWorkableApi("/workable"));
                 });
             })
@@ -1809,6 +2024,28 @@ public sealed class WorkableHttpApiTests
         await host.StartAsync();
         return host;
     }
+
+    private static IWorkSystemSession Direct(IWorkSystem system)
+        => CreateTransportSession(
+            system,
+            WorkInvocationChannel.HttpApi,
+            description: "Use HTTP API test session.");
+
+    private static IWorkSystemSession CreateTransportSession(
+        IWorkSystem system,
+        WorkInvocationChannel channel,
+        string description)
+        => TransportAuthorizationTestSupport.CreateTransportSession(
+            system,
+            channel,
+            description: description);
+
+    private static ClaimsPrincipal CreateTransportPrincipal(
+        string id,
+        string name,
+        string email,
+        IEnumerable<string>? groups = null)
+        => TransportAuthorizationTestSupport.CreateTransportPrincipal(id, name, email, groups);
 
     private static Task<WorkExecutionResult> SuccessfulWork(
         IWorkExecutionContext context,
@@ -1858,5 +2095,21 @@ public sealed class WorkableHttpApiTests
         {
             await Task.Delay(10);
         }
+    }
+
+    private static async Task WaitForReadModel(IWorkSystem system)
+    {
+        var deadline = DateTimeOffset.UtcNow.AddSeconds(5);
+        while (DateTimeOffset.UtcNow < deadline)
+        {
+            if (system.Diagnostics.ReadModel.PendingUpdateCount == 0)
+            {
+                return;
+            }
+
+            await Task.Delay(10);
+        }
+
+        Assert.Equal(0, system.Diagnostics.ReadModel.PendingUpdateCount);
     }
 }

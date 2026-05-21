@@ -12,5 +12,7 @@ public sealed record WorkerBulkActionOutcome(
 
     public int InvalidCount => this.Outcomes.Count(outcome => outcome.Status == WorkActionStatus.Invalid);
 
+    public int UnauthorizedCount => this.Outcomes.Count(outcome => outcome.Status == WorkActionStatus.Unauthorized);
+
     public int NotFoundCount => this.Outcomes.Count(outcome => outcome.Status == WorkActionStatus.NotFound);
 }

@@ -23,6 +23,7 @@ public sealed class WorkableRealtimeViewSubscriptions
         IWorkSystem system,
         string viewName,
         WorkViewCriteria criteria,
+        WorkAuthorizationSnapshot authorization,
         CancellationToken cancellationToken)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(connectionId);
@@ -30,9 +31,10 @@ public sealed class WorkableRealtimeViewSubscriptions
         ArgumentNullException.ThrowIfNull(system);
         ArgumentException.ThrowIfNullOrWhiteSpace(viewName);
         ArgumentNullException.ThrowIfNull(criteria);
+        ArgumentNullException.ThrowIfNull(authorization);
 
         var normalizedViewName = NormalizeViewName(viewName);
-        var subscription = CreateSubscription(system, normalizedViewName, criteria);
+        var subscription = CreateSubscription(system, normalizedViewName, criteria, authorization);
         var connectionViewKey = ConnectionViewKey(connectionId, system.Id, normalizedViewName);
         WorkableRealtimeViewSubscription? oldSubscription = null;
         var addToGroup = false;
@@ -155,27 +157,31 @@ public sealed class WorkableRealtimeViewSubscriptions
     private static WorkableRealtimeViewSubscription CreateSubscription(
         IWorkSystem system,
         string viewName,
-        WorkViewCriteria criteria)
+        WorkViewCriteria criteria,
+        WorkAuthorizationSnapshot authorization)
     {
-        var key = CreateGroupKey(system.Id, viewName, criteria);
+        var key = CreateGroupKey(system.Id, viewName, criteria, authorization.ReadFingerprint);
         return new WorkableRealtimeViewSubscription(
             system.Id,
             viewName,
             criteria,
             WorkableRealtimeGroups.View(system, key),
-            system.Diagnostics.ReadModel.AppliedSequence);
+            system.Diagnostics.ReadModel.AppliedSequence,
+            authorization);
     }
 
     private static string CreateGroupKey(
         WorkSystemId systemId,
         string viewName,
-        WorkViewCriteria criteria)
+        WorkViewCriteria criteria,
+        string readFingerprint)
     {
         var json = JsonSerializer.Serialize(new
         {
             SystemId = systemId.Value,
             ViewName = viewName,
             Criteria = criteria,
+            ReadFingerprint = readFingerprint,
         }, KeyJsonOptions);
         var hash = SHA256.HashData(Encoding.UTF8.GetBytes(json));
         return Convert.ToHexString(hash).ToLowerInvariant();

@@ -61,10 +61,11 @@ Adapter packages reference `Workable.Views` when they need to expose the compone
 
 `src/Workable.AspNetCore` contains ASP.NET Core integration that does not expose routes:
 
-- HTTP-context origin provider for direct .NET queueing and worker operations
-- `AddWorkableAspNetCoreOrigins`
+- `IWorkActorFactory` and `IWorkRequestContextFactory`
+- default claims-based `IWorkAuthorizationGroupProvider`
+- `AddWorkableAspNetCoreAuthorization`
 
-ASP.NET Core applications reference `Workable.AspNetCore` when their own controllers or minimal API routes queue work and those direct .NET calls should record actor information from `HttpContext.User`.
+ASP.NET Core applications reference `Workable.AspNetCore` when their own controllers, minimal API routes, or custom transports need authenticated `WorkRequestContext` values and default claims-based group resolution from `HttpContext`.
 
 `src/Workable.Mcp` contains the MCP adapter surface:
 

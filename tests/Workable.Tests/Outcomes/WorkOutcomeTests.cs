@@ -53,6 +53,23 @@ public sealed class WorkOutcomeTests
     }
 
     [Fact]
+    public void WorkQueueOutcomeUnauthorizedIncludesDefinitionAndMessages()
+    {
+        var definitionId = WorkDefinitionId.New();
+
+        var outcome = WorkQueueOutcome.Unauthorized("secured-work", definitionId);
+
+        Assert.Equal(WorkQueueStatus.Unauthorized, outcome.Status);
+        Assert.False(outcome.IsAccepted);
+        Assert.Equal(definitionId, outcome.DefinitionId);
+        Assert.Null(outcome.WorkerId);
+        var message = Assert.Single(outcome.Messages);
+        Assert.Equal("workable.definition.unauthorized", message.Code);
+        Assert.Equal("definition.authorization", message.Target);
+        Assert.Contains("secured-work", message.Text);
+    }
+
+    [Fact]
     public void WorkActionOutcomeAcceptedIncludesSnapshotAndMessages()
     {
         var worker = CreateWorkerSnapshot(WorkerState.Running);
@@ -101,6 +118,24 @@ public sealed class WorkOutcomeTests
         Assert.Equal(worker.Id, outcome.WorkerId);
         Assert.Same(worker, outcome.Worker);
         Assert.Equal(messages, outcome.Messages);
+    }
+
+    [Fact]
+    public void WorkActionOutcomeUnauthorizedCreatesStructuredMessage()
+    {
+        var workerId = WorkerId.New();
+
+        var outcome = WorkActionOutcome.Unauthorized(WorkAction.Cancel, workerId);
+
+        Assert.Equal(WorkActionStatus.Unauthorized, outcome.Status);
+        Assert.False(outcome.IsAccepted);
+        Assert.Equal(WorkAction.Cancel, outcome.Action);
+        Assert.Equal(workerId, outcome.WorkerId);
+        Assert.Null(outcome.Worker);
+        var message = Assert.Single(outcome.Messages);
+        Assert.Equal("workable.worker.unauthorized", message.Code);
+        Assert.Equal("worker.authorization", message.Target);
+        Assert.Contains(workerId.ToString(), message.Text);
     }
 
     [Fact]

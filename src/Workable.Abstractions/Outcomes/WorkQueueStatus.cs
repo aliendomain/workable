@@ -3,5 +3,6 @@ public enum WorkQueueStatus
 {
     Accepted,
     Invalid,
+    Unauthorized,
     NotFound,
 }

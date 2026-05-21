@@ -4,6 +4,10 @@ Workable can stream worker events and coalesced component-view updates to ASP.NE
 
 The realtime adapter is observability-only. Queueing work, querying snapshots, and sending worker actions remain in the .NET and HTTP API surfaces. SignalR clients subscribe to updates and receive messages when the underlying Workable event stream changes.
 
+`Workable.SignalR` is an authenticated transport. Anonymous negotiate and connect requests are rejected, and mapped systems must have `RequireAuthorization(true)`.
+
+Each hub subscription captures a `WorkRequestContext` and an authorization snapshot when the client subscribes. Realtime reads are filtered by the caller's read access, and shared subscription groups are keyed by effective read visibility so callers only share broadcasts when they can see the same work.
+
 ## Setup
 
 Register and map the SignalR adapter from the host application.
@@ -248,7 +252,7 @@ await connection.InvokeAsync(
 
 `WatchView` immediately sends the current `WorkComponentQueryResult` to the caller. After that, the server coalesces Workable events and publishes refreshed results on the publish interval.
 
-View subscriptions are grouped by system id, view name, scope, component ids, component types, shapes, and options. Connections with the same normalized request share one server recomputation per publish tick. If a client hides a panel, it should call `WatchView` again with that component omitted; if it changes a panel between `compact`, `standard`, and `detailed`, it should call `WatchView` with the new shape. The same SignalR connection stays open while the server swaps the connection between normalized view groups.
+View subscriptions are grouped by system id, view name, scope, component ids, component types, shapes, options, and effective read visibility. Connections with the same normalized request and the same readable work set share one server recomputation per publish tick. If a client hides a panel, it should call `WatchView` again with that component omitted; if it changes a panel between `compact`, `standard`, and `detailed`, it should call `WatchView` with the new shape. The same SignalR connection stays open while the server swaps the connection between normalized view groups.
 
 SignalR view payloads use the same component efficiency contract as HTTP:
 

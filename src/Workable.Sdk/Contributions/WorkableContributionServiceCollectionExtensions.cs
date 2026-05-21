@@ -9,7 +9,7 @@ public static class WorkableContributionServiceCollectionExtensions
         WorkDefinition definition,
         Func<IWorkExecutionContext, WorkInput?, CancellationToken, Task<WorkExecutionResult>> execute,
         string? systemName = null)
-        => services.AddWorkableWork(definition, execute, configure: null, systemName);
+        => services.AddWorkableWork(definition, execute, configure: null, authorize: null, systemName);
 
     public static IServiceCollection AddWorkableWork(
         this IServiceCollection services,
@@ -17,12 +17,21 @@ public static class WorkableContributionServiceCollectionExtensions
         Func<IWorkExecutionContext, WorkInput?, CancellationToken, Task<WorkExecutionResult>> execute,
         Action<IWorkConfigurationBuilder>? configure,
         string? systemName = null)
+        => services.AddWorkableWork(definition, execute, configure, authorize: null, systemName);
+
+    public static IServiceCollection AddWorkableWork(
+        this IServiceCollection services,
+        WorkDefinition definition,
+        Func<IWorkExecutionContext, WorkInput?, CancellationToken, Task<WorkExecutionResult>> execute,
+        Action<IWorkConfigurationBuilder>? configure,
+        Action<IWorkAuthorizationBuilder>? authorize,
+        string? systemName = null)
     {
         ArgumentNullException.ThrowIfNull(services);
         ArgumentNullException.ThrowIfNull(definition);
         ArgumentNullException.ThrowIfNull(execute);
 
-        var registration = WorkConfigurationComposer.ApplyRegistration(definition, executorType: null, configure);
+        var registration = WorkConfigurationComposer.ApplyRegistration(definition, executorType: null, configure, authorize);
         services.RegisterInitializerTypes(registration);
         services.AddSingleton(new WorkContribution(
             registration.Definition,
@@ -40,7 +49,7 @@ public static class WorkableContributionServiceCollectionExtensions
         WorkDefinition definition,
         Func<IWorkExecutionContext, TInput, CancellationToken, Task<WorkExecutionResult>> execute,
         string? systemName = null)
-        => services.AddWorkableWork(definition, execute, configure: null, systemName);
+        => services.AddWorkableWork(definition, execute, configure: null, authorize: null, systemName);
 
     public static IServiceCollection AddWorkableWork<TInput>(
         this IServiceCollection services,
@@ -48,13 +57,22 @@ public static class WorkableContributionServiceCollectionExtensions
         Func<IWorkExecutionContext, TInput, CancellationToken, Task<WorkExecutionResult>> execute,
         Action<IWorkConfigurationBuilder>? configure,
         string? systemName = null)
+        => services.AddWorkableWork(definition, execute, configure, authorize: null, systemName);
+
+    public static IServiceCollection AddWorkableWork<TInput>(
+        this IServiceCollection services,
+        WorkDefinition definition,
+        Func<IWorkExecutionContext, TInput, CancellationToken, Task<WorkExecutionResult>> execute,
+        Action<IWorkConfigurationBuilder>? configure,
+        Action<IWorkAuthorizationBuilder>? authorize,
+        string? systemName = null)
     {
         ArgumentNullException.ThrowIfNull(services);
         ArgumentNullException.ThrowIfNull(definition);
         ArgumentNullException.ThrowIfNull(execute);
 
         definition = WorkExecutorAdapterFactory.ApplyTypedSchemas<TInput>(definition);
-        var registration = WorkConfigurationComposer.ApplyRegistration(definition, executorType: null, configure);
+        var registration = WorkConfigurationComposer.ApplyRegistration(definition, executorType: null, configure, authorize);
         services.RegisterInitializerTypes(registration);
         services.AddSingleton(new WorkContribution(
             registration.Definition,
@@ -72,7 +90,7 @@ public static class WorkableContributionServiceCollectionExtensions
         WorkDefinition definition,
         Func<IWorkExecutionContext, TInput, CancellationToken, Task<WorkExecutionResult<TOutput>>> execute,
         string? systemName = null)
-        => services.AddWorkableWork(definition, execute, configure: null, systemName);
+        => services.AddWorkableWork(definition, execute, configure: null, authorize: null, systemName);
 
     public static IServiceCollection AddWorkableWork<TInput, TOutput>(
         this IServiceCollection services,
@@ -80,13 +98,22 @@ public static class WorkableContributionServiceCollectionExtensions
         Func<IWorkExecutionContext, TInput, CancellationToken, Task<WorkExecutionResult<TOutput>>> execute,
         Action<IWorkConfigurationBuilder>? configure,
         string? systemName = null)
+        => services.AddWorkableWork(definition, execute, configure, authorize: null, systemName);
+
+    public static IServiceCollection AddWorkableWork<TInput, TOutput>(
+        this IServiceCollection services,
+        WorkDefinition definition,
+        Func<IWorkExecutionContext, TInput, CancellationToken, Task<WorkExecutionResult<TOutput>>> execute,
+        Action<IWorkConfigurationBuilder>? configure,
+        Action<IWorkAuthorizationBuilder>? authorize,
+        string? systemName = null)
     {
         ArgumentNullException.ThrowIfNull(services);
         ArgumentNullException.ThrowIfNull(definition);
         ArgumentNullException.ThrowIfNull(execute);
 
         definition = WorkExecutorAdapterFactory.ApplyTypedSchemas<TInput, TOutput>(definition);
-        var registration = WorkConfigurationComposer.ApplyRegistration(definition, executorType: null, configure);
+        var registration = WorkConfigurationComposer.ApplyRegistration(definition, executorType: null, configure, authorize);
         services.RegisterInitializerTypes(registration);
         services.AddSingleton(new WorkContribution(
             registration.Definition,
@@ -106,6 +133,7 @@ public static class WorkableContributionServiceCollectionExtensions
         => services.AddWorkableWork<TExecutor>(
             WorkConfigurationComposer.CreateDefinitionFromAttributes(typeof(TExecutor)),
             configure: null,
+            authorize: null,
             systemName);
 
     public static IServiceCollection AddWorkableWork<TExecutor>(
@@ -113,9 +141,18 @@ public static class WorkableContributionServiceCollectionExtensions
         Action<IWorkConfigurationBuilder> configure,
         string? systemName = null)
         where TExecutor : class
+        => services.AddWorkableWork<TExecutor>(configure, authorize: null, systemName);
+
+    public static IServiceCollection AddWorkableWork<TExecutor>(
+        this IServiceCollection services,
+        Action<IWorkConfigurationBuilder>? configure,
+        Action<IWorkAuthorizationBuilder>? authorize,
+        string? systemName = null)
+        where TExecutor : class
         => services.AddWorkableWork<TExecutor>(
             WorkConfigurationComposer.CreateDefinitionFromAttributes(typeof(TExecutor)),
             configure,
+            authorize,
             systemName);
 
     public static IServiceCollection AddWorkableWork<TExecutor>(
@@ -123,12 +160,21 @@ public static class WorkableContributionServiceCollectionExtensions
         WorkDefinition definition,
         string? systemName = null)
         where TExecutor : class
-        => services.AddWorkableWork<TExecutor>(definition, configure: null, systemName);
+        => services.AddWorkableWork<TExecutor>(definition, configure: null, authorize: null, systemName);
 
     public static IServiceCollection AddWorkableWork<TExecutor>(
         this IServiceCollection services,
         WorkDefinition definition,
         Action<IWorkConfigurationBuilder>? configure,
+        string? systemName = null)
+        where TExecutor : class
+        => services.AddWorkableWork<TExecutor>(definition, configure, authorize: null, systemName);
+
+    public static IServiceCollection AddWorkableWork<TExecutor>(
+        this IServiceCollection services,
+        WorkDefinition definition,
+        Action<IWorkConfigurationBuilder>? configure,
+        Action<IWorkAuthorizationBuilder>? authorize,
         string? systemName = null)
         where TExecutor : class
     {
@@ -137,7 +183,7 @@ public static class WorkableContributionServiceCollectionExtensions
         WorkExecutorAdapterFactory.ThrowIfUnsupported(typeof(TExecutor));
 
         services.AddScoped<TExecutor>();
-        var registration = WorkConfigurationComposer.ApplyRegistration(definition, typeof(TExecutor), configure);
+        var registration = WorkConfigurationComposer.ApplyRegistration(definition, typeof(TExecutor), configure, authorize);
         services.RegisterInitializerTypes(registration);
         services.AddSingleton(new WorkContribution(
             registration.Definition,

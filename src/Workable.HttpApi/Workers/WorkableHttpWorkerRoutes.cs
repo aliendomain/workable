@@ -13,6 +13,8 @@ internal static class WorkableHttpWorkerRoutes
             WorkableHttpWorkerBulkActionRequest? request,
             HttpContext httpContext,
             WorkableHttpSystemResolver systems,
+            WorkableHttpWorkerAdapter workers,
+            IWorkRequestContextFactory requestContexts,
             CancellationToken cancellationToken) =>
         {
             if (!WorkableHttpRouteBinding.TryParseAction(action, out var parsedAction))
@@ -31,7 +33,12 @@ internal static class WorkableHttpWorkerRoutes
                 return notFound;
             }
 
-            var result = await WorkableHttpWorkerAdapter.ExecuteAllCore(system, parsedAction, request, WorkableHttpOrigin.Create(httpContext, $"Apply worker action '{parsedAction}' to multiple workers through HTTP API."), cancellationToken);
+            var session = WorkableHttpRequestContext.CreateSession(
+                httpContext,
+                system,
+                requestContexts,
+                $"Apply worker action '{parsedAction}' to multiple workers through HTTP API.");
+            var result = await workers.ExecuteAll(session, parsedAction, request, cancellationToken);
             return Results.Ok(result);
         });
 
@@ -41,6 +48,8 @@ internal static class WorkableHttpWorkerRoutes
             WorkableHttpWorkerActionRequest request,
             HttpContext httpContext,
             WorkableHttpSystemResolver systems,
+            WorkableHttpWorkerAdapter workers,
+            IWorkRequestContextFactory requestContexts,
             CancellationToken cancellationToken) =>
         {
             if (!WorkableHttpRouteBinding.TryParseAction(action, out var parsedAction))
@@ -59,7 +68,12 @@ internal static class WorkableHttpWorkerRoutes
                 return notFound;
             }
 
-            var result = await WorkableHttpWorkerAdapter.ExecuteCore(system, new WorkerId(workerId), parsedAction, request, WorkableHttpOrigin.Create(httpContext, $"Apply worker action '{parsedAction}' through HTTP API."), cancellationToken);
+            var session = WorkableHttpRequestContext.CreateSession(
+                httpContext,
+                system,
+                requestContexts,
+                $"Apply worker action '{parsedAction}' through HTTP API.");
+            var result = await workers.Execute(session, new WorkerId(workerId), parsedAction, request, cancellationToken);
             return WorkableHttpRouteResults.ToActionHttpResult(result);
         });
 
@@ -68,6 +82,8 @@ internal static class WorkableHttpWorkerRoutes
             WorkableHttpWorkerReconfigurationRequest request,
             HttpContext httpContext,
             WorkableHttpSystemResolver systems,
+            WorkableHttpWorkerAdapter workers,
+            IWorkRequestContextFactory requestContexts,
             CancellationToken cancellationToken) =>
         {
             if (!WorkableHttpRouteResults.TryResolveSystem(httpContext, systems, out var system, out var notFound))
@@ -75,7 +91,12 @@ internal static class WorkableHttpWorkerRoutes
                 return notFound;
             }
 
-            var result = await WorkableHttpWorkerAdapter.ReconfigureCore(system, new WorkerId(workerId), request, WorkableHttpOrigin.Create(httpContext, "Reconfigure worker through HTTP API."), cancellationToken);
+            var session = WorkableHttpRequestContext.CreateSession(
+                httpContext,
+                system,
+                requestContexts,
+                "Reconfigure worker through HTTP API.");
+            var result = await workers.Reconfigure(session, new WorkerId(workerId), request, cancellationToken);
             return WorkableHttpRouteResults.ToActionHttpResult(result);
         });
     }

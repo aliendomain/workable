@@ -6,17 +6,23 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 
 namespace Workable;
-internal sealed class InMemoryWorkSystem : IWorkSystem, IOriginAwareWorkSystem, IWorkSystemShutdownMetadata, IWorkSystemCoordinationCapabilities
+internal sealed class InMemoryWorkSystem :
+    IWorkSystem,
+    IWorkSystemShutdownMetadata,
+    IWorkSystemCoordinationCapabilities
 {
     private readonly IServiceProvider rootServices;
+    private readonly IWorkAuthorizationGroupProvider groupProvider;
+    private readonly WorkSystemAuthorizationConfiguration authorization;
     private readonly IReadOnlyList<Func<IServiceProvider, IWorkDefinitionSource>> workDefinitionSourceFactories;
     private readonly IReadOnlyList<Func<IServiceProvider, IStartupWorkSource>> startupWorkSourceFactories;
     private readonly WorkSystemCatalog catalog;
     private readonly WorkQueueService queue;
     private readonly WorkerOperations workers;
     private readonly WorkSystemReadModel readModel;
-    private readonly IWorkQueryService query;
-    private readonly IWorkSystemDiagnostics diagnostics;
+    private readonly WorkSystemReadModelQueryService query;
+    private readonly WorkSystemDiagnostics diagnostics;
+    private readonly WorkSystemSessionFactory sessions;
     private readonly InMemoryWorkMetricsSink metrics = new();
     private readonly WorkEventStream events = new();
     private readonly WorkSystemQueueDiagnosticsTracker queueDiagnostics = new();
@@ -35,13 +41,12 @@ internal sealed class InMemoryWorkSystem : IWorkSystem, IOriginAwareWorkSystem, 
     {
         this.Id = registration.Id;
         this.Name = registration.Name;
+        this.RequiresAuthorization = registration.RequiresAuthorization;
+        this.authorization = registration.Authorization;
         this.rootServices = rootServices;
         this.workDefinitionSourceFactories = workDefinitionSourceFactories;
         this.startupWorkSourceFactories = startupWorkSourceFactories;
         this.ShutdownGracePeriod = shutdownGracePeriod;
-        var dotNetOriginProvider = registration.DotNetOriginProviderFactory?.Invoke(rootServices)
-            ?? rootServices.GetService<IDotNetWorkOriginProvider>()
-            ?? new DefaultDotNetWorkOriginProvider();
         var persistenceStore = rootServices.GetService<IWorkPersistenceStore>()
             ?? rootServices.GetService<IWorkQueueDurabilityStore>();
         this.PersistentCoordinationAvailable = persistenceStore is not null;
@@ -55,7 +60,6 @@ internal sealed class InMemoryWorkSystem : IWorkSystem, IOriginAwareWorkSystem, 
             rootServices,
             this.events,
             this.readModel,
-            dotNetOriginProvider,
             registration.ExceptionClassifiers,
             globalExceptionClassifiers,
             this.ShutdownGracePeriod,
@@ -68,12 +72,27 @@ internal sealed class InMemoryWorkSystem : IWorkSystem, IOriginAwareWorkSystem, 
         this.diagnostics = new WorkSystemDiagnostics(this.queueDiagnostics, this.readModel, this.workers);
         this.readModel.UseDetailReaders(this.workers.GetAuthoritative, this.workers.GetIterationAuthoritative);
         this.query = this.readModel.Query;
-        this.queue = new WorkQueueService(this.catalog, this.workers, dotNetOriginProvider, this.queueDiagnostics);
+        this.queue = new WorkQueueService(this.catalog, this.workers, this.queueDiagnostics);
+        this.groupProvider = rootServices.GetService<IWorkAuthorizationGroupProvider>() ?? EmptyWorkAuthorizationGroupProvider.Instance;
+        this.sessions = new WorkSystemSessionFactory(
+            this.Id,
+            this.Name,
+            () => this.State,
+            this.diagnostics,
+            this.catalog,
+            this.queue,
+            this.workers,
+            this.query,
+            this.events,
+            this.authorization,
+            this.groupProvider);
     }
 
     public WorkSystemId Id { get; }
 
     public string? Name { get; }
+
+    public bool RequiresAuthorization { get; }
 
     public WorkSystemState State { get; private set; } = WorkSystemState.Created;
 
@@ -81,67 +100,107 @@ internal sealed class InMemoryWorkSystem : IWorkSystem, IOriginAwareWorkSystem, 
 
     public bool PersistentCoordinationAvailable { get; }
 
-    public IWorkCatalog Catalog => this.catalog;
+    public IWorkCatalog Catalog
+    {
+        get
+        {
+            this.ThrowIfAuthorizationRequiredForDirectAccess();
+            return this.catalog;
+        }
+    }
 
-    public IWorkQueueService Queue => this.queue;
+    public IWorkQueueService Queue
+    {
+        get
+        {
+            this.ThrowIfAuthorizationRequiredForDirectAccess();
+            return this.queue;
+        }
+    }
 
-    public IWorkerOperations Workers => this.workers;
+    public IWorkerOperations Workers
+    {
+        get
+        {
+            this.ThrowIfAuthorizationRequiredForDirectAccess();
+            return this.workers;
+        }
+    }
 
-    public IWorkQueryService Query => this.query;
+    public IWorkQueryService Query
+    {
+        get
+        {
+            this.ThrowIfAuthorizationRequiredForDirectAccess();
+            return this.query;
+        }
+    }
 
-    public IWorkEventStream Events => this.events;
+    public IWorkEventStream Events
+    {
+        get
+        {
+            this.ThrowIfAuthorizationRequiredForDirectAccess();
+            return this.events;
+        }
+    }
 
     public IWorkSystemDiagnostics Diagnostics => this.diagnostics;
 
-    Task<IWorkerHandle> IOriginAwareWorkSystem.Enqueue(
-        string name,
-        WorkInput? input,
-        WorkerOptions? options,
-        WorkOrigin origin,
-        CancellationToken cancellationToken)
-        => this.queue.Enqueue(name, input, options, origin, cancellationToken);
-
-    Task<IWorkerHandle> IOriginAwareWorkSystem.Enqueue(
-        WorkDefinitionId definitionId,
-        WorkInput? input,
-        WorkerOptions? options,
-        WorkOrigin origin,
-        CancellationToken cancellationToken)
-        => this.queue.Enqueue(definitionId, input, options, origin, cancellationToken);
-
-    Task<WorkActionOutcome> IOriginAwareWorkSystem.Execute(
-        WorkerVersion worker,
-        WorkAction action,
-        WorkOrigin origin,
-        CancellationToken cancellationToken)
+    public bool CanConnect(WorkRequestContext requestContext)
     {
-        cancellationToken.ThrowIfCancellationRequested();
-        return this.workers.Execute(worker, action, origin);
+        ArgumentNullException.ThrowIfNull(requestContext);
+
+        return !this.RequiresAuthorization || this.ResolveAuthorization(requestContext).CanConnect();
     }
 
-    Task<WorkerBulkActionOutcome> IOriginAwareWorkSystem.ExecuteAll(
-        WorkAction action,
-        WorkerBulkActionFilter? filter,
-        WorkOrigin origin,
-        CancellationToken cancellationToken)
-        => this.workers.ExecuteAll(action, filter, origin, cancellationToken);
-
-    Task<WorkActionOutcome> IOriginAwareWorkSystem.Reconfigure(
-        WorkerVersion worker,
-        WorkerReconfiguration changes,
-        WorkOrigin origin,
-        CancellationToken cancellationToken)
+    public IWorkSystemSession CreateSession(WorkRequestContext requestContext)
     {
-        cancellationToken.ThrowIfCancellationRequested();
-        return this.workers.Reconfigure(worker, changes, origin);
+        ArgumentNullException.ThrowIfNull(requestContext);
+
+        return this.sessions.CreateSession(requestContext, this.RequiresAuthorization);
     }
 
-    Task<WorkSystemStopResult> IOriginAwareWorkSystem.Stop(
-        WorkOrigin origin,
-        CancellationToken cancellationToken)
-        => this.Stop(origin, cancellationToken);
+    public Task Start(
+        WorkRequestContext requestContext,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(requestContext);
 
-    public async Task Start(CancellationToken cancellationToken = default)
+        this.EnsureControlSystemAccess(requestContext);
+        return this.StartCore(cancellationToken);
+    }
+
+    private void ThrowIfAuthorizationRequiredForDirectAccess()
+    {
+        if (this.RequiresAuthorization)
+        {
+            throw new WorkSystemAuthorizationRequiredException(this.Id, this.Name);
+        }
+    }
+
+    private void EnsureControlSystemAccess(WorkRequestContext requestContext)
+    {
+        if (!this.RequiresAuthorization)
+        {
+            return;
+        }
+
+        if (!this.ResolveAuthorization(requestContext).CanControlSystem())
+        {
+            throw new WorkSystemAccessDeniedException(WorkSystemPermission.ControlSystem, this.Id, this.Name);
+        }
+    }
+
+    private WorkSystemAuthorizationEvaluator ResolveAuthorization(WorkRequestContext requestContext)
+    {
+        var groups = requestContext.Authorization?.Groups
+            ?? this.groupProvider.GetGroups(requestContext.Actor, this.Name)
+            ?? new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        return new WorkSystemAuthorizationEvaluator(this.authorization, groups);
+    }
+
+    private async Task StartCore(CancellationToken cancellationToken = default)
     {
         await this.lifecycleLock.WaitAsync(cancellationToken);
         var dispatchingStarted = false;
@@ -182,16 +241,20 @@ internal sealed class InMemoryWorkSystem : IWorkSystem, IOriginAwareWorkSystem, 
         }
     }
 
-    public Task<WorkSystemStopResult> Stop(CancellationToken cancellationToken = default)
-        => this.Stop(
-            WorkOrigin.Create(WorkInvocationChannel.DotNet, description: "Stop Workable system through .NET."),
-            cancellationToken);
-
-    private async Task<WorkSystemStopResult> Stop(
-        WorkOrigin origin,
+    public Task<WorkSystemStopResult> Stop(
+        WorkRequestContext requestContext,
         CancellationToken cancellationToken = default)
     {
-        ArgumentNullException.ThrowIfNull(origin);
+        ArgumentNullException.ThrowIfNull(requestContext);
+        this.EnsureControlSystemAccess(requestContext);
+        return this.StopCore(requestContext, cancellationToken);
+    }
+
+    private async Task<WorkSystemStopResult> StopCore(
+        WorkRequestContext requestContext,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(requestContext);
 
         await this.lifecycleLock.WaitAsync(cancellationToken);
         try
@@ -202,8 +265,8 @@ internal sealed class InMemoryWorkSystem : IWorkSystem, IOriginAwareWorkSystem, 
             }
 
             this.State = WorkSystemState.Stopping;
-            await this.NotifyStopping(origin);
-            var result = await this.workers.StopDispatching(origin, cancellationToken);
+            await this.NotifyStopping(requestContext.Origin);
+            var result = await this.workers.StopDispatching(requestContext, cancellationToken);
             this.metrics.Clear();
             this.State = WorkSystemState.Stopped;
             return result;
@@ -231,7 +294,10 @@ internal sealed class InMemoryWorkSystem : IWorkSystem, IOriginAwareWorkSystem, 
 
     public async ValueTask DisposeAsync()
     {
-        await this.Stop();
+        await this.StopCore(
+            WorkRequestContext.Create(
+                WorkInvocationChannel.DotNet,
+                description: "Dispose Workable system through .NET."));
         this.workers.Dispose();
         this.lifecycleLock.Dispose();
         await this.readModel.DisposeAsync();
@@ -280,12 +346,12 @@ internal sealed class InMemoryWorkSystem : IWorkSystem, IOriginAwareWorkSystem, 
                         $"Startup work '{registeredWork.Definition.Name}' cannot use '{nameof(WorkStartPolicy.StartAndReturnAfterCompleted)}'. Startup work is queued during system start and cannot wait for worker completion.");
                 }
 
-                var origin = WorkOrigin.Create(
+                var requestContext = WorkRequestContext.Create(
                     WorkInvocationChannel.DotNet,
                     description: $"Queue startup work from '{source.GetType().FullName}'.");
                 var handle = request.DefinitionId is { } definitionId
-                    ? await this.queue.Enqueue(definitionId, request.Input, request.Options, origin, cancellationToken)
-                    : await this.queue.Enqueue(request.Name ?? throw new InvalidOperationException("Startup work requests must provide a work definition id or name."), request.Input, request.Options, origin, cancellationToken);
+                    ? await this.queue.Enqueue(definitionId, request.Input, request.Options, requestContext, cancellationToken)
+                    : await this.queue.Enqueue(request.Name ?? throw new InvalidOperationException("Startup work requests must provide a work definition id or name."), request.Input, request.Options, requestContext, cancellationToken);
 
                 if (!handle.QueueOutcome.IsAccepted)
                 {
@@ -336,14 +402,14 @@ internal sealed class InMemoryWorkSystem : IWorkSystem, IOriginAwareWorkSystem, 
         {
             cancellationToken.ThrowIfCancellationRequested();
             var input = automaticStart.InputFactory(services);
-            var origin = WorkOrigin.Create(
+            var requestContext = WorkRequestContext.Create(
                 WorkInvocationChannel.DotNet,
                 description: $"Queue automatically started work '{registeredWork.Definition.Name}'.");
             var handle = await this.queue.Enqueue(
                 registeredWork.Definition.Id,
                 input,
                 null,
-                origin,
+                requestContext,
                 cancellationToken);
 
             if (!handle.QueueOutcome.IsAccepted)

@@ -165,25 +165,6 @@ public sealed class HostingTests
         Assert.False(system.Catalog.TryGet("feature.work", out _));
     }
 
-    [Fact]
-    public async Task DirectDotNetQueueUsesConfiguredOriginProvider()
-    {
-        var services = new ServiceCollection()
-            .AddWorkableSystem(builder => builder
-                .UseDotNetOriginProvider(_ => new StaticDotNetOriginProvider())
-                .AddWork(WorkDefinition.Create("origin.work"), SuccessfulWork));
-        var system = services.BuildServiceProvider().GetRequiredService<IWorkSystemRegistry>().Default;
-        await system.Start();
-
-        var handle = await system.Queue.Enqueue("origin.work");
-        var worker = await system.Query.Worker(handle.WorkerId ?? throw new InvalidOperationException("Expected worker."));
-
-        Assert.NotNull(worker);
-        Assert.Equal(WorkInvocationChannel.DotNet, worker.Origin.Channel);
-        Assert.Equal("configured-user", worker.Origin.Actor.Id);
-        Assert.Equal("Queue work 'origin.work' through .NET.", worker.Origin.Description);
-    }
-
     private static Task<WorkExecutionResult> SuccessfulWork(IWorkExecutionContext context, WorkInput? input, CancellationToken cancellationToken)
         => Task.FromResult(WorkExecutionResult.Success());
 
@@ -244,12 +225,4 @@ public sealed class HostingTests
         }
     }
 
-    private sealed class StaticDotNetOriginProvider : IDotNetWorkOriginProvider
-    {
-        public WorkOrigin CreateOrigin(string description)
-            => WorkOrigin.Create(
-                WorkInvocationChannel.DotNet,
-                new WorkActor(Id: "configured-user", Name: "Configured User"),
-                description);
-    }
 }

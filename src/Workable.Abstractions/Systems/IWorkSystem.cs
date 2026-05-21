@@ -7,6 +7,8 @@ public interface IWorkSystem : IAsyncDisposable
 
     string? Name { get; }
 
+    bool RequiresAuthorization { get; }
+
     WorkSystemState State { get; }
 
     IWorkCatalog Catalog { get; }
@@ -21,7 +23,15 @@ public interface IWorkSystem : IAsyncDisposable
 
     IWorkSystemDiagnostics Diagnostics { get; }
 
-    Task Start(CancellationToken cancellationToken = default);
+    bool CanConnect(WorkRequestContext requestContext);
 
-    Task<WorkSystemStopResult> Stop(CancellationToken cancellationToken = default);
+    IWorkSystemSession CreateSession(WorkRequestContext requestContext);
+
+    Task Start(
+        WorkRequestContext requestContext,
+        CancellationToken cancellationToken = default);
+
+    Task<WorkSystemStopResult> Stop(
+        WorkRequestContext requestContext,
+        CancellationToken cancellationToken = default);
 }

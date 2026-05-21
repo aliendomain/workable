@@ -16,22 +16,23 @@ public class WorkableViewQueryAdapter
         };
 
     public async Task<WorkComponentQueryResult> Components(
-        IWorkSystem system,
+        IWorkSystemSession session,
         WorkComponentCriteria? criteria = null,
         CancellationToken cancellationToken = default)
     {
-        ArgumentNullException.ThrowIfNull(system);
+        ArgumentNullException.ThrowIfNull(session);
 
         var query = criteria ?? new WorkComponentCriteria();
         var requests = NormalizeComponentRequests(query.Components);
-        var queryService = BeginRead(system.Query);
+        var queryService = BeginRead(session.Query);
         var components = new Dictionary<string, WorkComponentResult>(StringComparer.OrdinalIgnoreCase);
         foreach (var request in requests)
         {
             cancellationToken.ThrowIfCancellationRequested();
             var normalizedRequest = NormalizeComponentRequest(request);
             components[request.Id] = await this.CreateComponent(
-                system,
+                session,
+                session.Catalog,
                 queryService,
                 normalizedRequest,
                 query.Scope,
@@ -42,12 +43,12 @@ public class WorkableViewQueryAdapter
     }
 
     public Task<WorkComponentQueryResult> View(
-        IWorkSystem system,
+        IWorkSystemSession session,
         string name,
         WorkViewCriteria? criteria = null,
         CancellationToken cancellationToken = default)
     {
-        ArgumentNullException.ThrowIfNull(system);
+        ArgumentNullException.ThrowIfNull(session);
 
         var query = criteria ?? new WorkViewCriteria();
         var requests = NormalizeViewComponentRequests(name, query.Components);
@@ -62,7 +63,7 @@ public class WorkableViewQueryAdapter
         }
 
         return this.Components(
-            system,
+            session,
             new WorkComponentCriteria(
                 query.Scope,
                 requests),
@@ -70,124 +71,76 @@ public class WorkableViewQueryAdapter
     }
 
     public async Task<WorkerSnapshot?> Worker(
-        IWorkSystem system,
+        IWorkSystemSession session,
         WorkerId workerId,
         CancellationToken cancellationToken = default)
-    {
-        ArgumentNullException.ThrowIfNull(system);
-
-        return await system.Query.Worker(workerId, cancellationToken: cancellationToken);
-    }
+        => await session.Query.Worker(workerId, cancellationToken: cancellationToken);
 
     public async Task<WorkerIterationSnapshot?> WorkerIteration(
-        IWorkSystem system,
+        IWorkSystemSession session,
         WorkerIterationReference iteration,
         CancellationToken cancellationToken = default)
-    {
-        ArgumentNullException.ThrowIfNull(system);
-
-        return await system.Query.WorkerIteration(iteration, cancellationToken: cancellationToken);
-    }
+        => await session.Query.WorkerIteration(iteration, cancellationToken: cancellationToken);
 
     public Task<WorkerQueryResult> Workers(
-        IWorkSystem system,
+        IWorkSystemSession session,
         WorkerCriteria? criteria = null,
         CancellationToken cancellationToken = default)
-    {
-        ArgumentNullException.ThrowIfNull(system);
-
-        return system.Query.Workers(criteria, cancellationToken: cancellationToken);
-    }
+        => session.Query.Workers(criteria, cancellationToken: cancellationToken);
 
     public Task<WorkerIterationQueryResult> WorkerIterations(
-        IWorkSystem system,
+        IWorkSystemSession session,
         WorkerIterationCriteria? criteria = null,
         CancellationToken cancellationToken = default)
-    {
-        ArgumentNullException.ThrowIfNull(system);
-
-        return system.Query.WorkerIterations(criteria, cancellationToken: cancellationToken);
-    }
+        => session.Query.WorkerIterations(criteria, cancellationToken: cancellationToken);
 
     public async Task<WorkInfo?> WorkInfo(
-        IWorkSystem system,
+        IWorkSystemSession session,
         WorkDefinitionId definitionId,
         CancellationToken cancellationToken = default)
-    {
-        ArgumentNullException.ThrowIfNull(system);
-
-        return await system.Query.WorkInfo(definitionId, cancellationToken: cancellationToken);
-    }
+        => await session.Query.WorkInfo(definitionId, cancellationToken: cancellationToken);
 
     public async Task<WorkInfo?> WorkInfo(
-        IWorkSystem system,
+        IWorkSystemSession session,
         string name,
         CancellationToken cancellationToken = default)
-    {
-        ArgumentNullException.ThrowIfNull(system);
-
-        return await system.Query.WorkInfo(name, cancellationToken: cancellationToken);
-    }
+        => await session.Query.WorkInfo(name, cancellationToken: cancellationToken);
 
     public async Task<IReadOnlyList<WorkDefinition>> WorkDefinitions(
-        IWorkSystem system,
+        IWorkSystemSession session,
         WorkDefinitionCriteria? criteria = null,
         CancellationToken cancellationToken = default)
-    {
-        ArgumentNullException.ThrowIfNull(system);
-
-        return (await system.Query.WorkDefinitions(criteria, cancellationToken: cancellationToken)).Definitions;
-    }
+        => (await session.Query.WorkDefinitions(criteria, cancellationToken: cancellationToken)).Definitions;
 
     public Task<WorkerKeyQueryResult> WorkerKeys(
-        IWorkSystem system,
+        IWorkSystemSession session,
         WorkerKeyCriteria? criteria = null,
         CancellationToken cancellationToken = default)
-    {
-        ArgumentNullException.ThrowIfNull(system);
-
-        return system.Query.WorkerKeys(criteria, cancellationToken: cancellationToken);
-    }
+        => session.Query.WorkerKeys(criteria, cancellationToken: cancellationToken);
 
     public Task<WorkerKeyTypeQueryResult> WorkerKeyTypes(
-        IWorkSystem system,
+        IWorkSystemSession session,
         WorkerKeyTypeCriteria? criteria = null,
         CancellationToken cancellationToken = default)
-    {
-        ArgumentNullException.ThrowIfNull(system);
-
-        return system.Query.WorkerKeyTypes(criteria, cancellationToken: cancellationToken);
-    }
+        => session.Query.WorkerKeyTypes(criteria, cancellationToken: cancellationToken);
 
     public Task<WorkIterationKeyQueryResult> WorkIterationKeys(
-        IWorkSystem system,
+        IWorkSystemSession session,
         WorkIterationKeyCriteria? criteria = null,
         CancellationToken cancellationToken = default)
-    {
-        ArgumentNullException.ThrowIfNull(system);
-
-        return system.Query.WorkIterationKeys(criteria, cancellationToken: cancellationToken);
-    }
+        => session.Query.WorkIterationKeys(criteria, cancellationToken: cancellationToken);
 
     public Task<WorkIterationKeyTypeQueryResult> WorkIterationKeyTypes(
-        IWorkSystem system,
+        IWorkSystemSession session,
         WorkIterationKeyTypeCriteria? criteria = null,
         CancellationToken cancellationToken = default)
-    {
-        ArgumentNullException.ThrowIfNull(system);
-
-        return system.Query.WorkIterationKeyTypes(criteria, cancellationToken: cancellationToken);
-    }
+        => session.Query.WorkIterationKeyTypes(criteria, cancellationToken: cancellationToken);
 
     public Task<WorkerStatusSummary> WorkerStatusSummary(
-        IWorkSystem system,
+        IWorkSystemSession session,
         WorkerCriteria? criteria = null,
         CancellationToken cancellationToken = default)
-    {
-        ArgumentNullException.ThrowIfNull(system);
-
-        return system.Query.WorkerStatusSummary(criteria, cancellationToken: cancellationToken);
-    }
+        => session.Query.WorkerStatusSummary(criteria, cancellationToken: cancellationToken);
 
     public WorkViewCriteria NormalizeViewCriteria(
         string name,
@@ -226,7 +179,8 @@ public class WorkableViewQueryAdapter
             : queries;
 
     private async Task<WorkComponentResult> CreateComponent(
-        IWorkSystem system,
+        IWorkSystemSession session,
+        IWorkCatalog catalog,
         IWorkQueryService queries,
         WorkComponentRequest request,
         WorkSystemCriteria? criteria,
@@ -236,8 +190,8 @@ public class WorkableViewQueryAdapter
         {
             var data = request.Type.Trim().ToLowerInvariant() switch
             {
-                "system" => CreateSystemComponent(system),
-                "catalog" => CreateCatalogComponent(system, criteria),
+                "system" => CreateSystemComponent(session),
+                "catalog" => CreateCatalogComponent(catalog, criteria),
                 "workers" => await CreateWorkersComponent(queries, criteria, request.Shape, cancellationToken),
                 "failedworkers" => await CreateFailedWorkersComponent(queries, criteria, request.Shape, cancellationToken),
                 "iterations" => await CreateIterationsComponent(queries, criteria, request.Shape, cancellationToken),
@@ -246,14 +200,14 @@ public class WorkableViewQueryAdapter
                 "throughput" => await CreateThroughputComponent(queries, criteria, request.Shape, request.Options, cancellationToken),
                 "workergrid" => await CreateWorkerGridComponent(queries, criteria, request.Options, cancellationToken),
                 "iterationgrid" => await CreateIterationGridComponent(queries, criteria, request.Options, cancellationToken),
-                "systemdiagnostics" => CreateSystemDiagnosticsComponent(system),
-                "queuemessages" => CreateQueueDiagnosticsComponent(system, request.Shape),
-                "queuediagnostics" => CreateQueueDiagnosticsComponent(system, request.Shape),
-                "readmodeldiagnostics" => CreateReadModelDiagnosticsComponent(system, request.Shape, request.Options),
-                "retentiondiagnostics" => CreateRetentionDiagnosticsComponent(system, request.Shape, request.Options),
-                "concurrencydiagnostics" => CreateConcurrencyDiagnosticsComponent(system, request.Shape, request.Options),
-                "durabilitydiagnostics" => CreateDurabilityDiagnosticsComponent(system, request.Shape, request.Options),
-                "idempotencydiagnostics" => CreateIdempotencyDiagnosticsComponent(system, request.Shape),
+                "systemdiagnostics" => CreateSystemDiagnosticsComponent(session),
+                "queuemessages" => CreateQueueDiagnosticsComponent(session, request.Shape),
+                "queuediagnostics" => CreateQueueDiagnosticsComponent(session, request.Shape),
+                "readmodeldiagnostics" => CreateReadModelDiagnosticsComponent(session, request.Shape, request.Options),
+                "retentiondiagnostics" => CreateRetentionDiagnosticsComponent(session, request.Shape, request.Options),
+                "concurrencydiagnostics" => CreateConcurrencyDiagnosticsComponent(session, request.Shape, request.Options),
+                "durabilitydiagnostics" => CreateDurabilityDiagnosticsComponent(session, request.Shape, request.Options),
+                "idempotencydiagnostics" => CreateIdempotencyDiagnosticsComponent(session, request.Shape),
                 _ => null,
             };
 
@@ -267,16 +221,16 @@ public class WorkableViewQueryAdapter
         }
     }
 
-    private static object CreateSystemComponent(IWorkSystem system)
+    private static object CreateSystemComponent(IWorkSystemSession session)
         => new
         {
-            SystemName = system.Name,
-            SystemState = system.State,
+            SystemName = session.SystemName,
+            SystemState = session.SystemState,
         };
 
-    private static object CreateCatalogComponent(IWorkSystem system, WorkSystemCriteria? criteria)
+    private static object CreateCatalogComponent(IWorkCatalog catalog, WorkSystemCriteria? criteria)
     {
-        var level = GetDefinitionCatalogLevel(system, criteria?.Category);
+        var level = GetDefinitionCatalogLevel(catalog, criteria?.Category);
         return new
         {
             CatalogCategories = level.Categories,
@@ -285,10 +239,10 @@ public class WorkableViewQueryAdapter
     }
 
     private static WorkDefinitionCatalogLevel GetDefinitionCatalogLevel(
-        IWorkSystem system,
+        IWorkCatalog catalog,
         string? category)
     {
-        ArgumentNullException.ThrowIfNull(system);
+        ArgumentNullException.ThrowIfNull(catalog);
 
         string[] pathSegments = string.IsNullOrWhiteSpace(category)
             ? []
@@ -296,7 +250,7 @@ public class WorkableViewQueryAdapter
         var categories = new Dictionary<string, WorkSystemCatalogCategoryItem>(StringComparer.OrdinalIgnoreCase);
         var directDefinitions = new List<WorkDefinition>();
 
-        foreach (var definition in system.Catalog.Definitions)
+        foreach (var definition in catalog.Definitions)
         {
             var definitionSegments = SplitCategoryPath(definition.Category);
             if (!StartsWithCategoryPath(definitionSegments, pathSegments))
@@ -613,10 +567,10 @@ public class WorkableViewQueryAdapter
             summary.InFlightDeltaPerSecond);
 
     private static object CreateQueueDiagnosticsComponent(
-        IWorkSystem system,
+        IWorkSystemSession session,
         string shape)
     {
-        var queue = system.Diagnostics.Queue;
+        var queue = session.Diagnostics.Queue;
         var hasRejectedWork = queue.RejectedWorkCount > 0;
         var hasAlertableRejectedWork = queue.AlertableRejectedWorkCount > 0;
 
@@ -639,18 +593,18 @@ public class WorkableViewQueryAdapter
             hasRejectedWork);
     }
 
-    private static object CreateSystemDiagnosticsComponent(IWorkSystem system)
+    private static object CreateSystemDiagnosticsComponent(IWorkSystemSession session)
         => new WorkSystemDiagnosticsCompactComponent(
-            system.Name,
-            system.State,
-            system.State == WorkSystemState.Stopping);
+            session.SystemName,
+            session.SystemState,
+            session.SystemState == WorkSystemState.Stopping);
 
     private static object CreateReadModelDiagnosticsComponent(
-        IWorkSystem system,
+        IWorkSystemSession session,
         string shape,
         JsonElement? options)
     {
-        var readModel = system.Diagnostics.ReadModel;
+        var readModel = session.Diagnostics.ReadModel;
         var warningThreshold = Math.Max(1, TryGetInt32(options, "warningThreshold") ?? 100);
         var isBehind = readModel.PendingUpdateCount >= warningThreshold;
 
@@ -672,11 +626,11 @@ public class WorkableViewQueryAdapter
     }
 
     private static object CreateRetentionDiagnosticsComponent(
-        IWorkSystem system,
+        IWorkSystemSession session,
         string shape,
         JsonElement? options)
     {
-        var retention = system.Diagnostics.Retention;
+        var retention = session.Diagnostics.Retention;
         var warningSeconds = Math.Max(1, TryGetInt32(options, "warningSeconds") ?? 30);
         var isBehind = retention.OldestDuePurgeAge >= TimeSpan.FromSeconds(warningSeconds);
 
@@ -700,11 +654,11 @@ public class WorkableViewQueryAdapter
     }
 
     private static object CreateConcurrencyDiagnosticsComponent(
-        IWorkSystem system,
+        IWorkSystemSession session,
         string shape,
         JsonElement? options)
     {
-        var concurrency = system.Diagnostics.Concurrency;
+        var concurrency = session.Diagnostics.Concurrency;
         var warningSeconds = Math.Max(1, TryGetInt32(options, "warningSeconds") ?? 30);
         var isBehind = concurrency.DeferredStartCount > 0 &&
             concurrency.OldestDeferredStartAge >= TimeSpan.FromSeconds(warningSeconds);
@@ -726,11 +680,11 @@ public class WorkableViewQueryAdapter
     }
 
     private static object CreateDurabilityDiagnosticsComponent(
-        IWorkSystem system,
+        IWorkSystemSession session,
         string shape,
         JsonElement? options)
     {
-        var durability = system.Diagnostics.Durability;
+        var durability = session.Diagnostics.Durability;
         var acceptedWorkerWarningSeconds = Math.Max(1, TryGetInt32(options, "acceptedWorkerWarningSeconds") ?? 30);
         var cleanupWarningSeconds = Math.Max(1, TryGetInt32(options, "cleanupWarningSeconds") ?? 30);
         var isAcceptedWorkerMaterializationBehind = durability.AcceptedWaiterCount > 0 &&
@@ -769,10 +723,10 @@ public class WorkableViewQueryAdapter
     }
 
     private static object CreateIdempotencyDiagnosticsComponent(
-        IWorkSystem system,
+        IWorkSystemSession session,
         string shape)
     {
-        var idempotency = system.Diagnostics.Idempotency;
+        var idempotency = session.Diagnostics.Idempotency;
         if (shape == WorkComponentShapes.Compact)
         {
             return new WorkIdempotencyDiagnosticsCompactComponent(

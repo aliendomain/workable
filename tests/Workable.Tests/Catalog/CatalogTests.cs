@@ -125,6 +125,37 @@ public sealed class CatalogTests
     }
 
     [Fact]
+    public void WorkDefinitionCreateCanSetAuthorization()
+    {
+        var authorization = WorkDefinitionAuthorization.Create(
+            readGroups: ["catalog.read"],
+            operateGroups: ["catalog.operate"],
+            source: WorkAuthorizationRegistrationSource.Fluent);
+
+        var definition = WorkDefinition.Create(
+            "definition.authorization",
+            authorization: authorization);
+
+        Assert.Same(authorization, definition.Authorization);
+        Assert.Equal(["catalog.read"], definition.Authorization.Read.Groups.OrderBy(group => group).ToArray());
+        Assert.Equal(["catalog.operate"], definition.Authorization.Operate.Groups.OrderBy(group => group).ToArray());
+        Assert.Equal(WorkAuthorizationRegistrationSource.Fluent, definition.Authorization.Read.Source);
+        Assert.Equal(WorkAuthorizationRegistrationSource.Fluent, definition.Authorization.Operate.Source);
+    }
+
+    [Fact]
+    public void WorkDefinitionCreateDefaultsAuthorizationToNone()
+    {
+        var definition = WorkDefinition.Create("definition.authorization.default");
+
+        Assert.NotNull(definition.Authorization);
+        Assert.Empty(definition.Authorization.Read.Groups);
+        Assert.Empty(definition.Authorization.Operate.Groups);
+        Assert.Equal(WorkAuthorizationRegistrationSource.None, definition.Authorization.Read.Source);
+        Assert.Equal(WorkAuthorizationRegistrationSource.None, definition.Authorization.Operate.Source);
+    }
+
+    [Fact]
     public void WorkDefinitionExposesRevisionVersion()
     {
         var definition = WorkDefinition.Create("versioned.definition");

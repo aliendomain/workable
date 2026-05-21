@@ -11,6 +11,16 @@ public sealed record WorkDefinitionReconfigurationOutcome(
     public static WorkDefinitionReconfigurationOutcome Accepted(WorkDefinition definition, IEnumerable<WorkMessage>? messages = null)
         => new(WorkDefinitionReconfigurationStatus.Accepted, definition.Id, definition, [.. messages ?? []]);
 
+    public static WorkDefinitionReconfigurationOutcome Unauthorized(WorkDefinitionId definitionId)
+        => new(
+            WorkDefinitionReconfigurationStatus.Unauthorized,
+            definitionId,
+            null,
+            [WorkMessage.Error(
+                "workable.definition.unauthorized",
+                $"You are not authorized to operate work definition '{definitionId}'.",
+                "definition.authorization")]);
+
     public static WorkDefinitionReconfigurationOutcome NotFound(WorkDefinitionId definitionId)
         => new(
             WorkDefinitionReconfigurationStatus.NotFound,

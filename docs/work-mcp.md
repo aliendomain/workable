@@ -6,6 +6,10 @@ The adapter does not change how work is authored or executed. It projects an `IW
 
 MCP exposure is opt-in. A work definition must allow `WorkInvocationChannel.Mcp` to appear as an MCP tool or be invoked through the MCP adapter.
 
+`Workable.Mcp` is an authenticated transport. Anonymous callers are rejected, and mapped systems must have `RequireAuthorization(true)`.
+
+Each MCP request creates a `WorkRequestContext` and an `IWorkSystemSession` for the selected system. Work-definition read access filters tool discovery and query results. Work-definition operate access controls work tools and worker action tools.
+
 ## Server Setup
 
 `Workable.Mcp` includes an ASP.NET Core MCP server integration. Add it to the same host application that registers Workable systems.
@@ -95,6 +99,8 @@ IReadOnlyList<WorkableMcpToolDescriptor> tools =
 ```
 
 Each descriptor includes the work name, description, category, definition id, input schema, output schema, and definition metadata. Definitions that do not allow `WorkInvocationChannel.Mcp` are omitted.
+
+Definitions the caller cannot read are also omitted from the descriptor list.
 
 ```csharp
 foreach (var tool in tools)

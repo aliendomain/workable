@@ -164,40 +164,37 @@ IWorkerHandle handle = await workSystem.Queue.Enqueue(
 
 Configuration supplied through queue options is merged over the definition defaults.
 
-## .NET Origin
+## Request Context And Origin
 
 Direct .NET queue calls record a `WorkOrigin` with `WorkInvocationChannel.DotNet`. By default, the actor is unknown.
 
-Hosts can provide an origin provider for direct .NET calls:
+When the caller already knows who is making the request, create a `WorkRequestContext` and queue through a session instead of calling `IWorkSystem.Queue` directly.
 
 ```csharp
-services.AddWorkableSystem(builder =>
-{
-    builder.UseDotNetOriginProvider<MyDotNetOriginProvider>();
-});
+var requestContext = WorkRequestContext.Create(
+    WorkInvocationChannel.DotNet,
+    new WorkActor(Id: "current-user-id"),
+    "Queue welcome email from application service.");
 
-public sealed class MyDotNetOriginProvider : IDotNetWorkOriginProvider
-{
-    public WorkOrigin CreateOrigin(string description)
-        => WorkOrigin.Create(
-            WorkInvocationChannel.DotNet,
-            new WorkActor(Id: "current-user-id"),
-            description);
-}
+var session = workSystem.CreateSession(requestContext);
+
+IWorkerHandle handle = await session.Queue.Enqueue(
+    "email.welcome.send",
+    input: WorkInput.Empty,
+    cancellationToken: cancellationToken);
 ```
 
-ASP.NET Core hosts can use `Workable.AspNetCore` to record actor information from `HttpContext.User` for direct .NET queue calls made inside their own controllers or minimal API routes. This does not expose Workable HTTP API endpoints.
+ASP.NET Core hosts can use `Workable.AspNetCore` to create authenticated request contexts from `HttpContext` inside their own controllers or minimal API routes. This does not expose Workable's built-in HTTP API endpoints.
 
 ```csharp
 services.AddWorkableSystem(builder =>
 {
     builder.StartWithHost();
+    builder.RequireAuthorization();
 });
 
-services.AddWorkableAspNetCoreOrigins();
+services.AddWorkableAspNetCoreAuthorization();
 ```
-
-`Workable.HttpApi` also registers this ASP.NET Core origin provider when `AddWorkableHttpApi` is used.
 
 ## Queue Outcome
 

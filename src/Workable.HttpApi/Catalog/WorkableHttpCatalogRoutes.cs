@@ -15,6 +15,7 @@ internal static class WorkableHttpCatalogRoutes
             bool? level,
             WorkableHttpSystemResolver systems,
             WorkableHttpCatalogAdapter catalog,
+            IWorkRequestContextFactory requestContexts,
             CancellationToken cancellationToken) =>
         {
             if (!WorkableHttpRouteResults.TryResolveSystem(httpContext, systems, out var system, out var notFound))
@@ -22,20 +23,25 @@ internal static class WorkableHttpCatalogRoutes
                 return notFound;
             }
 
+            var session = WorkableHttpRequestContext.CreateSession(
+                httpContext,
+                system,
+                requestContexts,
+                "Browse work definitions through HTTP API.");
             if (level == true)
             {
-                return Results.Ok(WorkableHttpCatalogAdapter.GetDefinitionCatalogLevel(system, category));
+                return Results.Ok(WorkableHttpCatalogAdapter.GetDefinitionCatalogLevel(session.Catalog, category));
             }
 
             if (!string.IsNullOrWhiteSpace(category))
             {
-                var definitions = await system.Query.WorkDefinitions(new WorkDefinitionCriteria(
+                var definitions = await session.Query.WorkDefinitions(new WorkDefinitionCriteria(
                         Category: category,
                         IncludeSubcategories: includeSubcategories ?? true), cancellationToken: cancellationToken);
                 return Results.Ok(definitions.Definitions);
             }
 
-            return Results.Ok(catalog.GetDefinitions(system));
+            return Results.Ok(catalog.GetDefinitions(session));
         });
 
         group.MapPost("/definitions/{definitionId:guid}/reconfigure", async (
@@ -44,6 +50,7 @@ internal static class WorkableHttpCatalogRoutes
             WorkableHttpDefinitionReconfigurationRequest request,
             WorkableHttpSystemResolver systems,
             WorkableHttpCatalogAdapter catalog,
+            IWorkRequestContextFactory requestContexts,
             CancellationToken cancellationToken) =>
         {
             if (!WorkableHttpRouteResults.TryResolveSystem(httpContext, systems, out var system, out var notFound))
@@ -51,8 +58,13 @@ internal static class WorkableHttpCatalogRoutes
                 return notFound;
             }
 
-            var result = await catalog.ReconfigureDefinition(
+            var session = WorkableHttpRequestContext.CreateSession(
+                httpContext,
                 system,
+                requestContexts,
+                "Reconfigure work definition through HTTP API.");
+            var result = await catalog.ReconfigureDefinition(
+                session,
                 new WorkDefinitionId(definitionId),
                 request,
                 cancellationToken);

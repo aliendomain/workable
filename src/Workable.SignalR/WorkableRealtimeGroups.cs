@@ -13,6 +13,9 @@ internal static class WorkableRealtimeGroups
     public static string Worker(IWorkSystem system, WorkerId workerId)
         => $"{System(system)}:worker:{workerId.Value:N}";
 
+    public static string Worker(IWorkSystem system, WorkerId workerId, string key)
+        => $"{Worker(system, workerId)}:{key}";
+
     public static string Definition(IWorkSystem system, WorkDefinitionId definitionId)
         => $"{System(system)}:definition:{definitionId.Value:N}";
 

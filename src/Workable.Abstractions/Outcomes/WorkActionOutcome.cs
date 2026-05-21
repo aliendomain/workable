@@ -14,6 +14,14 @@ public sealed record WorkActionOutcome(
     public static WorkActionOutcome NotFound(WorkAction action, WorkerId workerId)
         => new(WorkActionStatus.NotFound, action, workerId, null, [WorkMessage.Error("workable.worker.not_found", $"No worker was found for '{workerId}'.", "worker")]);
 
+    public static WorkActionOutcome Unauthorized(WorkAction action, WorkerId workerId)
+        => new(
+            WorkActionStatus.Unauthorized,
+            action,
+            workerId,
+            null,
+            [WorkMessage.Error("workable.worker.unauthorized", $"You are not authorized to operate worker '{workerId}'.", "worker.authorization")]);
+
     public static WorkActionOutcome Invalid(WorkAction action, WorkerSnapshot? worker, IEnumerable<WorkMessage> messages)
         => new(WorkActionStatus.Invalid, action, worker?.Id, worker, [.. messages]);
 

@@ -35,17 +35,20 @@ public sealed class WorkableMcpToolRouter(IWorkSystemRegistry registry)
     private const string ReconfigureWorkDefinitionTool = "workable_reconfigure_work_definition";
 
     public IReadOnlyList<WorkableMcpServerToolDescriptor> GetTools(
+        WorkRequestContext requestContext,
         WorkableMcpServerOptions? options = null,
         string? systemName = null)
     {
-        options ??= WorkableMcpServerOptions.Default;
+        ArgumentNullException.ThrowIfNull(requestContext);
 
+        options ??= WorkableMcpServerOptions.Default;
         var tools = new List<WorkableMcpServerToolDescriptor>();
         var system = ResolveSystem(systemName);
+        var session = system.CreateSession(requestContext);
 
         if (options.IncludeWorkTools)
         {
-            tools.AddRange(CreateWorkTools(system, options.ToolCatalog));
+            tools.AddRange(CreateWorkTools(session, options.ToolCatalog));
         }
 
         if (options.IncludeQueryTools)
@@ -64,20 +67,13 @@ public sealed class WorkableMcpToolRouter(IWorkSystemRegistry registry)
     public async Task<WorkableMcpToolResult> CallTool(
         string toolName,
         JsonElement? arguments,
-        WorkableMcpServerOptions? options = null,
-        string? systemName = null,
-        CancellationToken cancellationToken = default)
-        => await this.CallTool(toolName, arguments, options, systemName, origin: null, cancellationToken);
-
-    internal async Task<WorkableMcpToolResult> CallTool(
-        string toolName,
-        JsonElement? arguments,
         WorkableMcpServerOptions? options,
         string? systemName,
-        WorkOrigin? origin,
+        WorkRequestContext requestContext,
         CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(toolName);
+        ArgumentNullException.ThrowIfNull(requestContext);
 
         options ??= WorkableMcpServerOptions.Default;
         if (!TryResolveSystem(systemName, out var system, out var systemError))
@@ -85,58 +81,158 @@ public sealed class WorkableMcpToolRouter(IWorkSystemRegistry registry)
             return systemError;
         }
 
+        var session = system.CreateSession(requestContext);
         var workTools = options.IncludeWorkTools
-            ? CreateWorkTools(system, options.ToolCatalog)
+            ? CreateWorkTools(session, options.ToolCatalog)
             : [];
 
         if (TryGetWorkToolName(workTools, toolName, out var workName))
         {
-            var invocation = origin is null
-                ? await system.InvokeMcpTool(workName, arguments, options.Invocation, cancellationToken)
-                : await system.InvokeMcpTool(workName, arguments, options.Invocation, origin, cancellationToken);
+            var invocation = await session.InvokeMcpTool(workName, arguments, options.Invocation, cancellationToken);
             return ToToolResult(invocation, invocation.Status == WorkableMcpInvocationStatus.Rejected);
         }
 
         if (options.IncludeQueryTools)
         {
-            var queryResult = toolName switch
+            switch (toolName)
             {
-                QueryWorkersTool => ToToolResult(await QueryWorkers(system, arguments, cancellationToken)),
-                GetWorkerTool => ToToolResult(await GetWorker(system, arguments, cancellationToken)),
-                GetWorkerIterationTool => ToToolResult(await GetWorkerIteration(system, arguments, cancellationToken)),
-                QueryWorkerIterationsTool => ToToolResult(await QueryWorkerIterations(system, arguments, cancellationToken)),
-                GetWorkInfoTool => ToToolResult(await GetWorkInfo(system, arguments, cancellationToken)),
-                QueryWorkDefinitionsTool => ToToolResult(await QueryWorkDefinitions(system, arguments, cancellationToken)),
-                QueryWorkerKeysTool => ToToolResult(await QueryWorkerKeys(system, arguments, cancellationToken)),
-                QueryWorkerKeyTypesTool => ToToolResult(await QueryWorkerKeyTypes(system, arguments, cancellationToken)),
-                QueryWorkIterationKeysTool => ToToolResult(await QueryWorkIterationKeys(system, arguments, cancellationToken)),
-                QueryWorkIterationKeyTypesTool => ToToolResult(await QueryWorkIterationKeyTypes(system, arguments, cancellationToken)),
-                GetWorkerStatusSummaryTool => ToToolResult(await GetWorkerStatusSummary(system, arguments, cancellationToken)),
-                _ => null,
-            };
+                case QueryWorkersTool:
+                    return ToToolResult(await session.Query.Workers(ToWorkerCriteria(arguments), cancellationToken: cancellationToken));
+                case GetWorkerTool:
+                {
+                    var workerId = ReadRequiredGuid(arguments, "workerId");
+                    var worker = await session.Query.Worker(new WorkerId(workerId), cancellationToken: cancellationToken);
+                    return ToToolResult(worker is null
+                        ? new { found = false, workerId = workerId.ToString("D") }
+                        : new { found = true, worker });
+                }
+                case GetWorkerIterationTool:
+                {
+                    var workerId = new WorkerId(ReadRequiredGuid(arguments, "workerId"));
+                    var sequence = ReadRequiredLong(arguments, "sequence");
+                    var iteration = await session.Query.WorkerIteration(
+                        new WorkerIterationReference(workerId, sequence),
+                        cancellationToken: cancellationToken);
+                    return ToToolResult(iteration is null
+                        ? new { found = false, workerId = workerId.Value.ToString("D"), sequence }
+                        : new { found = true, iteration });
+                }
+                case QueryWorkerIterationsTool:
+                    return ToToolResult(await session.Query.WorkerIterations(ToWorkerIterationCriteria(arguments), cancellationToken: cancellationToken));
+                case GetWorkInfoTool:
+                {
+                    var name = ReadString(arguments, "name");
+                    var definitionId = ReadGuid(arguments, "definitionId");
+                    WorkInfo? info = null;
 
-            if (queryResult is not null)
-            {
-                return queryResult;
+                    if (definitionId.HasValue)
+                    {
+                        info = await session.Query.WorkInfo(new WorkDefinitionId(definitionId.Value), cancellationToken: cancellationToken);
+                    }
+                    else if (!string.IsNullOrWhiteSpace(name))
+                    {
+                        info = await session.Query.WorkInfo(name, cancellationToken: cancellationToken);
+                    }
+
+                    return ToToolResult(info is null
+                        ? new { found = false, name, definitionId = definitionId?.ToString("D") }
+                        : new { found = true, info });
+                }
+                case QueryWorkDefinitionsTool:
+                {
+                    var query = new WorkDefinitionCriteria(
+                        Id: ReadGuid(arguments, "definitionId") is { } id ? new WorkDefinitionId(id) : null,
+                        Name: ReadString(arguments, "name"),
+                        Category: ReadString(arguments, "category"),
+                        Search: ReadString(arguments, "search"),
+                        IncludeSubcategories: ReadBool(arguments, "includeSubcategories") ?? true);
+                    return ToToolResult((await session.Query.WorkDefinitions(query, cancellationToken: cancellationToken)).Definitions);
+                }
+                case QueryWorkerKeysTool:
+                    return ToToolResult(await session.Query.WorkerKeys(
+                        new WorkerKeyCriteria(
+                            Kind: ReadOptionalEnum<WorkKeyKind>(arguments, "kind"),
+                            Type: ReadString(arguments, "type"),
+                            Value: ReadString(arguments, "value"),
+                            Search: ReadString(arguments, "search"),
+                            States: ReadStates(arguments),
+                            Skip: ReadInt(arguments, "skip") ?? 0,
+                            Take: ReadInt(arguments, "take") ?? WorkerKeyCriteria.DefaultTake),
+                        cancellationToken: cancellationToken));
+                case QueryWorkerKeyTypesTool:
+                    return ToToolResult(await session.Query.WorkerKeyTypes(
+                        new WorkerKeyTypeCriteria(
+                            Kind: ReadOptionalEnum<WorkKeyKind>(arguments, "kind"),
+                            Search: ReadString(arguments, "search"),
+                            Type: ReadString(arguments, "type"),
+                            States: ReadStates(arguments),
+                            Skip: ReadInt(arguments, "skip") ?? 0,
+                            Take: ReadInt(arguments, "take") ?? WorkerKeyCriteria.DefaultTake),
+                        cancellationToken: cancellationToken));
+                case QueryWorkIterationKeysTool:
+                    return ToToolResult(await session.Query.WorkIterationKeys(
+                        new WorkIterationKeyCriteria(
+                            Kind: ReadOptionalEnum<WorkKeyKind>(arguments, "kind"),
+                            Type: ReadString(arguments, "type"),
+                            Value: ReadString(arguments, "value"),
+                            Search: ReadString(arguments, "search"),
+                            Statuses: ReadCompletionStatuses(arguments),
+                            Skip: ReadInt(arguments, "skip") ?? 0,
+                            Take: ReadInt(arguments, "take") ?? WorkIterationKeyCriteria.DefaultTake),
+                        cancellationToken: cancellationToken));
+                case QueryWorkIterationKeyTypesTool:
+                    return ToToolResult(await session.Query.WorkIterationKeyTypes(
+                        new WorkIterationKeyTypeCriteria(
+                            Kind: ReadOptionalEnum<WorkKeyKind>(arguments, "kind"),
+                            Search: ReadString(arguments, "search"),
+                            Type: ReadString(arguments, "type"),
+                            Statuses: ReadCompletionStatuses(arguments),
+                            Skip: ReadInt(arguments, "skip") ?? 0,
+                            Take: ReadInt(arguments, "take") ?? WorkIterationKeyCriteria.DefaultTake),
+                        cancellationToken: cancellationToken));
+                case GetWorkerStatusSummaryTool:
+                    return ToToolResult(await session.Query.WorkerStatusSummary(ToWorkerCriteria(arguments), cancellationToken: cancellationToken));
             }
         }
 
         if (options.IncludeActionTools)
         {
-            var actionResult = toolName switch
+            switch (toolName)
             {
-                StartWorkerTool => ToToolResult(await ExecuteWorkerAction(system, arguments, WorkAction.Start, origin, cancellationToken)),
-                PauseWorkerTool => ToToolResult(await ExecuteWorkerAction(system, arguments, WorkAction.Pause, origin, cancellationToken)),
-                CancelWorkerTool => ToToolResult(await ExecuteWorkerAction(system, arguments, WorkAction.Cancel, origin, cancellationToken)),
-                PushWorkerTool => ToToolResult(await ExecuteWorkerAction(system, arguments, WorkAction.Push, origin, cancellationToken)),
-                PurgeWorkerTool => ToToolResult(await ExecuteWorkerAction(system, arguments, WorkAction.Purge, origin, cancellationToken)),
-                ReconfigureWorkDefinitionTool => ToToolResult(await ReconfigureWorkDefinition(system, arguments, cancellationToken)),
-                _ => null,
-            };
-
-            if (actionResult is not null)
-            {
-                return actionResult;
+                case StartWorkerTool:
+                case PauseWorkerTool:
+                case CancelWorkerTool:
+                case PushWorkerTool:
+                case PurgeWorkerTool:
+                {
+                    var workerId = new WorkerId(ReadRequiredGuid(arguments, "workerId"));
+                    var revision = ReadRequiredLong(arguments, "revision");
+                    var version = new WorkerVersion(workerId, revision);
+                    var action = toolName switch
+                    {
+                        StartWorkerTool => WorkAction.Start,
+                        PauseWorkerTool => WorkAction.Pause,
+                        CancelWorkerTool => WorkAction.Cancel,
+                        PushWorkerTool => WorkAction.Push,
+                        _ => WorkAction.Purge,
+                    };
+                    return ToToolResult(await session.Workers.Execute(version, action, cancellationToken));
+                }
+                case ReconfigureWorkDefinitionTool:
+                {
+                    var definitionId = new WorkDefinitionId(ReadRequiredGuid(arguments, "definitionId"));
+                    var revision = ReadRequiredLong(arguments, "revision");
+                    var changes = TryGetProperty(arguments, "changes", out var changesProperty) &&
+                        changesProperty.ValueKind == JsonValueKind.Object
+                            ? changesProperty.Deserialize<WorkDefinitionReconfiguration>(JsonOptions) ?? new WorkDefinitionReconfiguration()
+                            : new WorkDefinitionReconfiguration(
+                                DefaultOptions: ReadObject<WorkerOptions>(arguments, "defaultOptions"),
+                                Configuration: ReadObject<WorkConfiguration>(arguments, "configuration"));
+                    return ToToolResult(await session.Catalog.Reconfigure(
+                        new WorkDefinitionVersion(definitionId, revision),
+                        changes,
+                        cancellationToken));
+                }
             }
         }
 
@@ -170,10 +266,10 @@ public sealed class WorkableMcpToolRouter(IWorkSystemRegistry registry)
     }
 
     private static IReadOnlyList<WorkableMcpServerToolDescriptor> CreateWorkTools(
-        IWorkSystem system,
+        IWorkSystemSession session,
         WorkableMcpToolCatalogOptions catalogOptions)
     {
-        var descriptors = system.GetMcpToolDescriptors(catalogOptions);
+        var descriptors = session.GetMcpToolDescriptors(catalogOptions);
         var baseNameCounts = descriptors
             .GroupBy(descriptor => CreateWorkToolName(descriptor.Name), StringComparer.Ordinal)
             .ToDictionary(group => group.Key, group => group.Count(), StringComparer.Ordinal);
@@ -307,207 +403,6 @@ public sealed class WorkableMcpToolRouter(IWorkSystemRegistry registry)
                 WorkableMcpServerToolKind.Action),
         ];
 
-    private static async Task<object> QueryWorkers(
-        IWorkSystem system,
-        JsonElement? arguments,
-        CancellationToken cancellationToken)
-    {
-        var query = ToWorkerCriteria(arguments);
-        return await system.Query.Workers(query, cancellationToken: cancellationToken);
-    }
-
-    private static async Task<object> GetWorker(
-        IWorkSystem system,
-        JsonElement? arguments,
-        CancellationToken cancellationToken)
-    {
-        var workerId = ReadRequiredGuid(arguments, "workerId");
-        var worker = await system.Query.Worker(new WorkerId(workerId), cancellationToken: cancellationToken);
-        return worker is null
-            ? new { found = false, workerId = workerId.ToString("D") }
-            : new { found = true, worker };
-    }
-
-    private static async Task<object> GetWorkerIteration(
-        IWorkSystem system,
-        JsonElement? arguments,
-        CancellationToken cancellationToken)
-    {
-        var workerId = new WorkerId(ReadRequiredGuid(arguments, "workerId"));
-        var sequence = ReadRequiredLong(arguments, "sequence");
-        var iteration = await system.Query.WorkerIteration(new WorkerIterationReference(workerId, sequence), cancellationToken: cancellationToken);
-
-        return iteration is null
-            ? new { found = false, workerId = workerId.Value.ToString("D"), sequence }
-            : new { found = true, iteration };
-    }
-
-    private static async Task<object> QueryWorkerIterations(
-        IWorkSystem system,
-        JsonElement? arguments,
-        CancellationToken cancellationToken)
-    {
-        var query = ToWorkerIterationCriteria(arguments);
-        return await system.Query.WorkerIterations(query, cancellationToken: cancellationToken);
-    }
-
-    private static async Task<object> GetWorkInfo(
-        IWorkSystem system,
-        JsonElement? arguments,
-        CancellationToken cancellationToken)
-    {
-        var name = ReadString(arguments, "name");
-        var definitionId = ReadGuid(arguments, "definitionId");
-        WorkInfo? info = null;
-
-        if (definitionId.HasValue)
-        {
-            info = await system.Query.WorkInfo(new WorkDefinitionId(definitionId.Value), cancellationToken: cancellationToken);
-        }
-        else if (!string.IsNullOrWhiteSpace(name))
-        {
-            info = await system.Query.WorkInfo(name, cancellationToken: cancellationToken);
-        }
-
-        return info is null
-            ? new { found = false, name, definitionId = definitionId?.ToString("D") }
-            : new { found = true, info };
-    }
-
-    private static async Task<object> QueryWorkDefinitions(
-        IWorkSystem system,
-        JsonElement? arguments,
-        CancellationToken cancellationToken)
-    {
-        var query = new WorkDefinitionCriteria(
-            Id: ReadGuid(arguments, "definitionId") is { } id ? new WorkDefinitionId(id) : null,
-            Name: ReadString(arguments, "name"),
-            Category: ReadString(arguments, "category"),
-            Search: ReadString(arguments, "search"),
-            IncludeSubcategories: ReadBool(arguments, "includeSubcategories") ?? true);
-
-        return (await system.Query.WorkDefinitions(query, cancellationToken: cancellationToken)).Definitions;
-    }
-
-    private static async Task<object> QueryWorkerKeys(
-        IWorkSystem system,
-        JsonElement? arguments,
-        CancellationToken cancellationToken)
-    {
-        var query = new WorkerKeyCriteria(
-            Kind: ReadOptionalEnum<WorkKeyKind>(arguments, "kind"),
-            Type: ReadString(arguments, "type"),
-            Value: ReadString(arguments, "value"),
-            Search: ReadString(arguments, "search"),
-            States: ReadStates(arguments),
-            Skip: ReadInt(arguments, "skip") ?? 0,
-            Take: ReadInt(arguments, "take") ?? WorkerKeyCriteria.DefaultTake);
-
-        return await system.Query.WorkerKeys(query, cancellationToken: cancellationToken);
-    }
-
-    private static async Task<object> QueryWorkerKeyTypes(
-        IWorkSystem system,
-        JsonElement? arguments,
-        CancellationToken cancellationToken)
-    {
-        var query = new WorkerKeyTypeCriteria(
-            Kind: ReadOptionalEnum<WorkKeyKind>(arguments, "kind"),
-            Search: ReadString(arguments, "search"),
-            Type: ReadString(arguments, "type"),
-            States: ReadStates(arguments),
-            Skip: ReadInt(arguments, "skip") ?? 0,
-            Take: ReadInt(arguments, "take") ?? WorkerKeyCriteria.DefaultTake);
-
-        return await system.Query.WorkerKeyTypes(query, cancellationToken: cancellationToken);
-    }
-
-    private static async Task<object> QueryWorkIterationKeys(
-        IWorkSystem system,
-        JsonElement? arguments,
-        CancellationToken cancellationToken)
-    {
-        var query = new WorkIterationKeyCriteria(
-            Kind: ReadOptionalEnum<WorkKeyKind>(arguments, "kind"),
-            Type: ReadString(arguments, "type"),
-            Value: ReadString(arguments, "value"),
-            Search: ReadString(arguments, "search"),
-            Statuses: ReadCompletionStatuses(arguments),
-            Skip: ReadInt(arguments, "skip") ?? 0,
-            Take: ReadInt(arguments, "take") ?? WorkIterationKeyCriteria.DefaultTake);
-
-        return await system.Query.WorkIterationKeys(query, cancellationToken: cancellationToken);
-    }
-
-    private static async Task<object> QueryWorkIterationKeyTypes(
-        IWorkSystem system,
-        JsonElement? arguments,
-        CancellationToken cancellationToken)
-    {
-        var query = new WorkIterationKeyTypeCriteria(
-            Kind: ReadOptionalEnum<WorkKeyKind>(arguments, "kind"),
-            Search: ReadString(arguments, "search"),
-            Type: ReadString(arguments, "type"),
-            Statuses: ReadCompletionStatuses(arguments),
-            Skip: ReadInt(arguments, "skip") ?? 0,
-            Take: ReadInt(arguments, "take") ?? WorkIterationKeyCriteria.DefaultTake);
-
-        return await system.Query.WorkIterationKeyTypes(query, cancellationToken: cancellationToken);
-    }
-
-    private static async Task<object> GetWorkerStatusSummary(
-        IWorkSystem system,
-        JsonElement? arguments,
-        CancellationToken cancellationToken)
-    {
-        var query = ToWorkerCriteria(arguments);
-        return await system.Query.WorkerStatusSummary(query, cancellationToken: cancellationToken);
-    }
-
-    private static async Task<object> ExecuteWorkerAction(
-        IWorkSystem system,
-        JsonElement? arguments,
-        WorkAction action,
-        WorkOrigin? origin,
-        CancellationToken cancellationToken)
-    {
-        var workerId = new WorkerId(ReadRequiredGuid(arguments, "workerId"));
-        var revision = ReadRequiredLong(arguments, "revision");
-        var version = new WorkerVersion(workerId, revision);
-
-        return origin is null
-            ? await system.Workers.Execute(version, action, cancellationToken)
-            : await RequiredOriginAwareSystem(system).Execute(version, action, origin, cancellationToken);
-    }
-
-    private static async Task<object> ReconfigureWorkDefinition(
-        IWorkSystem system,
-        JsonElement? arguments,
-        CancellationToken cancellationToken)
-    {
-        var definitionId = new WorkDefinitionId(ReadRequiredGuid(arguments, "definitionId"));
-        var revision = ReadRequiredLong(arguments, "revision");
-        var changes = ReadDefinitionReconfiguration(arguments);
-        return await system.Catalog.Reconfigure(
-            new WorkDefinitionVersion(definitionId, revision),
-            changes,
-            cancellationToken);
-    }
-
-    private static WorkDefinitionReconfiguration ReadDefinitionReconfiguration(JsonElement? arguments)
-    {
-        if (TryGetProperty(arguments, "changes", out var changesProperty) &&
-            changesProperty.ValueKind == JsonValueKind.Object)
-        {
-            return changesProperty.Deserialize<WorkDefinitionReconfiguration>(JsonOptions)
-                ?? new WorkDefinitionReconfiguration();
-        }
-
-        return new WorkDefinitionReconfiguration(
-            DefaultOptions: ReadObject<WorkerOptions>(arguments, "defaultOptions"),
-            Configuration: ReadObject<WorkConfiguration>(arguments, "configuration"));
-    }
-
     private static WorkerCriteria ToWorkerCriteria(JsonElement? arguments)
     {
         return new WorkerCriteria(
@@ -595,10 +490,6 @@ public sealed class WorkableMcpToolRouter(IWorkSystemRegistry registry)
 
         return $"Queue Workable work '{descriptor.Name}' in category '{category}'. {description} The input schema describes the arguments. By default the MCP server waits for completion and returns the work output.";
     }
-
-    private static IOriginAwareWorkSystem RequiredOriginAwareSystem(IWorkSystem system)
-        => system as IOriginAwareWorkSystem
-            ?? throw new InvalidOperationException("The configured Workable system does not support trusted origin-aware operations.");
 
     private IWorkSystem ResolveSystem(string? systemName)
     {

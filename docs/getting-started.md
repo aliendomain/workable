@@ -10,7 +10,7 @@ All three packages use the `Workable` namespace.
 
 Optional adapter packages connect Workable to the edges of an application:
 
-- Use `Workable.AspNetCore` when the host queues work from its own ASP.NET Core controllers or minimal API routes and wants worker origins to include the authenticated HTTP user and request path.
+- Use `Workable.AspNetCore` when the host needs to create authenticated `WorkRequestContext` values from `HttpContext` for its own controllers, minimal APIs, or custom transports.
 - Use `Workable.HttpApi` when the host wants Workable to provide standard HTTP routes for queueing work, querying workers, and sending worker actions such as pause, cancel, push, and purge.
 - Use `Workable.Mcp` when the host wants authored work definitions, work-system query tools, and worker action tools to be available to an MCP client, such as an LLM tool host.
 - Use `Workable.SignalR` when the host wants browser clients to receive realtime worker events and component-view updates.
@@ -203,7 +203,7 @@ public sealed class WelcomeEmailService(IWorkSystem workSystem)
 }
 ```
 
-ASP.NET Core hosts that queue work from their own controllers or minimal API routes can reference `Workable.AspNetCore` and register HTTP-context origins. Use this when the work should record who requested it without exposing Workable's standard HTTP API endpoints.
+ASP.NET Core hosts that queue work from their own controllers or minimal API routes can reference `Workable.AspNetCore` and register HTTP-context request-context services. Use this when the work should record who requested it without exposing Workable's standard HTTP API endpoints.
 
 ```xml
 <PackageReference Include="Workable.AspNetCore" Version="1.0.0" />
@@ -213,9 +213,33 @@ ASP.NET Core hosts that queue work from their own controllers or minimal API rou
 services.AddWorkableSystem(builder =>
 {
     builder.StartWithHost();
+    builder.RequireAuthorization();
 });
 
-services.AddWorkableAspNetCoreOrigins();
+services.AddWorkableAspNetCoreAuthorization();
+```
+
+Then create a session from the current request instead of queueing directly on `IWorkSystem`.
+
+```csharp
+app.MapPost("/welcome/{userId}", async (
+    string userId,
+    HttpContext httpContext,
+    IWorkSystem system,
+    IWorkRequestContextFactory requestContexts,
+    CancellationToken cancellationToken) =>
+{
+    var requestContext = requestContexts.Create(
+        httpContext,
+        WorkInvocationChannel.HttpApi,
+        "Queue welcome email from custom endpoint.");
+
+    var session = system.CreateSession(requestContext);
+    return await session.Queue.Enqueue(
+        "email.welcome.send",
+        new SendWelcomeEmailArgs(userId),
+        cancellationToken: cancellationToken);
+});
 ```
 
 ## Queue Work
@@ -245,6 +269,6 @@ Non-host libraries reference `Workable.Abstractions` when they consume a work sy
 
 Host applications reference `Workable` when they create systems, queue work, observe events, or control workers.
 
-ASP.NET Core host applications can also reference `Workable.AspNetCore` when direct .NET queue calls should record actor information from `HttpContext.User`. Applications reference `Workable.HttpApi` only when they want Workable's built-in HTTP endpoints, `Workable.Mcp` only when they want an MCP server surface, and `Workable.SignalR` only when they want realtime client updates.
+ASP.NET Core host applications can also reference `Workable.AspNetCore` when custom endpoints or transports should create authenticated `WorkRequestContext` values from `HttpContext`. Applications reference `Workable.HttpApi` only when they want Workable's built-in HTTP endpoints, `Workable.Mcp` only when they want an MCP server surface, and `Workable.SignalR` only when they want realtime client updates.
 
 This keeps feature libraries independent of the host runtime while still allowing the host to compose all available work into the systems it owns.

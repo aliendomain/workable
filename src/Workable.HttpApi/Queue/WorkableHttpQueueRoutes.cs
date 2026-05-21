@@ -25,6 +25,8 @@ internal static class WorkableHttpQueueRoutes
             WorkableHttpWorkRequest? request,
             HttpContext httpContext,
             WorkableHttpSystemResolver systems,
+            WorkableHttpQueueAdapter queue,
+            IWorkRequestContextFactory requestContexts,
             CancellationToken cancellationToken) =>
         {
             if (!WorkableHttpRouteResults.TryResolveSystem(httpContext, systems, out var system, out var notFound))
@@ -32,7 +34,12 @@ internal static class WorkableHttpQueueRoutes
                 return notFound;
             }
 
-            var result = await WorkableHttpQueueAdapter.QueueCore(system, name, request, WorkableHttpOrigin.Create(httpContext, $"Queue work '{name}' through HTTP API."), cancellationToken);
+            var session = WorkableHttpRequestContext.CreateSession(
+                httpContext,
+                system,
+                requestContexts,
+                $"Queue work '{name}' through HTTP API.");
+            var result = await queue.Enqueue(session, name, request, cancellationToken);
             return WorkableHttpRouteResults.ToQueueHttpResult(result);
         });
 
@@ -41,6 +48,8 @@ internal static class WorkableHttpQueueRoutes
             WorkableHttpWorkRequest? request,
             HttpContext httpContext,
             WorkableHttpSystemResolver systems,
+            WorkableHttpQueueAdapter queue,
+            IWorkRequestContextFactory requestContexts,
             CancellationToken cancellationToken) =>
         {
             if (!WorkableHttpRouteResults.TryResolveSystem(httpContext, systems, out var system, out var notFound))
@@ -48,7 +57,12 @@ internal static class WorkableHttpQueueRoutes
                 return notFound;
             }
 
-            var result = await WorkableHttpQueueAdapter.QueueCore(system, new WorkDefinitionId(definitionId), request, WorkableHttpOrigin.Create(httpContext, $"Queue work definition '{definitionId:D}' through HTTP API."), cancellationToken);
+            var session = WorkableHttpRequestContext.CreateSession(
+                httpContext,
+                system,
+                requestContexts,
+                $"Queue work definition '{definitionId:D}' through HTTP API.");
+            var result = await queue.Enqueue(session, new WorkDefinitionId(definitionId), request, cancellationToken);
             return WorkableHttpRouteResults.ToQueueHttpResult(result);
         });
     }

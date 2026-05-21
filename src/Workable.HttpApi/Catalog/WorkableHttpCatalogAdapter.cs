@@ -2,61 +2,63 @@ namespace Workable;
 
 public sealed class WorkableHttpCatalogAdapter
 {
-    public IReadOnlyList<WorkDefinition> GetDefinitions(IWorkSystem system)
-        => GetDefinitionsForSystem(system);
+    public IReadOnlyList<WorkDefinition> GetDefinitions(IWorkSystemSession session)
+        => GetDefinitionsForCatalog(session.Catalog);
 
     public Task<WorkDefinitionReconfigurationOutcome> ReconfigureDefinition(
-        IWorkSystem system,
+        IWorkSystemSession session,
         WorkDefinitionId definitionId,
         WorkableHttpDefinitionReconfigurationRequest request,
         CancellationToken cancellationToken = default)
     {
-        ArgumentNullException.ThrowIfNull(system);
+        ArgumentNullException.ThrowIfNull(session);
         ArgumentNullException.ThrowIfNull(request);
 
-        return system.Catalog.Reconfigure(
+        return session.Catalog.Reconfigure(
             new WorkDefinitionVersion(definitionId, request.Revision),
             request.Changes,
             cancellationToken);
     }
 
-    internal static Task<WorkDefinitionReconfigurationOutcome> ReconfigureDefinitionCore(
-        IWorkSystem system,
-        WorkDefinitionId definitionId,
-        WorkableHttpDefinitionReconfigurationRequest request,
-        CancellationToken cancellationToken = default)
+    internal static IReadOnlyList<WorkDefinition> GetDefinitionsForCatalog(IWorkCatalog catalog)
     {
-        ArgumentNullException.ThrowIfNull(system);
-        ArgumentNullException.ThrowIfNull(request);
+        ArgumentNullException.ThrowIfNull(catalog);
 
-        return new WorkableHttpCatalogAdapter().ReconfigureDefinition(system, definitionId, request, cancellationToken);
-    }
-
-    internal static IReadOnlyList<WorkDefinition> GetDefinitionsForSystem(IWorkSystem system)
-    {
-        ArgumentNullException.ThrowIfNull(system);
-
-        return [.. system.Catalog.Definitions
+        return [.. catalog.Definitions
             .OrderBy(definition => definition.Category, StringComparer.OrdinalIgnoreCase)
             .ThenBy(definition => definition.Name, StringComparer.OrdinalIgnoreCase)];
     }
 
     internal static WorkableHttpDefinitionCatalogLevel GetDefinitionCatalogLevel(
-        IWorkSystem system,
+        IWorkCatalog catalog,
         string? category)
     {
-        ArgumentNullException.ThrowIfNull(system);
+        ArgumentNullException.ThrowIfNull(catalog);
 
         string[] pathSegments = string.IsNullOrWhiteSpace(category)
             ? []
-            : SplitCategoryPath(category);
+            : (string.IsNullOrWhiteSpace(category)
+                ? WorkDefinitionMetadataDefaults.Category
+                : category)
+                .Split(':', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
         var categories = new Dictionary<string, WorkSystemCatalogCategoryItem>(StringComparer.OrdinalIgnoreCase);
         var directDefinitions = new List<WorkDefinition>();
 
-        foreach (var definition in system.Catalog.Definitions)
+        foreach (var definition in catalog.Definitions)
         {
-            var definitionSegments = SplitCategoryPath(definition.Category);
-            if (!StartsWithCategoryPath(definitionSegments, pathSegments))
+            var definitionSegments = (string.IsNullOrWhiteSpace(definition.Category)
+                    ? WorkDefinitionMetadataDefaults.Category
+                    : definition.Category)
+                .Split(':', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            var matchesPath = pathSegments.Length == 0 ||
+                pathSegments.Length <= definitionSegments.Length &&
+                pathSegments
+                    .Select((segment, index) => string.Equals(
+                        definitionSegments[index],
+                        segment,
+                        StringComparison.OrdinalIgnoreCase))
+                    .All(matches => matches);
+            if (!matchesPath)
             {
                 continue;
             }
@@ -84,22 +86,4 @@ public sealed class WorkableHttpCatalogAdapter
                 .OrderBy(definition => definition.Category, StringComparer.OrdinalIgnoreCase)
                 .ThenBy(definition => definition.Name, StringComparer.OrdinalIgnoreCase)]);
     }
-
-    private static string[] SplitCategoryPath(string? category)
-        => (string.IsNullOrWhiteSpace(category)
-                ? WorkDefinitionMetadataDefaults.Category
-                : category)
-            .Split(':', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-
-    private static bool StartsWithCategoryPath(
-        string[] categorySegments,
-        string[] pathSegments)
-        => pathSegments.Length == 0 ||
-            pathSegments.Length <= categorySegments.Length &&
-            pathSegments
-                .Select((segment, index) => string.Equals(
-                    categorySegments[index],
-                    segment,
-                    StringComparison.OrdinalIgnoreCase))
-                .All(matches => matches);
 }

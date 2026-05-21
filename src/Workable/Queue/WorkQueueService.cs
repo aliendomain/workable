@@ -1,16 +1,9 @@
-using System.Collections.Concurrent;
-using System.Diagnostics.CodeAnalysis;
-using System.Runtime.CompilerServices;
-using System.Threading.Channels;
-using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Hosting;
-
 namespace Workable;
 internal sealed class WorkQueueService(
     WorkSystemCatalog catalog,
     WorkerOperations workers,
-    IDotNetWorkOriginProvider dotNetOriginProvider,
-    WorkSystemQueueDiagnosticsTracker queueDiagnostics) : IWorkQueueService
+    WorkSystemQueueDiagnosticsTracker queueDiagnostics) :
+    IWorkQueueService
 {
     public Task<IWorkerHandle> Enqueue(
         WorkDefinitionId definitionId,
@@ -21,18 +14,30 @@ internal sealed class WorkQueueService(
             definitionId,
             input,
             options,
-            dotNetOriginProvider.CreateOrigin($"Queue work definition '{definitionId.Value:D}' through .NET."),
+            WorkRequestContext.Create(
+                WorkInvocationChannel.DotNet,
+                description: $"Queue work definition '{definitionId.Value:D}' through .NET."),
             cancellationToken);
 
     internal Task<IWorkerHandle> Enqueue(
         WorkDefinitionId definitionId,
         WorkInput? input,
         WorkerOptions? options,
-        WorkOrigin origin,
-        CancellationToken cancellationToken = default)
-        => !catalog.TryGetWork(definitionId, out var registeredWork)
-            ? Task.FromResult<IWorkerHandle>(Reject(WorkQueueOutcome.NotFound(definitionId.ToString())))
-            : workers.CreateWorker(registeredWork, input, options, origin, cancellationToken);
+        WorkRequestContext requestContext,
+        CancellationToken cancellationToken)
+    {
+        if (!catalog.TryGetWork(definitionId, out var registeredWork))
+        {
+            return Task.FromResult<IWorkerHandle>(Reject(WorkQueueOutcome.NotFound(definitionId.ToString())));
+        }
+
+        if (!registeredWork.Definition.Configuration.Invocation.Allows(requestContext.Origin.Channel))
+        {
+            return Task.FromResult<IWorkerHandle>(Reject(ChannelNotAllowed(registeredWork.Definition, requestContext.Origin.Channel)));
+        }
+
+        return workers.CreateWorker(registeredWork, input, options, requestContext, cancellationToken);
+    }
 
     public Task<IWorkerHandle> Enqueue<TInput>(
         WorkDefinitionId definitionId,
@@ -53,7 +58,9 @@ internal sealed class WorkQueueService(
             name,
             input,
             options,
-            dotNetOriginProvider.CreateOrigin($"Queue work '{name}' through .NET."),
+            WorkRequestContext.Create(
+                WorkInvocationChannel.DotNet,
+                description: $"Queue work '{name}' through .NET."),
             cancellationToken);
     }
 
@@ -61,14 +68,22 @@ internal sealed class WorkQueueService(
         string name,
         WorkInput? input,
         WorkerOptions? options,
-        WorkOrigin origin,
-        CancellationToken cancellationToken = default)
+        WorkRequestContext requestContext,
+        CancellationToken cancellationToken)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(name);
 
-        return !catalog.TryGetWork(name, out var registeredWork)
-            ? Task.FromResult<IWorkerHandle>(Reject(WorkQueueOutcome.NotFound(name)))
-            : workers.CreateWorker(registeredWork, input, options, origin, cancellationToken);
+        if (!catalog.TryGetWork(name, out var registeredWork))
+        {
+            return Task.FromResult<IWorkerHandle>(Reject(WorkQueueOutcome.NotFound(name)));
+        }
+
+        if (!registeredWork.Definition.Configuration.Invocation.Allows(requestContext.Origin.Channel))
+        {
+            return Task.FromResult<IWorkerHandle>(Reject(ChannelNotAllowed(registeredWork.Definition, requestContext.Origin.Channel)));
+        }
+
+        return workers.CreateWorker(registeredWork, input, options, requestContext, cancellationToken);
     }
 
     public Task<IWorkerHandle> Enqueue<TInput>(
@@ -91,4 +106,24 @@ internal sealed class WorkQueueService(
         queueDiagnostics.RecordRejected(outcome);
         return WorkerHandle.Rejected(outcome);
     }
+
+    private static WorkQueueOutcome ChannelNotAllowed(
+        WorkDefinition definition,
+        WorkInvocationChannel channel)
+        => WorkQueueOutcome.Invalid(
+            definition.Id,
+            [WorkMessage.Error(
+                "workable.invocation.channel_not_allowed",
+                $"Work '{definition.Name}' cannot be invoked through {DescribeChannel(channel)}.",
+                "invocation.channel")]);
+
+    private static string DescribeChannel(WorkInvocationChannel channel)
+        => channel switch
+        {
+            WorkInvocationChannel.DotNet => ".NET",
+            WorkInvocationChannel.HttpApi => "the HTTP API",
+            WorkInvocationChannel.Mcp => "MCP",
+            WorkInvocationChannel.SignalR => "SignalR",
+            _ => channel.ToString(),
+        };
 }

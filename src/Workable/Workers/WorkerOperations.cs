@@ -7,7 +7,9 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 
 namespace Workable;
-internal sealed class WorkerOperations : IWorkerOperations, IDisposable
+internal sealed class WorkerOperations :
+    IWorkerOperations,
+    IDisposable
 {
     private readonly WorkSystemCatalog catalog;
     private readonly Func<WorkSystemState> getSystemState;
@@ -24,7 +26,6 @@ internal sealed class WorkerOperations : IWorkerOperations, IDisposable
     private readonly WorkerDispatcher dispatcher;
     private readonly WorkConcurrencyCoordinator concurrency;
     private readonly WorkerRetentionScheduler retention;
-    private readonly IDotNetWorkOriginProvider dotNetOriginProvider;
     private readonly TimeSpan shutdownGracePeriod;
     private readonly WorkSystemCapacityConfiguration capacity;
     private readonly WorkSystemQueueDiagnosticsTracker queueDiagnostics;
@@ -43,7 +44,6 @@ internal sealed class WorkerOperations : IWorkerOperations, IDisposable
         IServiceProvider rootServices,
         WorkEventStream events,
         IWorkSystemReadModelStore readModel,
-        IDotNetWorkOriginProvider dotNetOriginProvider,
         IReadOnlyList<WorkExceptionClassifier> systemExceptionClassifiers,
         IReadOnlyList<WorkExceptionClassifier> globalExceptionClassifiers,
         TimeSpan shutdownGracePeriod,
@@ -56,7 +56,6 @@ internal sealed class WorkerOperations : IWorkerOperations, IDisposable
     {
         this.catalog = catalog;
         this.getSystemState = getSystemState;
-        this.dotNetOriginProvider = dotNetOriginProvider;
         this.shutdownGracePeriod = shutdownGracePeriod;
         this.capacity = capacity;
         this.metrics = metrics;
@@ -124,7 +123,7 @@ internal sealed class WorkerOperations : IWorkerOperations, IDisposable
         RegisteredWork registeredWork,
         WorkInput? input,
         WorkerOptions? options,
-        WorkOrigin origin,
+        WorkRequestContext requestContext,
         CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
@@ -164,7 +163,7 @@ internal sealed class WorkerOperations : IWorkerOperations, IDisposable
             registeredWork,
             input,
             runtimePlan,
-            origin,
+            requestContext.Origin,
             DateTimeOffset.UtcNow,
             cancellationToken);
 
@@ -360,14 +359,15 @@ internal sealed class WorkerOperations : IWorkerOperations, IDisposable
 
     internal Task<WorkSystemStopResult> StopDispatching(CancellationToken cancellationToken)
         => this.StopDispatching(
-            WorkOrigin.Create(WorkInvocationChannel.DotNet, description: "Stop Workable system through .NET."),
+            new WorkRequestContext(
+                WorkOrigin.Create(WorkInvocationChannel.DotNet, description: "Stop Workable system through .NET.")),
             cancellationToken);
 
     internal async Task<WorkSystemStopResult> StopDispatching(
-        WorkOrigin origin,
+        WorkRequestContext requestContext,
         CancellationToken cancellationToken)
     {
-        ArgumentNullException.ThrowIfNull(origin);
+        ArgumentNullException.ThrowIfNull(requestContext);
 
         lock (this.lifecycleSync)
         {
@@ -448,17 +448,21 @@ internal sealed class WorkerOperations : IWorkerOperations, IDisposable
         return this.Execute(
             worker,
             action,
-            this.dotNetOriginProvider.CreateOrigin($"Apply worker action '{action}' through .NET."));
+            WorkRequestContext.Create(
+                WorkInvocationChannel.DotNet,
+                description: $"Apply worker action '{action}' through .NET."),
+            cancellationToken);
     }
 
     internal Task<WorkActionOutcome> Execute(
         WorkerVersion worker,
         WorkAction action,
-        WorkOrigin origin)
+        WorkRequestContext requestContext,
+        CancellationToken cancellationToken)
     {
-        ArgumentNullException.ThrowIfNull(origin);
+        cancellationToken.ThrowIfCancellationRequested();
 
-        return Task.FromResult(this.ApplyAction(worker, action, origin));
+        return Task.FromResult(this.ApplyAction(worker, action, requestContext.Origin));
     }
 
     public Task<WorkerBulkActionOutcome> ExecuteAll(
@@ -468,16 +472,18 @@ internal sealed class WorkerOperations : IWorkerOperations, IDisposable
         => this.ExecuteAll(
             action,
             filter,
-            this.dotNetOriginProvider.CreateOrigin($"Apply worker action '{action}' to multiple workers through .NET."),
+            WorkRequestContext.Create(
+                WorkInvocationChannel.DotNet,
+                description: $"Apply worker action '{action}' to multiple workers through .NET."),
             cancellationToken);
 
     internal Task<WorkerBulkActionOutcome> ExecuteAll(
         WorkAction action,
         WorkerBulkActionFilter? filter,
-        WorkOrigin origin,
-        CancellationToken cancellationToken = default)
+        WorkRequestContext requestContext,
+        CancellationToken cancellationToken)
     {
-        ArgumentNullException.ThrowIfNull(origin);
+        ArgumentNullException.ThrowIfNull(requestContext);
 
         filter ??= WorkerBulkActionFilter.All;
         var candidates = this.GetBulkActionCandidates(filter);
@@ -486,7 +492,7 @@ internal sealed class WorkerOperations : IWorkerOperations, IDisposable
         {
             cancellationToken.ThrowIfCancellationRequested();
             var version = candidate.ToSummary().Version;
-            outcomes.Add(this.ApplyAction(version, action, origin));
+            outcomes.Add(this.ApplyAction(version, action, requestContext.Origin));
         }
 
         return Task.FromResult(new WorkerBulkActionOutcome(
@@ -547,15 +553,19 @@ internal sealed class WorkerOperations : IWorkerOperations, IDisposable
         return this.Reconfigure(
             worker,
             changes,
-            this.dotNetOriginProvider.CreateOrigin("Reconfigure worker through .NET."));
+            WorkRequestContext.Create(
+                WorkInvocationChannel.DotNet,
+                description: "Reconfigure worker through .NET."),
+            cancellationToken);
     }
 
     internal Task<WorkActionOutcome> Reconfigure(
         WorkerVersion worker,
         WorkerReconfiguration changes,
-        WorkOrigin origin)
+        WorkRequestContext requestContext,
+        CancellationToken cancellationToken)
     {
-        ArgumentNullException.ThrowIfNull(origin);
+        cancellationToken.ThrowIfCancellationRequested();
 
         if (!this.workers.TryGetValue(worker.WorkerId, out var record))
         {
@@ -563,7 +573,7 @@ internal sealed class WorkerOperations : IWorkerOperations, IDisposable
         }
 
         var outcome = record.Reconfigure(changes, worker.Revision, this.persistenceStoreAvailable);
-        record.RecordReconfigurationHistory(changes, outcome, origin);
+        record.RecordReconfigurationHistory(changes, outcome, requestContext.Origin);
         if (outcome.IsAccepted)
         {
             this.concurrency.Synchronize(record);
@@ -586,7 +596,7 @@ internal sealed class WorkerOperations : IWorkerOperations, IDisposable
 
         if (outcome.IsAccepted)
         {
-            this.workerEvents.Reconfigured(record, changes, outcome, origin);
+            this.workerEvents.Reconfigured(record, changes, outcome, requestContext.Origin);
         }
 
         return Task.FromResult(outcome);
