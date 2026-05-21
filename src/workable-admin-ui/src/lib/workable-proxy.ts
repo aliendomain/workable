@@ -7,8 +7,6 @@ import {
   type AdminSecurityEnvironment,
 } from "./admin-security.ts";
 
-const LOCAL_HTTPS_HOSTS = new Set(["localhost", "127.0.0.1", "::1"]);
-
 type WorkableProxyOptions = {
   env?: AdminSecurityEnvironment;
   fetch?: typeof fetch;
@@ -54,7 +52,7 @@ export async function proxyWorkableRequest(
   }
 
   try {
-    const response = await fetchWorkable(target.url, {
+    const response = await (options.fetch ?? fetch)(target.url, {
       method: request.method,
       headers: {
         accept: "application/json",
@@ -75,35 +73,10 @@ export async function proxyWorkableRequest(
   } catch {
     return Response.json(
       {
-        error: "Unable to reach the Workable HTTP API.",
+        error: createProxyReachabilityError(target.url),
       },
       { status: 502 }
     );
-  }
-}
-
-function shouldAllowInsecureLocalHttps(url: URL) {
-  return process.env.NODE_ENV !== "production" &&
-    url.protocol === "https:" &&
-    LOCAL_HTTPS_HOSTS.has(url.hostname);
-}
-
-async function fetchWorkable(url: URL, init: RequestInit) {
-  if (!shouldAllowInsecureLocalHttps(url)) {
-    return fetch(url, init);
-  }
-
-  const previous = process.env.NODE_TLS_REJECT_UNAUTHORIZED;
-  process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
-
-  try {
-    return await fetch(url, init);
-  } finally {
-    if (previous === undefined) {
-      delete process.env.NODE_TLS_REJECT_UNAUTHORIZED;
-    } else {
-      process.env.NODE_TLS_REJECT_UNAUTHORIZED = previous;
-    }
   }
 }
 
@@ -145,4 +118,20 @@ async function readBody(request: Request, maximumBytes: number) {
   }
 
   return { ok: true as const, text: new TextDecoder().decode(buffer) };
+}
+
+function createProxyReachabilityError(url: URL) {
+  if (url.protocol === "https:" && isLoopbackHost(url.hostname)) {
+    return "Unable to reach the Workable HTTP API. Local HTTPS loopback hosts must present a trusted development certificate to the admin UI proxy.";
+  }
+
+  return "Unable to reach the Workable HTTP API.";
+}
+
+function isLoopbackHost(hostname: string) {
+  const normalized = hostname.toLowerCase();
+  return normalized === "localhost" ||
+    normalized === "127.0.0.1" ||
+    normalized === "::1" ||
+    normalized === "[::1]";
 }
