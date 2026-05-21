@@ -195,14 +195,15 @@ public sealed class WorkSystemLifecycleTests
     {
         var tracker = new ConcurrentShutdownTracker(expectedStarts: 2);
         var provider = new ServiceCollection()
-            .Configure<HostOptions>(options => options.ShutdownTimeout = TimeSpan.FromMilliseconds(400))
             .AddSingleton(tracker)
             .AddWorkableSystem(builder => builder
                 .StartWithHost()
-                .AddWork<ConcurrentCancellationIgnoringShutdownWork>(WorkDefinition.Create("shutdown.concurrent")))
+                .UseShutdownGracePeriod(TimeSpan.FromSeconds(30))
+                .AddWork<ConcurrentCancelAwareShutdownWork>(WorkDefinition.Create("shutdown.concurrent")))
             .AddWorkableSystem("remote", builder => builder
                 .StartWithHost()
-                .AddWork<ConcurrentCancellationIgnoringShutdownWork>(WorkDefinition.Create("shutdown.concurrent")))
+                .UseShutdownGracePeriod(TimeSpan.FromSeconds(30))
+                .AddWork<ConcurrentCancelAwareShutdownWork>(WorkDefinition.Create("shutdown.concurrent")))
             .BuildServiceProvider();
         var registry = provider.GetRequiredService<IWorkSystemRegistry>();
         var hostedService = Assert.Single(provider.GetServices<IHostedService>());
@@ -213,13 +214,20 @@ public sealed class WorkSystemLifecycleTests
         var second = await remote.Queue.Enqueue("shutdown.concurrent");
         await tracker.AllStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
 
-        var startedAt = Stopwatch.GetTimestamp();
-        await hostedService.StopAsync(CancellationToken.None);
-        var elapsed = Stopwatch.GetElapsedTime(startedAt);
+        var stop = hostedService.StopAsync(CancellationToken.None);
+        try
+        {
+            await tracker.AllCancellationObserved.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        }
+        finally
+        {
+            tracker.ReleaseCancel.TrySetResult();
+        }
+
+        await stop.WaitAsync(TimeSpan.FromSeconds(5));
 
         Assert.Equal(WorkCompletionStatus.Interrupted, (await first.WaitForCompletion()).Status);
         Assert.Equal(WorkCompletionStatus.Interrupted, (await second.WaitForCompletion()).Status);
-        Assert.True(elapsed < TimeSpan.FromMilliseconds(550), $"Expected systems to stop concurrently, but elapsed was {elapsed}.");
     }
 
     [Fact]
@@ -558,8 +566,13 @@ public sealed class WorkSystemLifecycleTests
     private sealed class ConcurrentShutdownTracker(int expectedStarts)
     {
         private int startedCount;
+        private int cancellationObservedCount;
 
         public TaskCompletionSource AllStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public TaskCompletionSource AllCancellationObserved { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public TaskCompletionSource ReleaseCancel { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         public void SignalStarted()
         {
@@ -568,9 +581,17 @@ public sealed class WorkSystemLifecycleTests
                 this.AllStarted.TrySetResult();
             }
         }
+
+        public void SignalCancellationObserved()
+        {
+            if (Interlocked.Increment(ref this.cancellationObservedCount) == expectedStarts)
+            {
+                this.AllCancellationObserved.TrySetResult();
+            }
+        }
     }
 
-    private sealed class ConcurrentCancellationIgnoringShutdownWork(ConcurrentShutdownTracker tracker) : IWorkExecutor
+    private sealed class ConcurrentCancelAwareShutdownWork(ConcurrentShutdownTracker tracker) : IWorkExecutor
     {
         public async Task<WorkExecutionResult> Execute(
             IWorkExecutionContext context,
@@ -578,8 +599,17 @@ public sealed class WorkSystemLifecycleTests
             CancellationToken cancellationToken)
         {
             tracker.SignalStarted();
-            await Task.Delay(Timeout.InfiniteTimeSpan, CancellationToken.None);
-            return WorkExecutionResult.Success();
+            try
+            {
+                await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+                return WorkExecutionResult.Success();
+            }
+            catch (OperationCanceledException)
+            {
+                tracker.SignalCancellationObserved();
+                await tracker.ReleaseCancel.Task;
+                throw;
+            }
         }
     }
 
