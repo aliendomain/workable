@@ -1,5 +1,6 @@
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.Extensions.Configuration;
+using System.Linq;
 
 namespace Workable;
 
@@ -140,21 +141,17 @@ public sealed class WorkableEntraAuthorizationOptions
                 "Workable Entra authorization requires a non-empty SignalR access token query string name.");
         }
 
-        foreach (var path in this.GetSignalRAccessTokenQueryStringPaths())
+        foreach (var path in this.GetSignalRAccessTokenQueryStringPaths().Where(path => !path.StartsWith('/')))
         {
-            if (!path.StartsWith('/'))
-            {
-                throw new InvalidOperationException(
-                    "Workable Entra SignalR access token query string paths must be absolute application paths.");
-            }
+            throw new InvalidOperationException(
+                "Workable Entra SignalR access token query string paths must be absolute application paths.");
         }
     }
 
     private static IEnumerable<string> ReadList(IConfiguration section)
     {
-        foreach (var child in section.GetChildren())
+        foreach (var value in section.GetChildren().Select(child => child.Value?.Trim()))
         {
-            var value = child.Value?.Trim();
             if (!string.IsNullOrWhiteSpace(value))
             {
                 yield return value;

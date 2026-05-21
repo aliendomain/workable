@@ -14,6 +14,7 @@ import {
 } from "./admin-security.ts";
 import { getAdminSecuritySettings } from "./admin-security/config.ts";
 import {
+  createExpiredEntraTargetTokenCookies,
   createEntraTargetTokenCookieHeaders,
 } from "./admin-security/entra-downstream.ts";
 import { createWorkableRealtimeUrl } from "./workable.ts";
@@ -476,6 +477,108 @@ test("proxy refreshes and forwards the correct token for each configured hosted 
   assert.equal(authorizationHeader, "Bearer ops-access-token");
   assert.equal(tokenBodies.length, 1);
   assert.match(tokenBodies[0] ?? "", /scope=api%3A%2F%2Fops-client-id%2Fworkable.access/);
+});
+
+test("proxy binds Entra target token refresh to the actual proxied host", async () => {
+  const env = entraEnv({
+    WORKABLE_ALLOWED_API_URLS: "https://ops.example.com/workable",
+    WORKABLE_ADMIN_ENTRA_TARGET_APIS_JSON: JSON.stringify([
+      {
+        apiUrl: "https://workable.example.com/workable",
+        scope: "api://actually-client-id/workable.access",
+      },
+      {
+        apiUrl: "https://ops.example.com/workable",
+        scope: "api://ops-client-id/workable.access",
+      },
+    ]),
+  });
+  const cookieHeader = createEntraAuthenticatedCookieHeader(
+    env,
+    new Request("https://admin.example.com/"),
+    {
+      refresh_token: "refresh-me",
+    }
+  );
+  const tokenBodies: string[] = [];
+  let proxiedUrl: string | null = null;
+
+  const response = await proxyWorkableRequest(
+    new Request(
+      "https://admin.example.com/api/workable/systems?apiUrl=https%3A%2F%2Fworkable.example.com%2Fworkable",
+      {
+        headers: {
+          cookie: cookieHeader,
+          "x-workable-api-url": "https://ops.example.com/workable",
+        },
+      }
+    ),
+    ["systems"],
+    {
+      env,
+      fetch: async (url, init) => {
+        if (String(url).includes(".well-known/openid-configuration")) {
+          return new Response(JSON.stringify({
+            token_endpoint: "https://login.microsoftonline.com/tenant-id/oauth2/v2.0/token",
+          }), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          });
+        }
+
+        if (String(url).endsWith("/oauth2/v2.0/token")) {
+          const body = init?.body instanceof URLSearchParams
+            ? init.body.toString()
+            : String(init?.body ?? "");
+          tokenBodies.push(body);
+          return new Response(JSON.stringify({
+            access_token: "ops-access-token",
+            expires_in: 3600,
+            refresh_token: "ops-refresh-token",
+            token_type: "Bearer",
+          }), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          });
+        }
+
+        proxiedUrl = String(url);
+        return new Response(JSON.stringify({ systems: [] }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      },
+    }
+  );
+
+  assert.equal(response.status, 200);
+  assert.equal(proxiedUrl, "https://ops.example.com/workable/systems?apiUrl=https%3A%2F%2Fworkable.example.com%2Fworkable");
+  assert.equal(tokenBodies.length, 1);
+  assert.match(tokenBodies[0] ?? "", /scope=api%3A%2F%2Fops-client-id%2Fworkable.access/);
+});
+
+test("oversized Entra target token state expires cookies instead of writing unreadable chunks", () => {
+  const env = entraEnv({
+    WORKABLE_ADMIN_ENTRA_TARGET_APIS_JSON: JSON.stringify([
+      {
+        apiUrl: "https://workable.example.com/workable",
+        scope: "api://actually-client-id/workable.access",
+      },
+    ]),
+  });
+
+  const cookies = createEntraTargetTokenCookieHeaders(
+    {
+      access_token: "a".repeat(80_000),
+      expires_in: 3600,
+      refresh_token: "b".repeat(80_000),
+      token_type: "Bearer",
+    },
+    new Request("https://admin.example.com/"),
+    getAdminSecuritySettings(env)
+  );
+
+  assert.deepEqual(cookies, createExpiredEntraTargetTokenCookies());
 });
 
 test("proxy explains trusted certificate requirements for local HTTPS loopback failures", async () => {

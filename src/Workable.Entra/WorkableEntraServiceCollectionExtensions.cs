@@ -5,6 +5,7 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.IdentityModel.Tokens;
+using System.Linq;
 
 namespace Workable;
 
@@ -144,13 +145,11 @@ public static class WorkableEntraServiceCollectionExtensions
             return false;
         }
 
-        foreach (var path in options.GetSignalRAccessTokenQueryStringPaths())
+        foreach (var path in options.GetSignalRAccessTokenQueryStringPaths()
+            .Where(path => httpContext.Request.Path.StartsWithSegments(new PathString(path))))
         {
-            if (httpContext.Request.Path.StartsWithSegments(new PathString(path)))
-            {
-                accessToken = candidate;
-                return true;
-            }
+            accessToken = candidate;
+            return true;
         }
 
         return false;
@@ -181,12 +180,9 @@ public static class WorkableEntraServiceCollectionExtensions
         params char[] values)
     {
         var merged = existing.ToList();
-        foreach (var value in values)
+        foreach (var value in values.Where(value => !merged.Contains(value)))
         {
-            if (!merged.Contains(value))
-            {
-                merged.Add(value);
-            }
+            merged.Add(value);
         }
 
         return merged;
@@ -194,10 +190,9 @@ public static class WorkableEntraServiceCollectionExtensions
 
     private static void AddUnique(List<string> target, params string[] values)
     {
-        foreach (var value in values)
+        foreach (var value in values.Where(value => !string.IsNullOrWhiteSpace(value)))
         {
-            if (!string.IsNullOrWhiteSpace(value) &&
-                !target.Contains(value, StringComparer.OrdinalIgnoreCase))
+            if (!target.Contains(value, StringComparer.OrdinalIgnoreCase))
             {
                 target.Add(value);
             }

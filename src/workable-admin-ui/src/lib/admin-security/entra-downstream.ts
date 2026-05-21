@@ -66,6 +66,10 @@ type EntraTargetAccessTokenFailure = AdminSecurityFailure & {
   setCookieHeaders: string[];
 };
 
+type EntraTargetAccessTokenOptions = {
+  requestedApiUrl?: URL | null;
+};
+
 export function getEntraTargetTokenBindings(settings: AdminSecuritySettings) {
   const bindings: EntraTargetTokenBinding[] = [];
   const seen = new Set<string>();
@@ -156,18 +160,23 @@ export function createEntraTargetTokenCookieHeaders(
     };
   }
 
-  return serializeStateCookie(state, request, settings);
+  try {
+    return serializeStateCookie(state, request, settings);
+  } catch {
+    return createExpiredEntraTargetTokenCookies();
+  }
 }
 
 export async function getEntraTargetAccessToken(
   request: Request,
   env: AdminSecurityEnvironment = process.env,
-  fetcher: FetchLike = fetch
+  fetcher: FetchLike = fetch,
+  options: EntraTargetAccessTokenOptions = {}
 ): Promise<EntraTargetAccessTokenSuccess | EntraTargetAccessTokenFailure> {
   const settings = getAdminSecuritySettings(env);
   const binding = findEntraTargetTokenBinding(
     settings,
-    getRequestedApiUrl(request, settings)
+    options.requestedApiUrl ?? getRequestedApiUrl(request, settings)
   );
   if (!binding) {
     return { ok: true, setCookieHeaders: [] };
@@ -525,6 +534,10 @@ function serializeChunkedCookie(
   }
 ) {
   const chunks = splitIntoChunks(value, TOKEN_COOKIE_CHUNK_SIZE);
+  if (chunks.length > MAX_TOKEN_COOKIE_CHUNKS) {
+    throw new Error("Microsoft Entra ID token state exceeds the supported cookie size.");
+  }
+
   return [
     serializeCookie(`${name}.parts`, String(chunks.length), options),
     ...chunks.map((chunk, index) => serializeCookie(`${name}.${index}`, chunk, options)),

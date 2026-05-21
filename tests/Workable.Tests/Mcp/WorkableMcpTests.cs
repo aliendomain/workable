@@ -479,7 +479,8 @@ public sealed class WorkableMcpTests
         using var host = await CreateExplicitSchemeMcpHttpHost();
         var httpClient = host.GetTestClient();
 
-        using var unauthorized = await httpClient.PostAsync("/workable/mcp", new StringContent("{", System.Text.Encoding.UTF8, "application/json"));
+        using var unauthorizedContent = new StringContent("{", System.Text.Encoding.UTF8, "application/json");
+        using var unauthorized = await httpClient.PostAsync("/workable/mcp", unauthorizedContent);
         Assert.Equal(System.Net.HttpStatusCode.Unauthorized, unauthorized.StatusCode);
 
         httpClient.DefaultRequestHeaders.Authorization = WorkableSchemeAuthenticationTestSupport.CreateBearerHeader();

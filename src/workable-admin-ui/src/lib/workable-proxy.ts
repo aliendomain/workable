@@ -55,7 +55,10 @@ export async function proxyWorkableRequest(
   const targetAccessToken = await getEntraTargetAccessToken(
     request,
     env,
-    options.fetch ?? fetch
+    options.fetch ?? fetch,
+    {
+      requestedApiUrl: target.baseUrl,
+    }
   );
   if (!targetAccessToken.ok) {
     return Response.json(
