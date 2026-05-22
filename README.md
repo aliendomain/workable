@@ -15,21 +15,35 @@ Workable also gives applications a path to expose the same authored work through
 - Define work once and invoke it through .NET, HTTP, or MCP when those channels are enabled.
 - Keep feature libraries independent from the host runtime while still letting them contribute work.
 - Queue fire-and-forget work without losing the ability to query, observe, cancel, pause, retry, or purge it.
+- Give operators a real admin surface for work: live system and worker visibility, executable definitions, diagnostics, and control actions instead of one-off job screens and custom tooling.
 - Attach runtime behavior such as recurrence, transient retry, idempotency, concurrency, retention, logging, profiling, initialization, and start policy.
 - Use structured inputs, outputs, messages, worker snapshots, event payloads, and status summaries instead of ad hoc task tracking.
 - Preserve who or what started work through request context and origin metadata for HTTP, MCP, SignalR, and direct .NET calls.
 
 ## Packages
 
+### Core Packages
+
 - `Workable.Sdk`: contracts and registration helpers for assemblies that author work.
 - `Workable.Abstractions`: contracts for libraries that consume an already-hosted work system.
 - `Workable`: in-process host and runtime for Workable systems.
+
+### Optional Packages
+
+- `Workable.SqlServer`: SQL Server persistence integration for durable queueing, persistence-backed idempotency, and persistence-backed concurrency.
 - `Workable.AspNetCore`: ASP.NET Core request-context and authorization integration for custom endpoints and hosts.
 - `Workable.Entra`: Microsoft Entra ID bearer-token validation and Workable authorization claim mapping for ASP.NET Core target apps.
-- `Workable.Views`: shared component-view contracts and projections used by HTTP and SignalR adapters.
+- `Workable.Views`: shared component-view contracts and projections used by HTTP and SignalR adapters; most applications receive it transitively through `Workable.HttpApi` or `Workable.SignalR` instead of referencing it directly.
 - `Workable.HttpApi`: standard HTTP endpoints for queueing, querying, and controlling work.
 - `Workable.Mcp`: MCP server adapter for authored work, query tools, and worker action tools.
 - `Workable.SignalR`: realtime worker events and component-view updates for ASP.NET Core clients.
+
+### Apps And Tools
+
+- `samples/Workable.SampleHost`: runnable ASP.NET Core sample app with HTTP API, MCP, SignalR, fake-auth profiles, and SQL Server LocalDB durability scenarios.
+- `src/Workable.PerformanceHarness`: opt-in scenario runner and BenchmarkDotNet harness for runtime, query, view, realtime, and SQL durability performance work.
+- `integrations/sqlserver/tools/Workable.SqlServer.Cli`: SQL Server schema generation and deployment CLI for Workable persistence.
+- `src/workable-admin-ui`: Next.js admin UI for inspecting and operating Workable systems through the HTTP API and SignalR realtime updates.
 
 ## Documentation
 
@@ -48,6 +62,7 @@ Workable also gives applications a path to expose the same authored work through
   - [Retention](https://github.com/aliendomain/workable/blob/main/docs/work-configuration-retention.md): automatic purge timing for completed and canceled workers.
   - [Concurrency](https://github.com/aliendomain/workable/blob/main/docs/work-configuration-concurrency.md): capacity limits by definition, subject, or concurrency key.
   - [Queue Durability](https://github.com/aliendomain/workable/blob/main/docs/work-configuration-queue-durability.md): persist accepted queue requests and replay interrupted durable work.
+  - [Workable SQL Server Integration](https://github.com/aliendomain/workable/blob/main/integrations/sqlserver/README.md): configure SQL Server persistence, schema deployment, durable completion, and schema CLI usage.
   - [Invocation](https://github.com/aliendomain/workable/blob/main/docs/work-configuration-invocation.md): channels allowed to start a work definition.
   - [Interactions](https://github.com/aliendomain/workable/blob/main/docs/work-configuration-interactions.md): non-obvious behavior when configuration types are combined.
 - [Work Querying](https://github.com/aliendomain/workable/blob/main/docs/work-querying.md): build admin views, status summaries, and definition browsers.

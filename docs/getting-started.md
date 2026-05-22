@@ -8,23 +8,83 @@ The core Workable path uses three packages:
 
 All three packages use the `Workable` namespace.
 
-Optional adapter packages connect Workable to the edges of an application:
+Optional packages add persistence, security, transport, and realtime integrations:
 
+- Use `Workable.SqlServer` when the host wants SQL Server persistence for durable queueing, persistence-backed idempotency, and persistence-backed concurrency.
 - Use `Workable.AspNetCore` when the host needs to create authenticated `WorkRequestContext` values from `HttpContext` for its own controllers, minimal APIs, or custom transports.
 - Use `Workable.Entra` when an ASP.NET Core target app should validate Microsoft Entra ID bearer tokens for Workable HTTP, MCP, and SignalR adapter calls.
-- `Workable.Views` provides shared component-view contracts and projections used by HTTP and SignalR adapters. Most applications receive it transitively through those adapters.
+- `Workable.Views` provides shared component-view contracts and projections used by HTTP and SignalR adapters. Most applications receive it transitively through `Workable.HttpApi` or `Workable.SignalR` instead of referencing it directly.
 - Use `Workable.HttpApi` when the host wants Workable to provide standard HTTP routes for queueing work, querying workers, and sending worker actions such as pause, cancel, push, and purge.
 - Use `Workable.Mcp` when the host wants authored work definitions, work-system query tools, and worker action tools to be available to an MCP client, such as an LLM tool host.
 - Use `Workable.SignalR` when the host wants browser clients to receive realtime worker events and component-view updates.
 
-The core host does not need these adapters unless it wants one of those integration points.
+The core host does not need these packages unless it wants one of those integration points.
+
+## Hosting Workable Systems in your Application
+
+You can host one Workable system or several. An unnamed registration is the explicit default system. If every system is named, the first registered system becomes the default. Injecting IWorkSystem gives that default system directly, while IWorkSystemRegistry lets host code choose a specific named system by name or id.
+
+Multiple systems are useful when different areas of the application need isolation. For example, you might separate customer-facing work from internal operations work, give each system different authorization or retention settings, or expose only one system to a particular client surface. If you only need one catalog and one set of runtime policies, the default system is usually enough.
+
+```xml
+<PackageReference Include="Workable" Version="<current-version>" />
+```
+
+Replace `<current-version>` with the Workable package version you want to install.
+
+Example registration:
+
+```csharp
+using Workable;
+
+services.AddWorkableSystem(builder =>
+{
+    builder.StartWithHost();
+});
+
+services.AddWorkableSystem("email", builder =>
+{
+    builder.StartWithHost();
+});
+```
+
+### Lifecycle Options
+
+The system builder has three lifecycle controls:
+
+- `StartWithHost(bool enabled = true)`: starts the system automatically with the host instead of requiring a manual start.
+- `UseShutdownGracePeriod(TimeSpan gracePeriod)`: sets an explicit shutdown grace period for that system.
+- `UseShutdownGracePeriodRatio(double hostShutdownTimeoutRatio)`: keeps the system shutdown grace period relative to the host shutdown timeout.
+
+Hosts can change the shutdown grace period. By default, Workable uses 80% of the
+.NET generic host shutdown timeout when host options are available. If Workable
+is used outside a generic host, the fallback default is 15 seconds.
+
+```csharp
+services.AddWorkableSystem(builder =>
+{
+    builder.StartWithHost();
+    builder.UseShutdownGracePeriod(TimeSpan.FromSeconds(30));
+});
+```
+
+You can also keep the grace period relative to the host timeout. Ratios must be
+greater than zero and cannot exceed 90%.
+
+```csharp
+services.AddWorkableSystem(builder =>
+{
+    builder.StartWithHost();
+    builder.UseShutdownGracePeriodRatio(0.75);
+});
+```
 
 ## Feature Assembly
 
 A feature assembly defines work. It references `Workable.Sdk`.
 
 ```xml
-<PackageReference Include="Workable.Sdk" Version="1.0.0" />
+<PackageReference Include="Workable.Sdk" Version="<current-version>" />
 ```
 
 Feature assemblies can register work with a delegate:
@@ -130,66 +190,12 @@ public sealed class EmailStartupWorkSource(
 services.AddWorkableStartupWorkSource<EmailStartupWorkSource>();
 ```
 
-## Host Application
-
-A host application creates Workable systems. It references `Workable`.
-
-```xml
-<PackageReference Include="Workable" Version="1.0.0" />
-```
-
-The host registers one or more systems:
-
-```csharp
-using Workable;
-
-services.AddWorkableSystem(builder =>
-{
-    builder.StartWithHost();
-});
-
-services.AddWorkableSystem("email", builder =>
-{
-    builder.StartWithHost();
-});
-```
-
-Hosts can change the shutdown grace period. By default, Workable uses 80% of the
-.NET generic host shutdown timeout when host options are available. If Workable
-is used outside a generic host, the fallback default is 15 seconds.
-
-```csharp
-services.AddWorkableSystem(builder =>
-{
-    builder.StartWithHost();
-    builder.UseShutdownGracePeriod(TimeSpan.FromSeconds(30));
-});
-```
-
-You can also keep the grace period relative to the host timeout. Ratios must be
-greater than zero and cannot exceed 90%.
-
-```csharp
-services.AddWorkableSystem(builder =>
-{
-    builder.StartWithHost();
-    builder.UseShutdownGracePeriodRatio(0.75);
-});
-```
-
-Each system has its own catalog. Unbound work registrations are included in systems that accept work from feature assemblies. Work can also target a named system.
-
-```csharp
-services.AddWorkableWork<SendWelcomeEmailWork>(
-    systemName: "email");
-```
-
 ## Non-Host Library
 
 A library can queue, query, or control work without hosting Workable. It references `Workable.Abstractions` and accepts `IWorkSystem` or `IWorkSystemRegistry` from the host application's DI container.
 
 ```xml
-<PackageReference Include="Workable.Abstractions" Version="1.0.0" />
+<PackageReference Include="Workable.Abstractions" Version="<current-version>" />
 ```
 
 ```csharp
@@ -208,7 +214,7 @@ public sealed class WelcomeEmailService(IWorkSystem workSystem)
 ASP.NET Core hosts that queue work from their own controllers or minimal API routes can reference `Workable.AspNetCore` and register HTTP-context request-context services. Use this when the work should record who requested it without exposing Workable's standard HTTP API endpoints.
 
 ```xml
-<PackageReference Include="Workable.AspNetCore" Version="1.0.0" />
+<PackageReference Include="Workable.AspNetCore" Version="<current-version>" />
 ```
 
 ```csharp
@@ -247,7 +253,7 @@ app.MapPost("/welcome/{userId}", async (
 If the ASP.NET Core host should validate Microsoft Entra ID bearer tokens for Workable adapters, reference `Workable.Entra` and configure the target app tenant/audience:
 
 ```xml
-<PackageReference Include="Workable.Entra" Version="1.0.0" />
+<PackageReference Include="Workable.Entra" Version="<current-version>" />
 ```
 
 ```csharp

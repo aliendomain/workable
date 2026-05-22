@@ -1,6 +1,6 @@
 # Workable SQL Server Integration
 
-`Workable.SqlServer` provides SQL Server persistence for durable queueing, persistence-backed idempotency, persistence-backed concurrency, and persistent logging.
+`Workable.SqlServer` provides SQL Server persistence for durable queueing, persistence-backed idempotency, and persistence-backed concurrency.
 
 ## Runtime Configuration
 

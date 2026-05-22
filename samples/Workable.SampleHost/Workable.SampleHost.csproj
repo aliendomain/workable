@@ -9,7 +9,6 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\Workable\Workable.csproj" />
-    <ProjectReference Include="..\..\src\Workable.Entra\Workable.Entra.csproj" />
     <ProjectReference Include="..\..\src\Workable.HttpApi\Workable.HttpApi.csproj" />
     <ProjectReference Include="..\..\src\Workable.Mcp\Workable.Mcp.csproj" />
     <ProjectReference Include="..\..\src\Workable.SignalR\Workable.SignalR.csproj" />

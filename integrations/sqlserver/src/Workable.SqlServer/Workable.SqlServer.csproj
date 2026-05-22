@@ -5,7 +5,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <PackageId>Workable.SqlServer</PackageId>
-    <Description>SQL Server persistence integration for Workable durable queueing, persistence-backed idempotency, persistence-backed concurrency, and persistent logging.</Description>
+    <Description>SQL Server persistence integration for Workable durable queueing, persistence-backed idempotency, and persistence-backed concurrency.</Description>
     <PackageTags>work;workflow;background-jobs;recurrence;queueing;dotnet;sql-server;localdb;persistence</PackageTags>
   </PropertyGroup>
 
