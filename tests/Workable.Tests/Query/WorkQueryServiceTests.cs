@@ -1260,6 +1260,7 @@ public sealed class WorkQueryServiceTests
         var failed = await system.Queue.Enqueue("components.billing.failed", WorkInput.Empty.WithIdentifier(sharedIdentifier));
         await failed.WaitForCompletion();
         await (await system.Queue.Enqueue("components.shipping.complete", WorkInput.Empty.WithIdentifier(sharedIdentifier))).WaitForCompletion();
+        await WaitForReadModel(system);
 
         var criteria = new WorkSystemCriteria(Category: "Components:Billing");
         var details = await system.Query.SystemDetails(criteria);

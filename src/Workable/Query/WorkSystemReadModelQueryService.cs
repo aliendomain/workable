@@ -422,6 +422,7 @@ internal sealed class WorkSystemReadModelQueryService(
     private ValueTask<WorkSystemReadModelSnapshot> GetCurrentReadModel(CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
+        this.readModel.ThrowIfProjectorFailed();
         return ValueTask.FromResult(this.readModel.Current);
     }
 
