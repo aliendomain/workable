@@ -1,3 +1,4 @@
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
@@ -27,8 +28,26 @@ public static class WorkableSignalREndpointRouteBuilderExtensions
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
 
         var builder = endpoints.MapHub<WorkableRealtimeHub>(path);
+        ApplyTransportAuthorization(builder, endpoints.ServiceProvider);
         RequireAuthenticated(builder);
         return builder;
+    }
+
+    private static void ApplyTransportAuthorization(IEndpointConventionBuilder builder, IServiceProvider services)
+    {
+        var transportScheme = services
+            .GetService<IOptions<WorkableAspNetCoreAuthorizationOptions>>()
+            ?.Value
+            .TransportAuthenticationScheme;
+
+        if (string.IsNullOrWhiteSpace(transportScheme))
+        {
+            return;
+        }
+
+        builder.RequireAuthorization(new AuthorizationPolicyBuilder(transportScheme)
+            .RequireAuthenticatedUser()
+            .Build());
     }
 
     private static void EnsureAllSystemsRequireAuthorization(IWorkSystemRegistry registry)

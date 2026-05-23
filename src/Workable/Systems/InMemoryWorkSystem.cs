@@ -48,8 +48,7 @@ internal sealed class InMemoryWorkSystem :
         this.workDefinitionSourceFactories = workDefinitionSourceFactories;
         this.startupWorkSourceFactories = startupWorkSourceFactories;
         this.ShutdownGracePeriod = shutdownGracePeriod;
-        var persistenceStore = rootServices.GetService<IWorkPersistenceStore>()
-            ?? rootServices.GetService<IWorkQueueDurabilityStore>();
+        var persistenceStore = rootServices.GetService<IWorkPersistenceStore>();
         this.PersistentCoordinationAvailable = persistenceStore is not null;
         this.catalog = new WorkSystemCatalog(work, this.PersistentCoordinationAvailable);
         this.readModel = new WorkSystemReadModel(this.catalog, () => this.State, this.Name, this.metrics);

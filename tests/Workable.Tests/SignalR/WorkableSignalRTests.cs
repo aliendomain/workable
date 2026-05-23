@@ -5,6 +5,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
 using System.Threading.Channels;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http.Connections;
@@ -849,6 +850,7 @@ public sealed class WorkableSignalRTests
                     }
 
                     app.UseRouting();
+                    app.UseAuthorization();
                     app.UseEndpoints(endpoints =>
                     {
                         endpoints.MapWorkableApi("/workable");
@@ -908,6 +910,18 @@ public sealed class WorkableSignalRTests
         await authorized.InvokeAsync("WatchSystem", null);
     }
 
+    [Fact]
+    public async Task SignalRUsesWorkableTransportSchemeWhenHostFallbackPolicyTargetsAnotherScheme()
+    {
+        using var host = await CreateExplicitSchemeSignalRHostWithFallbackPolicy();
+        await using var connection = CreateConnection(
+            host,
+            accessToken: WorkableSchemeAuthenticationTestSupport.WorkableToken);
+
+        await connection.StartAsync();
+        await connection.InvokeAsync("WatchSystem", null);
+    }
+
     private static async Task<IHost> CreateExplicitSchemeSignalRHost()
     {
         var host = new HostBuilder()
@@ -946,6 +960,66 @@ public sealed class WorkableSignalRTests
                 {
                     app.UseRouting();
                     app.UseAuthentication();
+                    app.UseAuthorization();
+                    app.UseEndpoints(endpoints =>
+                    {
+                        endpoints.MapWorkableApi("/workable");
+                        endpoints.MapWorkableSignalR();
+                    });
+                });
+            })
+            .Build();
+
+        await host.StartAsync();
+        return host;
+    }
+
+    private static async Task<IHost> CreateExplicitSchemeSignalRHostWithFallbackPolicy()
+    {
+        var host = new HostBuilder()
+            .ConfigureWebHost(web =>
+            {
+                web.UseTestServer();
+                web.ConfigureServices(services =>
+                {
+                    services.AddRouting();
+                    services.AddWorkableSchemeTestAuthentication();
+                    services.AddAuthorization(options =>
+                    {
+                        options.FallbackPolicy = new AuthorizationPolicyBuilder(
+                            WorkableSchemeAuthenticationTestSupport.AmbientScheme)
+                            .RequireClaim("host-app")
+                            .Build();
+                    });
+                    services.AddTransportTestAuthorization();
+                    services.AddSingleton<SignalRWorkGate>();
+                    services.AddWorkableSystem(builder =>
+                    {
+                        builder.StartWithHost();
+                        builder.RequireAuthorization();
+                        builder.ConfigureTransportSystemAuthorization();
+                        builder.AddAuthorizedTransportWork(
+                            WorkDefinition.Create(
+                                "signalr.worker",
+                                configuration: WorkConfiguration.Default with
+                                {
+                                    Start = WorkStartConfiguration.DoNotStart,
+                                }),
+                            SuccessfulWork);
+                        builder.AddAuthorizedTransportWork(WorkDefinition.Create("signalr.view"), SuccessfulWork);
+                    });
+                    services.AddWorkableHttpApi();
+                    services.AddWorkableSignalR(options =>
+                    {
+                        options.PublishInterval = TimeSpan.FromMilliseconds(50);
+                        options.DiagnosticsPublishInterval = TimeSpan.FromMilliseconds(50);
+                    });
+                });
+                web.Configure(app =>
+                {
+                    app.UseRouting();
+                    app.UseAuthentication();
+                    app.UseAuthorization();
                     app.UseEndpoints(endpoints =>
                     {
                         endpoints.MapWorkableApi("/workable");

@@ -1,10 +1,15 @@
 # Workable Sample Host
 
-This sample hosts two in-process Workable systems with the standard adapters enabled:
+This sample hosts two in-process Workable systems:
 
-- HTTP API at `/workable`
-- MCP server at `/workable/mcp`
-- SignalR realtime hub at `/workable/realtime`
+- the default `Operations` system
+- the named `fulfillment` system
+
+The sample enables the standard adapters, but not every adapter is exposed the same way for both systems:
+
+- HTTP API at `/workable` for the default system, with named-system routes under `/workable/systems/{systemName}`
+- MCP server at `/workable/mcp` for the default system
+- SignalR realtime hub at `/workable/realtime`, where subscriptions can target either system by `systemName`
 
 The sample uses fake path-based authentication so local authorization scenarios are easy to exercise without an identity provider.
 
@@ -43,9 +48,12 @@ Invoke-RestMethod http://localhost:61932/sample-workload/queue-pressure/stop -Me
 Invoke-RestMethod http://localhost:61932/sample-workload/tight-loops
 Invoke-RestMethod http://localhost:61932/sample-workload/tight-loops/start -Method Post -ContentType application/json -Body '{"useTaskYield":true}'
 Invoke-RestMethod http://localhost:61932/sample-workload/tight-loops/stop -Method Post
+Invoke-RestMethod http://localhost:61932/sample-workload/force-cancel -Method Post
+Invoke-RestMethod http://localhost:61932/sample-workload/interval -Method Post -ContentType application/json -Body '{"milliseconds":85}'
+Invoke-RestMethod http://localhost:61932/sample-workload/failures -Method Post -ContentType application/json -Body '{"percentage":8}'
 ```
 
-MCP exposes work definitions with protocol-safe names such as:
+MCP exposes default-system work definitions with protocol-safe names such as:
 
 - `workable_work_sample_echo`
 - `workable_work_sample_delay`
@@ -58,6 +66,7 @@ MCP work calls wait for completion by default. Calling `workable_work_sample_ech
 The HTTP API exposes the standard Workable routes. For example:
 
 - `GET /workable/definitions`
+- `GET /workable/systems/fulfillment/definitions`
 - `POST /workable/work/sample.echo`
 - `POST /workable/workers/query`
 - `POST /workable/workers/{workerId}/actions/{action}`
@@ -96,6 +105,7 @@ The admin UI is secure by default and will not proxy requests until you configur
 Then start the admin UI:
 
 ```powershell
+npm --prefix .\src\workable-admin-ui install
 npm --prefix .\src\workable-admin-ui run dev
 ```
 

@@ -46,21 +46,5 @@ public sealed record WorkRecurrenceConfiguration
         init => this.retainedFailedIterations = value;
     }
 
-    [Obsolete("Use RetainedSuccessfulIterations.")]
-    [JsonIgnore]
-    public int MaximumSuccessfulIterations
-    {
-        get => this.retainedSuccessfulIterations;
-        init => this.retainedSuccessfulIterations = value;
-    }
-
-    [Obsolete("Use RetainedFailedIterations.")]
-    [JsonIgnore]
-    public int MaximumFailedIterations
-    {
-        get => this.retainedFailedIterations;
-        init => this.retainedFailedIterations = value;
-    }
-
     public bool RaiseCircuitBreakerOpenedEvent { get; init; } = true;
 }

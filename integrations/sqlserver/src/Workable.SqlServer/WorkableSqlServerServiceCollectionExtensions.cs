@@ -33,7 +33,6 @@ public static class WorkableSqlServerServiceCollectionExtensions
         services.AddSingleton(options);
         services.AddSingleton<WorkableSqlServerQueueDurabilityStore>();
         services.AddSingleton<IWorkPersistenceStore>(services => services.GetRequiredService<WorkableSqlServerQueueDurabilityStore>());
-        services.AddSingleton<IWorkQueueDurabilityStore>(services => services.GetRequiredService<WorkableSqlServerQueueDurabilityStore>());
         return services;
     }
 }

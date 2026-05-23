@@ -81,12 +81,12 @@ public sealed class WorkableHttpSystemResolver(
             system.Id,
             system.Name,
             system.State,
-            result.ForceCanceledWorkers)
+            result.ForceInterruptedWorkers)
         {
             CancellationRequestedWorkers = result.CancellationRequestedWorkers,
             CancellationRequestedWorkerSummaries = result.CancellationRequestedWorkerSummaries,
-            ForceCanceledWorkerNames = result.ForceCanceledWorkerNames,
-            ForceCanceledWorkerSummaries = result.ForceCanceledWorkerSummaries,
+            ForceInterruptedWorkerNames = result.ForceInterruptedWorkerNames,
+            ForceInterruptedWorkerSummaries = result.ForceInterruptedWorkerSummaries,
             ShutdownGracePeriod = result.ShutdownGracePeriod,
         };
     }

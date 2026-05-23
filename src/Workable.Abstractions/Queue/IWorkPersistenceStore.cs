@@ -27,8 +27,6 @@ public interface IWorkPersistenceStore
         CancellationToken cancellationToken = default);
 }
 
-public interface IWorkQueueDurabilityStore : IWorkPersistenceStore;
-
 public sealed record WorkQueueDurabilityInitializationContext(
     WorkSystemId WorkSystemId,
     string? WorkSystemName,

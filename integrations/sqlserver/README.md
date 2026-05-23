@@ -2,6 +2,13 @@
 
 `Workable.SqlServer` provides SQL Server persistence for durable queueing, persistence-backed idempotency, and persistence-backed concurrency.
 
+See also:
+
+- [Documentation Index](../../docs/README.md)
+- [Getting Started](../../docs/guides/getting-started.md)
+- [Queue Durability Configuration](../../docs/guides/configuration/queue-durability.md)
+- [Configuration Interactions](../../docs/guides/configuration/interactions.md)
+
 ## Runtime Configuration
 
 ```csharp
@@ -23,6 +30,17 @@ services.AddWorkableSqlServerDurableQueue(
 
 When `autoDeploySchema` is `false`, startup validates that the required schema is already installed and fails if it is missing or incomplete.
 
+The package also exposes an options-object overload when the host wants to bind the integration from configuration:
+
+```csharp
+services.AddWorkableSqlServerDurableQueue(new WorkableSqlServerQueueDurabilityOptions
+{
+    ConnectionString = connectionString,
+    SchemaName = "workable",
+    AutoDeploySchema = true,
+});
+```
+
 ## Durable Queue Runtime Behavior
 
 The SQL Server durable queue writes accepted durable workers to the configured schema before returning from enqueue. Without a caller transaction, the integration commits its own insert before returning. With `WorkerOptions.WithSqlServerQueueDurabilityTransaction(connection, transaction)`, the insert participates in the caller's transaction and the queue reader cannot claim the work until that transaction commits. This caller-owned enqueue transaction path requires `QueueDurably()`; persistence-backed idempotency without durable queueing rejects queue requests that supply the queue durability transaction option.
@@ -37,7 +55,7 @@ configuration.QueueDurably(fallbackPollingInterval: TimeSpan.FromSeconds(5));
 
 The default fallback polling interval is five seconds. The minimum supported interval is one second.
 
-Durable completion is opt-in for work that needs successful business writes and Workable's final durable cleanup to commit together:
+Durable completion is opt-in for work that needs successful business writes and Workable's final durable cleanup to commit together. It is usually paired with durable queueing:
 
 ```csharp
 configuration.QueueDurably().CompleteDurably();

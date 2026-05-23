@@ -1,6 +1,7 @@
 "use client";
 
 import Image from "next/image";
+import { useRouter } from "next/navigation";
 import {
   Activity,
   Bell,
@@ -15,6 +16,7 @@ import {
   Home,
   Info,
   Loader2,
+  LogOut,
   Maximize2,
   Minimize2,
   Plus,
@@ -295,8 +297,10 @@ const eventViewerEventTypes = [
 ] as const;
 
 export function WorkableConsole() {
+  const router = useRouter();
   const initialConsoleState = useMemo(() => createDefaultConsoleStorage(), []);
   const [hasMounted, setHasMounted] = useState(false);
+  const [isSigningOut, setIsSigningOut] = useState(false);
   const [consoleState, setConsoleState] = useState<ConsoleStorage>(initialConsoleState);
   const [view, setView] = useState<View>(initialConsoleState.view);
   const [visibleView, setVisibleView] = useState<View>(consoleState.view);
@@ -1703,6 +1707,23 @@ export function WorkableConsole() {
     refreshView("overview");
   };
 
+  const signOut = async () => {
+    if (isSigningOut) {
+      return;
+    }
+
+    setIsSigningOut(true);
+    try {
+      await fetch("/api/auth/logout", {
+        method: "POST",
+      });
+    } finally {
+      router.replace("/login");
+      router.refresh();
+      setIsSigningOut(false);
+    }
+  };
+
   return (
     <SidebarProvider>
       <DiagnosticsAlertSubscriptions
@@ -1778,7 +1799,19 @@ export function WorkableConsole() {
             </SidebarGroupContent>
           </SidebarGroup>
         </SidebarContent>
-        <SidebarFooter />
+        <SidebarFooter>
+          <div className="p-2">
+            <Button
+              className="w-full justify-start"
+              disabled={isSigningOut}
+              onClick={() => void signOut()}
+              variant="outline"
+            >
+              {isSigningOut ? <Loader2 className="size-4 animate-spin" /> : <LogOut />}
+              <span>{isSigningOut ? "Signing out..." : "Sign out"}</span>
+            </Button>
+          </div>
+        </SidebarFooter>
       </Sidebar>
       <SidebarInset>
         <main className="flex-1 bg-background">

@@ -1,7 +1,9 @@
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Options;
 
 namespace Workable;
 
@@ -16,6 +18,7 @@ public static class WorkableHttpApiExtensions
         EnsureAllSystemsRequireAuthorization(endpoints.ServiceProvider.GetRequiredService<IWorkSystemRegistry>());
 
         var group = endpoints.MapGroup(prefix);
+        ApplyTransportAuthorization(group, endpoints.ServiceProvider);
         RequireAuthenticated(group);
         HandleAuthorizationDenied(group);
         group.MapGet("/systems", (
@@ -29,6 +32,7 @@ public static class WorkableHttpApiExtensions
 
         MapWorkableApiRoutes(group);
         var namedGroup = group.MapGroup("/systems/{systemName}");
+        ApplyTransportAuthorization(namedGroup, endpoints.ServiceProvider);
         RequireAuthenticated(namedGroup);
         MapWorkableApiRoutes(namedGroup);
 
@@ -57,6 +61,23 @@ public static class WorkableHttpApiExtensions
                 return WorkableHttpRouteResults.AuthorizationDenied(denied);
             }
         });
+    }
+
+    private static void ApplyTransportAuthorization(RouteGroupBuilder group, IServiceProvider services)
+    {
+        var transportScheme = services
+            .GetService<IOptions<WorkableAspNetCoreAuthorizationOptions>>()
+            ?.Value
+            .TransportAuthenticationScheme;
+
+        if (string.IsNullOrWhiteSpace(transportScheme))
+        {
+            return;
+        }
+
+        group.RequireAuthorization(new AuthorizationPolicyBuilder(transportScheme)
+            .RequireAuthenticatedUser()
+            .Build());
     }
 
     private static void RequireAuthenticated(RouteGroupBuilder group)

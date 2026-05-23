@@ -13,6 +13,7 @@ public static class WorkableAspNetCoreServiceCollectionExtensions
         ArgumentNullException.ThrowIfNull(services);
 
         services.TryAddSingleton<IHttpContextAccessor, HttpContextAccessor>();
+        services.AddAuthorization();
         services.AddOptions<WorkableAspNetCoreAuthorizationOptions>();
         if (configure is not null)
         {

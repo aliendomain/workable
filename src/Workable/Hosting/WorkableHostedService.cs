@@ -121,17 +121,17 @@ internal sealed class WorkableHostedService(
         var successful = results
             .Where(result => result.Result is not null)
             .ToList();
-        var forceCanceled = successful
-            .Where(result => result.Result!.ForceCanceledWorkerSummaries.Count > 0)
+        var forceInterrupted = successful
+            .Where(result => result.Result!.ForceInterruptedWorkerSummaries.Count > 0)
             .ToList();
 
-        if (forceCanceled.Count > 0 && logger.IsEnabled(LogLevel.Warning))
+        if (forceInterrupted.Count > 0 && logger.IsEnabled(LogLevel.Warning))
         {
             logger.LogWarning(
-                "Force-canceled {WorkerCount} worker(s): {WorkersBySystem}",
-                forceCanceled.Sum(result => result.Result!.ForceCanceledWorkerSummaries.Count),
-                string.Join(" | ", forceCanceled.Select(result =>
-                    $"{result.Plan.SystemName}: {FormatWorkers(result.Result!.ForceCanceledWorkerSummaries)}")));
+                "Force-interrupted {WorkerCount} worker(s): {WorkersBySystem}",
+                forceInterrupted.Sum(result => result.Result!.ForceInterruptedWorkerSummaries.Count),
+                string.Join(" | ", forceInterrupted.Select(result =>
+                    $"{result.Plan.SystemName}: {FormatWorkers(result.Result!.ForceInterruptedWorkerSummaries)}")));
         }
 
         if (logger.IsEnabled(LogLevel.Information))
