@@ -12,3 +12,4 @@ artifacts/
 *.snupkg
 *.log
 src/workable-admin-ui/workable-admin.config.local.json
+src/workable-admin-ui/workable-admin.config.json

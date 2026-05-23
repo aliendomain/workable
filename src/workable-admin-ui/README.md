@@ -18,7 +18,7 @@ The admin UI is default-deny. The page and `/api/workable/*` proxy require authe
 The admin UI reads one active server-side config file:
 
 - `workable-admin.config.local.json` for local or secret-bearing config. This file is ignored by git.
-- `workable-admin.config.json` for shared checked-in config that contains no secrets.
+- `workable-admin.config.json` for an optional second local config file when you want a non-secret server-side config without using environment variables. This file is also ignored by git.
 
 If both files exist, `workable-admin.config.local.json` wins. Environment variables override either file.
 
@@ -123,7 +123,7 @@ For a local-only Entra setup, copy `workable-admin.entra.config.example.json` to
 }
 ```
 
-For a checked-in Entra config, use `workable-admin.config.json` and omit secrets:
+For a non-secret Entra config file, use `workable-admin.config.json` and omit secrets:
 
 ```json
 {
