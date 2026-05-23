@@ -57,7 +57,7 @@ Recommended entry points:
 - [Configuration](https://github.com/aliendomain/workable/blob/main/docs/guides/configuration/README.md) if you are tuning start behavior, retry, recurrence, concurrency, durability, logging, retention, or invocation rules.
 - [HTTP API](https://github.com/aliendomain/workable/blob/main/docs/adapters/http-api.md), [MCP](https://github.com/aliendomain/workable/blob/main/docs/adapters/mcp.md), and [Realtime](https://github.com/aliendomain/workable/blob/main/docs/adapters/realtime.md) if you are exposing Workable over transports.
 - [Abstractions Surface](https://github.com/aliendomain/workable/blob/main/docs/concepts/abstractions-surface.md) if you are consuming a hosted system from another library.
-- [Workable SQL Server Integration](integrations/sqlserver/README.md) if you need durable queueing or persistence-backed coordination.
+- [Workable SQL Server Integration](https://github.com/aliendomain/workable/blob/main/integrations/sqlserver/README.md) if you need durable queueing or persistence-backed coordination.
 - [Sample Host](https://github.com/aliendomain/workable/blob/main/samples/Workable.SampleHost/README.md) if you want a runnable reference app.
 - [Admin UI](https://github.com/aliendomain/workable/blob/main/src/workable-admin-ui/README.md) if you want the browser-based operator surface.
 - [Performance Harness](https://github.com/aliendomain/workable/blob/main/src/Workable.PerformanceHarness/README.md) if you are measuring runtime or adapter performance.
