@@ -143,6 +143,19 @@ public sealed class WorkQueryServiceTests
 
         try
         {
+            await Eventually(async () =>
+            {
+                var executingProbe = await system.Query.WorkerIterations(new WorkerIterationCriteria(
+                    Statuses: new HashSet<WorkCompletionStatus> { WorkCompletionStatus.Executing }));
+                var keyedProbe = await system.Query.WorkerIterations(new WorkerIterationCriteria(
+                    Identifier: discoveredIdentifier,
+                    Statuses: new HashSet<WorkCompletionStatus> { WorkCompletionStatus.Executing }));
+                var overviewProbe = await system.Query.SystemDetails();
+                return executingProbe.Iterations.Count == 1 &&
+                    keyedProbe.Iterations.Count == 1 &&
+                    overviewProbe.CurrentIterationCount == 1 &&
+                    overviewProbe.IterationCountByStatus.GetValueOrDefault(WorkCompletionStatus.Executing) == 1;
+            });
             var snapshot = await system.Query.WorkerIteration(new WorkerIterationReference(workerId, 1));
             var executing = await system.Query.WorkerIterations(new WorkerIterationCriteria(
                 Statuses: new HashSet<WorkCompletionStatus> { WorkCompletionStatus.Executing }));
