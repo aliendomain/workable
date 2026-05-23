@@ -113,7 +113,7 @@ The default warning threshold used by diagnostics components is `100` pending up
 
 When read-model lag is high:
 
-- Overview and query pages may show an older, internally consistent snapshot.
+- Each aggregate query may show an older published snapshot, and separate aggregate queries may not line up with each other.
 - Worker lifecycle execution can still be moving normally.
 - If `PendingUpdateCount` rises and does not return toward zero, projection is not draining fast enough.
 - If `LastProjectionDuration` grows, the projector may be spending too much time per batch.

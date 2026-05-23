@@ -118,6 +118,8 @@ public sealed class WorkSystemAuthorizationConfigurationTests
         var operatorSession = system.CreateSession(CreateRequestContext("operator"));
         await operatorSession.Queue.Enqueue(visible.Id);
         await operatorSession.Queue.Enqueue(hidden.Id);
+        await Eventually(async () =>
+            (await operatorSession.Query.Workers(new WorkerCriteria(Take: 10))).TotalCount == 2);
 
         var readerSession = system.CreateSession(CreateRequestContext("reader"));
 
@@ -125,39 +127,6 @@ public sealed class WorkSystemAuthorizationConfigurationTests
         Assert.Equal(visible.Id, Assert.Single((await readerSession.Query.WorkDefinitions()).Definitions).Id);
         Assert.Equal(visible.Id, Assert.Single((await readerSession.Query.Workers(new WorkerCriteria(Take: 10))).Workers).DefinitionId);
         Assert.Null(await readerSession.Query.WorkInfo(hidden.Id));
-    }
-
-    [Fact]
-    public async Task AuthorizedSessionSnapshotReadStaysPinnedToCapturedReadModelSnapshot()
-    {
-        var visible = PausedDefinition("visible.snapshot");
-        var provider = new ServiceCollection()
-            .AddSingleton<IWorkAuthorizationGroupProvider>(new TestGroupProvider(new Dictionary<string, IReadOnlySet<string>>
-            {
-                ["operator"] = Groups("visible.read", "visible.operate"),
-                ["reader"] = Groups("visible.read"),
-            }))
-            .AddDefaultWorkableSystemForAuthorizationTests(builder => builder.AddWork(
-                visible,
-                SuccessfulWork,
-                configure: null,
-                authorize: authorize => authorize.RequireGroups(
-                    readGroups: ["visible.read"],
-                    operateGroups: ["visible.operate"])))
-            .BuildServiceProvider();
-        var system = provider.GetRequiredService<IWorkSystem>();
-        await system.Start();
-        var operatorSession = system.CreateSession(CreateRequestContext("operator"));
-        var readerSession = system.CreateSession(CreateRequestContext("reader"));
-        await operatorSession.Queue.Enqueue(visible.Id);
-        Assert.Equal(1, (await readerSession.Query.Workers(new WorkerCriteria(Take: 10))).TotalCount);
-        var snapshotRead = readerSession.Query.BeginRead();
-
-        await operatorSession.Queue.Enqueue(visible.Id);
-        Assert.Equal(2, (await readerSession.Query.Workers(new WorkerCriteria(Take: 10))).TotalCount);
-        var pinned = await snapshotRead.Workers(new WorkerCriteria(Take: 10));
-
-        Assert.Equal(1, pinned.TotalCount);
     }
 
     [Fact]
@@ -585,6 +554,22 @@ public sealed class WorkSystemAuthorizationConfigurationTests
             WorkInvocationChannel.DotNet,
             new WorkActor(Id: actorId),
             $"Authorize actor '{actorId}' in tests.");
+
+    private static async Task Eventually(Func<Task<bool>> condition)
+    {
+        var deadline = DateTimeOffset.UtcNow.AddSeconds(5);
+        while (DateTimeOffset.UtcNow < deadline)
+        {
+            if (await condition())
+            {
+                return;
+            }
+
+            await Task.Delay(10);
+        }
+
+        Assert.True(await condition(), "Expected condition to become true.");
+    }
 
     private sealed class TestGroupProvider(IReadOnlyDictionary<string, IReadOnlySet<string>> groupsByActor) : IWorkAuthorizationGroupProvider
     {

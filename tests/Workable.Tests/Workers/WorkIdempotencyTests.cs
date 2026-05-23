@@ -81,6 +81,7 @@ public sealed class WorkIdempotencyTests
 
         var first = await system.Queue.Enqueue("subject-only", SubjectInput(subject));
         var second = await system.Queue.Enqueue("subject-only", SubjectInput(subject));
+        await WaitForReadModel(system);
         var matches = (await system.Query.Workers(new WorkerCriteria(DefinitionId: definition.Id, SubjectId: subject, Take: 10))).Workers;
 
         Assert.True(first.QueueOutcome.IsAccepted);
@@ -203,6 +204,7 @@ public sealed class WorkIdempotencyTests
         var firstWorker = RequiredWorker(await system.Query.Worker(RequiredWorkerId(first)));
         var cancel = await system.Workers.Execute(firstWorker.Version, WorkAction.Cancel);
         var second = await system.Queue.Enqueue("duplicate-canceled", SubjectInput(subject));
+        await WaitForReadModel(system);
         var matches = (await system.Query.Workers(new WorkerCriteria(DefinitionId: definition.Id, SubjectId: subject, Take: 10))).Workers;
 
         Assert.True(cancel.IsAccepted);
@@ -232,6 +234,7 @@ public sealed class WorkIdempotencyTests
         var first = await system.Queue.Enqueue("subject-query-one", SubjectInput(subject));
         await Task.Delay(TimeSpan.FromMilliseconds(5));
         var second = await system.Queue.Enqueue("subject-query-two", SubjectInput(subject));
+        await WaitForReadModel(system);
 
         var allMatches = (await system.Query.Workers(new WorkerCriteria(SubjectId: subject, Take: 10))).Workers;
         var definitionMatches = (await system.Query.Workers(new WorkerCriteria(DefinitionId: firstDefinition.Id, SubjectId: subject, Take: 10))).Workers;
@@ -313,6 +316,22 @@ public sealed class WorkIdempotencyTests
         var hasEvent = await reader.MoveNextAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(5));
         Assert.True(hasEvent);
         return reader.Current;
+    }
+
+    private static async Task WaitForReadModel(IWorkSystem system)
+    {
+        var deadline = DateTimeOffset.UtcNow.AddSeconds(5);
+        while (DateTimeOffset.UtcNow < deadline)
+        {
+            if (system.Diagnostics.ReadModel.PendingUpdateCount == 0)
+            {
+                return;
+            }
+
+            await Task.Delay(10);
+        }
+
+        Assert.Equal(0, system.Diagnostics.ReadModel.PendingUpdateCount);
     }
 
     private static WorkDefinition RequiredDefinition(IWorkSystem system, string name)

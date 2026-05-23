@@ -5,9 +5,6 @@ internal sealed class AuthorizedWorkQueryService(
     IWorkQueryService inner,
     WorkAuthorizationEvaluator authorization) : IWorkQueryService
 {
-    public IWorkQueryService BeginRead()
-        => new AuthorizedWorkQueryService(catalog, inner.BeginRead(), authorization);
-
     public async Task<WorkerSnapshot?> Worker(
         WorkerId workerId,
         CancellationToken cancellationToken = default)

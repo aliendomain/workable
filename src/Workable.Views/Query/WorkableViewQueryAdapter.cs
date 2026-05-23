@@ -25,7 +25,7 @@ public class WorkableViewQueryAdapter
         var query = criteria ?? new WorkComponentCriteria();
         var requests = NormalizeComponentRequests(query.Components);
         EnsureAuthorizedComponentAccess(session, requests);
-        var queryService = session.Query.BeginRead();
+        var queryService = session.Query;
         var components = new Dictionary<string, WorkComponentResult>(StringComparer.OrdinalIgnoreCase);
         foreach (var request in requests)
         {

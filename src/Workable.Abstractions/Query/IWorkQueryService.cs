@@ -2,8 +2,6 @@ namespace Workable;
 
 public interface IWorkQueryService
 {
-    IWorkQueryService BeginRead();
-
     Task<WorkerSnapshot?> Worker(
         WorkerId workerId,
         CancellationToken cancellationToken = default);

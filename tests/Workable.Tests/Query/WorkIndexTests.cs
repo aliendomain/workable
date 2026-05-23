@@ -55,6 +55,7 @@ public sealed class WorkIndexTests
         await (await system.Queue.Enqueue(
             "index.shipping.completed",
             WorkInput.Empty.WithSubject(new WorkSubjectId("case", "shipping")))).WaitForCompletion();
+        await WaitForReadModel(system);
 
         var runningWorkerId = RequiredWorkerId(running);
         var queuedWorkerId = RequiredWorkerId(queued);
@@ -85,6 +86,7 @@ public sealed class WorkIndexTests
 
         release.TrySetResult();
         await running.WaitForCompletion();
+        await WaitForReadModel(system);
 
         var settledBilling = await system.Query.SystemDetails(new WorkSystemCriteria(Category: "Billing"));
         var noExecutingIterations = await system.Query.WorkerIterations(new WorkerIterationCriteria(
@@ -170,6 +172,7 @@ public sealed class WorkIndexTests
                 .WithSubject(new WorkSubjectId("shared", "shipping"))
                 .WithConcurrencyKey(new WorkConcurrencyKey("shared", "shipping"))
                 .WithIdentifier(new WorkIdentifier("shared", "shipping")))).WaitForCompletion();
+        await WaitForReadModel(system);
 
         var wholeSystem = await system.Query.SystemDetails();
         var billingScope = await system.Query.SystemDetails(new WorkSystemCriteria(Category: "Billing"));
@@ -309,6 +312,7 @@ public sealed class WorkIndexTests
             targetDefinition.Name,
             WorkInput.Empty.WithSubject(sharedSubject).WithIdentifier(targetIdentifier));
         await Cancel(system, RequiredWorkerId(sameKeysCanceled));
+        await WaitForReadModel(system);
 
         var matches = await system.Query.Workers(new WorkerCriteria(
             DefinitionId: targetDefinition.Id,
@@ -453,6 +457,7 @@ public sealed class WorkIndexTests
                 .WithIdentifier(new WorkIdentifier("claim", "input-2")));
         await first.WaitForCompletion();
         await second.WaitForCompletion();
+        await WaitForReadModel(system);
 
         await AssertWorkerKeyTypeMatchesKeys(
             system,
@@ -517,6 +522,7 @@ public sealed class WorkIndexTests
                 .WithConcurrencyKey(new WorkConcurrencyKey("claim", "CLM-1"))
                 .WithIdentifier(new WorkIdentifier("claim", "input-1")));
         await handle.WaitForCompletion();
+        await WaitForReadModel(system);
 
         await AssertIterationKeyTypeMatchesKeys(
             system,
@@ -563,6 +569,7 @@ public sealed class WorkIndexTests
             "index.status.replace",
             WorkInput.Empty.WithSubject(new WorkSubjectId("status", "replace")));
         await entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await WaitForReadModel(system);
 
         var executingOverview = await system.Query.SystemDetails(new WorkSystemCriteria(Category: "Index"));
         var executingQuery = await system.Query.WorkerIterations(new WorkerIterationCriteria(
@@ -575,6 +582,7 @@ public sealed class WorkIndexTests
 
         release.TrySetResult();
         await handle.WaitForCompletion();
+        await WaitForReadModel(system);
 
         var completedOverview = await system.Query.SystemDetails(new WorkSystemCriteria(Category: "Index"));
         var executingAfterCompletion = await system.Query.WorkerIterations(new WorkerIterationCriteria(
@@ -617,6 +625,7 @@ public sealed class WorkIndexTests
         await (await system.Queue.Enqueue(
             "index.recent.shipping",
             WorkInput.Empty.WithIdentifier(new WorkIdentifier("sequence", "shipping")))).WaitForCompletion();
+        await WaitForReadModel(system);
 
         var billing = await system.Query.SystemDetails(new WorkSystemCriteria(Category: "Billing"));
 
@@ -651,6 +660,7 @@ public sealed class WorkIndexTests
             await handle.WaitForCompletion();
             workerIds.Add(RequiredWorkerId(handle));
         }
+        await WaitForReadModel(system);
 
         await Purge(system, workerIds[6]);
         await Purge(system, workerIds[5]);
@@ -669,6 +679,7 @@ public sealed class WorkIndexTests
         var worker = RequiredWorker(await system.Query.Worker(workerId));
         var purge = await system.Workers.Execute(worker.Version, WorkAction.Purge);
         Assert.True(purge.IsAccepted);
+        await WaitForReadModel(system);
     }
 
     private static async Task Cancel(IWorkSystem system, WorkerId workerId)
@@ -676,6 +687,23 @@ public sealed class WorkIndexTests
         var worker = RequiredWorker(await system.Query.Worker(workerId));
         var cancel = await system.Workers.Execute(worker.Version, WorkAction.Cancel);
         Assert.True(cancel.IsAccepted);
+        await WaitForReadModel(system);
+    }
+
+    private static async Task WaitForReadModel(IWorkSystem system)
+    {
+        var deadline = DateTimeOffset.UtcNow.AddSeconds(5);
+        while (DateTimeOffset.UtcNow < deadline)
+        {
+            if (system.Diagnostics.ReadModel.PendingUpdateCount == 0)
+            {
+                return;
+            }
+
+            await Task.Delay(10);
+        }
+
+        Assert.Equal(0, system.Diagnostics.ReadModel.PendingUpdateCount);
     }
 
     private static void AssertKeyType(

@@ -4,11 +4,16 @@
 
 Workable query APIs provide read-only access to worker state and registered work definitions. Use the methods on `IWorkSystem.Query` to inspect work without changing it. `IWorkQueryService` is intentionally discoverable: each built-in query has its own method.
 
-Runtime worker and iteration queries are served from an in-memory read model. Worker lifecycle code publishes lightweight updates to a projector, and query methods read the latest published snapshot instead of locking worker records. The read model starts empty with the process and is cleared when the in-memory system stops; it is eventually consistent with worker execution, while query methods wait for updates already accepted by the projector before returning.
+Workable uses two read paths.
+
+- `Worker(...)` and `WorkerIteration(...)` read authoritative worker detail.
+- List, search, summary, and whole-system queries read from an in-memory projected read model.
+
+Worker lifecycle code publishes lightweight updates to that projector. The read model starts empty with the process and is cleared when the in-memory system stops. It is eventually consistent with worker execution, and query methods do not force the projector to catch up before returning.
 
 ## Read Model Boundaries
 
-`IWorkSystem.Query` is the display and inspection read surface. It uses the projected read model for worker detail, worker rows, iteration detail, iteration rows, key search, and system details.
+`IWorkSystem.Query` is the display and inspection read surface. `Worker(...)` and `WorkerIteration(...)` return authoritative retained detail. Worker rows, iteration rows, key search, summaries, and system-level queries read from the projected model.
 
 Control and correctness paths continue to read live worker records. This includes idempotency checks during queue acceptance, concurrency reservations, worker actions and reconfiguration, shutdown interruption, retention purge selection, and bulk action execution. Those paths need authoritative current state and optimistic concurrency behavior, so they do not rely on the eventually consistent read model.
 
@@ -26,25 +31,19 @@ The read-model channel is unbounded so accepted updates are not dropped. Treat s
 
 See [Work Diagnostics](diagnostics.md) for the full diagnostics model and warning guidance.
 
-## Consistent Reads
+## Consistency Model
 
-`IWorkQueryService.BeginRead()` captures the current read-model snapshot and returns a query service pinned to that snapshot.
+Aggregate queries are eventual by default.
 
-That is useful when one caller wants a self-consistent set of related reads without later calls observing newer projector state than earlier ones.
+Each aggregate query method evaluates against one published read-model snapshot, so one call is internally coherent. Separate aggregate calls are not guaranteed to observe the same snapshot. A caller that issues `Workers(...)`, then `WorkerStatusSummary(...)`, then `SystemDetails(...)` can see slightly different moments of projector state across those calls.
 
-For example, a caller can capture one read and then perform multiple queries against that same snapshot:
+That matters most for:
 
-```csharp
-IWorkQueryService read = workSystem.Query.BeginRead();
+- dashboards that compose multiple aggregate queries
+- custom transports that stitch together several query results
+- view/component adapters that build one response from multiple aggregate reads
 
-WorkerQueryResult workers = await read.Workers(cancellationToken: cancellationToken);
-WorkerStatusSummary summary = await read.WorkerStatusSummary(cancellationToken: cancellationToken);
-WorkSystemDetails details = await read.SystemDetails(cancellationToken: cancellationToken);
-```
-
-Most application code can call `workSystem.Query` directly. `BeginRead()` matters when a caller is composing multiple related reads into one response and wants those reads to line up against the same published projector state.
-
-Treat that pinned read as a short-lived composition tool. Capture it while building one response or one composed read operation, then let it go and capture a fresh read later when you want newer state.
+Treat aggregate query results as display-oriented operational reads, not as a correctness boundary. If multiple reads must agree exactly, use one purpose-built query result, or move the correctness-sensitive decision back to an authoritative control path instead of composing aggregate reads on the client.
 
 ## Start With The Question
 
@@ -63,7 +62,7 @@ That framing matters because the query surface is intentionally explicit. Workab
 
 ## Worker Queries
 
-Use `IWorkQueryService.Worker` when you need full worker detail.
+Use `IWorkQueryService.Worker` when you need full authoritative worker detail.
 
 ```csharp
 WorkerSnapshot? worker = await workSystem.Query.Worker(workerId, cancellationToken: cancellationToken);
@@ -146,7 +145,7 @@ long? current = worker?.CurrentIterationSequence;
 long? last = worker?.LastIterationSequence;
 ```
 
-Use `IWorkQueryService.WorkerIteration` when you need one full iteration snapshot by worker id and sequence.
+Use `IWorkQueryService.WorkerIteration` when you need one full authoritative iteration snapshot by worker id and sequence.
 
 ```csharp
 WorkerIterationSnapshot? iteration =

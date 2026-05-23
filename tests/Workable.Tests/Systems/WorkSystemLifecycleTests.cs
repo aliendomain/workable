@@ -358,6 +358,8 @@ public sealed class WorkSystemLifecycleTests
         var completedWorker = await system.Query.Worker(completed.WorkerId ?? throw new InvalidOperationException("Expected completed worker id."));
         var failedWorker = await system.Query.Worker(handle.WorkerId ?? throw new InvalidOperationException("Expected failed worker id."));
         var queuedWorker = await system.Query.Worker(queued.WorkerId ?? throw new InvalidOperationException("Expected queued worker id."));
+        await Eventually(async () =>
+            (await system.Query.Workers(new WorkerCriteria())).Workers.Count == 0);
         var overview = await system.Query.SystemDetails();
         var query = await system.Query.Workers(new WorkerCriteria());
         var keys = await system.Query.WorkerKeys(new WorkerKeyCriteria(Search: "shutdown-test"));
@@ -654,6 +656,22 @@ public sealed class WorkSystemLifecycleTests
                 throw;
             }
         }
+    }
+
+    private static async Task Eventually(Func<Task<bool>> condition)
+    {
+        var deadline = DateTimeOffset.UtcNow.AddSeconds(5);
+        while (DateTimeOffset.UtcNow < deadline)
+        {
+            if (await condition())
+            {
+                return;
+            }
+
+            await Task.Delay(10);
+        }
+
+        Assert.True(await condition(), "Expected condition to become true.");
     }
 
     private sealed class CancellationIgnoringShutdownWork(ShutdownTracker tracker) : IWorkExecutor
