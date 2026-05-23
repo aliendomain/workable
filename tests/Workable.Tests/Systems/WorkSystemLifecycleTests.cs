@@ -433,13 +433,13 @@ public sealed class WorkSystemLifecycleTests
         var completion = await handle.WaitForCompletion();
 
         var canceled = Assert.Single(stop.CancellationRequestedWorkers);
-        var forceCanceled = Assert.Single(stop.ForceCanceledWorkers);
-        var forceCanceledSummary = Assert.Single(stop.ForceCanceledWorkerSummaries);
+        var forceInterrupted = Assert.Single(stop.ForceInterruptedWorkers);
+        var forceInterruptedSummary = Assert.Single(stop.ForceInterruptedWorkerSummaries);
         Assert.Equal(handle.WorkerId, canceled.Id);
-        Assert.Equal(handle.WorkerId, forceCanceled.Id);
-        Assert.Equal(handle.WorkerId, forceCanceledSummary.Id);
-        Assert.Equal("shutdown.ignores-cancel", forceCanceledSummary.DefinitionName);
-        Assert.Equal(["shutdown.ignores-cancel"], stop.ForceCanceledWorkerNames);
+        Assert.Equal(handle.WorkerId, forceInterrupted.Id);
+        Assert.Equal(handle.WorkerId, forceInterruptedSummary.Id);
+        Assert.Equal("shutdown.ignores-cancel", forceInterruptedSummary.DefinitionName);
+        Assert.Equal(["shutdown.ignores-cancel"], stop.ForceInterruptedWorkerNames);
         Assert.Equal(TimeSpan.FromMilliseconds(20), stop.ShutdownGracePeriod);
         Assert.Equal(WorkCompletionStatus.Interrupted, completion.Status);
         Assert.Equal(WorkerState.Interrupted, completion.Worker?.State);
@@ -466,7 +466,7 @@ public sealed class WorkSystemLifecycleTests
         var stop = await system.Stop();
         var elapsed = Stopwatch.GetElapsedTime(startedAt);
 
-        Assert.Single(stop.ForceCanceledWorkers);
+        Assert.Single(stop.ForceInterruptedWorkers);
         Assert.Equal(WorkCompletionStatus.Interrupted, (await handle.WaitForCompletion()).Status);
         Assert.True(elapsed >= TimeSpan.FromMilliseconds(120), $"Expected host-relative grace wait, but elapsed was {elapsed}.");
         Assert.True(elapsed < TimeSpan.FromSeconds(2), $"Expected bounded shutdown, but elapsed was {elapsed}.");
@@ -493,7 +493,7 @@ public sealed class WorkSystemLifecycleTests
         var stop = await system.Stop();
         var elapsed = Stopwatch.GetElapsedTime(startedAt);
 
-        Assert.Single(stop.ForceCanceledWorkers);
+        Assert.Single(stop.ForceInterruptedWorkers);
         Assert.Equal(WorkCompletionStatus.Interrupted, (await handle.WaitForCompletion()).Status);
         Assert.True(elapsed < TimeSpan.FromSeconds(1), $"Expected explicit grace period to win, but elapsed was {elapsed}.");
     }

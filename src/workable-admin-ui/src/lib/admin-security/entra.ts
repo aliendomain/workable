@@ -234,10 +234,11 @@ export async function completeEntraLogin(
     }
     appendExpiredEntraCookies(response);
     return response;
-  } catch {
+  } catch (error) {
+    logEntraCallbackFailure(error);
     return createFailedEntraCallbackResponse(
       request,
-      "Microsoft Entra ID sign-in could not be completed.",
+      formatEntraCallbackError(error, settings),
       settings
     );
   }
@@ -315,7 +316,9 @@ async function fetchOpenIdConfiguration(
   );
   const response = await fetcher(metadataUrl, { cache: "no-store" });
   if (!response.ok) {
-    throw new Error("Unable to load Microsoft Entra ID metadata.");
+    throw new Error(
+      `Unable to load Microsoft Entra ID metadata (${response.status}).`
+    );
   }
 
   return await response.json() as EntraOpenIdConfiguration;
@@ -354,7 +357,12 @@ async function exchangeAuthorizationCode(
   });
   const tokens = await response.json() as EntraTokenResponse;
   if (!response.ok || tokens.error || !tokens.id_token) {
-    throw new Error("Microsoft Entra ID token exchange failed.");
+    const tokenError = tokens.error_description || tokens.error;
+    throw new Error(
+      tokenError
+        ? `Microsoft Entra ID token exchange failed: ${tokenError}`
+        : `Microsoft Entra ID token exchange failed (${response.status}).`
+    );
   }
 
   return tokens;
@@ -379,7 +387,9 @@ async function validateEntraIdToken(
 
   const jwksResponse = await fetcher(jwksUri, { cache: "no-store" });
   if (!jwksResponse.ok) {
-    throw new Error("Unable to load Microsoft Entra ID signing keys.");
+    throw new Error(
+      `Unable to load Microsoft Entra ID signing keys (${jwksResponse.status}).`
+    );
   }
 
   const jwks = await jwksResponse.json() as JsonWebKeySet;
@@ -564,4 +574,20 @@ function normalizeNextPath(value: string | null | undefined) {
   }
 
   return value;
+}
+
+function formatEntraCallbackError(
+  error: unknown,
+  settings: AdminSecuritySettings
+) {
+  const message = error instanceof Error ? error.message.trim() : "";
+  if (!message || settings.isProduction) {
+    return "Microsoft Entra ID sign-in could not be completed.";
+  }
+
+  return `Microsoft Entra ID sign-in could not be completed. ${message}`;
+}
+
+function logEntraCallbackFailure(error: unknown) {
+  console.error("Microsoft Entra ID callback failed.", error);
 }

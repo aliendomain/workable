@@ -15,57 +15,49 @@ Workable also gives applications a path to expose the same authored work through
 - Define work once and invoke it through .NET, HTTP, or MCP when those channels are enabled.
 - Keep feature libraries independent from the host runtime while still letting them contribute work.
 - Queue fire-and-forget work without losing the ability to query, observe, cancel, pause, retry, or purge it.
+- Give operators a real admin surface for work: live system and worker visibility, executable definitions, diagnostics, and control actions instead of one-off job screens and custom tooling.
 - Attach runtime behavior such as recurrence, transient retry, idempotency, concurrency, retention, logging, profiling, initialization, and start policy.
 - Use structured inputs, outputs, messages, worker snapshots, event payloads, and status summaries instead of ad hoc task tracking.
 - Preserve who or what started work through request context and origin metadata for HTTP, MCP, SignalR, and direct .NET calls.
 
 ## Packages
 
+### Core Packages
+
 - `Workable.Sdk`: contracts and registration helpers for assemblies that author work.
 - `Workable.Abstractions`: contracts for libraries that consume an already-hosted work system.
 - `Workable`: in-process host and runtime for Workable systems.
+
+### Optional Packages
+
+- `Workable.SqlServer`: SQL Server persistence integration for durable queueing, persistence-backed idempotency, and persistence-backed concurrency.
 - `Workable.AspNetCore`: ASP.NET Core request-context and authorization integration for custom endpoints and hosts.
 - `Workable.Entra`: Microsoft Entra ID bearer-token validation and Workable authorization claim mapping for ASP.NET Core target apps.
-- `Workable.Views`: shared component-view contracts and projections used by HTTP and SignalR adapters.
+- `Workable.Views`: shared component-view contracts and projections used by HTTP and SignalR adapters; most applications receive it transitively through `Workable.HttpApi` or `Workable.SignalR` instead of referencing it directly.
 - `Workable.HttpApi`: standard HTTP endpoints for queueing, querying, and controlling work.
 - `Workable.Mcp`: MCP server adapter for authored work, query tools, and worker action tools.
 - `Workable.SignalR`: realtime worker events and component-view updates for ASP.NET Core clients.
 
+### Apps And Tools
+
+- `samples/Workable.SampleHost`: runnable ASP.NET Core sample app with HTTP API, MCP, SignalR, fake-auth profiles, and SQL Server LocalDB durability scenarios.
+- `src/Workable.PerformanceHarness`: opt-in scenario runner and BenchmarkDotNet harness for runtime, query, view, realtime, and SQL durability performance work.
+- `integrations/sqlserver/tools/Workable.SqlServer.Cli`: SQL Server schema generation and deployment CLI for Workable persistence.
+- `src/workable-admin-ui`: Next.js admin UI for inspecting and operating Workable systems through the HTTP API and SignalR realtime updates.
+
 ## Documentation
 
-### Using Workable
+Start with the docs landing page: [Workable Docs](https://github.com/aliendomain/workable/blob/main/docs/README.md).
 
-- [Getting Started](https://github.com/aliendomain/workable/blob/main/docs/getting-started.md): package split, work author setup, host setup, and queueing work.
-- [Work Registration](https://github.com/aliendomain/workable/blob/main/docs/work-registration.md): define work in feature assemblies, generate definitions from sources, queue startup work, target named systems, and isolate catalogs.
-- [Work Queueing](https://github.com/aliendomain/workable/blob/main/docs/work-queueing.md): queue work by name or id, pass input, set queue options, and await completion.
-- [Work Authorization](https://github.com/aliendomain/workable/blob/main/docs/work-authorization.md): security model, work and system authorization, ASP.NET Core integration, and adapter behavior.
-- [Work Configuration](https://github.com/aliendomain/workable/blob/main/docs/work-configuration.md): configuration sources, override order, and runtime reconfiguration rules.
-  - [Start](https://github.com/aliendomain/workable/blob/main/docs/work-configuration-start.md): automatic start behavior and when queue calls return.
-  - [Idempotency](https://github.com/aliendomain/workable/blob/main/docs/work-configuration-idempotency.md): duplicate prevention by `WorkSubjectId`.
-  - [Recurrence](https://github.com/aliendomain/workable/blob/main/docs/work-configuration-recurrence.md): repeated execution and recurrence circuit behavior.
-  - [Transient Retry](https://github.com/aliendomain/workable/blob/main/docs/work-configuration-transient-retry.md): transient exception classification and retry behavior.
-  - [Logging](https://github.com/aliendomain/workable/blob/main/docs/work-configuration-logging.md): worker-scoped logging behavior.
-  - [Retention](https://github.com/aliendomain/workable/blob/main/docs/work-configuration-retention.md): automatic purge timing for completed and canceled workers.
-  - [Concurrency](https://github.com/aliendomain/workable/blob/main/docs/work-configuration-concurrency.md): capacity limits by definition, subject, or concurrency key.
-  - [Queue Durability](https://github.com/aliendomain/workable/blob/main/docs/work-configuration-queue-durability.md): persist accepted queue requests and replay interrupted durable work.
-  - [Invocation](https://github.com/aliendomain/workable/blob/main/docs/work-configuration-invocation.md): channels allowed to start a work definition.
-  - [Interactions](https://github.com/aliendomain/workable/blob/main/docs/work-configuration-interactions.md): non-obvious behavior when configuration types are combined.
-- [Work Querying](https://github.com/aliendomain/workable/blob/main/docs/work-querying.md): build admin views, status summaries, and definition browsers.
-- [Work Observability](https://github.com/aliendomain/workable/blob/main/docs/work-observability.md): subscribe to work events.
-- [Work Diagnostics](https://github.com/aliendomain/workable/blob/main/docs/work-diagnostics.md): understand queue rejection, read-model lag, retention lag, and system warning signals.
-- [Work Profiling](https://github.com/aliendomain/workable/blob/main/docs/work-profiling.md): capture per-worker execution profile trees.
-- [Workable HTTP API](https://github.com/aliendomain/workable/blob/main/docs/work-http-api.md): expose registered work through HTTP endpoints.
-- [Workable MCP](https://github.com/aliendomain/workable/blob/main/docs/work-mcp.md): expose registered work and read-only query tools through an MCP server.
-- [Workable Realtime](https://github.com/aliendomain/workable/blob/main/docs/work-realtime.md): stream worker events, component-view updates, diagnostics, and admin event-viewer traffic through SignalR.
-- [Sample Host](https://github.com/aliendomain/workable/blob/main/samples/Workable.SampleHost/README.md): run HTTP and MCP adapters together in one ASP.NET Core app.
+Recommended entry points:
 
-### Under The Hood
-
-These docs explain what happens inside Workable after work is registered or queued.
-
-- [Core API Surface](https://github.com/aliendomain/workable/blob/main/docs/core-api-surface.md): understand systems, queues, workers, actions, queries, events, and public contracts.
-- [Work Authorization](https://github.com/aliendomain/workable/blob/main/docs/work-authorization.md): security model, request-context sessions, and how the adapters apply authorization.
-- [Project Structure](https://github.com/aliendomain/workable/blob/main/docs/project-structure.md): source layout, package boundary, and namespace convention.
-- [Work Lifecycle](https://github.com/aliendomain/workable/blob/main/docs/work-lifecycle.md): queue acceptance, execution, worker handles, and lifecycle diagrams.
-- [Execution Engine](https://github.com/aliendomain/workable/blob/main/docs/execution-engine.md): dispatcher, execution strategies, concurrency coordination, event stream, and retention behavior.
-- [Work Diagnostics](https://github.com/aliendomain/workable/blob/main/docs/work-diagnostics.md): runtime diagnostics, warning thresholds, and admin UI notification behavior.
+- [Getting Started](https://github.com/aliendomain/workable/blob/main/docs/guides/getting-started.md) if you are evaluating or integrating Workable.
+- [Registration](https://github.com/aliendomain/workable/blob/main/docs/guides/registration.md) if you are authoring work in feature assemblies.
+- [Queueing](https://github.com/aliendomain/workable/blob/main/docs/guides/queueing.md) if you already have work definitions and want to invoke them.
+- [Configuration](https://github.com/aliendomain/workable/blob/main/docs/guides/configuration/README.md) if you are tuning start behavior, retry, recurrence, concurrency, durability, logging, retention, or invocation rules.
+- [HTTP API](https://github.com/aliendomain/workable/blob/main/docs/adapters/http-api.md), [MCP](https://github.com/aliendomain/workable/blob/main/docs/adapters/mcp.md), and [Realtime](https://github.com/aliendomain/workable/blob/main/docs/adapters/realtime.md) if you are exposing Workable over transports.
+- [Abstractions Surface](https://github.com/aliendomain/workable/blob/main/docs/concepts/abstractions-surface.md) if you are consuming a hosted system from another library.
+- [Workable SQL Server Integration](integrations/sqlserver/README.md) if you need durable queueing or persistence-backed coordination.
+- [Sample Host](https://github.com/aliendomain/workable/blob/main/samples/Workable.SampleHost/README.md) if you want a runnable reference app.
+- [Admin UI](https://github.com/aliendomain/workable/blob/main/src/workable-admin-ui/README.md) if you want the browser-based operator surface.
+- [Performance Harness](https://github.com/aliendomain/workable/blob/main/src/Workable.PerformanceHarness/README.md) if you are measuring runtime or adapter performance.

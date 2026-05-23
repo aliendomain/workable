@@ -18,7 +18,7 @@ internal static class WorkerEventPayloads
     {
         return JsonSerializer.SerializeToElement(
             new WorkerEventPayload(
-                worker,
+                WorkerEventWorkerPayload.From(worker),
                 keys,
                 action,
                 actionStatus,
@@ -41,7 +41,7 @@ internal static class WorkerEventPayloads
     }
 
     private sealed record WorkerEventPayload(
-        WorkerSummary Worker,
+        WorkerEventWorkerPayload Worker,
         IReadOnlyList<WorkerEventKey> Keys,
         WorkAction? Action = null,
         WorkActionStatus? ActionStatus = null,
@@ -55,6 +55,53 @@ internal static class WorkerEventPayloads
     private sealed record WorkerPurgePayload(
         DateTimeOffset PurgedAt,
         IReadOnlyList<WorkerId> WorkerIds);
+
+    private sealed record WorkerEventWorkerPayload(
+        WorkerId Id,
+        long Revision,
+        long StateSequence,
+        WorkDefinitionId DefinitionId,
+        string DefinitionName,
+        string DefinitionCategory,
+        WorkSubjectId? SubjectId,
+        WorkConcurrencyKey? ConcurrencyKey,
+        IReadOnlySet<WorkIdentifier> Identifiers,
+        WorkerState State,
+        WorkInterruptionReason? InterruptionReason,
+        DateTimeOffset CreatedAt,
+        DateTimeOffset StateChangedAt,
+        DateTimeOffset UpdatedAt)
+    {
+        public WorkerVersion Version => new(Id, Revision);
+
+        public TimeSpan? QueueDuration { get; init; }
+
+        public TimeSpan TotalExecutionDuration { get; init; }
+
+        public DateTimeOffset? NextRunAt { get; init; }
+
+        public static WorkerEventWorkerPayload From(WorkerSummary worker)
+            => new(
+                worker.Id,
+                worker.Revision,
+                worker.StateSequence,
+                worker.DefinitionId,
+                worker.DefinitionName,
+                worker.DefinitionCategory,
+                worker.SubjectId,
+                worker.ConcurrencyKey,
+                worker.Identifiers,
+                worker.State,
+                worker.InterruptionReason,
+                worker.CreatedAt,
+                worker.StateChangedAt,
+                worker.UpdatedAt)
+            {
+                QueueDuration = worker.QueueDuration,
+                TotalExecutionDuration = worker.TotalExecutionDuration,
+                NextRunAt = worker.NextRunAt,
+            };
+    }
 
     private sealed record WorkerIterationEventPayload(
         long Sequence,

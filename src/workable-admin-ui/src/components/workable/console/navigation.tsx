@@ -1290,6 +1290,9 @@ export async function discoverSystems(apiUrl: string): Promise<WorkableHttpSyste
         },
         "systems"
       );
+      if (!isWorkableSystemsResponse(result)) {
+        continue;
+      }
 
       return {
         ...result,
@@ -1382,6 +1385,14 @@ function formatWorkableApiUrl(url: URL) {
 function formatSystemsEndpoint(apiUrl: string) {
   const normalized = apiUrl.replace(/\/+$/, "");
   return `${normalized}/systems`;
+}
+
+function isWorkableSystemsResponse(value: unknown): value is WorkableHttpSystems {
+  return Boolean(
+    value &&
+      typeof value === "object" &&
+      Array.isArray((value as Partial<WorkableHttpSystems>).systems)
+  );
 }
 
 function createDiscoveredSystemFromStored(

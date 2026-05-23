@@ -39,12 +39,14 @@ public sealed class WorkEventPayloadTests
         var queuedData = RequiredData(queued);
         Assert.Equal("events.payload", queuedData.GetProperty("worker").GetProperty("definitionName").GetString());
         Assert.Equal("Queued", queuedData.GetProperty("worker").GetProperty("state").GetString());
+        Assert.False(queuedData.GetProperty("worker").TryGetProperty("origin", out _));
         AssertThinEvent(queued, queuedData);
         AssertEventKeys(queuedData, subject, concurrencyKey, identifier);
 
         var completedData = RequiredData(completed);
         Assert.Equal("Completed", completedData.GetProperty("worker").GetProperty("state").GetString());
         Assert.Equal("Completed", completedData.GetProperty("completionStatus").GetString());
+        Assert.False(completedData.GetProperty("worker").TryGetProperty("origin", out _));
         AssertThinEvent(completed, completedData);
         AssertEventKeys(completedData, subject, concurrencyKey, identifier);
     }
@@ -270,6 +272,7 @@ public sealed class WorkEventPayloadTests
         Assert.Equal("worker.log", workEvent.EventType);
         Assert.Empty(workEvent.Messages);
         Assert.Equal("events.thin-log", data.GetProperty("worker").GetProperty("definitionName").GetString());
+        Assert.False(data.GetProperty("worker").TryGetProperty("origin", out _));
         AssertThinEvent(workEvent, data);
     }
 

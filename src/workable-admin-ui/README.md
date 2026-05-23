@@ -2,9 +2,10 @@ This is the Workable admin UI.
 
 ## Getting Started
 
-First, run the development server:
+From `src/workable-admin-ui`, install dependencies and run the development server:
 
 ```bash
+npm install
 npm run dev
 ```
 
@@ -17,9 +18,11 @@ The admin UI is default-deny. The page and `/api/workable/*` proxy require authe
 The admin UI reads one active server-side config file:
 
 - `workable-admin.config.local.json` for local or secret-bearing config. This file is ignored by git.
-- `workable-admin.config.json` for shared checked-in config that contains no secrets.
+- `workable-admin.config.json` for an optional second local config file when you want a non-secret server-side config without using environment variables. This file is also ignored by git.
 
 If both files exist, `workable-admin.config.local.json` wins. Environment variables override either file.
+
+You can also point at one explicit config file with `WORKABLE_ADMIN_CONFIG_PATH`, or disable config-file loading entirely with `WORKABLE_ADMIN_CONFIG_DISABLED=true`.
 
 Choose one authentication provider with `authProvider`:
 
@@ -56,6 +59,8 @@ WORKABLE_ADMIN_UI_PASSWORD=replace-with-a-long-random-password
 WORKABLE_ADMIN_UI_SESSION_SECRET=replace-with-a-different-long-random-secret
 ```
 
+For Basic auth, `sessionSecret` is optional. If it is omitted, the admin UI falls back to the configured Basic password for local session signing.
+
 ### Microsoft Entra ID
 
 To use Microsoft Entra ID, set `authProvider` to `entra` and configure an Entra app registration with a **Web** redirect URI:
@@ -70,19 +75,45 @@ Use your deployed admin UI origin for deployed environments:
 https://admin.example.com/api/auth/entra/callback
 ```
 
+The Entra setup has two app-registration sides:
+
+- the target API app registration for the hosted Workable API
+- the admin UI app registration that signs users in and requests delegated tokens for that API
+
+For the target API app registration:
+
+- under the manifest, set `requestedAccessTokenVersion` to `2`
+- under **Expose an API**, set the Application ID URI
+- a good default is `api://<target-client-id>`
+- add a delegated scope such as `workable.access`
+
+That means a typical delegated scope string looks like:
+
+```text
+api://00000000-0000-0000-0000-000000000000/workable.access
+```
+
+If you want the admin UI client to be pre-authorized for that scope, add the admin UI app registration as an authorized client application for the scope under **Expose an API**.
+
+For the admin UI app registration:
+
+- add the Web redirect URI for `/api/auth/entra/callback`
+- under **API permissions**, add delegated permission to the target Workable API scope such as `workable.access`
+- grant admin consent if your tenant policy requires it
+
 For a local-only Entra setup, copy `workable-admin.entra.config.example.json` to `workable-admin.config.local.json` and fill in the Entra app registration values:
 
 ```json
 {
   "authProvider": "entra",
-  "apiUrl": "https://workable.example.com/workable",
+  "apiUrl": "http://localhost:61932/workable",
   "entraId": {
     "tenantId": "00000000-0000-0000-0000-000000000000",
     "clientId": "00000000-0000-0000-0000-000000000000",
-    "redirectUri": "https://admin.example.com/api/auth/entra/callback",
+    "redirectUri": "http://localhost:3000/api/auth/entra/callback",
     "targetApis": [
       {
-        "apiUrl": "https://workable.example.com/workable",
+        "apiUrl": "https://localhost:7058/workable",
         "scope": "api://00000000-0000-0000-0000-000000000000/workable.access"
       }
     ],
@@ -92,7 +123,7 @@ For a local-only Entra setup, copy `workable-admin.entra.config.example.json` to
 }
 ```
 
-For a checked-in Entra config, use `workable-admin.config.json` and omit secrets:
+For a non-secret Entra config file, use `workable-admin.config.json` and omit secrets:
 
 ```json
 {
@@ -121,6 +152,8 @@ If you also want the admin UI to call Entra-protected hosted Workable APIs, conf
 - `apiUrl`: the exact Workable HTTP API base URL for that host
 - `scope`: the delegated scope string for that API, for example `api://<actually-client-id>/workable.access`
 
+That `scope` value must come from the target API app registration's **Expose an API** page, and the target API should be configured to issue v2 access tokens for it.
+
 That forwarding is explicit and host-bound. The admin UI only forwards a delegated token to a URL that has a matching `targetApis` entry, even if other URLs are allow-listed for the proxy. The token stays out of `localStorage` and `sessionStorage`; the Next.js server keeps refresh/access state in encrypted HttpOnly cookies and uses a same-origin token endpoint only to feed SignalR's in-memory `accessTokenFactory`.
 
 The Entra integration authenticates access to this admin UI; the hosted Workable API still decides whether each proxied operation is allowed.
@@ -133,10 +166,14 @@ WORKABLE_ADMIN_ENTRA_TENANT_ID=00000000-0000-0000-0000-000000000000
 WORKABLE_ADMIN_ENTRA_CLIENT_ID=00000000-0000-0000-0000-000000000000
 WORKABLE_ADMIN_ENTRA_CLIENT_SECRET=replace-with-client-secret
 WORKABLE_ADMIN_ENTRA_REDIRECT_URI=https://admin.example.com/api/auth/entra/callback
+WORKABLE_ADMIN_ENTRA_AUTHORITY_HOST=https://login.microsoftonline.com
 WORKABLE_ADMIN_ENTRA_TARGET_APIS_JSON=[{"apiUrl":"https://workable.example.com/workable","scope":"api://00000000-0000-0000-0000-000000000000/workable.access"}]
+WORKABLE_ADMIN_ENTRA_ALLOWED_EMAILS=alice@example.com,bob@example.com
 WORKABLE_ADMIN_ENTRA_ALLOWED_EMAIL_DOMAINS=example.com
 WORKABLE_ADMIN_UI_SESSION_SECRET=replace-with-a-long-random-session-signing-secret
 ```
+
+`allowedEmails` and `allowedEmailDomains` are optional. If both are empty, any successfully authenticated Entra user is allowed into the admin UI. `authorityHost` defaults to `https://login.microsoftonline.com`.
 
 For local-only experiments you can opt into anonymous admin UI access:
 
@@ -173,8 +210,18 @@ WORKABLE_API_URL=https://workable.example.com/workable
 WORKABLE_ALLOWED_API_URLS=https://workable.example.com/workable,https://ops.example.com/workable
 ```
 
+Additional server-side settings are also available:
+
+```bash
+WORKABLE_ADMIN_UI_SESSION_COOKIE_NAME=workable_admin_session
+WORKABLE_ADMIN_UI_SESSION_MAX_AGE_SECONDS=28800
+WORKABLE_ADMIN_UI_MAX_BODY_BYTES=1048576
+```
+
 The proxy rejects browser-supplied `x-workable-api-url` values that are not configured. This keeps the admin UI from becoming an open server-side HTTP proxy when deployed.
 
 Unsafe proxy requests also require a same-origin `Origin` header to reduce CSRF risk when browser credentials are used. The proxy does not forward the admin UI `Authorization` header to the hosted Workable API. When `entraId.targetApis` is configured, the proxy instead forwards a delegated Entra bearer token only to a configured matching hosted API URL. The hosted system must continue to enforce its own authentication and authorization on every Workable adapter surface. If the hosted API rejects a request with `401` or `403`, the admin UI returns that response instead of overriding it with local operation-role logic.
 
 The admin UI accepts realtime hub paths only when the hosted system reports an HTTP(S) hub URL on the same origin as the configured Workable API URL. Cross-origin or non-HTTP(S) hub metadata is ignored by default so a hostile hosted system cannot silently make the browser connect to an arbitrary realtime endpoint. When Entra target-token forwarding is configured, SignalR connections fetch that token from a same-origin admin UI endpoint and keep it only in memory on the browser side.
+
+For the admin UI's proxied HTTP API calls, the browser talks only to the Next.js origin, so the hosted Workable HTTP API usually does not need browser CORS for those requests. Realtime is different: the browser connects directly to the hosted SignalR hub URL reported by the Workable system. If that hub is on another origin, the hosted application must configure CORS for the SignalR endpoint, for example with `app.MapWorkableSignalR().RequireCors("WorkableRealtime")`.

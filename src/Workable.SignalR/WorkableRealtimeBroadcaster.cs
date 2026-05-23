@@ -488,8 +488,7 @@ internal sealed class WorkableRealtimeBroadcaster(
         var components = new Dictionary<string, WorkComponentResult>(StringComparer.OrdinalIgnoreCase);
         foreach (var component in subscription.Criteria.Components ?? [])
         {
-            if (string.Equals(component.Type, "queueDiagnostics", StringComparison.OrdinalIgnoreCase) ||
-                string.Equals(component.Type, "queueMessages", StringComparison.OrdinalIgnoreCase))
+            if (string.Equals(component.Type, "queueDiagnostics", StringComparison.OrdinalIgnoreCase))
             {
                 components[component.Id] = new WorkComponentResult(
                     "ok",
@@ -623,7 +622,6 @@ internal sealed class WorkableRealtimeBroadcaster(
 
     private static bool IsAlertDiagnosticsComponent(WorkComponentRequest component)
         => string.Equals(component.Type, "queueDiagnostics", StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(component.Type, "queueMessages", StringComparison.OrdinalIgnoreCase) ||
             string.Equals(component.Type, "systemDiagnostics", StringComparison.OrdinalIgnoreCase) ||
             string.Equals(component.Type, "readModelDiagnostics", StringComparison.OrdinalIgnoreCase) ||
             string.Equals(component.Type, "retentionDiagnostics", StringComparison.OrdinalIgnoreCase) ||

@@ -8,7 +8,7 @@ using Microsoft.Data.SqlClient;
 
 namespace Workable.SqlServer;
 
-internal sealed class WorkableSqlServerQueueDurabilityStore(WorkableSqlServerQueueDurabilityOptions options) : IWorkQueueDurabilityStore
+internal sealed class WorkableSqlServerQueueDurabilityStore(WorkableSqlServerQueueDurabilityOptions options) : IWorkPersistenceStore
 {
     private const string RequiredDmlSetOptions = """
 SET ANSI_NULLS ON;

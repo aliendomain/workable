@@ -391,7 +391,7 @@ internal sealed class WorkerOperations :
             CancellationRequestedWorkers = [.. interruptedWorkers.Select(worker => worker.ToSnapshot())],
             CancellationRequestedWorkerSummaries = [.. interruptedWorkers
                 .Select(worker => WorkSystemShutdownWorker.From(worker.ToSnapshot()))],
-            ForceCanceledWorkerSummaries = [.. forceInterruptedWorkers
+            ForceInterruptedWorkerSummaries = [.. forceInterruptedWorkers
                 .Select(WorkSystemShutdownWorker.From)],
             ShutdownGracePeriod = this.shutdownGracePeriod,
         };

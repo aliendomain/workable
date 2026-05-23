@@ -4,6 +4,7 @@ using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Security.Claims;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.TestHost;
@@ -1156,6 +1157,24 @@ public sealed class WorkableHttpApiTests
     }
 
     [Fact]
+    public async Task MappedHttpUsesWorkableTransportSchemeWhenHostFallbackPolicyTargetsAnotherScheme()
+    {
+        using var host = await CreateExplicitSchemeHttpHostWithFallbackPolicy();
+        var client = host.GetTestClient();
+        client.DefaultRequestHeaders.Authorization = WorkableSchemeAuthenticationTestSupport.CreateBearerHeader();
+
+        using var response = await client.GetAsync("/workable/systems");
+        response.EnsureSuccessStatusCode();
+
+        var body = JsonNode.Parse(await response.Content.ReadAsStringAsync())
+            ?? throw new InvalidOperationException("Expected systems JSON response.");
+        var systems = body["systems"]?.AsArray()
+            ?? throw new InvalidOperationException("Expected systems array.");
+        var system = Assert.Single(systems);
+        Assert.True(system?["access"]?["canConnect"]?.GetValue<bool>() == true);
+    }
+
+    [Fact]
     public async Task MappedHttpReconfigureEventUsesHttpOrigin()
     {
         using var host = await CreateHttpHost();
@@ -1451,8 +1470,8 @@ public sealed class WorkableHttpApiTests
         Assert.Equal(WorkSystemState.Stopped, system.State);
         Assert.Equal("Started", startJson["state"]?.GetValue<string>());
         Assert.Equal("Stopped", stopJson["state"]?.GetValue<string>());
-        Assert.Empty(stopJson["forceCanceledWorkers"]?.AsArray()
-            ?? throw new InvalidOperationException("Expected force-canceled worker array."));
+        Assert.Empty(stopJson["forceInterruptedWorkers"]?.AsArray()
+            ?? throw new InvalidOperationException("Expected force-interrupted worker array."));
     }
 
     [Fact]
@@ -1469,7 +1488,7 @@ public sealed class WorkableHttpApiTests
     }
 
     [Fact]
-    public async Task MappedHttpLifecycleStopReturnsForceCanceledWorkerNames()
+    public async Task MappedHttpLifecycleStopReturnsForceInterruptedWorkerNames()
     {
         using var host = await CreateShutdownHttpHost();
         var client = host.GetTestClient();
@@ -1488,16 +1507,16 @@ public sealed class WorkableHttpApiTests
         stopResponse.EnsureSuccessStatusCode();
         var stopJson = JsonNode.Parse(await stopResponse.Content.ReadAsStringAsync())
             ?? throw new InvalidOperationException("Expected JSON response.");
-        var names = stopJson["forceCanceledWorkerNames"]?.AsArray()
-            ?? throw new InvalidOperationException("Expected force-canceled worker names.");
-        var summaries = stopJson["forceCanceledWorkerSummaries"]?.AsArray()
-            ?? throw new InvalidOperationException("Expected force-canceled worker summaries.");
+        var names = stopJson["forceInterruptedWorkerNames"]?.AsArray()
+            ?? throw new InvalidOperationException("Expected force-interrupted worker names.");
+        var summaries = stopJson["forceInterruptedWorkerSummaries"]?.AsArray()
+            ?? throw new InvalidOperationException("Expected force-interrupted worker summaries.");
 
         var name = Assert.Single(names)
-            ?? throw new InvalidOperationException("Expected force-canceled worker name.");
+            ?? throw new InvalidOperationException("Expected force-interrupted worker name.");
         Assert.Equal("http.shutdown.force", name.GetValue<string>());
         var summary = Assert.Single(summaries)
-            ?? throw new InvalidOperationException("Expected force-canceled worker summary.");
+            ?? throw new InvalidOperationException("Expected force-interrupted worker summary.");
         Assert.Equal("http.shutdown.force", summary["definitionName"]?.GetValue<string>());
     }
 
@@ -1725,6 +1744,7 @@ public sealed class WorkableHttpApiTests
                         });
                     }
 
+                    app.UseAuthorization();
                     app.UseEndpoints(endpoints => endpoints.MapWorkableApi("/workable"));
                 });
             })
@@ -1786,6 +1806,7 @@ public sealed class WorkableHttpApiTests
                             groups: groups);
                         await next();
                     });
+                    app.UseAuthorization();
                     app.UseEndpoints(endpoints => endpoints.MapWorkableApi("/workable"));
                 });
             })
@@ -1832,6 +1853,7 @@ public sealed class WorkableHttpApiTests
                             groups: groups);
                         await next();
                     });
+                    app.UseAuthorization();
                     app.UseEndpoints(endpoints => endpoints.MapWorkableApi("/workable"));
                 });
             })
@@ -1881,6 +1903,7 @@ public sealed class WorkableHttpApiTests
                             groups: groups);
                         await next();
                     });
+                    app.UseAuthorization();
                     app.UseEndpoints(endpoints => endpoints.MapWorkableApi("/workable"));
                 });
             })
@@ -1931,6 +1954,7 @@ public sealed class WorkableHttpApiTests
                             email: "greya@example.test");
                         await next();
                     });
+                    app.UseAuthorization();
                     app.UseEndpoints(endpoints => endpoints.MapWorkableApi("/workable"));
                 });
             })
@@ -1971,6 +1995,7 @@ public sealed class WorkableHttpApiTests
                             email: "greya@example.test");
                         await next();
                     });
+                    app.UseAuthorization();
                     app.UseEndpoints(endpoints => endpoints.MapWorkableApi("/workable"));
                 });
             })
@@ -2012,6 +2037,7 @@ public sealed class WorkableHttpApiTests
                             email: "greya@example.test");
                         await next();
                     });
+                    app.UseAuthorization();
                     app.UseEndpoints(endpoints => endpoints.MapWorkableApi("/workable"));
                 });
             })
@@ -2065,6 +2091,7 @@ public sealed class WorkableHttpApiTests
                             "Test"));
                         await next();
                     });
+                    app.UseAuthorization();
                     app.UseEndpoints(endpoints => endpoints.MapWorkableApi("/workable"));
                 });
             })
@@ -2096,8 +2123,50 @@ public sealed class WorkableHttpApiTests
                 });
                 web.Configure(app =>
                 {
-                    app.UseAuthentication();
                     app.UseRouting();
+                    app.UseAuthentication();
+                    app.UseAuthorization();
+                    app.UseEndpoints(endpoints => endpoints.MapWorkableApi("/workable"));
+                });
+            })
+            .Build();
+
+        await host.StartAsync();
+        return host;
+    }
+
+    private static async Task<IHost> CreateExplicitSchemeHttpHostWithFallbackPolicy()
+    {
+        var host = new HostBuilder()
+            .ConfigureWebHost(web =>
+            {
+                web.UseTestServer();
+                web.ConfigureServices(services =>
+                {
+                    services.AddRouting();
+                    services.AddWorkableSchemeTestAuthentication();
+                    services.AddAuthorization(options =>
+                    {
+                        options.FallbackPolicy = new AuthorizationPolicyBuilder(
+                            WorkableSchemeAuthenticationTestSupport.AmbientScheme)
+                            .RequireClaim("host-app")
+                            .Build();
+                    });
+                    services.AddTransportTestAuthorization();
+                    services.AddWorkableSystem(builder =>
+                    {
+                        builder.StartWithHost();
+                        builder.RequireAuthorization();
+                        builder.ConfigureTransportSystemAuthorization();
+                        builder.AddAuthorizedTransportWork(WorkDefinition.Create("http.scheme"), SuccessfulWork);
+                    });
+                    services.AddWorkableHttpApi();
+                });
+                web.Configure(app =>
+                {
+                    app.UseRouting();
+                    app.UseAuthentication();
+                    app.UseAuthorization();
                     app.UseEndpoints(endpoints => endpoints.MapWorkableApi("/workable"));
                 });
             })
@@ -2153,6 +2222,7 @@ public sealed class WorkableHttpApiTests
                             email: "greya@example.test");
                         await next();
                     });
+                    app.UseAuthorization();
                     app.UseEndpoints(endpoints => endpoints.MapWorkableApi("/workable"));
                 });
             })

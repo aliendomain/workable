@@ -197,7 +197,6 @@ public class WorkableViewQueryAdapter
                 "workergrid" => await CreateWorkerGridComponent(queries, criteria, request.Options, cancellationToken),
                 "iterationgrid" => await CreateIterationGridComponent(queries, criteria, request.Options, cancellationToken),
                 "systemdiagnostics" => CreateSystemDiagnosticsComponent(session),
-                "queuemessages" => CreateQueueDiagnosticsComponent(session, request.Shape),
                 "queuediagnostics" => CreateQueueDiagnosticsComponent(session, request.Shape),
                 "readmodeldiagnostics" => CreateReadModelDiagnosticsComponent(session, request.Shape, request.Options),
                 "retentiondiagnostics" => CreateRetentionDiagnosticsComponent(session, request.Shape, request.Options),
@@ -850,8 +849,7 @@ public class WorkableViewQueryAdapter
         {
             shape = WorkComponentShapes.Detailed;
         }
-        else if ((string.Equals(request.Type, "queueDiagnostics", StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(request.Type, "queueMessages", StringComparison.OrdinalIgnoreCase)) &&
+        else if (string.Equals(request.Type, "queueDiagnostics", StringComparison.OrdinalIgnoreCase) &&
             shape == WorkComponentShapes.Standard)
         {
             shape = WorkComponentShapes.Detailed;
@@ -885,7 +883,6 @@ public class WorkableViewQueryAdapter
     private static bool IsDiagnosticsComponent(WorkComponentRequest request)
         => string.Equals(request.Type, "systemDiagnostics", StringComparison.OrdinalIgnoreCase) ||
             string.Equals(request.Type, "queueDiagnostics", StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(request.Type, "queueMessages", StringComparison.OrdinalIgnoreCase) ||
             string.Equals(request.Type, "readModelDiagnostics", StringComparison.OrdinalIgnoreCase) ||
             string.Equals(request.Type, "retentionDiagnostics", StringComparison.OrdinalIgnoreCase) ||
             string.Equals(request.Type, "concurrencyDiagnostics", StringComparison.OrdinalIgnoreCase) ||

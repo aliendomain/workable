@@ -17,30 +17,48 @@
     <File Path="README.md" />
   </Folder>
   <Folder Name="/Docs/">
-    <File Path="docs/core-api-surface.md" />
-    <File Path="docs/execution-engine.md" />
-    <File Path="docs/getting-started.md" />
-    <File Path="docs/project-structure.md" />
-    <File Path="docs/work-configuration-concurrency.md" />
-    <File Path="docs/work-configuration-idempotency.md" />
-    <File Path="docs/work-configuration-invocation.md" />
-    <File Path="docs/work-configuration-interactions.md" />
-    <File Path="docs/work-configuration-logging.md" />
-    <File Path="docs/work-configuration-queue-durability.md" />
-    <File Path="docs/work-configuration-recurrence.md" />
-    <File Path="docs/work-configuration-retention.md" />
-    <File Path="docs/work-configuration-start.md" />
-    <File Path="docs/work-configuration-transient-retry.md" />
-    <File Path="docs/work-configuration.md" />
-    <File Path="docs/work-http-api.md" />
-    <File Path="docs/work-lifecycle.md" />
-    <File Path="docs/work-mcp.md" />
-    <File Path="docs/work-observability.md" />
-    <File Path="docs/work-profiling.md" />
-    <File Path="docs/work-queueing.md" />
-    <File Path="docs/work-querying.md" />
-    <File Path="docs/work-realtime.md" />
-    <File Path="docs/work-registration.md" />
+    <File Path="docs/README.md" />
+  </Folder>
+  <Folder Name="/Docs/Adapters/">
+    <File Path="docs/adapters/http-api.md" />
+    <File Path="docs/adapters/mcp.md" />
+    <File Path="docs/adapters/realtime.md" />
+  </Folder>
+  <Folder Name="/Docs/Concepts/">
+    <File Path="docs/concepts/abstractions-extension-points.md" />
+    <File Path="docs/concepts/abstractions-surface.md" />
+    <File Path="docs/concepts/aspnetcore-integration.md" />
+    <File Path="docs/concepts/authorization.md" />
+    <File Path="docs/concepts/core-api-surface.md" />
+    <File Path="docs/concepts/diagnostics.md" />
+    <File Path="docs/concepts/execution-engine.md" />
+    <File Path="docs/concepts/lifecycle.md" />
+    <File Path="docs/concepts/observability.md" />
+    <File Path="docs/concepts/outcomes-and-control.md" />
+    <File Path="docs/concepts/profiling.md" />
+    <File Path="docs/concepts/project-structure.md" />
+    <File Path="docs/concepts/querying.md" />
+    <File Path="docs/concepts/views.md" />
+  </Folder>
+  <Folder Name="/Docs/Guides/">
+    <File Path="docs/guides/entra-authentication.md" />
+    <File Path="docs/guides/getting-started.md" />
+    <File Path="docs/guides/queueing.md" />
+    <File Path="docs/guides/registration.md" />
+  </Folder>
+  <Folder Name="/Docs/Guides/Configuration/">
+    <File Path="docs/guides/configuration/README.md" />
+    <File Path="docs/guides/configuration/concurrency.md" />
+    <File Path="docs/guides/configuration/idempotency.md" />
+    <File Path="docs/guides/configuration/interactions.md" />
+    <File Path="docs/guides/configuration/invocation.md" />
+    <File Path="docs/guides/configuration/logging.md" />
+    <File Path="docs/guides/configuration/queue-durability.md" />
+    <File Path="docs/guides/configuration/recurrence.md" />
+    <File Path="docs/guides/configuration/retention.md" />
+    <File Path="docs/guides/configuration/start.md" />
+    <File Path="docs/guides/configuration/system-settings.md" />
+    <File Path="docs/guides/configuration/transient-retry.md" />
   </Folder>
   <Project Path="src/Workable.Abstractions/Workable.Abstractions.csproj" />
   <Project Path="src/Workable.AspNetCore/Workable.AspNetCore.csproj" />
