@@ -445,6 +445,10 @@ public sealed class WorkQueryServiceTests
 
         try
         {
+            await Eventually(async () =>
+                (await system.Query.WorkerKeys(new WorkerKeyCriteria(
+                    Search: "claim id CLM-777",
+                    States: new HashSet<WorkerState> { WorkerState.Running }))).Keys.Count == 1);
             var running = await system.Query.WorkerKeys(new WorkerKeyCriteria(
                 Search: "claim id CLM-777",
                 States: new HashSet<WorkerState> { WorkerState.Running }));
