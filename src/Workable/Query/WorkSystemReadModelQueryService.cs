@@ -7,8 +7,7 @@ internal sealed class WorkSystemReadModelQueryService(
     WorkSystemReadModel readModel,
     InMemoryWorkMetricsSink metrics,
     Func<WorkerId, CancellationToken, Task<WorkerSnapshot?>>? getWorkerDetail = null,
-    Func<WorkerIterationReference, CancellationToken, Task<WorkerIterationSnapshot?>>? getIterationDetail = null,
-    WorkSystemReadModelSnapshot? snapshot = null) : IWorkQueryService
+    Func<WorkerIterationReference, CancellationToken, Task<WorkerIterationSnapshot?>>? getIterationDetail = null) : IWorkQueryService
 {
     private const int SystemWorkerListSize = 5;
     private const int SystemIterationListSize = 5;
@@ -30,7 +29,6 @@ internal sealed class WorkSystemReadModelQueryService(
     private readonly string? workSystemName = workSystemName;
     private readonly WorkSystemReadModel readModel = readModel;
     private readonly InMemoryWorkMetricsSink metrics = metrics;
-    private readonly WorkSystemReadModelSnapshot? capturedSnapshot = snapshot;
     private Func<WorkerId, CancellationToken, Task<WorkerSnapshot?>> getWorkerDetail = getWorkerDetail ?? MissingWorkerDetail;
     private Func<WorkerIterationReference, CancellationToken, Task<WorkerIterationSnapshot?>> getIterationDetail = getIterationDetail ?? MissingIterationDetail;
 
@@ -45,29 +43,11 @@ internal sealed class WorkSystemReadModelQueryService(
         this.getIterationDetail = getIteration;
     }
 
-    public IWorkQueryService BeginRead()
-    {
-        return new WorkSystemReadModelQueryService(
-            this.catalog,
-            this.getSystemState,
-            this.workSystemName,
-            this.readModel,
-            this.metrics,
-            this.getWorkerDetail,
-            this.getIterationDetail,
-            this.readModel.Current);
-    }
-
     public async Task<WorkerSnapshot?> Worker(
         WorkerId workerId,
         CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        if (this.capturedSnapshot is { } snapshot && !snapshot.WorkersById.ContainsKey(workerId))
-        {
-            return null;
-        }
-
         return await this.getWorkerDetail(workerId, cancellationToken);
     }
 
@@ -76,11 +56,6 @@ internal sealed class WorkSystemReadModelQueryService(
         CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        if (this.capturedSnapshot is { } snapshot && !snapshot.IterationsByReference.ContainsKey(iteration))
-        {
-            return null;
-        }
-
         return await this.getIterationDetail(iteration, cancellationToken);
     }
 
@@ -88,7 +63,7 @@ internal sealed class WorkSystemReadModelQueryService(
         WorkerCriteria? criteria = null,
         CancellationToken cancellationToken = default)
     {
-        var snapshot = await this.GetSnapshot(cancellationToken);
+        var snapshot = await this.GetCurrentReadModel(cancellationToken);
         var query = criteria ?? new WorkerCriteria();
         var normalizedSkip = Math.Max(0, query.Skip);
         var normalizedTake = NormalizeWorkerTake(query.Take);
@@ -114,7 +89,7 @@ internal sealed class WorkSystemReadModelQueryService(
         WorkerIterationCriteria? criteria = null,
         CancellationToken cancellationToken = default)
     {
-        var snapshot = await this.GetSnapshot(cancellationToken);
+        var snapshot = await this.GetCurrentReadModel(cancellationToken);
         var query = criteria ?? new WorkerIterationCriteria();
         var normalizedSkip = Math.Max(0, query.Skip);
         var normalizedTake = NormalizeWorkerIterationTake(query.Take);
@@ -140,7 +115,7 @@ internal sealed class WorkSystemReadModelQueryService(
         WorkDefinitionId definitionId,
         CancellationToken cancellationToken = default)
     {
-        var snapshot = await this.GetSnapshot(cancellationToken);
+        var snapshot = await this.GetCurrentReadModel(cancellationToken);
         if (!this.catalog.TryGet(definitionId, out var definition))
         {
             return null;
@@ -154,7 +129,7 @@ internal sealed class WorkSystemReadModelQueryService(
         CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(name);
-        var snapshot = await this.GetSnapshot(cancellationToken);
+        var snapshot = await this.GetCurrentReadModel(cancellationToken);
         if (!this.catalog.TryGet(name, out var definition))
         {
             return null;
@@ -184,7 +159,7 @@ internal sealed class WorkSystemReadModelQueryService(
         WorkerKeyCriteria? criteria = null,
         CancellationToken cancellationToken = default)
     {
-        var snapshot = await this.GetSnapshot(cancellationToken);
+        var snapshot = await this.GetCurrentReadModel(cancellationToken);
         var query = criteria ?? new WorkerKeyCriteria();
         var normalizedSkip = Math.Max(0, query.Skip);
         var normalizedTake = NormalizeWorkKeyTake(query.Take);
@@ -217,7 +192,7 @@ internal sealed class WorkSystemReadModelQueryService(
         WorkerKeyTypeCriteria? criteria = null,
         CancellationToken cancellationToken = default)
     {
-        var snapshot = await this.GetSnapshot(cancellationToken);
+        var snapshot = await this.GetCurrentReadModel(cancellationToken);
         var query = criteria ?? new WorkerKeyTypeCriteria();
         var normalizedSkip = Math.Max(0, query.Skip);
         var normalizedTake = NormalizeWorkKeyTake(query.Take);
@@ -249,7 +224,7 @@ internal sealed class WorkSystemReadModelQueryService(
         WorkIterationKeyCriteria? criteria = null,
         CancellationToken cancellationToken = default)
     {
-        var snapshot = await this.GetSnapshot(cancellationToken);
+        var snapshot = await this.GetCurrentReadModel(cancellationToken);
         var query = criteria ?? new WorkIterationKeyCriteria();
         var normalizedSkip = Math.Max(0, query.Skip);
         var normalizedTake = NormalizeWorkIterationKeyTake(query.Take);
@@ -282,7 +257,7 @@ internal sealed class WorkSystemReadModelQueryService(
         WorkIterationKeyTypeCriteria? criteria = null,
         CancellationToken cancellationToken = default)
     {
-        var snapshot = await this.GetSnapshot(cancellationToken);
+        var snapshot = await this.GetCurrentReadModel(cancellationToken);
         var query = criteria ?? new WorkIterationKeyTypeCriteria();
         var normalizedSkip = Math.Max(0, query.Skip);
         var normalizedTake = NormalizeWorkIterationKeyTake(query.Take);
@@ -314,7 +289,7 @@ internal sealed class WorkSystemReadModelQueryService(
         WorkerCriteria? criteria = null,
         CancellationToken cancellationToken = default)
     {
-        var snapshot = await this.GetSnapshot(cancellationToken);
+        var snapshot = await this.GetCurrentReadModel(cancellationToken);
         if (criteria is null || IsWholeSystemStatusSummary(criteria))
         {
             return CreateStatusSummary(CountWorkersByState(snapshot.Workers, definitionIds: null));
@@ -335,7 +310,7 @@ internal sealed class WorkSystemReadModelQueryService(
         WorkSystemCriteria? criteria = null,
         CancellationToken cancellationToken = default)
     {
-        var snapshot = await this.GetSnapshot(cancellationToken);
+        var snapshot = await this.GetCurrentReadModel(cancellationToken);
         var definitionIds = this.ResolveDefinitionScope(criteria);
         var workerCounts = CreateSystemWorkerCounts(snapshot, definitionIds);
         var iterationCounts = CreateSystemIterationCounts(snapshot, definitionIds);
@@ -360,29 +335,29 @@ internal sealed class WorkSystemReadModelQueryService(
             CreateSystemRecentIterations(snapshot, WorkCompletionStatus.Completed, SystemIterationListSize, definitionIds));
     }
 
-    public async Task<WorkSystemThroughput> SystemThroughput(
+    public Task<WorkSystemThroughput> SystemThroughput(
         WorkSystemCriteria? criteria = null,
         WorkThroughputCriteria? throughput = null,
         CancellationToken cancellationToken = default)
     {
-        await this.FlushIfLive(cancellationToken);
-        return this.CreateSystemThroughput(this.ResolveDefinitionScope(criteria), throughput);
+        cancellationToken.ThrowIfCancellationRequested();
+        return Task.FromResult(this.CreateSystemThroughput(this.ResolveDefinitionScope(criteria), throughput));
     }
 
-    public async Task<WorkSystemThroughputSummary> SystemThroughputSummary(
+    public Task<WorkSystemThroughputSummary> SystemThroughputSummary(
         WorkSystemCriteria? criteria = null,
         WorkThroughputCriteria? throughput = null,
         CancellationToken cancellationToken = default)
     {
-        await this.FlushIfLive(cancellationToken);
-        return this.metrics.GetThroughputSummary(throughput, this.ResolveDefinitionScope(criteria));
+        cancellationToken.ThrowIfCancellationRequested();
+        return Task.FromResult(this.metrics.GetThroughputSummary(throughput, this.ResolveDefinitionScope(criteria)));
     }
 
     public async Task<WorkSystemWorkerCounts> SystemWorkerCounts(
         WorkSystemCriteria? criteria = null,
         CancellationToken cancellationToken = default)
     {
-        var snapshot = await this.GetSnapshot(cancellationToken);
+        var snapshot = await this.GetCurrentReadModel(cancellationToken);
         return CreateSystemWorkerCounts(snapshot, this.ResolveDefinitionScope(criteria));
     }
 
@@ -390,7 +365,7 @@ internal sealed class WorkSystemReadModelQueryService(
         WorkSystemCriteria? criteria = null,
         CancellationToken cancellationToken = default)
     {
-        var snapshot = await this.GetSnapshot(cancellationToken);
+        var snapshot = await this.GetCurrentReadModel(cancellationToken);
         return CreateSystemIterationCounts(snapshot, this.ResolveDefinitionScope(criteria));
     }
 
@@ -398,7 +373,7 @@ internal sealed class WorkSystemReadModelQueryService(
         WorkSystemCriteria? criteria = null,
         CancellationToken cancellationToken = default)
     {
-        var snapshot = await this.GetSnapshot(cancellationToken);
+        var snapshot = await this.GetCurrentReadModel(cancellationToken);
         return new WorkIterationKeyTypeFacetQueryResult(
             CreateSystemCommonKeyTypes(snapshot, this.ResolveDefinitionScope(criteria)));
     }
@@ -407,7 +382,7 @@ internal sealed class WorkSystemReadModelQueryService(
         WorkSystemCriteria? criteria = null,
         CancellationToken cancellationToken = default)
     {
-        var snapshot = await this.GetSnapshot(cancellationToken);
+        var snapshot = await this.GetCurrentReadModel(cancellationToken);
         var definitionIds = this.ResolveDefinitionScope(criteria);
         var counts = CreateSystemWorkerCounts(snapshot, definitionIds);
         return new WorkSystemFailedWorkers(
@@ -422,7 +397,7 @@ internal sealed class WorkSystemReadModelQueryService(
         WorkSystemCriteria? criteria = null,
         CancellationToken cancellationToken = default)
     {
-        var snapshot = await this.GetSnapshot(cancellationToken);
+        var snapshot = await this.GetCurrentReadModel(cancellationToken);
         return new WorkerIterationOverviewQueryResult(
             CreateSystemRecentIterations(
                 snapshot,
@@ -435,7 +410,7 @@ internal sealed class WorkSystemReadModelQueryService(
         WorkSystemCriteria? criteria = null,
         CancellationToken cancellationToken = default)
     {
-        var snapshot = await this.GetSnapshot(cancellationToken);
+        var snapshot = await this.GetCurrentReadModel(cancellationToken);
         return new WorkerIterationOverviewQueryResult(
             CreateSystemRecentIterations(
                 snapshot,
@@ -444,27 +419,10 @@ internal sealed class WorkSystemReadModelQueryService(
                 this.ResolveDefinitionScope(criteria)));
     }
 
-    private async ValueTask<WorkSystemReadModelSnapshot> GetSnapshot(CancellationToken cancellationToken)
+    private ValueTask<WorkSystemReadModelSnapshot> GetCurrentReadModel(CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        if (this.capturedSnapshot is { } snapshot)
-        {
-            return snapshot;
-        }
-
-        await this.readModel.Flush(cancellationToken);
-        return this.readModel.Current;
-    }
-
-    private async ValueTask FlushIfLive(CancellationToken cancellationToken)
-    {
-        cancellationToken.ThrowIfCancellationRequested();
-        if (this.capturedSnapshot is not null)
-        {
-            return;
-        }
-
-        await this.readModel.Flush(cancellationToken);
+        return ValueTask.FromResult(this.readModel.Current);
     }
 
     private static Task<WorkerSnapshot?> MissingWorkerDetail(

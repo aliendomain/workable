@@ -81,7 +81,8 @@ Execution context also exposes the worker's `WorkOrigin`, whether interruption i
 - Worker snapshots can expose captured logs and profile snapshots.
 - Worker snapshots expose the `WorkOrigin` that queued the worker.
 - `IWorkQueryService.Worker` returns a full `WorkerSnapshot`.
-- `IWorkQueryService` reads worker and iteration state from the runtime read model snapshot; the in-memory model starts empty with the process and is cleared when the system stops.
+- `IWorkQueryService.Worker` and `IWorkQueryService.WorkerIteration` return authoritative retained detail.
+- Aggregate and list-style query methods read from the runtime read model; the in-memory model starts empty with the process and is cleared when the system stops.
 - Control and correctness paths use live worker records instead of the eventually consistent read model. This includes idempotency checks, concurrency decisions, worker actions, shutdown interruption, retention purge selection, and bulk action execution.
 - `IWorkSystem.Diagnostics` exposes queue, read-model, retention, concurrency, durability, and idempotency diagnostics. See [Work Diagnostics](diagnostics.md).
 - `IWorkQueryService.Workers` returns lightweight `WorkerOverviewItem` rows.

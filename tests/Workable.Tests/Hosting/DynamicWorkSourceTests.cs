@@ -187,6 +187,8 @@ public sealed class DynamicWorkSourceTests
         await system.Start();
         await system.Stop();
         await system.Start();
+        await Eventually(async () =>
+            (await system.Query.Workers(new WorkerCriteria(DefinitionName: "runtime.generated", Take: 10))).TotalCount == 1);
 
         var workers = await system.Query.Workers(new WorkerCriteria(DefinitionName: "runtime.generated", Take: 10));
 
@@ -326,6 +328,22 @@ public sealed class DynamicWorkSourceTests
         var hasEvent = await reader.MoveNextAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(5));
         Assert.True(hasEvent);
         return reader.Current;
+    }
+
+    private static async Task Eventually(Func<Task<bool>> condition)
+    {
+        var deadline = DateTimeOffset.UtcNow.AddSeconds(5);
+        while (DateTimeOffset.UtcNow < deadline)
+        {
+            if (await condition())
+            {
+                return;
+            }
+
+            await Task.Delay(10);
+        }
+
+        Assert.True(await condition(), "Expected condition to become true.");
     }
 
     private sealed record EchoInput(string Message);

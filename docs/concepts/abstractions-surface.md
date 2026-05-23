@@ -167,7 +167,7 @@ The main groups are:
 - status summaries
 - whole-system and sliced aggregate queries
 
-`BeginRead()` is the advanced piece that matters most for custom transports and UIs. It captures the current read-model snapshot and returns a query service pinned to that snapshot, so multiple related reads can line up against the same projected state.
+`Worker(...)` and `WorkerIteration(...)` return authoritative retained detail. The aggregate/list side of the query surface is eventual: each call reads one published projector snapshot, but separate aggregate calls are not guaranteed to line up against the same snapshot.
 
 See [Querying](querying.md) for the read-model, key-search, and aggregate-query details.
 

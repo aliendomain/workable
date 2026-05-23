@@ -6,9 +6,6 @@ internal sealed class SessionWorkQueryService(
 {
     public WorkRequestContext RequestContext { get; } = requestContext;
 
-    public IWorkQueryService BeginRead()
-        => new SessionWorkQueryService(inner.BeginRead(), this.RequestContext);
-
     public Task<WorkerSnapshot?> Worker(
         WorkerId workerId,
         CancellationToken cancellationToken = default)

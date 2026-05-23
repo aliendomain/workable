@@ -42,6 +42,7 @@ public sealed class WorkQueryServiceTests
                 .WithConcurrencyKey(key)
                 .WithIdentifier(identifier));
         await system.Queue.Enqueue("invoice.sync", WorkInput.Empty.WithIdentifier(new WorkIdentifier("invoice", "inv-200")));
+        await WaitForReadModel(system);
 
         var result = await system.Query.Workers(new WorkerCriteria(
             DefinitionId: definition.Id,
@@ -75,6 +76,7 @@ public sealed class WorkQueryServiceTests
 
         var handle = await system.Queue.Enqueue("discover.relationships", WorkInput.Empty);
         await handle.WaitForCompletion();
+        await WaitForReadModel(system);
 
         var result = await system.Query.Workers(new WorkerCriteria(Identifier: discovered));
 
@@ -258,6 +260,7 @@ public sealed class WorkQueryServiceTests
 
         var handle = await system.Queue.Enqueue("iteration.retry");
         await handle.WaitForCompletion();
+        await WaitForReadModel(system);
         var workerId = RequiredWorkerId(handle);
         var failed = await system.Query.WorkerIterations(new WorkerIterationCriteria(
             WorkerId: workerId,
@@ -285,12 +288,14 @@ public sealed class WorkQueryServiceTests
 
         var handle = await system.Queue.Enqueue("iteration.purge");
         await handle.WaitForCompletion();
+        await WaitForReadModel(system);
         var workerId = RequiredWorkerId(handle);
         var beforePurge = await system.Query.WorkerIterations(new WorkerIterationCriteria(WorkerId: workerId));
         var worker = await system.Query.Worker(workerId)
             ?? throw new InvalidOperationException("Expected worker.");
 
         await system.Workers.Execute(worker.Version, WorkAction.Purge);
+        await WaitForReadModel(system);
         var afterPurge = await system.Query.WorkerIterations(new WorkerIterationCriteria(WorkerId: workerId));
 
         Assert.Single(beforePurge.Iterations);
@@ -326,6 +331,7 @@ public sealed class WorkQueryServiceTests
             "keyed.work",
             WorkInput.Empty.WithSubject(subject));
         await second.WaitForCompletion();
+        await WaitForReadModel(system);
 
         var claimKeys = await system.Query.WorkerKeys(new WorkerKeyCriteria(Search: "claim id CLM-123"));
         var subjectKeys = await system.Query.WorkerKeys(new WorkerKeyCriteria(Kind: WorkKeyKind.Subject, Type: "claim"));
@@ -369,6 +375,7 @@ public sealed class WorkQueryServiceTests
             "key.type.grouping",
             WorkInput.Empty.WithIdentifier(new WorkIdentifier("claim", "CLM-2")));
         await second.WaitForCompletion();
+        await WaitForReadModel(system);
 
         var types = await system.Query.WorkerKeyTypes(new WorkerKeyTypeCriteria(Type: "claim"));
         var pagedTypes = await system.Query.WorkerKeyTypes(new WorkerKeyTypeCriteria(Take: 1));
@@ -406,6 +413,7 @@ public sealed class WorkQueryServiceTests
                 "key.take.cap",
                 WorkInput.Empty.WithIdentifier(new WorkIdentifier("batch", index.ToString())));
         }
+        await WaitForReadModel(system);
 
         var result = await system.Query.WorkerKeys(new WorkerKeyCriteria(Take: WorkerKeyCriteria.MaximumTake + 5));
 
@@ -500,6 +508,7 @@ public sealed class WorkQueryServiceTests
                 .WithConcurrencyKey(concurrencyKey)
                 .WithIdentifier(queuedIdentifier));
         await handle.WaitForCompletion();
+        await WaitForReadModel(system);
 
         var claimKeys = await system.Query.WorkIterationKeys(new WorkIterationKeyCriteria(Search: "claim id CLM-123"));
         var subjectKeys = await system.Query.WorkIterationKeys(new WorkIterationKeyCriteria(Kind: WorkKeyKind.Subject, Type: "claim"));
@@ -541,6 +550,7 @@ public sealed class WorkQueryServiceTests
         await (await system.Queue.Enqueue(
             "iteration.key.type.grouping",
             WorkInput.Empty.WithIdentifier(new WorkIdentifier("claim", "CLM-2")))).WaitForCompletion();
+        await WaitForReadModel(system);
 
         var types = await system.Query.WorkIterationKeyTypes(new WorkIterationKeyTypeCriteria(Type: "claim"));
         var pagedTypes = await system.Query.WorkIterationKeyTypes(new WorkIterationKeyTypeCriteria(Take: 1));
@@ -574,6 +584,7 @@ public sealed class WorkQueryServiceTests
                 "iteration.key.take.cap",
                 WorkInput.Empty.WithIdentifier(new WorkIdentifier("batch", index.ToString())))).WaitForCompletion();
         }
+        await WaitForReadModel(system);
 
         var result = await system.Query.WorkIterationKeys(new WorkIterationKeyCriteria(Take: WorkIterationKeyCriteria.MaximumTake + 5));
 
@@ -601,11 +612,15 @@ public sealed class WorkQueryServiceTests
         var handle = await system.Queue.Enqueue("long.running", WorkInput.Empty);
         await entered.Task.WaitAsync(TimeSpan.FromSeconds(1));
 
+        await Eventually(async () =>
+            (await system.Query.Workers(new WorkerCriteria(
+                States: new HashSet<WorkerState> { WorkerState.Running }))).Workers.Count == 1);
         var running = await system.Query.Workers(new WorkerCriteria(
             States: new HashSet<WorkerState> { WorkerState.Running }));
 
         release.TrySetResult();
         await handle.WaitForCompletion();
+        await WaitForReadModel(system);
         var completed = await system.Query.Workers(new WorkerCriteria(
             States: new HashSet<WorkerState> { WorkerState.Completed }));
 
@@ -666,6 +681,7 @@ public sealed class WorkQueryServiceTests
         var recurrence = await system.Queue.Enqueue("query.config.recurrence");
         var concurrency = await system.Queue.Enqueue("query.config.concurrency");
         var profiling = await system.Queue.Enqueue("query.config.profiling");
+        await WaitForReadModel(system);
 
         var recurringWorkers = await system.Query.Workers(new WorkerCriteria(
             Configuration: new WorkerConfigurationCriteria(RecurrenceEnabled: true)));
@@ -693,6 +709,7 @@ public sealed class WorkQueryServiceTests
         await system.Start();
 
         var handle = await system.Queue.Enqueue("query.config.reconfigure");
+        await WaitForReadModel(system);
         var worker = await system.Query.Worker(RequiredWorkerId(handle))
             ?? throw new InvalidOperationException("Expected worker.");
         var before = await system.Query.Workers(new WorkerCriteria(
@@ -715,6 +732,7 @@ public sealed class WorkQueryServiceTests
                         MaximumCapacity = 1,
                     },
                 }));
+        await WaitForReadModel(system);
         var afterEnabled = await system.Query.Workers(new WorkerCriteria(
             Configuration: new WorkerConfigurationCriteria(
                 RecurrenceEnabled: true,
@@ -763,6 +781,7 @@ public sealed class WorkQueryServiceTests
         await handle.WaitForCompletion();
         var pausedWorker = await system.Query.Worker(workerId)
             ?? throw new InvalidOperationException("Expected paused worker.");
+        await WaitForReadModel(system);
         var pausedQuery = await system.Query.Workers(new WorkerCriteria(
             States: new HashSet<WorkerState> { WorkerState.Paused }));
 
@@ -770,6 +789,7 @@ public sealed class WorkQueryServiceTests
         await handle.WaitForCompletion();
         var completedWorker = await system.Query.Worker(workerId)
             ?? throw new InvalidOperationException("Expected completed worker.");
+        await WaitForReadModel(system);
         var completedQuery = await system.Query.Workers(new WorkerCriteria(
             States: new HashSet<WorkerState> { WorkerState.Completed }));
         var summary = await system.Query.WorkerStatusSummary();
@@ -802,6 +822,7 @@ public sealed class WorkQueryServiceTests
         {
             await system.Queue.Enqueue("query.take.cap", WorkInput.Empty);
         }
+        await WaitForReadModel(system);
 
         var result = await system.Query.Workers(new WorkerCriteria(Take: WorkerCriteria.MaximumTake + 5));
 
@@ -831,6 +852,7 @@ public sealed class WorkQueryServiceTests
         var second = await system.Queue.Enqueue("query.window.workers");
         await Task.Delay(20);
         var third = await system.Queue.Enqueue("query.window.workers");
+        await WaitForReadModel(system);
 
         var ascending = await system.Query.Workers(new WorkerCriteria(
             DefinitionName: "query.window.workers",
@@ -885,6 +907,7 @@ public sealed class WorkQueryServiceTests
         await Task.Delay(20);
         var third = await system.Queue.Enqueue("query.window.iterations");
         await third.WaitForCompletion();
+        await WaitForReadModel(system);
 
         var ascending = await system.Query.WorkerIterations(new WorkerIterationCriteria(
             DefinitionName: "query.window.iterations",
@@ -930,6 +953,7 @@ public sealed class WorkQueryServiceTests
         await system.Start();
 
         await system.Queue.Enqueue("rollup.work", WorkInput.Empty);
+        await WaitForReadModel(system);
         var info = await system.Query.WorkInfo("rollup.work");
 
         Assert.NotNull(info);
@@ -955,6 +979,7 @@ public sealed class WorkQueryServiceTests
 
         await system.Start();
         await (await system.Queue.Enqueue("summary.failed")).WaitForCompletion();
+        await WaitForReadModel(system);
 
         var summary = await system.Query.WorkerStatusSummary();
         var info = await system.Query.WorkInfo("summary.failed")
@@ -1035,6 +1060,7 @@ public sealed class WorkQueryServiceTests
         await (await system.Queue.Enqueue("finance.root")).WaitForCompletion();
         await (await system.Queue.Enqueue("invoice.send")).WaitForCompletion();
         await (await system.Queue.Enqueue("operations.cache")).WaitForCompletion();
+        await WaitForReadModel(system);
 
         var finance = await system.Query.Workers(new WorkerCriteria(Category: "finance"));
         var exactFinance = await system.Query.Workers(new WorkerCriteria(
@@ -1075,6 +1101,7 @@ public sealed class WorkQueryServiceTests
         await system.Start();
 
         await system.Queue.Enqueue("status.work", WorkInput.Empty);
+        await WaitForReadModel(system);
 
         var summary = await system.Query.WorkerStatusSummary();
 
@@ -1137,6 +1164,7 @@ public sealed class WorkQueryServiceTests
         await system.Queue.Enqueue(
             shippingDefinition.Name,
             WorkInput.Empty.WithSubject(subject).WithIdentifier(identifier));
+        await WaitForReadModel(system);
 
         var exact = await system.Query.WorkerStatusSummary(new WorkerCriteria(
             DefinitionId: targetDefinition.Id,
@@ -1175,6 +1203,7 @@ public sealed class WorkQueryServiceTests
         await completed.WaitForCompletion();
         var failed = await system.Queue.Enqueue("overview.failed", WorkInput.Empty);
         await failed.WaitForCompletion();
+        await WaitForReadModel(system);
 
         var overview = await system.Query.SystemDetails();
 
@@ -1300,6 +1329,7 @@ public sealed class WorkQueryServiceTests
         await system.Queue.Enqueue("overview.queued");
         await (await system.Queue.Enqueue("overview.completed")).WaitForCompletion();
         await (await system.Queue.Enqueue("overview.not-counted-failed")).WaitForCompletion();
+        await WaitForReadModel(system);
 
         try
         {
@@ -1338,6 +1368,7 @@ public sealed class WorkQueryServiceTests
             await (await system.Queue.Enqueue("overview.limit.complete", WorkInput.Empty)).WaitForCompletion();
             await (await system.Queue.Enqueue("overview.limit.failed", WorkInput.Empty)).WaitForCompletion();
         }
+        await WaitForReadModel(system);
 
         var overview = await system.Query.SystemDetails();
 
@@ -1377,6 +1408,7 @@ public sealed class WorkQueryServiceTests
                 "overview.keys",
                 WorkInput.Empty.WithIdentifier(new WorkIdentifier($"secondary-{index}", index.ToString())))).WaitForCompletion();
         }
+        await WaitForReadModel(system);
 
         var overview = await system.Query.SystemDetails();
 
@@ -1423,6 +1455,7 @@ public sealed class WorkQueryServiceTests
         await (await system.Queue.Enqueue(
             "overview.retry.keys",
             WorkInput.Empty.WithSubject(new WorkSubjectId("claim", "CLM-1")))).WaitForCompletion();
+        await WaitForReadModel(system);
 
         var overview = await system.Query.SystemDetails();
 
@@ -1463,6 +1496,7 @@ public sealed class WorkQueryServiceTests
         await (await system.Queue.Enqueue(
             "shipping.complete",
             WorkInput.Empty.WithIdentifier(new WorkIdentifier("shipment", "S-1")))).WaitForCompletion();
+        await WaitForReadModel(system);
 
         var billing = await system.Query.SystemDetails(new WorkSystemCriteria(Category: "Billing"));
         var exactBilling = await system.Query.SystemDetails(new WorkSystemCriteria(
@@ -1511,6 +1545,7 @@ public sealed class WorkQueryServiceTests
         var billingHandle = await system.Queue.Enqueue("queue.billing.root");
         await Task.Delay(10);
         var invoiceHandle = await system.Queue.Enqueue("queue.billing.invoice");
+        await WaitForReadModel(system);
 
         var shipping = await system.Query.Worker(RequiredWorkerId(shippingHandle))
             ?? throw new InvalidOperationException("Expected shipping worker.");
@@ -1532,6 +1567,7 @@ public sealed class WorkQueryServiceTests
         Assert.Equal(billingInvoice.StateChangedAt, invoice.OldestQueuedAt);
 
         var cancelRoot = await system.Workers.Execute(billingRoot.Version, WorkAction.Cancel);
+        await WaitForReadModel(system);
         var billingAfterCancel = await system.Query.SystemDetails(new WorkSystemCriteria(Category: "Billing"));
 
         Assert.True(cancelRoot.IsAccepted);
@@ -1627,6 +1663,7 @@ public sealed class WorkQueryServiceTests
             ?? throw new InvalidOperationException("Expected worker.");
 
         var purge = await system.Workers.Execute(worker.Version, WorkAction.Purge);
+        await WaitForReadModel(system);
 
         var afterPurgeIterations = await system.Query.WorkerIterations(new WorkerIterationCriteria(WorkerId: workerId));
         var afterPurge = await system.Query.SystemThroughput(new WorkSystemCriteria(Category: "Metrics:Purge"),
@@ -1652,9 +1689,12 @@ public sealed class WorkQueryServiceTests
 
         await system.Start();
         await (await system.Queue.Enqueue("readmodel.clear")).WaitForCompletion();
+        await WaitForReadModel(system);
 
         var beforeStop = await system.Query.Workers();
         await system.Stop();
+        await Eventually(async () =>
+            (await system.Query.Workers()).Workers.Count == 0);
         var afterStop = await system.Query.Workers();
         var overview = await system.Query.SystemDetails();
 
@@ -1676,7 +1716,11 @@ public sealed class WorkQueryServiceTests
         var handle = await system.Queue.Enqueue("readmodel.diagnostics");
         await handle.WaitForCompletion();
 
-        await system.Query.Worker(RequiredWorkerId(handle));
+        await Eventually(() => Task.FromResult(
+            system.Diagnostics.ReadModel is { } current &&
+            current.EnqueuedSequence > 0 &&
+            current.EnqueuedSequence == current.AppliedSequence &&
+            current.PendingUpdateCount == 0));
         var diagnostics = system.Diagnostics.ReadModel;
 
         Assert.Equal(0, initial.EnqueuedSequence);
@@ -1874,7 +1918,7 @@ public sealed class WorkQueryServiceTests
     }
 
     [Fact]
-    public async Task QueryFlushPublishesReadModelWhenProjectorBatchExactlyDrains()
+    public async Task ReadModelEventuallyPublishesWhenProjectorBatchExactlyDrains()
     {
         const int batchSize = 1024;
         const string definitionName = "readmodel.batch.boundary";
@@ -1894,6 +1938,11 @@ public sealed class WorkQueryServiceTests
             await system.Queue.Enqueue(definitionName);
         }
 
+        await Eventually(() => Task.FromResult(
+            system.Diagnostics.ReadModel is { } diagnostics &&
+            diagnostics.EnqueuedSequence == diagnostics.AppliedSequence &&
+            diagnostics.PendingUpdateCount == 0));
+
         var counts = await system.Query.SystemWorkerCounts();
         var diagnostics = system.Diagnostics.ReadModel;
 
@@ -1901,52 +1950,6 @@ public sealed class WorkQueryServiceTests
         Assert.Equal(batchSize, counts.WorkerCountByState[WorkerState.Queued]);
         Assert.Equal(diagnostics.EnqueuedSequence, diagnostics.AppliedSequence);
         Assert.Equal(0, diagnostics.PendingUpdateCount);
-    }
-
-    [Fact]
-    public async Task QuerySnapshotReadStaysPinnedToCapturedReadModelSnapshot()
-    {
-        const string definitionName = "readmodel.snapshot";
-        var definition = WorkDefinition.Create(definitionName, category: "ReadModel");
-        await using var system = CreateSystem(definition, SuccessfulWork);
-
-        await system.Start();
-        var first = await system.Queue.Enqueue(definitionName);
-        await first.WaitForCompletion();
-        await Eventually(async () =>
-            (await system.Query.Workers(new WorkerCriteria(DefinitionName: definitionName, Take: 10))).Workers.Count == 1);
-        var snapshotRead = system.Query.BeginRead();
-
-        var second = await system.Queue.Enqueue(definitionName);
-        await second.WaitForCompletion();
-        await Eventually(async () =>
-            (await system.Query.Workers(new WorkerCriteria(DefinitionName: definitionName, Take: 10))).Workers.Count == 2);
-        var pinned = await snapshotRead.Workers(new WorkerCriteria(DefinitionName: definitionName, Take: 10));
-
-        Assert.Equal(RequiredWorkerId(first), Assert.Single(pinned.Workers).Id);
-    }
-
-    [Fact]
-    public async Task QuerySnapshotReadDoesNotSeeDetailsCreatedAfterCapture()
-    {
-        const string definitionName = "readmodel.snapshot.details";
-        var definition = WorkDefinition.Create(definitionName, category: "ReadModel");
-        await using var system = CreateSystem(definition, SuccessfulWork);
-
-        await system.Start();
-        var snapshotRead = system.Query.BeginRead();
-
-        var handle = await system.Queue.Enqueue(definitionName);
-        await handle.WaitForCompletion();
-        var workerId = RequiredWorkerId(handle);
-        await Eventually(async () =>
-            (await system.Query.Workers(new WorkerCriteria(DefinitionName: definitionName, Take: 10))).Workers.Count == 1);
-
-        var pinnedWorker = await snapshotRead.Worker(workerId);
-        var pinnedIteration = await snapshotRead.WorkerIteration(new WorkerIterationReference(workerId, 1));
-
-        Assert.Null(pinnedWorker);
-        Assert.Null(pinnedIteration);
     }
 
     [Fact]
@@ -2006,6 +2009,9 @@ public sealed class WorkQueryServiceTests
 
         Assert.True(await condition(), "Expected condition to become true.");
     }
+
+    private static Task WaitForReadModel(IWorkSystem system)
+        => Eventually(() => Task.FromResult(system.Diagnostics.ReadModel.PendingUpdateCount == 0));
 
     private static IWorkSystem CreateSystem(
         WorkDefinition definition,

@@ -73,6 +73,14 @@ WorkComponentQueryResult result = await adapter.View(
 
 The same adapter also exposes targeted methods such as `Worker`, `Workers`, `WorkerIterations`, `WorkInfo`, `WorkDefinitions`, `WorkerKeys`, `WorkIterationKeys`, and `WorkerStatusSummary`. Those are useful when a custom UI needs one specific data set instead of a component envelope.
 
+## Consistency Note
+
+View and component responses are composition helpers, not transactional snapshots.
+
+Each aggregate query inside a view reads the latest published projector snapshot it sees at that moment. When one view response is built from multiple aggregate queries, the components can reflect slightly different projector moments. That is usually fine for dashboards and operator tooling, but it matters if a caller assumes worker tables, summaries, throughput, and diagnostics are all from one perfectly aligned instant.
+
+If exact agreement matters, prefer one purpose-built query result over stitching together several aggregate components.
+
 ## Named Views
 
 These view names are built in:
