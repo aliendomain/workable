@@ -11,7 +11,6 @@ import {
   CircleAlert,
   Clock3,
   FileCode2,
-  FileJson,
   Folder,
   Home,
   Info,
@@ -21,16 +20,30 @@ import {
   Minimize2,
   Plus,
   RefreshCw,
-  RotateCcw,
   Rows2,
   Rows4,
-  Settings,
-  Wrench,
   Workflow,
   X,
 } from "lucide-react";
 import { Fragment, type KeyboardEvent, type PointerEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import {
+  overviewPanelIds,
+  type OverviewPanelId,
+  overviewPanelShapeCapabilities,
+  type OverviewPanelShapeMap,
+} from "@/components/features/console/overview-panels";
+import { OverviewPanelSettings } from "@/components/features/console/overview-panel-settings";
+import { SystemToolsMenu } from "@/components/features/console/system-tools-menu";
+import type {
+  OverviewScope,
+  PendingDelete,
+  PendingStopSystem,
+  ServerView,
+  View,
+  WorkableHostConnection,
+  WorkableSystemConnection,
+} from "@/components/features/console/types";
 import { Button } from "@/components/ui/button";
 import {
   Popover,
@@ -77,7 +90,6 @@ import {
 import {
   OverviewCatalogFilter,
   QueryFilterPopover,
-  ViewActionLane,
 } from "@/components/workable/console/filters";
 import { ErrorPanel } from "@/components/workable/console/feedback-panel";
 import {
@@ -129,71 +141,8 @@ import {
 const STORAGE_KEY = "workable-console.state.v1";
 const LEGACY_CONNECTION_STORAGE_KEY = "workable-console.connection";
 
-type View = "overview" | "definitions" | "definition" | "workers" | "iterations" | "worker";
-type ServerView = Exclude<View, "worker">;
 const throughputSeriesIds = ["started", "completed", "failed", "canceled"] as const;
 type ThroughputSeriesId = (typeof throughputSeriesIds)[number];
-
-const overviewPanelIds = [
-  "workers",
-  "failedWorkers",
-  "throughput",
-  "iterations",
-  "failedIterations",
-  "completedIterations",
-] as const;
-type OverviewPanelId = (typeof overviewPanelIds)[number];
-type OverviewPanelShapeMap = Record<OverviewPanelId, WorkComponentShape>;
-
-const overviewPanelShapeCapabilities: Record<OverviewPanelId, {
-  defaultShape: WorkComponentShape;
-  supportedShapes: WorkComponentShape[];
-}> = {
-  completedIterations: {
-    defaultShape: "standard",
-    supportedShapes: ["standard", "detailed"],
-  },
-  failedIterations: {
-    defaultShape: "standard",
-    supportedShapes: ["standard", "detailed"],
-  },
-  failedWorkers: {
-    defaultShape: "detailed",
-    supportedShapes: ["standard", "detailed"],
-  },
-  iterations: {
-    defaultShape: "standard",
-    supportedShapes: ["compact", "standard"],
-  },
-  throughput: {
-    defaultShape: "standard",
-    supportedShapes: ["compact", "standard"],
-  },
-  workers: {
-    defaultShape: "standard",
-    supportedShapes: ["compact", "standard"],
-  },
-};
-type WorkableHostConnection = {
-  id: string;
-  name: string;
-  apiUrl: string;
-  systems: WorkableSystemConnection[];
-};
-
-type WorkableSystemConnection = {
-  id: string;
-  hostId: string;
-  name: string;
-  systemName?: string;
-  access?: WorkSystemAccessSummary;
-  realtimeEnabled: boolean;
-  realtimeFeatures?: string[] | null;
-  realtimeHubPath?: string | null;
-  realtimeSupported?: boolean;
-  realtimeTransport?: string | null;
-  state?: string | null;
-};
 
 type LegacyWorkableServerConnection = WorkableSystemConnection & {
   apiUrl?: string;
@@ -209,20 +158,6 @@ type ConsoleStorage = {
   overviewHiddenThroughputSeries: ThroughputSeriesId[];
   overviewThroughputHidden: boolean;
   view: ServerView;
-};
-
-type PendingDelete =
-  | { kind: "host"; host: WorkableHostConnection }
-  | { kind: "system"; host: WorkableHostConnection; system: WorkableSystemConnection };
-
-type PendingStopSystem = {
-  system: WorkableSystemConnection;
-};
-
-type OverviewScope = {
-  category?: string;
-  definitionName?: string;
-  includeSubcategories?: boolean;
 };
 
 type NavigationEntry = {
@@ -1543,7 +1478,7 @@ export function WorkableConsole() {
     setConsoleState((current) => ({
       ...current,
       activeSystemId: entry.systemId,
-      view: entry.view,
+      view: isServerView(entry.view) ? entry.view : current.view,
     }));
     if (entry.view !== "worker") {
       setMountedViews((current) => new Set([...current, entry.view]));
@@ -1948,7 +1883,7 @@ export function WorkableConsole() {
       </Sidebar>
       <SidebarInset>
         <main className="flex-1 bg-background">
-          <div className="relative mx-auto w-full max-w-7xl p-4 md:p-6" data-view-content>
+          <div className="relative mx-auto w-full max-w-7xl p-4 md:p-6">
               {!hydratedConnection && (
                 <EmptyServerState
                   description={
@@ -2077,7 +2012,7 @@ export function WorkableConsole() {
                         refreshToken={refreshTokens.overview}
                         onOpenWorker={openWorker}
                         renderToolbar={({ loading, refreshing }) => (
-                          <ViewActionLane>
+                          <>
                             <OverviewCatalogFilter
                               connection={hydratedConnection}
                               loading={loading || refreshing}
@@ -2124,7 +2059,7 @@ export function WorkableConsole() {
                               onPanelVisibilityChange={setOverviewPanelVisible}
                               onResetUi={resetOverviewUiToDefaults}
                             />
-                          </ViewActionLane>
+                          </>
                         )}
                       />
                     </div>
@@ -2254,7 +2189,7 @@ export function WorkableConsole() {
                 </>
               )}
               {hydratedConnection && view === "worker" && selectedWorkerId && (
-                <div className={`${viewContentOffsetClass} flex h-[calc(100dvh-6.75rem)] min-h-0 flex-col overflow-hidden md:h-[calc(100dvh-8.25rem)]`}>
+                <div className={`${viewContentOffsetClass} flex min-h-0 flex-col`}>
                   <WorkerConsoleView
                     connection={hydratedConnection}
                     onNavigateBack={navigateBack}
@@ -2304,43 +2239,6 @@ export function WorkableConsole() {
   );
 }
 
-const overviewPanelOptions: Array<{
-  description: string;
-  id: OverviewPanelId;
-  label: string;
-}> = [
-  {
-    description: "Worker states and current worker totals.",
-    id: "workers",
-    label: "Workers",
-  },
-  {
-    description: "Recent workers in the failed state.",
-    id: "failedWorkers",
-    label: "Recent Failed Workers",
-  },
-  {
-    description: "Throughput and execution charts.",
-    id: "throughput",
-    label: "Throughput",
-  },
-  {
-    description: "Worker iteration statuses and common relationship filters.",
-    id: "iterations",
-    label: "Iterations",
-  },
-  {
-    description: "Recent failed worker iterations.",
-    id: "failedIterations",
-    label: "Recent Failed Iterations",
-  },
-  {
-    description: "Recent completed worker iterations.",
-    id: "completedIterations",
-    label: "Recent Completed Iterations",
-  },
-];
-
 type SystemDiagnosticsViewState = RealtimeViewLoadable<WorkComponentQueryResult>;
 
 type DiagnosticsAlertTarget = {
@@ -2365,80 +2263,6 @@ type DiagnosticsAlertSnapshot = {
 type DiagnosticsAlertSource = DiagnosticsAlertSnapshot & {
   target: DiagnosticsAlertTarget;
 };
-
-function SystemToolsMenu({
-  canUseRealtimePayloads,
-  eventViewerOpen,
-  onEventViewerOpenChange,
-  onRealtimePayloadOpenChange,
-  realtimePayloadOpen,
-}: {
-  canUseRealtimePayloads: boolean;
-  eventViewerOpen: boolean;
-  onEventViewerOpenChange: (open: boolean) => void;
-  onRealtimePayloadOpenChange: (open: boolean) => void;
-  realtimePayloadOpen: boolean;
-}) {
-  const [open, setOpen] = useState(false);
-
-  return (
-    <Popover open={open} onOpenChange={setOpen}>
-      <Tooltip delayDuration={500} disableHoverableContent>
-        <TooltipTrigger asChild>
-          <PopoverTrigger asChild>
-            <Button
-              aria-label="System tools"
-              className="text-muted-foreground hover:bg-transparent hover:text-foreground dark:hover:bg-transparent"
-              size="icon-sm"
-              variant="ghost"
-            >
-              <Wrench className="size-4" />
-            </Button>
-          </PopoverTrigger>
-        </TooltipTrigger>
-        <TooltipContent side="bottom" sideOffset={6}>
-          System tools
-        </TooltipContent>
-      </Tooltip>
-      <PopoverContent align="end" className="w-56 p-1">
-        <button
-          className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm hover:bg-accent hover:text-accent-foreground"
-          onClick={() => {
-            onEventViewerOpenChange(!eventViewerOpen);
-            setOpen(false);
-          }}
-          type="button"
-        >
-          <FileJson className="size-4" />
-          <span className="flex-1">Event viewer</span>
-          <span className="text-muted-foreground text-xs">{eventViewerOpen ? "Open" : ""}</span>
-        </button>
-        <Tooltip delayDuration={250}>
-          <TooltipTrigger asChild>
-            <button
-              className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm hover:bg-accent hover:text-accent-foreground disabled:pointer-events-none disabled:opacity-50"
-              disabled={!canUseRealtimePayloads}
-              onClick={() => {
-                onRealtimePayloadOpenChange(!realtimePayloadOpen);
-                setOpen(false);
-              }}
-              type="button"
-            >
-              <Rows4 className="size-4" />
-              <span className="flex-1">Realtime payloads</span>
-              <span className="text-muted-foreground text-xs">{realtimePayloadOpen ? "Open" : ""}</span>
-            </button>
-          </TooltipTrigger>
-          {!canUseRealtimePayloads ? (
-            <TooltipContent side="left" sideOffset={6}>
-              Realtime payloads are only available on the worker detail view when realtime is configured.
-            </TooltipContent>
-          ) : null}
-        </Tooltip>
-      </PopoverContent>
-    </Popover>
-  );
-}
 
 function DiagnosticsAlertSubscriptions({
   captureEnabled,
@@ -4626,95 +4450,6 @@ function parseTimeSpanMilliseconds(value: string) {
 
 function parseDurationSeconds(value: string) {
   return (parseTimeSpanMilliseconds(value) ?? 0) / 1000;
-}
-
-function OverviewPanelSettings({
-  hiddenPanelIds,
-  onPanelVisibilityChange,
-  onResetUi,
-}: {
-  hiddenPanelIds: OverviewPanelId[];
-  onPanelVisibilityChange: (panelId: OverviewPanelId, visible: boolean) => void;
-  onResetUi: () => void;
-}) {
-  return (
-    <Popover>
-      <Tooltip delayDuration={500} disableHoverableContent>
-        <TooltipTrigger asChild>
-          <PopoverTrigger asChild>
-            <Button
-              aria-label="Overview panel settings"
-              className="text-muted-foreground hover:bg-transparent hover:text-foreground dark:hover:bg-transparent"
-              size="icon-sm"
-              variant="ghost"
-            >
-              <Settings className="size-4" />
-            </Button>
-          </PopoverTrigger>
-        </TooltipTrigger>
-        <TooltipContent side="bottom" sideOffset={6}>
-          Overview panel settings
-        </TooltipContent>
-      </Tooltip>
-      <PopoverContent align="end" className="w-80 p-0">
-        <div className="flex items-start justify-between gap-3 border-b px-3 py-2">
-          <div className="min-w-0">
-            <div className="font-medium text-sm">Overview panels</div>
-            <div className="text-muted-foreground text-xs">
-              Checked panels are shown on the overview screen.
-            </div>
-          </div>
-          <Button
-            className="h-6 shrink-0 px-2 text-xs"
-            onClick={() => overviewPanelIds.forEach((id) => onPanelVisibilityChange(id, true))}
-            size="sm"
-            variant="ghost"
-          >
-            All
-          </Button>
-        </div>
-        <div className="space-y-1 p-2">
-          {overviewPanelOptions.map((panel) => {
-            const visible = !hiddenPanelIds.includes(panel.id);
-            return (
-              <label
-                className="flex cursor-pointer items-start gap-3 rounded-md px-2 py-2 transition-colors hover:bg-accent/40"
-                key={panel.id}
-              >
-                <input
-                  checked={visible}
-                  className="mt-0.5 size-4 accent-primary"
-                  onChange={(event) =>
-                    onPanelVisibilityChange(panel.id, event.currentTarget.checked)
-                  }
-                  type="checkbox"
-                />
-                <span className="min-w-0">
-                  <span className="block font-medium text-sm">{panel.label}</span>
-                  <span className="block text-muted-foreground text-xs">
-                    {panel.description}
-                  </span>
-                </span>
-              </label>
-            );
-          })}
-        </div>
-        <div className="border-t p-2">
-          <Button
-            className="h-9 w-full justify-start gap-2 text-muted-foreground"
-            onClick={() => {
-              onResetUi();
-            }}
-            size="sm"
-            variant="ghost"
-          >
-            <RotateCcw className="size-4" />
-            Reset UI to defaults
-          </Button>
-        </div>
-      </PopoverContent>
-    </Popover>
-  );
 }
 
 function loadConsoleStorage(): ConsoleStorage {

@@ -24,7 +24,7 @@ import {
   Send,
   Trash2,
 } from "lucide-react";
-import type { Dispatch, ReactNode, SetStateAction } from "react";
+import type { Dispatch, SetStateAction } from "react";
 import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -54,6 +54,21 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import {
+  consoleBreadcrumbCurrentClassName,
+  consoleBreadcrumbDefinitionClassName,
+  consoleBreadcrumbLinkClassName,
+  consoleBreadcrumbRootItemClassName,
+  consoleBreadcrumbTextClassName,
+  ConsolePageLayout,
+  consolePanelActionGapClassName,
+  consolePanelClusterGapClassName,
+  ConsolePanelBody,
+  ConsolePanelHeader,
+  consolePanelSectionGapClassName,
+  ConsolePanelSurface,
+} from "@/components/features/console/console-primitives";
+import type { Loadable, OverviewScope } from "@/components/features/console/types";
 import {
   SchemaForm,
   SchemaPathField,
@@ -101,11 +116,6 @@ import {
   type WorkerSnapshot,
 } from "@/lib/workable";
 
-type OverviewScope = {
-  category?: string;
-  definitionName?: string;
-  includeSubcategories?: boolean;
-};
 type QueueConfigurationField = QueueRequestSchemaDescriptor["tabs"][number]["fields"][number];
 type QueueConfigurationTab = QueueRequestSchemaDescriptor["tabs"][number];
 type QueueConfigurationFieldSection = {
@@ -114,13 +124,15 @@ type QueueConfigurationFieldSection = {
   description?: string;
   fields: QueueConfigurationField[];
 };
-type Loadable<T> = {
-  data?: T;
-  error?: string;
-  loading: boolean;
-  refreshing?: boolean;
-};
 type WorkerExecutionView = "inspector" | "logs" | "timeline";
+type WorkerRetryTimelineState = {
+  kind: "state";
+  mode: "retry";
+  nextRunAt?: string | null;
+  retryAttempt?: number | null;
+  stateChangedAt?: string | null;
+  updatedAt: string;
+};
 type WorkerRealtimeLogEventData = {
   log?: {
     category?: string;
@@ -236,9 +248,8 @@ export function DefinitionsView({
   }, [catalogScope?.definitionName, definitions.loading, filtered, onOpenDefinition]);
 
   return (
-    <div className="space-y-6">
+    <ConsolePageLayout reserveToolbar>
       <ErrorPanel errors={[definitions.error]} />
-      <ViewActionLane />
       <Card>
         <CardHeader className="gap-4 md:flex-row md:items-center md:justify-between">
           <div className="min-w-0 flex-1">
@@ -306,7 +317,7 @@ export function DefinitionsView({
         onQueuedWorker={onOpenWorker}
         onOpenChange={(open) => !open && setQueueDefinition(null)}
       />
-    </div>
+    </ConsolePageLayout>
   );
 }
 
@@ -462,9 +473,8 @@ export function DefinitionView({
   };
 
   return (
-    <div className="space-y-6">
+    <ConsolePageLayout reserveToolbar>
       <ErrorPanel errors={[info.error, saveError]} />
-      <ViewActionLane />
       {info.loading ? (
         <StackedSkeleton count={6} />
       ) : !definition ? (
@@ -560,7 +570,7 @@ export function DefinitionView({
           />
         </>
       )}
-    </div>
+    </ConsolePageLayout>
   );
 }
 
@@ -660,13 +670,23 @@ export function WorkerConsoleView({
     () => worker ? createRealtimeWorkerStateTimelineItems(worker, workerEvents.messages, relativeNow) : [],
     [relativeNow, worker, workerEvents.messages]
   );
-  const retryTimelineState = useMemo(
+  const retryTimelineState = useMemo<WorkerRetryTimelineState | null>(
     () => {
       const liveRealtimeRetry = realtimeStateTimelineItems.find(
         (item) => item.liveText?.kind === "state" && item.liveText.mode === "retry"
       );
-      if (liveRealtimeRetry?.liveText?.kind === "state") {
-        return liveRealtimeRetry.liveText;
+      if (
+        liveRealtimeRetry?.liveText?.kind === "state" &&
+        liveRealtimeRetry.liveText.mode === "retry"
+      ) {
+        return {
+          kind: "state",
+          mode: "retry",
+          nextRunAt: liveRealtimeRetry.liveText.nextRunAt ?? null,
+          retryAttempt: liveRealtimeRetry.liveText.retryAttempt ?? null,
+          stateChangedAt: liveRealtimeRetry.liveText.stateChangedAt ?? null,
+          updatedAt: liveRealtimeRetry.liveText.updatedAt,
+        };
       }
 
       if (worker?.state === "Retrying") {
@@ -915,8 +935,7 @@ export function WorkerConsoleView({
   };
 
   return (
-    <div className="flex h-full min-h-0 flex-col gap-6">
-      <ViewActionLane />
+    <ConsolePageLayout reserveToolbar>
       {snapshot.loading && <StackedSkeleton count={8} />}
       {snapshot.error && (
         <ErrorBanner key={snapshot.error} message={snapshot.error} title="Unable to load worker" />
@@ -954,77 +973,77 @@ export function WorkerConsoleView({
           )}
 
           <div className="min-h-0 flex-1">
-            <Card className="flex h-full min-h-0 flex-col">
-              <CardContent className="flex min-h-0 flex-1 flex-col space-y-4">
-                <Tabs
-                  className="flex min-h-0 flex-1 flex-col gap-4"
-                  onValueChange={handleExecutionViewChange}
-                  value={executionView}
-                >
-                  <div className="flex shrink-0 flex-wrap items-center gap-3">
-                    <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1">
-                      <WorkerStatusBadge now={relativeNow} worker={worker} />
-                      <TabsList className="flex h-auto min-w-0 flex-wrap justify-start">
-                        <TabsTrigger value="logs">Logs</TabsTrigger>
-                        <TabsTrigger value="timeline">Timeline</TabsTrigger>
-                        <TabsTrigger value="inspector">Inspector</TabsTrigger>
-                      </TabsList>
-                    </div>
-                    <div className="ml-auto flex flex-wrap items-center justify-end gap-2">
-                      <WorkerActionButton
-                        action="Start"
-                        disabled={pendingAction !== null || !availableActions.Start}
-                        icon={Play}
-                        onAction={executeAction}
-                      />
-                      <WorkerActionButton
-                        action="Pause"
-                        disabled={pendingAction !== null || !availableActions.Pause}
-                        icon={Pause}
-                        onAction={executeAction}
-                      />
-                      <WorkerActionButton
-                        action="Cancel"
-                        cancellationMayStopExecution={worker.state !== "Paused" && worker.state !== "Failed"}
-                        disabled={pendingAction !== null || !availableActions.Cancel}
-                        icon={Ban}
-                        onAction={executeAction}
-                      />
-                      <WorkerActionButton
-                        action="Push"
-                        disabled={pendingAction !== null || !availableActions.Push}
-                        icon={Clock3}
-                        onAction={executeAction}
-                        tooltip="Request the next scheduled run immediately."
-                      />
-                      <Tooltip delayDuration={250}>
-                        <TooltipTrigger asChild>
-                          <Button
-                            className={openingCopyQueue
-                              ? "border-violet-500/50 bg-violet-500/10 text-violet-700 dark:text-violet-300"
-                              : "border-violet-500/50 bg-violet-500/10 text-violet-700 hover:bg-violet-500/20 hover:text-violet-800 dark:text-violet-300 dark:hover:text-violet-200"}
-                            disabled={pendingAction !== null || openingCopyQueue || !worker}
-                            onClick={() => void openCopyQueueDialog()}
-                            size="sm"
-                            variant="outline"
-                          >
-                            {openingCopyQueue ? <Loader2 className="size-4 animate-spin" /> : <Copy className="size-4" />}
-                            New
-                          </Button>
-                        </TooltipTrigger>
-                        <TooltipContent side="top" sideOffset={6}>
-                          Queue a new worker using this worker&apos;s current input and runtime settings.
-                        </TooltipContent>
-                      </Tooltip>
-                      <WorkerActionButton
-                        action="Purge"
-                        disabled={pendingAction !== null || !availableActions.Purge}
-                        icon={Trash2}
-                        onAction={executeAction}
-                        tooltip="Remove this completed or canceled worker from retained history."
-                      />
-                    </div>
+            <ConsolePanelSurface className="flex h-full min-h-0 flex-col">
+              <Tabs
+                className="flex min-h-0 flex-1 flex-col gap-0"
+                onValueChange={handleExecutionViewChange}
+                value={executionView}
+              >
+                <ConsolePanelHeader className={consolePanelSectionGapClassName}>
+                  <div className={`flex min-w-0 flex-1 flex-wrap items-center ${consolePanelClusterGapClassName}`}>
+                    <WorkerStatusBadge now={relativeNow} worker={worker} />
+                    <TabsList className="flex h-auto min-w-0 flex-wrap justify-start">
+                      <TabsTrigger value="logs">Logs</TabsTrigger>
+                      <TabsTrigger value="timeline">Timeline</TabsTrigger>
+                      <TabsTrigger value="inspector">Inspector</TabsTrigger>
+                    </TabsList>
                   </div>
+                  <div className={`ml-auto flex flex-wrap items-center justify-end ${consolePanelActionGapClassName}`}>
+                    <WorkerActionButton
+                      action="Start"
+                      disabled={pendingAction !== null || !availableActions.Start}
+                      icon={Play}
+                      onAction={executeAction}
+                    />
+                    <WorkerActionButton
+                      action="Pause"
+                      disabled={pendingAction !== null || !availableActions.Pause}
+                      icon={Pause}
+                      onAction={executeAction}
+                    />
+                    <WorkerActionButton
+                      action="Cancel"
+                      cancellationMayStopExecution={worker.state !== "Paused" && worker.state !== "Failed"}
+                      disabled={pendingAction !== null || !availableActions.Cancel}
+                      icon={Ban}
+                      onAction={executeAction}
+                    />
+                    <WorkerActionButton
+                      action="Push"
+                      disabled={pendingAction !== null || !availableActions.Push}
+                      icon={Clock3}
+                      onAction={executeAction}
+                      tooltip="Request the next scheduled run immediately."
+                    />
+                    <Tooltip delayDuration={250}>
+                      <TooltipTrigger asChild>
+                        <Button
+                          className={openingCopyQueue
+                            ? "border-violet-500/50 bg-violet-500/10 text-violet-700 dark:text-violet-300"
+                            : "border-violet-500/50 bg-violet-500/10 text-violet-700 hover:bg-violet-500/20 hover:text-violet-800 dark:text-violet-300 dark:hover:text-violet-200"}
+                          disabled={pendingAction !== null || openingCopyQueue || !worker}
+                          onClick={() => void openCopyQueueDialog()}
+                          size="sm"
+                          variant="outline"
+                        >
+                          {openingCopyQueue ? <Loader2 className="size-4 animate-spin" /> : <Copy className="size-4" />}
+                          New
+                        </Button>
+                      </TooltipTrigger>
+                      <TooltipContent side="top" sideOffset={6}>
+                        Queue a new worker using this worker&apos;s current input and runtime settings.
+                      </TooltipContent>
+                    </Tooltip>
+                    <WorkerActionButton
+                      action="Purge"
+                      disabled={pendingAction !== null || !availableActions.Purge}
+                      icon={Trash2}
+                      onAction={executeAction}
+                      tooltip="Remove this completed or canceled worker from retained history."
+                    />
+                  </div>
+                </ConsolePanelHeader>
+                <ConsolePanelBody className="flex min-h-0 flex-1 flex-col space-y-4">
                   <TabsContent className="mt-0 min-h-0 flex-1 space-y-4" value="logs">
                     <WorkerLogStreamCard
                       connectionError={workerEvents.error}
@@ -1071,9 +1090,9 @@ export function WorkerConsoleView({
                       </TabsContent>
                     </Tabs>
                   </TabsContent>
-                </Tabs>
-              </CardContent>
-            </Card>
+                </ConsolePanelBody>
+              </Tabs>
+            </ConsolePanelSurface>
           </div>
         </div>
       )}
@@ -1085,7 +1104,7 @@ export function WorkerConsoleView({
         onOpenChange={(open) => !open && setCopyQueueDialog(null)}
         onQueuedWorker={onOpenWorker}
       />
-    </div>
+    </ConsolePageLayout>
   );
 }
 
@@ -1698,18 +1717,18 @@ function ScopeTrail({
   const activeCategoryPath = scope?.category ?? "";
 
   return (
-    <div className="min-w-0 overflow-x-auto text-xs">
+    <div className={`min-w-0 overflow-x-auto ${consoleBreadcrumbTextClassName}`}>
       <Breadcrumb>
-        <BreadcrumbList className="flex-nowrap whitespace-nowrap text-xs">
+        <BreadcrumbList className={`flex-nowrap whitespace-nowrap ${consoleBreadcrumbTextClassName}`}>
           <BreadcrumbItem className="shrink-0">
             {scope ? (
-              <BreadcrumbLink asChild>
-                <button onClick={onClear} type="button">
+              <BreadcrumbLink asChild className={consoleBreadcrumbRootItemClassName}>
+                <button className="inline-flex items-center" onClick={onClear} type="button">
                   All categories
                 </button>
               </BreadcrumbLink>
             ) : (
-              <BreadcrumbPage>All categories</BreadcrumbPage>
+              <BreadcrumbPage className={consoleBreadcrumbRootItemClassName}>All categories</BreadcrumbPage>
             )}
           </BreadcrumbItem>
           {categoryCrumbs.map((crumb, index) => {
@@ -1720,11 +1739,11 @@ function ScopeTrail({
                 <BreadcrumbSeparator className="shrink-0" />
                 <BreadcrumbItem className="min-w-0 shrink-0">
                   {isCurrentCategory ? (
-                    <BreadcrumbPage className="max-w-56 truncate">
+                    <BreadcrumbPage className={consoleBreadcrumbCurrentClassName}>
                       {crumb.label}
                     </BreadcrumbPage>
                   ) : (
-                    <BreadcrumbLink asChild className="max-w-56 truncate">
+                    <BreadcrumbLink asChild className={consoleBreadcrumbLinkClassName}>
                       <button
                         onClick={() => onSelectCategory(crumb.path)}
                         type="button"
@@ -1742,7 +1761,7 @@ function ScopeTrail({
               <BreadcrumbSeparator className="shrink-0" />
               <BreadcrumbItem className="min-w-0 shrink-0">
                 {onSelectDefinition && scope?.definitionName ? (
-                  <BreadcrumbLink asChild className="max-w-80 truncate font-mono">
+                  <BreadcrumbLink asChild className={consoleBreadcrumbDefinitionClassName}>
                     <button
                       onClick={() => onSelectDefinition(
                         scope.definitionName ?? "",
@@ -1754,7 +1773,7 @@ function ScopeTrail({
                     </button>
                   </BreadcrumbLink>
                 ) : (
-                  <BreadcrumbPage className="max-w-80 truncate font-mono text-foreground">
+                  <BreadcrumbPage className={`${consoleBreadcrumbDefinitionClassName} text-foreground`}>
                     {scope?.definitionName}
                   </BreadcrumbPage>
                 )}
@@ -1763,17 +1782,6 @@ function ScopeTrail({
           )}
         </BreadcrumbList>
       </Breadcrumb>
-    </div>
-  );
-}
-
-function ViewActionLane({ children }: { children?: ReactNode }) {
-  return (
-    <div
-      aria-hidden={children ? undefined : true}
-      className="-mb-2 flex min-h-9 min-w-0 -translate-y-2 items-center justify-end gap-1"
-    >
-      {children}
     </div>
   );
 }
@@ -3140,7 +3148,7 @@ function createWorkerTimelineItems(
   activeIteration: WorkerIterationSnapshot | null,
   now: number,
   historicalStatusItems: WorkerTimelineItem[],
-  retryTimelineState: Extract<WorkerTimelineLiveText, { kind: "state"; mode: "retry" }> | null,
+  retryTimelineState: WorkerRetryTimelineState | null,
   liveStatusItem: WorkerTimelineItem | null
 ): WorkerTimelineItem[] {
   const liveExecutingIterationSequence = liveStatusItem?.liveText?.kind === "iteration" &&
@@ -3253,7 +3261,7 @@ function getTimelineIterations(
 function mergeTimelineIteration(
   existing: WorkerIterationSnapshot | undefined,
   candidate: WorkerIterationSnapshot
-) {
+): WorkerIterationSnapshot {
   if (!existing) {
     return candidate;
   }
@@ -3318,29 +3326,30 @@ function scoreTimelineIterationCompleteness(iteration: WorkerIterationSnapshot) 
 function mergeTimelineIterationMessages(
   preferred?: WorkMessage[] | null,
   secondary?: WorkMessage[] | null
-) {
+): WorkMessage[] | undefined {
   if ((preferred?.length ?? 0) >= (secondary?.length ?? 0)) {
-    return preferred ?? secondary;
+    return preferred ?? secondary ?? undefined;
   }
 
-  return secondary ?? preferred;
+  return secondary ?? preferred ?? undefined;
 }
 
 function mergeTimelineIterationLogs(
   preferred?: WorkerLogEntry[] | null,
   secondary?: WorkerLogEntry[] | null
-) {
+): WorkerLogEntry[] | undefined {
   if ((preferred?.length ?? 0) >= (secondary?.length ?? 0)) {
-    return preferred ?? secondary;
+    return preferred ?? secondary ?? undefined;
   }
 
-  return secondary ?? preferred;
+  return secondary ?? preferred ?? undefined;
 }
 
 function createQueuedTimelineItem(worker: WorkerSnapshot): WorkerTimelineItem {
   return {
     at: worker.createdAt,
     badge: "Queued",
+    description: "",
     facts: [],
     filterKind: "system",
     icon: Send,
@@ -3655,22 +3664,20 @@ function createIterationTimelineItems(
     return items;
   }
 
-  if (iteration.completedAt || iteration.status !== "Executing") {
-    items.push({
-      at: iteration.completedAt ?? iteration.occurredAt,
-      badge: iteration.status,
-      description: describeIterationOutcome(iteration, now),
-      failureDetails,
-      facts: [],
-      filterKind: iteration.status === "Failed" ? "failures" : "system",
-      icon: iterationTimelineIcon(iteration.status),
-      id: `iteration:${iteration.sequence}`,
-      kind: "iteration",
-      sortOrder: 3,
-      title: `Iteration #${iteration.sequence} ${formatIterationTimelineStatus(iteration.status)} after ${settledDuration}`,
-      tone: iterationTimelineTone(iteration.status),
-    });
-  }
+  items.push({
+    at: iteration.completedAt ?? iteration.occurredAt,
+    badge: iteration.status,
+    description: describeIterationOutcome(iteration, now),
+    failureDetails,
+    facts: [],
+    filterKind: iteration.status === "Failed" ? "failures" : "system",
+    icon: iterationTimelineIcon(iteration.status),
+    id: `iteration:${iteration.sequence}`,
+    kind: "iteration",
+    sortOrder: 3,
+    title: `Iteration #${iteration.sequence} ${formatIterationTimelineStatus(iteration.status)} after ${settledDuration}`,
+    tone: iterationTimelineTone(iteration.status),
+  });
 
   return items;
 }
@@ -3845,9 +3852,9 @@ function renderTimelineItemDescription(item: WorkerTimelineItem, now: number) {
   if (item.liveText?.kind === "state") {
     return describeWaitingTimelineItem(
       {
-        nextRunAt: item.liveText.nextRunAt,
-        retryAttempt: item.liveText.retryAttempt,
-        stateChangedAt: item.liveText.stateChangedAt,
+        nextRunAt: item.liveText.nextRunAt ?? undefined,
+        retryAttempt: item.liveText.retryAttempt ?? undefined,
+        stateChangedAt: item.liveText.stateChangedAt ?? undefined,
         updatedAt: item.liveText.updatedAt,
       },
       now,
@@ -4835,27 +4842,29 @@ function readInnerExceptions(metadata: Record<string, unknown> | null): WorkerFa
     return [];
   }
 
-  return value
-    .map((entry) => {
-      if (!entry || typeof entry !== "object") {
-        return null;
-      }
+  const exceptions: WorkerFailureException[] = [];
 
-      const record = entry as Record<string, unknown>;
-      const exceptionType = formatExceptionTypeName(readUnknownString(record.exceptionType));
-      const message = sanitizeWorkerFailureText(readUnknownString(record.exceptionMessage));
-      const stackTrace = readUnknownString(record.exceptionStackTrace).trim();
-      if (!exceptionType && !message && !stackTrace) {
-        return null;
-      }
+  for (const entry of value) {
+    if (!entry || typeof entry !== "object") {
+      continue;
+    }
 
-      return {
-        exceptionType: exceptionType || undefined,
-        message: message || "Inner exception",
-        stackTrace: stackTrace || undefined,
-      } satisfies WorkerFailureException;
-    })
-    .filter((entry): entry is WorkerFailureException => entry !== null);
+    const record = entry as Record<string, unknown>;
+    const exceptionType = formatExceptionTypeName(readUnknownString(record.exceptionType));
+    const message = sanitizeWorkerFailureText(readUnknownString(record.exceptionMessage));
+    const stackTrace = readUnknownString(record.exceptionStackTrace).trim();
+    if (!exceptionType && !message && !stackTrace) {
+      continue;
+    }
+
+    exceptions.push({
+      exceptionType: exceptionType || undefined,
+      message: message || "Inner exception",
+      stackTrace: stackTrace || undefined,
+    });
+  }
+
+  return exceptions;
 }
 
 function readUnknownString(value: unknown) {
@@ -5184,8 +5193,8 @@ function createDefaultQueueRequest(definition: WorkDefinition | null): QueueWork
 function createCopiedWorkerQueueRequest(worker: WorkerSnapshot): QueueWorkRequest {
   return sanitizeQueueWorkRequest({
     completion: "ReturnAfterAccepted",
-    subjectId: cloneTypedValue(worker.subjectId),
-    concurrencyKey: cloneTypedValue(worker.concurrencyKey),
+    subjectId: cloneTypedValue(worker.subjectId) ?? undefined,
+    concurrencyKey: cloneTypedValue(worker.concurrencyKey) ?? undefined,
     options: {
       profilingEnabled: worker.options?.profilingEnabled ?? false,
       configuration: stripInvocationConfiguration(cloneConfiguration(

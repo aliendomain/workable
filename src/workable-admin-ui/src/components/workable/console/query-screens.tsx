@@ -17,6 +17,10 @@ import {
 } from "lucide-react";
 import type { MutableRefObject, ReactNode, RefObject } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ConsolePageLayout } from "@/components/features/console/console-primitives";
+import { PanelShell } from "@/components/features/console/panel-shell";
+import { ToolbarIconButton } from "@/components/features/console/toolbar-icon-button";
+import type { OverviewScope } from "@/components/features/console/types";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -32,11 +36,6 @@ import {
   TableCell,
   TableRow,
 } from "@/components/ui/table";
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from "@/components/ui/tooltip";
 import { ErrorPanel } from "@/components/workable/console/feedback-panel";
 import {
   formatRelativeTime,
@@ -70,12 +69,6 @@ type InfiniteLoadable<TItem> = {
   loadMore: () => void;
   refreshLoadedWindow?: () => void;
   totalCount?: number;
-};
-
-type OverviewScope = {
-  category?: string;
-  definitionName?: string;
-  includeSubcategories?: boolean;
 };
 
 type DurationDisplay = {
@@ -288,22 +281,23 @@ export function WorkersView({
   const workerHighlightId = activeActionHighlight
     ? activeActionHighlight.workerId
     : activeSelectedWorkerRowId;
+  const toolbar = (
+    <>
+      <QueryResultTotal noun="worker" totalCount={workers.totalCount} />
+      {filterControls}
+      <QueryRefreshButton
+        isRefreshing={workers.loading}
+        label="Refresh workers"
+        onRefresh={refreshWorkers}
+      />
+    </>
+  );
 
   return (
-    <div className="space-y-6">
+    <ConsolePageLayout toolbar={toolbar}>
       <ErrorPanel errors={[workers.error, actionError]} />
       <QueryPanelShell
-        actions={
-          <>
-            <QueryResultTotal noun="worker" totalCount={workers.totalCount} />
-            {filterControls}
-            <QueryRefreshButton
-              isRefreshing={workers.loading}
-              label="Refresh workers"
-              onRefresh={refreshWorkers}
-            />
-          </>
-        }
+        actions={toolbar}
         contentClassName="mt-3"
         onShapeChange={setGridShape}
         shape={gridShape}
@@ -331,7 +325,7 @@ export function WorkersView({
           workers={visibleWorkers}
         />
       </QueryPanelShell>
-    </div>
+    </ConsolePageLayout>
   );
 }
 
@@ -410,22 +404,23 @@ export function IterationsView({
   const activeSelectedIterationRowKey = selectedIterationResetKey === selectionScopeKey
     ? selectedIterationRowKey
     : null;
+  const toolbar = (
+    <>
+      <QueryResultTotal noun="iteration" totalCount={iterations.totalCount} />
+      {filterControls}
+      <QueryRefreshButton
+        isRefreshing={iterations.loading}
+        label="Refresh iterations"
+        onRefresh={refreshIterations}
+      />
+    </>
+  );
 
   return (
-    <div className="space-y-6">
+    <ConsolePageLayout toolbar={toolbar}>
       <ErrorPanel errors={[iterations.error]} />
       <QueryPanelShell
-        actions={
-          <>
-            <QueryResultTotal noun="iteration" totalCount={iterations.totalCount} />
-            {filterControls}
-            <QueryRefreshButton
-              isRefreshing={iterations.loading}
-              label="Refresh iterations"
-              onRefresh={refreshIterations}
-            />
-          </>
-        }
+        actions={toolbar}
         contentClassName="mt-3"
         onShapeChange={setGridShape}
         shape={gridShape}
@@ -449,7 +444,7 @@ export function IterationsView({
           shape={gridShape}
         />
       </QueryPanelShell>
-    </div>
+    </ConsolePageLayout>
   );
 }
 
@@ -475,24 +470,17 @@ function QueryPanelShell({
   title: string;
 }) {
   return (
-    <section className="rounded-lg border bg-card p-4 shadow-sm">
-      <div className="flex min-w-0 items-center justify-between gap-3">
-        <div className="min-w-0">
-          <h2 className="truncate font-semibold text-base">{title}</h2>
-        </div>
-        <div className="flex h-7 shrink-0 items-center gap-2">
-          {actions}
-          {shape && onShapeChange && supportedShapes ? (
-            <PanelMenu
-              onShapeChange={onShapeChange}
-              shape={shape}
-              supportedShapes={supportedShapes}
-            />
-          ) : null}
-        </div>
-      </div>
-      <div className={contentClassName}>{children}</div>
-    </section>
+    <PanelShell
+      actions={actions}
+      contentClassName={contentClassName}
+      onShapeChange={onShapeChange}
+      shape={shape}
+      shapeOptions={queryShapeOptions}
+      supportedShapes={supportedShapes}
+      title={title}
+    >
+      {children}
+    </PanelShell>
   );
 }
 
@@ -506,84 +494,15 @@ function QueryRefreshButton({
   onRefresh: () => void;
 }) {
   return (
-    <Tooltip delayDuration={500} disableHoverableContent>
-      <TooltipTrigger asChild>
-        <Button
-          aria-label={label}
-          className="size-7 text-muted-foreground"
-          disabled={isRefreshing}
-          onClick={onRefresh}
-          size="icon-sm"
-          type="button"
-          variant="ghost"
-        >
-          <RefreshCw className={isRefreshing ? "size-4 animate-spin" : "size-4"} />
-        </Button>
-      </TooltipTrigger>
-      <TooltipContent side="top" sideOffset={6}>
-        {label}
-      </TooltipContent>
-    </Tooltip>
-  );
-}
-
-function PanelMenu({
-  onShapeChange,
-  shape,
-  supportedShapes,
-}: {
-  onShapeChange: (shape: WorkComponentShape) => void;
-  shape: WorkComponentShape;
-  supportedShapes: readonly WorkComponentShape[];
-}) {
-  return (
-    <DropdownMenu>
-      <Tooltip delayDuration={500} disableHoverableContent>
-        <TooltipTrigger asChild>
-          <DropdownMenuTrigger asChild>
-            <Button
-              aria-label="Open panel options"
-              className="size-7 text-muted-foreground"
-              size="icon-sm"
-              variant="ghost"
-            >
-              <MoreHorizontal className="size-4" />
-            </Button>
-          </DropdownMenuTrigger>
-        </TooltipTrigger>
-        <TooltipContent side="top" sideOffset={6}>
-          Panel options
-        </TooltipContent>
-      </Tooltip>
-      <DropdownMenuContent align="end" className="w-44">
-        {queryShapeOptions.map((option) => {
-          const Icon = option.icon;
-          const supported = supportedShapes.includes(option.shape);
-          const active = shape === option.shape;
-
-          return (
-            <DropdownMenuItem
-              className={active ? "bg-accent/60" : undefined}
-              disabled={!supported}
-              key={option.shape}
-              onSelect={() => {
-                if (supported) {
-                  onShapeChange(option.shape);
-                }
-              }}
-            >
-              <Icon className="size-4" />
-              <span>{option.label}</span>
-              {!supported && (
-                <span className="ml-auto text-muted-foreground text-[11px]">
-                  Unavailable
-                </span>
-              )}
-            </DropdownMenuItem>
-          );
-        })}
-      </DropdownMenuContent>
-    </DropdownMenu>
+    <ToolbarIconButton
+      disabled={isRefreshing}
+      label={label}
+      onClick={onRefresh}
+      type="button"
+      className="size-7"
+    >
+      <RefreshCw className={isRefreshing ? "size-4 animate-spin" : "size-4"} />
+    </ToolbarIconButton>
   );
 }
 

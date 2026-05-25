@@ -23,13 +23,21 @@ import {
   MoreHorizontal,
   Play,
   Rows2,
-  Rows3,
   Rows4,
   X,
 } from "lucide-react";
 import type { PointerEvent, ReactNode } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { ConsolePageLayout } from "@/components/features/console/console-primitives";
+import {
+  type OverviewPanelId,
+  overviewPanelShapeCapabilities,
+  overviewShapeOptions,
+  type OverviewPanelShapeMap,
+} from "@/components/features/console/overview-panels";
+import { PanelShell } from "@/components/features/console/panel-shell";
+import type { Loadable, OverviewScope } from "@/components/features/console/types";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader } from "@/components/ui/card";
@@ -126,17 +134,6 @@ type WorkOverviewIterationsComponent = {
   commonKeyTypes?: WorkIterationKeyTypeFacet[];
   iterationCountByStatus: Partial<Record<WorkCompletionStatus, number>>;
 };
-type OverviewScope = {
-  category?: string;
-  definitionName?: string;
-  includeSubcategories?: boolean;
-};
-type Loadable<T> = {
-  data?: T;
-  error?: string;
-  loading: boolean;
-  refreshing?: boolean;
-};
 export type RealtimePayloadPanelState = {
   captureEnabled: boolean;
   connectionState: string;
@@ -189,54 +186,6 @@ type RealtimePayloadComponentData = {
   id: string;
   shape?: WorkComponentShape;
   status?: string;
-};
-export const overviewPanelIds = [
-  "workers",
-  "failedWorkers",
-  "throughput",
-  "iterations",
-  "failedIterations",
-  "completedIterations",
-] as const;
-export type OverviewPanelId = (typeof overviewPanelIds)[number];
-export type OverviewPanelShapeMap = Record<OverviewPanelId, WorkComponentShape>;
-const overviewShapeOptions: Array<{
-  icon: typeof Rows2;
-  label: string;
-  shape: WorkComponentShape;
-}> = [
-  { icon: Rows2, label: "Compact", shape: "compact" },
-  { icon: Rows3, label: "Standard", shape: "standard" },
-  { icon: Rows4, label: "Detailed", shape: "detailed" },
-];
-export const overviewPanelShapeCapabilities: Record<OverviewPanelId, {
-  defaultShape: WorkComponentShape;
-  supportedShapes: WorkComponentShape[];
-}> = {
-  workers: {
-    defaultShape: "standard",
-    supportedShapes: ["compact", "standard"],
-  },
-  failedWorkers: {
-    defaultShape: "standard",
-    supportedShapes: ["standard", "detailed"],
-  },
-  throughput: {
-    defaultShape: "standard",
-    supportedShapes: ["compact", "standard"],
-  },
-  iterations: {
-    defaultShape: "standard",
-    supportedShapes: ["compact", "standard"],
-  },
-  failedIterations: {
-    defaultShape: "standard",
-    supportedShapes: ["standard", "detailed"],
-  },
-  completedIterations: {
-    defaultShape: "standard",
-    supportedShapes: ["standard", "detailed"],
-  },
 };
 const overviewWorkerStates: WorkerState[] = [
   "Queued",
@@ -651,7 +600,13 @@ export function OverviewView({
   }, [overview.error, onConnectionError]);
 
   return (
-    <div className="space-y-4">
+    <ConsolePageLayout
+      toolbar={renderToolbar({
+        loading: overview.loading,
+        realtimePayloadControl,
+        refreshing: !!overview.refreshing || !!realtimeOverview.refreshing,
+      })}
+    >
       <ErrorPanel
         errors={[
           overview.error,
@@ -661,11 +616,6 @@ export function OverviewView({
         ]}
       />
       {realtimePayloadWindow}
-      {renderToolbar({
-        loading: overview.loading,
-        realtimePayloadControl,
-        refreshing: !!overview.refreshing || !!realtimeOverview.refreshing,
-      })}
       {lacksReadableWorkAccess && (
         <Card>
           <CardHeader>
@@ -908,7 +858,7 @@ export function OverviewView({
       </div>
         </>
       )}
-    </div>
+    </ConsolePageLayout>
   );
 }
 
@@ -941,127 +891,22 @@ function OverviewPanelShell({
   supportedShapes?: WorkComponentShape[];
   title: ReactNode;
 }) {
-  const hasPanelMenu = Boolean((shape && onShapeChange && supportedShapes) || onClose);
-
   return (
-    <section className={`rounded-xl bg-card p-4 ring-1 ring-foreground/10 ${className ?? ""}`}>
-      <div className={centerActions ? "grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-3" : "flex items-center justify-between gap-3"}>
-        <div className="flex min-w-0 items-center gap-2">
-          <span className="min-w-0">
-            <span className="flex min-w-0 flex-wrap items-center gap-2 font-semibold text-sm">
-              {title}
-            </span>
-            {description && (
-              <span className="mt-0.5 block text-muted-foreground text-xs">
-                {description}
-              </span>
-            )}
-          </span>
-        </div>
-        {centerActions ? (
-          <>
-            <div className="flex min-w-0 flex-wrap items-center justify-center gap-1.5">
-              {actions}
-            </div>
-            <div className="flex min-w-0 items-center justify-end">
-              {hasPanelMenu && (
-                <OverviewPanelMenu
-                  onClose={onClose}
-                  onShapeChange={onShapeChange}
-                  shape={shape}
-                  supportedShapes={supportedShapes}
-                />
-              )}
-            </div>
-          </>
-        ) : (
-          <div className="flex shrink-0 flex-wrap items-center justify-end gap-1.5">
-            {actions}
-            {hasPanelMenu && (
-              <OverviewPanelMenu
-                onClose={onClose}
-                onShapeChange={onShapeChange}
-                shape={shape}
-                supportedShapes={supportedShapes}
-              />
-            )}
-          </div>
-        )}
-      </div>
-      <div className={contentClassName ?? "mt-4 space-y-4"}>
-        {children}
-      </div>
-    </section>
-  );
-}
-
-function OverviewPanelMenu({
-  onClose,
-  onShapeChange,
-  shape,
-  supportedShapes,
-}: {
-  onClose?: () => void;
-  onShapeChange?: (shape: WorkComponentShape) => void;
-  shape?: WorkComponentShape;
-  supportedShapes?: WorkComponentShape[];
-}) {
-  const canChangeShape = Boolean(shape && onShapeChange && supportedShapes);
-
-  return (
-    <DropdownMenu>
-      <Tooltip delayDuration={500} disableHoverableContent>
-        <TooltipTrigger asChild>
-          <DropdownMenuTrigger asChild>
-            <Button
-              aria-label="Open panel options"
-              className="size-7 text-muted-foreground"
-              size="icon-sm"
-              variant="ghost"
-            >
-              <MoreHorizontal className="size-4" />
-            </Button>
-          </DropdownMenuTrigger>
-        </TooltipTrigger>
-        <TooltipContent side="top" sideOffset={6}>
-          Panel options
-        </TooltipContent>
-      </Tooltip>
-      <DropdownMenuContent align="end" className="w-44">
-        {canChangeShape && overviewShapeOptions.map((option) => {
-          const Icon = option.icon;
-          const supported = supportedShapes?.includes(option.shape) ?? false;
-          const active = shape === option.shape;
-
-          return (
-            <DropdownMenuItem
-              className={active ? "bg-accent/60" : undefined}
-              disabled={!supported}
-              key={option.shape}
-              onSelect={() => {
-                if (supported) {
-                  onShapeChange?.(option.shape);
-                }
-              }}
-            >
-              <Icon className="size-4" />
-              <span>{option.label}</span>
-              {!supported && (
-                <span className="ml-auto text-muted-foreground text-[11px]">
-                  Unavailable
-                </span>
-              )}
-            </DropdownMenuItem>
-          );
-        })}
-        {onClose && (
-          <DropdownMenuItem onSelect={onClose}>
-            <X className="size-4" />
-            Hide panel
-          </DropdownMenuItem>
-        )}
-      </DropdownMenuContent>
-    </DropdownMenu>
+    <PanelShell
+      actions={actions}
+      centerActions={centerActions}
+      className={className}
+      contentClassName={contentClassName}
+      description={description}
+      onClose={onClose}
+      onShapeChange={onShapeChange}
+      shape={shape}
+      shapeOptions={overviewShapeOptions}
+      supportedShapes={supportedShapes}
+      title={title}
+    >
+      {children}
+    </PanelShell>
   );
 }
 

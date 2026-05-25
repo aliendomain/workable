@@ -9,8 +9,8 @@ import {
   ListFilter,
   Square,
 } from "lucide-react";
-import type { ReactNode } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { Loadable, OverviewScope } from "@/components/features/console/types";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -28,11 +28,6 @@ import {
   type WorkableConnection,
 } from "@/lib/workable";
 
-type OverviewScope = {
-  category?: string;
-  definitionName?: string;
-  includeSubcategories?: boolean;
-};
 type WorkOverviewCatalogComponent = Pick<WorkSystemOverview, "catalogCategories" | "catalogDefinitions">;
 type DefinitionCatalogLevel = {
   categories: WorkOverviewCatalogCategoryItem[];
@@ -41,22 +36,6 @@ type DefinitionCatalogLevel = {
 type CatalogFilterDefinitionItem = Pick<WorkDefinition, "id" | "name"> & {
   category?: string | null;
 };
-type Loadable<T> = {
-  data?: T;
-  error?: string;
-  loading: boolean;
-  refreshing?: boolean;
-};
-export function ViewActionLane({ children }: { children?: ReactNode }) {
-  return (
-    <div
-      aria-hidden={children ? undefined : true}
-      className="-mb-2 flex min-h-9 min-w-0 -translate-y-2 items-center justify-end gap-1"
-    >
-      {children}
-    </div>
-  );
-}
 
 export function OverviewCatalogFilter({
   connection,

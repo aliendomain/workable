@@ -24,6 +24,22 @@ import {
 } from "lucide-react";
 import { Fragment, type ReactNode, useCallback, useEffect, useMemo, useState } from "react";
 import {
+  consoleBreadcrumbCurrentClassName,
+  consoleBreadcrumbDefinitionClassName,
+  consoleBreadcrumbLinkClassName,
+  consoleBreadcrumbTextClassName,
+} from "@/components/features/console/console-primitives";
+import type {
+  Loadable,
+  OverviewScope,
+  PendingDelete,
+  PendingStopSystem,
+  ServerView,
+  View,
+  WorkableHostConnection,
+  WorkableSystemConnection,
+} from "@/components/features/console/types";
+import {
   AlertDialog,
   AlertDialogAction,
   AlertDialogCancel,
@@ -70,45 +86,6 @@ import {
   type WorkableHttpSystemInfo,
   type WorkableHttpSystems,
 } from "@/lib/workable";
-
-type View = "overview" | "definitions" | "definition" | "workers" | "iterations" | "worker";
-type ServerView = Exclude<View, "worker">;
-type OverviewScope = {
-  category?: string;
-  definitionName?: string;
-  includeSubcategories?: boolean;
-};
-type WorkableHostConnection = {
-  id: string;
-  name: string;
-  apiUrl: string;
-  systems: WorkableSystemConnection[];
-};
-type WorkableSystemConnection = {
-  id: string;
-  hostId: string;
-  name: string;
-  systemName?: string;
-  access?: WorkSystemAccessSummary;
-  realtimeEnabled: boolean;
-  realtimeFeatures?: string[] | null;
-  realtimeHubPath?: string | null;
-  realtimeSupported?: boolean;
-  realtimeTransport?: string | null;
-  state?: string | null;
-};
-type PendingDelete =
-  | { kind: "host"; host: WorkableHostConnection }
-  | { kind: "system"; host: WorkableHostConnection; system: WorkableSystemConnection };
-type PendingStopSystem = {
-  system: WorkableSystemConnection;
-};
-type Loadable<T> = {
-  data?: T;
-  error?: string;
-  loading: boolean;
-  refreshing?: boolean;
-};
 const navItems: Array<{ id: ServerView; label: string; icon: typeof Activity }> = [
   { id: "overview", label: "Overview", icon: Activity },
   { id: "definitions", label: "Catalog", icon: Boxes },
@@ -1153,7 +1130,7 @@ export function ConsoleNavigationHeader({
       </Tooltip>
       <div className="min-w-0 flex-1 overflow-x-auto">
         <Breadcrumb>
-          <BreadcrumbList className="flex-nowrap whitespace-nowrap">
+          <BreadcrumbList className={`flex-nowrap whitespace-nowrap ${consoleBreadcrumbTextClassName}`}>
             <BreadcrumbItem className="min-w-0 shrink-0">
               <BreadcrumbPage className="max-w-48 truncate text-muted-foreground">
                 {host.name}
@@ -1162,13 +1139,13 @@ export function ConsoleNavigationHeader({
             <BreadcrumbSeparator className="shrink-0" />
             <BreadcrumbItem className="min-w-0 shrink-0">
               {canOpenOverview ? (
-                <BreadcrumbLink asChild className="max-w-56 truncate">
+                <BreadcrumbLink asChild className={consoleBreadcrumbLinkClassName}>
                   <button onClick={() => onOpenView("overview", system.id)} type="button">
                     {system.name}
                   </button>
                 </BreadcrumbLink>
               ) : (
-                <BreadcrumbPage className="max-w-56 truncate">
+                <BreadcrumbPage className={consoleBreadcrumbCurrentClassName}>
                   {system.name}
                 </BreadcrumbPage>
               )}
@@ -1176,13 +1153,15 @@ export function ConsoleNavigationHeader({
             <BreadcrumbSeparator className="shrink-0" />
             <BreadcrumbItem className="min-w-0 shrink-0">
               {breadcrumbParent ? (
-                <BreadcrumbLink asChild className="max-w-80 truncate font-mono">
+                <BreadcrumbLink asChild className={consoleBreadcrumbDefinitionClassName}>
                   <button onClick={breadcrumbParent.onSelect} type="button">
                     {breadcrumbParent.label}
                   </button>
                 </BreadcrumbLink>
               ) : (
-                <BreadcrumbPage className={`${view === "worker" || view === "definition" ? "font-mono" : ""} max-w-80 truncate font-semibold text-foreground`}>
+                <BreadcrumbPage
+                  className={`${view === "worker" || view === "definition" ? consoleBreadcrumbDefinitionClassName : consoleBreadcrumbCurrentClassName} text-foreground`}
+                >
                   {currentLabel}
                 </BreadcrumbPage>
               )}
@@ -1191,7 +1170,7 @@ export function ConsoleNavigationHeader({
               <>
                 <BreadcrumbSeparator className="shrink-0" />
                 <BreadcrumbItem className="min-w-0 shrink-0">
-                  <BreadcrumbPage className="max-w-80 truncate font-mono font-semibold text-foreground">
+                  <BreadcrumbPage className={`${consoleBreadcrumbDefinitionClassName} font-semibold text-foreground`}>
                     {currentLabel}
                   </BreadcrumbPage>
                 </BreadcrumbItem>
