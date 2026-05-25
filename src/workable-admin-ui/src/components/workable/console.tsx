@@ -19,7 +19,6 @@ import {
   Maximize2,
   Minimize2,
   Plus,
-  RefreshCw,
   Rows2,
   Rows4,
   Workflow,
@@ -34,7 +33,11 @@ import {
   type OverviewPanelShapeMap,
 } from "@/components/features/console/overview-panels";
 import { OverviewPanelSettings } from "@/components/features/console/overview-panel-settings";
-import { SystemToolsMenu } from "@/components/features/console/system-tools-menu";
+import {
+  ConsoleHeaderCapabilitiesProvider,
+  type ConsoleHeaderCapabilities,
+} from "@/components/features/console/header-capabilities";
+import { EventViewerToggleButton } from "@/components/features/console/event-viewer-toggle-button";
 import type {
   OverviewScope,
   PendingDelete,
@@ -537,7 +540,6 @@ export function WorkableConsole() {
     () => createDiagnosticsAlertTargets(consoleState.hosts),
     [consoleState.hosts]
   );
-  const hasDiagnosticsAlertTargets = diagnosticsAlertTargets.length > 0;
   const diagnosticsAlertSources = useMemo<DiagnosticsAlertSource[]>(
     () => diagnosticsAlertTargets.map((target) => ({
       ...(diagnosticsAlertsByTargetId[target.id] ?? {
@@ -689,9 +691,6 @@ export function WorkableConsole() {
       />
     )
     : null;
-  const canUseRealtimePayloads = view === "worker" &&
-    Boolean(selectedWorkerId) &&
-    Boolean(hydratedConnection?.realtimeHubPath);
   const toggleEventViewerEventType = useCallback((eventType: string) => {
     setSelectedEventViewerEventTypes((current) =>
       current.includes(eventType)
@@ -772,15 +771,6 @@ export function WorkableConsole() {
       setIdempotencyDiagnosticsExpanded(false);
     }
   }, []);
-  useEffect(() => {
-    if (!hasDiagnosticsAlertTargets && systemNotificationOpen) {
-      const timeoutId = window.setTimeout(() => {
-        handleSystemNotificationOpenChange(false);
-      }, 0);
-
-      return () => window.clearTimeout(timeoutId);
-    }
-  }, [handleSystemNotificationOpenChange, hasDiagnosticsAlertTargets, systemNotificationOpen]);
   const acknowledgeQueueRejections = useCallback((systemId: string, count: number) => {
     setAcknowledgedRejectedWorkCounts((current) => ({
       ...current,
@@ -1081,6 +1071,19 @@ export function WorkableConsole() {
       [targetView]: current[targetView] + 1,
     }));
   }, []);
+  const defaultHeaderCapabilities = useMemo<ConsoleHeaderCapabilities | null>(
+    () =>
+      hydratedConnection
+        ? {
+            refresh: {
+              ariaLabel: headerRefreshTitle(view),
+              onRefresh: () => refreshView(view),
+              title: headerRefreshTitle(view),
+            },
+          }
+        : null,
+    [hydratedConnection, refreshView, view]
+  );
 
   const setSystemOverviewScope = useCallback((
     systemId: string,
@@ -1891,7 +1894,7 @@ export function WorkableConsole() {
                 />
               )}
               {hydratedConnection && (
-                <>
+                <ConsoleHeaderCapabilitiesProvider defaultCapabilities={defaultHeaderCapabilities}>
                   {workerRealtimePayloadWindow}
                   {activeHost && activeSystem && (
                     <ConsoleNavigationHeader
@@ -1907,41 +1910,36 @@ export function WorkableConsole() {
                       system={activeSystem}
                       systemNotifications={(
                         <div className="flex items-center gap-1">
-                          <SystemToolsMenu
-                            canUseRealtimePayloads={canUseRealtimePayloads}
-                            eventViewerOpen={eventViewerOpen}
-                            onEventViewerOpenChange={setEventViewerOpen}
-                            onRealtimePayloadOpenChange={setRealtimePayloadOpen}
-                            realtimePayloadOpen={realtimePayloadOpen}
+                          <EventViewerToggleButton
+                            onOpenChange={setEventViewerOpen}
+                            open={eventViewerOpen}
                           />
-                          {hasDiagnosticsAlertTargets && (
-                            <SystemNotificationTray
-                              acknowledgedRejectedWorkCounts={acknowledgedRejectedWorkCounts}
-                              activeDiagnosticsAlertTargetId={activeDiagnosticsAlertTargetId}
-                              activeSystemDiagnosticsAvailable={activeCanUseRealtimeDiagnosticsUi}
-                              alertSources={diagnosticsAlertSources}
-                              concurrencyDetailDiagnostics={concurrencyDiagnosticsDetail}
-                              concurrencyExpanded={concurrencyDiagnosticsExpanded}
-                              durabilityDetailDiagnostics={durabilityDiagnosticsDetail}
-                              durabilityExpanded={durabilityDiagnosticsExpanded}
-                              idempotencyDetailDiagnostics={idempotencyDiagnosticsDetail}
-                              idempotencyExpanded={idempotencyDiagnosticsExpanded}
-                              onAcknowledgeQueueRejections={acknowledgeQueueRejections}
-                              onConcurrencyExpandedChange={setConcurrencyDiagnosticsExpanded}
-                              onDurabilityExpandedChange={setDurabilityDiagnosticsExpanded}
-                              onIdempotencyExpandedChange={setIdempotencyDiagnosticsExpanded}
-                              onOpenChange={handleSystemNotificationOpenChange}
-                              onReadModelExpandedChange={setReadModelDiagnosticsExpanded}
-                              onRetentionExpandedChange={setRetentionDiagnosticsExpanded}
-                              open={systemNotificationOpen}
-                              readModelDetailDiagnostics={readModelDiagnosticsDetail}
-                              readModelExpanded={readModelDiagnosticsExpanded}
-                              retentionDetailDiagnostics={retentionDiagnosticsDetail}
-                              retentionExpanded={retentionDiagnosticsExpanded}
-                              systemName={activeSystem.name}
-                              trayDiagnostics={diagnosticsTray}
-                            />
-                          )}
+                          <SystemNotificationTray
+                            acknowledgedRejectedWorkCounts={acknowledgedRejectedWorkCounts}
+                            activeDiagnosticsAlertTargetId={activeDiagnosticsAlertTargetId}
+                            activeSystemDiagnosticsAvailable={activeCanUseRealtimeDiagnosticsUi}
+                            alertSources={diagnosticsAlertSources}
+                            concurrencyDetailDiagnostics={concurrencyDiagnosticsDetail}
+                            concurrencyExpanded={concurrencyDiagnosticsExpanded}
+                            durabilityDetailDiagnostics={durabilityDiagnosticsDetail}
+                            durabilityExpanded={durabilityDiagnosticsExpanded}
+                            idempotencyDetailDiagnostics={idempotencyDiagnosticsDetail}
+                            idempotencyExpanded={idempotencyDiagnosticsExpanded}
+                            onAcknowledgeQueueRejections={acknowledgeQueueRejections}
+                            onConcurrencyExpandedChange={setConcurrencyDiagnosticsExpanded}
+                            onDurabilityExpandedChange={setDurabilityDiagnosticsExpanded}
+                            onIdempotencyExpandedChange={setIdempotencyDiagnosticsExpanded}
+                            onOpenChange={handleSystemNotificationOpenChange}
+                            onReadModelExpandedChange={setReadModelDiagnosticsExpanded}
+                            onRetentionExpandedChange={setRetentionDiagnosticsExpanded}
+                            open={systemNotificationOpen}
+                            readModelDetailDiagnostics={readModelDiagnosticsDetail}
+                            readModelExpanded={readModelDiagnosticsExpanded}
+                            retentionDetailDiagnostics={retentionDiagnosticsDetail}
+                            retentionExpanded={retentionDiagnosticsExpanded}
+                            systemName={activeSystem.name}
+                            trayDiagnostics={diagnosticsTray}
+                          />
                           <EventViewerWindow
                             captureEnabled={eventViewerCaptureEnabled}
                             connectionState={realtimeEvents.connectionState}
@@ -2033,22 +2031,6 @@ export function WorkableConsole() {
                               refreshToken={refreshTokens.overview}
                               scope={activeOverviewScope}
                             />
-                            <Tooltip delayDuration={500} disableHoverableContent>
-                              <TooltipTrigger asChild>
-                                <Button
-                                  aria-label="Refresh overview"
-                                  className="text-muted-foreground hover:bg-transparent hover:text-foreground dark:hover:bg-transparent"
-                                  onClick={() => refreshView("overview")}
-                                  size="icon-sm"
-                                  variant="ghost"
-                                >
-                                  <RefreshCw className="size-4" />
-                                </Button>
-                              </TooltipTrigger>
-                              <TooltipContent side="bottom" sideOffset={6}>
-                                Refresh overview
-                              </TooltipContent>
-                            </Tooltip>
                             <OverviewPanelSettings
                               hiddenPanelIds={consoleState.overviewHiddenPanels}
                               onPanelVisibilityChange={setOverviewPanelVisible}
@@ -2181,18 +2163,20 @@ export function WorkableConsole() {
                     active={!!pendingView && view !== "worker"}
                     label={`Loading ${pendingView ? navTitle(pendingView) : "view"}`}
                   />
-                </>
-              )}
-              {hydratedConnection && view === "worker" && selectedWorkerId && (
-                <div className={`${viewContentOffsetClass} flex min-h-0 flex-col`}>
-                  <WorkerConsoleView
-                    connection={hydratedConnection}
-                    onNavigateBack={navigateBack}
-                    onOpenWorker={openWorker}
-                    refreshToken={refreshTokens.worker}
-                    workerId={selectedWorkerId}
-                  />
-                </div>
+                  {view === "worker" && selectedWorkerId && (
+                    <div className={`${viewContentOffsetClass} flex min-h-0 flex-col`}>
+                      <WorkerConsoleView
+                        connection={hydratedConnection}
+                        onNavigateBack={navigateBack}
+                        onOpenWorker={openWorker}
+                        onRealtimePayloadOpenChange={setRealtimePayloadOpen}
+                        refreshToken={refreshTokens.worker}
+                        realtimePayloadOpen={realtimePayloadOpen}
+                        workerId={selectedWorkerId}
+                      />
+                    </div>
+                  )}
+                </ConsoleHeaderCapabilitiesProvider>
               )}
           </div>
         </main>
@@ -4742,16 +4726,6 @@ function getViewReadinessKey(systemId: string, view: View) {
   return `${systemId}:${view}`;
 }
 
-function createDefaultHost(): WorkableHostConnection {
-  const hostId = "local-sample-host";
-  return {
-    id: hostId,
-    name: "Local sample",
-    apiUrl: DEFAULT_WORKABLE_API_URL,
-    systems: [createDefaultSystem(hostId)],
-  };
-}
-
 function createDefaultSystem(hostId: string): WorkableSystemConnection {
   return {
     id: "local-sample-default",
@@ -4822,6 +4796,23 @@ function navTitle(view: View) {
   }
 
   return navItems.find((item) => item.id === view)?.label ?? "Overview";
+}
+
+function headerRefreshTitle(view: View) {
+  switch (view) {
+    case "definitions":
+      return "Refresh catalog";
+    case "definition":
+      return "Refresh definition";
+    case "iterations":
+      return "Refresh iterations";
+    case "worker":
+      return "Refresh worker";
+    case "workers":
+      return "Refresh workers";
+    default:
+      return "Refresh overview";
+  }
 }
 
 function cloneOverviewScope(scope: OverviewScope | null): OverviewScope | null {

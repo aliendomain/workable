@@ -1,12 +1,6 @@
 "use client";
 
 import {
-  HubConnection,
-  HubConnectionBuilder,
-  HubConnectionState,
-  LogLevel,
-} from "@microsoft/signalr";
-import {
   Activity,
   ArrowDown,
   ArrowUp,
@@ -15,7 +9,6 @@ import {
   CheckCircle2,
   ChevronRight,
   CircleAlert,
-  FileJson,
   Equal,
   Hourglass,
   Info,
@@ -31,12 +24,22 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { ConsolePageLayout } from "@/components/features/console/console-primitives";
 import {
+  useRegisterConsoleHeaderCapabilities,
+  type ConsoleHeaderCapabilities,
+} from "@/components/features/console/header-capabilities";
+import {
   type OverviewPanelId,
   overviewPanelShapeCapabilities,
   overviewShapeOptions,
   type OverviewPanelShapeMap,
 } from "@/components/features/console/overview-panels";
 import { PanelShell } from "@/components/features/console/panel-shell";
+import {
+  useConsoleRealtimeEventStream,
+  useConsoleRealtimeView,
+  type ConsoleRealtimeEventLoadable,
+  type ConsoleRealtimeViewLoadable,
+} from "@/components/features/console/realtime";
 import type { Loadable, OverviewScope } from "@/components/features/console/types";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -65,8 +68,6 @@ import {
 } from "@/components/workable/console/live-relative-time";
 import { IdentifierSummary, TypedValueSummary } from "@/components/workable/console/query-screens";
 import {
-  createWorkableRealtimeUrl,
-  getWorkableRealtimeAccessToken,
   stateTone,
   workableFetch,
   type WorkAction,
@@ -97,6 +98,7 @@ import {
 type ThroughputMode = "completion" | "execution";
 const throughputSeriesIds = ["started", "completed", "failed", "canceled"] as const;
 const jsonByteEncoder = new TextEncoder();
+const noop = () => undefined;
 type ThroughputSeriesId = "started" | "completed" | "failed" | "canceled";
 type ThroughputMetric = {
   description: string;
@@ -172,15 +174,7 @@ export type RealtimeEventMessage = {
   value: WorkableRealtimeEvent | WorkableRealtimeEventBatch;
 };
 
-export type RealtimeEventLoadable = {
-  clearMessages: () => void;
-  connectionState: string;
-  enabled: boolean;
-  error?: string;
-  hubUrl?: string | null;
-  loading?: boolean;
-  messages: RealtimeEventMessage[];
-};
+export type RealtimeEventLoadable = ConsoleRealtimeEventLoadable<RealtimeEventMessage>;
 type RealtimePayloadComponentData = {
   data: unknown;
   id: string;
@@ -293,7 +287,6 @@ export function OverviewView({
   refreshToken: number;
   renderToolbar: (state: {
     loading: boolean;
-    realtimePayloadControl: ReactNode;
     refreshing: boolean;
   }) => ReactNode;
 }) {
@@ -308,9 +301,9 @@ export function OverviewView({
   const payloadOpen = realtimePayloadOpen ?? false;
   const payloadCaptureEnabled = realtimePayloadCaptureEnabled ?? true;
   const payloadMaxMessages = realtimePayloadMaxMessages ?? 100;
-  const setPayloadOpen = onRealtimePayloadOpenChange ?? (() => undefined);
-  const setPayloadCaptureEnabled = onRealtimePayloadCaptureEnabledChange ?? (() => undefined);
-  const setPayloadMaxMessages = onRealtimePayloadMaxMessagesChange ?? (() => undefined);
+  const setPayloadOpen = onRealtimePayloadOpenChange ?? noop;
+  const setPayloadCaptureEnabled = onRealtimePayloadCaptureEnabledChange ?? noop;
+  const setPayloadMaxMessages = onRealtimePayloadMaxMessagesChange ?? noop;
   const lacksReadableWorkAccess =
     access !== undefined &&
     !access.canReadAllWork &&
@@ -431,25 +424,9 @@ export function OverviewView({
     "overview"
   );
   const overviewData = realtimeOverview.data ?? overview.data;
-  const realtimePayloadControl = (
-    <Button
-      className="h-9 w-full justify-start gap-2 text-muted-foreground"
-      onClick={() => setPayloadOpen(true)}
-      size="sm"
-      variant="ghost"
-    >
-      <FileJson className="size-4" />
-      Realtime payloads
-      {realtimeOverview.enabled && (
-        <span
-          aria-hidden="true"
-          className={`ml-auto size-2 rounded-full ${
-            realtimeOverview.connectionState === "connected" ? "bg-emerald-400" : "bg-amber-400"
-          }`}
-        />
-      )}
-    </Button>
-  );
+  const togglePayloadOpen = useCallback(() => {
+    setPayloadOpen(!payloadOpen);
+  }, [payloadOpen, setPayloadOpen]);
   const realtimePayloadWindow = isVisible ? (
     <RealtimePayloadWindow
       captureEnabled={payloadCaptureEnabled}
@@ -467,6 +444,36 @@ export function OverviewView({
       open={payloadOpen}
     />
   ) : null;
+  const headerCapabilities = useMemo<ConsoleHeaderCapabilities>(
+    () => ({
+      realtime: {
+        connectionState: realtimeOverview.connectionState,
+        enabled: realtimeOverview.enabled,
+        menuItems: [
+          {
+            active: payloadOpen,
+            icon: <Rows4 className="size-4" />,
+            id: "overview-realtime-payloads",
+            label: "Realtime payloads",
+            onSelect: togglePayloadOpen,
+          },
+        ],
+      },
+      refresh: {
+        disabled: overview.loading || (realtimeOverview.enabled && realtimeOverview.connectionState === "connected"),
+        refreshing: Boolean(overview.refreshing) || Boolean(realtimeOverview.refreshing),
+      },
+    }),
+    [
+      overview.loading,
+      overview.refreshing,
+      payloadOpen,
+      realtimeOverview.connectionState,
+      realtimeOverview.enabled,
+      realtimeOverview.refreshing,
+      togglePayloadOpen,
+    ]
+  );
   const isReady = !overview.loading;
   const systemComponent = getWorkComponentData<WorkOverviewSystemComponent>(
     overviewData,
@@ -598,12 +605,16 @@ export function OverviewView({
       onConnectionError();
     }
   }, [overview.error, onConnectionError]);
+  useRegisterConsoleHeaderCapabilities({
+    active: isVisible,
+    capabilities: headerCapabilities,
+    id: "overview",
+  });
 
   return (
     <ConsolePageLayout
       toolbar={renderToolbar({
         loading: overview.loading,
-        realtimePayloadControl,
         refreshing: !!overview.refreshing || !!realtimeOverview.refreshing,
       })}
     >
@@ -3710,27 +3721,7 @@ function clampFloatingWindowPosition(value: number, viewport: number, size: numb
   return Math.min(Math.max(min, value), max);
 }
 
-function getRealtimeErrorMessage(error: unknown, fallback: string) {
-  return error instanceof Error && error.message ? error.message : fallback;
-}
-
-function isExpectedRealtimeDisconnect(error: unknown) {
-  const message = getRealtimeErrorMessage(error, "").toLowerCase();
-  return (
-    message.includes("failed to fetch") ||
-    message.includes("failed to complete negotiation") ||
-    message.includes("failed to start the connection") ||
-    message.includes("websocket closed with status code: 1006")
-  );
-}
-
-export type RealtimeViewLoadable<T> = Loadable<T> & {
-  clearMessages: () => void;
-  connectionState: string;
-  enabled: boolean;
-  hubUrl?: string | null;
-  messages: RealtimePayloadMessage[];
-};
+export type RealtimeViewLoadable<T> = ConsoleRealtimeViewLoadable<T, RealtimePayloadMessage>;
 
 export function useWorkableRealtimeView<T>(
   connection: WorkableConnection | null,
@@ -3741,272 +3732,25 @@ export function useWorkableRealtimeView<T>(
   maxMessages: number,
   subscription = viewName
 ): RealtimeViewLoadable<T> {
-  const [state, setState] = useState<RealtimeViewLoadable<T>>({
-    clearMessages: () => undefined,
-    connectionState: enabled ? "connecting" : "disabled",
-    enabled,
-    hubUrl: connection ? createWorkableRealtimeUrl(connection) : null,
-    loading: false,
-    messages: [],
-  });
-  const hubConnectionRef = useRef<HubConnection | null>(null);
-  const hasConnection = connection !== null;
-  const apiUrl = connection?.apiUrl ?? "";
-  const hubUrl = connection ? createWorkableRealtimeUrl(connection) : null;
-  const systemName = connection?.systemName;
-  const bodyKey = JSON.stringify(body);
-  const bodyKeyRef = useRef(bodyKey);
-  const captureEnabledRef = useRef(captureEnabled);
-  const maxMessagesRef = useRef(maxMessages);
-  const messageIdRef = useRef(0);
-  const systemNameRef = useRef(systemName);
-
-  useEffect(() => {
-    bodyKeyRef.current = bodyKey;
-    captureEnabledRef.current = captureEnabled;
-    maxMessagesRef.current = maxMessages;
-    systemNameRef.current = systemName;
-  }, [bodyKey, captureEnabled, maxMessages, systemName]);
-
-  const clearMessages = useCallback(() => {
-    setState((current) =>
-      current.messages.length === 0 ? current : { ...current, messages: [] }
-    );
-  }, []);
-
-  useEffect(() => {
-    queueMicrotask(() => {
-      setState((current) =>
-        current.messages.length > maxMessages
-          ? { ...current, messages: current.messages.slice(0, maxMessages) }
-          : current
-      );
-    });
-  }, [maxMessages]);
-
-  useEffect(() => {
-    if (!hasConnection || !enabled || !hubUrl) {
-      queueMicrotask(() =>
-        setState((current) =>
-          current.connectionState === "disabled" &&
-          current.enabled === enabled &&
-          current.hubUrl === hubUrl &&
-          !current.loading &&
-          !current.refreshing
-            ? current
-            : {
-                ...current,
-                connectionState: "disabled",
-                enabled,
-                hubUrl,
-                loading: false,
-                refreshing: false,
-              }
-        )
-      );
-      return;
-    }
-
-    let canceled = false;
-    let retryTimer: ReturnType<typeof setTimeout> | null = null;
-    queueMicrotask(() => {
-      if (!canceled) {
-        setState((current) => ({
-          ...current,
-          connectionState: "connecting",
-          enabled,
-          hubUrl,
-        }));
-      }
-    });
-    const hubConnection = new HubConnectionBuilder()
-      .withUrl(hubUrl, {
-        accessTokenFactory: () => getWorkableRealtimeAccessToken(apiUrl),
-        withCredentials: true,
-      })
-      .withAutomaticReconnect()
-      .configureLogging(LogLevel.None)
-      .build();
-
-    hubConnectionRef.current = hubConnection;
-    const subscribe = () =>
-      hubConnection.invoke(
-        "WatchView",
+  return useConsoleRealtimeView({
+    body,
+    captureEnabled,
+    connection,
+    createMessage: (result, nextMessageId) => {
+      const payloadJson = JSON.stringify(result);
+      return createRealtimePayloadMessage(
+        result,
+        payloadJson,
+        `${subscription}:${nextMessageId}`,
         viewName,
-        JSON.parse(bodyKeyRef.current),
-        systemNameRef.current ?? null
+        subscription
       );
-    const scheduleRestart = (error: unknown, delayMs = 1000) => {
-      if (canceled || retryTimer) {
-        return;
-      }
-
-      retryTimer = setTimeout(() => {
-        retryTimer = null;
-        if (!canceled && hubConnection.state === HubConnectionState.Disconnected) {
-          startConnection();
-        }
-      }, delayMs);
-      setState((current) => ({
-        ...current,
-        connectionState: "disconnected",
-        error: error && !isExpectedRealtimeDisconnect(error)
-          ? getRealtimeErrorMessage(error, "Realtime view connection closed.")
-          : undefined,
-        loading: false,
-        refreshing: false,
-      }));
-    };
-    const startConnection = () => {
-      if (canceled || hubConnection.state !== HubConnectionState.Disconnected) {
-        return;
-      }
-
-      queueMicrotask(() => {
-        if (!canceled) {
-          setState((current) => ({
-            ...current,
-            connectionState: current.data === undefined ? "connecting" : "reconnecting",
-            loading: current.data === undefined,
-            refreshing: current.data !== undefined,
-          }));
-        }
-      });
-      void hubConnection
-        .start()
-        .then(() => subscribe())
-        .then(() => {
-          if (!canceled) {
-            setState((current) => ({
-              ...current,
-              connectionState: "connected",
-              error: undefined,
-              loading: false,
-              refreshing: false,
-            }));
-          }
-        })
-        .catch((error) => {
-          if (!canceled) {
-            scheduleRestart(error, isExpectedRealtimeDisconnect(error) ? 1000 : 3000);
-          }
-        });
-    };
-    hubConnection.on("workable.view", (result: T) => {
-      if (!canceled) {
-        const payloadJson = JSON.stringify(result);
-        const message = createRealtimePayloadMessage(
-          result,
-          payloadJson,
-          `${subscription}:${++messageIdRef.current}`,
-          viewName,
-          subscription
-        );
-        setState((current) => ({
-          ...current,
-          connectionState: "connected",
-          data: result,
-          enabled,
-          hubUrl,
-          loading: false,
-          messages: captureEnabledRef.current
-            ? [message, ...current.messages].slice(0, maxMessagesRef.current)
-            : current.messages,
-          refreshing: false,
-        }));
-      }
-    });
-    hubConnection.onreconnecting(() => {
-      if (!canceled) {
-        setState((current) => ({
-          ...current,
-          connectionState: "reconnecting",
-          refreshing: current.data !== undefined,
-        }));
-      }
-    });
-    hubConnection.onreconnected(() => {
-      if (!canceled) {
-        setState((current) => ({
-          ...current,
-          connectionState: "connected",
-        }));
-      }
-      void subscribe().catch((error) => {
-        if (!canceled && !isExpectedRealtimeDisconnect(error)) {
-          setState((current) => ({
-            ...current,
-            connectionState: "error",
-            error: getRealtimeErrorMessage(error, "Realtime view subscription failed."),
-            loading: false,
-            refreshing: false,
-          }));
-        }
-      });
-    });
-    hubConnection.onclose((error) => {
-      if (!canceled) {
-        scheduleRestart(error, isExpectedRealtimeDisconnect(error) ? 1000 : 3000);
-      }
-    });
-
-    startConnection();
-
-    return () => {
-      canceled = true;
-      if (retryTimer) {
-        clearTimeout(retryTimer);
-      }
-      hubConnectionRef.current = null;
-      void hubConnection.stop().catch(() => undefined);
-    };
-  }, [apiUrl, enabled, hasConnection, hubUrl, subscription, systemName, viewName]);
-
-  useEffect(() => {
-    const hubConnection = hubConnectionRef.current;
-    if (!enabled || !hubConnection || hubConnection.state !== HubConnectionState.Connected) {
-      return;
-    }
-
-    let canceled = false;
-    queueMicrotask(() => {
-      if (!canceled) {
-        setState((current) => ({
-          ...current,
-          connectionState: hubConnection.state.toLowerCase(),
-          error: undefined,
-          loading: current.data === undefined,
-          refreshing: current.data !== undefined,
-        }));
-      }
-    });
-
-    hubConnection
-      .invoke("WatchView", viewName, JSON.parse(bodyKey), systemName ?? null)
-      .catch((error) => {
-        if (!canceled) {
-          setState((current) => ({
-            ...current,
-            data: current.data,
-            connectionState: "error",
-            error: getRealtimeErrorMessage(error, "Realtime view subscription failed."),
-            loading: false,
-            refreshing: false,
-          }));
-        }
-      });
-
-    return () => {
-      canceled = true;
-      if (hubConnection.state === HubConnectionState.Connected) {
-        void hubConnection
-          .invoke("UnwatchView", viewName, systemName ?? null)
-          .catch(() => undefined);
-      }
-    };
-  }, [bodyKey, enabled, systemName, viewName]);
-
-  return { ...state, clearMessages };
+    },
+    enabled,
+    maxMessages,
+    subscription,
+    viewName,
+  });
 }
 
 export function useWorkableRealtimeEvents(
@@ -4015,235 +3759,30 @@ export function useWorkableRealtimeEvents(
   enabled: boolean,
   maxMessages: number
 ): RealtimeEventLoadable {
-  const [state, setState] = useState<RealtimeEventLoadable>({
-    clearMessages: () => undefined,
-    connectionState: enabled ? "connecting" : "disabled",
-    enabled,
-    hubUrl: connection ? createWorkableRealtimeUrl(connection) : null,
-    loading: false,
-    messages: [],
-  });
-  const hubConnectionRef = useRef<HubConnection | null>(null);
-  const hasConnection = connection !== null;
-  const apiUrl = connection?.apiUrl ?? "";
-  const hubUrl = connection ? createWorkableRealtimeUrl(connection) : null;
-  const systemName = connection?.systemName;
   const criteriaKey = JSON.stringify(criteria);
-  const criteriaKeyRef = useRef(criteriaKey);
-  const maxMessagesRef = useRef(maxMessages);
-  const messageIdRef = useRef(0);
-  const systemNameRef = useRef(systemName);
-
-  useEffect(() => {
-    criteriaKeyRef.current = criteriaKey;
-    maxMessagesRef.current = maxMessages;
-    systemNameRef.current = systemName;
-  }, [criteriaKey, maxMessages, systemName]);
-
-  const clearMessages = useCallback(() => {
-    setState((current) =>
-      current.messages.length === 0 ? current : { ...current, messages: [] }
-    );
-  }, []);
-
-  useEffect(() => {
-    queueMicrotask(() => {
-      setState((current) =>
-        current.messages.length > maxMessages
-          ? { ...current, messages: current.messages.slice(0, maxMessages) }
-          : current
-      );
-    });
-  }, [maxMessages]);
-
-  useEffect(() => {
-    if (!hasConnection || !enabled || !hubUrl) {
-      queueMicrotask(() =>
-        setState((current) =>
-          current.connectionState === "disabled" &&
-          current.enabled === enabled &&
-          current.hubUrl === hubUrl &&
-          !current.loading
-            ? current
-            : {
-                ...current,
-                connectionState: "disabled",
-                enabled,
-                hubUrl,
-                loading: false,
-              }
-        )
-      );
-      return;
-    }
-
-    let canceled = false;
-    let retryTimer: ReturnType<typeof setTimeout> | null = null;
-    queueMicrotask(() => {
-      if (!canceled) {
-        setState((current) => ({
-          ...current,
-          connectionState: "connecting",
-          enabled,
-          hubUrl,
-          loading: current.messages.length === 0,
-        }));
-      }
-    });
-    const hubConnection = new HubConnectionBuilder()
-      .withUrl(hubUrl, {
-        accessTokenFactory: () => getWorkableRealtimeAccessToken(apiUrl),
-        withCredentials: true,
-      })
-      .withAutomaticReconnect()
-      .configureLogging(LogLevel.None)
-      .build();
-
-    hubConnectionRef.current = hubConnection;
-    const subscribe = () =>
-      hubConnection.invoke(
-        "WatchEvents",
-        JSON.parse(criteriaKeyRef.current),
-        systemNameRef.current ?? null
-      );
-    const scheduleRestart = (error: unknown, delayMs = 1000) => {
-      if (canceled || retryTimer) {
-        return;
-      }
-
-      retryTimer = setTimeout(() => {
-        retryTimer = null;
-        if (!canceled && hubConnection.state === HubConnectionState.Disconnected) {
-          startConnection();
-        }
-      }, delayMs);
-      setState((current) => ({
-        ...current,
-        connectionState: "disconnected",
-        error: error && !isExpectedRealtimeDisconnect(error)
-          ? getRealtimeErrorMessage(error, "Realtime event connection closed.")
-          : undefined,
-        loading: false,
-      }));
-    };
-    const startConnection = () => {
-      if (canceled || hubConnection.state !== HubConnectionState.Disconnected) {
-        return;
-      }
-
-      queueMicrotask(() => {
-        if (!canceled) {
-          setState((current) => ({
-            ...current,
-            connectionState: current.messages.length === 0 ? "connecting" : "reconnecting",
-            loading: current.messages.length === 0,
-          }));
-        }
-      });
-      void hubConnection
-        .start()
-        .then(() => subscribe())
-        .then(() => {
-          if (!canceled) {
-            setState((current) => ({
-              ...current,
-              connectionState: "connected",
-              error: undefined,
-              loading: false,
-            }));
-          }
-        })
-        .catch((error) => {
-          if (!canceled) {
-            scheduleRestart(error, isExpectedRealtimeDisconnect(error) ? 1000 : 3000);
-          }
-        });
-    };
-    hubConnection.on("workable.event", (workEvent: WorkableRealtimeEvent) => {
-      if (!canceled) {
-        const message = createRealtimeEventMessage(
-          [workEvent],
-          `events:${++messageIdRef.current}`,
-          Date.now()
-        );
-        setState((current) => ({
-          ...current,
-          connectionState: "connected",
-          enabled,
-          hubUrl,
-          loading: false,
-          messages: [message, ...current.messages].slice(0, maxMessagesRef.current),
-        }));
-      }
-    });
-    hubConnection.on("workable.events", (batch: WorkableRealtimeEventBatch) => {
-      if (!canceled) {
-        const batchId = `batch:${++messageIdRef.current}`;
-        const message = createRealtimeEventMessage(
-          batch.events,
-          batchId,
-          Date.now(),
-          batch.sentAt
-        );
-        setState((current) => ({
-          ...current,
-          connectionState: "connected",
-          enabled,
-          hubUrl,
-          loading: false,
-          messages: [message, ...current.messages].slice(0, maxMessagesRef.current),
-        }));
-      }
-    });
-    hubConnection.onreconnecting(() => {
-      if (!canceled) {
-        setState((current) => ({
-          ...current,
-          connectionState: "reconnecting",
-        }));
-      }
-    });
-    hubConnection.onreconnected(() => {
-      if (!canceled) {
-        setState((current) => ({
-          ...current,
-          connectionState: "connected",
-        }));
-      }
-      void hubConnection.invoke(
-        "WatchEvents",
-        JSON.parse(criteriaKeyRef.current),
-        systemNameRef.current ?? null
-      ).catch((error) => {
-        if (!canceled && !isExpectedRealtimeDisconnect(error)) {
-          setState((current) => ({
-            ...current,
-            connectionState: "error",
-            error: getRealtimeErrorMessage(error, "Realtime event subscription failed."),
-            loading: false,
-          }));
-        }
-      });
-    });
-    hubConnection.onclose((error) => {
-      if (!canceled) {
-        scheduleRestart(error, isExpectedRealtimeDisconnect(error) ? 1000 : 3000);
-      }
-    });
-
-    startConnection();
-
-    return () => {
-      canceled = true;
-      if (retryTimer) {
-        clearTimeout(retryTimer);
-      }
-      hubConnectionRef.current = null;
-      void hubConnection.stop().catch(() => undefined);
-    };
-  }, [apiUrl, criteriaKey, enabled, hasConnection, hubUrl, systemName]);
-
-  return { ...state, clearMessages };
+  return useConsoleRealtimeEventStream({
+    connection,
+    createBatchMessage: (batch, nextMessageId) =>
+      createRealtimeEventMessage(
+        batch.events,
+        `batch:${nextMessageId}`,
+        Date.now(),
+        batch.sentAt
+      ),
+    createSingleMessage: (workEvent, nextMessageId) =>
+      createRealtimeEventMessage(
+        [workEvent],
+        `events:${nextMessageId}`,
+        Date.now()
+      ),
+    enabled,
+    maxMessages,
+    subscriptionErrorMessage: "Realtime event subscription failed.",
+    watchArgument: criteria,
+    watchArgumentKey: criteriaKey,
+    watchMethod: "WatchEvents",
+    watchStoppedMessage: "Realtime event connection closed.",
+  });
 }
 
 export function useWorkableRealtimeWorkerEvents(
@@ -4252,239 +3791,31 @@ export function useWorkableRealtimeWorkerEvents(
   enabled: boolean,
   maxMessages: number
 ): RealtimeEventLoadable {
-  const [state, setState] = useState<RealtimeEventLoadable>({
-    clearMessages: () => undefined,
-    connectionState: enabled ? "connecting" : "disabled",
+  return useConsoleRealtimeEventStream({
+    connection,
+    createBatchMessage: (batch, nextMessageId) =>
+      createRealtimeEventMessage(
+        batch.events,
+        `worker-batch:${nextMessageId}`,
+        Date.now(),
+        batch.sentAt
+      ),
+    createSingleMessage: (workEvent, nextMessageId) =>
+      createRealtimeEventMessage(
+        [workEvent],
+        `worker-events:${nextMessageId}`,
+        Date.now()
+      ),
     enabled,
-    hubUrl: connection ? createWorkableRealtimeUrl(connection) : null,
-    loading: false,
-    messages: [],
+    maxMessages,
+    subscriptionErrorMessage: "Realtime worker subscription failed.",
+    unwatchMethod: "UnwatchWorker",
+    watchArgument: workerId,
+    watchArgumentKey: workerId,
+    watchMethod: "WatchWorker",
+    watchReady: workerId.trim().length > 0,
+    watchStoppedMessage: "Realtime worker connection closed.",
   });
-  const hubConnectionRef = useRef<HubConnection | null>(null);
-  const hasConnection = connection !== null;
-  const apiUrl = connection?.apiUrl ?? "";
-  const hubUrl = connection ? createWorkableRealtimeUrl(connection) : null;
-  const systemName = connection?.systemName;
-  const workerIdRef = useRef(workerId);
-  const maxMessagesRef = useRef(maxMessages);
-  const messageIdRef = useRef(0);
-  const systemNameRef = useRef(systemName);
-
-  useEffect(() => {
-    workerIdRef.current = workerId;
-    maxMessagesRef.current = maxMessages;
-    systemNameRef.current = systemName;
-  }, [maxMessages, systemName, workerId]);
-
-  const clearMessages = useCallback(() => {
-    setState((current) =>
-      current.messages.length === 0 ? current : { ...current, messages: [] }
-    );
-  }, []);
-
-  useEffect(() => {
-    queueMicrotask(() => {
-      setState((current) =>
-        current.messages.length > maxMessages
-          ? { ...current, messages: current.messages.slice(0, maxMessages) }
-          : current
-      );
-    });
-  }, [maxMessages]);
-
-  useEffect(() => {
-    if (!hasConnection || !enabled || !hubUrl || !workerId.trim()) {
-      queueMicrotask(() =>
-        setState((current) =>
-          current.connectionState === "disabled" &&
-          current.enabled === enabled &&
-          current.hubUrl === hubUrl &&
-          !current.loading
-            ? current
-            : {
-                ...current,
-                connectionState: "disabled",
-                enabled,
-                hubUrl,
-                loading: false,
-              }
-        )
-      );
-      return;
-    }
-
-    let canceled = false;
-    let retryTimer: ReturnType<typeof setTimeout> | null = null;
-    queueMicrotask(() => {
-      if (!canceled) {
-        setState((current) => ({
-          ...current,
-          connectionState: "connecting",
-          enabled,
-          hubUrl,
-          loading: current.messages.length === 0,
-        }));
-      }
-    });
-    const hubConnection = new HubConnectionBuilder()
-      .withUrl(hubUrl, {
-        accessTokenFactory: () => getWorkableRealtimeAccessToken(apiUrl),
-        withCredentials: true,
-      })
-      .withAutomaticReconnect()
-      .configureLogging(LogLevel.None)
-      .build();
-
-    hubConnectionRef.current = hubConnection;
-    const subscribe = () =>
-      hubConnection.invoke(
-        "WatchWorker",
-        workerIdRef.current,
-        systemNameRef.current ?? null
-      );
-    const scheduleRestart = (error: unknown, delayMs = 1000) => {
-      if (canceled || retryTimer) {
-        return;
-      }
-
-      retryTimer = setTimeout(() => {
-        retryTimer = null;
-        if (!canceled && hubConnection.state === HubConnectionState.Disconnected) {
-          startConnection();
-        }
-      }, delayMs);
-      setState((current) => ({
-        ...current,
-        connectionState: "disconnected",
-        error: error && !isExpectedRealtimeDisconnect(error)
-          ? getRealtimeErrorMessage(error, "Realtime worker connection closed.")
-          : undefined,
-        loading: false,
-      }));
-    };
-    const startConnection = () => {
-      if (canceled || hubConnection.state !== HubConnectionState.Disconnected) {
-        return;
-      }
-
-      queueMicrotask(() => {
-        if (!canceled) {
-          setState((current) => ({
-            ...current,
-            connectionState: current.messages.length === 0 ? "connecting" : "reconnecting",
-            loading: current.messages.length === 0,
-          }));
-        }
-      });
-      void hubConnection
-        .start()
-        .then(() => subscribe())
-        .then(() => {
-          if (!canceled) {
-            setState((current) => ({
-              ...current,
-              connectionState: "connected",
-              error: undefined,
-              loading: false,
-            }));
-          }
-        })
-        .catch((error) => {
-          if (!canceled) {
-            scheduleRestart(error, isExpectedRealtimeDisconnect(error) ? 1000 : 3000);
-          }
-        });
-    };
-    hubConnection.on("workable.event", (workEvent: WorkableRealtimeEvent) => {
-      if (!canceled) {
-        const message = createRealtimeEventMessage(
-          [workEvent],
-          `worker-events:${++messageIdRef.current}`,
-          Date.now()
-        );
-        setState((current) => ({
-          ...current,
-          connectionState: "connected",
-          enabled,
-          hubUrl,
-          loading: false,
-          messages: [message, ...current.messages].slice(0, maxMessagesRef.current),
-        }));
-      }
-    });
-    hubConnection.on("workable.events", (batch: WorkableRealtimeEventBatch) => {
-      if (!canceled) {
-        const batchId = `worker-batch:${++messageIdRef.current}`;
-        const message = createRealtimeEventMessage(
-          batch.events,
-          batchId,
-          Date.now(),
-          batch.sentAt
-        );
-        setState((current) => ({
-          ...current,
-          connectionState: "connected",
-          enabled,
-          hubUrl,
-          loading: false,
-          messages: [message, ...current.messages].slice(0, maxMessagesRef.current),
-        }));
-      }
-    });
-    hubConnection.onreconnecting(() => {
-      if (!canceled) {
-        setState((current) => ({
-          ...current,
-          connectionState: "reconnecting",
-        }));
-      }
-    });
-    hubConnection.onreconnected(() => {
-      if (!canceled) {
-        setState((current) => ({
-          ...current,
-          connectionState: "connected",
-        }));
-      }
-      void hubConnection.invoke(
-        "WatchWorker",
-        workerIdRef.current,
-        systemNameRef.current ?? null
-      ).catch((error) => {
-        if (!canceled && !isExpectedRealtimeDisconnect(error)) {
-          setState((current) => ({
-            ...current,
-            connectionState: "error",
-            error: getRealtimeErrorMessage(error, "Realtime worker subscription failed."),
-            loading: false,
-          }));
-        }
-      });
-    });
-    hubConnection.onclose((error) => {
-      if (!canceled) {
-        scheduleRestart(error, isExpectedRealtimeDisconnect(error) ? 1000 : 3000);
-      }
-    });
-
-    startConnection();
-
-    return () => {
-      canceled = true;
-      if (retryTimer) {
-        clearTimeout(retryTimer);
-      }
-      if (hubConnection.state === HubConnectionState.Connected) {
-        void hubConnection
-          .invoke("UnwatchWorker", workerIdRef.current, systemNameRef.current ?? null)
-          .catch(() => undefined);
-      }
-      hubConnectionRef.current = null;
-      void hubConnection.stop().catch(() => undefined);
-    };
-  }, [apiUrl, enabled, hasConnection, hubUrl, systemName, workerId]);
-
-  return { ...state, clearMessages };
 }
 
 function createRealtimeEventMessage(

@@ -17,15 +17,15 @@ import {
   Minimize2,
   Pause,
   Play,
-  Radio,
   RefreshCw,
+  Rows4,
   RotateCw,
   Search,
   Send,
   Trash2,
 } from "lucide-react";
 import type { Dispatch, SetStateAction } from "react";
-import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import {
   AlertDialog,
@@ -68,6 +68,10 @@ import {
   consolePanelSectionGapClassName,
   ConsolePanelSurface,
 } from "@/components/features/console/console-primitives";
+import {
+  useRegisterConsoleHeaderCapabilities,
+  type ConsoleHeaderCapabilities,
+} from "@/components/features/console/header-capabilities";
 import type { Loadable, OverviewScope } from "@/components/features/console/types";
 import {
   SchemaForm,
@@ -578,13 +582,17 @@ export function WorkerConsoleView({
   connection,
   onNavigateBack,
   onOpenWorker,
+  onRealtimePayloadOpenChange,
   refreshToken,
+  realtimePayloadOpen,
   workerId,
 }: {
   connection: WorkableConnection;
   onNavigateBack: () => void;
   onOpenWorker: (workerId: string) => void;
+  onRealtimePayloadOpenChange: (open: boolean) => void;
   refreshToken: number;
+  realtimePayloadOpen: boolean;
   workerId: string;
 }) {
   const [actionFeedback, setActionFeedback] = useState<{
@@ -757,6 +765,45 @@ export function WorkerConsoleView({
   const availableActions = worker
     ? getAvailableWorkerActions(worker.state)
     : emptyAvailableWorkerActions;
+  const toggleRealtimePayloadOpen = useCallback(() => {
+    onRealtimePayloadOpenChange(!realtimePayloadOpen);
+  }, [onRealtimePayloadOpenChange, realtimePayloadOpen]);
+  const refreshWorkerSnapshot = useCallback(() => {
+    setRealtimeRefreshToken((value) => value + 1);
+  }, []);
+  const headerCapabilities = useMemo<ConsoleHeaderCapabilities>(
+    () => ({
+      realtime: {
+        connectionState: workerEvents.connectionState,
+        enabled: realtimeEnabled,
+        menuItems: [
+          {
+            active: realtimePayloadOpen,
+            icon: <Rows4 className="size-4" />,
+            id: "worker-realtime-payloads",
+            label: "Realtime payloads",
+            onSelect: toggleRealtimePayloadOpen,
+          },
+        ],
+      },
+      refresh: {
+        disabled: snapshot.loading || snapshot.refreshing === true ||
+          (realtimeEnabled && workerEvents.connectionState === "connected"),
+        onRefresh: refreshWorkerSnapshot,
+        refreshing: snapshot.refreshing === true,
+        title: "Refresh worker logs and snapshot",
+      },
+    }),
+    [
+      realtimeEnabled,
+      realtimePayloadOpen,
+      refreshWorkerSnapshot,
+      snapshot.loading,
+      snapshot.refreshing,
+      toggleRealtimePayloadOpen,
+      workerEvents.connectionState,
+    ]
+  );
 
   const openCopyQueueDialog = async () => {
     if (!worker) {
@@ -885,6 +932,10 @@ export function WorkerConsoleView({
       setRealtimeRefreshToken((value) => value + 1);
     }
   }, [workerEvents.messages, workerId]);
+  useRegisterConsoleHeaderCapabilities({
+    capabilities: headerCapabilities,
+    id: "worker-console",
+  });
 
   const handleExecutionViewChange = (value: string) => {
     if (value !== "logs" && value !== "timeline" && value !== "inspector") {
@@ -892,9 +943,6 @@ export function WorkerConsoleView({
     }
 
     setExecutionViewOverride({ value, workerId });
-  };
-  const refreshWorkerSnapshot = () => {
-    setRealtimeRefreshToken((value) => value + 1);
   };
 
   const executeAction = async (action: WorkAction) => {
@@ -1047,12 +1095,8 @@ export function WorkerConsoleView({
                   <TabsContent className="mt-0 min-h-0 flex-1 space-y-4" value="logs">
                     <WorkerLogStreamCard
                       connectionError={workerEvents.error}
-                      connectionState={workerEvents.connectionState}
                       entries={executionLogs}
                       hasActiveIteration={hasActiveIteration}
-                      onRefresh={refreshWorkerSnapshot}
-                      refreshing={snapshot.refreshing === true}
-                      realtimeEnabled={realtimeEnabled}
                     />
                   </TabsContent>
                   <TabsContent className="mt-0 min-h-0 flex-1 space-y-4" value="timeline">
@@ -1265,7 +1309,7 @@ export function QueueDialog({
   );
 
   return (
-    <Dialog onOpenChange={onOpenChange} open={!!definition}>
+    <Dialog modal={false} onOpenChange={onOpenChange} open={!!definition}>
       <DialogContent
         className="flex h-[calc(100vh-2rem)] max-h-[calc(100vh-2rem)] flex-col overflow-hidden p-0 sm:h-[88vh] sm:max-h-[88vh] sm:max-w-5xl"
         onInteractOutside={(event) => event.preventDefault()}
@@ -2561,7 +2605,7 @@ function IterationDurationGraph({
     scrollRef.current.scrollLeft = scrollRef.current.scrollWidth;
   }, [lastPointKey, points.length]);
 
-  if (points.length === 0) {
+  if (points.length <= 1) {
     return null;
   }
 
@@ -2632,23 +2676,14 @@ function IterationDurationGraph({
 
 function WorkerLogStreamCard({
   connectionError,
-  connectionState,
   entries,
   hasActiveIteration,
-  onRefresh,
-  refreshing,
-  realtimeEnabled,
 }: {
   connectionError?: string;
-  connectionState: string;
   entries: WorkerLogEntry[];
   hasActiveIteration: boolean;
-  onRefresh: () => void;
-  refreshing: boolean;
-  realtimeEnabled: boolean;
 }) {
   const scrollRef = useRef<HTMLDivElement | null>(null);
-  const showRefresh = !realtimeEnabled || connectionState !== "connected";
   const [hiddenLevels, setHiddenLevels] = useState<Set<string>>(() => new Set());
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [pausedEntries, setPausedEntries] = useState<WorkerLogEntry[] | null>(null);
@@ -2761,28 +2796,6 @@ function WorkerLogStreamCard({
             <Badge className="border-amber-500/30 bg-amber-500/10 text-amber-800 dark:text-amber-100" variant="outline">
               {pendingPausedCount} buffered
             </Badge>
-          ) : null}
-          <span
-            aria-label={formatRealtimeConnectionState(connectionState, realtimeEnabled)}
-            className={`inline-flex size-8 items-center justify-center rounded-full border ${realtimeConnectionTone(connectionState, realtimeEnabled)}`}
-            role="img"
-            title={formatRealtimeConnectionState(connectionState, realtimeEnabled)}
-          >
-            <Radio className="size-4" />
-          </span>
-          {showRefresh ? (
-            <Button
-              className="h-8 px-2"
-              disabled={refreshing}
-              onClick={onRefresh}
-              size="sm"
-              title="Refresh worker logs and snapshot"
-              type="button"
-              variant="outline"
-            >
-              <RefreshCw className={`size-3.5 ${refreshing ? "animate-spin" : ""}`} />
-              <span className="sr-only">Refresh worker logs</span>
-            </Button>
           ) : null}
         </div>
       </div>
@@ -4564,46 +4577,6 @@ function logLevelFilterTone(level: string) {
       return "border-slate-400/40 bg-slate-500/10 text-slate-700 dark:text-slate-200";
     default:
       return "border-border bg-muted/40 text-foreground";
-  }
-}
-
-function formatRealtimeConnectionState(connectionState: string, enabled: boolean) {
-  if (!enabled) {
-    return "Realtime unavailable";
-  }
-
-  switch (connectionState) {
-    case "connected":
-      return "Realtime enabled";
-    case "connecting":
-      return "Realtime connecting";
-    case "reconnecting":
-      return "Realtime reconnecting";
-    case "error":
-      return "Realtime error";
-    case "disconnected":
-      return "Realtime disconnected";
-    default:
-      return connectionState;
-  }
-}
-
-function realtimeConnectionTone(connectionState: string, enabled: boolean) {
-  if (!enabled) {
-    return "border-slate-400/40 bg-slate-500/10 text-slate-700 dark:text-slate-200";
-  }
-
-  switch (connectionState) {
-    case "connected":
-      return "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-200";
-    case "connecting":
-    case "reconnecting":
-      return "border-sky-500/30 bg-sky-500/10 text-sky-700 dark:text-sky-200";
-    case "error":
-    case "disconnected":
-      return "border-amber-500/30 bg-amber-500/10 text-amber-800 dark:text-amber-100";
-    default:
-      return "border-slate-400/40 bg-slate-500/10 text-slate-700 dark:text-slate-200";
   }
 }
 

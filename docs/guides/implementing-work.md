@@ -6,6 +6,15 @@ This guide is for developers writing executor code.
 
 It explains what runs inside a work implementation, what `IWorkExecutionContext` exposes, and what Workable does when executor code returns a result, requests failure, throws an exception, or is canceled because of pause, cancel, or interruption.
 
+## Related Authoring Features
+
+This guide focuses on executor code: what runs when a worker executes and how that execution behaves.
+
+Some work authoring features are closely related, but they are documented in other guides because they are registration-time or configuration-time concerns rather than execution-time implementation details:
+
+- [Work Registration](registration.md): automatic start, startup work sources, named systems, and feature-contributed work.
+- [Work Configuration](configuration/README.md): runtime behavior such as start policy, retry, recurrence, concurrency, retention, logging, durability, and invocation rules.
+
 ## Basic Shape
 
 Work can be implemented with a delegate or an executor class. In either case, executor code receives:

@@ -13,7 +13,6 @@ import {
   Pencil,
   Play,
   Plus,
-  Radio,
   RefreshCw,
   Search,
   Send,
@@ -23,12 +22,14 @@ import {
   Workflow,
 } from "lucide-react";
 import { Fragment, type ReactNode, useCallback, useEffect, useMemo, useState } from "react";
+import { ConsoleHeaderCapabilityControls } from "@/components/features/console/header-capability-controls";
 import {
   consoleBreadcrumbCurrentClassName,
   consoleBreadcrumbDefinitionClassName,
   consoleBreadcrumbLinkClassName,
   consoleBreadcrumbTextClassName,
 } from "@/components/features/console/console-primitives";
+import { useResolvedConsoleHeaderCapabilities } from "@/components/features/console/header-capabilities";
 import type {
   Loadable,
   OverviewScope,
@@ -251,9 +252,6 @@ export function ServerTree({
                             />
                             <span className="min-w-0 truncate">{system.name}</span>
                             <SystemStateBadge state={system.state} />
-                            {system.realtimeEnabled && (
-                              <Radio className="text-emerald-300" />
-                            )}
                           </button>
                         </SidebarMenuSubButton>
                         {(lifecycleAction || lifecycleActionSystemId === system.id) && (
@@ -753,9 +751,6 @@ export function ServerDialog({
   const [selectedSystemIds, setSelectedSystemIds] = useState<Set<string>>(
     () => new Set(host?.systems.map((system) => system.systemName ?? "") ?? [])
   );
-  const [realtimeSystemIds, setRealtimeSystemIds] = useState<Set<string>>(
-    () => new Set(host?.systems.filter((system) => system.realtimeEnabled).map((system) => system.systemName ?? ""))
-  );
   const [isLoadingSystems, setIsLoadingSystems] = useState(false);
   const [hasLoadedSystems, setHasLoadedSystems] = useState(false);
   const [systemsError, setSystemsError] = useState<string | undefined>();
@@ -781,16 +776,6 @@ export function ServerDialog({
         }
 
         return new Set(systems.map(getSystemStorageKey));
-      });
-      setRealtimeSystemIds((current) => {
-        const next = new Set<string>();
-        for (const system of systems) {
-          const key = getSystemStorageKey(system);
-          if (current.has(key) && system.capabilities.realtime.enabled) {
-            next.add(key);
-          }
-        }
-        return next;
       });
     } catch (caught) {
       setHasLoadedSystems(false);
@@ -835,7 +820,6 @@ export function ServerDialog({
         createStoredSystem(
           hostId,
           system,
-          realtimeSystemIds,
           findStoredSystemByKey(host, system)
         )
       ),
@@ -848,19 +832,6 @@ export function ServerDialog({
     setSelectedSystemIds((current) => {
       const next = new Set(current);
       if (checked) {
-        next.add(key);
-      } else {
-        next.delete(key);
-      }
-      return next;
-    });
-  };
-
-  const toggleRealtimeSystem = (system: WorkableHttpSystemInfo, checked: boolean) => {
-    const key = getSystemStorageKey(system);
-    setRealtimeSystemIds((current) => {
-      const next = new Set(current);
-      if (checked && system.capabilities.realtime.enabled) {
         next.add(key);
       } else {
         next.delete(key);
@@ -894,7 +865,6 @@ export function ServerDialog({
                   setApiUrl(event.target.value);
                   setDiscovered([]);
                   setSelectedSystemIds(new Set());
-                  setRealtimeSystemIds(new Set());
                   setHasLoadedSystems(false);
                   setSystemsError(undefined);
                 }}
@@ -919,9 +889,8 @@ export function ServerDialog({
             <ErrorBanner key={systemsError} message={systemsError} title="Discovery failed" />
           )}
           <div className="rounded-lg border">
-            <div className="grid grid-cols-[1fr_7rem] border-b px-3 py-2 font-medium text-muted-foreground text-xs">
+            <div className="border-b px-3 py-2 font-medium text-muted-foreground text-xs">
               <span>System</span>
-              <span>Real time</span>
             </div>
             <div className="max-h-72 overflow-y-auto">
               {isLoadingSystems ? (
@@ -937,12 +906,11 @@ export function ServerDialog({
               ) : (
                 discovered.map((system) => {
                   const key = getSystemStorageKey(system);
-                  const realtimeAvailable = system.capabilities.realtime.enabled;
                   const accessBadges = getSystemAccessBadges(system.access);
 
                   return (
                     <div
-                      className="grid grid-cols-[1fr_7rem] items-start gap-3 border-b px-3 py-3 last:border-b-0"
+                      className="border-b px-3 py-3 last:border-b-0"
                       key={key}
                     >
                       <label className="flex min-w-0 items-start gap-3">
@@ -976,11 +944,6 @@ export function ServerDialog({
                           </span>
                         </span>
                       </label>
-                      <RealtimeCheckbox
-                        checked={realtimeAvailable && realtimeSystemIds.has(key)}
-                        disabled={!realtimeAvailable}
-                        onChange={(checked) => toggleRealtimeSystem(system, checked)}
-                      />
                     </div>
                   );
                 })
@@ -1006,47 +969,6 @@ export function ServerDialog({
         </div>
       </DialogContent>
     </Dialog>
-  );
-}
-
-function RealtimeCheckbox({
-  checked,
-  disabled,
-  onChange,
-}: {
-  checked: boolean;
-  disabled: boolean;
-  onChange: (checked: boolean) => void;
-}) {
-  const checkbox = (
-    <input
-      checked={checked}
-      className="size-4 rounded border disabled:opacity-50"
-      disabled={disabled}
-      onChange={(event) => onChange(event.target.checked)}
-      type="checkbox"
-    />
-  );
-
-  if (!disabled) {
-    return <label className="flex justify-center pt-0.5">{checkbox}</label>;
-  }
-
-  return (
-    <Tooltip delayDuration={500} disableHoverableContent>
-      <TooltipTrigger asChild>
-        <span className="flex cursor-not-allowed justify-center pt-0.5">
-          {checkbox}
-        </span>
-      </TooltipTrigger>
-      <TooltipContent
-        className="max-w-64 whitespace-normal text-left"
-        side="top"
-        sideOffset={6}
-      >
-        Real-time not available because SignalR is not configured on the server.
-      </TooltipContent>
-    </Tooltip>
   );
 }
 
@@ -1082,6 +1004,7 @@ export function ConsoleNavigationHeader({
   view: View;
   workerId: string | null;
 }) {
+  const headerCapabilities = useResolvedConsoleHeaderCapabilities();
   const canOpenOverview = view !== "overview";
   const currentLabel =
     view === "definition" && definitionId
@@ -1179,8 +1102,9 @@ export function ConsoleNavigationHeader({
           </BreadcrumbList>
         </Breadcrumb>
       </div>
-      {systemNotifications && (
-        <div className="ml-auto flex shrink-0 items-center">
+      {(headerCapabilities || systemNotifications) && (
+        <div className="ml-auto flex shrink-0 items-center gap-1">
+          <ConsoleHeaderCapabilityControls capabilities={headerCapabilities} />
           {systemNotifications}
         </div>
       )}
@@ -1191,7 +1115,6 @@ export function ConsoleNavigationHeader({
 function createStoredSystem(
   hostId: string,
   system: WorkableHttpSystemInfo,
-  realtimeSystemIds: Set<string>,
   existingSystem?: WorkableSystemConnection
 ): WorkableSystemConnection {
   const key = getSystemStorageKey(system);
@@ -1203,7 +1126,7 @@ function createStoredSystem(
     name: getSystemDisplayName(system),
     systemName: normalizeOptional(system.name),
     access: system.access,
-    realtimeEnabled: realtimeSupported && realtimeSystemIds.has(key),
+    realtimeEnabled: realtimeSupported,
     realtimeFeatures: normalizeRealtimeFeatures(system.capabilities.realtime.features),
     realtimeHubPath: system.capabilities.realtime.hubPath ?? null,
     realtimeSupported,
@@ -1460,12 +1383,6 @@ export function reconcileStoredSystemsWithDiscovery(
   host: WorkableHostConnection,
   systems: WorkableHttpSystemInfo[]
 ): WorkableSystemConnection[] {
-  const realtimeSystemIds = new Set(
-    host.systems
-      .filter((system) => system.realtimeEnabled)
-      .map((system) => system.systemName ?? "")
-  );
-
   return host.systems.flatMap((storedSystem) => {
     const discoveredSystem = systems.find(
       (system) =>
@@ -1474,7 +1391,7 @@ export function reconcileStoredSystemsWithDiscovery(
     );
 
     return discoveredSystem
-      ? [createStoredSystem(host.id, discoveredSystem, realtimeSystemIds, storedSystem)]
+      ? [createStoredSystem(host.id, discoveredSystem, storedSystem)]
       : [];
   });
 }
