@@ -23,6 +23,8 @@ public sealed record WorkerSnapshot(
 {
     public WorkerVersion Version => new(this.Id, this.Revision);
 
+    public int? RetryAttempt { get; init; }
+
     public IReadOnlyList<WorkerIterationSnapshot> Iterations { get; init; } = [];
 
     public WorkerIterationSnapshot? LastIteration { get; init; }
@@ -30,8 +32,6 @@ public sealed record WorkerSnapshot(
     public long? CurrentIterationSequence { get; init; }
 
     public long? LastIterationSequence { get; init; }
-
-    public IReadOnlyList<WorkerLogEntry> Logs { get; init; } = [];
 
     public IReadOnlyList<WorkerActionHistoryEntry> ActionHistory { get; init; } = [];
 

@@ -13,7 +13,7 @@ export function useLiveRelativeTimeNow() {
   const [now, setNow] = useState(() => Date.now());
 
   useEffect(() => {
-    const interval = window.setInterval(() => setNow(Date.now()), 1000);
+    const interval = window.setInterval(() => setNow(Date.now()), 100);
     return () => window.clearInterval(interval);
   }, []);
 
@@ -30,20 +30,39 @@ export function formatRelativeTime(value: string | null | undefined, now = Date.
     return "-";
   }
 
-  const elapsedSeconds = Math.max(0, (now - timestamp) / 1000);
-  if (elapsedSeconds < 5) {
-    return "just now";
+  const deltaSeconds = (timestamp - now) / 1000;
+  const absoluteSeconds = Math.abs(deltaSeconds);
+  if (absoluteSeconds < 10) {
+    const label = absoluteSeconds.toFixed(2);
+    return deltaSeconds >= 0
+      ? `in ${label}s`
+      : `${label}s ago`;
   }
 
-  if (elapsedSeconds < 60) {
-    return relativeTimeFormatter.format(-Math.floor(elapsedSeconds), "second");
+  if (absoluteSeconds < 60) {
+    return relativeTimeFormatter.format(
+      deltaSeconds >= 0 ? Math.ceil(deltaSeconds) : Math.floor(deltaSeconds),
+      "second"
+    );
   }
-  if (elapsedSeconds < 60 * 60) {
-    return relativeTimeFormatter.format(-Math.floor(elapsedSeconds / 60), "minute");
+  if (absoluteSeconds < 60 * 60) {
+    const deltaMinutes = deltaSeconds / 60;
+    return relativeTimeFormatter.format(
+      deltaMinutes >= 0 ? Math.ceil(deltaMinutes) : Math.floor(deltaMinutes),
+      "minute"
+    );
   }
-  if (elapsedSeconds < 24 * 60 * 60) {
-    return relativeTimeFormatter.format(-Math.floor(elapsedSeconds / (60 * 60)), "hour");
+  if (absoluteSeconds < 24 * 60 * 60) {
+    const deltaHours = deltaSeconds / (60 * 60);
+    return relativeTimeFormatter.format(
+      deltaHours >= 0 ? Math.ceil(deltaHours) : Math.floor(deltaHours),
+      "hour"
+    );
   }
 
-  return relativeTimeFormatter.format(-Math.floor(elapsedSeconds / (24 * 60 * 60)), "day");
+  const deltaDays = deltaSeconds / (24 * 60 * 60);
+  return relativeTimeFormatter.format(
+    deltaDays >= 0 ? Math.ceil(deltaDays) : Math.floor(deltaDays),
+    "day"
+  );
 }

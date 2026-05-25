@@ -6,6 +6,7 @@ import test from "node:test";
 import {
   authenticateAdminRequest,
   createEntraAuthorizationResponse,
+  createEntraTargetAccessTokenResponse,
   createAdminSessionCookie,
   createWorkableTargetUrl,
   getAdminAuthProvider,
@@ -65,6 +66,69 @@ test("login-created session cookie authenticates without browser basic auth", ()
   }
 
   assert.equal(authentication.identity.scheme, "session");
+});
+
+test("near-expiry session authentication renews the session cookie", () => {
+  const env = secureEnv({
+    WORKABLE_ADMIN_UI_SESSION_MAX_AGE_SECONDS: "60",
+  });
+  const loginRequest = new Request("https://admin.example.com/api/auth/login", {
+    method: "POST",
+  });
+  const cookie = createAdminSessionCookie("admin", loginRequest, env);
+
+  assert.equal(cookie.ok, true);
+  if (!cookie.ok) {
+    return;
+  }
+
+  const authentication = authenticateAdminRequest(
+    new Headers({
+      cookie: cookie.header.split(";")[0] ?? "",
+    }),
+    env,
+    new Request("https://admin.example.com/workers")
+  );
+
+  assert.equal(authentication.ok, true);
+  if (!authentication.ok) {
+    return;
+  }
+
+  assert.match(authentication.sessionCookieHeader ?? "", /^workable_admin_session=/);
+});
+
+test("expired session cookies are cleared when authentication fails", () => {
+  const env = secureEnv({
+    WORKABLE_ADMIN_UI_SESSION_MAX_AGE_SECONDS: "60",
+  });
+  const loginRequest = new Request("https://admin.example.com/api/auth/login", {
+    method: "POST",
+  });
+  const cookie = createAdminSessionCookie("admin", loginRequest, env);
+
+  assert.equal(cookie.ok, true);
+  if (!cookie.ok) {
+    return;
+  }
+
+  const originalNow = Date.now;
+  Date.now = () => originalNow() + 61_000;
+  try {
+    const authentication = authenticateAdminRequest(
+      new Headers({
+        cookie: cookie.header.split(";")[0] ?? "",
+      }),
+      env
+    );
+
+    assert.equal(authentication.ok, false);
+    assert.equal(authentication.status, 401);
+    assert.match(authentication.headers?.["set-cookie"] ?? "", /workable_admin_session=/);
+    assert.match(authentication.headers?.["set-cookie"] ?? "", /Max-Age=0/i);
+  } finally {
+    Date.now = originalNow;
+  }
 });
 
 test("admin UI auth provider defaults to basic and can select Entra", () => {
@@ -196,6 +260,42 @@ test("Entra login with multiple hosted APIs requests offline access without pinn
 
   const scope = new URL(location).searchParams.get("scope") ?? "";
   assert.equal(scope, "openid profile email offline_access");
+});
+
+test("hosted Workable token endpoint returns 200 with no token when no binding is configured for the URL", async () => {
+  const env = entraEnv({
+    WORKABLE_ADMIN_ENTRA_TARGET_APIS_JSON: JSON.stringify([
+      {
+        apiUrl: "https://workable.example.com/workable",
+        scope: "api://actually-client-id/workable.access",
+      },
+    ]),
+  });
+  const cookie = createAdminSessionCookie(
+    "admin",
+    new Request("https://admin.example.com/api/auth/entra/login"),
+    env,
+    "entra"
+  );
+
+  assert.equal(cookie.ok, true);
+  if (!cookie.ok) {
+    return;
+  }
+
+  const response = await createEntraTargetAccessTokenResponse(
+    new Request("https://admin.example.com/api/auth/entra/workable-token?apiUrl=https%3A%2F%2Fops.example.com%2Fworkable", {
+      headers: {
+        cookie: cookie.header.split(";")[0] ?? "",
+      },
+    }),
+    env
+  );
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), {
+    accessToken: null,
+  });
 });
 
 test("authenticated proxy access does not require local operation-role configuration", () => {

@@ -15,24 +15,36 @@ internal sealed class TransientRetryWorkerExecutionStrategy(
             while (true)
             {
                 var attempt = await attemptRunner.Execute(worker, retryAttempts, cancellationToken);
-                if (!attempt.IsExceptionFailure)
+                if (!attempt.IsExceptionFailure && !attempt.IsTransientDeclarativeFailure)
                 {
                     return completionRecorder.Complete(worker, attempt.RequiredResult);
                 }
 
-                if (attempt.RequiredExceptionClassification != WorkExceptionClassification.Transient ||
-                    retryAttempts >= transientRetry.Count)
+                if (attempt.IsExceptionFailure &&
+                    (attempt.RequiredExceptionClassification != WorkExceptionClassification.Transient ||
+                    retryAttempts >= transientRetry.Count))
                 {
                     attemptRunner.LogFinalException(worker, attempt, retryAttempts);
                     return completionRecorder.Fail(worker, attempt.RequiredExceptionFailureMessage);
                 }
 
+                if (attempt.IsTransientDeclarativeFailure &&
+                    retryAttempts >= transientRetry.Count)
+                {
+                    return completionRecorder.Complete(worker, attempt.RequiredResult);
+                }
+
                 retryAttempts++;
                 var delay = GetRetryDelay(transientRetry, retryAttempts);
-                var result = WorkExecutionResult.Failure([attempt.RequiredExceptionFailureMessage]);
-                worker.CompleteRetryIteration(result, delay);
+                var result = attempt.IsExceptionFailure
+                    ? WorkExecutionResult.Failure([attempt.RequiredExceptionFailureMessage])
+                    : attempt.RequiredResult;
+                worker.CompleteRetryIteration(result, delay, retryAttempts);
                 workerEvents.IterationFailed(worker);
-                attemptRunner.LogRetrying(worker, attempt, retryAttempts, transientRetry.Count, delay);
+                if (attempt.IsExceptionFailure)
+                {
+                    attemptRunner.LogRetrying(worker, attempt, retryAttempts, transientRetry.Count, delay);
+                }
                 workerEvents.Retrying(worker, delay);
                 await worker.WaitForRecurrenceInterval(delay, cancellationToken);
 

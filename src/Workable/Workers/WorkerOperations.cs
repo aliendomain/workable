@@ -80,7 +80,7 @@ internal sealed class WorkerOperations :
             this.OnPersistedWorkerMaterialized,
             this.InterruptWorker,
             persistenceLogger);
-        this.workerEvents = new WorkerEventPublisher(workSystemId, events, this.SynchronizeWorkerIfTracked, readModel);
+        this.workerEvents = new WorkerEventPublisher(workSystemId, workSystemName, events, this.SynchronizeWorkerIfTracked, readModel);
         var logger = rootServices.GetService<ILoggerFactory>()?.CreateLogger("Workable.WorkerExecution");
         var invoker = new WorkerExecutionInvoker(
             workSystemId,
@@ -912,7 +912,7 @@ internal sealed class WorkerOperations :
             return 0;
         }
 
-        Dictionary<WorkDefinitionId, List<WorkerId>>? purgedWorkerIdsByDefinition = null;
+        Dictionary<WorkDefinitionId, (string DefinitionName, List<WorkerId> WorkerIds)>? purgedWorkerIdsByDefinition = null;
         List<WorkerId>? allPurgedWorkerIds = null;
         foreach (var workerId in workerIds)
         {
@@ -933,15 +933,15 @@ internal sealed class WorkerOperations :
             allPurgedWorkerIds ??= [];
             allPurgedWorkerIds.Add(workerId);
 
-            var definitionId = removed.Work.Definition.Id;
+            var definition = removed.Work.Definition;
             purgedWorkerIdsByDefinition ??= [];
-            if (!purgedWorkerIdsByDefinition.TryGetValue(definitionId, out var definitionPurgedWorkerIds))
+            if (!purgedWorkerIdsByDefinition.TryGetValue(definition.Id, out var definitionPurge))
             {
-                definitionPurgedWorkerIds = [];
-                purgedWorkerIdsByDefinition[definitionId] = definitionPurgedWorkerIds;
+                definitionPurge = (definition.Name, []);
+                purgedWorkerIdsByDefinition[definition.Id] = definitionPurge;
             }
 
-            definitionPurgedWorkerIds.Add(workerId);
+            definitionPurge.WorkerIds.Add(workerId);
         }
 
         if (purgedWorkerIdsByDefinition is null)
@@ -957,8 +957,8 @@ internal sealed class WorkerOperations :
         var purgedCount = 0;
         foreach (var purgedWorkers in purgedWorkerIdsByDefinition)
         {
-            purgedCount += purgedWorkers.Value.Count;
-            this.workerEvents.Purged(purgedWorkers.Value, purgedWorkers.Key);
+            purgedCount += purgedWorkers.Value.WorkerIds.Count;
+            this.workerEvents.Purged(purgedWorkers.Value.WorkerIds, purgedWorkers.Key, purgedWorkers.Value.DefinitionName);
         }
 
         return purgedCount;

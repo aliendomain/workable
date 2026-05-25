@@ -1,10 +1,21 @@
 # Transient Retry Configuration
 
-Transient retry configuration controls how Workable retries unhandled execution exceptions that are classified as transient.
+Transient retry configuration controls how Workable retries transient execution failures.
 
 For configuration source order, precedence, and override rules that apply to every configuration facet, see [Work Configuration](README.md).
 
-When `Count` is greater than zero, Workable uses the transient retry execution strategy. A transient exception is retried until execution succeeds, cancellation is requested, a non-transient exception occurs, or the configured retry count is exhausted. Declarative `WorkExecutionResult.Failure` results are not retried.
+When `Count` is greater than zero, Workable uses the transient retry execution strategy. A transient failure is retried until execution succeeds, cancellation is requested, a non-transient failure occurs, or the configured retry count is exhausted.
+
+Retryable transient failures come from:
+
+- unhandled execution exceptions that are classified as transient
+- `IWorkExecutionContext.Fail(..., transient: true)`
+
+Non-retryable declarative failures include:
+
+- `WorkExecutionResult.Failure(...)`
+- returned `Error` messages
+- `IWorkExecutionContext.Fail(..., transient: false)`
 
 Each transient retry is a new worker iteration with a fresh execution scope. During retry backoff the worker state is `Retrying`, and `NextRunAt` indicates when the next retry iteration is scheduled.
 
@@ -149,6 +160,8 @@ services.AddWorkableSystem(builder =>
                     : WorkExceptionClassification.Unknown));
 });
 ```
+
+For the broader executor-writing model, including `IWorkExecutionContext.Fail(..., transient: true)` and cancellation behavior, see [Implementing Work](../implementing-work.md).
 
 ## Related Interactions
 

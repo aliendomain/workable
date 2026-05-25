@@ -23,12 +23,21 @@ export type AdminSessionIdentity = {
   email?: string;
 };
 
+export type AdminSessionReadResult = {
+  identity: AdminSessionIdentity | null;
+  expiresAt?: number;
+  hadCookie: boolean;
+  shouldClear: boolean;
+};
+
 type AdminSessionPayload = {
   sub: string;
   provider?: AdminAuthProvider;
   email?: string;
   exp: number;
 };
+
+const SESSION_RENEWAL_WINDOW_SECONDS = 15 * 60;
 
 export function createSignedAdminSessionCookie(
   identity: AdminSessionIdentity,
@@ -72,40 +81,90 @@ export function readAdminSession(
   headers: Headers,
   settings: AdminSecuritySettings
 ): AdminSessionIdentity | null {
+  return readAdminSessionState(headers, settings).identity;
+}
+
+export function readAdminSessionState(
+  headers: Headers,
+  settings: AdminSecuritySettings
+): AdminSessionReadResult {
   const value = parseCookieHeader(headers.get("cookie")).get(settings.sessionCookieName);
   if (!value) {
-    return null;
+    return {
+      identity: null,
+      hadCookie: false,
+      shouldClear: false,
+    };
   }
 
   const secret = sessionSecret(settings);
   if (!secret) {
-    return null;
+    return {
+      identity: null,
+      hadCookie: true,
+      shouldClear: true,
+    };
   }
 
   const [payload, signature] = value.split(".");
   if (!payload || !signature || !constantTimeEquals(signature, sign(payload, secret))) {
-    return null;
+    return {
+      identity: null,
+      hadCookie: true,
+      shouldClear: true,
+    };
   }
 
   try {
     const parsed = JSON.parse(base64UrlDecode(payload)) as AdminSessionPayload;
     const provider = parsed.provider ?? "basic";
+    const now = Math.floor(Date.now() / 1000);
     if (
       !parsed.sub ||
-      parsed.exp <= Math.floor(Date.now() / 1000) ||
+      parsed.exp <= now ||
       provider !== settings.authProvider
     ) {
-      return null;
+      return {
+        identity: null,
+        hadCookie: true,
+        shouldClear: true,
+      };
     }
 
     return {
-      name: parsed.sub,
-      provider,
-      email: parsed.email,
+      identity: {
+        name: parsed.sub,
+        provider,
+        email: parsed.email,
+      },
+      expiresAt: parsed.exp,
+      hadCookie: true,
+      shouldClear: false,
     };
   } catch {
-    return null;
+    return {
+      identity: null,
+      hadCookie: true,
+      shouldClear: true,
+    };
   }
+}
+
+export function shouldRenewAdminSession(
+  expiresAt: number | undefined,
+  settings: AdminSecuritySettings
+) {
+  if (!expiresAt) {
+    return false;
+  }
+
+  const now = Math.floor(Date.now() / 1000);
+  const remainingSeconds = expiresAt - now;
+  const renewalWindow = Math.min(
+    SESSION_RENEWAL_WINDOW_SECONDS,
+    Math.max(60, Math.floor(settings.sessionMaxAgeSeconds / 4))
+  );
+  return remainingSeconds <= renewalWindow;
 }
 
 export function sessionSecret(settings: AdminSecuritySettings) {

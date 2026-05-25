@@ -19,6 +19,7 @@ export type AdminSecurityFailure = {
 export type AdminSecuritySuccess = {
   ok: true;
   identity: AdminIdentity;
+  sessionCookieHeader?: string;
 };
 
 export type AdminSecurityResult = AdminSecuritySuccess | AdminSecurityFailure;
@@ -35,7 +36,8 @@ export function authenticatedIdentity(
   name: string,
   scheme: AdminIdentity["scheme"],
   provider?: AdminAuthProvider,
-  email?: string
+  email?: string,
+  sessionCookieHeader?: string
 ): AdminSecuritySuccess {
   return {
     ok: true,
@@ -45,6 +47,7 @@ export function authenticatedIdentity(
       provider,
       email,
     },
+    sessionCookieHeader,
   };
 }
 

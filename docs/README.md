@@ -16,6 +16,7 @@ Start with [Getting Started](guides/getting-started.md) if you are evaluating wh
 ## Guides
 
 - [Getting Started](guides/getting-started.md): package split, work author setup, host setup, and queueing work.
+- [Implementing Work](guides/implementing-work.md): write executor code, use `IWorkExecutionContext`, and understand failure, cancellation, pause, and interruption behavior.
 - [Microsoft Entra Authentication](guides/entra-authentication.md): configure Entra bearer-token authentication and claim mapping for Workable surfaces.
 - [Registration](guides/registration.md): define work in feature assemblies, generate definitions from sources, queue startup work, target named systems, and isolate catalogs.
 - [Queueing](guides/queueing.md): queue work by name or id, pass input, set queue options, and await completion.

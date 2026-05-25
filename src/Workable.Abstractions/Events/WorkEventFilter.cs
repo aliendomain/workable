@@ -17,9 +17,9 @@ public sealed record WorkEventFilter(
         ArgumentNullException.ThrowIfNull(workEvent);
 
         return (this.WorkerId is null || this.WorkerId == workEvent.WorkerId) &&
-            (this.DefinitionId is null || this.DefinitionId == workEvent.DefinitionId) &&
+            (this.DefinitionId is null || this.DefinitionId == workEvent.WorkDefinitionId) &&
             (this.DefinitionIds is not { Count: > 0 } ||
-                (workEvent.DefinitionId is { } definitionId && this.DefinitionIds.Contains(definitionId))) &&
+                (workEvent.WorkDefinitionId is { } definitionId && this.DefinitionIds.Contains(definitionId))) &&
             (this.SubjectId is null || this.SubjectId == workEvent.SubjectId) &&
             (this.ConcurrencyKey is null || this.ConcurrencyKey == workEvent.ConcurrencyKey) &&
             (this.Identifier is null || workEvent.Identifiers.Contains(this.Identifier.Value)) &&

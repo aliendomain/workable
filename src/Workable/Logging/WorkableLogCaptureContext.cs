@@ -48,8 +48,7 @@ internal sealed class WorkableLogCaptureContext : IDisposable
             eventId,
             formatter(state, exception),
             exception?.GetType().FullName,
-            exception?.Message,
-            ExtractMetadata(state));
+            exception?.Message);
 
         this.worker.RecordLog(entry);
         this.events.Log(this.worker, entry);
@@ -64,26 +63,5 @@ internal sealed class WorkableLogCaptureContext : IDisposable
 
         this.disposed = true;
         CurrentContext.Value = this.previous;
-    }
-
-    private static Dictionary<string, object?>? ExtractMetadata<TState>(TState state)
-    {
-        if (state is not IEnumerable<KeyValuePair<string, object?>> values)
-        {
-            return null;
-        }
-
-        var metadata = new Dictionary<string, object?>();
-        foreach (var value in values)
-        {
-            if (value.Key == "{OriginalFormat}")
-            {
-                continue;
-            }
-
-            metadata[value.Key] = value.Value;
-        }
-
-        return metadata.Count == 0 ? null : metadata;
     }
 }

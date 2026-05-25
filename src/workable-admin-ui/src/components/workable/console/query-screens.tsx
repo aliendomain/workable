@@ -157,6 +157,7 @@ export function WorkersView({
   );
   const [manualRefreshToken, setManualRefreshToken] = useState(0);
   const queryKey = JSON.stringify(query);
+  const selectionScopeKey = `${connection.apiUrl}\n${connection.systemName ?? ""}\n${queryKey}`;
   const scrollResetKey = `${connection.apiUrl}\n${connection.systemName ?? ""}\n${queryKey}\n${refreshToken}\n${manualRefreshToken}`;
   const workerScrollTopRef = useRef(0);
   useEffect(() => {
@@ -177,8 +178,6 @@ export function WorkersView({
   const refreshWorkers = useCallback((options?: { resetScroll?: boolean }) => {
     setActionError(undefined);
     setActionHighlight(null);
-    setSelectedWorkerRowId(null);
-    setSelectedWorkerResetKey(null);
     if (options?.resetScroll === false) {
       workers.refreshLoadedWindow?.();
       return;
@@ -238,7 +237,7 @@ export function WorkersView({
       }
       if (options?.watch) {
         setSelectedWorkerRowId(worker.id.value);
-        setSelectedWorkerResetKey(scrollResetKey);
+        setSelectedWorkerResetKey(selectionScopeKey);
         onOpenWorker(worker.id.value);
       }
       if (action !== "Purge") {
@@ -257,18 +256,18 @@ export function WorkersView({
     } finally {
       setPendingActionWorkerId(null);
     }
-  }, [connection, hideWorker, onOpenWorker, refreshWorkers, scrollResetKey, visibleWorkers]);
+  }, [connection, hideWorker, onOpenWorker, refreshWorkers, scrollResetKey, selectionScopeKey, visibleWorkers]);
   const openWorkerRow = useCallback((worker: WorkViewWorkerGridDetailed) => {
     setActionHighlight(null);
     setSelectedWorkerRowId(worker.id.value);
-    setSelectedWorkerResetKey(scrollResetKey);
+    setSelectedWorkerResetKey(selectionScopeKey);
     onOpenWorker(worker.id.value);
-  }, [onOpenWorker, scrollResetKey]);
+  }, [onOpenWorker, selectionScopeKey]);
   const selectWorkerRow = useCallback((worker: WorkViewWorkerGridDetailed) => {
     setActionHighlight(null);
     setSelectedWorkerRowId(worker.id.value);
-    setSelectedWorkerResetKey(scrollResetKey);
-  }, [scrollResetKey]);
+    setSelectedWorkerResetKey(selectionScopeKey);
+  }, [selectionScopeKey]);
   const isReady = !workers.loading;
   useEffect(() => {
     if (isLoadingTarget && isReady) {
@@ -283,7 +282,7 @@ export function WorkersView({
   const activeActionHighlight = actionHighlight?.resetKey === scrollResetKey
     ? actionHighlight
     : null;
-  const activeSelectedWorkerRowId = selectedWorkerResetKey === scrollResetKey
+  const activeSelectedWorkerRowId = selectedWorkerResetKey === selectionScopeKey
     ? selectedWorkerRowId
     : null;
   const workerHighlightId = activeActionHighlight
@@ -374,6 +373,7 @@ export function IterationsView({
   );
   const [manualRefreshToken, setManualRefreshToken] = useState(0);
   const queryKey = JSON.stringify(query);
+  const selectionScopeKey = `${connection.apiUrl}\n${connection.systemName ?? ""}\n${queryKey}`;
   const scrollResetKey = `${connection.apiUrl}\n${connection.systemName ?? ""}\n${queryKey}\n${refreshToken}\n${manualRefreshToken}`;
   const iterationScrollTopRef = useRef(0);
   useEffect(() => {
@@ -389,15 +389,13 @@ export function IterationsView({
     queryGridShapeCapabilities.defaultShape
   );
   const refreshIterations = useCallback(() => {
-    setSelectedIterationRowKey(null);
-    setSelectedIterationResetKey(null);
     setManualRefreshToken((value) => value + 1);
   }, []);
   const openIterationRow = useCallback((iteration: WorkViewIterationGridDetailed) => {
     setSelectedIterationRowKey(getIterationRowKey(iteration));
-    setSelectedIterationResetKey(scrollResetKey);
+    setSelectedIterationResetKey(selectionScopeKey);
     onOpenWorker(iteration.workerId.value);
-  }, [onOpenWorker, scrollResetKey]);
+  }, [onOpenWorker, selectionScopeKey]);
   const isReady = !iterations.loading;
   useEffect(() => {
     if (isLoadingTarget && isReady) {
@@ -409,7 +407,7 @@ export function IterationsView({
     return null;
   }
 
-  const activeSelectedIterationRowKey = selectedIterationResetKey === scrollResetKey
+  const activeSelectedIterationRowKey = selectedIterationResetKey === selectionScopeKey
     ? selectedIterationRowKey
     : null;
 

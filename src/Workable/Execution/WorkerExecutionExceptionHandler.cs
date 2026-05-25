@@ -43,9 +43,51 @@ internal sealed class WorkerExecutionExceptionHandler(
             new Dictionary<string, object?>
             {
                 ["exceptionType"] = exception.GetType().FullName,
+                ["exceptionMessage"] = exception.Message,
+                ["exceptionStackTrace"] = exception.StackTrace,
+                ["innerExceptions"] = CreateInnerExceptionMetadata(exception),
                 ["exceptionClassification"] = classification.ToString(),
                 ["isTransient"] = isTransient,
                 ["transientRetryAttempts"] = retryAttempts,
             });
     }
+
+    private static IReadOnlyList<IReadOnlyDictionary<string, object?>> CreateInnerExceptionMetadata(Exception exception)
+    {
+        var innerExceptions = new List<IReadOnlyDictionary<string, object?>>();
+        AppendInnerExceptionMetadata(exception, innerExceptions);
+        return innerExceptions;
+    }
+
+    private static void AppendInnerExceptionMetadata(
+        Exception exception,
+        List<IReadOnlyDictionary<string, object?>> innerExceptions)
+    {
+        if (exception is AggregateException aggregateException)
+        {
+            foreach (var inner in aggregateException.Flatten().InnerExceptions)
+            {
+                innerExceptions.Add(CreateExceptionMetadata(inner));
+                AppendInnerExceptionMetadata(inner, innerExceptions);
+            }
+
+            return;
+        }
+
+        if (exception.InnerException is not { } innerException)
+        {
+            return;
+        }
+
+        innerExceptions.Add(CreateExceptionMetadata(innerException));
+        AppendInnerExceptionMetadata(innerException, innerExceptions);
+    }
+
+    private static IReadOnlyDictionary<string, object?> CreateExceptionMetadata(Exception exception)
+        => new Dictionary<string, object?>
+        {
+            ["exceptionType"] = exception.GetType().FullName,
+            ["exceptionMessage"] = exception.Message,
+            ["exceptionStackTrace"] = exception.StackTrace,
+        };
 }

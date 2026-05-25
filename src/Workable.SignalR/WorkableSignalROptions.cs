@@ -11,9 +11,11 @@ public sealed class WorkableSignalROptions
 
     public WorkEventOverflowBehavior EventOverflowBehavior { get; set; } = WorkEventOverflowBehavior.DropWrite;
 
-    public TimeSpan EventBatchWindow { get; set; } = TimeSpan.FromSeconds(1);
+    public TimeSpan BatchTimeWindow { get; set; } = TimeSpan.FromSeconds(1);
 
-    public TimeSpan EventMinimumBatchWindow { get; set; } = TimeSpan.FromMilliseconds(100);
+    public TimeSpan LiveTimeWindow { get; set; } = TimeSpan.FromMilliseconds(100);
+
+    public TimeSpan MinimumTimeWindow { get; set; } = TimeSpan.FromMilliseconds(100);
 
     public int EventMaxBatchSize { get; set; } = 512;
 }

@@ -144,7 +144,13 @@ export function ServerTree({
   onAddServer: () => void;
   onEditHost: (host: WorkableHostConnection) => void;
   onOpenCatalogScope: (systemId: string, scope: OverviewScope | null) => void;
-  onOpenDefinition: (definitionId: string, systemId?: string) => void;
+  onOpenDefinition: (
+    definitionId: string,
+    options?: {
+      definitionName?: string;
+      systemId?: string;
+    }
+  ) => void;
   onOpenWorker: (workerId: string) => void;
   onLifecycleAction: (system: WorkableSystemConnection, action: "start" | "stop") => void;
   onOpenView: (view: View, systemId: string) => void;
@@ -457,7 +463,13 @@ function CatalogExplorer({
   activeOverviewCategory: string;
   host: WorkableHostConnection;
   onOpenCatalogScope: (systemId: string, scope: OverviewScope | null) => void;
-  onOpenDefinition: (definitionId: string, systemId?: string) => void;
+  onOpenDefinition: (
+    definitionId: string,
+    options?: {
+      definitionName?: string;
+      systemId?: string;
+    }
+  ) => void;
   onOpenWorker: (workerId: string) => void;
   system: WorkableSystemConnection;
 }) {
@@ -555,7 +567,10 @@ function CatalogExplorer({
               >
                 <button
                   className="flex h-full min-w-0 flex-1 items-center gap-2 px-2 text-left"
-                  onClick={() => onOpenDefinition(definition.id.value, system.id)}
+                  onClick={() => onOpenDefinition(definition.id.value, {
+                    definitionName: definition.name,
+                    systemId: system.id,
+                  })}
                   type="button"
                 >
                   <FileCode2 className="size-4 shrink-0 text-sidebar-accent-foreground" />
@@ -1059,20 +1074,31 @@ function RealtimeCheckbox({
 }
 
 export function ConsoleNavigationHeader({
+  breadcrumbParent,
   canGoBack,
+  canGoForward,
   definitionId,
+  definitionName,
   host,
   onBack,
+  onForward,
   onOpenView,
   system,
   systemNotifications,
   view,
   workerId,
 }: {
+  breadcrumbParent?: {
+    label: string;
+    onSelect: () => void;
+  } | null;
   canGoBack: boolean;
+  canGoForward: boolean;
   definitionId: string | null;
+  definitionName: string | null;
   host: WorkableHostConnection;
   onBack: () => void;
+  onForward: () => void;
   onOpenView: (view: View, systemId?: string, trackHistory?: boolean) => void;
   system: WorkableSystemConnection;
   systemNotifications?: ReactNode;
@@ -1082,7 +1108,7 @@ export function ConsoleNavigationHeader({
   const canOpenOverview = view !== "overview";
   const currentLabel =
     view === "definition" && definitionId
-      ? definitionId
+      ? definitionName ?? definitionId
       : view === "worker" && workerId
         ? workerId
         : navTitle(view);
@@ -1106,6 +1132,23 @@ export function ConsoleNavigationHeader({
         </TooltipTrigger>
         <TooltipContent side="bottom" sideOffset={6}>
           Go back
+        </TooltipContent>
+      </Tooltip>
+      <Tooltip delayDuration={500} disableHoverableContent>
+        <TooltipTrigger asChild>
+          <Button
+            aria-label="Go forward"
+            className="shrink-0"
+            disabled={!canGoForward}
+            onClick={onForward}
+            size="icon-sm"
+            variant="ghost"
+          >
+            <ChevronRight className="size-4" />
+          </Button>
+        </TooltipTrigger>
+        <TooltipContent side="bottom" sideOffset={6}>
+          Go forward
         </TooltipContent>
       </Tooltip>
       <div className="min-w-0 flex-1 overflow-x-auto">
@@ -1132,10 +1175,28 @@ export function ConsoleNavigationHeader({
             </BreadcrumbItem>
             <BreadcrumbSeparator className="shrink-0" />
             <BreadcrumbItem className="min-w-0 shrink-0">
-              <BreadcrumbPage className={`${view === "worker" || view === "definition" ? "font-mono" : ""} max-w-80 truncate font-semibold text-foreground`}>
-                {currentLabel}
-              </BreadcrumbPage>
+              {breadcrumbParent ? (
+                <BreadcrumbLink asChild className="max-w-80 truncate font-mono">
+                  <button onClick={breadcrumbParent.onSelect} type="button">
+                    {breadcrumbParent.label}
+                  </button>
+                </BreadcrumbLink>
+              ) : (
+                <BreadcrumbPage className={`${view === "worker" || view === "definition" ? "font-mono" : ""} max-w-80 truncate font-semibold text-foreground`}>
+                  {currentLabel}
+                </BreadcrumbPage>
+              )}
             </BreadcrumbItem>
+            {breadcrumbParent && (
+              <>
+                <BreadcrumbSeparator className="shrink-0" />
+                <BreadcrumbItem className="min-w-0 shrink-0">
+                  <BreadcrumbPage className="max-w-80 truncate font-mono font-semibold text-foreground">
+                    {currentLabel}
+                  </BreadcrumbPage>
+                </BreadcrumbItem>
+              </>
+            )}
           </BreadcrumbList>
         </Breadcrumb>
       </div>

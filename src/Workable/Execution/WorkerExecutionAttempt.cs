@@ -4,7 +4,8 @@ internal sealed record WorkerExecutionAttempt(
     WorkExecutionResult? Result,
     WorkMessage? ExceptionFailureMessage,
     Exception? Exception = null,
-    WorkExceptionClassification? ExceptionClassification = null)
+    WorkExceptionClassification? ExceptionClassification = null,
+    bool IsTransientDeclarativeFailure = false)
 {
     public bool IsExceptionFailure => this.ExceptionFailureMessage is not null;
 
@@ -22,6 +23,9 @@ internal sealed record WorkerExecutionAttempt(
 
     public static WorkerExecutionAttempt Completed(WorkExecutionResult result)
         => new(result, ExceptionFailureMessage: null);
+
+    public static WorkerExecutionAttempt DeclarativeTransientFailed(WorkExecutionResult result)
+        => new(result, ExceptionFailureMessage: null, IsTransientDeclarativeFailure: true);
 
     public static WorkerExecutionAttempt ExceptionFailed(
         WorkMessage message,

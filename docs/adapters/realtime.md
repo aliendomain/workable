@@ -57,8 +57,9 @@ builder.Services.AddWorkableSignalR(options =>
     options.HubPath = "/internal/work/realtime";
     options.PublishInterval = TimeSpan.FromSeconds(2);
     options.DiagnosticsPublishInterval = TimeSpan.FromMilliseconds(250);
-    options.EventBatchWindow = TimeSpan.FromSeconds(1);
-    options.EventMinimumBatchWindow = TimeSpan.FromMilliseconds(100);
+    options.BatchTimeWindow = TimeSpan.FromSeconds(1);
+    options.LiveTimeWindow = TimeSpan.FromMilliseconds(100);
+    options.MinimumTimeWindow = TimeSpan.FromMilliseconds(100);
     options.EventMaxBatchSize = 512;
     options.EventSubscriptionCapacity = 16_384;
     options.EventOverflowBehavior = WorkEventOverflowBehavior.DropWrite;
@@ -78,8 +79,9 @@ app.MapWorkableSignalR("/internal/work/realtime");
 - `HubPath`: the default path used by `MapWorkableSignalR()` when the map call does not supply one explicitly.
 - `PublishInterval`: how often non-diagnostics view subscriptions are recomputed and pushed while they are active.
 - `DiagnosticsPublishInterval`: how often diagnostics view subscriptions are recomputed and pushed while they are active.
-- `EventBatchWindow`: how long the broadcaster waits to accumulate more events after the first event in a burst before sending.
-- `EventMinimumBatchWindow`: the minimum positive batch window the broadcaster will honor, to avoid overly chatty event sending from tiny configured values.
+- `BatchTimeWindow`: how long the broadcaster waits to accumulate more events after the first event in a normal burst before sending.
+- `LiveTimeWindow`: how long the broadcaster waits to accumulate more events for live-style subscriptions such as `WatchWorker` before sending.
+- `MinimumTimeWindow`: the minimum positive time window the broadcaster will honor for either mode, to avoid overly chatty sends from tiny configured values.
 - `EventMaxBatchSize`: the maximum number of events included in one `workable.events` batch.
 - `EventSubscriptionCapacity`: the number of events each active event subscription group can buffer before overflow handling applies.
 - `EventOverflowBehavior`: what happens when an event subscription group reaches its buffer limit, such as `DropWrite` or `DropOldest`.
@@ -233,8 +235,9 @@ await connection.InvokeAsync(
 
 The realtime broadcaster coalesces bursts into batches. This reduces SignalR send overhead during high-volume event spikes.
 
-- `EventBatchWindow` controls how long the broadcaster waits to collect additional events after receiving the first event in a burst.
-- `EventMinimumBatchWindow` prevents accidentally configuring an overly chatty event stream; smaller positive windows are raised to this value.
+- `BatchTimeWindow` controls how long the broadcaster waits to collect additional events after receiving the first event in a normal burst.
+- `LiveTimeWindow` does the same for live-style subscriptions. Today that primarily means `WatchWorker`, so worker detail screens can feel more immediate than broad event viewers.
+- `MinimumTimeWindow` prevents accidentally configuring an overly chatty event stream; smaller positive windows are raised to this value.
 - `EventMaxBatchSize` caps the number of events in one batch.
 - `EventSubscriptionCapacity` caps the number of individual events buffered by each active event subscription group before the configured overflow behavior applies.
 - `EventOverflowBehavior` controls what the per-subscription channel does when it reaches capacity.
@@ -242,9 +245,9 @@ The realtime broadcaster coalesces bursts into batches. This reduces SignalR sen
 - Multiple collected events are sent through `workable.events`.
 - Event order is preserved inside the batch.
 
-The defaults are a 1 second batch window, a 100ms minimum batch window, 512 events per batch, 16,384 buffered events per active event subscription group, and `DropWrite` overflow behavior.
+The defaults are a 1 second batch window, a 100ms live window, a 100ms minimum time window, 512 events per batch, 16,384 buffered events per active event subscription group, and `DropWrite` overflow behavior.
 
-The batch window is also the send pace during bursts. If the batch reaches `EventMaxBatchSize` before the window expires, the broadcaster waits out the remaining window before sending. That gives the bounded event subscription channel room to absorb overflow according to `EventOverflowBehavior` instead of turning a large burst into a tight loop of SignalR sends.
+The chosen time window is also the send pace during bursts. If the batch reaches `EventMaxBatchSize` before the window expires, the broadcaster waits out the remaining window before sending. That gives the bounded event subscription channel room to absorb overflow according to `EventOverflowBehavior` instead of turning a large burst into a tight loop of SignalR sends.
 
 `DropWrite` is the default for SignalR because realtime event viewers are observational and bounded. When a SignalR event subscription is already full, lazy event payloads can be skipped before construction, which keeps high-throughput worker execution from paying to produce events the browser will never inspect. Use `DropOldest` only when keeping the newest event samples matters more than minimizing writer-path overhead.
 

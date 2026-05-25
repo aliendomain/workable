@@ -200,7 +200,12 @@ internal sealed class WorkableRealtimeBroadcaster(
                 }
 
                 pendingRead = null;
-                var batch = await this.CollectEventBatch(reader, pendingRead, reader.Current, cancellationToken);
+                var batch = await this.CollectEventBatch(
+                    subscription,
+                    reader,
+                    pendingRead,
+                    reader.Current,
+                    cancellationToken);
                 await this.SendEventBatch(
                     subscription.GroupName,
                     batch.Events,
@@ -245,12 +250,13 @@ internal sealed class WorkableRealtimeBroadcaster(
     }
 
     private async Task<EventBatch> CollectEventBatch(
+        WorkableRealtimeEventSubscriptions.EventSubscription subscription,
         IAsyncEnumerator<WorkEvent> reader,
         Task<bool>? pendingRead,
         WorkEvent firstEvent,
         CancellationToken cancellationToken)
     {
-        var batchWindow = NormalizeEventBatchWindow(options.Value);
+        var batchWindow = ResolveTimeWindow(subscription, options.Value);
         var maxBatchSize = Math.Max(1, options.Value.EventMaxBatchSize);
         if (maxBatchSize == 1 || batchWindow <= TimeSpan.Zero)
         {
@@ -772,16 +778,40 @@ internal sealed class WorkableRealtimeBroadcaster(
     private static TimeSpan NormalizeInterval(TimeSpan interval, TimeSpan fallback)
         => interval > TimeSpan.Zero ? interval : fallback;
 
-    private static TimeSpan NormalizeEventBatchWindow(WorkableSignalROptions signalROptions)
+    private static TimeSpan NormalizeBatchTimeWindow(WorkableSignalROptions signalROptions)
     {
-        var minimum = NormalizeInterval(
-            signalROptions.EventMinimumBatchWindow,
-            TimeSpan.FromMilliseconds(100));
+        var minimum = NormalizeMinimumTimeWindow(signalROptions);
         var requested = NormalizeInterval(
-            signalROptions.EventBatchWindow,
+            signalROptions.BatchTimeWindow,
             TimeSpan.FromSeconds(1));
         return requested < minimum ? minimum : requested;
     }
+
+    private static TimeSpan ResolveTimeWindow(
+        WorkableRealtimeEventSubscriptions.EventSubscription subscription,
+        WorkableSignalROptions signalROptions)
+    {
+        if (subscription.Filter?.WorkerId is not null)
+        {
+            return NormalizeLiveTimeWindow(signalROptions);
+        }
+
+        return NormalizeBatchTimeWindow(signalROptions);
+    }
+
+    private static TimeSpan NormalizeLiveTimeWindow(WorkableSignalROptions signalROptions)
+    {
+        var minimum = NormalizeMinimumTimeWindow(signalROptions);
+        var requested = NormalizeInterval(
+            signalROptions.LiveTimeWindow,
+            TimeSpan.FromMilliseconds(100));
+        return requested < minimum ? minimum : requested;
+    }
+
+    private static TimeSpan NormalizeMinimumTimeWindow(WorkableSignalROptions signalROptions)
+        => NormalizeInterval(
+            signalROptions.MinimumTimeWindow,
+            TimeSpan.FromMilliseconds(100));
 
     private enum DiagnosticsLagSeverity
     {

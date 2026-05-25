@@ -47,52 +47,26 @@ Each `WorkEvent` identifies where the event came from and what happened.
 public sealed record WorkEvent(
     DateTimeOffset OccurredAt,
     WorkSystemId WorkSystemId,
+    string? WorkSystemName,
     WorkerId? WorkerId,
-    WorkDefinitionId? DefinitionId,
+    WorkDefinitionId? WorkDefinitionId,
+    string? WorkDefinitionName,
     WorkSubjectId? SubjectId,
     WorkConcurrencyKey? ConcurrencyKey,
     IReadOnlySet<WorkIdentifier> Identifiers,
-    WorkOrigin? Origin,
     string EventType,
-    JsonElement? Data,
-    IReadOnlyList<WorkMessage> Messages);
+    JsonElement? Data);
 ```
 
-The envelope is stable and filterable. It carries the system, worker, definition, subject, concurrency key, identifiers, origin, event type, thin event data, and an optional top-level message list.
+The envelope is stable and filterable. It carries the system id, optional system name, worker, definition id and name, subject, concurrency key, identifiers, event type, and thin event data.
 
 Event data is intentionally thin. Worker lifecycle events include a worker summary and lightweight `keys` when keys are available. They do not include worker input, output, worker messages, logs, full iteration history, or full worker detail. Query worker detail when a consumer needs those heavier fields.
 
 `worker.purge` is even smaller. It carries only the purge timestamp and purged worker ids; it does not include a worker summary or keys.
 
-The current worker lifecycle publisher also leaves the top-level `Messages` list empty. Queue-outcome messages, worker messages, and action conflict/invalid details stay on queue outcomes, action outcomes, and worker detail surfaces rather than being copied into the event stream.
-
-The envelope `Origin` is the event-level origin. Worker lifecycle payloads do not repeat the worker's original queue origin inside `Data`.
-
 ## Event Types
 
-Common event types include:
-
-- `worker.queued`
-- `worker.start`
-- `worker.started`
-- `worker.pause`
-- `worker.paused`
-- `worker.cancel`
-- `worker.completed`
-- `worker.failed`
-- `worker.interrupted`
-- `worker.canceled`
-- `worker.waiting`
-- `worker.retrying`
-- `worker.iteration.completed`
-- `worker.iteration.failed`
-- `worker.recurrence.circuit_opened`
-- `worker.log`
-- `worker.push`
-- `worker.purge`
-- `worker.reconfigured`
-
-Briefly:
+The current worker event types are:
 
 - `worker.queued`: a worker was accepted into the system.
 - `worker.start`: a start action was applied to a worker.
@@ -120,7 +94,15 @@ Action events such as `worker.cancel`, `worker.pause`, and `worker.push` describ
 
 `Data` uses camel-case JSON property names. Enum values are strings. Null properties are omitted.
 
-Most worker events include this shape:
+Most worker events share a common thin worker payload and then add a few event-specific fields when needed. The payload families below document the base shape once, then show only the JSON fields each event family adds or changes.
+
+### Base Worker Payload
+
+Used as-is by:
+
+- `worker.started`
+
+Shape:
 
 ```json
 {
@@ -154,72 +136,170 @@ Most worker events include this shape:
 }
 ```
 
-Additional event-specific fields are added when useful:
+Notes:
 
-- Completion events include `completionStatus`.
-- Action events include `action` and `actionStatus`.
-- Reconfiguration events include `reconfigurationStatus` and the requested `reconfiguration`.
-- Waiting events include `recurrenceInterval`.
-- Retrying events include `retryDelay`.
-- Iteration events include a thin `iteration` object with sequence, timestamps, execution duration, and status.
+- `queueDuration` is included after the worker has started at least once. It is omitted for work that is still queued and has never begun execution.
+- `nextRunAt` is included when the worker already has a scheduled future run. In practice that means recurring work in the `Waiting` state and transient-retry work in the `Retrying` state.
+- `interruptionReason` is included when the worker is in the `Interrupted` state.
+- Every payload family below includes this full base worker payload unless noted otherwise.
 
-`queueDuration` and `nextRunAt` are included on the nested worker summary when they are available. `interruptionReason` is omitted unless the worker was interrupted.
+### Event Origin Payload
 
-Example completed event:
+Used by events that represent a caller request rather than a passive state transition.
+
+Shape:
 
 ```json
 {
-  "worker": {
-    "id": { "value": "00000000-0000-0000-0000-000000000000" },
-    "revision": 3,
-    "stateSequence": 5,
-    "definitionId": { "value": "00000000-0000-0000-0000-000000000000" },
-    "definitionName": "email.welcome.send",
-    "definitionCategory": "Email",
-    "subjectId": { "type": "user", "value": "user-123" },
-    "identifiers": [
-      { "type": "order", "value": "order-789" }
-    ],
-    "state": "Completed",
-    "createdAt": "2026-05-17T12:00:00Z",
-    "stateChangedAt": "2026-05-17T12:00:01Z",
-    "updatedAt": "2026-05-17T12:00:01Z",
-    "version": {
-      "workerId": { "value": "00000000-0000-0000-0000-000000000000" },
-      "revision": 3
+  "origin": {
+    "channel": "HttpApi",
+    "actor": {
+      "id": "user-123",
+      "name": "Greya",
+      "email": "greya@example.test"
     },
-    "queueDuration": "00:00:00.0500000",
-    "totalExecutionDuration": "00:00:00.9500000"
-  },
-  "keys": [],
+    "description": "Queue work 'email.welcome.send' through the HTTP API.",
+    "url": "/workable/work/email.welcome.send"
+  }
+}
+```
+
+Notes:
+
+- `actor` is omitted when the origin does not carry caller identity.
+- `description` and `url` are included only when the source request supplied them.
+
+### Queue Payload
+
+Used by:
+
+- `worker.queued`
+
+Includes the base worker payload plus:
+
+```json
+{
+  "origin": { "...": "same as Event Origin Payload" }
+}
+```
+
+Notes:
+
+- `worker.queued` always includes `origin`.
+- `origin.actor` is included only when the queue request carried caller identity.
+
+### Log Payload
+
+Used by:
+
+- `worker.log`
+
+Includes the base worker payload plus:
+
+```json
+{
+  "log": {
+    "category": "MyApp.Workers.EmailWelcomeSend",
+    "level": "Error",
+    "eventId": {
+      "id": 42,
+      "name": "email_sent"
+    },
+    "message": "SMTP connection failed while sending the welcome email.",
+    "exceptionType": "System.InvalidOperationException",
+    "exceptionMessage": "SMTP connection failed."
+  }
+}
+```
+
+Notes:
+
+- `OccurredAt` on the event envelope is the captured log timestamp.
+- The event payload includes the core captured log fields.
+- `exceptionType` and `exceptionMessage` are present only when the captured log included an exception.
+- Retained iteration logs on `WorkerSnapshot.Iterations[*].Logs` carry the same structured log entry fields as the event payload.
+
+### Action Payload
+
+Used by:
+
+- `worker.start`
+- `worker.pause`
+- `worker.cancel`
+- `worker.push`
+
+Includes the base worker payload plus:
+
+```json
+{
+  "origin": { "...": "same as Event Origin Payload" },
+  "action": "Cancel",
+  "actionStatus": "Accepted"
+}
+```
+
+Notes:
+
+- `action` is the action that was applied.
+- `actionStatus` is the immediate action outcome, such as `Accepted`, `Conflict`, or `Invalid`.
+
+### Completion Payload
+
+Used by:
+
+- `worker.completed`
+- `worker.failed`
+- `worker.paused`
+- `worker.interrupted`
+- `worker.canceled`
+
+Includes the base worker payload plus:
+
+```json
+{
   "completionStatus": "Completed"
 }
 ```
 
-Example iteration event:
+### Waiting Payload
+
+Used by:
+
+- `worker.waiting`
+
+Includes the base worker payload plus:
 
 ```json
 {
-  "worker": {
-    "id": { "value": "00000000-0000-0000-0000-000000000000" },
-    "revision": 4,
-    "stateSequence": 7,
-    "definitionId": { "value": "00000000-0000-0000-0000-000000000000" },
-    "definitionName": "email.welcome.send",
-    "definitionCategory": "Email",
-    "state": "Waiting",
-    "createdAt": "2026-05-17T12:00:00Z",
-    "stateChangedAt": "2026-05-17T12:00:01Z",
-    "updatedAt": "2026-05-17T12:00:01Z",
-    "version": {
-      "workerId": { "value": "00000000-0000-0000-0000-000000000000" },
-      "revision": 4
-    },
-    "queueDuration": "00:00:00.0500000",
-    "totalExecutionDuration": "00:00:00.9500000",
-    "nextRunAt": "2026-05-17T12:05:00Z"
-  },
-  "keys": [],
+  "recurrenceInterval": "00:00:04"
+}
+```
+
+### Retrying Payload
+
+Used by:
+
+- `worker.retrying`
+
+Includes the base worker payload plus:
+
+```json
+{
+  "retryDelay": "00:00:00.8000000"
+}
+```
+
+### Iteration Completion Payload
+
+Used by:
+
+- `worker.iteration.completed`
+- `worker.iteration.failed`
+
+Includes the base worker payload plus:
+
+```json
+{
   "completionStatus": "Completed",
   "iteration": {
     "sequence": 1,
@@ -231,18 +311,76 @@ Example iteration event:
 }
 ```
 
-Example purge event:
+### Recurrence Circuit Payload
+
+Used by:
+
+- `worker.recurrence.circuit_opened`
+
+Includes the base worker payload plus:
+
+```json
+{
+  "iteration": {
+    "sequence": 3,
+    "startedAt": "2026-05-17T12:10:00Z",
+    "completedAt": "2026-05-17T12:10:01Z",
+    "executionDuration": "00:00:01",
+    "status": "Failed"
+  }
+}
+```
+
+Notes:
+
+- This event includes the latest retained iteration snapshot, but it does not add `completionStatus`.
+
+### Reconfiguration Payload
+
+Used by:
+
+- `worker.reconfigured`
+
+Includes the base worker payload plus:
+
+```json
+{
+  "origin": { "...": "same as Event Origin Payload" },
+  "reconfigurationStatus": "Accepted",
+  "reconfiguration": {
+    "recurrence": {
+      "isEnabled": false
+    }
+  }
+}
+```
+
+Notes:
+
+- `reconfiguration` contains the accepted change request shape, with only the supplied fields present.
+
+### Purge Payload
+
+Used by:
+
+- `worker.purge`
+
+Shape:
 
 ```json
 {
   "purgedAt": "2026-05-17T12:00:00Z",
   "workerIds": [
     { "value": "00000000-0000-0000-0000-000000000000" }
-  ]
+  ],
+  "origin": { "...": "same as Event Origin Payload" }
 }
 ```
 
-`worker.log` events are thin notifications that a worker log was captured. They currently carry the normal worker summary payload, not the log entry text itself. Log text is retained on `WorkerSnapshot.Logs` up to the worker's configured logging buffer size, not embedded in the event payload.
+Notes:
+
+- `worker.purge` is the only current event type that does not use the base worker payload.
+- `origin` is included only for explicit non-system-user purge requests. Retention and other system-driven purge events omit it.
 
 When a consumer knows the event payload shape, `WorkEvent.DeserializeData<T>()` can deserialize the `Data` field directly:
 

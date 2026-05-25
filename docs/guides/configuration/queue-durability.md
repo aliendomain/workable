@@ -133,6 +133,49 @@ services.AddWorkableSqlServerDurableQueue(
 
 Durable completion is an opt-in completion guarantee for work whose successful business write and Workable final cleanup must commit together.
 
+### Why It Exists
+
+Without durable completion, these two facts can drift apart:
+
+- your executor's durable business write succeeded
+- Workable durably recorded that the worker is finished
+
+That drift matters when replay would be harmful.
+
+Consider a worker that creates an invoice row in your database and then returns success.
+
+If the invoice insert commits but Workable never durably records completion, the durable row can be replayed later and the same worker can create a second invoice.
+
+That leaves the system in the worst possible state:
+
+- your business data says the work already happened
+- Workable still believes the durable worker was not safely completed
+- replay can perform the side effect again
+
+`CompleteDurably()` exists to make those two durable effects commit or roll back together.
+
+### Concrete Example
+
+Imagine `billing.invoice.generate` writes one invoice row and must never create two invoices for the same request.
+
+Bad sequence without durable completion:
+
+1. executor inserts `Invoice(Id = inv-123, OrderId = order-456)`
+2. executor returns `Success`
+3. process crashes before Workable durably completes the worker row
+4. durable replay runs the worker again
+5. a second invoice is generated or the executor now hits confusing duplicate-key behavior
+
+Good sequence with durable completion:
+
+1. executor starts a database transaction
+2. executor inserts `Invoice(Id = inv-123, OrderId = order-456)`
+3. executor calls `IWorkExecutionContext.CompleteDurably(...)` inside that same transaction
+4. transaction commits
+5. both the invoice row and Workable durable completion commit together
+
+If anything fails before commit, neither durable effect is finalized, so replay sees a consistent picture.
+
 `CompleteDurably()` does not create a transaction for executor code. The executor owns the transaction, performs its business writes, asks Workable to complete the persisted row inside that transaction, and then commits:
 
 ```csharp
@@ -150,6 +193,8 @@ await transaction.CommitAsync(cancellationToken);
 
 return WorkExecutionResult.Success();
 ```
+
+That sample is valuable only when the business write and the Workable durable row truly need one shared transaction boundary. If your side effects are already safely idempotent, or replaying the worker is acceptable, durable queueing may still be useful while durable completion is unnecessary.
 
 If a worker with durable completion enabled returns a successful result without calling `IWorkExecutionContext.CompleteDurably(...)`, Workable fails the execution instead of marking the worker completed. This keeps successful Workable completion tied to the transaction boundary the developer controls. If the transaction rolls back, the business write and Workable durable completion roll back together.
 

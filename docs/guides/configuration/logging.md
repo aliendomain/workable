@@ -4,7 +4,7 @@ Logging configuration controls worker-scoped log capture.
 
 For configuration source order, precedence, and override rules that apply to every configuration facet, see [Work Configuration](README.md).
 
-Workable decorates `ILogger<>` in the host service provider. During worker execution, logs written by the executor and by scoped or transient services created for that execution are still forwarded to the host logger. When worker logging is enabled, matching log entries are retained on the worker snapshot and a thin `worker.log` event is published.
+Workable decorates `ILogger<>` in the host service provider. During worker execution, logs written by the executor and by scoped or transient services created for that execution are still forwarded to the host logger. When worker logging is enabled, matching log entries are retained on the worker snapshot and a `worker.log` event is published with the captured log message details.
 
 ## Settings
 
@@ -12,7 +12,7 @@ Workable decorates `ILogger<>` in the host service provider. During worker execu
 | --- | --- | --- |
 | `IsEnabled` | `true` | Enables worker-scoped log capture. |
 | `Level` | `LogLevel.Information` | Minimum log level captured by Workable. Host logging still uses the host's normal logging rules. |
-| `MaximumBufferedEntries` | `100` | Maximum number of captured log entries retained on the worker snapshot. Older entries are removed first. |
+| `MaximumBufferedEntries` | `100` | Maximum number of captured log entries retained per worker iteration. Older entries are removed first within that iteration. |
 
 ## Attribute Configuration
 
@@ -35,10 +35,10 @@ public sealed class RefreshCacheWork : IWorkExecutor
 
 Captured logs are exposed in two related places:
 
-- `worker.log` events on `IWorkEventStream`, which notify subscribers that a log was captured.
-- `WorkerSnapshot.Logs`, which contains the most recent captured entries for that worker.
+- `worker.log` events on `IWorkEventStream`, which include the captured log message details plus worker context.
+- `WorkerSnapshot.Iterations[*].Logs`, which contains the retained log entries for each retained iteration.
 
-The event payload is intentionally thin and does not include the log message or metadata. Query the worker snapshot when a UI needs the retained log details.
+The event payload includes the captured log message, category, level, event id, and exception fields when an exception was logged. Retained iteration snapshots expose the same log entry fields for each retained iteration.
 
 ## Startup Configuration
 

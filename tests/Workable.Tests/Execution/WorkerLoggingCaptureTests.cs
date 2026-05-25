@@ -9,7 +9,7 @@ namespace Workable.Tests;
 public sealed class WorkerLoggingCaptureTests
 {
     [Fact]
-    public async Task CapturesExecutorAndScopedServiceLogsIntoEventsAndBoundedWorkerBuffer()
+    public async Task CapturesExecutorAndScopedServiceLogsIntoRetainedIterationBuffer()
     {
         var loggerFactory = new CapturingLoggerFactory(isEnabled: false);
         var definition = WorkDefinition.Create("logged-work", "Captures logs from executor dependencies.");
@@ -33,13 +33,17 @@ public sealed class WorkerLoggingCaptureTests
 
         Assert.True(completion.IsCompletedSuccessfully);
         Assert.All(logEvents, workEvent => Assert.Equal("worker.log", workEvent.EventType));
-        Assert.All(logEvents, AssertThinLogEvent);
+        Assert.All(logEvents, workEvent => AssertLogEvent(workEvent));
+        Assert.Contains(logEvents, workEvent => RequiredData(workEvent).GetProperty("log").GetProperty("message").GetString() == "dependency constructed");
+        Assert.Contains(logEvents, workEvent => RequiredData(workEvent).GetProperty("log").GetProperty("message").GetString() == "executor guarded debug");
+        Assert.Contains(logEvents, workEvent => RequiredData(workEvent).GetProperty("log").GetProperty("message").GetString() == "dependency executed");
 
         var worker = RequiredWorker(completion.Worker);
-        Assert.Equal(2, worker.Logs.Count);
-        Assert.DoesNotContain(worker.Logs, entry => entry.Message == "dependency constructed");
-        Assert.Contains(worker.Logs, entry => entry.Message == "executor guarded debug");
-        Assert.Contains(worker.Logs, entry => entry.Message == "dependency executed");
+        var iteration = RequiredLastIteration(worker);
+        Assert.Equal(2, iteration.Logs.Count);
+        Assert.DoesNotContain(iteration.Logs, entry => entry.Message == "dependency constructed");
+        Assert.Contains(iteration.Logs, entry => entry.Message == "executor guarded debug");
+        Assert.Contains(iteration.Logs, entry => entry.Message == "dependency executed");
         Assert.Contains(loggerFactory.Logs, entry => entry.Message == "executor guarded debug");
         Assert.Contains(loggerFactory.Logs, entry => entry.Message == "dependency executed");
     }
@@ -62,7 +66,7 @@ public sealed class WorkerLoggingCaptureTests
         var completion = await handle.WaitForCompletion();
 
         Assert.True(completion.IsCompletedSuccessfully);
-        Assert.Empty(RequiredWorker(completion.Worker).Logs);
+        Assert.Empty(RequiredLastIteration(RequiredWorker(completion.Worker)).Logs);
         await AssertNoEvent(subscription);
     }
 
@@ -84,29 +88,76 @@ public sealed class WorkerLoggingCaptureTests
         var completion = await handle.WaitForCompletion();
         var warning = await ReadNext(reader);
 
-        AssertThinLogEvent(warning);
+        AssertLogEvent(warning, expectedMessage: "visible warning", expectedLevel: "Warning");
         var worker = RequiredWorker(completion.Worker);
-        Assert.Single(worker.Logs);
-        Assert.Equal("visible warning", worker.Logs[0].Message);
+        var iteration = RequiredLastIteration(worker);
+        Assert.Single(iteration.Logs);
+        Assert.Equal("visible warning", iteration.Logs[0].Message);
+    }
+
+    [Fact]
+    public async Task MaximumBufferedEntriesAppliesPerRetainedIteration()
+    {
+        var definition = WorkDefinition.Create("retry-logged-work", "Applies log buffering per retry iteration.");
+        var services = new ServiceCollection();
+        services.AddSingleton<RetryAttemptCounter>();
+        services.AddWorkableSystem(builder => builder.AddWork<RetryLoggedExecutor>(
+            definition,
+            configuration =>
+            {
+                configuration.ConfigureLogging(level: LogLevel.Debug, maximumBufferedEntries: 2);
+                configuration.ClassifyExceptions(_ => WorkExceptionClassification.Transient);
+                configuration.UseTransientRetry(WorkTransientRetryConfiguration.Default with
+                {
+                    Count = 1,
+                    InitialDelay = TimeSpan.FromMilliseconds(1),
+                    Jitter = TimeSpan.Zero,
+                    MaximumDelay = TimeSpan.FromMilliseconds(1),
+                });
+            }));
+        var system = services.BuildServiceProvider().GetRequiredService<IWorkSystemRegistry>().Default;
+        await system.Start();
+
+        var handle = await system.Queue.Enqueue("retry-logged-work");
+        var completion = await handle.WaitForCompletion();
+        var worker = RequiredWorker(completion.Worker);
+
+        Assert.Equal(WorkCompletionStatus.Failed, completion.Status);
+        Assert.Equal(2, worker.Iterations.Count);
+        Assert.All(worker.Iterations, iteration => Assert.Equal(2, iteration.Logs.Count));
+        Assert.All(worker.Iterations, iteration => Assert.DoesNotContain(iteration.Logs, entry => entry.Message.EndsWith("A")));
+        Assert.All(worker.Iterations, iteration => Assert.Contains(iteration.Logs, entry => entry.Message.EndsWith("B")));
+        Assert.All(worker.Iterations, iteration => Assert.Contains(iteration.Logs, entry => entry.Message.EndsWith("C")));
     }
 
     private static JsonElement RequiredData(WorkEvent workEvent)
         => workEvent.Data ?? throw new InvalidOperationException($"Expected data for event '{workEvent.EventType}'.");
 
-    private static void AssertThinLogEvent(WorkEvent workEvent)
+    private static void AssertLogEvent(WorkEvent workEvent, string? expectedMessage = null, string? expectedLevel = null)
     {
         var data = RequiredData(workEvent);
-        Assert.Empty(workEvent.Messages);
+        var log = data.GetProperty("log");
         Assert.Equal("worker.log", workEvent.EventType);
         Assert.False(data.TryGetProperty("input", out _));
         Assert.False(data.TryGetProperty("output", out _));
         Assert.False(data.TryGetProperty("messages", out _));
-        Assert.False(data.TryGetProperty("log", out _));
         Assert.False(data.TryGetProperty("logs", out _));
+        if (expectedMessage is not null)
+        {
+            Assert.Equal(expectedMessage, log.GetProperty("message").GetString());
+        }
+
+        if (expectedLevel is not null)
+        {
+            Assert.Equal(expectedLevel, log.GetProperty("level").GetString());
+        }
     }
 
     private static WorkerSnapshot RequiredWorker(WorkerSnapshot? worker)
         => worker ?? throw new InvalidOperationException("Expected worker to exist.");
+
+    private static WorkerIterationSnapshot RequiredLastIteration(WorkerSnapshot worker)
+        => worker.LastIteration ?? throw new InvalidOperationException("Expected last iteration to exist.");
 
     private static async Task<WorkEvent> ReadNext(IAsyncEnumerator<WorkEvent> reader)
     {
@@ -158,6 +209,27 @@ public sealed class WorkerLoggingCaptureTests
             logger.LogInformation("hidden information");
             logger.LogWarning("visible warning");
             return Task.FromResult(WorkExecutionResult.Success());
+        }
+    }
+
+    private sealed class RetryAttemptCounter
+    {
+        private int attempts;
+
+        public int NextAttempt() => Interlocked.Increment(ref this.attempts);
+    }
+
+    private sealed class RetryLoggedExecutor(
+        ILogger<RetryLoggedExecutor> logger,
+        RetryAttemptCounter counter) : IWorkExecutor
+    {
+        public Task<WorkExecutionResult> Execute(IWorkExecutionContext context, WorkInput? input, CancellationToken cancellationToken)
+        {
+            var attempt = counter.NextAttempt();
+            logger.LogDebug("attempt {Attempt} A", attempt);
+            logger.LogDebug("attempt {Attempt} B", attempt);
+            logger.LogDebug("attempt {Attempt} C", attempt);
+            throw new InvalidOperationException($"transient attempt {attempt}");
         }
     }
 

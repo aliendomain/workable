@@ -137,7 +137,7 @@ type Loadable<T> = {
   loading: boolean;
   refreshing?: boolean;
 };
-type RealtimePayloadPanelState = {
+export type RealtimePayloadPanelState = {
   captureEnabled: boolean;
   connectionState: string;
   enabled: boolean;
@@ -501,7 +501,7 @@ export function OverviewView({
       )}
     </Button>
   );
-  const realtimePayloadWindow = (
+  const realtimePayloadWindow = isVisible ? (
     <RealtimePayloadWindow
       captureEnabled={payloadCaptureEnabled}
       connectionState={realtimeOverview.connectionState}
@@ -517,7 +517,7 @@ export function OverviewView({
       onOpenChange={setPayloadOpen}
       open={payloadOpen}
     />
-  );
+  ) : null;
   const isReady = !overview.loading;
   const systemComponent = getWorkComponentData<WorkOverviewSystemComponent>(
     overviewData,
@@ -3166,7 +3166,7 @@ function completionTone(status: WorkCompletionStatus) {
   }
 }
 
-function RealtimePayloadWindow({
+export function RealtimePayloadWindow({
   captureEnabled,
   connectionState,
   enabled,
@@ -4397,6 +4397,247 @@ export function useWorkableRealtimeEvents(
       void hubConnection.stop().catch(() => undefined);
     };
   }, [apiUrl, criteriaKey, enabled, hasConnection, hubUrl, systemName]);
+
+  return { ...state, clearMessages };
+}
+
+export function useWorkableRealtimeWorkerEvents(
+  connection: WorkableConnection | null,
+  workerId: string,
+  enabled: boolean,
+  maxMessages: number
+): RealtimeEventLoadable {
+  const [state, setState] = useState<RealtimeEventLoadable>({
+    clearMessages: () => undefined,
+    connectionState: enabled ? "connecting" : "disabled",
+    enabled,
+    hubUrl: connection ? createWorkableRealtimeUrl(connection) : null,
+    loading: false,
+    messages: [],
+  });
+  const hubConnectionRef = useRef<HubConnection | null>(null);
+  const hasConnection = connection !== null;
+  const apiUrl = connection?.apiUrl ?? "";
+  const hubUrl = connection ? createWorkableRealtimeUrl(connection) : null;
+  const systemName = connection?.systemName;
+  const workerIdRef = useRef(workerId);
+  const maxMessagesRef = useRef(maxMessages);
+  const messageIdRef = useRef(0);
+  const systemNameRef = useRef(systemName);
+
+  useEffect(() => {
+    workerIdRef.current = workerId;
+    maxMessagesRef.current = maxMessages;
+    systemNameRef.current = systemName;
+  }, [maxMessages, systemName, workerId]);
+
+  const clearMessages = useCallback(() => {
+    setState((current) =>
+      current.messages.length === 0 ? current : { ...current, messages: [] }
+    );
+  }, []);
+
+  useEffect(() => {
+    queueMicrotask(() => {
+      setState((current) =>
+        current.messages.length > maxMessages
+          ? { ...current, messages: current.messages.slice(0, maxMessages) }
+          : current
+      );
+    });
+  }, [maxMessages]);
+
+  useEffect(() => {
+    if (!hasConnection || !enabled || !hubUrl || !workerId.trim()) {
+      queueMicrotask(() =>
+        setState((current) =>
+          current.connectionState === "disabled" &&
+          current.enabled === enabled &&
+          current.hubUrl === hubUrl &&
+          !current.loading
+            ? current
+            : {
+                ...current,
+                connectionState: "disabled",
+                enabled,
+                hubUrl,
+                loading: false,
+              }
+        )
+      );
+      return;
+    }
+
+    let canceled = false;
+    let retryTimer: ReturnType<typeof setTimeout> | null = null;
+    queueMicrotask(() => {
+      if (!canceled) {
+        setState((current) => ({
+          ...current,
+          connectionState: "connecting",
+          enabled,
+          hubUrl,
+          loading: current.messages.length === 0,
+        }));
+      }
+    });
+    const hubConnection = new HubConnectionBuilder()
+      .withUrl(hubUrl, {
+        accessTokenFactory: () => getWorkableRealtimeAccessToken(apiUrl),
+        withCredentials: true,
+      })
+      .withAutomaticReconnect()
+      .configureLogging(LogLevel.None)
+      .build();
+
+    hubConnectionRef.current = hubConnection;
+    const subscribe = () =>
+      hubConnection.invoke(
+        "WatchWorker",
+        workerIdRef.current,
+        systemNameRef.current ?? null
+      );
+    const scheduleRestart = (error: unknown, delayMs = 1000) => {
+      if (canceled || retryTimer) {
+        return;
+      }
+
+      retryTimer = setTimeout(() => {
+        retryTimer = null;
+        if (!canceled && hubConnection.state === HubConnectionState.Disconnected) {
+          startConnection();
+        }
+      }, delayMs);
+      setState((current) => ({
+        ...current,
+        connectionState: "disconnected",
+        error: error && !isExpectedRealtimeDisconnect(error)
+          ? getRealtimeErrorMessage(error, "Realtime worker connection closed.")
+          : undefined,
+        loading: false,
+      }));
+    };
+    const startConnection = () => {
+      if (canceled || hubConnection.state !== HubConnectionState.Disconnected) {
+        return;
+      }
+
+      queueMicrotask(() => {
+        if (!canceled) {
+          setState((current) => ({
+            ...current,
+            connectionState: current.messages.length === 0 ? "connecting" : "reconnecting",
+            loading: current.messages.length === 0,
+          }));
+        }
+      });
+      void hubConnection
+        .start()
+        .then(() => subscribe())
+        .then(() => {
+          if (!canceled) {
+            setState((current) => ({
+              ...current,
+              connectionState: "connected",
+              error: undefined,
+              loading: false,
+            }));
+          }
+        })
+        .catch((error) => {
+          if (!canceled) {
+            scheduleRestart(error, isExpectedRealtimeDisconnect(error) ? 1000 : 3000);
+          }
+        });
+    };
+    hubConnection.on("workable.event", (workEvent: WorkableRealtimeEvent) => {
+      if (!canceled) {
+        const message = createRealtimeEventMessage(
+          [workEvent],
+          `worker-events:${++messageIdRef.current}`,
+          Date.now()
+        );
+        setState((current) => ({
+          ...current,
+          connectionState: "connected",
+          enabled,
+          hubUrl,
+          loading: false,
+          messages: [message, ...current.messages].slice(0, maxMessagesRef.current),
+        }));
+      }
+    });
+    hubConnection.on("workable.events", (batch: WorkableRealtimeEventBatch) => {
+      if (!canceled) {
+        const batchId = `worker-batch:${++messageIdRef.current}`;
+        const message = createRealtimeEventMessage(
+          batch.events,
+          batchId,
+          Date.now(),
+          batch.sentAt
+        );
+        setState((current) => ({
+          ...current,
+          connectionState: "connected",
+          enabled,
+          hubUrl,
+          loading: false,
+          messages: [message, ...current.messages].slice(0, maxMessagesRef.current),
+        }));
+      }
+    });
+    hubConnection.onreconnecting(() => {
+      if (!canceled) {
+        setState((current) => ({
+          ...current,
+          connectionState: "reconnecting",
+        }));
+      }
+    });
+    hubConnection.onreconnected(() => {
+      if (!canceled) {
+        setState((current) => ({
+          ...current,
+          connectionState: "connected",
+        }));
+      }
+      void hubConnection.invoke(
+        "WatchWorker",
+        workerIdRef.current,
+        systemNameRef.current ?? null
+      ).catch((error) => {
+        if (!canceled && !isExpectedRealtimeDisconnect(error)) {
+          setState((current) => ({
+            ...current,
+            connectionState: "error",
+            error: getRealtimeErrorMessage(error, "Realtime worker subscription failed."),
+            loading: false,
+          }));
+        }
+      });
+    });
+    hubConnection.onclose((error) => {
+      if (!canceled) {
+        scheduleRestart(error, isExpectedRealtimeDisconnect(error) ? 1000 : 3000);
+      }
+    });
+
+    startConnection();
+
+    return () => {
+      canceled = true;
+      if (retryTimer) {
+        clearTimeout(retryTimer);
+      }
+      if (hubConnection.state === HubConnectionState.Connected) {
+        void hubConnection
+          .invoke("UnwatchWorker", workerIdRef.current, systemNameRef.current ?? null)
+          .catch(() => undefined);
+      }
+      hubConnectionRef.current = null;
+      void hubConnection.stop().catch(() => undefined);
+    };
+  }, [apiUrl, enabled, hasConnection, hubUrl, systemName, workerId]);
 
   return { ...state, clearMessages };
 }

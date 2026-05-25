@@ -239,6 +239,10 @@ public sealed class WorkExceptionClassificationTests
         Assert.Equal(expectedClassification.ToString(), message.Metadata?["exceptionClassification"]);
         Assert.Equal(expectedTransient, message.Metadata?["isTransient"]);
         Assert.Equal(typeof(InvalidOperationException).FullName, message.Metadata?["exceptionType"]);
+        Assert.Equal("Boom.", message.Metadata?["exceptionMessage"]);
+        Assert.Contains(nameof(ThrowingWork), Assert.IsType<string>(message.Metadata?["exceptionStackTrace"]));
+        var innerExceptions = Assert.IsAssignableFrom<IReadOnlyList<IReadOnlyDictionary<string, object?>>>(message.Metadata?["innerExceptions"]);
+        Assert.Empty(innerExceptions);
     }
 
     private sealed class CapturingLoggerFactory : ILoggerFactory

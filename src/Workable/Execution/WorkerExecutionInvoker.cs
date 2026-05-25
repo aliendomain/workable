@@ -11,7 +11,7 @@ internal sealed class WorkerExecutionInvoker(
     Action<WorkerRecord, WorkIdentifier> identifierDiscovered,
     WorkInitializationExecutor initialization)
 {
-    public async Task<WorkExecutionResult> Execute(WorkerRecord worker, CancellationToken cancellationToken)
+    public async Task<WorkerExecutionInvocationResult> Execute(WorkerRecord worker, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
 
@@ -28,7 +28,7 @@ internal sealed class WorkerExecutionInvoker(
             var initializationResult = await initialization.Initialize(worker, CreateDurableContext, cancellationToken);
             if (initializationResult.HasErrors)
             {
-                return initializationResult;
+                return new WorkerExecutionInvocationResult(initializationResult, RequestedFailureIsTransient: false);
             }
 
             cancellationToken.ThrowIfCancellationRequested();
@@ -40,15 +40,17 @@ internal sealed class WorkerExecutionInvoker(
                 executor.GetType(),
                 nameof(IWorkExecutor.Execute),
                 worker.Input);
-            var result = await executor.Execute(context, worker.Input, cancellationToken);
+            var result = ApplyRequestedFailure(
+                await executor.Execute(context, worker.Input, cancellationToken),
+                context);
             executionScope?.SetResult(new
             {
-                result.HasErrors,
-                MessageCount = result.Messages.Count,
+                result.Result.HasErrors,
+                MessageCount = result.Result.Messages.Count,
             });
 
             if (worker.Configuration.Coordination.Durability.CompleteDurably &&
-                !result.HasErrors &&
+                !result.Result.HasErrors &&
                 worker.State == WorkerState.Running &&
                 !context.IsDurableCompletionRecorded)
             {
@@ -100,4 +102,26 @@ internal sealed class WorkerExecutionInvoker(
             (transaction, durableCompletionCancellation) =>
                 persistence.CompleteDurably(worker, transaction, durableCompletionCancellation));
     }
+
+    private static WorkerExecutionInvocationResult ApplyRequestedFailure(
+        WorkExecutionResult result,
+        WorkExecutionContext context)
+    {
+        var failure = context.RequestedFailure;
+        if (failure is null)
+        {
+            return new WorkerExecutionInvocationResult(result, RequestedFailureIsTransient: false);
+        }
+
+        var messages = result.Messages.Contains(failure)
+            ? result.Messages
+            : (IReadOnlyList<WorkMessage>)[failure, .. result.Messages];
+        return new WorkerExecutionInvocationResult(
+            WorkExecutionResult.Failure(messages, result.Output),
+            context.IsRequestedFailureTransient);
+    }
 }
+
+internal sealed record WorkerExecutionInvocationResult(
+    WorkExecutionResult Result,
+    bool RequestedFailureIsTransient);

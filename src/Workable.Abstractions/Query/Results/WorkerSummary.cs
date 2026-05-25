@@ -19,6 +19,8 @@ public sealed record WorkerSummary(
 {
     public WorkerVersion Version => new(this.Id, this.Revision);
 
+    public int? RetryAttempt { get; init; }
+
     public TimeSpan? QueueDuration { get; init; }
 
     public TimeSpan TotalExecutionDuration { get; init; }

@@ -209,6 +209,53 @@ public sealed class TransientRetryWorkerExecutionStrategyTests
     }
 
     [Fact]
+    public async Task TransientContextFailureIsRetriedAndCanSucceed()
+    {
+        var attempts = 0;
+        var classifierCalled = false;
+        var system = CreateSystem(
+            new CapturingLoggerFactory(),
+            (context, input, cancellationToken) =>
+            {
+                attempts++;
+                if (attempts == 1)
+                {
+                    context.Fail(
+                        "sample.transient_failure",
+                        "Retry this declarative failure.",
+                        "execution",
+                        transient: true);
+                    return Task.FromResult(WorkExecutionResult.Success());
+                }
+
+                return Task.FromResult(WorkExecutionResult.Success(WorkOutput.FromValue(new AttemptResult(attempts))));
+            },
+            configuration => configuration
+                .RetryTransientFailures(
+                    count: 2,
+                    initialDelay: TimeSpan.FromMilliseconds(1),
+                    jitter: TimeSpan.Zero)
+                .ClassifyExceptions(_ =>
+                {
+                    classifierCalled = true;
+                    return WorkExceptionClassification.Transient;
+                }));
+
+        await system.Start();
+
+        var completion = await (await system.Queue.Enqueue("retry-work")).WaitForCompletion();
+
+        Assert.Equal(2, attempts);
+        Assert.False(classifierCalled);
+        Assert.True(completion.IsCompletedSuccessfully);
+        Assert.Equal(2, completion.Output?.ToValue<AttemptResult>()?.Attempts);
+        Assert.Equal(
+            [WorkCompletionStatus.Failed, WorkCompletionStatus.Completed],
+            RequiredWorker(completion).Iterations.Select(iteration => iteration.Status));
+        Assert.Equal("sample.transient_failure", RequiredWorker(completion).Iterations[0].Messages[0].Code);
+    }
+
+    [Fact]
     public void RetryDelayUsesInitialDelayWhenBackoffIsNone()
     {
         var transientRetry = WorkTransientRetryConfiguration.Default with
@@ -263,6 +310,8 @@ public sealed class TransientRetryWorkerExecutionStrategyTests
         Assert.Equal(expectedClassification.ToString(), message.Metadata?["exceptionClassification"]);
         Assert.Equal(expectedClassification == WorkExceptionClassification.Transient, message.Metadata?["isTransient"]);
         Assert.Equal(expectedRetryAttempts, message.Metadata?["transientRetryAttempts"]);
+        Assert.NotNull(message.Metadata?["exceptionMessage"]);
+        Assert.NotNull(message.Metadata?["exceptionStackTrace"]);
     }
 
     private static WorkerSnapshot RequiredWorker(WorkCompletion completion)

@@ -62,8 +62,11 @@ import {
   OverviewView,
   JsonValue,
   type RealtimeEventMessage,
+  type RealtimePayloadMessage,
+  RealtimePayloadWindow,
   useWorkableRealtimeView,
   useWorkableRealtimeEvents,
+  useWorkableRealtimeWorkerEvents,
   type RealtimeViewLoadable,
 } from "@/components/workable/console/overview-screen";
 import {
@@ -229,6 +232,7 @@ type NavigationEntry = {
   iterationKeyTypeFilter: string;
   iterationStatusFilter: WorkCompletionStatus[];
   overviewScope: OverviewScope | null;
+  definitionName: string | null;
   workerCategoryFilter: string;
   workerDefinitionFilter: string;
   keyTypeFilter: string;
@@ -338,6 +342,7 @@ export function WorkableConsole() {
   const [selectedEventViewerKeys, setSelectedEventViewerKeys] = useState<WorkableRealtimeEventKeyCriteria[]>([]);
   const [refreshTokens, setRefreshTokens] = useState<Record<View, number>>(initialRefreshTokens);
   const [selectedDefinitionId, setSelectedDefinitionId] = useState<string | null>(null);
+  const [selectedDefinitionName, setSelectedDefinitionName] = useState<string | null>(null);
   const [selectedWorkerId, setSelectedWorkerId] = useState<string | null>(null);
   const [workerCategoryFilter, setWorkerCategoryFilter] = useState("");
   const [workerDefinitionFilter, setWorkerDefinitionFilter] = useState("");
@@ -354,6 +359,7 @@ export function WorkableConsole() {
     Record<string, OverviewScope | undefined>
   >({});
   const [navigationHistory, setNavigationHistory] = useState<NavigationEntry[]>([]);
+  const [forwardNavigation, setForwardNavigation] = useState<NavigationEntry[]>([]);
   const viewScrollPositions = useRef<Partial<Record<ServerView, number>>>({});
   const readyViews = useRef<Set<string>>(new Set());
   const restoredHostsRef = useRef<WorkableHostConnection[] | null>(null);
@@ -717,6 +723,45 @@ export function WorkableConsole() {
       selectedEventViewerEventTypes.length > 0,
     eventViewerMaxMessages
   );
+  const workerRealtimePayloadEvents = useWorkableRealtimeWorkerEvents(
+    hydratedConnection,
+    selectedWorkerId ?? "",
+    Boolean(hydratedConnection?.realtimeHubPath) &&
+      captureRealtimePayloads &&
+      view === "worker" &&
+      Boolean(selectedWorkerId),
+    realtimePayloadMaxMessages
+  );
+  const workerRealtimePayloadMessages = useMemo<RealtimePayloadMessage[]>(
+    () => createRealtimePayloadMessagesFromEventMessages(
+      workerRealtimePayloadEvents.messages,
+      selectedWorkerId
+    ),
+    [selectedWorkerId, workerRealtimePayloadEvents.messages]
+  );
+  const clearWorkerRealtimePayloadMessages = workerRealtimePayloadEvents.clearMessages;
+  const workerRealtimePayloadWindow = view === "worker"
+    ? (
+      <RealtimePayloadWindow
+        captureEnabled={realtimePayloadCaptureEnabled}
+        connectionState={workerRealtimePayloadEvents.connectionState}
+        enabled={workerRealtimePayloadEvents.enabled}
+        externalMessages={[]}
+        hubUrl={workerRealtimePayloadEvents.hubUrl ?? null}
+        maxMessages={realtimePayloadMaxMessages}
+        messages={workerRealtimePayloadMessages}
+        onCaptureEnabledChange={setRealtimePayloadCaptureEnabled}
+        onClearExternalMessages={() => undefined}
+        onClearMessages={clearWorkerRealtimePayloadMessages}
+        onMaxMessagesChange={setRealtimePayloadMaxMessages}
+        onOpenChange={setRealtimePayloadOpen}
+        open={realtimePayloadOpen}
+      />
+    )
+    : null;
+  const canUseRealtimePayloads = view === "worker" &&
+    Boolean(selectedWorkerId) &&
+    Boolean(hydratedConnection?.realtimeHubPath);
   const toggleEventViewerEventType = useCallback((eventType: string) => {
     setSelectedEventViewerEventTypes((current) =>
       current.includes(eventType)
@@ -989,6 +1034,7 @@ export function WorkableConsole() {
 
       if (resetNavigation) {
         setSelectedDefinitionId(null);
+        setSelectedDefinitionName(null);
         setSelectedWorkerId(null);
         setNavigationHistory([]);
         setView("overview");
@@ -1052,6 +1098,7 @@ export function WorkableConsole() {
         catalogScopeBySystemId[consoleState.activeSystemId] ?? null
       ),
       definitionId: selectedDefinitionId,
+      definitionName: selectedDefinitionName,
       iterationCategoryFilter,
       iterationDefinitionFilter,
       iterationKeyTypeFilter,
@@ -1077,6 +1124,7 @@ export function WorkableConsole() {
       keyTypeFilter,
       overviewScopeBySystemId,
       selectedDefinitionId,
+      selectedDefinitionName,
       selectedWorkerId,
       workerCategoryFilter,
       view,
@@ -1085,8 +1133,11 @@ export function WorkableConsole() {
     ]
   );
 
-  const pushCurrentNavigation = useCallback(() => {
+  const pushCurrentNavigation = useCallback((clearForward = true) => {
     const entry = currentNavigation();
+    if (clearForward) {
+      setForwardNavigation([]);
+    }
     setNavigationHistory((current) =>
       navigationEntriesEqual(current.at(-1), entry)
         ? current
@@ -1253,6 +1304,7 @@ export function WorkableConsole() {
       pushCurrentNavigation();
     }
     setSelectedDefinitionId(null);
+    setSelectedDefinitionName(null);
     setSelectedWorkerId(workerId);
     setVisibleView("worker");
     setPendingView(null);
@@ -1260,11 +1312,19 @@ export function WorkableConsole() {
     refreshView("worker");
   };
 
-  const openDefinition = (definitionId: string, systemId = activeSystem?.id ?? "") => {
+  const openDefinition = (
+    definitionId: string,
+    options?: {
+      definitionName?: string;
+      systemId?: string;
+    }
+  ) => {
+    const systemId = options?.systemId ?? activeSystem?.id ?? "";
     rememberCurrentViewScroll();
     pushCurrentNavigation();
     setSelectedWorkerId(null);
     setSelectedDefinitionId(definitionId);
+    setSelectedDefinitionName(options?.definitionName ?? null);
     const isSystemChange = systemId !== activeSystem?.id;
     setConsoleState((current) => ({
       ...current,
@@ -1292,6 +1352,7 @@ export function WorkableConsole() {
         systemId,
         view: nextView,
         definitionId: nextView === "definition" ? selectedDefinitionId : null,
+        definitionName: nextView === "definition" ? selectedDefinitionName : null,
         workerId: null,
         catalogScope: cloneOverviewScope(catalogScopeBySystemId[systemId] ?? null),
         iterationCategoryFilter,
@@ -1312,6 +1373,7 @@ export function WorkableConsole() {
       setSelectedWorkerId(null);
       if (nextView !== "definition") {
         setSelectedDefinitionId(null);
+        setSelectedDefinitionName(null);
       }
       setConsoleState((current) => ({
         ...current,
@@ -1473,6 +1535,7 @@ export function WorkableConsole() {
     setIterationStatusFilter(entry.iterationStatusFilter);
     setKeyTypeFilter(entry.keyTypeFilter);
     setSelectedDefinitionId(entry.definitionId);
+    setSelectedDefinitionName(entry.definitionName);
     setSelectedWorkerId(entry.workerId);
     setWorkerCategoryFilter(entry.workerCategoryFilter);
     setWorkerDefinitionFilter(entry.workerDefinitionFilter);
@@ -1480,12 +1543,12 @@ export function WorkableConsole() {
     setConsoleState((current) => ({
       ...current,
       activeSystemId: entry.systemId,
-      view: entry.view === "worker" ? current.view : entry.view,
+      view: entry.view,
     }));
     if (entry.view !== "worker") {
       setMountedViews((current) => new Set([...current, entry.view]));
-      setVisibleView(entry.view);
     }
+    setVisibleView(entry.view);
     setPendingView(null);
     setView(entry.view);
   }, []);
@@ -1496,9 +1559,79 @@ export function WorkableConsole() {
       return;
     }
 
+    const currentEntry = currentNavigation();
     restoreNavigation(previous);
+    if (previous.view === "workers" || previous.view === "iterations") {
+      refreshView(previous.view);
+    }
+    setForwardNavigation((current) =>
+      navigationEntriesEqual(current.at(-1), currentEntry)
+        ? current
+        : [...current, currentEntry].slice(-20)
+    );
     setNavigationHistory((current) => current.slice(0, -1));
-  }, [navigationHistory, restoreNavigation]);
+  }, [currentNavigation, navigationHistory, refreshView, restoreNavigation]);
+  const navigateForward = useCallback(() => {
+    const next = forwardNavigation.at(-1);
+    if (!next) {
+      return;
+    }
+
+    const currentEntry = currentNavigation();
+    restoreNavigation(next);
+    if (next.view === "workers" || next.view === "iterations") {
+      refreshView(next.view);
+    }
+    setNavigationHistory((current) =>
+      navigationEntriesEqual(current.at(-1), currentEntry)
+        ? current
+        : [...current, currentEntry].slice(-20)
+    );
+    setForwardNavigation((current) => current.slice(0, -1));
+  }, [currentNavigation, forwardNavigation, refreshView, restoreNavigation]);
+  const breadcrumbParent = useMemo(() => {
+    const previous = navigationHistory.at(-1);
+    if (view === "definition" && previous?.view === "worker" && previous.workerId) {
+      return {
+        label: previous.workerId,
+        onSelect: navigateBack,
+      };
+    }
+
+    if (view === "worker") {
+      const workerParent = [...navigationHistory]
+        .reverse()
+        .find((entry) =>
+          entry.view === "definitions" ||
+          entry.view === "definition" ||
+          entry.view === "workers" ||
+          entry.view === "iterations"
+        );
+
+      if (workerParent?.view === "definitions") {
+        return {
+          label: navTitle("definitions"),
+          onSelect: navigateBack,
+        };
+      }
+
+      if (workerParent?.view === "definition") {
+        return {
+          label: workerParent.definitionName ?? workerParent.definitionId ?? navTitle("definition"),
+          onSelect: navigateBack,
+        };
+      }
+
+      if (workerParent?.view === "workers" || workerParent?.view === "iterations") {
+        return {
+          label: navTitle(workerParent.view),
+          onSelect: navigateBack,
+        };
+      }
+    }
+
+    return null;
+  }, [navigateBack, navigationHistory, view]);
 
   const markViewReady = useCallback((readyView: ServerView) => {
     if (!activeSystemId) {
@@ -1829,17 +1962,23 @@ export function WorkableConsole() {
               )}
               {hydratedConnection && (
                 <>
+                  {workerRealtimePayloadWindow}
                   {activeHost && activeSystem && (
                     <ConsoleNavigationHeader
+                      breadcrumbParent={breadcrumbParent}
                       canGoBack={navigationHistory.length > 0}
+                      canGoForward={forwardNavigation.length > 0}
                       definitionId={selectedDefinitionId}
+                      definitionName={selectedDefinitionName}
                       host={activeHost}
                       onBack={navigateBack}
+                      onForward={navigateForward}
                       onOpenView={openView}
                       system={activeSystem}
                       systemNotifications={(
                         <div className="flex items-center gap-1">
                           <SystemToolsMenu
+                            canUseRealtimePayloads={canUseRealtimePayloads}
                             eventViewerOpen={eventViewerOpen}
                             onEventViewerOpenChange={setEventViewerOpen}
                             onRealtimePayloadOpenChange={setRealtimePayloadOpen}
@@ -2000,8 +2139,11 @@ export function WorkableConsole() {
                             openCatalogScope(activeSystem.id, scope);
                           }
                         }}
-                        onOpenDefinition={(definitionId) =>
-                          openDefinition(definitionId, activeSystem?.id ?? "")
+                        onOpenDefinition={(definitionId, definitionName) =>
+                          openDefinition(definitionId, {
+                            definitionName,
+                            systemId: activeSystem?.id ?? "",
+                          })
                         }
                         onOpenWorker={openWorker}
                         onReady={markDefinitionsReady}
@@ -2014,6 +2156,7 @@ export function WorkableConsole() {
                       <DefinitionView
                         connection={hydratedConnection}
                         definitionId={selectedDefinitionId}
+                        onDefinitionResolved={setSelectedDefinitionName}
                         onOpenWorker={openWorker}
                         onReady={markDefinitionReady}
                         refreshToken={refreshTokens.definition}
@@ -2111,11 +2254,11 @@ export function WorkableConsole() {
                 </>
               )}
               {hydratedConnection && view === "worker" && selectedWorkerId && (
-                <div className={viewContentOffsetClass}>
+                <div className={`${viewContentOffsetClass} flex h-[calc(100dvh-6.75rem)] min-h-0 flex-col overflow-hidden md:h-[calc(100dvh-8.25rem)]`}>
                   <WorkerConsoleView
-                    backLabel={`Back to ${navTitle(getWorkerParentView(navigationHistory))}`}
                     connection={hydratedConnection}
-                    onBack={navigationHistory.length > 0 ? navigateBack : () => openView(getWorkerParentView(navigationHistory))}
+                    onNavigateBack={navigateBack}
+                    onOpenWorker={openWorker}
                     refreshToken={refreshTokens.worker}
                     workerId={selectedWorkerId}
                   />
@@ -2224,11 +2367,13 @@ type DiagnosticsAlertSource = DiagnosticsAlertSnapshot & {
 };
 
 function SystemToolsMenu({
+  canUseRealtimePayloads,
   eventViewerOpen,
   onEventViewerOpenChange,
   onRealtimePayloadOpenChange,
   realtimePayloadOpen,
 }: {
+  canUseRealtimePayloads: boolean;
   eventViewerOpen: boolean;
   onEventViewerOpenChange: (open: boolean) => void;
   onRealtimePayloadOpenChange: (open: boolean) => void;
@@ -2268,18 +2413,28 @@ function SystemToolsMenu({
           <span className="flex-1">Event viewer</span>
           <span className="text-muted-foreground text-xs">{eventViewerOpen ? "Open" : ""}</span>
         </button>
-        <button
-          className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm hover:bg-accent hover:text-accent-foreground"
-          onClick={() => {
-            onRealtimePayloadOpenChange(!realtimePayloadOpen);
-            setOpen(false);
-          }}
-          type="button"
-        >
-          <Rows4 className="size-4" />
-          <span className="flex-1">Realtime payloads</span>
-          <span className="text-muted-foreground text-xs">{realtimePayloadOpen ? "Open" : ""}</span>
-        </button>
+        <Tooltip delayDuration={250}>
+          <TooltipTrigger asChild>
+            <button
+              className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm hover:bg-accent hover:text-accent-foreground disabled:pointer-events-none disabled:opacity-50"
+              disabled={!canUseRealtimePayloads}
+              onClick={() => {
+                onRealtimePayloadOpenChange(!realtimePayloadOpen);
+                setOpen(false);
+              }}
+              type="button"
+            >
+              <Rows4 className="size-4" />
+              <span className="flex-1">Realtime payloads</span>
+              <span className="text-muted-foreground text-xs">{realtimePayloadOpen ? "Open" : ""}</span>
+            </button>
+          </TooltipTrigger>
+          {!canUseRealtimePayloads ? (
+            <TooltipContent side="left" sideOffset={6}>
+              Realtime payloads are only available on the worker detail view when realtime is configured.
+            </TooltipContent>
+          ) : null}
+        </Tooltip>
       </PopoverContent>
     </Popover>
   );
@@ -3042,7 +3197,7 @@ function EventViewerWindow({
                               {workEvent.workerId?.value ?? "-"}
                             </span>
                             <span className="truncate font-mono text-muted-foreground">
-                              {workEvent.definitionId?.value ?? "-"}
+                              {workEvent.workDefinitionId?.value ?? "-"}
                             </span>
                           </button>
                         ))}
@@ -3146,7 +3301,7 @@ function formatEventBatchTypeSummary(eventTypes: string[]) {
 
 function formatEventBatchDefinitionSummary(events: WorkableRealtimeEvent[]) {
   const definitionIds = [...new Set(events
-    .map((workEvent) => workEvent.definitionId?.value)
+    .map((workEvent) => workEvent.workDefinitionId?.value)
     .filter((definitionId): definitionId is string => Boolean(definitionId)))];
 
   if (definitionIds.length === 0) {
@@ -3156,6 +3311,22 @@ function formatEventBatchDefinitionSummary(events: WorkableRealtimeEvent[]) {
   return definitionIds.length === 1
     ? definitionIds[0]
     : `${definitionIds.length} definitions`;
+}
+
+function createRealtimePayloadMessagesFromEventMessages(
+  messages: RealtimeEventMessage[],
+  workerId: string | null
+): RealtimePayloadMessage[] {
+  const subscription = workerId ? `worker:${workerId}` : "worker";
+  return messages.map((message) => ({
+    bytes: message.bytes,
+    components: [],
+    id: `worker-payload:${message.id}`,
+    receivedAt: message.receivedAt,
+    subscription,
+    value: message.value,
+    viewName: "worker-events",
+  }));
 }
 
 function getCenteredEventViewerPosition(size: "compact" | "large") {
@@ -5085,16 +5256,12 @@ function getDocumentScrollHeight() {
   );
 }
 
-function getWorkerParentView(history: NavigationEntry[]): ServerView {
-  const previous = history.at(-1);
-  return previous && isServerView(previous.view) ? previous.view : "workers";
-}
-
 function navigationEntriesEqual(left: NavigationEntry | undefined, right: NavigationEntry) {
   return (
     left?.systemId === right.systemId &&
     overviewScopesEqual(left.catalogScope, right.catalogScope) &&
     left.definitionId === right.definitionId &&
+    left.definitionName === right.definitionName &&
     left.iterationCategoryFilter === right.iterationCategoryFilter &&
     left.iterationDefinitionFilter === right.iterationDefinitionFilter &&
     left.iterationKeyTypeFilter === right.iterationKeyTypeFilter &&

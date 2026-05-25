@@ -14,8 +14,8 @@ const feedbackToneStyles = {
     variant: "destructive" as const,
   },
   info: {
-    button: "text-sky-300/70 hover:bg-sky-500/10 hover:text-sky-200",
-    className: "border-sky-500/30 bg-sky-500/10 pr-10 text-sky-100",
+    button: "text-slate-300/80 hover:bg-slate-700/40 hover:text-white",
+    className: "border-slate-600/80 bg-slate-950 pr-10 text-slate-50 shadow-lg",
     icon: CircleDot,
     variant: "default" as const,
   },

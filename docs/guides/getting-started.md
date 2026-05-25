@@ -328,5 +328,6 @@ This keeps feature libraries independent of the host runtime while still allowin
 
 ## Good Next Reads
 
+- Read [Implementing Work](implementing-work.md) to understand what executor code can do through `IWorkExecutionContext`, and how pause, cancel, interruption, failure, and exceptions behave at runtime.
 - Read [Registration](registration.md) to go deeper on authored work, definition sources, startup work, and named systems.
 - Read [Queueing](queueing.md) to go deeper on inputs, queue options, request context, and waiting for completion.

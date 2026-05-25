@@ -7,7 +7,7 @@ namespace Workable.Tests;
 public sealed class WorkerActionHistoryTests
 {
     [Fact]
-    public async Task DirectDotNetWorkerActionsRecordDurableHistoryAndActionEventOrigin()
+    public async Task DirectDotNetWorkerActionsRecordDurableHistory()
     {
         var definition = WorkDefinition.Create(
             "history.action",
@@ -36,7 +36,7 @@ public sealed class WorkerActionHistoryTests
         Assert.Equal(WorkActionStatus.Accepted, history.Status);
         Assert.Equal(WorkInvocationChannel.DotNet, history.Origin.Channel);
         Assert.Equal("Apply worker action 'Cancel' through .NET.", history.Origin.Description);
-        Assert.Equal(history.Origin, actionEvent.Origin);
+        Assert.Equal(worker.DefinitionName, actionEvent.WorkDefinitionName);
     }
 
     [Fact]

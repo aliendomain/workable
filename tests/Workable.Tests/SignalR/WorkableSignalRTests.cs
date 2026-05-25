@@ -267,7 +267,7 @@ public sealed class WorkableSignalRTests
     {
         using var host = await CreateHost(addSignalR: true, configureSignalR: options =>
         {
-            options.EventBatchWindow = TimeSpan.FromMilliseconds(100);
+            options.BatchTimeWindow = TimeSpan.FromMilliseconds(100);
             options.EventMaxBatchSize = 10;
         });
         var system = host.Services.GetRequiredService<IWorkSystemRegistry>().Default;
