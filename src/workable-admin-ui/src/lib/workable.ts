@@ -841,6 +841,7 @@ const realtimeAccessTokenCache = new Map<string, {
 const realtimeAccessTokenTtlMs = 55 * 60 * 1000;
 const realtimeMissingAccessTokenTtlMs = 5 * 60 * 1000;
 let loginRedirectInFlight = false;
+const ADMIN_UI_AUTH_REQUIRED_ERROR = "Authentication is required for the Workable admin UI.";
 
 export function formatDateTime(value?: string | null) {
   if (!value) {
@@ -938,10 +939,10 @@ async function fetchWorkable<T>(
     : responseText;
 
   if (!response.ok) {
-    if (response.status === 401) {
-      redirectToLogin();
-    }
     const message = getWorkableErrorMessage(response.status, body);
+    if (shouldRedirectToLogin(response.status, body)) {
+      redirectToLogin(connection.apiUrl, "unauthorized");
+    }
     throw new WorkableApiError(message, response.status, body);
   }
 
@@ -993,11 +994,11 @@ export async function getWorkableRealtimeAccessToken(apiUrl: string) {
       credentials: "same-origin",
     }
   );
-  if (response.status === 401) {
-    redirectToLogin();
+  const body = await response.json().catch(() => ({}));
+  if (shouldRedirectToLogin(response.status, body)) {
+    redirectToLogin(apiUrl, "unauthorized");
   }
 
-  const body = await response.json().catch(() => ({}));
   if (!response.ok) {
     const message = typeof body?.error === "string" && body.error.trim()
       ? body.error
@@ -1021,19 +1022,28 @@ export async function getWorkableRealtimeAccessToken(apiUrl: string) {
   return accessToken;
 }
 
-function redirectToLogin() {
+function redirectToLogin(error?: string, reason?: "unauthorized") {
   if (typeof window === "undefined" || loginRedirectInFlight) {
     return;
   }
 
   const nextPath = `${window.location.pathname}${window.location.search}`;
-  const target = `/login?next=${encodeURIComponent(nextPath)}`;
   if (window.location.pathname === "/login") {
     return;
   }
 
+  const params = new URLSearchParams({
+    next: nextPath,
+  });
+  if (error?.trim()) {
+    params.set("error", error.trim());
+  }
+  if (reason) {
+    params.set("reason", reason);
+  }
+
   loginRedirectInFlight = true;
-  window.location.replace(target);
+  window.location.replace(`/login?${params.toString()}`);
 }
 
 function createDirectoryUrl(url: URL) {
@@ -1102,6 +1112,10 @@ function getWorkableErrorMessage(status: number, body: unknown) {
   }
 
   return `Workable request failed with ${status}.`;
+}
+
+function shouldRedirectToLogin(status: number, body: unknown) {
+  return status === 401 && getWorkableErrorMessage(status, body) === ADMIN_UI_AUTH_REQUIRED_ERROR;
 }
 
 function createScopedWorkablePath(connection: WorkableConnection, path: string) {

@@ -25,12 +25,14 @@ import type { AdminAuthProvider } from "@/lib/admin-security";
 type LoginFormProps = {
   authProvider: AdminAuthProvider;
   initialError: string | null;
+  initialReason: "unauthorized" | null;
   nextPath: string;
 };
 
 export function LoginForm({
   authProvider,
   initialError,
+  initialReason,
   nextPath,
 }: LoginFormProps) {
   const router = useRouter();
@@ -38,6 +40,7 @@ export function LoginForm({
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(initialError);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const errorTitle = getErrorTitle(error, initialReason);
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -69,23 +72,24 @@ export function LoginForm({
 
   return (
     <AuthShell>
-        <div className="mb-6 flex justify-center">
-          <WorkableLogo priority />
-        </div>
-
         <Card className="border-border/70 bg-card/95 shadow-2xl shadow-black/20 backdrop-blur">
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2 text-xl">
-              <LockKeyhole className="size-5" />
-              Sign in
-            </CardTitle>
+          <CardHeader className="space-y-4">
+            <div className="flex justify-center">
+              <WorkableLogo className="h-10 w-auto object-contain" priority />
+            </div>
+          {authProvider !== "entra" && (
+              <CardTitle className="flex items-center gap-2 text-xl">
+                <LockKeyhole className="size-5" />
+                Sign in
+              </CardTitle>
+          )}
           </CardHeader>
           <CardContent>
             {authProvider === "entra" ? (
               <div className="space-y-4">
                 {error && (
                   <Alert variant="destructive">
-                    <AlertTitle>Sign in failed</AlertTitle>
+                    <AlertTitle>{errorTitle}</AlertTitle>
                     <AlertDescription>{error}</AlertDescription>
                   </Alert>
                 )}
@@ -125,7 +129,7 @@ export function LoginForm({
 
                 {error && (
                   <Alert variant="destructive">
-                    <AlertTitle>Sign in failed</AlertTitle>
+                    <AlertTitle>{errorTitle}</AlertTitle>
                     <AlertDescription>{error}</AlertDescription>
                   </Alert>
                 )}
@@ -150,4 +154,21 @@ async function getErrorMessage(response: Response) {
   } catch {
     return `Sign in failed with ${response.status}.`;
   }
+}
+
+function getErrorTitle(error: string | null, reason: "unauthorized" | null) {
+  if (reason === "unauthorized") {
+    return "Unauthorized";
+  }
+
+  const normalized = error?.toLowerCase() ?? "";
+  if (normalized.includes("unauthorized")) {
+    return "Unauthorized";
+  }
+
+  if (normalized.includes("sign in again")) {
+    return "Session expired";
+  }
+
+  return "Sign in failed";
 }

@@ -139,14 +139,9 @@ import {
 } from "@/lib/workable";
 
 const STORAGE_KEY = "workable-console.state.v1";
-const LEGACY_CONNECTION_STORAGE_KEY = "workable-console.connection";
 
 const throughputSeriesIds = ["started", "completed", "failed", "canceled"] as const;
 type ThroughputSeriesId = (typeof throughputSeriesIds)[number];
-
-type LegacyWorkableServerConnection = WorkableSystemConnection & {
-  apiUrl?: string;
-};
 
 type ConsoleStorage = {
   activeSystemId: string;
@@ -4463,11 +4458,7 @@ function loadConsoleStorage(): ConsoleStorage {
   if (stored) {
     try {
       const parsed = JSON.parse(stored) as Partial<ConsoleStorage> & {
-        activeServerId?: string;
-        expandedServerIds?: string[];
-        overviewCollapsedPanels?: unknown;
         overviewPanelShapes?: unknown;
-        servers?: LegacyWorkableServerConnection[];
       };
 
       if (Array.isArray(parsed.hosts)) {
@@ -4482,10 +4473,7 @@ function loadConsoleStorage(): ConsoleStorage {
               parsed.overviewHiddenPanels,
               parsed.overviewThroughputHidden
             ),
-            overviewPanelShapes: normalizeOverviewPanelShapes(
-              parsed.overviewPanelShapes,
-              parsed.overviewCollapsedPanels
-            ),
+            overviewPanelShapes: normalizeOverviewPanelShapes(parsed.overviewPanelShapes),
             overviewHiddenThroughputSeries: normalizeThroughputSeriesIds(
               parsed.overviewHiddenThroughputSeries
             ),
@@ -4512,34 +4500,11 @@ function loadConsoleStorage(): ConsoleStorage {
             parsed.overviewHiddenPanels,
             parsed.overviewThroughputHidden
           ),
-          overviewPanelShapes: normalizeOverviewPanelShapes(
-            parsed.overviewPanelShapes,
-            parsed.overviewCollapsedPanels
-          ),
+          overviewPanelShapes: normalizeOverviewPanelShapes(parsed.overviewPanelShapes),
           overviewHiddenThroughputSeries: normalizeThroughputSeriesIds(
             parsed.overviewHiddenThroughputSeries
           ),
           overviewThroughputHidden: parsed.overviewThroughputHidden ?? false,
-          view: isServerView(parsed.view) ? parsed.view : "overview",
-        };
-      }
-
-      if (Array.isArray(parsed.servers) && parsed.servers.length > 0) {
-        const hosts = parsed.servers.map((server) => migrateFlatServer(server));
-        const activeSystemId =
-          parsed.activeServerId && hosts.some((host) => host.systems[0]?.id === parsed.activeServerId)
-            ? parsed.activeServerId
-            : getFirstAvailableSystemId(hosts);
-
-        return {
-          activeSystemId,
-          expandedHostIds: hosts.map((host) => host.id),
-          expandedSystemIds: parsed.expandedServerIds ?? (activeSystemId ? [activeSystemId] : []),
-          hosts,
-          overviewHiddenPanels: [],
-          overviewPanelShapes: createDefaultOverviewPanelShapes(),
-          overviewHiddenThroughputSeries: [],
-          overviewThroughputHidden: false,
           view: isServerView(parsed.view) ? parsed.view : "overview",
         };
       }
@@ -4548,43 +4513,15 @@ function loadConsoleStorage(): ConsoleStorage {
     }
   }
 
-  const legacy = window.localStorage.getItem(LEGACY_CONNECTION_STORAGE_KEY);
-  if (!legacy) {
-    return fallback;
-  }
-
-  try {
-    const connection = JSON.parse(legacy) as WorkableConnection;
-    const migratedHost = createDefaultHost();
-    migratedHost.apiUrl = connection.apiUrl || DEFAULT_WORKABLE_API_URL;
-    migratedHost.systems[0].systemName = connection.systemName;
-
-    return {
-      activeSystemId: migratedHost.systems[0].id,
-      expandedHostIds: [migratedHost.id],
-      expandedSystemIds: [migratedHost.systems[0].id],
-      hosts: [migratedHost],
-      overviewHiddenPanels: [],
-      overviewPanelShapes: createDefaultOverviewPanelShapes(),
-      overviewHiddenThroughputSeries: [],
-      overviewThroughputHidden: false,
-      view: "overview",
-    };
-  } catch {
-    window.localStorage.removeItem(LEGACY_CONNECTION_STORAGE_KEY);
-    return fallback;
-  }
+  return fallback;
 }
 
 function createDefaultConsoleStorage(): ConsoleStorage {
-  const defaultHost = createDefaultHost();
-  const defaultSystem = defaultHost.systems[0];
-
   return {
-    activeSystemId: defaultSystem.id,
-    expandedHostIds: [defaultHost.id],
-    expandedSystemIds: [defaultSystem.id],
-    hosts: [defaultHost],
+    activeSystemId: "",
+    expandedHostIds: [],
+    expandedSystemIds: [],
+    hosts: [],
     overviewHiddenPanels: [],
     overviewPanelShapes: createDefaultOverviewPanelShapes(),
     overviewHiddenThroughputSeries: [],
@@ -4603,8 +4540,7 @@ function createDefaultOverviewPanelShapes(): OverviewPanelShapeMap {
 }
 
 function normalizeOverviewPanelShapes(
-  value: unknown,
-  legacyCollapsedPanels?: unknown
+  value: unknown
 ): OverviewPanelShapeMap {
   const shapes = createDefaultOverviewPanelShapes();
 
@@ -4612,12 +4548,6 @@ function normalizeOverviewPanelShapes(
     const requested = value as Partial<Record<OverviewPanelId, unknown>>;
     for (const panelId of overviewPanelIds) {
       shapes[panelId] = normalizeOverviewPanelShape(panelId, requested[panelId]);
-    }
-  }
-
-  for (const panelId of normalizeOverviewPanelIds(legacyCollapsedPanels)) {
-    if (overviewPanelShapeCapabilities[panelId].supportedShapes.includes("compact")) {
-      shapes[panelId] = "compact";
     }
   }
 
@@ -4727,23 +4657,6 @@ function normalizeStoredSystem(
     realtimeSupported,
     realtimeTransport,
     state: system.state ?? null,
-  };
-}
-
-function migrateFlatServer(server: LegacyWorkableServerConnection): WorkableHostConnection {
-  const hostId = `host-${server.id || createServerId()}`;
-
-  return {
-    id: hostId,
-    name: server.name || "Workable host",
-    apiUrl: server.apiUrl || DEFAULT_WORKABLE_API_URL,
-    systems: [
-      normalizeStoredSystem(hostId, {
-        ...server,
-        id: server.id || createServerId(),
-        hostId,
-      }),
-    ],
   };
 }
 

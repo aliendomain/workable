@@ -28,7 +28,7 @@ internal sealed class WorkerRecord(
     private readonly List<WorkerIterationSnapshot> retainedIterations = [];
     private readonly List<WorkerActionHistoryEntry> actionHistory = [];
     private readonly HashSet<WorkIdentifier> identifiers = input?.Identifiers?.ToHashSet() ?? [];
-    private readonly HashSet<WorkInitializationId> completedInitializers = [];
+    private readonly HashSet<WorkInitializationId> oncePerWorkerInitializersRun = [];
     private WorkProfileSnapshot? profile;
     private WorkProfileSnapshot? pendingIterationProfile;
     private CurrentWorkerIteration? currentIteration;
@@ -168,19 +168,19 @@ internal sealed class WorkerRecord(
         return true;
     }
 
-    public bool IsInitializationComplete(WorkInitializationId initializationId)
+    public bool HasRunOncePerWorkerInitializer(WorkInitializationId initializationId)
     {
         lock (this.sync)
         {
-            return this.completedInitializers.Contains(initializationId);
+            return this.oncePerWorkerInitializersRun.Contains(initializationId);
         }
     }
 
-    public void MarkInitializationComplete(WorkInitializationId initializationId)
+    public void MarkOncePerWorkerInitializerRun(WorkInitializationId initializationId)
     {
         lock (this.sync)
         {
-            if (this.completedInitializers.Add(initializationId))
+            if (this.oncePerWorkerInitializersRun.Add(initializationId))
             {
                 this.MarkUpdated();
             }
