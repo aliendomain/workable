@@ -25,9 +25,7 @@ internal sealed class WorkerRecord(
     private TaskCompletionSource<WorkerSnapshot> started = CreateSnapshotSource();
     private TaskCompletionSource<WorkCompletion> completion = CreateCompletionSource();
     private TaskCompletionSource recurrenceWaitSignal = CreateSignalSource();
-    private readonly List<WorkerIterationSnapshot> successfulIterations = [];
-    private readonly List<WorkerIterationSnapshot> failedIterations = [];
-    private readonly List<WorkerIterationSnapshot> interruptedIterations = [];
+    private readonly List<WorkerIterationSnapshot> retainedIterations = [];
     private readonly List<WorkerActionHistoryEntry> actionHistory = [];
     private readonly HashSet<WorkIdentifier> identifiers = input?.Identifiers?.ToHashSet() ?? [];
     private readonly HashSet<WorkInitializationId> completedInitializers = [];
@@ -917,9 +915,7 @@ internal sealed class WorkerRecord(
 
     private WorkerSnapshot ToSnapshotLocked()
     {
-        var iterations = this.successfulIterations
-            .Concat(this.failedIterations)
-            .Concat(this.interruptedIterations)
+        var iterations = this.retainedIterations
             .OrderBy(iteration => iteration.Sequence)
             .ToArray();
 
@@ -1068,22 +1064,14 @@ internal sealed class WorkerRecord(
         this.pendingIterationProfile = null;
         this.currentIteration = null;
         this.lastIterationSequence = iteration.Sequence;
-        var retained = status switch
-        {
-            WorkCompletionStatus.Completed => this.successfulIterations,
-            WorkCompletionStatus.Failed => this.failedIterations,
-            _ => this.interruptedIterations,
-        };
-        retained.Add(iteration);
+        this.retainedIterations.Add(iteration);
 
-        var maximum = status == WorkCompletionStatus.Completed
-            ? this.Configuration.Recurrence.RetainedSuccessfulIterations
-            : this.Configuration.Recurrence.RetainedFailedIterations;
+        var maximum = this.Configuration.Recurrence.RetainedIterations;
         var forgottenIterations = new List<WorkerIterationReference>();
-        while (retained.Count > maximum)
+        while (this.retainedIterations.Count > maximum)
         {
-            var forgotten = retained[0];
-            retained.RemoveAt(0);
+            var forgotten = this.retainedIterations[0];
+            this.retainedIterations.RemoveAt(0);
             forgottenIterations.Add(new WorkerIterationReference(this.Id, forgotten.Sequence));
         }
 
@@ -1516,9 +1504,7 @@ internal sealed class WorkerRecord(
     }
 
     private WorkerIterationSnapshot? GetLatestIterationLocked()
-        => this.successfulIterations
-            .Concat(this.failedIterations)
-            .Concat(this.interruptedIterations)
+        => this.retainedIterations
             .OrderByDescending(iteration => iteration.Sequence)
             .FirstOrDefault();
 
@@ -1529,9 +1515,7 @@ internal sealed class WorkerRecord(
             return this.CreateCurrentIterationSnapshotLocked(DateTimeOffset.UtcNow);
         }
 
-        return this.successfulIterations
-            .Concat(this.failedIterations)
-            .Concat(this.interruptedIterations)
+        return this.retainedIterations
             .FirstOrDefault(iteration => iteration.Sequence == sequence);
     }
 

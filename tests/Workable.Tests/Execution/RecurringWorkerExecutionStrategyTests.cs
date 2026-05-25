@@ -449,7 +449,7 @@ public sealed class RecurringWorkerExecutionStrategyTests
     }
 
     [Fact]
-    public async Task IterationHistoryRetainsConfiguredSuccessfulAndFailedCounts()
+    public async Task IterationHistoryRetainsConfiguredIterationCountAcrossStatuses()
     {
         var attempts = 0;
         var system = CreateSystem(
@@ -471,8 +471,7 @@ public sealed class RecurringWorkerExecutionStrategyTests
             {
                 Interval = TimeSpan.FromMilliseconds(1),
                 CircuitBreakerFailureThreshold = 10,
-                RetainedSuccessfulIterations = 2,
-                RetainedFailedIterations = 1,
+                RetainedIterations = 4,
             });
 
         await system.Start();
@@ -487,9 +486,9 @@ public sealed class RecurringWorkerExecutionStrategyTests
         Assert.Equal(WorkCompletionStatus.Canceled, completion.Status);
         Assert.Equal(4, iterations.Count);
         Assert.Equal(
-            [WorkCompletionStatus.Completed, WorkCompletionStatus.Completed, WorkCompletionStatus.Failed, WorkCompletionStatus.Canceled],
+            [WorkCompletionStatus.Failed, WorkCompletionStatus.Completed, WorkCompletionStatus.Failed, WorkCompletionStatus.Canceled],
             iterations.Select(iteration => iteration.Status));
-        Assert.Equal([2, 4, 5, null], iterations.Select(iteration => iteration.Output?.ToValue<int>()));
+        Assert.Equal([3, 4, 5, null], iterations.Select(iteration => iteration.Output?.ToValue<int>()));
     }
 
     [Fact]

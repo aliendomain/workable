@@ -5391,8 +5391,7 @@ const defaultWorkConfiguration: WorkConfiguration = {
     interval: "00:00:00",
     continueAfterFailure: true,
     circuitBreakerFailureThreshold: 3,
-    maximumSuccessfulIterations: 25,
-    maximumFailedIterations: 5,
+    retainedIterations: 25,
     raiseCircuitBreakerOpenedEvent: true,
   },
   transientRetry: {

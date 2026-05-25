@@ -337,8 +337,7 @@ export type WorkConfiguration = {
     interval: string;
     continueAfterFailure: boolean;
     circuitBreakerFailureThreshold: number;
-    maximumSuccessfulIterations: number;
-    maximumFailedIterations: number;
+    retainedIterations: number;
     raiseCircuitBreakerOpenedEvent: boolean;
   };
   transientRetry: {

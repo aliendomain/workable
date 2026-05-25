@@ -20,8 +20,7 @@ That includes failure paths. A failed iteration does not necessarily complete th
 | `Interval` | `TimeSpan.Zero` | Wait time between completed iterations. Must be greater than zero when recurrence is enabled. |
 | `ContinueAfterFailure` | `true` | Continues the recurring loop after a failed execution while the circuit remains closed. |
 | `CircuitBreakerFailureThreshold` | `3` | Maximum consecutive failed iterations before recurrence opens the circuit and stops the recurring loop. |
-| `RetainedSuccessfulIterations` | `25` | Number of successful iteration records retained on the worker snapshot. |
-| `RetainedFailedIterations` | `5` | Number of failed or interrupted iteration records retained on the worker snapshot. |
+| `RetainedIterations` | `25` | Number of iteration records retained on the worker snapshot, regardless of status. |
 | `RaiseCircuitBreakerOpenedEvent` | `true` | Publishes an event when recurrence stops because the circuit breaker opens. |
 
 ## Attribute Configuration
@@ -33,8 +32,7 @@ That includes failure paths. A failed iteration does not necessarily complete th
     intervalMilliseconds: 300_000,
     continueAfterFailure: true,
     circuitBreakerFailureThreshold: 3,
-    retainedSuccessfulIterations: 25,
-    retainedFailedIterations: 5,
+    retainedIterations: 25,
     raiseCircuitBreakerOpenedEvent: true)]
 public sealed class RefreshCacheWork : IWorkExecutor
 {
@@ -65,8 +63,7 @@ services.AddWorkableSystem(builder =>
                 Interval = TimeSpan.FromMinutes(5),
                 ContinueAfterFailure = true,
                 CircuitBreakerFailureThreshold = 3,
-                RetainedSuccessfulIterations = 25,
-                RetainedFailedIterations = 5,
+                RetainedIterations = 25,
                 RaiseCircuitBreakerOpenedEvent = true,
             }));
 });

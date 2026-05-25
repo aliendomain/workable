@@ -53,6 +53,7 @@ Recommended entry points:
 
 - [Getting Started](https://github.com/aliendomain/workable/blob/main/docs/guides/getting-started.md) if you are evaluating or integrating Workable.
 - [Registration](https://github.com/aliendomain/workable/blob/main/docs/guides/registration.md) if you are authoring work in feature assemblies.
+- [Implementation](https://github.com/aliendomain/workable/blob/main/docs/guides/implementing-work.md) if you want to implement work classes and understand what executor code can do at runtime.
 - [Queueing](https://github.com/aliendomain/workable/blob/main/docs/guides/queueing.md) if you already have work definitions and want to invoke them.
 - [Configuration](https://github.com/aliendomain/workable/blob/main/docs/guides/configuration/README.md) if you are tuning start behavior, retry, recurrence, concurrency, durability, logging, retention, or invocation rules.
 - [HTTP API](https://github.com/aliendomain/workable/blob/main/docs/adapters/http-api.md), [MCP](https://github.com/aliendomain/workable/blob/main/docs/adapters/mcp.md), and [Realtime](https://github.com/aliendomain/workable/blob/main/docs/adapters/realtime.md) if you are exposing Workable over transports.

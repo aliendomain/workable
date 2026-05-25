@@ -88,20 +88,12 @@ internal static class WorkConfigurationValidator
                 "configuration.recurrence.circuitBreakerFailureThreshold"));
         }
 
-        if (recurrence.RetainedSuccessfulIterations <= 0)
+        if (recurrence.RetainedIterations <= 0)
         {
             messages.Add(WorkMessage.Error(
-                "workable.configuration.recurrence.retained_successful_iterations_required",
-                "Recurrence retained successful iterations must be greater than zero.",
-                "configuration.recurrence.retainedSuccessfulIterations"));
-        }
-
-        if (recurrence.RetainedFailedIterations <= 0)
-        {
-            messages.Add(WorkMessage.Error(
-                "workable.configuration.recurrence.retained_failed_iterations_required",
-                "Recurrence retained failed iterations must be greater than zero.",
-                "configuration.recurrence.retainedFailedIterations"));
+                "workable.configuration.recurrence.retained_iterations_required",
+                "Recurrence retained iterations must be greater than zero.",
+                "configuration.recurrence.retainedIterations"));
         }
     }
 

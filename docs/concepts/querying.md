@@ -646,8 +646,7 @@ The examples below show the serialized JSON shape returned by HTTP and MCP adapt
       "interval": "00:00:00",
       "continueAfterFailure": true,
       "circuitBreakerFailureThreshold": 3,
-      "retainedSuccessfulIterations": 25,
-      "retainedFailedIterations": 5,
+      "retainedIterations": 25,
       "raiseCircuitBreakerOpenedEvent": true
     },
     "transientRetry": {
@@ -850,8 +849,7 @@ The examples below show the serialized JSON shape returned by HTTP and MCP adapt
           "interval": "00:00:00",
           "continueAfterFailure": true,
           "circuitBreakerFailureThreshold": 3,
-          "retainedSuccessfulIterations": 25,
-          "retainedFailedIterations": 5,
+          "retainedIterations": 25,
           "raiseCircuitBreakerOpenedEvent": true
         },
         "transientRetry": {
@@ -954,8 +952,7 @@ The examples below show the serialized JSON shape returned by HTTP and MCP adapt
         "interval": "00:00:00",
         "continueAfterFailure": true,
         "circuitBreakerFailureThreshold": 3,
-        "retainedSuccessfulIterations": 25,
-        "retainedFailedIterations": 5,
+        "retainedIterations": 25,
         "raiseCircuitBreakerOpenedEvent": true
       },
       "transientRetry": {

@@ -956,7 +956,6 @@ static WorkDefinition DemoRecurringDefinition(string name, string category, stri
         {
             Recurrence = WorkRecurrenceConfiguration.Every(TimeSpan.FromSeconds(4)) with
             {
-                RetainedSuccessfulIterations = 1_000,
-                RetainedFailedIterations = 25,
+                RetainedIterations = 1_000,
             },
         });

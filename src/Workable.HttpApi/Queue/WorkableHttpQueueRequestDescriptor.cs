@@ -57,8 +57,7 @@ public sealed record WorkableHttpQueueRequestDescriptor(
                 Field("options.configuration.recurrence.interval", "Interval", "Time between recurring executions. Use .NET TimeSpan text such as 00:05:00."),
                 Field("options.configuration.recurrence.continueAfterFailure", "Continue after failure", "Keep scheduling future iterations after an iteration fails until limits stop it."),
                 Field("options.configuration.recurrence.circuitBreakerFailureThreshold", "Circuit breaker threshold", "Number of failed iterations that opens the recurrence circuit breaker."),
-                Field("options.configuration.recurrence.retainedSuccessfulIterations", "Retained successful iterations", "Number of successful iteration records retained on the worker."),
-                Field("options.configuration.recurrence.retainedFailedIterations", "Retained failed iterations", "Number of failed iteration records retained on the worker."),
+                Field("options.configuration.recurrence.retainedIterations", "Retained iterations", "Number of iteration records retained on the worker, regardless of status."),
                 Field("options.configuration.recurrence.raiseCircuitBreakerOpenedEvent", "Raise circuit event", "Emit a worker event when the recurrence circuit breaker opens."),
             ]),
         new(
