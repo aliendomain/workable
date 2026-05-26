@@ -80,6 +80,7 @@ sequenceDiagram
     Dispatcher->>Ops: Dispatch queued worker
     Ops->>Record: Start(systemLifetimeToken), state sequence advances
     Ops->>Publisher: Publish worker.started
+    Ops->>Publisher: Publish worker.iteration.started
 
     Note over Strategy,Exec: Workable creates execution context inside the execution scope
     Ops->>Strategy: Execute(worker, workerToken)
@@ -140,7 +141,7 @@ sequenceDiagram
                 Strategy->>Publisher: Publish worker.retrying
                 Strategy->>Record: Wait for retry delay or Push/Pause/Cancel
                 Strategy->>Record: TryBeginRetryIteration()
-                Strategy->>Publisher: Publish worker.started
+                Strategy->>Publisher: Publish worker.iteration.started
             else Attempt returns WorkExecutionResult or final exception failure
                 Invoker-->>Attempt: WorkExecutionResult or exception
                 Attempt-->>Strategy: Iteration result or final failure result
@@ -156,10 +157,10 @@ sequenceDiagram
             alt Push
                 Record-->>Strategy: Wait is signaled
                 Strategy->>Record: TryBeginNextRecurringIteration()
-                Strategy->>Publisher: Publish worker.started
+                Strategy->>Publisher: Publish worker.iteration.started
             else Interval elapses
                 Strategy->>Record: TryBeginNextRecurringIteration()
-                Strategy->>Publisher: Publish worker.started
+                Strategy->>Publisher: Publish worker.iteration.started
             else Pause, Cancel, or shutdown interruption
                 Record-->>Strategy: Wait is signaled
                 Strategy->>Record: Complete as paused, canceled, or interrupted
@@ -169,6 +170,8 @@ sequenceDiagram
         end
     end
 ```
+
+`worker.started` is raised once when a worker first enters active execution, either from automatic start or an accepted start action. `worker.iteration.started` is raised for that first execution attempt and again for each later retry or recurring iteration start.
 
 ## Worker Handle
 
@@ -285,8 +288,10 @@ Hosts can use lifecycle observers to coordinate external resources, mirror stop 
 - `IWorkerExecutionStrategy` executes a worker according to a runtime strategy.
 - `ConfiguredWorkerExecutionStrategy` chooses run-once, transient retry, or recurring execution for each worker.
 - `RunOnceWorkerExecutionStrategy` executes workers that run once and then complete.
-- `TransientRetryWorkerExecutionStrategy` retries unhandled execution exceptions that are classified as transient.
-- `RecurringWorkerExecutionStrategy` executes recurring workers across repeated iterations.
+- `RetryCapableWorkerExecutionStrategy` owns the shared attempt loop, retry decisions, retry-delay handling, and execution cleanup for retry-capable strategies.
+- `TransientRetryWorkerExecutionStrategy` specializes non-recurring retry behavior after the shared retry-capable loop finishes.
+- `RecurringWorkerExecutionStrategy` executes recurring workers across repeated iterations on top of the shared retry-capable loop.
+- `WorkerIterationTransitionCoordinator` centralizes start-event publication for initial execution, retry restarts, and next recurring iterations.
 - `WorkerExecutionInvoker` creates initialization scopes for configured initializers, then creates a separate execution scope for the executor.
 - `IWorkInitializer` runs setup or validation before executor invocation.
 - `WorkerStateMachine` owns action and completion transition rules.

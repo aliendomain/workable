@@ -25,6 +25,8 @@ public interface IWorkExecutionContext
 
     bool AddIdentifier(WorkIdentifier identifier);
 
+    void Fail(string code, string message, string? target = null, bool transient = false);
+
     Task CompleteDurably(
         IWorkQueueDurabilityTransaction transaction,
         CancellationToken cancellationToken = default);

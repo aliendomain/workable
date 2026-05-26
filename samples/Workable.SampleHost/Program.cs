@@ -1,4 +1,5 @@
 using System.Text.Json;
+using SampleHost.Demo;
 using Workable;
 using Workable.SampleHost;
 using Workable.SampleHost.Demo;
@@ -40,6 +41,7 @@ builder.Services.AddCors(options =>
 });
 
 builder.Services.AddWorkableSqlServerDurableQueue(samplePersistenceConnectionString);
+builder.Services.AddSingleton<DemoRecurringIterationPlanStore>();
 
 builder.Services.AddWorkableSystem(workable =>
 {
@@ -77,6 +79,29 @@ builder.Services.AddWorkableSystem(workable =>
             blockingMode: WorkConcurrencyBlockingMode.WhileExecuting,
             limitReachedBehavior: WorkConcurrencyLimitReachedBehavior.DeferStart));
     workable.AddWork<DemoTimedWork>(DemoRecurringDefinition("sample.demo.recurring", "Samples:Demo", "Small recurring pulse for UI waiting/running state testing."));
+    workable.AddWork<DemoRecurringIterationWork>(
+        DemoRecurringDefinition(
+            "sample.demo.iteration-lab",
+            "Samples:Demo",
+            "Recurring sample that mixes normal success, non-transient failures, and transient recovery for iteration/logging demos."),
+        configuration => configuration
+            .UseRecurrence(WorkRecurrenceConfiguration.Every(TimeSpan.FromSeconds(2)) with
+            {
+                ContinueAfterFailure = false,
+                CircuitBreakerFailureThreshold = 100,
+            })
+            .RetryTransientFailures(
+                count: 4,
+                initialDelay: TimeSpan.FromSeconds(5),
+                jitter: TimeSpan.Zero,
+                maximumDelay: TimeSpan.FromSeconds(5),
+                backoff: WorkRetryBackoff.None)
+            .ClassifyExceptions(exception => exception switch
+            {
+                DemoRecurringTransientException => WorkExceptionClassification.Transient,
+                DemoRecurringNonTransientException => WorkExceptionClassification.NonTransient,
+                _ => WorkExceptionClassification.Unknown,
+            }));
 });
 
 builder.Services.AddWorkableSystem("fulfillment", workable =>
@@ -117,6 +142,9 @@ builder.Services.AddWorkableSignalR(options =>
 {
     options.PublishInterval = TimeSpan.FromMilliseconds(250);
     options.DiagnosticsPublishInterval = TimeSpan.FromMilliseconds(250);
+    options.BatchTimeWindow = TimeSpan.FromSeconds(1);
+    options.LiveTimeWindow = TimeSpan.FromMilliseconds(100);
+    options.MinimumTimeWindow = TimeSpan.FromMilliseconds(100);
 });
 
 var app = builder.Build();
@@ -928,7 +956,6 @@ static WorkDefinition DemoRecurringDefinition(string name, string category, stri
         {
             Recurrence = WorkRecurrenceConfiguration.Every(TimeSpan.FromSeconds(4)) with
             {
-                RetainedSuccessfulIterations = 1_000,
-                RetainedFailedIterations = 25,
+                RetainedIterations = 1_000,
             },
         });

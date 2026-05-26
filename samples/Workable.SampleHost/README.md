@@ -25,7 +25,7 @@ The sample registers operation, fulfillment, and demo work definitions. Open the
 http://localhost:61932/
 ```
 
-The demo workload queues work continuously while it is enabled. It includes short work, long work, a small fixed set of recurring workers, discovered identifiers, subjects, supplied identifiers, globally selectable target systems, and a configurable intentional failure percentage.
+The demo workload queues work continuously while it is enabled. It includes short work, long work, a small fixed set of recurring workers, discovered identifiers, subjects, supplied identifiers, globally selectable target systems, and a configurable intentional failure percentage. One Operations recurring worker, `sample.demo.iteration-lab`, runs every 2 seconds and is tuned for iteration/logging demos: about 90% of its cycles succeed after 10 log entries, about 5% fail non-transiently after a handful of logs, and about 5% fail transiently before recovering within the configured retry limit.
 
 The default sample system is also configured with SQL Server LocalDB persistence using the `WorkableSampleHost` database. The normal sample workload does not queue durable work. Use the Durable burst control on the root page to queue `sample.demo.durable` workers through the durable SQL queue. The durable sample is intentionally configured without idempotency, so its SQL rows have `IsDurableQueued = 1` and `HasIdempotencyReservation = 0`.
 

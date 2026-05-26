@@ -33,7 +33,7 @@ public sealed class RunOnceWorkerExecutionStrategyTests
             message.Severity == WorkMessageSeverity.Error &&
             message.Text == "Boom.");
         Assert.Equal(handle.WorkerId, workEvent.WorkerId);
-        Assert.Equal(definition.Id, workEvent.DefinitionId);
+        Assert.Equal(definition.Name, workEvent.WorkDefinitionName);
         Assert.Equal("worker.failed", workEvent.EventType);
     }
 

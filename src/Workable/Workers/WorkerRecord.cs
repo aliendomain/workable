@@ -25,19 +25,17 @@ internal sealed class WorkerRecord(
     private TaskCompletionSource<WorkerSnapshot> started = CreateSnapshotSource();
     private TaskCompletionSource<WorkCompletion> completion = CreateCompletionSource();
     private TaskCompletionSource recurrenceWaitSignal = CreateSignalSource();
-    private readonly List<WorkerIterationSnapshot> successfulIterations = [];
-    private readonly List<WorkerIterationSnapshot> failedIterations = [];
-    private readonly List<WorkerIterationSnapshot> interruptedIterations = [];
-    private readonly List<WorkerLogEntry> logEntries = [];
+    private readonly List<WorkerIterationSnapshot> retainedIterations = [];
     private readonly List<WorkerActionHistoryEntry> actionHistory = [];
     private readonly HashSet<WorkIdentifier> identifiers = input?.Identifiers?.ToHashSet() ?? [];
-    private readonly HashSet<WorkInitializationId> completedInitializers = [];
+    private readonly HashSet<WorkInitializationId> oncePerWorkerInitializersRun = [];
     private WorkProfileSnapshot? profile;
     private WorkProfileSnapshot? pendingIterationProfile;
     private CurrentWorkerIteration? currentIteration;
     private WorkInterruptionReason? interruptionReason;
     private DateTimeOffset? firstStartedAt;
     private DateTimeOffset? nextRunAt;
+    private int? retryAttempt;
     private TimeSpan totalExecutionDuration;
     private long? lastIterationSequence;
     private long iterationSequence;
@@ -170,19 +168,19 @@ internal sealed class WorkerRecord(
         return true;
     }
 
-    public bool IsInitializationComplete(WorkInitializationId initializationId)
+    public bool HasRunOncePerWorkerInitializer(WorkInitializationId initializationId)
     {
         lock (this.sync)
         {
-            return this.completedInitializers.Contains(initializationId);
+            return this.oncePerWorkerInitializersRun.Contains(initializationId);
         }
     }
 
-    public void MarkInitializationComplete(WorkInitializationId initializationId)
+    public void MarkOncePerWorkerInitializerRun(WorkInitializationId initializationId)
     {
         lock (this.sync)
         {
-            if (this.completedInitializers.Add(initializationId))
+            if (this.oncePerWorkerInitializersRun.Add(initializationId))
             {
                 this.MarkUpdated();
             }
@@ -210,6 +208,7 @@ internal sealed class WorkerRecord(
             this.ApplyAcceptedTransitionLocked(transition, advancesRevision);
             this.IsStartDeferred = false;
             this.Output = null;
+            this.retryAttempt = null;
             this.BeginIterationLocked();
             if (this.started.Task.IsCompleted)
             {
@@ -359,6 +358,7 @@ internal sealed class WorkerRecord(
             this.Output = null;
             this.RecordIterationLocked(null, this.Messages, transition.CompletionStatus);
             this.nextRunAt = null;
+            this.retryAttempt = null;
             this.AdvanceStateSequence();
             this.ReleaseExecutionCancellationLocked();
             return transition.CompletionStatus;
@@ -384,6 +384,7 @@ internal sealed class WorkerRecord(
             this.Output = null;
             this.RecordIterationLocked(null, this.Messages, transition.CompletionStatus);
             this.nextRunAt = null;
+            this.retryAttempt = null;
             this.AdvanceStateSequence();
             this.ReleaseExecutionCancellationLocked();
             return transition.CompletionStatus;
@@ -409,13 +410,14 @@ internal sealed class WorkerRecord(
             this.Messages = result.Messages;
             this.recurrenceWaitSignal = CreateSignalSource();
             this.nextRunAt = DateTimeOffset.UtcNow + this.Configuration.Recurrence.Interval;
+            this.retryAttempt = null;
             this.RecordIterationLocked(result, result.HasErrors ? WorkCompletionStatus.Failed : WorkCompletionStatus.Completed);
             this.AdvanceStateSequence();
             return WorkCompletionStatus.Invalid;
         }
     }
 
-    public WorkCompletionStatus CompleteRetryIteration(WorkExecutionResult result, TimeSpan retryDelay)
+    public WorkCompletionStatus CompleteRetryIteration(WorkExecutionResult result, TimeSpan retryDelay, int retryAttempt)
     {
         lock (this.sync)
         {
@@ -434,6 +436,7 @@ internal sealed class WorkerRecord(
             this.Messages = result.Messages;
             this.recurrenceWaitSignal = CreateSignalSource();
             this.nextRunAt = DateTimeOffset.UtcNow + retryDelay;
+            this.retryAttempt = retryAttempt;
             this.RecordIterationLocked(result, WorkCompletionStatus.Failed);
             this.AdvanceStateSequence();
             return WorkCompletionStatus.Invalid;
@@ -456,6 +459,7 @@ internal sealed class WorkerRecord(
                 ? WorkerState.Failed
                 : WorkerState.Completed);
             this.nextRunAt = null;
+            this.retryAttempt = null;
             this.AdvanceStateSequence();
             this.ReleaseExecutionCancellationLocked();
             return status;
@@ -487,6 +491,7 @@ internal sealed class WorkerRecord(
             this.Output = null;
             this.Messages = [];
             this.nextRunAt = null;
+            this.retryAttempt = null;
             this.BeginIterationLocked();
             this.AdvanceStateSequence();
             return true;
@@ -506,6 +511,7 @@ internal sealed class WorkerRecord(
             this.Output = null;
             this.Messages = [];
             this.nextRunAt = null;
+            this.retryAttempt = null;
             this.BeginIterationLocked();
             this.AdvanceStateSequence();
             return true;
@@ -520,6 +526,7 @@ internal sealed class WorkerRecord(
             this.SetStateLocked(WorkerState.Failed);
             this.RecordIterationLocked(null, this.Messages, WorkCompletionStatus.Failed);
             this.nextRunAt = null;
+            this.retryAttempt = null;
             this.AdvanceStateSequence();
             this.ReleaseExecutionCancellationLocked();
         }
@@ -754,11 +761,15 @@ internal sealed class WorkerRecord(
                 return;
             }
 
-            this.logEntries.Add(entry);
-            this.currentIteration?.Logs.Add(entry);
-            while (this.logEntries.Count > logging.MaximumBufferedEntries)
+            if (this.currentIteration is not { } currentIteration)
             {
-                this.logEntries.RemoveAt(0);
+                return;
+            }
+
+            currentIteration.Logs.Add(entry);
+            while (currentIteration.Logs.Count > logging.MaximumBufferedEntries)
+            {
+                currentIteration.Logs.RemoveAt(0);
             }
 
             this.MarkUpdated();
@@ -790,6 +801,7 @@ internal sealed class WorkerRecord(
                 origin,
                 this.Revision,
                 this.StateSequence,
+                this.State,
                 outcome.Messages));
             this.MarkUpdated();
         }
@@ -814,6 +826,7 @@ internal sealed class WorkerRecord(
                 origin,
                 this.Revision,
                 this.StateSequence,
+                this.State,
                 outcome.Messages,
                 reconfiguration));
             this.MarkUpdated();
@@ -902,9 +915,7 @@ internal sealed class WorkerRecord(
 
     private WorkerSnapshot ToSnapshotLocked()
     {
-        var iterations = this.successfulIterations
-            .Concat(this.failedIterations)
-            .Concat(this.interruptedIterations)
+        var iterations = this.retainedIterations
             .OrderBy(iteration => iteration.Sequence)
             .ToArray();
 
@@ -935,9 +946,9 @@ internal sealed class WorkerRecord(
             LastIteration = latestIteration,
             CurrentIterationSequence = this.currentIteration?.Sequence,
             LastIterationSequence = this.lastIterationSequence,
-            Logs = [.. this.logEntries],
             ActionHistory = [.. this.actionHistory],
             Profile = this.profile,
+            RetryAttempt = this.retryAttempt,
             QueueDuration = this.QueueDurationLocked(),
             TotalExecutionDuration = this.TotalExecutionDurationLocked(),
             NextRunAt = this.nextRunAt,
@@ -1053,22 +1064,14 @@ internal sealed class WorkerRecord(
         this.pendingIterationProfile = null;
         this.currentIteration = null;
         this.lastIterationSequence = iteration.Sequence;
-        var retained = status switch
-        {
-            WorkCompletionStatus.Completed => this.successfulIterations,
-            WorkCompletionStatus.Failed => this.failedIterations,
-            _ => this.interruptedIterations,
-        };
-        retained.Add(iteration);
+        this.retainedIterations.Add(iteration);
 
-        var maximum = status == WorkCompletionStatus.Completed
-            ? this.Configuration.Recurrence.RetainedSuccessfulIterations
-            : this.Configuration.Recurrence.RetainedFailedIterations;
+        var maximum = this.Configuration.Recurrence.RetainedIterations;
         var forgottenIterations = new List<WorkerIterationReference>();
-        while (retained.Count > maximum)
+        while (this.retainedIterations.Count > maximum)
         {
-            var forgotten = retained[0];
-            retained.RemoveAt(0);
+            var forgotten = this.retainedIterations[0];
+            this.retainedIterations.RemoveAt(0);
             forgottenIterations.Add(new WorkerIterationReference(this.Id, forgotten.Sequence));
         }
 
@@ -1368,8 +1371,8 @@ internal sealed class WorkerRecord(
 
     public WorkEvent ToEvent(
         WorkSystemId workSystemId,
+        string? workSystemName,
         string eventType,
-        WorkOrigin? origin = null,
         WorkerEventPayloadDetails? details = null)
     {
         lock (this.sync)
@@ -1377,34 +1380,37 @@ internal sealed class WorkerRecord(
             return new(
                 DateTimeOffset.UtcNow,
                 workSystemId,
+                workSystemName,
                 this.Id,
                 this.Work.Definition.Id,
+                this.Work.Definition.Name,
                 this.SubjectId,
                 this.ConcurrencyKey,
                 this.identifiers.ToHashSet(),
-                origin ?? this.Origin,
                 eventType,
-                this.CreateEventDataLocked(details),
-                []);
+                this.CreateEventDataLocked(details));
         }
     }
 
-    public WorkEvent ToLogEvent(WorkSystemId workSystemId, WorkerLogEntry entry)
+    public WorkEvent ToLogEvent(
+        WorkSystemId workSystemId,
+        string? workSystemName,
+        WorkerLogEntry entry)
     {
         lock (this.sync)
         {
             return new(
                 entry.OccurredAt,
                 workSystemId,
+                workSystemName,
                 this.Id,
                 this.Work.Definition.Id,
+                this.Work.Definition.Name,
                 this.SubjectId,
                 this.ConcurrencyKey,
                 this.identifiers.ToHashSet(),
-                this.Origin,
                 "worker.log",
-                this.CreateEventDataLocked(null),
-                []);
+                this.CreateEventDataLocked(new WorkerEventPayloadDetails(LogEntry: entry)));
         }
     }
 
@@ -1434,6 +1440,7 @@ internal sealed class WorkerRecord(
             this.StateChangedAt,
             this.UpdatedAt)
         {
+            RetryAttempt = this.retryAttempt,
             QueueDuration = this.QueueDurationLocked(),
             TotalExecutionDuration = this.TotalExecutionDurationLocked(),
             NextRunAt = this.nextRunAt,
@@ -1466,6 +1473,7 @@ internal sealed class WorkerRecord(
         return WorkerEventPayloads.Create(
             this.ToSummaryLocked(),
             this.CreateEventKeysLocked(),
+            details.Origin,
             details.Action,
             details.ActionStatus,
             details.ReconfigurationStatus,
@@ -1473,7 +1481,8 @@ internal sealed class WorkerRecord(
             details.CompletionStatus,
             details.IncludeLatestIteration ? this.GetLatestIterationLocked() : null,
             details.RecurrenceInterval,
-            details.RetryDelay);
+            details.RetryDelay,
+            details.LogEntry);
     }
 
     private IReadOnlyList<WorkerEventKey> CreateEventKeysLocked()
@@ -1495,11 +1504,16 @@ internal sealed class WorkerRecord(
     }
 
     private WorkerIterationSnapshot? GetLatestIterationLocked()
-        => this.successfulIterations
-            .Concat(this.failedIterations)
-            .Concat(this.interruptedIterations)
+    {
+        if (this.currentIteration is not null)
+        {
+            return this.CreateCurrentIterationSnapshotLocked(DateTimeOffset.UtcNow);
+        }
+
+        return this.retainedIterations
             .OrderByDescending(iteration => iteration.Sequence)
             .FirstOrDefault();
+    }
 
     private WorkerIterationSnapshot? GetIterationSnapshotLocked(long sequence)
     {
@@ -1508,9 +1522,7 @@ internal sealed class WorkerRecord(
             return this.CreateCurrentIterationSnapshotLocked(DateTimeOffset.UtcNow);
         }
 
-        return this.successfulIterations
-            .Concat(this.failedIterations)
-            .Concat(this.interruptedIterations)
+        return this.retainedIterations
             .FirstOrDefault(iteration => iteration.Sequence == sequence);
     }
 

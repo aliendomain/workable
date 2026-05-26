@@ -907,6 +907,9 @@ public sealed class WorkableHttpApiTests
         using var host = await CreateHttpHost();
         var client = host.GetTestClient();
         var system = host.Services.GetRequiredService<IWorkSystemRegistry>().Default;
+        Assert.True(Direct(system).Catalog.TryGet("http.route.case", out var definition));
+        await using var queuedSubscription = Direct(system).Events.Subscribe(new WorkEventFilter(DefinitionId: definition.Id, EventType: "worker.queued"));
+        await using var queuedReader = queuedSubscription.Read().GetAsyncEnumerator();
 
         var queueResponse = await client.PostAsJsonAsync(
             "/WORKABLE/WORK/http.route.case",
@@ -942,13 +945,22 @@ public sealed class WorkableHttpApiTests
         var summaryJson = JsonNode.Parse(await summaryResponse.Content.ReadAsStringAsync())
             ?? throw new InvalidOperationException("Expected JSON response.");
 
+        var queuedEvent = await ReadNext(queuedReader);
         var canceled = await session.Query.Worker(new WorkerId(workerId));
         var actionEvent = await ReadNext(actionReader);
+        var queuedOrigin = RequiredData(queuedEvent).GetProperty("origin");
+        var actionOrigin = RequiredData(actionEvent).GetProperty("origin");
         Assert.Equal(WorkerState.Canceled, canceled?.State);
-        Assert.Equal(WorkInvocationChannel.HttpApi, actionEvent.Origin?.Channel);
-        Assert.Equal("user-123", actionEvent.Origin?.Actor.Id);
-        Assert.Contains("/WORKABLE/WORKERS/", actionEvent.Origin?.Url, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(worker.DefinitionName, actionEvent.WorkDefinitionName);
         Assert.Equal(1, summaryJson["total"]?.GetValue<int>());
+        Assert.Equal("HttpApi", queuedOrigin.GetProperty("channel").GetString());
+        Assert.Equal("user-123", queuedOrigin.GetProperty("actor").GetProperty("id").GetString());
+        Assert.Equal("greya@example.test", queuedOrigin.GetProperty("actor").GetProperty("email").GetString());
+        Assert.Contains("/WORKABLE/WORK/http.route.case", queuedOrigin.GetProperty("url").GetString(), StringComparison.OrdinalIgnoreCase);
+        Assert.Equal("HttpApi", actionOrigin.GetProperty("channel").GetString());
+        Assert.Equal("user-123", actionOrigin.GetProperty("actor").GetProperty("id").GetString());
+        Assert.Equal("greya@example.test", actionOrigin.GetProperty("actor").GetProperty("email").GetString());
+        Assert.Contains("/WORKABLE/WORKERS/", actionOrigin.GetProperty("url").GetString(), StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -1147,11 +1159,11 @@ public sealed class WorkableHttpApiTests
         using var host = await CreateExplicitSchemeHttpHost();
         var client = host.GetTestClient();
 
-        using var unauthorized = await client.GetAsync("/workable/systems");
+        using var unauthorized = await client.GetAsync("/workable/host");
         Assert.Equal(HttpStatusCode.Unauthorized, unauthorized.StatusCode);
 
         client.DefaultRequestHeaders.Authorization = WorkableSchemeAuthenticationTestSupport.CreateBearerHeader();
-        using var authorized = await client.GetAsync("/workable/systems");
+        using var authorized = await client.GetAsync("/workable/host");
 
         authorized.EnsureSuccessStatusCode();
     }
@@ -1163,11 +1175,11 @@ public sealed class WorkableHttpApiTests
         var client = host.GetTestClient();
         client.DefaultRequestHeaders.Authorization = WorkableSchemeAuthenticationTestSupport.CreateBearerHeader();
 
-        using var response = await client.GetAsync("/workable/systems");
+        using var response = await client.GetAsync("/workable/host");
         response.EnsureSuccessStatusCode();
 
         var body = JsonNode.Parse(await response.Content.ReadAsStringAsync())
-            ?? throw new InvalidOperationException("Expected systems JSON response.");
+            ?? throw new InvalidOperationException("Expected host JSON response.");
         var systems = body["systems"]?.AsArray()
             ?? throw new InvalidOperationException("Expected systems array.");
         var system = Assert.Single(systems);
@@ -1211,10 +1223,13 @@ public sealed class WorkableHttpApiTests
         reconfigureResponse.EnsureSuccessStatusCode();
 
         var reconfigureEvent = await ReadNext(reconfigureReader);
+        var origin = RequiredData(reconfigureEvent).GetProperty("origin");
 
-        Assert.Equal(WorkInvocationChannel.HttpApi, reconfigureEvent.Origin?.Channel);
-        Assert.Equal("user-123", reconfigureEvent.Origin?.Actor.Id);
-        Assert.Contains($"/workable/workers/{workerId:D}/reconfigure", reconfigureEvent.Origin?.Url, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(worker.DefinitionName, reconfigureEvent.WorkDefinitionName);
+        Assert.Equal("HttpApi", origin.GetProperty("channel").GetString());
+        Assert.Equal("user-123", origin.GetProperty("actor").GetProperty("id").GetString());
+        Assert.Equal("greya@example.test", origin.GetProperty("actor").GetProperty("email").GetString());
+        Assert.Contains("/workable/workers/", origin.GetProperty("url").GetString(), StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -1258,10 +1273,11 @@ public sealed class WorkableHttpApiTests
         using var host = await CreateMultiSystemHttpHost();
         var client = host.GetTestClient();
 
-        var response = await client.GetAsync("/workable/systems");
+        var response = await client.GetAsync("/workable/host");
         response.EnsureSuccessStatusCode();
         var json = JsonNode.Parse(await response.Content.ReadAsStringAsync())
             ?? throw new InvalidOperationException("Expected JSON response.");
+        Assert.False(json["capabilities"]?["realtime"]?["enabled"]?.GetValue<bool>() ?? true);
         var systems = json["systems"]?.AsArray()
             ?? throw new InvalidOperationException("Expected systems array.");
 
@@ -1271,8 +1287,6 @@ public sealed class WorkableHttpApiTests
             candidate["name"] is null &&
             candidate["isDefault"] is JsonValue isDefault &&
             isDefault.GetValue<bool>() &&
-            candidate["capabilities"]?["realtime"]?["enabled"] is JsonValue realtimeEnabled &&
-            !realtimeEnabled.GetValue<bool>() &&
             candidate["capabilities"]?["persistentCoordinationAvailable"] is JsonValue persistentCoordinationAvailable &&
             !persistentCoordinationAvailable.GetValue<bool>() &&
             candidate["access"]?["canConnect"] is JsonValue canConnect &&
@@ -1300,8 +1314,6 @@ public sealed class WorkableHttpApiTests
             candidate["name"]?.GetValue<string>() == "background" &&
             candidate["isDefault"] is JsonValue isDefault &&
             !isDefault.GetValue<bool>() &&
-            candidate["capabilities"]?["realtime"]?["enabled"] is JsonValue realtimeEnabled &&
-            !realtimeEnabled.GetValue<bool>() &&
             candidate["capabilities"]?["persistentCoordinationAvailable"] is JsonValue persistentCoordinationAvailable &&
             !persistentCoordinationAvailable.GetValue<bool>());
     }
@@ -1312,7 +1324,7 @@ public sealed class WorkableHttpApiTests
         using var host = await CreateMultiSystemHttpHost(TransportAuthorizationTestSupport.ReadGroups);
         var client = host.GetTestClient();
 
-        var response = await client.GetAsync("/workable/systems");
+        var response = await client.GetAsync("/workable/host");
         response.EnsureSuccessStatusCode();
         var json = JsonNode.Parse(await response.Content.ReadAsStringAsync())
             ?? throw new InvalidOperationException("Expected JSON response.");
@@ -1328,7 +1340,7 @@ public sealed class WorkableHttpApiTests
         using var host = await CreateMultiSystemHttpHost(TransportAuthorizationTestSupport.ConnectGroups);
         var client = host.GetTestClient();
 
-        var response = await client.GetAsync("/workable/systems");
+        var response = await client.GetAsync("/workable/host");
         response.EnsureSuccessStatusCode();
         var json = JsonNode.Parse(await response.Content.ReadAsStringAsync())
             ?? throw new InvalidOperationException("Expected JSON response.");
@@ -1592,7 +1604,7 @@ public sealed class WorkableHttpApiTests
                 revision = worker.Revision,
             });
 
-        Assert.Equal(System.Net.HttpStatusCode.Forbidden, defaultActionResponse.StatusCode);
+        Assert.Equal(System.Net.HttpStatusCode.NotFound, defaultActionResponse.StatusCode);
 
         var reconfigureResponse = await client.PostAsJsonAsync(
             $"/workable/systems/background/workers/{workerId:D}/reconfigure",
@@ -1686,7 +1698,7 @@ public sealed class WorkableHttpApiTests
             .BuildServiceProvider();
         var system = provider.GetRequiredService<IWorkSystemRegistry>().Default;
         return (system, new HttpAdapterServices(
-            provider.GetRequiredService<WorkableHttpSystemResolver>(),
+            provider.GetRequiredService<WorkableHttpTopologyResolver>(),
             provider.GetRequiredService<WorkableHttpCatalogAdapter>(),
             provider.GetRequiredService<WorkableHttpQueueAdapter>(),
             provider.GetRequiredService<WorkableHttpQueryAdapter>(),
@@ -1694,7 +1706,7 @@ public sealed class WorkableHttpApiTests
     }
 
     private sealed record HttpAdapterServices(
-        WorkableHttpSystemResolver Systems,
+        WorkableHttpTopologyResolver Topology,
         WorkableHttpCatalogAdapter Catalog,
         WorkableHttpQueueAdapter Queue,
         WorkableHttpQueryAdapter Query,
@@ -2287,6 +2299,9 @@ public sealed class WorkableHttpApiTests
         return JsonNode.Parse(await response.Content.ReadAsStringAsync())
             ?? throw new InvalidOperationException("Expected JSON response.");
     }
+
+    private static JsonElement RequiredData(WorkEvent workEvent)
+        => workEvent.Data ?? throw new InvalidOperationException($"Expected data for event '{workEvent.EventType}'.");
 
     private static async Task<WorkEvent> ReadNext(IAsyncEnumerator<WorkEvent> reader)
     {

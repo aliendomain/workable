@@ -5,8 +5,7 @@ using Microsoft.Extensions.Logging;
 namespace Workable;
 public sealed record WorkRecurrenceConfiguration
 {
-    private readonly int retainedSuccessfulIterations = 25;
-    private readonly int retainedFailedIterations = 5;
+    private readonly int retainedIterations = 25;
 
     public static WorkRecurrenceConfiguration Default { get; } = new();
 
@@ -34,16 +33,10 @@ public sealed record WorkRecurrenceConfiguration
 
     public int CircuitBreakerFailureThreshold { get; init; } = 3;
 
-    public int RetainedSuccessfulIterations
+    public int RetainedIterations
     {
-        get => this.retainedSuccessfulIterations;
-        init => this.retainedSuccessfulIterations = value;
-    }
-
-    public int RetainedFailedIterations
-    {
-        get => this.retainedFailedIterations;
-        init => this.retainedFailedIterations = value;
+        get => this.retainedIterations;
+        init => this.retainedIterations = value;
     }
 
     public bool RaiseCircuitBreakerOpenedEvent { get; init; } = true;

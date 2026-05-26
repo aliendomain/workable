@@ -36,4 +36,17 @@ public sealed class WorkableViewQueryAdapterTests
 
         Assert.False(requiresIntervalPublish);
     }
+
+    [Fact]
+    public void NormalizeViewCriteriaReturnsDefaultWorkerComponents()
+    {
+        var adapter = new WorkableViewQueryAdapter();
+
+        var criteria = adapter.NormalizeViewCriteria("worker");
+        var components = Assert.IsAssignableFrom<IReadOnlyList<WorkComponentRequest>>(criteria.Components);
+
+        Assert.Equal(["worker", "currentIteration"], components.Select(component => component.Id).ToArray());
+        Assert.Equal(["workerDetail", "workerCurrentIteration"], components.Select(component => component.Type).ToArray());
+        Assert.All(components, component => Assert.Equal(WorkComponentShapes.Detailed, component.Shape));
+    }
 }

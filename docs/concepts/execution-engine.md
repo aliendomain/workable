@@ -23,17 +23,18 @@ flowchart TD
     Dispatcher --> Strategy["IWorkerExecutionStrategy"]
     Strategy --> Selector["ConfiguredWorkerExecutionStrategy"]
     Selector --> RunOnce["RunOnceWorkerExecutionStrategy"]
-    Selector --> Retry["TransientRetryWorkerExecutionStrategy"]
-    Selector --> Recurring["RecurringWorkerExecutionStrategy"]
+    Selector --> RetryBase["RetryCapableWorkerExecutionStrategy"]
+    RetryBase --> Retry["TransientRetryWorkerExecutionStrategy"]
+    RetryBase --> Recurring["RecurringWorkerExecutionStrategy"]
     RunOnce --> Attempt["WorkerExecutionAttemptRunner"]
-    Retry --> Attempt
-    Recurring --> Attempt
+    RetryBase --> Attempt
     Attempt --> Invoker["WorkerExecutionInvoker"]
     Attempt --> ExceptionHandler["WorkerExecutionExceptionHandler"]
     ExceptionHandler --> Classifier["WorkExceptionClassifierChain"]
     RunOnce --> Completion["WorkerExecutionCompletionRecorder"]
-    Retry --> Completion
-    Recurring --> Completion
+    RetryBase --> Completion
+    RetryBase --> IterationTransitions["WorkerIterationTransitionCoordinator"]
+    IterationTransitions --> Publisher
     Recurring --> Publisher
     Invoker --> Initialization["WorkInitializationExecutor"]
     Initialization --> InitScope["Initialization DI Scope"]
@@ -80,11 +81,15 @@ When durable completion is enabled, executor code calls `IWorkExecutionContext.C
 
 `OnceLazy` initialization uses a per-definition gate. The first worker to reach the initializer runs it while competing workers wait; after it succeeds, later workers skip it. Typed initializers cannot use `OnceLazy` because they depend on worker input.
 
-`TransientRetryWorkerExecutionStrategy` retries unhandled execution exceptions that are classified as transient. Classification runs work-level classifiers first, then system-level classifiers, then app-wide classifiers. Declarative `WorkExecutionResult.Failure` results are not retried.
+`RetryCapableWorkerExecutionStrategy` owns the shared attempt loop, transient retry decision logic, retry-delay handling, and execution-resource cleanup used by the retry-capable strategies.
 
-`RecurringWorkerExecutionStrategy` keeps one worker alive across repeated iterations. It also owns transient retry inside the recurrence loop, so a recurring worker can move through `Running -> Retrying -> Running` before the engine decides whether that iteration should continue recurrence. After a continued iteration, it records the iteration result, moves the worker to `Waiting`, and waits for the recurrence interval or a `Push` action. Failed iterations can continue, stop immediately, or open the recurrence circuit based on recurrence configuration.
+`TransientRetryWorkerExecutionStrategy` now specializes only the terminal behavior for non-recurring work after the shared retry-capable attempt loop finishes. Classification runs work-level classifiers first, then system-level classifiers, then app-wide classifiers. Declarative `WorkExecutionResult.Failure` results are not retried.
+
+`RecurringWorkerExecutionStrategy` keeps one worker alive across repeated iterations. It uses the same shared retry-capable attempt loop, then decides whether that iteration should continue recurrence. After a continued iteration, it records the iteration result, moves the worker to `Waiting`, and waits for the recurrence interval or a `Push` action. Failed iterations can continue, stop immediately, or open the recurrence circuit based on recurrence configuration.
 
 `WorkerExecutionCompletionRecorder` owns the shared tail of execution completion. Declarative failures, successful results, cancellation, shutdown interruption, and final exception failures all flow through it to update the worker record, create the completion, and publish the worker event. For run-once and non-recurring retry workers, it publishes the final iteration event before the terminal completion event.
+
+`WorkerIterationTransitionCoordinator` owns the shared worker and iteration start-event publication for the initial execution start, retry iteration restarts, and next recurring iteration starts.
 
 Recurring workers that opt into concurrency hold their concurrency reservation while waiting between iterations. This keeps one recurring worker from releasing and reacquiring capacity on every interval.
 
@@ -130,7 +135,7 @@ sequenceDiagram
                 Strategy->>Events: worker.retrying
                 Strategy->>Record: WaitForRecurrenceInterval(retryDelay)
                 Strategy->>Record: TryBeginRetryIteration()
-                Strategy->>Events: worker.started
+                Strategy->>Events: worker.iteration.started
             else Retry loop is exhausted or non-transient
                 Attempt-->>Strategy: Failure result
             end
@@ -142,7 +147,7 @@ sequenceDiagram
             Strategy->>Events: worker.waiting
             Strategy->>Record: WaitForRecurrenceInterval(recurrence interval)
             Strategy->>Record: TryBeginNextRecurringIteration()
-            Strategy->>Events: worker.started
+            Strategy->>Events: worker.iteration.started
         else Stop recurrence
             opt Circuit breaker opens
                 Strategy->>Events: worker.recurrence.circuit_opened
@@ -153,6 +158,8 @@ sequenceDiagram
 ```
 
 `Push` signals either the recurrence wait or the retry-delay wait and lets the execution strategy begin the next iteration immediately. `Pause` and `Cancel` also signal those waits so control actions do not wait for the timer to expire.
+
+The first dispatch into active execution still raises `worker.started` as part of `WorkerOperations.Start(...)`. The recurrence strategy raises `worker.iteration.started` for each retry restart and for each later recurring iteration start so iteration timelines stay precise without overloading `worker.started`.
 
 ## Concurrency Drain
 

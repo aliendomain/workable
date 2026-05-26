@@ -10,10 +10,10 @@ internal static class WorkableHttpSystemRoutes
     {
         group.MapGet("/diagnostics", (
             HttpContext httpContext,
-            WorkableHttpSystemResolver systems,
+            WorkableHttpTopologyResolver topology,
             IWorkRequestContextFactory requestContexts) =>
         {
-            if (!WorkableHttpRouteResults.TryResolveSystem(httpContext, systems, out var system, out var notFound))
+            if (!WorkableHttpRouteResults.TryResolveSystem(httpContext, topology, out var system, out var notFound))
             {
                 return notFound;
             }
@@ -23,16 +23,16 @@ internal static class WorkableHttpSystemRoutes
                 system,
                 requestContexts,
                 "View Workable system diagnostics through HTTP API.");
-            return Results.Ok(WorkableHttpSystemResolver.Diagnostics(system, session));
+            return Results.Ok(WorkableHttpTopologyResolver.Diagnostics(system, session));
         });
 
         group.MapPost("/lifecycle/start", async (
             HttpContext httpContext,
-            WorkableHttpSystemResolver systems,
+            WorkableHttpTopologyResolver topology,
             IWorkRequestContextFactory requestContexts,
             CancellationToken cancellationToken) =>
         {
-            if (!WorkableHttpRouteResults.TryResolveSystem(httpContext, systems, out var system, out var notFound))
+            if (!WorkableHttpRouteResults.TryResolveSystem(httpContext, topology, out var system, out var notFound))
             {
                 return notFound;
             }
@@ -41,17 +41,17 @@ internal static class WorkableHttpSystemRoutes
                 httpContext,
                 requestContexts,
                 "Start Workable system through HTTP API.");
-            var result = await WorkableHttpSystemResolver.Start(system, requestContext, cancellationToken);
+            var result = await WorkableHttpTopologyResolver.Start(system, requestContext, cancellationToken);
             return Results.Ok(result);
         });
 
         group.MapPost("/lifecycle/stop", async (
             HttpContext httpContext,
-            WorkableHttpSystemResolver systems,
+            WorkableHttpTopologyResolver topology,
             IWorkRequestContextFactory requestContexts,
             CancellationToken cancellationToken) =>
         {
-            if (!WorkableHttpRouteResults.TryResolveSystem(httpContext, systems, out var system, out var notFound))
+            if (!WorkableHttpRouteResults.TryResolveSystem(httpContext, topology, out var system, out var notFound))
             {
                 return notFound;
             }
@@ -60,7 +60,7 @@ internal static class WorkableHttpSystemRoutes
                 httpContext,
                 requestContexts,
                 "Stop Workable system through HTTP API.");
-            var result = await WorkableHttpSystemResolver.Stop(system, requestContext, cancellationToken);
+            var result = await WorkableHttpTopologyResolver.Stop(system, requestContext, cancellationToken);
             return Results.Ok(result);
         });
     }

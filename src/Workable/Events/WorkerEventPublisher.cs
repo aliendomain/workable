@@ -2,6 +2,7 @@ namespace Workable;
 
 internal sealed class WorkerEventPublisher(
     WorkSystemId workSystemId,
+    string? workSystemName,
     WorkEventStream events,
     Action<WorkerRecord> synchronize,
     IWorkSystemReadModelWriter? readModel = null)
@@ -10,7 +11,10 @@ internal sealed class WorkerEventPublisher(
     private static readonly IReadOnlySet<WorkIdentifier> EmptyIdentifiers = new HashSet<WorkIdentifier>();
 
     internal void Queued(WorkerRecord worker)
-        => this.PublishWithoutSynchronize(worker, "worker.queued");
+        => this.PublishWithoutSynchronize(
+            worker,
+            "worker.queued",
+            details: new WorkerEventPayloadDetails(Origin: worker.Origin));
 
     internal void Started(WorkerRecord worker)
         => this.Publish(worker, "worker.started");
@@ -20,13 +24,14 @@ internal sealed class WorkerEventPublisher(
         var action = outcome.Action;
         var eventType = $"worker.{action.ToString().ToLowerInvariant()}";
         var details = new WorkerEventPayloadDetails(
+            Origin: action == WorkAction.Purge && !ShouldIncludeExplicitPurgeOrigin(origin) ? null : origin,
             Action: action,
             ActionStatus: outcome.Status);
         if (action == WorkAction.Purge)
         {
             if (outcome.IsAccepted)
             {
-                this.PublishWorkerPurge(worker, origin);
+                this.PublishWorkerPurge(worker, ShouldIncludeExplicitPurgeOrigin(origin) ? origin : null);
             }
 
             return;
@@ -43,8 +48,8 @@ internal sealed class WorkerEventPublisher(
         => this.Publish(
             worker,
             "worker.reconfigured",
-            origin,
-            new WorkerEventPayloadDetails(
+            details: new WorkerEventPayloadDetails(
+                Origin: origin,
                 ReconfigurationStatus: outcome.Status,
                 Reconfiguration: changes));
 
@@ -69,6 +74,12 @@ internal sealed class WorkerEventPublisher(
             worker,
             "worker.retrying",
             details: new WorkerEventPayloadDetails(RetryDelay: retryDelay));
+
+    internal void IterationStarted(WorkerRecord worker)
+        => this.Publish(
+            worker,
+            "worker.iteration.started",
+            details: new WorkerEventPayloadDetails(IncludeLatestIteration: true));
 
     internal void IterationCompleted(WorkerRecord worker)
         => this.Publish(
@@ -102,7 +113,10 @@ internal sealed class WorkerEventPublisher(
     internal void Purged(WorkerRecord worker)
         => this.PublishWorkerPurge(worker);
 
-    internal void Purged(IReadOnlyCollection<WorkerId> workerIds, WorkDefinitionId? definitionId)
+    internal void Purged(
+        IReadOnlyCollection<WorkerId> workerIds,
+        WorkDefinitionId? definitionId,
+        string? definitionName)
     {
         ArgumentNullException.ThrowIfNull(workerIds);
 
@@ -132,21 +146,24 @@ internal sealed class WorkerEventPublisher(
             new PurgeEventState(
                 occurredAt,
                 workSystemId,
+                workSystemName,
                 workerId,
                 definitionId,
-                purgedWorkerIds),
+                definitionName,
+                purgedWorkerIds,
+                null),
             static state => new WorkEvent(
                 state.OccurredAt,
                 state.WorkSystemId,
+                state.WorkSystemName,
                 state.WorkerId,
                 state.DefinitionId,
+                state.DefinitionName,
                 null,
                 null,
                 EmptyIdentifiers,
-                null,
                 PurgeEventType,
-                WorkerEventPayloads.CreatePurge(state.WorkerIds, state.OccurredAt),
-                []));
+                WorkerEventPayloads.CreatePurge(state.WorkerIds, state.OccurredAt, state.Origin)));
     }
 
     internal void Log(WorkerRecord worker, WorkerLogEntry entry)
@@ -154,8 +171,8 @@ internal sealed class WorkerEventPublisher(
         readModel?.RecordWorker(worker.ToReadModelWorker());
         events.Publish(
             worker.ToEventMetadata(workSystemId, "worker.log"),
-            (WorkSystemId: workSystemId, Worker: worker, Entry: entry),
-            static state => state.Worker.ToLogEvent(state.WorkSystemId, state.Entry));
+            (WorkSystemId: workSystemId, WorkSystemName: workSystemName, Worker: worker, Entry: entry),
+            static state => state.Worker.ToLogEvent(state.WorkSystemId, state.WorkSystemName, state.Entry));
     }
 
     internal static string EventTypeFor(WorkCompletionStatus status)
@@ -189,11 +206,11 @@ internal sealed class WorkerEventPublisher(
 
         events.Publish(
             worker.ToEventMetadata(workSystemId, eventType),
-            (WorkSystemId: workSystemId, Worker: worker, EventType: eventType, Origin: origin, Details: details),
+            (WorkSystemId: workSystemId, WorkSystemName: workSystemName, Worker: worker, EventType: eventType, Details: details),
             static state => state.Worker.ToEvent(
                 state.WorkSystemId,
+                state.WorkSystemName,
                 state.EventType,
-                state.Origin,
                 state.Details));
     }
 
@@ -204,31 +221,40 @@ internal sealed class WorkerEventPublisher(
         var occurredAt = DateTimeOffset.UtcNow;
         events.Publish(
             worker.ToEventMetadata(workSystemId, PurgeEventType),
-            new WorkerPurgeEventState(occurredAt, workSystemId, worker, origin),
+            new WorkerPurgeEventState(occurredAt, workSystemId, workSystemName, worker, origin),
             static state => new WorkEvent(
                 state.OccurredAt,
                 state.WorkSystemId,
+                state.WorkSystemName,
                 state.Worker.Id,
                 state.Worker.Work.Definition.Id,
+                state.Worker.Work.Definition.Name,
                 state.Worker.SubjectId,
                 state.Worker.ConcurrencyKey,
                 state.Worker.Identifiers,
-                state.Origin,
                 PurgeEventType,
-                WorkerEventPayloads.CreatePurge(new[] { state.Worker.Id }, state.OccurredAt),
-                []));
+                WorkerEventPayloads.CreatePurge(new[] { state.Worker.Id }, state.OccurredAt, state.Origin)));
     }
 
     private sealed record PurgeEventState(
         DateTimeOffset OccurredAt,
         WorkSystemId WorkSystemId,
+        string? WorkSystemName,
         WorkerId? WorkerId,
         WorkDefinitionId? DefinitionId,
-        IReadOnlyList<WorkerId> WorkerIds);
+        string? DefinitionName,
+        IReadOnlyList<WorkerId> WorkerIds,
+        WorkOrigin? Origin);
 
     private sealed record WorkerPurgeEventState(
         DateTimeOffset OccurredAt,
         WorkSystemId WorkSystemId,
+        string? WorkSystemName,
         WorkerRecord Worker,
         WorkOrigin? Origin);
+
+    private static bool ShouldIncludeExplicitPurgeOrigin(WorkOrigin origin)
+        => !string.IsNullOrWhiteSpace(origin.Actor.Id) ||
+            !string.IsNullOrWhiteSpace(origin.Actor.Name) ||
+            !string.IsNullOrWhiteSpace(origin.Actor.Email);
 }

@@ -20,7 +20,7 @@ internal sealed class WorkInitializationExecutor(IServiceProvider rootServices)
         foreach (var initializer in initializers)
         {
             if (initializer.Timing == WorkInitializationTiming.OncePerWorker &&
-                worker.IsInitializationComplete(initializer.Id))
+                worker.HasRunOncePerWorkerInitializer(initializer.Id))
             {
                 continue;
             }
@@ -48,7 +48,7 @@ internal sealed class WorkInitializationExecutor(IServiceProvider rootServices)
 
             if (initializer.Timing == WorkInitializationTiming.OncePerWorker)
             {
-                worker.MarkInitializationComplete(initializer.Id);
+                worker.MarkOncePerWorkerInitializerRun(initializer.Id);
             }
         }
 

@@ -10,7 +10,13 @@ internal sealed class AuthorizedWorkerOperations(
         WorkAction action,
         CancellationToken cancellationToken = default)
     {
-        if (!await this.CanOperate(worker.WorkerId, cancellationToken))
+        var authorizationResult = await this.AuthorizeWorker(worker.WorkerId, cancellationToken);
+        if (authorizationResult is WorkerAuthorizationResult.NotFound)
+        {
+            return WorkActionOutcome.NotFound(action, worker.WorkerId);
+        }
+
+        if (authorizationResult is WorkerAuthorizationResult.Unauthorized)
         {
             return WorkActionOutcome.Unauthorized(action, worker.WorkerId);
         }
@@ -70,7 +76,13 @@ internal sealed class AuthorizedWorkerOperations(
         WorkerReconfiguration changes,
         CancellationToken cancellationToken = default)
     {
-        if (!await this.CanOperate(worker.WorkerId, cancellationToken))
+        var authorizationResult = await this.AuthorizeWorker(worker.WorkerId, cancellationToken);
+        if (authorizationResult is WorkerAuthorizationResult.NotFound)
+        {
+            return WorkActionOutcome.NotFound(WorkAction.Start, worker.WorkerId);
+        }
+
+        if (authorizationResult is WorkerAuthorizationResult.Unauthorized)
         {
             return WorkActionOutcome.Unauthorized(WorkAction.Start, worker.WorkerId);
         }
@@ -78,9 +90,23 @@ internal sealed class AuthorizedWorkerOperations(
         return await inner.Reconfigure(worker, changes, cancellationToken);
     }
 
-    private async Task<bool> CanOperate(WorkerId workerId, CancellationToken cancellationToken)
+    private async Task<WorkerAuthorizationResult> AuthorizeWorker(WorkerId workerId, CancellationToken cancellationToken)
     {
         var worker = await query.Worker(workerId, cancellationToken);
-        return worker is not null && authorization.CanOperate(worker.DefinitionId);
+        if (worker is null)
+        {
+            return WorkerAuthorizationResult.NotFound;
+        }
+
+        return authorization.CanOperate(worker.DefinitionId)
+            ? WorkerAuthorizationResult.Authorized
+            : WorkerAuthorizationResult.Unauthorized;
+    }
+
+    private enum WorkerAuthorizationResult
+    {
+        Authorized,
+        Unauthorized,
+        NotFound,
     }
 }

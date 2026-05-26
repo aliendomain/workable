@@ -254,18 +254,6 @@ export async function createEntraTargetAccessTokenResponse(
   env: AdminSecurityEnvironment = process.env,
   fetcher: FetchLike = fetch
 ) {
-  const settings = getAdminSecuritySettings(env);
-  const binding = findEntraTargetTokenBinding(
-    settings,
-    getRequestedApiUrl(request, settings)
-  );
-  if (!binding) {
-    return Response.json(
-      { error: "No hosted Workable API token binding is configured for that URL." },
-      { status: 404, headers: { "cache-control": "no-store" } }
-    );
-  }
-
   const token = await getEntraTargetAccessToken(request, env, fetcher);
   if (!token.ok) {
     return Response.json(
@@ -279,8 +267,10 @@ export async function createEntraTargetAccessTokenResponse(
 
   if (!token.accessToken) {
     return Response.json(
-      { error: "No hosted Workable API access token is available." },
-      { status: 404, headers: { "cache-control": "no-store" } }
+      { accessToken: null },
+      {
+        headers: withCookies({ "cache-control": "no-store" }, token.setCookieHeaders),
+      }
     );
   }
 

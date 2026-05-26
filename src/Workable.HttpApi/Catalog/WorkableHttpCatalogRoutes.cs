@@ -13,12 +13,12 @@ internal static class WorkableHttpCatalogRoutes
             string? category,
             bool? includeSubcategories,
             bool? level,
-            WorkableHttpSystemResolver systems,
+            WorkableHttpTopologyResolver topology,
             WorkableHttpCatalogAdapter catalog,
             IWorkRequestContextFactory requestContexts,
             CancellationToken cancellationToken) =>
         {
-            if (!WorkableHttpRouteResults.TryResolveSystem(httpContext, systems, out var system, out var notFound))
+            if (!WorkableHttpRouteResults.TryResolveSystem(httpContext, topology, out var system, out var notFound))
             {
                 return notFound;
             }
@@ -48,12 +48,12 @@ internal static class WorkableHttpCatalogRoutes
             HttpContext httpContext,
             Guid definitionId,
             WorkableHttpDefinitionReconfigurationRequest request,
-            WorkableHttpSystemResolver systems,
+            WorkableHttpTopologyResolver topology,
             WorkableHttpCatalogAdapter catalog,
             IWorkRequestContextFactory requestContexts,
             CancellationToken cancellationToken) =>
         {
-            if (!WorkableHttpRouteResults.TryResolveSystem(httpContext, systems, out var system, out var notFound))
+            if (!WorkableHttpRouteResults.TryResolveSystem(httpContext, topology, out var system, out var notFound))
             {
                 return notFound;
             }

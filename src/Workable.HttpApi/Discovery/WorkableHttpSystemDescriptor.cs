@@ -1,8 +1,8 @@
 namespace Workable;
-public sealed record WorkableHttpSystemInfo(
+public sealed record WorkableHttpSystemDescriptor(
     WorkSystemId Id,
     string? Name,
     WorkSystemState State,
     bool IsDefault,
-    WorkableHttpCapabilities Capabilities,
+    WorkableHttpSystemCapabilities Capabilities,
     WorkSystemAccessSummary Access);

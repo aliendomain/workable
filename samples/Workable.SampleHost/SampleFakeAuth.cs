@@ -84,6 +84,17 @@ internal static class SampleFakeAuth
                 SystemAdministratorGroup,
             ]),
         new(
+            "system-and-work-admin",
+            "System + Work Admin",
+            "Explicitly carries both the system administrator and work administrator groups across both systems.",
+            "Discovery should show both systems with full diagnostics, control, read, and operate access everywhere.",
+            IsAuthenticated: true,
+            Groups:
+            [
+                SystemAdministratorGroup,
+                WorkAdministratorGroup,
+            ]),
+        new(
             "work-admin",
             "Work Admin",
             "Work administrator across both systems with enough Connect access to add the host, but without diagnostics or system control permissions.",

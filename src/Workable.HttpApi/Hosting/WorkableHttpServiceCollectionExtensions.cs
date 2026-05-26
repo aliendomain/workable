@@ -15,7 +15,7 @@ public static class WorkableHttpServiceCollectionExtensions
             options.SerializerOptions.Converters.Add(new JsonStringEnumConverter());
         });
         services.AddWorkableAspNetCoreAuthorization();
-        services.TryAddSingleton<WorkableHttpSystemResolver>();
+        services.TryAddSingleton<WorkableHttpTopologyResolver>();
         services.TryAddSingleton<WorkableHttpCatalogAdapter>();
         services.TryAddSingleton<WorkableHttpQueueAdapter>();
         services.TryAddSingleton<WorkableHttpQueryAdapter>();

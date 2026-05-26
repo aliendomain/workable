@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
+using SampleHost.Demo;
 using Workable.SampleHost;
 using Workable.SampleHost.Fulfillment;
 using Workable.SampleHost.Operations;
@@ -9,6 +10,7 @@ namespace Workable.SampleHost.Demo;
 public sealed class DemoWorkloadController(
     IWorkSystemRegistry registry,
     DemoSampleSystemSelection systemSelection,
+    DemoRecurringIterationPlanStore recurringIterationPlans,
     ILogger<DemoWorkloadController> logger) : IHostedService, IAsyncDisposable
 {
     private static readonly TimeSpan DefaultQueueInterval = TimeSpan.FromMilliseconds(85);
@@ -158,6 +160,7 @@ public sealed class DemoWorkloadController(
             await this.CancelTrackedWorkers(cancellationToken);
         }
 
+        this.ClearTrackedIterationPlans();
         this.activeDemoWorkers.Clear();
         return this.Status();
     }
@@ -373,6 +376,14 @@ public sealed class DemoWorkloadController(
                 new DemoRelationshipKeys(
                     Subject: new WorkSubjectId("demo-recurring", "operations"),
                     Identifier: new WorkIdentifier("sample-workload", "home-toggle")),
+                cancellationToken);
+
+            await this.QueueDefault(
+                "sample.demo.iteration-lab",
+                new DemoRecurringIterationInput(5_000),
+                new DemoRelationshipKeys(
+                    Subject: new WorkSubjectId("demo-recurring", "iteration-lab"),
+                    Identifier: new WorkIdentifier("sample-workload", "iteration-lab")),
                 cancellationToken);
         }
 
@@ -706,6 +717,7 @@ public sealed class DemoWorkloadController(
                 if (worker.State is WorkerState.Completed or WorkerState.Canceled or WorkerState.Failed)
                 {
                     this.activeDemoWorkers.TryRemove(workerId, out _);
+                    recurringIterationPlans.Forget(workerId);
                 }
 
                 break;
@@ -714,7 +726,16 @@ public sealed class DemoWorkloadController(
             if (!found)
             {
                 this.activeDemoWorkers.TryRemove(workerId, out _);
+                recurringIterationPlans.Forget(workerId);
             }
+        }
+    }
+
+    private void ClearTrackedIterationPlans()
+    {
+        foreach (var workerId in this.activeDemoWorkers.Keys)
+        {
+            recurringIterationPlans.Forget(workerId);
         }
     }
 

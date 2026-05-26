@@ -101,7 +101,7 @@ public sealed class WorkableEntraAuthorizationTests
         var httpApiContext = CreateMessageReceivedContext(
             jwtOptions,
             scheme,
-            "/workable/systems",
+            "/workable/host",
             "http-token");
         await jwtOptions.Events.MessageReceived(httpApiContext);
 

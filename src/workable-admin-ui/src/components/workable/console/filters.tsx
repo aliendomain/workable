@@ -9,14 +9,13 @@ import {
   ListFilter,
   Square,
 } from "lucide-react";
-import type { ReactNode } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { Loadable, OverviewScope } from "@/components/features/console/types";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { Skeleton } from "@/components/ui/skeleton";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import {
   workableFetch,
@@ -28,11 +27,6 @@ import {
   type WorkableConnection,
 } from "@/lib/workable";
 
-type OverviewScope = {
-  category?: string;
-  definitionName?: string;
-  includeSubcategories?: boolean;
-};
 type WorkOverviewCatalogComponent = Pick<WorkSystemOverview, "catalogCategories" | "catalogDefinitions">;
 type DefinitionCatalogLevel = {
   categories: WorkOverviewCatalogCategoryItem[];
@@ -41,26 +35,9 @@ type DefinitionCatalogLevel = {
 type CatalogFilterDefinitionItem = Pick<WorkDefinition, "id" | "name"> & {
   category?: string | null;
 };
-type Loadable<T> = {
-  data?: T;
-  error?: string;
-  loading: boolean;
-  refreshing?: boolean;
-};
-export function ViewActionLane({ children }: { children?: ReactNode }) {
-  return (
-    <div
-      aria-hidden={children ? undefined : true}
-      className="-mb-2 flex min-h-9 min-w-0 -translate-y-2 items-center justify-end gap-1"
-    >
-      {children}
-    </div>
-  );
-}
 
 export function OverviewCatalogFilter({
   connection,
-  loading,
   onClear,
   onSelectCategory,
   onSelectDefinition,
@@ -69,7 +46,6 @@ export function OverviewCatalogFilter({
   tooltipLabel = "Filter overview by category and definition",
 }: {
   connection: WorkableConnection;
-  loading: boolean;
   onClear: () => void;
   onSelectCategory: (category: string) => void;
   onSelectDefinition: (definitionName: string, category: string) => void;
@@ -170,39 +146,28 @@ export function OverviewCatalogFilter({
         </TooltipContent>
       </Tooltip>
       <PopoverContent align="end" className="w-[26rem] p-0">
-        <div className="flex h-10 items-center justify-between border-b px-3">
-          <span className="font-medium text-sm">Filters</span>
-          <Button onClick={clearAll} size="sm" variant="ghost">
-            Clear
-          </Button>
-        </div>
-        <ScrollArea className="max-h-[70vh]">
-          <div className="p-3">
-            <div className="overflow-hidden rounded-lg border">
-              <div className="border-b px-3 py-2 font-medium text-muted-foreground text-xs">
-                Catalog
-              </div>
-              <CatalogFilterPanel
-                categories={catalog.data?.categories ?? []}
-                definitions={catalog.data?.definitions ?? []}
-                loading={loading || catalog.loading || !!catalog.refreshing}
-                onClear={clearAll}
-                onClose={() => setOpen(false)}
-                onSelectCategory={(category) => {
-                  closeTooltip();
-                  onSelectCategory(category);
-                }}
-                onSelectDefinition={(definitionName, category) => {
-                  closeTooltip();
-                  onSelectDefinition(definitionName, category);
-                }}
-                path={path}
-                scope={scope}
-                setPath={setPath}
-              />
-            </div>
-          </div>
-        </ScrollArea>
+        <FilterPanelFrame onClear={clearAll}>
+          <FilterPanelSection title="Catalog">
+            <CatalogFilterPanel
+              categories={catalog.data?.categories ?? []}
+              definitions={catalog.data?.definitions ?? []}
+              loading={!catalog.data && (catalog.loading || !!catalog.refreshing)}
+              onClear={clearAll}
+              onClose={() => setOpen(false)}
+              onSelectCategory={(category) => {
+                closeTooltip();
+                onSelectCategory(category);
+              }}
+              onSelectDefinition={(definitionName, category) => {
+                closeTooltip();
+                onSelectDefinition(definitionName, category);
+              }}
+              path={path}
+              scope={scope}
+              setPath={setPath}
+            />
+          </FilterPanelSection>
+        </FilterPanelFrame>
       </PopoverContent>
     </Popover>
   );
@@ -250,7 +215,7 @@ function CatalogFilterPanel({
   };
 
   return (
-    <>
+    <div className="flex h-[22rem] min-h-0 flex-col">
       <div className="flex h-10 min-w-0 items-center gap-1 border-b px-2">
         <button
           aria-label={canGoBack ? "Back to parent category" : "Catalog root"}
@@ -268,12 +233,10 @@ function CatalogFilterPanel({
           All
         </Button>
       </div>
-      <ScrollArea className="max-h-80">
+      <ScrollArea className="min-h-0 flex-1">
         <div className="py-1">
           {loading ? (
-            Array.from({ length: 5 }).map((_, index) => (
-              <Skeleton className="mx-2 my-1 h-8" key={index} />
-            ))
+            <CatalogFilterPlaceholder />
           ) : (
             <>
               {categories.map((category) => {
@@ -337,7 +300,54 @@ function CatalogFilterPanel({
           )}
         </div>
       </ScrollArea>
+    </div>
+  );
+}
+
+function CatalogFilterPlaceholder() {
+  return <div className="mx-2 my-1 h-40 rounded-md border border-dashed" />;
+}
+
+function FilterPanelFrame({
+  children,
+  onClear,
+}: {
+  children: React.ReactNode;
+  onClear: () => void;
+}) {
+  return (
+    <>
+      <div className="flex h-10 items-center justify-between border-b px-3">
+        <span className="font-medium text-sm">Filters</span>
+        <Button onClick={onClear} size="sm" variant="ghost">
+          Clear
+        </Button>
+      </div>
+      <ScrollArea className="max-h-[70vh]">
+        <div className="grid gap-3 p-3">
+          {children}
+        </div>
+      </ScrollArea>
     </>
+  );
+}
+
+function FilterPanelSection({
+  children,
+  className,
+  title,
+}: {
+  children: React.ReactNode;
+  className?: string;
+  title: string;
+}) {
+  return (
+    <div className={`overflow-hidden rounded-lg border ${className ?? ""}`.trim()}>
+      <div className="border-b px-3 py-2 font-medium text-muted-foreground text-xs">
+        {title}
+      </div>
+      {children}
+    </div>
   );
 }
 
@@ -404,6 +414,82 @@ function QueryFacetPanel<TValue extends string>({
         })}
       </div>
     </div>
+  );
+}
+
+function QueryFilterSections<TValue extends string>({
+  allFacetLabel,
+  catalogCategories,
+  catalogDefinitions,
+  catalogLoading,
+  catalogScope,
+  clearAll,
+  facetLabel,
+  facetOptions,
+  facetValue,
+  keyTypeFilter,
+  onClose,
+  onFacetChange,
+  onKeyTypeFilterChange,
+  onSelectCategory,
+  onSelectDefinition,
+  path,
+  setPath,
+}: {
+  allFacetLabel: string;
+  catalogCategories: WorkOverviewCatalogCategoryItem[];
+  catalogDefinitions: CatalogFilterDefinitionItem[];
+  catalogLoading: boolean;
+  catalogScope: OverviewScope | null;
+  clearAll: () => void;
+  facetLabel: string;
+  facetOptions: TValue[];
+  facetValue: TValue[];
+  keyTypeFilter: string;
+  onClose?: () => void;
+  onFacetChange: (value: TValue[]) => void;
+  onKeyTypeFilterChange: (keyType: string) => void;
+  onSelectCategory: (category: string) => void;
+  onSelectDefinition: (definitionName: string, category: string) => void;
+  path: string;
+  setPath: (path: string) => void;
+}) {
+  return (
+    <FilterPanelFrame onClear={clearAll}>
+      <FilterPanelSection title="Catalog">
+        <CatalogFilterPanel
+          categories={catalogCategories}
+          definitions={catalogDefinitions}
+          loading={catalogLoading}
+          onClear={clearAll}
+          onClose={onClose}
+          onSelectCategory={onSelectCategory}
+          onSelectDefinition={onSelectDefinition}
+          path={path}
+          scope={catalogScope}
+          setPath={setPath}
+        />
+      </FilterPanelSection>
+      <FilterPanelSection title={facetLabel}>
+        <QueryFacetPanel
+          allLabel={allFacetLabel}
+          onChange={onFacetChange}
+          options={facetOptions}
+          value={facetValue}
+        />
+      </FilterPanelSection>
+      <FilterPanelSection className="p-3" title="Key type">
+        <div className="grid gap-2">
+          <Label className="text-muted-foreground text-xs">Key type</Label>
+          <Input
+            className="h-8"
+            onChange={(event) => onKeyTypeFilterChange(event.target.value)}
+            placeholder="Any key type"
+            value={keyTypeFilter}
+          />
+        </div>
+      </FilterPanelSection>
+    </FilterPanelFrame>
   );
 }
 
@@ -513,57 +599,112 @@ export function QueryFilterPopover<TValue extends string>({
         </TooltipContent>
       </Tooltip>
       <PopoverContent align="end" className="w-[26rem] p-0">
-        <div className="flex h-10 items-center justify-between border-b px-3">
-          <span className="font-medium text-sm">Filters</span>
-          <Button onClick={clearAll} size="sm" variant="ghost">
-            Clear
-          </Button>
-        </div>
-        <ScrollArea className="max-h-[70vh]">
-          <div className="grid gap-3 p-3">
-            <div className="overflow-hidden rounded-lg border">
-              <div className="border-b px-3 py-2 font-medium text-muted-foreground text-xs">
-                Catalog
-              </div>
-              <CatalogFilterPanel
-                categories={catalogComponent?.catalogCategories ?? []}
-                definitions={catalogComponent?.catalogDefinitions ?? []}
-                loading={catalog.loading || !!catalog.refreshing}
-                onClear={onClearCatalog}
-                onSelectCategory={onSelectCategory}
-                onSelectDefinition={(definitionName, category) => {
-                  onSelectDefinition(definitionName, category);
-                  setOpen(false);
-                }}
-                path={path}
-                scope={catalogScope}
-                setPath={setPath}
-              />
-            </div>
-            <div className="rounded-lg border">
-              <div className="border-b px-3 py-2 font-medium text-muted-foreground text-xs">
-                {facetLabel}
-              </div>
-              <QueryFacetPanel
-                allLabel={allFacetLabel}
-                onChange={onFacetChange}
-                options={facetOptions}
-                value={facetValue}
-              />
-            </div>
-            <div className="grid gap-2 rounded-lg border p-3">
-              <Label className="text-muted-foreground text-xs">Key type</Label>
-              <Input
-                className="h-8"
-                onChange={(event) => onKeyTypeFilterChange(event.target.value)}
-                placeholder="Any key type"
-                value={keyTypeFilter}
-              />
-            </div>
-          </div>
-        </ScrollArea>
+        <QueryFilterSections
+          allFacetLabel={allFacetLabel}
+          catalogCategories={catalogComponent?.catalogCategories ?? []}
+          catalogDefinitions={catalogComponent?.catalogDefinitions ?? []}
+          catalogLoading={!catalogComponent && (catalog.loading || !!catalog.refreshing)}
+          catalogScope={catalogScope}
+          clearAll={clearAll}
+          facetLabel={facetLabel}
+          facetOptions={facetOptions}
+          facetValue={facetValue}
+          keyTypeFilter={keyTypeFilter}
+          onClose={() => setOpen(false)}
+          onFacetChange={onFacetChange}
+          onKeyTypeFilterChange={onKeyTypeFilterChange}
+          onSelectCategory={onSelectCategory}
+          onSelectDefinition={onSelectDefinition}
+          path={path}
+          setPath={setPath}
+        />
       </PopoverContent>
     </Popover>
+  );
+}
+
+export function getQueryFilterActiveCount<TValue extends string>(
+  catalogScope: OverviewScope | null,
+  facetValue: TValue[],
+  keyTypeFilter: string
+) {
+  return (catalogScope ? 1 : 0) + (keyTypeFilter.trim() ? 1 : 0) + (facetValue.length > 0 ? 1 : 0);
+}
+
+export function QueryFilterPanelContent<TValue extends string>({
+  allFacetLabel,
+  catalogScope,
+  connection,
+  facetLabel,
+  facetOptions,
+  facetValue,
+  keyTypeFilter,
+  onClearCatalog,
+  onFacetChange,
+  onKeyTypeFilterChange,
+  onSelectCategory,
+  onSelectDefinition,
+  refreshToken,
+}: {
+  allFacetLabel: string;
+  catalogScope: OverviewScope | null;
+  connection: WorkableConnection;
+  facetLabel: string;
+  facetOptions: TValue[];
+  facetValue: TValue[];
+  keyTypeFilter: string;
+  onClearCatalog: () => void;
+  onFacetChange: (value: TValue[]) => void;
+  onKeyTypeFilterChange: (keyType: string) => void;
+  onSelectCategory: (category: string) => void;
+  onSelectDefinition: (definitionName: string, category: string) => void;
+  refreshToken: number;
+}) {
+  const [path, setPath] = useState(catalogScope?.category ?? "");
+  const catalogRequest = useMemo(
+    () => ({
+      components: [{ id: "catalog", type: "catalog" }],
+      scope: createOverviewComponentScope(catalogScope),
+    }),
+    [catalogScope]
+  );
+  const catalog = useWorkablePostResource<WorkComponentQueryResult>(
+    connection,
+    "components/query",
+    catalogRequest,
+    refreshToken
+  );
+  const catalogComponent = getWorkComponentData<WorkOverviewCatalogComponent>(
+    catalog.data,
+    "catalog"
+  );
+
+  const clearAll = () => {
+    onClearCatalog();
+    onKeyTypeFilterChange("");
+    onFacetChange([]);
+    setPath("");
+  };
+
+  return (
+    <QueryFilterSections
+      allFacetLabel={allFacetLabel}
+      catalogCategories={catalogComponent?.catalogCategories ?? []}
+      catalogDefinitions={catalogComponent?.catalogDefinitions ?? []}
+      catalogLoading={!catalogComponent && (catalog.loading || !!catalog.refreshing)}
+      catalogScope={catalogScope}
+      clearAll={clearAll}
+      facetLabel={facetLabel}
+      facetOptions={facetOptions}
+      facetValue={facetValue}
+      keyTypeFilter={keyTypeFilter}
+      onFacetChange={onFacetChange}
+      onKeyTypeFilterChange={onKeyTypeFilterChange}
+      onSelectCategory={onSelectCategory}
+      onSelectDefinition={onSelectDefinition}
+      path={path}
+      setPath={setPath}
+    />
   );
 }
 
@@ -763,15 +904,14 @@ function useWorkablePostResource<T>(
     }
 
     let canceled = false;
-    const requestChanged = previousRequestKey.current !== requestKey;
     previousRequestKey.current = requestKey;
     queueMicrotask(() => {
       if (!canceled) {
         setState((current) => ({
-          ...(requestChanged ? {} : current),
+          ...current,
           error: undefined,
-          loading: requestChanged || current.data === undefined,
-          refreshing: !requestChanged && current.data !== undefined,
+          loading: current.data === undefined,
+          refreshing: current.data !== undefined,
         }));
       }
     });

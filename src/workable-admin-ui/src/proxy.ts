@@ -9,9 +9,13 @@ export function proxy(request: NextRequest) {
     return NextResponse.next();
   }
 
-  const authentication = authenticateAdminRequest(request.headers);
+  const authentication = authenticateAdminRequest(request.headers, process.env, request);
   if (authentication.ok) {
-    return NextResponse.next();
+    const response = NextResponse.next();
+    if (authentication.sessionCookieHeader) {
+      response.headers.append("set-cookie", authentication.sessionCookieHeader);
+    }
+    return response;
   }
 
   if (request.nextUrl.pathname.startsWith("/api/")) {
@@ -29,7 +33,12 @@ export function proxy(request: NextRequest) {
     "next",
     `${request.nextUrl.pathname}${request.nextUrl.search}`
   );
-  return NextResponse.redirect(loginUrl);
+  const response = NextResponse.redirect(loginUrl);
+  const headers = failureHeaders(authentication);
+  if (headers["set-cookie"]) {
+    response.headers.append("set-cookie", headers["set-cookie"]);
+  }
+  return response;
 }
 
 function isPublicAdminRoute(pathname: string) {

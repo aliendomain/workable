@@ -12,7 +12,7 @@ internal static class WorkableHttpWorkerRoutes
             string action,
             WorkableHttpWorkerBulkActionRequest? request,
             HttpContext httpContext,
-            WorkableHttpSystemResolver systems,
+            WorkableHttpTopologyResolver topology,
             WorkableHttpWorkerAdapter workers,
             IWorkRequestContextFactory requestContexts,
             CancellationToken cancellationToken) =>
@@ -28,7 +28,7 @@ internal static class WorkableHttpWorkerRoutes
                 });
             }
 
-            if (!WorkableHttpRouteResults.TryResolveSystem(httpContext, systems, out var system, out var notFound))
+            if (!WorkableHttpRouteResults.TryResolveSystem(httpContext, topology, out var system, out var notFound))
             {
                 return notFound;
             }
@@ -47,7 +47,7 @@ internal static class WorkableHttpWorkerRoutes
             string action,
             WorkableHttpWorkerActionRequest request,
             HttpContext httpContext,
-            WorkableHttpSystemResolver systems,
+            WorkableHttpTopologyResolver topology,
             WorkableHttpWorkerAdapter workers,
             IWorkRequestContextFactory requestContexts,
             CancellationToken cancellationToken) =>
@@ -63,7 +63,7 @@ internal static class WorkableHttpWorkerRoutes
                 });
             }
 
-            if (!WorkableHttpRouteResults.TryResolveSystem(httpContext, systems, out var system, out var notFound))
+            if (!WorkableHttpRouteResults.TryResolveSystem(httpContext, topology, out var system, out var notFound))
             {
                 return notFound;
             }
@@ -81,12 +81,12 @@ internal static class WorkableHttpWorkerRoutes
             Guid workerId,
             WorkableHttpWorkerReconfigurationRequest request,
             HttpContext httpContext,
-            WorkableHttpSystemResolver systems,
+            WorkableHttpTopologyResolver topology,
             WorkableHttpWorkerAdapter workers,
             IWorkRequestContextFactory requestContexts,
             CancellationToken cancellationToken) =>
         {
-            if (!WorkableHttpRouteResults.TryResolveSystem(httpContext, systems, out var system, out var notFound))
+            if (!WorkableHttpRouteResults.TryResolveSystem(httpContext, topology, out var system, out var notFound))
             {
                 return notFound;
             }

@@ -13,8 +13,9 @@ import {
 import {
   createExpiredSessionCookie,
   createSignedAdminSessionCookie,
-  readAdminSession,
+  readAdminSessionState,
   sessionSecret,
+  shouldRenewAdminSession,
 } from "./admin-security/session.ts";
 import {
   authenticatedIdentity,
@@ -52,7 +53,8 @@ export type {
 
 export function authenticateAdminRequest(
   headers: Headers,
-  env: AdminSecurityEnvironment = process.env
+  env: AdminSecurityEnvironment = process.env,
+  request?: Request
 ): AdminSecurityResult {
   const settings = getAdminSecuritySettings(env);
   if (settings.configError) {
@@ -77,23 +79,43 @@ export function authenticateAdminRequest(
     return targetTokenConfiguration;
   }
 
-  const session = readAdminSession(headers, settings);
-  if (session) {
+  const session = readAdminSessionState(headers, settings);
+  if (session.identity) {
+    const renewedCookie = request && shouldRenewAdminSession(session.expiresAt, settings)
+      ? createSignedAdminSessionCookie(session.identity, request, settings)
+      : null;
+
     return authenticatedIdentity(
-      session.name,
+      session.identity.name,
       "session",
-      session.provider,
-      session.email
+      session.identity.provider,
+      session.identity.email,
+      renewedCookie?.ok ? renewedCookie.header : undefined
     );
   }
 
   if (settings.authProvider === "basic") {
-    return authenticateBasicRequest(headers, settings);
+    const basicAuthentication = authenticateBasicRequest(headers, settings);
+    if (basicAuthentication.ok || !session.shouldClear) {
+      return basicAuthentication;
+    }
+
+    return securityFailure(
+      basicAuthentication.status,
+      basicAuthentication.error,
+      {
+        ...(basicAuthentication.headers ?? {}),
+        "set-cookie": createExpiredSessionCookie(settings),
+      }
+    );
   }
 
   return securityFailure(
     401,
-    "Authentication is required for the Workable admin UI."
+    "Authentication is required for the Workable admin UI.",
+    session.shouldClear
+      ? { "set-cookie": createExpiredSessionCookie(settings) }
+      : undefined
   );
 }
 

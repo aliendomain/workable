@@ -196,6 +196,8 @@ public class WorkableViewQueryAdapter
                 "throughput" => await CreateThroughputComponent(queries, criteria, request.Shape, request.Options, cancellationToken),
                 "workergrid" => await CreateWorkerGridComponent(queries, criteria, request.Options, cancellationToken),
                 "iterationgrid" => await CreateIterationGridComponent(queries, criteria, request.Options, cancellationToken),
+                "workerdetail" => await CreateWorkerDetailComponent(queries, request.Options, cancellationToken),
+                "workercurrentiteration" => await CreateWorkerCurrentIterationComponent(queries, request.Options, cancellationToken),
                 "systemdiagnostics" => CreateSystemDiagnosticsComponent(session),
                 "queuediagnostics" => CreateQueueDiagnosticsComponent(session, request.Shape),
                 "readmodeldiagnostics" => CreateReadModelDiagnosticsComponent(session, request.Shape, request.Options),
@@ -505,6 +507,32 @@ public class WorkableViewQueryAdapter
             query.Criteria.Take);
     }
 
+    private static async Task<WorkerSnapshot?> CreateWorkerDetailComponent(
+        IWorkQueryService queries,
+        JsonElement? options,
+        CancellationToken cancellationToken)
+    {
+        var workerId = GetRequiredWorkerId(options);
+        return await queries.Worker(workerId, cancellationToken: cancellationToken);
+    }
+
+    private static async Task<WorkerIterationSnapshot?> CreateWorkerCurrentIterationComponent(
+        IWorkQueryService queries,
+        JsonElement? options,
+        CancellationToken cancellationToken)
+    {
+        var workerId = GetRequiredWorkerId(options);
+        var worker = await queries.Worker(workerId, cancellationToken: cancellationToken);
+        if (worker?.CurrentIterationSequence is not long sequence)
+        {
+            return null;
+        }
+
+        return await queries.WorkerIteration(
+            new WorkerIterationReference(workerId, sequence),
+            cancellationToken: cancellationToken);
+    }
+
     private static async Task<object> CreateThroughputComponent(
         IWorkQueryService queries,
         WorkSystemCriteria? criteria,
@@ -778,6 +806,16 @@ public class WorkableViewQueryAdapter
                 : [new("iterationGrid", "iterationGrid", Shape: WorkComponentShapes.Detailed)];
         }
 
+        if (string.Equals(name, "worker", StringComparison.OrdinalIgnoreCase))
+        {
+            return requests is { Count: > 0 }
+                ? requests
+                : [
+                    new("worker", "workerDetail", Shape: WorkComponentShapes.Detailed),
+                    new("currentIteration", "workerCurrentIteration", Shape: WorkComponentShapes.Detailed),
+                ];
+        }
+
         if (string.Equals(name, "diagnostics", StringComparison.OrdinalIgnoreCase))
         {
             return requests is { Count: > 0 }
@@ -961,6 +999,19 @@ public class WorkableViewQueryAdapter
             query.KeyType);
     }
 
+    private static WorkerId GetRequiredWorkerId(JsonElement? options)
+    {
+        var query = DeserializeOptions<WorkViewWorkerOptions>(options);
+        if (string.IsNullOrWhiteSpace(query?.WorkerId))
+        {
+            throw new InvalidOperationException("workerId is required.");
+        }
+
+        return Guid.TryParse(query.WorkerId, out var workerId)
+            ? new WorkerId(workerId)
+            : throw new InvalidOperationException("workerId must be a valid GUID.");
+    }
+
     private static T? DeserializeOptions<T>(JsonElement? options)
     {
         if (options is null || options.Value.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined)
@@ -1017,6 +1068,9 @@ public class WorkableViewQueryAdapter
     private sealed record WorkViewIterationGridCriteria(
         WorkerIterationCriteria Criteria,
         string? KeyType);
+
+    private sealed record WorkViewWorkerOptions(
+        string? WorkerId = null);
 
     private sealed record WorkViewWorkerGridOptions(
         string? KeyType = null,

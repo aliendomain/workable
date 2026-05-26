@@ -10,8 +10,7 @@ public sealed class WorkRecurrenceAttribute : Attribute
             intervalMilliseconds: intervalMilliseconds,
             continueAfterFailure: true,
             circuitBreakerFailureThreshold: 3,
-            retainedSuccessfulIterations: 25,
-            retainedFailedIterations: 5,
+            retainedIterations: 25,
             raiseCircuitBreakerOpenedEvent: true)
     {
     }
@@ -20,8 +19,7 @@ public sealed class WorkRecurrenceAttribute : Attribute
         int intervalMilliseconds,
         bool continueAfterFailure = true,
         int circuitBreakerFailureThreshold = 3,
-        int retainedSuccessfulIterations = 25,
-        int retainedFailedIterations = 5,
+        int retainedIterations = 25,
         bool raiseCircuitBreakerOpenedEvent = true)
     {
         this.Configuration = new WorkRecurrenceConfiguration
@@ -30,8 +28,7 @@ public sealed class WorkRecurrenceAttribute : Attribute
             Interval = TimeSpan.FromMilliseconds(intervalMilliseconds),
             ContinueAfterFailure = continueAfterFailure,
             CircuitBreakerFailureThreshold = circuitBreakerFailureThreshold,
-            RetainedSuccessfulIterations = retainedSuccessfulIterations,
-            RetainedFailedIterations = retainedFailedIterations,
+            RetainedIterations = retainedIterations,
             RaiseCircuitBreakerOpenedEvent = raiseCircuitBreakerOpenedEvent,
         };
 

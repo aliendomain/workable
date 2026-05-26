@@ -15,8 +15,7 @@ public sealed class WorkRecurrenceConfigurationTests
         Assert.Equal(TimeSpan.Zero, recurrence.Interval);
         Assert.True(recurrence.ContinueAfterFailure);
         Assert.Equal(3, recurrence.CircuitBreakerFailureThreshold);
-        Assert.Equal(25, recurrence.RetainedSuccessfulIterations);
-        Assert.Equal(5, recurrence.RetainedFailedIterations);
+        Assert.Equal(25, recurrence.RetainedIterations);
         Assert.True(recurrence.RaiseCircuitBreakerOpenedEvent);
     }
 
@@ -233,8 +232,7 @@ public sealed class WorkRecurrenceConfigurationTests
             Interval = TimeSpan.FromSeconds(12),
             ContinueAfterFailure = false,
             CircuitBreakerFailureThreshold = 7,
-            RetainedSuccessfulIterations = 8,
-            RetainedFailedIterations = 9,
+            RetainedIterations = 8,
             RaiseCircuitBreakerOpenedEvent = false,
         };
 
@@ -264,8 +262,7 @@ public sealed class WorkRecurrenceConfigurationTests
         Assert.Equal(expected.Interval, actual.Interval);
         Assert.Equal(expected.ContinueAfterFailure, actual.ContinueAfterFailure);
         Assert.Equal(expected.CircuitBreakerFailureThreshold, actual.CircuitBreakerFailureThreshold);
-        Assert.Equal(expected.RetainedSuccessfulIterations, actual.RetainedSuccessfulIterations);
-        Assert.Equal(expected.RetainedFailedIterations, actual.RetainedFailedIterations);
+        Assert.Equal(expected.RetainedIterations, actual.RetainedIterations);
         Assert.Equal(expected.RaiseCircuitBreakerOpenedEvent, actual.RaiseCircuitBreakerOpenedEvent);
     }
 
@@ -283,8 +280,7 @@ public sealed class WorkRecurrenceConfigurationTests
         intervalMilliseconds: 12_000,
         continueAfterFailure: false,
         circuitBreakerFailureThreshold: 7,
-        retainedSuccessfulIterations: 8,
-        retainedFailedIterations: 9,
+        retainedIterations: 8,
         raiseCircuitBreakerOpenedEvent: false)]
     private sealed class FullAttributedRecurringWork : IWorkExecutor
     {

@@ -18,6 +18,7 @@
   <ItemGroup>
     <InternalsVisibleTo Include="Workable" />
     <InternalsVisibleTo Include="Workable.SignalR" />
+    <InternalsVisibleTo Include="Workable.Tests" />
   </ItemGroup>
 
 </Project>

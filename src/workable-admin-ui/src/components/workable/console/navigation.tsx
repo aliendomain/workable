@@ -13,7 +13,6 @@ import {
   Pencil,
   Play,
   Plus,
-  Radio,
   RefreshCw,
   Search,
   Send,
@@ -23,6 +22,24 @@ import {
   Workflow,
 } from "lucide-react";
 import { Fragment, type ReactNode, useCallback, useEffect, useMemo, useState } from "react";
+import { ConsoleHeaderCapabilityControls } from "@/components/features/console/header-capability-controls";
+import {
+  consoleBreadcrumbCurrentClassName,
+  consoleBreadcrumbDefinitionClassName,
+  consoleBreadcrumbLinkClassName,
+  consoleBreadcrumbTextClassName,
+} from "@/components/features/console/console-primitives";
+import { useResolvedConsoleHeaderCapabilities } from "@/components/features/console/header-capabilities";
+import type {
+  Loadable,
+  OverviewScope,
+  PendingDelete,
+  PendingStopSystem,
+  ServerView,
+  View,
+  WorkableHostConnection,
+  WorkableSystemConnection,
+} from "@/components/features/console/types";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -66,49 +83,10 @@ import {
   type WorkDefinition,
   type WorkOverviewCatalogCategoryItem,
   type WorkableConnection,
+  type WorkableHttpHostDescriptor,
   type WorkSystemAccessSummary,
-  type WorkableHttpSystemInfo,
-  type WorkableHttpSystems,
+  type WorkableHttpSystemDescriptor,
 } from "@/lib/workable";
-
-type View = "overview" | "definitions" | "definition" | "workers" | "iterations" | "worker";
-type ServerView = Exclude<View, "worker">;
-type OverviewScope = {
-  category?: string;
-  definitionName?: string;
-  includeSubcategories?: boolean;
-};
-type WorkableHostConnection = {
-  id: string;
-  name: string;
-  apiUrl: string;
-  systems: WorkableSystemConnection[];
-};
-type WorkableSystemConnection = {
-  id: string;
-  hostId: string;
-  name: string;
-  systemName?: string;
-  access?: WorkSystemAccessSummary;
-  realtimeEnabled: boolean;
-  realtimeFeatures?: string[] | null;
-  realtimeHubPath?: string | null;
-  realtimeSupported?: boolean;
-  realtimeTransport?: string | null;
-  state?: string | null;
-};
-type PendingDelete =
-  | { kind: "host"; host: WorkableHostConnection }
-  | { kind: "system"; host: WorkableHostConnection; system: WorkableSystemConnection };
-type PendingStopSystem = {
-  system: WorkableSystemConnection;
-};
-type Loadable<T> = {
-  data?: T;
-  error?: string;
-  loading: boolean;
-  refreshing?: boolean;
-};
 const navItems: Array<{ id: ServerView; label: string; icon: typeof Activity }> = [
   { id: "overview", label: "Overview", icon: Activity },
   { id: "definitions", label: "Catalog", icon: Boxes },
@@ -144,7 +122,13 @@ export function ServerTree({
   onAddServer: () => void;
   onEditHost: (host: WorkableHostConnection) => void;
   onOpenCatalogScope: (systemId: string, scope: OverviewScope | null) => void;
-  onOpenDefinition: (definitionId: string, systemId?: string) => void;
+  onOpenDefinition: (
+    definitionId: string,
+    options?: {
+      definitionName?: string;
+      systemId?: string;
+    }
+  ) => void;
   onOpenWorker: (workerId: string) => void;
   onLifecycleAction: (system: WorkableSystemConnection, action: "start" | "stop") => void;
   onOpenView: (view: View, systemId: string) => void;
@@ -268,9 +252,6 @@ export function ServerTree({
                             />
                             <span className="min-w-0 truncate">{system.name}</span>
                             <SystemStateBadge state={system.state} />
-                            {system.realtimeEnabled && (
-                              <Radio className="text-emerald-300" />
-                            )}
                           </button>
                         </SidebarMenuSubButton>
                         {(lifecycleAction || lifecycleActionSystemId === system.id) && (
@@ -457,7 +438,13 @@ function CatalogExplorer({
   activeOverviewCategory: string;
   host: WorkableHostConnection;
   onOpenCatalogScope: (systemId: string, scope: OverviewScope | null) => void;
-  onOpenDefinition: (definitionId: string, systemId?: string) => void;
+  onOpenDefinition: (
+    definitionId: string,
+    options?: {
+      definitionName?: string;
+      systemId?: string;
+    }
+  ) => void;
   onOpenWorker: (workerId: string) => void;
   system: WorkableSystemConnection;
 }) {
@@ -555,7 +542,10 @@ function CatalogExplorer({
               >
                 <button
                   className="flex h-full min-w-0 flex-1 items-center gap-2 px-2 text-left"
-                  onClick={() => onOpenDefinition(definition.id.value, system.id)}
+                  onClick={() => onOpenDefinition(definition.id.value, {
+                    definitionName: definition.name,
+                    systemId: system.id,
+                  })}
                   type="button"
                 >
                   <FileCode2 className="size-4 shrink-0 text-sidebar-accent-foreground" />
@@ -755,14 +745,21 @@ export function ServerDialog({
 }) {
   const [name, setName] = useState(host?.name ?? "");
   const [apiUrl, setApiUrl] = useState(host?.apiUrl ?? "");
-  const [discovered, setDiscovered] = useState<WorkableHttpSystemInfo[]>(
+  const [discovered, setDiscovered] = useState<WorkableHttpSystemDescriptor[]>(
     () => host?.systems.map(createDiscoveredSystemFromStored) ?? []
+  );
+  const [discoveredRealtime, setDiscoveredRealtime] = useState<WorkableHttpHostDescriptor["capabilities"]["realtime"] | null>(
+    () =>
+      host
+        ? {
+            enabled: host.realtimeEnabled,
+            hubPath: host.realtimeHubPath ?? null,
+            transport: host.realtimeTransport ?? null,
+          }
+        : null
   );
   const [selectedSystemIds, setSelectedSystemIds] = useState<Set<string>>(
     () => new Set(host?.systems.map((system) => system.systemName ?? "") ?? [])
-  );
-  const [realtimeSystemIds, setRealtimeSystemIds] = useState<Set<string>>(
-    () => new Set(host?.systems.filter((system) => system.realtimeEnabled).map((system) => system.systemName ?? ""))
   );
   const [isLoadingSystems, setIsLoadingSystems] = useState(false);
   const [hasLoadedSystems, setHasLoadedSystems] = useState(false);
@@ -777,11 +774,12 @@ export function ServerDialog({
     setSystemsError(undefined);
 
     try {
-      const result = await discoverSystems(apiUrl);
+      const result = await discoverHost(apiUrl);
       const systems = result.systems ?? [];
       setHasLoadedSystems(true);
       setApiUrl(result.apiUrl);
       setDiscovered(systems);
+      setDiscoveredRealtime(result.capabilities.realtime);
 
       setSelectedSystemIds((current) => {
         if (current.size > 0) {
@@ -789,16 +787,6 @@ export function ServerDialog({
         }
 
         return new Set(systems.map(getSystemStorageKey));
-      });
-      setRealtimeSystemIds((current) => {
-        const next = new Set<string>();
-        for (const system of systems) {
-          const key = getSystemStorageKey(system);
-          if (current.has(key) && system.capabilities.realtime.enabled) {
-            next.add(key);
-          }
-        }
-        return next;
       });
     } catch (caught) {
       setHasLoadedSystems(false);
@@ -839,11 +827,13 @@ export function ServerDialog({
       id: hostId,
       name: name.trim() || "Workable host",
       apiUrl: apiUrl.trim(),
+      realtimeEnabled: Boolean(discoveredRealtime?.enabled),
+      realtimeHubPath: discoveredRealtime?.hubPath ?? null,
+      realtimeTransport: discoveredRealtime?.transport ?? null,
       systems: selected.map((system) =>
         createStoredSystem(
           hostId,
           system,
-          realtimeSystemIds,
           findStoredSystemByKey(host, system)
         )
       ),
@@ -851,24 +841,11 @@ export function ServerDialog({
     onOpenChange(false);
   };
 
-  const toggleSelectedSystem = (system: WorkableHttpSystemInfo, checked: boolean) => {
+  const toggleSelectedSystem = (system: WorkableHttpSystemDescriptor, checked: boolean) => {
     const key = getSystemStorageKey(system);
     setSelectedSystemIds((current) => {
       const next = new Set(current);
       if (checked) {
-        next.add(key);
-      } else {
-        next.delete(key);
-      }
-      return next;
-    });
-  };
-
-  const toggleRealtimeSystem = (system: WorkableHttpSystemInfo, checked: boolean) => {
-    const key = getSystemStorageKey(system);
-    setRealtimeSystemIds((current) => {
-      const next = new Set(current);
-      if (checked && system.capabilities.realtime.enabled) {
         next.add(key);
       } else {
         next.delete(key);
@@ -901,8 +878,8 @@ export function ServerDialog({
                 onChange={(event) => {
                   setApiUrl(event.target.value);
                   setDiscovered([]);
+                  setDiscoveredRealtime(null);
                   setSelectedSystemIds(new Set());
-                  setRealtimeSystemIds(new Set());
                   setHasLoadedSystems(false);
                   setSystemsError(undefined);
                 }}
@@ -927,9 +904,8 @@ export function ServerDialog({
             <ErrorBanner key={systemsError} message={systemsError} title="Discovery failed" />
           )}
           <div className="rounded-lg border">
-            <div className="grid grid-cols-[1fr_7rem] border-b px-3 py-2 font-medium text-muted-foreground text-xs">
+            <div className="border-b px-3 py-2 font-medium text-muted-foreground text-xs">
               <span>System</span>
-              <span>Real time</span>
             </div>
             <div className="max-h-72 overflow-y-auto">
               {isLoadingSystems ? (
@@ -945,12 +921,11 @@ export function ServerDialog({
               ) : (
                 discovered.map((system) => {
                   const key = getSystemStorageKey(system);
-                  const realtimeAvailable = system.capabilities.realtime.enabled;
                   const accessBadges = getSystemAccessBadges(system.access);
 
                   return (
                     <div
-                      className="grid grid-cols-[1fr_7rem] items-start gap-3 border-b px-3 py-3 last:border-b-0"
+                      className="border-b px-3 py-3 last:border-b-0"
                       key={key}
                     >
                       <label className="flex min-w-0 items-start gap-3">
@@ -984,11 +959,6 @@ export function ServerDialog({
                           </span>
                         </span>
                       </label>
-                      <RealtimeCheckbox
-                        checked={realtimeAvailable && realtimeSystemIds.has(key)}
-                        disabled={!realtimeAvailable}
-                        onChange={(checked) => toggleRealtimeSystem(system, checked)}
-                      />
                     </div>
                   );
                 })
@@ -1017,72 +987,43 @@ export function ServerDialog({
   );
 }
 
-function RealtimeCheckbox({
-  checked,
-  disabled,
-  onChange,
-}: {
-  checked: boolean;
-  disabled: boolean;
-  onChange: (checked: boolean) => void;
-}) {
-  const checkbox = (
-    <input
-      checked={checked}
-      className="size-4 rounded border disabled:opacity-50"
-      disabled={disabled}
-      onChange={(event) => onChange(event.target.checked)}
-      type="checkbox"
-    />
-  );
-
-  if (!disabled) {
-    return <label className="flex justify-center pt-0.5">{checkbox}</label>;
-  }
-
-  return (
-    <Tooltip delayDuration={500} disableHoverableContent>
-      <TooltipTrigger asChild>
-        <span className="flex cursor-not-allowed justify-center pt-0.5">
-          {checkbox}
-        </span>
-      </TooltipTrigger>
-      <TooltipContent
-        className="max-w-64 whitespace-normal text-left"
-        side="top"
-        sideOffset={6}
-      >
-        Real-time not available because SignalR is not configured on the server.
-      </TooltipContent>
-    </Tooltip>
-  );
-}
-
 export function ConsoleNavigationHeader({
+  breadcrumbParent,
   canGoBack,
+  canGoForward,
   definitionId,
+  definitionName,
   host,
   onBack,
+  onForward,
   onOpenView,
   system,
   systemNotifications,
   view,
   workerId,
 }: {
+  breadcrumbParent?: {
+    label: string;
+    onSelect: () => void;
+  } | null;
   canGoBack: boolean;
+  canGoForward: boolean;
   definitionId: string | null;
+  definitionName: string | null;
   host: WorkableHostConnection;
   onBack: () => void;
+  onForward: () => void;
   onOpenView: (view: View, systemId?: string, trackHistory?: boolean) => void;
   system: WorkableSystemConnection;
   systemNotifications?: ReactNode;
   view: View;
   workerId: string | null;
 }) {
+  const headerCapabilities = useResolvedConsoleHeaderCapabilities();
   const canOpenOverview = view !== "overview";
   const currentLabel =
     view === "definition" && definitionId
-      ? definitionId
+      ? definitionName ?? definitionId
       : view === "worker" && workerId
         ? workerId
         : navTitle(view);
@@ -1108,9 +1049,26 @@ export function ConsoleNavigationHeader({
           Go back
         </TooltipContent>
       </Tooltip>
+      <Tooltip delayDuration={500} disableHoverableContent>
+        <TooltipTrigger asChild>
+          <Button
+            aria-label="Go forward"
+            className="shrink-0"
+            disabled={!canGoForward}
+            onClick={onForward}
+            size="icon-sm"
+            variant="ghost"
+          >
+            <ChevronRight className="size-4" />
+          </Button>
+        </TooltipTrigger>
+        <TooltipContent side="bottom" sideOffset={6}>
+          Go forward
+        </TooltipContent>
+      </Tooltip>
       <div className="min-w-0 flex-1 overflow-x-auto">
         <Breadcrumb>
-          <BreadcrumbList className="flex-nowrap whitespace-nowrap">
+          <BreadcrumbList className={`flex-nowrap whitespace-nowrap ${consoleBreadcrumbTextClassName}`}>
             <BreadcrumbItem className="min-w-0 shrink-0">
               <BreadcrumbPage className="max-w-48 truncate text-muted-foreground">
                 {host.name}
@@ -1119,28 +1077,49 @@ export function ConsoleNavigationHeader({
             <BreadcrumbSeparator className="shrink-0" />
             <BreadcrumbItem className="min-w-0 shrink-0">
               {canOpenOverview ? (
-                <BreadcrumbLink asChild className="max-w-56 truncate">
+                <BreadcrumbLink asChild className={consoleBreadcrumbLinkClassName}>
                   <button onClick={() => onOpenView("overview", system.id)} type="button">
                     {system.name}
                   </button>
                 </BreadcrumbLink>
               ) : (
-                <BreadcrumbPage className="max-w-56 truncate">
+                <BreadcrumbPage className={consoleBreadcrumbCurrentClassName}>
                   {system.name}
                 </BreadcrumbPage>
               )}
             </BreadcrumbItem>
             <BreadcrumbSeparator className="shrink-0" />
             <BreadcrumbItem className="min-w-0 shrink-0">
-              <BreadcrumbPage className={`${view === "worker" || view === "definition" ? "font-mono" : ""} max-w-80 truncate font-semibold text-foreground`}>
-                {currentLabel}
-              </BreadcrumbPage>
+              {breadcrumbParent ? (
+                <BreadcrumbLink asChild className={consoleBreadcrumbDefinitionClassName}>
+                  <button onClick={breadcrumbParent.onSelect} type="button">
+                    {breadcrumbParent.label}
+                  </button>
+                </BreadcrumbLink>
+              ) : (
+                <BreadcrumbPage
+                  className={`${view === "worker" || view === "definition" ? consoleBreadcrumbDefinitionClassName : consoleBreadcrumbCurrentClassName} text-foreground`}
+                >
+                  {currentLabel}
+                </BreadcrumbPage>
+              )}
             </BreadcrumbItem>
+            {breadcrumbParent && (
+              <>
+                <BreadcrumbSeparator className="shrink-0" />
+                <BreadcrumbItem className="min-w-0 shrink-0">
+                  <BreadcrumbPage className={`${consoleBreadcrumbDefinitionClassName} font-semibold text-foreground`}>
+                    {currentLabel}
+                  </BreadcrumbPage>
+                </BreadcrumbItem>
+              </>
+            )}
           </BreadcrumbList>
         </Breadcrumb>
       </div>
-      {systemNotifications && (
-        <div className="ml-auto flex shrink-0 items-center">
+      {(headerCapabilities || systemNotifications) && (
+        <div className="ml-auto flex shrink-0 items-center gap-1">
+          <ConsoleHeaderCapabilityControls capabilities={headerCapabilities} />
           {systemNotifications}
         </div>
       )}
@@ -1150,12 +1129,10 @@ export function ConsoleNavigationHeader({
 
 function createStoredSystem(
   hostId: string,
-  system: WorkableHttpSystemInfo,
-  realtimeSystemIds: Set<string>,
+  system: WorkableHttpSystemDescriptor,
   existingSystem?: WorkableSystemConnection
 ): WorkableSystemConnection {
   const key = getSystemStorageKey(system);
-  const realtimeSupported = system.capabilities.realtime.enabled;
 
   return {
     id: existingSystem?.id ?? `${hostId}-${key || "default"}`,
@@ -1163,18 +1140,14 @@ function createStoredSystem(
     name: getSystemDisplayName(system),
     systemName: normalizeOptional(system.name),
     access: system.access,
-    realtimeEnabled: realtimeSupported && realtimeSystemIds.has(key),
-    realtimeFeatures: normalizeRealtimeFeatures(system.capabilities.realtime.features),
-    realtimeHubPath: system.capabilities.realtime.hubPath ?? null,
-    realtimeSupported,
-    realtimeTransport: system.capabilities.realtime.transport ?? null,
+    persistentCoordinationAvailable: system.capabilities.persistentCoordinationAvailable,
     state: system.state,
   };
 }
 
 function findStoredSystemByKey(
   host: WorkableHostConnection | undefined,
-  system: WorkableHttpSystemInfo
+  system: WorkableHttpSystemDescriptor
 ) {
   const key = getSystemStorageKey(system);
   return host?.systems.find(
@@ -1243,20 +1216,6 @@ function createUnknownAccessSummary(): WorkSystemAccessSummary {
   };
 }
 
-function normalizeRealtimeFeatures(features?: string[] | null) {
-  if (!Array.isArray(features)) {
-    return null;
-  }
-
-  const normalized = [...new Set(
-    features
-      .filter((feature) => typeof feature === "string" && feature.trim())
-      .map((feature) => feature.trim())
-  )];
-
-  return normalized.length > 0 ? normalized : null;
-}
-
 function getWorkAccessBadge(
   label: "Read" | "Operate",
   count: number,
@@ -1278,19 +1237,19 @@ function formatCompactCount(value: number) {
   return new Intl.NumberFormat("en-US", { notation: value >= 1000 ? "compact" : "standard" }).format(value);
 }
 
-export async function discoverSystems(apiUrl: string): Promise<WorkableHttpSystems & { apiUrl: string }> {
+export async function discoverHost(apiUrl: string): Promise<WorkableHttpHostDescriptor & { apiUrl: string }> {
   const candidates = createWorkableApiUrlCandidates(apiUrl);
   let lastError: unknown;
 
   for (const candidate of candidates) {
     try {
-      const result = await workableFetch<WorkableHttpSystems>(
+      const result = await workableFetch<WorkableHttpHostDescriptor>(
         {
           apiUrl: candidate,
         },
-        "systems"
+        "host"
       );
-      if (!isWorkableSystemsResponse(result)) {
+      if (!isWorkableHostResponse(result)) {
         continue;
       }
 
@@ -1303,7 +1262,7 @@ export async function discoverSystems(apiUrl: string): Promise<WorkableHttpSyste
     }
   }
 
-  const attempted = candidates.map(formatSystemsEndpoint).join(", ");
+  const attempted = candidates.map(formatHostEndpoint).join(", ");
   if (lastError instanceof WorkableApiError) {
     if (lastError.status === 401) {
       throw new Error(
@@ -1319,7 +1278,7 @@ export async function discoverSystems(apiUrl: string): Promise<WorkableHttpSyste
 
     if (lastError.status === 404) {
       throw new Error(
-        `No Workable systems endpoint was found at that address. Make sure the URL points to the Workable HTTP API root, usually ending in /workable. Tried ${attempted}.`
+        `No Workable host endpoint was found at that address. Make sure the URL points to the Workable HTTP API root, usually ending in /workable. Tried ${attempted}.`
       );
     }
   }
@@ -1350,12 +1309,15 @@ function createWorkableApiUrlCandidates(value: string) {
       }
     };
 
-    const systemsBase = stripTrailingPathSegment(entered, "systems");
-    addCandidate(systemsBase);
+    const hostBase = stripTrailingPathSegment(
+      stripTrailingPathSegment(entered, "systems"),
+      "host"
+    );
+    addCandidate(hostBase);
 
-    const path = systemsBase.pathname.replace(/\/+$/, "");
+    const path = hostBase.pathname.replace(/\/+$/, "");
     if (!path.toLowerCase().endsWith("/workable")) {
-      const workableBase = new URL(systemsBase.toString());
+      const workableBase = new URL(hostBase.toString());
       workableBase.pathname = `${path}/workable`.replace(/^\/?/, "/");
       addCandidate(workableBase);
     }
@@ -1382,72 +1344,67 @@ function formatWorkableApiUrl(url: URL) {
   return `${url.origin}${path}${url.search}`;
 }
 
-function formatSystemsEndpoint(apiUrl: string) {
+function formatHostEndpoint(apiUrl: string) {
   const normalized = apiUrl.replace(/\/+$/, "");
-  return `${normalized}/systems`;
+  return `${normalized}/host`;
 }
 
-function isWorkableSystemsResponse(value: unknown): value is WorkableHttpSystems {
+function isWorkableHostResponse(value: unknown): value is WorkableHttpHostDescriptor {
   return Boolean(
     value &&
       typeof value === "object" &&
-      Array.isArray((value as Partial<WorkableHttpSystems>).systems)
+      Array.isArray((value as Partial<WorkableHttpHostDescriptor>).systems) &&
+      (value as Partial<WorkableHttpHostDescriptor>).capabilities
   );
 }
 
 function createDiscoveredSystemFromStored(
   system: WorkableSystemConnection
-): WorkableHttpSystemInfo {
+): WorkableHttpSystemDescriptor {
   return {
     id: { value: system.id },
     name: system.systemName ?? null,
     state: system.state ?? "Unknown",
     isDefault: !system.systemName,
     capabilities: {
-      realtime: {
-        enabled: Boolean(system.realtimeSupported),
-        features: normalizeRealtimeFeatures(system.realtimeFeatures),
-        hubPath: system.realtimeHubPath,
-        transport: system.realtimeTransport,
-      },
-      persistentCoordinationAvailable: false,
+      persistentCoordinationAvailable: system.persistentCoordinationAvailable,
     },
     access: system.access ?? createUnknownAccessSummary(),
   };
 }
 
-export function reconcileStoredSystemsWithDiscovery(
+export function reconcileStoredHostWithDiscovery(
   host: WorkableHostConnection,
-  systems: WorkableHttpSystemInfo[]
-): WorkableSystemConnection[] {
-  const realtimeSystemIds = new Set(
-    host.systems
-      .filter((system) => system.realtimeEnabled)
-      .map((system) => system.systemName ?? "")
-  );
-
-  return host.systems.flatMap((storedSystem) => {
-    const discoveredSystem = systems.find(
+  discoveredHost: WorkableHttpHostDescriptor
+): WorkableHostConnection {
+  return {
+    ...host,
+    realtimeEnabled: Boolean(discoveredHost.capabilities.realtime.enabled),
+    realtimeHubPath: discoveredHost.capabilities.realtime.hubPath ?? null,
+    realtimeTransport: discoveredHost.capabilities.realtime.transport ?? null,
+    systems: host.systems.flatMap((storedSystem) => {
+      const discoveredSystem = discoveredHost.systems.find(
       (system) =>
         getSystemStorageKey(system) ===
         getSystemStorageKey(createDiscoveredSystemFromStored(storedSystem))
-    );
+      );
 
-    return discoveredSystem
-      ? [createStoredSystem(host.id, discoveredSystem, realtimeSystemIds, storedSystem)]
-      : [];
-  });
+      return discoveredSystem
+        ? [createStoredSystem(host.id, discoveredSystem, storedSystem)]
+        : [];
+    }),
+  };
 }
 
-function getSystemStorageKey(system: WorkableHttpSystemInfo) {
+function getSystemStorageKey(system: WorkableHttpSystemDescriptor) {
   return system.name?.trim() ?? "";
 }
 
-function getSystemDisplayName(system: WorkableHttpSystemInfo) {
+function getSystemDisplayName(system: WorkableHttpSystemDescriptor) {
   return normalizeOptional(system.name) ?? "Default";
 }
 
-function getSystemSecondaryText(system: WorkableHttpSystemInfo) {
+function getSystemSecondaryText(system: WorkableHttpSystemDescriptor) {
   return system.isDefault ? "Default system" : null;
 }
 

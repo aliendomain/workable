@@ -164,9 +164,14 @@ internal sealed class WorkerRetentionScheduler(
             {
                 cancellationToken.ThrowIfCancellationRequested();
 
-                if (this.TryTakeDuePurgeBatch(out var scheduledPurgeWorkerIds, out var scheduledPurgeDefinitionId))
+                if (this.TryTakeDuePurgeBatch(
+                    out var scheduledPurgeWorkerIds,
+                    out var scheduledPurgeDefinitionId))
                 {
-                    this.TryPurge(scheduledPurgeWorkerIds, scheduledPurgeDefinitionId, cancellationToken);
+                    this.TryPurge(
+                        scheduledPurgeWorkerIds,
+                        scheduledPurgeDefinitionId,
+                        cancellationToken);
                     continue;
                 }
 

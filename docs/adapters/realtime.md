@@ -57,8 +57,9 @@ builder.Services.AddWorkableSignalR(options =>
     options.HubPath = "/internal/work/realtime";
     options.PublishInterval = TimeSpan.FromSeconds(2);
     options.DiagnosticsPublishInterval = TimeSpan.FromMilliseconds(250);
-    options.EventBatchWindow = TimeSpan.FromSeconds(1);
-    options.EventMinimumBatchWindow = TimeSpan.FromMilliseconds(100);
+    options.BatchTimeWindow = TimeSpan.FromSeconds(1);
+    options.LiveTimeWindow = TimeSpan.FromMilliseconds(100);
+    options.MinimumTimeWindow = TimeSpan.FromMilliseconds(100);
     options.EventMaxBatchSize = 512;
     options.EventSubscriptionCapacity = 16_384;
     options.EventOverflowBehavior = WorkEventOverflowBehavior.DropWrite;
@@ -78,8 +79,9 @@ app.MapWorkableSignalR("/internal/work/realtime");
 - `HubPath`: the default path used by `MapWorkableSignalR()` when the map call does not supply one explicitly.
 - `PublishInterval`: how often non-diagnostics view subscriptions are recomputed and pushed while they are active.
 - `DiagnosticsPublishInterval`: how often diagnostics view subscriptions are recomputed and pushed while they are active.
-- `EventBatchWindow`: how long the broadcaster waits to accumulate more events after the first event in a burst before sending.
-- `EventMinimumBatchWindow`: the minimum positive batch window the broadcaster will honor, to avoid overly chatty event sending from tiny configured values.
+- `BatchTimeWindow`: how long the broadcaster waits to accumulate more events after the first event in a normal burst before sending.
+- `LiveTimeWindow`: how long the broadcaster waits to accumulate more events for live-style subscriptions such as `WatchWorker` before sending.
+- `MinimumTimeWindow`: the minimum positive time window the broadcaster will honor for either mode, to avoid overly chatty sends from tiny configured values.
 - `EventMaxBatchSize`: the maximum number of events included in one `workable.events` batch.
 - `EventSubscriptionCapacity`: the number of events each active event subscription group can buffer before overflow handling applies.
 - `EventOverflowBehavior`: what happens when an event subscription group reaches its buffer limit, such as `DropWrite` or `DropOldest`.
@@ -88,23 +90,24 @@ app.MapWorkableSignalR("/internal/work/realtime");
 
 ## Capability Discovery
 
-`Workable.HttpApi` exposes capability information through the systems endpoint so clients can build a system picker and discover whether realtime is available for each system.
+`Workable.HttpApi` exposes capability information through the host endpoint so clients can discover whether the host exposes realtime transport and which systems are visible to the caller.
 
 ```http
-GET /workable/systems
+GET /workable/host
 ```
 
-Each listed system includes the same realtime capability object surfaced by the HTTP systems endpoint. The realtime feature list is filtered by the caller's system/work visibility, so two callers can see different feature sets for the same system.
+Realtime capability is host-level in the HTTP discovery surface. System visibility still matters because callers only see systems they can connect to, and system access still determines which system-specific views and diagnostics a client should attempt to use.
 
 When `Workable.SignalR` is registered:
 
 ```json
 {
-  "realtime": {
-    "enabled": true,
-    "transport": "signalr",
-    "hubPath": "/workable/realtime",
-    "features": ["system-view", "work-views", "worker-events", "diagnostics-view"]
+  "capabilities": {
+    "realtime": {
+      "enabled": true,
+      "transport": "signalr",
+      "hubPath": "/workable/realtime"
+    }
   }
 }
 ```
@@ -113,16 +116,15 @@ When `Workable.SignalR` is not registered:
 
 ```json
 {
-  "realtime": {
-    "enabled": false,
-    "transport": null,
-    "hubPath": null,
-    "features": null
+  "capabilities": {
+    "realtime": {
+      "enabled": false,
+      "transport": null,
+      "hubPath": null
+    }
   }
 }
 ```
-
-When a caller can connect to a system but cannot read work or diagnostics, the feature list can be narrower. For example, a connect-only caller may see only `["system-view"]`.
 
 ## Worker Events
 
@@ -233,8 +235,9 @@ await connection.InvokeAsync(
 
 The realtime broadcaster coalesces bursts into batches. This reduces SignalR send overhead during high-volume event spikes.
 
-- `EventBatchWindow` controls how long the broadcaster waits to collect additional events after receiving the first event in a burst.
-- `EventMinimumBatchWindow` prevents accidentally configuring an overly chatty event stream; smaller positive windows are raised to this value.
+- `BatchTimeWindow` controls how long the broadcaster waits to collect additional events after receiving the first event in a normal burst.
+- `LiveTimeWindow` does the same for live-style subscriptions. Today that primarily means `WatchWorker`, so worker detail screens can feel more immediate than broad event viewers.
+- `MinimumTimeWindow` prevents accidentally configuring an overly chatty event stream; smaller positive windows are raised to this value.
 - `EventMaxBatchSize` caps the number of events in one batch.
 - `EventSubscriptionCapacity` caps the number of individual events buffered by each active event subscription group before the configured overflow behavior applies.
 - `EventOverflowBehavior` controls what the per-subscription channel does when it reaches capacity.
@@ -242,9 +245,9 @@ The realtime broadcaster coalesces bursts into batches. This reduces SignalR sen
 - Multiple collected events are sent through `workable.events`.
 - Event order is preserved inside the batch.
 
-The defaults are a 1 second batch window, a 100ms minimum batch window, 512 events per batch, 16,384 buffered events per active event subscription group, and `DropWrite` overflow behavior.
+The defaults are a 1 second batch window, a 100ms live window, a 100ms minimum time window, 512 events per batch, 16,384 buffered events per active event subscription group, and `DropWrite` overflow behavior.
 
-The batch window is also the send pace during bursts. If the batch reaches `EventMaxBatchSize` before the window expires, the broadcaster waits out the remaining window before sending. That gives the bounded event subscription channel room to absorb overflow according to `EventOverflowBehavior` instead of turning a large burst into a tight loop of SignalR sends.
+The chosen time window is also the send pace during bursts. If the batch reaches `EventMaxBatchSize` before the window expires, the broadcaster waits out the remaining window before sending. That gives the bounded event subscription channel room to absorb overflow according to `EventOverflowBehavior` instead of turning a large burst into a tight loop of SignalR sends.
 
 `DropWrite` is the default for SignalR because realtime event viewers are observational and bounded. When a SignalR event subscription is already full, lazy event payloads can be skipped before construction, which keeps high-throughput worker execution from paying to produce events the browser will never inspect. Use `DropOldest` only when keeping the newest event samples matters more than minimizing writer-path overhead.
 
@@ -255,14 +258,22 @@ Batching changes transport shape, not event semantics. Clients should handle bot
 Overview-style clients can subscribe to the same component-view request shape used by the HTTP API.
 
 ```csharp
-connection.On<WorkComponentQueryResult>("workable.view", view =>
+const string OverviewSubscriptionId = "overview-main";
+
+connection.On<WorkableRealtimeViewEnvelope<WorkComponentQueryResult>>("workable.view", envelope =>
 {
-    // Replace the visible component data with the pushed component map.
+    if (!string.Equals(envelope.SubscriptionId, OverviewSubscriptionId, StringComparison.Ordinal))
+    {
+        return;
+    }
+
+    // Replace the visible component data with envelope.Result.
 });
 
 await connection.StartAsync();
 await connection.InvokeAsync(
     "WatchView",
+    OverviewSubscriptionId,
     "overview",
     new WorkViewCriteria(
         Components:
@@ -274,9 +285,9 @@ await connection.InvokeAsync(
     (string?)null);
 ```
 
-`WatchView` immediately sends the current `WorkComponentQueryResult` to the caller. After that, the server coalesces Workable events and publishes refreshed results on the publish interval.
+`WatchView` immediately sends the current `WorkableRealtimeViewEnvelope<WorkComponentQueryResult>` to the caller. The envelope includes the caller-supplied `subscriptionId`, the normalized `viewName`, and the `result`. After that, the server coalesces Workable events and publishes refreshed results on the publish interval.
 
-View subscriptions are grouped by system id, view name, scope, component ids, component types, shapes, options, and effective read visibility. Connections with the same normalized request and the same readable work set share one server recomputation per publish tick. If a client hides a panel, it should call `WatchView` again with that component omitted; if it changes a panel between `compact`, `standard`, and `detailed`, it should call `WatchView` with the new shape. The same SignalR connection stays open while the server swaps the connection between normalized view groups.
+View subscriptions are grouped by system id, view name, scope, component ids, component types, shapes, options, and effective read visibility. Connections with the same normalized request and the same readable work set share one server recomputation per publish tick. The client-supplied `subscriptionId` is the logical handle for one live view stream on a SignalR connection. A single SignalR connection can keep multiple view subscriptions active at once as long as each one has its own `subscriptionId`. Reusing the same `subscriptionId` replaces that logical view watch with the new normalized request.
 
 SignalR view payloads use the same component efficiency contract as HTTP:
 
@@ -290,7 +301,7 @@ Most view groups publish only after the read-model sequence advances. View group
 Stop watching a view when the page no longer needs live updates.
 
 ```csharp
-await connection.InvokeAsync("UnwatchView", "overview", (string?)null);
+await connection.InvokeAsync("UnwatchView", OverviewSubscriptionId, (string?)null);
 ```
 
 ## Diagnostics View Updates
@@ -298,8 +309,11 @@ await connection.InvokeAsync("UnwatchView", "overview", (string?)null);
 System health chrome can subscribe to the `diagnostics` view without adding diagnostics data to the overview payload. The default diagnostics publish interval is 750ms and only active diagnostics view groups are published. See [Work Diagnostics](../concepts/diagnostics.md) for field meanings and warning guidance.
 
 ```csharp
+const string DiagnosticsSubscriptionId = "diagnostics-alerts";
+
 await connection.InvokeAsync(
     "WatchView",
+    DiagnosticsSubscriptionId,
     "diagnostics",
     new WorkViewCriteria(
         Components:
@@ -334,8 +348,11 @@ Threshold options are component-specific: `warningThreshold` controls read-model
 For example, an always-on alert indicator can stay quiet while healthy:
 
 ```csharp
+const string DiagnosticsAlertSubscriptionId = "diagnostics-alert-tray";
+
 await connection.InvokeAsync(
     "WatchView",
+    DiagnosticsAlertSubscriptionId,
     "diagnostics",
     new WorkViewCriteria(
         Components:
@@ -360,8 +377,8 @@ The hub exposes these observability methods:
 ```csharp
 Task WatchWorker(string workerId, string? systemName = null);
 Task UnwatchWorker(string workerId, string? systemName = null);
-Task WatchView(string viewName, WorkViewCriteria? criteria = null, string? systemName = null);
-Task UnwatchView(string viewName, string? systemName = null);
+Task WatchView(string subscriptionId, string viewName, WorkViewCriteria? criteria = null, string? systemName = null);
+Task UnwatchView(string subscriptionId, string? systemName = null);
 Task WatchEvents(WorkableRealtimeEventCriteria? criteria = null, string? systemName = null);
 Task UnwatchEvents(WorkableRealtimeEventCriteria? criteria = null, string? systemName = null);
 Task WatchSystem(string? systemName = null);

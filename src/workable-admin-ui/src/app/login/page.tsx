@@ -11,6 +11,7 @@ export default async function LoginPage({ searchParams }: LoginPageProps) {
     <LoginForm
       authProvider={getAdminAuthProvider()}
       initialError={normalizeError(params.error)}
+      initialReason={normalizeReason(params.reason)}
       nextPath={normalizeNextPath(params.next)}
     />
   );
@@ -28,4 +29,9 @@ function normalizeNextPath(value: string | string[] | undefined) {
 function normalizeError(value: string | string[] | undefined) {
   const candidate = Array.isArray(value) ? value[0] : value;
   return candidate?.trim() || null;
+}
+
+function normalizeReason(value: string | string[] | undefined) {
+  const candidate = Array.isArray(value) ? value[0] : value;
+  return candidate === "unauthorized" ? candidate : null;
 }

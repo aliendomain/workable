@@ -374,6 +374,55 @@ public sealed class RecurringWorkerExecutionStrategyTests
     }
 
     [Fact]
+    public async Task TransientContextFailureRunsInsideRecurringIteration()
+    {
+        var attempts = 0;
+        var classifierCalled = false;
+        var system = CreateSystem(
+            _ => { },
+            (context, input, cancellationToken) =>
+            {
+                attempts++;
+                if (attempts == 1)
+                {
+                    context.Fail(
+                        "sample.transient_failure",
+                        "Retry this declarative recurring failure.",
+                        "execution",
+                        transient: true);
+                    return Task.FromResult(WorkExecutionResult.Success());
+                }
+
+                return Task.FromResult(WorkExecutionResult.Success());
+            },
+            recurrence => recurrence with
+            {
+                Interval = TimeSpan.FromMinutes(5),
+            },
+            configuration => configuration
+                .RetryTransientFailures(2, TimeSpan.FromMilliseconds(1), jitter: TimeSpan.Zero)
+                .ClassifyExceptions(_ =>
+                {
+                    classifierCalled = true;
+                    return WorkExceptionClassification.Transient;
+                }));
+
+        await system.Start();
+
+        var handle = await system.Queue.Enqueue("recurring-work");
+        var workerId = RequiredWorkerId(handle);
+        await Eventually(async () => attempts == 2 && await WorkerIsWaiting(system, workerId));
+        await CancelIfActive(system, workerId);
+        var completion = await handle.WaitForCompletion();
+
+        Assert.Equal(2, attempts);
+        Assert.False(classifierCalled);
+        Assert.Equal(WorkCompletionStatus.Canceled, completion.Status);
+        Assert.Contains(completion.Worker?.Iterations ?? [], iteration => iteration.Status == WorkCompletionStatus.Failed);
+        Assert.Contains(completion.Worker?.Iterations ?? [], iteration => iteration.Status == WorkCompletionStatus.Completed);
+    }
+
+    [Fact]
     public async Task ExceptionFailuresCanContinueUntilCircuitOpens()
     {
         var attempts = 0;
@@ -400,7 +449,7 @@ public sealed class RecurringWorkerExecutionStrategyTests
     }
 
     [Fact]
-    public async Task IterationHistoryRetainsConfiguredSuccessfulAndFailedCounts()
+    public async Task IterationHistoryRetainsConfiguredIterationCountAcrossStatuses()
     {
         var attempts = 0;
         var system = CreateSystem(
@@ -422,8 +471,7 @@ public sealed class RecurringWorkerExecutionStrategyTests
             {
                 Interval = TimeSpan.FromMilliseconds(1),
                 CircuitBreakerFailureThreshold = 10,
-                RetainedSuccessfulIterations = 2,
-                RetainedFailedIterations = 1,
+                RetainedIterations = 4,
             });
 
         await system.Start();
@@ -438,9 +486,9 @@ public sealed class RecurringWorkerExecutionStrategyTests
         Assert.Equal(WorkCompletionStatus.Canceled, completion.Status);
         Assert.Equal(4, iterations.Count);
         Assert.Equal(
-            [WorkCompletionStatus.Completed, WorkCompletionStatus.Completed, WorkCompletionStatus.Failed, WorkCompletionStatus.Canceled],
+            [WorkCompletionStatus.Failed, WorkCompletionStatus.Completed, WorkCompletionStatus.Failed, WorkCompletionStatus.Canceled],
             iterations.Select(iteration => iteration.Status));
-        Assert.Equal([2, 4, 5, null], iterations.Select(iteration => iteration.Output?.ToValue<int>()));
+        Assert.Equal([3, 4, 5, null], iterations.Select(iteration => iteration.Output?.ToValue<int>()));
     }
 
     [Fact]

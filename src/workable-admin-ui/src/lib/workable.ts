@@ -18,18 +18,31 @@ export type WorkableRealtimeEventKeyCriteria = {
   value: string;
 };
 
+export type WorkableRealtimeOriginActor = {
+  id?: string | null;
+  name?: string | null;
+  email?: string | null;
+};
+
+export type WorkableRealtimeOrigin = {
+  channel: string;
+  actor?: WorkableRealtimeOriginActor | null;
+  description?: string | null;
+  url?: string | null;
+};
+
 export type WorkableRealtimeEvent = {
   occurredAt: string;
   workSystemId: { value: string };
+  workSystemName?: string | null;
   workerId?: { value: string } | null;
-  definitionId?: { value: string } | null;
+  workDefinitionId?: { value: string } | null;
+  workDefinitionName?: string | null;
   subjectId?: WorkTypedValue | null;
   concurrencyKey?: WorkTypedValue | null;
   identifiers: WorkTypedValue[];
-  origin?: Record<string, unknown> | null;
   eventType: string;
   data?: unknown;
-  messages: WorkMessage[];
 };
 
 export type WorkableRealtimeEventBatch = {
@@ -41,11 +54,13 @@ export type WorkRealtimeCapability = {
   enabled: boolean;
   transport?: string | null;
   hubPath?: string | null;
-  features?: string[] | null;
 };
 
-export type WorkableHttpCapabilities = {
+export type WorkableHttpHostCapabilities = {
   realtime: WorkRealtimeCapability;
+};
+
+export type WorkableHttpSystemCapabilities = {
   persistentCoordinationAvailable: boolean;
 };
 
@@ -62,16 +77,17 @@ export type WorkSystemAccessSummary = {
   operableDefinitionCount: number;
 };
 
-export type WorkableHttpSystems = {
-  systems: WorkableHttpSystemInfo[];
+export type WorkableHttpHostDescriptor = {
+  capabilities: WorkableHttpHostCapabilities;
+  systems: WorkableHttpSystemDescriptor[];
 };
 
-export type WorkableHttpSystemInfo = {
+export type WorkableHttpSystemDescriptor = {
   id: { value: string };
   name?: string | null;
   state: string;
   isDefault: boolean;
-  capabilities: WorkableHttpCapabilities;
+  capabilities: WorkableHttpSystemCapabilities;
   access: WorkSystemAccessSummary;
 };
 
@@ -198,6 +214,7 @@ export type WorkMessage = {
   severity: string;
   text: string;
   target?: string | null;
+  metadata?: Record<string, unknown> | null;
 };
 
 export type WorkerSummary = {
@@ -213,6 +230,8 @@ export type WorkerSummary = {
   state: WorkerState;
   createdAt: string;
   stateChangedAt?: string;
+  nextRunAt?: string | null;
+  retryAttempt?: number | null;
   updatedAt: string;
   version: WorkerVersion;
 };
@@ -263,10 +282,14 @@ export type WorkOverviewFailedWorker =
 export type WorkerSnapshot = WorkerSummary & {
   input?: WorkData | null;
   output?: WorkData | null;
+  options?: WorkerOptions | null;
+  configuration?: WorkConfiguration | null;
   messages?: WorkMessage[];
-  logs?: WorkerLogEntry[];
   actionHistory?: WorkerActionHistoryEntry[];
   iterations?: WorkerIterationSnapshot[];
+  currentIterationSequence?: number | null;
+  lastIteration?: WorkerIterationSnapshot | null;
+  lastIterationSequence?: number | null;
   profile?: unknown;
 };
 
@@ -317,8 +340,7 @@ export type WorkConfiguration = {
     interval: string;
     continueAfterFailure: boolean;
     circuitBreakerFailureThreshold: number;
-    maximumSuccessfulIterations: number;
-    maximumFailedIterations: number;
+    retainedIterations: number;
     raiseCircuitBreakerOpenedEvent: boolean;
   };
   transientRetry: {
@@ -363,9 +385,17 @@ export type WorkData = {
 
 export type WorkerLogEntry = {
   occurredAt: string;
+  workerId?: { value: string } | null;
+  definitionId?: { value: string } | null;
   category: string;
   level: string;
+  eventId?: {
+    id: number;
+    name?: string | null;
+  } | null;
   message: string;
+  exceptionType?: string | null;
+  exceptionMessage?: string | null;
 };
 
 export type WorkerActionHistoryEntry = {
@@ -373,9 +403,12 @@ export type WorkerActionHistoryEntry = {
   kind: string;
   action?: string | null;
   status: string;
+  state: WorkerState;
+  origin?: WorkableRealtimeOrigin | null;
   revision: number;
   stateSequence: number;
   messages?: WorkMessage[];
+  reconfiguration?: Record<string, unknown> | null;
 };
 
 export type WorkerIterationSnapshot = {
@@ -387,6 +420,7 @@ export type WorkerIterationSnapshot = {
   status: WorkCompletionStatus;
   output?: WorkData | null;
   messages?: WorkMessage[];
+  logs?: WorkerLogEntry[];
 };
 
 export type WorkerIterationOverviewItem = {
@@ -804,9 +838,13 @@ export class WorkableApiError extends Error {
 
 const inFlightGetRequests = new Map<string, Promise<unknown>>();
 const realtimeAccessTokenCache = new Map<string, {
-  accessToken: string;
+  accessToken?: string;
   expiresAt: number;
 }>();
+const realtimeAccessTokenTtlMs = 55 * 60 * 1000;
+const realtimeMissingAccessTokenTtlMs = 5 * 60 * 1000;
+let loginRedirectInFlight = false;
+const ADMIN_UI_AUTH_REQUIRED_ERROR = "Authentication is required for the Workable admin UI.";
 
 export function formatDateTime(value?: string | null) {
   if (!value) {
@@ -905,6 +943,9 @@ async function fetchWorkable<T>(
 
   if (!response.ok) {
     const message = getWorkableErrorMessage(response.status, body);
+    if (shouldRedirectToLogin(response.status, body)) {
+      redirectToLogin(connection.apiUrl, "unauthorized");
+    }
     throw new WorkableApiError(message, response.status, body);
   }
 
@@ -956,12 +997,11 @@ export async function getWorkableRealtimeAccessToken(apiUrl: string) {
       credentials: "same-origin",
     }
   );
-  if (response.status === 404) {
-    realtimeAccessTokenCache.delete(apiUrl);
-    return undefined;
+  const body = await response.json().catch(() => ({}));
+  if (shouldRedirectToLogin(response.status, body)) {
+    redirectToLogin(apiUrl, "unauthorized");
   }
 
-  const body = await response.json().catch(() => ({}));
   if (!response.ok) {
     const message = typeof body?.error === "string" && body.error.trim()
       ? body.error
@@ -971,15 +1011,42 @@ export async function getWorkableRealtimeAccessToken(apiUrl: string) {
 
   const accessToken = typeof body?.accessToken === "string" ? body.accessToken.trim() : "";
   if (!accessToken) {
-    realtimeAccessTokenCache.delete(apiUrl);
+    realtimeAccessTokenCache.set(apiUrl, {
+      accessToken: undefined,
+      expiresAt: now + realtimeMissingAccessTokenTtlMs,
+    });
     return undefined;
   }
 
   realtimeAccessTokenCache.set(apiUrl, {
     accessToken,
-    expiresAt: now + 55 * 60 * 1000,
+    expiresAt: now + realtimeAccessTokenTtlMs,
   });
   return accessToken;
+}
+
+function redirectToLogin(error?: string, reason?: "unauthorized") {
+  if (typeof window === "undefined" || loginRedirectInFlight) {
+    return;
+  }
+
+  const nextPath = `${window.location.pathname}${window.location.search}`;
+  if (window.location.pathname === "/login") {
+    return;
+  }
+
+  const params = new URLSearchParams({
+    next: nextPath,
+  });
+  if (error?.trim()) {
+    params.set("error", error.trim());
+  }
+  if (reason) {
+    params.set("reason", reason);
+  }
+
+  loginRedirectInFlight = true;
+  window.location.replace(`/login?${params.toString()}`);
 }
 
 function createDirectoryUrl(url: URL) {
@@ -1048,6 +1115,10 @@ function getWorkableErrorMessage(status: number, body: unknown) {
   }
 
   return `Workable request failed with ${status}.`;
+}
+
+function shouldRedirectToLogin(status: number, body: unknown) {
+  return status === 401 && getWorkableErrorMessage(status, body) === ADMIN_UI_AUTH_REQUIRED_ERROR;
 }
 
 function createScopedWorkablePath(connection: WorkableConnection, path: string) {

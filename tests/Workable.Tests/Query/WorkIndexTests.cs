@@ -206,8 +206,7 @@ public sealed class WorkIndexTests
                         {
                             Recurrence = WorkRecurrenceConfiguration.Default with
                             {
-                                RetainedFailedIterations = 1,
-                                RetainedSuccessfulIterations = 1,
+                                RetainedIterations = 2,
                             },
                         }),
                     (_, _, _) =>

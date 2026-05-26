@@ -557,7 +557,7 @@ public sealed class WorkEventStreamTests
 
         Assert.True(handle.QueueOutcome.IsAccepted);
         Assert.Equal(handle.WorkerId, workEvent.WorkerId);
-        Assert.Equal(definition.Id, workEvent.DefinitionId);
+        Assert.Equal(definition.Name, workEvent.WorkDefinitionName);
         Assert.Equal("worker.queued", workEvent.EventType);
     }
 
@@ -593,18 +593,19 @@ public sealed class WorkEventStreamTests
         WorkerId? workerId = null,
         WorkDefinitionId? definitionId = null,
         WorkSystemId? workSystemId = null,
+        string? workSystemName = null,
         IReadOnlySet<WorkIdentifier>? identifiers = null,
         string eventType = "worker.queued")
         => new(
             DateTimeOffset.UtcNow,
             workSystemId ?? WorkSystemId.New(),
+            workSystemName,
             workerId ?? WorkerId.New(),
             definitionId ?? WorkDefinitionId.New(),
+            definitionId is { } id ? $"definition-{id.Value:N}" : "definition",
             null,
             null,
             identifiers ?? new HashSet<WorkIdentifier>(),
-            null,
             eventType,
-            null,
-            []);
+            null);
 }

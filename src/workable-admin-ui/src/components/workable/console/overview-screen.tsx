@@ -1,12 +1,6 @@
 "use client";
 
 import {
-  HubConnection,
-  HubConnectionBuilder,
-  HubConnectionState,
-  LogLevel,
-} from "@microsoft/signalr";
-import {
   Activity,
   ArrowDown,
   ArrowUp,
@@ -15,21 +9,48 @@ import {
   CheckCircle2,
   ChevronRight,
   CircleAlert,
-  FileJson,
   Equal,
   Hourglass,
   Info,
   Loader2,
   MoreHorizontal,
   Play,
-  Rows2,
-  Rows3,
   Rows4,
-  X,
 } from "lucide-react";
-import type { PointerEvent, ReactNode } from "react";
+import type { ReactNode } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { createPortal } from "react-dom";
+import {
+  ConsolePageLayout,
+} from "@/components/features/console/console-primitives";
+import { PanelAggregateFrame } from "@/components/features/console/panel-aggregate-frame";
+import {
+  useConsolePageRealtimeView,
+  useRegisterConsolePageRealtimeView,
+  type ConsolePageRealtimeViewDescriptor,
+} from "@/components/features/console/page-realtime-view";
+import {
+  createRealtimePayloadMessage,
+  type RealtimePayloadMessage,
+} from "@/components/features/console/realtime-payload";
+import {
+  useRegisterConsoleHeaderCapabilities,
+  type ConsoleHeaderCapabilities,
+} from "@/components/features/console/header-capabilities";
+import {
+  type OverviewPanelId,
+  overviewPanelOptions,
+  overviewPanelShapeCapabilities,
+  type OverviewPanelShapeMap,
+} from "@/components/features/console/overview-panels";
+import { PanelShell } from "@/components/features/console/panel-shell";
+import {
+  type ConsoleRealtimeEventMessage,
+  type ConsoleRealtimeViewLoadable,
+  useConsoleRealtimeView,
+  type ConsoleRealtimeEventLoadable,
+  useConsoleRealtimeEventStream,
+} from "@/components/features/console/realtime";
+import type { Loadable, OverviewScope } from "@/components/features/console/types";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader } from "@/components/ui/card";
@@ -57,8 +78,6 @@ import {
 } from "@/components/workable/console/live-relative-time";
 import { IdentifierSummary, TypedValueSummary } from "@/components/workable/console/query-screens";
 import {
-  createWorkableRealtimeUrl,
-  getWorkableRealtimeAccessToken,
   stateTone,
   workableFetch,
   type WorkAction,
@@ -80,7 +99,6 @@ import {
   type WorkSystemAccessSummary,
   type WorkableConnection,
   type WorkableRealtimeEvent,
-  type WorkableRealtimeEventBatch,
   type WorkableRealtimeEventCriteria,
   type WorkerOverviewItem,
   type WorkerState,
@@ -89,6 +107,7 @@ import {
 type ThroughputMode = "completion" | "execution";
 const throughputSeriesIds = ["started", "completed", "failed", "canceled"] as const;
 const jsonByteEncoder = new TextEncoder();
+const noop = () => undefined;
 type ThroughputSeriesId = "started" | "completed" | "failed" | "canceled";
 type ThroughputMetric = {
   description: string;
@@ -111,6 +130,11 @@ type ThroughputSeries = {
   strokeWidth?: string;
   values: number[];
 };
+const chartViewBoxWidth = 1000;
+const chartViewBoxHeight = 220;
+const chartTopInset = 20;
+const chartBottomInset = 30;
+const chartValueRange = chartViewBoxHeight - chartTopInset - chartBottomInset;
 type WorkOverviewSystemComponent = Pick<WorkSystemOverview, "systemName" | "systemState">;
 type WorkOverviewWorkersComponent = Pick<
   WorkSystemOverview,
@@ -126,118 +150,10 @@ type WorkOverviewIterationsComponent = {
   commonKeyTypes?: WorkIterationKeyTypeFacet[];
   iterationCountByStatus: Partial<Record<WorkCompletionStatus, number>>;
 };
-type OverviewScope = {
-  category?: string;
-  definitionName?: string;
-  includeSubcategories?: boolean;
-};
-type Loadable<T> = {
-  data?: T;
-  error?: string;
-  loading: boolean;
-  refreshing?: boolean;
-};
-type RealtimePayloadPanelState = {
-  captureEnabled: boolean;
-  connectionState: string;
-  enabled: boolean;
-  externalMessages: RealtimePayloadMessage[];
-  hubUrl?: string | null;
-  maxMessages: number;
-  messages: RealtimePayloadMessage[];
-  onCaptureEnabledChange: (enabled: boolean) => void;
-  onClearExternalMessages: () => void;
-  onClearMessages: () => void;
-  onMaxMessagesChange: (maxMessages: number) => void;
-  onOpenChange: (open: boolean) => void;
-  open: boolean;
-};
-export type RealtimePayloadMessage = {
-  bytes: number;
-  components: Array<{ id: string; shape?: string; status?: string }>;
-  id: string;
-  receivedAt: number;
-  subscription: string;
-  value: unknown;
-  viewName: string;
-};
+export type RealtimeEventMessage = ConsoleRealtimeEventMessage;
 
-export type RealtimeEventMessage = {
-  batchId?: string;
-  batchSize?: number;
-  bytes: number;
-  bytesEstimated?: boolean;
-  events: WorkableRealtimeEvent[];
-  eventTypes: string[];
-  id: string;
-  receivedAt: number;
-  sentAt?: string;
-  value: WorkableRealtimeEvent | WorkableRealtimeEventBatch;
-};
-
-export type RealtimeEventLoadable = {
-  clearMessages: () => void;
-  connectionState: string;
-  enabled: boolean;
-  error?: string;
-  hubUrl?: string | null;
-  loading?: boolean;
-  messages: RealtimeEventMessage[];
-};
-type RealtimePayloadComponentData = {
-  data: unknown;
-  id: string;
-  shape?: WorkComponentShape;
-  status?: string;
-};
-export const overviewPanelIds = [
-  "workers",
-  "failedWorkers",
-  "throughput",
-  "iterations",
-  "failedIterations",
-  "completedIterations",
-] as const;
-export type OverviewPanelId = (typeof overviewPanelIds)[number];
-export type OverviewPanelShapeMap = Record<OverviewPanelId, WorkComponentShape>;
-const overviewShapeOptions: Array<{
-  icon: typeof Rows2;
-  label: string;
-  shape: WorkComponentShape;
-}> = [
-  { icon: Rows2, label: "Compact", shape: "compact" },
-  { icon: Rows3, label: "Standard", shape: "standard" },
-  { icon: Rows4, label: "Detailed", shape: "detailed" },
-];
-export const overviewPanelShapeCapabilities: Record<OverviewPanelId, {
-  defaultShape: WorkComponentShape;
-  supportedShapes: WorkComponentShape[];
-}> = {
-  workers: {
-    defaultShape: "standard",
-    supportedShapes: ["compact", "standard"],
-  },
-  failedWorkers: {
-    defaultShape: "standard",
-    supportedShapes: ["standard", "detailed"],
-  },
-  throughput: {
-    defaultShape: "standard",
-    supportedShapes: ["compact", "standard"],
-  },
-  iterations: {
-    defaultShape: "standard",
-    supportedShapes: ["compact", "standard"],
-  },
-  failedIterations: {
-    defaultShape: "standard",
-    supportedShapes: ["standard", "detailed"],
-  },
-  completedIterations: {
-    defaultShape: "standard",
-    supportedShapes: ["standard", "detailed"],
-  },
-};
+export type RealtimeEventLoadable = ConsoleRealtimeEventLoadable<RealtimeEventMessage>;
+export type RealtimeViewLoadable<T> = ConsoleRealtimeViewLoadable<T, RealtimePayloadMessage>;
 const overviewWorkerStates: WorkerState[] = [
   "Queued",
   "Running",
@@ -268,7 +184,8 @@ export function getOverviewPanelShape(
   panelId: OverviewPanelId
 ) {
   const shape = shapes[panelId];
-  return overviewPanelShapeCapabilities[panelId].supportedShapes.includes(shape)
+  return shape === "compact" ||
+    overviewPanelShapeCapabilities[panelId].supportedShapes.includes(shape)
     ? shape
     : overviewPanelShapeCapabilities[panelId].defaultShape;
 }
@@ -284,11 +201,9 @@ function overviewComponent(
 export function OverviewView({
   access,
   connection,
-  externalRealtimeMessages,
   hiddenPanelIds,
   hiddenThroughputSeries,
   isVisible,
-  onClearExternalRealtimeMessages,
   onConnectionError,
   onOpenCatalog,
   onOpenIterations,
@@ -297,8 +212,8 @@ export function OverviewView({
   onOpenWorker,
   onPanelShapeChange,
   onPanelVisibilityChange,
-  onRealtimePayloadCaptureEnabledChange,
-  onRealtimePayloadMaxMessagesChange,
+  onResetUi,
+  onActiveRealtimeConnectionCountChange,
   onRealtimePayloadOpenChange,
   onStateLoaded,
   onThroughputSeriesToggle,
@@ -306,20 +221,17 @@ export function OverviewView({
   onViewWorkersByState,
   overviewScope,
   panelShapes,
-  realtimeFeatures,
   realtimePayloadCaptureEnabled,
   realtimePayloadMaxMessages,
   realtimePayloadOpen,
   refreshToken,
-  renderToolbar,
+  renderControls,
 }: {
   access?: WorkSystemAccessSummary;
   connection: WorkableConnection;
-  externalRealtimeMessages?: RealtimePayloadMessage[];
   hiddenPanelIds: OverviewPanelId[];
   hiddenThroughputSeries: ThroughputSeriesId[];
   isVisible: boolean;
-  onClearExternalRealtimeMessages?: () => void;
   onConnectionError: () => void;
   onOpenCatalog: () => void;
   onOpenIterations: () => void;
@@ -328,8 +240,8 @@ export function OverviewView({
   onOpenWorker: (workerId: string) => void;
   onPanelShapeChange: (panelId: OverviewPanelId, shape: WorkComponentShape) => void;
   onPanelVisibilityChange: (panelId: OverviewPanelId, visible: boolean) => void;
-  onRealtimePayloadCaptureEnabledChange?: (enabled: boolean) => void;
-  onRealtimePayloadMaxMessagesChange?: (maxMessages: number) => void;
+  onResetUi: () => void;
+  onActiveRealtimeConnectionCountChange?: (count: number) => void;
   onRealtimePayloadOpenChange?: (open: boolean) => void;
   onStateLoaded: (state: string) => void;
   onThroughputSeriesToggle: (seriesId: ThroughputSeriesId) => void;
@@ -337,14 +249,12 @@ export function OverviewView({
   onViewWorkersByState: (states: WorkerState[]) => void;
   overviewScope: OverviewScope | null;
   panelShapes: OverviewPanelShapeMap;
-  realtimeFeatures?: string[] | null;
   realtimePayloadCaptureEnabled?: boolean;
   realtimePayloadMaxMessages?: number;
   realtimePayloadOpen?: boolean;
   refreshToken: number;
-  renderToolbar: (state: {
+  renderControls: (state: {
     loading: boolean;
-    realtimePayloadControl: ReactNode;
     refreshing: boolean;
   }) => ReactNode;
 }) {
@@ -359,16 +269,14 @@ export function OverviewView({
   const payloadOpen = realtimePayloadOpen ?? false;
   const payloadCaptureEnabled = realtimePayloadCaptureEnabled ?? true;
   const payloadMaxMessages = realtimePayloadMaxMessages ?? 100;
-  const setPayloadOpen = onRealtimePayloadOpenChange ?? (() => undefined);
-  const setPayloadCaptureEnabled = onRealtimePayloadCaptureEnabledChange ?? (() => undefined);
-  const setPayloadMaxMessages = onRealtimePayloadMaxMessagesChange ?? (() => undefined);
+  const setPayloadOpen = onRealtimePayloadOpenChange ?? noop;
   const lacksReadableWorkAccess =
     access !== undefined &&
     !access.canReadAllWork &&
     access.readableDefinitionCount === 0;
   const canUseRealtimeOverview = lacksReadableWorkAccess
-    ? hasRealtimeFeature(realtimeFeatures, "system-view")
-    : hasRealtimeFeature(realtimeFeatures, "work-views");
+    ? (access?.canConnect ?? true)
+    : (access?.canReadAllWork ?? true) || (access?.readableDefinitionCount ?? 0) > 0;
   const throughputWindow =
     throughputWindows.find((window) => window.seconds === throughputWindowSeconds) ??
     throughputWindows[0];
@@ -472,51 +380,69 @@ export function OverviewView({
     effectiveOverviewRequest,
     refreshToken
   );
-  const realtimeOverview = useWorkableRealtimeView<WorkComponentQueryResult>(
-    connection,
-    "overview",
-    effectiveOverviewRequest,
-    isVisible && canUseRealtimeOverview && Boolean(connection.realtimeHubPath),
-    payloadCaptureEnabled && payloadOpen,
-    payloadMaxMessages,
-    "overview"
+  const realtimeOverviewDescriptor = useMemo<ConsolePageRealtimeViewDescriptor>(
+    () => ({
+      body: effectiveOverviewRequest,
+      captureEnabled: payloadCaptureEnabled && payloadOpen,
+      connection,
+      enabled: isVisible && canUseRealtimeOverview && Boolean(connection.realtimeHubPath),
+      maxMessages: payloadMaxMessages,
+      subscription: "overview",
+      viewName: "overview",
+    }),
+    [
+      canUseRealtimeOverview,
+      connection,
+      effectiveOverviewRequest,
+      isVisible,
+      payloadCaptureEnabled,
+      payloadMaxMessages,
+      payloadOpen,
+    ]
   );
+  useRegisterConsolePageRealtimeView({
+    active: isVisible,
+    descriptor: realtimeOverviewDescriptor,
+    id: "overview",
+  });
+  const realtimeOverview = useConsolePageRealtimeView<WorkComponentQueryResult>("overview");
   const overviewData = realtimeOverview.data ?? overview.data;
-  const realtimePayloadControl = (
-    <Button
-      className="h-9 w-full justify-start gap-2 text-muted-foreground"
-      onClick={() => setPayloadOpen(true)}
-      size="sm"
-      variant="ghost"
-    >
-      <FileJson className="size-4" />
-      Realtime payloads
-      {realtimeOverview.enabled && (
-        <span
-          aria-hidden="true"
-          className={`ml-auto size-2 rounded-full ${
-            realtimeOverview.connectionState === "connected" ? "bg-emerald-400" : "bg-amber-400"
-          }`}
-        />
-      )}
-    </Button>
-  );
-  const realtimePayloadWindow = (
-    <RealtimePayloadWindow
-      captureEnabled={payloadCaptureEnabled}
-      connectionState={realtimeOverview.connectionState}
-      enabled={realtimeOverview.enabled}
-      externalMessages={externalRealtimeMessages ?? []}
-      hubUrl={realtimeOverview.hubUrl}
-      maxMessages={payloadMaxMessages}
-      messages={realtimeOverview.messages}
-      onCaptureEnabledChange={setPayloadCaptureEnabled}
-      onClearExternalMessages={onClearExternalRealtimeMessages ?? (() => undefined)}
-      onClearMessages={realtimeOverview.clearMessages}
-      onMaxMessagesChange={setPayloadMaxMessages}
-      onOpenChange={setPayloadOpen}
-      open={payloadOpen}
-    />
+  const togglePayloadOpen = useCallback(() => {
+    setPayloadOpen(!payloadOpen);
+  }, [payloadOpen, setPayloadOpen]);
+  const overviewControls = renderControls({
+    loading: overview.loading,
+    refreshing: !!overview.refreshing || !!realtimeOverview.refreshing,
+  });
+  const headerCapabilities = useMemo<ConsoleHeaderCapabilities>(
+    () => ({
+      realtime: {
+        connectionState: realtimeOverview.connectionState,
+        enabled: realtimeOverview.enabled,
+        menuItems: [
+          {
+            active: payloadOpen,
+            icon: <Rows4 className="size-4" />,
+            id: "overview-realtime-payloads",
+            label: "Realtime payloads",
+            onSelect: togglePayloadOpen,
+          },
+        ],
+      },
+      refresh: {
+        disabled: overview.loading || (realtimeOverview.enabled && realtimeOverview.connectionState === "connected"),
+        refreshing: Boolean(overview.refreshing) || Boolean(realtimeOverview.refreshing),
+      },
+    }),
+    [
+      overview.loading,
+      overview.refreshing,
+      payloadOpen,
+      realtimeOverview.connectionState,
+      realtimeOverview.enabled,
+      realtimeOverview.refreshing,
+      togglePayloadOpen,
+    ]
   );
   const isReady = !overview.loading;
   const systemComponent = getWorkComponentData<WorkOverviewSystemComponent>(
@@ -649,40 +575,60 @@ export function OverviewView({
       onConnectionError();
     }
   }, [overview.error, onConnectionError]);
+  useRegisterConsoleHeaderCapabilities({
+    active: isVisible,
+    capabilities: headerCapabilities,
+    id: "overview",
+  });
+  useEffect(() => {
+    onActiveRealtimeConnectionCountChange?.(
+      realtimeOverview.enabled && realtimeOverview.connectionState !== "disabled" ? 1 : 0
+    );
+  }, [
+    onActiveRealtimeConnectionCountChange,
+    realtimeOverview.connectionState,
+    realtimeOverview.enabled,
+  ]);
 
   return (
-    <div className="space-y-4">
-      <ErrorPanel
-        errors={[
-          overview.error,
-          realtimeOverview.error,
-          actionError,
-          ...componentErrors,
-        ]}
-      />
-      {realtimePayloadWindow}
-      {renderToolbar({
-        loading: overview.loading,
-        realtimePayloadControl,
-        refreshing: !!overview.refreshing || !!realtimeOverview.refreshing,
-      })}
-      {lacksReadableWorkAccess && (
-        <Card>
-          <CardHeader>
-            <div className="space-y-1">
-              <h2 className="font-semibold leading-none tracking-tight">No work access</h2>
-              <p className="text-muted-foreground text-sm">
-                You can connect to this system, but you do not have permission to read work.
-                Work overview panels are hidden, but system state can still update live.
-              </p>
-            </div>
-          </CardHeader>
-        </Card>
-      )}
-      {!lacksReadableWorkAccess && (
-        <>
+    <ConsolePageLayout>
+      <PanelAggregateFrame
+        className="space-y-2.5"
+        controls={overviewControls}
+        hiddenPanelIds={hiddenPanelIds}
+        onPanelVisibilityChange={onPanelVisibilityChange}
+        onResetUi={onResetUi}
+        padding="tightTop"
+        panelOptions={overviewPanelOptions}
+        settingsButtonLabel="Overview panel settings"
+        settingsDescription="Checked panels are shown on the overview screen."
+        settingsTitle="Overview panels"
+      >
+        <ErrorPanel
+          errors={[
+            overview.error,
+            realtimeOverview.error,
+            actionError,
+            ...componentErrors,
+          ]}
+        />
+        {lacksReadableWorkAccess && (
+          <Card>
+            <CardHeader>
+              <div className="space-y-1">
+                <h2 className="font-semibold leading-none tracking-tight">No work access</h2>
+                <p className="text-muted-foreground text-sm">
+                  You can connect to this system, but you do not have permission to read work.
+                  Work overview panels are hidden, but system state can still update live.
+                </p>
+              </div>
+            </CardHeader>
+          </Card>
+        )}
+        {!lacksReadableWorkAccess && (
+          <>
       {isPanelVisible("workers") && (
-        <OverviewPanelShell
+        <PanelShell
           actions={workersShape === "compact" ? (
             <CompactWorkerStrip
               activeWorkerCount={activeWorkerCount}
@@ -699,9 +645,9 @@ export function OverviewView({
           contentClassName={workersShape === "compact" ? "hidden" : undefined}
           description={undefined}
           onClose={() => onPanelVisibilityChange("workers", false)}
-          onShapeChange={(shape) => onPanelShapeChange("workers", shape)}
-          shape={workersShape}
-          supportedShapes={overviewPanelShapeCapabilities.workers.supportedShapes}
+          onViewStateChange={(shape) => onPanelShapeChange("workers", shape)}
+          supportedViewStates={overviewPanelShapeCapabilities.workers.supportedShapes}
+          viewState={workersShape}
           title={
             <>
               Workers
@@ -782,7 +728,7 @@ export function OverviewView({
               </div>
             </>
           )}
-        </OverviewPanelShell>
+        </PanelShell>
       )}
       {isPanelVisible("failedWorkers") && (
         <OverviewWorkerList
@@ -819,7 +765,7 @@ export function OverviewView({
         />
       )}
       {isPanelVisible("iterations") && (
-        <OverviewPanelShell
+        <PanelShell
           actions={iterationsShape === "compact" ? (
             <CompactIterationStrip
               statuses={["Executing", "Completed", "Failed"]}
@@ -832,9 +778,9 @@ export function OverviewView({
           contentClassName={iterationsShape === "compact" ? "hidden" : undefined}
           description={undefined}
           onClose={() => onPanelVisibilityChange("iterations", false)}
-          onShapeChange={(shape) => onPanelShapeChange("iterations", shape)}
-          shape={iterationsShape}
-          supportedShapes={overviewPanelShapeCapabilities.iterations.supportedShapes}
+          onViewStateChange={(shape) => onPanelShapeChange("iterations", shape)}
+          supportedViewStates={overviewPanelShapeCapabilities.iterations.supportedShapes}
+          viewState={iterationsShape}
           title={
             <>
               Iterations
@@ -870,7 +816,7 @@ export function OverviewView({
               onSelectKeyType={onOpenKeyType}
             />
           )}
-        </OverviewPanelShell>
+        </PanelShell>
       )}
       <div className="grid gap-4 xl:grid-cols-2">
         {showFailedIterations && (
@@ -908,160 +854,8 @@ export function OverviewView({
       </div>
         </>
       )}
-    </div>
-  );
-}
-
-function hasRealtimeFeature(features: string[] | null | undefined, feature: string) {
-  return Array.isArray(features) && features.includes(feature);
-}
-
-function OverviewPanelShell({
-  actions,
-  centerActions = false,
-  children,
-  className,
-  contentClassName,
-  description,
-  onClose,
-  onShapeChange,
-  shape,
-  supportedShapes,
-  title,
-}: {
-  actions?: ReactNode;
-  centerActions?: boolean;
-  children: ReactNode;
-  className?: string;
-  contentClassName?: string;
-  description?: string;
-  onClose?: () => void;
-  onShapeChange?: (shape: WorkComponentShape) => void;
-  shape?: WorkComponentShape;
-  supportedShapes?: WorkComponentShape[];
-  title: ReactNode;
-}) {
-  const hasPanelMenu = Boolean((shape && onShapeChange && supportedShapes) || onClose);
-
-  return (
-    <section className={`rounded-xl bg-card p-4 ring-1 ring-foreground/10 ${className ?? ""}`}>
-      <div className={centerActions ? "grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-3" : "flex items-center justify-between gap-3"}>
-        <div className="flex min-w-0 items-center gap-2">
-          <span className="min-w-0">
-            <span className="flex min-w-0 flex-wrap items-center gap-2 font-semibold text-sm">
-              {title}
-            </span>
-            {description && (
-              <span className="mt-0.5 block text-muted-foreground text-xs">
-                {description}
-              </span>
-            )}
-          </span>
-        </div>
-        {centerActions ? (
-          <>
-            <div className="flex min-w-0 flex-wrap items-center justify-center gap-1.5">
-              {actions}
-            </div>
-            <div className="flex min-w-0 items-center justify-end">
-              {hasPanelMenu && (
-                <OverviewPanelMenu
-                  onClose={onClose}
-                  onShapeChange={onShapeChange}
-                  shape={shape}
-                  supportedShapes={supportedShapes}
-                />
-              )}
-            </div>
-          </>
-        ) : (
-          <div className="flex shrink-0 flex-wrap items-center justify-end gap-1.5">
-            {actions}
-            {hasPanelMenu && (
-              <OverviewPanelMenu
-                onClose={onClose}
-                onShapeChange={onShapeChange}
-                shape={shape}
-                supportedShapes={supportedShapes}
-              />
-            )}
-          </div>
-        )}
-      </div>
-      <div className={contentClassName ?? "mt-4 space-y-4"}>
-        {children}
-      </div>
-    </section>
-  );
-}
-
-function OverviewPanelMenu({
-  onClose,
-  onShapeChange,
-  shape,
-  supportedShapes,
-}: {
-  onClose?: () => void;
-  onShapeChange?: (shape: WorkComponentShape) => void;
-  shape?: WorkComponentShape;
-  supportedShapes?: WorkComponentShape[];
-}) {
-  const canChangeShape = Boolean(shape && onShapeChange && supportedShapes);
-
-  return (
-    <DropdownMenu>
-      <Tooltip delayDuration={500} disableHoverableContent>
-        <TooltipTrigger asChild>
-          <DropdownMenuTrigger asChild>
-            <Button
-              aria-label="Open panel options"
-              className="size-7 text-muted-foreground"
-              size="icon-sm"
-              variant="ghost"
-            >
-              <MoreHorizontal className="size-4" />
-            </Button>
-          </DropdownMenuTrigger>
-        </TooltipTrigger>
-        <TooltipContent side="top" sideOffset={6}>
-          Panel options
-        </TooltipContent>
-      </Tooltip>
-      <DropdownMenuContent align="end" className="w-44">
-        {canChangeShape && overviewShapeOptions.map((option) => {
-          const Icon = option.icon;
-          const supported = supportedShapes?.includes(option.shape) ?? false;
-          const active = shape === option.shape;
-
-          return (
-            <DropdownMenuItem
-              className={active ? "bg-accent/60" : undefined}
-              disabled={!supported}
-              key={option.shape}
-              onSelect={() => {
-                if (supported) {
-                  onShapeChange?.(option.shape);
-                }
-              }}
-            >
-              <Icon className="size-4" />
-              <span>{option.label}</span>
-              {!supported && (
-                <span className="ml-auto text-muted-foreground text-[11px]">
-                  Unavailable
-                </span>
-              )}
-            </DropdownMenuItem>
-          );
-        })}
-        {onClose && (
-          <DropdownMenuItem onSelect={onClose}>
-            <X className="size-4" />
-            Hide panel
-          </DropdownMenuItem>
-        )}
-      </DropdownMenuContent>
-    </DropdownMenu>
+      </PanelAggregateFrame>
+    </ConsolePageLayout>
   );
 }
 
@@ -1100,7 +894,7 @@ function OverviewWorkerList({
   const [selectedWorkerId, setSelectedWorkerId] = useState<string | null>(null);
 
   return (
-    <OverviewPanelShell
+    <PanelShell
       actions={
         <button
           className="inline-flex cursor-pointer items-center gap-1 rounded-md border border-transparent px-2 py-1 text-muted-foreground text-sm transition-colors hover:border-primary/60 hover:bg-accent/40 hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
@@ -1113,9 +907,9 @@ function OverviewWorkerList({
       }
       className={panelClassName}
       onClose={onClose}
-      onShapeChange={onShapeChange}
-      shape={shape}
-      supportedShapes={supportedShapes}
+      onViewStateChange={onShapeChange}
+      supportedViewStates={supportedShapes}
+      viewState={shape}
       title={
         <>
           {title}
@@ -1151,7 +945,7 @@ function OverviewWorkerList({
           workers={workers}
         />
       )}
-    </OverviewPanelShell>
+    </PanelShell>
   );
 }
 
@@ -1549,7 +1343,7 @@ function OverviewIterationList({
   iterations: WorkOverviewIteration[];
 }) {
   return (
-    <OverviewPanelShell
+    <PanelShell
       actions={
         <button
           className="inline-flex cursor-pointer items-center gap-1 rounded-md border border-transparent px-2 py-1 text-muted-foreground text-sm transition-colors hover:border-primary/60 hover:bg-accent/40 hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
@@ -1562,9 +1356,9 @@ function OverviewIterationList({
       }
       className={panelClassName}
       onClose={onClose}
-      onShapeChange={onShapeChange}
-      shape={shape}
-      supportedShapes={supportedShapes}
+      onViewStateChange={onShapeChange}
+      supportedViewStates={supportedShapes}
+      viewState={shape}
       title={
         <>
           {title}
@@ -1594,7 +1388,7 @@ function OverviewIterationList({
           onOpenWorker={onOpenWorker}
         />
       )}
-    </OverviewPanelShell>
+    </PanelShell>
   );
 }
 
@@ -2119,7 +1913,7 @@ function ThroughputChartPanel({
     ? "Execution timing for completed iterations, scoped to the current overview filter."
     : "Started, completed, failed, and canceled iteration rates, scoped to the current overview filter.";
   return (
-    <OverviewPanelShell
+    <PanelShell
       actions={compact ? (
         <CompactThroughputStrip
           loading={loading}
@@ -2148,9 +1942,9 @@ function ThroughputChartPanel({
       contentClassName={compact ? "hidden" : undefined}
       description={compact ? undefined : chartDescription}
       onClose={onClose}
-      onShapeChange={onShapeChange}
-      shape={shape}
-      supportedShapes={supportedShapes}
+      onViewStateChange={onShapeChange}
+      supportedViewStates={supportedShapes}
+      viewState={shape}
       title={compact ? "Throughput & Execution" : chartLabel}
     >
       {!compact && (
@@ -2175,7 +1969,7 @@ function ThroughputChartPanel({
         </TabsContent>
       </Tabs>
       )}
-    </OverviewPanelShell>
+    </PanelShell>
   );
 }
 
@@ -2257,15 +2051,16 @@ function ThroughputAreaChart({
   const series = visibleSeries.length > 0 ? visibleSeries : allSeries;
   const maxValue = getNiceChartMax(Math.max(0, ...series.flatMap((item) => item.values)), mode);
   const yTicks = createYAxisTicks(maxValue);
+  const drawableSeries = series.filter((item) => !isZeroOnlySeries(item.values));
   const xTicks = createTimeAxisTicks(throughput, buckets);
   const metrics = createThroughputMetrics(
     mode,
     throughput,
     windowSeconds
   );
-  const lineSeries = mode === "completion" && series.length > 1
-    ? [...series.slice(1), series[0]]
-    : series;
+  const lineSeries = mode === "completion" && drawableSeries.length > 1
+    ? [...drawableSeries.slice(1), drawableSeries[0]]
+    : drawableSeries;
 
   return (
     <div className="space-y-3">
@@ -2310,9 +2105,21 @@ function ThroughputAreaChart({
       {showChart && (
         <div>
           <div className="relative grid h-56 grid-cols-[3.25rem_1fr] overflow-hidden rounded-lg border bg-background/40">
-            <div className="flex flex-col justify-between border-r border-border/70 px-2 py-3 text-right font-mono text-[10px] text-muted-foreground">
-              {yTicks.map((tick) => (
-                <span key={tick}>{formatThroughputAxisValue(mode, tick)}</span>
+            <div className="relative border-r border-border/70 px-2 text-right font-mono text-[10px] text-muted-foreground">
+              {yTicks.map((tick, index) => (
+                <span
+                  className={`absolute right-2 ${
+                    index === 0
+                      ? "translate-y-0"
+                      : index === yTicks.length - 1
+                        ? "-translate-y-full"
+                        : "-translate-y-1/2"
+                  }`}
+                  key={tick}
+                  style={{ top: `${(chartY(tick, maxValue) / chartViewBoxHeight) * 100}%` }}
+                >
+                  {formatThroughputAxisValue(mode, tick)}
+                </span>
               ))}
             </div>
             <div className="relative min-w-0">
@@ -2321,29 +2128,29 @@ function ThroughputAreaChart({
                 className="h-full w-full"
                 preserveAspectRatio="none"
                 role="img"
-                viewBox="0 0 1000 220"
+                viewBox={`0 0 ${chartViewBoxWidth} ${chartViewBoxHeight}`}
               >
                 <defs>
-                  {series.map((item) => (
+                  {drawableSeries.map((item) => (
                     <linearGradient id={item.gradientId} key={item.gradientId} x1="0" x2="0" y1="0" y2="1">
                       <stop offset="5%" stopColor={item.color} stopOpacity="0.42" />
                       <stop offset="95%" stopColor={item.color} stopOpacity="0.04" />
                     </linearGradient>
                   ))}
                 </defs>
-                {[0, 1, 2, 3].map((line) => (
+                {yTicks.map((tick, index) => (
                   <line
-                    className="stroke-border"
-                    key={line}
-                    strokeDasharray={line === 3 ? undefined : "4 8"}
+                    className={index === yTicks.length - 1 ? "stroke-border/90" : "stroke-border"}
+                    key={tick}
+                    strokeDasharray={index === yTicks.length - 1 ? undefined : "4 8"}
                     strokeWidth="1"
                     x1="0"
-                    x2="1000"
-                    y1={20 + line * 55}
-                    y2={20 + line * 55}
+                    x2={chartViewBoxWidth}
+                    y1={chartY(tick, maxValue)}
+                    y2={chartY(tick, maxValue)}
                   />
                 ))}
-                {series.map((item) => (
+                {drawableSeries.map((item) => (
                   <path d={createAreaPath(item.values, maxValue)} fill={`url(#${item.gradientId})`} key={`${item.label}-area`} />
                 ))}
                 {lineSeries.map((item) => (
@@ -2606,13 +2413,22 @@ function createAreaPath(values: number[], maxValue: number) {
 
   const last = chartPoint(values.at(-1) ?? 0, values.length - 1, values.length, maxValue);
   const first = chartPoint(values[0] ?? 0, 0, values.length, maxValue);
-  return `${line} L ${last.x.toFixed(2)} 210 L ${first.x.toFixed(2)} 210 Z`;
+  const baselineY = chartY(0, maxValue);
+  return `${line} L ${last.x.toFixed(2)} ${baselineY.toFixed(2)} L ${first.x.toFixed(2)} ${baselineY.toFixed(2)} Z`;
 }
 
 function chartPoint(value: number, index: number, count: number, maxValue: number) {
-  const x = count <= 1 ? 0 : (index / (count - 1)) * 1000;
-  const y = 20 + (1 - value / maxValue) * 170;
+  const x = count <= 1 ? 0 : (index / (count - 1)) * chartViewBoxWidth;
+  const y = chartY(value, maxValue);
   return { x, y };
+}
+
+function chartY(value: number, maxValue: number) {
+  return chartTopInset + (1 - value / maxValue) * chartValueRange;
+}
+
+function isZeroOnlySeries(values: number[]) {
+  return values.length > 0 && values.every((value) => value === 0);
 }
 
 function createThroughputMetrics(
@@ -3166,726 +2982,40 @@ function completionTone(status: WorkCompletionStatus) {
   }
 }
 
-function RealtimePayloadWindow({
-  captureEnabled,
-  connectionState,
-  enabled,
-  externalMessages,
-  hubUrl,
-  maxMessages,
-  messages,
-  onCaptureEnabledChange,
-  onClearExternalMessages,
-  onClearMessages,
-  onMaxMessagesChange,
-  onOpenChange,
-  open,
-}: RealtimePayloadPanelState) {
-  const [position, setPosition] = useState({ x: 0, y: 0 });
-  const [windowSize, setWindowSize] = useState<"compact" | "large">("large");
-  const [messagesCollapsed, setMessagesCollapsed] = useState(false);
-  const [jsonView, setJsonView] = useState<"payload" | "componentData">("payload");
-  const [jsonCollapsedToComponents, setJsonCollapsedToComponents] = useState(false);
-  const [subscriptionFilter, setSubscriptionFilter] = useState("all");
-  const [selectedComponentId, setSelectedComponentId] = useState<string | null>(null);
-  const [selectedMessageId, setSelectedMessageId] = useState<string | null>(null);
-  const dragRef = useRef<{
-    originX: number;
-    originY: number;
-    startX: number;
-    startY: number;
-  } | null>(null);
-  const panelRef = useRef<HTMLDivElement | null>(null);
-  const wasOpenRef = useRef(false);
-  const allMessages = useMemo(
-    () => [...messages, ...externalMessages]
-      .sort((left, right) => right.receivedAt - left.receivedAt)
-      .slice(0, maxMessages),
-    [externalMessages, maxMessages, messages]
-  );
-  const subscriptionOptions = useMemo(
-    () => Array.from(new Set(allMessages.map((message) => message.subscription))).sort(),
-    [allMessages]
-  );
-  const activeSubscriptionFilter =
-    subscriptionFilter !== "all" && subscriptionOptions.includes(subscriptionFilter)
-      ? subscriptionFilter
-      : "all";
-  const filteredMessages = activeSubscriptionFilter === "all"
-    ? allMessages
-    : allMessages.filter((message) => message.subscription === activeSubscriptionFilter);
-  const selectedMessage =
-    filteredMessages.find((message) => message.id === selectedMessageId) ?? filteredMessages[0];
-  const returnedComponents = useMemo(
-    () => getRealtimePayloadComponentData(selectedMessage?.value),
-    [selectedMessage]
-  );
-  const selectedComponent =
-    returnedComponents.find((component) => component.id === selectedComponentId) ??
-    returnedComponents[0];
-  const isCompactWindow = windowSize === "compact";
-  const receivedAtText = selectedMessage
-    ? formatPayloadTime(selectedMessage.receivedAt)
-    : "No messages captured";
-  const payloadSizeText = selectedMessage?.bytes === undefined
-    ? "-"
-    : `${selectedMessage.bytes.toLocaleString()} bytes`;
-
-  useEffect(() => {
-    if (open && !wasOpenRef.current) {
-      setPosition(getCenteredRealtimePayloadPosition(windowSize));
-    }
-    wasOpenRef.current = open;
-  }, [open, windowSize]);
-
-  const toggleWindowSize = () => {
-    const nextSize = isCompactWindow ? "large" : "compact";
-
-    setWindowSize(nextSize);
-    setPosition(getCenteredRealtimePayloadPosition(nextSize));
-  };
-
-  const showComponentDataView = () => {
-    setJsonView("componentData");
-    setSelectedComponentId((current) =>
-      current && returnedComponents.some((component) => component.id === current)
-        ? current
-        : returnedComponents[0]?.id ?? null
-    );
-  };
-
-  const startDrag = (event: PointerEvent<HTMLDivElement>) => {
-    event.currentTarget.setPointerCapture(event.pointerId);
-    dragRef.current = {
-      originX: position.x,
-      originY: position.y,
-      startX: event.clientX,
-      startY: event.clientY,
-    };
-  };
-
-  const drag = (event: PointerEvent<HTMLDivElement>) => {
-    if (!dragRef.current) {
-      return;
-    }
-
-    const nextX = dragRef.current.originX + event.clientX - dragRef.current.startX;
-    const nextY = dragRef.current.originY + event.clientY - dragRef.current.startY;
-    const viewportWidth = window.visualViewport?.width ?? window.innerWidth;
-    const viewportHeight = window.visualViewport?.height ?? window.innerHeight;
-    const panelWidth = panelRef.current?.offsetWidth ?? 0;
-    const panelHeight = panelRef.current?.offsetHeight ?? 0;
-
-    setPosition({
-      x: clampFloatingWindowPosition(nextX, viewportWidth, panelWidth),
-      y: clampFloatingWindowPosition(nextY, viewportHeight, panelHeight),
-    });
-  };
-
-  const stopDrag = (event: PointerEvent<HTMLDivElement>) => {
-    dragRef.current = null;
-    event.currentTarget.releasePointerCapture(event.pointerId);
-  };
-
-  return (
-    <>
-      {open && typeof document !== "undefined"
-        ? createPortal(
-          <div
-            className={`fixed z-50 grid resize grid-rows-[auto_minmax(0,1fr)] overflow-hidden rounded-lg border bg-popover text-sm text-popover-foreground shadow-2xl ring-1 ring-foreground/10 ${
-              isCompactWindow ? "min-h-[28rem] min-w-[42rem]" : "min-h-[32rem] min-w-[48rem]"
-            }`}
-            ref={panelRef}
-            style={{
-              height: isCompactWindow ? "min(82vh, 32rem)" : "min(88vh, 56rem)",
-              left: position.x,
-              top: position.y,
-              width: isCompactWindow ? "min(96vw, 48rem)" : "min(96vw, 96rem)",
-            }}
-          >
-            <div
-              className="flex cursor-move items-center justify-between gap-3 border-b px-4 py-3 select-none"
-              onPointerDown={startDrag}
-              onPointerMove={drag}
-              onPointerUp={stopDrag}
-            >
-              <div className="min-w-0">
-                <div className="font-medium text-base">Realtime payloads</div>
-                <div className="truncate text-muted-foreground text-xs">
-                  {enabled ? connectionState : "disabled"} - {messages.length}/{maxMessages} messages - {payloadSizeText}
-                </div>
-              </div>
-              <div className="flex shrink-0 items-center gap-1">
-                <Button
-                  aria-label={isCompactWindow ? "Expand realtime payloads" : "Compact realtime payloads"}
-                  className="cursor-pointer"
-                  onClick={toggleWindowSize}
-                  onPointerDown={(event) => event.stopPropagation()}
-                  size="icon-sm"
-                  variant="ghost"
-                >
-                  {isCompactWindow ? <Rows4 className="size-4" /> : <Rows2 className="size-4" />}
-                </Button>
-                <Button
-                  aria-label="Close realtime payloads"
-                  className="cursor-pointer"
-                  onClick={() => onOpenChange(false)}
-                  onPointerDown={(event) => event.stopPropagation()}
-                  size="icon-sm"
-                  variant="ghost"
-                >
-                  <X className="size-4" />
-                </Button>
-              </div>
-            </div>
-            <div className="grid min-h-0 grid-rows-[auto_minmax(0,1fr)] gap-3 overflow-hidden p-3">
-              <div className="grid gap-2 rounded-md border px-3 py-2 lg:grid-cols-[minmax(0,1fr)_auto]">
-                <div className="flex min-w-0 flex-wrap items-center gap-x-4 gap-y-1 text-xs">
-                  <PayloadInlineMetric label="Received" value={receivedAtText} />
-                  <PayloadInlineMetric label="Size" value={payloadSizeText} />
-                  <PayloadInlineMetric label="Messages" value={`${filteredMessages.length}/${allMessages.length}/${maxMessages}`} />
-                  <PayloadInlineMetric label="Subscription" value={selectedMessage?.subscription ?? "-"} />
-                  <PayloadInlineMetric label="Hub" value={hubUrl ?? "-"} wide />
-                </div>
-                <div className="flex flex-wrap items-center gap-3">
-                  <Button
-                    className="h-8 px-2 text-xs"
-                    disabled={allMessages.length === 0}
-                    onClick={() => {
-                      setSelectedMessageId(null);
-                      setSelectedComponentId(null);
-                      onClearMessages();
-                      onClearExternalMessages();
-                    }}
-                    size="sm"
-                    variant="ghost"
-                  >
-                    Clear
-                  </Button>
-                  <label className="flex items-center gap-2 text-muted-foreground">
-                    <span>Show</span>
-                    <select
-                      className="h-8 max-w-44 rounded-md border bg-background px-2 text-foreground"
-                      onChange={(event) => setSubscriptionFilter(event.currentTarget.value)}
-                      value={activeSubscriptionFilter}
-                    >
-                      <option value="all">All subscriptions</option>
-                      {subscriptionOptions.map((subscription) => (
-                        <option key={subscription} value={subscription}>
-                          {subscription}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  <label className="flex items-center gap-2 text-muted-foreground">
-                    <input
-                      checked={captureEnabled}
-                      className="size-4 accent-primary"
-                      onChange={(event) => onCaptureEnabledChange(event.currentTarget.checked)}
-                      type="checkbox"
-                    />
-                    <span>Capture incoming messages</span>
-                  </label>
-                  <label className="flex items-center gap-2">
-                    <span className="text-muted-foreground">Max</span>
-                    <input
-                      className="h-8 w-20 rounded-md border bg-background px-2 font-mono text-foreground"
-                      max={1000}
-                      min={1}
-                      onChange={(event) =>
-                        onMaxMessagesChange(normalizeRealtimeMaxMessages(event.currentTarget.value))
-                      }
-                      type="number"
-                      value={maxMessages}
-                    />
-                  </label>
-                </div>
-              </div>
-              <div
-                className={`grid min-h-0 gap-3 ${
-                  messagesCollapsed
-                    ? "md:grid-cols-[2.75rem_minmax(0,1fr)]"
-                    : "md:grid-cols-[22rem_minmax(0,1fr)]"
-                }`}
-              >
-                <div className="grid min-h-0 grid-rows-[auto_minmax(0,1fr)] overflow-hidden rounded-md border">
-                  <div className="flex items-center justify-between gap-2 border-b px-2 py-1.5">
-                    {!messagesCollapsed && (
-                      <div className="font-medium text-muted-foreground text-xs">Messages</div>
-                    )}
-                    <Button
-                      aria-label={messagesCollapsed ? "Show messages" : "Collapse messages"}
-                      className="ml-auto"
-                      onClick={() => setMessagesCollapsed((current) => !current)}
-                      size="icon-sm"
-                      variant="ghost"
-                    >
-                      <ChevronRight
-                        className={`size-4 transition-transform ${
-                          messagesCollapsed ? "" : "rotate-180"
-                        }`}
-                      />
-                    </Button>
-                  </div>
-                  {messagesCollapsed ? (
-                    <div className="flex min-h-0 items-start justify-center overflow-hidden py-2">
-                      <div className="font-mono text-muted-foreground text-xs [writing-mode:vertical-rl]">
-                        {filteredMessages.length}
-                      </div>
-                    </div>
-                  ) : (
-                    <div className="min-h-0 overflow-auto p-2">
-                      {allMessages.length === 0 ? (
-                        <div className="p-3 text-muted-foreground text-sm">
-                          Waiting for realtime payloads.
-                        </div>
-                      ) : filteredMessages.length === 0 ? (
-                        <div className="p-3 text-muted-foreground text-sm">
-                          No payloads match this subscription.
-                        </div>
-                      ) : (
-                        <div className="space-y-1">
-                          {filteredMessages.map((message) => (
-                            <button
-                              className={`grid w-full gap-1 rounded-md px-2 py-2 text-left text-xs transition-colors ${
-                                message.id === selectedMessage?.id
-                                  ? "bg-accent text-accent-foreground"
-                                  : "hover:bg-accent/50"
-                              }`}
-                              key={message.id}
-                              onClick={() => setSelectedMessageId(message.id)}
-                              type="button"
-                            >
-                              <span className="flex items-center justify-between gap-2">
-                                <span className="min-w-0 truncate font-mono">
-                                  {formatPayloadTime(message.receivedAt)}
-                                </span>
-                                <span className="font-mono text-muted-foreground">
-                                  {message.bytes.toLocaleString()}b
-                                </span>
-                              </span>
-                              <span className="truncate font-mono text-muted-foreground">
-                                {message.subscription}
-                              </span>
-                              <span className="truncate text-muted-foreground">
-                                {message.components.map((component) => component.id).join(", ")}
-                              </span>
-                            </button>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-                  )}
-                </div>
-                <div
-                  className={`grid min-h-0 overflow-hidden rounded-md border ${
-                    jsonView === "componentData"
-                      ? "grid-rows-[auto_auto_minmax(0,1fr)]"
-                      : "grid-rows-[auto_minmax(0,1fr)]"
-                  }`}
-                >
-                  <div className="flex items-center justify-between gap-2 border-b px-3 py-2">
-                    <div className="flex min-w-0 items-center gap-2">
-                      <div className="font-medium text-muted-foreground text-xs">
-                        JSON
-                      </div>
-                      <div className="flex rounded-md border bg-muted/30 p-0.5">
-                        <Button
-                          className={`h-6 px-2 text-xs ${
-                            jsonView === "payload" ? "bg-accent text-accent-foreground" : ""
-                          }`}
-                          onClick={() => setJsonView("payload")}
-                          size="sm"
-                          variant="ghost"
-                        >
-                          Payload
-                        </Button>
-                        <Button
-                          className={`h-6 px-2 text-xs ${
-                            jsonView === "componentData" ? "bg-accent text-accent-foreground" : ""
-                          }`}
-                          disabled={returnedComponents.length === 0}
-                          onClick={showComponentDataView}
-                          size="sm"
-                          variant="ghost"
-                        >
-                          Data
-                        </Button>
-                      </div>
-                    </div>
-                    {jsonView === "payload" ? (
-                      <Button
-                        className="h-7 px-2 text-xs"
-                        onClick={() => setJsonCollapsedToComponents((current) => !current)}
-                        size="sm"
-                        variant="ghost"
-                      >
-                        {jsonCollapsedToComponents ? "Expand JSON" : "Component level"}
-                      </Button>
-                    ) : (
-                      <div className="min-w-0 truncate font-mono text-muted-foreground text-xs">
-                        {selectedComponent
-                          ? `${selectedComponent.id}:${selectedComponent.shape ?? "?"}:${selectedComponent.status ?? "?"}`
-                          : "No component data"}
-                      </div>
-                    )}
-                  </div>
-                  {jsonView === "componentData" && (
-                    <div className="flex min-w-0 gap-1 overflow-x-auto border-b px-3 py-2">
-                      {returnedComponents.length === 0 ? (
-                        <span className="text-muted-foreground text-xs">
-                          No returned components.
-                        </span>
-                      ) : (
-                        returnedComponents.map((component) => (
-                          <button
-                            className={`shrink-0 rounded-md border px-2 py-1 font-mono text-xs transition-colors ${
-                              component.id === selectedComponent?.id
-                                ? "bg-accent text-accent-foreground"
-                                : "text-muted-foreground hover:bg-accent/50"
-                            }`}
-                            key={component.id}
-                            onClick={() => setSelectedComponentId(component.id)}
-                            type="button"
-                          >
-                            {component.id}
-                          </button>
-                        ))
-                      )}
-                    </div>
-                  )}
-                  <pre className="min-h-0 overflow-auto whitespace-pre-wrap break-words bg-muted/30 p-3 font-mono text-xs leading-relaxed">
-                    {jsonView === "componentData" ? (
-                      selectedComponent ? (
-                        <JsonValue
-                          key={`${selectedMessage?.id ?? "none"}:${selectedComponent.id}:data`}
-                          value={selectedComponent.data}
-                        />
-                      ) : (
-                        "Select a returned component."
-                      )
-                    ) : selectedMessage ? (
-                      <JsonValue
-                        collapseToComponentLevel={jsonCollapsedToComponents}
-                        key={`${selectedMessage.id}:${jsonCollapsedToComponents ? "components" : "full"}`}
-                        value={selectedMessage.value}
-                      />
-                    ) : (
-                      "Waiting for the first realtime payload."
-                    )}
-                  </pre>
-                </div>
-              </div>
-            </div>
-          </div>,
-          document.body
-        )
-        : null}
-    </>
-  );
+export function useWorkableRealtimeEvents(
+  connection: WorkableConnection | null,
+  criteria: WorkableRealtimeEventCriteria,
+  enabled: boolean,
+  captureEnabled: boolean,
+  maxMessages: number
+): RealtimeEventLoadable {
+  const criteriaKey = JSON.stringify(criteria);
+  return useConsoleRealtimeEventStream({
+    captureEnabled,
+    connection,
+    createBatchMessage: (batch, nextMessageId) =>
+      createRealtimeEventMessage(
+        batch.events,
+        `batch:${nextMessageId}`,
+        Date.now(),
+        batch.sentAt
+      ),
+    createSingleMessage: (workEvent, nextMessageId) =>
+      createRealtimeEventMessage(
+        [workEvent],
+        `events:${nextMessageId}`,
+        Date.now()
+      ),
+    debugLabel: "events",
+    enabled,
+    maxMessages,
+    subscriptionErrorMessage: "Realtime event subscription failed.",
+    watchArgument: criteria,
+    watchArgumentKey: criteriaKey,
+    watchMethod: "WatchEvents",
+    watchStoppedMessage: "Realtime event connection closed.",
+  });
 }
-
-export function JsonValue({
-  collapseToComponentLevel = false,
-  indent = 0,
-  maxExpandedArrayItems,
-  value,
-}: {
-  collapseToComponentLevel?: boolean;
-  indent?: number;
-  maxExpandedArrayItems?: number;
-  value: unknown;
-}) {
-  if (value === null) {
-    return <span className="text-muted-foreground">null</span>;
-  }
-
-  if (Array.isArray(value)) {
-    return (
-      <JsonArrayValue
-        collapseToComponentLevel={collapseToComponentLevel}
-        indent={indent}
-        maxExpandedArrayItems={maxExpandedArrayItems}
-        value={value}
-      />
-    );
-  }
-
-  if (typeof value === "object") {
-    return (
-      <JsonObjectValue
-        collapseToComponentLevel={collapseToComponentLevel}
-        indent={indent}
-        maxExpandedArrayItems={maxExpandedArrayItems}
-        value={value as Record<string, unknown>}
-      />
-    );
-  }
-
-  if (typeof value === "string") {
-    return <span className="text-emerald-300">{JSON.stringify(value)}</span>;
-  }
-
-  if (typeof value === "number") {
-    return <span className="text-amber-300">{value}</span>;
-  }
-
-  if (typeof value === "boolean") {
-    return <span className="text-purple-300">{String(value)}</span>;
-  }
-
-  if (typeof value === "undefined") {
-    return <span className="text-muted-foreground">undefined</span>;
-  }
-
-  return <span>{JSON.stringify(value)}</span>;
-}
-
-function JsonArrayValue({
-  collapseToComponentLevel,
-  indent,
-  maxExpandedArrayItems,
-  value,
-}: {
-  collapseToComponentLevel: boolean;
-  indent: number;
-  maxExpandedArrayItems?: number;
-  value: unknown[];
-}) {
-  const [manualExpanded, setManualExpanded] = useState<boolean | null>(null);
-  const isCollapsedToComponent = collapseToComponentLevel && indent >= 2;
-  const isExpanded = manualExpanded ?? !isCollapsedToComponent;
-  const expandedItemLimit = maxExpandedArrayItems && maxExpandedArrayItems > 0
-    ? maxExpandedArrayItems
-    : value.length;
-  const visibleItems = value.length > expandedItemLimit
-    ? value.slice(0, expandedItemLimit)
-    : value;
-  const hiddenItemCount = value.length - visibleItems.length;
-
-  if (value.length === 0) {
-    return <span>[]</span>;
-  }
-
-  if (!isExpanded) {
-    return (
-      <JsonCollapseButton
-        closer="]"
-        count={`${value.length} items`}
-        expanded={false}
-        opener="["
-        onToggle={() => setManualExpanded(true)}
-      />
-    );
-  }
-
-  return (
-    <>
-      <JsonCollapseButton
-        expanded={isExpanded}
-        onToggle={() => setManualExpanded(false)}
-        opener="["
-      />
-      {visibleItems.map((item, index) => (
-        <span key={index}>
-          {"\n"}
-          {jsonIndent(indent + 1)}
-          <JsonValue
-            collapseToComponentLevel={collapseToComponentLevel}
-            indent={indent + 1}
-            maxExpandedArrayItems={maxExpandedArrayItems}
-            value={item}
-          />
-          {index < value.length - 1 ? <span>,</span> : null}
-        </span>
-      ))}
-      {hiddenItemCount > 0 && (
-        <span>
-          {"\n"}
-          {jsonIndent(indent + 1)}
-          <span className="text-muted-foreground">
-            ... {hiddenItemCount.toLocaleString()} more item{hiddenItemCount === 1 ? "" : "s"}
-          </span>
-        </span>
-      )}
-      {"\n"}
-      {jsonIndent(indent)}
-      <span>]</span>
-    </>
-  );
-}
-
-function JsonObjectValue({
-  collapseToComponentLevel,
-  indent,
-  maxExpandedArrayItems,
-  value,
-}: {
-  collapseToComponentLevel: boolean;
-  indent: number;
-  maxExpandedArrayItems?: number;
-  value: Record<string, unknown>;
-}) {
-  const [manualExpanded, setManualExpanded] = useState<boolean | null>(null);
-  const entries = Object.entries(value);
-  const isCollapsedToComponent = collapseToComponentLevel && indent >= 2;
-  const isExpanded = manualExpanded ?? !isCollapsedToComponent;
-
-  if (entries.length === 0) {
-    return <span>{"{}"}</span>;
-  }
-
-  if (!isExpanded) {
-    return (
-      <JsonCollapseButton
-        closer="}"
-        count={`${entries.length} keys`}
-        expanded={false}
-        opener="{"
-        onToggle={() => setManualExpanded(true)}
-      />
-    );
-  }
-
-  return (
-    <>
-      <JsonCollapseButton
-        expanded={isExpanded}
-        onToggle={() => setManualExpanded(false)}
-        opener="{"
-      />
-      {entries.map(([key, item], index) => (
-        <span key={key}>
-          {"\n"}
-          {jsonIndent(indent + 1)}
-          <span className="text-sky-300">{JSON.stringify(key)}</span>
-          <span>: </span>
-          <JsonValue
-            collapseToComponentLevel={collapseToComponentLevel}
-            indent={indent + 1}
-            maxExpandedArrayItems={maxExpandedArrayItems}
-            value={item}
-          />
-          {index < entries.length - 1 ? <span>,</span> : null}
-        </span>
-      ))}
-      {"\n"}
-      {jsonIndent(indent)}
-      <span>{"}"}</span>
-    </>
-  );
-}
-
-function JsonCollapseButton({
-  closer,
-  count,
-  expanded,
-  onToggle,
-  opener,
-}: {
-  closer?: string;
-  count?: string;
-  expanded: boolean;
-  onToggle: () => void;
-  opener: string;
-}) {
-  return (
-    <button
-      className="inline-flex items-center gap-1 rounded px-0.5 text-left hover:bg-accent"
-      onClick={onToggle}
-      type="button"
-    >
-      <ChevronRight className={`size-3 transition-transform ${expanded ? "rotate-90" : ""}`} />
-      <span>{opener}</span>
-      {count ? <span className="text-muted-foreground">{count}</span> : null}
-      {closer ? <span>{closer}</span> : null}
-    </button>
-  );
-}
-
-function jsonIndent(level: number) {
-  return <span>{Array.from({ length: level }).map(() => "  ").join("")}</span>;
-}
-
-function formatPayloadTime(value: number) {
-  return new Intl.DateTimeFormat(undefined, {
-    hour: "numeric",
-    minute: "numeric",
-    second: "numeric",
-  }).format(new Date(value));
-}
-
-function getCenteredRealtimePayloadPosition(size: "compact" | "large") {
-  const viewportWidth = window.visualViewport?.width ?? window.innerWidth;
-  const viewportHeight = window.visualViewport?.height ?? window.innerHeight;
-  const panelWidth = size === "compact"
-    ? Math.min(viewportWidth * 0.96, 768)
-    : Math.min(viewportWidth * 0.96, 1536);
-  const panelHeight = size === "compact"
-    ? Math.min(viewportHeight * 0.82, 512)
-    : Math.min(viewportHeight * 0.88, 896);
-
-  return {
-    x: Math.max(8, Math.round((viewportWidth - panelWidth) / 2)),
-    y: Math.max(8, Math.round((viewportHeight - panelHeight) / 2)),
-  };
-}
-
-function PayloadInlineMetric({
-  label,
-  value,
-  wide = false,
-}: {
-  label: string;
-  value: string;
-  wide?: boolean;
-}) {
-  return (
-    <div className={`flex min-w-0 items-center gap-1 ${wide ? "max-w-[32rem]" : ""}`}>
-      <span className="text-muted-foreground">{label}</span>
-      <span className="min-w-0 truncate font-mono text-foreground">{value}</span>
-    </div>
-  );
-}
-
-function normalizeRealtimeMaxMessages(value: string) {
-  const parsed = Number.parseInt(value, 10);
-  if (!Number.isFinite(parsed)) {
-    return 100;
-  }
-
-  return Math.min(1000, Math.max(1, parsed));
-}
-
-function clampFloatingWindowPosition(value: number, viewport: number, size: number) {
-  const visibleGrip = 40;
-  const min = size > 0 ? Math.min(8, visibleGrip - size) : 8;
-  const max = Math.max(8, viewport - visibleGrip);
-
-  return Math.min(Math.max(min, value), max);
-}
-
-function getRealtimeErrorMessage(error: unknown, fallback: string) {
-  return error instanceof Error && error.message ? error.message : fallback;
-}
-
-function isExpectedRealtimeDisconnect(error: unknown) {
-  const message = getRealtimeErrorMessage(error, "").toLowerCase();
-  return (
-    message.includes("failed to fetch") ||
-    message.includes("failed to complete negotiation") ||
-    message.includes("failed to start the connection") ||
-    message.includes("websocket closed with status code: 1006")
-  );
-}
-
-export type RealtimeViewLoadable<T> = Loadable<T> & {
-  clearMessages: () => void;
-  connectionState: string;
-  enabled: boolean;
-  hubUrl?: string | null;
-  messages: RealtimePayloadMessage[];
-};
 
 export function useWorkableRealtimeView<T>(
   connection: WorkableConnection | null,
@@ -3894,511 +3024,66 @@ export function useWorkableRealtimeView<T>(
   enabled: boolean,
   captureEnabled: boolean,
   maxMessages: number,
-  subscription = viewName
+  subscription?: string
 ): RealtimeViewLoadable<T> {
-  const [state, setState] = useState<RealtimeViewLoadable<T>>({
-    clearMessages: () => undefined,
-    connectionState: enabled ? "connecting" : "disabled",
-    enabled,
-    hubUrl: connection ? createWorkableRealtimeUrl(connection) : null,
-    loading: false,
-    messages: [],
-  });
-  const hubConnectionRef = useRef<HubConnection | null>(null);
-  const hasConnection = connection !== null;
-  const apiUrl = connection?.apiUrl ?? "";
-  const hubUrl = connection ? createWorkableRealtimeUrl(connection) : null;
-  const systemName = connection?.systemName;
-  const bodyKey = JSON.stringify(body);
-  const bodyKeyRef = useRef(bodyKey);
-  const captureEnabledRef = useRef(captureEnabled);
-  const maxMessagesRef = useRef(maxMessages);
-  const messageIdRef = useRef(0);
-  const systemNameRef = useRef(systemName);
+  const subscriptionName = subscription ?? viewName;
 
-  useEffect(() => {
-    bodyKeyRef.current = bodyKey;
-    captureEnabledRef.current = captureEnabled;
-    maxMessagesRef.current = maxMessages;
-    systemNameRef.current = systemName;
-  }, [bodyKey, captureEnabled, maxMessages, systemName]);
-
-  const clearMessages = useCallback(() => {
-    setState((current) =>
-      current.messages.length === 0 ? current : { ...current, messages: [] }
-    );
-  }, []);
-
-  useEffect(() => {
-    queueMicrotask(() => {
-      setState((current) =>
-        current.messages.length > maxMessages
-          ? { ...current, messages: current.messages.slice(0, maxMessages) }
-          : current
-      );
-    });
-  }, [maxMessages]);
-
-  useEffect(() => {
-    if (!hasConnection || !enabled || !hubUrl) {
-      queueMicrotask(() =>
-        setState((current) =>
-          current.connectionState === "disabled" &&
-          current.enabled === enabled &&
-          current.hubUrl === hubUrl &&
-          !current.loading &&
-          !current.refreshing
-            ? current
-            : {
-                ...current,
-                connectionState: "disabled",
-                enabled,
-                hubUrl,
-                loading: false,
-                refreshing: false,
-              }
-        )
-      );
-      return;
-    }
-
-    let canceled = false;
-    let retryTimer: ReturnType<typeof setTimeout> | null = null;
-    queueMicrotask(() => {
-      if (!canceled) {
-        setState((current) => ({
-          ...current,
-          connectionState: "connecting",
-          enabled,
-          hubUrl,
-        }));
-      }
-    });
-    const hubConnection = new HubConnectionBuilder()
-      .withUrl(hubUrl, {
-        accessTokenFactory: () => getWorkableRealtimeAccessToken(apiUrl),
-        withCredentials: true,
-      })
-      .withAutomaticReconnect()
-      .configureLogging(LogLevel.None)
-      .build();
-
-    hubConnectionRef.current = hubConnection;
-    const subscribe = () =>
-      hubConnection.invoke(
-        "WatchView",
+  return useConsoleRealtimeView<T, RealtimePayloadMessage>({
+    body,
+    captureEnabled,
+    connection,
+    createMessage: (result, nextMessageId) => {
+      const payloadJson = JSON.stringify(result);
+      return createRealtimePayloadMessage(
+        result,
+        payloadJson,
+        `${subscriptionName}:${nextMessageId}`,
         viewName,
-        JSON.parse(bodyKeyRef.current),
-        systemNameRef.current ?? null
+        subscriptionName,
+        connection
       );
-    const scheduleRestart = (error: unknown, delayMs = 1000) => {
-      if (canceled || retryTimer) {
-        return;
-      }
-
-      retryTimer = setTimeout(() => {
-        retryTimer = null;
-        if (!canceled && hubConnection.state === HubConnectionState.Disconnected) {
-          startConnection();
-        }
-      }, delayMs);
-      setState((current) => ({
-        ...current,
-        connectionState: "disconnected",
-        error: error && !isExpectedRealtimeDisconnect(error)
-          ? getRealtimeErrorMessage(error, "Realtime view connection closed.")
-          : undefined,
-        loading: false,
-        refreshing: false,
-      }));
-    };
-    const startConnection = () => {
-      if (canceled || hubConnection.state !== HubConnectionState.Disconnected) {
-        return;
-      }
-
-      queueMicrotask(() => {
-        if (!canceled) {
-          setState((current) => ({
-            ...current,
-            connectionState: current.data === undefined ? "connecting" : "reconnecting",
-            loading: current.data === undefined,
-            refreshing: current.data !== undefined,
-          }));
-        }
-      });
-      void hubConnection
-        .start()
-        .then(() => subscribe())
-        .then(() => {
-          if (!canceled) {
-            setState((current) => ({
-              ...current,
-              connectionState: "connected",
-              error: undefined,
-              loading: false,
-              refreshing: false,
-            }));
-          }
-        })
-        .catch((error) => {
-          if (!canceled) {
-            scheduleRestart(error, isExpectedRealtimeDisconnect(error) ? 1000 : 3000);
-          }
-        });
-    };
-    hubConnection.on("workable.view", (result: T) => {
-      if (!canceled) {
-        const payloadJson = JSON.stringify(result);
-        const message = createRealtimePayloadMessage(
-          result,
-          payloadJson,
-          `${subscription}:${++messageIdRef.current}`,
-          viewName,
-          subscription
-        );
-        setState((current) => ({
-          ...current,
-          connectionState: "connected",
-          data: result,
-          enabled,
-          hubUrl,
-          loading: false,
-          messages: captureEnabledRef.current
-            ? [message, ...current.messages].slice(0, maxMessagesRef.current)
-            : current.messages,
-          refreshing: false,
-        }));
-      }
-    });
-    hubConnection.onreconnecting(() => {
-      if (!canceled) {
-        setState((current) => ({
-          ...current,
-          connectionState: "reconnecting",
-          refreshing: current.data !== undefined,
-        }));
-      }
-    });
-    hubConnection.onreconnected(() => {
-      if (!canceled) {
-        setState((current) => ({
-          ...current,
-          connectionState: "connected",
-        }));
-      }
-      void subscribe().catch((error) => {
-        if (!canceled && !isExpectedRealtimeDisconnect(error)) {
-          setState((current) => ({
-            ...current,
-            connectionState: "error",
-            error: getRealtimeErrorMessage(error, "Realtime view subscription failed."),
-            loading: false,
-            refreshing: false,
-          }));
-        }
-      });
-    });
-    hubConnection.onclose((error) => {
-      if (!canceled) {
-        scheduleRestart(error, isExpectedRealtimeDisconnect(error) ? 1000 : 3000);
-      }
-    });
-
-    startConnection();
-
-    return () => {
-      canceled = true;
-      if (retryTimer) {
-        clearTimeout(retryTimer);
-      }
-      hubConnectionRef.current = null;
-      void hubConnection.stop().catch(() => undefined);
-    };
-  }, [apiUrl, enabled, hasConnection, hubUrl, subscription, systemName, viewName]);
-
-  useEffect(() => {
-    const hubConnection = hubConnectionRef.current;
-    if (!enabled || !hubConnection || hubConnection.state !== HubConnectionState.Connected) {
-      return;
-    }
-
-    let canceled = false;
-    queueMicrotask(() => {
-      if (!canceled) {
-        setState((current) => ({
-          ...current,
-          connectionState: hubConnection.state.toLowerCase(),
-          error: undefined,
-          loading: current.data === undefined,
-          refreshing: current.data !== undefined,
-        }));
-      }
-    });
-
-    hubConnection
-      .invoke("WatchView", viewName, JSON.parse(bodyKey), systemName ?? null)
-      .catch((error) => {
-        if (!canceled) {
-          setState((current) => ({
-            ...current,
-            data: current.data,
-            connectionState: "error",
-            error: getRealtimeErrorMessage(error, "Realtime view subscription failed."),
-            loading: false,
-            refreshing: false,
-          }));
-        }
-      });
-
-    return () => {
-      canceled = true;
-      if (hubConnection.state === HubConnectionState.Connected) {
-        void hubConnection
-          .invoke("UnwatchView", viewName, systemName ?? null)
-          .catch(() => undefined);
-      }
-    };
-  }, [bodyKey, enabled, systemName, viewName]);
-
-  return { ...state, clearMessages };
+    },
+    enabled,
+    maxMessages,
+    subscription: subscriptionName,
+    viewName,
+  });
 }
 
-export function useWorkableRealtimeEvents(
+export function useWorkableRealtimeWorkerEvents(
   connection: WorkableConnection | null,
-  criteria: WorkableRealtimeEventCriteria,
+  workerId: string,
   enabled: boolean,
+  captureEnabled: boolean,
   maxMessages: number
 ): RealtimeEventLoadable {
-  const [state, setState] = useState<RealtimeEventLoadable>({
-    clearMessages: () => undefined,
-    connectionState: enabled ? "connecting" : "disabled",
+  return useConsoleRealtimeEventStream({
+    captureEnabled,
+    connection,
+    createBatchMessage: (batch, nextMessageId) =>
+      createRealtimeEventMessage(
+        batch.events,
+        `worker-batch:${nextMessageId}`,
+        Date.now(),
+        batch.sentAt
+      ),
+    createSingleMessage: (workEvent, nextMessageId) =>
+      createRealtimeEventMessage(
+        [workEvent],
+        `worker-events:${nextMessageId}`,
+        Date.now()
+      ),
+    debugLabel: `worker:${workerId}`,
     enabled,
-    hubUrl: connection ? createWorkableRealtimeUrl(connection) : null,
-    loading: false,
-    messages: [],
+    maxMessages,
+    subscriptionErrorMessage: "Realtime worker subscription failed.",
+    unwatchMethod: "UnwatchWorker",
+    watchArgument: workerId,
+    watchArgumentKey: workerId,
+    watchMethod: "WatchWorker",
+    watchReady: workerId.trim().length > 0,
+    watchStoppedMessage: "Realtime worker connection closed.",
   });
-  const hubConnectionRef = useRef<HubConnection | null>(null);
-  const hasConnection = connection !== null;
-  const apiUrl = connection?.apiUrl ?? "";
-  const hubUrl = connection ? createWorkableRealtimeUrl(connection) : null;
-  const systemName = connection?.systemName;
-  const criteriaKey = JSON.stringify(criteria);
-  const criteriaKeyRef = useRef(criteriaKey);
-  const maxMessagesRef = useRef(maxMessages);
-  const messageIdRef = useRef(0);
-  const systemNameRef = useRef(systemName);
-
-  useEffect(() => {
-    criteriaKeyRef.current = criteriaKey;
-    maxMessagesRef.current = maxMessages;
-    systemNameRef.current = systemName;
-  }, [criteriaKey, maxMessages, systemName]);
-
-  const clearMessages = useCallback(() => {
-    setState((current) =>
-      current.messages.length === 0 ? current : { ...current, messages: [] }
-    );
-  }, []);
-
-  useEffect(() => {
-    queueMicrotask(() => {
-      setState((current) =>
-        current.messages.length > maxMessages
-          ? { ...current, messages: current.messages.slice(0, maxMessages) }
-          : current
-      );
-    });
-  }, [maxMessages]);
-
-  useEffect(() => {
-    if (!hasConnection || !enabled || !hubUrl) {
-      queueMicrotask(() =>
-        setState((current) =>
-          current.connectionState === "disabled" &&
-          current.enabled === enabled &&
-          current.hubUrl === hubUrl &&
-          !current.loading
-            ? current
-            : {
-                ...current,
-                connectionState: "disabled",
-                enabled,
-                hubUrl,
-                loading: false,
-              }
-        )
-      );
-      return;
-    }
-
-    let canceled = false;
-    let retryTimer: ReturnType<typeof setTimeout> | null = null;
-    queueMicrotask(() => {
-      if (!canceled) {
-        setState((current) => ({
-          ...current,
-          connectionState: "connecting",
-          enabled,
-          hubUrl,
-          loading: current.messages.length === 0,
-        }));
-      }
-    });
-    const hubConnection = new HubConnectionBuilder()
-      .withUrl(hubUrl, {
-        accessTokenFactory: () => getWorkableRealtimeAccessToken(apiUrl),
-        withCredentials: true,
-      })
-      .withAutomaticReconnect()
-      .configureLogging(LogLevel.None)
-      .build();
-
-    hubConnectionRef.current = hubConnection;
-    const subscribe = () =>
-      hubConnection.invoke(
-        "WatchEvents",
-        JSON.parse(criteriaKeyRef.current),
-        systemNameRef.current ?? null
-      );
-    const scheduleRestart = (error: unknown, delayMs = 1000) => {
-      if (canceled || retryTimer) {
-        return;
-      }
-
-      retryTimer = setTimeout(() => {
-        retryTimer = null;
-        if (!canceled && hubConnection.state === HubConnectionState.Disconnected) {
-          startConnection();
-        }
-      }, delayMs);
-      setState((current) => ({
-        ...current,
-        connectionState: "disconnected",
-        error: error && !isExpectedRealtimeDisconnect(error)
-          ? getRealtimeErrorMessage(error, "Realtime event connection closed.")
-          : undefined,
-        loading: false,
-      }));
-    };
-    const startConnection = () => {
-      if (canceled || hubConnection.state !== HubConnectionState.Disconnected) {
-        return;
-      }
-
-      queueMicrotask(() => {
-        if (!canceled) {
-          setState((current) => ({
-            ...current,
-            connectionState: current.messages.length === 0 ? "connecting" : "reconnecting",
-            loading: current.messages.length === 0,
-          }));
-        }
-      });
-      void hubConnection
-        .start()
-        .then(() => subscribe())
-        .then(() => {
-          if (!canceled) {
-            setState((current) => ({
-              ...current,
-              connectionState: "connected",
-              error: undefined,
-              loading: false,
-            }));
-          }
-        })
-        .catch((error) => {
-          if (!canceled) {
-            scheduleRestart(error, isExpectedRealtimeDisconnect(error) ? 1000 : 3000);
-          }
-        });
-    };
-    hubConnection.on("workable.event", (workEvent: WorkableRealtimeEvent) => {
-      if (!canceled) {
-        const message = createRealtimeEventMessage(
-          [workEvent],
-          `events:${++messageIdRef.current}`,
-          Date.now()
-        );
-        setState((current) => ({
-          ...current,
-          connectionState: "connected",
-          enabled,
-          hubUrl,
-          loading: false,
-          messages: [message, ...current.messages].slice(0, maxMessagesRef.current),
-        }));
-      }
-    });
-    hubConnection.on("workable.events", (batch: WorkableRealtimeEventBatch) => {
-      if (!canceled) {
-        const batchId = `batch:${++messageIdRef.current}`;
-        const message = createRealtimeEventMessage(
-          batch.events,
-          batchId,
-          Date.now(),
-          batch.sentAt
-        );
-        setState((current) => ({
-          ...current,
-          connectionState: "connected",
-          enabled,
-          hubUrl,
-          loading: false,
-          messages: [message, ...current.messages].slice(0, maxMessagesRef.current),
-        }));
-      }
-    });
-    hubConnection.onreconnecting(() => {
-      if (!canceled) {
-        setState((current) => ({
-          ...current,
-          connectionState: "reconnecting",
-        }));
-      }
-    });
-    hubConnection.onreconnected(() => {
-      if (!canceled) {
-        setState((current) => ({
-          ...current,
-          connectionState: "connected",
-        }));
-      }
-      void hubConnection.invoke(
-        "WatchEvents",
-        JSON.parse(criteriaKeyRef.current),
-        systemNameRef.current ?? null
-      ).catch((error) => {
-        if (!canceled && !isExpectedRealtimeDisconnect(error)) {
-          setState((current) => ({
-            ...current,
-            connectionState: "error",
-            error: getRealtimeErrorMessage(error, "Realtime event subscription failed."),
-            loading: false,
-          }));
-        }
-      });
-    });
-    hubConnection.onclose((error) => {
-      if (!canceled) {
-        scheduleRestart(error, isExpectedRealtimeDisconnect(error) ? 1000 : 3000);
-      }
-    });
-
-    startConnection();
-
-    return () => {
-      canceled = true;
-      if (retryTimer) {
-        clearTimeout(retryTimer);
-      }
-      hubConnectionRef.current = null;
-      void hubConnection.stop().catch(() => undefined);
-    };
-  }, [apiUrl, criteriaKey, enabled, hasConnection, hubUrl, systemName]);
-
-  return { ...state, clearMessages };
 }
 
 function createRealtimeEventMessage(
@@ -4505,46 +3190,6 @@ function measureJsonBytes(value: unknown, budget = 250_000) {
   return state;
 }
 
-function createRealtimePayloadMessage<T>(
-  result: T,
-  payloadJson: string,
-  id: string,
-  viewName: string,
-  subscription: string
-): RealtimePayloadMessage {
-  const maybeComponents =
-    typeof result === "object" && result !== null && "components" in result
-      ? (result as { components?: Record<string, WorkComponentResult> }).components
-      : undefined;
-
-  return {
-    bytes: new TextEncoder().encode(payloadJson).length,
-    components: Object.entries(maybeComponents ?? {}).map(([id, component]) => ({
-      id,
-      shape: component.shape,
-      status: component.status,
-    })),
-    id,
-    receivedAt: Date.now(),
-    subscription,
-    value: result,
-    viewName,
-  };
-}
-
-function getRealtimePayloadComponentData(value: unknown): RealtimePayloadComponentData[] {
-  const components =
-    typeof value === "object" && value !== null && "components" in value
-      ? (value as { components?: Record<string, WorkComponentResult> }).components
-      : undefined;
-
-  return Object.entries(components ?? {}).map(([id, component]) => ({
-    data: component.data,
-    id,
-    shape: component.shape,
-    status: component.status,
-  }));
-}
 
 function useWorkablePostResource<T>(
   connection: WorkableConnection,

@@ -40,11 +40,47 @@ public sealed class WorkerExecutionInvokerTests
             async () => await invoker.Execute(worker, cancellation.Token));
     }
 
+    [Fact]
+    public async Task ExecuteReturnsFailureWhenExecutionContextIsMarkedFailed()
+    {
+        var provider = new ServiceCollection().BuildServiceProvider();
+        var invoker = CreateInvoker(provider);
+        var worker = CreateWorker(initializers: [], executorFactory: _ => new ContextFailingWork());
+
+        var invocation = await invoker.Execute(worker, CancellationToken.None);
+        var result = invocation.Result;
+
+        Assert.True(result.HasErrors);
+        var message = Assert.Single(result.Messages);
+        Assert.Equal("test.context.failed", message.Code);
+        Assert.Equal(WorkMessageSeverity.Error, message.Severity);
+        Assert.Equal("The execution context marked this work as failed.", message.Text);
+        Assert.Equal("execution", message.Target);
+        Assert.Equal("executionContext", message.Metadata?["failureSource"]);
+        Assert.False(invocation.RequestedFailureIsTransient);
+    }
+
+    [Fact]
+    public async Task ExecutePreservesExistingExecutorMessagesAlongsideRequestedContextFailure()
+    {
+        var provider = new ServiceCollection().BuildServiceProvider();
+        var invoker = CreateInvoker(provider);
+        var worker = CreateWorker(initializers: [], executorFactory: _ => new ContextFailingWorkWithAdditionalMessage());
+
+        var invocation = await invoker.Execute(worker, CancellationToken.None);
+        var result = invocation.Result;
+
+        Assert.True(result.HasErrors);
+        Assert.Equal(2, result.Messages.Count);
+        Assert.Equal("test.context.failed", result.Messages[0].Code);
+        Assert.Equal("test.context.additional", result.Messages[1].Code);
+    }
+
     private static WorkerExecutionInvoker CreateInvoker(IServiceProvider services)
     {
         var systemId = WorkSystemId.New();
         var events = new WorkEventStream();
-        var publisher = new WorkerEventPublisher(systemId, events, synchronize: _ => { });
+        var publisher = new WorkerEventPublisher(systemId, null, events, synchronize: _ => { });
         return new WorkerExecutionInvoker(
             systemId,
             workSystemName: null,
@@ -55,11 +91,13 @@ public sealed class WorkerExecutionInvokerTests
             new WorkInitializationExecutor(services));
     }
 
-    private static WorkerRecord CreateWorker(IReadOnlyList<WorkInitializationRegistration> initializers)
+    private static WorkerRecord CreateWorker(
+        IReadOnlyList<WorkInitializationRegistration> initializers,
+        Func<IServiceProvider, IWorkExecutor>? executorFactory = null)
     {
         var work = new RegisteredWork(
             WorkDefinition.Create("execution.canceled-before-scope"),
-            _ => new ShouldNotExecuteWork(),
+            executorFactory ?? (_ => new ShouldNotExecuteWork()),
             ExceptionClassifiers: [],
             AutomaticStarts: [],
             Initializers: initializers);
@@ -134,5 +172,33 @@ public sealed class WorkerExecutionInvokerTests
             WorkInput? input,
             CancellationToken cancellationToken)
             => throw new InvalidOperationException("Worker should not run when execution is already canceled.");
+    }
+
+    private sealed class ContextFailingWork : IWorkExecutor
+    {
+        public Task<WorkExecutionResult> Execute(
+            IWorkExecutionContext context,
+            WorkInput? input,
+            CancellationToken cancellationToken)
+        {
+            context.Fail("test.context.failed", "The execution context marked this work as failed.", "execution");
+            return Task.FromResult(WorkExecutionResult.Success());
+        }
+    }
+
+    private sealed class ContextFailingWorkWithAdditionalMessage : IWorkExecutor
+    {
+        public Task<WorkExecutionResult> Execute(
+            IWorkExecutionContext context,
+            WorkInput? input,
+            CancellationToken cancellationToken)
+        {
+            context.Fail("test.context.failed", "The execution context marked this work as failed.", "execution");
+            return Task.FromResult(WorkExecutionResult.Success(
+                messages:
+                [
+                    WorkMessage.Info("test.context.additional", "The executor also returned a non-error detail message.")
+                ]));
+        }
     }
 }

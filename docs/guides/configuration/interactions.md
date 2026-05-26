@@ -126,6 +126,16 @@ Completed workers and explicitly canceled workers release durable concurrency by
 
 `CompleteDurably()` is an opt-in guarantee for work whose business data and Workable completion record must commit together.
 
+The reason is replay safety. If executor code commits a durable business write but Workable does not durably complete the worker row, replay can run the worker again even though the business side effect already happened.
+
+Think of:
+
+- creating an invoice row
+- capturing a payment record
+- writing an outbox message that must exist exactly once
+
+`CompleteDurably()` keeps "my durable business side effect happened" and "Workable is durably done with this worker" inside the same transaction boundary.
+
 Workable does not create the developer's transaction. Executor code creates the transaction, performs business writes, calls `IWorkExecutionContext.CompleteDurably(...)` with the persistence transaction, then commits. If the transaction rolls back, the business write and Workable durable completion roll back together.
 
 If durable completion is enabled and executor code returns success without calling `CompleteDurably(...)`, Workable fails the execution instead of marking it completed. That failure is intentional because otherwise the durable row could be replayed even though the in-memory execution reported success.

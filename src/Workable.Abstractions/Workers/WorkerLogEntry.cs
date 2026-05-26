@@ -10,5 +10,4 @@ public sealed record WorkerLogEntry(
     EventId EventId,
     string Message,
     string? ExceptionType = null,
-    string? ExceptionMessage = null,
-    IReadOnlyDictionary<string, object?>? Metadata = null);
+    string? ExceptionMessage = null);

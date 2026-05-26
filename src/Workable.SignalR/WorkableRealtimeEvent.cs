@@ -4,15 +4,15 @@ namespace Workable;
 public sealed record WorkableRealtimeEvent(
     DateTimeOffset OccurredAt,
     WorkSystemId WorkSystemId,
+    string? WorkSystemName,
     WorkerId? WorkerId,
-    WorkDefinitionId? DefinitionId,
+    WorkDefinitionId? WorkDefinitionId,
+    string? WorkDefinitionName,
     WorkSubjectId? SubjectId,
     WorkConcurrencyKey? ConcurrencyKey,
     IReadOnlyList<WorkIdentifier> Identifiers,
-    WorkOrigin? Origin,
     string EventType,
-    JsonElement? Data,
-    IReadOnlyList<WorkMessage> Messages)
+    JsonElement? Data)
 {
     public static WorkableRealtimeEvent From(WorkEvent workEvent)
     {
@@ -21,15 +21,15 @@ public sealed record WorkableRealtimeEvent(
         return new WorkableRealtimeEvent(
             workEvent.OccurredAt,
             workEvent.WorkSystemId,
+            workEvent.WorkSystemName,
             workEvent.WorkerId,
-            workEvent.DefinitionId,
+            workEvent.WorkDefinitionId,
+            workEvent.WorkDefinitionName,
             workEvent.SubjectId,
             workEvent.ConcurrencyKey,
             [.. workEvent.Identifiers],
-            workEvent.Origin,
             workEvent.EventType,
-            workEvent.Data,
-            workEvent.Messages);
+            workEvent.Data);
     }
 }
 

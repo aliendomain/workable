@@ -8,5 +8,6 @@ public sealed record WorkerActionHistoryEntry(
     WorkOrigin Origin,
     long Revision,
     long StateSequence,
+    WorkerState State,
     IReadOnlyList<WorkMessage> Messages,
     WorkerReconfiguration? Reconfiguration = null);

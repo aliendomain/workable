@@ -10,9 +10,9 @@ internal static class WorkableHttpQueueRoutes
     {
         group.MapGet("/queue-request/schema", (
             HttpContext httpContext,
-            WorkableHttpSystemResolver systems) =>
+            WorkableHttpTopologyResolver topology) =>
         {
-            if (!WorkableHttpRouteResults.TryResolveSystem(httpContext, systems, out var system, out var notFound))
+            if (!WorkableHttpRouteResults.TryResolveSystem(httpContext, topology, out var system, out var notFound))
             {
                 return notFound;
             }
@@ -24,12 +24,12 @@ internal static class WorkableHttpQueueRoutes
             string name,
             WorkableHttpWorkRequest? request,
             HttpContext httpContext,
-            WorkableHttpSystemResolver systems,
+            WorkableHttpTopologyResolver topology,
             WorkableHttpQueueAdapter queue,
             IWorkRequestContextFactory requestContexts,
             CancellationToken cancellationToken) =>
         {
-            if (!WorkableHttpRouteResults.TryResolveSystem(httpContext, systems, out var system, out var notFound))
+            if (!WorkableHttpRouteResults.TryResolveSystem(httpContext, topology, out var system, out var notFound))
             {
                 return notFound;
             }
@@ -47,12 +47,12 @@ internal static class WorkableHttpQueueRoutes
             Guid definitionId,
             WorkableHttpWorkRequest? request,
             HttpContext httpContext,
-            WorkableHttpSystemResolver systems,
+            WorkableHttpTopologyResolver topology,
             WorkableHttpQueueAdapter queue,
             IWorkRequestContextFactory requestContexts,
             CancellationToken cancellationToken) =>
         {
-            if (!WorkableHttpRouteResults.TryResolveSystem(httpContext, systems, out var system, out var notFound))
+            if (!WorkableHttpRouteResults.TryResolveSystem(httpContext, topology, out var system, out var notFound))
             {
                 return notFound;
             }

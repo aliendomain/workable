@@ -39,14 +39,14 @@ internal static class WorkableHttpRouteResults
 
     internal static bool TryResolveSystem(
         HttpContext httpContext,
-        WorkableHttpSystemResolver systems,
+        WorkableHttpTopologyResolver topology,
         out IWorkSystem system,
         out IResult notFound)
     {
         var systemName = httpContext.Request.RouteValues.TryGetValue("systemName", out var value)
             ? Convert.ToString(value)
             : null;
-        if (systems.TryGetSystem(systemName, out var resolved))
+        if (topology.TryResolveSystem(systemName, out var resolved))
         {
             system = resolved;
             notFound = Results.NotFound();

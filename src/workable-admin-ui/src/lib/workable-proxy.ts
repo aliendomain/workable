@@ -19,7 +19,7 @@ export async function proxyWorkableRequest(
   options: WorkableProxyOptions = {}
 ) {
   const env = options.env;
-  const authentication = authenticateAdminRequest(request.headers, env);
+  const authentication = authenticateAdminRequest(request.headers, env, request);
   if (!authentication.ok) {
     return Response.json(
       { error: authentication.error },
@@ -95,7 +95,10 @@ export async function proxyWorkableRequest(
         {
           "content-type": response.headers.get("content-type") ?? "application/json",
         },
-        targetAccessToken.setCookieHeaders
+        [
+          ...targetAccessToken.setCookieHeaders,
+          ...(authentication.sessionCookieHeader ? [authentication.sessionCookieHeader] : []),
+        ]
       ),
     });
   } catch {

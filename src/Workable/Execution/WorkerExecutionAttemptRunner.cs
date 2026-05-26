@@ -10,9 +10,11 @@ internal sealed class WorkerExecutionAttemptRunner(
         CancellationToken cancellationToken)
     {
         var execution = await CaptureExecution(invoker.Execute(worker, cancellationToken));
-        if (execution.Result is { } result)
+        if (execution.InvocationResult is { } invocation)
         {
-            return WorkerExecutionAttempt.Completed(result);
+            return invocation.RequestedFailureIsTransient
+                ? WorkerExecutionAttempt.DeclarativeTransientFailed(invocation.Result)
+                : WorkerExecutionAttempt.Completed(invocation.Result);
         }
 
         if (execution.WasCanceled)
@@ -34,7 +36,7 @@ internal sealed class WorkerExecutionAttemptRunner(
     public void LogFinalException(WorkerRecord worker, WorkerExecutionAttempt attempt, int retryAttempts)
         => exceptionHandler.LogFinalException(worker, attempt.RequiredException, attempt.RequiredExceptionClassification, retryAttempts);
 
-    private static async Task<ExecutionCapture> CaptureExecution(Task<WorkExecutionResult> execution)
+    private static async Task<ExecutionCapture> CaptureExecution(Task<WorkerExecutionInvocationResult> execution)
     {
         await Task.WhenAny(execution).ConfigureAwait(false);
 
@@ -60,17 +62,17 @@ internal sealed class WorkerExecutionAttemptRunner(
         };
 
     private sealed record ExecutionCapture(
-        WorkExecutionResult? Result,
+        WorkerExecutionInvocationResult? InvocationResult,
         bool WasCanceled,
         Exception? Exception)
     {
-        public static ExecutionCapture Completed(WorkExecutionResult result)
+        public static ExecutionCapture Completed(WorkerExecutionInvocationResult result)
             => new(result, WasCanceled: false, Exception: null);
 
         public static ExecutionCapture Canceled()
-            => new(Result: null, WasCanceled: true, Exception: null);
+            => new(InvocationResult: null, WasCanceled: true, Exception: null);
 
         public static ExecutionCapture Failed(Exception exception)
-            => new(Result: null, WasCanceled: false, exception);
+            => new(InvocationResult: null, WasCanceled: false, exception);
     }
 }
