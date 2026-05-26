@@ -83,9 +83,9 @@ import {
   type WorkDefinition,
   type WorkOverviewCatalogCategoryItem,
   type WorkableConnection,
+  type WorkableHttpHostDescriptor,
   type WorkSystemAccessSummary,
-  type WorkableHttpSystemInfo,
-  type WorkableHttpSystems,
+  type WorkableHttpSystemDescriptor,
 } from "@/lib/workable";
 const navItems: Array<{ id: ServerView; label: string; icon: typeof Activity }> = [
   { id: "overview", label: "Overview", icon: Activity },
@@ -745,8 +745,18 @@ export function ServerDialog({
 }) {
   const [name, setName] = useState(host?.name ?? "");
   const [apiUrl, setApiUrl] = useState(host?.apiUrl ?? "");
-  const [discovered, setDiscovered] = useState<WorkableHttpSystemInfo[]>(
+  const [discovered, setDiscovered] = useState<WorkableHttpSystemDescriptor[]>(
     () => host?.systems.map(createDiscoveredSystemFromStored) ?? []
+  );
+  const [discoveredRealtime, setDiscoveredRealtime] = useState<WorkableHttpHostDescriptor["capabilities"]["realtime"] | null>(
+    () =>
+      host
+        ? {
+            enabled: host.realtimeEnabled,
+            hubPath: host.realtimeHubPath ?? null,
+            transport: host.realtimeTransport ?? null,
+          }
+        : null
   );
   const [selectedSystemIds, setSelectedSystemIds] = useState<Set<string>>(
     () => new Set(host?.systems.map((system) => system.systemName ?? "") ?? [])
@@ -764,11 +774,12 @@ export function ServerDialog({
     setSystemsError(undefined);
 
     try {
-      const result = await discoverSystems(apiUrl);
+      const result = await discoverHost(apiUrl);
       const systems = result.systems ?? [];
       setHasLoadedSystems(true);
       setApiUrl(result.apiUrl);
       setDiscovered(systems);
+      setDiscoveredRealtime(result.capabilities.realtime);
 
       setSelectedSystemIds((current) => {
         if (current.size > 0) {
@@ -816,6 +827,9 @@ export function ServerDialog({
       id: hostId,
       name: name.trim() || "Workable host",
       apiUrl: apiUrl.trim(),
+      realtimeEnabled: Boolean(discoveredRealtime?.enabled),
+      realtimeHubPath: discoveredRealtime?.hubPath ?? null,
+      realtimeTransport: discoveredRealtime?.transport ?? null,
       systems: selected.map((system) =>
         createStoredSystem(
           hostId,
@@ -827,7 +841,7 @@ export function ServerDialog({
     onOpenChange(false);
   };
 
-  const toggleSelectedSystem = (system: WorkableHttpSystemInfo, checked: boolean) => {
+  const toggleSelectedSystem = (system: WorkableHttpSystemDescriptor, checked: boolean) => {
     const key = getSystemStorageKey(system);
     setSelectedSystemIds((current) => {
       const next = new Set(current);
@@ -864,6 +878,7 @@ export function ServerDialog({
                 onChange={(event) => {
                   setApiUrl(event.target.value);
                   setDiscovered([]);
+                  setDiscoveredRealtime(null);
                   setSelectedSystemIds(new Set());
                   setHasLoadedSystems(false);
                   setSystemsError(undefined);
@@ -1114,11 +1129,10 @@ export function ConsoleNavigationHeader({
 
 function createStoredSystem(
   hostId: string,
-  system: WorkableHttpSystemInfo,
+  system: WorkableHttpSystemDescriptor,
   existingSystem?: WorkableSystemConnection
 ): WorkableSystemConnection {
   const key = getSystemStorageKey(system);
-  const realtimeSupported = system.capabilities.realtime.enabled;
 
   return {
     id: existingSystem?.id ?? `${hostId}-${key || "default"}`,
@@ -1126,18 +1140,14 @@ function createStoredSystem(
     name: getSystemDisplayName(system),
     systemName: normalizeOptional(system.name),
     access: system.access,
-    realtimeEnabled: realtimeSupported,
-    realtimeFeatures: normalizeRealtimeFeatures(system.capabilities.realtime.features),
-    realtimeHubPath: system.capabilities.realtime.hubPath ?? null,
-    realtimeSupported,
-    realtimeTransport: system.capabilities.realtime.transport ?? null,
+    persistentCoordinationAvailable: system.capabilities.persistentCoordinationAvailable,
     state: system.state,
   };
 }
 
 function findStoredSystemByKey(
   host: WorkableHostConnection | undefined,
-  system: WorkableHttpSystemInfo
+  system: WorkableHttpSystemDescriptor
 ) {
   const key = getSystemStorageKey(system);
   return host?.systems.find(
@@ -1206,20 +1216,6 @@ function createUnknownAccessSummary(): WorkSystemAccessSummary {
   };
 }
 
-function normalizeRealtimeFeatures(features?: string[] | null) {
-  if (!Array.isArray(features)) {
-    return null;
-  }
-
-  const normalized = [...new Set(
-    features
-      .filter((feature) => typeof feature === "string" && feature.trim())
-      .map((feature) => feature.trim())
-  )];
-
-  return normalized.length > 0 ? normalized : null;
-}
-
 function getWorkAccessBadge(
   label: "Read" | "Operate",
   count: number,
@@ -1241,19 +1237,19 @@ function formatCompactCount(value: number) {
   return new Intl.NumberFormat("en-US", { notation: value >= 1000 ? "compact" : "standard" }).format(value);
 }
 
-export async function discoverSystems(apiUrl: string): Promise<WorkableHttpSystems & { apiUrl: string }> {
+export async function discoverHost(apiUrl: string): Promise<WorkableHttpHostDescriptor & { apiUrl: string }> {
   const candidates = createWorkableApiUrlCandidates(apiUrl);
   let lastError: unknown;
 
   for (const candidate of candidates) {
     try {
-      const result = await workableFetch<WorkableHttpSystems>(
+      const result = await workableFetch<WorkableHttpHostDescriptor>(
         {
           apiUrl: candidate,
         },
-        "systems"
+        "host"
       );
-      if (!isWorkableSystemsResponse(result)) {
+      if (!isWorkableHostResponse(result)) {
         continue;
       }
 
@@ -1266,7 +1262,7 @@ export async function discoverSystems(apiUrl: string): Promise<WorkableHttpSyste
     }
   }
 
-  const attempted = candidates.map(formatSystemsEndpoint).join(", ");
+  const attempted = candidates.map(formatHostEndpoint).join(", ");
   if (lastError instanceof WorkableApiError) {
     if (lastError.status === 401) {
       throw new Error(
@@ -1282,7 +1278,7 @@ export async function discoverSystems(apiUrl: string): Promise<WorkableHttpSyste
 
     if (lastError.status === 404) {
       throw new Error(
-        `No Workable systems endpoint was found at that address. Make sure the URL points to the Workable HTTP API root, usually ending in /workable. Tried ${attempted}.`
+        `No Workable host endpoint was found at that address. Make sure the URL points to the Workable HTTP API root, usually ending in /workable. Tried ${attempted}.`
       );
     }
   }
@@ -1313,12 +1309,15 @@ function createWorkableApiUrlCandidates(value: string) {
       }
     };
 
-    const systemsBase = stripTrailingPathSegment(entered, "systems");
-    addCandidate(systemsBase);
+    const hostBase = stripTrailingPathSegment(
+      stripTrailingPathSegment(entered, "systems"),
+      "host"
+    );
+    addCandidate(hostBase);
 
-    const path = systemsBase.pathname.replace(/\/+$/, "");
+    const path = hostBase.pathname.replace(/\/+$/, "");
     if (!path.toLowerCase().endsWith("/workable")) {
-      const workableBase = new URL(systemsBase.toString());
+      const workableBase = new URL(hostBase.toString());
       workableBase.pathname = `${path}/workable`.replace(/^\/?/, "/");
       addCandidate(workableBase);
     }
@@ -1345,66 +1344,67 @@ function formatWorkableApiUrl(url: URL) {
   return `${url.origin}${path}${url.search}`;
 }
 
-function formatSystemsEndpoint(apiUrl: string) {
+function formatHostEndpoint(apiUrl: string) {
   const normalized = apiUrl.replace(/\/+$/, "");
-  return `${normalized}/systems`;
+  return `${normalized}/host`;
 }
 
-function isWorkableSystemsResponse(value: unknown): value is WorkableHttpSystems {
+function isWorkableHostResponse(value: unknown): value is WorkableHttpHostDescriptor {
   return Boolean(
     value &&
       typeof value === "object" &&
-      Array.isArray((value as Partial<WorkableHttpSystems>).systems)
+      Array.isArray((value as Partial<WorkableHttpHostDescriptor>).systems) &&
+      (value as Partial<WorkableHttpHostDescriptor>).capabilities
   );
 }
 
 function createDiscoveredSystemFromStored(
   system: WorkableSystemConnection
-): WorkableHttpSystemInfo {
+): WorkableHttpSystemDescriptor {
   return {
     id: { value: system.id },
     name: system.systemName ?? null,
     state: system.state ?? "Unknown",
     isDefault: !system.systemName,
     capabilities: {
-      realtime: {
-        enabled: Boolean(system.realtimeSupported),
-        features: normalizeRealtimeFeatures(system.realtimeFeatures),
-        hubPath: system.realtimeHubPath,
-        transport: system.realtimeTransport,
-      },
-      persistentCoordinationAvailable: false,
+      persistentCoordinationAvailable: system.persistentCoordinationAvailable,
     },
     access: system.access ?? createUnknownAccessSummary(),
   };
 }
 
-export function reconcileStoredSystemsWithDiscovery(
+export function reconcileStoredHostWithDiscovery(
   host: WorkableHostConnection,
-  systems: WorkableHttpSystemInfo[]
-): WorkableSystemConnection[] {
-  return host.systems.flatMap((storedSystem) => {
-    const discoveredSystem = systems.find(
+  discoveredHost: WorkableHttpHostDescriptor
+): WorkableHostConnection {
+  return {
+    ...host,
+    realtimeEnabled: Boolean(discoveredHost.capabilities.realtime.enabled),
+    realtimeHubPath: discoveredHost.capabilities.realtime.hubPath ?? null,
+    realtimeTransport: discoveredHost.capabilities.realtime.transport ?? null,
+    systems: host.systems.flatMap((storedSystem) => {
+      const discoveredSystem = discoveredHost.systems.find(
       (system) =>
         getSystemStorageKey(system) ===
         getSystemStorageKey(createDiscoveredSystemFromStored(storedSystem))
-    );
+      );
 
-    return discoveredSystem
-      ? [createStoredSystem(host.id, discoveredSystem, storedSystem)]
-      : [];
-  });
+      return discoveredSystem
+        ? [createStoredSystem(host.id, discoveredSystem, storedSystem)]
+        : [];
+    }),
+  };
 }
 
-function getSystemStorageKey(system: WorkableHttpSystemInfo) {
+function getSystemStorageKey(system: WorkableHttpSystemDescriptor) {
   return system.name?.trim() ?? "";
 }
 
-function getSystemDisplayName(system: WorkableHttpSystemInfo) {
+function getSystemDisplayName(system: WorkableHttpSystemDescriptor) {
   return normalizeOptional(system.name) ?? "Default";
 }
 
-function getSystemSecondaryText(system: WorkableHttpSystemInfo) {
+function getSystemSecondaryText(system: WorkableHttpSystemDescriptor) {
   return system.isDefault ? "Default system" : null;
 }
 

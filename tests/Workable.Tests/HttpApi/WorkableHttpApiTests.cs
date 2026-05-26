@@ -1159,11 +1159,11 @@ public sealed class WorkableHttpApiTests
         using var host = await CreateExplicitSchemeHttpHost();
         var client = host.GetTestClient();
 
-        using var unauthorized = await client.GetAsync("/workable/systems");
+        using var unauthorized = await client.GetAsync("/workable/host");
         Assert.Equal(HttpStatusCode.Unauthorized, unauthorized.StatusCode);
 
         client.DefaultRequestHeaders.Authorization = WorkableSchemeAuthenticationTestSupport.CreateBearerHeader();
-        using var authorized = await client.GetAsync("/workable/systems");
+        using var authorized = await client.GetAsync("/workable/host");
 
         authorized.EnsureSuccessStatusCode();
     }
@@ -1175,11 +1175,11 @@ public sealed class WorkableHttpApiTests
         var client = host.GetTestClient();
         client.DefaultRequestHeaders.Authorization = WorkableSchemeAuthenticationTestSupport.CreateBearerHeader();
 
-        using var response = await client.GetAsync("/workable/systems");
+        using var response = await client.GetAsync("/workable/host");
         response.EnsureSuccessStatusCode();
 
         var body = JsonNode.Parse(await response.Content.ReadAsStringAsync())
-            ?? throw new InvalidOperationException("Expected systems JSON response.");
+            ?? throw new InvalidOperationException("Expected host JSON response.");
         var systems = body["systems"]?.AsArray()
             ?? throw new InvalidOperationException("Expected systems array.");
         var system = Assert.Single(systems);
@@ -1273,10 +1273,11 @@ public sealed class WorkableHttpApiTests
         using var host = await CreateMultiSystemHttpHost();
         var client = host.GetTestClient();
 
-        var response = await client.GetAsync("/workable/systems");
+        var response = await client.GetAsync("/workable/host");
         response.EnsureSuccessStatusCode();
         var json = JsonNode.Parse(await response.Content.ReadAsStringAsync())
             ?? throw new InvalidOperationException("Expected JSON response.");
+        Assert.False(json["capabilities"]?["realtime"]?["enabled"]?.GetValue<bool>() ?? true);
         var systems = json["systems"]?.AsArray()
             ?? throw new InvalidOperationException("Expected systems array.");
 
@@ -1286,8 +1287,6 @@ public sealed class WorkableHttpApiTests
             candidate["name"] is null &&
             candidate["isDefault"] is JsonValue isDefault &&
             isDefault.GetValue<bool>() &&
-            candidate["capabilities"]?["realtime"]?["enabled"] is JsonValue realtimeEnabled &&
-            !realtimeEnabled.GetValue<bool>() &&
             candidate["capabilities"]?["persistentCoordinationAvailable"] is JsonValue persistentCoordinationAvailable &&
             !persistentCoordinationAvailable.GetValue<bool>() &&
             candidate["access"]?["canConnect"] is JsonValue canConnect &&
@@ -1315,8 +1314,6 @@ public sealed class WorkableHttpApiTests
             candidate["name"]?.GetValue<string>() == "background" &&
             candidate["isDefault"] is JsonValue isDefault &&
             !isDefault.GetValue<bool>() &&
-            candidate["capabilities"]?["realtime"]?["enabled"] is JsonValue realtimeEnabled &&
-            !realtimeEnabled.GetValue<bool>() &&
             candidate["capabilities"]?["persistentCoordinationAvailable"] is JsonValue persistentCoordinationAvailable &&
             !persistentCoordinationAvailable.GetValue<bool>());
     }
@@ -1327,7 +1324,7 @@ public sealed class WorkableHttpApiTests
         using var host = await CreateMultiSystemHttpHost(TransportAuthorizationTestSupport.ReadGroups);
         var client = host.GetTestClient();
 
-        var response = await client.GetAsync("/workable/systems");
+        var response = await client.GetAsync("/workable/host");
         response.EnsureSuccessStatusCode();
         var json = JsonNode.Parse(await response.Content.ReadAsStringAsync())
             ?? throw new InvalidOperationException("Expected JSON response.");
@@ -1343,7 +1340,7 @@ public sealed class WorkableHttpApiTests
         using var host = await CreateMultiSystemHttpHost(TransportAuthorizationTestSupport.ConnectGroups);
         var client = host.GetTestClient();
 
-        var response = await client.GetAsync("/workable/systems");
+        var response = await client.GetAsync("/workable/host");
         response.EnsureSuccessStatusCode();
         var json = JsonNode.Parse(await response.Content.ReadAsStringAsync())
             ?? throw new InvalidOperationException("Expected JSON response.");
@@ -1607,7 +1604,7 @@ public sealed class WorkableHttpApiTests
                 revision = worker.Revision,
             });
 
-        Assert.Equal(System.Net.HttpStatusCode.Forbidden, defaultActionResponse.StatusCode);
+        Assert.Equal(System.Net.HttpStatusCode.NotFound, defaultActionResponse.StatusCode);
 
         var reconfigureResponse = await client.PostAsJsonAsync(
             $"/workable/systems/background/workers/{workerId:D}/reconfigure",
@@ -1701,7 +1698,7 @@ public sealed class WorkableHttpApiTests
             .BuildServiceProvider();
         var system = provider.GetRequiredService<IWorkSystemRegistry>().Default;
         return (system, new HttpAdapterServices(
-            provider.GetRequiredService<WorkableHttpSystemResolver>(),
+            provider.GetRequiredService<WorkableHttpTopologyResolver>(),
             provider.GetRequiredService<WorkableHttpCatalogAdapter>(),
             provider.GetRequiredService<WorkableHttpQueueAdapter>(),
             provider.GetRequiredService<WorkableHttpQueryAdapter>(),
@@ -1709,7 +1706,7 @@ public sealed class WorkableHttpApiTests
     }
 
     private sealed record HttpAdapterServices(
-        WorkableHttpSystemResolver Systems,
+        WorkableHttpTopologyResolver Topology,
         WorkableHttpCatalogAdapter Catalog,
         WorkableHttpQueueAdapter Queue,
         WorkableHttpQueryAdapter Query,

@@ -51,16 +51,23 @@ Route matching is case-insensitive. Worker action route values are also parsed c
 
 ## Capabilities
 
-List available Workable systems from the mapped HTTP API root.
+Read host-level discovery information from the mapped HTTP API root.
 
 ```http
-GET /workable/systems
+GET /workable/host
 ```
 
-The response includes each system's id, optional name, state, default-system marker, capabilities, and the caller's system-level access summary.
+The response includes host capabilities plus each visible system's id, optional name, state, default-system marker, system capabilities, and the caller's system-level access summary.
 
 ```json
 {
+  "capabilities": {
+    "realtime": {
+      "enabled": true,
+      "transport": "signalr",
+      "hubPath": "/workable/realtime"
+    }
+  },
   "systems": [
     {
       "id": { "value": "11111111-1111-1111-1111-111111111111" },
@@ -68,12 +75,6 @@ The response includes each system's id, optional name, state, default-system mar
       "state": "Started",
       "isDefault": true,
       "capabilities": {
-        "realtime": {
-          "enabled": true,
-          "transport": "signalr",
-          "hubPath": "/workable/realtime",
-          "features": ["system-view", "work-views", "worker-events", "diagnostics-view"]
-        },
         "persistentCoordinationAvailable": true
       },
       "access": {
@@ -93,21 +94,11 @@ The response includes each system's id, optional name, state, default-system mar
 }
 ```
 
-The `capabilities` object lets clients discover optional adapter and host features for each system. `persistentCoordinationAvailable` tells clients whether the system currently has persistent coordination available through a registered persistence store. In practice, that means persistent coordination settings such as `storage: "Persistent"` can be honored for features like durable queueing, persistence-backed idempotency, and persistence-backed coordination. The `realtime` section reports whether `Workable.SignalR` is registered and, when it is, advertises the current hub transport details and supported realtime feature names.
+The host-level `capabilities` object lets clients discover optional transport features exposed by the host. `realtime` reports whether `Workable.SignalR` is registered and, when it is, advertises the hub transport details clients should use.
+
+The per-system `capabilities` object is reserved for system-specific runtime behavior. `persistentCoordinationAvailable` tells clients whether that system currently has persistent coordination available through a registered persistence store. In practice, that means persistent coordination settings such as `storage: "Persistent"` can be honored for features like durable queueing, persistence-backed idempotency, and persistence-backed coordination.
 
 The systems list is filtered by the system-level `Connect` permission. Callers only see systems they are allowed to discover.
-
-```json
-{
-  "realtime": {
-    "enabled": true,
-    "transport": "signalr",
-    "hubPath": "/workable/realtime",
-    "features": ["system-view", "work-views", "worker-events", "diagnostics-view"]
-  },
-  "persistentCoordinationAvailable": true
-}
-```
 
 When realtime is not registered, `enabled` is `false`.
 

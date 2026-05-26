@@ -20,6 +20,9 @@ export type WorkableHostConnection = {
   id: string;
   name: string;
   apiUrl: string;
+  realtimeEnabled: boolean;
+  realtimeHubPath?: string | null;
+  realtimeTransport?: string | null;
   systems: WorkableSystemConnection[];
 };
 
@@ -29,11 +32,7 @@ export type WorkableSystemConnection = {
   name: string;
   systemName?: string;
   access?: WorkSystemAccessSummary;
-  realtimeEnabled: boolean;
-  realtimeFeatures?: string[] | null;
-  realtimeHubPath?: string | null;
-  realtimeSupported?: boolean;
-  realtimeTransport?: string | null;
+  persistentCoordinationAvailable: boolean;
   state?: string | null;
 };
 

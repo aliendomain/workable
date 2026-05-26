@@ -118,12 +118,12 @@ This is not a worker event subscription replacement. It is the lifecycle seam fo
 
 ## Realtime Capability Provider
 
-`IWorkRealtimeCapabilityProvider` is the public way to advertise whether a system has a realtime surface:
+`IWorkRealtimeCapabilityProvider` is the public way to advertise whether a host has a realtime surface:
 
 ```csharp
 public interface IWorkRealtimeCapabilityProvider
 {
-    WorkRealtimeCapability GetCapability(IWorkSystem system);
+    WorkRealtimeCapability GetCapability();
 }
 ```
 
@@ -132,9 +132,8 @@ public interface IWorkRealtimeCapabilityProvider
 - whether realtime is enabled
 - transport name
 - hub path
-- optional feature names
 
-That matters when another surface, usually HTTP or a custom admin UI, wants to ask "does this system support realtime and how should I connect to it?" without hard-coding SignalR assumptions.
+That matters when another surface, usually HTTP or a custom admin UI, wants to ask "does this host expose realtime and how should I connect to it?" without hard-coding SignalR assumptions.
 
 Most applications will never implement this directly. It matters when you are building or replacing a realtime transport and want the host to advertise that capability coherently.
 

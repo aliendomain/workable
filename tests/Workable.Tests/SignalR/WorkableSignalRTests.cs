@@ -21,83 +21,76 @@ namespace Workable.Tests;
 public sealed class WorkableSignalRTests
 {
     [Fact]
-    public async Task SystemsEndpointReportsRealtimeDisabledWhenSignalRIsNotRegistered()
+    public async Task HostEndpointReportsRealtimeDisabledWhenSignalRIsNotRegistered()
     {
         using var host = await CreateHost(addSignalR: false);
         var client = host.GetTestClient();
 
-        var systems = await client.GetFromJsonAsync<WorkableHttpSystems>("/workable/systems", JsonOptions());
-        var system = Assert.Single(systems?.Systems ?? []);
+        var response = await client.GetFromJsonAsync<WorkableHttpHostDescriptor>("/workable/host", JsonOptions());
+        Assert.NotNull(response);
 
-        Assert.False(system.Capabilities.Realtime.Enabled);
-        Assert.Null(system.Capabilities.Realtime.Transport);
-        Assert.Null(system.Capabilities.Realtime.HubPath);
+        Assert.False(response.Capabilities.Realtime.Enabled);
+        Assert.Null(response.Capabilities.Realtime.Transport);
+        Assert.Null(response.Capabilities.Realtime.HubPath);
     }
 
     [Fact]
-    public async Task SystemsEndpointReportsRealtimeEnabledWhenSignalRIsRegistered()
+    public async Task HostEndpointReportsRealtimeEnabledWhenSignalRIsRegistered()
     {
         using var host = await CreateHost(addSignalR: true);
         var client = host.GetTestClient();
 
-        var systems = await client.GetFromJsonAsync<WorkableHttpSystems>("/workable/systems", JsonOptions());
-        var system = Assert.Single(systems?.Systems ?? []);
-        var capabilities = system.Capabilities;
+        var response = await client.GetFromJsonAsync<WorkableHttpHostDescriptor>("/workable/host", JsonOptions());
+        Assert.NotNull(response);
+        var capabilities = response.Capabilities;
 
         Assert.True(capabilities.Realtime.Enabled);
         Assert.Equal("signalr", capabilities.Realtime.Transport);
         Assert.Equal("/workable/realtime", capabilities.Realtime.HubPath);
-        Assert.Contains("system-view", capabilities.Realtime.Features ?? []);
-        Assert.Contains("work-views", capabilities.Realtime.Features ?? []);
-        Assert.Contains("worker-events", capabilities.Realtime.Features ?? []);
-        Assert.Contains("diagnostics-view", capabilities.Realtime.Features ?? []);
     }
 
     [Fact]
-    public async Task SystemsEndpointFiltersRealtimeFeaturesForConnectOnlyCaller()
+    public async Task HostEndpointReportsRealtimeForConnectOnlyCaller()
     {
         using var host = await CreateHost(
             addSignalR: true,
             groups: TransportAuthorizationTestSupport.ConnectGroups);
         var client = host.GetTestClient();
 
-        var systems = await client.GetFromJsonAsync<WorkableHttpSystems>("/workable/systems", JsonOptions());
-        var system = Assert.Single(systems?.Systems ?? []);
-        var features = system.Capabilities.Realtime.Features ?? [];
+        var response = await client.GetFromJsonAsync<WorkableHttpHostDescriptor>("/workable/host", JsonOptions());
+        Assert.NotNull(response);
 
-        Assert.True(system.Capabilities.Realtime.Enabled);
-        Assert.Contains("system-view", features);
-        Assert.DoesNotContain("work-views", features);
-        Assert.DoesNotContain("worker-events", features);
-        Assert.DoesNotContain("diagnostics-view", features);
+        Assert.True(response.Capabilities.Realtime.Enabled);
+        Assert.Equal("signalr", response.Capabilities.Realtime.Transport);
+        Assert.Equal("/workable/realtime", response.Capabilities.Realtime.HubPath);
     }
 
     [Fact]
-    public async Task SystemsEndpointUsesMappedRealtimeHubPath()
+    public async Task HostEndpointUsesMappedRealtimeHubPath()
     {
         using var host = await CreateHost(addSignalR: true, hubPath: "/custom/realtime");
         var client = host.GetTestClient();
 
-        var systems = await client.GetFromJsonAsync<WorkableHttpSystems>("/workable/systems", JsonOptions());
-        var system = Assert.Single(systems?.Systems ?? []);
+        var response = await client.GetFromJsonAsync<WorkableHttpHostDescriptor>("/workable/host", JsonOptions());
+        Assert.NotNull(response);
 
-        Assert.Equal("/custom/realtime", system.Capabilities.Realtime.HubPath);
+        Assert.Equal("/custom/realtime", response.Capabilities.Realtime.HubPath);
     }
 
     [Fact]
-    public async Task SystemsEndpointIncludesRealtimeCapabilities()
+    public async Task HostEndpointIncludesRealtimeCapabilities()
     {
         using var host = await CreateHost(addSignalR: true);
         var client = host.GetTestClient();
 
-        var systems = await client.GetFromJsonAsync<WorkableHttpSystems>("/workable/systems", JsonOptions());
+        var response = await client.GetFromJsonAsync<WorkableHttpHostDescriptor>("/workable/host", JsonOptions());
 
-        Assert.NotNull(systems);
-        var system = Assert.Single(systems.Systems);
+        Assert.NotNull(response);
+        var system = Assert.Single(response.Systems);
         Assert.True(system.IsDefault);
-        Assert.True(system.Capabilities.Realtime.Enabled);
-        Assert.Equal("signalr", system.Capabilities.Realtime.Transport);
-        Assert.Equal("/workable/realtime", system.Capabilities.Realtime.HubPath);
+        Assert.True(response.Capabilities.Realtime.Enabled);
+        Assert.Equal("signalr", response.Capabilities.Realtime.Transport);
+        Assert.Equal("/workable/realtime", response.Capabilities.Realtime.HubPath);
     }
 
     [Fact]

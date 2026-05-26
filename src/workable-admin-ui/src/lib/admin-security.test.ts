@@ -366,17 +366,17 @@ test("proxy forwards the configured Entra target API token to the configured hos
   let authorizationHeader: string | null | undefined;
 
   const response = await proxyWorkableRequest(
-    new Request("https://admin.example.com/api/workable/systems", {
+    new Request("https://admin.example.com/api/workable/host", {
       headers: {
         cookie: cookieHeader,
       },
     }),
-    ["systems"],
+    ["host"],
     {
       env,
       fetch: async (_url, init) => {
         authorizationHeader = new Headers(init?.headers).get("authorization");
-        return new Response(JSON.stringify({ systems: [] }), {
+        return new Response(JSON.stringify({ capabilities: { realtime: { enabled: false, transport: null, hubPath: null } }, systems: [] }), {
           status: 200,
           headers: { "content-type": "application/json" },
         });
@@ -402,18 +402,18 @@ test("proxy does not forward the configured Entra token to a different allowed h
   let authorizationHeader: string | null | undefined;
 
   const response = await proxyWorkableRequest(
-    new Request("https://admin.example.com/api/workable/systems", {
+    new Request("https://admin.example.com/api/workable/host", {
       headers: {
         cookie: cookieHeader,
         "x-workable-api-url": "https://ops.example.com/workable",
       },
     }),
-    ["systems"],
+    ["host"],
     {
       env,
       fetch: async (_url, init) => {
         authorizationHeader = new Headers(init?.headers).get("authorization");
-        return new Response(JSON.stringify({ systems: [] }), {
+        return new Response(JSON.stringify({ capabilities: { realtime: { enabled: false, transport: null, hubPath: null } }, systems: [] }), {
           status: 200,
           headers: { "content-type": "application/json" },
         });
@@ -448,12 +448,12 @@ test("proxy refreshes an expired Entra target API token before forwarding", asyn
   let authorizationHeader: string | null | undefined;
 
   const response = await proxyWorkableRequest(
-    new Request("https://admin.example.com/api/workable/systems", {
+    new Request("https://admin.example.com/api/workable/host", {
       headers: {
         cookie: cookieHeader,
       },
     }),
-    ["systems"],
+    ["host"],
     {
       env,
       fetch: async (url, init) => {
@@ -485,7 +485,7 @@ test("proxy refreshes an expired Entra target API token before forwarding", asyn
         }
 
         authorizationHeader = new Headers(init?.headers).get("authorization");
-        return new Response(JSON.stringify({ systems: [] }), {
+        return new Response(JSON.stringify({ capabilities: { realtime: { enabled: false, transport: null, hubPath: null } }, systems: [] }), {
           status: 200,
           headers: { "content-type": "application/json" },
         });
@@ -529,13 +529,13 @@ test("proxy refreshes and forwards the correct token for each configured hosted 
   let authorizationHeader: string | null | undefined;
 
   const response = await proxyWorkableRequest(
-    new Request("https://admin.example.com/api/workable/systems", {
+    new Request("https://admin.example.com/api/workable/host", {
       headers: {
         cookie: cookieHeader,
         "x-workable-api-url": "https://ops.example.com/workable",
       },
     }),
-    ["systems"],
+    ["host"],
     {
       env,
       fetch: async (url, init) => {
@@ -565,7 +565,7 @@ test("proxy refreshes and forwards the correct token for each configured hosted 
         }
 
         authorizationHeader = new Headers(init?.headers).get("authorization");
-        return new Response(JSON.stringify({ systems: [] }), {
+        return new Response(JSON.stringify({ capabilities: { realtime: { enabled: false, transport: null, hubPath: null } }, systems: [] }), {
           status: 200,
           headers: { "content-type": "application/json" },
         });
@@ -605,7 +605,7 @@ test("proxy binds Entra target token refresh to the actual proxied host", async 
 
   const response = await proxyWorkableRequest(
     new Request(
-      "https://admin.example.com/api/workable/systems?apiUrl=https%3A%2F%2Fworkable.example.com%2Fworkable",
+      "https://admin.example.com/api/workable/host?apiUrl=https%3A%2F%2Fworkable.example.com%2Fworkable",
       {
         headers: {
           cookie: cookieHeader,
@@ -613,7 +613,7 @@ test("proxy binds Entra target token refresh to the actual proxied host", async 
         },
       }
     ),
-    ["systems"],
+    ["host"],
     {
       env,
       fetch: async (url, init) => {
@@ -643,7 +643,7 @@ test("proxy binds Entra target token refresh to the actual proxied host", async 
         }
 
         proxiedUrl = String(url);
-        return new Response(JSON.stringify({ systems: [] }), {
+        return new Response(JSON.stringify({ capabilities: { realtime: { enabled: false, transport: null, hubPath: null } }, systems: [] }), {
           status: 200,
           headers: { "content-type": "application/json" },
         });
@@ -652,7 +652,7 @@ test("proxy binds Entra target token refresh to the actual proxied host", async 
   );
 
   assert.equal(response.status, 200);
-  assert.equal(proxiedUrl, "https://ops.example.com/workable/systems?apiUrl=https%3A%2F%2Fworkable.example.com%2Fworkable");
+  assert.equal(proxiedUrl, "https://ops.example.com/workable/host?apiUrl=https%3A%2F%2Fworkable.example.com%2Fworkable");
   assert.equal(tokenBodies.length, 1);
   assert.match(tokenBodies[0] ?? "", /scope=api%3A%2F%2Fops-client-id%2Fworkable.access/);
 });
@@ -683,12 +683,12 @@ test("oversized Entra target token state expires cookies instead of writing unre
 
 test("proxy explains trusted certificate requirements for local HTTPS loopback failures", async () => {
   const response = await proxyWorkableRequest(
-    new Request("https://admin.example.com/api/workable/systems", {
+    new Request("https://admin.example.com/api/workable/host", {
       headers: {
         authorization: basic("admin", "correct horse battery staple"),
       },
     }),
-    ["systems"],
+    ["host"],
     {
       env: secureEnv({
         NODE_ENV: "development",
@@ -737,8 +737,8 @@ test("unsafe admin API requests require a same-origin Origin header", () => {
 
 test("production proxy target fails closed when WORKABLE_API_URL is missing", () => {
   const target = createWorkableTargetUrl(
-    new Request("https://admin.example.com/api/workable/systems"),
-    ["systems"],
+    new Request("https://admin.example.com/api/workable/host"),
+    ["host"],
     {
       NODE_ENV: "production",
       WORKABLE_ADMIN_CONFIG_DISABLED: "true",
@@ -781,12 +781,12 @@ test("server-only local config file can supply credentials without operation rol
 
 test("browser-supplied Workable API URLs must be allow-listed", () => {
   const target = createWorkableTargetUrl(
-    new Request("https://admin.example.com/api/workable/systems", {
+    new Request("https://admin.example.com/api/workable/host", {
       headers: {
         "x-workable-api-url": "https://evil.example.com/workable",
       },
     }),
-    ["systems"],
+    ["host"],
     secureEnv()
   );
 

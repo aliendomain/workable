@@ -37,6 +37,7 @@ import {
   ConsoleHeaderCapabilitiesProvider,
   type ConsoleHeaderCapabilities,
 } from "@/components/features/console/header-capabilities";
+import { ConsolePageRealtimeViewProvider } from "@/components/features/console/page-realtime-view";
 import { EventViewerToggleButton } from "@/components/features/console/event-viewer-toggle-button";
 import type {
   OverviewScope,
@@ -78,11 +79,8 @@ import {
   OverviewView,
   JsonValue,
   type RealtimeEventMessage,
-  type RealtimePayloadMessage,
-  RealtimePayloadWindow,
   useWorkableRealtimeView,
   useWorkableRealtimeEvents,
-  useWorkableRealtimeWorkerEvents,
   type RealtimeViewLoadable,
 } from "@/components/workable/console/overview-screen";
 import {
@@ -99,9 +97,9 @@ import {
   ConsoleNavigationHeader,
   DelayedLoadingOverlay,
   DeleteTargetDialog,
-  discoverSystems,
+  discoverHost,
   EmptyServerState,
-  reconcileStoredSystemsWithDiscovery,
+  reconcileStoredHostWithDiscovery,
   ServerDialog,
   ServerTree,
   StopSystemDialog,
@@ -277,6 +275,7 @@ export function WorkableConsole() {
   const [selectedDefinitionId, setSelectedDefinitionId] = useState<string | null>(null);
   const [selectedDefinitionName, setSelectedDefinitionName] = useState<string | null>(null);
   const [selectedWorkerId, setSelectedWorkerId] = useState<string | null>(null);
+  const [pageRealtimeConnectionCount, setPageRealtimeConnectionCount] = useState(0);
   const [workerCategoryFilter, setWorkerCategoryFilter] = useState("");
   const [workerDefinitionFilter, setWorkerDefinitionFilter] = useState("");
   const [keyTypeFilter, setKeyTypeFilter] = useState("");
@@ -300,11 +299,14 @@ export function WorkableConsole() {
   const activeHost = activeLocation?.host;
   const activeSystem = activeLocation?.system;
   const activeSystemId = activeSystem?.id ?? "";
-  const activeRealtimeFeatures = activeSystem?.realtimeFeatures ?? null;
   const activeCanViewDiagnostics = activeSystem?.access?.canViewDiagnostics ?? false;
-  const activeCanUseRealtimeEvents = hasRealtimeFeature(activeRealtimeFeatures, "worker-events");
-  const activeCanUseRealtimeDiagnostics = hasRealtimeFeature(activeRealtimeFeatures, "diagnostics-view");
-  const activeCanUseRealtimeDiagnosticsUi = activeCanViewDiagnostics && activeCanUseRealtimeDiagnostics;
+  const activeCanUseRealtimeEvents = Boolean(
+    activeSystem?.access?.canReadAllWork ||
+    (activeSystem?.access?.readableDefinitionCount ?? 0) > 0
+  );
+  const activeCanUseRealtimeDiagnosticsUi =
+    activeCanViewDiagnostics &&
+    Boolean(activeHost?.realtimeEnabled && activeHost.realtimeHubPath);
   const activeCatalogScope = activeSystem
     ? catalogScopeBySystemId[activeSystem.id] ?? null
     : null;
@@ -316,8 +318,8 @@ export function WorkableConsole() {
       activeHost?.apiUrl
         ? {
             apiUrl: activeHost.apiUrl,
-            realtimeHubPath: activeSystem?.realtimeEnabled
-              ? activeSystem.realtimeHubPath ?? null
+            realtimeHubPath: activeHost.realtimeEnabled
+              ? activeHost.realtimeHubPath ?? null
               : null,
             systemName: activeSystem?.systemName,
           }
@@ -554,7 +556,7 @@ export function WorkableConsole() {
   const activeDiagnosticsAlertTargetId = activeHost && activeSystem
     ? createDiagnosticsAlertTargetId(
         activeHost.apiUrl,
-        activeSystem.realtimeHubPath ?? null,
+        activeHost.realtimeHubPath ?? null,
         activeSystem.systemName
       )
     : null;
@@ -655,42 +657,17 @@ export function WorkableConsole() {
       selectedEventViewerEventTypes.length > 0,
     eventViewerMaxMessages
   );
-  const workerRealtimePayloadEvents = useWorkableRealtimeWorkerEvents(
-    hydratedConnection,
-    selectedWorkerId ?? "",
-    Boolean(hydratedConnection?.realtimeHubPath) &&
-      captureRealtimePayloads &&
-      view === "worker" &&
-      Boolean(selectedWorkerId),
-    realtimePayloadMaxMessages
-  );
-  const workerRealtimePayloadMessages = useMemo<RealtimePayloadMessage[]>(
-    () => createRealtimePayloadMessagesFromEventMessages(
-      workerRealtimePayloadEvents.messages,
-      selectedWorkerId
-    ),
-    [selectedWorkerId, workerRealtimePayloadEvents.messages]
-  );
-  const clearWorkerRealtimePayloadMessages = workerRealtimePayloadEvents.clearMessages;
-  const workerRealtimePayloadWindow = view === "worker"
-    ? (
-      <RealtimePayloadWindow
-        captureEnabled={realtimePayloadCaptureEnabled}
-        connectionState={workerRealtimePayloadEvents.connectionState}
-        enabled={workerRealtimePayloadEvents.enabled}
-        externalMessages={[]}
-        hubUrl={workerRealtimePayloadEvents.hubUrl ?? null}
-        maxMessages={realtimePayloadMaxMessages}
-        messages={workerRealtimePayloadMessages}
-        onCaptureEnabledChange={setRealtimePayloadCaptureEnabled}
-        onClearExternalMessages={() => undefined}
-        onClearMessages={clearWorkerRealtimePayloadMessages}
-        onMaxMessagesChange={setRealtimePayloadMaxMessages}
-        onOpenChange={setRealtimePayloadOpen}
-        open={realtimePayloadOpen}
-      />
-    )
-    : null;
+  const activeRealtimeConnectionCount =
+    pageRealtimeConnectionCount +
+    countEnabledRealtimeConnections([
+      diagnosticsTray,
+      readModelDiagnosticsDetail,
+      retentionDiagnosticsDetail,
+      concurrencyDiagnosticsDetail,
+      durabilityDiagnosticsDetail,
+      idempotencyDiagnosticsDetail,
+      realtimeEvents,
+    ]);
   const toggleEventViewerEventType = useCallback((eventType: string) => {
     setSelectedEventViewerEventTypes((current) =>
       current.includes(eventType)
@@ -886,11 +863,10 @@ export function WorkableConsole() {
       const discoveries = await Promise.all(
         hostsToRevalidate.map(async (host) => {
           try {
-            const result = await discoverSystems(host.apiUrl);
+            const result = await discoverHost(host.apiUrl);
             return {
-              apiUrl: result.apiUrl,
               hostId: host.id,
-              systems: reconcileStoredSystemsWithDiscovery(host, result.systems ?? []),
+              host: reconcileStoredHostWithDiscovery(host, result),
             };
           } catch {
             return null;
@@ -907,9 +883,8 @@ export function WorkableConsole() {
         const updates = new Map(
           discoveries
             .filter((discovery): discovery is {
-              apiUrl: string;
               hostId: string;
-              systems: WorkableSystemConnection[];
+              host: WorkableHostConnection;
             } => discovery !== null)
             .map((discovery) => [discovery.hostId, discovery])
         );
@@ -920,13 +895,7 @@ export function WorkableConsole() {
 
         const hosts = current.hosts.map((host) => {
           const update = updates.get(host.id);
-          return update
-            ? {
-                ...host,
-                apiUrl: update.apiUrl,
-                systems: update.systems,
-              }
-            : host;
+          return update ? update.host : host;
         });
         const availableSystemIds = new Set(
           hosts.flatMap((host) => host.systems.map((system) => system.id))
@@ -1894,8 +1863,8 @@ export function WorkableConsole() {
                 />
               )}
               {hydratedConnection && (
+                <ConsolePageRealtimeViewProvider>
                 <ConsoleHeaderCapabilitiesProvider defaultCapabilities={defaultHeaderCapabilities}>
-                  {workerRealtimePayloadWindow}
                   {activeHost && activeSystem && (
                     <ConsoleNavigationHeader
                       breadcrumbParent={breadcrumbParent}
@@ -1941,6 +1910,7 @@ export function WorkableConsole() {
                             trayDiagnostics={diagnosticsTray}
                           />
                           <EventViewerWindow
+                            activeConnectionCount={activeRealtimeConnectionCount}
                             captureEnabled={eventViewerCaptureEnabled}
                             connectionState={realtimeEvents.connectionState}
                             definitionError={eventViewerDefinitionError}
@@ -1983,6 +1953,7 @@ export function WorkableConsole() {
                         isVisible={visibleView === "overview"}
                         onClearExternalRealtimeMessages={clearDiagnosticsRealtimeMessages}
                         onConnectionError={handleOverviewConnectionError}
+                        onActiveRealtimeConnectionCountChange={setPageRealtimeConnectionCount}
                         onStateLoaded={handleOverviewStateLoaded}
                         onOpenCatalog={() => openView("definitions")}
                         onOpenIterations={openIterations}
@@ -2001,7 +1972,6 @@ export function WorkableConsole() {
                         onViewIterationsByStatus={openIterationsFiltered}
                         onViewWorkersByState={openWorkersFiltered}
                         overviewScope={activeOverviewScope}
-                        realtimeFeatures={activeRealtimeFeatures}
                         refreshToken={refreshTokens.overview}
                         onOpenWorker={openWorker}
                         renderToolbar={({ loading, refreshing }) => (
@@ -2167,16 +2137,22 @@ export function WorkableConsole() {
                     <div className={`${viewContentOffsetClass} flex min-h-0 flex-col`}>
                       <WorkerConsoleView
                         connection={hydratedConnection}
+                        onActiveRealtimeConnectionCountChange={setPageRealtimeConnectionCount}
                         onNavigateBack={navigateBack}
                         onOpenWorker={openWorker}
+                        onRealtimePayloadCaptureEnabledChange={setRealtimePayloadCaptureEnabled}
+                        onRealtimePayloadMaxMessagesChange={setRealtimePayloadMaxMessages}
                         onRealtimePayloadOpenChange={setRealtimePayloadOpen}
                         refreshToken={refreshTokens.worker}
+                        realtimePayloadCaptureEnabled={realtimePayloadCaptureEnabled}
+                        realtimePayloadMaxMessages={realtimePayloadMaxMessages}
                         realtimePayloadOpen={realtimePayloadOpen}
                         workerId={selectedWorkerId}
                       />
                     </div>
                   )}
                 </ConsoleHeaderCapabilitiesProvider>
+                </ConsolePageRealtimeViewProvider>
               )}
           </div>
         </main>
@@ -2348,6 +2324,7 @@ function DiagnosticsAlertSubscription({
 }
 
 function EventViewerWindow({
+  activeConnectionCount,
   captureEnabled,
   connectionState,
   definitionError,
@@ -2372,6 +2349,7 @@ function EventViewerWindow({
   selectedEventTypes,
   selectedKeys,
 }: {
+  activeConnectionCount: number;
   captureEnabled: boolean;
   connectionState: string;
   definitionError?: string;
@@ -2601,7 +2579,7 @@ function EventViewerWindow({
               <div className="min-w-0">
                 <div className="font-medium text-base">Event viewer</div>
                 <div className="truncate text-muted-foreground text-xs">
-                  {enabled ? connectionState : "disabled"} - {messages.length}/{maxMessages} batches - {selectedFilterText}
+                  {enabled ? connectionState : "disabled"} - {formatActiveConnectionCount(activeConnectionCount)} - {messages.length}/{maxMessages} batches - {selectedFilterText}
                 </div>
               </div>
               <div className="flex shrink-0 items-center gap-1">
@@ -3116,22 +3094,6 @@ function formatEventBatchDefinitionSummary(events: WorkableRealtimeEvent[]) {
     : `${definitionIds.length} definitions`;
 }
 
-function createRealtimePayloadMessagesFromEventMessages(
-  messages: RealtimeEventMessage[],
-  workerId: string | null
-): RealtimePayloadMessage[] {
-  const subscription = workerId ? `worker:${workerId}` : "worker";
-  return messages.map((message) => ({
-    bytes: message.bytes,
-    components: [],
-    id: `worker-payload:${message.id}`,
-    receivedAt: message.receivedAt,
-    subscription,
-    value: message.value,
-    viewName: "worker-events",
-  }));
-}
-
 function getCenteredEventViewerPosition(size: "compact" | "large") {
   if (typeof window === "undefined") {
     return { x: 0, y: 0 };
@@ -3187,6 +3149,19 @@ function formatEventViewerFilterSummary(
   ].filter(Boolean);
 
   return parts.join(", ");
+}
+
+function formatActiveConnectionCount(value: number) {
+  return `${value} active connection${value === 1 ? "" : "s"}`;
+}
+
+function countEnabledRealtimeConnections(
+  connections: Array<{ connectionState?: string; enabled?: boolean } | null | undefined>
+) {
+  return connections.filter((connection) =>
+    connection?.enabled === true &&
+    connection.connectionState !== "disabled"
+  ).length;
 }
 
 function eventTypeTone(eventType: string) {
@@ -4592,14 +4567,36 @@ function normalizeOverviewPanelIds(value: unknown): OverviewPanelId[] {
 
 function normalizeStoredHost(host: WorkableHostConnection): WorkableHostConnection {
   const hostId = host.id || createServerId();
+  const isDefaultLocalSampleHost = hostId === "local-sample-host";
   const systems = Array.isArray(host.systems)
     ? host.systems.map((system) => normalizeStoredSystem(hostId, system))
     : [createDefaultSystem(hostId)];
+  const legacyRealtimeSource = systems.find((system) => {
+    const candidate = system as WorkableSystemConnection & {
+      realtimeEnabled?: boolean;
+      realtimeHubPath?: string | null;
+      realtimeTransport?: string | null;
+    };
+    return Boolean(candidate.realtimeEnabled && candidate.realtimeHubPath);
+  }) as (WorkableSystemConnection & {
+    realtimeEnabled?: boolean;
+    realtimeHubPath?: string | null;
+    realtimeTransport?: string | null;
+  }) | undefined;
 
   return {
     id: hostId,
     name: host.name || "Workable host",
     apiUrl: host.apiUrl || DEFAULT_WORKABLE_API_URL,
+    realtimeEnabled: isDefaultLocalSampleHost
+      ? true
+      : Boolean(host.realtimeEnabled ?? legacyRealtimeSource?.realtimeEnabled),
+    realtimeHubPath: isDefaultLocalSampleHost
+      ? host.realtimeHubPath ?? legacyRealtimeSource?.realtimeHubPath ?? "/workable/realtime"
+      : host.realtimeHubPath ?? legacyRealtimeSource?.realtimeHubPath ?? null,
+    realtimeTransport: isDefaultLocalSampleHost
+      ? host.realtimeTransport ?? legacyRealtimeSource?.realtimeTransport ?? "signalr"
+      : host.realtimeTransport ?? legacyRealtimeSource?.realtimeTransport ?? null,
     systems,
   };
 }
@@ -4608,38 +4605,13 @@ function normalizeStoredSystem(
   hostId: string,
   system: WorkableSystemConnection
 ): WorkableSystemConnection {
-  const isDefaultLocalSampleSystem =
-    hostId === "local-sample-host" &&
-    (system.id === "local-sample-default" || !system.id) &&
-    !normalizeOptional(system.systemName);
-  const realtimeHubPath = isDefaultLocalSampleSystem
-    ? system.realtimeHubPath ?? "/workable/realtime"
-    : system.realtimeHubPath ?? null;
-  const realtimeSupported = isDefaultLocalSampleSystem
-    ? true
-    : Boolean(system.realtimeSupported);
-  const realtimeEnabled = isDefaultLocalSampleSystem
-    ? true
-    : Boolean(system.realtimeEnabled && realtimeSupported);
-  const realtimeTransport = isDefaultLocalSampleSystem
-    ? system.realtimeTransport ?? "signalr"
-    : system.realtimeTransport ?? null;
-
   return {
     id: system.id || createServerId(),
     hostId,
     name: system.name || "Default",
     systemName: normalizeOptional(system.systemName),
-    access: system.access ?? (isDefaultLocalSampleSystem ? createFullAccessSummary() : undefined),
-    realtimeEnabled,
-    realtimeFeatures: normalizeRealtimeFeatures(
-      isDefaultLocalSampleSystem
-        ? system.realtimeFeatures ?? ["system-view", "work-views", "worker-events", "diagnostics-view"]
-        : system.realtimeFeatures
-    ),
-    realtimeHubPath,
-    realtimeSupported,
-    realtimeTransport,
+    access: system.access ?? (hostId === "local-sample-host" ? createFullAccessSummary() : undefined),
+    persistentCoordinationAvailable: Boolean(system.persistentCoordinationAvailable),
     state: system.state ?? null,
   };
 }
@@ -4671,19 +4643,20 @@ function createDiagnosticsAlertTargets(hosts: WorkableHostConnection[]): Diagnos
   const targetsById = new Map<string, DiagnosticsAlertTarget>();
 
   for (const host of hosts) {
+    if (!host.realtimeEnabled || !host.realtimeHubPath) {
+      continue;
+    }
+
     for (const system of host.systems) {
       if (
-        !system.realtimeEnabled ||
-        !system.realtimeHubPath ||
-        system.access?.canViewDiagnostics !== true ||
-        !hasRealtimeFeature(system.realtimeFeatures, "diagnostics-view")
+        system.access?.canViewDiagnostics !== true
       ) {
         continue;
       }
 
       const id = createDiagnosticsAlertTargetId(
         host.apiUrl,
-        system.realtimeHubPath,
+        host.realtimeHubPath,
         system.systemName
       );
       if (targetsById.has(id)) {
@@ -4696,7 +4669,7 @@ function createDiagnosticsAlertTargets(hosts: WorkableHostConnection[]): Diagnos
         displayName: `${system.name} @ ${host.name}`,
         hostId: host.id,
         hostName: host.name,
-        realtimeHubPath: system.realtimeHubPath,
+        realtimeHubPath: host.realtimeHubPath,
         systemName: system.systemName,
       });
     }
@@ -4732,11 +4705,7 @@ function createDefaultSystem(hostId: string): WorkableSystemConnection {
     hostId,
     name: "Default",
     access: createFullAccessSummary(),
-    realtimeEnabled: true,
-    realtimeFeatures: ["system-view", "work-views", "worker-events", "diagnostics-view"],
-    realtimeHubPath: "/workable/realtime",
-    realtimeSupported: true,
-    realtimeTransport: "signalr",
+    persistentCoordinationAvailable: false,
     state: null,
   };
 }
@@ -4762,24 +4731,6 @@ function createFullAccessSummary(): WorkSystemAccessSummary {
     readableDefinitionCount: 0,
     operableDefinitionCount: 0,
   };
-}
-
-function hasRealtimeFeature(features: string[] | null | undefined, feature: string) {
-  return Array.isArray(features) && features.includes(feature);
-}
-
-function normalizeRealtimeFeatures(features?: string[] | null) {
-  if (!Array.isArray(features)) {
-    return null;
-  }
-
-  const normalized = [...new Set(
-    features
-      .filter((feature) => typeof feature === "string" && feature.trim())
-      .map((feature) => feature.trim())
-  )];
-
-  return normalized.length > 0 ? normalized : null;
 }
 
 function normalizeOptional(value?: string | null) {

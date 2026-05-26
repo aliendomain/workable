@@ -54,11 +54,13 @@ export type WorkRealtimeCapability = {
   enabled: boolean;
   transport?: string | null;
   hubPath?: string | null;
-  features?: string[] | null;
 };
 
-export type WorkableHttpCapabilities = {
+export type WorkableHttpHostCapabilities = {
   realtime: WorkRealtimeCapability;
+};
+
+export type WorkableHttpSystemCapabilities = {
   persistentCoordinationAvailable: boolean;
 };
 
@@ -75,16 +77,17 @@ export type WorkSystemAccessSummary = {
   operableDefinitionCount: number;
 };
 
-export type WorkableHttpSystems = {
-  systems: WorkableHttpSystemInfo[];
+export type WorkableHttpHostDescriptor = {
+  capabilities: WorkableHttpHostCapabilities;
+  systems: WorkableHttpSystemDescriptor[];
 };
 
-export type WorkableHttpSystemInfo = {
+export type WorkableHttpSystemDescriptor = {
   id: { value: string };
   name?: string | null;
   state: string;
   isDefault: boolean;
-  capabilities: WorkableHttpCapabilities;
+  capabilities: WorkableHttpSystemCapabilities;
   access: WorkSystemAccessSummary;
 };
 

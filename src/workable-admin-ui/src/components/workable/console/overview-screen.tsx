@@ -24,6 +24,16 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { ConsolePageLayout } from "@/components/features/console/console-primitives";
 import {
+  useConsolePageRealtimeView,
+  useRegisterConsolePageRealtimeView,
+  type ConsolePageRealtimeViewDescriptor,
+} from "@/components/features/console/page-realtime-view";
+import {
+  createRealtimePayloadMessage,
+  getRealtimePayloadComponentData,
+  type RealtimePayloadMessage,
+} from "@/components/features/console/realtime-payload";
+import {
   useRegisterConsoleHeaderCapabilities,
   type ConsoleHeaderCapabilities,
 } from "@/components/features/console/header-capabilities";
@@ -35,10 +45,10 @@ import {
 } from "@/components/features/console/overview-panels";
 import { PanelShell } from "@/components/features/console/panel-shell";
 import {
-  useConsoleRealtimeEventStream,
+  type ConsoleRealtimeViewLoadable,
   useConsoleRealtimeView,
   type ConsoleRealtimeEventLoadable,
-  type ConsoleRealtimeViewLoadable,
+  useConsoleRealtimeEventStream,
 } from "@/components/features/console/realtime";
 import type { Loadable, OverviewScope } from "@/components/features/console/types";
 import { Badge } from "@/components/ui/badge";
@@ -151,16 +161,6 @@ export type RealtimePayloadPanelState = {
   onOpenChange: (open: boolean) => void;
   open: boolean;
 };
-export type RealtimePayloadMessage = {
-  bytes: number;
-  components: Array<{ id: string; shape?: string; status?: string }>;
-  id: string;
-  receivedAt: number;
-  subscription: string;
-  value: unknown;
-  viewName: string;
-};
-
 export type RealtimeEventMessage = {
   batchId?: string;
   batchSize?: number;
@@ -175,12 +175,7 @@ export type RealtimeEventMessage = {
 };
 
 export type RealtimeEventLoadable = ConsoleRealtimeEventLoadable<RealtimeEventMessage>;
-type RealtimePayloadComponentData = {
-  data: unknown;
-  id: string;
-  shape?: WorkComponentShape;
-  status?: string;
-};
+export type RealtimeViewLoadable<T> = ConsoleRealtimeViewLoadable<T, RealtimePayloadMessage>;
 const overviewWorkerStates: WorkerState[] = [
   "Queued",
   "Running",
@@ -241,6 +236,7 @@ export function OverviewView({
   onPanelShapeChange,
   onPanelVisibilityChange,
   onRealtimePayloadCaptureEnabledChange,
+  onActiveRealtimeConnectionCountChange,
   onRealtimePayloadMaxMessagesChange,
   onRealtimePayloadOpenChange,
   onStateLoaded,
@@ -249,7 +245,6 @@ export function OverviewView({
   onViewWorkersByState,
   overviewScope,
   panelShapes,
-  realtimeFeatures,
   realtimePayloadCaptureEnabled,
   realtimePayloadMaxMessages,
   realtimePayloadOpen,
@@ -272,6 +267,7 @@ export function OverviewView({
   onPanelShapeChange: (panelId: OverviewPanelId, shape: WorkComponentShape) => void;
   onPanelVisibilityChange: (panelId: OverviewPanelId, visible: boolean) => void;
   onRealtimePayloadCaptureEnabledChange?: (enabled: boolean) => void;
+  onActiveRealtimeConnectionCountChange?: (count: number) => void;
   onRealtimePayloadMaxMessagesChange?: (maxMessages: number) => void;
   onRealtimePayloadOpenChange?: (open: boolean) => void;
   onStateLoaded: (state: string) => void;
@@ -280,7 +276,6 @@ export function OverviewView({
   onViewWorkersByState: (states: WorkerState[]) => void;
   overviewScope: OverviewScope | null;
   panelShapes: OverviewPanelShapeMap;
-  realtimeFeatures?: string[] | null;
   realtimePayloadCaptureEnabled?: boolean;
   realtimePayloadMaxMessages?: number;
   realtimePayloadOpen?: boolean;
@@ -309,8 +304,8 @@ export function OverviewView({
     !access.canReadAllWork &&
     access.readableDefinitionCount === 0;
   const canUseRealtimeOverview = lacksReadableWorkAccess
-    ? hasRealtimeFeature(realtimeFeatures, "system-view")
-    : hasRealtimeFeature(realtimeFeatures, "work-views");
+    ? (access?.canConnect ?? true)
+    : (access?.canReadAllWork ?? true) || (access?.readableDefinitionCount ?? 0) > 0;
   const throughputWindow =
     throughputWindows.find((window) => window.seconds === throughputWindowSeconds) ??
     throughputWindows[0];
@@ -414,15 +409,32 @@ export function OverviewView({
     effectiveOverviewRequest,
     refreshToken
   );
-  const realtimeOverview = useWorkableRealtimeView<WorkComponentQueryResult>(
-    connection,
-    "overview",
-    effectiveOverviewRequest,
-    isVisible && canUseRealtimeOverview && Boolean(connection.realtimeHubPath),
-    payloadCaptureEnabled && payloadOpen,
-    payloadMaxMessages,
-    "overview"
+  const realtimeOverviewDescriptor = useMemo<ConsolePageRealtimeViewDescriptor>(
+    () => ({
+      body: effectiveOverviewRequest,
+      captureEnabled: payloadCaptureEnabled && payloadOpen,
+      connection,
+      enabled: isVisible && canUseRealtimeOverview && Boolean(connection.realtimeHubPath),
+      maxMessages: payloadMaxMessages,
+      subscription: "overview",
+      viewName: "overview",
+    }),
+    [
+      canUseRealtimeOverview,
+      connection,
+      effectiveOverviewRequest,
+      isVisible,
+      payloadCaptureEnabled,
+      payloadMaxMessages,
+      payloadOpen,
+    ]
   );
+  useRegisterConsolePageRealtimeView({
+    active: isVisible,
+    descriptor: realtimeOverviewDescriptor,
+    id: "overview",
+  });
+  const realtimeOverview = useConsolePageRealtimeView<WorkComponentQueryResult>("overview");
   const overviewData = realtimeOverview.data ?? overview.data;
   const togglePayloadOpen = useCallback(() => {
     setPayloadOpen(!payloadOpen);
@@ -610,6 +622,15 @@ export function OverviewView({
     capabilities: headerCapabilities,
     id: "overview",
   });
+  useEffect(() => {
+    onActiveRealtimeConnectionCountChange?.(
+      realtimeOverview.enabled && realtimeOverview.connectionState !== "disabled" ? 1 : 0
+    );
+  }, [
+    onActiveRealtimeConnectionCountChange,
+    realtimeOverview.connectionState,
+    realtimeOverview.enabled,
+  ]);
 
   return (
     <ConsolePageLayout
@@ -871,10 +892,6 @@ export function OverviewView({
       )}
     </ConsolePageLayout>
   );
-}
-
-function hasRealtimeFeature(features: string[] | null | undefined, feature: string) {
-  return Array.isArray(features) && features.includes(feature);
 }
 
 function OverviewPanelShell({
@@ -3721,38 +3738,6 @@ function clampFloatingWindowPosition(value: number, viewport: number, size: numb
   return Math.min(Math.max(min, value), max);
 }
 
-export type RealtimeViewLoadable<T> = ConsoleRealtimeViewLoadable<T, RealtimePayloadMessage>;
-
-export function useWorkableRealtimeView<T>(
-  connection: WorkableConnection | null,
-  viewName: string,
-  body: unknown,
-  enabled: boolean,
-  captureEnabled: boolean,
-  maxMessages: number,
-  subscription = viewName
-): RealtimeViewLoadable<T> {
-  return useConsoleRealtimeView({
-    body,
-    captureEnabled,
-    connection,
-    createMessage: (result, nextMessageId) => {
-      const payloadJson = JSON.stringify(result);
-      return createRealtimePayloadMessage(
-        result,
-        payloadJson,
-        `${subscription}:${nextMessageId}`,
-        viewName,
-        subscription
-      );
-    },
-    enabled,
-    maxMessages,
-    subscription,
-    viewName,
-  });
-}
-
 export function useWorkableRealtimeEvents(
   connection: WorkableConnection | null,
   criteria: WorkableRealtimeEventCriteria,
@@ -3782,6 +3767,38 @@ export function useWorkableRealtimeEvents(
     watchArgumentKey: criteriaKey,
     watchMethod: "WatchEvents",
     watchStoppedMessage: "Realtime event connection closed.",
+  });
+}
+
+export function useWorkableRealtimeView<T>(
+  connection: WorkableConnection | null,
+  viewName: string,
+  body: unknown,
+  enabled: boolean,
+  captureEnabled: boolean,
+  maxMessages: number,
+  subscription?: string
+): RealtimeViewLoadable<T> {
+  const subscriptionName = subscription ?? viewName;
+
+  return useConsoleRealtimeView<T, RealtimePayloadMessage>({
+    body,
+    captureEnabled,
+    connection,
+    createMessage: (result, nextMessageId) => {
+      const payloadJson = JSON.stringify(result);
+      return createRealtimePayloadMessage(
+        result,
+        payloadJson,
+        `${subscriptionName}:${nextMessageId}`,
+        viewName,
+        subscriptionName
+      );
+    },
+    enabled,
+    maxMessages,
+    subscription: subscriptionName,
+    viewName,
   });
 }
 
@@ -3922,46 +3939,6 @@ function measureJsonBytes(value: unknown, budget = 250_000) {
   return state;
 }
 
-function createRealtimePayloadMessage<T>(
-  result: T,
-  payloadJson: string,
-  id: string,
-  viewName: string,
-  subscription: string
-): RealtimePayloadMessage {
-  const maybeComponents =
-    typeof result === "object" && result !== null && "components" in result
-      ? (result as { components?: Record<string, WorkComponentResult> }).components
-      : undefined;
-
-  return {
-    bytes: new TextEncoder().encode(payloadJson).length,
-    components: Object.entries(maybeComponents ?? {}).map(([id, component]) => ({
-      id,
-      shape: component.shape,
-      status: component.status,
-    })),
-    id,
-    receivedAt: Date.now(),
-    subscription,
-    value: result,
-    viewName,
-  };
-}
-
-function getRealtimePayloadComponentData(value: unknown): RealtimePayloadComponentData[] {
-  const components =
-    typeof value === "object" && value !== null && "components" in value
-      ? (value as { components?: Record<string, WorkComponentResult> }).components
-      : undefined;
-
-  return Object.entries(components ?? {}).map(([id, component]) => ({
-    data: component.data,
-    id,
-    shape: component.shape,
-    status: component.status,
-  }));
-}
 
 function useWorkablePostResource<T>(
   connection: WorkableConnection,

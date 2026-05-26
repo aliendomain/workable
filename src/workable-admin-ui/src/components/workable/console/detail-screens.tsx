@@ -72,6 +72,11 @@ import {
   useRegisterConsoleHeaderCapabilities,
   type ConsoleHeaderCapabilities,
 } from "@/components/features/console/header-capabilities";
+import {
+  useConsolePageRealtimeView,
+  useRegisterConsolePageRealtimeView,
+  type ConsolePageRealtimeViewDescriptor,
+} from "@/components/features/console/page-realtime-view";
 import type { Loadable, OverviewScope } from "@/components/features/console/types";
 import {
   SchemaForm,
@@ -92,8 +97,7 @@ import {
   useLiveRelativeTimeNow,
 } from "@/components/workable/console/live-relative-time";
 import {
-  useWorkableRealtimeWorkerEvents,
-  type RealtimeEventMessage,
+  RealtimePayloadWindow,
 } from "@/components/workable/console/overview-screen";
 import {
   formatDateTime,
@@ -102,6 +106,7 @@ import {
   type QueueWorkRequest,
   type WorkAction,
   type WorkCompletionStatus,
+  type WorkComponentQueryResult,
   type WorkConfiguration,
   type WorkData,
   type WorkDefinition,
@@ -109,7 +114,6 @@ import {
   type WorkInfo,
   type WorkMessage,
   type WorkableRealtimeOrigin,
-  type WorkableRealtimeEvent,
   type WorkableConnection,
   type WorkerActionHistoryEntry,
   type WorkerIterationSnapshot,
@@ -136,19 +140,6 @@ type WorkerRetryTimelineState = {
   retryAttempt?: number | null;
   stateChangedAt?: string | null;
   updatedAt: string;
-};
-type WorkerRealtimeLogEventData = {
-  log?: {
-    category?: string;
-    level?: string;
-    eventId?: {
-      id?: number;
-      name?: string | null;
-    } | null;
-    message?: string;
-    exceptionType?: string | null;
-    exceptionMessage?: string | null;
-  } | null;
 };
 type WorkerFailureDetails = {
   code?: string;
@@ -580,18 +571,28 @@ export function DefinitionView({
 
 export function WorkerConsoleView({
   connection,
+  onActiveRealtimeConnectionCountChange,
   onNavigateBack,
   onOpenWorker,
+  onRealtimePayloadCaptureEnabledChange,
+  onRealtimePayloadMaxMessagesChange,
   onRealtimePayloadOpenChange,
   refreshToken,
+  realtimePayloadCaptureEnabled,
+  realtimePayloadMaxMessages,
   realtimePayloadOpen,
   workerId,
 }: {
   connection: WorkableConnection;
+  onActiveRealtimeConnectionCountChange: (count: number) => void;
   onNavigateBack: () => void;
   onOpenWorker: (workerId: string) => void;
+  onRealtimePayloadCaptureEnabledChange: (enabled: boolean) => void;
+  onRealtimePayloadMaxMessagesChange: (maxMessages: number) => void;
   onRealtimePayloadOpenChange: (open: boolean) => void;
   refreshToken: number;
+  realtimePayloadCaptureEnabled: boolean;
+  realtimePayloadMaxMessages: number;
   realtimePayloadOpen: boolean;
   workerId: string;
 }) {
@@ -620,19 +621,63 @@ export function WorkerConsoleView({
   } | null>(null);
   const [openingCopyQueue, setOpeningCopyQueue] = useState(false);
   const realtimeEnabled = Boolean(connection.realtimeHubPath);
-  const workerEvents = useWorkableRealtimeWorkerEvents(
-    connection,
-    workerId,
-    realtimeEnabled,
-    200
+  const workerViewRequest = useMemo(
+    () => ({
+      components: [
+        {
+          id: "worker",
+          options: { workerId },
+          shape: "detailed",
+          type: "workerDetail",
+        },
+        {
+          id: "currentIteration",
+          options: { workerId },
+          shape: "detailed",
+          type: "workerCurrentIteration",
+        },
+      ],
+    }),
+    [workerId]
   );
-  const processedRealtimeMessageIdsRef = useRef<Set<string>>(new Set());
+  const realtimeWorkerDescriptor = useMemo<ConsolePageRealtimeViewDescriptor>(
+    () => ({
+      body: workerViewRequest,
+      captureEnabled: realtimePayloadCaptureEnabled && realtimePayloadOpen,
+      connection,
+      enabled: realtimeEnabled && workerId.trim().length > 0,
+      maxMessages: realtimePayloadMaxMessages,
+      subscription: `worker:${workerId}`,
+      viewName: "worker",
+    }),
+    [
+      connection,
+      realtimeEnabled,
+      realtimePayloadCaptureEnabled,
+      realtimePayloadMaxMessages,
+      realtimePayloadOpen,
+      workerId,
+      workerViewRequest,
+    ]
+  );
+  useRegisterConsolePageRealtimeView({
+    active: true,
+    descriptor: realtimeWorkerDescriptor,
+    id: "worker-console",
+  });
+  const realtimeWorker = useConsolePageRealtimeView<WorkComponentQueryResult>("worker-console");
   const snapshot = useWorkableResource<WorkerSnapshot>(
     connection,
     `workers/${workerId}`,
     refreshToken + actionRefreshToken + realtimeRefreshToken
   );
-  const currentIterationSequence = snapshot.data?.currentIterationSequence ?? null;
+  const realtimeWorkerData = realtimeWorker.data;
+  const worker = getWorkComponentData<WorkerSnapshot>(realtimeWorkerData, "worker") ?? snapshot.data;
+  const liveCurrentIteration = getWorkComponentData<WorkerIterationSnapshot>(
+    realtimeWorkerData,
+    "currentIteration"
+  );
+  const currentIterationSequence = worker?.currentIterationSequence ?? null;
   const currentIterationSnapshot = useWorkableResource<WorkerIterationSnapshot>(
     connection,
     currentIterationSequence !== null
@@ -642,18 +687,18 @@ export function WorkerConsoleView({
     { retainDataOnNull: true, resetKey: workerId }
   );
   const relativeNow = useLiveRelativeTimeNow();
-  const worker = snapshot.data;
   const retainedIterationSequences = useMemo(
     () => new Set((worker?.iterations ?? []).map((iteration) => iteration.sequence)),
     [worker?.iterations]
   );
+  const currentIterationData = liveCurrentIteration ?? currentIterationSnapshot.data ?? null;
   const currentIteration = currentIterationSequence !== null
-    ? currentIterationSnapshot.data ?? null
+    ? currentIterationData
     : null;
   const timelineTransitionIteration = currentIterationSequence === null &&
-      currentIterationSnapshot.data &&
-      !retainedIterationSequences.has(currentIterationSnapshot.data.sequence)
-    ? currentIterationSnapshot.data
+      currentIterationData &&
+      !retainedIterationSequences.has(currentIterationData.sequence)
+    ? currentIterationData
     : null;
   const activeIteration = currentIteration ?? getActiveIteration(worker?.iterations);
   const timelineIteration = activeIteration ?? timelineTransitionIteration;
@@ -674,29 +719,8 @@ export function WorkerConsoleView({
   const executionView = executionViewOverride?.workerId === workerId
     ? executionViewOverride.value
     : defaultsToTimeline ? "timeline" : "logs";
-  const realtimeStateTimelineItems = useMemo(
-    () => worker ? createRealtimeWorkerStateTimelineItems(worker, workerEvents.messages, relativeNow) : [],
-    [relativeNow, worker, workerEvents.messages]
-  );
   const retryTimelineState = useMemo<WorkerRetryTimelineState | null>(
     () => {
-      const liveRealtimeRetry = realtimeStateTimelineItems.find(
-        (item) => item.liveText?.kind === "state" && item.liveText.mode === "retry"
-      );
-      if (
-        liveRealtimeRetry?.liveText?.kind === "state" &&
-        liveRealtimeRetry.liveText.mode === "retry"
-      ) {
-        return {
-          kind: "state",
-          mode: "retry",
-          nextRunAt: liveRealtimeRetry.liveText.nextRunAt ?? null,
-          retryAttempt: liveRealtimeRetry.liveText.retryAttempt ?? null,
-          stateChangedAt: liveRealtimeRetry.liveText.stateChangedAt ?? null,
-          updatedAt: liveRealtimeRetry.liveText.updatedAt,
-        };
-      }
-
       if (worker?.state === "Retrying") {
         return {
           kind: "state" as const,
@@ -710,13 +734,13 @@ export function WorkerConsoleView({
 
       return null;
     },
-    [realtimeStateTimelineItems, worker]
+    [worker]
   );
   const liveTimelineStatusItem = useMemo(
     () => worker
-      ? createWorkerTimelineLiveStatusItem(worker, timelineIteration, realtimeStateTimelineItems, relativeNow)
+      ? createWorkerTimelineLiveStatusItem(worker, timelineIteration, relativeNow)
       : null,
-    [realtimeStateTimelineItems, relativeNow, timelineIteration, worker]
+    [relativeNow, timelineIteration, worker]
   );
   const [historicalTimelineStatusState, setHistoricalTimelineStatusState] = useState<{
     items: WorkerTimelineItem[];
@@ -755,9 +779,9 @@ export function WorkerConsoleView({
   const retainedLogEntries = useMemo(
     () => mergeWorkerLogEntries(
       primaryIteration?.logs ?? [],
-      currentIterationSnapshot.data?.logs ?? []
+      currentIteration?.logs ?? []
     ),
-    [currentIterationSnapshot.data?.logs, primaryIteration?.logs]
+    [currentIteration?.logs, primaryIteration?.logs]
   );
   const terminalFailure = worker?.state === "Failed"
     ? getWorkerFailureDetails(worker, latestIteration)
@@ -774,8 +798,8 @@ export function WorkerConsoleView({
   const headerCapabilities = useMemo<ConsoleHeaderCapabilities>(
     () => ({
       realtime: {
-        connectionState: workerEvents.connectionState,
-        enabled: realtimeEnabled,
+        connectionState: realtimeWorker.connectionState,
+        enabled: realtimeWorker.enabled,
         menuItems: [
           {
             active: realtimePayloadOpen,
@@ -788,21 +812,39 @@ export function WorkerConsoleView({
       },
       refresh: {
         disabled: snapshot.loading || snapshot.refreshing === true ||
-          (realtimeEnabled && workerEvents.connectionState === "connected"),
+          (realtimeWorker.enabled && realtimeWorker.connectionState === "connected"),
         onRefresh: refreshWorkerSnapshot,
-        refreshing: snapshot.refreshing === true,
+        refreshing: snapshot.refreshing === true || realtimeWorker.refreshing === true,
         title: "Refresh worker logs and snapshot",
       },
     }),
     [
-      realtimeEnabled,
       realtimePayloadOpen,
+      realtimeWorker.connectionState,
+      realtimeWorker.enabled,
+      realtimeWorker.refreshing,
       refreshWorkerSnapshot,
       snapshot.loading,
       snapshot.refreshing,
       toggleRealtimePayloadOpen,
-      workerEvents.connectionState,
     ]
+  );
+  const realtimePayloadWindow = (
+    <RealtimePayloadWindow
+      captureEnabled={realtimePayloadCaptureEnabled}
+      connectionState={realtimeWorker.connectionState}
+      enabled={realtimeWorker.enabled}
+      externalMessages={[]}
+      hubUrl={realtimeWorker.hubUrl ?? null}
+      maxMessages={realtimePayloadMaxMessages}
+      messages={realtimeWorker.messages}
+      onCaptureEnabledChange={onRealtimePayloadCaptureEnabledChange}
+      onClearExternalMessages={() => undefined}
+      onClearMessages={realtimeWorker.clearMessages}
+      onMaxMessagesChange={onRealtimePayloadMaxMessagesChange}
+      onOpenChange={onRealtimePayloadOpenChange}
+      open={realtimePayloadOpen}
+    />
   );
 
   const openCopyQueueDialog = async () => {
@@ -830,10 +872,6 @@ export function WorkerConsoleView({
       setOpeningCopyQueue(false);
     }
   };
-
-  useEffect(() => {
-    processedRealtimeMessageIdsRef.current = new Set();
-  }, [workerId]);
 
   useEffect(() => {
     previousLiveTimelineStatusItemRef.current = null;
@@ -889,50 +927,19 @@ export function WorkerConsoleView({
 
     return () => clearTimeout(timer);
   }, [actionFeedback]);
-
   useEffect(() => {
-    const handledMessageIds = processedRealtimeMessageIdsRef.current;
-    const nextLogEntries: WorkerLogEntry[] = [];
-    let shouldRefreshSnapshot = false;
+    onActiveRealtimeConnectionCountChange(
+      realtimeWorker.enabled && realtimeWorker.connectionState !== "disabled" ? 1 : 0
+    );
 
-    [...workerEvents.messages]
-      .reverse()
-      .filter((message) => !handledMessageIds.has(message.id))
-      .forEach((message) => {
-        handledMessageIds.add(message.id);
-        message.events.forEach((workEvent) => {
-          if (workEvent.workerId?.value !== workerId) {
-            return;
-          }
-
-          const logEntry = tryCreateRealtimeWorkerLogEntry(workEvent.data, workEvent.occurredAt);
-          if (workEvent.eventType === "worker.log" && logEntry) {
-            nextLogEntries.push(logEntry);
-            return;
-          }
-
-          shouldRefreshSnapshot = true;
-        });
-    });
-
-    if (nextLogEntries.length > 0) {
-      setExecutionLogState((current) => ({
-        entries: mergeWorkerLogEntries(
-          current.workerId === workerId
-            ? current.entries
-            : [],
-          nextLogEntries,
-          workerExecutionLogStreamLimit
-        ),
-        workerId,
-      }));
-    }
-
-    if (shouldRefreshSnapshot) {
-      setRealtimeRefreshToken((value) => value + 1);
-    }
-  }, [workerEvents.messages, workerId]);
+    return () => onActiveRealtimeConnectionCountChange(0);
+  }, [
+    onActiveRealtimeConnectionCountChange,
+    realtimeWorker.connectionState,
+    realtimeWorker.enabled,
+  ]);
   useRegisterConsoleHeaderCapabilities({
+    active: true,
     capabilities: headerCapabilities,
     id: "worker-console",
   });
@@ -946,7 +953,7 @@ export function WorkerConsoleView({
   };
 
   const executeAction = async (action: WorkAction) => {
-    const current = snapshot.data;
+    const current = worker;
     if (!current) {
       return;
     }
@@ -984,6 +991,7 @@ export function WorkerConsoleView({
 
   return (
     <ConsolePageLayout reserveToolbar>
+      {realtimePayloadWindow}
       {snapshot.loading && <StackedSkeleton count={8} />}
       {snapshot.error && (
         <ErrorBanner key={snapshot.error} message={snapshot.error} title="Unable to load worker" />
@@ -1094,7 +1102,7 @@ export function WorkerConsoleView({
                 <ConsolePanelBody className="flex min-h-0 flex-1 flex-col space-y-4">
                   <TabsContent className="mt-0 min-h-0 flex-1 space-y-4" value="logs">
                     <WorkerLogStreamCard
-                      connectionError={workerEvents.error}
+                      connectionError={realtimeWorker.error}
                       entries={executionLogs}
                       hasActiveIteration={hasActiveIteration}
                     />
@@ -1309,7 +1317,7 @@ export function QueueDialog({
   );
 
   return (
-    <Dialog modal={false} onOpenChange={onOpenChange} open={!!definition}>
+    <Dialog onOpenChange={onOpenChange} open={!!definition}>
       <DialogContent
         className="flex h-[calc(100vh-2rem)] max-h-[calc(100vh-2rem)] flex-col overflow-hidden p-0 sm:h-[88vh] sm:max-h-[88vh] sm:max-w-5xl"
         onInteractOutside={(event) => event.preventDefault()}
@@ -3214,18 +3222,8 @@ function createWorkerTimelineItems(
 function createWorkerTimelineLiveStatusItem(
   worker: WorkerSnapshot,
   activeIteration: WorkerIterationSnapshot | null,
-  realtimeStateItems: WorkerTimelineItem[],
   now: number
 ) {
-  const latestRealtimeStateItem = realtimeStateItems[0];
-  if (latestRealtimeStateItem?.liveText?.kind === "state" && latestRealtimeStateItem.liveText.mode === "retry") {
-    return null;
-  }
-
-  if (latestRealtimeStateItem) {
-    return latestRealtimeStateItem;
-  }
-
   if (activeIteration?.status === "Executing") {
     return createExecutingIterationTimelineItem(activeIteration, now);
   }
@@ -3487,88 +3485,6 @@ function getLatestRetryingFailedIterationSequence(iterations: WorkerIterationSna
 
       return right.sequence - left.sequence;
     })[0]?.sequence ?? null;
-}
-
-function createRealtimeWorkerStateTimelineItems(
-  worker: WorkerSnapshot,
-  messages: RealtimeEventMessage[],
-  now: number
-): WorkerTimelineItem[] {
-  const latestRealtimeState = findLatestRealtimeWorkerState(worker, messages);
-  if (!latestRealtimeState) {
-    return [];
-  }
-
-  const payload = latestRealtimeState.worker;
-  if (payload.state === "Retrying") {
-    const description = describeWaitingTimelineItem(
-      {
-        nextRunAt: payload.nextRunAt ?? null,
-        retryAttempt: payload.retryAttempt ?? null,
-        stateChangedAt: payload.stateChangedAt ?? latestRealtimeState.occurredAt,
-        updatedAt: payload.updatedAt ?? latestRealtimeState.occurredAt,
-      },
-      now,
-      "retry"
-    );
-    return [{
-      at: payload.stateChangedAt ?? latestRealtimeState.occurredAt,
-      badge: "Retrying",
-      description,
-      facts: [],
-      filterKind: "system",
-      icon: RotateCw,
-      id: `state:retrying:${payload.stateSequence ?? `realtime:${latestRealtimeState.occurredAt}`}`,
-      kind: "state",
-      liveText: {
-        kind: "state",
-        mode: "retry",
-        nextRunAt: payload.nextRunAt ?? null,
-        retryAttempt: payload.retryAttempt ?? null,
-        stateChangedAt: payload.stateChangedAt ?? latestRealtimeState.occurredAt,
-        updatedAt: payload.updatedAt ?? latestRealtimeState.occurredAt,
-      },
-      sortOrder: 4,
-      stateMode: "retry",
-      title: description,
-      tone: "warning",
-    }];
-  }
-
-  if (payload.state === "Waiting") {
-    const description = describeWaitingTimelineItem(
-      {
-        nextRunAt: payload.nextRunAt ?? null,
-        stateChangedAt: payload.stateChangedAt ?? latestRealtimeState.occurredAt,
-        updatedAt: payload.updatedAt ?? latestRealtimeState.occurredAt,
-      },
-      now,
-      "recurrence"
-    );
-    return [{
-      at: payload.stateChangedAt ?? latestRealtimeState.occurredAt,
-      badge: "Waiting",
-      description,
-      facts: [],
-      filterKind: "system",
-      icon: Clock3,
-      id: `state:waiting:${payload.stateSequence ?? `realtime:${latestRealtimeState.occurredAt}`}`,
-      kind: "state",
-      liveText: {
-        kind: "state",
-        mode: "recurrence",
-        nextRunAt: payload.nextRunAt ?? null,
-        stateChangedAt: payload.stateChangedAt ?? latestRealtimeState.occurredAt,
-        updatedAt: payload.updatedAt ?? latestRealtimeState.occurredAt,
-      },
-      sortOrder: 4,
-      stateMode: "recurrence",
-      title: description,
-      tone: "info",
-    }];
-  }
-
-  return [];
 }
 
 function createActionTimelineItems(
@@ -3988,67 +3904,6 @@ function isLiveTimelineGap(item: WorkerTimelineItem) {
     (item.liveText?.kind === "iteration" && item.liveText.status === "Executing");
 }
 
-type RealtimeWorkerStatePayload = {
-  state?: WorkerState;
-  stateSequence?: number;
-  stateChangedAt?: string;
-  updatedAt?: string;
-  nextRunAt?: string | null;
-  retryAttempt?: number | null;
-};
-
-function findLatestRealtimeWorkerState(
-  worker: WorkerSnapshot,
-  messages: RealtimeEventMessage[]
-) {
-  let latest: {
-    occurredAt: string;
-    worker: RealtimeWorkerStatePayload;
-  } | null = null;
-
-  for (const message of messages) {
-    for (const workEvent of message.events) {
-      if (workEvent.workerId?.value !== worker.id.value || workEvent.eventType === "worker.log") {
-        continue;
-      }
-
-      const payload = tryGetRealtimeWorkerStatePayload(workEvent);
-      if (!payload?.stateSequence || payload.stateSequence <= worker.stateSequence) {
-        continue;
-      }
-
-      if (
-        !latest ||
-        payload.stateSequence > (latest.worker.stateSequence ?? 0) ||
-        (
-          payload.stateSequence === latest.worker.stateSequence &&
-          parseTimelineTimestamp(workEvent.occurredAt) > parseTimelineTimestamp(latest.occurredAt)
-        )
-      ) {
-        latest = {
-          occurredAt: workEvent.occurredAt,
-          worker: payload,
-        };
-      }
-    }
-  }
-
-  return latest;
-}
-
-function tryGetRealtimeWorkerStatePayload(workEvent: WorkableRealtimeEvent): RealtimeWorkerStatePayload | null {
-  if (!workEvent.data || typeof workEvent.data !== "object") {
-    return null;
-  }
-
-  const worker = "worker" in workEvent.data ? workEvent.data.worker : null;
-  if (!worker || typeof worker !== "object") {
-    return null;
-  }
-
-  return worker as RealtimeWorkerStatePayload;
-}
-
 function formatIterationTimelineStatus(status: WorkCompletionStatus) {
   switch (status) {
     case "Completed":
@@ -4396,33 +4251,6 @@ function getSortedIterations(iterations?: WorkerIterationSnapshot[] | null) {
 
       return Date.parse(right.occurredAt) - Date.parse(left.occurredAt);
     });
-}
-
-function tryCreateRealtimeWorkerLogEntry(data: unknown, occurredAt: string): WorkerLogEntry | null {
-  if (!data || typeof data !== "object") {
-    return null;
-  }
-
-  const payload = data as WorkerRealtimeLogEventData;
-  const log = payload.log;
-  if (!log || typeof log !== "object" || typeof log.category !== "string" || typeof log.message !== "string") {
-    return null;
-  }
-
-  return {
-    occurredAt,
-    category: log.category,
-    level: typeof log.level === "string" ? log.level : "Information",
-    eventId: typeof log.eventId?.id === "number"
-      ? {
-          id: log.eventId.id,
-          name: typeof log.eventId.name === "string" ? log.eventId.name : null,
-        }
-      : null,
-    message: log.message,
-    exceptionType: typeof log.exceptionType === "string" ? log.exceptionType : null,
-    exceptionMessage: typeof log.exceptionMessage === "string" ? log.exceptionMessage : null,
-  };
 }
 
 function mergeWorkerLogEntries(
@@ -5135,6 +4963,13 @@ function createEffectiveConfigurationOptions(
       definition?.configuration ?? defaultWorkConfiguration
     )),
   };
+}
+
+function getWorkComponentData<T>(result: WorkComponentQueryResult | undefined, id: string) {
+  const component = result?.components?.[id];
+  return component?.status?.toLowerCase() === "ok"
+    ? component.data as T
+    : undefined;
 }
 
 function createQueueDialogRequest(

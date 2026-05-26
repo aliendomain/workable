@@ -90,23 +90,24 @@ app.MapWorkableSignalR("/internal/work/realtime");
 
 ## Capability Discovery
 
-`Workable.HttpApi` exposes capability information through the systems endpoint so clients can build a system picker and discover whether realtime is available for each system.
+`Workable.HttpApi` exposes capability information through the host endpoint so clients can discover whether the host exposes realtime transport and which systems are visible to the caller.
 
 ```http
-GET /workable/systems
+GET /workable/host
 ```
 
-Each listed system includes the same realtime capability object surfaced by the HTTP systems endpoint. The realtime feature list is filtered by the caller's system/work visibility, so two callers can see different feature sets for the same system.
+Realtime capability is host-level in the HTTP discovery surface. System visibility still matters because callers only see systems they can connect to, and system access still determines which system-specific views and diagnostics a client should attempt to use.
 
 When `Workable.SignalR` is registered:
 
 ```json
 {
-  "realtime": {
-    "enabled": true,
-    "transport": "signalr",
-    "hubPath": "/workable/realtime",
-    "features": ["system-view", "work-views", "worker-events", "diagnostics-view"]
+  "capabilities": {
+    "realtime": {
+      "enabled": true,
+      "transport": "signalr",
+      "hubPath": "/workable/realtime"
+    }
   }
 }
 ```
@@ -115,16 +116,15 @@ When `Workable.SignalR` is not registered:
 
 ```json
 {
-  "realtime": {
-    "enabled": false,
-    "transport": null,
-    "hubPath": null,
-    "features": null
+  "capabilities": {
+    "realtime": {
+      "enabled": false,
+      "transport": null,
+      "hubPath": null
+    }
   }
 }
 ```
-
-When a caller can connect to a system but cannot read work or diagnostics, the feature list can be narrower. For example, a connect-only caller may see only `["system-view"]`.
 
 ## Worker Events
 

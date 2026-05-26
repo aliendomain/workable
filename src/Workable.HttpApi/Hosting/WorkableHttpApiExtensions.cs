@@ -21,14 +21,14 @@ public static class WorkableHttpApiExtensions
         ApplyTransportAuthorization(group, endpoints.ServiceProvider);
         RequireAuthenticated(group);
         HandleAuthorizationDenied(group);
-        group.MapGet("/systems", (
+        group.MapGet("/host", (
             HttpContext httpContext,
-            WorkableHttpSystemResolver systems,
+            WorkableHttpTopologyResolver topology,
             IWorkRequestContextFactory requestContexts)
-            => Results.Ok(systems.GetSystems(WorkableHttpRequestContext.Create(
+            => Results.Ok(topology.DescribeHost(WorkableHttpRequestContext.Create(
                 httpContext,
                 requestContexts,
-                "Discover Workable systems through HTTP API."))));
+                "Discover Workable host capabilities through HTTP API."))));
 
         MapWorkableApiRoutes(group);
         var namedGroup = group.MapGroup("/systems/{systemName}");

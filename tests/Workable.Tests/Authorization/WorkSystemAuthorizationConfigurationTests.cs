@@ -190,6 +190,33 @@ public sealed class WorkSystemAuthorizationConfigurationTests
     }
 
     [Fact]
+    public async Task AuthorizedSessionReturnsNotFoundForMissingWorkerOperationsWithinOperateScope()
+    {
+        var definition = PausedDefinition("missing.operate");
+        var provider = new ServiceCollection()
+            .AddSingleton<IWorkAuthorizationGroupProvider>(new TestGroupProvider(new Dictionary<string, IReadOnlySet<string>>
+            {
+                ["operator"] = Groups("missing.read", "missing.write"),
+            }))
+            .AddDefaultWorkableSystemForAuthorizationTests(builder => builder.AddWork(
+                definition,
+                SuccessfulWork,
+                configure: null,
+                authorize: authorize => authorize.RequireGroups(
+                    readGroups: ["missing.read"],
+                    operateGroups: ["missing.write"])))
+            .BuildServiceProvider();
+        var system = provider.GetRequiredService<IWorkSystem>();
+        await system.Start();
+
+        var outcome = await system.CreateSession(CreateRequestContext("operator")).Workers.Execute(
+            new WorkerVersion(WorkerId.New(), Revision: 1),
+            WorkAction.Start);
+
+        Assert.Equal(WorkActionStatus.NotFound, outcome.Status);
+    }
+
+    [Fact]
     public void UnsecuredSessionDoesNotResolveAuthorizationScope()
     {
         var provider = new ServiceCollection()

@@ -11,12 +11,12 @@ internal static class WorkableHttpQueryRoutes
         group.MapPost("/components/query", (
             HttpContext httpContext,
             WorkComponentCriteria? query,
-            WorkableHttpSystemResolver systems,
+            WorkableHttpTopologyResolver topology,
             WorkableHttpQueryAdapter queries,
             IWorkRequestContextFactory requestContexts,
             CancellationToken cancellationToken) =>
         {
-            if (!WorkableHttpRouteResults.TryResolveSystem(httpContext, systems, out var system, out var notFound))
+            if (!WorkableHttpRouteResults.TryResolveSystem(httpContext, topology, out var system, out var notFound))
             {
                 return Task.FromResult(notFound);
             }
@@ -30,12 +30,12 @@ internal static class WorkableHttpQueryRoutes
             HttpContext httpContext,
             string componentName,
             WorkSingleComponentCriteria? query,
-            WorkableHttpSystemResolver systems,
+            WorkableHttpTopologyResolver topology,
             WorkableHttpQueryAdapter queries,
             IWorkRequestContextFactory requestContexts,
             CancellationToken cancellationToken) =>
         {
-            if (!WorkableHttpRouteResults.TryResolveSystem(httpContext, systems, out var system, out var notFound))
+            if (!WorkableHttpRouteResults.TryResolveSystem(httpContext, topology, out var system, out var notFound))
             {
                 return Task.FromResult(notFound);
             }
@@ -55,12 +55,12 @@ internal static class WorkableHttpQueryRoutes
             HttpContext httpContext,
             string viewName,
             WorkViewCriteria? query,
-            WorkableHttpSystemResolver systems,
+            WorkableHttpTopologyResolver topology,
             WorkableHttpQueryAdapter queries,
             IWorkRequestContextFactory requestContexts,
             CancellationToken cancellationToken) =>
         {
-            if (!WorkableHttpRouteResults.TryResolveSystem(httpContext, systems, out var system, out var notFound))
+            if (!WorkableHttpRouteResults.TryResolveSystem(httpContext, topology, out var system, out var notFound))
             {
                 return Task.FromResult(notFound);
             }
@@ -73,12 +73,12 @@ internal static class WorkableHttpQueryRoutes
         group.MapPost("/definitions/query", async (
             HttpContext httpContext,
             WorkDefinitionCriteria? query,
-            WorkableHttpSystemResolver systems,
+            WorkableHttpTopologyResolver topology,
             WorkableHttpQueryAdapter queries,
             IWorkRequestContextFactory requestContexts,
             CancellationToken cancellationToken) =>
         {
-            if (!WorkableHttpRouteResults.TryResolveSystem(httpContext, systems, out var system, out var notFound))
+            if (!WorkableHttpRouteResults.TryResolveSystem(httpContext, topology, out var system, out var notFound))
             {
                 return notFound;
             }
@@ -91,12 +91,12 @@ internal static class WorkableHttpQueryRoutes
         group.MapGet("/definitions/{definitionId:guid}/info", async (
             HttpContext httpContext,
             Guid definitionId,
-            WorkableHttpSystemResolver systems,
+            WorkableHttpTopologyResolver topology,
             WorkableHttpQueryAdapter queries,
             IWorkRequestContextFactory requestContexts,
             CancellationToken cancellationToken) =>
         {
-            if (!WorkableHttpRouteResults.TryResolveSystem(httpContext, systems, out var system, out var notFound))
+            if (!WorkableHttpRouteResults.TryResolveSystem(httpContext, topology, out var system, out var notFound))
             {
                 return notFound;
             }
@@ -109,12 +109,12 @@ internal static class WorkableHttpQueryRoutes
         group.MapGet("/work/id/{definitionId:guid}/info", async (
             HttpContext httpContext,
             Guid definitionId,
-            WorkableHttpSystemResolver systems,
+            WorkableHttpTopologyResolver topology,
             WorkableHttpQueryAdapter queries,
             IWorkRequestContextFactory requestContexts,
             CancellationToken cancellationToken) =>
         {
-            if (!WorkableHttpRouteResults.TryResolveSystem(httpContext, systems, out var system, out var notFound))
+            if (!WorkableHttpRouteResults.TryResolveSystem(httpContext, topology, out var system, out var notFound))
             {
                 return notFound;
             }
@@ -127,12 +127,12 @@ internal static class WorkableHttpQueryRoutes
         group.MapGet("/work/{name}/info", async (
             HttpContext httpContext,
             string name,
-            WorkableHttpSystemResolver systems,
+            WorkableHttpTopologyResolver topology,
             WorkableHttpQueryAdapter queries,
             IWorkRequestContextFactory requestContexts,
             CancellationToken cancellationToken) =>
         {
-            if (!WorkableHttpRouteResults.TryResolveSystem(httpContext, systems, out var system, out var notFound))
+            if (!WorkableHttpRouteResults.TryResolveSystem(httpContext, topology, out var system, out var notFound))
             {
                 return notFound;
             }
@@ -145,12 +145,12 @@ internal static class WorkableHttpQueryRoutes
         group.MapGet("/workers/{workerId:guid}", async (
             HttpContext httpContext,
             Guid workerId,
-            WorkableHttpSystemResolver systems,
+            WorkableHttpTopologyResolver topology,
             WorkableHttpQueryAdapter queries,
             IWorkRequestContextFactory requestContexts,
             CancellationToken cancellationToken) =>
         {
-            if (!WorkableHttpRouteResults.TryResolveSystem(httpContext, systems, out var system, out var notFound))
+            if (!WorkableHttpRouteResults.TryResolveSystem(httpContext, topology, out var system, out var notFound))
             {
                 return notFound;
             }
@@ -164,12 +164,12 @@ internal static class WorkableHttpQueryRoutes
             HttpContext httpContext,
             Guid workerId,
             long sequence,
-            WorkableHttpSystemResolver systems,
+            WorkableHttpTopologyResolver topology,
             WorkableHttpQueryAdapter queries,
             IWorkRequestContextFactory requestContexts,
             CancellationToken cancellationToken) =>
         {
-            if (!WorkableHttpRouteResults.TryResolveSystem(httpContext, systems, out var system, out var notFound))
+            if (!WorkableHttpRouteResults.TryResolveSystem(httpContext, topology, out var system, out var notFound))
             {
                 return notFound;
             }
@@ -181,12 +181,12 @@ internal static class WorkableHttpQueryRoutes
 
         group.MapGet("/workers/status-summary", (
             HttpContext httpContext,
-            WorkableHttpSystemResolver systems,
+            WorkableHttpTopologyResolver topology,
             WorkableHttpQueryAdapter queries,
             IWorkRequestContextFactory requestContexts,
             CancellationToken cancellationToken) =>
         {
-            if (!WorkableHttpRouteResults.TryResolveSystem(httpContext, systems, out var system, out var notFound))
+            if (!WorkableHttpRouteResults.TryResolveSystem(httpContext, topology, out var system, out var notFound))
             {
                 return Task.FromResult(notFound);
             }
@@ -199,12 +199,12 @@ internal static class WorkableHttpQueryRoutes
         group.MapPost("/workers/status-summary", (
             HttpContext httpContext,
             WorkableHttpWorkerCriteria? query,
-            WorkableHttpSystemResolver systems,
+            WorkableHttpTopologyResolver topology,
             WorkableHttpQueryAdapter queries,
             IWorkRequestContextFactory requestContexts,
             CancellationToken cancellationToken) =>
         {
-            if (!WorkableHttpRouteResults.TryResolveSystem(httpContext, systems, out var system, out var notFound))
+            if (!WorkableHttpRouteResults.TryResolveSystem(httpContext, topology, out var system, out var notFound))
             {
                 return Task.FromResult(notFound);
             }
@@ -217,12 +217,12 @@ internal static class WorkableHttpQueryRoutes
         group.MapPost("/work-keys/query", (
             HttpContext httpContext,
             WorkerKeyCriteria? query,
-            WorkableHttpSystemResolver systems,
+            WorkableHttpTopologyResolver topology,
             WorkableHttpQueryAdapter queries,
             IWorkRequestContextFactory requestContexts,
             CancellationToken cancellationToken) =>
         {
-            if (!WorkableHttpRouteResults.TryResolveSystem(httpContext, systems, out var system, out var notFound))
+            if (!WorkableHttpRouteResults.TryResolveSystem(httpContext, topology, out var system, out var notFound))
             {
                 return Task.FromResult(notFound);
             }
@@ -239,12 +239,12 @@ internal static class WorkableHttpQueryRoutes
             string? search,
             int? skip,
             int? take,
-            WorkableHttpSystemResolver systems,
+            WorkableHttpTopologyResolver topology,
             WorkableHttpQueryAdapter queries,
             IWorkRequestContextFactory requestContexts,
             CancellationToken cancellationToken) =>
         {
-            if (!WorkableHttpRouteResults.TryResolveSystem(httpContext, systems, out var system, out var notFound))
+            if (!WorkableHttpRouteResults.TryResolveSystem(httpContext, topology, out var system, out var notFound))
             {
                 return Task.FromResult(notFound);
             }
@@ -261,12 +261,12 @@ internal static class WorkableHttpQueryRoutes
         group.MapPost("/work-keys/types/query", (
             HttpContext httpContext,
             WorkableHttpWorkerKeyTypeCriteria? query,
-            WorkableHttpSystemResolver systems,
+            WorkableHttpTopologyResolver topology,
             WorkableHttpQueryAdapter queries,
             IWorkRequestContextFactory requestContexts,
             CancellationToken cancellationToken) =>
         {
-            if (!WorkableHttpRouteResults.TryResolveSystem(httpContext, systems, out var system, out var notFound))
+            if (!WorkableHttpRouteResults.TryResolveSystem(httpContext, topology, out var system, out var notFound))
             {
                 return Task.FromResult(notFound);
             }
@@ -279,12 +279,12 @@ internal static class WorkableHttpQueryRoutes
         group.MapPost("/work-iteration-keys/query", (
             HttpContext httpContext,
             WorkIterationKeyCriteria? query,
-            WorkableHttpSystemResolver systems,
+            WorkableHttpTopologyResolver topology,
             WorkableHttpQueryAdapter queries,
             IWorkRequestContextFactory requestContexts,
             CancellationToken cancellationToken) =>
         {
-            if (!WorkableHttpRouteResults.TryResolveSystem(httpContext, systems, out var system, out var notFound))
+            if (!WorkableHttpRouteResults.TryResolveSystem(httpContext, topology, out var system, out var notFound))
             {
                 return Task.FromResult(notFound);
             }
@@ -301,12 +301,12 @@ internal static class WorkableHttpQueryRoutes
             string? search,
             int? skip,
             int? take,
-            WorkableHttpSystemResolver systems,
+            WorkableHttpTopologyResolver topology,
             WorkableHttpQueryAdapter queries,
             IWorkRequestContextFactory requestContexts,
             CancellationToken cancellationToken) =>
         {
-            if (!WorkableHttpRouteResults.TryResolveSystem(httpContext, systems, out var system, out var notFound))
+            if (!WorkableHttpRouteResults.TryResolveSystem(httpContext, topology, out var system, out var notFound))
             {
                 return Task.FromResult(notFound);
             }
@@ -323,12 +323,12 @@ internal static class WorkableHttpQueryRoutes
         group.MapPost("/work-iteration-keys/types/query", (
             HttpContext httpContext,
             WorkableHttpWorkIterationKeyTypeCriteria? query,
-            WorkableHttpSystemResolver systems,
+            WorkableHttpTopologyResolver topology,
             WorkableHttpQueryAdapter queries,
             IWorkRequestContextFactory requestContexts,
             CancellationToken cancellationToken) =>
         {
-            if (!WorkableHttpRouteResults.TryResolveSystem(httpContext, systems, out var system, out var notFound))
+            if (!WorkableHttpRouteResults.TryResolveSystem(httpContext, topology, out var system, out var notFound))
             {
                 return Task.FromResult(notFound);
             }
