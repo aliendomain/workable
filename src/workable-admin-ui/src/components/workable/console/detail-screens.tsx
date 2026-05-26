@@ -11,7 +11,6 @@ import {
   Copy,
   Eye,
   Info,
-  ListFilter,
   Loader2,
   Maximize2,
   Minimize2,
@@ -62,12 +61,8 @@ import {
   consoleBreadcrumbTextClassName,
   ConsolePageLayout,
   consolePanelActionGapClassName,
-  consolePanelClusterGapClassName,
-  ConsolePanelBody,
-  ConsolePanelHeader,
-  consolePanelSectionGapClassName,
-  ConsolePanelSurface,
 } from "@/components/features/console/console-primitives";
+import { PanelAggregateFrame } from "@/components/features/console/panel-aggregate-frame";
 import {
   useRegisterConsoleHeaderCapabilities,
   type ConsoleHeaderCapabilities,
@@ -77,6 +72,9 @@ import {
   useRegisterConsolePageRealtimeView,
   type ConsolePageRealtimeViewDescriptor,
 } from "@/components/features/console/page-realtime-view";
+import { PanelShell } from "@/components/features/console/panel-shell";
+import type { PanelVisibilityOption } from "@/components/features/console/panel-visibility-settings";
+import { ToolbarIconButton } from "@/components/features/console/toolbar-icon-button";
 import type { Loadable, OverviewScope } from "@/components/features/console/types";
 import {
   SchemaForm,
@@ -132,7 +130,6 @@ type QueueConfigurationFieldSection = {
   description?: string;
   fields: QueueConfigurationField[];
 };
-type WorkerExecutionView = "inspector" | "logs" | "timeline";
 type WorkerRetryTimelineState = {
   kind: "state";
   mode: "retry";
@@ -177,6 +174,41 @@ type StackTraceDisplayEntry =
 
 const workerExecutionLogStreamLimit = 400;
 const stackFrameFilterKinds: StackFrameFilterKind[] = ["application", "work", "library"];
+const catalogPanelOptions: PanelVisibilityOption<"catalog">[] = [
+  {
+    id: "catalog",
+    label: "Catalog",
+    description: "Definitions in the selected catalog scope, with search and queue actions.",
+  },
+];
+type WorkerDetailPanelId =
+  | "workerControls"
+  | "workerLogs"
+  | "workerDuration"
+  | "workerTimeline";
+
+const workerPanelOptions: PanelVisibilityOption<WorkerDetailPanelId>[] = [
+  {
+    id: "workerControls",
+    label: "Worker controls",
+    description: "Current worker state, control actions, and input summary.",
+  },
+  {
+    id: "workerLogs",
+    label: "Logs",
+    description: "Compact log summary or detailed retained worker log stream.",
+  },
+  {
+    id: "workerDuration",
+    label: "Recent iterations",
+    description: "Recent completed or active iteration durations.",
+  },
+  {
+    id: "workerTimeline",
+    label: "Iteration timeline",
+    description: "Detailed iteration timeline with filters and status events.",
+  },
+];
 
 export function DefinitionsView({
   catalogScope,
@@ -202,6 +234,8 @@ export function DefinitionsView({
   );
   const [search, setSearch] = useState("");
   const [queueDefinition, setQueueDefinition] = useState<WorkDefinition | null>(null);
+  const [gridShape, setGridShape] = useState<WorkComponentShape>("detailed");
+  const [hiddenPanelIds, setHiddenPanelIds] = useState<ReadonlySet<"catalog">>(() => new Set());
   const autoOpenedDefinitionScope = useRef("");
   const isReady = !definitions.loading;
 
@@ -242,70 +276,108 @@ export function DefinitionsView({
     }
   }, [catalogScope?.definitionName, definitions.loading, filtered, onOpenDefinition]);
 
+  const setCatalogPanelVisible = useCallback((panelId: "catalog", visible: boolean) => {
+    setHiddenPanelIds((current) => {
+      const next = new Set(current);
+      if (visible) {
+        next.delete(panelId);
+      } else {
+        next.add(panelId);
+      }
+      return next;
+    });
+  }, []);
+
+  const resetCatalogUiToDefaults = useCallback(() => {
+    setHiddenPanelIds(new Set());
+    setGridShape("detailed");
+  }, []);
+
+  const isCatalogPanelVisible = !hiddenPanelIds.has("catalog");
+
   return (
-    <ConsolePageLayout reserveToolbar>
+    <ConsolePageLayout>
       <ErrorPanel errors={[definitions.error]} />
-      <Card>
-        <CardHeader className="gap-4 md:flex-row md:items-center md:justify-between">
-          <div className="min-w-0 flex-1">
-            <ScopeTrail
-              onClear={() => onCatalogScopeChange(null)}
-              onSelectCategory={(category) => onCatalogScopeChange({
-                category,
-                includeSubcategories: true,
-              })}
-              scope={catalogScope}
-            />
-          </div>
-          <div className="relative w-full md:w-80">
-            <Search className="absolute left-3 top-2.5 size-4 text-muted-foreground" />
-            <Input
-              className="pl-9"
-              onChange={(event) => setSearch(event.target.value)}
-              placeholder="Search catalog"
-              value={search}
-            />
-          </div>
-        </CardHeader>
-        <CardContent>
-          {definitions.loading ? (
-            <StackedSkeleton count={8} />
-          ) : (
-            <div className="grid gap-3 md:grid-cols-2">
-              {filtered.map((definition) => (
-                <div
-                  className="rounded-lg border bg-card p-4"
-                  key={definition.id.value}
-                >
-                  <div className="flex items-start justify-between gap-4">
-                    <div className="min-w-0">
-                      <div className="truncate font-mono text-sm">{definition.name}</div>
-                      <div className="mt-1 text-muted-foreground text-sm">
-                        {definition.description ?? "No description"}
+      <PanelAggregateFrame
+        hiddenPanelIds={[...hiddenPanelIds]}
+        onPanelVisibilityChange={setCatalogPanelVisible}
+        onResetUi={resetCatalogUiToDefaults}
+        padding="tightTop"
+        panelOptions={catalogPanelOptions}
+        settingsButtonLabel="Catalog panel settings"
+        settingsDescription="Checked panels are shown on the catalog page."
+        settingsTitle="Catalog panels"
+      >
+        {isCatalogPanelVisible ? (
+          <PanelShell
+            onClose={() => setCatalogPanelVisible("catalog", false)}
+            onViewStateChange={setGridShape}
+            supportedViewStates={["detailed"]}
+            title="Catalog"
+            viewState={gridShape}
+          >
+            <div className="space-y-4">
+              <div className="gap-4 md:flex md:items-center md:justify-between">
+                <div className="min-w-0 flex-1">
+                  <ScopeTrail
+                    onClear={() => onCatalogScopeChange(null)}
+                    onSelectCategory={(category) => onCatalogScopeChange({
+                      category,
+                      includeSubcategories: true,
+                    })}
+                    scope={catalogScope}
+                  />
+                </div>
+                <div className="relative mt-4 w-full md:mt-0 md:w-80">
+                  <Search className="absolute left-3 top-2.5 size-4 text-muted-foreground" />
+                  <Input
+                    className="pl-9"
+                    onChange={(event) => setSearch(event.target.value)}
+                    placeholder="Search catalog"
+                    value={search}
+                  />
+                </div>
+              </div>
+              {definitions.loading ? (
+                <StackedSkeleton count={8} />
+              ) : (
+                <div className="grid gap-3 md:grid-cols-2">
+                  {filtered.map((definition) => (
+                    <div
+                      className="rounded-lg border bg-card p-4"
+                      key={definition.id.value}
+                    >
+                      <div className="flex items-start justify-between gap-4">
+                        <div className="min-w-0">
+                          <div className="truncate font-mono text-sm">{definition.name}</div>
+                          <div className="mt-1 text-muted-foreground text-sm">
+                            {definition.description ?? "No description"}
+                          </div>
+                        </div>
+                        <Badge variant="secondary">{definition.category ?? "Uncategorized"}</Badge>
+                      </div>
+                      <div className="mt-4 flex justify-end gap-2">
+                        <Button
+                          onClick={() => onOpenDefinition(definition.id.value, definition.name)}
+                          size="sm"
+                          variant="outline"
+                        >
+                          <Info className="size-4" />
+                          Definition
+                        </Button>
+                        <Button onClick={() => setQueueDefinition(definition)} size="sm">
+                          <Send className="size-4" />
+                          Queue
+                        </Button>
                       </div>
                     </div>
-                    <Badge variant="secondary">{definition.category ?? "Uncategorized"}</Badge>
-                  </div>
-                  <div className="mt-4 flex justify-end gap-2">
-                    <Button
-                      onClick={() => onOpenDefinition(definition.id.value, definition.name)}
-                      size="sm"
-                      variant="outline"
-                    >
-                      <Info className="size-4" />
-                      Definition
-                    </Button>
-                    <Button onClick={() => setQueueDefinition(definition)} size="sm">
-                      <Send className="size-4" />
-                      Queue
-                    </Button>
-                  </div>
+                  ))}
                 </div>
-              ))}
+              )}
             </div>
-          )}
-        </CardContent>
-      </Card>
+          </PanelShell>
+        ) : null}
+      </PanelAggregateFrame>
       <QueueDialog
         connection={connection}
         definition={queueDefinition}
@@ -603,10 +675,6 @@ export function WorkerConsoleView({
   const [pendingAction, setPendingAction] = useState<WorkAction | null>(null);
   const [actionRefreshToken, setActionRefreshToken] = useState(0);
   const [realtimeRefreshToken, setRealtimeRefreshToken] = useState(0);
-  const [executionViewOverride, setExecutionViewOverride] = useState<{
-    value: WorkerExecutionView;
-    workerId: string;
-  } | null>(null);
   const [executionLogState, setExecutionLogState] = useState<{
     entries: WorkerLogEntry[];
     workerId: string;
@@ -620,6 +688,12 @@ export function WorkerConsoleView({
     request: QueueWorkRequest;
   } | null>(null);
   const [openingCopyQueue, setOpeningCopyQueue] = useState(false);
+  const [hiddenPanelIds, setHiddenPanelIds] = useState<ReadonlySet<WorkerDetailPanelId>>(() => new Set());
+  const [workerControlsPanelViewState, setWorkerControlsPanelViewState] = useState<WorkComponentShape>("compact");
+  const [workerLogsPanelViewState, setWorkerLogsPanelViewState] = useState<WorkComponentShape>("compact");
+  const [workerDurationPanelViewState, setWorkerDurationPanelViewState] = useState<WorkComponentShape>("standard");
+  const [workerTimelinePanelViewState, setWorkerTimelinePanelViewState] = useState<WorkComponentShape>("detailed");
+  const initializedWorkerPanelsRef = useRef<string | null>(null);
   const realtimeEnabled = Boolean(connection.realtimeHubPath);
   const workerViewRequest = useMemo(
     () => ({
@@ -716,9 +790,6 @@ export function WorkerConsoleView({
     ]
   );
   const defaultsToTimeline = worker ? shouldDefaultToTimeline(worker) : false;
-  const executionView = executionViewOverride?.workerId === workerId
-    ? executionViewOverride.value
-    : defaultsToTimeline ? "timeline" : "logs";
   const retryTimelineState = useMemo<WorkerRetryTimelineState | null>(
     () => {
       if (worker?.state === "Retrying") {
@@ -782,6 +853,10 @@ export function WorkerConsoleView({
       currentIteration?.logs ?? []
     ),
     [currentIteration?.logs, primaryIteration?.logs]
+  );
+  const timelineIterations = useMemo(
+    () => getTimelineIterations(worker?.iterations, timelineIteration),
+    [timelineIteration, worker?.iterations]
   );
   const terminalFailure = worker?.state === "Failed"
     ? getWorkerFailureDetails(worker, latestIteration)
@@ -944,14 +1019,6 @@ export function WorkerConsoleView({
     id: "worker-console",
   });
 
-  const handleExecutionViewChange = (value: string) => {
-    if (value !== "logs" && value !== "timeline" && value !== "inspector") {
-      return;
-    }
-
-    setExecutionViewOverride({ value, workerId });
-  };
-
   const executeAction = async (action: WorkAction) => {
     const current = worker;
     if (!current) {
@@ -989,62 +1056,75 @@ export function WorkerConsoleView({
     }
   };
 
-  return (
-    <ConsolePageLayout reserveToolbar>
-      {realtimePayloadWindow}
-      {snapshot.loading && <StackedSkeleton count={8} />}
-      {snapshot.error && (
-        <ErrorBanner key={snapshot.error} message={snapshot.error} title="Unable to load worker" />
-      )}
-      {worker && (
-        <div className="relative flex min-h-0 flex-1 flex-col gap-6">
-          {actionFeedback?.tone === "success" && (
-            <div className="pointer-events-none absolute bottom-4 right-4 z-10 w-full max-w-md">
-              <div className="pointer-events-auto">
-                <FeedbackBanner
-                  key={actionFeedback.message}
-                  message={actionFeedback.message}
-                  onDismiss={() => setActionFeedback(undefined)}
-                  title="Action result"
-                  tone={actionFeedback.tone}
-                />
-              </div>
-            </div>
-          )}
-          {actionFeedback && actionFeedback.tone !== "success" && (
-            <FeedbackBanner
-              key={actionFeedback.message}
-              message={actionFeedback.message}
-              onDismiss={() => setActionFeedback(undefined)}
-              title="Action result"
-              tone={actionFeedback.tone}
-            />
-          )}
-          {terminalFailure && executionView !== "timeline" && (
-            <WorkerFailureBanner
-              key={`${worker.id.value}:${worker.stateSequence}:failed`}
-              details={terminalFailure}
-              now={relativeNow}
-            />
-          )}
+  const setWorkerPanelVisible = useCallback((panelId: WorkerDetailPanelId, visible: boolean) => {
+    setHiddenPanelIds((current) => {
+      const next = new Set(current);
+      if (visible) {
+        next.delete(panelId);
+      } else {
+        next.add(panelId);
+      }
+      return next;
+    });
+  }, []);
 
-          <div className="min-h-0 flex-1">
-            <ConsolePanelSurface className="flex h-full min-h-0 flex-col">
-              <Tabs
-                className="flex min-h-0 flex-1 flex-col gap-0"
-                onValueChange={handleExecutionViewChange}
-                value={executionView}
-              >
-                <ConsolePanelHeader className={consolePanelSectionGapClassName}>
-                  <div className={`flex min-w-0 flex-1 flex-wrap items-center ${consolePanelClusterGapClassName}`}>
-                    <WorkerStatusBadge now={relativeNow} worker={worker} />
-                    <TabsList className="flex h-auto min-w-0 flex-wrap justify-start">
-                      <TabsTrigger value="logs">Logs</TabsTrigger>
-                      <TabsTrigger value="timeline">Timeline</TabsTrigger>
-                      <TabsTrigger value="inspector">Inspector</TabsTrigger>
-                    </TabsList>
-                  </div>
-                  <div className={`ml-auto flex flex-wrap items-center justify-end ${consolePanelActionGapClassName}`}>
+  useEffect(() => {
+    if (!worker || initializedWorkerPanelsRef.current === workerId) {
+      return;
+    }
+
+    setHiddenPanelIds(createDefaultWorkerHiddenPanels());
+    setWorkerControlsPanelViewState("compact");
+    setWorkerLogsPanelViewState(defaultsToTimeline ? "compact" : "detailed");
+    setWorkerDurationPanelViewState("standard");
+    setWorkerTimelinePanelViewState(defaultsToTimeline ? "detailed" : "compact");
+    initializedWorkerPanelsRef.current = workerId;
+  }, [defaultsToTimeline, worker, workerId]);
+
+  const resetWorkerUiToDefaults = useCallback(() => {
+    setHiddenPanelIds(createDefaultWorkerHiddenPanels());
+    setWorkerControlsPanelViewState("compact");
+    setWorkerLogsPanelViewState(defaultsToTimeline ? "compact" : "detailed");
+    setWorkerDurationPanelViewState("standard");
+    setWorkerTimelinePanelViewState(defaultsToTimeline ? "detailed" : "compact");
+  }, [defaultsToTimeline]);
+
+  return (
+    <ConsolePageLayout>
+      {realtimePayloadWindow}
+      <PanelAggregateFrame
+        hiddenPanelIds={[...hiddenPanelIds]}
+        onPanelVisibilityChange={setWorkerPanelVisible}
+        onResetUi={resetWorkerUiToDefaults}
+        padding="tightTop"
+        panelOptions={workerPanelOptions}
+        settingsButtonLabel="Worker panel settings"
+        settingsDescription="Checked panels are shown on the worker details page."
+        settingsTitle="Worker panels"
+      >
+        {snapshot.loading && <StackedSkeleton count={8} />}
+        {snapshot.error && !worker && (
+          <ErrorBanner key={snapshot.error} message={snapshot.error} title="Unable to load worker" />
+        )}
+        {worker && (
+          <div className="relative flex min-h-0 flex-1 flex-col gap-6">
+            {actionFeedback?.tone === "success" && (
+              <div className="pointer-events-none absolute bottom-4 right-4 z-10 w-full max-w-md">
+                <div className="pointer-events-auto">
+                  <FeedbackBanner
+                    key={actionFeedback.message}
+                    message={actionFeedback.message}
+                    onDismiss={() => setActionFeedback(undefined)}
+                    title="Action result"
+                    tone={actionFeedback.tone}
+                  />
+                </div>
+              </div>
+            )}
+            {!hiddenPanelIds.has("workerControls") ? (
+              <PanelShell
+                leadingActions={(
+                  <div className={`flex flex-wrap items-center ${consolePanelActionGapClassName}`}>
                     <WorkerActionButton
                       action="Start"
                       disabled={pendingAction !== null || !availableActions.Start}
@@ -1074,9 +1154,7 @@ export function WorkerConsoleView({
                     <Tooltip delayDuration={250}>
                       <TooltipTrigger asChild>
                         <Button
-                          className={openingCopyQueue
-                            ? "border-violet-500/50 bg-violet-500/10 text-violet-700 dark:text-violet-300"
-                            : "border-violet-500/50 bg-violet-500/10 text-violet-700 hover:bg-violet-500/20 hover:text-violet-800 dark:text-violet-300 dark:hover:text-violet-200"}
+                          className={workerActionToneClassName("Start", pendingAction !== null || openingCopyQueue || !worker)}
                           disabled={pendingAction !== null || openingCopyQueue || !worker}
                           onClick={() => void openCopyQueueDialog()}
                           size="sm"
@@ -1098,56 +1176,79 @@ export function WorkerConsoleView({
                       tooltip="Remove this completed or canceled worker from retained history."
                     />
                   </div>
-                </ConsolePanelHeader>
-                <ConsolePanelBody className="flex min-h-0 flex-1 flex-col space-y-4">
-                  <TabsContent className="mt-0 min-h-0 flex-1 space-y-4" value="logs">
-                    <WorkerLogStreamCard
-                      connectionError={realtimeWorker.error}
-                      entries={executionLogs}
-                      hasActiveIteration={hasActiveIteration}
-                    />
-                  </TabsContent>
-                  <TabsContent className="mt-0 min-h-0 flex-1 space-y-4" value="timeline">
-                    <WorkerExecutionTimelineCard
-                      items={timelineItems}
-                      iterations={getTimelineIterations(worker?.iterations, timelineIteration)}
-                      now={relativeNow}
-                    />
-                  </TabsContent>
-                  <TabsContent className="mt-0 min-h-0 flex-1 space-y-4" value="inspector">
-                    <Tabs className="flex min-h-0 flex-1 flex-col gap-4" defaultValue="payload">
-                      <TabsList className="flex h-auto w-full shrink-0 flex-wrap justify-start">
-                        <TabsTrigger value="payload">Payload</TabsTrigger>
-                        <TabsTrigger value="history">History</TabsTrigger>
-                        <TabsTrigger value="raw">Raw</TabsTrigger>
-                      </TabsList>
-                      <TabsContent className="mt-0 min-h-0 flex-1" value="payload">
-                        <div className="grid max-h-full gap-4 overflow-auto pr-1 xl:grid-cols-2">
-                          <WorkDataCard data={worker.input} label="Input" />
-                          <WorkDataCard data={worker.output} label="Output" />
-                        </div>
-                      </TabsContent>
-                      <TabsContent className="mt-0 min-h-0 flex-1" value="history">
-                        <div className="grid max-h-full gap-4 overflow-auto pr-1 xl:grid-cols-2">
-                          <SnapshotBlock label="Messages" value={worker.messages} />
-                          <SnapshotBlock label="Action History" value={worker.actionHistory} />
-                          <SnapshotBlock label="Iterations" value={worker.iterations} />
-                        </div>
-                      </TabsContent>
-                      <TabsContent className="mt-0 min-h-0 flex-1" value="raw">
-                        <div className="grid max-h-full gap-4 overflow-auto pr-1 xl:grid-cols-2">
-                          <SnapshotBlock label="Profile" value={worker.profile} />
-                          <SnapshotBlock label="Version" value={worker.version} />
-                        </div>
-                      </TabsContent>
-                    </Tabs>
-                  </TabsContent>
-                </ConsolePanelBody>
-              </Tabs>
-            </ConsolePanelSurface>
+                )}
+                contentClassName={workerControlsPanelViewState === "compact" ? "hidden" : "space-y-4"}
+                onClose={() => setWorkerPanelVisible("workerControls", false)}
+                onViewStateChange={setWorkerControlsPanelViewState}
+                supportedViewStates={["compact", "standard"]}
+                title={<WorkerStatusBadge now={relativeNow} worker={worker} />}
+                viewState={workerControlsPanelViewState}
+              >
+                <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+                  <MetadataItem label="Created on" value={formatDateTime(worker.createdAt)} />
+                  <MetadataItem label="Created by" value={getWorkerCreatedByLabel(worker)} />
+                  <MetadataItem label="Type" value={worker.input?.clrType ?? worker.input?.contentType ?? "Unknown"} />
+                  <MetadataItem label="Definition" value={worker.definitionName} />
+                </div>
+                <WorkDataCard data={worker.input} label="Input" />
+              </PanelShell>
+            ) : null}
+            {terminalFailure ? (
+              <WorkerFailureBanner
+                key={`${worker.id.value}:${worker.stateSequence}:failed`}
+                details={terminalFailure}
+                now={relativeNow}
+              />
+            ) : null}
+            {snapshot.error && (
+              <ErrorBanner key={snapshot.error} message={snapshot.error} title="Unable to load worker" />
+            )}
+            {actionFeedback && actionFeedback.tone !== "success" && (
+              <FeedbackBanner
+                key={actionFeedback.message}
+                message={actionFeedback.message}
+                onDismiss={() => setActionFeedback(undefined)}
+                title="Action result"
+                tone={actionFeedback.tone}
+              />
+            )}
+            {!hiddenPanelIds.has("workerDuration") ? (
+              <PanelShell
+                onClose={() => setWorkerPanelVisible("workerDuration", false)}
+                onViewStateChange={setWorkerDurationPanelViewState}
+                supportedViewStates={["standard"]}
+                title="Recent Iterations"
+                viewState={workerDurationPanelViewState}
+              >
+                <IterationDurationGraph iterations={timelineIterations} now={relativeNow} />
+                {timelineIterations.length <= 1 ? (
+                  <EmptyListState message="At least two iteration points are needed to draw the duration chart." />
+                ) : null}
+              </PanelShell>
+            ) : null}
+            {!hiddenPanelIds.has("workerLogs") ? (
+              <WorkerLogPanel
+                connectionError={realtimeWorker.error}
+                entries={executionLogs}
+                hasActiveIteration={hasActiveIteration}
+                onClose={() => setWorkerPanelVisible("workerLogs", false)}
+                onViewStateChange={setWorkerLogsPanelViewState}
+                viewState={workerLogsPanelViewState}
+              />
+            ) : null}
+
+            {!hiddenPanelIds.has("workerTimeline") ? (
+              <WorkerTimelinePanel
+                items={timelineItems}
+                now={relativeNow}
+                onClose={() => setWorkerPanelVisible("workerTimeline", false)}
+                onViewStateChange={setWorkerTimelinePanelViewState}
+                viewState={workerTimelinePanelViewState}
+              />
+            ) : null}
           </div>
-        </div>
-      )}
+        )}
+      </PanelAggregateFrame>
       <QueueDialog
         connection={connection}
         definition={copyQueueDialog?.definition ?? null}
@@ -1980,25 +2081,12 @@ function workerStatusTextTone(state: WorkerState) {
   }
 }
 
-function workerActionToneClassName(action: WorkAction, disabled: boolean) {
+function workerActionToneClassName(_action: WorkAction, disabled: boolean) {
   if (disabled) {
     return "";
   }
 
-  switch (action) {
-    case "Start":
-      return "border-emerald-500/50 bg-emerald-500/10 text-emerald-700 hover:bg-emerald-500/20 hover:text-emerald-800 dark:text-emerald-300 dark:hover:text-emerald-200";
-    case "Pause":
-      return "border-amber-500/50 bg-amber-500/10 text-amber-700 hover:bg-amber-500/20 hover:text-amber-800 dark:text-amber-300 dark:hover:text-amber-200";
-    case "Cancel":
-      return "border-red-500/50 bg-red-500/10 text-red-700 hover:bg-red-500/20 hover:text-red-800 dark:text-red-300 dark:hover:text-red-200";
-    case "Push":
-      return "border-sky-500/50 bg-sky-500/10 text-sky-700 hover:bg-sky-500/20 hover:text-sky-800 dark:text-sky-300 dark:hover:text-sky-200";
-    case "Purge":
-      return "border-slate-500/50 bg-slate-500/10 text-slate-700 hover:bg-slate-500/20 hover:text-slate-800 dark:text-slate-300 dark:hover:text-slate-200";
-    default:
-      return "";
-  }
+  return "border-border bg-muted/20 text-foreground hover:bg-muted/35";
 }
 
 function SnapshotBlock({ label, value }: { label: string; value: unknown }) {
@@ -2220,16 +2308,19 @@ type WorkerTimelineRow =
     item: WorkerTimelineItem;
   };
 
-function WorkerExecutionTimelineCard({
+function WorkerTimelinePanel({
   items,
-  iterations,
   now,
+  onClose,
+  onViewStateChange,
+  viewState,
 }: {
   items: WorkerTimelineItem[];
-  iterations: WorkerIterationSnapshot[];
   now: number;
+  onClose: () => void;
+  onViewStateChange: (shape: WorkComponentShape) => void;
+  viewState: WorkComponentShape;
 }) {
-  const [filtersOpen, setFiltersOpen] = useState(false);
   const [pausedItems, setPausedItems] = useState<WorkerTimelineItem[] | null>(null);
   const [sortDirection, setSortDirection] = useState<WorkerSortDirection>("desc");
   const [selectedFilters, setSelectedFilters] = useState<Set<WorkerTimelineFilterKind>>(
@@ -2284,20 +2375,20 @@ function WorkerExecutionTimelineCard({
       0
     );
   }, [currentFilteredItems, pausedItems, visibleItems]);
-  const toggleFilter = (filterKind: WorkerTimelineFilterKind) => {
+  const togglePause = () => {
+    setPausedItems((current) => current ? null : items);
+  };
+  const setFilterSelected = (filterKind: WorkerTimelineFilterKind, selected: boolean) => {
     setSelectedFilters((current) => {
       const next = new Set(current);
-      if (next.has(filterKind)) {
-        next.delete(filterKind);
-      } else {
+      if (selected) {
         next.add(filterKind);
+      } else {
+        next.delete(filterKind);
       }
 
       return next;
     });
-  };
-  const togglePause = () => {
-    setPausedItems((current) => current ? null : items);
   };
 
   useLayoutEffect(() => {
@@ -2323,103 +2414,66 @@ function WorkerExecutionTimelineCard({
   }, [visibleRows]);
 
   return (
-    <section className="flex h-full min-h-0 flex-col rounded-xl border bg-muted/10 p-4">
-      <IterationDurationGraph iterations={iterations} now={now} />
-      <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
-        <div className="flex flex-wrap items-center gap-2">
-          <Button
-            aria-label={filtersActive ? `Filter timeline, ${normalizedSelectedFilters.size} active` : "Filter timeline"}
-            className={`h-8 px-2 ${filtersActive || filtersOpen ? "border-sky-500/30 bg-sky-500/10 text-sky-700 dark:text-sky-200" : ""}`}
-            onClick={() => setFiltersOpen((current) => !current)}
-            size="sm"
-            title={filtersActive ? "Adjust timeline filters" : "Filter timeline"}
-            type="button"
-            variant="outline"
-          >
-            <ListFilter className="size-3.5" />
-            {filtersActive ? (
-              <span className="font-mono text-[11px]">{normalizedSelectedFilters.size}</span>
-            ) : null}
-          </Button>
-          <Button
-            className="h-8 px-2"
-            onClick={togglePause}
-            size="sm"
-            title={isPaused ? "Resume the timeline stream" : "Pause the timeline stream from updating"}
-            type="button"
-            variant="outline"
-          >
-            {isPaused ? <Play className="size-3.5" /> : <Pause className="size-3.5" />}
-            <span className="sr-only">{isPaused ? "Resume timeline stream" : "Pause timeline stream"}</span>
-          </Button>
-          <Button
-            className="h-8 px-2"
-            onClick={() => setSortDirection((current) => current === "desc" ? "asc" : "desc")}
-            size="sm"
-            title={sortDirection === "desc" ? "Show oldest timeline items first" : "Show newest timeline items first"}
-            type="button"
-            variant="outline"
-          >
-            {sortDirection === "desc"
-              ? <ArrowDownWideNarrow className="size-3.5" />
-              : <ArrowUpNarrowWide className="size-3.5" />}
-            <span className="sr-only">
-              {sortDirection === "desc" ? "Show oldest timeline items first" : "Show newest timeline items first"}
-            </span>
-          </Button>
-        </div>
-        <div className="flex flex-wrap items-center gap-2">
+    <PanelShell
+      contentClassName={viewState === "compact" ? "hidden" : "space-y-4"}
+      actions={(
+        <WorkerTimelinePanelActions
+          isPaused={isPaused}
+          onTogglePause={togglePause}
+          onToggleSortDirection={() => setSortDirection((current) => current === "desc" ? "asc" : "desc")}
+          sortDirection={sortDirection}
+        />
+      )}
+      filterControl={viewState === "detailed"
+        ? {
+            activeCount: filtersActive ? normalizedSelectedFilters.size : 0,
+            content: (
+              <WorkerTimelineFilterContent
+                onClearFilters={() => setSelectedFilters(new Set(workerTimelineFilterKinds))}
+                onSetFilterSelected={setFilterSelected}
+                selectedFilters={normalizedSelectedFilters}
+              />
+            ),
+            label: "Filter timeline",
+          }
+        : undefined}
+      onClose={onClose}
+      onViewStateChange={onViewStateChange}
+      supportedViewStates={["compact", "detailed"]}
+      title="Iteration Timeline"
+      viewState={viewState}
+    >
+      <section className="flex h-full min-h-0 flex-col rounded-xl border bg-muted/10 p-4">
+        <div className="mb-4 flex flex-wrap items-center justify-end gap-2">
           {isPaused && pendingPausedCount > 0 ? (
             <Badge className="border-amber-500/30 bg-amber-500/10 text-amber-800 dark:text-amber-100" variant="outline">
               {pendingPausedCount} buffered
             </Badge>
           ) : null}
         </div>
-      </div>
-      {(filtersOpen || filtersActive) ? (
-        <div className="mb-4 flex flex-wrap gap-2">
-          {workerTimelineFilterKinds.map((filterKind) => {
-            const isActive = normalizedSelectedFilters.has(filterKind);
-            return (
-              <button
-                className={`rounded-full border px-2.5 py-1 font-mono text-[11px] transition-colors ${
-                  isActive
-                    ? workerTimelineFilterTone(filterKind)
-                    : "border-border bg-muted/30 text-muted-foreground"
-                }`}
-                key={filterKind}
-                onClick={() => toggleFilter(filterKind)}
-                type="button"
-              >
-                {workerTimelineFilterLabel(filterKind)}
-              </button>
-            );
-          })}
-        </div>
-      ) : null}
-      {visibleItems.length === 0 ? (
-        <EmptyListState
-          message={filtersActive
-            ? "No retained timeline events match the current filters."
-            : "No retained timeline events yet."}
-        />
-      ) : (
-        <div
-          className="min-h-0 flex-1 overflow-auto rounded-xl border bg-background/60 p-4"
-          onScroll={(event) => {
-            scrollAnchorRef.current = captureTimelineScrollAnchor(
-              visibleRows,
-              event.currentTarget,
-              rowRefs.current
-            );
-          }}
-          ref={scrollRef}
-        >
-          <div className="space-y-0">
-            {visibleRows.map((row, index) => {
-              if (row.kind === "gap") {
-                const gapLabel = row.liveSinceAt
-                  ? formatMillisecondsCompact(Math.max(0, now - parseTimelineTimestamp(row.liveSinceAt)))
+        {visibleItems.length === 0 ? (
+          <EmptyListState
+            message={filtersActive
+              ? "No retained timeline events match the current filters."
+              : "No retained timeline events yet."}
+          />
+        ) : (
+          <div
+            className="min-h-0 flex-1 overflow-auto rounded-xl border bg-background/60 p-4"
+            onScroll={(event) => {
+              scrollAnchorRef.current = captureTimelineScrollAnchor(
+                visibleRows,
+                event.currentTarget,
+                rowRefs.current
+              );
+            }}
+            ref={scrollRef}
+          >
+            <div className="space-y-0">
+              {visibleRows.map((row, index) => {
+                if (row.kind === "gap") {
+                  const gapLabel = row.liveSinceAt
+                    ? formatMillisecondsCompact(Math.max(0, now - parseTimelineTimestamp(row.liveSinceAt)))
                   : formatMillisecondsCompact(row.milliseconds);
                 return (
                   <div
@@ -2452,27 +2506,27 @@ function WorkerExecutionTimelineCard({
               const itemTitle = renderTimelineItemTitle(item, now);
               const itemDescription = renderTimelineItemDescription(item, now);
 
-              return (
-                <div
-                  className="grid grid-cols-[2.5rem_minmax(0,1fr)] gap-3"
-                  key={item.id}
-                  ref={(node) => {
-                    if (node) {
-                      rowRefs.current.set(item.id, node);
-                    } else {
-                      rowRefs.current.delete(item.id);
-                    }
-                  }}
-                >
-                  <div className="relative flex justify-center">
-                    {!isLast && (
-                      <span className="absolute top-9 bottom-0 w-px bg-border/80" />
-                    )}
-                    <span className={`mt-1 flex size-8 items-center justify-center rounded-full border ${timelineIconTone(item)}`}>
-                      <Icon className="size-4" />
-                    </span>
-                  </div>
-                  <div className="pb-6 last:pb-0">
+                return (
+                  <div
+                    className="grid grid-cols-[2.5rem_minmax(0,1fr)] gap-3"
+                    key={item.id}
+                    ref={(node) => {
+                      if (node) {
+                        rowRefs.current.set(item.id, node);
+                      } else {
+                        rowRefs.current.delete(item.id);
+                      }
+                    }}
+                  >
+                    <div className="relative flex justify-center">
+                      {!isLast && (
+                        <span className="absolute top-9 bottom-0 w-px bg-border/80" />
+                      )}
+                      <span className={`mt-1 flex size-8 items-center justify-center rounded-full border ${timelineIconTone(item)}`}>
+                        <Icon className="size-4" />
+                      </span>
+                    </div>
+                    <div className="pb-6 last:pb-0">
                       <div className="rounded-xl border bg-background/80 p-4 shadow-sm">
                         <div className="flex flex-wrap items-start justify-between gap-3">
                           <div className="min-w-0">
@@ -2532,13 +2586,97 @@ function WorkerExecutionTimelineCard({
                       ) : null}
                     </div>
                   </div>
-                </div>
-              );
-            })}
+                  </div>
+                );
+              })}
+            </div>
           </div>
-        </div>
-      )}
-    </section>
+        )}
+      </section>
+    </PanelShell>
+  );
+}
+
+function WorkerTimelineFilterContent({
+  onClearFilters,
+  onSetFilterSelected,
+  selectedFilters,
+}: {
+  onClearFilters: () => void;
+  onSetFilterSelected: (filterKind: WorkerTimelineFilterKind, selected: boolean) => void;
+  selectedFilters: ReadonlySet<WorkerTimelineFilterKind>;
+}) {
+  return (
+    <>
+      <div className="flex items-center justify-between border-b px-3 py-2">
+        <span className="font-medium text-sm">Timeline filters</span>
+        <Button
+          className="h-7 px-2 text-xs"
+          onClick={onClearFilters}
+          size="sm"
+          variant="ghost"
+        >
+          All
+        </Button>
+      </div>
+      <div className="space-y-1 p-2">
+        {workerTimelineFilterKinds.map((filterKind) => {
+          const selected = selectedFilters.has(filterKind);
+
+          return (
+            <label
+              className="flex cursor-pointer items-center gap-3 rounded-md px-2 py-2 transition-colors hover:bg-accent/40"
+              key={filterKind}
+            >
+              <input
+                checked={selected}
+                className="size-4 accent-primary"
+                onChange={(event) => onSetFilterSelected(filterKind, event.currentTarget.checked)}
+                type="checkbox"
+              />
+              <span className={`inline-flex rounded-full border px-2 py-0.5 font-mono text-[11px] ${workerTimelineFilterTone(filterKind)}`}>
+                {workerTimelineFilterLabel(filterKind)}
+              </span>
+            </label>
+          );
+        })}
+      </div>
+    </>
+  );
+}
+
+function WorkerTimelinePanelActions({
+  isPaused,
+  onTogglePause,
+  onToggleSortDirection,
+  sortDirection,
+}: {
+  isPaused: boolean;
+  onTogglePause: () => void;
+  onToggleSortDirection: () => void;
+  sortDirection: WorkerSortDirection;
+}) {
+  return (
+    <>
+      <ToolbarIconButton
+        label={isPaused ? "Resume timeline stream" : "Pause timeline stream"}
+        onClick={onTogglePause}
+        type="button"
+        tooltip={isPaused ? "Resume the timeline stream" : "Pause the timeline stream from updating"}
+      >
+        {isPaused ? <Play className="size-3.5" /> : <Pause className="size-3.5" />}
+      </ToolbarIconButton>
+      <ToolbarIconButton
+        label={sortDirection === "desc" ? "Show oldest timeline items first" : "Show newest timeline items first"}
+        onClick={onToggleSortDirection}
+        type="button"
+        tooltip={sortDirection === "desc" ? "Show oldest timeline items first" : "Show newest timeline items first"}
+      >
+        {sortDirection === "desc"
+          ? <ArrowDownWideNarrow className="size-3.5" />
+          : <ArrowUpNarrowWide className="size-3.5" />}
+      </ToolbarIconButton>
+    </>
   );
 }
 
@@ -2619,10 +2757,6 @@ function IterationDurationGraph({
 
   return (
     <div className="mb-4 rounded-xl border bg-background/60 p-3">
-      <div className="mb-2 flex items-center justify-between gap-2 text-[11px] text-muted-foreground">
-        <span className="font-mono uppercase tracking-[0.2em]">Iteration durations</span>
-        <span className="font-mono">oldest -&gt; newest</span>
-      </div>
       <div className="flex items-stretch gap-3">
         <div className="flex h-24 w-14 shrink-0 flex-col justify-between py-2 text-right font-mono text-[11px] text-muted-foreground">
           <span>{maxLabel}</span>
@@ -2682,18 +2816,22 @@ function IterationDurationGraph({
   );
 }
 
-function WorkerLogStreamCard({
+function WorkerLogPanel({
   connectionError,
   entries,
   hasActiveIteration,
+  onClose,
+  onViewStateChange,
+  viewState,
 }: {
   connectionError?: string;
   entries: WorkerLogEntry[];
   hasActiveIteration: boolean;
+  onClose: () => void;
+  onViewStateChange: (shape: WorkComponentShape) => void;
+  viewState: WorkComponentShape;
 }) {
-  const scrollRef = useRef<HTMLDivElement | null>(null);
   const [hiddenLevels, setHiddenLevels] = useState<Set<string>>(() => new Set());
-  const [filtersOpen, setFiltersOpen] = useState(false);
   const [pausedEntries, setPausedEntries] = useState<WorkerLogEntry[] | null>(null);
   const [sortDirection, setSortDirection] = useState<WorkerSortDirection>("desc");
   const sortedEntries = useMemo(
@@ -2725,19 +2863,36 @@ function WorkerLogStreamCard({
     );
   }, [filteredEntries, pausedEntries, visibleEntries]);
   const clientEntryCount = sortedEntries.length;
-
-  useEffect(() => {
-    if (hasActiveIteration && !isPaused && scrollRef.current) {
-      scrollRef.current.scrollTop = 0;
-    }
-  }, [hasActiveIteration, isPaused, visibleEntries.length]);
   const filtersActive = hiddenLevels.size > 0;
+  const selectedLevelCount = filtersActive
+    ? availableLevels.filter((level) => !hiddenLevels.has(normalizeLogLevel(level))).length
+    : 0;
+  const summary = useMemo(
+    () => summarizeWorkerLogEntries(entries),
+    [entries]
+  );
+  const title = useMemo(
+    () => (
+      <WorkerLogPanelTitle
+        onSelectLevel={(level) => {
+          setHiddenLevels(createHiddenLogLevelsForFocus(availableLevels, level));
+          onViewStateChange("detailed");
+        }}
+        summary={summary}
+        viewState={viewState}
+      />
+    ),
+    [availableLevels, onViewStateChange, summary, viewState]
+  );
 
-  const toggleLevel = (level: string) => {
+  const togglePause = () => {
+    setPausedEntries((current) => current ? null : sortedEntries);
+  };
+  const setLevelVisible = (level: string, visible: boolean) => {
     const normalizedLevel = normalizeLogLevel(level);
     setHiddenLevels((current) => {
       const next = new Set(current);
-      if (next.has(normalizedLevel)) {
+      if (visible) {
         next.delete(normalizedLevel);
       } else {
         next.add(normalizedLevel);
@@ -2747,55 +2902,245 @@ function WorkerLogStreamCard({
     });
   };
 
-  const togglePause = () => {
-    setPausedEntries((current) => current ? null : sortedEntries);
+  return (
+    <PanelShell
+      contentClassName={viewState === "compact"
+        ? connectionError && hasActiveIteration
+          ? "space-y-3"
+          : "hidden"
+        : "space-y-4"}
+      filterControl={viewState === "detailed"
+        ? {
+            activeCount: selectedLevelCount,
+            content: (
+              <WorkerLogFilterContent
+                availableLevels={availableLevels}
+                hiddenLevels={hiddenLevels}
+                onClearFilters={() => setHiddenLevels(new Set())}
+                onSetLevelVisible={setLevelVisible}
+              />
+            ),
+            label: "Filter log levels",
+          }
+        : undefined}
+      actions={viewState === "detailed" ? (
+        <WorkerLogPanelActions
+          isPaused={isPaused}
+          onTogglePause={togglePause}
+          onToggleSortDirection={() => setSortDirection((current) => current === "desc" ? "asc" : "desc")}
+          sortDirection={sortDirection}
+        />
+      ) : null}
+      onClose={onClose}
+      onViewStateChange={onViewStateChange}
+      supportedViewStates={["compact", "detailed"]}
+      title={title}
+      viewState={viewState}
+    >
+      <WorkerLogStreamCard
+        clientEntryCount={clientEntryCount}
+        connectionError={connectionError}
+        hasActiveIteration={hasActiveIteration}
+        isPaused={isPaused}
+        pendingPausedCount={pendingPausedCount}
+        viewState={viewState}
+        visibleEntries={visibleEntries}
+      />
+    </PanelShell>
+  );
+}
+
+function WorkerLogPanelTitle({
+  onSelectLevel,
+  summary,
+  viewState,
+}: {
+  onSelectLevel: (level: "Error" | "Information" | "Warning") => void;
+  summary: {
+    errors: number;
+    information: number;
+    total: number;
+    warnings: number;
   };
+  viewState: WorkComponentShape;
+}) {
+  return (
+    <>
+      <span>Logs</span>
+      {viewState === "compact" ? (
+        <>
+          <LogSummaryPill
+            count={summary.errors}
+            label="Errors"
+            onClick={() => onSelectLevel("Error")}
+            tone={logLevelFilterTone("Error")}
+          />
+          <LogSummaryPill
+            count={summary.warnings}
+            label="Warnings"
+            onClick={() => onSelectLevel("Warning")}
+            tone={logLevelFilterTone("Warning")}
+          />
+          <LogSummaryPill
+            count={summary.information}
+            label="Info"
+            onClick={() => onSelectLevel("Information")}
+            tone={logLevelFilterTone("Information")}
+          />
+        </>
+      ) : null}
+    </>
+  );
+}
+
+function LogSummaryPill({
+  count,
+  label,
+  onClick,
+  tone,
+}: {
+  count: number;
+  label: string;
+  onClick: () => void;
+  tone: string;
+}) {
+  return (
+    <button
+      className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1 font-mono text-xs transition-colors ${tone}`}
+      onClick={onClick}
+      type="button"
+    >
+      <span>{label}</span>
+      <span>{count}</span>
+    </button>
+  );
+}
+
+function WorkerLogFilterContent({
+  availableLevels,
+  hiddenLevels,
+  onClearFilters,
+  onSetLevelVisible,
+}: {
+  availableLevels: string[];
+  hiddenLevels: ReadonlySet<string>;
+  onClearFilters: () => void;
+  onSetLevelVisible: (level: string, visible: boolean) => void;
+}) {
+  return (
+    <>
+      <div className="flex items-center justify-between border-b px-3 py-2">
+        <span className="font-medium text-sm">Log levels</span>
+        <Button
+          className="h-7 px-2 text-xs"
+          onClick={onClearFilters}
+          size="sm"
+          variant="ghost"
+        >
+          All
+        </Button>
+      </div>
+      <div className="space-y-1 p-2">
+        {availableLevels.map((level) => {
+          const visible = !hiddenLevels.has(normalizeLogLevel(level));
+
+          return (
+            <label
+              className="flex cursor-pointer items-center gap-3 rounded-md px-2 py-2 transition-colors hover:bg-accent/40"
+              key={level}
+            >
+              <input
+                checked={visible}
+                className="size-4 accent-primary"
+                onChange={(event) => onSetLevelVisible(level, event.currentTarget.checked)}
+                type="checkbox"
+              />
+              <span className={`inline-flex rounded-full border px-2 py-0.5 font-mono text-[11px] ${logLevelFilterTone(level)}`}>
+                {level}
+              </span>
+            </label>
+          );
+        })}
+      </div>
+    </>
+  );
+}
+
+function WorkerLogPanelActions({
+  isPaused,
+  onTogglePause,
+  onToggleSortDirection,
+  sortDirection,
+}: {
+  isPaused: boolean;
+  onTogglePause: () => void;
+  onToggleSortDirection: () => void;
+  sortDirection: WorkerSortDirection;
+}) {
+  return (
+    <>
+      <ToolbarIconButton
+        label={isPaused ? "Resume log stream" : "Pause log stream"}
+        onClick={onTogglePause}
+        type="button"
+        tooltip={isPaused ? "Resume the log stream" : "Pause the log stream from updating"}
+      >
+        {isPaused ? <Play className="size-3.5" /> : <Pause className="size-3.5" />}
+      </ToolbarIconButton>
+      <ToolbarIconButton
+        label={sortDirection === "desc" ? "Show oldest log entries first" : "Show newest log entries first"}
+        onClick={onToggleSortDirection}
+        type="button"
+        tooltip={sortDirection === "desc" ? "Show oldest log entries first" : "Show newest log entries first"}
+      >
+        {sortDirection === "desc"
+          ? <ArrowDownWideNarrow className="size-3.5" />
+          : <ArrowUpNarrowWide className="size-3.5" />}
+      </ToolbarIconButton>
+    </>
+  );
+}
+
+function WorkerLogStreamCard({
+  clientEntryCount,
+  connectionError,
+  hasActiveIteration,
+  isPaused,
+  pendingPausedCount,
+  viewState,
+  visibleEntries,
+}: {
+  clientEntryCount: number;
+  connectionError?: string;
+  hasActiveIteration: boolean;
+  isPaused: boolean;
+  pendingPausedCount: number;
+  viewState: WorkComponentShape;
+  visibleEntries: WorkerLogEntry[];
+}) {
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (hasActiveIteration && !isPaused && scrollRef.current) {
+      scrollRef.current.scrollTop = 0;
+    }
+  }, [hasActiveIteration, isPaused, visibleEntries.length]);
+
+  if (viewState === "compact") {
+    return (
+      <section className="flex h-full min-h-0 flex-col rounded-xl border bg-muted/10 p-4">
+        {connectionError && hasActiveIteration ? (
+          <div className="mb-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-amber-900 text-sm dark:text-amber-100">
+            {connectionError}
+          </div>
+        ) : null}
+      </section>
+    );
+  }
 
   return (
     <section className="flex h-full min-h-0 flex-col rounded-xl border bg-muted/10 p-4">
-      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-        <div className="flex flex-wrap items-center gap-2">
-          <Button
-            aria-label={filtersActive ? `Filter log levels, ${hiddenLevels.size} hidden` : "Filter log levels"}
-            className={`h-8 px-2 ${filtersActive || filtersOpen ? "border-sky-500/30 bg-sky-500/10 text-sky-700 dark:text-sky-200" : ""}`}
-            onClick={() => setFiltersOpen((current) => !current)}
-            size="sm"
-            title={filtersActive ? "Adjust hidden log levels" : "Filter log levels"}
-            type="button"
-            variant="outline"
-          >
-            <ListFilter className="size-3.5" />
-            {filtersActive ? (
-              <span className="font-mono text-[11px]">{hiddenLevels.size}</span>
-            ) : null}
-          </Button>
-          <Button
-            className="h-8 px-2"
-            onClick={togglePause}
-            size="sm"
-            title={isPaused ? "Resume the log stream" : "Pause the log stream from updating"}
-            type="button"
-            variant="outline"
-          >
-            {isPaused ? <Play className="size-3.5" /> : <Pause className="size-3.5" />}
-            <span className="sr-only">{isPaused ? "Resume log stream" : "Pause log stream"}</span>
-          </Button>
-          <Button
-            className="h-8 px-2"
-            onClick={() => setSortDirection((current) => current === "desc" ? "asc" : "desc")}
-            size="sm"
-            title={sortDirection === "desc" ? "Show oldest log entries first" : "Show newest log entries first"}
-            type="button"
-            variant="outline"
-          >
-            {sortDirection === "desc"
-              ? <ArrowDownWideNarrow className="size-3.5" />
-              : <ArrowUpNarrowWide className="size-3.5" />}
-            <span className="sr-only">
-              {sortDirection === "desc" ? "Show oldest log entries first" : "Show newest log entries first"}
-            </span>
-          </Button>
-        </div>
+      <div className="mb-3 flex flex-wrap items-center justify-end gap-2">
         <div className="flex flex-wrap items-center gap-2">
           <Badge className="border-slate-500/30 bg-slate-500/10 text-slate-700 dark:text-slate-200" variant="outline">
             {clientEntryCount}/{workerExecutionLogStreamLimit} logs
@@ -2807,27 +3152,6 @@ function WorkerLogStreamCard({
           ) : null}
         </div>
       </div>
-      {(filtersOpen || filtersActive) && availableLevels.length > 0 ? (
-        <div className="mb-3 flex flex-wrap gap-2">
-          {availableLevels.map((level) => {
-            const isHidden = hiddenLevels.has(normalizeLogLevel(level));
-            return (
-              <button
-                className={`rounded-full border px-2.5 py-1 font-mono text-[11px] transition-colors ${
-                  isHidden
-                    ? "border-border bg-muted/30 text-muted-foreground"
-                    : logLevelFilterTone(level)
-                }`}
-                key={level}
-                onClick={() => toggleLevel(level)}
-                type="button"
-              >
-                {level}
-              </button>
-            );
-          })}
-        </div>
-      ) : null}
       {connectionError && hasActiveIteration ? (
         <div className="mb-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-amber-900 text-sm dark:text-amber-100">
           {connectionError}
@@ -2842,7 +3166,7 @@ function WorkerLogStreamCard({
             <EmptyListState
               message={hasActiveIteration
                 ? "The active iteration has not emitted any log lines yet."
-                : "No retained log entries for the latest iteration."}
+                : "No logs in this view."}
             />
           </div>
         ) : (
@@ -4276,6 +4600,21 @@ function filterWorkerLogEntries(entries: WorkerLogEntry[], hiddenLevels: Set<str
   return entries.filter((entry) => !hiddenLevels.has(normalizeLogLevel(entry.level)));
 }
 
+function createHiddenLogLevelsForFocus(
+  levels: string[],
+  focusLevel: "Error" | "Information" | "Warning"
+) {
+  const allowedLevels = focusLevel === "Error"
+    ? new Set(["Critical", "Error"])
+    : new Set([focusLevel]);
+
+  return new Set(
+    levels
+      .map((level) => normalizeLogLevel(level))
+      .filter((level) => !allowedLevels.has(level))
+  );
+}
+
 function compareWorkerLogEntries(left: WorkerLogEntry, right: WorkerLogEntry) {
   const timestampDifference = Date.parse(left.occurredAt) - Date.parse(right.occurredAt);
   if (timestampDifference !== 0) {
@@ -4830,6 +5169,46 @@ function MetadataItem({ label, value }: { label: string; value: string }) {
       <div className="mt-1 break-words font-mono text-sm">{value}</div>
     </div>
   );
+}
+
+function createDefaultWorkerHiddenPanels() {
+  return new Set<WorkerDetailPanelId>();
+}
+
+function summarizeWorkerLogEntries(entries: WorkerLogEntry[]) {
+  return entries.reduce(
+    (summary, entry) => {
+      summary.total += 1;
+
+      switch (normalizeLogLevel(entry.level)) {
+        case "Critical":
+        case "Error":
+          summary.errors += 1;
+          break;
+        case "Warning":
+          summary.warnings += 1;
+          break;
+        case "Information":
+          summary.information += 1;
+          break;
+      }
+
+      return summary;
+    },
+    {
+      errors: 0,
+      information: 0,
+      total: 0,
+      warnings: 0,
+    }
+  );
+}
+
+function getWorkerCreatedByLabel(worker: WorkerSnapshot) {
+  const earliestAction = [...(worker.actionHistory ?? [])]
+    .sort((left, right) => parseTimelineTimestamp(left.occurredAt) - parseTimelineTimestamp(right.occurredAt))[0];
+  return formatActionTimelineActorLabel(earliestAction?.origin) ??
+    formatActionTimelineSourceLabel(earliestAction?.origin?.channel);
 }
 
 function StackedSkeleton({ count }: { count: number }) {

@@ -32,7 +32,7 @@ import {
   overviewPanelShapeCapabilities,
   type OverviewPanelShapeMap,
 } from "@/components/features/console/overview-panels";
-import { OverviewPanelSettings } from "@/components/features/console/overview-panel-settings";
+import { ConsoleViewMount } from "@/components/features/console/console-primitives";
 import {
   ConsoleHeaderCapabilitiesProvider,
   type ConsoleHeaderCapabilities,
@@ -90,7 +90,8 @@ import {
 } from "@/components/workable/console/detail-screens";
 import {
   OverviewCatalogFilter,
-  QueryFilterPopover,
+  QueryFilterPanelContent,
+  getQueryFilterActiveCount,
 } from "@/components/workable/console/filters";
 import { ErrorPanel } from "@/components/workable/console/feedback-panel";
 import {
@@ -206,7 +207,6 @@ const initialRefreshTokens: Record<View, number> = {
   iterations: 0,
   worker: 0,
 };
-const viewContentOffsetClass = "pt-2";
 const readModelLagWarningThreshold = 100;
 const concurrencyLagWarningSeconds = 30;
 const durabilityAcceptedWorkerWarningSeconds = 30;
@@ -1943,7 +1943,7 @@ export function WorkableConsole() {
                   )}
                   <ErrorPanel errors={[lifecycleError]} />
                   {mountedViews.has("overview") && (
-                    <div className={visibleView === "overview" ? viewContentOffsetClass : "hidden"}>
+                    <ConsoleViewMount active={visibleView === "overview"}>
                       <OverviewView
                         access={activeSystem?.access}
                         connection={hydratedConnection}
@@ -1961,6 +1961,7 @@ export function WorkableConsole() {
                         onReady={markOverviewReady}
                         onPanelShapeChange={setOverviewPanelShape}
                         onPanelVisibilityChange={setOverviewPanelVisible}
+                        onResetUi={resetOverviewUiToDefaults}
                         onThroughputSeriesToggle={toggleOverviewThroughputSeries}
                         panelShapes={consoleState.overviewPanelShapes}
                         realtimePayloadCaptureEnabled={realtimePayloadCaptureEnabled}
@@ -1974,45 +1975,38 @@ export function WorkableConsole() {
                         overviewScope={activeOverviewScope}
                         refreshToken={refreshTokens.overview}
                         onOpenWorker={openWorker}
-                        renderToolbar={({ loading, refreshing }) => (
-                          <>
-                            <OverviewCatalogFilter
-                              connection={hydratedConnection}
-                              loading={loading || refreshing}
-                              onClear={() => {
-                                if (activeSystem) {
-                                  openCategoryOverview(activeSystem.id, "");
-                                }
-                              }}
-                              onSelectCategory={(category) => {
-                                if (activeSystem) {
-                                  openCategoryOverview(activeSystem.id, category);
-                                }
-                              }}
-                              onSelectDefinition={(definitionName, category) => {
-                                if (activeSystem) {
-                                  openDefinitionOverview(
-                                    activeSystem.id,
-                                    definitionName,
-                                    category
-                                  );
-                                }
-                              }}
-                              refreshToken={refreshTokens.overview}
-                              scope={activeOverviewScope}
-                            />
-                            <OverviewPanelSettings
-                              hiddenPanelIds={consoleState.overviewHiddenPanels}
-                              onPanelVisibilityChange={setOverviewPanelVisible}
-                              onResetUi={resetOverviewUiToDefaults}
-                            />
-                          </>
+                        renderControls={({ loading, refreshing }) => (
+                          <OverviewCatalogFilter
+                            connection={hydratedConnection}
+                            loading={loading || refreshing}
+                            onClear={() => {
+                              if (activeSystem) {
+                                openCategoryOverview(activeSystem.id, "");
+                              }
+                            }}
+                            onSelectCategory={(category) => {
+                              if (activeSystem) {
+                                openCategoryOverview(activeSystem.id, category);
+                              }
+                            }}
+                            onSelectDefinition={(definitionName, category) => {
+                              if (activeSystem) {
+                                openDefinitionOverview(
+                                  activeSystem.id,
+                                  definitionName,
+                                  category
+                                );
+                              }
+                            }}
+                            refreshToken={refreshTokens.overview}
+                            scope={activeOverviewScope}
+                          />
                         )}
                       />
-                    </div>
+                    </ConsoleViewMount>
                   )}
                   {mountedViews.has("definitions") && (
-                    <div className={visibleView === "definitions" ? viewContentOffsetClass : "hidden"}>
+                    <ConsoleViewMount active={visibleView === "definitions"}>
                       <DefinitionsView
                         catalogScope={activeCatalogScope}
                         connection={hydratedConnection}
@@ -2031,10 +2025,10 @@ export function WorkableConsole() {
                         onReady={markDefinitionsReady}
                         refreshToken={refreshTokens.definitions}
                       />
-                    </div>
+                    </ConsoleViewMount>
                   )}
                   {mountedViews.has("definition") && selectedDefinitionId && (
-                    <div className={visibleView === "definition" ? viewContentOffsetClass : "hidden"}>
+                    <ConsoleViewMount active={visibleView === "definition"}>
                       <DefinitionView
                         connection={hydratedConnection}
                         definitionId={selectedDefinitionId}
@@ -2043,39 +2037,48 @@ export function WorkableConsole() {
                         onReady={markDefinitionReady}
                         refreshToken={refreshTokens.definition}
                       />
-                    </div>
+                    </ConsoleViewMount>
                   )}
                   {mountedViews.has("workers") && (
-                    <div className={visibleView === "workers" ? viewContentOffsetClass : "hidden"}>
+                    <ConsoleViewMount active={visibleView === "workers"}>
                       <WorkersView
                         categoryFilter={workerCategoryFilter}
                         connection={hydratedConnection}
-                        filterControls={(
-                          <QueryFilterPopover
-                            allFacetLabel="All states"
-                            catalogScope={createQueryCatalogScope(workerCategoryFilter, workerDefinitionFilter)}
-                            connection={hydratedConnection}
-                            facetLabel="Worker states"
-                            facetOptions={states}
-                            facetValue={workerStateFilter}
-                            keyTypeFilter={keyTypeFilter}
-                            onClearCatalog={() => {
-                              setWorkerCategoryFilter("");
-                              setWorkerDefinitionFilter("");
-                            }}
-                            onFacetChange={setWorkerStateFilter}
-                            onKeyTypeFilterChange={setKeyTypeFilter}
-                            onSelectCategory={(category) => {
-                              setWorkerCategoryFilter(category);
-                              setWorkerDefinitionFilter("");
-                            }}
-                            onSelectDefinition={(definitionName, category) => {
-                              setWorkerCategoryFilter(category);
-                              setWorkerDefinitionFilter(definitionName);
-                            }}
-                            refreshToken={refreshTokens.workers}
-                          />
-                        )}
+                        filterControl={{
+                          activeCount: getQueryFilterActiveCount(
+                            createQueryCatalogScope(workerCategoryFilter, workerDefinitionFilter),
+                            workerStateFilter,
+                            keyTypeFilter
+                          ),
+                          content: (
+                            <QueryFilterPanelContent
+                              allFacetLabel="All states"
+                              catalogScope={createQueryCatalogScope(workerCategoryFilter, workerDefinitionFilter)}
+                              connection={hydratedConnection}
+                              facetLabel="Worker states"
+                              facetOptions={states}
+                              facetValue={workerStateFilter}
+                              keyTypeFilter={keyTypeFilter}
+                              onClearCatalog={() => {
+                                setWorkerCategoryFilter("");
+                                setWorkerDefinitionFilter("");
+                              }}
+                              onFacetChange={setWorkerStateFilter}
+                              onKeyTypeFilterChange={setKeyTypeFilter}
+                              onSelectCategory={(category) => {
+                                setWorkerCategoryFilter(category);
+                                setWorkerDefinitionFilter("");
+                              }}
+                              onSelectDefinition={(definitionName, category) => {
+                                setWorkerCategoryFilter(category);
+                                setWorkerDefinitionFilter(definitionName);
+                              }}
+                              refreshToken={refreshTokens.workers}
+                            />
+                          ),
+                          contentClassName: "w-[26rem] p-0",
+                          label: "Filter workers",
+                        }}
                         isLoadingTarget={visibleView === "workers" || pendingView === "workers"}
                         isVisible={visibleView === "workers"}
                         onOpenWorker={openWorker}
@@ -2085,40 +2088,49 @@ export function WorkableConsole() {
                         stateFilter={workerStateFilter}
                         refreshToken={refreshTokens.workers}
                       />
-                    </div>
+                    </ConsoleViewMount>
                   )}
                   {mountedViews.has("iterations") && (
-                    <div className={visibleView === "iterations" ? viewContentOffsetClass : "hidden"}>
+                    <ConsoleViewMount active={visibleView === "iterations"}>
                       <IterationsView
                         categoryFilter={iterationCategoryFilter}
                         connection={hydratedConnection}
                         definitionFilter={iterationDefinitionFilter}
-                        filterControls={(
-                          <QueryFilterPopover
-                            allFacetLabel="All statuses"
-                            catalogScope={createQueryCatalogScope(iterationCategoryFilter, iterationDefinitionFilter)}
-                            connection={hydratedConnection}
-                            facetLabel="Iteration statuses"
-                            facetOptions={iterationStatuses}
-                            facetValue={iterationStatusFilter}
-                            keyTypeFilter={iterationKeyTypeFilter}
-                            onClearCatalog={() => {
-                              setIterationCategoryFilter("");
-                              setIterationDefinitionFilter("");
-                            }}
-                            onFacetChange={setIterationStatusFilter}
-                            onKeyTypeFilterChange={setIterationKeyTypeFilter}
-                            onSelectCategory={(category) => {
-                              setIterationCategoryFilter(category);
-                              setIterationDefinitionFilter("");
-                            }}
-                            onSelectDefinition={(definitionName, category) => {
-                              setIterationCategoryFilter(category);
-                              setIterationDefinitionFilter(definitionName);
-                            }}
-                            refreshToken={refreshTokens.iterations}
-                          />
-                        )}
+                        filterControl={{
+                          activeCount: getQueryFilterActiveCount(
+                            createQueryCatalogScope(iterationCategoryFilter, iterationDefinitionFilter),
+                            iterationStatusFilter,
+                            iterationKeyTypeFilter
+                          ),
+                          content: (
+                            <QueryFilterPanelContent
+                              allFacetLabel="All statuses"
+                              catalogScope={createQueryCatalogScope(iterationCategoryFilter, iterationDefinitionFilter)}
+                              connection={hydratedConnection}
+                              facetLabel="Iteration statuses"
+                              facetOptions={iterationStatuses}
+                              facetValue={iterationStatusFilter}
+                              keyTypeFilter={iterationKeyTypeFilter}
+                              onClearCatalog={() => {
+                                setIterationCategoryFilter("");
+                                setIterationDefinitionFilter("");
+                              }}
+                              onFacetChange={setIterationStatusFilter}
+                              onKeyTypeFilterChange={setIterationKeyTypeFilter}
+                              onSelectCategory={(category) => {
+                                setIterationCategoryFilter(category);
+                                setIterationDefinitionFilter("");
+                              }}
+                              onSelectDefinition={(definitionName, category) => {
+                                setIterationCategoryFilter(category);
+                                setIterationDefinitionFilter(definitionName);
+                              }}
+                              refreshToken={refreshTokens.iterations}
+                            />
+                          ),
+                          contentClassName: "w-[26rem] p-0",
+                          label: "Filter iterations",
+                        }}
                         isLoadingTarget={visibleView === "iterations" || pendingView === "iterations"}
                         isVisible={visibleView === "iterations"}
                         keyTypeFilter={iterationKeyTypeFilter}
@@ -2127,14 +2139,14 @@ export function WorkableConsole() {
                         refreshToken={refreshTokens.iterations}
                         statusFilter={iterationStatusFilter}
                       />
-                    </div>
+                    </ConsoleViewMount>
                   )}
                   <DelayedLoadingOverlay
                     active={!!pendingView && view !== "worker"}
                     label={`Loading ${pendingView ? navTitle(pendingView) : "view"}`}
                   />
                   {view === "worker" && selectedWorkerId && (
-                    <div className={`${viewContentOffsetClass} flex min-h-0 flex-col`}>
+                    <ConsoleViewMount active={true}>
                       <WorkerConsoleView
                         connection={hydratedConnection}
                         onActiveRealtimeConnectionCountChange={setPageRealtimeConnectionCount}
@@ -2149,7 +2161,7 @@ export function WorkableConsole() {
                         realtimePayloadOpen={realtimePayloadOpen}
                         workerId={selectedWorkerId}
                       />
-                    </div>
+                    </ConsoleViewMount>
                   )}
                 </ConsoleHeaderCapabilitiesProvider>
                 </ConsolePageRealtimeViewProvider>
@@ -4519,7 +4531,10 @@ function normalizeOverviewPanelShape(
 ): WorkComponentShape {
   const capabilities = overviewPanelShapeCapabilities[panelId];
   return typeof value === "string" &&
-    capabilities.supportedShapes.includes(value as WorkComponentShape)
+    (
+      value === "compact" ||
+      capabilities.supportedShapes.includes(value as WorkComponentShape)
+    )
     ? value as WorkComponentShape
     : capabilities.defaultShape;
 }

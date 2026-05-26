@@ -1,5 +1,5 @@
-import { Rows2, Rows3, Rows4, type LucideIcon } from "lucide-react";
 import type { WorkComponentShape } from "@/lib/workable";
+import type { PanelVisibilityOption } from "@/components/features/console/panel-visibility-settings";
 
 export const overviewPanelIds = [
   "workers",
@@ -12,16 +12,6 @@ export const overviewPanelIds = [
 
 export type OverviewPanelId = (typeof overviewPanelIds)[number];
 export type OverviewPanelShapeMap = Record<OverviewPanelId, WorkComponentShape>;
-
-export const overviewShapeOptions: Array<{
-  icon: LucideIcon;
-  label: string;
-  shape: WorkComponentShape;
-}> = [
-  { icon: Rows2, label: "Compact", shape: "compact" },
-  { icon: Rows3, label: "Standard", shape: "standard" },
-  { icon: Rows4, label: "Detailed", shape: "detailed" },
-];
 
 export const overviewPanelShapeCapabilities: Record<OverviewPanelId, {
   defaultShape: WorkComponentShape;
@@ -53,11 +43,7 @@ export const overviewPanelShapeCapabilities: Record<OverviewPanelId, {
   },
 };
 
-export const overviewPanelOptions: Array<{
-  description: string;
-  id: OverviewPanelId;
-  label: string;
-}> = [
+export const overviewPanelOptions: PanelVisibilityOption<OverviewPanelId>[] = [
   {
     id: "workers",
     label: "Workers",

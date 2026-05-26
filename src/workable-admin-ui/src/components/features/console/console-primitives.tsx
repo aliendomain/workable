@@ -4,8 +4,17 @@ import type { HTMLAttributes, ReactNode } from "react";
 import { cn } from "@/lib/utils";
 
 export const consolePageLayoutClassName = "flex min-h-0 flex-col gap-6";
+export const consoleViewMountClassName = "flex min-h-0 flex-col";
 export const consoleToolbarLaneClassName =
   "-mb-2 flex min-h-9 min-w-0 -translate-y-2 items-center justify-end gap-1";
+export const consoleToolbarFrameClassName =
+  "inline-flex min-h-9 items-center gap-1 rounded-xl border border-white/10 bg-background/40 px-1.5 py-1 shadow-sm backdrop-blur-md";
+export const consoleViewFrameClassName =
+  "rounded-2xl border border-white/10 bg-background/35 shadow-sm backdrop-blur-md";
+const consoleViewFramePaddingClassNames = {
+  default: "p-4 md:p-5",
+  tightTop: "px-4 pb-4 pt-1.5 md:px-5 md:pb-5 md:pt-1.5",
+} as const;
 export const consolePanelSurfaceClassName = "rounded-xl bg-card p-4 ring-1 ring-foreground/10";
 export const consolePanelHeaderClassName =
   "flex min-w-0 items-center justify-between gap-3";
@@ -36,6 +45,43 @@ export function ViewActionLane({ children }: { children?: ReactNode }) {
   );
 }
 
+export function ViewActionFrame({
+  children,
+  className,
+  ...props
+}: HTMLAttributes<HTMLDivElement> & {
+  children: ReactNode;
+}) {
+  return (
+    <div className={cn(consoleToolbarFrameClassName, className)} {...props}>
+      {children}
+    </div>
+  );
+}
+
+export function ConsoleViewFrame({
+  children,
+  className,
+  padding = "default",
+  ...props
+}: HTMLAttributes<HTMLDivElement> & {
+  children: ReactNode;
+  padding?: keyof typeof consoleViewFramePaddingClassNames;
+}) {
+  return (
+    <div
+      className={cn(
+        consoleViewFrameClassName,
+        consoleViewFramePaddingClassNames[padding],
+        className
+      )}
+      {...props}
+    >
+      {children}
+    </div>
+  );
+}
+
 export function ConsolePageLayout({
   children,
   className,
@@ -50,6 +96,25 @@ export function ConsolePageLayout({
   return (
     <div className={cn(consolePageLayoutClassName, className)} {...props}>
       {(reserveToolbar || toolbar) ? <ViewActionLane>{toolbar}</ViewActionLane> : null}
+      {children}
+    </div>
+  );
+}
+
+export function ConsoleViewMount({
+  active = true,
+  children,
+  className,
+  ...props
+}: HTMLAttributes<HTMLDivElement> & {
+  active?: boolean;
+  children: ReactNode;
+}) {
+  return (
+    <div
+      className={cn(active ? consoleViewMountClassName : "hidden", className)}
+      {...props}
+    >
       {children}
     </div>
   );

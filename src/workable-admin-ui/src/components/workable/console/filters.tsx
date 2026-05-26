@@ -546,6 +546,121 @@ export function QueryFilterPopover<TValue extends string>({
   );
 }
 
+export function getQueryFilterActiveCount<TValue extends string>(
+  catalogScope: OverviewScope | null,
+  facetValue: TValue[],
+  keyTypeFilter: string
+) {
+  return (catalogScope ? 1 : 0) + (keyTypeFilter.trim() ? 1 : 0) + (facetValue.length > 0 ? 1 : 0);
+}
+
+export function QueryFilterPanelContent<TValue extends string>({
+  allFacetLabel,
+  catalogScope,
+  connection,
+  facetLabel,
+  facetOptions,
+  facetValue,
+  keyTypeFilter,
+  onClearCatalog,
+  onFacetChange,
+  onKeyTypeFilterChange,
+  onSelectCategory,
+  onSelectDefinition,
+  refreshToken,
+}: {
+  allFacetLabel: string;
+  catalogScope: OverviewScope | null;
+  connection: WorkableConnection;
+  facetLabel: string;
+  facetOptions: TValue[];
+  facetValue: TValue[];
+  keyTypeFilter: string;
+  onClearCatalog: () => void;
+  onFacetChange: (value: TValue[]) => void;
+  onKeyTypeFilterChange: (keyType: string) => void;
+  onSelectCategory: (category: string) => void;
+  onSelectDefinition: (definitionName: string, category: string) => void;
+  refreshToken: number;
+}) {
+  const [path, setPath] = useState(catalogScope?.category ?? "");
+  const catalogRequest = useMemo(
+    () => ({
+      components: [{ id: "catalog", type: "catalog" }],
+      scope: createOverviewComponentScope(catalogScope),
+    }),
+    [catalogScope]
+  );
+  const catalog = useWorkablePostResource<WorkComponentQueryResult>(
+    connection,
+    "components/query",
+    catalogRequest,
+    refreshToken
+  );
+  const catalogComponent = getWorkComponentData<WorkOverviewCatalogComponent>(
+    catalog.data,
+    "catalog"
+  );
+
+  const clearAll = () => {
+    onClearCatalog();
+    onKeyTypeFilterChange("");
+    onFacetChange([]);
+    setPath("");
+  };
+
+  return (
+    <>
+      <div className="flex h-10 items-center justify-between border-b px-3">
+        <span className="font-medium text-sm">Filters</span>
+        <Button onClick={clearAll} size="sm" variant="ghost">
+          Clear
+        </Button>
+      </div>
+      <ScrollArea className="max-h-[70vh]">
+        <div className="grid gap-3 p-3">
+          <div className="overflow-hidden rounded-lg border">
+            <div className="border-b px-3 py-2 font-medium text-muted-foreground text-xs">
+              Catalog
+            </div>
+            <CatalogFilterPanel
+              categories={catalogComponent?.catalogCategories ?? []}
+              definitions={catalogComponent?.catalogDefinitions ?? []}
+              loading={catalog.loading || !!catalog.refreshing}
+              onClear={onClearCatalog}
+              onSelectCategory={onSelectCategory}
+              onSelectDefinition={onSelectDefinition}
+              path={path}
+              scope={catalogScope}
+              setPath={setPath}
+            />
+          </div>
+          <div className="rounded-lg border">
+            <div className="border-b px-3 py-2 font-medium text-muted-foreground text-xs">
+              {facetLabel}
+            </div>
+            <QueryFacetPanel
+              allLabel={allFacetLabel}
+              onChange={onFacetChange}
+              options={facetOptions}
+              value={facetValue}
+            />
+          </div>
+          <div className="grid gap-2 rounded-lg border p-3">
+            <Label className="text-muted-foreground text-xs">Key type</Label>
+            <Input
+              className="h-8"
+              onChange={(event) => onKeyTypeFilterChange(event.target.value)}
+              placeholder="Any key type"
+              value={keyTypeFilter}
+            />
+          </div>
+        </div>
+      </ScrollArea>
+    </>
+  );
+}
+
 function createQueryFilterDescriptions<TValue extends string>(
   catalogScope: OverviewScope | null,
   facetLabel: string,

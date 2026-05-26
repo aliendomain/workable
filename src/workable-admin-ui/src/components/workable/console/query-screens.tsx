@@ -10,15 +10,14 @@ import {
   Play,
   RefreshCw,
   SquareArrowOutUpRight,
-  Rows2,
-  Rows3,
-  Rows4,
   Trash2,
 } from "lucide-react";
 import type { MutableRefObject, ReactNode, RefObject } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ConsolePageLayout } from "@/components/features/console/console-primitives";
-import { PanelShell } from "@/components/features/console/panel-shell";
+import { PanelAggregateFrame } from "@/components/features/console/panel-aggregate-frame";
+import { PanelShell, type PanelFilterControl } from "@/components/features/console/panel-shell";
+import type { PanelVisibilityOption } from "@/components/features/console/panel-visibility-settings";
 import { ToolbarIconButton } from "@/components/features/console/toolbar-icon-button";
 import type { OverviewScope } from "@/components/features/console/types";
 import { Badge } from "@/components/ui/badge";
@@ -97,24 +96,29 @@ const queryGridShapeCapabilities = {
   defaultShape: WorkComponentShape;
   supportedShapes: WorkComponentShape[];
 };
-const queryShapeOptions: Array<{
-  icon: typeof Rows2;
-  label: string;
-  shape: WorkComponentShape;
-}> = [
-  { icon: Rows2, label: "Compact", shape: "compact" },
-  { icon: Rows3, label: "Standard", shape: "standard" },
-  { icon: Rows4, label: "Detailed", shape: "detailed" },
-];
 const queryPageTake = 50;
 const maxQueryTake = 50;
 const minQueryTake = 1;
+const workersPanelOptions: PanelVisibilityOption<"workers">[] = [
+  {
+    id: "workers",
+    label: "Workers",
+    description: "Worker query results with filtering, refresh, and row actions.",
+  },
+];
+const iterationsPanelOptions: PanelVisibilityOption<"iterations">[] = [
+  {
+    id: "iterations",
+    label: "Iterations",
+    description: "Iteration query results with filtering, refresh, and worker navigation.",
+  },
+];
 
 export function WorkersView({
   categoryFilter,
   connection,
   definitionFilter,
-  filterControls,
+  filterControl,
   isLoadingTarget,
   isVisible,
   keyTypeFilter,
@@ -126,7 +130,7 @@ export function WorkersView({
   categoryFilter: string;
   connection: WorkableConnection;
   definitionFilter: string;
-  filterControls: ReactNode;
+  filterControl?: PanelFilterControl;
   isLoadingTarget: boolean;
   isVisible: boolean;
   keyTypeFilter: string;
@@ -167,6 +171,7 @@ export function WorkersView({
   );
   const [actionError, setActionError] = useState<string>();
   const [hiddenWorkerIds, setHiddenWorkerIds] = useState<ReadonlySet<string>>(() => new Set());
+  const [hiddenPanelIds, setHiddenPanelIds] = useState<ReadonlySet<"workers">>(() => new Set());
   const [pendingActionWorkerId, setPendingActionWorkerId] = useState<string | null>(null);
   const refreshWorkers = useCallback((options?: { resetScroll?: boolean }) => {
     setActionError(undefined);
@@ -268,6 +273,23 @@ export function WorkersView({
     }
   }, [isLoadingTarget, isReady, onReady]);
 
+  const setWorkersPanelVisible = useCallback((panelId: "workers", visible: boolean) => {
+    setHiddenPanelIds((current) => {
+      const next = new Set(current);
+      if (visible) {
+        next.delete(panelId);
+      } else {
+        next.add(panelId);
+      }
+      return next;
+    });
+  }, []);
+
+  const resetWorkersUiToDefaults = useCallback(() => {
+    setHiddenPanelIds(new Set());
+    setGridShape(queryGridShapeCapabilities.defaultShape);
+  }, []);
+
   if (!isVisible) {
     return null;
   }
@@ -281,50 +303,59 @@ export function WorkersView({
   const workerHighlightId = activeActionHighlight
     ? activeActionHighlight.workerId
     : activeSelectedWorkerRowId;
-  const toolbar = (
-    <>
-      <QueryResultTotal noun="worker" totalCount={workers.totalCount} />
-      {filterControls}
-      <QueryRefreshButton
-        isRefreshing={workers.loading}
-        label="Refresh workers"
-        onRefresh={refreshWorkers}
-      />
-    </>
-  );
-
   return (
-    <ConsolePageLayout toolbar={toolbar}>
-      <ErrorPanel errors={[workers.error, actionError]} />
-      <QueryPanelShell
-        actions={toolbar}
-        contentClassName="mt-3"
-        onShapeChange={setGridShape}
-        shape={gridShape}
-        supportedShapes={queryGridShapeCapabilities.supportedShapes}
-        title="Workers"
+    <ConsolePageLayout>
+      <PanelAggregateFrame
+        hiddenPanelIds={[...hiddenPanelIds]}
+        onPanelVisibilityChange={setWorkersPanelVisible}
+        onResetUi={resetWorkersUiToDefaults}
+        padding="tightTop"
+        panelOptions={workersPanelOptions}
+        settingsButtonLabel="Workers panel settings"
+        settingsDescription="Checked panels are shown on the workers page."
+        settingsTitle="Workers panels"
       >
-        <VirtualWorkerTable
-          hasMore={workers.hasMore}
-          highlightedWorkerId={workerHighlightId}
-          highlightedWorkerIndex={activeActionHighlight?.fallbackIndex}
-          loading={workers.loading}
-          loadingMore={workers.loadingMore}
-          loadMore={workers.loadMore}
-          onAction={executeWorkerAction}
-          onActionMenuOpen={selectWorkerRow}
-          onSelect={openWorkerRow}
-          onScrollPositionChange={(scrollTop) => {
-            workerScrollTopRef.current = scrollTop;
-          }}
-          onView={openWorkerRow}
-          pendingActionWorkerId={pendingActionWorkerId}
-          scrollMemory={workerScrollTopRef}
-          scrollResetKey={scrollResetKey}
-          shape={gridShape}
-          workers={visibleWorkers}
-        />
-      </QueryPanelShell>
+        <ErrorPanel errors={[workers.error, actionError]} />
+        {!hiddenPanelIds.has("workers") ? (
+          <QueryPanelShell
+            actions={(
+              <QueryRefreshButton
+                isRefreshing={workers.loading}
+                label="Refresh workers"
+                onRefresh={refreshWorkers}
+              />
+            )}
+            filterControl={filterControl}
+            leadingActions={<QueryResultTotal noun="worker" totalCount={workers.totalCount} />}
+            onClose={() => setWorkersPanelVisible("workers", false)}
+            onShapeChange={setGridShape}
+            shape={gridShape}
+            supportedShapes={queryGridShapeCapabilities.supportedShapes}
+            title="Workers"
+          >
+            <VirtualWorkerTable
+              hasMore={workers.hasMore}
+              highlightedWorkerId={workerHighlightId}
+              highlightedWorkerIndex={activeActionHighlight?.fallbackIndex}
+              loading={workers.loading}
+              loadingMore={workers.loadingMore}
+              loadMore={workers.loadMore}
+              onAction={executeWorkerAction}
+              onActionMenuOpen={selectWorkerRow}
+              onSelect={openWorkerRow}
+              onScrollPositionChange={(scrollTop) => {
+                workerScrollTopRef.current = scrollTop;
+              }}
+              onView={openWorkerRow}
+              pendingActionWorkerId={pendingActionWorkerId}
+              scrollMemory={workerScrollTopRef}
+              scrollResetKey={scrollResetKey}
+              shape={gridShape}
+              workers={visibleWorkers}
+            />
+          </QueryPanelShell>
+        ) : null}
+      </PanelAggregateFrame>
     </ConsolePageLayout>
   );
 }
@@ -333,7 +364,7 @@ export function IterationsView({
   categoryFilter,
   connection,
   definitionFilter,
-  filterControls,
+  filterControl,
   isLoadingTarget,
   isVisible,
   keyTypeFilter,
@@ -345,7 +376,7 @@ export function IterationsView({
   categoryFilter: string;
   connection: WorkableConnection;
   definitionFilter: string;
-  filterControls: ReactNode;
+  filterControl?: PanelFilterControl;
   isLoadingTarget: boolean;
   isVisible: boolean;
   keyTypeFilter: string;
@@ -382,6 +413,7 @@ export function IterationsView({
   const [gridShape, setGridShape] = useState<WorkComponentShape>(
     queryGridShapeCapabilities.defaultShape
   );
+  const [hiddenPanelIds, setHiddenPanelIds] = useState<ReadonlySet<"iterations">>(() => new Set());
   const refreshIterations = useCallback(() => {
     setManualRefreshToken((value) => value + 1);
   }, []);
@@ -397,6 +429,23 @@ export function IterationsView({
     }
   }, [isLoadingTarget, isReady, onReady]);
 
+  const setIterationsPanelVisible = useCallback((panelId: "iterations", visible: boolean) => {
+    setHiddenPanelIds((current) => {
+      const next = new Set(current);
+      if (visible) {
+        next.delete(panelId);
+      } else {
+        next.add(panelId);
+      }
+      return next;
+    });
+  }, []);
+
+  const resetIterationsUiToDefaults = useCallback(() => {
+    setHiddenPanelIds(new Set());
+    setGridShape(queryGridShapeCapabilities.defaultShape);
+  }, []);
+
   if (!isVisible) {
     return null;
   }
@@ -404,46 +453,55 @@ export function IterationsView({
   const activeSelectedIterationRowKey = selectedIterationResetKey === selectionScopeKey
     ? selectedIterationRowKey
     : null;
-  const toolbar = (
-    <>
-      <QueryResultTotal noun="iteration" totalCount={iterations.totalCount} />
-      {filterControls}
-      <QueryRefreshButton
-        isRefreshing={iterations.loading}
-        label="Refresh iterations"
-        onRefresh={refreshIterations}
-      />
-    </>
-  );
-
   return (
-    <ConsolePageLayout toolbar={toolbar}>
-      <ErrorPanel errors={[iterations.error]} />
-      <QueryPanelShell
-        actions={toolbar}
-        contentClassName="mt-3"
-        onShapeChange={setGridShape}
-        shape={gridShape}
-        supportedShapes={queryGridShapeCapabilities.supportedShapes}
-        title="Iterations"
+    <ConsolePageLayout>
+      <PanelAggregateFrame
+        hiddenPanelIds={[...hiddenPanelIds]}
+        onPanelVisibilityChange={setIterationsPanelVisible}
+        onResetUi={resetIterationsUiToDefaults}
+        padding="tightTop"
+        panelOptions={iterationsPanelOptions}
+        settingsButtonLabel="Iterations panel settings"
+        settingsDescription="Checked panels are shown on the iterations page."
+        settingsTitle="Iterations panels"
       >
-        <VirtualIterationTable
-          hasMore={iterations.hasMore}
-          highlightedIterationKey={activeSelectedIterationRowKey}
-          highlightedWorkerId={null}
-          iterations={iterations.items}
-          loading={iterations.loading}
-          loadingMore={iterations.loadingMore}
-          loadMore={iterations.loadMore}
-          onScrollPositionChange={(scrollTop) => {
-            iterationScrollTopRef.current = scrollTop;
-          }}
-          onSelect={openIterationRow}
-          scrollMemory={iterationScrollTopRef}
-          scrollResetKey={scrollResetKey}
-          shape={gridShape}
-        />
-      </QueryPanelShell>
+        <ErrorPanel errors={[iterations.error]} />
+        {!hiddenPanelIds.has("iterations") ? (
+          <QueryPanelShell
+            actions={(
+              <QueryRefreshButton
+                isRefreshing={iterations.loading}
+                label="Refresh iterations"
+                onRefresh={refreshIterations}
+              />
+            )}
+            filterControl={filterControl}
+            leadingActions={<QueryResultTotal noun="iteration" totalCount={iterations.totalCount} />}
+            onClose={() => setIterationsPanelVisible("iterations", false)}
+            onShapeChange={setGridShape}
+            shape={gridShape}
+            supportedShapes={queryGridShapeCapabilities.supportedShapes}
+            title="Iterations"
+          >
+            <VirtualIterationTable
+              hasMore={iterations.hasMore}
+              highlightedIterationKey={activeSelectedIterationRowKey}
+              highlightedWorkerId={null}
+              iterations={iterations.items}
+              loading={iterations.loading}
+              loadingMore={iterations.loadingMore}
+              loadMore={iterations.loadMore}
+              onScrollPositionChange={(scrollTop) => {
+                iterationScrollTopRef.current = scrollTop;
+              }}
+              onSelect={openIterationRow}
+              scrollMemory={iterationScrollTopRef}
+              scrollResetKey={scrollResetKey}
+              shape={gridShape}
+            />
+          </QueryPanelShell>
+        ) : null}
+      </PanelAggregateFrame>
     </ConsolePageLayout>
   );
 }
@@ -455,7 +513,9 @@ function getIterationRowKey(iteration: WorkViewIterationGridDetailed) {
 function QueryPanelShell({
   actions,
   children,
-  contentClassName,
+  filterControl,
+  leadingActions,
+  onClose,
   onShapeChange,
   shape,
   supportedShapes,
@@ -463,7 +523,9 @@ function QueryPanelShell({
 }: {
   actions?: ReactNode;
   children: ReactNode;
-  contentClassName?: string;
+  filterControl?: PanelFilterControl;
+  leadingActions?: ReactNode;
+  onClose?: () => void;
   onShapeChange?: (shape: WorkComponentShape) => void;
   shape?: WorkComponentShape;
   supportedShapes?: readonly WorkComponentShape[];
@@ -472,12 +534,13 @@ function QueryPanelShell({
   return (
     <PanelShell
       actions={actions}
-      contentClassName={contentClassName}
-      onShapeChange={onShapeChange}
-      shape={shape}
-      shapeOptions={queryShapeOptions}
-      supportedShapes={supportedShapes}
+      filterControl={filterControl}
+      leadingActions={leadingActions}
+      onClose={onClose}
+      onViewStateChange={onShapeChange}
+      supportedViewStates={supportedShapes}
       title={title}
+      viewState={shape}
     >
       {children}
     </PanelShell>

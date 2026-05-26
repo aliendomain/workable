@@ -22,7 +22,10 @@ import {
 import type { PointerEvent, ReactNode } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { ConsolePageLayout } from "@/components/features/console/console-primitives";
+import {
+  ConsolePageLayout,
+} from "@/components/features/console/console-primitives";
+import { PanelAggregateFrame } from "@/components/features/console/panel-aggregate-frame";
 import {
   useConsolePageRealtimeView,
   useRegisterConsolePageRealtimeView,
@@ -39,8 +42,8 @@ import {
 } from "@/components/features/console/header-capabilities";
 import {
   type OverviewPanelId,
+  overviewPanelOptions,
   overviewPanelShapeCapabilities,
-  overviewShapeOptions,
   type OverviewPanelShapeMap,
 } from "@/components/features/console/overview-panels";
 import { PanelShell } from "@/components/features/console/panel-shell";
@@ -206,7 +209,8 @@ export function getOverviewPanelShape(
   panelId: OverviewPanelId
 ) {
   const shape = shapes[panelId];
-  return overviewPanelShapeCapabilities[panelId].supportedShapes.includes(shape)
+  return shape === "compact" ||
+    overviewPanelShapeCapabilities[panelId].supportedShapes.includes(shape)
     ? shape
     : overviewPanelShapeCapabilities[panelId].defaultShape;
 }
@@ -235,6 +239,7 @@ export function OverviewView({
   onOpenWorker,
   onPanelShapeChange,
   onPanelVisibilityChange,
+  onResetUi,
   onRealtimePayloadCaptureEnabledChange,
   onActiveRealtimeConnectionCountChange,
   onRealtimePayloadMaxMessagesChange,
@@ -249,7 +254,7 @@ export function OverviewView({
   realtimePayloadMaxMessages,
   realtimePayloadOpen,
   refreshToken,
-  renderToolbar,
+  renderControls,
 }: {
   access?: WorkSystemAccessSummary;
   connection: WorkableConnection;
@@ -266,6 +271,7 @@ export function OverviewView({
   onOpenWorker: (workerId: string) => void;
   onPanelShapeChange: (panelId: OverviewPanelId, shape: WorkComponentShape) => void;
   onPanelVisibilityChange: (panelId: OverviewPanelId, visible: boolean) => void;
+  onResetUi: () => void;
   onRealtimePayloadCaptureEnabledChange?: (enabled: boolean) => void;
   onActiveRealtimeConnectionCountChange?: (count: number) => void;
   onRealtimePayloadMaxMessagesChange?: (maxMessages: number) => void;
@@ -280,7 +286,7 @@ export function OverviewView({
   realtimePayloadMaxMessages?: number;
   realtimePayloadOpen?: boolean;
   refreshToken: number;
-  renderToolbar: (state: {
+  renderControls: (state: {
     loading: boolean;
     refreshing: boolean;
   }) => ReactNode;
@@ -439,6 +445,10 @@ export function OverviewView({
   const togglePayloadOpen = useCallback(() => {
     setPayloadOpen(!payloadOpen);
   }, [payloadOpen, setPayloadOpen]);
+  const overviewControls = renderControls({
+    loading: overview.loading,
+    refreshing: !!overview.refreshing || !!realtimeOverview.refreshing,
+  });
   const realtimePayloadWindow = isVisible ? (
     <RealtimePayloadWindow
       captureEnabled={payloadCaptureEnabled}
@@ -633,38 +643,45 @@ export function OverviewView({
   ]);
 
   return (
-    <ConsolePageLayout
-      toolbar={renderToolbar({
-        loading: overview.loading,
-        refreshing: !!overview.refreshing || !!realtimeOverview.refreshing,
-      })}
-    >
-      <ErrorPanel
-        errors={[
-          overview.error,
-          realtimeOverview.error,
-          actionError,
-          ...componentErrors,
-        ]}
-      />
+    <ConsolePageLayout>
       {realtimePayloadWindow}
-      {lacksReadableWorkAccess && (
-        <Card>
-          <CardHeader>
-            <div className="space-y-1">
-              <h2 className="font-semibold leading-none tracking-tight">No work access</h2>
-              <p className="text-muted-foreground text-sm">
-                You can connect to this system, but you do not have permission to read work.
-                Work overview panels are hidden, but system state can still update live.
-              </p>
-            </div>
-          </CardHeader>
-        </Card>
-      )}
-      {!lacksReadableWorkAccess && (
-        <>
+      <PanelAggregateFrame
+        className="space-y-2.5"
+        controls={overviewControls}
+        hiddenPanelIds={hiddenPanelIds}
+        onPanelVisibilityChange={onPanelVisibilityChange}
+        onResetUi={onResetUi}
+        padding="tightTop"
+        panelOptions={overviewPanelOptions}
+        settingsButtonLabel="Overview panel settings"
+        settingsDescription="Checked panels are shown on the overview screen."
+        settingsTitle="Overview panels"
+      >
+        <ErrorPanel
+          errors={[
+            overview.error,
+            realtimeOverview.error,
+            actionError,
+            ...componentErrors,
+          ]}
+        />
+        {lacksReadableWorkAccess && (
+          <Card>
+            <CardHeader>
+              <div className="space-y-1">
+                <h2 className="font-semibold leading-none tracking-tight">No work access</h2>
+                <p className="text-muted-foreground text-sm">
+                  You can connect to this system, but you do not have permission to read work.
+                  Work overview panels are hidden, but system state can still update live.
+                </p>
+              </div>
+            </CardHeader>
+          </Card>
+        )}
+        {!lacksReadableWorkAccess && (
+          <>
       {isPanelVisible("workers") && (
-        <OverviewPanelShell
+        <PanelShell
           actions={workersShape === "compact" ? (
             <CompactWorkerStrip
               activeWorkerCount={activeWorkerCount}
@@ -681,9 +698,9 @@ export function OverviewView({
           contentClassName={workersShape === "compact" ? "hidden" : undefined}
           description={undefined}
           onClose={() => onPanelVisibilityChange("workers", false)}
-          onShapeChange={(shape) => onPanelShapeChange("workers", shape)}
-          shape={workersShape}
-          supportedShapes={overviewPanelShapeCapabilities.workers.supportedShapes}
+          onViewStateChange={(shape) => onPanelShapeChange("workers", shape)}
+          supportedViewStates={overviewPanelShapeCapabilities.workers.supportedShapes}
+          viewState={workersShape}
           title={
             <>
               Workers
@@ -764,7 +781,7 @@ export function OverviewView({
               </div>
             </>
           )}
-        </OverviewPanelShell>
+        </PanelShell>
       )}
       {isPanelVisible("failedWorkers") && (
         <OverviewWorkerList
@@ -801,7 +818,7 @@ export function OverviewView({
         />
       )}
       {isPanelVisible("iterations") && (
-        <OverviewPanelShell
+        <PanelShell
           actions={iterationsShape === "compact" ? (
             <CompactIterationStrip
               statuses={["Executing", "Completed", "Failed"]}
@@ -814,9 +831,9 @@ export function OverviewView({
           contentClassName={iterationsShape === "compact" ? "hidden" : undefined}
           description={undefined}
           onClose={() => onPanelVisibilityChange("iterations", false)}
-          onShapeChange={(shape) => onPanelShapeChange("iterations", shape)}
-          shape={iterationsShape}
-          supportedShapes={overviewPanelShapeCapabilities.iterations.supportedShapes}
+          onViewStateChange={(shape) => onPanelShapeChange("iterations", shape)}
+          supportedViewStates={overviewPanelShapeCapabilities.iterations.supportedShapes}
+          viewState={iterationsShape}
           title={
             <>
               Iterations
@@ -852,7 +869,7 @@ export function OverviewView({
               onSelectKeyType={onOpenKeyType}
             />
           )}
-        </OverviewPanelShell>
+        </PanelShell>
       )}
       <div className="grid gap-4 xl:grid-cols-2">
         {showFailedIterations && (
@@ -890,51 +907,8 @@ export function OverviewView({
       </div>
         </>
       )}
+      </PanelAggregateFrame>
     </ConsolePageLayout>
-  );
-}
-
-function OverviewPanelShell({
-  actions,
-  centerActions = false,
-  children,
-  className,
-  contentClassName,
-  description,
-  onClose,
-  onShapeChange,
-  shape,
-  supportedShapes,
-  title,
-}: {
-  actions?: ReactNode;
-  centerActions?: boolean;
-  children: ReactNode;
-  className?: string;
-  contentClassName?: string;
-  description?: string;
-  onClose?: () => void;
-  onShapeChange?: (shape: WorkComponentShape) => void;
-  shape?: WorkComponentShape;
-  supportedShapes?: WorkComponentShape[];
-  title: ReactNode;
-}) {
-  return (
-    <PanelShell
-      actions={actions}
-      centerActions={centerActions}
-      className={className}
-      contentClassName={contentClassName}
-      description={description}
-      onClose={onClose}
-      onShapeChange={onShapeChange}
-      shape={shape}
-      shapeOptions={overviewShapeOptions}
-      supportedShapes={supportedShapes}
-      title={title}
-    >
-      {children}
-    </PanelShell>
   );
 }
 
@@ -973,7 +947,7 @@ function OverviewWorkerList({
   const [selectedWorkerId, setSelectedWorkerId] = useState<string | null>(null);
 
   return (
-    <OverviewPanelShell
+    <PanelShell
       actions={
         <button
           className="inline-flex cursor-pointer items-center gap-1 rounded-md border border-transparent px-2 py-1 text-muted-foreground text-sm transition-colors hover:border-primary/60 hover:bg-accent/40 hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
@@ -986,9 +960,9 @@ function OverviewWorkerList({
       }
       className={panelClassName}
       onClose={onClose}
-      onShapeChange={onShapeChange}
-      shape={shape}
-      supportedShapes={supportedShapes}
+      onViewStateChange={onShapeChange}
+      supportedViewStates={supportedShapes}
+      viewState={shape}
       title={
         <>
           {title}
@@ -1024,7 +998,7 @@ function OverviewWorkerList({
           workers={workers}
         />
       )}
-    </OverviewPanelShell>
+    </PanelShell>
   );
 }
 
@@ -1422,7 +1396,7 @@ function OverviewIterationList({
   iterations: WorkOverviewIteration[];
 }) {
   return (
-    <OverviewPanelShell
+    <PanelShell
       actions={
         <button
           className="inline-flex cursor-pointer items-center gap-1 rounded-md border border-transparent px-2 py-1 text-muted-foreground text-sm transition-colors hover:border-primary/60 hover:bg-accent/40 hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
@@ -1435,9 +1409,9 @@ function OverviewIterationList({
       }
       className={panelClassName}
       onClose={onClose}
-      onShapeChange={onShapeChange}
-      shape={shape}
-      supportedShapes={supportedShapes}
+      onViewStateChange={onShapeChange}
+      supportedViewStates={supportedShapes}
+      viewState={shape}
       title={
         <>
           {title}
@@ -1467,7 +1441,7 @@ function OverviewIterationList({
           onOpenWorker={onOpenWorker}
         />
       )}
-    </OverviewPanelShell>
+    </PanelShell>
   );
 }
 
@@ -1992,7 +1966,7 @@ function ThroughputChartPanel({
     ? "Execution timing for completed iterations, scoped to the current overview filter."
     : "Started, completed, failed, and canceled iteration rates, scoped to the current overview filter.";
   return (
-    <OverviewPanelShell
+    <PanelShell
       actions={compact ? (
         <CompactThroughputStrip
           loading={loading}
@@ -2021,9 +1995,9 @@ function ThroughputChartPanel({
       contentClassName={compact ? "hidden" : undefined}
       description={compact ? undefined : chartDescription}
       onClose={onClose}
-      onShapeChange={onShapeChange}
-      shape={shape}
-      supportedShapes={supportedShapes}
+      onViewStateChange={onShapeChange}
+      supportedViewStates={supportedShapes}
+      viewState={shape}
       title={compact ? "Throughput & Execution" : chartLabel}
     >
       {!compact && (
@@ -2048,7 +2022,7 @@ function ThroughputChartPanel({
         </TabsContent>
       </Tabs>
       )}
-    </OverviewPanelShell>
+    </PanelShell>
   );
 }
 
