@@ -215,6 +215,7 @@ public sealed class WorkableHttpApiTests
         var handle = await Direct(system).Queue.Enqueue("http.query.one", WorkInput.Empty.WithIdentifier(new WorkIdentifier("batch", "1")));
         var completion = await handle.WaitForCompletion();
         Assert.True(completion.IsCompletedSuccessfully);
+        await WaitForReadModel(system);
 
         var workerId = handle.WorkerId ?? throw new InvalidOperationException("Expected worker id.");
         var worker = await http.Query.Worker(Direct(system), workerId);
