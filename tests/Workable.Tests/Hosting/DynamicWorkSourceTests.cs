@@ -162,6 +162,7 @@ public sealed class DynamicWorkSourceTests
         await system.Start();
         await tracker.StartupWorkCompleted.Task.WaitAsync(TimeSpan.FromSeconds(5));
         await ReadNext(completedReader);
+        await WaitForReadModel(system);
 
         var workers = (await system.Query.Workers(new WorkerCriteria())).Workers;
         var worker = Assert.Single(workers, worker => worker.DefinitionName == "runtime.generated");
@@ -345,6 +346,9 @@ public sealed class DynamicWorkSourceTests
 
         Assert.True(await condition(), "Expected condition to become true.");
     }
+
+    private static Task WaitForReadModel(IWorkSystem system)
+        => Eventually(() => Task.FromResult(system.Diagnostics.ReadModel.PendingUpdateCount == 0));
 
     private sealed record EchoInput(string Message);
 

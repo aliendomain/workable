@@ -207,6 +207,7 @@ public sealed class WorkQueryServiceTests
                 .WithConcurrencyKey(concurrencyKey)
                 .WithIdentifier(queuedIdentifier));
         await handle.WaitForCompletion();
+        await WaitForReadModel(system);
         var workerId = RequiredWorkerId(handle);
         var snapshot = await system.Query.WorkerIteration(new WorkerIterationReference(workerId, 1));
         var bySubject = await system.Query.WorkerIterations(new WorkerIterationCriteria(SubjectId: subject));
@@ -1631,6 +1632,7 @@ public sealed class WorkQueryServiceTests
         await system.Workers.Execute(canceledWorker.Version, WorkAction.Cancel);
         await canceled.WaitForCompletion();
         await (await system.Queue.Enqueue("metrics.other")).WaitForCompletion();
+        await WaitForReadModel(system);
         await WaitForThroughputBucketToClose();
 
         var overviewWithoutThroughput = await system.Query.SystemDetails(new WorkSystemCriteria(

@@ -241,6 +241,7 @@ public sealed class WorkIndexTests
                 .WithConcurrencyKey(new WorkConcurrencyKey("retention", "shared"))
                 .WithIdentifier(new WorkIdentifier("retention", "shared")));
         await handle.WaitForCompletion();
+        await WaitForReadModel(system);
         var workerId = RequiredWorkerId(handle);
 
         var retained = await system.Query.WorkerIterations(new WorkerIterationCriteria(WorkerId: workerId, Take: 10));
@@ -345,6 +346,7 @@ public sealed class WorkIndexTests
             WorkInput.Empty
                 .WithSubject(new WorkSubjectId("account", "A-1"))
                 .WithIdentifier(new WorkIdentifier("invoice", "INV-1")))).WaitForCompletion();
+        await WaitForReadModel(system);
 
         var workers = await system.Query.Workers(new WorkerCriteria(
             SubjectId: new WorkSubjectId("account", "missing"),
@@ -382,6 +384,7 @@ public sealed class WorkIndexTests
                 .WithConcurrencyKey(new WorkConcurrencyKey("claim", "CLM-1"))
                 .WithIdentifier(new WorkIdentifier("claim", "CLM-1")));
         await handle.WaitForCompletion();
+        await WaitForReadModel(system);
         var workerId = RequiredWorkerId(handle);
 
         var workerKeys = await system.Query.WorkerKeys(new WorkerKeyCriteria(
