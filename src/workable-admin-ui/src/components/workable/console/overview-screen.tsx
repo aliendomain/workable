@@ -15,13 +15,10 @@ import {
   Loader2,
   MoreHorizontal,
   Play,
-  Rows2,
   Rows4,
-  X,
 } from "lucide-react";
-import type { PointerEvent, ReactNode } from "react";
+import type { ReactNode } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { createPortal } from "react-dom";
 import {
   ConsolePageLayout,
 } from "@/components/features/console/console-primitives";
@@ -33,7 +30,6 @@ import {
 } from "@/components/features/console/page-realtime-view";
 import {
   createRealtimePayloadMessage,
-  getRealtimePayloadComponentData,
   type RealtimePayloadMessage,
 } from "@/components/features/console/realtime-payload";
 import {
@@ -48,6 +44,7 @@ import {
 } from "@/components/features/console/overview-panels";
 import { PanelShell } from "@/components/features/console/panel-shell";
 import {
+  type ConsoleRealtimeEventMessage,
   type ConsoleRealtimeViewLoadable,
   useConsoleRealtimeView,
   type ConsoleRealtimeEventLoadable,
@@ -102,7 +99,6 @@ import {
   type WorkSystemAccessSummary,
   type WorkableConnection,
   type WorkableRealtimeEvent,
-  type WorkableRealtimeEventBatch,
   type WorkableRealtimeEventCriteria,
   type WorkerOverviewItem,
   type WorkerState,
@@ -134,6 +130,11 @@ type ThroughputSeries = {
   strokeWidth?: string;
   values: number[];
 };
+const chartViewBoxWidth = 1000;
+const chartViewBoxHeight = 220;
+const chartTopInset = 20;
+const chartBottomInset = 30;
+const chartValueRange = chartViewBoxHeight - chartTopInset - chartBottomInset;
 type WorkOverviewSystemComponent = Pick<WorkSystemOverview, "systemName" | "systemState">;
 type WorkOverviewWorkersComponent = Pick<
   WorkSystemOverview,
@@ -149,33 +150,7 @@ type WorkOverviewIterationsComponent = {
   commonKeyTypes?: WorkIterationKeyTypeFacet[];
   iterationCountByStatus: Partial<Record<WorkCompletionStatus, number>>;
 };
-export type RealtimePayloadPanelState = {
-  captureEnabled: boolean;
-  connectionState: string;
-  enabled: boolean;
-  externalMessages: RealtimePayloadMessage[];
-  hubUrl?: string | null;
-  maxMessages: number;
-  messages: RealtimePayloadMessage[];
-  onCaptureEnabledChange: (enabled: boolean) => void;
-  onClearExternalMessages: () => void;
-  onClearMessages: () => void;
-  onMaxMessagesChange: (maxMessages: number) => void;
-  onOpenChange: (open: boolean) => void;
-  open: boolean;
-};
-export type RealtimeEventMessage = {
-  batchId?: string;
-  batchSize?: number;
-  bytes: number;
-  bytesEstimated?: boolean;
-  events: WorkableRealtimeEvent[];
-  eventTypes: string[];
-  id: string;
-  receivedAt: number;
-  sentAt?: string;
-  value: WorkableRealtimeEvent | WorkableRealtimeEventBatch;
-};
+export type RealtimeEventMessage = ConsoleRealtimeEventMessage;
 
 export type RealtimeEventLoadable = ConsoleRealtimeEventLoadable<RealtimeEventMessage>;
 export type RealtimeViewLoadable<T> = ConsoleRealtimeViewLoadable<T, RealtimePayloadMessage>;
@@ -226,11 +201,9 @@ function overviewComponent(
 export function OverviewView({
   access,
   connection,
-  externalRealtimeMessages,
   hiddenPanelIds,
   hiddenThroughputSeries,
   isVisible,
-  onClearExternalRealtimeMessages,
   onConnectionError,
   onOpenCatalog,
   onOpenIterations,
@@ -240,9 +213,7 @@ export function OverviewView({
   onPanelShapeChange,
   onPanelVisibilityChange,
   onResetUi,
-  onRealtimePayloadCaptureEnabledChange,
   onActiveRealtimeConnectionCountChange,
-  onRealtimePayloadMaxMessagesChange,
   onRealtimePayloadOpenChange,
   onStateLoaded,
   onThroughputSeriesToggle,
@@ -258,11 +229,9 @@ export function OverviewView({
 }: {
   access?: WorkSystemAccessSummary;
   connection: WorkableConnection;
-  externalRealtimeMessages?: RealtimePayloadMessage[];
   hiddenPanelIds: OverviewPanelId[];
   hiddenThroughputSeries: ThroughputSeriesId[];
   isVisible: boolean;
-  onClearExternalRealtimeMessages?: () => void;
   onConnectionError: () => void;
   onOpenCatalog: () => void;
   onOpenIterations: () => void;
@@ -272,9 +241,7 @@ export function OverviewView({
   onPanelShapeChange: (panelId: OverviewPanelId, shape: WorkComponentShape) => void;
   onPanelVisibilityChange: (panelId: OverviewPanelId, visible: boolean) => void;
   onResetUi: () => void;
-  onRealtimePayloadCaptureEnabledChange?: (enabled: boolean) => void;
   onActiveRealtimeConnectionCountChange?: (count: number) => void;
-  onRealtimePayloadMaxMessagesChange?: (maxMessages: number) => void;
   onRealtimePayloadOpenChange?: (open: boolean) => void;
   onStateLoaded: (state: string) => void;
   onThroughputSeriesToggle: (seriesId: ThroughputSeriesId) => void;
@@ -303,8 +270,6 @@ export function OverviewView({
   const payloadCaptureEnabled = realtimePayloadCaptureEnabled ?? true;
   const payloadMaxMessages = realtimePayloadMaxMessages ?? 100;
   const setPayloadOpen = onRealtimePayloadOpenChange ?? noop;
-  const setPayloadCaptureEnabled = onRealtimePayloadCaptureEnabledChange ?? noop;
-  const setPayloadMaxMessages = onRealtimePayloadMaxMessagesChange ?? noop;
   const lacksReadableWorkAccess =
     access !== undefined &&
     !access.canReadAllWork &&
@@ -449,23 +414,6 @@ export function OverviewView({
     loading: overview.loading,
     refreshing: !!overview.refreshing || !!realtimeOverview.refreshing,
   });
-  const realtimePayloadWindow = isVisible ? (
-    <RealtimePayloadWindow
-      captureEnabled={payloadCaptureEnabled}
-      connectionState={realtimeOverview.connectionState}
-      enabled={realtimeOverview.enabled}
-      externalMessages={externalRealtimeMessages ?? []}
-      hubUrl={realtimeOverview.hubUrl}
-      maxMessages={payloadMaxMessages}
-      messages={realtimeOverview.messages}
-      onCaptureEnabledChange={setPayloadCaptureEnabled}
-      onClearExternalMessages={onClearExternalRealtimeMessages ?? (() => undefined)}
-      onClearMessages={realtimeOverview.clearMessages}
-      onMaxMessagesChange={setPayloadMaxMessages}
-      onOpenChange={setPayloadOpen}
-      open={payloadOpen}
-    />
-  ) : null;
   const headerCapabilities = useMemo<ConsoleHeaderCapabilities>(
     () => ({
       realtime: {
@@ -644,7 +592,6 @@ export function OverviewView({
 
   return (
     <ConsolePageLayout>
-      {realtimePayloadWindow}
       <PanelAggregateFrame
         className="space-y-2.5"
         controls={overviewControls}
@@ -2104,15 +2051,16 @@ function ThroughputAreaChart({
   const series = visibleSeries.length > 0 ? visibleSeries : allSeries;
   const maxValue = getNiceChartMax(Math.max(0, ...series.flatMap((item) => item.values)), mode);
   const yTicks = createYAxisTicks(maxValue);
+  const drawableSeries = series.filter((item) => !isZeroOnlySeries(item.values));
   const xTicks = createTimeAxisTicks(throughput, buckets);
   const metrics = createThroughputMetrics(
     mode,
     throughput,
     windowSeconds
   );
-  const lineSeries = mode === "completion" && series.length > 1
-    ? [...series.slice(1), series[0]]
-    : series;
+  const lineSeries = mode === "completion" && drawableSeries.length > 1
+    ? [...drawableSeries.slice(1), drawableSeries[0]]
+    : drawableSeries;
 
   return (
     <div className="space-y-3">
@@ -2157,9 +2105,21 @@ function ThroughputAreaChart({
       {showChart && (
         <div>
           <div className="relative grid h-56 grid-cols-[3.25rem_1fr] overflow-hidden rounded-lg border bg-background/40">
-            <div className="flex flex-col justify-between border-r border-border/70 px-2 py-3 text-right font-mono text-[10px] text-muted-foreground">
-              {yTicks.map((tick) => (
-                <span key={tick}>{formatThroughputAxisValue(mode, tick)}</span>
+            <div className="relative border-r border-border/70 px-2 text-right font-mono text-[10px] text-muted-foreground">
+              {yTicks.map((tick, index) => (
+                <span
+                  className={`absolute right-2 ${
+                    index === 0
+                      ? "translate-y-0"
+                      : index === yTicks.length - 1
+                        ? "-translate-y-full"
+                        : "-translate-y-1/2"
+                  }`}
+                  key={tick}
+                  style={{ top: `${(chartY(tick, maxValue) / chartViewBoxHeight) * 100}%` }}
+                >
+                  {formatThroughputAxisValue(mode, tick)}
+                </span>
               ))}
             </div>
             <div className="relative min-w-0">
@@ -2168,29 +2128,29 @@ function ThroughputAreaChart({
                 className="h-full w-full"
                 preserveAspectRatio="none"
                 role="img"
-                viewBox="0 0 1000 220"
+                viewBox={`0 0 ${chartViewBoxWidth} ${chartViewBoxHeight}`}
               >
                 <defs>
-                  {series.map((item) => (
+                  {drawableSeries.map((item) => (
                     <linearGradient id={item.gradientId} key={item.gradientId} x1="0" x2="0" y1="0" y2="1">
                       <stop offset="5%" stopColor={item.color} stopOpacity="0.42" />
                       <stop offset="95%" stopColor={item.color} stopOpacity="0.04" />
                     </linearGradient>
                   ))}
                 </defs>
-                {[0, 1, 2, 3].map((line) => (
+                {yTicks.map((tick, index) => (
                   <line
-                    className="stroke-border"
-                    key={line}
-                    strokeDasharray={line === 3 ? undefined : "4 8"}
+                    className={index === yTicks.length - 1 ? "stroke-border/90" : "stroke-border"}
+                    key={tick}
+                    strokeDasharray={index === yTicks.length - 1 ? undefined : "4 8"}
                     strokeWidth="1"
                     x1="0"
-                    x2="1000"
-                    y1={20 + line * 55}
-                    y2={20 + line * 55}
+                    x2={chartViewBoxWidth}
+                    y1={chartY(tick, maxValue)}
+                    y2={chartY(tick, maxValue)}
                   />
                 ))}
-                {series.map((item) => (
+                {drawableSeries.map((item) => (
                   <path d={createAreaPath(item.values, maxValue)} fill={`url(#${item.gradientId})`} key={`${item.label}-area`} />
                 ))}
                 {lineSeries.map((item) => (
@@ -2453,13 +2413,22 @@ function createAreaPath(values: number[], maxValue: number) {
 
   const last = chartPoint(values.at(-1) ?? 0, values.length - 1, values.length, maxValue);
   const first = chartPoint(values[0] ?? 0, 0, values.length, maxValue);
-  return `${line} L ${last.x.toFixed(2)} 210 L ${first.x.toFixed(2)} 210 Z`;
+  const baselineY = chartY(0, maxValue);
+  return `${line} L ${last.x.toFixed(2)} ${baselineY.toFixed(2)} L ${first.x.toFixed(2)} ${baselineY.toFixed(2)} Z`;
 }
 
 function chartPoint(value: number, index: number, count: number, maxValue: number) {
-  const x = count <= 1 ? 0 : (index / (count - 1)) * 1000;
-  const y = 20 + (1 - value / maxValue) * 170;
+  const x = count <= 1 ? 0 : (index / (count - 1)) * chartViewBoxWidth;
+  const y = chartY(value, maxValue);
   return { x, y };
+}
+
+function chartY(value: number, maxValue: number) {
+  return chartTopInset + (1 - value / maxValue) * chartValueRange;
+}
+
+function isZeroOnlySeries(values: number[]) {
+  return values.length > 0 && values.every((value) => value === 0);
 }
 
 function createThroughputMetrics(
@@ -3013,713 +2982,16 @@ function completionTone(status: WorkCompletionStatus) {
   }
 }
 
-export function RealtimePayloadWindow({
-  captureEnabled,
-  connectionState,
-  enabled,
-  externalMessages,
-  hubUrl,
-  maxMessages,
-  messages,
-  onCaptureEnabledChange,
-  onClearExternalMessages,
-  onClearMessages,
-  onMaxMessagesChange,
-  onOpenChange,
-  open,
-}: RealtimePayloadPanelState) {
-  const [position, setPosition] = useState({ x: 0, y: 0 });
-  const [windowSize, setWindowSize] = useState<"compact" | "large">("large");
-  const [messagesCollapsed, setMessagesCollapsed] = useState(false);
-  const [jsonView, setJsonView] = useState<"payload" | "componentData">("payload");
-  const [jsonCollapsedToComponents, setJsonCollapsedToComponents] = useState(false);
-  const [subscriptionFilter, setSubscriptionFilter] = useState("all");
-  const [selectedComponentId, setSelectedComponentId] = useState<string | null>(null);
-  const [selectedMessageId, setSelectedMessageId] = useState<string | null>(null);
-  const dragRef = useRef<{
-    originX: number;
-    originY: number;
-    startX: number;
-    startY: number;
-  } | null>(null);
-  const panelRef = useRef<HTMLDivElement | null>(null);
-  const wasOpenRef = useRef(false);
-  const allMessages = useMemo(
-    () => [...messages, ...externalMessages]
-      .sort((left, right) => right.receivedAt - left.receivedAt)
-      .slice(0, maxMessages),
-    [externalMessages, maxMessages, messages]
-  );
-  const subscriptionOptions = useMemo(
-    () => Array.from(new Set(allMessages.map((message) => message.subscription))).sort(),
-    [allMessages]
-  );
-  const activeSubscriptionFilter =
-    subscriptionFilter !== "all" && subscriptionOptions.includes(subscriptionFilter)
-      ? subscriptionFilter
-      : "all";
-  const filteredMessages = activeSubscriptionFilter === "all"
-    ? allMessages
-    : allMessages.filter((message) => message.subscription === activeSubscriptionFilter);
-  const selectedMessage =
-    filteredMessages.find((message) => message.id === selectedMessageId) ?? filteredMessages[0];
-  const returnedComponents = useMemo(
-    () => getRealtimePayloadComponentData(selectedMessage?.value),
-    [selectedMessage]
-  );
-  const selectedComponent =
-    returnedComponents.find((component) => component.id === selectedComponentId) ??
-    returnedComponents[0];
-  const isCompactWindow = windowSize === "compact";
-  const receivedAtText = selectedMessage
-    ? formatPayloadTime(selectedMessage.receivedAt)
-    : "No messages captured";
-  const payloadSizeText = selectedMessage?.bytes === undefined
-    ? "-"
-    : `${selectedMessage.bytes.toLocaleString()} bytes`;
-
-  useEffect(() => {
-    if (open && !wasOpenRef.current) {
-      setPosition(getCenteredRealtimePayloadPosition(windowSize));
-    }
-    wasOpenRef.current = open;
-  }, [open, windowSize]);
-
-  const toggleWindowSize = () => {
-    const nextSize = isCompactWindow ? "large" : "compact";
-
-    setWindowSize(nextSize);
-    setPosition(getCenteredRealtimePayloadPosition(nextSize));
-  };
-
-  const showComponentDataView = () => {
-    setJsonView("componentData");
-    setSelectedComponentId((current) =>
-      current && returnedComponents.some((component) => component.id === current)
-        ? current
-        : returnedComponents[0]?.id ?? null
-    );
-  };
-
-  const startDrag = (event: PointerEvent<HTMLDivElement>) => {
-    event.currentTarget.setPointerCapture(event.pointerId);
-    dragRef.current = {
-      originX: position.x,
-      originY: position.y,
-      startX: event.clientX,
-      startY: event.clientY,
-    };
-  };
-
-  const drag = (event: PointerEvent<HTMLDivElement>) => {
-    if (!dragRef.current) {
-      return;
-    }
-
-    const nextX = dragRef.current.originX + event.clientX - dragRef.current.startX;
-    const nextY = dragRef.current.originY + event.clientY - dragRef.current.startY;
-    const viewportWidth = window.visualViewport?.width ?? window.innerWidth;
-    const viewportHeight = window.visualViewport?.height ?? window.innerHeight;
-    const panelWidth = panelRef.current?.offsetWidth ?? 0;
-    const panelHeight = panelRef.current?.offsetHeight ?? 0;
-
-    setPosition({
-      x: clampFloatingWindowPosition(nextX, viewportWidth, panelWidth),
-      y: clampFloatingWindowPosition(nextY, viewportHeight, panelHeight),
-    });
-  };
-
-  const stopDrag = (event: PointerEvent<HTMLDivElement>) => {
-    dragRef.current = null;
-    event.currentTarget.releasePointerCapture(event.pointerId);
-  };
-
-  return (
-    <>
-      {open && typeof document !== "undefined"
-        ? createPortal(
-          <div
-            className={`fixed z-50 grid resize grid-rows-[auto_minmax(0,1fr)] overflow-hidden rounded-lg border bg-popover text-sm text-popover-foreground shadow-2xl ring-1 ring-foreground/10 ${
-              isCompactWindow ? "min-h-[28rem] min-w-[42rem]" : "min-h-[32rem] min-w-[48rem]"
-            }`}
-            ref={panelRef}
-            style={{
-              height: isCompactWindow ? "min(82vh, 32rem)" : "min(88vh, 56rem)",
-              left: position.x,
-              top: position.y,
-              width: isCompactWindow ? "min(96vw, 48rem)" : "min(96vw, 96rem)",
-            }}
-          >
-            <div
-              className="flex cursor-move items-center justify-between gap-3 border-b px-4 py-3 select-none"
-              onPointerDown={startDrag}
-              onPointerMove={drag}
-              onPointerUp={stopDrag}
-            >
-              <div className="min-w-0">
-                <div className="font-medium text-base">Realtime payloads</div>
-                <div className="truncate text-muted-foreground text-xs">
-                  {enabled ? connectionState : "disabled"} - {messages.length}/{maxMessages} messages - {payloadSizeText}
-                </div>
-              </div>
-              <div className="flex shrink-0 items-center gap-1">
-                <Button
-                  aria-label={isCompactWindow ? "Expand realtime payloads" : "Compact realtime payloads"}
-                  className="cursor-pointer"
-                  onClick={toggleWindowSize}
-                  onPointerDown={(event) => event.stopPropagation()}
-                  size="icon-sm"
-                  variant="ghost"
-                >
-                  {isCompactWindow ? <Rows4 className="size-4" /> : <Rows2 className="size-4" />}
-                </Button>
-                <Button
-                  aria-label="Close realtime payloads"
-                  className="cursor-pointer"
-                  onClick={() => onOpenChange(false)}
-                  onPointerDown={(event) => event.stopPropagation()}
-                  size="icon-sm"
-                  variant="ghost"
-                >
-                  <X className="size-4" />
-                </Button>
-              </div>
-            </div>
-            <div className="grid min-h-0 grid-rows-[auto_minmax(0,1fr)] gap-3 overflow-hidden p-3">
-              <div className="grid gap-2 rounded-md border px-3 py-2 lg:grid-cols-[minmax(0,1fr)_auto]">
-                <div className="flex min-w-0 flex-wrap items-center gap-x-4 gap-y-1 text-xs">
-                  <PayloadInlineMetric label="Received" value={receivedAtText} />
-                  <PayloadInlineMetric label="Size" value={payloadSizeText} />
-                  <PayloadInlineMetric label="Messages" value={`${filteredMessages.length}/${allMessages.length}/${maxMessages}`} />
-                  <PayloadInlineMetric label="Subscription" value={selectedMessage?.subscription ?? "-"} />
-                  <PayloadInlineMetric label="Hub" value={hubUrl ?? "-"} wide />
-                </div>
-                <div className="flex flex-wrap items-center gap-3">
-                  <Button
-                    className="h-8 px-2 text-xs"
-                    disabled={allMessages.length === 0}
-                    onClick={() => {
-                      setSelectedMessageId(null);
-                      setSelectedComponentId(null);
-                      onClearMessages();
-                      onClearExternalMessages();
-                    }}
-                    size="sm"
-                    variant="ghost"
-                  >
-                    Clear
-                  </Button>
-                  <label className="flex items-center gap-2 text-muted-foreground">
-                    <span>Show</span>
-                    <select
-                      className="h-8 max-w-44 rounded-md border bg-background px-2 text-foreground"
-                      onChange={(event) => setSubscriptionFilter(event.currentTarget.value)}
-                      value={activeSubscriptionFilter}
-                    >
-                      <option value="all">All subscriptions</option>
-                      {subscriptionOptions.map((subscription) => (
-                        <option key={subscription} value={subscription}>
-                          {subscription}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  <label className="flex items-center gap-2 text-muted-foreground">
-                    <input
-                      checked={captureEnabled}
-                      className="size-4 accent-primary"
-                      onChange={(event) => onCaptureEnabledChange(event.currentTarget.checked)}
-                      type="checkbox"
-                    />
-                    <span>Capture incoming messages</span>
-                  </label>
-                  <label className="flex items-center gap-2">
-                    <span className="text-muted-foreground">Max</span>
-                    <input
-                      className="h-8 w-20 rounded-md border bg-background px-2 font-mono text-foreground"
-                      max={1000}
-                      min={1}
-                      onChange={(event) =>
-                        onMaxMessagesChange(normalizeRealtimeMaxMessages(event.currentTarget.value))
-                      }
-                      type="number"
-                      value={maxMessages}
-                    />
-                  </label>
-                </div>
-              </div>
-              <div
-                className={`grid min-h-0 gap-3 ${
-                  messagesCollapsed
-                    ? "md:grid-cols-[2.75rem_minmax(0,1fr)]"
-                    : "md:grid-cols-[22rem_minmax(0,1fr)]"
-                }`}
-              >
-                <div className="grid min-h-0 grid-rows-[auto_minmax(0,1fr)] overflow-hidden rounded-md border">
-                  <div className="flex items-center justify-between gap-2 border-b px-2 py-1.5">
-                    {!messagesCollapsed && (
-                      <div className="font-medium text-muted-foreground text-xs">Messages</div>
-                    )}
-                    <Button
-                      aria-label={messagesCollapsed ? "Show messages" : "Collapse messages"}
-                      className="ml-auto"
-                      onClick={() => setMessagesCollapsed((current) => !current)}
-                      size="icon-sm"
-                      variant="ghost"
-                    >
-                      <ChevronRight
-                        className={`size-4 transition-transform ${
-                          messagesCollapsed ? "" : "rotate-180"
-                        }`}
-                      />
-                    </Button>
-                  </div>
-                  {messagesCollapsed ? (
-                    <div className="flex min-h-0 items-start justify-center overflow-hidden py-2">
-                      <div className="font-mono text-muted-foreground text-xs [writing-mode:vertical-rl]">
-                        {filteredMessages.length}
-                      </div>
-                    </div>
-                  ) : (
-                    <div className="min-h-0 overflow-auto p-2">
-                      {allMessages.length === 0 ? (
-                        <div className="p-3 text-muted-foreground text-sm">
-                          Waiting for realtime payloads.
-                        </div>
-                      ) : filteredMessages.length === 0 ? (
-                        <div className="p-3 text-muted-foreground text-sm">
-                          No payloads match this subscription.
-                        </div>
-                      ) : (
-                        <div className="space-y-1">
-                          {filteredMessages.map((message) => (
-                            <button
-                              className={`grid w-full gap-1 rounded-md px-2 py-2 text-left text-xs transition-colors ${
-                                message.id === selectedMessage?.id
-                                  ? "bg-accent text-accent-foreground"
-                                  : "hover:bg-accent/50"
-                              }`}
-                              key={message.id}
-                              onClick={() => setSelectedMessageId(message.id)}
-                              type="button"
-                            >
-                              <span className="flex items-center justify-between gap-2">
-                                <span className="min-w-0 truncate font-mono">
-                                  {formatPayloadTime(message.receivedAt)}
-                                </span>
-                                <span className="font-mono text-muted-foreground">
-                                  {message.bytes.toLocaleString()}b
-                                </span>
-                              </span>
-                              <span className="truncate font-mono text-muted-foreground">
-                                {message.subscription}
-                              </span>
-                              <span className="truncate text-muted-foreground">
-                                {message.components.map((component) => component.id).join(", ")}
-                              </span>
-                            </button>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-                  )}
-                </div>
-                <div
-                  className={`grid min-h-0 overflow-hidden rounded-md border ${
-                    jsonView === "componentData"
-                      ? "grid-rows-[auto_auto_minmax(0,1fr)]"
-                      : "grid-rows-[auto_minmax(0,1fr)]"
-                  }`}
-                >
-                  <div className="flex items-center justify-between gap-2 border-b px-3 py-2">
-                    <div className="flex min-w-0 items-center gap-2">
-                      <div className="font-medium text-muted-foreground text-xs">
-                        JSON
-                      </div>
-                      <div className="flex rounded-md border bg-muted/30 p-0.5">
-                        <Button
-                          className={`h-6 px-2 text-xs ${
-                            jsonView === "payload" ? "bg-accent text-accent-foreground" : ""
-                          }`}
-                          onClick={() => setJsonView("payload")}
-                          size="sm"
-                          variant="ghost"
-                        >
-                          Payload
-                        </Button>
-                        <Button
-                          className={`h-6 px-2 text-xs ${
-                            jsonView === "componentData" ? "bg-accent text-accent-foreground" : ""
-                          }`}
-                          disabled={returnedComponents.length === 0}
-                          onClick={showComponentDataView}
-                          size="sm"
-                          variant="ghost"
-                        >
-                          Data
-                        </Button>
-                      </div>
-                    </div>
-                    {jsonView === "payload" ? (
-                      <Button
-                        className="h-7 px-2 text-xs"
-                        onClick={() => setJsonCollapsedToComponents((current) => !current)}
-                        size="sm"
-                        variant="ghost"
-                      >
-                        {jsonCollapsedToComponents ? "Expand JSON" : "Component level"}
-                      </Button>
-                    ) : (
-                      <div className="min-w-0 truncate font-mono text-muted-foreground text-xs">
-                        {selectedComponent
-                          ? `${selectedComponent.id}:${selectedComponent.shape ?? "?"}:${selectedComponent.status ?? "?"}`
-                          : "No component data"}
-                      </div>
-                    )}
-                  </div>
-                  {jsonView === "componentData" && (
-                    <div className="flex min-w-0 gap-1 overflow-x-auto border-b px-3 py-2">
-                      {returnedComponents.length === 0 ? (
-                        <span className="text-muted-foreground text-xs">
-                          No returned components.
-                        </span>
-                      ) : (
-                        returnedComponents.map((component) => (
-                          <button
-                            className={`shrink-0 rounded-md border px-2 py-1 font-mono text-xs transition-colors ${
-                              component.id === selectedComponent?.id
-                                ? "bg-accent text-accent-foreground"
-                                : "text-muted-foreground hover:bg-accent/50"
-                            }`}
-                            key={component.id}
-                            onClick={() => setSelectedComponentId(component.id)}
-                            type="button"
-                          >
-                            {component.id}
-                          </button>
-                        ))
-                      )}
-                    </div>
-                  )}
-                  <pre className="min-h-0 overflow-auto whitespace-pre-wrap break-words bg-muted/30 p-3 font-mono text-xs leading-relaxed">
-                    {jsonView === "componentData" ? (
-                      selectedComponent ? (
-                        <JsonValue
-                          key={`${selectedMessage?.id ?? "none"}:${selectedComponent.id}:data`}
-                          value={selectedComponent.data}
-                        />
-                      ) : (
-                        "Select a returned component."
-                      )
-                    ) : selectedMessage ? (
-                      <JsonValue
-                        collapseToComponentLevel={jsonCollapsedToComponents}
-                        key={`${selectedMessage.id}:${jsonCollapsedToComponents ? "components" : "full"}`}
-                        value={selectedMessage.value}
-                      />
-                    ) : (
-                      "Waiting for the first realtime payload."
-                    )}
-                  </pre>
-                </div>
-              </div>
-            </div>
-          </div>,
-          document.body
-        )
-        : null}
-    </>
-  );
-}
-
-export function JsonValue({
-  collapseToComponentLevel = false,
-  indent = 0,
-  maxExpandedArrayItems,
-  value,
-}: {
-  collapseToComponentLevel?: boolean;
-  indent?: number;
-  maxExpandedArrayItems?: number;
-  value: unknown;
-}) {
-  if (value === null) {
-    return <span className="text-muted-foreground">null</span>;
-  }
-
-  if (Array.isArray(value)) {
-    return (
-      <JsonArrayValue
-        collapseToComponentLevel={collapseToComponentLevel}
-        indent={indent}
-        maxExpandedArrayItems={maxExpandedArrayItems}
-        value={value}
-      />
-    );
-  }
-
-  if (typeof value === "object") {
-    return (
-      <JsonObjectValue
-        collapseToComponentLevel={collapseToComponentLevel}
-        indent={indent}
-        maxExpandedArrayItems={maxExpandedArrayItems}
-        value={value as Record<string, unknown>}
-      />
-    );
-  }
-
-  if (typeof value === "string") {
-    return <span className="text-emerald-300">{JSON.stringify(value)}</span>;
-  }
-
-  if (typeof value === "number") {
-    return <span className="text-amber-300">{value}</span>;
-  }
-
-  if (typeof value === "boolean") {
-    return <span className="text-purple-300">{String(value)}</span>;
-  }
-
-  if (typeof value === "undefined") {
-    return <span className="text-muted-foreground">undefined</span>;
-  }
-
-  return <span>{JSON.stringify(value)}</span>;
-}
-
-function JsonArrayValue({
-  collapseToComponentLevel,
-  indent,
-  maxExpandedArrayItems,
-  value,
-}: {
-  collapseToComponentLevel: boolean;
-  indent: number;
-  maxExpandedArrayItems?: number;
-  value: unknown[];
-}) {
-  const [manualExpanded, setManualExpanded] = useState<boolean | null>(null);
-  const isCollapsedToComponent = collapseToComponentLevel && indent >= 2;
-  const isExpanded = manualExpanded ?? !isCollapsedToComponent;
-  const expandedItemLimit = maxExpandedArrayItems && maxExpandedArrayItems > 0
-    ? maxExpandedArrayItems
-    : value.length;
-  const visibleItems = value.length > expandedItemLimit
-    ? value.slice(0, expandedItemLimit)
-    : value;
-  const hiddenItemCount = value.length - visibleItems.length;
-
-  if (value.length === 0) {
-    return <span>[]</span>;
-  }
-
-  if (!isExpanded) {
-    return (
-      <JsonCollapseButton
-        closer="]"
-        count={`${value.length} items`}
-        expanded={false}
-        opener="["
-        onToggle={() => setManualExpanded(true)}
-      />
-    );
-  }
-
-  return (
-    <>
-      <JsonCollapseButton
-        expanded={isExpanded}
-        onToggle={() => setManualExpanded(false)}
-        opener="["
-      />
-      {visibleItems.map((item, index) => (
-        <span key={index}>
-          {"\n"}
-          {jsonIndent(indent + 1)}
-          <JsonValue
-            collapseToComponentLevel={collapseToComponentLevel}
-            indent={indent + 1}
-            maxExpandedArrayItems={maxExpandedArrayItems}
-            value={item}
-          />
-          {index < value.length - 1 ? <span>,</span> : null}
-        </span>
-      ))}
-      {hiddenItemCount > 0 && (
-        <span>
-          {"\n"}
-          {jsonIndent(indent + 1)}
-          <span className="text-muted-foreground">
-            ... {hiddenItemCount.toLocaleString()} more item{hiddenItemCount === 1 ? "" : "s"}
-          </span>
-        </span>
-      )}
-      {"\n"}
-      {jsonIndent(indent)}
-      <span>]</span>
-    </>
-  );
-}
-
-function JsonObjectValue({
-  collapseToComponentLevel,
-  indent,
-  maxExpandedArrayItems,
-  value,
-}: {
-  collapseToComponentLevel: boolean;
-  indent: number;
-  maxExpandedArrayItems?: number;
-  value: Record<string, unknown>;
-}) {
-  const [manualExpanded, setManualExpanded] = useState<boolean | null>(null);
-  const entries = Object.entries(value);
-  const isCollapsedToComponent = collapseToComponentLevel && indent >= 2;
-  const isExpanded = manualExpanded ?? !isCollapsedToComponent;
-
-  if (entries.length === 0) {
-    return <span>{"{}"}</span>;
-  }
-
-  if (!isExpanded) {
-    return (
-      <JsonCollapseButton
-        closer="}"
-        count={`${entries.length} keys`}
-        expanded={false}
-        opener="{"
-        onToggle={() => setManualExpanded(true)}
-      />
-    );
-  }
-
-  return (
-    <>
-      <JsonCollapseButton
-        expanded={isExpanded}
-        onToggle={() => setManualExpanded(false)}
-        opener="{"
-      />
-      {entries.map(([key, item], index) => (
-        <span key={key}>
-          {"\n"}
-          {jsonIndent(indent + 1)}
-          <span className="text-sky-300">{JSON.stringify(key)}</span>
-          <span>: </span>
-          <JsonValue
-            collapseToComponentLevel={collapseToComponentLevel}
-            indent={indent + 1}
-            maxExpandedArrayItems={maxExpandedArrayItems}
-            value={item}
-          />
-          {index < entries.length - 1 ? <span>,</span> : null}
-        </span>
-      ))}
-      {"\n"}
-      {jsonIndent(indent)}
-      <span>{"}"}</span>
-    </>
-  );
-}
-
-function JsonCollapseButton({
-  closer,
-  count,
-  expanded,
-  onToggle,
-  opener,
-}: {
-  closer?: string;
-  count?: string;
-  expanded: boolean;
-  onToggle: () => void;
-  opener: string;
-}) {
-  return (
-    <button
-      className="inline-flex items-center gap-1 rounded px-0.5 text-left hover:bg-accent"
-      onClick={onToggle}
-      type="button"
-    >
-      <ChevronRight className={`size-3 transition-transform ${expanded ? "rotate-90" : ""}`} />
-      <span>{opener}</span>
-      {count ? <span className="text-muted-foreground">{count}</span> : null}
-      {closer ? <span>{closer}</span> : null}
-    </button>
-  );
-}
-
-function jsonIndent(level: number) {
-  return <span>{Array.from({ length: level }).map(() => "  ").join("")}</span>;
-}
-
-function formatPayloadTime(value: number) {
-  return new Intl.DateTimeFormat(undefined, {
-    hour: "numeric",
-    minute: "numeric",
-    second: "numeric",
-  }).format(new Date(value));
-}
-
-function getCenteredRealtimePayloadPosition(size: "compact" | "large") {
-  const viewportWidth = window.visualViewport?.width ?? window.innerWidth;
-  const viewportHeight = window.visualViewport?.height ?? window.innerHeight;
-  const panelWidth = size === "compact"
-    ? Math.min(viewportWidth * 0.96, 768)
-    : Math.min(viewportWidth * 0.96, 1536);
-  const panelHeight = size === "compact"
-    ? Math.min(viewportHeight * 0.82, 512)
-    : Math.min(viewportHeight * 0.88, 896);
-
-  return {
-    x: Math.max(8, Math.round((viewportWidth - panelWidth) / 2)),
-    y: Math.max(8, Math.round((viewportHeight - panelHeight) / 2)),
-  };
-}
-
-function PayloadInlineMetric({
-  label,
-  value,
-  wide = false,
-}: {
-  label: string;
-  value: string;
-  wide?: boolean;
-}) {
-  return (
-    <div className={`flex min-w-0 items-center gap-1 ${wide ? "max-w-[32rem]" : ""}`}>
-      <span className="text-muted-foreground">{label}</span>
-      <span className="min-w-0 truncate font-mono text-foreground">{value}</span>
-    </div>
-  );
-}
-
-function normalizeRealtimeMaxMessages(value: string) {
-  const parsed = Number.parseInt(value, 10);
-  if (!Number.isFinite(parsed)) {
-    return 100;
-  }
-
-  return Math.min(1000, Math.max(1, parsed));
-}
-
-function clampFloatingWindowPosition(value: number, viewport: number, size: number) {
-  const visibleGrip = 40;
-  const min = size > 0 ? Math.min(8, visibleGrip - size) : 8;
-  const max = Math.max(8, viewport - visibleGrip);
-
-  return Math.min(Math.max(min, value), max);
-}
-
 export function useWorkableRealtimeEvents(
   connection: WorkableConnection | null,
   criteria: WorkableRealtimeEventCriteria,
   enabled: boolean,
+  captureEnabled: boolean,
   maxMessages: number
 ): RealtimeEventLoadable {
   const criteriaKey = JSON.stringify(criteria);
   return useConsoleRealtimeEventStream({
+    captureEnabled,
     connection,
     createBatchMessage: (batch, nextMessageId) =>
       createRealtimeEventMessage(
@@ -3734,6 +3006,7 @@ export function useWorkableRealtimeEvents(
         `events:${nextMessageId}`,
         Date.now()
       ),
+    debugLabel: "events",
     enabled,
     maxMessages,
     subscriptionErrorMessage: "Realtime event subscription failed.",
@@ -3766,7 +3039,8 @@ export function useWorkableRealtimeView<T>(
         payloadJson,
         `${subscriptionName}:${nextMessageId}`,
         viewName,
-        subscriptionName
+        subscriptionName,
+        connection
       );
     },
     enabled,
@@ -3780,9 +3054,11 @@ export function useWorkableRealtimeWorkerEvents(
   connection: WorkableConnection | null,
   workerId: string,
   enabled: boolean,
+  captureEnabled: boolean,
   maxMessages: number
 ): RealtimeEventLoadable {
   return useConsoleRealtimeEventStream({
+    captureEnabled,
     connection,
     createBatchMessage: (batch, nextMessageId) =>
       createRealtimeEventMessage(
@@ -3797,6 +3073,7 @@ export function useWorkableRealtimeWorkerEvents(
         `worker-events:${nextMessageId}`,
         Date.now()
       ),
+    debugLabel: `worker:${workerId}`,
     enabled,
     maxMessages,
     subscriptionErrorMessage: "Realtime worker subscription failed.",

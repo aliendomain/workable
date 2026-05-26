@@ -1,7 +1,7 @@
 "use client";
 
 import type { ReactNode } from "react";
-import { ListFilter, MoreHorizontal, RotateCw, Rows2, Rows3, Rows4, X, type LucideIcon } from "lucide-react";
+import { ListFilter, MoreHorizontal, Rows2, Rows3, Rows4, X, type LucideIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -223,6 +223,7 @@ function NextViewStateButton({
   option: PanelShapeOption;
 }) {
   const label = `Next view: ${option.label}`;
+  const NextViewIcon = option.icon;
 
   return (
     <Tooltip delayDuration={500} disableHoverableContent>
@@ -236,7 +237,7 @@ function NextViewStateButton({
           variant="ghost"
         >
           <span className="sr-only">{label}</span>
-          <RotateCw className="size-4" />
+          <NextViewIcon className="size-4" />
         </Button>
       </TooltipTrigger>
       <TooltipContent side="top" sideOffset={6}>

@@ -3,7 +3,6 @@
 import { useState } from "react";
 import type { FormEvent } from "react";
 import { useRouter } from "next/navigation";
-import { LockKeyhole } from "lucide-react";
 import { AuthShell } from "@/components/layout/auth-shell";
 import { WorkableLogo } from "@/components/shared/workable-logo";
 import {
@@ -16,7 +15,6 @@ import {
   Card,
   CardContent,
   CardHeader,
-  CardTitle,
 } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -72,75 +70,69 @@ export function LoginForm({
 
   return (
     <AuthShell>
-        <Card className="border-border/70 bg-card/95 shadow-2xl shadow-black/20 backdrop-blur">
-          <CardHeader className="space-y-4">
-            <div className="flex justify-center">
-              <WorkableLogo className="h-10 w-auto object-contain" priority />
+      <Card className="border-border/70 bg-card/95 shadow-2xl shadow-black/20 backdrop-blur">
+        <CardHeader className="space-y-4">
+          <div className="flex justify-center">
+            <WorkableLogo className="h-10 w-auto object-contain" priority />
+          </div>
+        </CardHeader>
+        <CardContent>
+          {authProvider === "entra" ? (
+            <div className="space-y-4">
+              {error && (
+                <Alert variant="destructive">
+                  <AlertTitle>{errorTitle}</AlertTitle>
+                  <AlertDescription>{error}</AlertDescription>
+                </Alert>
+              )}
+
+              <Button asChild className="w-full" size="lg">
+                <a href={`/api/auth/entra/login?next=${encodeURIComponent(nextPath)}`}>
+                  Sign in with Microsoft
+                </a>
+              </Button>
             </div>
-          {authProvider !== "entra" && (
-              <CardTitle className="flex items-center gap-2 text-xl">
-                <LockKeyhole className="size-5" />
-                Sign in
-              </CardTitle>
-          )}
-          </CardHeader>
-          <CardContent>
-            {authProvider === "entra" ? (
-              <div className="space-y-4">
-                {error && (
-                  <Alert variant="destructive">
-                    <AlertTitle>{errorTitle}</AlertTitle>
-                    <AlertDescription>{error}</AlertDescription>
-                  </Alert>
-                )}
-
-                <Button asChild className="w-full" size="lg">
-                  <a href={`/api/auth/entra/login?next=${encodeURIComponent(nextPath)}`}>
-                    Sign in with Microsoft
-                  </a>
-                </Button>
+          ) : (
+            <form className="space-y-4" onSubmit={submit}>
+              <div className="space-y-2">
+                <Label htmlFor="userName">Username</Label>
+                <Input
+                  autoComplete="username"
+                  autoFocus
+                  id="userName"
+                  name="userName"
+                  onChange={(event) => setUserName(event.target.value)}
+                  required
+                  value={userName}
+                />
               </div>
-            ) : (
-              <form className="space-y-4" onSubmit={submit}>
-                <div className="space-y-2">
-                  <Label htmlFor="userName">Username</Label>
-                  <Input
-                    autoComplete="username"
-                    autoFocus
-                    id="userName"
-                    name="userName"
-                    onChange={(event) => setUserName(event.target.value)}
-                    required
-                    value={userName}
-                  />
-                </div>
-                <div className="space-y-2">
-                  <Label htmlFor="password">Password</Label>
-                  <Input
-                    autoComplete="current-password"
-                    id="password"
-                    name="password"
-                    onChange={(event) => setPassword(event.target.value)}
-                    required
-                    type="password"
-                    value={password}
-                  />
-                </div>
+              <div className="space-y-2">
+                <Label htmlFor="password">Password</Label>
+                <Input
+                  autoComplete="current-password"
+                  id="password"
+                  name="password"
+                  onChange={(event) => setPassword(event.target.value)}
+                  required
+                  type="password"
+                  value={password}
+                />
+              </div>
 
-                {error && (
-                  <Alert variant="destructive">
-                    <AlertTitle>{errorTitle}</AlertTitle>
-                    <AlertDescription>{error}</AlertDescription>
-                  </Alert>
-                )}
+              {error && (
+                <Alert variant="destructive">
+                  <AlertTitle>{errorTitle}</AlertTitle>
+                  <AlertDescription>{error}</AlertDescription>
+                </Alert>
+              )}
 
-                <Button className="w-full" disabled={isSubmitting} size="lg" type="submit">
-                  {isSubmitting ? "Signing in..." : "Sign in"}
-                </Button>
-              </form>
-            )}
-          </CardContent>
-        </Card>
+              <Button className="w-full" disabled={isSubmitting} size="lg" type="submit">
+                {isSubmitting ? "Signing in..." : "Sign in"}
+              </Button>
+            </form>
+          )}
+        </CardContent>
+      </Card>
     </AuthShell>
   );
 }

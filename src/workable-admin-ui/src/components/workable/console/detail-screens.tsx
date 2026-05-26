@@ -95,9 +95,6 @@ import {
   useLiveRelativeTimeNow,
 } from "@/components/workable/console/live-relative-time";
 import {
-  RealtimePayloadWindow,
-} from "@/components/workable/console/overview-screen";
-import {
   formatDateTime,
   workableFetch,
   type QueueRequestSchemaDescriptor,
@@ -105,6 +102,7 @@ import {
   type WorkAction,
   type WorkCompletionStatus,
   type WorkComponentQueryResult,
+  type WorkComponentShape,
   type WorkConfiguration,
   type WorkData,
   type WorkDefinition,
@@ -646,8 +644,6 @@ export function WorkerConsoleView({
   onActiveRealtimeConnectionCountChange,
   onNavigateBack,
   onOpenWorker,
-  onRealtimePayloadCaptureEnabledChange,
-  onRealtimePayloadMaxMessagesChange,
   onRealtimePayloadOpenChange,
   refreshToken,
   realtimePayloadCaptureEnabled,
@@ -659,8 +655,6 @@ export function WorkerConsoleView({
   onActiveRealtimeConnectionCountChange: (count: number) => void;
   onNavigateBack: () => void;
   onOpenWorker: (workerId: string) => void;
-  onRealtimePayloadCaptureEnabledChange: (enabled: boolean) => void;
-  onRealtimePayloadMaxMessagesChange: (maxMessages: number) => void;
   onRealtimePayloadOpenChange: (open: boolean) => void;
   refreshToken: number;
   realtimePayloadCaptureEnabled: boolean;
@@ -904,24 +898,6 @@ export function WorkerConsoleView({
       toggleRealtimePayloadOpen,
     ]
   );
-  const realtimePayloadWindow = (
-    <RealtimePayloadWindow
-      captureEnabled={realtimePayloadCaptureEnabled}
-      connectionState={realtimeWorker.connectionState}
-      enabled={realtimeWorker.enabled}
-      externalMessages={[]}
-      hubUrl={realtimeWorker.hubUrl ?? null}
-      maxMessages={realtimePayloadMaxMessages}
-      messages={realtimeWorker.messages}
-      onCaptureEnabledChange={onRealtimePayloadCaptureEnabledChange}
-      onClearExternalMessages={() => undefined}
-      onClearMessages={realtimeWorker.clearMessages}
-      onMaxMessagesChange={onRealtimePayloadMaxMessagesChange}
-      onOpenChange={onRealtimePayloadOpenChange}
-      open={realtimePayloadOpen}
-    />
-  );
-
   const openCopyQueueDialog = async () => {
     if (!worker) {
       return;
@@ -1091,7 +1067,6 @@ export function WorkerConsoleView({
 
   return (
     <ConsolePageLayout>
-      {realtimePayloadWindow}
       <PanelAggregateFrame
         hiddenPanelIds={[...hiddenPanelIds]}
         onPanelVisibilityChange={setWorkerPanelVisible}
@@ -2416,14 +2391,14 @@ function WorkerTimelinePanel({
   return (
     <PanelShell
       contentClassName={viewState === "compact" ? "hidden" : "space-y-4"}
-      actions={(
+      actions={viewState === "detailed" ? (
         <WorkerTimelinePanelActions
           isPaused={isPaused}
           onTogglePause={togglePause}
           onToggleSortDirection={() => setSortDirection((current) => current === "desc" ? "asc" : "desc")}
           sortDirection={sortDirection}
         />
-      )}
+      ) : null}
       filterControl={viewState === "detailed"
         ? {
             activeCount: filtersActive ? normalizedSelectedFilters.size : 0,

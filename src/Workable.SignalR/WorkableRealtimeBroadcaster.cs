@@ -482,7 +482,10 @@ internal sealed class WorkableRealtimeBroadcaster(
             .Group(subscription.GroupName)
             .SendAsync(
                 WorkableRealtimeClientMethods.ViewUpdated,
-                view,
+                new WorkableRealtimeViewEnvelope<WorkComponentQueryResult>(
+                    subscription.SubscriptionId,
+                    subscription.ViewName,
+                    view),
                 cancellationToken);
     }
 
@@ -595,7 +598,10 @@ internal sealed class WorkableRealtimeBroadcaster(
             .Group(subscription.GroupName)
             .SendAsync(
                 WorkableRealtimeClientMethods.ViewUpdated,
-                new WorkComponentQueryResult(DateTimeOffset.UtcNow, components),
+                new WorkableRealtimeViewEnvelope<WorkComponentQueryResult>(
+                    subscription.SubscriptionId,
+                    subscription.ViewName,
+                    new WorkComponentQueryResult(DateTimeOffset.UtcNow, components)),
                 cancellationToken);
     }
 

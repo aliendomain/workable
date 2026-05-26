@@ -75,6 +75,12 @@ internal sealed class WorkerEventPublisher(
             "worker.retrying",
             details: new WorkerEventPayloadDetails(RetryDelay: retryDelay));
 
+    internal void IterationStarted(WorkerRecord worker)
+        => this.Publish(
+            worker,
+            "worker.iteration.started",
+            details: new WorkerEventPayloadDetails(IncludeLatestIteration: true));
+
     internal void IterationCompleted(WorkerRecord worker)
         => this.Publish(
             worker,

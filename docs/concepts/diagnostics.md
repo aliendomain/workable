@@ -283,8 +283,11 @@ Diagnostics component options:
 Example:
 
 ```csharp
+const string DiagnosticsAlertSubscriptionId = "diagnostics-alert-tray";
+
 await connection.InvokeAsync(
     "WatchView",
+    DiagnosticsAlertSubscriptionId,
     "diagnostics",
     new WorkViewCriteria(
         Components:

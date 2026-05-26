@@ -8,7 +8,6 @@ import {
   MoreHorizontal,
   Pause,
   Play,
-  RefreshCw,
   SquareArrowOutUpRight,
   Trash2,
 } from "lucide-react";
@@ -18,7 +17,6 @@ import { ConsolePageLayout } from "@/components/features/console/console-primiti
 import { PanelAggregateFrame } from "@/components/features/console/panel-aggregate-frame";
 import { PanelShell, type PanelFilterControl } from "@/components/features/console/panel-shell";
 import type { PanelVisibilityOption } from "@/components/features/console/panel-visibility-settings";
-import { ToolbarIconButton } from "@/components/features/console/toolbar-icon-button";
 import type { OverviewScope } from "@/components/features/console/types";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -28,7 +26,6 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { Skeleton } from "@/components/ui/skeleton";
 import {
   Table,
   TableBody,
@@ -155,7 +152,7 @@ export function WorkersView({
   const [manualRefreshToken, setManualRefreshToken] = useState(0);
   const queryKey = JSON.stringify(query);
   const selectionScopeKey = `${connection.apiUrl}\n${connection.systemName ?? ""}\n${queryKey}`;
-  const scrollResetKey = `${connection.apiUrl}\n${connection.systemName ?? ""}\n${queryKey}\n${refreshToken}\n${manualRefreshToken}`;
+  const scrollResetKey = `${connection.apiUrl}\n${connection.systemName ?? ""}\n${queryKey}`;
   const workerScrollTopRef = useRef(0);
   useEffect(() => {
     workerScrollTopRef.current = 0;
@@ -304,13 +301,15 @@ export function WorkersView({
     ? activeActionHighlight.workerId
     : activeSelectedWorkerRowId;
   return (
-    <ConsolePageLayout>
+    <ConsolePageLayout fill scrollMode="panel">
       <PanelAggregateFrame
+        fill
         hiddenPanelIds={[...hiddenPanelIds]}
         onPanelVisibilityChange={setWorkersPanelVisible}
         onResetUi={resetWorkersUiToDefaults}
         padding="tightTop"
         panelOptions={workersPanelOptions}
+        scrollMode="panel"
         settingsButtonLabel="Workers panel settings"
         settingsDescription="Checked panels are shown on the workers page."
         settingsTitle="Workers panels"
@@ -318,13 +317,6 @@ export function WorkersView({
         <ErrorPanel errors={[workers.error, actionError]} />
         {!hiddenPanelIds.has("workers") ? (
           <QueryPanelShell
-            actions={(
-              <QueryRefreshButton
-                isRefreshing={workers.loading}
-                label="Refresh workers"
-                onRefresh={refreshWorkers}
-              />
-            )}
             filterControl={filterControl}
             leadingActions={<QueryResultTotal noun="worker" totalCount={workers.totalCount} />}
             onClose={() => setWorkersPanelVisible("workers", false)}
@@ -351,6 +343,7 @@ export function WorkersView({
               scrollMemory={workerScrollTopRef}
               scrollResetKey={scrollResetKey}
               shape={gridShape}
+              totalCount={workers.totalCount}
               workers={visibleWorkers}
             />
           </QueryPanelShell>
@@ -396,10 +389,9 @@ export function IterationsView({
     }),
     [categoryFilter, definitionFilter, keyTypeFilter, statusFilter]
   );
-  const [manualRefreshToken, setManualRefreshToken] = useState(0);
   const queryKey = JSON.stringify(query);
   const selectionScopeKey = `${connection.apiUrl}\n${connection.systemName ?? ""}\n${queryKey}`;
-  const scrollResetKey = `${connection.apiUrl}\n${connection.systemName ?? ""}\n${queryKey}\n${refreshToken}\n${manualRefreshToken}`;
+  const scrollResetKey = `${connection.apiUrl}\n${connection.systemName ?? ""}\n${queryKey}`;
   const iterationScrollTopRef = useRef(0);
   useEffect(() => {
     iterationScrollTopRef.current = 0;
@@ -407,16 +399,13 @@ export function IterationsView({
   const iterations = useInfiniteIterationQuery(
     connection,
     query,
-    refreshToken + manualRefreshToken,
+    refreshToken,
     isLoadingTarget
   );
   const [gridShape, setGridShape] = useState<WorkComponentShape>(
     queryGridShapeCapabilities.defaultShape
   );
   const [hiddenPanelIds, setHiddenPanelIds] = useState<ReadonlySet<"iterations">>(() => new Set());
-  const refreshIterations = useCallback(() => {
-    setManualRefreshToken((value) => value + 1);
-  }, []);
   const openIterationRow = useCallback((iteration: WorkViewIterationGridDetailed) => {
     setSelectedIterationRowKey(getIterationRowKey(iteration));
     setSelectedIterationResetKey(selectionScopeKey);
@@ -454,13 +443,15 @@ export function IterationsView({
     ? selectedIterationRowKey
     : null;
   return (
-    <ConsolePageLayout>
+    <ConsolePageLayout fill scrollMode="panel">
       <PanelAggregateFrame
+        fill
         hiddenPanelIds={[...hiddenPanelIds]}
         onPanelVisibilityChange={setIterationsPanelVisible}
         onResetUi={resetIterationsUiToDefaults}
         padding="tightTop"
         panelOptions={iterationsPanelOptions}
+        scrollMode="panel"
         settingsButtonLabel="Iterations panel settings"
         settingsDescription="Checked panels are shown on the iterations page."
         settingsTitle="Iterations panels"
@@ -468,13 +459,6 @@ export function IterationsView({
         <ErrorPanel errors={[iterations.error]} />
         {!hiddenPanelIds.has("iterations") ? (
           <QueryPanelShell
-            actions={(
-              <QueryRefreshButton
-                isRefreshing={iterations.loading}
-                label="Refresh iterations"
-                onRefresh={refreshIterations}
-              />
-            )}
             filterControl={filterControl}
             leadingActions={<QueryResultTotal noun="iteration" totalCount={iterations.totalCount} />}
             onClose={() => setIterationsPanelVisible("iterations", false)}
@@ -498,6 +482,7 @@ export function IterationsView({
               scrollMemory={iterationScrollTopRef}
               scrollResetKey={scrollResetKey}
               shape={gridShape}
+              totalCount={iterations.totalCount}
             />
           </QueryPanelShell>
         ) : null}
@@ -534,6 +519,8 @@ function QueryPanelShell({
   return (
     <PanelShell
       actions={actions}
+      className="flex min-h-0 flex-1 flex-col overflow-hidden"
+      contentClassName="mt-4 flex min-h-0 flex-1 flex-col overflow-hidden"
       filterControl={filterControl}
       leadingActions={leadingActions}
       onClose={onClose}
@@ -542,31 +529,27 @@ function QueryPanelShell({
       title={title}
       viewState={shape}
     >
-      {children}
+      <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+        {children}
+      </div>
     </PanelShell>
   );
 }
 
-function QueryRefreshButton({
-  isRefreshing,
+function QueryTableStatus({
   label,
-  onRefresh,
 }: {
-  isRefreshing: boolean;
   label: string;
-  onRefresh: () => void;
 }) {
   return (
-    <ToolbarIconButton
-      disabled={isRefreshing}
-      label={label}
-      onClick={onRefresh}
-      type="button"
-      className="size-7"
-    >
-      <RefreshCw className={isRefreshing ? "size-4 animate-spin" : "size-4"} />
-    </ToolbarIconButton>
+    <div className="flex min-h-0 flex-1 items-center justify-center rounded-lg border border-dashed p-8 text-center text-muted-foreground text-sm">
+      <span>{label}</span>
+    </div>
   );
+}
+
+function QueryTablePlaceholder() {
+  return <div className="flex min-h-0 flex-1 rounded-lg border border-dashed" />;
 }
 
 function isWorkerNotFoundError(error: unknown) {
@@ -620,6 +603,7 @@ function VirtualWorkerTable({
   scrollMemory,
   scrollResetKey,
   shape,
+  totalCount,
   workers,
 }: {
   hasMore: boolean;
@@ -641,6 +625,7 @@ function VirtualWorkerTable({
   scrollMemory: MutableRefObject<number>;
   scrollResetKey: string;
   shape: WorkComponentShape;
+  totalCount?: number;
   workers: WorkViewWorkerGridDetailed[];
 }) {
   const detailed = shape === "detailed";
@@ -701,19 +686,19 @@ function VirtualWorkerTable({
   );
 
   if (loading && workers.length === 0) {
-    return <StackedSkeleton count={8} />;
+    if (workers.length === 0 && totalCount === 0) {
+      return <QueryTableStatus label="No workers matched the current query." />;
+    }
+
+    return <QueryTablePlaceholder />;
   }
 
   if (workers.length === 0) {
-    return (
-      <div className="rounded-lg border border-dashed p-8 text-center text-muted-foreground text-sm">
-        No workers matched the current query.
-      </div>
-    );
+    return <QueryTableStatus label="No workers matched the current query." />;
   }
 
   return (
-    <div className="overflow-hidden rounded-lg border">
+    <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-lg border">
       <div className="grid bg-card shadow-[0_1px_0_var(--border)]">
         <div className="flex min-h-12">
           <div className="flex h-12 flex-[2_2_22rem] items-center px-3 font-medium text-sm">Definition</div>
@@ -726,7 +711,7 @@ function VirtualWorkerTable({
         </div>
       </div>
       <div
-        className="workable-grid-scrollbar max-h-[calc(100vh-17rem)] overflow-auto"
+        className="workable-grid-scrollbar min-h-0 flex-1 overflow-auto"
         onScroll={(event) => {
           onScrollPositionChange(event.currentTarget.scrollTop);
           maybeLoadMoreWorkers(event.currentTarget);
@@ -974,6 +959,7 @@ function VirtualIterationTable({
   scrollMemory,
   scrollResetKey,
   shape,
+  totalCount,
 }: {
   hasMore: boolean;
   highlightedIterationKey?: string | null;
@@ -987,6 +973,7 @@ function VirtualIterationTable({
   scrollMemory: MutableRefObject<number>;
   scrollResetKey: string;
   shape: WorkComponentShape;
+  totalCount?: number;
 }) {
   const detailed = shape === "detailed";
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -1046,19 +1033,19 @@ function VirtualIterationTable({
   );
 
   if (loading && iterations.length === 0) {
-    return <StackedSkeleton count={8} />;
+    if (iterations.length === 0 && totalCount === 0) {
+      return <QueryTableStatus label="No iterations matched the current query." />;
+    }
+
+    return <QueryTablePlaceholder />;
   }
 
   if (iterations.length === 0) {
-    return (
-      <div className="rounded-lg border border-dashed p-8 text-center text-muted-foreground text-sm">
-        No iterations matched the current query.
-      </div>
-    );
+    return <QueryTableStatus label="No iterations matched the current query." />;
   }
 
   return (
-    <div className="overflow-hidden rounded-lg border">
+    <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-lg border">
       <div className="grid bg-card shadow-[0_1px_0_var(--border)]">
         <div className="flex min-h-12">
           <div className="flex h-12 flex-[2_2_22rem] items-center px-3 font-medium text-sm">Definition</div>
@@ -1071,7 +1058,7 @@ function VirtualIterationTable({
         </div>
       </div>
       <div
-        className="workable-grid-scrollbar max-h-[calc(100vh-17rem)] overflow-auto"
+        className="workable-grid-scrollbar min-h-0 flex-1 overflow-auto"
         onScroll={(event) => {
           onScrollPositionChange(event.currentTarget.scrollTop);
           maybeLoadMoreIterations(event.currentTarget);
@@ -1281,16 +1268,6 @@ function DurationValue({
     <span className={`${className} ${duration.isWarning ? "text-amber-300" : "text-muted-foreground"}`}>
       {duration.text}
     </span>
-  );
-}
-
-function StackedSkeleton({ count }: { count: number }) {
-  return (
-    <div className="space-y-2">
-      {Array.from({ length: count }, (_, index) => (
-        <Skeleton className="h-12 w-full rounded-md" key={index} />
-      ))}
-    </div>
   );
 }
 
@@ -1517,10 +1494,10 @@ function useInfiniteWorkerQuery(
     const requestId = requestIdRef.current + 1;
     requestIdRef.current = requestId;
     inFlightSkipRef.current = null;
-    const shouldClearItems = resetKeyRef.current !== resetKey;
+    const shouldResetQuery = resetKeyRef.current !== resetKey;
     resetKeyRef.current = resetKey;
     if (
-      !shouldClearItems &&
+      !shouldResetQuery &&
       loadedRequestKeyRef.current === requestKey &&
       stateRef.current.items.length > 0
     ) {
@@ -1532,20 +1509,13 @@ function useInfiniteWorkerQuery(
         return;
       }
 
-      setState((current) => shouldClearItems
-        ? {
-            items: [],
-            loading: true,
-            loadingMore: false,
-            nextSkip: 0,
-          }
-        : {
-            ...current,
-            error: undefined,
-            loading: true,
-            loadingMore: false,
-            nextSkip: 0,
-          });
+      setState((current) => ({
+        ...current,
+        error: undefined,
+        loading: true,
+        loadingMore: false,
+        nextSkip: 0,
+      }));
       loadedRequestKeyRef.current = requestKey;
       void loadPage(0, false, requestId);
     });
@@ -1803,10 +1773,10 @@ function useInfiniteIterationQuery(
     const requestId = requestIdRef.current + 1;
     requestIdRef.current = requestId;
     inFlightSkipRef.current = null;
-    const shouldClearItems = resetKeyRef.current !== resetKey;
+    const shouldResetQuery = resetKeyRef.current !== resetKey;
     resetKeyRef.current = resetKey;
     if (
-      !shouldClearItems &&
+      !shouldResetQuery &&
       loadedRequestKeyRef.current === requestKey &&
       stateRef.current.items.length > 0
     ) {
@@ -1818,20 +1788,13 @@ function useInfiniteIterationQuery(
         return;
       }
 
-      setState((current) => shouldClearItems
-        ? {
-            items: [],
-            loading: true,
-            loadingMore: false,
-            nextSkip: 0,
-          }
-        : {
-            ...current,
-            error: undefined,
-            loading: true,
-            loadingMore: false,
-            nextSkip: 0,
-          });
+      setState((current) => ({
+        ...current,
+        error: undefined,
+        loading: true,
+        loadingMore: false,
+        nextSkip: 0,
+      }));
       loadedRequestKeyRef.current = requestKey;
       void loadPage(0, false, requestId);
     });

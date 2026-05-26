@@ -70,7 +70,7 @@ The current worker event types are:
 
 - `worker.queued`: a worker was accepted into the system.
 - `worker.start`: a start action was applied to a worker.
-- `worker.started`: execution for an iteration began.
+- `worker.started`: the worker entered active execution for the first time, either because automatic start dispatched it or because an accepted start action resumed it.
 - `worker.pause`: a pause action was applied to a worker.
 - `worker.paused`: execution completion resolved into the paused state.
 - `worker.cancel`: a cancel action was applied to a worker.
@@ -80,6 +80,7 @@ The current worker event types are:
 - `worker.interrupted`: execution completion resolved as interrupted, such as shutdown or lease loss.
 - `worker.waiting`: a recurring worker finished an iteration and is waiting for its next recurrence interval.
 - `worker.retrying`: a transient exception failure moved the worker into retry delay.
+- `worker.iteration.started`: an iteration began. This includes the first execution attempt, retry iterations, and recurring next iterations.
 - `worker.iteration.completed`: an iteration finished successfully.
 - `worker.iteration.failed`: an iteration finished as failed.
 - `worker.recurrence.circuit_opened`: recurring execution stopped because the recurrence circuit breaker opened.
@@ -118,14 +119,15 @@ Shape:
     "identifiers": [
       { "type": "order", "value": "order-789" }
     ],
-    "state": "Queued",
+    "state": "Running",
     "createdAt": "2026-05-17T12:00:00Z",
-    "stateChangedAt": "2026-05-17T12:00:00Z",
-    "updatedAt": "2026-05-17T12:00:00Z",
+    "stateChangedAt": "2026-05-17T12:00:01Z",
+    "updatedAt": "2026-05-17T12:00:01Z",
     "version": {
       "workerId": { "value": "00000000-0000-0000-0000-000000000000" },
       "revision": 1
     },
+    "queueDuration": "00:00:01",
     "totalExecutionDuration": "00:00:00"
   },
   "keys": [
@@ -141,6 +143,7 @@ Notes:
 - `queueDuration` is included after the worker has started at least once. It is omitted for work that is still queued and has never begun execution.
 - `nextRunAt` is included when the worker already has a scheduled future run. In practice that means recurring work in the `Waiting` state and transient-retry work in the `Retrying` state.
 - `interruptionReason` is included when the worker is in the `Interrupted` state.
+- `worker.started` uses this base payload directly and does not include iteration data.
 - Every payload family below includes this full base worker payload unless noted otherwise.
 
 ### Event Origin Payload
@@ -288,6 +291,31 @@ Includes the base worker payload plus:
   "retryDelay": "00:00:00.8000000"
 }
 ```
+
+### Iteration Start Payload
+
+Used by:
+
+- `worker.iteration.started`
+
+Includes the base worker payload plus:
+
+```json
+{
+  "iteration": {
+    "sequence": 1,
+    "startedAt": "2026-05-17T12:00:00Z",
+    "executionDuration": "00:00:00",
+    "status": "Executing"
+  }
+}
+```
+
+Notes:
+
+- This payload uses the current in-flight iteration snapshot rather than a retained completed iteration.
+- `completedAt` is omitted because the iteration has not finished yet.
+- Iteration-heavy fields such as `output`, `messages`, and `logs` are still omitted from the event payload.
 
 ### Iteration Completion Payload
 

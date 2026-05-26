@@ -229,8 +229,10 @@ public sealed class WorkEventPayloadTests
         });
         await system.Start();
 
+        await using var iterationStartedSubscription = system.Events.Subscribe(new WorkEventFilter(DefinitionId: definition.Id, EventType: "worker.iteration.started"));
         await using var iterationSubscription = system.Events.Subscribe(new WorkEventFilter(DefinitionId: definition.Id, EventType: "worker.iteration.completed"));
         await using var waitingSubscription = system.Events.Subscribe(new WorkEventFilter(DefinitionId: definition.Id, EventType: "worker.waiting"));
+        await using var iterationStartedReader = iterationStartedSubscription.Read().GetAsyncEnumerator();
         await using var iterationReader = iterationSubscription.Read().GetAsyncEnumerator();
         await using var waitingReader = waitingSubscription.Read().GetAsyncEnumerator();
 
@@ -238,8 +240,21 @@ public sealed class WorkEventPayloadTests
         var workerId = RequiredWorkerId(handle);
         try
         {
+            var iterationStarted = await ReadNext(iterationStartedReader);
             var iteration = await ReadNext(iterationReader);
             var waiting = await ReadNext(waitingReader);
+
+            var iterationStartedData = RequiredData(iterationStarted);
+            var startedIterationPayload = iterationStartedData.GetProperty("iteration");
+            Assert.Equal("worker.iteration.started", iterationStarted.EventType);
+            Assert.Equal("Running", iterationStartedData.GetProperty("worker").GetProperty("state").GetString());
+            Assert.Equal(1, startedIterationPayload.GetProperty("sequence").GetInt64());
+            Assert.Equal("Executing", startedIterationPayload.GetProperty("status").GetString());
+            Assert.False(startedIterationPayload.TryGetProperty("output", out _));
+            Assert.False(startedIterationPayload.TryGetProperty("messages", out _));
+            Assert.False(startedIterationPayload.TryGetProperty("log", out _));
+            Assert.False(startedIterationPayload.TryGetProperty("logs", out _));
+            AssertThinEvent(iterationStarted, iterationStartedData);
 
             var iterationData = RequiredData(iteration);
             Assert.Equal("Completed", iterationData.GetProperty("completionStatus").GetString());
@@ -296,17 +311,38 @@ public sealed class WorkEventPayloadTests
         });
         await system.Start();
 
-        await using var subscription = system.Events.Subscribe(new WorkEventFilter(DefinitionId: definition.Id, EventType: "worker.retrying"));
-        await using var reader = subscription.Read().GetAsyncEnumerator();
+        await using var retryingSubscription = system.Events.Subscribe(new WorkEventFilter(DefinitionId: definition.Id, EventType: "worker.retrying"));
+        await using var startedSubscription = system.Events.Subscribe(new WorkEventFilter(DefinitionId: definition.Id, EventType: "worker.started"));
+        await using var iterationStartedSubscription = system.Events.Subscribe(new WorkEventFilter(DefinitionId: definition.Id, EventType: "worker.iteration.started"));
+        await using var retryingReader = retryingSubscription.Read().GetAsyncEnumerator();
+        await using var startedReader = startedSubscription.Read().GetAsyncEnumerator();
+        await using var iterationStartedReader = iterationStartedSubscription.Read().GetAsyncEnumerator();
 
         var handle = await system.Queue.Enqueue("events.retrying");
-        var workEvent = await ReadNext(reader);
+        var firstStarted = await ReadNext(startedReader);
+        var firstIterationStarted = await ReadNext(iterationStartedReader);
+        var retryingEvent = await ReadNext(retryingReader);
+        var secondIterationStarted = await ReadNext(iterationStartedReader);
         await handle.WaitForCompletion();
 
-        var data = RequiredData(workEvent);
-        Assert.Equal("Retrying", data.GetProperty("worker").GetProperty("state").GetString());
-        Assert.Equal(1, data.GetProperty("worker").GetProperty("retryAttempt").GetInt32());
-        Assert.Equal("00:00:00.0500000", data.GetProperty("retryDelay").GetString());
+        var startedData = RequiredData(firstStarted);
+        Assert.Equal("worker.started", firstStarted.EventType);
+        Assert.Equal("Running", startedData.GetProperty("worker").GetProperty("state").GetString());
+
+        var firstIterationStartedData = RequiredData(firstIterationStarted);
+        Assert.Equal("worker.iteration.started", firstIterationStarted.EventType);
+        Assert.Equal(1, firstIterationStartedData.GetProperty("iteration").GetProperty("sequence").GetInt64());
+
+        var retryingData = RequiredData(retryingEvent);
+        Assert.Equal("Retrying", retryingData.GetProperty("worker").GetProperty("state").GetString());
+        Assert.Equal(1, retryingData.GetProperty("worker").GetProperty("retryAttempt").GetInt32());
+        Assert.Equal("00:00:00.0500000", retryingData.GetProperty("retryDelay").GetString());
+
+        var secondIterationStartedData = RequiredData(secondIterationStarted);
+        Assert.Equal("worker.iteration.started", secondIterationStarted.EventType);
+        Assert.Equal(2, secondIterationStartedData.GetProperty("iteration").GetProperty("sequence").GetInt64());
+
+        await AssertNoNextEvent(startedReader);
     }
 
     [Fact]
@@ -518,6 +554,18 @@ public sealed class WorkEventPayloadTests
         }
 
         throw new TimeoutException("The expected event did not happen.");
+    }
+
+    private static async Task AssertNoNextEvent(IAsyncEnumerator<WorkEvent> reader)
+    {
+        try
+        {
+            Assert.False(await reader.MoveNextAsync().AsTask().WaitAsync(TimeSpan.FromMilliseconds(250)));
+        }
+        catch (TimeoutException)
+        {
+            // No event arrived within the window, which is the expected outcome.
+        }
     }
 
     private sealed class NoopExecutor : IWorkExecutor

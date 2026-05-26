@@ -52,13 +52,11 @@ export function ConsoleHeaderCapabilityControls({
                 size="icon-sm"
                 variant="ghost"
               >
-                <Radio
-                  className={cn("size-4", realtimeConnectionTone(realtime.connectionState, realtime.enabled))}
-                />
+                <RealtimeStatusIcon realtime={realtime} />
               </Button>
             </TooltipTrigger>
             <TooltipContent side="bottom" sideOffset={6}>
-              {formatRealtimeActionLabel(realtime, singleRealtimeAction)}
+              {formatRealtimeTooltip(realtime)}
             </TooltipContent>
           </Tooltip>
         ) : hasRealtimeMenu ? (
@@ -68,18 +66,16 @@ export function ConsoleHeaderCapabilityControls({
                 <DropdownMenuTrigger asChild>
                   <Button
                     aria-label={formatRealtimeConnectionState(realtime.connectionState, realtime.enabled)}
-                    className={consoleIconButtonClassName}
-                    size="icon-sm"
-                    variant="ghost"
-                  >
-                    <Radio
-                      className={cn("size-4", realtimeConnectionTone(realtime.connectionState, realtime.enabled))}
-                    />
-                  </Button>
-                </DropdownMenuTrigger>
-              </TooltipTrigger>
+                  className={consoleIconButtonClassName}
+                  size="icon-sm"
+                  variant="ghost"
+                >
+                  <RealtimeStatusIcon realtime={realtime} />
+                </Button>
+              </DropdownMenuTrigger>
+            </TooltipTrigger>
               <TooltipContent side="bottom" sideOffset={6}>
-                {formatRealtimeConnectionState(realtime.connectionState, realtime.enabled)}
+                {formatRealtimeTooltip(realtime)}
               </TooltipContent>
             </Tooltip>
             <DropdownMenuContent align="end" className="w-56 p-1">
@@ -105,11 +101,11 @@ export function ConsoleHeaderCapabilityControls({
                 className="inline-flex size-8 items-center justify-center"
                 role="img"
               >
-                <Radio className={cn("size-4", realtimeConnectionTone(realtime.connectionState, realtime.enabled))} />
+                <RealtimeStatusIcon realtime={realtime} />
               </span>
             </TooltipTrigger>
             <TooltipContent side="bottom" sideOffset={6}>
-              {formatRealtimeConnectionState(realtime.connectionState, realtime.enabled)}
+              {formatRealtimeTooltip(realtime)}
             </TooltipContent>
           </Tooltip>
         )
@@ -137,6 +133,27 @@ export function ConsoleHeaderCapabilityControls({
   );
 }
 
+function RealtimeStatusIcon({
+  realtime,
+}: {
+  realtime: NonNullable<ConsoleHeaderCapabilities["realtime"]>;
+}) {
+  const showDisconnectedBadge =
+    realtime.enabled &&
+    realtime.connectionState === "disconnected";
+
+  return (
+    <span className="relative inline-flex size-4 items-center justify-center">
+      <Radio className={cn("size-4", realtimeConnectionTone(realtime.connectionState, realtime.enabled))} />
+      {showDisconnectedBadge && (
+        <span className="-right-1 -top-1 absolute flex size-3 items-center justify-center rounded-full bg-red-500 font-semibold text-[9px] leading-none text-white">
+          !
+        </span>
+      )}
+    </span>
+  );
+}
+
 function formatRealtimeConnectionState(connectionState: string, enabled: boolean) {
   if (!enabled) {
     return "Realtime unavailable";
@@ -156,6 +173,12 @@ function formatRealtimeConnectionState(connectionState: string, enabled: boolean
     default:
       return connectionState;
   }
+}
+
+function formatRealtimeTooltip(
+  realtime: NonNullable<ConsoleHeaderCapabilities["realtime"]>
+) {
+  return realtime.title ?? formatRealtimeConnectionState(realtime.connectionState, realtime.enabled);
 }
 
 function realtimeConnectionTone(connectionState: string, enabled: boolean) {

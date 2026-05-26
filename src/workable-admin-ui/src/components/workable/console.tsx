@@ -16,29 +16,44 @@ import {
   Info,
   Loader2,
   LogOut,
-  Maximize2,
-  Minimize2,
+  Pause,
+  Play,
   Plus,
-  Rows2,
   Rows4,
   Workflow,
-  X,
 } from "lucide-react";
-import { Fragment, type KeyboardEvent, type PointerEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { createPortal } from "react-dom";
+import { Fragment, type KeyboardEvent, type PointerEvent, type ReactNode, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import {
   overviewPanelIds,
   type OverviewPanelId,
   overviewPanelShapeCapabilities,
   type OverviewPanelShapeMap,
 } from "@/components/features/console/overview-panels";
-import { ConsoleViewMount } from "@/components/features/console/console-primitives";
+import {
+  ConsoleViewport,
+  ConsoleViewportContent,
+  ConsoleViewMount,
+} from "@/components/features/console/console-primitives";
 import {
   ConsoleHeaderCapabilitiesProvider,
   type ConsoleHeaderCapabilities,
 } from "@/components/features/console/header-capabilities";
-import { ConsolePageRealtimeViewProvider } from "@/components/features/console/page-realtime-view";
-import { EventViewerToggleButton } from "@/components/features/console/event-viewer-toggle-button";
+import {
+  ConsolePageRealtimeViewProvider,
+} from "@/components/features/console/page-realtime-view";
+import {
+  clearConsoleRealtimeEventCapture,
+  clearConsoleRealtimePayloadCapture,
+  useConsoleRealtimeEventCapture,
+  useConsoleRealtimePayloadCapture,
+  useConsoleRealtimeStats,
+} from "@/components/features/console/realtime";
+import {
+  JsonValue,
+  RealtimePayloadWindow,
+  RealtimeStatsMenu,
+  type RealtimePayloadWindowTab,
+} from "@/components/features/console/realtime-payload-window";
 import type {
   OverviewScope,
   PendingDelete,
@@ -77,7 +92,6 @@ import {
 } from "@/components/workable/console/query-screens";
 import {
   OverviewView,
-  JsonValue,
   type RealtimeEventMessage,
   useWorkableRealtimeView,
   useWorkableRealtimeEvents,
@@ -223,6 +237,7 @@ const eventViewerEventTypes = [
   "worker.push",
   "worker.waiting",
   "worker.retrying",
+  "worker.iteration.started",
   "worker.iteration.completed",
   "worker.iteration.failed",
   "worker.recurrence.circuit_opened",
@@ -259,12 +274,11 @@ export function WorkableConsole() {
   const [concurrencyDiagnosticsExpanded, setConcurrencyDiagnosticsExpanded] = useState(false);
   const [durabilityDiagnosticsExpanded, setDurabilityDiagnosticsExpanded] = useState(false);
   const [idempotencyDiagnosticsExpanded, setIdempotencyDiagnosticsExpanded] = useState(false);
-  const [realtimePayloadCaptureEnabled, setRealtimePayloadCaptureEnabled] = useState(true);
+  const realtimePayloadCaptureEnabled = true;
   const [realtimePayloadMaxMessages, setRealtimePayloadMaxMessages] = useState(100);
   const [realtimePayloadOpen, setRealtimePayloadOpen] = useState(false);
-  const [eventViewerCaptureEnabled, setEventViewerCaptureEnabled] = useState(true);
+  const [realtimePayloadActiveTab, setRealtimePayloadActiveTab] = useState<RealtimePayloadWindowTab>("payloads");
   const [eventViewerMaxMessages, setEventViewerMaxMessages] = useState(100);
-  const [eventViewerOpen, setEventViewerOpen] = useState(false);
   const [eventViewerDefinitions, setEventViewerDefinitions] = useState<WorkDefinition[]>([]);
   const [eventViewerDefinitionsLoading, setEventViewerDefinitionsLoading] = useState(false);
   const [eventViewerDefinitionError, setEventViewerDefinitionError] = useState<string>();
@@ -272,10 +286,12 @@ export function WorkableConsole() {
   const [selectedEventViewerEventTypes, setSelectedEventViewerEventTypes] = useState<string[]>([]);
   const [selectedEventViewerKeys, setSelectedEventViewerKeys] = useState<WorkableRealtimeEventKeyCriteria[]>([]);
   const [refreshTokens, setRefreshTokens] = useState<Record<View, number>>(initialRefreshTokens);
+  const realtimeEventCapture = useConsoleRealtimeEventCapture();
+  const realtimeStats = useConsoleRealtimeStats();
+  const ignoreRealtimeConnectionCountChange = useCallback<(count: number) => void>(() => undefined, []);
   const [selectedDefinitionId, setSelectedDefinitionId] = useState<string | null>(null);
   const [selectedDefinitionName, setSelectedDefinitionName] = useState<string | null>(null);
   const [selectedWorkerId, setSelectedWorkerId] = useState<string | null>(null);
-  const [pageRealtimeConnectionCount, setPageRealtimeConnectionCount] = useState(0);
   const [workerCategoryFilter, setWorkerCategoryFilter] = useState("");
   const [workerDefinitionFilter, setWorkerDefinitionFilter] = useState("");
   const [keyTypeFilter, setKeyTypeFilter] = useState("");
@@ -284,6 +300,7 @@ export function WorkableConsole() {
   const [iterationDefinitionFilter, setIterationDefinitionFilter] = useState("");
   const [iterationKeyTypeFilter, setIterationKeyTypeFilter] = useState("");
   const [iterationStatusFilter, setIterationStatusFilter] = useState<WorkCompletionStatus[]>([]);
+  const usesPanelOwnedScroll = visibleView === "workers" || visibleView === "iterations";
   const [catalogScopeBySystemId, setCatalogScopeBySystemId] = useState<
     Record<string, OverviewScope | undefined>
   >({});
@@ -615,24 +632,6 @@ export function WorkableConsole() {
     realtimePayloadMaxMessages,
     "diagnostics:idempotency"
   );
-  const diagnosticsRealtimeMessages = useMemo(
-    () => [
-      ...diagnosticsTray.messages,
-      ...readModelDiagnosticsDetail.messages,
-      ...retentionDiagnosticsDetail.messages,
-      ...concurrencyDiagnosticsDetail.messages,
-      ...durabilityDiagnosticsDetail.messages,
-      ...idempotencyDiagnosticsDetail.messages,
-    ],
-    [
-      diagnosticsTray.messages,
-      readModelDiagnosticsDetail.messages,
-      retentionDiagnosticsDetail.messages,
-      concurrencyDiagnosticsDetail.messages,
-      durabilityDiagnosticsDetail.messages,
-      idempotencyDiagnosticsDetail.messages,
-    ]
-  );
   const eventViewerCriteria = useMemo<WorkableRealtimeEventCriteria>(
     () => ({
       definitionIds: selectedEventViewerDefinitionIds.length > 0
@@ -647,27 +646,19 @@ export function WorkableConsole() {
     }),
     [selectedEventViewerDefinitionIds, selectedEventViewerEventTypes, selectedEventViewerKeys]
   );
+  const captureRealtimeEvents =
+    realtimePayloadOpen &&
+    realtimePayloadActiveTab === "events";
   const realtimeEvents = useWorkableRealtimeEvents(
     hydratedConnection,
     eventViewerCriteria,
     Boolean(hydratedConnection?.realtimeHubPath) &&
       activeCanUseRealtimeEvents &&
-      eventViewerOpen &&
-      eventViewerCaptureEnabled &&
+      captureRealtimeEvents &&
       selectedEventViewerEventTypes.length > 0,
+    captureRealtimeEvents,
     eventViewerMaxMessages
   );
-  const activeRealtimeConnectionCount =
-    pageRealtimeConnectionCount +
-    countEnabledRealtimeConnections([
-      diagnosticsTray,
-      readModelDiagnosticsDetail,
-      retentionDiagnosticsDetail,
-      concurrencyDiagnosticsDetail,
-      durabilityDiagnosticsDetail,
-      idempotencyDiagnosticsDetail,
-      realtimeEvents,
-    ]);
   const toggleEventViewerEventType = useCallback((eventType: string) => {
     setSelectedEventViewerEventTypes((current) =>
       current.includes(eventType)
@@ -717,27 +708,6 @@ export function WorkableConsole() {
       )
     );
   }, []);
-  const clearDiagnosticsTrayMessages = diagnosticsTray.clearMessages;
-  const clearReadModelDiagnosticsDetailMessages = readModelDiagnosticsDetail.clearMessages;
-  const clearRetentionDiagnosticsDetailMessages = retentionDiagnosticsDetail.clearMessages;
-  const clearConcurrencyDiagnosticsDetailMessages = concurrencyDiagnosticsDetail.clearMessages;
-  const clearDurabilityDiagnosticsDetailMessages = durabilityDiagnosticsDetail.clearMessages;
-  const clearIdempotencyDiagnosticsDetailMessages = idempotencyDiagnosticsDetail.clearMessages;
-  const clearDiagnosticsRealtimeMessages = useCallback(() => {
-    clearDiagnosticsTrayMessages();
-    clearReadModelDiagnosticsDetailMessages();
-    clearRetentionDiagnosticsDetailMessages();
-    clearConcurrencyDiagnosticsDetailMessages();
-    clearDurabilityDiagnosticsDetailMessages();
-    clearIdempotencyDiagnosticsDetailMessages();
-  }, [
-    clearDiagnosticsTrayMessages,
-    clearReadModelDiagnosticsDetailMessages,
-    clearRetentionDiagnosticsDetailMessages,
-    clearConcurrencyDiagnosticsDetailMessages,
-    clearDurabilityDiagnosticsDetailMessages,
-    clearIdempotencyDiagnosticsDetailMessages,
-  ]);
   const handleSystemNotificationOpenChange = useCallback((open: boolean) => {
     setSystemNotificationOpen(open);
     if (!open) {
@@ -949,7 +919,7 @@ export function WorkableConsole() {
   }, [consoleState, hasMounted]);
 
   useEffect(() => {
-    if (!hydratedConnection || !eventViewerOpen) {
+    if (!hydratedConnection || !realtimePayloadOpen) {
       return;
     }
 
@@ -979,7 +949,7 @@ export function WorkableConsole() {
     return () => {
       canceled = true;
     };
-  }, [eventViewerOpen, hydratedConnection]);
+  }, [hydratedConnection, realtimePayloadOpen]);
 
   const currentNavigation = useCallback(
     (): NavigationEntry => ({
@@ -1040,10 +1010,27 @@ export function WorkableConsole() {
       [targetView]: current[targetView] + 1,
     }));
   }, []);
+  const toggleRealtimePayloadOpen = useCallback(() => {
+    setRealtimePayloadOpen((current) => !current);
+  }, []);
   const defaultHeaderCapabilities = useMemo<ConsoleHeaderCapabilities | null>(
     () =>
       hydratedConnection
         ? {
+            realtime: {
+              connectionState: "disabled",
+              enabled: false,
+              title: "Nothing on this screen uses realtime.",
+              menuItems: [
+                {
+                  active: realtimePayloadOpen,
+                  icon: <Rows4 className="size-4" />,
+                  id: "global-realtime-payloads",
+                  label: "Realtime payloads",
+                  onSelect: toggleRealtimePayloadOpen,
+                },
+              ],
+            },
             refresh: {
               ariaLabel: headerRefreshTitle(view),
               onRefresh: () => refreshView(view),
@@ -1051,7 +1038,7 @@ export function WorkableConsole() {
             },
           }
         : null,
-    [hydratedConnection, refreshView, view]
+    [hydratedConnection, realtimePayloadOpen, refreshView, toggleRealtimePayloadOpen, view]
   );
 
   const setSystemOverviewScope = useCallback((
@@ -1760,9 +1747,9 @@ export function WorkableConsole() {
   };
 
   return (
-    <SidebarProvider>
+    <SidebarProvider scrollMode={usesPanelOwnedScroll ? "panel" : "browser"}>
       <DiagnosticsAlertSubscriptions
-        captureEnabled={false}
+        captureEnabled={captureRealtimePayloads}
         enabled={hasMounted}
         maxMessages={realtimePayloadMaxMessages}
         onSnapshot={updateDiagnosticsAlertSnapshot}
@@ -1849,8 +1836,8 @@ export function WorkableConsole() {
         </SidebarFooter>
       </Sidebar>
       <SidebarInset>
-        <main className="flex-1 bg-background">
-          <div className="relative mx-auto w-full max-w-7xl p-4 md:p-6">
+        <main className="flex min-h-0 flex-1 flex-col bg-background">
+          <div className="relative mx-auto flex min-h-0 w-full max-w-7xl flex-1 flex-col p-4 md:p-6">
               {!hydratedConnection && (
                 <EmptyServerState
                   description={
@@ -1864,306 +1851,311 @@ export function WorkableConsole() {
               )}
               {hydratedConnection && (
                 <ConsolePageRealtimeViewProvider>
-                <ConsoleHeaderCapabilitiesProvider defaultCapabilities={defaultHeaderCapabilities}>
-                  {activeHost && activeSystem && (
-                    <ConsoleNavigationHeader
-                      breadcrumbParent={breadcrumbParent}
-                      canGoBack={navigationHistory.length > 0}
-                      canGoForward={forwardNavigation.length > 0}
-                      definitionId={selectedDefinitionId}
-                      definitionName={selectedDefinitionName}
-                      host={activeHost}
-                      onBack={navigateBack}
-                      onForward={navigateForward}
-                      onOpenView={openView}
-                      system={activeSystem}
-                      systemNotifications={(
-                        <div className="flex items-center gap-1">
-                          <EventViewerToggleButton
-                            onOpenChange={setEventViewerOpen}
-                            open={eventViewerOpen}
-                          />
-                          <SystemNotificationTray
-                            acknowledgedRejectedWorkCounts={acknowledgedRejectedWorkCounts}
-                            activeDiagnosticsAlertTargetId={activeDiagnosticsAlertTargetId}
-                            activeSystemDiagnosticsAvailable={activeCanUseRealtimeDiagnosticsUi}
-                            alertSources={diagnosticsAlertSources}
-                            concurrencyDetailDiagnostics={concurrencyDiagnosticsDetail}
-                            concurrencyExpanded={concurrencyDiagnosticsExpanded}
-                            durabilityDetailDiagnostics={durabilityDiagnosticsDetail}
-                            durabilityExpanded={durabilityDiagnosticsExpanded}
-                            idempotencyDetailDiagnostics={idempotencyDiagnosticsDetail}
-                            idempotencyExpanded={idempotencyDiagnosticsExpanded}
-                            onAcknowledgeQueueRejections={acknowledgeQueueRejections}
-                            onConcurrencyExpandedChange={setConcurrencyDiagnosticsExpanded}
-                            onDurabilityExpandedChange={setDurabilityDiagnosticsExpanded}
-                            onIdempotencyExpandedChange={setIdempotencyDiagnosticsExpanded}
-                            onOpenChange={handleSystemNotificationOpenChange}
-                            onReadModelExpandedChange={setReadModelDiagnosticsExpanded}
-                            onRetentionExpandedChange={setRetentionDiagnosticsExpanded}
-                            open={systemNotificationOpen}
-                            readModelDetailDiagnostics={readModelDiagnosticsDetail}
-                            readModelExpanded={readModelDiagnosticsExpanded}
-                            retentionDetailDiagnostics={retentionDiagnosticsDetail}
-                            retentionExpanded={retentionDiagnosticsExpanded}
-                            systemName={activeSystem.name}
-                            trayDiagnostics={diagnosticsTray}
-                          />
-                          <EventViewerWindow
-                            activeConnectionCount={activeRealtimeConnectionCount}
-                            captureEnabled={eventViewerCaptureEnabled}
-                            connectionState={realtimeEvents.connectionState}
-                            definitionError={eventViewerDefinitionError}
-                            definitions={eventViewerDefinitions}
-                            definitionsLoading={eventViewerDefinitionsLoading}
-                            enabled={realtimeEvents.enabled}
-                            eventTypes={eventViewerEventTypes}
-                            error={realtimeEvents.error}
-                            hubUrl={realtimeEvents.hubUrl ?? null}
-                            maxMessages={eventViewerMaxMessages}
-                            messages={realtimeEvents.messages}
-                            onAddKey={addEventViewerKey}
-                            onCaptureEnabledChange={setEventViewerCaptureEnabled}
-                            onClearMessages={realtimeEvents.clearMessages}
-                            onDefinitionToggle={toggleEventViewerDefinition}
-                            onEventTypeToggle={toggleEventViewerEventType}
-                            onMaxMessagesChange={setEventViewerMaxMessages}
-                            onOpenChange={setEventViewerOpen}
-                            onRemoveKey={removeEventViewerKey}
-                            open={eventViewerOpen}
-                            selectedDefinitionIds={selectedEventViewerDefinitionIds}
-                            selectedEventTypes={selectedEventViewerEventTypes}
-                            selectedKeys={selectedEventViewerKeys}
-                          />
-                        </div>
+                  <ConsoleHeaderCapabilitiesProvider defaultCapabilities={defaultHeaderCapabilities}>
+                    <ConsoleViewport scrollMode={usesPanelOwnedScroll ? "panel" : "browser"}>
+                      {activeHost && activeSystem && (
+                        <ConsoleNavigationHeader
+                          breadcrumbParent={breadcrumbParent}
+                          canGoBack={navigationHistory.length > 0}
+                          canGoForward={forwardNavigation.length > 0}
+                          definitionId={selectedDefinitionId}
+                          definitionName={selectedDefinitionName}
+                          host={activeHost}
+                          onBack={navigateBack}
+                          onForward={navigateForward}
+                          onOpenView={openView}
+                          system={activeSystem}
+                          systemNotifications={(
+                            <div className="flex items-center gap-1">
+                              <SystemNotificationTray
+                                acknowledgedRejectedWorkCounts={acknowledgedRejectedWorkCounts}
+                                activeDiagnosticsAlertTargetId={activeDiagnosticsAlertTargetId}
+                                activeSystemDiagnosticsAvailable={activeCanUseRealtimeDiagnosticsUi}
+                                alertSources={diagnosticsAlertSources}
+                                concurrencyDetailDiagnostics={concurrencyDiagnosticsDetail}
+                                concurrencyExpanded={concurrencyDiagnosticsExpanded}
+                                durabilityDetailDiagnostics={durabilityDiagnosticsDetail}
+                                durabilityExpanded={durabilityDiagnosticsExpanded}
+                                idempotencyDetailDiagnostics={idempotencyDiagnosticsDetail}
+                                idempotencyExpanded={idempotencyDiagnosticsExpanded}
+                                onAcknowledgeQueueRejections={acknowledgeQueueRejections}
+                                onConcurrencyExpandedChange={setConcurrencyDiagnosticsExpanded}
+                                onDurabilityExpandedChange={setDurabilityDiagnosticsExpanded}
+                                onIdempotencyExpandedChange={setIdempotencyDiagnosticsExpanded}
+                                onOpenChange={handleSystemNotificationOpenChange}
+                                onReadModelExpandedChange={setReadModelDiagnosticsExpanded}
+                                onRetentionExpandedChange={setRetentionDiagnosticsExpanded}
+                                open={systemNotificationOpen}
+                                readModelDetailDiagnostics={readModelDiagnosticsDetail}
+                                readModelExpanded={readModelDiagnosticsExpanded}
+                                retentionDetailDiagnostics={retentionDiagnosticsDetail}
+                                retentionExpanded={retentionDiagnosticsExpanded}
+                                systemName={activeSystem.name}
+                                trayDiagnostics={diagnosticsTray}
+                              />
+                            </div>
+                          )}
+                          view={view}
+                          workerId={selectedWorkerId}
+                        />
                       )}
-                      view={view}
-                      workerId={selectedWorkerId}
-                    />
-                  )}
-                  <ErrorPanel errors={[lifecycleError]} />
-                  {mountedViews.has("overview") && (
-                    <ConsoleViewMount active={visibleView === "overview"}>
-                      <OverviewView
-                        access={activeSystem?.access}
-                        connection={hydratedConnection}
-                        externalRealtimeMessages={diagnosticsRealtimeMessages}
-                        hiddenPanelIds={consoleState.overviewHiddenPanels}
-                        hiddenThroughputSeries={consoleState.overviewHiddenThroughputSeries}
-                        isVisible={visibleView === "overview"}
-                        onClearExternalRealtimeMessages={clearDiagnosticsRealtimeMessages}
-                        onConnectionError={handleOverviewConnectionError}
-                        onActiveRealtimeConnectionCountChange={setPageRealtimeConnectionCount}
-                        onStateLoaded={handleOverviewStateLoaded}
-                        onOpenCatalog={() => openView("definitions")}
-                        onOpenIterations={openIterations}
-                        onOpenKeyType={openIterationsByKeyType}
-                        onReady={markOverviewReady}
-                        onPanelShapeChange={setOverviewPanelShape}
-                        onPanelVisibilityChange={setOverviewPanelVisible}
-                        onResetUi={resetOverviewUiToDefaults}
-                        onThroughputSeriesToggle={toggleOverviewThroughputSeries}
-                        panelShapes={consoleState.overviewPanelShapes}
-                        realtimePayloadCaptureEnabled={realtimePayloadCaptureEnabled}
-                        realtimePayloadMaxMessages={realtimePayloadMaxMessages}
-                        realtimePayloadOpen={realtimePayloadOpen}
-                        onRealtimePayloadCaptureEnabledChange={setRealtimePayloadCaptureEnabled}
-                        onRealtimePayloadMaxMessagesChange={setRealtimePayloadMaxMessages}
-                        onRealtimePayloadOpenChange={setRealtimePayloadOpen}
-                        onViewIterationsByStatus={openIterationsFiltered}
-                        onViewWorkersByState={openWorkersFiltered}
-                        overviewScope={activeOverviewScope}
-                        refreshToken={refreshTokens.overview}
-                        onOpenWorker={openWorker}
-                        renderControls={({ loading, refreshing }) => (
-                          <OverviewCatalogFilter
-                            connection={hydratedConnection}
-                            loading={loading || refreshing}
-                            onClear={() => {
-                              if (activeSystem) {
-                                openCategoryOverview(activeSystem.id, "");
-                              }
-                            }}
-                            onSelectCategory={(category) => {
-                              if (activeSystem) {
-                                openCategoryOverview(activeSystem.id, category);
-                              }
-                            }}
-                            onSelectDefinition={(definitionName, category) => {
-                              if (activeSystem) {
-                                openDefinitionOverview(
-                                  activeSystem.id,
-                                  definitionName,
-                                  category
-                                );
-                              }
-                            }}
-                            refreshToken={refreshTokens.overview}
-                            scope={activeOverviewScope}
-                          />
-                        )}
-                      />
-                    </ConsoleViewMount>
-                  )}
-                  {mountedViews.has("definitions") && (
-                    <ConsoleViewMount active={visibleView === "definitions"}>
-                      <DefinitionsView
-                        catalogScope={activeCatalogScope}
-                        connection={hydratedConnection}
-                        onCatalogScopeChange={(scope) => {
-                          if (activeSystem) {
-                            openCatalogScope(activeSystem.id, scope);
-                          }
-                        }}
-                        onOpenDefinition={(definitionId, definitionName) =>
-                          openDefinition(definitionId, {
-                            definitionName,
-                            systemId: activeSystem?.id ?? "",
-                          })
-                        }
-                        onOpenWorker={openWorker}
-                        onReady={markDefinitionsReady}
-                        refreshToken={refreshTokens.definitions}
-                      />
-                    </ConsoleViewMount>
-                  )}
-                  {mountedViews.has("definition") && selectedDefinitionId && (
-                    <ConsoleViewMount active={visibleView === "definition"}>
-                      <DefinitionView
-                        connection={hydratedConnection}
-                        definitionId={selectedDefinitionId}
-                        onDefinitionResolved={setSelectedDefinitionName}
-                        onOpenWorker={openWorker}
-                        onReady={markDefinitionReady}
-                        refreshToken={refreshTokens.definition}
-                      />
-                    </ConsoleViewMount>
-                  )}
-                  {mountedViews.has("workers") && (
-                    <ConsoleViewMount active={visibleView === "workers"}>
-                      <WorkersView
-                        categoryFilter={workerCategoryFilter}
-                        connection={hydratedConnection}
-                        filterControl={{
-                          activeCount: getQueryFilterActiveCount(
-                            createQueryCatalogScope(workerCategoryFilter, workerDefinitionFilter),
-                            workerStateFilter,
-                            keyTypeFilter
-                          ),
-                          content: (
-                            <QueryFilterPanelContent
-                              allFacetLabel="All states"
-                              catalogScope={createQueryCatalogScope(workerCategoryFilter, workerDefinitionFilter)}
+                      <ConsoleViewportContent scrollMode={usesPanelOwnedScroll ? "panel" : "browser"}>
+                        <ErrorPanel errors={[lifecycleError]} />
+                        {mountedViews.has("overview") && (
+                          <ConsoleViewMount active={visibleView === "overview"}>
+                            <OverviewView
+                              access={activeSystem?.access}
                               connection={hydratedConnection}
-                              facetLabel="Worker states"
-                              facetOptions={states}
-                              facetValue={workerStateFilter}
+                              hiddenPanelIds={consoleState.overviewHiddenPanels}
+                              hiddenThroughputSeries={consoleState.overviewHiddenThroughputSeries}
+                              isVisible={visibleView === "overview"}
+                              onConnectionError={handleOverviewConnectionError}
+                              onActiveRealtimeConnectionCountChange={ignoreRealtimeConnectionCountChange}
+                              onStateLoaded={handleOverviewStateLoaded}
+                              onOpenCatalog={() => openView("definitions")}
+                              onOpenIterations={openIterations}
+                              onOpenKeyType={openIterationsByKeyType}
+                              onReady={markOverviewReady}
+                              onPanelShapeChange={setOverviewPanelShape}
+                              onPanelVisibilityChange={setOverviewPanelVisible}
+                              onResetUi={resetOverviewUiToDefaults}
+                              onThroughputSeriesToggle={toggleOverviewThroughputSeries}
+                              panelShapes={consoleState.overviewPanelShapes}
+                              realtimePayloadCaptureEnabled={realtimePayloadCaptureEnabled}
+                              realtimePayloadMaxMessages={realtimePayloadMaxMessages}
+                              realtimePayloadOpen={realtimePayloadOpen}
+                              onRealtimePayloadOpenChange={setRealtimePayloadOpen}
+                              onViewIterationsByStatus={openIterationsFiltered}
+                              onViewWorkersByState={openWorkersFiltered}
+                              overviewScope={activeOverviewScope}
+                              refreshToken={refreshTokens.overview}
+                              onOpenWorker={openWorker}
+                              renderControls={() => (
+                                <OverviewCatalogFilter
+                                  connection={hydratedConnection}
+                                  onClear={() => {
+                                    if (activeSystem) {
+                                      openCategoryOverview(activeSystem.id, "");
+                                    }
+                                  }}
+                                  onSelectCategory={(category) => {
+                                    if (activeSystem) {
+                                      openCategoryOverview(activeSystem.id, category);
+                                    }
+                                  }}
+                                  onSelectDefinition={(definitionName, category) => {
+                                    if (activeSystem) {
+                                      openDefinitionOverview(
+                                        activeSystem.id,
+                                        definitionName,
+                                        category
+                                      );
+                                    }
+                                  }}
+                                  refreshToken={refreshTokens.overview}
+                                  scope={activeOverviewScope}
+                                />
+                              )}
+                            />
+                          </ConsoleViewMount>
+                        )}
+                        {mountedViews.has("definitions") && (
+                          <ConsoleViewMount active={visibleView === "definitions"}>
+                            <DefinitionsView
+                              catalogScope={activeCatalogScope}
+                              connection={hydratedConnection}
+                              onCatalogScopeChange={(scope) => {
+                                if (activeSystem) {
+                                  openCatalogScope(activeSystem.id, scope);
+                                }
+                              }}
+                              onOpenDefinition={(definitionId, definitionName) =>
+                                openDefinition(definitionId, {
+                                  definitionName,
+                                  systemId: activeSystem?.id ?? "",
+                                })
+                              }
+                              onOpenWorker={openWorker}
+                              onReady={markDefinitionsReady}
+                              refreshToken={refreshTokens.definitions}
+                            />
+                          </ConsoleViewMount>
+                        )}
+                        {mountedViews.has("definition") && selectedDefinitionId && (
+                          <ConsoleViewMount active={visibleView === "definition"}>
+                            <DefinitionView
+                              connection={hydratedConnection}
+                              definitionId={selectedDefinitionId}
+                              onDefinitionResolved={setSelectedDefinitionName}
+                              onOpenWorker={openWorker}
+                              onReady={markDefinitionReady}
+                              refreshToken={refreshTokens.definition}
+                            />
+                          </ConsoleViewMount>
+                        )}
+                        {mountedViews.has("workers") && (
+                          <ConsoleViewMount
+                            active={visibleView === "workers"}
+                            fill
+                            scrollMode="panel"
+                          >
+                            <WorkersView
+                              categoryFilter={workerCategoryFilter}
+                              connection={hydratedConnection}
+                              filterControl={{
+                                activeCount: getQueryFilterActiveCount(
+                                  createQueryCatalogScope(workerCategoryFilter, workerDefinitionFilter),
+                                  workerStateFilter,
+                                  keyTypeFilter
+                                ),
+                                content: (
+                                  <QueryFilterPanelContent
+                                    allFacetLabel="All states"
+                                    catalogScope={createQueryCatalogScope(workerCategoryFilter, workerDefinitionFilter)}
+                                    connection={hydratedConnection}
+                                    facetLabel="Worker states"
+                                    facetOptions={states}
+                                    facetValue={workerStateFilter}
+                                    keyTypeFilter={keyTypeFilter}
+                                    onClearCatalog={() => {
+                                      setWorkerCategoryFilter("");
+                                      setWorkerDefinitionFilter("");
+                                    }}
+                                    onFacetChange={setWorkerStateFilter}
+                                    onKeyTypeFilterChange={setKeyTypeFilter}
+                                    onSelectCategory={(category) => {
+                                      setWorkerCategoryFilter(category);
+                                      setWorkerDefinitionFilter("");
+                                    }}
+                                    onSelectDefinition={(definitionName, category) => {
+                                      setWorkerCategoryFilter(category);
+                                      setWorkerDefinitionFilter(definitionName);
+                                    }}
+                                    refreshToken={refreshTokens.workers}
+                                  />
+                                ),
+                                contentClassName: "w-[26rem] p-0",
+                                label: "Filter workers",
+                              }}
+                              isLoadingTarget={visibleView === "workers" || pendingView === "workers"}
+                              isVisible={visibleView === "workers"}
+                              onOpenWorker={openWorker}
+                              onReady={markWorkersReady}
+                              definitionFilter={workerDefinitionFilter}
                               keyTypeFilter={keyTypeFilter}
-                              onClearCatalog={() => {
-                                setWorkerCategoryFilter("");
-                                setWorkerDefinitionFilter("");
-                              }}
-                              onFacetChange={setWorkerStateFilter}
-                              onKeyTypeFilterChange={setKeyTypeFilter}
-                              onSelectCategory={(category) => {
-                                setWorkerCategoryFilter(category);
-                                setWorkerDefinitionFilter("");
-                              }}
-                              onSelectDefinition={(definitionName, category) => {
-                                setWorkerCategoryFilter(category);
-                                setWorkerDefinitionFilter(definitionName);
-                              }}
+                              stateFilter={workerStateFilter}
                               refreshToken={refreshTokens.workers}
                             />
-                          ),
-                          contentClassName: "w-[26rem] p-0",
-                          label: "Filter workers",
-                        }}
-                        isLoadingTarget={visibleView === "workers" || pendingView === "workers"}
-                        isVisible={visibleView === "workers"}
-                        onOpenWorker={openWorker}
-                        onReady={markWorkersReady}
-                        definitionFilter={workerDefinitionFilter}
-                        keyTypeFilter={keyTypeFilter}
-                        stateFilter={workerStateFilter}
-                        refreshToken={refreshTokens.workers}
-                      />
-                    </ConsoleViewMount>
-                  )}
-                  {mountedViews.has("iterations") && (
-                    <ConsoleViewMount active={visibleView === "iterations"}>
-                      <IterationsView
-                        categoryFilter={iterationCategoryFilter}
-                        connection={hydratedConnection}
-                        definitionFilter={iterationDefinitionFilter}
-                        filterControl={{
-                          activeCount: getQueryFilterActiveCount(
-                            createQueryCatalogScope(iterationCategoryFilter, iterationDefinitionFilter),
-                            iterationStatusFilter,
-                            iterationKeyTypeFilter
-                          ),
-                          content: (
-                            <QueryFilterPanelContent
-                              allFacetLabel="All statuses"
-                              catalogScope={createQueryCatalogScope(iterationCategoryFilter, iterationDefinitionFilter)}
+                          </ConsoleViewMount>
+                        )}
+                        {mountedViews.has("iterations") && (
+                          <ConsoleViewMount
+                            active={visibleView === "iterations"}
+                            fill
+                            scrollMode="panel"
+                          >
+                            <IterationsView
+                              categoryFilter={iterationCategoryFilter}
                               connection={hydratedConnection}
-                              facetLabel="Iteration statuses"
-                              facetOptions={iterationStatuses}
-                              facetValue={iterationStatusFilter}
+                              definitionFilter={iterationDefinitionFilter}
+                              filterControl={{
+                                activeCount: getQueryFilterActiveCount(
+                                  createQueryCatalogScope(iterationCategoryFilter, iterationDefinitionFilter),
+                                  iterationStatusFilter,
+                                  iterationKeyTypeFilter
+                                ),
+                                content: (
+                                  <QueryFilterPanelContent
+                                    allFacetLabel="All statuses"
+                                    catalogScope={createQueryCatalogScope(iterationCategoryFilter, iterationDefinitionFilter)}
+                                    connection={hydratedConnection}
+                                    facetLabel="Iteration statuses"
+                                    facetOptions={iterationStatuses}
+                                    facetValue={iterationStatusFilter}
+                                    keyTypeFilter={iterationKeyTypeFilter}
+                                    onClearCatalog={() => {
+                                      setIterationCategoryFilter("");
+                                      setIterationDefinitionFilter("");
+                                    }}
+                                    onFacetChange={setIterationStatusFilter}
+                                    onKeyTypeFilterChange={setIterationKeyTypeFilter}
+                                    onSelectCategory={(category) => {
+                                      setIterationCategoryFilter(category);
+                                      setIterationDefinitionFilter("");
+                                    }}
+                                    onSelectDefinition={(definitionName, category) => {
+                                      setIterationCategoryFilter(category);
+                                      setIterationDefinitionFilter(definitionName);
+                                    }}
+                                    refreshToken={refreshTokens.iterations}
+                                  />
+                                ),
+                                contentClassName: "w-[26rem] p-0",
+                                label: "Filter iterations",
+                              }}
+                              isLoadingTarget={visibleView === "iterations" || pendingView === "iterations"}
+                              isVisible={visibleView === "iterations"}
                               keyTypeFilter={iterationKeyTypeFilter}
-                              onClearCatalog={() => {
-                                setIterationCategoryFilter("");
-                                setIterationDefinitionFilter("");
-                              }}
-                              onFacetChange={setIterationStatusFilter}
-                              onKeyTypeFilterChange={setIterationKeyTypeFilter}
-                              onSelectCategory={(category) => {
-                                setIterationCategoryFilter(category);
-                                setIterationDefinitionFilter("");
-                              }}
-                              onSelectDefinition={(definitionName, category) => {
-                                setIterationCategoryFilter(category);
-                                setIterationDefinitionFilter(definitionName);
-                              }}
+                              onOpenWorker={openWorker}
+                              onReady={markIterationsReady}
                               refreshToken={refreshTokens.iterations}
+                              statusFilter={iterationStatusFilter}
                             />
-                          ),
-                          contentClassName: "w-[26rem] p-0",
-                          label: "Filter iterations",
-                        }}
-                        isLoadingTarget={visibleView === "iterations" || pendingView === "iterations"}
-                        isVisible={visibleView === "iterations"}
-                        keyTypeFilter={iterationKeyTypeFilter}
-                        onOpenWorker={openWorker}
-                        onReady={markIterationsReady}
-                        refreshToken={refreshTokens.iterations}
-                        statusFilter={iterationStatusFilter}
-                      />
-                    </ConsoleViewMount>
-                  )}
-                  <DelayedLoadingOverlay
-                    active={!!pendingView && view !== "worker"}
-                    label={`Loading ${pendingView ? navTitle(pendingView) : "view"}`}
-                  />
-                  {view === "worker" && selectedWorkerId && (
-                    <ConsoleViewMount active={true}>
-                      <WorkerConsoleView
-                        connection={hydratedConnection}
-                        onActiveRealtimeConnectionCountChange={setPageRealtimeConnectionCount}
-                        onNavigateBack={navigateBack}
-                        onOpenWorker={openWorker}
-                        onRealtimePayloadCaptureEnabledChange={setRealtimePayloadCaptureEnabled}
-                        onRealtimePayloadMaxMessagesChange={setRealtimePayloadMaxMessages}
-                        onRealtimePayloadOpenChange={setRealtimePayloadOpen}
-                        refreshToken={refreshTokens.worker}
-                        realtimePayloadCaptureEnabled={realtimePayloadCaptureEnabled}
-                        realtimePayloadMaxMessages={realtimePayloadMaxMessages}
-                        realtimePayloadOpen={realtimePayloadOpen}
-                        workerId={selectedWorkerId}
-                      />
-                    </ConsoleViewMount>
-                  )}
-                </ConsoleHeaderCapabilitiesProvider>
+                          </ConsoleViewMount>
+                        )}
+                        <DelayedLoadingOverlay
+                          active={!!pendingView && view !== "worker"}
+                          label={`Loading ${pendingView ? navTitle(pendingView) : "view"}`}
+                        />
+                        {view === "worker" && selectedWorkerId && (
+                          <ConsoleViewMount active={true}>
+                            <WorkerConsoleView
+                              connection={hydratedConnection}
+                              onActiveRealtimeConnectionCountChange={ignoreRealtimeConnectionCountChange}
+                              onNavigateBack={navigateBack}
+                              onOpenWorker={openWorker}
+                              onRealtimePayloadOpenChange={setRealtimePayloadOpen}
+                              refreshToken={refreshTokens.worker}
+                              realtimePayloadCaptureEnabled={realtimePayloadCaptureEnabled}
+                              realtimePayloadMaxMessages={realtimePayloadMaxMessages}
+                              realtimePayloadOpen={realtimePayloadOpen}
+                              workerId={selectedWorkerId}
+                            />
+                          </ConsoleViewMount>
+                        )}
+                        <RealtimePayloadWindowHost
+                          eventTabContent={(
+                            <RealtimeEventsTabPanel
+                              definitionError={eventViewerDefinitionError}
+                              definitions={eventViewerDefinitions}
+                              definitionsLoading={eventViewerDefinitionsLoading}
+                              error={realtimeEvents.error}
+                              eventTypes={eventViewerEventTypes}
+                              maxMessages={eventViewerMaxMessages}
+                              messages={realtimeEventCapture.messages}
+                              onAddKey={addEventViewerKey}
+                              onClearMessages={clearConsoleRealtimeEventCapture}
+                              onDefinitionToggle={toggleEventViewerDefinition}
+                              onEventTypeToggle={toggleEventViewerEventType}
+                              onMaxMessagesChange={setEventViewerMaxMessages}
+                              onRemoveKey={removeEventViewerKey}
+                              realtimeStats={realtimeStats}
+                              selectedDefinitionIds={selectedEventViewerDefinitionIds}
+                              selectedEventTypes={selectedEventViewerEventTypes}
+                              selectedKeys={selectedEventViewerKeys}
+                            />
+                          )}
+                          maxMessages={realtimePayloadMaxMessages}
+                          onActiveTabChange={setRealtimePayloadActiveTab}
+                          onMaxMessagesChange={setRealtimePayloadMaxMessages}
+                          onOpenChange={setRealtimePayloadOpen}
+                          open={realtimePayloadOpen}
+                          realtimeStats={realtimeStats}
+                          activeTab={realtimePayloadActiveTab}
+                        />
+                      </ConsoleViewportContent>
+                    </ConsoleViewport>
+                  </ConsoleHeaderCapabilitiesProvider>
                 </ConsolePageRealtimeViewProvider>
               )}
           </div>
@@ -2203,6 +2195,43 @@ export function WorkableConsole() {
         target={pendingStopSystem}
       />
     </SidebarProvider>
+  );
+}
+
+function RealtimePayloadWindowHost({
+  activeTab,
+  eventTabContent,
+  maxMessages,
+  onActiveTabChange,
+  onMaxMessagesChange,
+  onOpenChange,
+  open,
+  realtimeStats,
+}: {
+  activeTab: RealtimePayloadWindowTab;
+  eventTabContent: ReactNode;
+  maxMessages: number;
+  onActiveTabChange: (tab: RealtimePayloadWindowTab) => void;
+  onMaxMessagesChange: (maxMessages: number) => void;
+  onOpenChange: (open: boolean) => void;
+  open: boolean;
+  realtimeStats: ReturnType<typeof useConsoleRealtimeStats>;
+}) {
+  const realtimePayloadCapture = useConsoleRealtimePayloadCapture();
+
+  return (
+    <RealtimePayloadWindow
+      activeTab={activeTab}
+      eventTabContent={eventTabContent}
+      maxMessages={maxMessages}
+      messages={realtimePayloadCapture.messages}
+      onActiveTabChange={onActiveTabChange}
+      onClearMessages={clearConsoleRealtimePayloadCapture}
+      onMaxMessagesChange={onMaxMessagesChange}
+      onOpenChange={onOpenChange}
+      open={open}
+      realtimeStats={realtimeStats}
+    />
   );
 }
 
@@ -2335,93 +2364,86 @@ function DiagnosticsAlertSubscription({
   return null;
 }
 
-function EventViewerWindow({
-  activeConnectionCount,
-  captureEnabled,
-  connectionState,
+function RealtimeEventsTabPanel({
   definitionError,
   definitions,
   definitionsLoading,
-  enabled,
   error,
   eventTypes,
-  hubUrl,
   maxMessages,
   messages,
   onAddKey,
-  onCaptureEnabledChange,
   onClearMessages,
   onDefinitionToggle,
   onEventTypeToggle,
   onMaxMessagesChange,
-  onOpenChange,
   onRemoveKey,
-  open,
+  realtimeStats,
   selectedDefinitionIds,
   selectedEventTypes,
   selectedKeys,
 }: {
-  activeConnectionCount: number;
-  captureEnabled: boolean;
-  connectionState: string;
   definitionError?: string;
   definitions: WorkDefinition[];
   definitionsLoading: boolean;
-  enabled: boolean;
   error?: string;
   eventTypes: readonly string[];
-  hubUrl: string | null;
   maxMessages: number;
   messages: RealtimeEventMessage[];
   onAddKey: (key: WorkableRealtimeEventKeyCriteria) => void;
-  onCaptureEnabledChange: (enabled: boolean) => void;
   onClearMessages: () => void;
   onDefinitionToggle: (definitionId: string) => void;
   onEventTypeToggle: (eventType: string) => void;
   onMaxMessagesChange: (maxMessages: number) => void;
-  onOpenChange: (open: boolean) => void;
   onRemoveKey: (key: WorkableRealtimeEventKeyCriteria) => void;
-  open: boolean;
+  realtimeStats: ReturnType<typeof useConsoleRealtimeStats>;
   selectedDefinitionIds: string[];
   selectedEventTypes: string[];
   selectedKeys: WorkableRealtimeEventKeyCriteria[];
 }) {
-  const [position, setPosition] = useState({ x: 0, y: 0 });
   const [catalogPath, setCatalogPath] = useState("");
-  const [windowSize, setWindowSize] = useState<"compact" | "large">("large");
   const [eventTableHeight, setEventTableHeight] = useState(208);
   const [filtersCollapsed, setFiltersCollapsed] = useState(false);
-  const [maximized, setMaximized] = useState(false);
   const [messagesCollapsed, setMessagesCollapsed] = useState(false);
+  const [searchText, setSearchText] = useState("");
   const [selectedEventIndex, setSelectedEventIndex] = useState(0);
   const [selectedMessageId, setSelectedMessageId] = useState<string | null>(null);
+  const [tablePaused, setTablePaused] = useState(false);
+  const [pausedMessages, setPausedMessages] = useState<RealtimeEventMessage[] | null>(null);
   const [keyKind, setKeyKind] = useState<WorkKeyKind | "Any">("Any");
   const [keyType, setKeyType] = useState("");
   const [keyValue, setKeyValue] = useState("");
-  const dragRef = useRef<{
-    originX: number;
-    originY: number;
-    startX: number;
-    startY: number;
-  } | null>(null);
   const eventRowRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const eventTableResizeRef = useRef<{
     startHeight: number;
     startY: number;
   } | null>(null);
-  const panelRef = useRef<HTMLDivElement | null>(null);
-  const wasOpenRef = useRef(false);
-  const selectedMessage = messages.find((message) => message.id === selectedMessageId) ?? messages[0];
+  const deferredSearchText = useDeferredValue(searchText);
+  const normalizedSearchText = deferredSearchText.trim().toLowerCase();
+  const tableBaseMessages = tablePaused && pausedMessages ? pausedMessages : messages;
+  const filteredMessages = useMemo(
+    () =>
+      tableBaseMessages.filter((message) =>
+        !normalizedSearchText ||
+        getRealtimeEventSearchText(message).includes(normalizedSearchText)
+      ),
+    [normalizedSearchText, tableBaseMessages]
+  );
+  const newMessageCount = useMemo(() => {
+    if (!tablePaused || !pausedMessages) {
+      return 0;
+    }
+
+    const pausedIds = new Set(pausedMessages.map((message) => message.id));
+    return messages.filter((message) => !pausedIds.has(message.id)).length;
+  }, [messages, pausedMessages, tablePaused]);
+  const selectedMessage =
+    filteredMessages.find((message) => message.id === selectedMessageId) ??
+    filteredMessages[0];
   const selectedEvent = selectedMessage?.events[Math.min(selectedEventIndex, selectedMessage.events.length - 1)];
   const selectedEventIndexInBounds = selectedEvent
     ? Math.min(selectedEventIndex, (selectedMessage?.events.length ?? 1) - 1)
     : 0;
-  const isCompactWindow = windowSize === "compact";
-  const selectedFilterText = formatEventViewerFilterSummary(
-    selectedEventTypes.length,
-    selectedDefinitionIds.length,
-    selectedKeys.length
-  );
   const catalogLevel = useMemo(
     () => createEventViewerCatalogLevel(definitions, catalogPath),
     [catalogPath, definitions]
@@ -2435,9 +2457,6 @@ function EventViewerWindow({
   const goBackInCatalog = () => {
     setCatalogPath(catalogSegments.slice(0, -1).join(":"));
   };
-  const selectedMessageBatchText = selectedMessage?.batchSize
-    ? `Batch ${selectedMessage.batchSize}`
-    : "Single";
   const hasEventTable = Boolean(selectedMessage && selectedMessage.events.length > 1);
   const addKey = () => {
     const type = keyType.trim();
@@ -2456,13 +2475,6 @@ function EventViewerWindow({
   };
 
   useEffect(() => {
-    if (open && !wasOpenRef.current) {
-      setPosition(getCenteredEventViewerPosition(windowSize));
-    }
-    wasOpenRef.current = open;
-  }, [open, windowSize]);
-
-  useEffect(() => {
     const row = eventRowRefs.current[selectedEventIndexInBounds];
     row?.scrollIntoView({ block: "nearest" });
     if (document.activeElement && eventRowRefs.current.includes(document.activeElement as HTMLButtonElement)) {
@@ -2470,48 +2482,27 @@ function EventViewerWindow({
     }
   }, [selectedEventIndexInBounds, selectedMessage?.id]);
 
-  const toggleWindowSize = () => {
-    const nextSize = isCompactWindow ? "large" : "compact";
-    setMaximized(false);
-    setWindowSize(nextSize);
-    setPosition(getCenteredEventViewerPosition(nextSize));
-  };
-
-  const toggleMaximized = () => {
-    setMaximized((current) => !current);
-  };
-
-  const startDrag = (event: PointerEvent<HTMLDivElement>) => {
-    event.currentTarget.setPointerCapture(event.pointerId);
-    dragRef.current = {
-      originX: position.x,
-      originY: position.y,
-      startX: event.clientX,
-      startY: event.clientY,
-    };
-  };
-
-  const drag = (event: PointerEvent<HTMLDivElement>) => {
-    if (!dragRef.current || maximized) {
+  const toggleTablePaused = () => {
+    if (tablePaused) {
+      setPausedMessages(null);
+      setTablePaused(false);
       return;
     }
 
-    const nextX = dragRef.current.originX + event.clientX - dragRef.current.startX;
-    const nextY = dragRef.current.originY + event.clientY - dragRef.current.startY;
-    const viewportWidth = window.visualViewport?.width ?? window.innerWidth;
-    const viewportHeight = window.visualViewport?.height ?? window.innerHeight;
-    const panelWidth = panelRef.current?.offsetWidth ?? 0;
-    const panelHeight = panelRef.current?.offsetHeight ?? 0;
-
-    setPosition({
-      x: clampFloatingWindowPosition(nextX, viewportWidth, panelWidth),
-      y: clampFloatingWindowPosition(nextY, viewportHeight, panelHeight),
-    });
+    setPausedMessages(messages);
+    setTablePaused(true);
   };
 
-  const stopDrag = (event: PointerEvent<HTMLDivElement>) => {
-    dragRef.current = null;
-    event.currentTarget.releasePointerCapture(event.pointerId);
+  const showNewMessages = () => {
+    setPausedMessages(messages);
+  };
+
+  const clearMessages = () => {
+    setSelectedMessageId(null);
+    setSelectedEventIndex(0);
+    setTablePaused(false);
+    setPausedMessages(null);
+    onClearMessages();
   };
 
   const startEventTableResize = (event: PointerEvent<HTMLDivElement>) => {
@@ -2559,487 +2550,415 @@ function EventViewerWindow({
   };
 
   return (
-    <>
-      {open && typeof document !== "undefined"
-        ? createPortal(
-          <div
-            className={`fixed z-50 grid resize grid-rows-[auto_minmax(0,1fr)] overflow-hidden rounded-lg border bg-popover text-sm text-popover-foreground shadow-2xl ring-1 ring-foreground/10 ${
-              maximized ? "" : isCompactWindow ? "min-h-[28rem] min-w-[42rem]" : "min-h-[32rem] min-w-[48rem]"
-            }`}
-            ref={panelRef}
-            style={{
-              height: maximized
-                ? "calc(100vh - 16px)"
-                : isCompactWindow
-                  ? "min(82vh, 32rem)"
-                  : "min(88vh, 56rem)",
-              left: maximized ? 8 : position.x,
-              top: maximized ? 8 : position.y,
-              width: maximized
-                ? "calc(100vw - 16px)"
-                : isCompactWindow
-                  ? "min(96vw, 48rem)"
-                  : "min(96vw, 96rem)",
-            }}
+    <div className="grid h-full min-h-0 grid-rows-[auto_minmax(0,1fr)] gap-3 overflow-hidden">
+      <div className="grid gap-2 rounded-md border bg-muted/30 px-2 py-2">
+        <div className="flex min-w-0 flex-wrap items-center gap-1">
+          <input
+            className="h-7 min-w-48 flex-1 rounded-md border bg-background px-2 text-foreground text-xs"
+            onChange={(event) => setSearchText(event.currentTarget.value)}
+            placeholder="Filter events"
+            value={searchText}
+          />
+          <RealtimeStatsMenu realtimeStats={realtimeStats} />
+          <Button
+            className="h-7 px-2 text-xs"
+            onClick={toggleTablePaused}
+            size="sm"
+            variant={tablePaused ? "secondary" : "ghost"}
           >
-            <div
-              className={`flex items-center justify-between gap-3 border-b px-4 py-3 select-none ${maximized ? "" : "cursor-move"}`}
-              onPointerDown={startDrag}
-              onPointerMove={drag}
-              onPointerUp={stopDrag}
+            {tablePaused ? <Play className="size-3.5" /> : <Pause className="size-3.5" />}
+            {tablePaused ? "Resume" : "Pause"}
+          </Button>
+          {tablePaused && (
+            <Button
+              className="h-7 px-2 text-xs"
+              disabled={newMessageCount === 0}
+              onClick={showNewMessages}
+              size="sm"
+              variant={newMessageCount > 0 ? "secondary" : "ghost"}
             >
-              <div className="min-w-0">
-                <div className="font-medium text-base">Event viewer</div>
-                <div className="truncate text-muted-foreground text-xs">
-                  {enabled ? connectionState : "disabled"} - {formatActiveConnectionCount(activeConnectionCount)} - {messages.length}/{maxMessages} batches - {selectedFilterText}
-                </div>
+              Show {newMessageCount.toLocaleString()} new
+            </Button>
+          )}
+          <label className="flex h-7 items-center gap-1.5 rounded-md border bg-background px-2 text-xs">
+            <span className="text-muted-foreground">Max</span>
+            <input
+              className="w-14 bg-transparent font-mono text-foreground outline-none"
+              max={1000}
+              min={1}
+              onChange={(event) =>
+                onMaxMessagesChange(normalizeEventViewerMaxMessages(event.currentTarget.value))
+              }
+              type="number"
+              value={maxMessages}
+            />
+          </label>
+          <Button
+            className="h-7 px-2 text-xs"
+            disabled={messages.length === 0}
+            onClick={clearMessages}
+            size="sm"
+            variant="ghost"
+          >
+            Clear
+          </Button>
+        </div>
+        {error && (
+          <div className="rounded-md border border-red-500/30 bg-red-500/10 px-2 py-1.5 text-red-200 text-xs">
+            {error}
+          </div>
+        )}
+      </div>
+      <div
+        className={`grid min-h-0 gap-3 ${
+          messagesCollapsed && filtersCollapsed
+            ? "md:grid-cols-[2.75rem_2.75rem_minmax(0,1fr)]"
+            : messagesCollapsed
+              ? "md:grid-cols-[2.75rem_minmax(20rem,22rem)_minmax(0,1fr)]"
+              : filtersCollapsed
+                ? "md:grid-cols-[22rem_2.75rem_minmax(0,1fr)]"
+                : "md:grid-cols-[22rem_minmax(20rem,22rem)_minmax(0,1fr)]"
+        }`}
+      >
+        <div className="grid min-h-0 grid-rows-[auto_minmax(0,1fr)] overflow-hidden rounded-md border">
+          <div className="grid gap-2 border-b bg-muted/30 px-2 py-2">
+            <div className="flex items-center justify-between gap-2">
+              {!messagesCollapsed && (
+                <div className="font-medium text-muted-foreground text-xs">Batches</div>
+              )}
+              <Button
+                aria-label={messagesCollapsed ? "Show events" : "Collapse events"}
+                className="ml-auto size-7"
+                onClick={() => setMessagesCollapsed((current) => !current)}
+                size="icon-sm"
+                variant="ghost"
+              >
+                <ChevronRight
+                  className={`size-4 transition-transform ${
+                    messagesCollapsed ? "" : "rotate-180"
+                  }`}
+                />
+              </Button>
+            </div>
+            {!messagesCollapsed && (
+              <div className="grid grid-cols-[6.5rem_minmax(8rem,1fr)_minmax(10rem,1.4fr)_minmax(8rem,1fr)_5rem] gap-3 font-medium text-muted-foreground text-xs">
+                <span>Time</span>
+                <span>Event types</span>
+                <span>Definitions</span>
+                <span>Workers</span>
+                <span className="text-right">Size</span>
               </div>
-              <div className="flex shrink-0 items-center gap-1">
-                <Button
-                  aria-label={isCompactWindow ? "Expand event viewer" : "Compact event viewer"}
-                  className="cursor-pointer"
-                  onClick={toggleWindowSize}
-                  onPointerDown={(event) => event.stopPropagation()}
-                  size="icon-sm"
-                  variant="ghost"
-                >
-                  {isCompactWindow ? <Rows4 className="size-4" /> : <Rows2 className="size-4" />}
-                </Button>
-                <Button
-                  aria-label={maximized ? "Restore event viewer" : "Maximize event viewer"}
-                  className="cursor-pointer"
-                  onClick={toggleMaximized}
-                  onPointerDown={(event) => event.stopPropagation()}
-                  size="icon-sm"
-                  variant="ghost"
-                >
-                  {maximized ? <Minimize2 className="size-4" /> : <Maximize2 className="size-4" />}
-                </Button>
-                <Button
-                  aria-label="Close event viewer"
-                  className="cursor-pointer"
-                  onClick={() => onOpenChange(false)}
-                  onPointerDown={(event) => event.stopPropagation()}
-                  size="icon-sm"
-                  variant="ghost"
-                >
-                  <X className="size-4" />
-                </Button>
+            )}
+          </div>
+          {messagesCollapsed ? (
+            <div className="flex min-h-0 items-start justify-center overflow-hidden py-2">
+              <div className="font-mono text-muted-foreground text-xs [writing-mode:vertical-rl]">
+                {filteredMessages.length.toLocaleString()} events
               </div>
             </div>
-            <div className="grid min-h-0 grid-rows-[auto_minmax(0,1fr)] gap-3 overflow-hidden p-3">
-              <div className="grid gap-2 rounded-md border px-3 py-2 xl:grid-cols-[minmax(0,1fr)_auto]">
-                <div className="flex min-w-0 flex-wrap items-center gap-x-4 gap-y-1 text-xs">
-                  <EventInlineMetric label="Received" value={selectedMessage ? formatEventViewerTime(selectedMessage.receivedAt) : "No events"} />
-                  <EventInlineMetric label="Batch" value={selectedMessage ? selectedMessageBatchText : "-"} />
-                  <EventInlineMetric label="Type" value={selectedEvent?.eventType ?? "-"} />
-                  <EventInlineMetric label="Worker" value={selectedEvent?.workerId?.value ?? "-"} />
-                  <EventInlineMetric label="Hub" value={hubUrl ?? "-"} wide />
+          ) : (
+            <div className="min-h-0 overflow-auto p-2">
+              {filteredMessages.length === 0 ? (
+                <div className="p-3 text-muted-foreground text-sm">
+                  {messages.length > 0 && normalizedSearchText
+                    ? "No events match the current filter."
+                    : selectedEventTypes.length === 0
+                    ? "Select one or more event types to start capture."
+                    : "Waiting for realtime events."}
                 </div>
-                <div className="flex flex-wrap items-center gap-3">
-                  <Button
-                    className="h-8 px-2 text-xs"
-                    disabled={messages.length === 0}
-                    onClick={() => {
-                      setSelectedMessageId(null);
-                      setSelectedEventIndex(0);
-                      onClearMessages();
-                    }}
-                    size="sm"
-                    variant="ghost"
+              ) : (
+                <div className="space-y-1">
+                  {filteredMessages.map((message) => (
+                    <button
+                      className={`grid w-full gap-1 rounded-md px-2 py-2 text-left text-xs transition-colors ${
+                        message.id === selectedMessage?.id
+                          ? "bg-accent text-accent-foreground"
+                          : "hover:bg-accent/50"
+                      }`}
+                      key={message.id}
+                      onClick={() => {
+                        setSelectedMessageId(message.id);
+                        setSelectedEventIndex(0);
+                      }}
+                      type="button"
+                    >
+                      <span className="grid grid-cols-[6.5rem_minmax(8rem,1fr)_minmax(10rem,1.4fr)_minmax(8rem,1fr)_5rem] items-center gap-3">
+                        <span className="font-mono">{formatEventViewerTime(message.receivedAt)}</span>
+                        <span className="truncate text-muted-foreground">
+                          {formatEventBatchTypeSummary(message.eventTypes)}
+                        </span>
+                        <span className="truncate text-muted-foreground">
+                          {formatEventBatchDefinitionSummary(message.events)}
+                        </span>
+                        <span className="truncate font-mono text-muted-foreground">
+                          {formatEventBatchWorkerSummary(message.events)}
+                        </span>
+                        <span className="font-mono text-right text-muted-foreground">
+                          {formatEventByteCount(message.bytes, message.bytesEstimated)}
+                        </span>
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+        <div className="grid min-h-0 grid-rows-[auto_minmax(0,1fr)] overflow-hidden rounded-md border">
+          <div className="flex items-center justify-between gap-2 border-b px-3 py-2">
+            {!filtersCollapsed && (
+              <div className="font-medium text-muted-foreground text-xs">Filters</div>
+            )}
+            <Button
+              aria-label={filtersCollapsed ? "Show filters" : "Collapse filters"}
+              className="ml-auto"
+              onClick={() => setFiltersCollapsed((current) => !current)}
+              size="icon-sm"
+              variant="ghost"
+            >
+              <ChevronRight
+                className={`size-4 transition-transform ${
+                  filtersCollapsed ? "" : "rotate-180"
+                }`}
+              />
+            </Button>
+          </div>
+          {filtersCollapsed ? (
+            <div className="flex min-h-0 items-start justify-center overflow-hidden py-2">
+              <div className="font-mono text-muted-foreground text-xs [writing-mode:vertical-rl]">
+                filters
+              </div>
+            </div>
+          ) : (
+            <div className="min-h-0 space-y-3 overflow-auto overflow-x-hidden p-2">
+              <div className="space-y-1">
+                <div className="flex items-center justify-between gap-2 px-1">
+                  <div className="font-medium text-muted-foreground text-xs">Event types</div>
+                </div>
+                {eventTypes.map((eventType) => (
+                  <label
+                    className="flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-xs hover:bg-accent/50"
+                    key={eventType}
                   >
-                    Clear
-                  </Button>
-                  <label className="flex items-center gap-2 text-muted-foreground">
                     <input
-                      checked={captureEnabled}
+                      checked={selectedEventTypes.includes(eventType)}
                       className="size-4 accent-primary"
-                      onChange={(event) => onCaptureEnabledChange(event.currentTarget.checked)}
+                      onChange={() => onEventTypeToggle(eventType)}
                       type="checkbox"
                     />
-                    <span>Capture incoming events</span>
+                    <span className={`rounded-full px-1.5 py-0.5 font-mono ${eventTypeTone(eventType)}`}>
+                      {eventType}
+                    </span>
                   </label>
-                  <label className="flex items-center gap-2">
-                    <span className="text-muted-foreground">Max</span>
-                    <input
-                      className="h-8 w-20 rounded-md border bg-background px-2 font-mono text-foreground"
-                      max={1000}
-                      min={1}
-                      onChange={(event) =>
-                        onMaxMessagesChange(normalizeEventViewerMaxMessages(event.currentTarget.value))
-                      }
-                      type="number"
-                      value={maxMessages}
-                    />
-                  </label>
+                ))}
+              </div>
+              <div className="space-y-1 border-t pt-3">
+                <div className="flex items-center justify-between gap-2 px-1">
+                  <div className="font-medium text-muted-foreground text-xs">Catalog</div>
                 </div>
-                {error && (
-                  <div className="col-span-full rounded-md border border-red-500/30 bg-red-500/10 px-2 py-1.5 text-red-200 text-xs">
-                    {error}
+                {definitionError && (
+                  <div className="rounded-md border border-red-500/30 bg-red-500/10 px-2 py-1.5 text-red-200 text-xs">
+                    {definitionError}
                   </div>
                 )}
-              </div>
-              <div
-                className={`grid min-h-0 gap-3 ${
-                  messagesCollapsed && filtersCollapsed
-                    ? "md:grid-cols-[2.75rem_2.75rem_minmax(0,1fr)]"
-                    : messagesCollapsed
-                      ? "md:grid-cols-[2.75rem_minmax(20rem,22rem)_minmax(0,1fr)]"
-                      : filtersCollapsed
-                        ? "md:grid-cols-[22rem_2.75rem_minmax(0,1fr)]"
-                        : "md:grid-cols-[22rem_minmax(20rem,22rem)_minmax(0,1fr)]"
-                }`}
-              >
-                <div className="grid min-h-0 grid-rows-[auto_minmax(0,1fr)] overflow-hidden rounded-md border">
-                  <div className="flex items-center justify-between gap-2 border-b px-2 py-1.5">
-                    {!messagesCollapsed && (
-                      <div className="font-medium text-muted-foreground text-xs">Batches</div>
-                    )}
-                    <Button
-                      aria-label={messagesCollapsed ? "Show events" : "Collapse events"}
-                      className="ml-auto"
-                      onClick={() => setMessagesCollapsed((current) => !current)}
-                      size="icon-sm"
-                      variant="ghost"
-                    >
-                      <ChevronRight
-                        className={`size-4 transition-transform ${
-                          messagesCollapsed ? "" : "rotate-180"
-                        }`}
-                      />
-                    </Button>
-                  </div>
-                  {messagesCollapsed ? (
-                    <div className="flex min-h-0 items-start justify-center overflow-hidden py-2">
-                      <div className="font-mono text-muted-foreground text-xs [writing-mode:vertical-rl]">
-                        {messages.length}
-                      </div>
+                {definitionsLoading && definitions.length === 0 ? (
+                  <div className="px-2 py-1.5 text-muted-foreground text-xs">Loading definitions.</div>
+                ) : definitions.length === 0 ? (
+                  <div className="px-2 py-1.5 text-muted-foreground text-xs">No definitions loaded.</div>
+                ) : (
+                  <div className="overflow-hidden rounded-md border">
+                    <div className="flex h-9 min-w-0 items-center gap-1 border-b px-2">
+                      <button
+                        aria-label={canGoBackInCatalog ? "Back to parent category" : "Catalog root"}
+                        className="flex size-7 shrink-0 items-center justify-center rounded-md hover:bg-accent hover:text-accent-foreground disabled:pointer-events-none disabled:opacity-40"
+                        disabled={!canGoBackInCatalog}
+                        onClick={goBackInCatalog}
+                        type="button"
+                      >
+                        {canGoBackInCatalog ? <ChevronLeft className="size-4" /> : <Home className="size-4" />}
+                      </button>
+                      <span className="min-w-0 flex-1 truncate font-medium text-xs">
+                        {catalogLabel}
+                      </span>
+                      <span className="shrink-0 text-muted-foreground text-[11px] tabular-nums">
+                        {selectedDefinitionIds.length}
+                      </span>
                     </div>
-                  ) : (
-                    <div className="min-h-0 overflow-auto p-2">
-                      {messages.length === 0 ? (
-                        <div className="p-3 text-muted-foreground text-sm">
-                          {selectedEventTypes.length === 0
-                            ? "Select one or more event types to start capture."
-                            : "Waiting for realtime events."}
-                        </div>
-                      ) : (
-                        <div className="space-y-1">
-                          {messages.map((message) => (
-                            <button
-                              className={`grid w-full gap-1 rounded-md px-2 py-2 text-left text-xs transition-colors ${
-                                message.id === selectedMessage?.id
-                                  ? "bg-accent text-accent-foreground"
-                                  : "hover:bg-accent/50"
-                              }`}
-                              key={message.id}
-                              onClick={() => {
-                                setSelectedMessageId(message.id);
-                                setSelectedEventIndex(0);
-                              }}
-                              type="button"
-                            >
-                              <span className="flex items-center justify-between gap-2">
-                                <span className="truncate font-mono font-medium">
-                                  {message.batchSize ? `Batch of ${message.batchSize}` : "Single event"}
-                                </span>
-                                <span className="font-mono text-muted-foreground">
-                                  {message.bytesEstimated ? ">=" : ""}{message.bytes.toLocaleString()}b
-                                </span>
-                              </span>
-                              <span className="truncate text-muted-foreground">
-                                {formatEventBatchTypeSummary(message.eventTypes)}
-                              </span>
-                              <span className="truncate font-mono text-muted-foreground">
-                                {formatEventViewerTime(message.receivedAt)}
-                              </span>
-                              <span className="truncate text-muted-foreground">
-                                {formatEventBatchDefinitionSummary(message.events)}
-                              </span>
-                            </button>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-                  )}
-                </div>
-                <div className="grid min-h-0 grid-rows-[auto_minmax(0,1fr)] overflow-hidden rounded-md border">
-                  <div className="flex items-center justify-between gap-2 border-b px-3 py-2">
-                    {!filtersCollapsed && (
-                      <div className="font-medium text-muted-foreground text-xs">Filters</div>
-                    )}
-                    <Button
-                      aria-label={filtersCollapsed ? "Show filters" : "Collapse filters"}
-                      className="ml-auto"
-                      onClick={() => setFiltersCollapsed((current) => !current)}
-                      size="icon-sm"
-                      variant="ghost"
-                    >
-                      <ChevronRight
-                        className={`size-4 transition-transform ${
-                          filtersCollapsed ? "" : "rotate-180"
-                        }`}
-                      />
-                    </Button>
-                  </div>
-                  {filtersCollapsed ? (
-                    <div className="flex min-h-0 items-start justify-center overflow-hidden py-2">
-                      <div className="font-mono text-muted-foreground text-xs [writing-mode:vertical-rl]">
-                        filters
-                      </div>
-                    </div>
-                  ) : (
-                  <div className="min-h-0 space-y-3 overflow-auto overflow-x-hidden p-2">
-                    <div className="space-y-1">
-                      <div className="flex items-center justify-between gap-2 px-1">
-                        <div className="font-medium text-muted-foreground text-xs">Event types</div>
-                      </div>
-                      {eventTypes.map((eventType) => (
+                    <div className="py-1">
+                      {catalogLevel.categories.map((category) => (
+                        <button
+                          className="flex h-8 w-full min-w-0 items-center gap-2 px-2 text-left text-xs hover:bg-accent hover:text-accent-foreground"
+                          key={category.path}
+                          onClick={() => selectCatalogCategory(category.path)}
+                          type="button"
+                        >
+                          <Folder className="size-4 shrink-0 text-muted-foreground" />
+                          <span className="min-w-0 flex-1 truncate">{category.label}</span>
+                          <span className="shrink-0 text-muted-foreground text-[11px] tabular-nums">
+                            {category.count}
+                          </span>
+                        </button>
+                      ))}
+                      {catalogLevel.definitions.map((definition) => (
                         <label
-                          className="flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-xs hover:bg-accent/50"
-                          key={eventType}
+                          className="flex cursor-pointer items-start gap-2 px-2 py-1.5 text-xs hover:bg-accent/50"
+                          key={definition.id.value}
                         >
                           <input
-                            checked={selectedEventTypes.includes(eventType)}
-                            className="size-4 accent-primary"
-                            onChange={() => onEventTypeToggle(eventType)}
+                            checked={selectedDefinitionIds.includes(definition.id.value)}
+                            className="mt-0.5 size-4 accent-primary"
+                            onChange={() => onDefinitionToggle(definition.id.value)}
                             type="checkbox"
                           />
-                          <span className={`rounded-full px-1.5 py-0.5 font-mono ${eventTypeTone(eventType)}`}>
-                            {eventType}
+                          <FileCode2 className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
+                          <span className="min-w-0">
+                            <span className="block truncate font-medium">{definition.name}</span>
+                            <span className="block truncate font-mono text-muted-foreground">{definition.id.value}</span>
                           </span>
                         </label>
                       ))}
-                    </div>
-                    <div className="space-y-1 border-t pt-3">
-                      <div className="flex items-center justify-between gap-2 px-1">
-                        <div className="font-medium text-muted-foreground text-xs">Catalog</div>
-                      </div>
-                      {definitionError && (
-                        <div className="rounded-md border border-red-500/30 bg-red-500/10 px-2 py-1.5 text-red-200 text-xs">
-                          {definitionError}
-                        </div>
-                      )}
-                      {definitionsLoading && definitions.length === 0 ? (
-                        <div className="px-2 py-1.5 text-muted-foreground text-xs">Loading definitions.</div>
-                      ) : definitions.length === 0 ? (
-                        <div className="px-2 py-1.5 text-muted-foreground text-xs">No definitions loaded.</div>
-                      ) : (
-                        <div className="overflow-hidden rounded-md border">
-                          <div className="flex h-9 min-w-0 items-center gap-1 border-b px-2">
-                            <button
-                              aria-label={canGoBackInCatalog ? "Back to parent category" : "Catalog root"}
-                              className="flex size-7 shrink-0 items-center justify-center rounded-md hover:bg-accent hover:text-accent-foreground disabled:pointer-events-none disabled:opacity-40"
-                              disabled={!canGoBackInCatalog}
-                              onClick={goBackInCatalog}
-                              type="button"
-                            >
-                              {canGoBackInCatalog ? <ChevronLeft className="size-4" /> : <Home className="size-4" />}
-                            </button>
-                            <span className="min-w-0 flex-1 truncate font-medium text-xs">
-                              {catalogLabel}
-                            </span>
-                            <span className="shrink-0 text-muted-foreground text-[11px] tabular-nums">
-                              {selectedDefinitionIds.length}
-                            </span>
-                          </div>
-                          <div className="py-1">
-                            {catalogLevel.categories.map((category) => (
-                              <button
-                                className="flex h-8 w-full min-w-0 items-center gap-2 px-2 text-left text-xs hover:bg-accent hover:text-accent-foreground"
-                                key={category.path}
-                                onClick={() => selectCatalogCategory(category.path)}
-                                type="button"
-                              >
-                                <Folder className="size-4 shrink-0 text-muted-foreground" />
-                                <span className="min-w-0 flex-1 truncate">{category.label}</span>
-                                <span className="shrink-0 text-muted-foreground text-[11px] tabular-nums">
-                                  {category.count}
-                                </span>
-                              </button>
-                            ))}
-                            {catalogLevel.definitions.map((definition) => (
-                              <label
-                                className="flex cursor-pointer items-start gap-2 px-2 py-1.5 text-xs hover:bg-accent/50"
-                                key={definition.id.value}
-                              >
-                                <input
-                                  checked={selectedDefinitionIds.includes(definition.id.value)}
-                                  className="mt-0.5 size-4 accent-primary"
-                                  onChange={() => onDefinitionToggle(definition.id.value)}
-                                  type="checkbox"
-                                />
-                                <FileCode2 className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
-                                <span className="min-w-0">
-                                  <span className="block truncate font-medium">{definition.name}</span>
-                                  <span className="block truncate font-mono text-muted-foreground">{definition.id.value}</span>
-                                </span>
-                              </label>
-                            ))}
-                            {catalogLevel.categories.length === 0 && catalogLevel.definitions.length === 0 && (
-                              <div className="px-2 py-2 text-muted-foreground text-xs">No catalog entries.</div>
-                            )}
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                    <div className="space-y-2 border-t pt-3">
-                      <div className="flex items-center justify-between gap-2 px-1">
-                        <div className="font-medium text-muted-foreground text-xs">Keys</div>
-                      </div>
-                      <div className="grid gap-2">
-                        <select
-                          className="h-8 rounded-md border bg-background px-2 text-xs"
-                          onChange={(event) => setKeyKind(event.currentTarget.value as WorkKeyKind | "Any")}
-                          value={keyKind}
-                        >
-                          <option value="Any">Any key</option>
-                          <option value="Subject">Subject</option>
-                          <option value="ConcurrencyKey">Concurrency key</option>
-                          <option value="Identifier">Identifier</option>
-                        </select>
-                        <input
-                          className="h-8 rounded-md border bg-background px-2 font-mono text-xs"
-                          onChange={(event) => setKeyType(event.currentTarget.value)}
-                          onKeyDown={(event) => {
-                            if (event.key === "Enter") {
-                              addKey();
-                            }
-                          }}
-                          placeholder="type"
-                          value={keyType}
-                        />
-                        <input
-                          className="h-8 rounded-md border bg-background px-2 font-mono text-xs"
-                          onChange={(event) => setKeyValue(event.currentTarget.value)}
-                          onKeyDown={(event) => {
-                            if (event.key === "Enter") {
-                              addKey();
-                            }
-                          }}
-                          placeholder="value"
-                          value={keyValue}
-                        />
-                        <Button className="h-8 text-xs" onClick={addKey} size="sm" variant="secondary">
-                          Add key
-                        </Button>
-                      </div>
-                      {selectedKeys.length > 0 && (
-                        <div className="flex flex-wrap gap-1">
-                          {selectedKeys.map((key) => (
-                            <button
-                              className="rounded-full border bg-muted/40 px-2 py-1 font-mono text-[11px] hover:bg-accent"
-                              key={`${key.kind ?? "Any"}:${key.type}:${key.value}`}
-                              onClick={() => onRemoveKey(key)}
-                              type="button"
-                            >
-                              {(key.kind ?? "Any")}:{key.type}:{key.value}
-                            </button>
-                          ))}
-                        </div>
+                      {catalogLevel.categories.length === 0 && catalogLevel.definitions.length === 0 && (
+                        <div className="px-2 py-2 text-muted-foreground text-xs">No catalog entries.</div>
                       )}
                     </div>
                   </div>
-                  )}
+                )}
+              </div>
+              <div className="space-y-2 border-t pt-3">
+                <div className="flex items-center justify-between gap-2 px-1">
+                  <div className="font-medium text-muted-foreground text-xs">Keys</div>
                 </div>
-                <div className={`grid min-h-0 overflow-hidden rounded-md border ${
-                  hasEventTable
-                    ? "grid-rows-[auto_auto_auto_minmax(0,1fr)]"
-                    : "grid-rows-[auto_minmax(0,1fr)]"
-                }`}>
-                  <div className="flex items-center justify-between gap-2 border-b px-3 py-2">
-                    <div className="font-medium text-muted-foreground text-xs">Event JSON</div>
-                    <div className="min-w-0 truncate font-mono text-muted-foreground text-xs">
-                      {selectedMessage && selectedMessage.events.length > 1
-                        ? `Event ${selectedEventIndexInBounds + 1}/${selectedMessage.events.length}`
-                        : selectedEvent?.eventType ?? "No event selected"}
-                    </div>
+                <div className="grid gap-2">
+                  <select
+                    className="h-8 rounded-md border bg-background px-2 text-xs"
+                    onChange={(event) => setKeyKind(event.currentTarget.value as WorkKeyKind | "Any")}
+                    value={keyKind}
+                  >
+                    <option value="Any">Any key</option>
+                    <option value="Subject">Subject</option>
+                    <option value="ConcurrencyKey">Concurrency key</option>
+                    <option value="Identifier">Identifier</option>
+                  </select>
+                  <input
+                    className="h-8 rounded-md border bg-background px-2 font-mono text-xs"
+                    onChange={(event) => setKeyType(event.currentTarget.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter") {
+                        addKey();
+                      }
+                    }}
+                    placeholder="type"
+                    value={keyType}
+                  />
+                  <input
+                    className="h-8 rounded-md border bg-background px-2 font-mono text-xs"
+                    onChange={(event) => setKeyValue(event.currentTarget.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter") {
+                        addKey();
+                      }
+                    }}
+                    placeholder="value"
+                    value={keyValue}
+                  />
+                  <Button className="h-8 text-xs" onClick={addKey} size="sm" variant="secondary">
+                    Add key
+                  </Button>
+                </div>
+                {selectedKeys.length > 0 && (
+                  <div className="flex flex-wrap gap-1">
+                    {selectedKeys.map((key) => (
+                      <button
+                        className="rounded-full border bg-muted/40 px-2 py-1 font-mono text-[11px] hover:bg-accent"
+                        key={`${key.kind ?? "Any"}:${key.type}:${key.value}`}
+                        onClick={() => onRemoveKey(key)}
+                        type="button"
+                      >
+                        {(key.kind ?? "Any")}:{key.type}:{key.value}
+                      </button>
+                    ))}
                   </div>
-                  {hasEventTable && selectedMessage && (
-                    <div
-                      className="grid min-h-0 grid-rows-[auto_minmax(0,1fr)] border-b"
-                      style={{ height: eventTableHeight }}
-                    >
-                      <div className="grid grid-cols-[4rem_minmax(8rem,1fr)_minmax(11rem,1.4fr)_minmax(8rem,1fr)] gap-2 border-b bg-muted/30 px-3 py-1.5 font-medium text-muted-foreground text-[11px]">
-                        <span>#</span>
-                        <span>Type</span>
-                        <span>Worker</span>
-                        <span>Definition</span>
-                      </div>
-                      <div className="min-h-0 overflow-auto">
-                        {selectedMessage.events.map((workEvent, index) => (
-                          <button
-                            className={`grid w-full grid-cols-[4rem_minmax(8rem,1fr)_minmax(11rem,1.4fr)_minmax(8rem,1fr)] gap-2 px-3 py-1.5 text-left text-xs ${
-                              index === selectedEventIndexInBounds
-                                ? "bg-accent text-accent-foreground"
-                                : "hover:bg-accent/50"
-                            }`}
-                            key={`${workEvent.eventType}:${workEvent.workerId?.value ?? "system"}:${index}`}
-                            onClick={() => setSelectedEventIndex(index)}
-                            onKeyDown={handleEventRowKeyDown}
-                            ref={(element) => {
-                              eventRowRefs.current[index] = element;
-                            }}
-                            type="button"
-                          >
-                            <span className="font-mono text-muted-foreground">{index + 1}</span>
-                            <span className={`w-fit rounded-full px-1.5 py-0.5 font-mono ${eventTypeTone(workEvent.eventType)}`}>
-                              {workEvent.eventType}
-                            </span>
-                            <span className="truncate font-mono text-muted-foreground">
-                              {workEvent.workerId?.value ?? "-"}
-                            </span>
-                            <span className="truncate font-mono text-muted-foreground">
-                              {workEvent.workDefinitionId?.value ?? "-"}
-                            </span>
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-                  {hasEventTable && (
-                    <div
-                      aria-label="Resize event table"
-                      className="group flex h-2 cursor-row-resize items-center justify-center border-b bg-muted/20 hover:bg-accent/40"
-                      onPointerDown={startEventTableResize}
-                      onPointerMove={resizeEventTable}
-                      onPointerUp={stopEventTableResize}
-                      role="separator"
-                    >
-                      <div className="h-px w-12 bg-border group-hover:bg-foreground/40" />
-                    </div>
-                  )}
-                  <pre className="min-h-0 overflow-auto whitespace-pre-wrap break-words bg-muted/30 p-3 font-mono text-xs leading-relaxed">
-                    {selectedEvent ? (
-                      <JsonValue maxExpandedArrayItems={100} value={selectedEvent} />
-                    ) : (
-                      "Waiting for the first realtime event."
-                    )}
-                  </pre>
-                </div>
+                )}
               </div>
             </div>
-          </div>,
-          document.body
-        )
-        : null}
-    </>
-  );
-}
-
-function EventInlineMetric({
-  label,
-  value,
-  wide = false,
-}: {
-  label: string;
-  value: string;
-  wide?: boolean;
-}) {
-  return (
-    <div className={`flex min-w-0 gap-1 ${wide ? "basis-full" : ""}`}>
-      <span className="text-muted-foreground">{label}</span>
-      <span className="truncate font-mono text-foreground">{value}</span>
+          )}
+        </div>
+        <div className={`grid min-h-0 overflow-hidden rounded-md border ${
+          hasEventTable
+            ? "grid-rows-[auto_auto_auto_minmax(0,1fr)]"
+            : "grid-rows-[auto_minmax(0,1fr)]"
+        }`}>
+          <div className="flex items-center justify-between gap-2 border-b px-3 py-2">
+            <div className="font-medium text-muted-foreground text-xs">Event JSON</div>
+            <div className="min-w-0 truncate font-mono text-muted-foreground text-xs">
+              {selectedMessage && selectedMessage.events.length > 1
+                ? `Event ${selectedEventIndexInBounds + 1}/${selectedMessage.events.length}`
+                : selectedEvent?.eventType ?? "No event selected"}
+            </div>
+          </div>
+          {hasEventTable && selectedMessage && (
+            <div
+              className="grid min-h-0 grid-rows-[auto_minmax(0,1fr)] border-b"
+              style={{ height: eventTableHeight }}
+            >
+              <div className="grid grid-cols-[4rem_minmax(8rem,1fr)_minmax(11rem,1.4fr)_minmax(8rem,1fr)] gap-2 border-b bg-muted/30 px-3 py-1.5 font-medium text-muted-foreground text-[11px]">
+                <span>#</span>
+                <span>Type</span>
+                <span>Worker</span>
+                <span>Definition</span>
+              </div>
+              <div className="min-h-0 overflow-auto">
+                {selectedMessage.events.map((workEvent, index) => (
+                  <button
+                    className={`grid w-full grid-cols-[4rem_minmax(8rem,1fr)_minmax(11rem,1.4fr)_minmax(8rem,1fr)] gap-2 px-3 py-1.5 text-left text-xs ${
+                      index === selectedEventIndexInBounds
+                        ? "bg-accent text-accent-foreground"
+                        : "hover:bg-accent/50"
+                    }`}
+                    key={`${workEvent.eventType}:${workEvent.workerId?.value ?? "system"}:${index}`}
+                    onClick={() => setSelectedEventIndex(index)}
+                    onKeyDown={handleEventRowKeyDown}
+                    ref={(element) => {
+                      eventRowRefs.current[index] = element;
+                    }}
+                    type="button"
+                  >
+                    <span className="font-mono text-muted-foreground">{index + 1}</span>
+                    <span className={`w-fit rounded-full px-1.5 py-0.5 font-mono ${eventTypeTone(workEvent.eventType)}`}>
+                      {workEvent.eventType}
+                    </span>
+                    <span className="truncate font-mono text-muted-foreground">
+                      {workEvent.workerId?.value ?? "-"}
+                    </span>
+                    <span className="truncate font-mono text-muted-foreground">
+                      {workEvent.workDefinitionId?.value ?? "-"}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+          {hasEventTable && (
+            <div
+              aria-label="Resize event table"
+              className="group flex h-2 cursor-row-resize items-center justify-center border-b bg-muted/20 hover:bg-accent/40"
+              onPointerDown={startEventTableResize}
+              onPointerMove={resizeEventTable}
+              onPointerUp={stopEventTableResize}
+              role="separator"
+            >
+              <div className="h-px w-12 bg-border group-hover:bg-foreground/40" />
+            </div>
+          )}
+          <pre className="min-h-0 overflow-auto whitespace-pre-wrap break-words bg-muted/30 p-3 font-mono text-xs leading-relaxed">
+            {selectedEvent ? (
+              <JsonValue maxExpandedArrayItems={100} value={selectedEvent} />
+            ) : (
+              "Waiting for the first realtime event."
+            )}
+          </pre>
+        </div>
+      </div>
     </div>
   );
 }
@@ -3106,24 +3025,41 @@ function formatEventBatchDefinitionSummary(events: WorkableRealtimeEvent[]) {
     : `${definitionIds.length} definitions`;
 }
 
-function getCenteredEventViewerPosition(size: "compact" | "large") {
-  if (typeof window === "undefined") {
-    return { x: 0, y: 0 };
+function formatEventBatchWorkerSummary(events: WorkableRealtimeEvent[]) {
+  const workerIds = [...new Set(events
+    .map((workEvent) => workEvent.workerId?.value)
+    .filter((workerId): workerId is string => Boolean(workerId)))];
+
+  if (workerIds.length === 0) {
+    return "System";
   }
 
-  const viewportWidth = window.visualViewport?.width ?? window.innerWidth;
-  const viewportHeight = window.visualViewport?.height ?? window.innerHeight;
-  const width = size === "compact" ? Math.min(viewportWidth * 0.96, 768) : Math.min(viewportWidth * 0.96, 1536);
-  const height = size === "compact" ? Math.min(viewportHeight * 0.82, 512) : Math.min(viewportHeight * 0.88, 896);
-
-  return {
-    x: Math.max(8, (viewportWidth - width) / 2),
-    y: Math.max(8, (viewportHeight - height) / 2),
-  };
+  return workerIds.length === 1
+    ? workerIds[0]
+    : `${workerIds.length} workers`;
 }
 
-function clampFloatingWindowPosition(value: number, viewport: number, size: number) {
-  return Math.min(Math.max(8, value), Math.max(8, viewport - size - 8));
+function getRealtimeEventSearchText(message: RealtimeEventMessage) {
+  return [
+    message.batchId,
+    message.batchSize ? String(message.batchSize) : null,
+    ...message.eventTypes,
+    ...message.events.flatMap((workEvent) => [
+      workEvent.eventType,
+      workEvent.workerId?.value ?? null,
+      workEvent.workDefinitionId?.value ?? null,
+      workEvent.subjectId?.type ?? null,
+      workEvent.subjectId?.value ?? null,
+    ]),
+    JSON.stringify(message.value),
+  ]
+    .filter((value): value is string => Boolean(value))
+    .join(" ")
+    .toLowerCase();
+}
+
+function formatEventByteCount(bytes: number, estimated?: boolean) {
+  return `${estimated ? ">=" : ""}${bytes.toLocaleString()}b`;
 }
 
 function clampEventTableHeight(value: number) {
@@ -3145,35 +3081,6 @@ function normalizeEventViewerMaxMessages(value: string) {
   }
 
   return Math.max(1, Math.min(1000, parsed));
-}
-
-function formatEventViewerFilterSummary(
-  eventTypeCount: number,
-  definitionCount: number,
-  keyCount: number
-) {
-  const parts = [
-    eventTypeCount > 0
-      ? `${eventTypeCount} type${eventTypeCount === 1 ? "" : "s"}`
-      : "No event types selected",
-    definitionCount > 0 ? `${definitionCount} definition${definitionCount === 1 ? "" : "s"}` : null,
-    keyCount > 0 ? `${keyCount} key${keyCount === 1 ? "" : "s"}` : null,
-  ].filter(Boolean);
-
-  return parts.join(", ");
-}
-
-function formatActiveConnectionCount(value: number) {
-  return `${value} active connection${value === 1 ? "" : "s"}`;
-}
-
-function countEnabledRealtimeConnections(
-  connections: Array<{ connectionState?: string; enabled?: boolean } | null | undefined>
-) {
-  return connections.filter((connection) =>
-    connection?.enabled === true &&
-    connection.connectionState !== "disabled"
-  ).length;
 }
 
 function eventTypeTone(eventType: string) {
@@ -3458,10 +3365,7 @@ function SystemNotificationTray({
           {activeSystemDiagnosticsAvailable ? (
             <>
               <div className="border-b bg-muted/10 px-3 py-2">
-                <div className="font-medium text-sm">Detailed diagnostics for {systemName}</div>
-                <div className="text-muted-foreground text-xs">
-                  The five diagnostic sections below belong to the active system only.
-                </div>
+                <div className="font-medium text-sm">Diagnostics for system: {systemName}</div>
               </div>
               <ReadModelDiagnosticsSummary
                 compact={readModelCompact}

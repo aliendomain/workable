@@ -97,7 +97,8 @@ export function ConsolePageRealtimeViewProvider({ children }: { children: ReactN
         payloadJson,
         `${subscription}:${nextMessageId}`,
         viewName,
-        subscription
+        subscription,
+        resolvedDescriptor?.connection ?? null
       );
     },
     enabled: resolvedDescriptor?.enabled ?? false,
@@ -150,6 +151,10 @@ export function useConsolePageRealtimeView<T>(id: string): ConsoleRealtimeViewLo
 
     return resolvedView as ConsoleRealtimeViewLoadable<T, RealtimePayloadMessage>;
   }, [id, resolvedDescriptorId, resolvedView]);
+}
+
+export function useResolvedConsolePageRealtimeView<T>(): ConsoleRealtimeViewLoadable<T, RealtimePayloadMessage> {
+  return useConsolePageRealtimeViewContext().resolvedView as ConsoleRealtimeViewLoadable<T, RealtimePayloadMessage>;
 }
 
 export function useResolvedConsolePageRealtimeViewDescriptorId() {

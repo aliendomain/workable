@@ -15,6 +15,7 @@ export type ConsoleHeaderRealtimeCapability = {
   connectionState: string;
   enabled: boolean;
   menuItems?: ConsoleHeaderMenuItem[] | null;
+  title?: string;
 };
 
 export type ConsoleHeaderRefreshCapability = {

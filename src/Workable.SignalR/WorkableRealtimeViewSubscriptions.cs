@@ -21,6 +21,7 @@ public sealed class WorkableRealtimeViewSubscriptions
         string connectionId,
         IGroupManager groupManager,
         IWorkSystem system,
+        string subscriptionId,
         string viewName,
         WorkViewCriteria criteria,
         WorkAuthorizationSnapshot authorization,
@@ -29,13 +30,15 @@ public sealed class WorkableRealtimeViewSubscriptions
         ArgumentException.ThrowIfNullOrWhiteSpace(connectionId);
         ArgumentNullException.ThrowIfNull(groupManager);
         ArgumentNullException.ThrowIfNull(system);
+        ArgumentException.ThrowIfNullOrWhiteSpace(subscriptionId);
         ArgumentException.ThrowIfNullOrWhiteSpace(viewName);
         ArgumentNullException.ThrowIfNull(criteria);
         ArgumentNullException.ThrowIfNull(authorization);
 
         var normalizedViewName = NormalizeViewName(viewName);
-        var subscription = CreateSubscription(system, normalizedViewName, criteria, authorization);
-        var connectionViewKey = ConnectionViewKey(connectionId, system.Id, normalizedViewName);
+        var normalizedSubscriptionId = NormalizeSubscriptionId(subscriptionId);
+        var subscription = CreateSubscription(system, normalizedSubscriptionId, normalizedViewName, criteria, authorization);
+        var connectionViewKey = ConnectionViewKey(connectionId, system.Id, normalizedSubscriptionId);
         WorkableRealtimeViewSubscription? oldSubscription = null;
         var addToGroup = false;
 
@@ -83,15 +86,15 @@ public sealed class WorkableRealtimeViewSubscriptions
         string connectionId,
         IGroupManager groupManager,
         IWorkSystem system,
-        string viewName,
+        string subscriptionId,
         CancellationToken cancellationToken)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(connectionId);
         ArgumentNullException.ThrowIfNull(groupManager);
         ArgumentNullException.ThrowIfNull(system);
-        ArgumentException.ThrowIfNullOrWhiteSpace(viewName);
+        ArgumentException.ThrowIfNullOrWhiteSpace(subscriptionId);
 
-        var connectionViewKey = ConnectionViewKey(connectionId, system.Id, NormalizeViewName(viewName));
+        var connectionViewKey = ConnectionViewKey(connectionId, system.Id, NormalizeSubscriptionId(subscriptionId));
         WorkableRealtimeViewSubscription? subscription = null;
 
         lock (this.gate)
@@ -156,12 +159,14 @@ public sealed class WorkableRealtimeViewSubscriptions
 
     private static WorkableRealtimeViewSubscription CreateSubscription(
         IWorkSystem system,
+        string subscriptionId,
         string viewName,
         WorkViewCriteria criteria,
         WorkAuthorizationSnapshot authorization)
     {
         var key = CreateGroupKey(system.Id, viewName, criteria, authorization.ReadFingerprint);
         return new WorkableRealtimeViewSubscription(
+            subscriptionId,
             system.Id,
             viewName,
             criteria,
@@ -195,11 +200,14 @@ public sealed class WorkableRealtimeViewSubscriptions
     private static string ConnectionViewKey(
         string connectionId,
         WorkSystemId systemId,
-        string viewName)
-        => $"{connectionId}:{systemId.Value:N}:{viewName}";
+        string subscriptionId)
+        => $"{connectionId}:{systemId.Value:N}:{subscriptionId}";
 
     private static string NormalizeViewName(string viewName)
         => viewName.Trim().ToLowerInvariant();
+
+    private static string NormalizeSubscriptionId(string subscriptionId)
+        => subscriptionId.Trim();
 
     private void ReleaseGroupLocked(string groupName)
     {

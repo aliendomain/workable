@@ -1504,9 +1504,16 @@ internal sealed class WorkerRecord(
     }
 
     private WorkerIterationSnapshot? GetLatestIterationLocked()
-        => this.retainedIterations
+    {
+        if (this.currentIteration is not null)
+        {
+            return this.CreateCurrentIterationSnapshotLocked(DateTimeOffset.UtcNow);
+        }
+
+        return this.retainedIterations
             .OrderByDescending(iteration => iteration.Sequence)
             .FirstOrDefault();
+    }
 
     private WorkerIterationSnapshot? GetIterationSnapshotLocked(long sequence)
     {

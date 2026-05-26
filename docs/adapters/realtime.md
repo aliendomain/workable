@@ -258,14 +258,22 @@ Batching changes transport shape, not event semantics. Clients should handle bot
 Overview-style clients can subscribe to the same component-view request shape used by the HTTP API.
 
 ```csharp
-connection.On<WorkComponentQueryResult>("workable.view", view =>
+const string OverviewSubscriptionId = "overview-main";
+
+connection.On<WorkableRealtimeViewEnvelope<WorkComponentQueryResult>>("workable.view", envelope =>
 {
-    // Replace the visible component data with the pushed component map.
+    if (!string.Equals(envelope.SubscriptionId, OverviewSubscriptionId, StringComparison.Ordinal))
+    {
+        return;
+    }
+
+    // Replace the visible component data with envelope.Result.
 });
 
 await connection.StartAsync();
 await connection.InvokeAsync(
     "WatchView",
+    OverviewSubscriptionId,
     "overview",
     new WorkViewCriteria(
         Components:
@@ -277,9 +285,9 @@ await connection.InvokeAsync(
     (string?)null);
 ```
 
-`WatchView` immediately sends the current `WorkComponentQueryResult` to the caller. After that, the server coalesces Workable events and publishes refreshed results on the publish interval.
+`WatchView` immediately sends the current `WorkableRealtimeViewEnvelope<WorkComponentQueryResult>` to the caller. The envelope includes the caller-supplied `subscriptionId`, the normalized `viewName`, and the `result`. After that, the server coalesces Workable events and publishes refreshed results on the publish interval.
 
-View subscriptions are grouped by system id, view name, scope, component ids, component types, shapes, options, and effective read visibility. Connections with the same normalized request and the same readable work set share one server recomputation per publish tick. If a client hides a panel, it should call `WatchView` again with that component omitted; if it changes a panel between `compact`, `standard`, and `detailed`, it should call `WatchView` with the new shape. The same SignalR connection stays open while the server swaps the connection between normalized view groups.
+View subscriptions are grouped by system id, view name, scope, component ids, component types, shapes, options, and effective read visibility. Connections with the same normalized request and the same readable work set share one server recomputation per publish tick. The client-supplied `subscriptionId` is the logical handle for one live view stream on a SignalR connection. A single SignalR connection can keep multiple view subscriptions active at once as long as each one has its own `subscriptionId`. Reusing the same `subscriptionId` replaces that logical view watch with the new normalized request.
 
 SignalR view payloads use the same component efficiency contract as HTTP:
 
@@ -293,7 +301,7 @@ Most view groups publish only after the read-model sequence advances. View group
 Stop watching a view when the page no longer needs live updates.
 
 ```csharp
-await connection.InvokeAsync("UnwatchView", "overview", (string?)null);
+await connection.InvokeAsync("UnwatchView", OverviewSubscriptionId, (string?)null);
 ```
 
 ## Diagnostics View Updates
@@ -301,8 +309,11 @@ await connection.InvokeAsync("UnwatchView", "overview", (string?)null);
 System health chrome can subscribe to the `diagnostics` view without adding diagnostics data to the overview payload. The default diagnostics publish interval is 750ms and only active diagnostics view groups are published. See [Work Diagnostics](../concepts/diagnostics.md) for field meanings and warning guidance.
 
 ```csharp
+const string DiagnosticsSubscriptionId = "diagnostics-alerts";
+
 await connection.InvokeAsync(
     "WatchView",
+    DiagnosticsSubscriptionId,
     "diagnostics",
     new WorkViewCriteria(
         Components:
@@ -337,8 +348,11 @@ Threshold options are component-specific: `warningThreshold` controls read-model
 For example, an always-on alert indicator can stay quiet while healthy:
 
 ```csharp
+const string DiagnosticsAlertSubscriptionId = "diagnostics-alert-tray";
+
 await connection.InvokeAsync(
     "WatchView",
+    DiagnosticsAlertSubscriptionId,
     "diagnostics",
     new WorkViewCriteria(
         Components:
@@ -363,8 +377,8 @@ The hub exposes these observability methods:
 ```csharp
 Task WatchWorker(string workerId, string? systemName = null);
 Task UnwatchWorker(string workerId, string? systemName = null);
-Task WatchView(string viewName, WorkViewCriteria? criteria = null, string? systemName = null);
-Task UnwatchView(string viewName, string? systemName = null);
+Task WatchView(string subscriptionId, string viewName, WorkViewCriteria? criteria = null, string? systemName = null);
+Task UnwatchView(string subscriptionId, string? systemName = null);
 Task WatchEvents(WorkableRealtimeEventCriteria? criteria = null, string? systemName = null);
 Task UnwatchEvents(WorkableRealtimeEventCriteria? criteria = null, string? systemName = null);
 Task WatchSystem(string? systemName = null);

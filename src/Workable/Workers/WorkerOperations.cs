@@ -14,6 +14,7 @@ internal sealed class WorkerOperations :
     private readonly WorkSystemCatalog catalog;
     private readonly Func<WorkSystemState> getSystemState;
     private readonly WorkerEventPublisher workerEvents;
+    private readonly WorkerIterationTransitionCoordinator iterationTransitions;
     private readonly ConfiguredWorkerExecutionStrategy executionStrategy;
     private readonly ConcurrentDictionary<WorkerId, WorkerRecord> workers = [];
     private readonly WorkerIndex index = new();
@@ -95,17 +96,20 @@ internal sealed class WorkerOperations :
             logger);
         var attemptRunner = new WorkerExecutionAttemptRunner(invoker, exceptionHandler);
         var completionRecorder = new WorkerExecutionCompletionRecorder(this.workerEvents);
+        this.iterationTransitions = new WorkerIterationTransitionCoordinator(this.workerEvents);
         var runOnce = new RunOnceWorkerExecutionStrategy(
             attemptRunner,
             completionRecorder);
         var transientRetry = new TransientRetryWorkerExecutionStrategy(
             attemptRunner,
             completionRecorder,
-            this.workerEvents);
+            this.workerEvents,
+            this.iterationTransitions);
         var recurring = new RecurringWorkerExecutionStrategy(
             attemptRunner,
             completionRecorder,
-            this.workerEvents);
+            this.workerEvents,
+            this.iterationTransitions);
         this.executionStrategy = new ConfiguredWorkerExecutionStrategy(runOnce, transientRetry, recurring);
         this.dispatcher = new WorkerDispatcher(this.DispatchQueuedWorker);
         this.retention = new WorkerRetentionScheduler(this.index, retentionConfiguration, this.PurgeFinalWorkersForRetention);
@@ -805,7 +809,7 @@ internal sealed class WorkerOperations :
         }
 
         worker.TrackCompletion(this.LaunchWorkerExecution(worker, executionToken));
-        this.workerEvents.Started(worker);
+        this.iterationTransitions.RecordWorkerStarted(worker);
         return outcome;
     }
 

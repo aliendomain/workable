@@ -41,6 +41,7 @@ public sealed class WorkableRealtimeHub(
     }
 
     public async Task WatchView(
+        string subscriptionId,
         string viewName,
         WorkViewCriteria? criteria = null,
         string? systemName = null)
@@ -54,12 +55,13 @@ public sealed class WorkableRealtimeHub(
                 this.Context.ConnectionId,
                 this.Groups,
                 system,
+                subscriptionId,
                 viewName,
                 views.NormalizeViewCriteria(viewName, criteria),
                 authorization,
                 this.Context.ConnectionAborted);
 
-            await SendView(session, subscription.ViewName, subscription.Criteria, this.Clients.Caller);
+            await SendView(subscription, session, this.Clients.Caller);
         }
         catch (OperationCanceledException) when (this.Context.ConnectionAborted.IsCancellationRequested)
         {
@@ -73,7 +75,7 @@ public sealed class WorkableRealtimeHub(
                     this.Context.ConnectionId,
                     this.Groups,
                     system,
-                    subscription.ViewName,
+                    subscription.SubscriptionId,
                     CancellationToken.None);
             }
 
@@ -81,14 +83,14 @@ public sealed class WorkableRealtimeHub(
         }
     }
 
-    public Task UnwatchView(string viewName, string? systemName = null)
+    public Task UnwatchView(string subscriptionId, string? systemName = null)
     {
         var system = ResolveSystem(systemName);
         return viewSubscriptions.UnwatchView(
             this.Context.ConnectionId,
             this.Groups,
             system,
-            viewName,
+            subscriptionId,
             this.Context.ConnectionAborted);
     }
 
@@ -164,19 +166,21 @@ public sealed class WorkableRealtimeHub(
     }
 
     private async Task SendView(
+        WorkableRealtimeViewSubscription subscription,
         IWorkSystemSession session,
-        string viewName,
-        WorkViewCriteria criteria,
         IClientProxy client)
     {
         var result = await views.View(
             session,
-            viewName,
-            criteria,
+            subscription.ViewName,
+            subscription.Criteria,
             cancellationToken: this.Context.ConnectionAborted);
         await client.SendAsync(
             WorkableRealtimeClientMethods.ViewUpdated,
-            result,
+            new WorkableRealtimeViewEnvelope<WorkComponentQueryResult>(
+                subscription.SubscriptionId,
+                subscription.ViewName,
+                result),
             this.Context.ConnectionAborted);
     }
 

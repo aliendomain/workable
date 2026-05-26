@@ -296,13 +296,13 @@ public sealed class WorkableSignalRTests
         var system = host.Services.GetRequiredService<IWorkSystemRegistry>().Default;
         var gate = host.Services.GetRequiredService<SignalRWorkGate>();
         await using var connection = CreateConnection(host);
+        const string subscriptionId = "overview";
         var views = Channel.CreateUnbounded<WorkComponentQueryResult>();
-        connection.On<WorkComponentQueryResult>(
-            WorkableRealtimeClientMethods.ViewUpdated,
-            view => views.Writer.TryWrite(view));
+        CaptureRealtimeViews(connection, subscriptionId, views);
         await connection.StartAsync();
         await connection.InvokeAsync(
             "WatchView",
+            subscriptionId,
             "overview",
             new WorkViewCriteria(Components:
             [
@@ -338,13 +338,13 @@ public sealed class WorkableSignalRTests
         var session = Session(system);
         await Eventually(() => session.Diagnostics.ReadModel.PendingUpdateCount == 0);
         await using var connection = CreateConnection(host);
+        const string subscriptionId = "overview";
         var views = Channel.CreateUnbounded<WorkComponentQueryResult>();
-        connection.On<WorkComponentQueryResult>(
-            WorkableRealtimeClientMethods.ViewUpdated,
-            view => views.Writer.TryWrite(view));
+        CaptureRealtimeViews(connection, subscriptionId, views);
         await connection.StartAsync();
         await connection.InvokeAsync(
             "WatchView",
+            subscriptionId,
             "overview",
             new WorkViewCriteria(Components:
             [
@@ -376,13 +376,13 @@ public sealed class WorkableSignalRTests
     {
         using var host = await CreateHost(addSignalR: true);
         await using var connection = CreateConnection(host);
+        const string subscriptionId = "overview";
         var views = Channel.CreateUnbounded<WorkComponentQueryResult>();
-        connection.On<WorkComponentQueryResult>(
-            WorkableRealtimeClientMethods.ViewUpdated,
-            view => views.Writer.TryWrite(view));
+        CaptureRealtimeViews(connection, subscriptionId, views);
         await connection.StartAsync();
         await connection.InvokeAsync(
             "WatchView",
+            subscriptionId,
             "overview",
             new WorkViewCriteria(Components:
             [
@@ -408,13 +408,13 @@ public sealed class WorkableSignalRTests
     {
         using var host = await CreateHost(addSignalR: true);
         await using var connection = CreateConnection(host);
+        const string subscriptionId = "diagnostics";
         var views = Channel.CreateUnbounded<WorkComponentQueryResult>();
-        connection.On<WorkComponentQueryResult>(
-            WorkableRealtimeClientMethods.ViewUpdated,
-            view => views.Writer.TryWrite(view));
+        CaptureRealtimeViews(connection, subscriptionId, views);
         await connection.StartAsync();
         await connection.InvokeAsync(
             "WatchView",
+            subscriptionId,
             "diagnostics",
             new WorkViewCriteria(Components:
             [
@@ -514,13 +514,13 @@ public sealed class WorkableSignalRTests
     {
         using var host = await CreateHost(addSignalR: true);
         await using var connection = CreateConnection(host);
+        const string subscriptionId = "diagnostics";
         var views = Channel.CreateUnbounded<WorkComponentQueryResult>();
-        connection.On<WorkComponentQueryResult>(
-            WorkableRealtimeClientMethods.ViewUpdated,
-            view => views.Writer.TryWrite(view));
+        CaptureRealtimeViews(connection, subscriptionId, views);
         await connection.StartAsync();
         await connection.InvokeAsync(
             "WatchView",
+            subscriptionId,
             "diagnostics",
             new WorkViewCriteria(Components:
             [
@@ -553,13 +553,13 @@ public sealed class WorkableSignalRTests
         using var host = await CreateHost(addSignalR: true);
         var system = host.Services.GetRequiredService<IWorkSystemRegistry>().Default;
         await using var connection = CreateConnection(host);
+        const string subscriptionId = "diagnostics";
         var views = Channel.CreateUnbounded<WorkComponentQueryResult>();
-        connection.On<WorkComponentQueryResult>(
-            WorkableRealtimeClientMethods.ViewUpdated,
-            view => views.Writer.TryWrite(view));
+        CaptureRealtimeViews(connection, subscriptionId, views);
         await connection.StartAsync();
         await connection.InvokeAsync(
             "WatchView",
+            subscriptionId,
             "diagnostics",
             new WorkViewCriteria(Components:
             [
@@ -610,13 +610,13 @@ public sealed class WorkableSignalRTests
             }));
         var system = host.Services.GetRequiredService<IWorkSystemRegistry>().Default;
         await using var connection = CreateConnection(host);
+        const string subscriptionId = "diagnostics";
         var views = Channel.CreateUnbounded<WorkComponentQueryResult>();
-        connection.On<WorkComponentQueryResult>(
-            WorkableRealtimeClientMethods.ViewUpdated,
-            view => views.Writer.TryWrite(view));
+        CaptureRealtimeViews(connection, subscriptionId, views);
         await connection.StartAsync();
         await connection.InvokeAsync(
             "WatchView",
+            subscriptionId,
             "diagnostics",
             new WorkViewCriteria(Components:
             [
@@ -667,13 +667,13 @@ public sealed class WorkableSignalRTests
         var system = host.Services.GetRequiredService<IWorkSystemRegistry>().Default;
         var gate = host.Services.GetRequiredService<SignalRWorkGate>();
         await using var connection = CreateConnection(host);
+        const string subscriptionId = "diagnostics";
         var views = Channel.CreateUnbounded<WorkComponentQueryResult>();
-        connection.On<WorkComponentQueryResult>(
-            WorkableRealtimeClientMethods.ViewUpdated,
-            view => views.Writer.TryWrite(view));
+        CaptureRealtimeViews(connection, subscriptionId, views);
         await connection.StartAsync();
         await connection.InvokeAsync(
             "WatchView",
+            subscriptionId,
             "diagnostics",
             new WorkViewCriteria(Components:
             [
@@ -750,14 +750,14 @@ public sealed class WorkableSignalRTests
             groups: TransportAuthorizationTestSupport.ConnectGroups);
         var system = host.Services.GetRequiredService<IWorkSystemRegistry>().Default;
         await using var connection = CreateConnection(host);
+        const string subscriptionId = "diagnostics";
         var views = Channel.CreateUnbounded<WorkComponentQueryResult>();
-        connection.On<WorkComponentQueryResult>(
-            WorkableRealtimeClientMethods.ViewUpdated,
-            view => views.Writer.TryWrite(view));
+        CaptureRealtimeViews(connection, subscriptionId, views);
         await connection.StartAsync();
 
         var exception = await Assert.ThrowsAnyAsync<Exception>(() => connection.InvokeAsync(
             "WatchView",
+            subscriptionId,
             "diagnostics",
             new WorkViewCriteria(Components:
             [
@@ -1040,6 +1040,22 @@ public sealed class WorkableSignalRTests
                 foreach (var workEvent in batch.Events)
                 {
                     events.Writer.TryWrite(workEvent);
+                }
+            });
+    }
+
+    private static void CaptureRealtimeViews(
+        HubConnection connection,
+        string subscriptionId,
+        Channel<WorkComponentQueryResult> views)
+    {
+        connection.On<WorkableRealtimeViewEnvelope<WorkComponentQueryResult>>(
+            WorkableRealtimeClientMethods.ViewUpdated,
+            envelope =>
+            {
+                if (string.Equals(envelope.SubscriptionId, subscriptionId, StringComparison.Ordinal))
+                {
+                    views.Writer.TryWrite(envelope.Result);
                 }
             });
     }

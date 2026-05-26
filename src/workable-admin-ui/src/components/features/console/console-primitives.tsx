@@ -5,6 +5,8 @@ import { cn } from "@/lib/utils";
 
 export const consolePageLayoutClassName = "flex min-h-0 flex-col gap-6";
 export const consoleViewMountClassName = "flex min-h-0 flex-col";
+export const consoleViewportClassName = "flex min-h-0 flex-1 flex-col";
+export const consoleViewportContentClassName = "flex min-h-0 flex-1 flex-col";
 export const consoleToolbarLaneClassName =
   "-mb-2 flex min-h-9 min-w-0 -translate-y-2 items-center justify-end gap-1";
 export const consoleToolbarFrameClassName =
@@ -33,6 +35,8 @@ export const consolePanelSectionGapClassName = "gap-4";
 export const consolePanelClusterGapClassName = "gap-3";
 export const consolePanelInlineGapClassName = "gap-1";
 export const consolePanelActionGapClassName = "gap-2";
+
+export type ConsoleScrollMode = "browser" | "panel";
 
 export function ViewActionLane({ children }: { children?: ReactNode }) {
   return (
@@ -85,16 +89,28 @@ export function ConsoleViewFrame({
 export function ConsolePageLayout({
   children,
   className,
+  fill = false,
   reserveToolbar = false,
+  scrollMode = "browser",
   toolbar,
   ...props
 }: HTMLAttributes<HTMLDivElement> & {
   children: ReactNode;
+  fill?: boolean;
   reserveToolbar?: boolean;
+  scrollMode?: ConsoleScrollMode;
   toolbar?: ReactNode;
 }) {
   return (
-    <div className={cn(consolePageLayoutClassName, className)} {...props}>
+    <div
+      className={cn(
+        consolePageLayoutClassName,
+        fill && "flex-1",
+        scrollMode === "panel" && "overflow-hidden",
+        className
+      )}
+      {...props}
+    >
       {(reserveToolbar || toolbar) ? <ViewActionLane>{toolbar}</ViewActionLane> : null}
       {children}
     </div>
@@ -105,14 +121,69 @@ export function ConsoleViewMount({
   active = true,
   children,
   className,
+  fill = false,
+  scrollMode = "browser",
   ...props
 }: HTMLAttributes<HTMLDivElement> & {
   active?: boolean;
   children: ReactNode;
+  fill?: boolean;
+  scrollMode?: ConsoleScrollMode;
 }) {
   return (
     <div
-      className={cn(active ? consoleViewMountClassName : "hidden", className)}
+      className={cn(
+        active ? consoleViewMountClassName : "hidden",
+        fill && "flex-1",
+        scrollMode === "panel" && "overflow-hidden",
+        className
+      )}
+      {...props}
+    >
+      {children}
+    </div>
+  );
+}
+
+export function ConsoleViewport({
+  children,
+  className,
+  scrollMode = "browser",
+  ...props
+}: HTMLAttributes<HTMLDivElement> & {
+  children: ReactNode;
+  scrollMode?: ConsoleScrollMode;
+}) {
+  return (
+    <div
+      className={cn(
+        consoleViewportClassName,
+        scrollMode === "panel" && "overflow-hidden",
+        className
+      )}
+      {...props}
+    >
+      {children}
+    </div>
+  );
+}
+
+export function ConsoleViewportContent({
+  children,
+  className,
+  scrollMode = "browser",
+  ...props
+}: HTMLAttributes<HTMLDivElement> & {
+  children: ReactNode;
+  scrollMode?: ConsoleScrollMode;
+}) {
+  return (
+    <div
+      className={cn(
+        consoleViewportContentClassName,
+        scrollMode === "panel" ? "overflow-hidden" : "overflow-visible",
+        className
+      )}
       {...props}
     >
       {children}
