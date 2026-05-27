@@ -361,7 +361,7 @@ export function IterationsView({
   isLoadingTarget,
   isVisible,
   keyTypeFilter,
-  onOpenWorker,
+  onOpenIteration,
   onReady,
   refreshToken,
   statusFilter,
@@ -373,7 +373,7 @@ export function IterationsView({
   isLoadingTarget: boolean;
   isVisible: boolean;
   keyTypeFilter: string;
-  onOpenWorker: (workerId: string) => void;
+  onOpenIteration: (workerId: string, sequence: number) => void;
   onReady: () => void;
   refreshToken: number;
   statusFilter: WorkCompletionStatus[];
@@ -409,8 +409,8 @@ export function IterationsView({
   const openIterationRow = useCallback((iteration: WorkViewIterationGridDetailed) => {
     setSelectedIterationRowKey(getIterationRowKey(iteration));
     setSelectedIterationResetKey(selectionScopeKey);
-    onOpenWorker(iteration.workerId.value);
-  }, [onOpenWorker, selectionScopeKey]);
+    onOpenIteration(iteration.workerId.value, iteration.sequence);
+  }, [onOpenIteration, selectionScopeKey]);
   const isReady = !iterations.loading;
   useEffect(() => {
     if (isLoadingTarget && isReady) {

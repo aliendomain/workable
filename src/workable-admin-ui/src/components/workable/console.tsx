@@ -100,6 +100,7 @@ import {
 import {
   DefinitionView,
   DefinitionsView,
+  IterationConsoleView,
   WorkerConsoleView,
 } from "@/components/workable/console/detail-screens";
 import {
@@ -173,6 +174,7 @@ type ConsoleStorage = {
 
 type NavigationEntry = {
   catalogScope: OverviewScope | null;
+  iterationSequence: number | null;
   iterationCategoryFilter: string;
   iterationDefinitionFilter: string;
   iterationKeyTypeFilter: string;
@@ -185,6 +187,7 @@ type NavigationEntry = {
   systemId: string;
   view: View;
   definitionId: string | null;
+  iterationWorkerId: string | null;
   workerId: string | null;
   workerStateFilter: WorkerState[];
 };
@@ -220,6 +223,7 @@ const initialRefreshTokens: Record<View, number> = {
   workers: 0,
   iterations: 0,
   worker: 0,
+  iteration: 0,
 };
 const readModelLagWarningThreshold = 100;
 const concurrencyLagWarningSeconds = 30;
@@ -292,6 +296,8 @@ export function WorkableConsole() {
   const [selectedDefinitionId, setSelectedDefinitionId] = useState<string | null>(null);
   const [selectedDefinitionName, setSelectedDefinitionName] = useState<string | null>(null);
   const [selectedWorkerId, setSelectedWorkerId] = useState<string | null>(null);
+  const [selectedIterationWorkerId, setSelectedIterationWorkerId] = useState<string | null>(null);
+  const [selectedIterationSequence, setSelectedIterationSequence] = useState<number | null>(null);
   const [workerCategoryFilter, setWorkerCategoryFilter] = useState("");
   const [workerDefinitionFilter, setWorkerDefinitionFilter] = useState("");
   const [keyTypeFilter, setKeyTypeFilter] = useState("");
@@ -958,10 +964,12 @@ export function WorkableConsole() {
       ),
       definitionId: selectedDefinitionId,
       definitionName: selectedDefinitionName,
+      iterationSequence: selectedIterationSequence,
       iterationCategoryFilter,
       iterationDefinitionFilter,
       iterationKeyTypeFilter,
       iterationStatusFilter,
+      iterationWorkerId: selectedIterationWorkerId,
       keyTypeFilter,
       overviewScope: cloneOverviewScope(
         overviewScopeBySystemId[consoleState.activeSystemId] ?? null
@@ -984,6 +992,8 @@ export function WorkableConsole() {
       overviewScopeBySystemId,
       selectedDefinitionId,
       selectedDefinitionName,
+      selectedIterationSequence,
+      selectedIterationWorkerId,
       selectedWorkerId,
       workerCategoryFilter,
       view,
@@ -1182,7 +1192,7 @@ export function WorkableConsole() {
   }, []);
 
   const rememberCurrentViewScroll = useCallback(() => {
-    if (visibleView !== "worker") {
+    if (visibleView !== "worker" && visibleView !== "iteration") {
       viewScrollPositions.current[visibleView] = getWindowScrollTop();
     }
   }, [visibleView]);
@@ -1194,11 +1204,29 @@ export function WorkableConsole() {
     }
     setSelectedDefinitionId(null);
     setSelectedDefinitionName(null);
+    setSelectedIterationWorkerId(null);
+    setSelectedIterationSequence(null);
     setSelectedWorkerId(workerId);
     setVisibleView("worker");
     setPendingView(null);
     setView("worker");
     refreshView("worker");
+  };
+
+  const openIteration = (workerId: string, sequence: number, trackHistory = true) => {
+    rememberCurrentViewScroll();
+    if (trackHistory) {
+      pushCurrentNavigation();
+    }
+    setSelectedDefinitionId(null);
+    setSelectedDefinitionName(null);
+    setSelectedWorkerId(null);
+    setSelectedIterationWorkerId(workerId);
+    setSelectedIterationSequence(sequence);
+    setVisibleView("iteration");
+    setPendingView(null);
+    setView("iteration");
+    refreshView("iteration");
   };
 
   const openDefinition = (
@@ -1212,6 +1240,8 @@ export function WorkableConsole() {
     rememberCurrentViewScroll();
     pushCurrentNavigation();
     setSelectedWorkerId(null);
+    setSelectedIterationWorkerId(null);
+    setSelectedIterationSequence(null);
     setSelectedDefinitionId(definitionId);
     setSelectedDefinitionName(options?.definitionName ?? null);
     const isSystemChange = systemId !== activeSystem?.id;
@@ -1242,6 +1272,8 @@ export function WorkableConsole() {
         view: nextView,
         definitionId: nextView === "definition" ? selectedDefinitionId : null,
         definitionName: nextView === "definition" ? selectedDefinitionName : null,
+        iterationSequence: null,
+        iterationWorkerId: null,
         workerId: null,
         catalogScope: cloneOverviewScope(catalogScopeBySystemId[systemId] ?? null),
         iterationCategoryFilter,
@@ -1258,8 +1290,10 @@ export function WorkableConsole() {
       pushCurrentNavigation();
     }
 
-    if (nextView !== "worker") {
+    if (nextView !== "worker" && nextView !== "iteration") {
       setSelectedWorkerId(null);
+      setSelectedIterationWorkerId(null);
+      setSelectedIterationSequence(null);
       if (nextView !== "definition") {
         setSelectedDefinitionId(null);
         setSelectedDefinitionName(null);
@@ -1421,6 +1455,8 @@ export function WorkableConsole() {
     setIterationCategoryFilter(entry.iterationCategoryFilter);
     setIterationDefinitionFilter(entry.iterationDefinitionFilter);
     setIterationKeyTypeFilter(entry.iterationKeyTypeFilter);
+    setSelectedIterationSequence(entry.iterationSequence);
+    setSelectedIterationWorkerId(entry.iterationWorkerId);
     setIterationStatusFilter(entry.iterationStatusFilter);
     setKeyTypeFilter(entry.keyTypeFilter);
     setSelectedDefinitionId(entry.definitionId);
@@ -1434,7 +1470,7 @@ export function WorkableConsole() {
       activeSystemId: entry.systemId,
       view: isServerView(entry.view) ? entry.view : current.view,
     }));
-    if (entry.view !== "worker") {
+    if (entry.view !== "worker" && entry.view !== "iteration") {
       setMountedViews((current) => new Set([...current, entry.view]));
     }
     setVisibleView(entry.view);
@@ -1519,8 +1555,51 @@ export function WorkableConsole() {
       }
     }
 
+    if (view === "iteration") {
+      const iterationParent = [...navigationHistory]
+        .reverse()
+        .find((entry) =>
+          entry.view === "worker" ||
+          entry.view === "iterations" ||
+          entry.view === "definitions" ||
+          entry.view === "definition"
+        );
+
+      if (iterationParent?.view === "worker" && iterationParent.workerId) {
+        return {
+          label: "Worker Console",
+          onSelect: navigateBack,
+        };
+      }
+
+      if (iterationParent?.view === "iterations") {
+        return {
+          label: navTitle("iterations"),
+          onSelect: navigateBack,
+        };
+      }
+
+      if (iterationParent?.view === "definitions") {
+        return {
+          label: navTitle("definitions"),
+          onSelect: navigateBack,
+        };
+      }
+
+      if (iterationParent?.view === "definition") {
+        return {
+          label: iterationParent.definitionName ?? iterationParent.definitionId ?? navTitle("definition"),
+          onSelect: navigateBack,
+        };
+      }
+    }
+
     return null;
   }, [navigateBack, navigationHistory, view]);
+  const autoOpenScopedDefinitionInCatalog = useMemo(() => {
+    const previous = navigationHistory.at(-1);
+    return previous?.view !== "worker";
+  }, [navigationHistory]);
 
   const markViewReady = useCallback((readyView: ServerView) => {
     if (!activeSystemId) {
@@ -1540,7 +1619,7 @@ export function WorkableConsole() {
   const markIterationsReady = useCallback(() => markViewReady("iterations"), [markViewReady]);
 
   useEffect(() => {
-    if (visibleView === "worker") {
+    if (visibleView === "worker" || visibleView === "iteration") {
       return;
     }
 
@@ -1555,7 +1634,7 @@ export function WorkableConsole() {
   }, [visibleView]);
 
   useEffect(() => {
-    if (visibleView === "worker") {
+    if (visibleView === "worker" || visibleView === "iteration") {
       return;
     }
 
@@ -1962,6 +2041,7 @@ export function WorkableConsole() {
                         {mountedViews.has("definitions") && (
                           <ConsoleViewMount active={visibleView === "definitions"}>
                             <DefinitionsView
+                              autoOpenScopedDefinition={autoOpenScopedDefinitionInCatalog}
                               catalogScope={activeCatalogScope}
                               connection={hydratedConnection}
                               onCatalogScopeChange={(scope) => {
@@ -2096,7 +2176,7 @@ export function WorkableConsole() {
                               isLoadingTarget={visibleView === "iterations" || pendingView === "iterations"}
                               isVisible={visibleView === "iterations"}
                               keyTypeFilter={iterationKeyTypeFilter}
-                              onOpenWorker={openWorker}
+                              onOpenIteration={openIteration}
                               onReady={markIterationsReady}
                               refreshToken={refreshTokens.iterations}
                               statusFilter={iterationStatusFilter}
@@ -2104,15 +2184,24 @@ export function WorkableConsole() {
                           </ConsoleViewMount>
                         )}
                         <DelayedLoadingOverlay
-                          active={!!pendingView && view !== "worker"}
+                          active={!!pendingView && view !== "worker" && view !== "iteration"}
                           label={`Loading ${pendingView ? navTitle(pendingView) : "view"}`}
                         />
                         {view === "worker" && selectedWorkerId && (
                           <ConsoleViewMount active={true}>
                             <WorkerConsoleView
                               connection={hydratedConnection}
+                              key={selectedWorkerId}
                               onActiveRealtimeConnectionCountChange={ignoreRealtimeConnectionCountChange}
+                              onOpenDefinitionCatalog={(definitionName, category) => openCatalogScope(
+                                activeSystemId,
+                                {
+                                  category: normalizeCategoryFilter(category ?? "") || undefined,
+                                  definitionName: definitionName.trim() || undefined,
+                                }
+                              )}
                               onNavigateBack={navigateBack}
+                              onOpenIteration={openIteration}
                               onOpenWorker={openWorker}
                               onRealtimePayloadOpenChange={setRealtimePayloadOpen}
                               refreshToken={refreshTokens.worker}
@@ -2120,6 +2209,18 @@ export function WorkableConsole() {
                               realtimePayloadMaxMessages={realtimePayloadMaxMessages}
                               realtimePayloadOpen={realtimePayloadOpen}
                               workerId={selectedWorkerId}
+                            />
+                          </ConsoleViewMount>
+                        )}
+                        {view === "iteration" && selectedIterationWorkerId && selectedIterationSequence !== null && (
+                          <ConsoleViewMount active={true}>
+                            <IterationConsoleView
+                              connection={hydratedConnection}
+                              key={`${selectedIterationWorkerId}:${selectedIterationSequence}`}
+                              onNavigateBack={navigateBack}
+                              refreshToken={refreshTokens.iteration}
+                              sequence={selectedIterationSequence}
+                              workerId={selectedIterationWorkerId}
                             />
                           </ConsoleViewMount>
                         )}
@@ -4609,6 +4710,7 @@ function isServerView(value: unknown): value is ServerView {
   return (
     value === "overview" ||
     value === "definitions" ||
+    value === "definition" ||
     value === "workers" ||
     value === "iterations"
   );
@@ -4661,6 +4763,9 @@ function navTitle(view: View) {
   if (view === "worker") {
     return "Worker Console";
   }
+  if (view === "iteration") {
+    return "Iteration";
+  }
   if (view === "definition") {
     return "Definition";
   }
@@ -4678,6 +4783,8 @@ function headerRefreshTitle(view: View) {
       return "Refresh iterations";
     case "worker":
       return "Refresh worker";
+    case "iteration":
+      return "Refresh iteration";
     case "workers":
       return "Refresh workers";
     default:
@@ -4771,6 +4878,7 @@ function navigationEntriesEqual(left: NavigationEntry | undefined, right: Naviga
     overviewScopesEqual(left.catalogScope, right.catalogScope) &&
     left.definitionId === right.definitionId &&
     left.definitionName === right.definitionName &&
+    left.iterationSequence === right.iterationSequence &&
     left.iterationCategoryFilter === right.iterationCategoryFilter &&
     left.iterationDefinitionFilter === right.iterationDefinitionFilter &&
     left.iterationKeyTypeFilter === right.iterationKeyTypeFilter &&
@@ -4778,6 +4886,7 @@ function navigationEntriesEqual(left: NavigationEntry | undefined, right: Naviga
     left.iterationStatusFilter.every(
       (status, index) => status === right.iterationStatusFilter[index]
     ) &&
+    left.iterationWorkerId === right.iterationWorkerId &&
     left.keyTypeFilter === right.keyTypeFilter &&
     overviewScopesEqual(left.overviewScope, right.overviewScope) &&
     left.view === right.view &&

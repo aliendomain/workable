@@ -280,6 +280,7 @@ export type WorkOverviewFailedWorker =
   | WorkerOverviewItem;
 
 export type WorkerSnapshot = WorkerSummary & {
+  origin: WorkableRealtimeOrigin;
   input?: WorkData | null;
   output?: WorkData | null;
   options?: WorkerOptions | null;
@@ -770,6 +771,14 @@ export type WorkDefinitionReconfigurationOutcome = {
   status: "Accepted" | "NotFound" | "Invalid" | "Conflict";
   definitionId: { value: string };
   definition?: WorkDefinition | null;
+  messages: WorkMessage[];
+};
+
+export type WorkActionOutcome = {
+  status: "Accepted" | "NotFound" | "Unauthorized" | "Invalid" | "Conflict";
+  action: WorkAction;
+  workerId?: { value: string } | null;
+  worker?: WorkerSnapshot | null;
   messages: WorkMessage[];
 };
 

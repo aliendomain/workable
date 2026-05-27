@@ -17,3 +17,12 @@ Observed behavior:
 - Visual Studio Test Explorer is not affected because it does not run through the Codex sandboxed CLI path.
 
 If a sandboxed test run is interrupted, clean up only orphaned MSBuild node processes matching `MSBuild.dll`, `/nodemode:1`, and `/nodeReuse:true`.
+
+## GitHub Operations
+
+Run all GitHub operations outside the sandbox.
+
+Observed behavior:
+
+- GitHub authentication and keyring-backed `gh` flows may fail inside the Codex sandbox even when they work normally outside it.
+- Issue creation, pull request work, and other `gh` commands should be executed with escalated permissions.

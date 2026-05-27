@@ -6,9 +6,10 @@ export type View =
   | "definition"
   | "workers"
   | "iterations"
-  | "worker";
+  | "worker"
+  | "iteration";
 
-export type ServerView = Exclude<View, "worker">;
+export type ServerView = Exclude<View, "worker" | "iteration">;
 
 export type OverviewScope = {
   category?: string;
