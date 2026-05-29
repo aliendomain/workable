@@ -37,7 +37,7 @@ public sealed class WorkableRealtimeViewSubscriptions
 
         var normalizedViewName = NormalizeViewName(viewName);
         var normalizedSubscriptionId = NormalizeSubscriptionId(subscriptionId);
-        var subscription = CreateSubscription(system, normalizedSubscriptionId, normalizedViewName, criteria, authorization);
+        var subscription = CreateSubscription(connectionId, system, normalizedSubscriptionId, normalizedViewName, criteria, authorization);
         var connectionViewKey = ConnectionViewKey(connectionId, system.Id, normalizedSubscriptionId);
         WorkableRealtimeViewSubscription? oldSubscription = null;
         var addToGroup = false;
@@ -157,7 +157,19 @@ public sealed class WorkableRealtimeViewSubscriptions
         }
     }
 
+    internal IReadOnlyList<WorkableRealtimeViewSubscription> GetGroupSubscriptions(string groupName)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(groupName);
+
+        lock (this.gate)
+        {
+            return [.. this.connectionViewGroups.Values
+                .Where(subscription => string.Equals(subscription.GroupName, groupName, StringComparison.Ordinal))];
+        }
+    }
+
     private static WorkableRealtimeViewSubscription CreateSubscription(
+        string connectionId,
         IWorkSystem system,
         string subscriptionId,
         string viewName,
@@ -166,6 +178,7 @@ public sealed class WorkableRealtimeViewSubscriptions
     {
         var key = CreateGroupKey(system.Id, viewName, criteria, authorization.ReadFingerprint);
         return new WorkableRealtimeViewSubscription(
+            connectionId,
             subscriptionId,
             system.Id,
             viewName,

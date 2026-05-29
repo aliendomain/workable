@@ -20,6 +20,7 @@ import {
   Play,
   Plus,
   Rows4,
+  X,
   Workflow,
 } from "lucide-react";
 import { Fragment, type KeyboardEvent, type PointerEvent, type ReactNode, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
@@ -271,6 +272,7 @@ export function WorkableConsole() {
   const [lifecycleActionSystemId, setLifecycleActionSystemId] = useState<string | null>(null);
   const [lifecycleError, setLifecycleError] = useState<string>();
   const [systemNotificationOpen, setSystemNotificationOpen] = useState(false);
+  const [systemIssueNotifications, setSystemIssueNotifications] = useState<Record<string, Omit<SystemNotification, "onDismiss">>>({});
   const [acknowledgedRejectedWorkCounts, setAcknowledgedRejectedWorkCounts] = useState<Record<string, number>>({});
   const [diagnosticsAlertsByTargetId, setDiagnosticsAlertsByTargetId] = useState<Record<string, DiagnosticsAlertSnapshot>>({});
   const [readModelDiagnosticsExpanded, setReadModelDiagnosticsExpanded] = useState(false);
@@ -730,6 +732,46 @@ export function WorkableConsole() {
       [systemId]: count,
     }));
   }, []);
+  const upsertSystemIssueNotification = useCallback((
+    notification: Omit<SystemNotification, "onDismiss"> | null
+  ) => {
+    if (!notification) {
+      return;
+    }
+
+    setSystemIssueNotifications((current) => {
+      const existing = current[notification.id];
+      if (existing &&
+        existing.title === notification.title &&
+        existing.description === notification.description &&
+        existing.tone === notification.tone) {
+        return current;
+      }
+
+      return {
+        ...current,
+        [notification.id]: notification,
+      };
+    });
+  }, []);
+  const clearSystemIssueNotification = useCallback((notificationId: string) => {
+    setSystemIssueNotifications((current) => {
+      if (!(notificationId in current)) {
+        return current;
+      }
+
+      const next = { ...current };
+      delete next[notificationId];
+      return next;
+    });
+  }, []);
+  const extraSystemNotifications = useMemo<SystemNotification[]>(
+    () => Object.values(systemIssueNotifications).map((notification) => ({
+      ...notification,
+      onDismiss: () => clearSystemIssueNotification(notification.id),
+    })),
+    [clearSystemIssueNotification, systemIssueNotifications]
+  );
 
   const updateSystemState = useCallback((systemId: string, state: string | null) => {
     setConsoleState((current) => {
@@ -1197,7 +1239,7 @@ export function WorkableConsole() {
     }
   }, [visibleView]);
 
-  const openWorker = (workerId: string, trackHistory = true) => {
+  const openWorker = useCallback((workerId: string, trackHistory = true) => {
     rememberCurrentViewScroll();
     if (trackHistory) {
       pushCurrentNavigation();
@@ -1211,7 +1253,7 @@ export function WorkableConsole() {
     setPendingView(null);
     setView("worker");
     refreshView("worker");
-  };
+  }, [pushCurrentNavigation, refreshView, rememberCurrentViewScroll]);
 
   const openIteration = (workerId: string, sequence: number, trackHistory = true) => {
     rememberCurrentViewScroll();
@@ -1565,37 +1607,23 @@ export function WorkableConsole() {
           entry.view === "definition"
         );
 
-      if (iterationParent?.view === "worker" && iterationParent.workerId) {
+      if (selectedIterationWorkerId) {
         return {
-          label: "Worker Console",
-          onSelect: navigateBack,
-        };
-      }
+          label: selectedIterationWorkerId,
+          onSelect: () => {
+            if (iterationParent?.view === "worker" && iterationParent.workerId === selectedIterationWorkerId) {
+              navigateBack();
+              return;
+            }
 
-      if (iterationParent?.view === "iterations") {
-        return {
-          label: navTitle("iterations"),
-          onSelect: navigateBack,
-        };
-      }
-
-      if (iterationParent?.view === "definitions") {
-        return {
-          label: navTitle("definitions"),
-          onSelect: navigateBack,
-        };
-      }
-
-      if (iterationParent?.view === "definition") {
-        return {
-          label: iterationParent.definitionName ?? iterationParent.definitionId ?? navTitle("definition"),
-          onSelect: navigateBack,
+            openWorker(selectedIterationWorkerId);
+          },
         };
       }
     }
 
     return null;
-  }, [navigateBack, navigationHistory, view]);
+  }, [navigateBack, navigationHistory, openWorker, selectedIterationWorkerId, view]);
   const autoOpenScopedDefinitionInCatalog = useMemo(() => {
     const previous = navigationHistory.at(-1);
     return previous?.view !== "worker";
@@ -1940,6 +1968,7 @@ export function WorkableConsole() {
                           definitionId={selectedDefinitionId}
                           definitionName={selectedDefinitionName}
                           host={activeHost}
+                          iterationSequence={selectedIterationSequence}
                           onBack={navigateBack}
                           onForward={navigateForward}
                           onOpenView={openView}
@@ -1955,6 +1984,7 @@ export function WorkableConsole() {
                                 concurrencyExpanded={concurrencyDiagnosticsExpanded}
                                 durabilityDetailDiagnostics={durabilityDiagnosticsDetail}
                                 durabilityExpanded={durabilityDiagnosticsExpanded}
+                                extraNotifications={extraSystemNotifications}
                                 idempotencyDetailDiagnostics={idempotencyDiagnosticsDetail}
                                 idempotencyExpanded={idempotencyDiagnosticsExpanded}
                                 onAcknowledgeQueueRejections={acknowledgeQueueRejections}
@@ -2190,6 +2220,7 @@ export function WorkableConsole() {
                         {view === "worker" && selectedWorkerId && (
                           <ConsoleViewMount active={true}>
                             <WorkerConsoleView
+                              clearSystemNotification={clearSystemIssueNotification}
                               connection={hydratedConnection}
                               key={selectedWorkerId}
                               onActiveRealtimeConnectionCountChange={ignoreRealtimeConnectionCountChange}
@@ -2208,6 +2239,7 @@ export function WorkableConsole() {
                               realtimePayloadCaptureEnabled={realtimePayloadCaptureEnabled}
                               realtimePayloadMaxMessages={realtimePayloadMaxMessages}
                               realtimePayloadOpen={realtimePayloadOpen}
+                              reportSystemNotification={upsertSystemIssueNotification}
                               workerId={selectedWorkerId}
                             />
                           </ConsoleViewMount>
@@ -2218,6 +2250,12 @@ export function WorkableConsole() {
                               connection={hydratedConnection}
                               key={`${selectedIterationWorkerId}:${selectedIterationSequence}`}
                               onNavigateBack={navigateBack}
+                              onOpenDefinition={(definitionId, definitionName) =>
+                                openDefinition(definitionId, {
+                                  definitionName: definitionName ?? undefined,
+                                  systemId: activeSystem?.id ?? "",
+                                })
+                              }
                               refreshToken={refreshTokens.iteration}
                               sequence={selectedIterationSequence}
                               workerId={selectedIterationWorkerId}
@@ -3207,6 +3245,7 @@ function eventTypeTone(eventType: string) {
 type SystemNotification = {
   description: string;
   id: string;
+  onDismiss?: () => void;
   rejectedWorkCount?: number;
   sourceId?: string;
   tone: "critical" | "warning";
@@ -3222,6 +3261,7 @@ function SystemNotificationTray({
   concurrencyExpanded,
   durabilityDetailDiagnostics,
   durabilityExpanded,
+  extraNotifications = [],
   idempotencyDetailDiagnostics,
   idempotencyExpanded,
   onAcknowledgeQueueRejections,
@@ -3247,6 +3287,7 @@ function SystemNotificationTray({
   concurrencyExpanded: boolean;
   durabilityDetailDiagnostics: SystemDiagnosticsViewState;
   durabilityExpanded: boolean;
+  extraNotifications?: SystemNotification[];
   idempotencyDetailDiagnostics: SystemDiagnosticsViewState;
   idempotencyExpanded: boolean;
   onAcknowledgeQueueRejections: (systemId: string, count: number) => void;
@@ -3343,7 +3384,9 @@ function SystemNotificationTray({
   const idempotencyCompact = open
     ? (idempotencyExpanded ? idempotencyDetailCompact ?? trayIdempotencyCompact : trayIdempotencyCompact) ?? trayIdempotencyCompact
     : trayIdempotencyCompact;
-  const notifications = alertSources.flatMap((source) =>
+  const notifications = [
+    ...extraNotifications,
+    ...alertSources.flatMap((source) =>
     createSystemNotifications(
       getWorkComponentData<WorkSystemDiagnosticsCompactComponent>(source.data, "systemDiagnostics"),
       getWorkComponentData<WorkQueueDiagnosticsCompactComponent>(source.data, "queueDiagnostics"),
@@ -3355,7 +3398,8 @@ function SystemNotificationTray({
       source.error,
       source.target
     )
-  );
+    ),
+  ];
   const hasNotifications = notifications.length > 0;
   const hasCriticalNotifications = notifications.some((notification) => notification.tone === "critical");
   const busy = alertSources.some((source) => source.loading || source.refreshing) ||
@@ -3436,7 +3480,7 @@ function SystemNotificationTray({
                 >
                   <div className="flex items-start gap-2">
                     <CircleAlert className="mt-0.5 size-4 shrink-0" />
-                    <div className="min-w-0">
+                    <div className="min-w-0 flex-1">
                       <div className="font-medium text-sm">{notification.title}</div>
                       <div className="text-xs opacity-85">{notification.description}</div>
                       {notification.sourceId && notification.rejectedWorkCount !== undefined ? (
@@ -3454,6 +3498,18 @@ function SystemNotificationTray({
                         </Button>
                       ) : null}
                     </div>
+                    {notification.onDismiss ? (
+                      <Button
+                        aria-label="Dismiss notification"
+                        className="h-6 w-6 shrink-0 self-start rounded-sm p-0 text-current/80 hover:bg-black/10 hover:text-current dark:hover:bg-white/10"
+                        onClick={() => notification.onDismiss?.()}
+                        size="icon"
+                        type="button"
+                        variant="ghost"
+                      >
+                        <X className="size-3.5" />
+                      </Button>
+                    ) : null}
                   </div>
                 </div>
               ))

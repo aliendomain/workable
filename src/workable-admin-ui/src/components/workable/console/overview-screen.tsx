@@ -593,7 +593,6 @@ export function OverviewView({
   return (
     <ConsolePageLayout>
       <PanelAggregateFrame
-        className="space-y-2.5"
         controls={overviewControls}
         hiddenPanelIds={hiddenPanelIds}
         onPanelVisibilityChange={onPanelVisibilityChange}
@@ -3047,42 +3046,6 @@ export function useWorkableRealtimeView<T>(
     maxMessages,
     subscription: subscriptionName,
     viewName,
-  });
-}
-
-export function useWorkableRealtimeWorkerEvents(
-  connection: WorkableConnection | null,
-  workerId: string,
-  enabled: boolean,
-  captureEnabled: boolean,
-  maxMessages: number
-): RealtimeEventLoadable {
-  return useConsoleRealtimeEventStream({
-    captureEnabled,
-    connection,
-    createBatchMessage: (batch, nextMessageId) =>
-      createRealtimeEventMessage(
-        batch.events,
-        `worker-batch:${nextMessageId}`,
-        Date.now(),
-        batch.sentAt
-      ),
-    createSingleMessage: (workEvent, nextMessageId) =>
-      createRealtimeEventMessage(
-        [workEvent],
-        `worker-events:${nextMessageId}`,
-        Date.now()
-      ),
-    debugLabel: `worker:${workerId}`,
-    enabled,
-    maxMessages,
-    subscriptionErrorMessage: "Realtime worker subscription failed.",
-    unwatchMethod: "UnwatchWorker",
-    watchArgument: workerId,
-    watchArgumentKey: workerId,
-    watchMethod: "WatchWorker",
-    watchReady: workerId.trim().length > 0,
-    watchStoppedMessage: "Realtime worker connection closed.",
   });
 }
 

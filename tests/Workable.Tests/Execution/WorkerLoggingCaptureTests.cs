@@ -137,11 +137,15 @@ public sealed class WorkerLoggingCaptureTests
     {
         var data = RequiredData(workEvent);
         var log = data.GetProperty("log");
+        var iteration = data.GetProperty("iteration");
         Assert.Equal("worker.log", workEvent.EventType);
         Assert.False(data.TryGetProperty("input", out _));
         Assert.False(data.TryGetProperty("output", out _));
         Assert.False(data.TryGetProperty("messages", out _));
         Assert.False(data.TryGetProperty("logs", out _));
+        Assert.False(string.IsNullOrWhiteSpace(log.GetProperty("id").GetString()));
+        Assert.True(iteration.GetProperty("sequence").GetInt64() >= 1);
+        Assert.Equal("Executing", iteration.GetProperty("status").GetString());
         if (expectedMessage is not null)
         {
             Assert.Equal(expectedMessage, log.GetProperty("message").GetString());

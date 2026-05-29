@@ -1,10 +1,13 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using Microsoft.Extensions.Logging;
 
 namespace Workable;
 
 public class WorkableViewQueryAdapter
 {
+    private readonly record struct WorkerOverviewLogRecord(long Sequence, WorkerLogEntry Entry);
+
     private static readonly JsonSerializerOptions ComponentOptionsJson = new(JsonSerializerDefaults.Web)
     {
         Converters = { new JsonStringEnumConverter() },
@@ -106,6 +109,185 @@ public class WorkableViewQueryAdapter
         string name,
         CancellationToken cancellationToken = default)
         => await session.Query.WorkInfo(name, cancellationToken: cancellationToken);
+
+    public async Task<WorkWorkerOverviewComponent?> WorkerOverview(
+        IWorkSystemSession session,
+        WorkerId workerId,
+        WorkWorkerOverviewCriteria? criteria = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(session);
+
+        var worker = await session.Query.Worker(workerId, cancellationToken: cancellationToken);
+        if (worker is null)
+        {
+            return null;
+        }
+
+        var query = NormalizeWorkerOverviewCriteria(criteria);
+        session.Catalog.TryGet(worker.DefinitionId, out var definition);
+        var activity = ResolveWorkerOverviewActivity(worker, query.Activity);
+        var mergedIterations = worker.GetMergedIterations();
+        var latestIteration = mergedIterations.FirstOrDefault();
+        var recentIterations = mergedIterations
+            .OrderByDescending(iteration => iteration.Sequence)
+            .Take(query.RecentIterationTake)
+            .Select(iteration => new WorkWorkerOverviewRecentIteration(
+                worker.Id,
+                iteration.Sequence,
+                iteration.Status,
+                iteration.StartedAt,
+                iteration.SettledAt,
+                iteration.SettledExecutionDuration,
+                iteration.AttemptCount))
+            .ToArray();
+        var allLogEntries = CreateWorkerOverviewLogRecords(mergedIterations, query.LogIterationSequence);
+        var filteredLogEntries = SortWorkerOverviewLogEntries(
+            FilterWorkerOverviewLogEntries(allLogEntries, query.LogLevels),
+            query.LogSortDirection);
+        var baseTimelineItems = worker.GetActivityEvents(mergedIterations)
+            .Select(CreateWorkerOverviewTimelineItem)
+            .ToArray();
+        var allTimelineItems = ApplyWorkerOverviewRetryPending(
+            worker,
+            latestIteration,
+            AddWorkerOverviewLiveStateItems(worker, latestIteration, baseTimelineItems));
+        var filteredTimelineItems = SortWorkerOverviewTimelineItems(
+            FilterWorkerOverviewTimelineItems(allTimelineItems, query.TimelineCategories),
+            query.TimelineSortDirection);
+
+        return new WorkWorkerOverviewComponent(
+            activity,
+            new WorkWorkerOverviewWorker(
+                worker.Id,
+                worker.Revision,
+                worker.StateSequence,
+                worker.State,
+                worker.IsFinal,
+                worker.CreatedAt,
+                worker.StateChangedAt,
+                worker.UpdatedAt,
+                worker.NextRunAt,
+                worker.RetryAttempt,
+                CreateWorkerOverviewOrigin(worker.Origin),
+                worker.DefinitionId,
+                worker.DefinitionName,
+                worker.DefinitionCategory,
+                CountWorkerOverviewConfigurationDifferences(worker, definition)),
+            worker.Input,
+            latestIteration is null
+                ? null
+                : CreateWorkerOverviewLatestIteration(worker, latestIteration, includeOutput: true),
+            recentIterations,
+            new WorkWorkerOverviewLogSection(
+                CreateWorkerOverviewLogSummary(allLogEntries),
+                activity == WorkWorkerOverviewActivity.Logs
+                    ? CreateWorkerOverviewLogPage(filteredLogEntries, query.ActivityCursor, query.ActivityTake)
+                    : null),
+            new WorkWorkerOverviewTimelineSection(
+                CreateWorkerOverviewTimelineSummary(allTimelineItems),
+                activity == WorkWorkerOverviewActivity.Timeline
+                    ? CreateWorkerOverviewTimelinePage(filteredTimelineItems, query.ActivityCursor, query.ActivityTake)
+                    : null));
+    }
+
+    public async Task<WorkWorkerOverviewRealtimeState?> WorkerOverviewRealtimeState(
+        IWorkSystemSession session,
+        WorkerId workerId,
+        WorkWorkerOverviewRealtimeCriteria? criteria = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(session);
+
+        var worker = await session.Query.Worker(workerId, cancellationToken: cancellationToken);
+        if (worker is null)
+        {
+            return null;
+        }
+
+        var query = NormalizeWorkerOverviewRealtimeCriteria(criteria);
+        session.Catalog.TryGet(worker.DefinitionId, out var definition);
+        var mergedIterations = worker.GetMergedIterations();
+        var latestIteration = mergedIterations.FirstOrDefault();
+        var recentIterations = IsExpandedRealtimeShape(query.WorkerDuration)
+            ? mergedIterations
+                .OrderByDescending(iteration => iteration.Sequence)
+                .Take(25)
+                .Select(iteration => new WorkWorkerOverviewRecentIteration(
+                    worker.Id,
+                    iteration.Sequence,
+                    iteration.Status,
+                    iteration.StartedAt,
+                    iteration.SettledAt,
+                    iteration.SettledExecutionDuration,
+                    iteration.AttemptCount))
+                .ToArray()
+            : [];
+        var allLogEntries = CreateWorkerOverviewLogRecords(mergedIterations, query.LogIterationSequence);
+        var filteredLogEntries = SortWorkerOverviewLogEntries(
+            FilterWorkerOverviewLogEntries(allLogEntries, query.LogLevels),
+            query.LogSortDirection);
+        var baseTimelineItems = worker.GetActivityEvents(mergedIterations)
+            .Select(CreateWorkerOverviewTimelineItem)
+            .ToArray();
+        var allTimelineItems = ApplyWorkerOverviewRetryPending(
+            worker,
+            latestIteration,
+            AddWorkerOverviewLiveStateItems(worker, latestIteration, baseTimelineItems));
+        var filteredTimelineItems = SortWorkerOverviewTimelineItems(
+            FilterWorkerOverviewTimelineItems(allTimelineItems, query.TimelineCategories),
+            query.TimelineSortDirection)
+            .Where(item => item.Kind == WorkWorkerOverviewTimelineItemKind.Iteration)
+            .ToArray();
+
+        return new WorkWorkerOverviewRealtimeState(
+            new WorkWorkerOverviewWorker(
+                worker.Id,
+                worker.Revision,
+                worker.StateSequence,
+                worker.State,
+                worker.IsFinal,
+                worker.CreatedAt,
+                worker.StateChangedAt,
+                worker.UpdatedAt,
+                worker.NextRunAt,
+                worker.RetryAttempt,
+                CreateWorkerOverviewOrigin(worker.Origin),
+                worker.DefinitionId,
+                worker.DefinitionName,
+                worker.DefinitionCategory,
+                CountWorkerOverviewConfigurationDifferences(worker, definition)),
+            latestIteration is null
+                ? null
+                : CreateWorkerOverviewLatestIteration(
+                    worker,
+                    latestIteration,
+                    includeOutput: string.Equals(query.WorkerControls, WorkComponentShapes.Standard, StringComparison.Ordinal)),
+            IncludesLogSummary(query.WorkerLogs)
+                ? CreateWorkerOverviewLogSummary(allLogEntries)
+                : null,
+            IsExpandedRealtimeShape(query.WorkerLogs)
+                ? filteredLogEntries
+                    .Select(record => new WorkWorkerOverviewLogEntry(
+                        record.Entry.Id.ToString("N"),
+                        record.Entry.OccurredAt,
+                        record.Entry.Level,
+                        record.Entry.Category,
+                        record.Entry.Message,
+                        record.Entry.EventId.Id,
+                        record.Entry.EventId.Name,
+                        record.Entry.ExceptionType,
+                        record.Entry.ExceptionMessage))
+                    .ToArray()
+                : [],
+            recentIterations,
+            IsExpandedRealtimeShape(query.WorkerTimeline)
+                ? CreateWorkerOverviewTimelineSummary(allTimelineItems)
+                : null,
+            IsExpandedRealtimeShape(query.WorkerTimeline)
+                ? filteredTimelineItems
+                : []);
+    }
 
     public async Task<IReadOnlyList<WorkDefinition>> WorkDefinitions(
         IWorkSystemSession session,
@@ -533,6 +715,441 @@ public class WorkableViewQueryAdapter
             cancellationToken: cancellationToken);
     }
 
+    private static WorkWorkerOverviewCriteria NormalizeWorkerOverviewCriteria(WorkWorkerOverviewCriteria? criteria)
+    {
+        var query = criteria ?? new WorkWorkerOverviewCriteria();
+        return query with
+        {
+            ActivityTake = Math.Clamp(query.ActivityTake, 1, 100),
+            RecentIterationTake = Math.Clamp(query.RecentIterationTake, 1, 25),
+            LogLevels = NormalizeWorkerOverviewEnumFilters(query.LogLevels),
+            LogIterationSequence = query.LogIterationSequence is > 0 ? query.LogIterationSequence : null,
+            TimelineCategories = NormalizeWorkerOverviewEnumFilters(query.TimelineCategories),
+        };
+    }
+
+    public WorkWorkerOverviewRealtimeCriteria NormalizeWorkerOverviewRealtimeCriteria(
+        WorkWorkerOverviewRealtimeCriteria? criteria = null)
+    {
+        var query = criteria ?? new WorkWorkerOverviewRealtimeCriteria();
+        return query with
+        {
+            WorkerControls = NormalizeRealtimeWorkerOverviewShape(query.WorkerControls, WorkComponentShapes.Compact),
+            WorkerLogs = NormalizeRealtimeWorkerOverviewShape(query.WorkerLogs, WorkComponentShapes.Compact),
+            WorkerDuration = NormalizeRealtimeWorkerOverviewShape(query.WorkerDuration, WorkComponentShapes.Compact),
+            WorkerTimeline = NormalizeRealtimeWorkerOverviewShape(query.WorkerTimeline, WorkComponentShapes.Compact),
+            LogLevels = NormalizeWorkerOverviewEnumFilters(query.LogLevels),
+            LogIterationSequence = query.LogIterationSequence is > 0 ? query.LogIterationSequence : null,
+            TimelineCategories = NormalizeWorkerOverviewEnumFilters(query.TimelineCategories),
+        };
+    }
+
+    private static IReadOnlyList<TEnum>? NormalizeWorkerOverviewEnumFilters<TEnum>(IReadOnlyList<TEnum>? values)
+        where TEnum : struct, Enum
+    {
+        if (values is null || values.Count == 0)
+        {
+            return null;
+        }
+
+        var normalized = values
+            .Distinct()
+            .ToArray();
+        return normalized.Length == 0 ? null : normalized;
+    }
+
+    private static WorkWorkerOverviewActivity ResolveWorkerOverviewActivity(
+        WorkerSnapshot worker,
+        WorkWorkerOverviewActivity requestedActivity)
+        => requestedActivity != WorkWorkerOverviewActivity.Auto
+            ? requestedActivity
+            : worker.State is WorkerState.Completed or WorkerState.Canceled ||
+                worker.Configuration.Recurrence.IsEnabled
+                ? WorkWorkerOverviewActivity.Timeline
+                : WorkWorkerOverviewActivity.Logs;
+
+    private static string NormalizeRealtimeWorkerOverviewShape(string? shape, string fallback)
+    {
+        var normalized = NormalizeComponentShape(shape);
+        return normalized is WorkComponentShapes.Standard or WorkComponentShapes.Detailed
+            ? normalized
+            : fallback;
+    }
+
+    private static bool IsExpandedRealtimeShape(string shape)
+        => string.Equals(shape, WorkComponentShapes.Standard, StringComparison.Ordinal) ||
+            string.Equals(shape, WorkComponentShapes.Detailed, StringComparison.Ordinal);
+
+    private static bool IncludesLogSummary(string shape)
+        => string.Equals(shape, WorkComponentShapes.Compact, StringComparison.Ordinal) ||
+            IsExpandedRealtimeShape(shape);
+
+    private static WorkWorkerOverviewLatestIteration CreateWorkerOverviewLatestIteration(
+        WorkerSnapshot worker,
+        WorkerIterationSnapshot latestIteration,
+        bool includeOutput)
+        => new(
+            worker.Id,
+            latestIteration.Sequence,
+            latestIteration.Status,
+            latestIteration.StartedAt,
+            latestIteration.SettledAt,
+            latestIteration.SettledExecutionDuration,
+            includeOutput ? latestIteration.Output : null,
+            CreateWorkerOverviewFailure(
+                latestIteration.Failure,
+                CreateWorkerOverviewRetryPendingState(worker, latestIteration)),
+            latestIteration.AttemptCount);
+
+    private static WorkWorkerOverviewLogSummary CreateWorkerOverviewLogSummary(
+        IReadOnlyList<WorkerOverviewLogRecord> entries)
+        => new(
+            entries.Count,
+            entries.Count(entry => entry.Entry.Level == LogLevel.Critical),
+            entries.Count(entry => entry.Entry.Level == LogLevel.Error),
+            entries.Count(entry => entry.Entry.Level is LogLevel.Error or LogLevel.Critical),
+            entries.Count(entry => entry.Entry.Level == LogLevel.Warning),
+            entries.Count(entry => entry.Entry.Level == LogLevel.Warning),
+            entries.Count(entry => entry.Entry.Level == LogLevel.Information),
+            entries.Count(entry => entry.Entry.Level == LogLevel.Debug),
+            entries.Count(entry => entry.Entry.Level == LogLevel.Trace));
+
+    private static IReadOnlyList<WorkerOverviewLogRecord> CreateWorkerOverviewLogRecords(
+        IReadOnlyList<WorkerIterationSnapshot> iterations,
+        long? sequence = null)
+        => [.. iterations
+            .Where(iteration => !sequence.HasValue || iteration.Sequence == sequence.Value)
+            .SelectMany(iteration => iteration.Logs.Select(entry => new WorkerOverviewLogRecord(iteration.Sequence, entry)))
+            .GroupBy(record => record.Entry.Id)
+            .Select(group => group
+                .OrderByDescending(record => record.Entry.OccurredAt)
+                .ThenByDescending(record => record.Sequence)
+                .First())
+            .OrderByDescending(record => record.Entry.OccurredAt)
+            .ThenByDescending(record => record.Sequence)
+            .ThenByDescending(GetWorkerOverviewLogEntryId)];
+
+    private static IReadOnlyList<WorkerOverviewLogRecord> FilterWorkerOverviewLogEntries(
+        IReadOnlyList<WorkerOverviewLogRecord> entries,
+        IReadOnlyList<LogLevel>? levels)
+    {
+        if (levels is null || levels.Count == 0)
+        {
+            return entries;
+        }
+
+        var allowedLevels = levels.ToHashSet();
+        return entries
+            .Where(entry => allowedLevels.Contains(entry.Entry.Level))
+            .ToArray();
+    }
+
+    private static IReadOnlyList<WorkerOverviewLogRecord> SortWorkerOverviewLogEntries(
+        IReadOnlyList<WorkerOverviewLogRecord> entries,
+        WorkWorkerOverviewSortDirection direction)
+        => direction == WorkWorkerOverviewSortDirection.Asc
+            ? entries
+                .OrderBy(entry => entry.Entry.OccurredAt)
+                .ThenBy(entry => entry.Sequence)
+                .ThenBy(GetWorkerOverviewLogEntryId, StringComparer.Ordinal)
+                .ToArray()
+            : entries
+                .OrderByDescending(entry => entry.Entry.OccurredAt)
+                .ThenByDescending(entry => entry.Sequence)
+                .ThenByDescending(GetWorkerOverviewLogEntryId, StringComparer.Ordinal)
+                .ToArray();
+
+    private static WorkWorkerOverviewPage<WorkWorkerOverviewLogEntry> CreateWorkerOverviewLogPage(
+        IReadOnlyList<WorkerOverviewLogRecord> entries,
+        string? cursor,
+        int take)
+    {
+        var pageEntries = SliceWorkerOverviewPage(entries, GetWorkerOverviewLogEntryId, cursor, take);
+        var items = pageEntries.Items
+            .Take(take)
+            .Select(record => new WorkWorkerOverviewLogEntry(
+                record.Entry.Id.ToString("N"),
+                record.Entry.OccurredAt,
+                record.Entry.Level,
+                record.Entry.Category,
+                record.Entry.Message,
+                record.Entry.EventId.Id,
+                record.Entry.EventId.Name,
+                record.Entry.ExceptionType,
+                record.Entry.ExceptionMessage))
+            .ToArray();
+
+        return new WorkWorkerOverviewPage<WorkWorkerOverviewLogEntry>(
+            items,
+            pageEntries.HasMore,
+            items.LastOrDefault()?.Id);
+    }
+
+    private static string GetWorkerOverviewLogEntryId(WorkerOverviewLogRecord entry)
+        => entry.Entry.Id.ToString("N");
+
+    private static WorkWorkerOverviewTimelineItem CreateWorkerOverviewTimelineItem(WorkerActivityEvent item)
+        => new(
+            item.Id,
+            item.At,
+            item.Kind switch
+            {
+                WorkerActivityEventKind.ActionRequest => WorkWorkerOverviewTimelineItemKind.ActionRequest,
+                WorkerActivityEventKind.StateChange => WorkWorkerOverviewTimelineItemKind.StateChange,
+                WorkerActivityEventKind.Iteration => WorkWorkerOverviewTimelineItemKind.Iteration,
+                _ => throw new InvalidOperationException($"Unknown worker activity event kind '{item.Kind}'."),
+            },
+            item.Category switch
+            {
+                WorkerActivityEventCategory.UserAction => WorkWorkerOverviewTimelineCategory.UserAction,
+                WorkerActivityEventCategory.SystemEvent => WorkWorkerOverviewTimelineCategory.SystemEvent,
+                WorkerActivityEventCategory.Failure => WorkWorkerOverviewTimelineCategory.Failure,
+                _ => throw new InvalidOperationException($"Unknown worker activity event category '{item.Category}'."),
+            },
+            item.ActionHistoryKind,
+            item.Action,
+            item.ActionStatus,
+            item.State,
+            item.Sequence,
+            item.IterationStatus,
+            item.ExecutionDuration,
+            item.Origin is null ? null : CreateWorkerOverviewOrigin(item.Origin),
+            CreateWorkerOverviewFailure(item.Failure),
+            AttemptCount: item.AttemptCount);
+
+    private static IReadOnlyList<WorkWorkerOverviewTimelineItem> AddWorkerOverviewLiveStateItems(
+        WorkerSnapshot worker,
+        WorkerIterationSnapshot? latestIteration,
+        IReadOnlyList<WorkWorkerOverviewTimelineItem> items)
+    {
+        var liveStateItem = CreateWorkerOverviewLiveStateItem(worker, latestIteration, items);
+        return liveStateItem is null
+            ? items
+            : [liveStateItem, .. items];
+    }
+
+    private static WorkWorkerOverviewTimelineItem? CreateWorkerOverviewLiveStateItem(
+        WorkerSnapshot worker,
+        WorkerIterationSnapshot? latestIteration,
+        IReadOnlyList<WorkWorkerOverviewTimelineItem> items)
+    {
+        var latestIterationStatus = latestIteration?.Status;
+        var hasMatchingStateItem = (WorkerState state) => items.Any(item =>
+            item.Kind == WorkWorkerOverviewTimelineItemKind.StateChange &&
+            item.State == state);
+
+        return worker.State switch
+        {
+            WorkerState.Paused when latestIterationStatus != WorkCompletionStatus.Paused &&
+                !hasMatchingStateItem(WorkerState.Paused) => CreateWorkerOverviewLiveStateItem(
+                    worker,
+                    WorkerState.Paused),
+            WorkerState.Canceled when latestIterationStatus != WorkCompletionStatus.Canceled &&
+                !hasMatchingStateItem(WorkerState.Canceled) => CreateWorkerOverviewLiveStateItem(
+                    worker,
+                    WorkerState.Canceled),
+            WorkerState.Waiting when !hasMatchingStateItem(WorkerState.Waiting) => CreateWorkerOverviewLiveStateItem(
+                    worker,
+                    WorkerState.Waiting,
+                    CreateWorkerOverviewPendingState(
+                        WorkWorkerOverviewPendingStateMode.Recurrence,
+                        worker)),
+            _ => null,
+        };
+    }
+
+    private static WorkWorkerOverviewTimelineItem CreateWorkerOverviewLiveStateItem(
+        WorkerSnapshot worker,
+        WorkerState state,
+        WorkWorkerOverviewPendingState? pendingState = null)
+        => new(
+            Id: CreateWorkerOverviewLiveStateItemId(worker, state),
+            At: worker.StateChangedAt,
+            Kind: WorkWorkerOverviewTimelineItemKind.StateChange,
+            Category: WorkWorkerOverviewTimelineCategory.SystemEvent,
+            ActionHistoryKind: null,
+            Action: null,
+            ActionStatus: null,
+            State: state,
+            Sequence: null,
+            IterationStatus: null,
+            AttemptCount: null,
+            ExecutionDuration: null,
+            Origin: null,
+            Failure: null,
+            PendingState: pendingState);
+
+    private static string CreateWorkerOverviewLiveStateItemId(WorkerSnapshot worker, WorkerState state)
+        => state == WorkerState.Waiting
+            ? "live-state:waiting"
+            : $"state:{state.ToString().ToLowerInvariant()}:{worker.StateSequence}";
+
+    private static IReadOnlyList<WorkWorkerOverviewTimelineItem> ApplyWorkerOverviewRetryPending(
+        WorkerSnapshot worker,
+        WorkerIterationSnapshot? latestIteration,
+        IReadOnlyList<WorkWorkerOverviewTimelineItem> items)
+    {
+        var retryPending = CreateWorkerOverviewRetryPendingState(worker, latestIteration);
+        if (retryPending is null || latestIteration is null)
+        {
+            return items;
+        }
+
+        return [.. items.Select(item =>
+            item.Kind == WorkWorkerOverviewTimelineItemKind.Iteration &&
+            item.Sequence == latestIteration.Sequence &&
+            item.Failure is not null
+                ? item with
+                {
+                    Failure = item.Failure with
+                    {
+                        PendingState = retryPending,
+                    },
+                }
+                : item)];
+    }
+
+    private static WorkWorkerOverviewTimelineSummary CreateWorkerOverviewTimelineSummary(
+        IReadOnlyList<WorkWorkerOverviewTimelineItem> items)
+        => new(
+            items.Count,
+            items.Count(item => item.Category == WorkWorkerOverviewTimelineCategory.UserAction),
+            items.Count(item => item.Category == WorkWorkerOverviewTimelineCategory.SystemEvent),
+            items.Count(item => item.Category == WorkWorkerOverviewTimelineCategory.Failure));
+
+    private static IReadOnlyList<WorkWorkerOverviewTimelineItem> FilterWorkerOverviewTimelineItems(
+        IReadOnlyList<WorkWorkerOverviewTimelineItem> items,
+        IReadOnlyList<WorkWorkerOverviewTimelineCategory>? categories)
+    {
+        var uniqueItems = items
+            .GroupBy(item => item.Id, StringComparer.Ordinal)
+            .Select(group => group.First())
+            .ToArray();
+
+        if (categories is null || categories.Count == 0)
+        {
+            return uniqueItems;
+        }
+
+        var allowedCategories = categories.ToHashSet();
+        return uniqueItems
+            .Where(item => allowedCategories.Contains(item.Category))
+            .ToArray();
+    }
+
+    private static IReadOnlyList<WorkWorkerOverviewTimelineItem> SortWorkerOverviewTimelineItems(
+        IReadOnlyList<WorkWorkerOverviewTimelineItem> items,
+        WorkWorkerOverviewSortDirection direction)
+        => direction == WorkWorkerOverviewSortDirection.Asc
+            ? items
+                .OrderBy(item => item.At)
+                .ThenBy(item => item.Id, StringComparer.Ordinal)
+                .ToArray()
+            : items
+                .OrderByDescending(item => item.At)
+                .ThenByDescending(item => item.Id, StringComparer.Ordinal)
+                .ToArray();
+
+    private static WorkWorkerOverviewPage<WorkWorkerOverviewTimelineItem> CreateWorkerOverviewTimelinePage(
+        IReadOnlyList<WorkWorkerOverviewTimelineItem> items,
+        string? cursor,
+        int take)
+    {
+        var page = SliceWorkerOverviewPage(items, item => item.Id, cursor, take);
+        var pageItems = page.Items.ToArray();
+        return new WorkWorkerOverviewPage<WorkWorkerOverviewTimelineItem>(
+            pageItems,
+            page.HasMore,
+            pageItems.LastOrDefault()?.Id);
+    }
+
+    private static (IReadOnlyList<T> Items, bool HasMore) SliceWorkerOverviewPage<T>(
+        IReadOnlyList<T> items,
+        Func<T, string> getCursor,
+        string? cursor,
+        int take)
+    {
+        var startIndex = 0;
+        if (!string.IsNullOrWhiteSpace(cursor))
+        {
+            var cursorIndex = items
+                .Select((item, index) => (Cursor: getCursor(item), Index: index))
+                .FirstOrDefault(entry => string.Equals(entry.Cursor, cursor, StringComparison.Ordinal));
+            if (cursorIndex.Cursor is not null)
+            {
+                startIndex = cursorIndex.Index + 1;
+            }
+        }
+
+        var remaining = items.Skip(startIndex).ToArray();
+        return (remaining.Take(take).ToArray(), remaining.Length > take);
+    }
+
+    private static int CountWorkerOverviewConfigurationDifferences(
+        WorkerSnapshot worker,
+        WorkDefinition? definition)
+    {
+        if (definition is null)
+        {
+            return 0;
+        }
+
+        return WorkerConfigurationDifferenceCounter.CountDifferences(
+            worker.Options,
+            worker.Configuration,
+            new WorkerOptions(definition.DefaultOptions.ProfilingEnabled),
+            definition.Configuration);
+    }
+
+    private static WorkWorkerOverviewOrigin CreateWorkerOverviewOrigin(WorkOrigin origin)
+        => new(
+            origin.Channel,
+            NormalizeWorkerOverviewText(origin.Actor.Id),
+            NormalizeWorkerOverviewText(origin.Actor.Name),
+            NormalizeWorkerOverviewText(origin.Actor.Email));
+
+    private static WorkWorkerOverviewFailure? CreateWorkerOverviewFailure(
+        WorkerIterationFailure? failure,
+        WorkWorkerOverviewPendingState? pendingState = null)
+        => failure is null
+            ? null
+            : new WorkWorkerOverviewFailure(
+                failure.Kind switch
+                {
+                    WorkerIterationFailureKind.Failure => WorkWorkerOverviewFailureKind.Failure,
+                    WorkerIterationFailureKind.Exception => WorkWorkerOverviewFailureKind.Exception,
+                    _ => throw new InvalidOperationException($"Unknown worker iteration failure kind '{failure.Kind}'."),
+                },
+                failure.Message,
+                failure.Code,
+                failure.Target,
+                failure.ExceptionType,
+                failure.StackTrace,
+                failure.DeclaredByWork,
+                pendingState);
+
+    private static WorkWorkerOverviewPendingState? CreateWorkerOverviewRetryPendingState(
+        WorkerSnapshot worker,
+        WorkerIterationSnapshot? latestIteration)
+        => worker.State == WorkerState.Retrying && latestIteration?.Failure is not null
+            ? CreateWorkerOverviewPendingState(WorkWorkerOverviewPendingStateMode.Retry, worker)
+            : null;
+
+    private static WorkWorkerOverviewPendingState CreateWorkerOverviewPendingState(
+        WorkWorkerOverviewPendingStateMode mode,
+        WorkerSnapshot worker)
+        => new(
+            mode,
+            worker.NextRunAt,
+            worker.StateChangedAt,
+            worker.UpdatedAt,
+            worker.RetryAttempt);
+
+    private static string? NormalizeWorkerOverviewText(string? value)
+        => string.IsNullOrWhiteSpace(value)
+            ? null
+            : value.Trim();
+
     private static async Task<object> CreateThroughputComponent(
         IWorkQueryService queries,
         WorkSystemCriteria? criteria,
@@ -766,6 +1383,7 @@ public class WorkableViewQueryAdapter
             worker.DefinitionName,
             worker.Revision,
             worker.State,
+            worker.IsFinal,
             worker.UpdatedAt,
             worker.TotalExecutionDuration,
             worker.SubjectId,
@@ -778,6 +1396,7 @@ public class WorkableViewQueryAdapter
             iteration.DefinitionName,
             iteration.WorkerState,
             iteration.Status,
+            iteration.IsFinal,
             iteration.CompletedAt,
             iteration.ExecutionDuration,
             iteration.SubjectId,
@@ -1092,3 +1711,4 @@ public class WorkableViewQueryAdapter
     private sealed record WorkComponentDescriptor(
         bool RequiresIntervalPublish = false);
 }
+

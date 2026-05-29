@@ -1,3 +1,6 @@
+using Microsoft.Extensions.DependencyInjection;
+using System.Collections.Concurrent;
+using Microsoft.Extensions.Logging;
 using Workable;
 
 namespace Workable.Tests;
@@ -49,4 +52,638 @@ public sealed class WorkableViewQueryAdapterTests
         Assert.Equal(["workerDetail", "workerCurrentIteration"], components.Select(component => component.Type).ToArray());
         Assert.All(components, component => Assert.Equal(WorkComponentShapes.Detailed, component.Shape));
     }
+
+    [Fact]
+    public async Task WorkerOverviewReturnsLogsPageForLogsInitialPanel()
+    {
+        var definition = WorkDefinition.Create("views.worker.landing.logs", "Returns worker overview logs.");
+        var services = new ServiceCollection();
+        services.AddWorkableSystem(builder => builder.AddWork<LandingLoggedExecutor>(
+            definition,
+            configuration => configuration.ConfigureLogging(level: LogLevel.Information)));
+        await using var system = services.BuildServiceProvider().GetRequiredService<IWorkSystemRegistry>().Default;
+        await system.Start();
+
+        var session = CreateTransportSession(
+            system,
+            WorkInvocationChannel.HttpApi,
+            new WorkActor("view-user", "View Tester"));
+        var handle = await session.Queue.Enqueue(
+            definition.Name,
+            options: new WorkerOptions(ProfilingEnabled: true));
+        await handle.WaitForCompletion();
+        await WaitForReadModel(system);
+
+        var landing = await new WorkableViewQueryAdapter().WorkerOverview(
+            session,
+            RequiredWorkerId(handle),
+            new WorkWorkerOverviewCriteria(
+                Activity: WorkWorkerOverviewActivity.Logs,
+                ActivityTake: 10,
+                RecentIterationTake: 5));
+
+        Assert.NotNull(landing);
+        Assert.Equal(WorkWorkerOverviewActivity.Logs, landing.Activity);
+        Assert.Equal(WorkInvocationChannel.HttpApi, landing.Worker.CreatedOrigin.Channel);
+        Assert.Equal("view-user", landing.Worker.CreatedOrigin.ActorId);
+        Assert.Equal("View Tester", landing.Worker.CreatedOrigin.ActorName);
+        Assert.Equal(1, landing.Worker.ConfigDifferenceCount);
+        Assert.True(landing.Worker.IsFinal);
+        Assert.NotNull(landing.Logs.Page);
+        Assert.Null(landing.Timeline.Page);
+        Assert.Equal(3, landing.Logs.Summary.Total);
+        Assert.Equal(0, landing.Logs.Summary.Critical);
+        Assert.Equal(1, landing.Logs.Summary.Error);
+        Assert.Equal(1, landing.Logs.Summary.Errors);
+        Assert.Equal(1, landing.Logs.Summary.Warning);
+        Assert.Equal(1, landing.Logs.Summary.Warnings);
+        Assert.Equal(1, landing.Logs.Summary.Information);
+        Assert.Equal(0, landing.Logs.Summary.Debug);
+        Assert.Equal(0, landing.Logs.Summary.Trace);
+        Assert.Equal(WorkCompletionStatus.Completed, Assert.IsType<WorkWorkerOverviewLatestIteration>(landing.LatestIteration).Status);
+        Assert.Single(landing.RecentIterations);
+    }
+
+    [Fact]
+    public async Task WorkerOverviewReturnsTimelinePageAndFailureDetailsForTimelineInitialPanel()
+    {
+        var definition = WorkDefinition.Create("views.worker.landing.timeline", "Returns worker overview timeline.");
+        var services = new ServiceCollection();
+        services.AddWorkableSystem(builder => builder.AddWork<LandingFailingExecutor>(
+            definition,
+            configuration => configuration.ConfigureLogging(level: LogLevel.Information)));
+        await using var system = services.BuildServiceProvider().GetRequiredService<IWorkSystemRegistry>().Default;
+        await system.Start();
+
+        var session = CreateTransportSession(system);
+        var handle = await session.Queue.Enqueue(
+            definition.Name,
+            options: new WorkerOptions(ProfilingEnabled: true));
+        await handle.WaitForCompletion();
+        await WaitForReadModel(system);
+
+        var landing = await new WorkableViewQueryAdapter().WorkerOverview(
+            session,
+            RequiredWorkerId(handle),
+            new WorkWorkerOverviewCriteria(
+                Activity: WorkWorkerOverviewActivity.Timeline,
+                ActivityTake: 10,
+                RecentIterationTake: 5));
+
+        var latestIteration = Assert.IsType<WorkWorkerOverviewLatestIteration>(landing?.LatestIteration);
+
+        Assert.NotNull(landing);
+        Assert.Equal(WorkWorkerOverviewActivity.Timeline, landing.Activity);
+        Assert.Null(landing.Logs.Page);
+        Assert.NotNull(landing.Timeline.Page);
+        Assert.Single(landing.Timeline.Page.Items);
+        Assert.Equal(1, landing.Timeline.Summary.Total);
+        Assert.Equal(1, landing.Timeline.Summary.FailureCount);
+        Assert.Equal(0, landing.Timeline.Summary.UserActionCount);
+        Assert.Equal(WorkCompletionStatus.Failed, latestIteration.Status);
+        Assert.NotNull(latestIteration.Failure);
+        Assert.Equal(WorkWorkerOverviewFailureKind.Failure, latestIteration.Failure.Kind);
+        Assert.Equal("view.failure", latestIteration.Failure.Code);
+        Assert.Equal("The work failed.", latestIteration.Failure.Message);
+        Assert.Equal(WorkCompletionStatus.Failed, Assert.Single(landing.RecentIterations).Status);
+    }
+
+    [Fact]
+    public async Task WorkerOverviewReturnsExecutingLatestIterationForActiveWorker()
+    {
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var definition = WorkDefinition.Create("views.worker.landing.active", "Returns worker overview for active workers.");
+        var services = new ServiceCollection();
+        services.AddWorkableSystem(builder => builder.AddWork(
+            definition,
+            async (_, _, cancellationToken) =>
+            {
+                entered.TrySetResult();
+                await release.Task.WaitAsync(cancellationToken);
+                return WorkExecutionResult.Success();
+            }));
+        await using var system = services.BuildServiceProvider().GetRequiredService<IWorkSystemRegistry>().Default;
+        await system.Start();
+
+        var session = CreateTransportSession(system);
+        var handle = await session.Queue.Enqueue(definition.Name);
+        await entered.Task.WaitAsync(TimeSpan.FromSeconds(1));
+
+        var landing = await new WorkableViewQueryAdapter().WorkerOverview(
+            session,
+            RequiredWorkerId(handle),
+            new WorkWorkerOverviewCriteria(
+                Activity: WorkWorkerOverviewActivity.Timeline,
+                ActivityTake: 10,
+                RecentIterationTake: 5));
+
+        release.TrySetResult();
+        await handle.WaitForCompletion();
+
+        var latestIteration = Assert.IsType<WorkWorkerOverviewLatestIteration>(landing?.LatestIteration);
+
+        Assert.NotNull(landing);
+        Assert.Equal(WorkCompletionStatus.Executing, latestIteration.Status);
+        Assert.Null(latestIteration.CompletedAt);
+        Assert.Null(latestIteration.ExecutionDuration);
+        Assert.NotNull(landing.Timeline.Page);
+        Assert.Contains(landing.Timeline.Page.Items, item =>
+            item.Kind == WorkWorkerOverviewTimelineItemKind.Iteration &&
+            item.Sequence == 1 &&
+            item.IterationStatus == WorkCompletionStatus.Executing);
+        Assert.Equal(WorkCompletionStatus.Executing, Assert.Single(landing.RecentIterations).Status);
+    }
+
+    [Fact]
+    public async Task WorkerOverviewSynthesizesWaitingStateFromWorkerSnapshot()
+    {
+        var definition = WorkDefinition.Create("views.worker.timeline.waiting", "Synthesizes waiting timeline state.");
+        var services = new ServiceCollection();
+        services.AddWorkableSystem(builder => builder.AddWork(
+            definition,
+            (_, _, _) => Task.FromResult(WorkExecutionResult.Success()),
+            configuration => configuration.UseRecurrence(WorkRecurrenceConfiguration.Every(TimeSpan.FromMinutes(5)) with
+            {
+                ContinueAfterFailure = false,
+                RetainedIterations = 10,
+            })));
+        await using var system = services.BuildServiceProvider().GetRequiredService<IWorkSystemRegistry>().Default;
+        await system.Start();
+
+        var session = CreateTransportSession(system);
+        var handle = await session.Queue.Enqueue(definition.Name);
+        var workerId = RequiredWorkerId(handle);
+        try
+        {
+            await Eventually(async () => (await system.Query.Worker(workerId))?.State == WorkerState.Waiting);
+
+            var overview = await new WorkableViewQueryAdapter().WorkerOverview(
+                session,
+                workerId,
+                new WorkWorkerOverviewCriteria(
+                    Activity: WorkWorkerOverviewActivity.Timeline,
+                    ActivityTake: 10));
+
+            var waitingItem = Assert.Single(
+                Assert.IsType<WorkWorkerOverviewPage<WorkWorkerOverviewTimelineItem>>(overview?.Timeline.Page).Items,
+                item => item.Kind == WorkWorkerOverviewTimelineItemKind.StateChange &&
+                    item.State == WorkerState.Waiting);
+
+            Assert.Equal("live-state:waiting", waitingItem.Id);
+            Assert.NotNull(waitingItem.PendingState);
+            Assert.Equal(WorkWorkerOverviewPendingStateMode.Recurrence, waitingItem.PendingState.Mode);
+        }
+        finally
+        {
+            var worker = await system.Query.Worker(workerId);
+            if (worker is not null && worker.State is not (WorkerState.Canceled or WorkerState.Completed))
+            {
+                await system.Workers.Execute(worker.Version, WorkAction.Cancel);
+            }
+        }
+
+        await handle.WaitForCompletion();
+    }
+
+    [Fact]
+    public async Task WorkerOverviewAttachesRetryPendingToFailedIterationInsteadOfRetryingRow()
+    {
+        var attempts = 0;
+        var definition = WorkDefinition.Create("views.worker.timeline.retrying", "Attaches retry pending state.");
+        var services = new ServiceCollection();
+        services.AddWorkableSystem(builder => builder.AddWork(
+            definition,
+            (_, _, _) =>
+            {
+                attempts++;
+                throw new TimeoutException("Retry this.");
+            },
+            configuration => configuration
+                .RetryTransientFailures(
+                    count: 1,
+                    initialDelay: TimeSpan.FromMinutes(5),
+                    maximumDelay: TimeSpan.FromMinutes(5),
+                    jitter: TimeSpan.Zero)
+                .ClassifyExceptions(exception => exception is TimeoutException
+                    ? WorkExceptionClassification.Transient
+                    : WorkExceptionClassification.Unknown)));
+        await using var system = services.BuildServiceProvider().GetRequiredService<IWorkSystemRegistry>().Default;
+        await system.Start();
+
+        var session = CreateTransportSession(system);
+        var handle = await session.Queue.Enqueue(definition.Name);
+        var workerId = RequiredWorkerId(handle);
+        try
+        {
+            await Eventually(async () => (await system.Query.Worker(workerId))?.State == WorkerState.Retrying);
+
+            var overview = await new WorkableViewQueryAdapter().WorkerOverview(
+                session,
+                workerId,
+                new WorkWorkerOverviewCriteria(
+                    Activity: WorkWorkerOverviewActivity.Timeline,
+                    ActivityTake: 20));
+
+            Assert.Equal(1, attempts);
+            var latestIteration = Assert.IsType<WorkWorkerOverviewLatestIteration>(overview?.LatestIteration);
+            Assert.NotNull(latestIteration.Failure);
+            Assert.NotNull(latestIteration.Failure.PendingState);
+            Assert.Equal(WorkWorkerOverviewPendingStateMode.Retry, latestIteration.Failure.PendingState.Mode);
+
+            var timelinePage = Assert.IsType<WorkWorkerOverviewPage<WorkWorkerOverviewTimelineItem>>(overview?.Timeline.Page);
+            var failedIteration = Assert.Single(timelinePage.Items, item =>
+                item.Kind == WorkWorkerOverviewTimelineItemKind.Iteration &&
+                item.Sequence == latestIteration.Sequence);
+            Assert.NotNull(failedIteration.Failure?.PendingState);
+            Assert.Equal(WorkWorkerOverviewPendingStateMode.Retry, failedIteration.Failure.PendingState.Mode);
+            Assert.DoesNotContain(timelinePage.Items, item =>
+                item.Kind == WorkWorkerOverviewTimelineItemKind.StateChange &&
+                item.State == WorkerState.Retrying);
+        }
+        finally
+        {
+            var worker = await system.Query.Worker(workerId);
+            if (worker is not null && worker.State is not (WorkerState.Canceled or WorkerState.Completed))
+            {
+                await system.Workers.Execute(worker.Version, WorkAction.Cancel);
+            }
+        }
+
+        var completion = await handle.WaitForCompletion();
+        Assert.Equal(WorkCompletionStatus.Canceled, completion.Status);
+    }
+
+    [Fact]
+    public async Task WorkerOverviewRealtimeStateRespectsCompactAndExpandedPanelModes()
+    {
+        var definition = WorkDefinition.Create("views.worker.realtime.state", "Returns worker overview realtime state.");
+        var services = new ServiceCollection();
+        services.AddWorkableSystem(builder => builder.AddWork<LandingLoggedExecutor>(
+            definition,
+            configuration => configuration.ConfigureLogging(level: LogLevel.Information)));
+        await using var system = services.BuildServiceProvider().GetRequiredService<IWorkSystemRegistry>().Default;
+        await system.Start();
+
+        var session = CreateTransportSession(system);
+        var handle = await session.Queue.Enqueue(definition.Name);
+        await handle.WaitForCompletion();
+
+        var adapter = new WorkableViewQueryAdapter();
+        var compact = await adapter.WorkerOverviewRealtimeState(
+            session,
+            RequiredWorkerId(handle),
+            new WorkWorkerOverviewRealtimeCriteria(
+                WorkerControls: WorkComponentShapes.Compact,
+                WorkerLogs: WorkComponentShapes.Compact,
+                WorkerDuration: WorkComponentShapes.Compact,
+                WorkerTimeline: WorkComponentShapes.Compact));
+        var expanded = await adapter.WorkerOverviewRealtimeState(
+            session,
+            RequiredWorkerId(handle),
+            new WorkWorkerOverviewRealtimeCriteria(
+                WorkerControls: WorkComponentShapes.Standard,
+                WorkerLogs: WorkComponentShapes.Standard,
+                WorkerDuration: WorkComponentShapes.Standard,
+                WorkerTimeline: WorkComponentShapes.Standard));
+
+        Assert.NotNull(compact);
+        Assert.NotNull(compact.LogSummary);
+        Assert.Empty(compact.LogEntries);
+        Assert.Empty(compact.RecentIterations);
+        Assert.Null(compact.TimelineSummary);
+        Assert.Empty(compact.TimelineItems);
+        Assert.NotNull(compact.LatestIteration);
+        Assert.Null(compact.LatestIteration.Output);
+
+        Assert.NotNull(expanded);
+        Assert.NotNull(expanded.LogSummary);
+        Assert.Equal(3, expanded.LogEntries.Count);
+        Assert.Single(expanded.RecentIterations);
+        Assert.NotNull(expanded.TimelineSummary);
+        Assert.Single(expanded.TimelineItems);
+    }
+
+    [Fact]
+    public async Task WorkerOverviewAggregatesLogsAcrossRetainedIterations()
+    {
+        var attemptsByWorker = new ConcurrentDictionary<WorkerId, int>();
+        var definition = WorkDefinition.Create("views.worker.logs.aggregate", "Aggregates retained iteration logs.");
+        var services = new ServiceCollection();
+        services.AddSingleton(attemptsByWorker);
+        services.AddWorkableSystem(builder => builder.AddWork<AggregateRecurringLogExecutor>(
+            definition,
+            configuration => configuration
+                .ConfigureLogging(level: LogLevel.Information)
+                .UseRecurrence(WorkRecurrenceConfiguration.Every(TimeSpan.FromMilliseconds(10)) with
+                {
+                    ContinueAfterFailure = false,
+                    RetainedIterations = 10,
+                })));
+        await using var system = services.BuildServiceProvider().GetRequiredService<IWorkSystemRegistry>().Default;
+        await system.Start();
+
+        var session = CreateTransportSession(system);
+        var handle = await session.Queue.Enqueue(definition.Name);
+        await handle.WaitForCompletion();
+        await WaitForReadModel(system);
+
+        var overview = await new WorkableViewQueryAdapter().WorkerOverview(
+            session,
+            RequiredWorkerId(handle),
+            new WorkWorkerOverviewCriteria(
+                Activity: WorkWorkerOverviewActivity.Logs,
+                ActivityTake: 10));
+
+        Assert.NotNull(overview?.Logs.Page);
+        Assert.Equal(2, overview.Logs.Summary.Total);
+        Assert.Equal(2, overview.Logs.Summary.Information);
+        Assert.Contains(overview.Logs.Page.Items, item => item.Message.Contains("attempt 1", StringComparison.Ordinal));
+        Assert.Contains(overview.Logs.Page.Items, item => item.Message.Contains("attempt 2", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task WorkerOverviewCanScopeLogsToASpecificIterationSequence()
+    {
+        var attemptsByWorker = new ConcurrentDictionary<WorkerId, int>();
+        var definition = WorkDefinition.Create("views.worker.logs.sequence", "Scopes retained logs to one iteration.");
+        var services = new ServiceCollection();
+        services.AddSingleton(attemptsByWorker);
+        services.AddWorkableSystem(builder => builder.AddWork<AggregateRecurringLogExecutor>(
+            definition,
+            configuration => configuration
+                .ConfigureLogging(level: LogLevel.Information)
+                .UseRecurrence(WorkRecurrenceConfiguration.Every(TimeSpan.FromMilliseconds(10)) with
+                {
+                    ContinueAfterFailure = false,
+                    RetainedIterations = 10,
+                })));
+        await using var system = services.BuildServiceProvider().GetRequiredService<IWorkSystemRegistry>().Default;
+        await system.Start();
+
+        var session = CreateTransportSession(system);
+        var handle = await session.Queue.Enqueue(definition.Name);
+        await handle.WaitForCompletion();
+        await WaitForReadModel(system);
+
+        var overview = await new WorkableViewQueryAdapter().WorkerOverview(
+            session,
+            RequiredWorkerId(handle),
+            new WorkWorkerOverviewCriteria(
+                Activity: WorkWorkerOverviewActivity.Logs,
+                ActivityTake: 10,
+                LogIterationSequence: 2));
+
+        Assert.NotNull(overview?.Logs.Page);
+        Assert.Equal(1, overview.Logs.Summary.Total);
+        Assert.Equal(1, overview.Logs.Summary.Information);
+        Assert.Collection(
+            overview.Logs.Page.Items,
+            item => Assert.Contains("attempt 2", item.Message, StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task WorkerOverviewFiltersAndPagesLogsUsingServerCriteria()
+    {
+        var definition = WorkDefinition.Create("views.worker.logs.criteria", "Filters and pages worker logs.");
+        var services = new ServiceCollection();
+        services.AddWorkableSystem(builder => builder.AddWork<LandingLoggedExecutor>(
+            definition,
+            configuration => configuration.ConfigureLogging(level: LogLevel.Information)));
+        await using var system = services.BuildServiceProvider().GetRequiredService<IWorkSystemRegistry>().Default;
+        await system.Start();
+
+        var session = CreateTransportSession(system);
+        var handle = await session.Queue.Enqueue(definition.Name);
+        await handle.WaitForCompletion();
+        await WaitForReadModel(system);
+        var adapter = new WorkableViewQueryAdapter();
+
+        var filtered = await adapter.WorkerOverview(
+            session,
+            RequiredWorkerId(handle),
+            new WorkWorkerOverviewCriteria(
+                Activity: WorkWorkerOverviewActivity.Logs,
+                ActivityTake: 10,
+                LogLevels: [LogLevel.Warning]));
+
+        var firstPage = await adapter.WorkerOverview(
+            session,
+            RequiredWorkerId(handle),
+            new WorkWorkerOverviewCriteria(
+                Activity: WorkWorkerOverviewActivity.Logs,
+                ActivityTake: 1,
+                LogSortDirection: WorkWorkerOverviewSortDirection.Asc));
+
+        var secondPage = await adapter.WorkerOverview(
+            session,
+            RequiredWorkerId(handle),
+            new WorkWorkerOverviewCriteria(
+                Activity: WorkWorkerOverviewActivity.Logs,
+                ActivityTake: 1,
+                ActivityCursor: firstPage?.Logs.Page?.Cursor,
+                LogSortDirection: WorkWorkerOverviewSortDirection.Asc));
+
+        Assert.NotNull(filtered);
+        Assert.Equal(3, filtered.Logs.Summary.Total);
+        Assert.Equal(0, filtered.Logs.Summary.Critical);
+        Assert.Equal(1, filtered.Logs.Summary.Error);
+        Assert.Equal(1, filtered.Logs.Summary.Errors);
+        Assert.Equal(1, filtered.Logs.Summary.Warning);
+        Assert.Equal(1, filtered.Logs.Summary.Warnings);
+        Assert.Equal(1, filtered.Logs.Summary.Information);
+        Assert.Equal(0, filtered.Logs.Summary.Debug);
+        Assert.Equal(0, filtered.Logs.Summary.Trace);
+        Assert.Collection(
+            Assert.IsType<WorkWorkerOverviewPage<WorkWorkerOverviewLogEntry>>(filtered.Logs.Page).Items,
+            item => Assert.Equal(LogLevel.Warning, item.Level));
+
+        Assert.NotNull(firstPage?.Logs.Page);
+        Assert.Single(firstPage.Logs.Page.Items);
+        Assert.True(firstPage.Logs.Page.HasMore);
+        Assert.Equal("landing info", firstPage.Logs.Page.Items[0].Message);
+
+        Assert.NotNull(secondPage?.Logs.Page);
+        Assert.Single(secondPage.Logs.Page.Items);
+        Assert.Equal("landing warning", secondPage.Logs.Page.Items[0].Message);
+    }
+
+    [Fact]
+    public async Task WorkerOverviewReturnsDistinctIdsForDuplicateLogEntries()
+    {
+        var definition = WorkDefinition.Create("views.worker.logs.duplicate-ids", "Returns unique ids for duplicate log entries.");
+        var services = new ServiceCollection();
+        services.AddWorkableSystem(builder => builder.AddWork<DuplicateLoggedExecutor>(
+            definition,
+            configuration => configuration.ConfigureLogging(level: LogLevel.Information)));
+        await using var system = services.BuildServiceProvider().GetRequiredService<IWorkSystemRegistry>().Default;
+        await system.Start();
+
+        var session = CreateTransportSession(system);
+        var handle = await session.Queue.Enqueue(definition.Name);
+        await handle.WaitForCompletion();
+        await WaitForReadModel(system);
+        var adapter = new WorkableViewQueryAdapter();
+
+        var overview = await adapter.WorkerOverview(
+            session,
+            RequiredWorkerId(handle),
+            new WorkWorkerOverviewCriteria(
+                Activity: WorkWorkerOverviewActivity.Logs,
+                ActivityTake: 10));
+
+        var page = Assert.IsType<WorkWorkerOverviewPage<WorkWorkerOverviewLogEntry>>(overview?.Logs.Page);
+        Assert.Equal(2, page.Items.Count);
+        Assert.All(page.Items, item => Assert.False(string.IsNullOrWhiteSpace(item.Id)));
+        Assert.Equal(2, page.Items.Select(item => item.Id).Distinct(StringComparer.Ordinal).Count());
+        Assert.All(page.Items, item => Assert.Equal("duplicate log", item.Message));
+    }
+
+    [Fact]
+    public async Task WorkerOverviewFiltersAndPagesTimelineUsingServerCriteria()
+    {
+        var definition = WorkDefinition.Create("views.worker.timeline.criteria", "Filters and pages worker timeline.");
+        var services = new ServiceCollection();
+        services.AddWorkableSystem(builder => builder.AddWork(
+            definition,
+            (_, _, _) => Task.FromResult(WorkExecutionResult.Success())));
+        await using var system = services.BuildServiceProvider().GetRequiredService<IWorkSystemRegistry>().Default;
+        await system.Start();
+
+        var session = CreateTransportSession(
+            system,
+            WorkInvocationChannel.HttpApi,
+            new WorkActor("timeline-user", "Timeline Tester"));
+        var handle = await session.Queue.Enqueue(definition.Name);
+        await handle.WaitForCompletion();
+        await WaitForReadModel(system);
+        var adapter = new WorkableViewQueryAdapter();
+
+        var filtered = await adapter.WorkerOverview(
+            session,
+            RequiredWorkerId(handle),
+            new WorkWorkerOverviewCriteria(
+                Activity: WorkWorkerOverviewActivity.Timeline,
+                ActivityTake: 10,
+                TimelineCategories: [WorkWorkerOverviewTimelineCategory.SystemEvent]));
+
+        var firstPage = await adapter.WorkerOverview(
+            session,
+            RequiredWorkerId(handle),
+            new WorkWorkerOverviewCriteria(
+                Activity: WorkWorkerOverviewActivity.Timeline,
+                ActivityTake: 1,
+                TimelineSortDirection: WorkWorkerOverviewSortDirection.Desc));
+
+        Assert.NotNull(filtered);
+        Assert.True(filtered.Timeline.Summary.Total >= 1);
+        Assert.All(
+            Assert.IsType<WorkWorkerOverviewPage<WorkWorkerOverviewTimelineItem>>(filtered.Timeline.Page).Items,
+            item => Assert.Equal(WorkWorkerOverviewTimelineCategory.SystemEvent, item.Category));
+
+        Assert.NotNull(firstPage?.Timeline.Page);
+        Assert.Single(firstPage.Timeline.Page.Items);
+    }
+
+    [Fact]
+    public async Task WorkerOverviewResolvesInitialPanelAutomaticallyFromWorkerShape()
+    {
+        var definition = WorkDefinition.Create("views.worker.landing.auto", "Returns worker overview with automatic panel selection.");
+        var services = new ServiceCollection();
+        services.AddWorkableSystem(builder => builder.AddWork(
+            definition,
+            (_, _, _) => Task.FromResult(WorkExecutionResult.Success())));
+        await using var system = services.BuildServiceProvider().GetRequiredService<IWorkSystemRegistry>().Default;
+        await system.Start();
+
+        var session = CreateTransportSession(system);
+        var handle = await session.Queue.Enqueue(definition.Name);
+        await handle.WaitForCompletion();
+        await WaitForReadModel(system);
+
+        var landing = await new WorkableViewQueryAdapter().WorkerOverview(
+            session,
+            RequiredWorkerId(handle));
+
+        Assert.NotNull(landing);
+        Assert.Equal(WorkWorkerOverviewActivity.Timeline, landing.Activity);
+        Assert.NotNull(landing.Timeline.Page);
+        Assert.Null(landing.Logs.Page);
+        Assert.True(landing.Worker.IsFinal);
+    }
+
+    private static IWorkSystemSession CreateTransportSession(
+        IWorkSystem system,
+        WorkInvocationChannel channel = WorkInvocationChannel.DotNet,
+        WorkActor? actor = null)
+        => TransportAuthorizationTestSupport.CreateTransportSession(
+            system,
+            channel,
+            actor,
+            description: "Use view adapter test session.");
+
+    private static async Task WaitForReadModel(IWorkSystem system)
+        => await Eventually(() => Task.FromResult(system.Diagnostics.ReadModel.PendingUpdateCount == 0));
+
+    private static async Task Eventually(Func<Task<bool>> condition)
+    {
+        var deadline = DateTimeOffset.UtcNow.AddSeconds(5);
+        while (DateTimeOffset.UtcNow < deadline)
+        {
+            if (await condition())
+            {
+                return;
+            }
+
+            await Task.Delay(10);
+        }
+
+        Assert.True(await condition(), "Expected condition to become true.");
+    }
+
+    private static WorkerId RequiredWorkerId(IWorkerHandle handle)
+        => handle.WorkerId ?? throw new InvalidOperationException("Expected accepted worker.");
+
+    private sealed class LandingLoggedExecutor(ILogger<LandingLoggedExecutor> logger) : IWorkExecutor
+    {
+        public Task<WorkExecutionResult> Execute(IWorkExecutionContext context, WorkInput? input, CancellationToken cancellationToken)
+        {
+            logger.LogInformation("landing info");
+            logger.LogWarning("landing warning");
+            logger.LogError("landing error");
+            return Task.FromResult(WorkExecutionResult.Success());
+        }
+    }
+
+    private sealed class DuplicateLoggedExecutor(ILogger<DuplicateLoggedExecutor> logger) : IWorkExecutor
+    {
+        public Task<WorkExecutionResult> Execute(IWorkExecutionContext context, WorkInput? input, CancellationToken cancellationToken)
+        {
+            logger.LogInformation("duplicate log");
+            logger.LogInformation("duplicate log");
+            return Task.FromResult(WorkExecutionResult.Success());
+        }
+    }
+
+    private sealed class LandingFailingExecutor : IWorkExecutor
+    {
+        public Task<WorkExecutionResult> Execute(IWorkExecutionContext context, WorkInput? input, CancellationToken cancellationToken)
+            => Task.FromResult(WorkExecutionResult.Failure([WorkMessage.Error("view.failure", "The work failed.")]));
+    }
+
+    private sealed class AggregateRecurringLogExecutor(
+        ConcurrentDictionary<WorkerId, int> attemptsByWorker,
+        ILogger<AggregateRecurringLogExecutor> logger) : IWorkExecutor
+    {
+        public Task<WorkExecutionResult> Execute(IWorkExecutionContext context, WorkInput? input, CancellationToken cancellationToken)
+        {
+            var attempt = attemptsByWorker.AddOrUpdate(context.WorkerId, 1, (_, current) => current + 1);
+            logger.LogInformation("aggregate log attempt {Attempt}", attempt);
+            return Task.FromResult(
+                attempt >= 2
+                    ? WorkExecutionResult.Failure([WorkMessage.Error("aggregate.stop", "Stop recurrence.")])
+                    : WorkExecutionResult.Success());
+        }
+    }
 }
+

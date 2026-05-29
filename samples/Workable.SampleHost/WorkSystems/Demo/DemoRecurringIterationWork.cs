@@ -56,7 +56,11 @@ public sealed class DemoRecurringIterationWork(
                     SuccessLogEntryCount,
                     RecoveredAfterTransientFailures: 0,
                     DateTimeOffset.UtcNow),
-                [WorkMessage.Info("sample.demo.iteration.completed", "The recurring sample iteration completed normally.")]);
+                CreateDemoMessages(
+                    "normal-success",
+                    "The recurring sample iteration completed normally.",
+                    1,
+                    1));
         }
         finally
         {
@@ -147,9 +151,11 @@ public sealed class DemoRecurringIterationWork(
                     SuccessLogEntryCount,
                     plan.PlannedTransientFailures,
                     DateTimeOffset.UtcNow),
-                [WorkMessage.Info(
-                    "sample.demo.iteration.recovered",
-                    $"The recurring sample recovered after {plan.PlannedTransientFailures} transient failure(s).")]);
+                CreateDemoMessages(
+                    "transient-recovery-success",
+                    $"The recurring sample recovered after {plan.PlannedTransientFailures} transient failure(s).",
+                    plan.AttemptNumber,
+                    plan.PlannedTransientFailures + 1));
         }
         finally
         {
@@ -209,6 +215,22 @@ public sealed class DemoRecurringIterationWork(
             logEntryCount,
             context.WorkerId.Value);
     }
+
+    private static IReadOnlyList<WorkMessage> CreateDemoMessages(
+        string mode,
+        string successText,
+        int attemptNumber,
+        int totalAttempts)
+        =>
+        [
+            WorkMessage.Info(
+                $"sample.demo.iteration.{mode}.info",
+                successText),
+            WorkMessage.Warning(
+                $"sample.demo.iteration.{mode}.warning",
+                $"Iteration lab warning sample for attempt {attemptNumber} of {totalAttempts}.",
+                "messages"),
+        ];
 
     private static DemoRecurringNonTransientException CreateSampleNonTransientException(string message)
     {

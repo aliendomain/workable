@@ -35,10 +35,10 @@ public sealed class RefreshCacheWork : IWorkExecutor
 
 Captured logs are exposed in two related places:
 
-- `worker.log` events on `IWorkEventStream`, which include the captured log message details plus worker context.
+- `worker.log` events on `IWorkEventStream`, which include the captured log message details, a stable log entry id, the in-flight iteration identity, and worker context.
 - `WorkerSnapshot.Iterations[*].Logs`, which contains the retained log entries for each retained iteration.
 
-The event payload includes the captured log message, category, level, event id, and exception fields when an exception was logged. Retained iteration snapshots expose the same log entry fields for each retained iteration.
+The event payload includes the captured log entry id, message, category, level, event id, and exception fields when an exception was logged. It also includes the current iteration snapshot so a consumer can correlate the log with the iteration that emitted it, plus the worker-level retained `logSummary` and `timelineSummary` aggregates used by overview-style realtime consumers. Retained iteration snapshots expose the same log entry fields for each retained iteration.
 
 ## Startup Configuration
 

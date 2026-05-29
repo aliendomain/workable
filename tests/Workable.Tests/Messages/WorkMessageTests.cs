@@ -11,7 +11,7 @@ public sealed class WorkMessageTests
         var message = WorkMessage.Info("sample.info", "Everything is fine.", "sample");
 
         Assert.Equal("sample.info", message.Code);
-        Assert.Equal(WorkMessageSeverity.Info, message.Severity);
+        Assert.Equal(WorkMessageSeverity.Information, message.Severity);
         Assert.Equal("Everything is fine.", message.Text);
         Assert.Equal("sample", message.Target);
         Assert.Null(message.Metadata);
@@ -39,6 +39,15 @@ public sealed class WorkMessageTests
         Assert.Equal("Something failed.", message.Text);
         Assert.Equal("sample", message.Target);
         Assert.Null(message.Metadata);
+    }
+
+    [Fact]
+    public void AdditionalFactoriesCreateExpectedSeverities()
+    {
+        Assert.Equal(WorkMessageSeverity.Trace, WorkMessage.Trace("sample.trace", "Trace.", "sample").Severity);
+        Assert.Equal(WorkMessageSeverity.Debug, WorkMessage.Debug("sample.debug", "Debug.", "sample").Severity);
+        Assert.Equal(WorkMessageSeverity.Information, WorkMessage.Information("sample.information", "Information.", "sample").Severity);
+        Assert.Equal(WorkMessageSeverity.Critical, WorkMessage.Critical("sample.critical", "Critical.", "sample").Severity);
     }
 
     [Fact]
@@ -80,9 +89,15 @@ public sealed class WorkMessageTests
             WorkMessage.Warning("sample.warning", "Warning."),
             WorkMessage.Error("sample.error", "Error."),
         ]);
+        var withCritical = WorkExecutionResult.Success(messages:
+        [
+            WorkMessage.Debug("sample.debug", "Debug."),
+            WorkMessage.Critical("sample.critical", "Critical."),
+        ]);
 
         Assert.False(warningOnly.HasErrors);
         Assert.True(withError.HasErrors);
+        Assert.True(withCritical.HasErrors);
     }
 
     private sealed record ResultPayload(string Value);

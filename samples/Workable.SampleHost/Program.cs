@@ -102,6 +102,19 @@ builder.Services.AddWorkableSystem(workable =>
                 DemoRecurringNonTransientException => WorkExceptionClassification.NonTransient,
                 _ => WorkExceptionClassification.Unknown,
             }));
+    workable.AddWork<DemoRecurringMessageFloodWork>(
+        DemoRecurringDefinition(
+            "sample.demo.message-flood",
+            "Samples:Demo",
+            "Recurring sample that emits a high-volume retained log flood per successful iteration."),
+        configuration => configuration.UseRecurrence(
+            WorkRecurrenceConfiguration.Every(TimeSpan.FromSeconds(1)) with
+            {
+                RetainedIterations = 25,
+            })
+            .ConfigureLogging(
+                level: LogLevel.Trace,
+                maximumBufferedEntries: 400));
 });
 
 builder.Services.AddWorkableSystem("fulfillment", workable =>

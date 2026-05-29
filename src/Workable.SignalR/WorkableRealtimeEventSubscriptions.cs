@@ -14,39 +14,6 @@ public sealed class WorkableRealtimeEventSubscriptions
 
     internal long Version => Volatile.Read(ref this.version);
 
-    internal async Task WatchSystem(
-        string connectionId,
-        IGroupManager groupManager,
-        IWorkSystem system,
-        WorkAuthorizationSnapshot authorization,
-        CancellationToken cancellationToken)
-    {
-        ArgumentNullException.ThrowIfNull(authorization);
-
-        var groupName = CreateSystemEventsGroupName(system, null, authorization.ReadFingerprint);
-        await this.WatchGroup(
-            connectionId,
-            groupManager,
-            system.Id,
-            groupName,
-            filter: null,
-            authorization,
-            cancellationToken);
-        await this.WaitForStreaming(groupName, cancellationToken);
-    }
-
-    internal Task UnwatchSystem(
-        string connectionId,
-        IGroupManager groupManager,
-        IWorkSystem system,
-        CancellationToken cancellationToken)
-        => this.UnwatchGroup(
-            connectionId,
-            groupManager,
-            system.Id,
-            filter: null,
-            cancellationToken);
-
     internal async Task WatchEvents(
         string connectionId,
         IGroupManager groupManager,
@@ -85,41 +52,6 @@ public sealed class WorkableRealtimeEventSubscriptions
             filter,
             cancellationToken);
     }
-
-    internal async Task WatchWorker(
-        string connectionId,
-        IGroupManager groupManager,
-        IWorkSystem system,
-        WorkerId workerId,
-        WorkAuthorizationSnapshot authorization,
-        CancellationToken cancellationToken)
-    {
-        ArgumentNullException.ThrowIfNull(authorization);
-
-        var groupName = WorkableRealtimeGroups.Worker(system, workerId, authorization.ReadFingerprint);
-        await this.WatchGroup(
-            connectionId,
-            groupManager,
-            system.Id,
-            groupName,
-            new WorkEventFilter(WorkerId: workerId),
-            authorization,
-            cancellationToken);
-        await this.WaitForStreaming(groupName, cancellationToken);
-    }
-
-    internal Task UnwatchWorker(
-        string connectionId,
-        IGroupManager groupManager,
-        IWorkSystem system,
-        WorkerId workerId,
-        CancellationToken cancellationToken)
-        => this.UnwatchGroup(
-            connectionId,
-            groupManager,
-            system.Id,
-            new WorkEventFilter(WorkerId: workerId),
-            cancellationToken);
 
     internal async Task RemoveConnection(
         string connectionId,
@@ -207,6 +139,11 @@ public sealed class WorkableRealtimeEventSubscriptions
             lock (this.gate)
             {
                 if (this.streamingGroups.Contains(groupName))
+                {
+                    return;
+                }
+
+                if (!this.groups.ContainsKey(groupName))
                 {
                     return;
                 }

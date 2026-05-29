@@ -421,6 +421,28 @@ Get a worker snapshot.
 GET /workable/workers/22222222-2222-2222-2222-222222222222
 ```
 
+Get only the effective worker configuration for one worker. This is the small point route intended for config panels that do not need the full worker snapshot.
+
+```http
+GET /workable/workers/22222222-2222-2222-2222-222222222222/configuration
+```
+
+Get the worker-overview landing payload used by detail screens. This returns the typed `WorkWorkerOverviewComponent` contract instead of the generic named-view component map.
+
+```http
+GET /workable/workers/22222222-2222-2222-2222-222222222222/overview
+GET /workable/workers/22222222-2222-2222-2222-222222222222/overview?activity=Timeline&activityTake=100&timelineSort=Asc&timelineCategories=Failure,UserAction
+GET /workable/workers/22222222-2222-2222-2222-222222222222/overview?activity=Logs&logSort=Desc&logLevels=Error,Warning&logIterationSequence=12
+```
+
+The worker-overview route accepts:
+
+- `activity`: `Auto`, `Logs`, or `Timeline`
+- `activityTake` and `activityCursor`
+- `recentIterationTake`
+- `logSort`, `logLevels`, and `logIterationSequence`
+- `timelineSort` and `timelineCategories`
+
 Get one completed worker iteration by worker id and iteration sequence.
 
 ```http

@@ -10,6 +10,7 @@ using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 using Workable;
 
 namespace Workable.Tests;
@@ -587,6 +588,8 @@ public sealed class WorkableHttpApiTests
             ?? throw new InvalidOperationException("Expected configured workers array.");
         Assert.Contains(workers, worker => worker?["state"]?.GetValue<string>() == "Completed");
         Assert.Contains(workers, worker => worker?["state"]?.GetValue<string>() == "Failed");
+        Assert.Contains(workers, worker => worker?["state"]?.GetValue<string>() == "Completed" && worker?["isFinal"]?.GetValue<bool>() == true);
+        Assert.Contains(workers, worker => worker?["state"]?.GetValue<string>() == "Failed" && worker?["isFinal"]?.GetValue<bool>() == false);
         Assert.NotNull(workers.FirstOrDefault()?["identifiers"]);
         Assert.Equal(1, configurationGrid["totalCount"]?.GetValue<int>());
         Assert.Equal("http.overview.complete", Assert.Single(configuredWorkers)?["definitionName"]?.GetValue<string>());
@@ -652,8 +655,103 @@ public sealed class WorkableHttpApiTests
         var iteration = Assert.Single(iterations);
         Assert.Equal(workerId.ToString("D"), iteration?["workerId"]?["value"]?.GetValue<string>());
         Assert.Equal("Completed", iteration?["status"]?.GetValue<string>());
+        Assert.True(iteration?["isFinal"]?.GetValue<bool>());
         Assert.NotNull(iteration?["workerState"]);
         Assert.NotNull(iteration?["identifiers"]);
+    }
+
+    [Fact]
+    public async Task MappedHttpRouteCanFilterWorkerOverviewActivity()
+    {
+        using var host = await CreateHttpHost(builder =>
+        {
+            builder.AddAuthorizedTransportWork(
+                WorkDefinition.Create("http.route.overview.activity"),
+                (context, input, cancellationToken) =>
+                {
+                    var logger = context.Services.GetRequiredService<ILoggerFactory>().CreateLogger("http.route.overview.activity");
+                    logger.LogInformation("http info");
+                    logger.LogWarning("http warning");
+                    logger.LogError("http error");
+                    return Task.FromResult(WorkExecutionResult.Success());
+                },
+                configuration => configuration.ConfigureLogging(level: LogLevel.Information));
+        });
+        var client = host.GetTestClient();
+        var system = host.Services.GetRequiredService<IWorkSystemRegistry>().Default;
+        var session = TransportAuthorizationTestSupport.CreateTransportSession(
+            system,
+            WorkInvocationChannel.HttpApi,
+            new WorkActor("http-overview-user", "HTTP Overview User"));
+
+        var handle = await session.Queue.Enqueue(
+            "http.route.overview.activity",
+            options: new WorkerOptions(ProfilingEnabled: true));
+        await handle.WaitForCompletion().WaitAsync(TimeSpan.FromSeconds(5));
+        await WaitForReadModel(system);
+        var workerId = handle.WorkerId?.Value
+            ?? throw new InvalidOperationException("Expected worker id.");
+
+        var logsResponse = await client.GetAsync(
+            $"/workable/workers/{workerId:D}/overview?activity=Logs&activityTake=10&logLevels=Warning&logSort=Asc");
+        var timelineResponse = await client.GetAsync(
+            $"/workable/workers/{workerId:D}/overview?activity=Timeline&activityTake=10&timelineCategories=SystemEvent");
+
+        logsResponse.EnsureSuccessStatusCode();
+        timelineResponse.EnsureSuccessStatusCode();
+
+        var logsJson = JsonNode.Parse(await logsResponse.Content.ReadAsStringAsync())
+            ?? throw new InvalidOperationException("Expected log overview JSON response.");
+        var timelineJson = JsonNode.Parse(await timelineResponse.Content.ReadAsStringAsync())
+            ?? throw new InvalidOperationException("Expected timeline overview JSON response.");
+        var timelineItems = timelineJson["timeline"]?["page"]?["items"]?.AsArray()
+            ?? throw new InvalidOperationException("Expected filtered timeline page.");
+
+        Assert.Equal("Logs", logsJson["activity"]?.GetValue<string>());
+        Assert.NotNull(logsJson["logs"]?["page"]);
+
+        Assert.NotEmpty(timelineItems);
+        Assert.All(timelineItems, item => Assert.Equal("SystemEvent", item?["category"]?.GetValue<string>()));
+    }
+
+    [Fact]
+    public async Task MappedHttpRouteCanScopeWorkerOverviewLogsToASpecificIteration()
+    {
+        using var host = await CreateHttpHost(builder =>
+        {
+            builder.AddAuthorizedTransportWork(
+                WorkDefinition.Create("http.route.overview.logs.sequence"),
+                (context, input, cancellationToken) =>
+                {
+                    var logger = context.Services.GetRequiredService<ILoggerFactory>().CreateLogger("http.route.overview.logs.sequence");
+                    logger.LogInformation("http overview info");
+                    logger.LogWarning("http overview warning");
+                    logger.LogError("http overview error");
+                    return Task.FromResult(WorkExecutionResult.Success());
+                },
+                configuration => configuration.ConfigureLogging(level: LogLevel.Information));
+        });
+        var client = host.GetTestClient();
+        var system = host.Services.GetRequiredService<IWorkSystemRegistry>().Default;
+        var session = TransportAuthorizationTestSupport.CreateTransportSession(system, WorkInvocationChannel.HttpApi);
+
+        var handle = await session.Queue.Enqueue(
+            "http.route.overview.logs.sequence",
+            options: new WorkerOptions(ProfilingEnabled: true));
+        await handle.WaitForCompletion().WaitAsync(TimeSpan.FromSeconds(5));
+        await WaitForReadModel(system);
+        var workerId = handle.WorkerId?.Value
+            ?? throw new InvalidOperationException("Expected worker id.");
+
+        var response = await client.GetAsync(
+            $"/workable/workers/{workerId:D}/overview?activity=Logs&activityTake=10&logIterationSequence=1");
+
+        response.EnsureSuccessStatusCode();
+
+        var json = JsonNode.Parse(await response.Content.ReadAsStringAsync())
+            ?? throw new InvalidOperationException("Expected log overview JSON response.");
+        Assert.Equal("Logs", json["activity"]?.GetValue<string>());
+        Assert.NotNull(json["logs"]?["page"]);
     }
 
     [Fact]
@@ -1713,7 +1811,26 @@ public sealed class WorkableHttpApiTests
         WorkableHttpQueryAdapter Query,
         WorkableHttpWorkerAdapter Workers);
 
+    private static Task<IHost> CreateHttpHost(
+        bool authenticated = true,
+        IEnumerable<string>? groups = null)
+        => CreateHttpHost(
+            builder =>
+            {
+                builder.AddAuthorizedTransportWork(
+                    WorkDefinition.Create(
+                        "http.route.case",
+                        configuration: WorkConfiguration.Default with
+                        {
+                            Start = WorkStartConfiguration.DoNotStart,
+                        }),
+                    SuccessfulWork);
+            },
+            authenticated,
+            groups);
+
     private static async Task<IHost> CreateHttpHost(
+        Action<IWorkSystemBuilder> configure,
         bool authenticated = true,
         IEnumerable<string>? groups = null)
     {
@@ -1730,14 +1847,7 @@ public sealed class WorkableHttpApiTests
                         builder.StartWithHost();
                         builder.RequireAuthorization();
                         builder.ConfigureTransportSystemAuthorization();
-                        builder.AddAuthorizedTransportWork(
-                            WorkDefinition.Create(
-                                "http.route.case",
-                                configuration: WorkConfiguration.Default with
-                                {
-                                    Start = WorkStartConfiguration.DoNotStart,
-                                }),
-                            SuccessfulWork);
+                        configure(builder);
                     });
                     services.AddWorkableHttpApi();
                 });

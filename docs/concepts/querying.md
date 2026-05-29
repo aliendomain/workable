@@ -68,7 +68,7 @@ Use `IWorkQueryService.Worker` when you need full authoritative worker detail.
 WorkerSnapshot? worker = await workSystem.Query.Worker(workerId, cancellationToken: cancellationToken);
 ```
 
-`WorkerSnapshot.ActionHistory` records worker action and reconfiguration attempts that were applied to that worker. Each entry includes the operation kind, action when applicable, outcome status, origin, revision, state sequence, messages, and requested reconfiguration changes when applicable.
+`WorkerSnapshot.ActionHistory` records worker action and reconfiguration attempts that were applied to that worker. Each entry includes the operation kind, action when applicable, outcome status, origin, revision, state sequence, messages, the associated iteration sequence when the action was recorded against a tracked iteration, and requested reconfiguration changes when applicable.
 
 Use `IWorkQueryService.Workers` to retrieve workers that match a `WorkerCriteria`. It returns `WorkerOverviewItem` rows instead of full snapshots.
 
@@ -407,7 +407,7 @@ The examples below show the serialized JSON shape returned by HTTP and MCP adapt
 }
 ```
 
-`IWorkQueryService.WorkerIteration` returns the full retained `WorkerIterationSnapshot`, including output, messages, logs, and profile for that iteration.
+`IWorkQueryService.WorkerIteration` returns the full retained `WorkerIterationSnapshot`, including `attemptCount`, derived `failure`, output, messages, logs, and profile for that iteration.
 
 ```json
 {
@@ -417,6 +417,8 @@ The examples below show the serialized JSON shape returned by HTTP and MCP adapt
   "executionDuration": "00:00:01",
   "occurredAt": "2026-05-11T12:00:03Z",
   "status": "Completed",
+  "attemptCount": 2,
+  "failure": null,
   "output": {
     "json": "{\"sent\":true}",
     "clrType": "Sample.SendWelcomeEmailOutput, Sample",
@@ -755,6 +757,7 @@ The examples below show the serialized JSON shape returned by HTTP and MCP adapt
       },
       "revision": 2,
       "stateSequence": 4,
+      "iterationSequence": 2,
       "messages": []
     },
     {
@@ -773,6 +776,7 @@ The examples below show the serialized JSON shape returned by HTTP and MCP adapt
       },
       "revision": 3,
       "stateSequence": 4,
+      "iterationSequence": 2,
       "messages": [],
       "reconfiguration": {
         "profilingEnabled": true

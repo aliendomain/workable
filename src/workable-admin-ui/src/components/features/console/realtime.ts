@@ -1,25 +1,28 @@
 "use client";
 
 import {
-  HubConnectionBuilder,
   HubConnectionState,
-  LogLevel,
-  type HubConnection,
-  type IHttpConnectionOptions,
 } from "@microsoft/signalr";
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import type { RealtimePayloadMessage } from "@/components/features/console/realtime-payload";
+import {
+  consoleRealtimeAutomaticReconnectDelaysMs,
+  consoleRealtimeFallbackRestartDelayMs,
+  createConsoleRealtimeHubConnection,
+  createConsoleRealtimeSharedConnectionKey,
+  createConsoleRealtimeSharedViewPool,
+  createWorkableRealtimeHubUrl,
+  type ConsoleRealtimeSharedViewConnectionLease,
+} from "@/components/features/console/realtime-view-pool";
 import type { Loadable } from "@/components/features/console/types";
 import {
   createWorkableRealtimeUrl,
-  getWorkableRealtimeAccessToken,
   type WorkableConnection,
   type WorkableRealtimeEvent,
   type WorkableRealtimeEventBatch,
 } from "@/lib/workable";
 
-export const consoleRealtimeAutomaticReconnectDelaysMs = [0, 2000, 10000, 30000] as const;
-export const consoleRealtimeFallbackRestartDelayMs = 5000;
+export { consoleRealtimeAutomaticReconnectDelaysMs, consoleRealtimeFallbackRestartDelayMs };
 
 export type ConsoleRealtimeViewLoadable<T, TMessage extends RealtimePayloadMessage> = Loadable<T> & {
   clearMessages: () => void;
@@ -56,6 +59,11 @@ type ConsoleRealtimeViewEnvelope<T> = {
   result: T;
   subscriptionId: string;
   viewName: string;
+};
+
+type ConsoleRealtimeSharedViewConnectionLeaseState = {
+  connectionKey: string;
+  lease: ConsoleRealtimeSharedViewConnectionLease;
 };
 
 export type ConsoleRealtimeStatsEntry = {
@@ -106,6 +114,8 @@ export type ConsoleRealtimeEventCaptureSnapshot = {
   sourceCount: number;
 };
 
+type ConsoleRealtimeWatchRetryDisposition = "retry" | "none";
+
 const emptyConsoleRealtimeStatsSnapshot: ConsoleRealtimeStatsSnapshot = {
   activeConsumerCount: 0,
   activeSubscriptionCount: 0,
@@ -141,85 +151,126 @@ let consoleRealtimePayloadCaptureSnapshot = emptyConsoleRealtimePayloadCaptureSn
 let consoleRealtimePayloadCaptureChangeQueued = false;
 let consoleRealtimeEventCaptureSnapshot = emptyConsoleRealtimeEventCaptureSnapshot;
 let consoleRealtimeEventCaptureChangeQueued = false;
-
-export function createConsoleRealtimeHubConnection({
-  apiUrl,
-  hubUrl,
-  options,
-}: {
-  apiUrl: string;
-  hubUrl: string;
-  options?: Partial<IHttpConnectionOptions>;
-}): HubConnection {
-  return new HubConnectionBuilder()
-    .withUrl(hubUrl, {
-      accessTokenFactory: () => getWorkableRealtimeAccessToken(apiUrl),
-      withCredentials: true,
-      ...options,
-    })
-    .withAutomaticReconnect([...consoleRealtimeAutomaticReconnectDelaysMs])
-    .configureLogging(LogLevel.None)
-    .build();
-}
+const consoleRealtimeSharedViewPool = createConsoleRealtimeSharedViewPool();
 
 export function useConsoleRealtimeView<T, TMessage extends RealtimePayloadMessage>({
   body,
   captureEnabled,
+  clientMethod = "workable.view",
+  connectionInstanceKey,
   connection,
   createMessage,
   enabled,
   maxMessages,
+  subscriptionErrorMessage = "Realtime view subscription failed.",
   viewName,
   subscription,
+  subscriptionInstanceKey,
+  watchMethod = "WatchView",
+  unwatchMethod = "UnwatchView",
 }: {
   body: unknown;
   captureEnabled: boolean;
+  clientMethod?: string;
+  connectionInstanceKey?: string;
   connection: WorkableConnection | null;
   createMessage: (result: T, nextMessageId: number) => TMessage;
   enabled: boolean;
   maxMessages: number;
+  subscriptionErrorMessage?: string;
   subscription?: string;
+  subscriptionInstanceKey?: string;
   viewName: string;
+  watchMethod?: string;
+  unwatchMethod?: string;
 }): ConsoleRealtimeViewLoadable<T, TMessage> {
   const subscriptionName = subscription ?? viewName;
-  const subscriptionId = subscriptionName;
+  const serverSubscriptionId = useMemo(
+    () => {
+      void subscriptionInstanceKey;
+      return createConsoleRealtimeEntryId("view-subscription");
+    },
+    [subscriptionInstanceKey]
+  );
   const [state, setState] = useState<ConsoleRealtimeViewLoadable<T, TMessage>>({
     clearMessages: () => undefined,
     connectionState: enabled ? "connecting" : "disabled",
     enabled,
-    hubUrl: connection ? createWorkableRealtimeUrl(connection) : null,
+    hubUrl: createWorkableRealtimeHubUrl(connection),
     loading: false,
     messages: [],
   });
-  const hubConnectionRef = useRef<HubConnection | null>(null);
   const payloadCaptureEntryIdRef = useRef<string>(createConsoleRealtimeEntryId("payload"));
   const statsEntryIdRef = useRef<string>(createConsoleRealtimeStatsEntryId("view"));
   const hasConnection = connection !== null;
   const apiUrl = connection?.apiUrl ?? "";
-  const hubUrl = connection ? createWorkableRealtimeUrl(connection) : null;
+  const hubUrl = createWorkableRealtimeHubUrl(connection);
   const systemName = connection?.systemName;
   const statsConnectionKey = useMemo(
-    () => createConsoleRealtimeStatsConnectionKey(apiUrl, systemName, hubUrl),
-    [apiUrl, hubUrl, systemName]
+    () => createConsoleRealtimeSharedConnectionKey(apiUrl, systemName, hubUrl, connectionInstanceKey),
+    [apiUrl, connectionInstanceKey, hubUrl, systemName]
   );
+  const desiredSharedConnectionKey = useMemo(
+    () => enabled && hasConnection && hubUrl ? statsConnectionKey : null,
+    [enabled, hasConnection, hubUrl, statsConnectionKey]
+  );
+  const [sharedConnectionState, setSharedConnectionState] =
+    useState<ConsoleRealtimeSharedViewConnectionLeaseState | null>(null);
+  const sharedConnection =
+    sharedConnectionState?.connectionKey === desiredSharedConnectionKey
+      ? sharedConnectionState.lease
+      : null;
   const bodyKey = JSON.stringify(body);
-  const bodyKeyRef = useRef(bodyKey);
   const captureEnabledRef = useRef(captureEnabled);
   const previousCaptureEnabledRef = useRef(captureEnabled);
   const createMessageRef = useRef(createMessage);
-  const hasDataRef = useRef(false);
   const maxMessagesRef = useRef(maxMessages);
   const messageIdRef = useRef(0);
-  const systemNameRef = useRef(systemName);
 
   useEffect(() => {
-    bodyKeyRef.current = bodyKey;
+    let canceled = false;
+
+    if (!desiredSharedConnectionKey || !hubUrl) {
+      queueMicrotask(() => {
+        if (!canceled) {
+          setSharedConnectionState((current) => (current === null ? current : null));
+        }
+      });
+      return () => {
+        canceled = true;
+      };
+    }
+
+    const lease = consoleRealtimeSharedViewPool.acquire({
+      apiUrl,
+      connectionKey: desiredSharedConnectionKey,
+      hubUrl,
+    });
+    queueMicrotask(() => {
+      if (!canceled) {
+        setSharedConnectionState({
+          connectionKey: desiredSharedConnectionKey,
+          lease,
+        });
+      }
+    });
+
+    return () => {
+      canceled = true;
+      lease.release();
+      setSharedConnectionState((current) =>
+        current?.connectionKey === desiredSharedConnectionKey && current.lease === lease
+          ? null
+          : current
+      );
+    };
+  }, [apiUrl, desiredSharedConnectionKey, hubUrl]);
+
+  useEffect(() => {
     captureEnabledRef.current = captureEnabled;
     createMessageRef.current = createMessage;
-    hasDataRef.current = state.data !== undefined;
     maxMessagesRef.current = maxMessages;
-    systemNameRef.current = systemName;
-  }, [bodyKey, captureEnabled, createMessage, maxMessages, state.data, systemName]);
+  }, [captureEnabled, createMessage, maxMessages]);
 
   const clearMessages = useCallback(() => {
     setState((current) =>
@@ -289,123 +340,65 @@ export function useConsoleRealtimeView<T, TMessage extends RealtimePayloadMessag
       );
       return;
     }
+  }, [enabled, hasConnection, hubUrl]);
+
+  useEffect(() => {
+    if (!sharedConnection) {
+      return;
+    }
 
     let canceled = false;
-    let retryTimer: ReturnType<typeof setTimeout> | null = null;
     const statsEntryId = statsEntryIdRef.current;
-    const updateStats = (connectionState: string) => {
+    const applySnapshot = (snapshot: { connectionState: string; error?: string }) => {
+      if (canceled || !enabled) {
+        return;
+      }
+
       upsertConsoleRealtimeStatsEntry({
         connectionKey: statsConnectionKey,
-        connectionState,
+        connectionState: snapshot.connectionState,
         consumerCount: 1,
         enabled,
         hubUrl,
         id: statsEntryId,
         kind: "view",
         label: subscriptionName,
-        lifecycleHandlerCount: 3,
-        onHandlerCount: 1,
+        lifecycleHandlerCount: 0,
+        onHandlerCount: 0,
         subscriptionCount: 1,
       });
-    };
-
-    queueMicrotask(() => {
-      if (!canceled) {
-        updateStats("connecting");
-        setState((current) => ({
-          ...current,
-          connectionState: "connecting",
-          enabled,
-          hubUrl,
-        }));
-      }
-    });
-    const hubConnection = createConsoleRealtimeHubConnection({
-      apiUrl,
-      hubUrl,
-    });
-
-    hubConnectionRef.current = hubConnection;
-    const subscribe = () =>
-      hubConnection.invoke(
-        "WatchView",
-        subscriptionId,
-        viewName,
-        JSON.parse(bodyKeyRef.current),
-        systemNameRef.current ?? null
-      );
-    const scheduleRestart = (error: unknown, delayMs = consoleRealtimeFallbackRestartDelayMs) => {
-      if (canceled || retryTimer) {
-        return;
-      }
-
-      retryTimer = setTimeout(() => {
-        retryTimer = null;
-        if (!canceled && hubConnection.state === HubConnectionState.Disconnected) {
-          startConnection();
-        }
-      }, delayMs);
-      updateStats("disconnected");
       setState((current) => ({
         ...current,
-        connectionState: "disconnected",
-        error: error && !isExpectedConsoleRealtimeDisconnect(error)
-          ? getConsoleRealtimeErrorMessage(error, "Realtime view connection closed.")
-          : undefined,
-        loading: false,
-        refreshing: false,
+        connectionState: snapshot.connectionState,
+        enabled,
+        error: snapshot.error,
+        hubUrl,
+        loading: snapshot.connectionState === "connecting" && current.data === undefined,
+        refreshing: snapshot.connectionState === "reconnecting" && current.data !== undefined,
       }));
     };
-    const startConnection = () => {
-      if (canceled || hubConnection.state !== HubConnectionState.Disconnected) {
-        return;
-      }
 
-      queueMicrotask(() => {
-        if (!canceled) {
-          const nextConnectionState = hasDataRef.current ? "reconnecting" : "connecting";
-          updateStats(nextConnectionState);
-          setState((current) => {
-            return {
-              ...current,
-              connectionState: nextConnectionState,
-              loading: !hasDataRef.current,
-              refreshing: hasDataRef.current,
-            };
-          });
-        }
-      });
-      void hubConnection
-        .start()
-        .then(() => subscribe())
-        .then(() => {
-          if (!canceled) {
-            updateStats("connected");
-            setState((current) => ({
-              ...current,
-              connectionState: "connected",
-              error: undefined,
-              loading: false,
-              refreshing: false,
-            }));
+    applySnapshot(sharedConnection.getSnapshot());
+    const unsubscribeState = sharedConnection.subscribeState((snapshot) => {
+      queueMicrotask(() => applySnapshot(snapshot));
+    });
+    const unsubscribeMethod = sharedConnection.subscribeMethod<ConsoleRealtimeViewEnvelope<T>>(
+      clientMethod,
+        (envelope) => {
+          if (
+            canceled ||
+          envelope.subscriptionId !== serverSubscriptionId
+          ) {
+            return;
           }
-        })
-        .catch((error) => {
-          if (!canceled) {
-            scheduleRestart(error);
-          }
-        });
-    };
 
-    hubConnection.on("workable.view", (envelope: ConsoleRealtimeViewEnvelope<T>) => {
-      if (!canceled && envelope.subscriptionId === subscriptionId) {
         const message = createMessageRef.current(envelope.result, ++messageIdRef.current);
-        updateStats("connected");
         setState((current) => ({
           ...current,
           connectionState: "connected",
           data: envelope.result,
           enabled,
+          error: undefined,
           hubUrl,
           loading: false,
           messages: captureEnabledRef.current
@@ -414,97 +407,82 @@ export function useConsoleRealtimeView<T, TMessage extends RealtimePayloadMessag
           refreshing: false,
         }));
       }
-    });
-    hubConnection.onreconnecting(() => {
-      if (!canceled) {
-        updateStats("reconnecting");
-        setState((current) => ({
-          ...current,
-          connectionState: "reconnecting",
-          refreshing: current.data !== undefined,
-        }));
-      }
-    });
-    hubConnection.onreconnected(() => {
-      if (!canceled) {
-        updateStats("connected");
-        setState((current) => ({
-          ...current,
-          connectionState: "connected",
-        }));
-      }
-      void subscribe().catch((error) => {
-        if (!canceled && !isExpectedConsoleRealtimeDisconnect(error)) {
-          updateStats("error");
-          setState((current) => ({
-            ...current,
-            connectionState: "error",
-            error: getConsoleRealtimeErrorMessage(error, "Realtime view subscription failed."),
-            loading: false,
-            refreshing: false,
-          }));
-        }
-      });
-    });
-    hubConnection.onclose((error) => {
-      if (!canceled) {
-        scheduleRestart(error);
-      }
-    });
-
-    startConnection();
+    );
 
     return () => {
       canceled = true;
-      if (retryTimer) {
-        clearTimeout(retryTimer);
-      }
-      hubConnectionRef.current = null;
+      unsubscribeState();
+      unsubscribeMethod();
       deleteConsoleRealtimeStatsEntry(statsEntryId);
-      void hubConnection.stop().catch(() => undefined);
     };
-  }, [apiUrl, enabled, hasConnection, hubUrl, statsConnectionKey, subscriptionId, subscriptionName, systemName, viewName]);
+  }, [clientMethod, enabled, hubUrl, serverSubscriptionId, sharedConnection, statsConnectionKey, subscriptionName]);
 
   useEffect(() => {
-    const hubConnection = hubConnectionRef.current;
-    if (!enabled || !hubConnection || hubConnection.state !== HubConnectionState.Connected) {
+    if (enabled && sharedConnection) {
+      sharedConnection.ensureStarted();
+    }
+  }, [enabled, sharedConnection]);
+
+  useEffect(() => {
+    if (!enabled || !sharedConnection || state.connectionState !== "connected") {
       return;
     }
 
     let canceled = false;
-    queueMicrotask(() => {
-      if (!canceled) {
+    const watchRetrier = createConsoleRealtimeWatchRetrier({
+      invokeWatch: () =>
+        sharedConnection.invoke(
+          watchMethod,
+          serverSubscriptionId,
+          viewName,
+          JSON.parse(bodyKey),
+          systemName ?? null
+        ),
+      isCanceled: () => canceled,
+      isConnected: () => sharedConnection.getSnapshot().connectionState === "connected",
+      onBeforeAttempt: () => {
+        queueMicrotask(() => {
+          if (!canceled) {
+            setState((current) => ({
+              ...current,
+              connectionState: "connected",
+              error: undefined,
+              loading: current.data === undefined,
+              refreshing: current.data !== undefined,
+            }));
+          }
+        });
+      },
+      onFailure: (error) => {
         setState((current) => ({
           ...current,
-          connectionState: hubConnection.state.toLowerCase(),
-          error: undefined,
-          loading: current.data === undefined,
-          refreshing: current.data !== undefined,
+          error: getConsoleRealtimeErrorMessage(error, subscriptionErrorMessage),
+          loading: false,
+          refreshing: false,
         }));
-      }
+        return "retry";
+      },
     });
 
-    hubConnection
-      .invoke("WatchView", subscriptionId, viewName, JSON.parse(bodyKey), systemName ?? null)
-      .catch((error) => {
-        if (!canceled) {
-          setState((current) => ({
-            ...current,
-            connectionState: "error",
-            error: getConsoleRealtimeErrorMessage(error, "Realtime view subscription failed."),
-            loading: false,
-            refreshing: false,
-          }));
-        }
-      });
+    void watchRetrier.run();
 
     return () => {
       canceled = true;
-      if (hubConnection.state === HubConnectionState.Connected) {
-        void hubConnection.invoke("UnwatchView", subscriptionId, systemName ?? null).catch(() => undefined);
-      }
+      watchRetrier.clear();
     };
-  }, [bodyKey, enabled, subscriptionId, systemName, viewName]);
+  }, [bodyKey, enabled, serverSubscriptionId, sharedConnection, state.connectionState, subscriptionErrorMessage, systemName, unwatchMethod, viewName, watchMethod]);
+
+  useEffect(() => {
+    if (!enabled || !sharedConnection) {
+      return;
+    }
+
+    return () => {
+      void sharedConnection
+        .invoke(unwatchMethod, serverSubscriptionId, systemName ?? null)
+        .catch(() => undefined);
+    };
+  }, [enabled, serverSubscriptionId, sharedConnection, systemName, unwatchMethod]);
 
   return { ...state, clearMessages };
 }
@@ -708,6 +686,35 @@ export function useConsoleRealtimeEventStream<TMessage extends ConsoleRealtimeEv
         loading: false,
       }));
     };
+    const watchRetrier = createConsoleRealtimeWatchRetrier({
+      invokeWatch,
+      isCanceled: () => canceled,
+      isConnected: () => hubConnection.state === HubConnectionState.Connected,
+      onSuccess: () => {
+        updateStats("connected");
+        setState((current) => ({
+          ...current,
+          connectionState: "connected",
+          error: undefined,
+          loading: false,
+        }));
+      },
+      onFailure: (error) => {
+        if (isExpectedConsoleRealtimeDisconnect(error)) {
+          scheduleRestart(error);
+          return "none";
+        }
+
+        updateStats("error");
+        setState((current) => ({
+          ...current,
+          connectionState: "error",
+          error: getConsoleRealtimeErrorMessage(error, subscriptionErrorMessage),
+          loading: false,
+        }));
+        return "retry";
+      },
+    });
     const startConnection = () => {
       if (canceled || hubConnection.state !== HubConnectionState.Disconnected) {
         return;
@@ -728,18 +735,7 @@ export function useConsoleRealtimeEventStream<TMessage extends ConsoleRealtimeEv
       });
       void hubConnection
         .start()
-        .then(() => invokeWatch())
-        .then(() => {
-          if (!canceled) {
-            updateStats("connected");
-            setState((current) => ({
-              ...current,
-              connectionState: "connected",
-              error: undefined,
-              loading: false,
-            }));
-          }
-        })
+        .then(() => watchRetrier.run())
         .catch((error) => {
           if (!canceled) {
             scheduleRestart(error);
@@ -796,17 +792,7 @@ export function useConsoleRealtimeEventStream<TMessage extends ConsoleRealtimeEv
           connectionState: "connected",
         }));
       }
-      void invokeWatch().catch((error) => {
-        if (!canceled && !isExpectedConsoleRealtimeDisconnect(error)) {
-          updateStats("error");
-          setState((current) => ({
-            ...current,
-            connectionState: "error",
-            error: getConsoleRealtimeErrorMessage(error, subscriptionErrorMessage),
-            loading: false,
-          }));
-        }
-      });
+      void watchRetrier.run();
     });
     hubConnection.onclose((error) => {
       if (!canceled) {
@@ -821,6 +807,7 @@ export function useConsoleRealtimeEventStream<TMessage extends ConsoleRealtimeEv
       if (retryTimer) {
         clearTimeout(retryTimer);
       }
+      watchRetrier.clear();
       deleteConsoleRealtimeStatsEntry(statsEntryId);
       if (unwatchMethod && hubConnection.state === HubConnectionState.Connected) {
         void hubConnection
@@ -949,7 +936,9 @@ function recomputeConsoleRealtimeStatsSnapshot(): ConsoleRealtimeStatsSnapshot {
       left.id.localeCompare(right.id)
     );
 
-  const physicalConnectionCount = connections.length;
+  const physicalConnectionCount = new Set(
+    connections.map((connection) => `${connection.kind}:${connection.connectionKey}`)
+  ).size;
   const onHandlerCount = connections.reduce((sum, connection) => sum + connection.onHandlerCount, 0);
   const lifecycleHandlerCount = connections.reduce(
     (sum, connection) => sum + connection.lifecycleHandlerCount,
@@ -1107,6 +1096,80 @@ function emitConsoleRealtimeEventCaptureChange() {
   for (const listener of consoleRealtimeEventCaptureListeners) {
     listener();
   }
+}
+
+function createConsoleRealtimeWatchRetrier({
+  invokeWatch,
+  isCanceled,
+  isConnected,
+  onBeforeAttempt,
+  onFailure,
+  onSuccess,
+}: {
+  invokeWatch: () => Promise<unknown>;
+  isCanceled: () => boolean;
+  isConnected: () => boolean;
+  onBeforeAttempt?: () => void;
+  onFailure: (error: unknown) => ConsoleRealtimeWatchRetryDisposition | void;
+  onSuccess?: () => void;
+}) {
+  let inFlight = false;
+  let retryTimer: ReturnType<typeof setTimeout> | null = null;
+
+  const clear = () => {
+    if (retryTimer) {
+      clearTimeout(retryTimer);
+      retryTimer = null;
+    }
+  };
+
+  const run = async () => {
+    if (isCanceled()) {
+      return;
+    }
+
+    clear();
+    if (inFlight) {
+      return;
+    }
+
+    inFlight = true;
+    onBeforeAttempt?.();
+
+    try {
+      await invokeWatch();
+      if (!isCanceled()) {
+        onSuccess?.();
+      }
+    } catch (error) {
+      if (isCanceled()) {
+        return;
+      }
+
+      const disposition = onFailure(error) ?? "retry";
+      if (disposition !== "retry" || !isConnected()) {
+        return;
+      }
+
+      if (!retryTimer) {
+        retryTimer = setTimeout(() => {
+          retryTimer = null;
+          if (isCanceled() || !isConnected()) {
+            return;
+          }
+
+          void run();
+        }, consoleRealtimeFallbackRestartDelayMs);
+      }
+    } finally {
+      inFlight = false;
+    }
+  };
+
+  return {
+    clear,
+    run,
+  };
 }
 
 function getConsoleRealtimeErrorMessage(error: unknown, fallback: string) {

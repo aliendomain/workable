@@ -7,39 +7,9 @@ public sealed class WorkableRealtimeHub(
     IWorkRequestContextFactory requestContexts,
     WorkableViewQueryAdapter views,
     WorkableRealtimeEventSubscriptions eventSubscriptions,
-    WorkableRealtimeViewSubscriptions viewSubscriptions) : Hub
+    WorkableRealtimeViewSubscriptions viewSubscriptions,
+    WorkableRealtimeWorkerOverviewSubscriptions workerOverviewSubscriptions) : Hub
 {
-    public async Task WatchWorker(string workerId, string? systemName = null)
-    {
-        var system = ResolveSystem(systemName);
-        try
-        {
-            var authorization = CreateAuthorization(system, out _);
-            await eventSubscriptions.WatchWorker(
-                this.Context.ConnectionId,
-                this.Groups,
-                system,
-                ParseWorkerId(workerId),
-                authorization,
-                this.Context.ConnectionAborted);
-        }
-        catch (OperationCanceledException) when (this.Context.ConnectionAborted.IsCancellationRequested)
-        {
-            // The client disconnected while the event pump was starting.
-        }
-    }
-
-    public async Task UnwatchWorker(string workerId, string? systemName = null)
-    {
-        var system = ResolveSystem(systemName);
-        await eventSubscriptions.UnwatchWorker(
-            this.Context.ConnectionId,
-            this.Groups,
-            system,
-            ParseWorkerId(workerId),
-            this.Context.ConnectionAborted);
-    }
-
     public async Task WatchView(
         string subscriptionId,
         string viewName,
@@ -94,23 +64,57 @@ public sealed class WorkableRealtimeHub(
             this.Context.ConnectionAborted);
     }
 
-    public async Task WatchSystem(string? systemName = null)
+    public async Task WatchWorkerOverview(
+        string subscriptionId,
+        string workerId,
+        WorkWorkerOverviewRealtimeCriteria? criteria = null,
+        string? systemName = null)
     {
         var system = ResolveSystem(systemName);
+        WorkableRealtimeWorkerOverviewSubscription? subscription = null;
         try
         {
-            var authorization = CreateAuthorization(system, out _);
-            await eventSubscriptions.WatchSystem(
+            var authorization = CreateAuthorization(system, out var session);
+            subscription = await workerOverviewSubscriptions.Watch(
                 this.Context.ConnectionId,
                 this.Groups,
                 system,
+                subscriptionId,
+                ParseWorkerId(workerId),
+                views.NormalizeWorkerOverviewRealtimeCriteria(criteria),
                 authorization,
                 this.Context.ConnectionAborted);
+            await SendWorkerOverview(subscription, session, this.Clients.Caller);
         }
         catch (OperationCanceledException) when (this.Context.ConnectionAborted.IsCancellationRequested)
         {
-            // The client disconnected while the event pump was starting.
+            // The client disconnected while the worker overview stream was starting.
         }
+        catch
+        {
+            if (subscription is not null)
+            {
+                await workerOverviewSubscriptions.Unwatch(
+                    this.Context.ConnectionId,
+                    this.Groups,
+                    system,
+                    subscription.SubscriptionId,
+                    CancellationToken.None);
+            }
+
+            throw;
+        }
+    }
+
+    public Task UnwatchWorkerOverview(string subscriptionId, string? systemName = null)
+    {
+        var system = ResolveSystem(systemName);
+        return workerOverviewSubscriptions.Unwatch(
+            this.Context.ConnectionId,
+            this.Groups,
+            system,
+            subscriptionId,
+            this.Context.ConnectionAborted);
     }
 
     public async Task WatchEvents(
@@ -148,20 +152,11 @@ public sealed class WorkableRealtimeHub(
             this.Context.ConnectionAborted);
     }
 
-    public async Task UnwatchSystem(string? systemName = null)
-    {
-        var system = ResolveSystem(systemName);
-        await eventSubscriptions.UnwatchSystem(
-            this.Context.ConnectionId,
-            this.Groups,
-            system,
-            this.Context.ConnectionAborted);
-    }
-
     public override async Task OnDisconnectedAsync(Exception? exception)
     {
         await eventSubscriptions.RemoveConnection(this.Context.ConnectionId, this.Groups, this.Context.ConnectionAborted);
         await viewSubscriptions.RemoveConnection(this.Context.ConnectionId, this.Groups, this.Context.ConnectionAborted);
+        await workerOverviewSubscriptions.RemoveConnection(this.Context.ConnectionId, this.Groups, this.Context.ConnectionAborted);
         await base.OnDisconnectedAsync(exception);
     }
 
@@ -181,6 +176,30 @@ public sealed class WorkableRealtimeHub(
                 subscription.SubscriptionId,
                 subscription.ViewName,
                 result),
+            this.Context.ConnectionAborted);
+    }
+
+    private async Task SendWorkerOverview(
+        WorkableRealtimeWorkerOverviewSubscription subscription,
+        IWorkSystemSession session,
+        IClientProxy client)
+    {
+        var result = await views.WorkerOverviewRealtimeState(
+            session,
+            subscription.WorkerId,
+            subscription.Criteria,
+            cancellationToken: this.Context.ConnectionAborted);
+        if (result is null)
+        {
+            return;
+        }
+
+        await client.SendAsync(
+            WorkableRealtimeClientMethods.WorkerOverviewUpdated,
+            new WorkableRealtimeViewEnvelope<WorkWorkerOverviewRealtimeUpdate>(
+                subscription.SubscriptionId,
+                "worker-overview",
+                WorkableRealtimeWorkerOverviewUpdateFactory.CreateInitial(result)),
             this.Context.ConnectionAborted);
     }
 

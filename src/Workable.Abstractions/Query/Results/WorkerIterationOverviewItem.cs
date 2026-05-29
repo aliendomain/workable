@@ -13,4 +13,7 @@ public sealed record WorkerIterationOverviewItem(
     TimeSpan ExecutionDuration,
     WorkSubjectId? SubjectId,
     WorkConcurrencyKey? ConcurrencyKey,
-    IReadOnlyCollection<WorkIdentifier> Identifiers);
+    IReadOnlyCollection<WorkIdentifier> Identifiers)
+{
+    public bool IsFinal => this.Status.IsFinal();
+}

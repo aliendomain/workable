@@ -994,6 +994,7 @@ export function ConsoleNavigationHeader({
   definitionId,
   definitionName,
   host,
+  iterationSequence,
   onBack,
   onForward,
   onOpenView,
@@ -1011,6 +1012,7 @@ export function ConsoleNavigationHeader({
   definitionId: string | null;
   definitionName: string | null;
   host: WorkableHostConnection;
+  iterationSequence: number | null;
   onBack: () => void;
   onForward: () => void;
   onOpenView: (view: View, systemId?: string, trackHistory?: boolean) => void;
@@ -1024,6 +1026,8 @@ export function ConsoleNavigationHeader({
   const currentLabel =
     view === "definition" && definitionId
       ? definitionName ?? definitionId
+      : view === "iteration" && iterationSequence !== null
+        ? `#${iterationSequence}`
       : view === "worker" && workerId
         ? workerId
         : navTitle(view);
@@ -1434,6 +1438,9 @@ function StackedSkeleton({ count }: { count: number }) {
 function navTitle(view: View) {
   if (view === "worker") {
     return "Worker Console";
+  }
+  if (view === "iteration") {
+    return "Iteration";
   }
   if (view === "definition") {
     return "Definition";

@@ -113,8 +113,12 @@ public sealed class WorkQueryServiceTests
             ?? throw new InvalidOperationException("Expected completed worker.");
 
         Assert.Equal(1, running.CurrentIterationSequence);
+        Assert.NotNull(running.CurrentIteration);
+        Assert.Equal(1, running.CurrentIteration?.Sequence);
+        Assert.Equal(WorkCompletionStatus.Executing, running.CurrentIteration?.Status);
         Assert.Null(running.LastIterationSequence);
         Assert.Null(completed.CurrentIterationSequence);
+        Assert.Null(completed.CurrentIteration);
         Assert.Equal(1, completed.LastIterationSequence);
         Assert.Equal(1, completed.LastIteration?.Sequence);
     }

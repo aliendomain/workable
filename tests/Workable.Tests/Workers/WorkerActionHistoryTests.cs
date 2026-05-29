@@ -70,6 +70,44 @@ public sealed class WorkerActionHistoryTests
         Assert.Same(changes, history.Reconfiguration);
     }
 
+    [Fact]
+    public async Task ActionHistoryIsForgottenWhenAssociatedIterationFallsOutOfRetention()
+    {
+        var definition = WorkDefinition.Create(
+            "history.retention",
+            configuration: WorkConfiguration.Default with
+            {
+                Recurrence = WorkRecurrenceConfiguration.Every(TimeSpan.FromMilliseconds(20)) with
+                {
+                    RetainedIterations = 1,
+                },
+            });
+        await using var system = CreateSystem(definition, SuccessfulWork);
+        await system.Start();
+
+        var handle = await system.Queue.Enqueue("history.retention");
+        var workerId = RequiredWorkerId(handle);
+
+        await Eventually(async () =>
+        {
+            var current = await system.Query.Worker(workerId);
+            return current is { State: WorkerState.Waiting, LastIterationSequence: >= 1 };
+        });
+
+        var worker = await system.Query.Worker(workerId)
+            ?? throw new InvalidOperationException("Expected worker.");
+        var changes = new WorkerReconfiguration(ProfilingEnabled: true);
+        var outcome = await system.Workers.Reconfigure(worker.Version, changes);
+
+        Assert.True(outcome.IsAccepted);
+
+        await Eventually(async () =>
+        {
+            var current = await system.Query.Worker(workerId);
+            return current is { LastIterationSequence: >= 2 } && current.ActionHistory.Count == 0;
+        });
+    }
+
     private static IWorkSystem CreateSystem(
         WorkDefinition definition,
         Func<IWorkExecutionContext, WorkInput?, CancellationToken, Task<WorkExecutionResult>> execute)
@@ -93,5 +131,21 @@ public sealed class WorkerActionHistoryTests
         var hasEvent = await reader.MoveNextAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(5));
         Assert.True(hasEvent);
         return reader.Current;
+    }
+
+    private static async Task Eventually(Func<Task<bool>> condition)
+    {
+        var timeoutAt = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(5);
+        while (DateTimeOffset.UtcNow < timeoutAt)
+        {
+            if (await condition())
+            {
+                return;
+            }
+
+            await Task.Delay(25);
+        }
+
+        Assert.True(await condition(), "Condition was not satisfied before the timeout.");
     }
 }

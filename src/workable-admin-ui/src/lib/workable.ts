@@ -228,6 +228,7 @@ export type WorkerSummary = {
   concurrencyKey?: WorkTypedValue | null;
   identifiers?: WorkTypedValue[];
   state: WorkerState;
+  isFinal: boolean;
   createdAt: string;
   stateChangedAt?: string;
   nextRunAt?: string | null;
@@ -246,6 +247,7 @@ export type WorkerOverviewItem = {
   revision: number;
   category?: string | null;
   state: WorkerState;
+  isFinal: boolean;
   createdAt: string;
   stateChangedAt?: string;
   updatedAt: string;
@@ -272,6 +274,7 @@ export type WorkViewWorkerGridDetailed = WorkOverviewFailedWorkerStandard & {
   subjectId?: WorkTypedValue | null;
   identifiers?: WorkTypedValue[];
   state: WorkerState;
+  isFinal: boolean;
 };
 
 export type WorkOverviewFailedWorker =
@@ -302,6 +305,11 @@ export type WorkerVersion = {
 export type WorkerOptions = {
   profilingEnabled?: boolean;
   configuration?: WorkConfiguration | null;
+};
+
+export type WorkableHttpWorkerConfiguration = {
+  profilingEnabled: boolean;
+  configuration: WorkConfiguration;
 };
 
 export type WorkConfiguration = {
@@ -385,6 +393,7 @@ export type WorkData = {
 };
 
 export type WorkerLogEntry = {
+  id: string;
   occurredAt: string;
   workerId?: { value: string } | null;
   definitionId?: { value: string } | null;
@@ -419,9 +428,183 @@ export type WorkerIterationSnapshot = {
   executionDuration?: string;
   occurredAt: string;
   status: WorkCompletionStatus;
+  isFinal: boolean;
   output?: WorkData | null;
   messages?: WorkMessage[];
   logs?: WorkerLogEntry[];
+};
+
+export type WorkWorkerOverviewActivity = "Auto" | "Logs" | "Timeline";
+export type WorkWorkerOverviewSortDirection = "Asc" | "Desc";
+
+export type WorkWorkerOverviewOrigin = {
+  channel: string;
+  actorId?: string | null;
+  actorName?: string | null;
+  actorEmail?: string | null;
+};
+
+export type WorkWorkerOverviewFailureKind = "Failure" | "Exception";
+export type WorkWorkerOverviewPendingStateMode = "Recurrence" | "Retry";
+
+export type WorkWorkerOverviewPendingState = {
+  mode: WorkWorkerOverviewPendingStateMode;
+  nextRunAt?: string | null;
+  stateChangedAt: string;
+  updatedAt: string;
+  retryAttempt?: number | null;
+};
+
+export type WorkWorkerOverviewFailure = {
+  kind: WorkWorkerOverviewFailureKind;
+  message: string;
+  code?: string | null;
+  target?: string | null;
+  exceptionType?: string | null;
+  stackTrace?: string | null;
+  declaredByWork: boolean;
+  pendingState?: WorkWorkerOverviewPendingState | null;
+};
+
+export type WorkWorkerOverviewLatestIteration = {
+  workerId: { value: string };
+  sequence: number;
+  status: WorkCompletionStatus;
+  startedAt: string;
+  completedAt?: string | null;
+  executionDuration?: string | null;
+  attemptCount: number;
+  output?: WorkData | null;
+  failure?: WorkWorkerOverviewFailure | null;
+};
+
+export type WorkWorkerOverviewRecentIteration = {
+  workerId: { value: string };
+  sequence: number;
+  status: WorkCompletionStatus;
+  startedAt: string;
+  completedAt?: string | null;
+  attemptCount: number;
+  executionDuration?: string | null;
+};
+
+export type WorkWorkerOverviewWorker = {
+  workerId: { value: string };
+  revision: number;
+  stateSequence: number;
+  state: WorkerState;
+  isFinal: boolean;
+  createdAt: string;
+  stateChangedAt: string;
+  updatedAt: string;
+  nextRunAt?: string | null;
+  retryAttempt?: number | null;
+  createdOrigin: WorkWorkerOverviewOrigin;
+  definitionId: { value: string };
+  definitionName: string;
+  definitionCategory: string;
+  configDifferenceCount: number;
+};
+
+export type WorkWorkerOverviewLogSummary = {
+  total: number;
+  critical: number;
+  error: number;
+  errors: number;
+  warning: number;
+  warnings: number;
+  information: number;
+  debug: number;
+  trace: number;
+};
+
+export type WorkWorkerOverviewLogEntry = {
+  id: string;
+  occurredAt: string;
+  level: string;
+  category: string;
+  message: string;
+  eventId: number;
+  eventName?: string | null;
+  exceptionType?: string | null;
+  exceptionMessage?: string | null;
+};
+
+export type WorkWorkerOverviewTimelineItemKind = "ActionRequest" | "StateChange" | "Iteration";
+export type WorkWorkerOverviewTimelineCategory = "UserAction" | "SystemEvent" | "Failure";
+
+export type WorkWorkerOverviewTimelineItem = {
+  id: string;
+  at: string;
+  kind: WorkWorkerOverviewTimelineItemKind;
+  category: WorkWorkerOverviewTimelineCategory;
+  actionHistoryKind?: string | null;
+  action?: WorkAction | null;
+  actionStatus?: string | null;
+  state?: WorkerState | null;
+  sequence?: number | null;
+  iterationStatus?: WorkCompletionStatus | null;
+  attemptCount?: number | null;
+  executionDuration?: string | null;
+  origin?: WorkWorkerOverviewOrigin | null;
+  failure?: WorkWorkerOverviewFailure | null;
+  pendingState?: WorkWorkerOverviewPendingState | null;
+};
+
+export type WorkWorkerOverviewTimelineSummary = {
+  total: number;
+  userActionCount: number;
+  systemEventCount: number;
+  failureCount: number;
+};
+
+export type WorkWorkerOverviewPage<T> = {
+  items: T[];
+  hasMore: boolean;
+  cursor?: string | null;
+};
+
+export type WorkWorkerOverviewLogSection = {
+  summary: WorkWorkerOverviewLogSummary;
+  page?: WorkWorkerOverviewPage<WorkWorkerOverviewLogEntry> | null;
+};
+
+export type WorkWorkerOverviewTimelineSection = {
+  summary: WorkWorkerOverviewTimelineSummary;
+  page?: WorkWorkerOverviewPage<WorkWorkerOverviewTimelineItem> | null;
+};
+
+export type WorkWorkerOverviewComponent = {
+  activity: WorkWorkerOverviewActivity;
+  worker: WorkWorkerOverviewWorker;
+  input?: WorkData | null;
+  latestIteration?: WorkWorkerOverviewLatestIteration | null;
+  recentIterations: WorkWorkerOverviewRecentIteration[];
+  logs: WorkWorkerOverviewLogSection;
+  timeline: WorkWorkerOverviewTimelineSection;
+};
+
+export type WorkWorkerOverviewRealtimeCriteria = {
+  workerControls?: WorkComponentShape;
+  workerLogs?: WorkComponentShape;
+  workerDuration?: WorkComponentShape;
+  workerTimeline?: WorkComponentShape;
+  logSortDirection?: WorkWorkerOverviewSortDirection;
+  logLevels?: string[] | null;
+  logIterationSequence?: number | null;
+  timelineSortDirection?: WorkWorkerOverviewSortDirection;
+  timelineCategories?: WorkWorkerOverviewTimelineCategory[] | null;
+};
+
+export type WorkWorkerOverviewRealtimeUpdate = {
+  generatedAt: string;
+  worker?: WorkWorkerOverviewWorker | null;
+  latestIteration?: WorkWorkerOverviewLatestIteration | null;
+  logSummary?: WorkWorkerOverviewLogSummary | null;
+  logEntries?: WorkWorkerOverviewLogEntry[] | null;
+  recentIterations?: WorkWorkerOverviewRecentIteration[] | null;
+  timelineSummary?: WorkWorkerOverviewTimelineSummary | null;
+  timelineItems?: WorkWorkerOverviewTimelineItem[] | null;
 };
 
 export type WorkerIterationOverviewItem = {
@@ -432,6 +615,7 @@ export type WorkerIterationOverviewItem = {
   category?: string | null;
   workerState: WorkerState;
   status: WorkCompletionStatus;
+  isFinal: boolean;
   startedAt: string;
   completedAt: string;
   executionDuration: string;
@@ -456,6 +640,7 @@ export type WorkOverviewIterationDetailed = WorkOverviewIterationStandard & {
 
 export type WorkViewIterationGridDetailed = WorkOverviewIterationDetailed & {
   status: WorkCompletionStatus;
+  isFinal: boolean;
 };
 
 export type WorkOverviewIteration =
@@ -1140,3 +1325,4 @@ function createScopedWorkablePath(connection: WorkableConnection, path: string) 
 
   return `systems/${encodeURIComponent(systemName)}/${normalizedPath}`;
 }
+

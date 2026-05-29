@@ -385,6 +385,14 @@ public sealed class DemoWorkloadController(
                     Subject: new WorkSubjectId("demo-recurring", "iteration-lab"),
                     Identifier: new WorkIdentifier("sample-workload", "iteration-lab")),
                 cancellationToken);
+
+            await this.QueueDefault(
+                "sample.demo.message-flood",
+                new DemoRecurringMessageFloodInput(),
+                new DemoRelationshipKeys(
+                    Subject: new WorkSubjectId("demo-recurring", "message-flood"),
+                    Identifier: new WorkIdentifier("sample-workload", "message-flood")),
+                cancellationToken);
         }
 
         if (systems.Fulfillment)

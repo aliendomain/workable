@@ -14,7 +14,7 @@ public sealed record WorkExecutionResult<TOutput>(
         TOutput? output = default)
         => new(output, [.. messages]);
 
-    public bool HasErrors => this.Messages.Any(message => message.Severity == WorkMessageSeverity.Error);
+    public bool HasErrors => this.Messages.Any(message => message.Severity.IsError());
 
     WorkExecutionResult IUntypedWorkExecutionResult.ToUntyped()
         => new(

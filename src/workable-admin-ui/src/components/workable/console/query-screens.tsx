@@ -11,11 +11,15 @@ import {
   SquareArrowOutUpRight,
   Trash2,
 } from "lucide-react";
-import type { MutableRefObject, ReactNode, RefObject } from "react";
+import type { MutableRefObject, ReactNode } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ConsolePageLayout } from "@/components/features/console/console-primitives";
 import { PanelAggregateFrame } from "@/components/features/console/panel-aggregate-frame";
-import { PanelShell, type PanelFilterControl } from "@/components/features/console/panel-shell";
+import {
+  PanelScrollViewport,
+  PanelShell,
+  type PanelFilterControl,
+} from "@/components/features/console/panel-shell";
 import type { PanelVisibilityOption } from "@/components/features/console/panel-visibility-settings";
 import type { OverviewScope } from "@/components/features/console/types";
 import { Badge } from "@/components/ui/badge";
@@ -407,6 +411,10 @@ export function IterationsView({
   );
   const [hiddenPanelIds, setHiddenPanelIds] = useState<ReadonlySet<"iterations">>(() => new Set());
   const openIterationRow = useCallback((iteration: WorkViewIterationGridDetailed) => {
+    if (!iteration.isFinal) {
+      return;
+    }
+
     setSelectedIterationRowKey(getIterationRowKey(iteration));
     setSelectedIterationResetKey(selectionScopeKey);
     onOpenIteration(iteration.workerId.value, iteration.sequence);
@@ -630,7 +638,6 @@ function VirtualWorkerTable({
 }) {
   const detailed = shape === "detailed";
   const scrollRef = useRef<HTMLDivElement>(null);
-  const loadMoreSentinelRef = useRef<HTMLDivElement>(null);
   const lastScrollResetKeyRef = useRef(scrollResetKey);
   const relativeNow = useLiveRelativeTimeNow();
   // eslint-disable-next-line react-hooks/incompatible-library -- TanStack Virtual owns scroll measurement state.
@@ -645,15 +652,6 @@ function VirtualWorkerTable({
   const hasHighlightedWorker = highlightedWorkerId
     ? workers.some((worker) => worker.id.value === highlightedWorkerId)
     : false;
-  const maybeLoadMoreWorkers = useCallback((element: HTMLElement | null) => {
-    if (!element || !hasMore || loading || loadingMore) {
-      return;
-    }
-
-    if (isNearScrollBottom(element)) {
-      loadMore();
-    }
-  }, [hasMore, loadMore, loading, loadingMore]);
 
   useEffect(() => {
     if (scrollMemory.current > 0) {
@@ -672,18 +670,6 @@ function VirtualWorkerTable({
       scrollRef.current?.scrollTo({ top: 0 });
     }
   }, [loading, loadingMore, onScrollPositionChange, scrollResetKey]);
-
-  useEffect(() => {
-    maybeLoadMoreWorkers(scrollRef.current);
-  }, [maybeLoadMoreWorkers, workers.length]);
-  useLoadMoreSentinel(
-    scrollRef,
-    loadMoreSentinelRef,
-    hasMore,
-    loading,
-    loadingMore,
-    loadMore
-  );
 
   if (loading && workers.length === 0) {
     if (workers.length === 0 && totalCount === 0) {
@@ -710,13 +696,18 @@ function VirtualWorkerTable({
           <div className="flex h-12 w-12 items-center px-3" />
         </div>
       </div>
-      <div
-        className="workable-grid-scrollbar min-h-0 flex-1 overflow-auto"
+      <PanelScrollViewport
+        className="workable-grid-scrollbar"
+        hasMore={hasMore}
+        loadedCount={workers.length}
+        loading={loading}
+        loadingMore={loadingMore}
+        noun="worker"
+        onLoadMore={loadMore}
         onScroll={(event) => {
           onScrollPositionChange(event.currentTarget.scrollTop);
-          maybeLoadMoreWorkers(event.currentTarget);
         }}
-        ref={scrollRef}
+        viewportRef={scrollRef}
       >
         <Table className="grid">
           <TableBody
@@ -804,14 +795,7 @@ function VirtualWorkerTable({
             })}
           </TableBody>
         </Table>
-        <InfiniteGridFooter
-          hasMore={hasMore}
-          loading={loading}
-          loadingMore={loadingMore}
-          loadedCount={workers.length}
-          sentinelRef={loadMoreSentinelRef}
-        />
-      </div>
+      </PanelScrollViewport>
     </div>
   );
 }
@@ -977,7 +961,6 @@ function VirtualIterationTable({
 }) {
   const detailed = shape === "detailed";
   const scrollRef = useRef<HTMLDivElement>(null);
-  const loadMoreSentinelRef = useRef<HTMLDivElement>(null);
   const lastScrollResetKeyRef = useRef(scrollResetKey);
   const relativeNow = useLiveRelativeTimeNow();
   // eslint-disable-next-line react-hooks/incompatible-library -- TanStack Virtual owns scroll measurement state.
@@ -992,15 +975,6 @@ function VirtualIterationTable({
     overscan: 10,
   });
   const virtualItems = rowVirtualizer.getVirtualItems();
-  const maybeLoadMoreIterations = useCallback((element: HTMLElement | null) => {
-    if (!element || !hasMore || loading || loadingMore) {
-      return;
-    }
-
-    if (isNearScrollBottom(element)) {
-      loadMore();
-    }
-  }, [hasMore, loadMore, loading, loadingMore]);
 
   useEffect(() => {
     if (scrollMemory.current > 0) {
@@ -1019,18 +993,6 @@ function VirtualIterationTable({
       scrollRef.current?.scrollTo({ top: 0 });
     }
   }, [loading, loadingMore, onScrollPositionChange, scrollResetKey]);
-
-  useEffect(() => {
-    maybeLoadMoreIterations(scrollRef.current);
-  }, [iterations.length, maybeLoadMoreIterations]);
-  useLoadMoreSentinel(
-    scrollRef,
-    loadMoreSentinelRef,
-    hasMore,
-    loading,
-    loadingMore,
-    loadMore
-  );
 
   if (loading && iterations.length === 0) {
     if (iterations.length === 0 && totalCount === 0) {
@@ -1057,13 +1019,18 @@ function VirtualIterationTable({
           <div className="flex h-12 w-28 items-center px-3 font-medium text-sm">Duration</div>
         </div>
       </div>
-      <div
-        className="workable-grid-scrollbar min-h-0 flex-1 overflow-auto"
+      <PanelScrollViewport
+        className="workable-grid-scrollbar"
+        hasMore={hasMore}
+        loadedCount={iterations.length}
+        loading={loading}
+        loadingMore={loadingMore}
+        noun="iteration"
+        onLoadMore={loadMore}
         onScroll={(event) => {
           onScrollPositionChange(event.currentTarget.scrollTop);
-          maybeLoadMoreIterations(event.currentTarget);
         }}
-        ref={scrollRef}
+        viewportRef={scrollRef}
       >
         <Table className="grid">
           <TableBody
@@ -1076,23 +1043,33 @@ function VirtualIterationTable({
                 return null;
               }
               const iterationKey = getIterationRowKey(iteration);
+              const isOpenable = iteration.isFinal;
               const isHighlighted = highlightedIterationKey
                 ? iterationKey === highlightedIterationKey
                 : iteration.workerId.value === highlightedWorkerId;
 
               return (
                 <TableRow
-                  className={`absolute flex h-16 w-full cursor-pointer overflow-hidden ${
+                  className={`absolute flex h-16 w-full overflow-hidden ${
+                    isOpenable ? "cursor-pointer" : "cursor-default"
+                  } ${
                     isHighlighted
                       ? "bg-sky-500/10 ring-1 ring-inset ring-sky-500/40"
                       : ""
                   }`}
                   data-index={virtualRow.index}
                   key={virtualRow.key}
-                  onClick={() => onSelect(iteration)}
+                  onClick={() => {
+                    if (isOpenable) {
+                      onSelect(iteration);
+                    }
+                  }}
                   style={{
                     transform: `translateY(${virtualRow.start}px)`,
                   }}
+                  title={isOpenable
+                    ? `Open iteration #${iteration.sequence}`
+                    : "Iteration detail is only available after the iteration reaches a final state."}
                 >
                   <TableCell className="min-w-0 flex-[2_2_22rem] overflow-hidden">
                     <div className="font-mono text-xs">{iteration.definitionName}</div>
@@ -1131,14 +1108,7 @@ function VirtualIterationTable({
             })}
           </TableBody>
         </Table>
-        <InfiniteGridFooter
-          hasMore={hasMore}
-          loading={loading}
-          loadingMore={loadingMore}
-          loadedCount={iterations.length}
-          sentinelRef={loadMoreSentinelRef}
-        />
-      </div>
+      </PanelScrollViewport>
     </div>
   );
 }
@@ -1159,73 +1129,6 @@ function QueryResultTotal({
       {totalCount.toLocaleString()} {noun}{totalCount === 1 ? "" : "s"}
     </div>
   );
-}
-
-function InfiniteGridFooter({
-  hasMore,
-  loadedCount,
-  loading,
-  loadingMore,
-  sentinelRef,
-}: {
-  hasMore: boolean;
-  loadedCount: number;
-  loading: boolean;
-  loadingMore: boolean;
-  sentinelRef: RefObject<HTMLDivElement | null>;
-}) {
-  return (
-    <div
-      className="flex h-12 items-center justify-center border-t text-muted-foreground text-xs"
-      ref={sentinelRef}
-    >
-      {loadingMore ? (
-        <span>Loading more...</span>
-      ) : loading ? (
-        <span>Refreshing...</span>
-      ) : hasMore ? (
-        <span>Scroll to load more</span>
-      ) : (
-        <span>Showing {loadedCount.toLocaleString()}</span>
-      )}
-    </div>
-  );
-}
-
-function useLoadMoreSentinel(
-  scrollRef: RefObject<HTMLElement | null>,
-  sentinelRef: RefObject<HTMLElement | null>,
-  hasMore: boolean,
-  loading: boolean,
-  loadingMore: boolean,
-  loadMore: () => void
-) {
-  useEffect(() => {
-    const root = scrollRef.current;
-    const sentinel = sentinelRef.current;
-    if (!root || !sentinel || !hasMore || loading || loadingMore) {
-      return;
-    }
-
-    const observer = new IntersectionObserver(
-      ([entry]) => {
-        if (entry?.isIntersecting) {
-          loadMore();
-        }
-      },
-      {
-        root,
-        rootMargin: "96px 0px",
-      }
-    );
-
-    observer.observe(sentinel);
-    return () => observer.disconnect();
-  }, [hasMore, loadMore, loading, loadingMore, scrollRef, sentinelRef]);
-}
-
-function isNearScrollBottom(element: HTMLElement) {
-  return element.scrollHeight - element.scrollTop - element.clientHeight <= 96;
 }
 
 export function IdentifierSummary({ identifiers }: { identifiers?: WorkTypedValue[] | null }) {

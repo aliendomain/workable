@@ -10,4 +10,5 @@ internal sealed record WorkerEventPayloadDetails(
     bool IncludeLatestIteration = false,
     TimeSpan? RecurrenceInterval = null,
     TimeSpan? RetryDelay = null,
-    WorkerLogEntry? LogEntry = null);
+    WorkerLogEntry? LogEntry = null,
+    bool IncludeRetainedSummaries = true);

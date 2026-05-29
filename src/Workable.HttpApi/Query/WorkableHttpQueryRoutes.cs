@@ -1,6 +1,7 @@
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
+using Microsoft.Extensions.Logging;
 
 namespace Workable;
 
@@ -158,6 +159,64 @@ internal static class WorkableHttpQueryRoutes
             var session = WorkableHttpRequestContext.CreateSession(httpContext, system, requestContexts, "Query a worker through HTTP API.");
             var worker = await queries.Worker(session, new WorkerId(workerId), cancellationToken: cancellationToken);
             return worker is null ? Results.NotFound() : Results.Ok(worker);
+        });
+
+        group.MapGet("/workers/{workerId:guid}/configuration", async (
+            HttpContext httpContext,
+            Guid workerId,
+            WorkableHttpTopologyResolver topology,
+            WorkableHttpQueryAdapter queries,
+            IWorkRequestContextFactory requestContexts,
+            CancellationToken cancellationToken) =>
+        {
+            if (!WorkableHttpRouteResults.TryResolveSystem(httpContext, topology, out var system, out var notFound))
+            {
+                return notFound;
+            }
+
+            var session = WorkableHttpRequestContext.CreateSession(httpContext, system, requestContexts, "Query worker configuration through HTTP API.");
+            var configuration = await queries.WorkerConfiguration(session, new WorkerId(workerId), cancellationToken: cancellationToken);
+            return configuration is null ? Results.NotFound() : Results.Ok(configuration);
+        });
+
+        group.MapGet("/workers/{workerId:guid}/overview", async (
+            HttpContext httpContext,
+            Guid workerId,
+            WorkWorkerOverviewActivity? activity,
+            int? activityTake,
+            string? activityCursor,
+            int? recentIterationTake,
+            WorkWorkerOverviewSortDirection? logSort,
+            string? logLevels,
+            long? logIterationSequence,
+            WorkWorkerOverviewSortDirection? timelineSort,
+            string? timelineCategories,
+            WorkableHttpTopologyResolver topology,
+            WorkableHttpQueryAdapter queries,
+            IWorkRequestContextFactory requestContexts,
+            CancellationToken cancellationToken) =>
+        {
+            if (!WorkableHttpRouteResults.TryResolveSystem(httpContext, topology, out var system, out var notFound))
+            {
+                return notFound;
+            }
+
+            var session = WorkableHttpRequestContext.CreateSession(httpContext, system, requestContexts, "Query a worker overview snapshot through HTTP API.");
+            var landing = await queries.WorkerOverview(
+                session,
+                new WorkerId(workerId),
+                new WorkWorkerOverviewCriteria(
+                    activity ?? WorkWorkerOverviewActivity.Auto,
+                    activityTake ?? 50,
+                    activityCursor,
+                    recentIterationTake ?? 25,
+                    logSort ?? WorkWorkerOverviewSortDirection.Desc,
+                    ParseLogLevels(logLevels),
+                    logIterationSequence,
+                    timelineSort ?? WorkWorkerOverviewSortDirection.Desc,
+                    ParseTimelineCategories(timelineCategories)),
+                cancellationToken: cancellationToken);
+            return landing is null ? Results.NotFound() : Results.Ok(landing);
         });
 
         group.MapGet("/workers/{workerId:guid}/iterations/{sequence:long}", async (
@@ -338,4 +397,38 @@ internal static class WorkableHttpQueryRoutes
                 () => queries.WorkIterationKeyTypes(session, query?.ToWorkIterationKeyTypeCriteria(), cancellationToken: cancellationToken));
         });
     }
+
+    private static IReadOnlyList<LogLevel>? ParseLogLevels(string? value)
+    {
+        var levels = ParseCsvEnum<LogLevel>(value);
+        return levels.Count == 0 ? null : levels;
+    }
+
+    private static IReadOnlyList<WorkWorkerOverviewTimelineCategory>? ParseTimelineCategories(string? value)
+    {
+        var categories = ParseCsvEnum<WorkWorkerOverviewTimelineCategory>(value);
+        return categories.Count == 0 ? null : categories;
+    }
+
+    private static IReadOnlyList<TEnum> ParseCsvEnum<TEnum>(string? value)
+        where TEnum : struct, Enum
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return [];
+        }
+
+        var parsed = new List<TEnum>();
+        foreach (var segment in value.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            if (Enum.TryParse<TEnum>(segment, ignoreCase: true, out var enumValue) &&
+                !parsed.Contains(enumValue))
+            {
+                parsed.Add(enumValue);
+            }
+        }
+
+        return parsed;
+    }
 }
+

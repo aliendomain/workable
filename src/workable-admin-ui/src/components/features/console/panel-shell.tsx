@@ -1,6 +1,7 @@
 "use client";
 
-import type { ReactNode } from "react";
+import type { ReactNode, RefObject, UIEvent } from "react";
+import { useEffect, useRef } from "react";
 import { ListFilter, MoreHorizontal, Rows2, Rows3, Rows4, X, type LucideIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -33,6 +34,7 @@ export type PanelFilterControl = {
   content: ReactNode;
   contentClassName?: string;
   label: string;
+  onOpenChange?: (open: boolean) => void;
 };
 
 export const panelViewStateOptions: readonly PanelShapeOption[] = [
@@ -177,11 +179,166 @@ export function PanelShell({
   );
 }
 
-function PanelFilterButton({ filterControl }: { filterControl: PanelFilterControl }) {
-  const { activeCount, content, contentClassName, label } = filterControl;
+export function PanelScrollViewport({
+  children,
+  className,
+  footerClassName,
+  hasMore,
+  loadedCount,
+  loading,
+  loadingMore,
+  noun,
+  onLoadMore,
+  onScroll,
+  showLoadedCount = true,
+  viewportRef,
+}: {
+  children: ReactNode;
+  className?: string;
+  footerClassName?: string;
+  hasMore: boolean;
+  loadedCount: number;
+  loading: boolean;
+  loadingMore: boolean;
+  noun: string;
+  onLoadMore: () => void;
+  onScroll?: (event: UIEvent<HTMLDivElement>) => void;
+  showLoadedCount?: boolean;
+  viewportRef?: RefObject<HTMLDivElement | null>;
+}) {
+  const internalViewportRef = useRef<HTMLDivElement | null>(null);
+  const sentinelRef = useRef<HTMLDivElement | null>(null);
+  const scrollRef = viewportRef ?? internalViewportRef;
+  const shouldContainOverscroll = hasMore || loading || loadingMore;
+
+  usePanelLoadMoreSentinel(
+    scrollRef,
+    sentinelRef,
+    hasMore,
+    loading,
+    loadingMore,
+    onLoadMore
+  );
 
   return (
-    <Popover>
+    <div
+      className={cn(
+        "workable-grid-scrollbar min-h-0 flex-1 overflow-auto",
+        shouldContainOverscroll ? "overscroll-contain" : "overscroll-auto",
+        className
+      )}
+      onScroll={(event) => {
+        if (
+          hasMore &&
+          !loading &&
+          !loadingMore &&
+          isNearPanelScrollBottom(event.currentTarget)
+        ) {
+          onLoadMore();
+        }
+
+        onScroll?.(event);
+      }}
+      ref={scrollRef}
+    >
+      {children}
+      {(hasMore || loading || loadingMore || showLoadedCount) ? (
+        <PanelInfiniteFooter
+          className={footerClassName}
+          hasMore={hasMore}
+          loadedCount={loadedCount}
+          loading={loading}
+          loadingMore={loadingMore}
+          noun={noun}
+          sentinelRef={sentinelRef}
+          showLoadedCount={showLoadedCount}
+        />
+      ) : null}
+    </div>
+  );
+}
+
+export function PanelInfiniteFooter({
+  className,
+  hasMore,
+  loadedCount,
+  loading,
+  loadingMore,
+  noun,
+  sentinelRef,
+  showLoadedCount = true,
+}: {
+  className?: string;
+  hasMore: boolean;
+  loadedCount: number;
+  loading: boolean;
+  loadingMore: boolean;
+  noun: string;
+  sentinelRef: RefObject<HTMLDivElement | null>;
+  showLoadedCount?: boolean;
+}) {
+  if (!loading && !loadingMore && !hasMore && !showLoadedCount) {
+    return null;
+  }
+
+  return (
+    <div
+      className={cn(
+        "flex h-12 items-center justify-center border-t text-xs text-muted-foreground",
+        className
+      )}
+      ref={sentinelRef}
+    >
+      {loadingMore ? (
+        <span>Loading more...</span>
+      ) : loading ? (
+        <span>Refreshing...</span>
+      ) : hasMore ? (
+        <span>Scroll to load more</span>
+      ) : (
+        <span>Showing {loadedCount.toLocaleString()} {noun}{loadedCount === 1 ? "" : "s"}</span>
+      )}
+    </div>
+  );
+}
+
+export function usePanelLoadMoreSentinel(
+  scrollRef: RefObject<HTMLElement | null>,
+  sentinelRef: RefObject<HTMLElement | null>,
+  hasMore: boolean,
+  loading: boolean,
+  loadingMore: boolean,
+  loadMore: () => void
+) {
+  useEffect(() => {
+    const root = scrollRef.current;
+    const sentinel = sentinelRef.current;
+    if (!root || !sentinel || !hasMore || loading || loadingMore) {
+      return;
+    }
+
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        if (entry?.isIntersecting) {
+          loadMore();
+        }
+      },
+      {
+        root,
+        rootMargin: "96px 0px",
+      }
+    );
+
+    observer.observe(sentinel);
+    return () => observer.disconnect();
+  }, [hasMore, loadMore, loading, loadingMore, scrollRef, sentinelRef]);
+}
+
+function PanelFilterButton({ filterControl }: { filterControl: PanelFilterControl }) {
+  const { activeCount, content, contentClassName, label, onOpenChange } = filterControl;
+
+  return (
+    <Popover onOpenChange={onOpenChange}>
       <Tooltip delayDuration={500} disableHoverableContent>
         <TooltipTrigger asChild>
           <PopoverTrigger asChild>
@@ -359,4 +516,8 @@ function getNormalizedPanelViewStates(supportedViewStates: readonly PanelViewSta
   }
 
   return ["compact", ...supportedViewStates] as const;
+}
+
+function isNearPanelScrollBottom(element: HTMLElement) {
+  return element.scrollHeight - element.scrollTop - element.clientHeight <= 96;
 }
