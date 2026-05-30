@@ -1650,6 +1650,19 @@ public sealed class WorkableHttpApiTests
     }
 
     [Fact]
+    public async Task DebugRealtimeEndpointIsNotRegisteredWhenConfiguredUrlsMixLoopbackAndNonLoopbackHosts()
+    {
+        using var host = await CreateHttpHost(
+            authenticated: false,
+            configuredUrls: "http://localhost:5050;http://0.0.0.0:5051");
+        var client = host.GetTestClient();
+
+        using var response = await client.GetAsync("/workable/debug/realtime");
+
+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+    }
+
+    [Fact]
     public async Task MappedHttpReconfigureEventUsesHttpOrigin()
     {
         using var host = await CreateHttpHost();
@@ -2178,7 +2191,8 @@ public sealed class WorkableHttpApiTests
     private static Task<IHost> CreateHttpHost(
         bool authenticated = true,
         IEnumerable<string>? groups = null,
-        bool development = false)
+        bool development = false,
+        string? configuredUrls = null)
         => CreateHttpHost(
             builder =>
             {
@@ -2193,13 +2207,15 @@ public sealed class WorkableHttpApiTests
             },
             authenticated,
             groups,
-            development);
+            development,
+            configuredUrls);
 
     private static async Task<IHost> CreateHttpHost(
         Action<IWorkSystemBuilder> configure,
         bool authenticated = true,
         IEnumerable<string>? groups = null,
-        bool development = false)
+        bool development = false,
+        string? configuredUrls = null)
     {
         var host = new HostBuilder()
             .ConfigureWebHost(web =>
@@ -2207,6 +2223,11 @@ public sealed class WorkableHttpApiTests
                 if (development)
                 {
                     web.UseEnvironment(Environments.Development);
+                }
+
+                if (!string.IsNullOrWhiteSpace(configuredUrls))
+                {
+                    web.UseSetting(WebHostDefaults.ServerUrlsKey, configuredUrls);
                 }
 
                 web.UseTestServer();

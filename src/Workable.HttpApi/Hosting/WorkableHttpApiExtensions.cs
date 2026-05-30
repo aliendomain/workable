@@ -140,7 +140,8 @@ public static class WorkableHttpApiExtensions
         }
 
         var configuration = services.GetService<IConfiguration>();
-        return GetConfiguredUrls(configuration).Any(IsLoopbackUrl);
+        var configuredUrls = GetConfiguredUrls(configuration).ToArray();
+        return configuredUrls.Length > 0 && configuredUrls.All(IsLoopbackUrl);
     }
 
     private static IEnumerable<string> GetConfiguredUrls(IConfiguration? configuration)
