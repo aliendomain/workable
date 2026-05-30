@@ -687,16 +687,23 @@ export function SchemaPresetButton({
   onApply: (value: unknown) => void;
 }) {
   return (
-    <Button
-      disabled={!schema}
-      onClick={() => onApply(createDefaultValue(schema))}
-      size="sm"
-      type="button"
-      variant="outline"
-    >
-      <WandSparkles className="size-4" />
-      Use input defaults
-    </Button>
+    <Tooltip delayDuration={250}>
+      <TooltipTrigger asChild>
+        <Button
+          disabled={!schema}
+          onClick={() => onApply(createDefaultValue(schema))}
+          size="sm"
+          type="button"
+          variant="outline"
+        >
+          <WandSparkles className="size-4" />
+          Use input defaults
+        </Button>
+      </TooltipTrigger>
+      <TooltipContent side="top" sideOffset={6}>
+        Fill the input form with the default values declared by this work&apos;s input schema.
+      </TooltipContent>
+    </Tooltip>
   );
 }
 

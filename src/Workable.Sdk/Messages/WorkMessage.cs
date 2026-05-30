@@ -6,6 +6,8 @@ public sealed record WorkMessage(
     string? Target = null,
     IReadOnlyDictionary<string, object?>? Metadata = null)
 {
+    public DateTimeOffset OccurredAt { get; init; } = DateTimeOffset.UtcNow;
+
     public static WorkMessage Trace(string code, string text, string? target = null)
         => new(code, WorkMessageSeverity.Trace, text, target);
 

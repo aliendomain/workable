@@ -13,4 +13,6 @@ public sealed record WorkerLogEntry(
     string? ExceptionMessage = null)
 {
     public Guid Id { get; init; } = Guid.NewGuid();
+
+    public long Ordinal { get; init; }
 }

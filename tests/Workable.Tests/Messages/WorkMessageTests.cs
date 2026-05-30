@@ -8,13 +8,16 @@ public sealed class WorkMessageTests
     [Fact]
     public void InfoCreatesInformationalMessage()
     {
+        var before = DateTimeOffset.UtcNow.AddSeconds(-1);
         var message = WorkMessage.Info("sample.info", "Everything is fine.", "sample");
+        var after = DateTimeOffset.UtcNow.AddSeconds(1);
 
         Assert.Equal("sample.info", message.Code);
         Assert.Equal(WorkMessageSeverity.Information, message.Severity);
         Assert.Equal("Everything is fine.", message.Text);
         Assert.Equal("sample", message.Target);
         Assert.Null(message.Metadata);
+        Assert.InRange(message.OccurredAt, before, after);
     }
 
     [Fact]

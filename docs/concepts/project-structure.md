@@ -195,7 +195,7 @@ Folder names are vocabulary, not decoration. A folder with the same name in two 
 
 `Identifiers` contains IDs, versions, subjects, identifiers, concurrency keys, and shared key contracts.
 
-`Messages` contains structured work messages and message severity.
+`Messages` contains structured work messages, including severity, text, timestamps, optional targets, and optional metadata.
 
 `Origins` contains actor/origin contracts and providers that describe where an invocation came from.
 

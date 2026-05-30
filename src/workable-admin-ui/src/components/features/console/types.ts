@@ -40,6 +40,7 @@ export type WorkableSystemConnection = {
 export type Loadable<T> = {
   data?: T;
   error?: string;
+  errorCause?: unknown;
   loading: boolean;
   refreshing?: boolean;
 };

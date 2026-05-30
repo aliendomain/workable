@@ -30,4 +30,6 @@ public sealed record WorkWorkerOverviewRealtimeUpdate(
     IReadOnlyList<WorkWorkerOverviewLogEntry>? LogEntries = null,
     IReadOnlyList<WorkWorkerOverviewRecentIteration>? RecentIterations = null,
     WorkWorkerOverviewTimelineSummary? TimelineSummary = null,
-    IReadOnlyList<WorkWorkerOverviewTimelineItem>? TimelineItems = null);
+    IReadOnlyList<WorkWorkerOverviewTimelineItem>? TimelineItems = null,
+    bool RequiresRefresh = false,
+    string? RefreshReason = null);

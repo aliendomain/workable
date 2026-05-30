@@ -118,7 +118,9 @@ public sealed record WorkWorkerOverviewLogEntry(
     int EventId,
     string? EventName,
     string? ExceptionType,
-    string? ExceptionMessage);
+    string? ExceptionMessage,
+    long? Sequence = null,
+    long? Ordinal = null);
 
 public sealed record WorkWorkerOverviewTimelineSection(
     WorkWorkerOverviewTimelineSummary Summary,

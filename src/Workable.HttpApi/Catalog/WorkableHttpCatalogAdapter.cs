@@ -5,6 +5,17 @@ public sealed class WorkableHttpCatalogAdapter
     public IReadOnlyList<WorkDefinition> GetDefinitions(IWorkSystemSession session)
         => GetDefinitionsForCatalog(session.Catalog);
 
+    public WorkDefinition? GetDefinition(
+        IWorkSystemSession session,
+        WorkDefinitionId definitionId)
+    {
+        ArgumentNullException.ThrowIfNull(session);
+
+        return session.Catalog.TryGet(definitionId, out var definition)
+            ? definition
+            : null;
+    }
+
     public Task<WorkDefinitionReconfigurationOutcome> ReconfigureDefinition(
         IWorkSystemSession session,
         WorkDefinitionId definitionId,
@@ -42,7 +53,7 @@ public sealed class WorkableHttpCatalogAdapter
                 : category)
                 .Split(':', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
         var categories = new Dictionary<string, WorkSystemCatalogCategoryItem>(StringComparer.OrdinalIgnoreCase);
-        var directDefinitions = new List<WorkDefinition>();
+        var directDefinitions = new List<WorkableHttpDefinitionCatalogItem>();
 
         foreach (var definition in catalog.Definitions)
         {
@@ -66,7 +77,7 @@ public sealed class WorkableHttpCatalogAdapter
             var remainingSegments = definitionSegments.Skip(pathSegments.Length).ToArray();
             if (remainingSegments.Length == 0)
             {
-                directDefinitions.Add(definition);
+                directDefinitions.Add(CreateDefinitionCatalogItem(definition));
                 continue;
             }
 
@@ -86,4 +97,12 @@ public sealed class WorkableHttpCatalogAdapter
                 .OrderBy(definition => definition.Category, StringComparer.OrdinalIgnoreCase)
                 .ThenBy(definition => definition.Name, StringComparer.OrdinalIgnoreCase)]);
     }
+
+    private static WorkableHttpDefinitionCatalogItem CreateDefinitionCatalogItem(WorkDefinition definition)
+        => new(
+            definition.Id,
+            definition.Name,
+            string.IsNullOrWhiteSpace(definition.Category)
+                ? WorkDefinitionMetadataDefaults.Category
+                : definition.Category);
 }

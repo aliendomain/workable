@@ -105,7 +105,7 @@ Execution context also exposes the worker's `WorkOrigin`, whether interruption i
 - Events include the publishing `WorkSystemId`.
 - Events can include a `WorkOrigin` for the trusted boundary that caused the event.
 - Event subscriptions can filter by worker id, one or more work definition ids, subject id, concurrency key, work identifier, key filters, and one or more event types.
-- Worker event payloads are selective and bounded. Use event data for notification, correlation, and realtime incremental updates, and query worker detail for full input, messages, full log history, full iteration history, action history, or profile data. The payloads now include focused overview fields such as latest iteration snapshots for `worker.started`, `worker.completed`, `worker.failed`, `worker.waiting`, `worker.retrying`, and `worker.log`, retained worker-level `logSummary` and `timelineSummary` aggregates on the base worker payload, `retryAttempt` and `configDifferenceCount` on the base worker payload when they are relevant, stable log entry ids on `worker.log`, and retained iteration `attemptCount`, `output`, and `failure` fields when those are available.
+- Worker event payloads are selective and bounded. Use event data for notification, correlation, and realtime incremental updates, and query worker detail for full input, messages, full log history, full iteration history, action history, or profile data. The payloads now include focused overview fields such as latest iteration snapshots for `worker.started`, `worker.completed`, `worker.failed`, `worker.waiting`, `worker.retrying`, and `worker.log`, retained worker-level `logSummary` and `timelineSummary` aggregates on the base worker payload, `retryAttempt` and `configDifferenceCount` on the base worker payload when they are relevant, stable log entry ids on `worker.log`, iteration `sequence` and per-iteration `ordinal` on retained log rows for stable ordering, and retained iteration `attemptCount`, `output`, and `failure` fields when those are available.
 - Each subscription owns a bounded event buffer.
 - Disposing a subscription or canceling its reader removes it from the stream.
 
@@ -153,4 +153,4 @@ Execution context also exposes the worker's `WorkOrigin`, whether interruption i
 - Expected validation and state failures return structured messages.
 - Exceptions are reserved for bugs, infrastructure failures, or unexpected host/runtime errors.
 - Unhandled execution exceptions are logged and can be classified as transient or non-transient by work, system, or app-wide classifiers.
-- Message structure includes code, severity, text, optional target, and optional metadata.
+- Message structure includes `occurredAt`, code, severity, text, optional target, and optional metadata.

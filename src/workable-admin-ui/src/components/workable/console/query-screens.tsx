@@ -45,12 +45,14 @@ import {
   stateTone,
   WorkableApiError,
   workableFetch,
+  workableQueryFetch,
   type WorkAction,
   type WorkCompletionStatus,
   type WorkComponentQueryResult,
   type WorkComponentRequest,
   type WorkComponentResult,
   type WorkComponentShape,
+  type WorkKeyKind,
   type WorkTypedValue,
   type WorkViewIterationGridDetailed,
   type WorkViewWorkerGridDetailed,
@@ -122,7 +124,9 @@ export function WorkersView({
   filterControl,
   isLoadingTarget,
   isVisible,
+  keyKindFilter,
   keyTypeFilter,
+  keyValueFilter,
   onOpenWorker,
   onReady,
   refreshToken,
@@ -134,7 +138,9 @@ export function WorkersView({
   filterControl?: PanelFilterControl;
   isLoadingTarget: boolean;
   isVisible: boolean;
+  keyKindFilter: WorkKeyKind | "Any";
   keyTypeFilter: string;
+  keyValueFilter: string;
   onOpenWorker: (workerId: string) => void;
   onReady: () => void;
   refreshToken: number;
@@ -148,10 +154,12 @@ export function WorkersView({
       category: normalizeCategoryFilter(categoryFilter) || undefined,
       definitionName: definitionFilter.trim() || undefined,
       includeSubcategories: true,
+      keyKind: keyKindFilter === "Any" ? undefined : keyKindFilter,
       keyType: keyTypeFilter.trim() || undefined,
+      keyValue: keyValueFilter.trim() || undefined,
       states: stateFilter.length === 0 ? undefined : stateFilter,
     }),
-    [categoryFilter, definitionFilter, keyTypeFilter, stateFilter]
+    [categoryFilter, definitionFilter, keyKindFilter, keyTypeFilter, keyValueFilter, stateFilter]
   );
   const [manualRefreshToken, setManualRefreshToken] = useState(0);
   const queryKey = JSON.stringify(query);
@@ -364,7 +372,9 @@ export function IterationsView({
   filterControl,
   isLoadingTarget,
   isVisible,
+  keyKindFilter,
   keyTypeFilter,
+  keyValueFilter,
   onOpenIteration,
   onReady,
   refreshToken,
@@ -376,7 +386,9 @@ export function IterationsView({
   filterControl?: PanelFilterControl;
   isLoadingTarget: boolean;
   isVisible: boolean;
+  keyKindFilter: WorkKeyKind | "Any";
   keyTypeFilter: string;
+  keyValueFilter: string;
   onOpenIteration: (workerId: string, sequence: number) => void;
   onReady: () => void;
   refreshToken: number;
@@ -388,10 +400,12 @@ export function IterationsView({
     () => ({
       category: normalizeCategoryFilter(categoryFilter) || undefined,
       definitionName: definitionFilter.trim() || undefined,
+      keyKind: keyKindFilter === "Any" ? undefined : keyKindFilter,
       keyType: keyTypeFilter.trim() || undefined,
+      keyValue: keyValueFilter.trim() || undefined,
       statuses: statusFilter.length === 0 ? undefined : statusFilter,
     }),
-    [categoryFilter, definitionFilter, keyTypeFilter, statusFilter]
+    [categoryFilter, definitionFilter, keyKindFilter, keyTypeFilter, keyValueFilter, statusFilter]
   );
   const queryKey = JSON.stringify(query);
   const selectionScopeKey = `${connection.apiUrl}\n${connection.systemName ?? ""}\n${queryKey}`;
@@ -1180,7 +1194,9 @@ function useInfiniteWorkerQuery(
     category?: string;
     definitionName?: string;
     includeSubcategories?: boolean;
+    keyKind?: WorkKeyKind;
     keyType?: string;
+    keyValue?: string;
     states?: WorkerState[];
   },
   refreshToken: number,
@@ -1220,17 +1236,21 @@ function useInfiniteWorkerQuery(
       category?: string;
       definitionName?: string;
       includeSubcategories?: boolean;
+      keyKind?: WorkKeyKind;
       keyType?: string;
+      keyValue?: string;
       states?: WorkerState[];
     };
     const requestConnection = { apiUrl, systemName };
 
-    const result = await workableFetch<WorkComponentQueryResult>(requestConnection, "views/workers", {
+    const result = await workableQueryFetch<WorkComponentQueryResult>(requestConnection, "views/workers", {
       method: "POST",
       body: JSON.stringify({
         components: [
           overviewComponent("workerGrid", "workerGrid", "detailed", {
+            keyKind: parsedQuery.keyKind,
             keyType: parsedQuery.keyType,
+            keyValue: parsedQuery.keyValue,
             states: parsedQuery.states,
             skip,
             take: boundedTake,
@@ -1460,7 +1480,9 @@ function useInfiniteIterationQuery(
   query: {
     category?: string;
     definitionName?: string;
+    keyKind?: WorkKeyKind;
     keyType?: string;
+    keyValue?: string;
     statuses?: WorkCompletionStatus[];
   },
   refreshToken: number,
@@ -1499,17 +1521,21 @@ function useInfiniteIterationQuery(
     const parsedQuery = JSON.parse(key) as {
       category?: string;
       definitionName?: string;
+      keyKind?: WorkKeyKind;
       keyType?: string;
+      keyValue?: string;
       statuses?: WorkCompletionStatus[];
     };
     const requestConnection = { apiUrl, systemName };
 
-    const result = await workableFetch<WorkComponentQueryResult>(requestConnection, "views/iterations", {
+    const result = await workableQueryFetch<WorkComponentQueryResult>(requestConnection, "views/iterations", {
       method: "POST",
       body: JSON.stringify({
         components: [
           overviewComponent("iterationGrid", "iterationGrid", "detailed", {
+            keyKind: parsedQuery.keyKind,
             keyType: parsedQuery.keyType,
+            keyValue: parsedQuery.keyValue,
             statuses: parsedQuery.statuses,
             skip,
             take: boundedTake,

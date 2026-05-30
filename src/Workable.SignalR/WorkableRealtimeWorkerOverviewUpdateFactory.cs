@@ -345,7 +345,9 @@ internal static class WorkableRealtimeWorkerOverviewUpdateFactory
                 log.EventId.Id,
                 log.EventId.Name,
                 log.ExceptionType,
-                log.ExceptionMessage),
+                log.ExceptionMessage,
+                payload?.Iteration?.Sequence,
+                log.Ordinal),
         ];
     }
 
@@ -888,6 +890,7 @@ internal static class WorkableRealtimeWorkerOverviewUpdateFactory
 
     private sealed record WorkerOverviewRealtimeEventLog(
         string Id,
+        long? Ordinal,
         string Category,
         string Level,
         WorkerOverviewRealtimeEventLogEventId EventId,

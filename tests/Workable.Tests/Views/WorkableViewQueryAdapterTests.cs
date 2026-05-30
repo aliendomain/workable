@@ -365,6 +365,35 @@ public sealed class WorkableViewQueryAdapterTests
     }
 
     [Fact]
+    public async Task WorkerOverviewRealtimeStateCapsExpandedInitialActivityPayloads()
+    {
+        var definition = WorkDefinition.Create("views.worker.realtime.cap", "Caps expanded worker overview realtime payloads.");
+        var services = new ServiceCollection();
+        services.AddWorkableSystem(builder => builder.AddWork<FloodLoggedExecutor>(
+            definition,
+            configuration => configuration.ConfigureLogging(level: LogLevel.Information)));
+        await using var system = services.BuildServiceProvider().GetRequiredService<IWorkSystemRegistry>().Default;
+        await system.Start();
+
+        var session = CreateTransportSession(system);
+        var handle = await session.Queue.Enqueue(definition.Name);
+        await handle.WaitForCompletion();
+
+        var adapter = new WorkableViewQueryAdapter();
+        var expanded = await adapter.WorkerOverviewRealtimeState(
+            session,
+            RequiredWorkerId(handle),
+            new WorkWorkerOverviewRealtimeCriteria(
+                WorkerControls: WorkComponentShapes.Standard,
+                WorkerLogs: WorkComponentShapes.Standard,
+                WorkerDuration: WorkComponentShapes.Standard,
+                WorkerTimeline: WorkComponentShapes.Standard));
+
+        Assert.NotNull(expanded);
+        Assert.Equal(50, expanded.LogEntries.Count);
+    }
+
+    [Fact]
     public async Task WorkerOverviewAggregatesLogsAcrossRetainedIterations()
     {
         var attemptsByWorker = new ConcurrentDictionary<WorkerId, int>();
@@ -540,6 +569,86 @@ public sealed class WorkableViewQueryAdapterTests
     }
 
     [Fact]
+    public async Task WorkerIterationMessagesCanFilterSortAndPage()
+    {
+        var definition = WorkDefinition.Create("views.iteration.messages.criteria", "Filters and pages iteration messages.");
+        var services = new ServiceCollection();
+        services.AddWorkableSystem(builder => builder.AddWork(
+            definition,
+            (_, _, _) => Task.FromResult(WorkExecutionResult.Success(messages:
+            [
+                new WorkMessage(
+                    "iteration.warning",
+                    WorkMessageSeverity.Warning,
+                    "Warning message.",
+                    "messages.warning",
+                    new Dictionary<string, object?> { ["slot"] = 2 })
+                {
+                    OccurredAt = DateTimeOffset.Parse("2026-05-29T10:00:02Z"),
+                },
+                new WorkMessage(
+                    "iteration.information",
+                    WorkMessageSeverity.Information,
+                    "Information message.",
+                    "messages.information",
+                    new Dictionary<string, object?> { ["slot"] = 1 })
+                {
+                    OccurredAt = DateTimeOffset.Parse("2026-05-29T10:00:01Z"),
+                },
+                new WorkMessage(
+                    "iteration.debug",
+                    WorkMessageSeverity.Debug,
+                    "Debug message.",
+                    "messages.debug",
+                    new Dictionary<string, object?> { ["slot"] = 3 })
+                {
+                    OccurredAt = DateTimeOffset.Parse("2026-05-29T10:00:03Z"),
+                },
+            ]))));
+        await using var system = services.BuildServiceProvider().GetRequiredService<IWorkSystemRegistry>().Default;
+        await system.Start();
+
+        var session = CreateTransportSession(system);
+        var handle = await session.Queue.Enqueue(definition.Name);
+        await handle.WaitForCompletion();
+        await WaitForReadModel(system);
+        var adapter = new WorkableViewQueryAdapter();
+
+        var firstPage = await adapter.WorkerIterationMessages(
+            session,
+            new WorkerIterationReference(RequiredWorkerId(handle), 1),
+            new WorkIterationMessageCriteria(
+                Take: 1,
+                SortDirection: WorkWorkerOverviewSortDirection.Asc,
+                Severities: [WorkMessageSeverity.Information, WorkMessageSeverity.Warning]));
+
+        var secondPage = await adapter.WorkerIterationMessages(
+            session,
+            new WorkerIterationReference(RequiredWorkerId(handle), 1),
+            new WorkIterationMessageCriteria(
+                Take: 1,
+                Cursor: firstPage?.Page.Cursor,
+                SortDirection: WorkWorkerOverviewSortDirection.Asc,
+                Severities: [WorkMessageSeverity.Information, WorkMessageSeverity.Warning]));
+
+        Assert.NotNull(firstPage);
+        Assert.Equal(3, firstPage.Summary.Total);
+        Assert.Equal(1, firstPage.Summary.Warning);
+        Assert.Equal(1, firstPage.Summary.Information);
+        Assert.Equal(1, firstPage.Summary.Debug);
+        Assert.Single(firstPage.Page.Items);
+        Assert.True(firstPage.Page.HasMore);
+        Assert.Equal("iteration.information", firstPage.Page.Items[0].Code);
+        Assert.Equal("messages.information", firstPage.Page.Items[0].Target);
+        Assert.NotNull(firstPage.Page.Items[0].Metadata);
+
+        Assert.NotNull(secondPage);
+        Assert.Single(secondPage.Page.Items);
+        Assert.Equal("iteration.warning", secondPage.Page.Items[0].Code);
+        Assert.False(secondPage.Page.HasMore);
+    }
+
+    [Fact]
     public async Task WorkerOverviewFiltersAndPagesTimelineUsingServerCriteria()
     {
         var definition = WorkDefinition.Create("views.worker.timeline.criteria", "Filters and pages worker timeline.");
@@ -661,6 +770,19 @@ public sealed class WorkableViewQueryAdapterTests
         {
             logger.LogInformation("duplicate log");
             logger.LogInformation("duplicate log");
+            return Task.FromResult(WorkExecutionResult.Success());
+        }
+    }
+
+    private sealed class FloodLoggedExecutor(ILogger<FloodLoggedExecutor> logger) : IWorkExecutor
+    {
+        public Task<WorkExecutionResult> Execute(IWorkExecutionContext context, WorkInput? input, CancellationToken cancellationToken)
+        {
+            for (var index = 0; index < 200; index++)
+            {
+                logger.LogInformation("flood log {Index}", index);
+            }
+
             return Task.FromResult(WorkExecutionResult.Success());
         }
     }

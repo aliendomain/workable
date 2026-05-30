@@ -12,6 +12,7 @@ public sealed record DemoRecurringMessageFloodOutput(
 public sealed class DemoRecurringMessageFloodWork(
     ILogger<DemoRecurringMessageFloodWork> logger) : IWorkExecutor<DemoRecurringMessageFloodInput, DemoRecurringMessageFloodOutput>
 {
+    private const int MessageCount = 6;
     private const int LogEntryCount = 198;
     private const int CriticalLogCount = 33;
     private const int ErrorLogCount = 33;
@@ -30,9 +31,10 @@ public sealed class DemoRecurringMessageFloodWork(
 
         return Task.FromResult(WorkExecutionResult<DemoRecurringMessageFloodOutput>.Success(
             new DemoRecurringMessageFloodOutput(
-                0,
+                MessageCount,
                 LogEntryCount,
-                DateTimeOffset.UtcNow)));
+                DateTimeOffset.UtcNow),
+            CreateMessages()));
     }
 
     private static void WriteLogs(ILogger logger)
@@ -85,4 +87,32 @@ public sealed class DemoRecurringMessageFloodWork(
                 LogEntryCount);
         }
     }
+
+    private static IReadOnlyList<WorkMessage> CreateMessages()
+        => [
+            WorkMessage.Critical(
+                "sample.demo.message-flood.critical",
+                "Recurring message flood emitted a critical retained message.",
+                "messages"),
+            WorkMessage.Error(
+                "sample.demo.message-flood.error",
+                "Recurring message flood emitted an error retained message.",
+                "messages"),
+            WorkMessage.Warning(
+                "sample.demo.message-flood.warning",
+                "Recurring message flood emitted a warning retained message.",
+                "messages"),
+            WorkMessage.Information(
+                "sample.demo.message-flood.information",
+                "Recurring message flood emitted an information retained message.",
+                "messages"),
+            WorkMessage.Debug(
+                "sample.demo.message-flood.debug",
+                "Recurring message flood emitted a debug retained message.",
+                "messages"),
+            WorkMessage.Trace(
+                "sample.demo.message-flood.trace",
+                "Recurring message flood emitted a trace retained message.",
+                "messages"),
+        ];
 }

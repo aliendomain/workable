@@ -6,6 +6,7 @@ namespace Workable;
 
 public class WorkableViewQueryAdapter
 {
+    private const int InitialWorkerOverviewRealtimeActivityTake = 50;
     private readonly record struct WorkerOverviewLogRecord(long Sequence, WorkerLogEntry Entry);
 
     private static readonly JsonSerializerOptions ComponentOptionsJson = new(JsonSerializerDefaults.Web)
@@ -85,6 +86,54 @@ public class WorkableViewQueryAdapter
         WorkerIterationReference iteration,
         CancellationToken cancellationToken = default)
         => await session.Query.WorkerIteration(iteration, cancellationToken: cancellationToken);
+
+    public async Task<WorkIterationMessageSection?> WorkerIterationMessages(
+        IWorkSystemSession session,
+        WorkerIterationReference iteration,
+        WorkIterationMessageCriteria? criteria = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(session);
+
+        var snapshot = await session.Query.WorkerIteration(iteration, cancellationToken: cancellationToken);
+        if (snapshot is null)
+        {
+            return null;
+        }
+
+        var query = NormalizeIterationMessageCriteria(criteria);
+        var filteredMessages = SortIterationMessages(
+            FilterIterationMessages(snapshot.Messages, query.Severities),
+            query.SortDirection);
+
+        return new WorkIterationMessageSection(
+            CreateIterationMessageSummary(snapshot.Messages),
+            CreateIterationMessagePage(filteredMessages, query.Cursor, query.Take));
+    }
+
+    public async Task<WorkIterationLogSection?> WorkerIterationLogs(
+        IWorkSystemSession session,
+        WorkerIterationReference iteration,
+        WorkIterationLogCriteria? criteria = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(session);
+
+        var snapshot = await session.Query.WorkerIteration(iteration, cancellationToken: cancellationToken);
+        if (snapshot is null)
+        {
+            return null;
+        }
+
+        var query = NormalizeIterationLogCriteria(criteria);
+        var filteredLogs = SortIterationLogs(
+            FilterIterationLogs(snapshot.Logs, query.Levels),
+            query.SortDirection);
+
+        return new WorkIterationLogSection(
+            CreateIterationLogSummary(snapshot.Logs),
+            CreateIterationLogPage(filteredLogs, query.Cursor, query.Take));
+    }
 
     public Task<WorkerQueryResult> Workers(
         IWorkSystemSession session,
@@ -191,6 +240,65 @@ public class WorkableViewQueryAdapter
                     : null));
     }
 
+    public async Task<WorkWorkerOverviewLogSection?> WorkerOverviewLogs(
+        IWorkSystemSession session,
+        WorkerId workerId,
+        WorkWorkerOverviewCriteria? criteria = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(session);
+
+        var worker = await session.Query.Worker(workerId, cancellationToken: cancellationToken);
+        if (worker is null)
+        {
+            return null;
+        }
+
+        var query = NormalizeWorkerOverviewCriteria(criteria);
+        var mergedIterations = worker.GetMergedIterations();
+        var allLogEntries = CreateWorkerOverviewLogRecords(mergedIterations, query.LogIterationSequence);
+        var filteredLogEntries = SortWorkerOverviewLogEntries(
+            FilterWorkerOverviewLogEntries(allLogEntries, query.LogLevels),
+            query.LogSortDirection);
+
+        return new WorkWorkerOverviewLogSection(
+            CreateWorkerOverviewLogSummary(allLogEntries),
+            CreateWorkerOverviewLogPage(filteredLogEntries, query.ActivityCursor, query.ActivityTake));
+    }
+
+    public async Task<WorkWorkerOverviewTimelineSection?> WorkerOverviewTimeline(
+        IWorkSystemSession session,
+        WorkerId workerId,
+        WorkWorkerOverviewCriteria? criteria = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(session);
+
+        var worker = await session.Query.Worker(workerId, cancellationToken: cancellationToken);
+        if (worker is null)
+        {
+            return null;
+        }
+
+        var query = NormalizeWorkerOverviewCriteria(criteria);
+        var mergedIterations = worker.GetMergedIterations();
+        var latestIteration = mergedIterations.FirstOrDefault();
+        var baseTimelineItems = worker.GetActivityEvents(mergedIterations)
+            .Select(CreateWorkerOverviewTimelineItem)
+            .ToArray();
+        var allTimelineItems = ApplyWorkerOverviewRetryPending(
+            worker,
+            latestIteration,
+            AddWorkerOverviewLiveStateItems(worker, latestIteration, baseTimelineItems));
+        var filteredTimelineItems = SortWorkerOverviewTimelineItems(
+            FilterWorkerOverviewTimelineItems(allTimelineItems, query.TimelineCategories),
+            query.TimelineSortDirection);
+
+        return new WorkWorkerOverviewTimelineSection(
+            CreateWorkerOverviewTimelineSummary(allTimelineItems),
+            CreateWorkerOverviewTimelinePage(filteredTimelineItems, query.ActivityCursor, query.ActivityTake));
+    }
+
     public async Task<WorkWorkerOverviewRealtimeState?> WorkerOverviewRealtimeState(
         IWorkSystemSession session,
         WorkerId workerId,
@@ -268,6 +376,7 @@ public class WorkableViewQueryAdapter
                 : null,
             IsExpandedRealtimeShape(query.WorkerLogs)
                 ? filteredLogEntries
+                    .Take(InitialWorkerOverviewRealtimeActivityTake)
                     .Select(record => new WorkWorkerOverviewLogEntry(
                         record.Entry.Id.ToString("N"),
                         record.Entry.OccurredAt,
@@ -277,7 +386,9 @@ public class WorkableViewQueryAdapter
                         record.Entry.EventId.Id,
                         record.Entry.EventId.Name,
                         record.Entry.ExceptionType,
-                        record.Entry.ExceptionMessage))
+                        record.Entry.ExceptionMessage,
+                        record.Sequence,
+                        record.Entry.Ordinal))
                     .ToArray()
                 : [],
             recentIterations,
@@ -285,7 +396,7 @@ public class WorkableViewQueryAdapter
                 ? CreateWorkerOverviewTimelineSummary(allTimelineItems)
                 : null,
             IsExpandedRealtimeShape(query.WorkerTimeline)
-                ? filteredTimelineItems
+                ? filteredTimelineItems.Take(InitialWorkerOverviewRealtimeActivityTake).ToArray()
                 : []);
     }
 
@@ -541,45 +652,54 @@ public class WorkableViewQueryAdapter
         CancellationToken cancellationToken)
     {
         var query = CreateWorkerGridCriteria(criteria, options);
-        if (!string.IsNullOrWhiteSpace(query.KeyType))
-        {
-            return await CreateWorkerGridByKeyTypeComponent(queries, criteria, query, cancellationToken);
-        }
-
-        var result = await queries.Workers(query.Criteria, cancellationToken: cancellationToken);
-        return new WorkViewWorkerGridDetailedComponent(
-            result.Workers.Select(CreateWorkerGridDetailed).ToArray(),
-            result.TotalCount,
-            result.Skip,
-            result.Take);
+        return await CreateGridComponent(
+            query.Criteria,
+            criteria,
+            query.KeyKind,
+            query.KeyType,
+            query.KeyValue,
+            async (workerCriteria, token) =>
+            {
+                var result = await queries.Workers(workerCriteria, cancellationToken: token);
+                return new WorkViewWorkerGridDetailedComponent(
+                    result.Workers.Select(CreateWorkerGridDetailed).ToArray(),
+                    result.TotalCount,
+                    result.Skip,
+                    result.Take);
+            },
+            (_, token) => CreateWorkerGridByKeyFilterComponent(queries, criteria, query, token),
+            cancellationToken);
     }
 
-    private static async Task<WorkViewWorkerGridDetailedComponent> CreateWorkerGridByKeyTypeComponent(
+    private static async Task<WorkViewWorkerGridDetailedComponent> CreateWorkerGridByKeyFilterComponent(
         IWorkQueryService queries,
         WorkSystemCriteria? scope,
         WorkViewWorkerGridCriteria query,
         CancellationToken cancellationToken)
     {
-        var keyTypes = await queries.WorkerKeyTypes(new WorkerKeyTypeCriteria(
-            Type: query.KeyType,
-            States: query.Criteria.States), cancellationToken: cancellationToken);
-        var workers = keyTypes.Types
-            .SelectMany(type => type.Workers)
-            .Where(worker => MatchesScope(worker.DefinitionName, worker.Category, scope))
-            .DistinctBy(worker => worker.Id)
-            .OrderByDescending(worker => worker.UpdatedAt)
-            .ToArray();
-        var page = workers
-            .Skip(query.Criteria.Skip)
-            .Take(query.Criteria.Take)
-            .Select(CreateWorkerGridDetailed)
-            .ToArray();
-
-        return new WorkViewWorkerGridDetailedComponent(
-            page,
-            workers.Length,
+        return await CreateKeyFilterGridComponent(
+            scope,
+            query.KeyValue,
             query.Criteria.Skip,
-            query.Criteria.Take);
+            query.Criteria.Take,
+            async (token) => (await queries.WorkerKeys(new WorkerKeyCriteria(
+                Kind: query.KeyKind,
+                Type: query.KeyType,
+                Value: query.KeyValue,
+                States: query.Criteria.States), cancellationToken: token)).Keys,
+            async (token) => (await queries.WorkerKeyTypes(new WorkerKeyTypeCriteria(
+                Kind: query.KeyKind,
+                Type: query.KeyType,
+                States: query.Criteria.States), cancellationToken: token)).Types,
+            key => key.Workers,
+            keyType => keyType.Workers,
+            worker => worker.DefinitionName,
+            worker => worker.Category,
+            worker => worker.Id,
+            worker => worker.UpdatedAt,
+            CreateWorkerGridDetailed,
+            (page, totalCount, skip, take) => new WorkViewWorkerGridDetailedComponent(page, totalCount, skip, take),
+            cancellationToken);
     }
 
     private static async Task<object> CreateIterationsComponent(
@@ -648,45 +768,54 @@ public class WorkableViewQueryAdapter
         CancellationToken cancellationToken)
     {
         var query = CreateIterationGridCriteria(criteria, options);
-        if (!string.IsNullOrWhiteSpace(query.KeyType))
-        {
-            return await CreateIterationGridByKeyTypeComponent(queries, criteria, query, cancellationToken);
-        }
-
-        var result = await queries.WorkerIterations(query.Criteria, cancellationToken: cancellationToken);
-        return new WorkViewIterationGridDetailedComponent(
-            result.Iterations.Select(CreateIterationGridDetailed).ToArray(),
-            result.TotalCount,
-            result.Skip,
-            result.Take);
+        return await CreateGridComponent(
+            query.Criteria,
+            criteria,
+            query.KeyKind,
+            query.KeyType,
+            query.KeyValue,
+            async (iterationCriteria, token) =>
+            {
+                var result = await queries.WorkerIterations(iterationCriteria, cancellationToken: token);
+                return new WorkViewIterationGridDetailedComponent(
+                    result.Iterations.Select(CreateIterationGridDetailed).ToArray(),
+                    result.TotalCount,
+                    result.Skip,
+                    result.Take);
+            },
+            (_, token) => CreateIterationGridByKeyFilterComponent(queries, criteria, query, token),
+            cancellationToken);
     }
 
-    private static async Task<WorkViewIterationGridDetailedComponent> CreateIterationGridByKeyTypeComponent(
+    private static async Task<WorkViewIterationGridDetailedComponent> CreateIterationGridByKeyFilterComponent(
         IWorkQueryService queries,
         WorkSystemCriteria? scope,
         WorkViewIterationGridCriteria query,
         CancellationToken cancellationToken)
     {
-        var keyTypes = await queries.WorkIterationKeyTypes(new WorkIterationKeyTypeCriteria(
-            Type: query.KeyType,
-            Statuses: query.Criteria.Statuses), cancellationToken: cancellationToken);
-        var iterations = keyTypes.Types
-            .SelectMany(type => type.Iterations)
-            .Where(iteration => MatchesScope(iteration.DefinitionName, iteration.Category, scope))
-            .DistinctBy(iteration => new WorkerIterationReference(iteration.WorkerId, iteration.Sequence))
-            .OrderByDescending(iteration => iteration.CompletedAt)
-            .ToArray();
-        var page = iterations
-            .Skip(query.Criteria.Skip)
-            .Take(query.Criteria.Take)
-            .Select(CreateIterationGridDetailed)
-            .ToArray();
-
-        return new WorkViewIterationGridDetailedComponent(
-            page,
-            iterations.Length,
+        return await CreateKeyFilterGridComponent(
+            scope,
+            query.KeyValue,
             query.Criteria.Skip,
-            query.Criteria.Take);
+            query.Criteria.Take,
+            async (token) => (await queries.WorkIterationKeys(new WorkIterationKeyCriteria(
+                Kind: query.KeyKind,
+                Type: query.KeyType,
+                Value: query.KeyValue,
+                Statuses: query.Criteria.Statuses), cancellationToken: token)).Keys,
+            async (token) => (await queries.WorkIterationKeyTypes(new WorkIterationKeyTypeCriteria(
+                Kind: query.KeyKind,
+                Type: query.KeyType,
+                Statuses: query.Criteria.Statuses), cancellationToken: token)).Types,
+            key => key.Iterations,
+            keyType => keyType.Iterations,
+            iteration => iteration.DefinitionName,
+            iteration => iteration.Category,
+            iteration => new WorkerIterationReference(iteration.WorkerId, iteration.Sequence),
+            iteration => iteration.CompletedAt,
+            CreateIterationGridDetailed,
+            (page, totalCount, skip, take) => new WorkViewIterationGridDetailedComponent(page, totalCount, skip, take),
+            cancellationToken);
     }
 
     private static async Task<WorkerSnapshot?> CreateWorkerDetailComponent(
@@ -827,6 +956,7 @@ public class WorkableViewQueryAdapter
                 .First())
             .OrderByDescending(record => record.Entry.OccurredAt)
             .ThenByDescending(record => record.Sequence)
+            .ThenByDescending(record => record.Entry.Ordinal)
             .ThenByDescending(GetWorkerOverviewLogEntryId)];
 
     private static IReadOnlyList<WorkerOverviewLogRecord> FilterWorkerOverviewLogEntries(
@@ -851,11 +981,13 @@ public class WorkableViewQueryAdapter
             ? entries
                 .OrderBy(entry => entry.Entry.OccurredAt)
                 .ThenBy(entry => entry.Sequence)
+                .ThenBy(entry => entry.Entry.Ordinal)
                 .ThenBy(GetWorkerOverviewLogEntryId, StringComparer.Ordinal)
                 .ToArray()
             : entries
                 .OrderByDescending(entry => entry.Entry.OccurredAt)
                 .ThenByDescending(entry => entry.Sequence)
+                .ThenByDescending(entry => entry.Entry.Ordinal)
                 .ThenByDescending(GetWorkerOverviewLogEntryId, StringComparer.Ordinal)
                 .ToArray();
 
@@ -876,7 +1008,9 @@ public class WorkableViewQueryAdapter
                 record.Entry.EventId.Id,
                 record.Entry.EventId.Name,
                 record.Entry.ExceptionType,
-                record.Entry.ExceptionMessage))
+                record.Entry.ExceptionMessage,
+                record.Sequence,
+                record.Entry.Ordinal))
             .ToArray();
 
         return new WorkWorkerOverviewPage<WorkWorkerOverviewLogEntry>(
@@ -1083,6 +1217,149 @@ public class WorkableViewQueryAdapter
 
         var remaining = items.Skip(startIndex).ToArray();
         return (remaining.Take(take).ToArray(), remaining.Length > take);
+    }
+
+    private static WorkIterationMessageCriteria NormalizeIterationMessageCriteria(
+        WorkIterationMessageCriteria? criteria)
+    {
+        var query = criteria ?? new WorkIterationMessageCriteria();
+        return query with
+        {
+            Take = Math.Clamp(query.Take, 1, 200),
+        };
+    }
+
+    private static WorkIterationLogCriteria NormalizeIterationLogCriteria(
+        WorkIterationLogCriteria? criteria)
+    {
+        var query = criteria ?? new WorkIterationLogCriteria();
+        return query with
+        {
+            Take = Math.Clamp(query.Take, 1, 200),
+        };
+    }
+
+    private static IReadOnlyList<WorkMessage> FilterIterationMessages(
+        IReadOnlyList<WorkMessage> messages,
+        IReadOnlyList<WorkMessageSeverity>? severities)
+    {
+        if (severities is not { Count: > 0 })
+        {
+            return messages;
+        }
+
+        var allowed = severities.ToHashSet();
+        return messages
+            .Where(message => allowed.Contains(message.Severity))
+            .ToArray();
+    }
+
+    private static IReadOnlyList<WorkMessage> SortIterationMessages(
+        IReadOnlyList<WorkMessage> messages,
+        WorkWorkerOverviewSortDirection direction)
+        => direction == WorkWorkerOverviewSortDirection.Asc
+            ? messages
+                .Select((message, index) => (Message: message, Index: index))
+                .OrderBy(entry => entry.Message.OccurredAt)
+                .ThenBy(entry => entry.Index)
+                .Select(entry => entry.Message)
+                .ToArray()
+            : messages
+                .Select((message, index) => (Message: message, Index: index))
+                .OrderByDescending(entry => entry.Message.OccurredAt)
+                .ThenByDescending(entry => entry.Index)
+                .Select(entry => entry.Message)
+                .ToArray();
+
+    private static WorkIterationMessageSummary CreateIterationMessageSummary(
+        IReadOnlyList<WorkMessage> messages)
+        => new(
+            messages.Count,
+            messages.Count(message => message.Severity == WorkMessageSeverity.Critical),
+            messages.Count(message => message.Severity == WorkMessageSeverity.Error),
+            messages.Count(message => message.Severity == WorkMessageSeverity.Error),
+            messages.Count(message => message.Severity == WorkMessageSeverity.Warning),
+            messages.Count(message => message.Severity == WorkMessageSeverity.Warning),
+            messages.Count(message => message.Severity == WorkMessageSeverity.Information),
+            messages.Count(message => message.Severity == WorkMessageSeverity.Debug),
+            messages.Count(message => message.Severity == WorkMessageSeverity.Trace));
+
+    private static WorkIterationMessagePage CreateIterationMessagePage(
+        IReadOnlyList<WorkMessage> items,
+        string? cursor,
+        int take)
+    {
+        var startIndex = 0;
+        if (!string.IsNullOrWhiteSpace(cursor) &&
+            int.TryParse(cursor, out var parsed) &&
+            parsed >= 0)
+        {
+            startIndex = Math.Min(parsed, items.Count);
+        }
+
+        var remaining = items.Skip(startIndex).ToArray();
+        var pageItems = remaining.Take(take).ToArray();
+        var hasMore = remaining.Length > take;
+        return new WorkIterationMessagePage(
+            pageItems,
+            hasMore,
+            hasMore ? (startIndex + pageItems.Length).ToString() : null);
+    }
+
+    private static IReadOnlyList<WorkerLogEntry> FilterIterationLogs(
+        IReadOnlyList<WorkerLogEntry> logs,
+        IReadOnlyList<LogLevel>? levels)
+    {
+        if (levels is not { Count: > 0 })
+        {
+            return logs;
+        }
+
+        var allowed = levels.ToHashSet();
+        return logs
+            .Where(entry => allowed.Contains(entry.Level))
+            .ToArray();
+    }
+
+    private static IReadOnlyList<WorkerLogEntry> SortIterationLogs(
+        IReadOnlyList<WorkerLogEntry> logs,
+        WorkWorkerOverviewSortDirection direction)
+        => direction == WorkWorkerOverviewSortDirection.Asc
+            ? logs
+                .OrderBy(entry => entry.OccurredAt)
+                .ThenBy(entry => entry.Ordinal)
+                .ThenBy(entry => entry.Id)
+                .ToArray()
+            : logs
+                .OrderByDescending(entry => entry.OccurredAt)
+                .ThenByDescending(entry => entry.Ordinal)
+                .ThenByDescending(entry => entry.Id)
+                .ToArray();
+
+    private static WorkWorkerOverviewLogSummary CreateIterationLogSummary(
+        IReadOnlyList<WorkerLogEntry> logs)
+        => new(
+            logs.Count,
+            logs.Count(entry => entry.Level == LogLevel.Critical),
+            logs.Count(entry => entry.Level == LogLevel.Error),
+            logs.Count(entry => entry.Level is LogLevel.Critical or LogLevel.Error),
+            logs.Count(entry => entry.Level == LogLevel.Warning),
+            logs.Count(entry => entry.Level == LogLevel.Warning),
+            logs.Count(entry => entry.Level == LogLevel.Information),
+            logs.Count(entry => entry.Level == LogLevel.Debug),
+            logs.Count(entry => entry.Level == LogLevel.Trace));
+
+    private static WorkWorkerOverviewPage<WorkerLogEntry> CreateIterationLogPage(
+        IReadOnlyList<WorkerLogEntry> items,
+        string? cursor,
+        int take)
+    {
+        var page = SliceWorkerOverviewPage(items, item => item.Id.ToString("N"), cursor, take);
+        var pageItems = page.Items.ToArray();
+        return new WorkWorkerOverviewPage<WorkerLogEntry>(
+            pageItems,
+            page.HasMore,
+            pageItems.LastOrDefault()?.Id.ToString("N"));
     }
 
     private static int CountWorkerOverviewConfigurationDifferences(
@@ -1583,8 +1860,12 @@ public class WorkableViewQueryAdapter
         var query = DeserializeOptions<WorkViewWorkerGridOptions>(options) ?? new WorkViewWorkerGridOptions();
         var skip = Math.Max(0, query.Skip);
         var take = Math.Clamp(query.Take, 1, WorkerCriteria.MaximumTake);
+        var keyKind = query.KeyKind;
+        var keyType = NormalizeQueryText(query.KeyType);
+        var keyValue = NormalizeQueryText(query.KeyValue);
         return new WorkViewWorkerGridCriteria(
-            new WorkerCriteria(
+            ApplyExactWorkerKeyCriteria(
+                new WorkerCriteria(
                 DefinitionId: scope?.DefinitionId,
                 DefinitionName: scope?.DefinitionName,
                 States: query.States?.ToHashSet(),
@@ -1595,7 +1876,12 @@ public class WorkableViewQueryAdapter
                 Take: take,
                 Category: scope?.Category,
                 IncludeSubcategories: scope?.IncludeSubcategories ?? true),
-            query.KeyType);
+                keyKind,
+                keyType,
+                keyValue),
+            keyKind,
+            keyType,
+            keyValue);
     }
 
     private static WorkViewIterationGridCriteria CreateIterationGridCriteria(
@@ -1605,8 +1891,12 @@ public class WorkableViewQueryAdapter
         var query = DeserializeOptions<WorkViewIterationGridOptions>(options) ?? new WorkViewIterationGridOptions();
         var skip = Math.Max(0, query.Skip);
         var take = Math.Clamp(query.Take, 1, WorkerIterationCriteria.MaximumTake);
+        var keyKind = query.KeyKind;
+        var keyType = NormalizeQueryText(query.KeyType);
+        var keyValue = NormalizeQueryText(query.KeyValue);
         return new WorkViewIterationGridCriteria(
-            new WorkerIterationCriteria(
+            ApplyExactIterationKeyCriteria(
+                new WorkerIterationCriteria(
                 DefinitionId: scope?.DefinitionId,
                 DefinitionName: scope?.DefinitionName,
                 Category: scope?.Category,
@@ -1615,7 +1905,145 @@ public class WorkableViewQueryAdapter
                 Direction: WorkCriteriaSortDirection.Descending,
                 Skip: skip,
                 Take: take),
-            query.KeyType);
+                keyKind,
+                keyType,
+                keyValue),
+            keyKind,
+            keyType,
+            keyValue);
+    }
+
+    private static bool HasKeyFilter(
+        WorkKeyKind? keyKind,
+        string? keyType,
+        string? keyValue)
+        => keyKind is not null ||
+            !string.IsNullOrWhiteSpace(keyType) ||
+            !string.IsNullOrWhiteSpace(keyValue);
+
+    private static bool HasExactStructuredKey(
+        WorkKeyKind? keyKind,
+        string? keyType,
+        string? keyValue)
+        => keyKind is not null &&
+            !string.IsNullOrWhiteSpace(keyType) &&
+            !string.IsNullOrWhiteSpace(keyValue);
+
+    private static string? NormalizeQueryText(string? value)
+        => string.IsNullOrWhiteSpace(value)
+            ? null
+            : value.Trim();
+
+    private static async Task<TComponent> CreateGridComponent<TCriteria, TComponent>(
+        TCriteria criteria,
+        WorkSystemCriteria? scope,
+        WorkKeyKind? keyKind,
+        string? keyType,
+        string? keyValue,
+        Func<TCriteria, CancellationToken, Task<TComponent>> loadExact,
+        Func<WorkSystemCriteria?, CancellationToken, Task<TComponent>> loadKeyFiltered,
+        CancellationToken cancellationToken)
+        where TCriteria : notnull
+    {
+        if (HasKeyFilter(keyKind, keyType, keyValue))
+        {
+            if (HasExactStructuredKey(keyKind, keyType, keyValue))
+            {
+                return await loadExact(criteria, cancellationToken);
+            }
+
+            return await loadKeyFiltered(scope, cancellationToken);
+        }
+
+        return await loadExact(criteria, cancellationToken);
+    }
+
+    private static async Task<TComponent> CreateKeyFilterGridComponent<TSource, TKeyDescriptor, TKeyTypeDescriptor, TIdentity, TRow, TComponent>(
+        WorkSystemCriteria? scope,
+        string? keyValue,
+        int skip,
+        int take,
+        Func<CancellationToken, Task<IReadOnlyList<TKeyDescriptor>>> loadKeys,
+        Func<CancellationToken, Task<IReadOnlyList<TKeyTypeDescriptor>>> loadKeyTypes,
+        Func<TKeyDescriptor, IEnumerable<TSource>> keyItems,
+        Func<TKeyTypeDescriptor, IEnumerable<TSource>> keyTypeItems,
+        Func<TSource, string> definitionName,
+        Func<TSource, string> category,
+        Func<TSource, TIdentity> identity,
+        Func<TSource, DateTimeOffset> sortKey,
+        Func<TSource, TRow> map,
+        Func<TRow[], int, int, int, TComponent> create,
+        CancellationToken cancellationToken)
+        where TIdentity : notnull
+    {
+        IEnumerable<TSource> items = !string.IsNullOrWhiteSpace(keyValue)
+            ? (await loadKeys(cancellationToken)).SelectMany(keyItems)
+            : (await loadKeyTypes(cancellationToken)).SelectMany(keyTypeItems);
+
+        var scoped = items
+            .Where(item => MatchesScope(definitionName(item), category(item), scope))
+            .DistinctBy(identity)
+            .OrderByDescending(sortKey)
+            .ToArray();
+        var page = scoped
+            .Skip(skip)
+            .Take(take)
+            .Select(map)
+            .ToArray();
+
+        return create(page, scoped.Length, skip, take);
+    }
+
+    private static WorkerCriteria ApplyExactWorkerKeyCriteria(
+        WorkerCriteria criteria,
+        WorkKeyKind? keyKind,
+        string? keyType,
+        string? keyValue)
+        => ApplyExactStructuredKey(
+            criteria,
+            keyKind,
+            keyType,
+            keyValue,
+            (current, subjectId) => current with { SubjectId = subjectId },
+            (current, concurrencyKey) => current with { ConcurrencyKey = concurrencyKey },
+            (current, identifier) => current with { Identifier = identifier });
+
+    private static WorkerIterationCriteria ApplyExactIterationKeyCriteria(
+        WorkerIterationCriteria criteria,
+        WorkKeyKind? keyKind,
+        string? keyType,
+        string? keyValue)
+        => ApplyExactStructuredKey(
+            criteria,
+            keyKind,
+            keyType,
+            keyValue,
+            (current, subjectId) => current with { SubjectId = subjectId },
+            (current, concurrencyKey) => current with { ConcurrencyKey = concurrencyKey },
+            (current, identifier) => current with { Identifier = identifier });
+
+    private static TCriteria ApplyExactStructuredKey<TCriteria>(
+        TCriteria criteria,
+        WorkKeyKind? keyKind,
+        string? keyType,
+        string? keyValue,
+        Func<TCriteria, WorkSubjectId, TCriteria> withSubjectId,
+        Func<TCriteria, WorkConcurrencyKey, TCriteria> withConcurrencyKey,
+        Func<TCriteria, WorkIdentifier, TCriteria> withIdentifier)
+        where TCriteria : notnull
+    {
+        if (!HasExactStructuredKey(keyKind, keyType, keyValue))
+        {
+            return criteria;
+        }
+
+        return keyKind switch
+        {
+            WorkKeyKind.Subject => withSubjectId(criteria, new WorkSubjectId(keyType!, keyValue!)),
+            WorkKeyKind.ConcurrencyKey => withConcurrencyKey(criteria, new WorkConcurrencyKey(keyType!, keyValue!)),
+            WorkKeyKind.Identifier => withIdentifier(criteria, new WorkIdentifier(keyType!, keyValue!)),
+            _ => criteria,
+        };
     }
 
     private static WorkerId GetRequiredWorkerId(JsonElement? options)
@@ -1682,24 +2110,32 @@ public class WorkableViewQueryAdapter
 
     private sealed record WorkViewWorkerGridCriteria(
         WorkerCriteria Criteria,
-        string? KeyType);
+        WorkKeyKind? KeyKind,
+        string? KeyType,
+        string? KeyValue);
 
     private sealed record WorkViewIterationGridCriteria(
         WorkerIterationCriteria Criteria,
-        string? KeyType);
+        WorkKeyKind? KeyKind,
+        string? KeyType,
+        string? KeyValue);
 
     private sealed record WorkViewWorkerOptions(
         string? WorkerId = null);
 
     private sealed record WorkViewWorkerGridOptions(
+        WorkKeyKind? KeyKind = null,
         string? KeyType = null,
+        string? KeyValue = null,
         IReadOnlyList<WorkerState>? States = null,
         WorkerConfigurationCriteria? Configuration = null,
         int Skip = 0,
         int Take = WorkerCriteria.DefaultTake);
 
     private sealed record WorkViewIterationGridOptions(
+        WorkKeyKind? KeyKind = null,
         string? KeyType = null,
+        string? KeyValue = null,
         IReadOnlyList<WorkCompletionStatus>? Statuses = null,
         int Skip = 0,
         int Take = WorkerIterationCriteria.DefaultTake);

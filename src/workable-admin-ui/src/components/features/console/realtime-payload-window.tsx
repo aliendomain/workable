@@ -479,6 +479,14 @@ export function RealtimeStatsMenu({ realtimeStats }: { realtimeStats: ConsoleRea
                   <span>{connection.lifecycleHandlerCount} lifecycle</span>
                   <span>{connection.subscriptionCount} sub</span>
                 </div>
+                <div className="truncate font-mono text-[11px] text-muted-foreground/80">
+                  {connection.connectionId ? `connId:${connection.connectionId}` : "connId:pending"}
+                </div>
+                <div className="truncate text-[11px] text-muted-foreground/80">
+                  {connection.lastMessageAt
+                    ? `last:${formatRealtimeStatsTimestamp(connection.lastMessageAt)}${connection.lastMessageLabel ? ` (${connection.lastMessageLabel})` : ""}`
+                    : "last:none"}
+                </div>
               </div>
             ))
           ) : (
@@ -490,6 +498,10 @@ export function RealtimeStatsMenu({ realtimeStats }: { realtimeStats: ConsoleRea
       </PopoverContent>
     </Popover>
   );
+}
+
+function formatRealtimeStatsTimestamp(value: number) {
+  return new Date(value).toLocaleTimeString();
 }
 
 function WindowModeButton({

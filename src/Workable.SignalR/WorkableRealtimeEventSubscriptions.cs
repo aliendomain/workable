@@ -99,6 +99,25 @@ public sealed class WorkableRealtimeEventSubscriptions
         }
     }
 
+    public IReadOnlyList<WorkableRealtimeDebugEventSubscriptionSnapshot> GetDebugSubscriptions(IWorkSystem system)
+    {
+        ArgumentNullException.ThrowIfNull(system);
+
+        lock (this.gate)
+        {
+            return [.. this.connectionGroups.Values
+                .Where(subscription => subscription.SystemId == system.Id)
+                .Select(subscription => new WorkableRealtimeDebugEventSubscriptionSnapshot(
+                    subscription.ConnectionId,
+                    subscription.GroupName,
+                    subscription.Filter,
+                    this.groups.TryGetValue(subscription.GroupName, out var group)
+                        ? group.ConnectionCount
+                        : 0,
+                    this.streamingGroups.Contains(subscription.GroupName)))];
+        }
+    }
+
     internal Task WaitForChange(long observedVersion, CancellationToken cancellationToken)
     {
         Task wait;
@@ -187,7 +206,7 @@ public sealed class WorkableRealtimeEventSubscriptions
                 this.ReleaseGroupLocked(oldSubscription.GroupName);
             }
 
-            var subscription = new EventSubscription(systemId, groupName, filter, authorization);
+            var subscription = new EventSubscription(connectionId, systemId, groupName, filter, authorization);
             this.connectionGroups[connectionGroupKey] = subscription;
             if (this.groups.TryGetValue(groupName, out var group))
             {
@@ -440,6 +459,7 @@ public sealed class WorkableRealtimeEventSubscriptions
         => new(TaskCreationOptions.RunContinuationsAsynchronously);
 
     internal sealed record EventSubscription(
+        string ConnectionId,
         WorkSystemId SystemId,
         string GroupName,
         WorkEventFilter? Filter,

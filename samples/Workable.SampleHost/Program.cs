@@ -54,6 +54,7 @@ builder.Services.AddWorkableSystem(workable =>
             SampleFakeAuth.OperationsCustomReadGroup,
             SampleFakeAuth.OperationsCustomOperateGroup));
     workable.AddWork<SampleDelayWork>();
+    workable.AddWork<SampleSleepWork>();
     workable.AddWork<WelcomeEmailWork>();
     workable.AddWork<InvoiceGenerateWork>();
     workable.AddWork<InventoryAdjustWork>();
@@ -63,6 +64,11 @@ builder.Services.AddWorkableSystem(workable =>
     workable.AddWork<FlakyValidationWork>();
     workable.AddWork<DemoTimedWork>(DemoDefinition("sample.demo.quick", "Samples:Demo", "Short sample work for UI state testing."));
     workable.AddWork<DemoTimedWork>(DemoDefinition("sample.demo.long", "Samples:Demo", "Longer sample work for UI state testing."));
+    workable.AddWork<DemoMessagePanelWork>(
+        DemoDefinition(
+            "sample.demo.message-panel",
+            "Samples:Demo",
+            "One-shot sample that returns a large retained message set across non-error severities."));
     workable.AddWork<DemoForceCancelWork>(DemoDefinition("sample.demo.force-cancel", "Samples:Demo", "Ignores cancellation so shutdown must force-cancel it."));
     workable.AddWork<DemoTimedWork>(DemoDefinition("sample.demo.throttled", "Samples:Demo", "Longer sample work without an artificial concurrency bottleneck."));
     workable.AddWork<DemoTimedWork>(
@@ -333,7 +339,7 @@ app.MapGet("/", (HttpContext context) =>
                                 <button id="toggle" type="button">Start sample workers</button>
                                 <label class="interval-control">
                                     Interval
-                                    <input id="interval" type="number" min="5" max="10000" step="5">
+                                    <input id="interval" type="number" min="1" max="10000" step="1">
                                     ms
                                 </label>
                                 <label class="percentage-control">

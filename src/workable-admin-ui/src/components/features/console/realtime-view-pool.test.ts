@@ -14,6 +14,7 @@ test("shared view pool reuses one physical connection for matching keys", async 
       created.push(connection);
       return connection as unknown as HubConnection;
     },
+    stopDelayMs: 0,
   });
 
   const first = acquire(pool);
@@ -30,6 +31,39 @@ test("shared view pool reuses one physical connection for matching keys", async 
   assert.equal(created[0]?.stopCount, 0);
 
   second.release();
+  await wait(5);
+  assert.equal(created[0]?.stopCount, 1);
+});
+
+test("shared view pool keeps a just-released connection alive across a brief remount gap", async () => {
+  const created: FakeHubConnection[] = [];
+  const pool = createConsoleRealtimeSharedViewPool({
+    createConnection: () => {
+      const connection = new FakeHubConnection();
+      created.push(connection);
+      return connection as unknown as HubConnection;
+    },
+    stopDelayMs: 25,
+  });
+
+  const first = acquire(pool);
+  first.ensureStarted();
+  await flushMicrotasks();
+  first.release();
+
+  await wait(5);
+
+  const second = acquire(pool);
+  second.ensureStarted();
+  await flushMicrotasks();
+
+  assert.equal(created.length, 1);
+  assert.equal(created[0]?.startCount, 1);
+  assert.equal(created[0]?.stopCount, 0);
+
+  second.release();
+  await wait(35);
+
   assert.equal(created[0]?.stopCount, 1);
 });
 
@@ -142,6 +176,10 @@ function acquire(pool: ReturnType<typeof createConsoleRealtimeSharedViewPool>): 
 async function flushMicrotasks() {
   await Promise.resolve();
   await Promise.resolve();
+}
+
+function wait(milliseconds: number) {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
 class FakeHubConnection {

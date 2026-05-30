@@ -16,7 +16,7 @@ The main outcome families are:
 
 Each one describes a different stage and should be read in that stage's terms.
 
-All of them also carry structured `WorkMessage` values so callers can surface validation, authorization, and state-transition detail without parsing exception text.
+All of them also carry structured `WorkMessage` values so callers can surface validation, authorization, and state-transition detail without parsing exception text. Each message includes `occurredAt`, code, severity, text, and optional target/metadata fields.
 
 ## Queue Outcomes
 

@@ -407,7 +407,7 @@ The examples below show the serialized JSON shape returned by HTTP and MCP adapt
 }
 ```
 
-`IWorkQueryService.WorkerIteration` returns the full retained `WorkerIterationSnapshot`, including `attemptCount`, derived `failure`, output, messages, logs, and profile for that iteration.
+`IWorkQueryService.WorkerIteration` returns the full retained `WorkerIterationSnapshot`, including `attemptCount`, derived `failure`, output, timestamped structured messages, logs, and profile for that iteration.
 
 ```json
 {
@@ -673,6 +673,7 @@ The examples below show the serialized JSON shape returned by HTTP and MCP adapt
   },
   "messages": [
     {
+      "occurredAt": "2026-05-11T12:00:03Z",
       "code": "email.sent",
       "severity": "Info",
       "text": "Email was sent.",

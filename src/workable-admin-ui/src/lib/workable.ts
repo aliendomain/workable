@@ -211,10 +211,44 @@ export type JsonSchemaNode = {
 
 export type WorkMessage = {
   code: string;
+  occurredAt: string;
   severity: string;
   text: string;
   target?: string | null;
   metadata?: Record<string, unknown> | null;
+};
+
+export type WorkIterationMessageSummary = {
+  total: number;
+  critical: number;
+  error: number;
+  errors: number;
+  warning: number;
+  warnings: number;
+  information: number;
+  debug: number;
+  trace: number;
+};
+
+export type WorkIterationMessagePage = {
+  items: WorkMessage[];
+  hasMore: boolean;
+  cursor?: string | null;
+};
+
+export type WorkIterationMessageSection = {
+  summary: WorkIterationMessageSummary;
+  page: WorkIterationMessagePage;
+};
+
+export type WorkerIterationFailure = {
+  kind: "Failure" | "Exception";
+  message: string;
+  code?: string | null;
+  target?: string | null;
+  exceptionType?: string | null;
+  stackTrace?: string | null;
+  declaredByWork: boolean;
 };
 
 export type WorkerSummary = {
@@ -310,6 +344,11 @@ export type WorkerOptions = {
 export type WorkableHttpWorkerConfiguration = {
   profilingEnabled: boolean;
   configuration: WorkConfiguration;
+  input?: WorkData | null;
+  subjectId?: WorkTypedValue | null;
+  concurrencyKey?: WorkTypedValue | null;
+  definitionInfo?: WorkInfo | null;
+  queueRequestSchema: QueueRequestSchemaDescriptor;
 };
 
 export type WorkConfiguration = {
@@ -395,6 +434,8 @@ export type WorkData = {
 export type WorkerLogEntry = {
   id: string;
   occurredAt: string;
+  sequence?: number | null;
+  ordinal?: number | null;
   workerId?: { value: string } | null;
   definitionId?: { value: string } | null;
   category: string;
@@ -428,10 +469,43 @@ export type WorkerIterationSnapshot = {
   executionDuration?: string;
   occurredAt: string;
   status: WorkCompletionStatus;
+  attemptCount: number;
   isFinal: boolean;
   output?: WorkData | null;
   messages?: WorkMessage[];
   logs?: WorkerLogEntry[];
+};
+
+export type WorkIterationLogSection = {
+  summary: WorkWorkerOverviewLogSummary;
+  page: WorkWorkerOverviewPage<WorkerLogEntry>;
+};
+
+export type WorkableHttpWorkerIterationSnapshot = {
+  sequence: number;
+  startedAt: string;
+  completedAt: string;
+  executionDuration: string;
+  occurredAt: string;
+  status: WorkCompletionStatus;
+  attemptCount: number;
+  isFinal: boolean;
+  output?: WorkData | null;
+  failure?: WorkerIterationFailure | null;
+  profile?: unknown;
+};
+
+export type WorkableHttpWorkerIterationDetail = {
+  workerId: { value: string };
+  definitionId: { value: string };
+  definitionName: string;
+  subjectId?: WorkTypedValue | null;
+  concurrencyKey?: WorkTypedValue | null;
+  identifiers: WorkTypedValue[];
+  input?: WorkData | null;
+  iteration: WorkableHttpWorkerIterationSnapshot;
+  messageSummary: WorkIterationMessageSummary;
+  logs: WorkIterationLogSection;
 };
 
 export type WorkWorkerOverviewActivity = "Auto" | "Logs" | "Timeline";
@@ -521,6 +595,8 @@ export type WorkWorkerOverviewLogSummary = {
 export type WorkWorkerOverviewLogEntry = {
   id: string;
   occurredAt: string;
+  sequence?: number | null;
+  ordinal?: number | null;
   level: string;
   category: string;
   message: string;
@@ -605,6 +681,8 @@ export type WorkWorkerOverviewRealtimeUpdate = {
   recentIterations?: WorkWorkerOverviewRecentIteration[] | null;
   timelineSummary?: WorkWorkerOverviewTimelineSummary | null;
   timelineItems?: WorkWorkerOverviewTimelineItem[] | null;
+  requiresRefresh?: boolean;
+  refreshReason?: string | null;
 };
 
 export type WorkerIterationOverviewItem = {
@@ -950,6 +1028,7 @@ export type WorkInfo = {
     completed: number;
     lastActivityAt?: string | null;
   };
+  queueRequestSchema: QueueRequestSchemaDescriptor;
 };
 
 export type WorkDefinitionReconfigurationOutcome = {
@@ -1031,10 +1110,12 @@ export class WorkableApiError extends Error {
 }
 
 const inFlightGetRequests = new Map<string, Promise<unknown>>();
+const inFlightQueryRequests = new Map<string, Promise<unknown>>();
 const realtimeAccessTokenCache = new Map<string, {
   accessToken?: string;
   expiresAt: number;
 }>();
+const inFlightRealtimeAccessTokenRequests = new Map<string, Promise<string | undefined>>();
 const realtimeAccessTokenTtlMs = 55 * 60 * 1000;
 const realtimeMissingAccessTokenTtlMs = 5 * 60 * 1000;
 let loginRedirectInFlight = false;
@@ -1115,6 +1196,40 @@ export async function workableFetch<T>(
   return request;
 }
 
+export async function workableQueryFetch<T>(
+  connection: WorkableConnection,
+  path: string,
+  init?: RequestInit
+): Promise<T> {
+  const scopedPath = createScopedWorkablePath(connection, path);
+  const method = init?.method?.toUpperCase() ?? "GET";
+  const body =
+    typeof init?.body === "string"
+      ? init.body
+      : init?.body === undefined
+        ? ""
+        : null;
+
+  if (body === null) {
+    return fetchWorkable<T>(connection, scopedPath, init);
+  }
+
+  const requestKey = `${method}:${connection.apiUrl}:${scopedPath}\n${body}`;
+  const existing = inFlightQueryRequests.get(requestKey);
+  if (existing) {
+    return existing as Promise<T>;
+  }
+
+  const request = fetchWorkable<T>(connection, scopedPath, init);
+  inFlightQueryRequests.set(requestKey, request);
+  request.then(
+    () => inFlightQueryRequests.delete(requestKey),
+    () => inFlightQueryRequests.delete(requestKey)
+  );
+
+  return request;
+}
+
 async function fetchWorkable<T>(
   connection: WorkableConnection,
   scopedPath: string,
@@ -1184,39 +1299,52 @@ export async function getWorkableRealtimeAccessToken(apiUrl: string) {
     return cached.accessToken;
   }
 
-  const response = await fetch(
-    `/api/auth/entra/workable-token?apiUrl=${encodeURIComponent(apiUrl)}`,
-    {
-      cache: "no-store",
-      credentials: "same-origin",
+  const inFlight = inFlightRealtimeAccessTokenRequests.get(apiUrl);
+  if (inFlight) {
+    return inFlight;
+  }
+
+  const request = (async () => {
+    const response = await fetch(
+      `/api/auth/entra/workable-token?apiUrl=${encodeURIComponent(apiUrl)}`,
+      {
+        cache: "no-store",
+        credentials: "same-origin",
+      }
+    );
+    const body = await response.json().catch(() => ({}));
+    if (shouldRedirectToLogin(response.status, body)) {
+      redirectToLogin(apiUrl, "unauthorized");
     }
-  );
-  const body = await response.json().catch(() => ({}));
-  if (shouldRedirectToLogin(response.status, body)) {
-    redirectToLogin(apiUrl, "unauthorized");
-  }
 
-  if (!response.ok) {
-    const message = typeof body?.error === "string" && body.error.trim()
-      ? body.error
-      : "Unable to acquire a hosted Workable API access token.";
-    throw new Error(message);
-  }
+    if (!response.ok) {
+      const message = typeof body?.error === "string" && body.error.trim()
+        ? body.error
+        : "Unable to acquire a hosted Workable API access token.";
+      throw new Error(message);
+    }
 
-  const accessToken = typeof body?.accessToken === "string" ? body.accessToken.trim() : "";
-  if (!accessToken) {
+    const accessToken = typeof body?.accessToken === "string" ? body.accessToken.trim() : "";
+    if (!accessToken) {
+      realtimeAccessTokenCache.set(apiUrl, {
+        accessToken: undefined,
+        expiresAt: now + realtimeMissingAccessTokenTtlMs,
+      });
+      return undefined;
+    }
+
     realtimeAccessTokenCache.set(apiUrl, {
-      accessToken: undefined,
-      expiresAt: now + realtimeMissingAccessTokenTtlMs,
+      accessToken,
+      expiresAt: now + realtimeAccessTokenTtlMs,
     });
-    return undefined;
-  }
+    return accessToken;
+  })();
 
-  realtimeAccessTokenCache.set(apiUrl, {
-    accessToken,
-    expiresAt: now + realtimeAccessTokenTtlMs,
+  inFlightRealtimeAccessTokenRequests.set(apiUrl, request);
+  request.finally(() => {
+    inFlightRealtimeAccessTokenRequests.delete(apiUrl);
   });
-  return accessToken;
+  return request;
 }
 
 function redirectToLogin(error?: string, reason?: "unauthorized") {

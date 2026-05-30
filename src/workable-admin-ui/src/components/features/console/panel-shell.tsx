@@ -34,6 +34,7 @@ export type PanelFilterControl = {
   content: ReactNode;
   contentClassName?: string;
   label: string;
+  open?: boolean;
   onOpenChange?: (open: boolean) => void;
 };
 
@@ -180,6 +181,7 @@ export function PanelShell({
 }
 
 export function PanelScrollViewport({
+  autoLoadMore = true,
   children,
   className,
   footerClassName,
@@ -193,6 +195,7 @@ export function PanelScrollViewport({
   showLoadedCount = true,
   viewportRef,
 }: {
+  autoLoadMore?: boolean;
   children: ReactNode;
   className?: string;
   footerClassName?: string;
@@ -214,7 +217,7 @@ export function PanelScrollViewport({
   usePanelLoadMoreSentinel(
     scrollRef,
     sentinelRef,
-    hasMore,
+    autoLoadMore && hasMore,
     loading,
     loadingMore,
     onLoadMore
@@ -229,6 +232,7 @@ export function PanelScrollViewport({
       )}
       onScroll={(event) => {
         if (
+          autoLoadMore &&
           hasMore &&
           !loading &&
           !loadingMore &&
@@ -335,10 +339,10 @@ export function usePanelLoadMoreSentinel(
 }
 
 function PanelFilterButton({ filterControl }: { filterControl: PanelFilterControl }) {
-  const { activeCount, content, contentClassName, label, onOpenChange } = filterControl;
+  const { activeCount, content, contentClassName, label, onOpenChange, open } = filterControl;
 
   return (
-    <Popover onOpenChange={onOpenChange}>
+    <Popover onOpenChange={onOpenChange} open={open}>
       <Tooltip delayDuration={500} disableHoverableContent>
         <TooltipTrigger asChild>
           <PopoverTrigger asChild>

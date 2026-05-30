@@ -80,6 +80,7 @@ import { IdentifierSummary, TypedValueSummary } from "@/components/workable/cons
 import {
   stateTone,
   workableFetch,
+  workableQueryFetch,
   type WorkAction,
   type WorkCompletionStatus,
   type WorkComponentQueryResult,
@@ -184,8 +185,7 @@ export function getOverviewPanelShape(
   panelId: OverviewPanelId
 ) {
   const shape = shapes[panelId];
-  return shape === "compact" ||
-    overviewPanelShapeCapabilities[panelId].supportedShapes.includes(shape)
+  return overviewPanelShapeCapabilities[panelId].supportedShapes.includes(shape)
     ? shape
     : overviewPanelShapeCapabilities[panelId].defaultShape;
 }
@@ -521,7 +521,7 @@ export function OverviewView({
     }
 
     try {
-      const failedWorkersOverview = await workableFetch<WorkComponentQueryResult>(
+      const failedWorkersOverview = await workableQueryFetch<WorkComponentQueryResult>(
         connection,
         "views/overview",
         {
@@ -3195,7 +3195,7 @@ function useWorkablePostResource<T>(
     });
 
     const requestConnection = { apiUrl, systemName };
-    workableFetch<T>(requestConnection, path, {
+    workableQueryFetch<T>(requestConnection, path, {
       method: "POST",
       body: bodyKey,
     })

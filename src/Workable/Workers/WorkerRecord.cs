@@ -765,23 +765,24 @@ internal sealed class WorkerRecord(
         }
     }
 
-    public void RecordLog(WorkerLogEntry entry)
+    public WorkerLogEntry RecordLog(WorkerLogEntry entry)
     {
         lock (this.sync)
         {
             var logging = this.Configuration.Logging;
             if (!logging.IsEnabled || entry.Level < logging.Level || logging.MaximumBufferedEntries <= 0)
             {
-                return;
+                return entry;
             }
 
             if (this.currentIteration is not { } currentIteration)
             {
-                return;
+                return entry;
             }
 
-            currentIteration.Logs.Add(entry);
-            this.AddLogSummaryEntryLocked(entry);
+            var storedEntry = entry with { Ordinal = currentIteration.NextLogOrdinal++ };
+            currentIteration.Logs.Add(storedEntry);
+            this.AddLogSummaryEntryLocked(storedEntry);
             while (currentIteration.Logs.Count > logging.MaximumBufferedEntries)
             {
                 this.RemoveLogSummaryEntryLocked(currentIteration.Logs[0]);
@@ -789,6 +790,7 @@ internal sealed class WorkerRecord(
             }
 
             this.MarkUpdated();
+            return storedEntry;
         }
     }
 
@@ -1783,6 +1785,8 @@ internal sealed class WorkerRecord(
     private sealed record CurrentWorkerIteration(long Sequence, DateTimeOffset StartedAt, int AttemptCount)
     {
         public List<WorkerLogEntry> Logs { get; } = [];
+
+        public long NextLogOrdinal { get; set; }
     }
 
     private readonly record struct CheckedWorkerTransition(

@@ -176,6 +176,7 @@ internal static class WorkerEventPayloads
 
     private sealed record WorkerEventLogPayload(
         string Id,
+        long Ordinal,
         string Category,
         string Level,
         WorkerEventLogEventIdPayload EventId,
@@ -186,6 +187,7 @@ internal static class WorkerEventPayloads
         public static WorkerEventLogPayload From(WorkerLogEntry entry)
             => new(
                 entry.Id.ToString("N"),
+                entry.Ordinal,
                 entry.Category,
                 entry.Level.ToString(),
                 WorkerEventLogEventIdPayload.From(entry.EventId),

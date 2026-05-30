@@ -67,6 +67,7 @@ type ConsoleRealtimeSharedViewConnectionLeaseState = {
 };
 
 export type ConsoleRealtimeStatsEntry = {
+  connectionId?: string | null;
   connectionKey: string;
   connectionState: string;
   consumerCount: number;
@@ -74,6 +75,8 @@ export type ConsoleRealtimeStatsEntry = {
   hubUrl: string | null;
   id: string;
   kind: "events" | "view";
+  lastMessageAt?: number;
+  lastMessageLabel?: string;
   label: string;
   lifecycleHandlerCount: number;
   onHandlerCount: number;
@@ -343,18 +346,56 @@ export function useConsoleRealtimeView<T, TMessage extends RealtimePayloadMessag
   }, [enabled, hasConnection, hubUrl]);
 
   useEffect(() => {
+    const statsEntryId = statsEntryIdRef.current;
+    if (!enabled || !hasConnection || !hubUrl || !desiredSharedConnectionKey) {
+      deleteConsoleRealtimeStatsEntry(statsEntryId);
+      return;
+    }
+
+    upsertConsoleRealtimeStatsEntry({
+      connectionId: null,
+      connectionKey: statsConnectionKey,
+      connectionState: "connecting",
+      consumerCount: 1,
+      enabled,
+      hubUrl,
+      id: statsEntryId,
+      kind: "view",
+      label: subscriptionName,
+      lifecycleHandlerCount: 0,
+      lastMessageAt: undefined,
+      lastMessageLabel: undefined,
+      onHandlerCount: 0,
+      subscriptionCount: 1,
+    });
+
+    return () => {
+      deleteConsoleRealtimeStatsEntry(statsEntryId);
+    };
+  }, [
+    desiredSharedConnectionKey,
+    enabled,
+    hasConnection,
+    hubUrl,
+    statsConnectionKey,
+    subscriptionName,
+  ]);
+
+  useEffect(() => {
     if (!sharedConnection) {
       return;
     }
 
     let canceled = false;
     const statsEntryId = statsEntryIdRef.current;
-    const applySnapshot = (snapshot: { connectionState: string; error?: string }) => {
+    const applySnapshot = (snapshot: { connectionId?: string | null; connectionState: string; error?: string }) => {
       if (canceled || !enabled) {
         return;
       }
 
+      const currentStatsEntry = consoleRealtimeStatsEntries.get(statsEntryId);
       upsertConsoleRealtimeStatsEntry({
+        connectionId: snapshot.connectionId ?? null,
         connectionKey: statsConnectionKey,
         connectionState: snapshot.connectionState,
         consumerCount: 1,
@@ -364,6 +405,8 @@ export function useConsoleRealtimeView<T, TMessage extends RealtimePayloadMessag
         kind: "view",
         label: subscriptionName,
         lifecycleHandlerCount: 0,
+        lastMessageAt: currentStatsEntry?.lastMessageAt,
+        lastMessageLabel: currentStatsEntry?.lastMessageLabel,
         onHandlerCount: 0,
         subscriptionCount: 1,
       });
@@ -393,6 +436,23 @@ export function useConsoleRealtimeView<T, TMessage extends RealtimePayloadMessag
           }
 
         const message = createMessageRef.current(envelope.result, ++messageIdRef.current);
+        const receivedAt = Date.now();
+        upsertConsoleRealtimeStatsEntry({
+          connectionId: sharedConnection.getSnapshot().connectionId ?? null,
+          connectionKey: statsConnectionKey,
+          connectionState: "connected",
+          consumerCount: 1,
+          enabled,
+          hubUrl,
+          id: statsEntryId,
+          kind: "view",
+          label: subscriptionName,
+          lifecycleHandlerCount: 0,
+          lastMessageAt: receivedAt,
+          lastMessageLabel: envelope.viewName,
+          onHandlerCount: 0,
+          subscriptionCount: 1,
+        });
         setState((current) => ({
           ...current,
           connectionState: "connected",
@@ -413,7 +473,6 @@ export function useConsoleRealtimeView<T, TMessage extends RealtimePayloadMessag
       canceled = true;
       unsubscribeState();
       unsubscribeMethod();
-      deleteConsoleRealtimeStatsEntry(statsEntryId);
     };
   }, [clientMethod, enabled, hubUrl, serverSubscriptionId, sharedConnection, statsConnectionKey, subscriptionName]);
 
@@ -627,7 +686,9 @@ export function useConsoleRealtimeEventStream<TMessage extends ConsoleRealtimeEv
     let retryTimer: ReturnType<typeof setTimeout> | null = null;
     const statsEntryId = statsEntryIdRef.current;
     const updateStats = (connectionState: string) => {
+      const currentStatsEntry = consoleRealtimeStatsEntries.get(statsEntryId);
       upsertConsoleRealtimeStatsEntry({
+        connectionId: hubConnection.connectionId ?? null,
         connectionKey: statsConnectionKey,
         connectionState,
         consumerCount: 1,
@@ -637,6 +698,8 @@ export function useConsoleRealtimeEventStream<TMessage extends ConsoleRealtimeEv
         kind: "events",
         label: debugLabel ?? watchMethod,
         lifecycleHandlerCount: 3,
+        lastMessageAt: currentStatsEntry?.lastMessageAt,
+        lastMessageLabel: currentStatsEntry?.lastMessageLabel,
         onHandlerCount: 2,
         subscriptionCount: 1,
       });
@@ -747,6 +810,26 @@ export function useConsoleRealtimeEventStream<TMessage extends ConsoleRealtimeEv
       if (!canceled) {
         const message = createSingleMessageRef.current(workEvent, ++messageIdRef.current);
         updateStats("connected");
+        upsertConsoleRealtimeStatsEntry({
+          ...(consoleRealtimeStatsEntries.get(statsEntryIdRef.current) ?? {
+            connectionId: hubConnection.connectionId ?? null,
+            connectionKey: statsConnectionKey,
+            connectionState: "connected",
+            consumerCount: 1,
+            enabled,
+            hubUrl,
+            id: statsEntryIdRef.current,
+            kind: "events" as const,
+            label: debugLabel ?? watchMethod,
+            lifecycleHandlerCount: 3,
+            onHandlerCount: 2,
+            subscriptionCount: 1,
+          }),
+          connectionId: hubConnection.connectionId ?? null,
+          connectionState: "connected",
+          lastMessageAt: message.receivedAt,
+          lastMessageLabel: workEvent.eventType,
+        });
         setState((current) => ({
           ...current,
           connectionState: "connected",
@@ -763,6 +846,28 @@ export function useConsoleRealtimeEventStream<TMessage extends ConsoleRealtimeEv
       if (!canceled) {
         const message = createBatchMessageRef.current(batch, ++messageIdRef.current);
         updateStats("connected");
+        upsertConsoleRealtimeStatsEntry({
+          ...(consoleRealtimeStatsEntries.get(statsEntryIdRef.current) ?? {
+            connectionId: hubConnection.connectionId ?? null,
+            connectionKey: statsConnectionKey,
+            connectionState: "connected",
+            consumerCount: 1,
+            enabled,
+            hubUrl,
+            id: statsEntryIdRef.current,
+            kind: "events" as const,
+            label: debugLabel ?? watchMethod,
+            lifecycleHandlerCount: 3,
+            onHandlerCount: 2,
+            subscriptionCount: 1,
+          }),
+          connectionId: hubConnection.connectionId ?? null,
+          connectionState: "connected",
+          lastMessageAt: message.receivedAt,
+          lastMessageLabel: batch.events[0]?.eventType
+            ? `${batch.events[0].eventType}${batch.events.length > 1 ? ` +${batch.events.length - 1}` : ""}`
+            : "batch",
+        });
         setState((current) => ({
           ...current,
           connectionState: "connected",

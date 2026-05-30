@@ -8,7 +8,6 @@ import {
   Braces,
   CheckCircle2,
   Clock3,
-  Copy,
   Eye,
   Info,
   Loader2,
@@ -73,6 +72,7 @@ import { PanelScrollViewport, PanelShell } from "@/components/features/console/p
 import type { PanelVisibilityOption } from "@/components/features/console/panel-visibility-settings";
 import { ToolbarIconButton } from "@/components/features/console/toolbar-icon-button";
 import type { Loadable, OverviewScope } from "@/components/features/console/types";
+import { invalidateDefinitionCatalogLevelCache } from "@/components/workable/console/catalog-browser-data";
 import {
   SchemaForm,
   SchemaPathField,
@@ -93,6 +93,7 @@ import {
 } from "@/components/workable/console/live-relative-time";
 import {
   formatDateTime,
+  WorkableApiError,
   type WorkActionOutcome,
   workableFetch,
   type QueueRequestSchemaDescriptor,
@@ -105,15 +106,19 @@ import {
   type WorkDefinition,
   type WorkDefinitionReconfigurationOutcome,
   type WorkInfo,
+  type WorkIterationMessageSection,
   type WorkMessage,
   type WorkableRealtimeOrigin,
   type WorkableConnection,
   type WorkableHttpWorkerConfiguration,
+  type WorkableHttpWorkerIterationDetail,
+  type WorkableHttpWorkerIterationSnapshot,
   type WorkWorkerOverviewComponent,
   type WorkWorkerOverviewFailure,
   type WorkWorkerOverviewActivity,
   type WorkWorkerOverviewLatestIteration,
   type WorkWorkerOverviewLogEntry,
+  type WorkWorkerOverviewLogSection,
   type WorkWorkerOverviewLogSummary,
   type WorkWorkerOverviewOrigin,
   type WorkWorkerOverviewRealtimeCriteria,
@@ -121,8 +126,13 @@ import {
   type WorkWorkerOverviewRecentIteration,
   type WorkWorkerOverviewTimelineCategory,
   type WorkWorkerOverviewTimelineItem,
+  type WorkWorkerOverviewTimelineSection,
   type WorkWorkerOverviewTimelineSummary,
   type WorkWorkerOverviewWorker,
+  type WorkIterationLogSection,
+  type WorkIterationMessageSummary,
+  type WorkTypedValue,
+  type WorkerIterationFailure,
   type WorkerIterationSnapshot,
   type WorkerLogEntry,
   type WorkerSummary,
@@ -152,6 +162,7 @@ type IterationDetailPanelId =
   | "iterationMessages"
   | "iterationOutput"
   | "iterationLogs";
+type IterationFocusedPanelId = "iterationMessages";
 type WorkerReconfigurationRequest = {
   profilingEnabled?: boolean;
   start?: WorkConfiguration["start"];
@@ -211,6 +222,23 @@ type WorkerDetailPanelId =
   | "workerDuration"
   | "workerTimeline";
 type WorkerFocusedPanelId = "workerLogs" | "workerTimeline";
+export type WorkerConsoleViewUiStateSnapshot = {
+  focusedWorkerHiddenSnapshotPanelIds: WorkerDetailPanelId[] | null;
+  focusedWorkerPanel: WorkerFocusedPanelId | null;
+  hiddenPanelIds: WorkerDetailPanelId[];
+  logSortDirection: WorkerSortDirection;
+  selectedLogLevels: WorkerLogFilterLevel[] | null;
+  selectedTimelineFilters: WorkerTimelineFilterKind[] | null;
+  timelineSortDirection: WorkerSortDirection;
+  workerConfigurationAutoShowAllValues: boolean;
+  workerConfigurationDisplayMode: WorkerConfigurationDisplayMode;
+  workerConfigurationPanelViewState: WorkComponentShape;
+  workerControlsPanelViewState: WorkComponentShape;
+  workerDurationPanelViewState: WorkComponentShape;
+  workerId: string;
+  workerLogsPanelViewState: WorkComponentShape;
+  workerTimelinePanelViewState: WorkComponentShape;
+};
 
 const workerPanelOptions: PanelVisibilityOption<WorkerDetailPanelId>[] = [
   {
@@ -261,6 +289,8 @@ const iterationPanelOptions: PanelVisibilityOption<IterationDetailPanelId>[] = [
     description: "Retained log entries emitted during this iteration.",
   },
 ];
+const maxWorkerLogPanelEntries = 500;
+const workerOverviewRealtimeResyncCooldownMs = 5000;
 
 export function DefinitionsView({
   autoOpenScopedDefinition = true,
@@ -467,8 +497,6 @@ export function DefinitionView({
   const [definitionRequest, setDefinitionRequest] = useState<QueueWorkRequest>(() =>
     createDefaultQueueRequest(null)
   );
-  const [queueSchemaDescriptor, setQueueSchemaDescriptor] =
-    useState<QueueRequestSchemaDescriptor | null>(null);
   const [saveError, setSaveError] = useState<string>();
   const [saveStatus, setSaveStatus] = useState<string>();
   const [isSaving, setIsSaving] = useState(false);
@@ -476,12 +504,12 @@ export function DefinitionView({
   const definition = updatedDefinition ?? info.data?.definition;
   const isReady = !info.loading;
   const queueRequestSchema = useMemo(
-    () => parseJsonSchema(queueSchemaDescriptor?.schema?.jsonSchema),
-    [queueSchemaDescriptor?.schema?.jsonSchema]
+    () => parseJsonSchema(info.data?.queueRequestSchema?.schema?.jsonSchema),
+    [info.data?.queueRequestSchema?.schema?.jsonSchema]
   );
   const definitionConfigurationDescriptor = useMemo(
-    () => createDefinitionConfigurationDescriptor(queueSchemaDescriptor),
-    [queueSchemaDescriptor]
+    () => createDefinitionConfigurationDescriptor(info.data?.queueRequestSchema ?? null),
+    [info.data?.queueRequestSchema]
   );
 
   useEffect(() => {
@@ -489,6 +517,12 @@ export function DefinitionView({
       onReady();
     }
   }, [isReady, onReady]);
+
+  useEffect(() => {
+    if (info.errorCause instanceof WorkableApiError && info.errorCause.status === 404) {
+      invalidateDefinitionCatalogLevelCache(connection);
+    }
+  }, [connection, info.errorCause]);
 
   useEffect(() => {
     if (!definition) {
@@ -529,26 +563,6 @@ export function DefinitionView({
   useEffect(() => {
     queueMicrotask(() => setUpdatedDefinition(null));
   }, [definitionId, info.data?.definition]);
-
-  useEffect(() => {
-    let canceled = false;
-
-    workableFetch<QueueRequestSchemaDescriptor>(connection, "queue-request/schema")
-      .then((descriptor) => {
-        if (!canceled) {
-          setQueueSchemaDescriptor(descriptor);
-        }
-      })
-      .catch(() => {
-        if (!canceled) {
-          setQueueSchemaDescriptor(null);
-        }
-      });
-
-    return () => {
-      canceled = true;
-    };
-  }, [connection]);
 
   const saveConfiguration = async () => {
     if (!definition) {
@@ -687,7 +701,9 @@ export function DefinitionView({
           <QueueDialog
             connection={connection}
             definition={queueDefinition}
+            fetchQueueSchemaWhenNeeded={false}
             onQueuedWorker={onOpenWorker}
+            preloadedQueueSchemaDescriptor={info.data?.queueRequestSchema ?? null}
             onOpenChange={(open) => !open && setQueueDefinition(null)}
           />
         </>
@@ -699,12 +715,14 @@ export function DefinitionView({
 export function WorkerConsoleView({
   clearSystemNotification,
   connection,
+  initialUiState,
   onActiveRealtimeConnectionCountChange,
   onRealtimePayloadOpenChange,
   onOpenDefinitionCatalog,
   onOpenIteration,
   onNavigateBack,
   onOpenWorker,
+  onUiStateChange,
   reportSystemNotification,
   refreshToken,
   realtimePayloadCaptureEnabled,
@@ -714,12 +732,14 @@ export function WorkerConsoleView({
 }: {
   clearSystemNotification: (notificationId: string) => void;
   connection: WorkableConnection;
+  initialUiState?: WorkerConsoleViewUiStateSnapshot | null;
   onActiveRealtimeConnectionCountChange: (count: number) => void;
   onOpenDefinitionCatalog: (definitionName: string, category?: string | null) => void;
   onOpenIteration: (workerId: string, sequence: number) => void;
   onNavigateBack: () => void;
   onOpenWorker: (workerId: string) => void;
   onRealtimePayloadOpenChange: (open: boolean) => void;
+  onUiStateChange?: (state: WorkerConsoleViewUiStateSnapshot) => void;
   reportSystemNotification: (notification: {
     description: string;
     id: string;
@@ -732,8 +752,10 @@ export function WorkerConsoleView({
   realtimePayloadOpen: boolean;
   workerId: string;
 }) {
+  const restoredUiState = initialUiState?.workerId === workerId ? initialUiState : null;
   const [actionFeedback, setActionFeedback] = useState<{
     message: string;
+    title?: string;
     tone: FeedbackTone;
   }>();
   const [pendingAction, setPendingAction] = useState<WorkAction | null>(null);
@@ -743,30 +765,55 @@ export function WorkerConsoleView({
   const [copyQueueDialog, setCopyQueueDialog] = useState<{
     definition: WorkDefinition;
     formValue: unknown;
+    queueRequestSchema: QueueRequestSchemaDescriptor;
     request: QueueWorkRequest;
   } | null>(null);
   const [openingCopyQueue, setOpeningCopyQueue] = useState(false);
   const [workerConfigurationRequest, setWorkerConfigurationRequest] = useState<QueueWorkRequest>(() =>
     createDefaultQueueRequest(null)
   );
-  const [queueSchemaDescriptor, setQueueSchemaDescriptor] =
-    useState<QueueRequestSchemaDescriptor | null>(null);
   const [isSavingWorkerConfiguration, setIsSavingWorkerConfiguration] = useState(false);
   const lastSavedWorkerConfigurationRequestRef = useRef<QueueWorkRequest | null>(null);
-  const [hiddenPanelIds, setHiddenPanelIds] = useState<ReadonlySet<WorkerDetailPanelId>>(() => createDefaultWorkerHiddenPanels());
-  const [workerControlsPanelViewState, setWorkerControlsPanelViewState] = useState<WorkComponentShape>("compact");
-  const [workerConfigurationPanelViewState, setWorkerConfigurationPanelViewState] = useState<WorkComponentShape>("compact");
+  const [hiddenPanelIds, setHiddenPanelIds] = useState<ReadonlySet<WorkerDetailPanelId>>(() =>
+    restoredUiState
+      ? new Set(restoredUiState.hiddenPanelIds)
+      : createDefaultWorkerHiddenPanels()
+  );
+  const [workerControlsPanelViewState, setWorkerControlsPanelViewState] = useState<WorkComponentShape>(
+    () => restoredUiState?.workerControlsPanelViewState ?? "compact"
+  );
+  const [workerConfigurationPanelViewState, setWorkerConfigurationPanelViewState] = useState<WorkComponentShape>(
+    () => restoredUiState?.workerConfigurationPanelViewState ?? "compact"
+  );
   const [workerConfigurationDisplayMode, setWorkerConfigurationDisplayMode] =
-    useState<WorkerConfigurationDisplayMode>("auto");
-  const [workerConfigurationAutoShowAllValues, setWorkerConfigurationAutoShowAllValues] = useState(true);
-  const [workerLogsPanelViewState, setWorkerLogsPanelViewStateState] = useState<WorkComponentShape>("compact");
-  const [workerDurationPanelViewState, setWorkerDurationPanelViewState] = useState<WorkComponentShape>("standard");
-  const [workerTimelinePanelViewState, setWorkerTimelinePanelViewStateState] = useState<WorkComponentShape>("standard");
-  const [focusedWorkerPanel, setFocusedWorkerPanel] = useState<WorkerFocusedPanelId | null>(null);
-  const [selectedLogLevels, setSelectedLogLevels] = useState<WorkerLogFilterLevel[] | null>(null);
-  const [logSortDirection, setLogSortDirection] = useState<WorkerSortDirection>("desc");
-  const [selectedTimelineFilters, setSelectedTimelineFilters] = useState<WorkerTimelineFilterKind[] | null>(null);
-  const [timelineSortDirection, setTimelineSortDirection] = useState<WorkerSortDirection>("desc");
+    useState<WorkerConfigurationDisplayMode>(() => restoredUiState?.workerConfigurationDisplayMode ?? "auto");
+  const [workerConfigurationAutoShowAllValues, setWorkerConfigurationAutoShowAllValues] = useState(
+    () => restoredUiState?.workerConfigurationAutoShowAllValues ?? true
+  );
+  const [workerLogsPanelViewState, setWorkerLogsPanelViewStateState] = useState<WorkComponentShape>(
+    () => restoredUiState?.workerLogsPanelViewState ?? "compact"
+  );
+  const [workerDurationPanelViewState, setWorkerDurationPanelViewState] = useState<WorkComponentShape>(
+    () => restoredUiState?.workerDurationPanelViewState ?? "standard"
+  );
+  const [workerTimelinePanelViewState, setWorkerTimelinePanelViewStateState] = useState<WorkComponentShape>(
+    () => restoredUiState?.workerTimelinePanelViewState ?? "standard"
+  );
+  const [focusedWorkerPanel, setFocusedWorkerPanel] = useState<WorkerFocusedPanelId | null>(
+    () => restoredUiState?.focusedWorkerPanel ?? null
+  );
+  const [selectedLogLevels, setSelectedLogLevels] = useState<WorkerLogFilterLevel[] | null>(
+    () => restoredUiState?.selectedLogLevels ?? null
+  );
+  const [logSortDirection, setLogSortDirection] = useState<WorkerSortDirection>(
+    () => restoredUiState?.logSortDirection ?? "desc"
+  );
+  const [selectedTimelineFilters, setSelectedTimelineFilters] = useState<WorkerTimelineFilterKind[] | null>(
+    () => restoredUiState?.selectedTimelineFilters ?? null
+  );
+  const [timelineSortDirection, setTimelineSortDirection] = useState<WorkerSortDirection>(
+    () => restoredUiState?.timelineSortDirection ?? "desc"
+  );
   const [extraLogEntries, setExtraLogEntries] = useState<WorkWorkerOverviewLogEntry[]>([]);
   const [realtimeLogEntries, setRealtimeLogEntries] = useState<WorkWorkerOverviewLogEntry[]>([]);
   const [logPageLoadState, setLogPageLoadState] = useState<WorkerOverviewPageLoadState>({
@@ -798,10 +845,16 @@ export function WorkerConsoleView({
   } | null>(null);
   const [realtimeRecentIterations, setRealtimeRecentIterations] = useState<WorkWorkerOverviewRecentIteration[]>([]);
   const [realtimeUpdateError, setRealtimeUpdateError] = useState<string>();
-  const focusedWorkerHiddenSnapshotRef = useRef<ReadonlySet<WorkerDetailPanelId> | null>(null);
-  const initializedWorkerPanelsRef = useRef<string | null>(null);
-  const initializedWorkerConfigurationVisibilityRef = useRef<string | null>(null);
-  const initializedWorkerConfigurationAutoModeRef = useRef<string | null>(null);
+  const focusedWorkerHiddenSnapshotRef = useRef<ReadonlySet<WorkerDetailPanelId> | null>(
+    restoredUiState?.focusedWorkerHiddenSnapshotPanelIds
+      ? new Set(restoredUiState.focusedWorkerHiddenSnapshotPanelIds)
+      : null
+  );
+  const lastPublishedUiStateKeyRef = useRef<string | null>(null);
+  const initializedWorkerPanelsRef = useRef<string | null>(restoredUiState ? workerId : null);
+  const initializedWorkerConfigurationVisibilityRef = useRef<string | null>(restoredUiState ? workerId : null);
+  const initializedWorkerConfigurationAutoModeRef = useRef<string | null>(restoredUiState ? workerId : null);
+  const workerOverviewRealtimeResyncCooldownUntilRef = useRef(0);
   const refreshSeed = refreshToken + actionRefreshToken + manualRefreshToken;
   const landingSnapshot = useWorkableResource<WorkWorkerOverviewComponent>(
     connection,
@@ -833,8 +886,21 @@ export function WorkerConsoleView({
     ]
   );
   const activity = landing?.activity ?? "Logs";
-  const isWorkerLogsPanelExpanded = workerLogsPanelViewState !== "compact";
-  const isWorkerTimelinePanelExpanded = workerTimelinePanelViewState !== "compact";
+  const defaultWorkerLogsPanelViewState = activity === "Timeline" ? "compact" : "standard";
+  const defaultWorkerTimelinePanelViewState = activity === "Timeline" ? "standard" : "compact";
+  const workerOverviewPanelsInitialized = landing !== null &&
+    initializedWorkerPanelsRef.current === workerId;
+  const shouldSubscribeToWorkerOverviewRealtime = workerOverviewPanelsInitialized &&
+    landing?.worker.state !== "Canceled" &&
+    landing?.worker.state !== "Completed";
+  const effectiveWorkerLogsPanelViewState = landing && !workerOverviewPanelsInitialized
+    ? defaultWorkerLogsPanelViewState
+    : workerLogsPanelViewState;
+  const effectiveWorkerTimelinePanelViewState = landing && !workerOverviewPanelsInitialized
+    ? defaultWorkerTimelinePanelViewState
+    : workerTimelinePanelViewState;
+  const isWorkerLogsPanelExpanded = effectiveWorkerLogsPanelViewState !== "compact";
+  const isWorkerTimelinePanelExpanded = effectiveWorkerTimelinePanelViewState !== "compact";
   const isWorkerPanelFocused = focusedWorkerPanel !== null;
   const normalizedSelectedLogLevels = useMemo(
     () => normalizeSelectedLogLevelsForRequest(selectedLogLevels),
@@ -855,9 +921,9 @@ export function WorkerConsoleView({
   const workerOverviewRealtimeCriteria = useMemo<WorkWorkerOverviewRealtimeCriteria>(
     () => ({
       workerControls: workerControlsPanelViewState === "detailed" ? "standard" : workerControlsPanelViewState,
-      workerLogs: workerLogsPanelViewState,
+      workerLogs: effectiveWorkerLogsPanelViewState,
       workerDuration: workerDurationPanelViewState,
-      workerTimeline: workerTimelinePanelViewState,
+      workerTimeline: effectiveWorkerTimelinePanelViewState,
       logSortDirection: logSortDirection === "asc" ? "Asc" : "Desc",
       logLevels: normalizedSelectedLogLevels,
       timelineSortDirection: timelineSortDirection === "asc" ? "Asc" : "Desc",
@@ -868,10 +934,10 @@ export function WorkerConsoleView({
       normalizedSelectedLogLevels,
       normalizedSelectedTimelineFilters,
       timelineSortDirection,
+      effectiveWorkerLogsPanelViewState,
+      effectiveWorkerTimelinePanelViewState,
       workerControlsPanelViewState,
       workerDurationPanelViewState,
-      workerLogsPanelViewState,
-      workerTimelinePanelViewState,
     ]
   );
   const workerOverviewRealtimeCriteriaKey = useMemo(
@@ -879,12 +945,14 @@ export function WorkerConsoleView({
     [workerOverviewRealtimeCriteria]
   );
   const workerOverviewRealtimeSubscriptionInstanceKey = useMemo(
-    () => `${workerId}:${workerOverviewRealtimeCriteriaKey}:${realtimeSubscriptionResetToken}`,
-    [realtimeSubscriptionResetToken, workerId, workerOverviewRealtimeCriteriaKey]
+    // Keep the worker overview watch identity stable across criteria-only changes
+    // so compact/standard transitions can update the existing watch in place.
+    () => `${workerId}:${realtimeSubscriptionResetToken}`,
+    [realtimeSubscriptionResetToken, workerId]
   );
   const workerOverviewRealtimeConnectionInstanceKey = useMemo(
-    () => `${workerId}:${workerOverviewRealtimeCriteriaKey}:${realtimeSubscriptionResetToken}`,
-    [realtimeSubscriptionResetToken, workerId, workerOverviewRealtimeCriteriaKey]
+    () => `worker-overview:${workerId}`,
+    [workerId]
   );
   const workerOverviewRealtime = useConsoleRealtimeView<WorkWorkerOverviewRealtimeUpdate, RealtimePayloadMessage>({
     body: workerOverviewRealtimeCriteria,
@@ -903,7 +971,7 @@ export function WorkerConsoleView({
         connection
       );
     },
-    enabled: Boolean(connection.realtimeHubPath),
+    enabled: Boolean(connection.realtimeHubPath) && shouldSubscribeToWorkerOverviewRealtime,
     maxMessages: realtimePayloadMaxMessages,
     subscription: `worker-overview:${workerId}`,
     subscriptionInstanceKey: workerOverviewRealtimeSubscriptionInstanceKey,
@@ -940,14 +1008,6 @@ export function WorkerConsoleView({
     ),
     [landing]
   );
-  const queueRequestSchema = useMemo(
-    () => parseJsonSchema(queueSchemaDescriptor?.schema?.jsonSchema),
-    [queueSchemaDescriptor?.schema?.jsonSchema]
-  );
-  const workerConfigurationDescriptor = useMemo(
-    () => createWorkerConfigurationDescriptor(queueSchemaDescriptor),
-    [queueSchemaDescriptor]
-  );
   const workerDetailSnapshot = useWorkableResource<WorkableHttpWorkerConfiguration>(
     connection,
     workerConfigurationPanelViewState === "standard"
@@ -960,18 +1020,16 @@ export function WorkerConsoleView({
     }
   );
   const workerConfigurationSource = workerDetailSnapshot.data ?? null;
-  const workerDefinitionInfo = useWorkableResource<WorkInfo>(
-    connection,
-    workerConfigurationPanelViewState === "standard" && worker?.definitionId.value
-      ? `definitions/${worker.definitionId.value}/info`
-      : null,
-    refreshSeed,
-    {
-      retainDataOnNull: true,
-      resetKey: worker?.definitionId.value ?? workerId,
-    }
+  const queueSchemaDescriptor = workerDetailSnapshot.data?.queueRequestSchema ?? null;
+  const queueRequestSchema = useMemo(
+    () => parseJsonSchema(queueSchemaDescriptor?.schema?.jsonSchema),
+    [queueSchemaDescriptor?.schema?.jsonSchema]
   );
-  const workerDefinition = workerDefinitionInfo.data?.definition ?? null;
+  const workerConfigurationDescriptor = useMemo(
+    () => createWorkerConfigurationDescriptor(queueSchemaDescriptor),
+    [queueSchemaDescriptor]
+  );
+  const workerDefinition = workerDetailSnapshot.data?.definitionInfo?.definition ?? null;
   const workerDefaultConfigurationRequest = useMemo(
     () => ({
       options: createEffectiveConfigurationOptions(workerDefinition),
@@ -1012,11 +1070,10 @@ export function WorkerConsoleView({
     [workerConfigurationRequest, workerDefaultConfigurationRequest, workerDefinition]
   );
   const workerConfigurationSeedRef = useRef("");
-  const logsPageSnapshot = useWorkableResource<WorkWorkerOverviewComponent>(
+  const logsPageSnapshot = useWorkableResource<WorkWorkerOverviewLogSection>(
     connection,
-    landing && isWorkerLogsPanelExpanded && !usingBootstrapLogsPage
-      ? createWorkerOverviewPath(workerId, {
-          activity: "Logs",
+    landing && workerOverviewPanelsInitialized && isWorkerLogsPanelExpanded && !usingBootstrapLogsPage
+      ? createWorkerOverviewLogsPath(workerId, {
           activityTake: workerOverviewActivityPageSize,
           logLevels: normalizedSelectedLogLevels,
           logSortDirection,
@@ -1028,11 +1085,10 @@ export function WorkerConsoleView({
       resetKey: `${workerId}:logs:${logQueryKey}:${logPageResetSeed}`,
     }
   );
-  const timelinePageSnapshot = useWorkableResource<WorkWorkerOverviewComponent>(
+  const timelinePageSnapshot = useWorkableResource<WorkWorkerOverviewTimelineSection>(
     connection,
-    landing && isWorkerTimelinePanelExpanded && !usingBootstrapTimelinePage
-      ? createWorkerOverviewPath(workerId, {
-          activity: "Timeline",
+    landing && workerOverviewPanelsInitialized && isWorkerTimelinePanelExpanded && !usingBootstrapTimelinePage
+      ? createWorkerOverviewTimelinePath(workerId, {
           activityTake: workerOverviewActivityPageSize,
           timelineFilters: normalizedSelectedTimelineFilters,
           timelineSortDirection,
@@ -1047,27 +1103,29 @@ export function WorkerConsoleView({
   const logBasePage = useMemo(
     () => usingBootstrapLogsPage
       ? landing?.logs.page ?? null
-      : logsPageSnapshot.refreshing === true
-        ? null
-        : logsPageSnapshot.data?.logs.page ?? null,
-    [landing?.logs.page, logsPageSnapshot.data?.logs.page, logsPageSnapshot.refreshing, usingBootstrapLogsPage]
+      : logsPageSnapshot.data?.page ?? null,
+    [landing?.logs.page, logsPageSnapshot.data?.page, usingBootstrapLogsPage]
   );
   const timelineBasePage = useMemo(
     () => usingBootstrapTimelinePage
       ? landing?.timeline.page ?? null
-      : timelinePageSnapshot.refreshing === true
-        ? null
-        : timelinePageSnapshot.data?.timeline.page ?? null,
-    [landing?.timeline.page, timelinePageSnapshot.data?.timeline.page, timelinePageSnapshot.refreshing, usingBootstrapTimelinePage]
+      : timelinePageSnapshot.data?.page ?? null,
+    [landing?.timeline.page, timelinePageSnapshot.data?.page, usingBootstrapTimelinePage]
   );
   const executionLogs = useMemo(
     () => {
       const overlayEntries = logSortDirection === "desc"
         ? [...realtimeLogEntries, ...extraLogEntries]
         : [...extraLogEntries, ...realtimeLogEntries];
-      const items = mergeWorkerOverviewRealtimeEntries(
-        logBasePage?.items ?? [],
-        overlayEntries,
+      const items = sortWorkerOverviewLogEntries(
+        filterWorkerOverviewLogEntriesBySelectedLevels(
+        mergeWorkerOverviewRealtimeEntries(
+          logBasePage?.items ?? [],
+          overlayEntries,
+          logSortDirection
+        ),
+        normalizedSelectedLogLevels
+        ),
         logSortDirection
       );
       return items.map(createWorkerLogEntryFromLandingLogEntry);
@@ -1076,6 +1134,7 @@ export function WorkerConsoleView({
       extraLogEntries,
       logSortDirection,
       logBasePage?.items,
+      normalizedSelectedLogLevels,
       realtimeLogEntries,
     ]
   );
@@ -1152,7 +1211,6 @@ export function WorkerConsoleView({
     : emptyAvailableWorkerActions;
   const refreshWorkerSnapshot = useCallback(() => {
     setManualRefreshToken((value) => value + 1);
-    setRealtimeSubscriptionResetToken((value) => value + 1);
   }, []);
   const toggleRealtimePayloadOpen = useCallback(() => {
     onRealtimePayloadOpenChange(!realtimePayloadOpen);
@@ -1198,20 +1256,20 @@ export function WorkerConsoleView({
 
     setOpeningCopyQueue(true);
     try {
-      const [fullWorker, info] = await Promise.all([
-        workableFetch<WorkerSnapshot>(
-          connection,
-          `workers/${worker.id.value}`
-        ),
-        workableFetch<WorkInfo>(
-          connection,
-          `definitions/${worker.definitionId.value}/info`
-        ),
-      ]);
+      const workerConfiguration = await workableFetch<WorkableHttpWorkerConfiguration>(
+        connection,
+        `workers/${worker.id.value}/configuration`
+      );
+      const definition = workerConfiguration.definitionInfo?.definition;
+      if (!definition) {
+        throw new Error("Queue settings are unavailable for this worker.");
+      }
+
       setCopyQueueDialog({
-        definition: info.definition,
-        formValue: cloneJsonValue(parseSchemaJsonValue(worker.input?.json)),
-        request: createCopiedWorkerQueueRequest(fullWorker, lastSavedWorkerConfigurationRequestRef.current),
+        definition,
+        formValue: cloneJsonValue(parseSchemaJsonValue(workerConfiguration.input?.json)),
+        queueRequestSchema: workerConfiguration.queueRequestSchema,
+        request: createCopiedWorkerQueueRequest(workerConfiguration, lastSavedWorkerConfigurationRequestRef.current),
       });
     } catch (caught) {
       setActionFeedback({
@@ -1222,30 +1280,6 @@ export function WorkerConsoleView({
       setOpeningCopyQueue(false);
     }
   };
-
-  useEffect(() => {
-    if (workerConfigurationPanelViewState !== "standard" || queueSchemaDescriptor) {
-      return;
-    }
-
-    let canceled = false;
-
-    workableFetch<QueueRequestSchemaDescriptor>(connection, "queue-request/schema")
-      .then((descriptor) => {
-        if (!canceled) {
-          setQueueSchemaDescriptor(descriptor);
-        }
-      })
-      .catch(() => {
-        if (!canceled) {
-          setQueueSchemaDescriptor(null);
-        }
-      });
-
-    return () => {
-      canceled = true;
-    };
-  }, [connection, queueSchemaDescriptor, workerConfigurationPanelViewState]);
 
   useEffect(() => {
     if (!workerConfigurationSource) {
@@ -1353,6 +1387,28 @@ export function WorkerConsoleView({
     }
 
     try {
+      if (update.requiresRefresh) {
+        const now = Date.now();
+        if (now < workerOverviewRealtimeResyncCooldownUntilRef.current) {
+          return;
+        }
+
+        workerOverviewRealtimeResyncCooldownUntilRef.current =
+          now + workerOverviewRealtimeResyncCooldownMs;
+        setActionFeedback({
+          message: update.refreshReason?.trim().length
+            ? update.refreshReason
+            : "Realtime worker updates fell behind and were refreshed.",
+          title: "Realtime resynced",
+          tone: "warning",
+        });
+        // The server restarts the worker-overview pump after issuing a resync
+        // instruction, so we only need a fresh HTTP snapshot here.
+        setManualRefreshToken((current) => current + 1);
+        setRealtimeUpdateError(undefined);
+        return;
+      }
+
       if (update.worker !== undefined) {
         setRealtimeWorker(update.worker ?? null);
       }
@@ -1370,20 +1426,26 @@ export function WorkerConsoleView({
       }
 
       if (update.recentIterations && update.recentIterations.length > 0) {
+        const recentIterations = update.recentIterations;
         setRealtimeRecentIterations((current) =>
-          mergeWorkerOverviewRecentIterations(current, update.recentIterations)
+          mergeWorkerOverviewRecentIterations(current, recentIterations)
         );
       }
 
       if (update.logEntries && update.logEntries.length > 0) {
+        const logEntries = update.logEntries;
         setRealtimeLogEntries((current) =>
-          mergeWorkerOverviewRealtimeEntries(current, update.logEntries, logSortDirection)
+          capWorkerLogEntries(
+            mergeWorkerOverviewRealtimeEntries(current, logEntries, logSortDirection),
+            maxWorkerLogPanelEntries
+          )
         );
       }
 
       if (update.timelineItems && update.timelineItems.length > 0) {
+        const timelineItems = update.timelineItems;
         setRealtimeTimelineItems((current) =>
-          mergeWorkerOverviewRealtimeEntries(current, update.timelineItems, timelineSortDirection)
+          mergeWorkerOverviewRealtimeEntries(current, timelineItems, timelineSortDirection)
         );
       }
 
@@ -1493,7 +1555,11 @@ export function WorkerConsoleView({
   }, [hiddenPanelIds, workerDurationPanelViewState]);
 
   const loadMoreLogs = useCallback(async () => {
-    if (logPageLoadState.loadingMore || !logPageLoadState.hasMore || !logPageLoadState.nextCursor) {
+    if (
+      logPageLoadState.loadingMore ||
+      !logPageLoadState.hasMore ||
+      !logPageLoadState.nextCursor
+    ) {
       return;
     }
 
@@ -1504,17 +1570,16 @@ export function WorkerConsoleView({
     }));
 
     try {
-      const overview = await workableFetch<WorkWorkerOverviewComponent>(
+      const logs = await workableFetch<WorkWorkerOverviewLogSection>(
         connection,
-        createWorkerOverviewPath(workerId, {
-          activity: "Logs",
+        createWorkerOverviewLogsPath(workerId, {
           activityCursor: logPageLoadState.nextCursor,
           activityTake: workerOverviewActivityPageSize,
           logLevels: normalizedSelectedLogLevels,
           logSortDirection,
         })
       );
-      const page = overview.logs.page;
+      const page = logs.page;
       if (!page) {
         setLogPageLoadState((current) => ({
           ...current,
@@ -1561,17 +1626,16 @@ export function WorkerConsoleView({
     }));
 
     try {
-      const overview = await workableFetch<WorkWorkerOverviewComponent>(
+      const timeline = await workableFetch<WorkWorkerOverviewTimelineSection>(
         connection,
-        createWorkerOverviewPath(workerId, {
-          activity: "Timeline",
+        createWorkerOverviewTimelinePath(workerId, {
           activityCursor: timelinePageLoadState.nextCursor,
           activityTake: workerOverviewActivityPageSize,
           timelineFilters: normalizedSelectedTimelineFilters,
           timelineSortDirection,
         })
       );
-      const page = overview.timeline.page;
+      const page = timeline.page;
       if (!page) {
         setTimelinePageLoadState((current) => ({
           ...current,
@@ -1824,6 +1888,58 @@ export function WorkerConsoleView({
     });
   }, [worker, workerConfigurationDifferenceCount, workerId]);
 
+  const uiStateSnapshot = useMemo<WorkerConsoleViewUiStateSnapshot>(() => ({
+      focusedWorkerHiddenSnapshotPanelIds: focusedWorkerHiddenSnapshotRef.current
+        ? [...focusedWorkerHiddenSnapshotRef.current]
+        : null,
+      focusedWorkerPanel,
+      hiddenPanelIds: [...hiddenPanelIds],
+      logSortDirection,
+      selectedLogLevels,
+      selectedTimelineFilters,
+      timelineSortDirection,
+      workerConfigurationAutoShowAllValues,
+      workerConfigurationDisplayMode,
+      workerConfigurationPanelViewState,
+      workerControlsPanelViewState,
+      workerDurationPanelViewState,
+      workerId,
+      workerLogsPanelViewState,
+      workerTimelinePanelViewState,
+    }), [
+      focusedWorkerPanel,
+      hiddenPanelIds,
+      logSortDirection,
+      selectedLogLevels,
+      selectedTimelineFilters,
+      timelineSortDirection,
+      workerConfigurationAutoShowAllValues,
+      workerConfigurationDisplayMode,
+      workerConfigurationPanelViewState,
+      workerControlsPanelViewState,
+      workerDurationPanelViewState,
+      workerId,
+      workerLogsPanelViewState,
+      workerTimelinePanelViewState,
+    ]);
+
+  useEffect(() => {
+    if (!onUiStateChange) {
+      return;
+    }
+
+    const snapshotKey = JSON.stringify(uiStateSnapshot);
+    if (lastPublishedUiStateKeyRef.current === snapshotKey) {
+      return;
+    }
+
+    lastPublishedUiStateKeyRef.current = snapshotKey;
+    onUiStateChange(uiStateSnapshot);
+  }, [
+    onUiStateChange,
+    uiStateSnapshot,
+  ]);
+
   const resetWorkerUiToDefaults = useCallback(() => {
     setHiddenPanelIds(createDefaultWorkerHiddenPanels(workerConfigurationDifferenceCount > 0));
     focusedWorkerHiddenSnapshotRef.current = null;
@@ -1840,9 +1956,9 @@ export function WorkerConsoleView({
     setTimelineSortDirection("desc");
   }, [activity, workerConfigurationDifferenceCount]);
   const logsLoading = isWorkerLogsPanelExpanded && !usingBootstrapLogsPage &&
-    ((logsPageSnapshot.loading && !logBasePage) || logsPageSnapshot.refreshing === true);
+    (logsPageSnapshot.loading && !logBasePage);
   const timelineLoading = isWorkerTimelinePanelExpanded && !usingBootstrapTimelinePage &&
-    ((timelinePageSnapshot.loading && !timelineBasePage) || timelinePageSnapshot.refreshing === true);
+    (timelinePageSnapshot.loading && !timelineBasePage);
   const logPanelError = logsPageSnapshot.error ?? logPageLoadState.error;
   const timelinePanelError = timelinePageSnapshot.error ?? timelinePageLoadState.error;
   const setLogLevelVisible = useCallback((level: WorkerLogFilterLevel, visible: boolean) => {
@@ -1887,7 +2003,7 @@ export function WorkerConsoleView({
                     key={actionFeedback.message}
                     message={actionFeedback.message}
                     onDismiss={() => setActionFeedback(undefined)}
-                    title="Action result"
+                    title={actionFeedback.title ?? "Action result"}
                     tone={actionFeedback.tone}
                   />
                 </div>
@@ -1906,7 +2022,7 @@ export function WorkerConsoleView({
                           size="sm"
                           variant="outline"
                         >
-                          {openingCopyQueue ? <Loader2 className="size-4 animate-spin" /> : <Copy className="size-4" />}
+                          {openingCopyQueue ? <Loader2 className="size-4 animate-spin" /> : <Send className="size-4" />}
                           New
                         </Button>
                       </TooltipTrigger>
@@ -2011,13 +2127,11 @@ export function WorkerConsoleView({
                 title={(
                   <div className="flex flex-wrap items-center gap-2">
                     <span className="font-medium">Worker configuration</span>
-                    {workerConfigurationPanelViewState === "compact" ? (
-                      <WorkerConfigurationStatusBadge
-                        definition={workerDefinition}
-                        differenceCount={workerConfigurationDifferenceCount}
-                        differences={workerConfigurationDifferences}
-                      />
-                    ) : null}
+                    <WorkerConfigurationStatusBadge
+                      definition={workerDefinition}
+                      differenceCount={workerConfigurationDifferenceCount}
+                      differences={workerConfigurationDifferences}
+                    />
                   </div>
                 )}
                 viewState={workerConfigurationPanelViewState}
@@ -2096,19 +2210,12 @@ export function WorkerConsoleView({
                 title="Unable to load worker configuration"
               />
             ) : null}
-            {workerDefinitionInfo.error && workerConfigurationPanelViewState === "standard" ? (
-              <ErrorBanner
-                key={workerDefinitionInfo.error}
-                message={workerDefinitionInfo.error}
-                title="Unable to load definition defaults"
-              />
-            ) : null}
             {actionFeedback && actionFeedback.tone !== "success" && (
               <FeedbackBanner
                 key={actionFeedback.message}
                 message={actionFeedback.message}
                 onDismiss={() => setActionFeedback(undefined)}
-                title="Action result"
+                title={actionFeedback.title ?? "Action result"}
                 tone={actionFeedback.tone}
               />
             )}
@@ -2142,6 +2249,7 @@ export function WorkerConsoleView({
                 onClose={() => setWorkerPanelVisible("workerLogs", false)}
                 onFocusLevel={focusLogLevel}
                 onLoadMore={() => void loadMoreLogs()}
+                onOpenIteration={(sequence) => onOpenIteration(worker.id.value, sequence)}
                 onSetLevelVisible={setLogLevelVisible}
                 onToggleSortDirection={() => setLogSortDirection((current) => current === "desc" ? "asc" : "desc")}
                 summaryOverride={logSummary ?? stableAggregateLogSummary ?? undefined}
@@ -2180,6 +2288,8 @@ export function WorkerConsoleView({
         connection={connection}
         definition={copyQueueDialog?.definition ?? null}
         initialFormValue={copyQueueDialog?.formValue}
+        preloadedQueueSchemaDescriptor={copyQueueDialog?.queueRequestSchema ?? null}
+        fetchQueueSchemaWhenNeeded={false}
         initialRequest={copyQueueDialog?.request}
         onOpenChange={(open) => !open && setCopyQueueDialog(null)}
         onQueuedWorker={onOpenWorker}
@@ -2202,37 +2312,88 @@ export function IterationConsoleView({
   sequence: number;
   workerId: string;
 }) {
-  const worker = useWorkableResource<WorkerSnapshot>(
+  const iterationDetail = useWorkableResource<WorkableHttpWorkerIterationDetail>(
     connection,
-    `workers/${workerId}`,
-    refreshToken,
-    {
-      retainDataOnNull: true,
-      resetKey: workerId,
-    }
-  );
-  const iteration = useWorkableResource<WorkerIterationSnapshot>(
-    connection,
-    `workers/${workerId}/iterations/${sequence}`,
+    `workers/${workerId}/iterations/${sequence}/detail`,
     refreshToken
   );
   const relativeNow = useLiveRelativeTimeNow();
   const [hiddenPanelIds, setHiddenPanelIds] = useState<ReadonlySet<IterationDetailPanelId>>(() => new Set());
+  const [focusedIterationPanel, setFocusedIterationPanel] = useState<IterationFocusedPanelId | null>(null);
   const [summaryViewState, setSummaryViewState] = useState<WorkComponentShape>("compact");
   const [messagesViewState, setMessagesViewState] = useState<WorkComponentShape>("compact");
   const [outputViewState, setOutputViewState] = useState<WorkComponentShape>("standard");
   const [logsViewState, setLogsViewState] = useState<WorkComponentShape>("detailed");
-  const activeIteration = iteration.data;
-  const retainedMessages = useMemo(
-    () => activeIteration?.messages ?? [],
-    [activeIteration?.messages]
+  const [iterationLogSortDirection, setIterationLogSortDirection] = useState<WorkerSortDirection>("desc");
+  const [iterationSelectedLogLevels, setIterationSelectedLogLevels] = useState<WorkerLogFilterLevel[] | null>(null);
+  const [extraIterationLogEntries, setExtraIterationLogEntries] = useState<WorkerLogEntry[]>([]);
+  const [iterationLogPageLoadState, setIterationLogPageLoadState] = useState<WorkerOverviewPageLoadState>({
+    hasMore: false,
+    loadingMore: false,
+  });
+  const focusedIterationHiddenSnapshotRef = useRef<ReadonlySet<IterationDetailPanelId> | null>(null);
+  const detail = iterationDetail.data;
+  const activeIteration = detail?.iteration;
+  const normalizedSelectedIterationLogLevels = useMemo(
+    () => iterationSelectedLogLevels ?? workerLogFilterLevels,
+    [iterationSelectedLogLevels]
+  );
+  const usingIterationLandingLogPage = iterationLogSortDirection === "desc" && iterationSelectedLogLevels === null;
+  const iterationLogQueryKey = useMemo(
+    () => `${iterationLogSortDirection}|${normalizedSelectedIterationLogLevels.join(",")}`,
+    [iterationLogSortDirection, normalizedSelectedIterationLogLevels]
+  );
+  const iterationLogsSnapshot = useWorkableResource<WorkIterationLogSection>(
+    connection,
+    usingIterationLandingLogPage
+      ? null
+      : createIterationLogsPath(workerId, sequence, {
+          logLevels: normalizedSelectedIterationLogLevels,
+          sortDirection: iterationLogSortDirection,
+          take: workerOverviewActivityPageSize,
+        }),
+    refreshToken,
+    {
+      resetKey: `${workerId}:${sequence}:${iterationLogQueryKey}`,
+    }
+  );
+  const iterationLogBaseSection = usingIterationLandingLogPage ? detail?.logs : iterationLogsSnapshot.data;
+  const iterationLogBasePage = iterationLogBaseSection?.page;
+  const iterationLogSummary = iterationLogBaseSection?.summary;
+  const iterationLogEntries = useMemo(
+    () => [...(iterationLogBasePage?.items ?? []), ...extraIterationLogEntries],
+    [extraIterationLogEntries, iterationLogBasePage?.items]
   );
   const failureDetails = useMemo(
-    () => activeIteration ? getIterationFailureDetails(activeIteration) : null,
-    [activeIteration]
+    () => activeIteration?.failure ? createWorkerFailureDetailsFromIterationFailure(activeIteration.failure) : null,
+    [activeIteration?.failure]
   );
+  const isIterationPanelFocused = focusedIterationPanel !== null;
+
+  const exitIterationPanelFocus = useCallback(() => {
+    const snapshot = focusedIterationHiddenSnapshotRef.current;
+    focusedIterationHiddenSnapshotRef.current = null;
+    setFocusedIterationPanel(null);
+    setHiddenPanelIds(snapshot ? new Set(snapshot) : new Set());
+  }, []);
+
+  const enterIterationPanelFocus = useCallback((panelId: IterationFocusedPanelId) => {
+    setHiddenPanelIds((current) => {
+      if (focusedIterationPanel === panelId) {
+        return current;
+      }
+
+      focusedIterationHiddenSnapshotRef.current = new Set(current);
+      setFocusedIterationPanel(panelId);
+      return createIterationFocusedHiddenPanels(panelId);
+    });
+  }, [focusedIterationPanel]);
 
   const setIterationPanelVisible = useCallback((panelId: IterationDetailPanelId, visible: boolean) => {
+    if (!visible && panelId === focusedIterationPanel) {
+      focusedIterationHiddenSnapshotRef.current = null;
+      setFocusedIterationPanel(null);
+    }
     setHiddenPanelIds((current) => {
       const next = new Set(current);
       if (visible) {
@@ -2246,27 +2407,113 @@ export function IterationConsoleView({
 
   const resetIterationUiToDefaults = useCallback(() => {
     setHiddenPanelIds(new Set());
+    focusedIterationHiddenSnapshotRef.current = null;
+    setFocusedIterationPanel(null);
     setSummaryViewState("compact");
     setMessagesViewState("compact");
     setOutputViewState("standard");
     setLogsViewState("detailed");
   }, []);
 
+  const setIterationMessagesPanelViewState = useCallback((shape: WorkComponentShape) => {
+    setMessagesViewState(shape);
+    if (shape === "detailed") {
+      enterIterationPanelFocus("iterationMessages");
+    } else if (focusedIterationPanel === "iterationMessages") {
+      exitIterationPanelFocus();
+    }
+  }, [enterIterationPanelFocus, exitIterationPanelFocus, focusedIterationPanel]);
+
+  useEffect(() => {
+    setExtraIterationLogEntries([]);
+    setIterationLogPageLoadState({
+      hasMore: false,
+      loadingMore: false,
+    });
+  }, [iterationLogQueryKey, refreshToken, sequence, workerId]);
+
+  useEffect(() => {
+    if (!iterationLogBasePage) {
+      return;
+    }
+
+    setIterationLogPageLoadState((current) => ({
+      ...current,
+      error: undefined,
+      hasMore: iterationLogBasePage.hasMore,
+      loadingMore: false,
+      nextCursor: iterationLogBasePage.cursor ?? null,
+    }));
+  }, [iterationLogBasePage]);
+
+  const loadMoreIterationLogs = useCallback(async () => {
+    if (
+      iterationLogPageLoadState.loadingMore ||
+      !iterationLogPageLoadState.hasMore ||
+      !iterationLogPageLoadState.nextCursor
+    ) {
+      return;
+    }
+
+    setIterationLogPageLoadState((current) => ({
+      ...current,
+      error: undefined,
+      loadingMore: true,
+    }));
+
+    try {
+      const logs = await workableFetch<WorkIterationLogSection>(
+        connection,
+        createIterationLogsPath(workerId, sequence, {
+          cursor: iterationLogPageLoadState.nextCursor,
+          logLevels: normalizedSelectedIterationLogLevels,
+          sortDirection: iterationLogSortDirection,
+          take: workerOverviewActivityPageSize,
+        })
+      );
+      const page = logs.page;
+      setExtraIterationLogEntries((current) => [...current, ...page.items]);
+      setIterationLogPageLoadState({
+        error: undefined,
+        hasMore: page.hasMore,
+        loadingMore: false,
+        nextCursor: page.cursor ?? null,
+      });
+    } catch (caught) {
+      setIterationLogPageLoadState((current) => ({
+        ...current,
+        error: caught instanceof Error ? caught.message : "Could not load more logs.",
+        loadingMore: false,
+      }));
+    }
+  }, [
+    connection,
+    iterationLogPageLoadState.hasMore,
+    iterationLogPageLoadState.loadingMore,
+    iterationLogPageLoadState.nextCursor,
+    iterationLogSortDirection,
+    normalizedSelectedIterationLogLevels,
+    sequence,
+    workerId,
+  ]);
+
   return (
-    <ConsolePageLayout>
-      <ErrorPanel errors={[worker.error, iteration.error]} />
+    <ConsolePageLayout fill={isIterationPanelFocused} scrollMode={isIterationPanelFocused ? "panel" : "browser"}>
+      <ErrorPanel errors={[iterationDetail.error]} />
       <PanelAggregateFrame
+        fill={isIterationPanelFocused}
         hiddenPanelIds={[...hiddenPanelIds]}
         onPanelVisibilityChange={setIterationPanelVisible}
         onResetUi={resetIterationUiToDefaults}
         padding="tightTop"
         panelOptions={iterationPanelOptions}
+        scrollMode={isIterationPanelFocused ? "panel" : "browser"}
         settingsButtonLabel="Iteration panel settings"
         settingsDescription="Checked panels are shown on the iteration page."
         settingsTitle="Iteration panels"
       >
-        {iteration.loading && !activeIteration ? <StackedSkeleton count={6} /> : null}
-        {!iteration.loading && !activeIteration ? (
+        {iterationDetail.loading && !activeIteration ? <StackedSkeleton count={6} /> : null}
+        {!iterationDetail.loading && !activeIteration ? (
           <div className="rounded-lg border border-dashed p-8 text-center text-muted-foreground text-sm">
             Iteration not found.
           </div>
@@ -2282,27 +2529,37 @@ export function IterationConsoleView({
                 title={<IterationStatusBadge iteration={activeIteration} />}
                 viewState={summaryViewState}
               >
-                <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+                <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
                   <MetadataItem label="Started" value={formatDateTime(activeIteration.startedAt)} />
                   <MetadataItem label="Completed" value={formatDateTime(activeIteration.completedAt)} />
                   <MetadataItem label="Duration" value={formatDurationLabel(activeIteration.executionDuration)} />
                   <MetadataItem
+                    label="Attempts"
+                    value={`${activeIteration.attemptCount} ${activeIteration.attemptCount === 1 ? "attempt" : "attempts"}`}
+                  />
+                  <MetadataItem
                     label="Definition"
-                    value={worker.data ? (
-                      <button
-                        className="cursor-pointer text-left text-sky-700 underline underline-offset-4 transition-colors hover:text-sky-600 dark:text-sky-300 dark:hover:text-sky-200"
-                        onClick={() => onOpenDefinition(
-                          worker.data?.definitionId.value,
-                          worker.data?.definitionName
-                        )}
-                        type="button"
-                      >
-                        {worker.data.definitionName}
-                      </button>
-                    ) : "Unknown"}
+                    value={(() => {
+                      return (
+                        <button
+                          className="cursor-pointer text-left text-sky-700 underline underline-offset-4 transition-colors hover:text-sky-600 dark:text-sky-300 dark:hover:text-sky-200"
+                          onClick={() => onOpenDefinition(
+                            detail.definitionId.value,
+                            detail.definitionName
+                          )}
+                          type="button"
+                        >
+                          {detail.definitionName}
+                        </button>
+                      );
+                    })()}
                   />
                 </div>
-                <IterationContextCard worker={worker.data} />
+                <IterationContextCard
+                  concurrencyKey={detail.concurrencyKey}
+                  identifiers={detail.identifiers}
+                  subjectId={detail.subjectId}
+                />
               </PanelShell>
             ) : null}
             {failureDetails ? <WorkerFailureBanner details={failureDetails} now={relativeNow} /> : null}
@@ -2315,24 +2572,53 @@ export function IterationConsoleView({
                 viewState={outputViewState}
               >
                 <div className="grid gap-4 xl:grid-cols-2">
-                  <WorkDataCard data={worker.data?.input} label="Worker input" />
+                  <WorkDataCard data={detail.input} label="Worker input" />
                   <WorkDataCard data={activeIteration.output} label="Iteration output" />
                 </div>
               </PanelShell>
             ) : null}
             {!hiddenPanelIds.has("iterationMessages") ? (
               <IterationMessagePanel
-                messages={retainedMessages}
+                connection={connection}
+                initialSummary={detail.messageSummary}
                 onClose={() => setIterationPanelVisible("iterationMessages", false)}
-                onViewStateChange={setMessagesViewState}
+                refreshToken={refreshToken}
+                sequence={sequence}
+                onViewStateChange={setIterationMessagesPanelViewState}
                 viewState={messagesViewState}
+                workerId={workerId}
               />
             ) : null}
             {!hiddenPanelIds.has("iterationLogs") ? (
               <WorkerLogPanel
-                entries={activeIteration.logs ?? []}
+                connectionError={iterationLogPageLoadState.error}
+                entries={iterationLogEntries}
+                hasMore={iterationLogPageLoadState.hasMore}
                 hasActiveIteration={activeIteration.status === "Executing"}
+                isLoading={iterationDetail.loading || iterationLogsSnapshot.loading}
+                isLoadingMore={iterationLogPageLoadState.loadingMore}
+                onClearFilters={() => setIterationSelectedLogLevels(null)}
                 onClose={() => setIterationPanelVisible("iterationLogs", false)}
+                onFocusLevel={(level) => setIterationSelectedLogLevels([level])}
+                onLoadMore={() => void loadMoreIterationLogs()}
+                pauseEnabled={false}
+                onSetLevelVisible={(level, visible) => {
+                  setIterationSelectedLogLevels((current) => {
+                    const base = new Set((current ?? workerLogFilterLevels).map((item) => item));
+                    if (visible) {
+                      base.add(level);
+                    } else {
+                      base.delete(level);
+                    }
+
+                    const next = workerLogFilterLevels.filter((item) => base.has(item));
+                    return next.length === workerLogFilterLevels.length ? null : next;
+                  });
+                }}
+                onToggleSortDirection={() => setIterationLogSortDirection((current) => current === "desc" ? "asc" : "desc")}
+                summaryOverride={iterationLogSummary ?? undefined}
+                selectedLevels={iterationSelectedLogLevels}
+                sortDirection={iterationLogSortDirection}
                 onViewStateChange={setLogsViewState}
                 viewState={logsViewState}
               />
@@ -2347,17 +2633,21 @@ export function IterationConsoleView({
 export function QueueDialog({
   connection,
   definition,
+  fetchQueueSchemaWhenNeeded = true,
   initialFormValue,
   initialRequest,
   onQueuedWorker,
   onOpenChange,
+  preloadedQueueSchemaDescriptor,
 }: {
   connection: WorkableConnection;
   definition: WorkDefinition | null;
+  fetchQueueSchemaWhenNeeded?: boolean;
   initialFormValue?: unknown;
   initialRequest?: QueueWorkRequest | null;
   onQueuedWorker: (workerId: string) => void;
   onOpenChange: (open: boolean) => void;
+  preloadedQueueSchemaDescriptor?: QueueRequestSchemaDescriptor | null;
 }) {
   const inputSchema = useMemo(
     () => parseJsonSchema(definition?.inputSchema?.jsonSchema),
@@ -2403,6 +2693,16 @@ export function QueueDialog({
       return;
     }
 
+    if (preloadedQueueSchemaDescriptor) {
+      queueMicrotask(() => setQueueSchemaDescriptor(preloadedQueueSchemaDescriptor));
+      return;
+    }
+
+    if (!fetchQueueSchemaWhenNeeded) {
+      queueMicrotask(() => setQueueSchemaDescriptor(null));
+      return;
+    }
+
     let canceled = false;
 
     workableFetch<QueueRequestSchemaDescriptor>(connection, "queue-request/schema")
@@ -2420,7 +2720,7 @@ export function QueueDialog({
     return () => {
       canceled = true;
     };
-  }, [connection, definition]);
+  }, [connection, definition, fetchQueueSchemaWhenNeeded, preloadedQueueSchemaDescriptor]);
 
   useEffect(() => {
     if (!definition) {
@@ -2610,23 +2910,29 @@ export function QueueDialog({
                 showAllValues={queueConfigurationDisplayMode === "all-values"}
                 footer={(
                   <div className="flex flex-wrap items-center justify-end gap-2 border-t pt-4">
-                    <Button
-                      disabled={queueConfigurationDifferences.length === 0}
-                      onClick={discardQueueConfigurationChanges}
-                      size="sm"
-                      type="button"
-                      variant="outline"
-                    >
-                      <RotateCw className="size-4" />
-                      Discard
-                    </Button>
+                    <Tooltip delayDuration={250}>
+                      <TooltipTrigger asChild>
+                        <Button
+                          disabled={queueConfigurationDifferences.length === 0}
+                          onClick={discardQueueConfigurationChanges}
+                          size="sm"
+                          type="button"
+                          variant="outline"
+                        >
+                          <RotateCw className="size-4" />
+                          Discard
+                        </Button>
+                      </TooltipTrigger>
+                      <TooltipContent side="top" sideOffset={6}>
+                        Restore the queue configuration values shown here to the dialog&apos;s starting values.
+                      </TooltipContent>
+                    </Tooltip>
                   </div>
                 )}
               />
             </TabsContent>
             <TabsContent className="mt-4 min-h-0 flex-1 overflow-y-auto pr-2" value="manual">
               <JsonTextEditor
-                label="Request JSON"
                 onChange={setManualRequestJson}
                 value={manualRequestJson}
               />
@@ -2640,29 +2946,43 @@ export function QueueDialog({
               </span>
             </div>
             <div className="flex shrink-0 items-center gap-2">
-              <Button
-                disabled={isQueueing}
-                onClick={() => void queue("stay-on-screen")}
-                variant="outline"
-              >
-                {isQueueing ? (
-                  <Loader2 className="size-4 animate-spin" />
-                ) : (
-                  <Send className="size-4" />
-                )}
-                {isWaitingForCompletion ? "Waiting" : "Queue"}
-              </Button>
-              <Button
-                disabled={isQueueing}
-                onClick={() => void queue("open-worker")}
-              >
-                {isQueueing ? (
-                  <Loader2 className="size-4 animate-spin" />
-                ) : (
-                  <Eye className="size-4" />
-                )}
-                {isWaitingForCompletion ? "Waiting" : "Watch"}
-              </Button>
+              <Tooltip delayDuration={250}>
+                <TooltipTrigger asChild>
+                  <Button
+                    disabled={isQueueing}
+                    onClick={() => void queue("stay-on-screen")}
+                    variant="outline"
+                  >
+                    {isQueueing ? (
+                      <Loader2 className="size-4 animate-spin" />
+                    ) : (
+                      <Send className="size-4" />
+                    )}
+                    {isWaitingForCompletion ? "Waiting" : "Queue"}
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent side="top" sideOffset={6}>
+                  Queue the worker and close this dialog without navigating to the new worker.
+                </TooltipContent>
+              </Tooltip>
+              <Tooltip delayDuration={250}>
+                <TooltipTrigger asChild>
+                  <Button
+                    disabled={isQueueing}
+                    onClick={() => void queue("open-worker")}
+                  >
+                    {isQueueing ? (
+                      <Loader2 className="size-4 animate-spin" />
+                    ) : (
+                      <Eye className="size-4" />
+                    )}
+                    {isWaitingForCompletion ? "Waiting" : "Watch"}
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent side="top" sideOffset={6}>
+                  Queue the worker and open its detail screen when the new worker id is returned.
+                </TooltipContent>
+              </Tooltip>
             </div>
           </div>
         </div>
@@ -2781,20 +3101,22 @@ function ConfigurationEditorSurface({
     <div className="space-y-4">
       {differences.length > 0 ? (
         <div className="text-muted-foreground text-sm">
-          {showingOnlyChanges ? "Showing only changed settings. " : "Showing all settings. "}
+          {showingOnlyChanges
+            ? "Showing only settings that differ from the definition defaults. "
+            : "Showing all settings, including values that match the definition defaults. "}
           <button
             className="text-sky-300 underline underline-offset-4 hover:text-sky-200"
             onClick={onToggleShowAllValues}
             type="button"
           >
-            {showingOnlyChanges ? "Show all values" : "Show only changes"}
+            {showingOnlyChanges ? "Show all settings" : "Show only differences from defaults"}
           </button>
           .
         </div>
       ) : null}
       <QueueConfigurationTabs
         descriptor={descriptor}
-        emptyStateMessage="No changed settings are exposed in this tab."
+        emptyStateMessage="No settings in this tab differ from the definition defaults."
         fieldPathFilter={showingOnlyChanges ? ((path) => changedPaths.has(path)) : undefined}
         fieldTooltipByPath={showingOnlyChanges ? fieldTooltipByPath : undefined}
         onRequestChange={onRequestChange}
@@ -3453,52 +3775,63 @@ function SnapshotBlock({ label, value }: { label: string; value: unknown }) {
 }
 
 function JsonTextEditor({
-  label,
   onChange,
   value,
 }: {
-  label: string;
   onChange: (value: string) => void;
   value: string;
 }) {
+  const [editorMode, setEditorMode] = useState<"pretty" | "formatted" | "compact">("pretty");
   const parsed = parseJsonText(value);
 
-  const format = () => {
-    if (!parsed.ok) {
+  const applyEditorMode = (nextMode: "pretty" | "formatted" | "compact") => {
+    setEditorMode(nextMode);
+    if (nextMode === "pretty" || !parsed.ok) {
       return;
     }
 
-    onChange(JSON.stringify(parsed.value, null, 2));
+    onChange(nextMode === "formatted"
+      ? JSON.stringify(parsed.value, null, 2)
+      : JSON.stringify(parsed.value));
   };
 
   return (
-    <div className="grid h-full min-h-0 gap-3 lg:grid-cols-2">
-      <div className="grid min-h-0 gap-2">
-        <div className="flex items-center justify-between gap-2">
-          <Label>{label}</Label>
-          <Button disabled={!parsed.ok} onClick={format} size="xs" variant="outline">
-            <Braces className="size-3" />
-            Format
-          </Button>
-        </div>
-        <Textarea
-          className="h-[calc(54vh-2.25rem)] min-h-0 resize-none overflow-y-auto font-mono text-xs"
-          onChange={(event) => onChange(event.target.value)}
-          spellCheck={false}
-          value={value}
-        />
-      </div>
-      <div className="grid min-h-0 gap-2">
-        <Label>Preview</Label>
-        <pre className="h-[calc(54vh-2.25rem)] overflow-auto rounded-lg border bg-muted/30 p-3 font-mono text-xs leading-relaxed">
+    <Tabs
+      className="flex h-full min-h-0 flex-col gap-3"
+      onValueChange={(nextValue) => applyEditorMode(nextValue as "pretty" | "formatted" | "compact")}
+      value={editorMode}
+    >
+      <TabsList className="grid h-9 w-full grid-cols-3">
+        <TabsTrigger value="pretty">Pretty</TabsTrigger>
+        <TabsTrigger value="formatted">Formatted</TabsTrigger>
+        <TabsTrigger value="compact">Compact</TabsTrigger>
+      </TabsList>
+      <TabsContent className="mt-0 min-h-0 flex-1" value="pretty">
+        <pre className="h-full overflow-auto rounded-lg border bg-muted/30 p-3 font-mono text-xs leading-relaxed">
           {parsed.ok ? (
             <JsonValue value={parsed.value} />
           ) : (
             <span className="text-red-300">{parsed.error}</span>
           )}
         </pre>
-      </div>
-    </div>
+      </TabsContent>
+      <TabsContent className="mt-0 min-h-0 flex-1" value="formatted">
+        <Textarea
+          className="h-full min-h-0 resize-none overflow-y-auto font-mono text-xs"
+          onChange={(event) => onChange(event.target.value)}
+          spellCheck={false}
+          value={value}
+        />
+      </TabsContent>
+      <TabsContent className="mt-0 min-h-0 flex-1" value="compact">
+        <Textarea
+          className="h-full min-h-0 resize-none overflow-y-auto font-mono text-xs"
+          onChange={(event) => onChange(event.target.value)}
+          spellCheck={false}
+          value={value}
+        />
+      </TabsContent>
+    </Tabs>
   );
 }
 
@@ -3594,7 +3927,11 @@ function WorkDataCard({ data, label }: { data?: WorkData | null; label: string }
   );
 }
 
-function IterationStatusBadge({ iteration }: { iteration: WorkerIterationSnapshot }) {
+function IterationStatusBadge({
+  iteration,
+}: {
+  iteration: Pick<WorkerIterationSnapshot, "sequence" | "status"> | Pick<WorkableHttpWorkerIterationSnapshot, "sequence" | "status">;
+}) {
   return (
     <div className="flex flex-wrap items-center gap-2">
       <span className="font-medium">Iteration #{iteration.sequence}</span>
@@ -3605,15 +3942,23 @@ function IterationStatusBadge({ iteration }: { iteration: WorkerIterationSnapsho
   );
 }
 
-function IterationContextCard({ worker }: { worker?: WorkerSnapshot }) {
+function IterationContextCard({
+  concurrencyKey,
+  identifiers,
+  subjectId,
+}: {
+  concurrencyKey?: WorkTypedValue | null;
+  identifiers?: WorkTypedValue[] | null;
+  subjectId?: WorkTypedValue | null;
+}) {
   return (
     <div className="grid gap-4">
       <SnapshotBlock
         label="Keys"
         value={{
-          subjectId: worker?.subjectId ?? null,
-          concurrencyKey: worker?.concurrencyKey ?? null,
-          identifiers: worker?.identifiers ?? [],
+          subjectId: subjectId ?? null,
+          concurrencyKey: concurrencyKey ?? null,
+          identifiers: identifiers ?? [],
         }}
       />
     </div>
@@ -3621,39 +3966,72 @@ function IterationContextCard({ worker }: { worker?: WorkerSnapshot }) {
 }
 
 function IterationMessagePanel({
-  messages,
+  connection,
+  initialSummary,
   onClose,
+  refreshToken,
+  sequence,
   onViewStateChange,
   viewState,
+  workerId,
 }: {
-  messages: WorkMessage[];
+  connection: WorkableConnection;
+  initialSummary: WorkIterationMessageSummary;
   onClose: () => void;
+  refreshToken: number;
+  sequence: number;
   onViewStateChange: (shape: WorkComponentShape) => void;
   viewState: WorkComponentShape;
+  workerId: string;
 }) {
   const [hiddenSeverities, setHiddenSeverities] = useState<Set<string>>(() => new Set());
   const [isolateOnNextFilterSelection, setIsolateOnNextFilterSelection] = useState(false);
   const [sortDirection, setSortDirection] = useState<"asc" | "desc">("desc");
-  const sortedMessages = useMemo(
-    () => sortWorkMessages(messages, sortDirection),
-    [messages, sortDirection]
+  const [messagesState, setMessagesState] = useState<{
+    error?: string;
+    hasMore: boolean;
+    items: WorkMessage[];
+    loading: boolean;
+    loadingMore: boolean;
+    nextCursor?: string | null;
+    summary: ReturnType<typeof summarizeWorkMessages>;
+  }>(() => ({
+    hasMore: false,
+    items: [],
+    loading: false,
+    loadingMore: false,
+    nextCursor: null,
+    summary: initialSummary,
+  }));
+  const visibleSeverities = useMemo(
+    () => iterationMessageSeverityLabels.filter((severity) => !hiddenSeverities.has(normalizeMessageSeverity(severity))),
+    [hiddenSeverities]
   );
+  const severityQueryValue = useMemo(
+    () => visibleSeverities.length === iterationMessageSeverityLabels.length
+      ? null
+      : visibleSeverities.join(","),
+    [visibleSeverities]
+  );
+  const requestPath = useMemo(
+    () => createIterationMessagesPath(workerId, sequence, {
+      severities: severityQueryValue,
+      sortDirection,
+      take: iterationMessagePanelPageSize,
+    }),
+    [sequence, severityQueryValue, sortDirection, workerId]
+  );
+  const summary = messagesState.summary;
   const availableSeverities = useMemo(
-    () => getOrderedMessageSeverities(sortedMessages),
-    [sortedMessages]
+    () => getOrderedMessageSeverities(summary),
+    [summary]
   );
-  const filteredMessages = useMemo(
-    () => filterWorkMessages(sortedMessages, hiddenSeverities),
-    [hiddenSeverities, sortedMessages]
-  );
+  const visibleMessages = messagesState.items;
+  const hasMoreVisibleMessages = messagesState.hasMore;
   const filtersActive = hiddenSeverities.size > 0;
   const selectedSeverityCount = filtersActive
     ? availableSeverities.filter((severity) => !hiddenSeverities.has(normalizeMessageSeverity(severity))).length
     : 0;
-  const summary = useMemo(
-    () => summarizeWorkMessages(messages),
-    [messages]
-  );
   const title = useMemo(
     () => (
       <IterationMessagePanelTitle
@@ -3688,10 +4066,130 @@ function IterationMessagePanel({
     });
   };
 
+  useEffect(() => {
+    setMessagesState((current) => ({
+      ...current,
+      summary: initialSummary,
+    }));
+  }, [initialSummary]);
+
+  useEffect(() => {
+    if (viewState === "compact") {
+      setMessagesState((current) => ({
+        ...current,
+        error: undefined,
+        hasMore: false,
+        items: [],
+        loading: false,
+        loadingMore: false,
+        nextCursor: null,
+        summary: initialSummary,
+      }));
+      return;
+    }
+
+    let canceled = false;
+    setMessagesState((current) => ({
+      ...current,
+      error: undefined,
+      hasMore: false,
+      items: [],
+      loading: true,
+      loadingMore: false,
+      nextCursor: null,
+    }));
+
+    workableFetch<WorkIterationMessageSection>(connection, requestPath)
+      .then((data) => {
+        if (canceled) {
+          return;
+        }
+
+        setMessagesState({
+          hasMore: data.page.hasMore,
+          items: data.page.items,
+          loading: false,
+          loadingMore: false,
+          nextCursor: data.page.cursor ?? null,
+          summary: data.summary,
+        });
+      })
+      .catch((error) => {
+        if (canceled) {
+          return;
+        }
+
+        setMessagesState((current) => ({
+          ...current,
+          error: error instanceof Error ? error.message : "Unable to load messages.",
+          hasMore: false,
+          items: [],
+          loading: false,
+          loadingMore: false,
+          nextCursor: null,
+        }));
+      });
+
+    return () => {
+      canceled = true;
+    };
+  }, [connection, initialSummary, refreshToken, requestPath, viewState]);
+
+  const loadMore = useCallback(() => {
+    if (messagesState.loading || messagesState.loadingMore || !messagesState.hasMore || !messagesState.nextCursor) {
+      return;
+    }
+
+    setMessagesState((current) => ({
+      ...current,
+      loadingMore: true,
+    }));
+
+    workableFetch<WorkIterationMessageSection>(
+      connection,
+      createIterationMessagesPath(workerId, sequence, {
+        cursor: messagesState.nextCursor,
+        severities: severityQueryValue,
+        sortDirection,
+        take: iterationMessagePanelPageSize,
+      })
+    )
+      .then((data) => {
+        setMessagesState((current) => ({
+          ...current,
+          hasMore: data.page.hasMore,
+          items: [...current.items, ...data.page.items],
+          loadingMore: false,
+          nextCursor: data.page.cursor ?? null,
+          summary: data.summary,
+        }));
+      })
+      .catch((error) => {
+        setMessagesState((current) => ({
+          ...current,
+          error: error instanceof Error ? error.message : "Unable to load more messages.",
+          loadingMore: false,
+        }));
+      });
+  }, [
+    connection,
+    messagesState.hasMore,
+    messagesState.loading,
+    messagesState.loadingMore,
+    messagesState.nextCursor,
+    sequence,
+    severityQueryValue,
+    sortDirection,
+    workerId,
+  ]);
+
   return (
     <PanelShell
-      contentClassName={viewState === "compact" ? "hidden" : "space-y-4"}
-      filterControl={viewState === "detailed"
+      className="flex min-h-0 flex-1 flex-col overflow-hidden"
+      contentClassName={viewState === "compact"
+        ? "hidden"
+        : "mt-4 flex min-h-0 flex-1 flex-col overflow-hidden"}
+      filterControl={viewState !== "compact"
         ? {
             activeCount: selectedSeverityCount,
             content: (
@@ -3706,7 +4204,7 @@ function IterationMessagePanel({
             onOpenChange: setIsolateOnNextFilterSelection,
           }
         : undefined}
-      actions={viewState === "detailed" ? (
+      actions={viewState !== "compact" ? (
         <IterationMessagePanelActions
           onToggleSortDirection={() => setSortDirection((current) => current === "desc" ? "asc" : "desc")}
           sortDirection={sortDirection}
@@ -3714,11 +4212,35 @@ function IterationMessagePanel({
       ) : null}
       onClose={onClose}
       onViewStateChange={onViewStateChange}
-      supportedViewStates={["compact", "detailed"]}
+      supportedViewStates={["compact", "standard", "detailed"]}
       title={title}
       viewState={viewState}
-    >
-      <IterationMessageList messages={filteredMessages} />
+      >
+        {messagesState.error ? (
+          <div className="mb-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-amber-100 text-sm">
+            {messagesState.error}
+          </div>
+        ) : null}
+        <section
+          className={cn(
+            "flex h-full min-h-0 flex-col rounded-xl border bg-muted/10 p-4",
+          viewState === "standard" && "min-h-[24rem] max-h-[70vh]",
+          viewState === "detailed" && "max-h-[calc(100svh-11rem)]"
+        )}
+      >
+          <PanelScrollViewport
+            className="rounded-xl border bg-background/60 p-4"
+            hasMore={hasMoreVisibleMessages}
+            loadedCount={visibleMessages.length}
+            loading={messagesState.loading}
+            loadingMore={messagesState.loadingMore}
+            noun="message"
+            onLoadMore={loadMore}
+            showLoadedCount={false}
+          >
+            <IterationMessageList messages={visibleMessages} />
+        </PanelScrollViewport>
+      </section>
     </PanelShell>
   );
 }
@@ -3854,14 +4376,21 @@ function IterationMessageList({
   return (
     <div className="grid gap-3">
       {messages.map((message, index) => (
-        <section className="rounded-xl border bg-muted/10 p-4" key={`${message.code}:${message.target ?? ""}:${index}`}>
+        <section className="rounded-xl border bg-muted/10 p-4" key={`${message.code}:${message.target ?? ""}:${message.occurredAt}:${index}`}>
           <div className="flex flex-wrap items-center gap-2">
             <Badge className={messageSeverityTone(message.severity)} variant="outline">
               {formatMessageSeverity(message.severity)}
             </Badge>
             <span className="font-medium text-sm">{message.code}</span>
+          </div>
+          <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
+            <span className="rounded-full border border-border/60 bg-background/60 px-2 py-1 text-muted-foreground">
+              Time: {formatDateTime(message.occurredAt)}
+            </span>
             {message.target ? (
-              <span className="break-words font-mono text-muted-foreground text-xs">{message.target}</span>
+              <span className="rounded-full border border-border/60 bg-background/60 px-2 py-1 font-mono text-muted-foreground">
+                Target: {message.target}
+              </span>
             ) : null}
           </div>
           <p className="mt-3 whitespace-pre-wrap break-words text-sm leading-6">{message.text}</p>
@@ -3912,6 +4441,8 @@ type WorkerOverviewPageLoadState = {
 };
 
 const workerOverviewActivityPageSize = 50;
+const iterationMessagePanelPageSize = 50;
+const iterationMessageSeverityLabels = ["Critical", "Error", "Warning", "Information", "Debug", "Trace"] as const;
 const workerLogFilterLevels: WorkerLogFilterLevel[] = [
   "Critical",
   "Error",
@@ -4147,6 +4678,9 @@ function WorkerTimelinePanel({
               const Icon = item.icon;
               const isLast = index === visibleRows.length - 1;
               const itemTitle = renderTimelineItemTitle(item, now);
+              const itemTitleSuffix = item.kind === "iteration" && item.sequence !== undefined
+                ? trimIterationTitlePrefix(itemTitle, item.sequence)
+                : itemTitle;
               const itemDescription = renderTimelineItemDescription(item, now);
 
                 return (
@@ -4174,7 +4708,16 @@ function WorkerTimelinePanel({
                         <div className="flex flex-wrap items-start justify-between gap-3">
                           <div className="min-w-0">
                             <div className="flex flex-wrap items-center gap-2">
-                              <div className="font-medium">{itemTitle}</div>
+                              {item.kind === "iteration" && item.sequence !== undefined ? (
+                                <button
+                                  className="font-medium text-sky-300 underline-offset-4 hover:text-sky-200 hover:underline"
+                                  onClick={() => onOpenIteration(item.sequence!)}
+                                  type="button"
+                                >
+                                  #{item.sequence}
+                                </button>
+                              ) : null}
+                              <div className="font-medium">{itemTitleSuffix}</div>
                             </div>
                             {item.actorLabel ? (
                               <div className="mt-1 text-muted-foreground text-xs">
@@ -4489,6 +5032,8 @@ function WorkerLogPanel({
   onClose,
   onFocusLevel,
   onLoadMore,
+  onOpenIteration,
+  pauseEnabled = true,
   onSetLevelVisible,
   onToggleSortDirection,
   summaryOverride,
@@ -4507,6 +5052,8 @@ function WorkerLogPanel({
   onClose: () => void;
   onFocusLevel: (level: WorkerLogFilterLevel) => void;
   onLoadMore: () => void;
+  onOpenIteration?: (sequence: number) => void;
+  pauseEnabled?: boolean;
   onSetLevelVisible: (level: WorkerLogFilterLevel, visible: boolean) => void;
   onToggleSortDirection: () => void;
   summaryOverride?: {
@@ -4606,6 +5153,7 @@ function WorkerLogPanel({
       actions={viewState !== "compact" ? (
         <WorkerLogPanelActions
           isPaused={isPaused}
+          pauseEnabled={pauseEnabled}
           onTogglePause={togglePause}
           onToggleSortDirection={onToggleSortDirection}
           sortDirection={sortDirection}
@@ -4625,7 +5173,10 @@ function WorkerLogPanel({
         isLoading={isLoading}
         isLoadingMore={isLoadingMore}
         onLoadMore={onLoadMore}
+        onOpenIteration={onOpenIteration}
+        pauseEnabled={pauseEnabled}
         pendingPausedCount={pendingPausedCount}
+        sortDirection={sortDirection}
         viewState={viewState}
         visibleEntries={visibleEntries}
       />
@@ -4774,25 +5325,29 @@ function WorkerLogFilterContent({
 
 function WorkerLogPanelActions({
   isPaused,
+  pauseEnabled,
   onTogglePause,
   onToggleSortDirection,
   sortDirection,
 }: {
   isPaused: boolean;
+  pauseEnabled: boolean;
   onTogglePause: () => void;
   onToggleSortDirection: () => void;
   sortDirection: WorkerSortDirection;
 }) {
   return (
     <>
-      <ToolbarIconButton
-        label={isPaused ? "Resume log stream" : "Pause log stream"}
-        onClick={onTogglePause}
-        type="button"
-        tooltip={isPaused ? "Resume the log stream" : "Pause the log stream from updating"}
-      >
-        {isPaused ? <Play className="size-3.5" /> : <Pause className="size-3.5" />}
-      </ToolbarIconButton>
+      {pauseEnabled ? (
+        <ToolbarIconButton
+          label={isPaused ? "Resume log stream" : "Pause log stream"}
+          onClick={onTogglePause}
+          type="button"
+          tooltip={isPaused ? "Resume the log stream" : "Pause the log stream from updating"}
+        >
+          {isPaused ? <Play className="size-3.5" /> : <Pause className="size-3.5" />}
+        </ToolbarIconButton>
+      ) : null}
       <ToolbarIconButton
         label={sortDirection === "desc" ? "Show oldest log entries first" : "Show newest log entries first"}
         onClick={onToggleSortDirection}
@@ -4815,7 +5370,10 @@ function WorkerLogStreamCard({
   isLoading,
   isLoadingMore,
   onLoadMore,
+  onOpenIteration,
+  pauseEnabled,
   pendingPausedCount,
+  sortDirection,
   viewState,
   visibleEntries,
 }: {
@@ -4826,18 +5384,101 @@ function WorkerLogStreamCard({
   isLoading: boolean;
   isLoadingMore: boolean;
   onLoadMore: () => void;
+  onOpenIteration?: (sequence: number) => void;
+  pauseEnabled: boolean;
   pendingPausedCount: number;
+  sortDirection: WorkerSortDirection;
   viewState: WorkComponentShape;
   visibleEntries: WorkerLogEntry[];
 }) {
+  const [windowStart, setWindowStart] = useState(0);
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+  const rowHeightsRef = useRef<Map<string, number>>(new Map());
+  const pendingScrollAdjustmentRef = useRef(0);
+  const pendingOlderPageAdvanceLengthRef = useRef<number | null>(null);
+  const maxWindowStart = Math.max(0, visibleEntries.length - maxWorkerLogPanelEntries);
+  const windowedEntries = useMemo(
+    () => visibleEntries.slice(windowStart, windowStart + maxWorkerLogPanelEntries),
+    [visibleEntries, windowStart]
+  );
+  const localHasMore = windowStart + maxWorkerLogPanelEntries < visibleEntries.length;
+  const effectiveHasMore = localHasMore || hasMore;
+
+  const advanceWindow = useCallback((count: number) => {
+    if (count <= 0 || windowedEntries.length === 0) {
+      return;
+    }
+
+    const step = Math.min(count, windowedEntries.length);
+    pendingScrollAdjustmentRef.current += windowedEntries
+      .slice(0, step)
+      .reduce((sum, entry) => sum + (rowHeightsRef.current.get(entry.id) ?? 18), 0);
+    setWindowStart((current) => Math.min(current + step, maxWindowStart));
+  }, [maxWindowStart, windowedEntries]);
+
+  useEffect(() => {
+    setWindowStart(0);
+    pendingOlderPageAdvanceLengthRef.current = null;
+    pendingScrollAdjustmentRef.current = 0;
+  }, [isPaused, sortDirection]);
+
+  useEffect(() => {
+    setWindowStart((current) => Math.min(current, maxWindowStart));
+  }, [maxWindowStart]);
+
+  useEffect(() => {
+    const previousLength = pendingOlderPageAdvanceLengthRef.current;
+    if (previousLength === null) {
+      return;
+    }
+
+    if (visibleEntries.length > previousLength) {
+      pendingOlderPageAdvanceLengthRef.current = null;
+      advanceWindow(Math.min(workerOverviewActivityPageSize, visibleEntries.length - previousLength));
+      return;
+    }
+
+    if (!isLoadingMore && visibleEntries.length <= previousLength) {
+      pendingOlderPageAdvanceLengthRef.current = null;
+    }
+  }, [advanceWindow, isLoadingMore, visibleEntries.length]);
+
+  useLayoutEffect(() => {
+    const scrollAdjustment = pendingScrollAdjustmentRef.current;
+    if (scrollAdjustment === 0) {
+      return;
+    }
+
+    const viewport = scrollRef.current;
+    if (!viewport) {
+      pendingScrollAdjustmentRef.current = 0;
+      return;
+    }
+
+    viewport.scrollTop = Math.max(0, viewport.scrollTop - scrollAdjustment);
+    pendingScrollAdjustmentRef.current = 0;
+  }, [windowStart, windowedEntries]);
+
+  const handleLoadMore = useCallback(() => {
+    if (localHasMore) {
+      advanceWindow(Math.min(
+        workerOverviewActivityPageSize,
+        visibleEntries.length - (windowStart + maxWorkerLogPanelEntries)
+      ));
+      return;
+    }
+
+    if (!hasMore || isLoadingMore) {
+      return;
+    }
+
+    pendingOlderPageAdvanceLengthRef.current = visibleEntries.length;
+    onLoadMore();
+  }, [advanceWindow, hasMore, isLoadingMore, localHasMore, onLoadMore, visibleEntries.length, windowStart]);
+
   if (viewState === "compact") {
     return (
-      <section
-        className={cn(
-          "flex h-full min-h-0 flex-col rounded-xl border bg-muted/10 p-4",
-          viewState === "detailed" && "min-h-[24rem] max-h-[70vh]"
-        )}
-      >
+      <section className="flex h-full min-h-0 flex-col rounded-xl border bg-muted/10 p-4">
         {connectionError ? (
           <div className="mb-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-amber-900 text-sm dark:text-amber-100">
             {connectionError}
@@ -4857,9 +5498,9 @@ function WorkerLogStreamCard({
     >
       <div className="mb-3 flex flex-wrap items-center justify-end gap-2">
         <Badge className="border-slate-500/30 bg-slate-500/10 text-slate-700 dark:text-slate-200" variant="outline">
-          {visibleEntries.length} loaded
+          {windowedEntries.length} loaded
         </Badge>
-        {isPaused && pendingPausedCount > 0 ? (
+        {pauseEnabled && isPaused && pendingPausedCount > 0 ? (
           <Badge className="border-amber-500/30 bg-amber-500/10 text-amber-800 dark:text-amber-100" variant="outline">
             {pendingPausedCount} buffered
           </Badge>
@@ -4871,20 +5512,27 @@ function WorkerLogStreamCard({
         </div>
       ) : null}
       <PanelScrollViewport
+        autoLoadMore={false}
         className="rounded-xl border border-slate-800 bg-slate-950 text-slate-100 shadow-inner"
         footerClassName="border-slate-800 text-slate-400"
-        hasMore={hasMore}
-        loadedCount={visibleEntries.length}
+        hasMore={effectiveHasMore}
+        loadedCount={windowedEntries.length}
         loading={isLoading}
         loadingMore={isLoadingMore}
         noun="log entry"
-        onLoadMore={onLoadMore}
+        onLoadMore={handleLoadMore}
+        onScroll={(event) => {
+          if (!isLoading && !isLoadingMore && isNearWorkerLogScrollBottom(event.currentTarget)) {
+            handleLoadMore();
+          }
+        }}
+        viewportRef={scrollRef}
       >
-        {isLoading && visibleEntries.length === 0 ? (
+        {isLoading && windowedEntries.length === 0 ? (
           <div className="p-4">
             <StackedSkeleton count={6} />
           </div>
-        ) : visibleEntries.length === 0 ? (
+        ) : windowedEntries.length === 0 ? (
           <div className="p-4">
             <EmptyListState
               message={hasActiveIteration
@@ -4894,14 +5542,19 @@ function WorkerLogStreamCard({
           </div>
         ) : (
           <div className="font-mono text-xs leading-[1.15rem]">
-            {visibleEntries.map((entry, index) => {
-              const previousEntry = index > 0 ? visibleEntries[index - 1] : null;
+            {windowedEntries.map((entry, index) => {
+              const previousEntry = index > 0 ? windowedEntries[index - 1] : null;
               const showCategory = !previousEntry || previousEntry.category !== entry.category;
 
               return (
                 <div
                   className="px-4 py-0"
                   key={entry.id}
+                  ref={(element) => {
+                    if (element) {
+                      rowHeightsRef.current.set(entry.id, element.offsetHeight);
+                    }
+                  }}
                 >
                   {showCategory ? (
                     <div className="text-slate-400">
@@ -4912,6 +5565,15 @@ function WorkerLogStreamCard({
                     <span className="shrink-0 text-slate-500">
                       {formatWorkerLogTimestamp(entry.occurredAt)}
                     </span>
+                    {entry.sequence && onOpenIteration ? (
+                      <button
+                        className="shrink-0 text-sky-300 underline-offset-4 hover:text-sky-200 hover:underline"
+                        onClick={() => onOpenIteration(entry.sequence!)}
+                        type="button"
+                      >
+                        #{entry.sequence}
+                      </button>
+                    ) : null}
                     <span className={`shrink-0 ${consoleLogLevelTone(entry.level)}`}>
                       {entry.level.toUpperCase()}
                     </span>
@@ -5328,6 +5990,16 @@ function renderTimelineItemTitle(item: WorkerTimelineItem, now: number) {
   return item.title;
 }
 
+function trimIterationTitlePrefix(title: string, sequence: number) {
+  const prefix = `Iteration #${sequence}`;
+  if (!title.startsWith(prefix)) {
+    return title;
+  }
+
+  const remainder = title.slice(prefix.length).trimStart();
+  return remainder.length > 0 ? remainder : "Iteration";
+}
+
 function itemDescriptionDurationLabel(item: WorkerTimelineItem) {
   const match = item.title.match(/after (.+)$/i);
   return match?.[1] ?? null;
@@ -5604,6 +6276,20 @@ function getIterationFailureDetails(iteration: WorkerIterationSnapshot): WorkerF
   );
 }
 
+function createWorkerFailureDetailsFromIterationFailure(
+  failure: WorkerIterationFailure
+): WorkerFailureDetails {
+  return {
+    code: failure.code ?? undefined,
+    declaredByWork: failure.declaredByWork,
+    exceptionType: failure.exceptionType ?? undefined,
+    kind: failure.kind === "Exception" ? "exception" : "failure",
+    message: failure.message,
+    stackTrace: failure.stackTrace ?? undefined,
+    target: failure.target ?? undefined,
+  };
+}
+
 function resolveWorkerFailureDetails(
   messages: WorkMessage[] | null | undefined,
   logs: WorkerLogEntry[] | null | undefined,
@@ -5676,28 +6362,79 @@ function getErrorWorkMessages(messages?: WorkMessage[] | null) {
   });
 }
 
-function filterWorkMessages(messages: WorkMessage[], hiddenSeverities: Set<string>) {
-  if (hiddenSeverities.size === 0) {
-    return messages;
-  }
-
-  return messages.filter((message) => !hiddenSeverities.has(normalizeMessageSeverity(message.severity)));
-}
-
-function sortWorkMessages(messages: WorkMessage[], sortDirection: "asc" | "desc") {
-  return sortDirection === "desc"
-    ? [...messages].reverse()
-    : [...messages];
-}
-
-function getOrderedMessageSeverities(messages: WorkMessage[]) {
-  const preferredOrder = ["Critical", "Error", "Warning", "Information", "Debug", "Trace"];
-  const available = new Set(messages.map((message) => normalizeMessageSeverityLabel(message.severity)));
+function getOrderedMessageSeverities(summary: ReturnType<typeof summarizeWorkMessages>) {
+  const available = new Set(
+    iterationMessageSeverityLabels.filter((severity) => {
+      switch (severity) {
+        case "Critical":
+          return summary.critical > 0;
+        case "Error":
+          return summary.error > 0;
+        case "Warning":
+          return summary.warning > 0;
+        case "Information":
+          return summary.information > 0;
+        case "Debug":
+          return summary.debug > 0;
+        case "Trace":
+          return summary.trace > 0;
+        default:
+          return false;
+      }
+    })
+  );
 
   return [
-    ...preferredOrder.filter((severity) => available.has(severity)),
-    ...[...available].filter((severity) => !preferredOrder.includes(severity)).sort(),
+    ...iterationMessageSeverityLabels.filter((severity) => available.has(severity)),
   ];
+}
+
+function createIterationMessagesPath(
+  workerId: string,
+  sequence: number,
+  options: {
+    cursor?: string | null;
+    severities?: string | null;
+    sortDirection: "asc" | "desc";
+    take: number;
+  }
+) {
+  const searchParams = new URLSearchParams({
+    sort: options.sortDirection === "asc" ? "Asc" : "Desc",
+    take: String(options.take),
+  });
+  if (options.cursor) {
+    searchParams.set("cursor", options.cursor);
+  }
+  if (options.severities) {
+    searchParams.set("severities", options.severities);
+  }
+
+  return `workers/${workerId}/iterations/${sequence}/messages?${searchParams.toString()}`;
+}
+
+function createIterationLogsPath(
+  workerId: string,
+  sequence: number,
+  options: {
+    cursor?: string | null;
+    logLevels?: readonly WorkerLogFilterLevel[] | null;
+    sortDirection: "asc" | "desc";
+    take: number;
+  }
+) {
+  const searchParams = new URLSearchParams({
+    sort: options.sortDirection === "asc" ? "Asc" : "Desc",
+    take: String(options.take),
+  });
+  if (options.cursor) {
+    searchParams.set("cursor", options.cursor);
+  }
+  if (options.logLevels && options.logLevels.length > 0 && options.logLevels.length !== workerLogFilterLevels.length) {
+    searchParams.set("logLevels", options.logLevels.join(","));
+  }
+
+  return `workers/${workerId}/iterations/${sequence}/logs?${searchParams.toString()}`;
 }
 
 function createHiddenMessageSeveritiesForFocus(
@@ -6268,6 +7005,55 @@ function createWorkerOverviewPath(
     timelineSortDirection?: WorkerSortDirection;
   }
 ) {
+  const query = createWorkerOverviewActivityQuery(options);
+  return query.length > 0
+    ? `workers/${workerId}/overview?${query}`
+    : `workers/${workerId}/overview`;
+}
+
+function createWorkerOverviewLogsPath(
+  workerId: string,
+  options?: {
+    activityCursor?: string | null;
+    activityTake?: number;
+    logLevels?: readonly WorkerLogFilterLevel[] | null;
+    logIterationSequence?: number | null;
+    logSortDirection?: WorkerSortDirection;
+  }
+) {
+  const query = createWorkerOverviewActivityQuery(options);
+  return query.length > 0
+    ? `workers/${workerId}/overview/logs?${query}`
+    : `workers/${workerId}/overview/logs`;
+}
+
+function createWorkerOverviewTimelinePath(
+  workerId: string,
+  options?: {
+    activityCursor?: string | null;
+    activityTake?: number;
+    timelineFilters?: readonly WorkerTimelineFilterKind[] | null;
+    timelineSortDirection?: WorkerSortDirection;
+  }
+) {
+  const query = createWorkerOverviewActivityQuery(options);
+  return query.length > 0
+    ? `workers/${workerId}/overview/timeline?${query}`
+    : `workers/${workerId}/overview/timeline`;
+}
+
+function createWorkerOverviewActivityQuery(
+  options?: {
+    activity?: Exclude<WorkWorkerOverviewActivity, "Auto">;
+    activityCursor?: string | null;
+    activityTake?: number;
+    logLevels?: readonly WorkerLogFilterLevel[] | null;
+    logIterationSequence?: number | null;
+    logSortDirection?: WorkerSortDirection;
+    timelineFilters?: readonly WorkerTimelineFilterKind[] | null;
+    timelineSortDirection?: WorkerSortDirection;
+  }
+) {
   const search = new URLSearchParams();
   if (options?.activity) {
     search.set("activity", options.activity);
@@ -6297,10 +7083,7 @@ function createWorkerOverviewPath(
     search.set("timelineSort", options.timelineSortDirection === "asc" ? "Asc" : "Desc");
   }
 
-  const query = search.toString();
-  return query.length > 0
-    ? `workers/${workerId}/overview?${query}`
-    : `workers/${workerId}/overview`;
+  return search.toString();
 }
 
 function serializeWorkerLogQuery(
@@ -6466,6 +7249,7 @@ function createWorkerIterationSnapshotFromLandingLatestIteration(
   iteration: WorkWorkerOverviewLatestIteration
 ): WorkerIterationSnapshot {
   return {
+    attemptCount: iteration.attemptCount,
     completedAt: iteration.completedAt ?? undefined,
     executionDuration: iteration.executionDuration ?? undefined,
     isFinal: isFinalIterationStatus(iteration.status),
@@ -6488,6 +7272,7 @@ function createWorkerIterationSnapshotFromLandingRecentIteration(
     : null;
 
   return {
+    attemptCount: iteration.attemptCount,
     completedAt: iteration.completedAt ?? undefined,
     executionDuration: iteration.executionDuration ?? undefined,
     isFinal: isFinalIterationStatus(iteration.status),
@@ -6513,7 +7298,9 @@ function createWorkerLogEntryFromLandingLogEntry(entry: WorkWorkerOverviewLogEnt
     id: entry.id,
     level: entry.level,
     message: entry.message,
+    ordinal: entry.ordinal,
     occurredAt: entry.occurredAt,
+    sequence: entry.sequence,
   };
 }
 
@@ -6860,7 +7647,7 @@ function createTimelineDescriptionFromLanding(
 
   if (item.kind === "Iteration") {
     return item.iterationStatus && item.sequence !== null && item.sequence !== undefined
-      ? describeIterationOutcomeFromLanding(item.sequence, item.iterationStatus, item.executionDuration, item.at, item.at)
+      ? describeIterationOutcomeFromLanding(item.sequence, item.iterationStatus, item.executionDuration)
       : "";
   }
 
@@ -6885,7 +7672,7 @@ function createTimelineBadgeFromLanding(item: WorkWorkerOverviewTimelineItem) {
   return item.state ?? "State";
 }
 
-function createTimelineFactsFromLanding() {
+function createTimelineFactsFromLanding(_item: WorkWorkerOverviewTimelineItem) {
   return [];
 }
 
@@ -6958,6 +7745,13 @@ function createWorkerFocusedHiddenPanels(focusedPanelId: WorkerFocusedPanelId) {
   return new Set<WorkerDetailPanelId>(
     ["workerConfiguration", "workerDuration", "workerLogs", "workerTimeline"]
       .filter((panelId): panelId is WorkerDetailPanelId => panelId !== focusedPanelId)
+  );
+}
+
+function createIterationFocusedHiddenPanels(focusedPanelId: IterationFocusedPanelId) {
+  return new Set<IterationDetailPanelId>(
+    ["iterationSummary", "iterationMessages", "iterationOutput", "iterationLogs"]
+      .filter((panelId): panelId is IterationDetailPanelId => panelId !== focusedPanelId)
   );
 }
 
@@ -7044,6 +7838,41 @@ function mergeWorkerOverviewRealtimeEntries<T extends { id: string }>(
   }
 
   return merged;
+}
+
+function filterWorkerOverviewLogEntriesBySelectedLevels(
+  entries: readonly WorkWorkerOverviewLogEntry[],
+  selectedLevels: readonly WorkerLogFilterLevel[] | null
+) {
+  if (!selectedLevels || selectedLevels.length === 0) {
+    return [...entries];
+  }
+
+  const allowedLevels = new Set(selectedLevels);
+  return entries.filter((entry) => allowedLevels.has(normalizeLogLevel(entry.level) as WorkerLogFilterLevel));
+}
+
+function sortWorkerOverviewLogEntries(
+  entries: readonly WorkWorkerOverviewLogEntry[],
+  sortDirection: WorkerSortDirection
+) {
+  return [...entries].sort((left, right) => {
+    const comparison = compareLogLikeEntries(left, right);
+    return sortDirection === "asc" ? comparison : -comparison;
+  });
+}
+
+function capWorkerLogEntries<T extends { id: string; occurredAt: string }>(
+  entries: readonly T[],
+  maximum: number
+) {
+  if (entries.length <= maximum) {
+    return [...entries];
+  }
+
+  return [...entries]
+    .sort((left, right) => -compareLogLikeEntries(left, right))
+    .slice(0, maximum);
 }
 
 function mergeWorkerOverviewItemsById<T extends { id: string }>(
@@ -7146,6 +7975,37 @@ function sortWorkerLogEntries(entries: readonly WorkerLogEntry[], sortDirection:
     const comparison = compareWorkerLogEntries(left, right);
     return sortDirection === "desc" ? -comparison : comparison;
   });
+}
+
+function compareWorkerLogEntries(left: WorkerLogEntry, right: WorkerLogEntry) {
+  return compareLogLikeEntries(left, right);
+}
+
+function compareLogLikeEntries<T extends { id: string; occurredAt: string; sequence?: number | null; ordinal?: number | null }>(left: T, right: T) {
+  const timestampDifference = Date.parse(left.occurredAt) - Date.parse(right.occurredAt);
+  if (timestampDifference !== 0) {
+    return timestampDifference;
+  }
+
+  const leftSequence = left.sequence ?? Number.MIN_SAFE_INTEGER;
+  const rightSequence = right.sequence ?? Number.MIN_SAFE_INTEGER;
+  const sequenceDifference = leftSequence - rightSequence;
+  if (sequenceDifference !== 0) {
+    return sequenceDifference;
+  }
+
+  const leftOrdinal = left.ordinal ?? Number.MIN_SAFE_INTEGER;
+  const rightOrdinal = right.ordinal ?? Number.MIN_SAFE_INTEGER;
+  const ordinalDifference = leftOrdinal - rightOrdinal;
+  if (ordinalDifference !== 0) {
+    return ordinalDifference;
+  }
+
+  return left.id.localeCompare(right.id);
+}
+
+function isNearWorkerLogScrollBottom(element: HTMLElement) {
+  return element.scrollHeight - element.clientHeight - element.scrollTop <= 96;
 }
 
 function summarizeWorkMessages(messages: WorkMessage[]) {
@@ -7446,7 +8306,7 @@ function createDefaultQueueRequest(definition: WorkDefinition | null): QueueWork
 }
 
 function createCopiedWorkerQueueRequest(
-  worker: WorkerSnapshot,
+  worker: Pick<WorkableHttpWorkerConfiguration, "configuration" | "profilingEnabled" | "subjectId" | "concurrencyKey">,
   configurationOverride?: QueueWorkRequest | null
 ): QueueWorkRequest {
   const effectiveConfiguration = configurationOverride?.options?.configuration
@@ -7460,7 +8320,7 @@ function createCopiedWorkerQueueRequest(
     subjectId: cloneTypedValue(worker.subjectId) ?? undefined,
     concurrencyKey: cloneTypedValue(worker.concurrencyKey) ?? undefined,
     options: {
-      profilingEnabled: configurationOverride?.options?.profilingEnabled ?? (worker.options?.profilingEnabled ?? false),
+      profilingEnabled: configurationOverride?.options?.profilingEnabled ?? worker.profilingEnabled,
       configuration: effectiveConfiguration,
     },
   });
@@ -7699,6 +8559,7 @@ function useWorkableResource<T>(
         if (retainDataOnNull && sameResetKey && current.data !== undefined) {
           return {
             data: current.data,
+            errorCause: undefined,
             loading: false,
             refreshing: false,
           };
@@ -7716,6 +8577,7 @@ function useWorkableResource<T>(
         setState((current) => ({
           ...current,
           error: undefined,
+          errorCause: undefined,
           loading: current.data === undefined,
           refreshing: current.data !== undefined,
         }));
@@ -7726,7 +8588,7 @@ function useWorkableResource<T>(
     workableFetch<T>(requestConnection, path)
       .then((data) => {
         if (!canceled) {
-          setState({ data, loading: false, refreshing: false });
+          setState({ data, errorCause: undefined, loading: false, refreshing: false });
         }
       })
       .catch((error) => {
@@ -7738,6 +8600,7 @@ function useWorkableResource<T>(
               : {
                   data: current.data,
                   error: detail,
+                  errorCause: error,
                   loading: false,
                   refreshing: false,
                 }

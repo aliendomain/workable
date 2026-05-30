@@ -44,6 +44,27 @@ internal static class WorkableHttpCatalogRoutes
             return Results.Ok(catalog.GetDefinitions(session));
         });
 
+        group.MapGet("/definitions/{definitionId:guid}", (
+            HttpContext httpContext,
+            Guid definitionId,
+            WorkableHttpTopologyResolver topology,
+            WorkableHttpCatalogAdapter catalog,
+            IWorkRequestContextFactory requestContexts) =>
+        {
+            if (!WorkableHttpRouteResults.TryResolveSystem(httpContext, topology, out var system, out var notFound))
+            {
+                return notFound;
+            }
+
+            var session = WorkableHttpRequestContext.CreateSession(
+                httpContext,
+                system,
+                requestContexts,
+                "Read a work definition through HTTP API.");
+            var definition = catalog.GetDefinition(session, new WorkDefinitionId(definitionId));
+            return definition is null ? Results.NotFound() : Results.Ok(definition);
+        });
+
         group.MapPost("/definitions/{definitionId:guid}/reconfigure", async (
             HttpContext httpContext,
             Guid definitionId,

@@ -103,12 +103,24 @@ import {
   DefinitionsView,
   IterationConsoleView,
   WorkerConsoleView,
+  type WorkerConsoleViewUiStateSnapshot,
 } from "@/components/workable/console/detail-screens";
 import {
   OverviewCatalogFilter,
   QueryFilterPanelContent,
   getQueryFilterActiveCount,
 } from "@/components/workable/console/filters";
+import {
+  DefinitionCatalogBrowser,
+  defaultCatalogBrowserBackButtonClassName,
+  defaultCatalogBrowserHeaderClassName,
+  defaultCatalogBrowserTitleClassName,
+} from "@/components/workable/console/catalog-browser";
+import {
+  clearDefinitionCatalogLevelCache,
+  invalidateDefinitionCatalogLevelCache,
+  invalidateDefinitionCatalogLevelCacheByApiUrl,
+} from "@/components/workable/console/catalog-browser-data";
 import { ErrorPanel } from "@/components/workable/console/feedback-panel";
 import {
   ConsoleNavigationHeader,
@@ -178,18 +190,23 @@ type NavigationEntry = {
   iterationSequence: number | null;
   iterationCategoryFilter: string;
   iterationDefinitionFilter: string;
+  iterationKeyKindFilter: WorkKeyKind | "Any";
   iterationKeyTypeFilter: string;
+  iterationKeyValueFilter: string;
   iterationStatusFilter: WorkCompletionStatus[];
   overviewScope: OverviewScope | null;
   definitionName: string | null;
   workerCategoryFilter: string;
   workerDefinitionFilter: string;
+  keyKindFilter: WorkKeyKind | "Any";
   keyTypeFilter: string;
+  keyValueFilter: string;
   systemId: string;
   view: View;
   definitionId: string | null;
   iterationWorkerId: string | null;
   workerId: string | null;
+  workerUiState: WorkerConsoleViewUiStateSnapshot | null;
   workerStateFilter: WorkerState[];
 };
 
@@ -275,6 +292,7 @@ export function WorkableConsole() {
   const [systemIssueNotifications, setSystemIssueNotifications] = useState<Record<string, Omit<SystemNotification, "onDismiss">>>({});
   const [acknowledgedRejectedWorkCounts, setAcknowledgedRejectedWorkCounts] = useState<Record<string, number>>({});
   const [diagnosticsAlertsByTargetId, setDiagnosticsAlertsByTargetId] = useState<Record<string, DiagnosticsAlertSnapshot>>({});
+  const diagnosticsAlertsByTargetIdRef = useRef<Record<string, DiagnosticsAlertSnapshot>>({});
   const [readModelDiagnosticsExpanded, setReadModelDiagnosticsExpanded] = useState(false);
   const [retentionDiagnosticsExpanded, setRetentionDiagnosticsExpanded] = useState(false);
   const [concurrencyDiagnosticsExpanded, setConcurrencyDiagnosticsExpanded] = useState(false);
@@ -285,9 +303,6 @@ export function WorkableConsole() {
   const [realtimePayloadOpen, setRealtimePayloadOpen] = useState(false);
   const [realtimePayloadActiveTab, setRealtimePayloadActiveTab] = useState<RealtimePayloadWindowTab>("payloads");
   const [eventViewerMaxMessages, setEventViewerMaxMessages] = useState(100);
-  const [eventViewerDefinitions, setEventViewerDefinitions] = useState<WorkDefinition[]>([]);
-  const [eventViewerDefinitionsLoading, setEventViewerDefinitionsLoading] = useState(false);
-  const [eventViewerDefinitionError, setEventViewerDefinitionError] = useState<string>();
   const [selectedEventViewerDefinitionIds, setSelectedEventViewerDefinitionIds] = useState<string[]>([]);
   const [selectedEventViewerEventTypes, setSelectedEventViewerEventTypes] = useState<string[]>([]);
   const [selectedEventViewerKeys, setSelectedEventViewerKeys] = useState<WorkableRealtimeEventKeyCriteria[]>([]);
@@ -295,6 +310,19 @@ export function WorkableConsole() {
   const realtimeEventCapture = useConsoleRealtimeEventCapture();
   const realtimeStats = useConsoleRealtimeStats();
   const ignoreRealtimeConnectionCountChange = useCallback<(count: number) => void>(() => undefined, []);
+  const handleWorkerUiStateChange = useCallback((snapshot: WorkerConsoleViewUiStateSnapshot) => {
+    setWorkerUiSnapshotsByWorkerId((current) => {
+      const previous = current[snapshot.workerId];
+      if (previous && JSON.stringify(previous) === JSON.stringify(snapshot)) {
+        return current;
+      }
+
+      return {
+        ...current,
+        [snapshot.workerId]: snapshot,
+      };
+    });
+  }, []);
   const [selectedDefinitionId, setSelectedDefinitionId] = useState<string | null>(null);
   const [selectedDefinitionName, setSelectedDefinitionName] = useState<string | null>(null);
   const [selectedWorkerId, setSelectedWorkerId] = useState<string | null>(null);
@@ -302,12 +330,18 @@ export function WorkableConsole() {
   const [selectedIterationSequence, setSelectedIterationSequence] = useState<number | null>(null);
   const [workerCategoryFilter, setWorkerCategoryFilter] = useState("");
   const [workerDefinitionFilter, setWorkerDefinitionFilter] = useState("");
+  const [keyKindFilter, setKeyKindFilter] = useState<WorkKeyKind | "Any">("Any");
   const [keyTypeFilter, setKeyTypeFilter] = useState("");
+  const [keyValueFilter, setKeyValueFilter] = useState("");
   const [workerStateFilter, setWorkerStateFilter] = useState<WorkerState[]>([]);
+  const [workersFilterOpen, setWorkersFilterOpen] = useState(false);
   const [iterationCategoryFilter, setIterationCategoryFilter] = useState("");
   const [iterationDefinitionFilter, setIterationDefinitionFilter] = useState("");
+  const [iterationKeyKindFilter, setIterationKeyKindFilter] = useState<WorkKeyKind | "Any">("Any");
   const [iterationKeyTypeFilter, setIterationKeyTypeFilter] = useState("");
+  const [iterationKeyValueFilter, setIterationKeyValueFilter] = useState("");
   const [iterationStatusFilter, setIterationStatusFilter] = useState<WorkCompletionStatus[]>([]);
+  const [iterationsFilterOpen, setIterationsFilterOpen] = useState(false);
   const usesPanelOwnedScroll = visibleView === "workers" || visibleView === "iterations";
   const [catalogScopeBySystemId, setCatalogScopeBySystemId] = useState<
     Record<string, OverviewScope | undefined>
@@ -317,6 +351,10 @@ export function WorkableConsole() {
   >({});
   const [navigationHistory, setNavigationHistory] = useState<NavigationEntry[]>([]);
   const [forwardNavigation, setForwardNavigation] = useState<NavigationEntry[]>([]);
+  const [restoredWorkerUiState, setRestoredWorkerUiState] = useState<WorkerConsoleViewUiStateSnapshot | null>(null);
+  const [workerUiSnapshotsByWorkerId, setWorkerUiSnapshotsByWorkerId] = useState<
+    Record<string, WorkerConsoleViewUiStateSnapshot | undefined>
+  >({});
   const viewScrollPositions = useRef<Partial<Record<ServerView, number>>>({});
   const readyViews = useRef<Set<string>>(new Set());
   const restoredHostsRef = useRef<WorkableHostConnection[] | null>(null);
@@ -772,6 +810,9 @@ export function WorkableConsole() {
     })),
     [clearSystemIssueNotification, systemIssueNotifications]
   );
+  useEffect(() => {
+    diagnosticsAlertsByTargetIdRef.current = diagnosticsAlertsByTargetId;
+  }, [diagnosticsAlertsByTargetId]);
 
   const updateSystemState = useCallback((systemId: string, state: string | null) => {
     setConsoleState((current) => {
@@ -823,6 +864,11 @@ export function WorkableConsole() {
     targetId: string,
     snapshot: DiagnosticsAlertSnapshot | null
   ) => {
+    const previousSnapshot = diagnosticsAlertsByTargetIdRef.current[targetId] ?? null;
+    if (shouldClearDefinitionCatalogCacheForDiagnosticsTransition(previousSnapshot, snapshot)) {
+      clearDefinitionCatalogLevelCache();
+    }
+
     const target = diagnosticsAlertTargets.find((candidate) => candidate.id === targetId);
     const systemDiagnostics = getWorkComponentData<WorkSystemDiagnosticsCompactComponent>(
       snapshot?.data,
@@ -896,6 +942,12 @@ export function WorkableConsole() {
         return;
       }
 
+      discoveries.forEach((discovery) => {
+        if (discovery) {
+          invalidateDefinitionCatalogLevelCacheByApiUrl(discovery.host.apiUrl);
+        }
+      });
+
       let resetNavigation = false;
       setConsoleState((current) => {
         const updates = new Map(
@@ -966,39 +1018,6 @@ export function WorkableConsole() {
     }
   }, [consoleState, hasMounted]);
 
-  useEffect(() => {
-    if (!hydratedConnection || !realtimePayloadOpen) {
-      return;
-    }
-
-    let canceled = false;
-    queueMicrotask(() => {
-      if (!canceled) {
-        setEventViewerDefinitionsLoading(true);
-        setEventViewerDefinitionError(undefined);
-      }
-    });
-    workableFetch<WorkDefinition[]>(hydratedConnection, "definitions")
-      .then((definitions) => {
-        if (!canceled) {
-          setEventViewerDefinitions(definitions);
-          setEventViewerDefinitionsLoading(false);
-        }
-      })
-      .catch((error) => {
-        if (!canceled) {
-          setEventViewerDefinitionError(
-            error instanceof Error ? error.message : "Definitions could not be loaded."
-          );
-          setEventViewerDefinitionsLoading(false);
-        }
-      });
-
-    return () => {
-      canceled = true;
-    };
-  }, [hydratedConnection, realtimePayloadOpen]);
-
   const currentNavigation = useCallback(
     (): NavigationEntry => ({
       catalogScope: cloneOverviewScope(
@@ -1009,10 +1028,14 @@ export function WorkableConsole() {
       iterationSequence: selectedIterationSequence,
       iterationCategoryFilter,
       iterationDefinitionFilter,
+      iterationKeyKindFilter,
       iterationKeyTypeFilter,
+      iterationKeyValueFilter,
       iterationStatusFilter,
       iterationWorkerId: selectedIterationWorkerId,
+      keyKindFilter,
       keyTypeFilter,
+      keyValueFilter,
       overviewScope: cloneOverviewScope(
         overviewScopeBySystemId[consoleState.activeSystemId] ?? null
       ),
@@ -1021,6 +1044,9 @@ export function WorkableConsole() {
       workerCategoryFilter,
       workerDefinitionFilter,
       workerId: selectedWorkerId,
+      workerUiState: selectedWorkerId
+        ? workerUiSnapshotsByWorkerId[selectedWorkerId] ?? null
+        : null,
       workerStateFilter,
     }),
     [
@@ -1028,15 +1054,20 @@ export function WorkableConsole() {
       catalogScopeBySystemId,
       iterationCategoryFilter,
       iterationDefinitionFilter,
+      iterationKeyKindFilter,
       iterationKeyTypeFilter,
+      iterationKeyValueFilter,
       iterationStatusFilter,
+      keyKindFilter,
       keyTypeFilter,
+      keyValueFilter,
       overviewScopeBySystemId,
       selectedDefinitionId,
       selectedDefinitionName,
       selectedIterationSequence,
       selectedIterationWorkerId,
       selectedWorkerId,
+      workerUiSnapshotsByWorkerId,
       workerCategoryFilter,
       view,
       workerDefinitionFilter,
@@ -1148,6 +1179,7 @@ export function WorkableConsole() {
         `lifecycle/${action}`,
         { method: "POST" }
       );
+      invalidateDefinitionCatalogLevelCache(targetConnection);
       updateSystemState(system.id, result.state);
       if (system.id === activeSystem?.id) {
         refreshView("overview");
@@ -1244,6 +1276,7 @@ export function WorkableConsole() {
     if (trackHistory) {
       pushCurrentNavigation();
     }
+    setRestoredWorkerUiState(null);
     setSelectedDefinitionId(null);
     setSelectedDefinitionName(null);
     setSelectedIterationWorkerId(null);
@@ -1260,6 +1293,7 @@ export function WorkableConsole() {
     if (trackHistory) {
       pushCurrentNavigation();
     }
+    setRestoredWorkerUiState(null);
     setSelectedDefinitionId(null);
     setSelectedDefinitionName(null);
     setSelectedWorkerId(null);
@@ -1281,6 +1315,7 @@ export function WorkableConsole() {
     const systemId = options?.systemId ?? activeSystem?.id ?? "";
     rememberCurrentViewScroll();
     pushCurrentNavigation();
+    setRestoredWorkerUiState(null);
     setSelectedWorkerId(null);
     setSelectedIterationWorkerId(null);
     setSelectedIterationSequence(null);
@@ -1320,10 +1355,15 @@ export function WorkableConsole() {
         catalogScope: cloneOverviewScope(catalogScopeBySystemId[systemId] ?? null),
         iterationCategoryFilter,
         iterationDefinitionFilter,
+        iterationKeyKindFilter,
         iterationKeyTypeFilter,
+        iterationKeyValueFilter,
         iterationStatusFilter,
+        keyKindFilter,
         keyTypeFilter,
+        keyValueFilter,
         overviewScope: cloneOverviewScope(overviewScopeBySystemId[systemId] ?? null),
+        workerUiState: null,
         workerCategoryFilter,
         workerDefinitionFilter,
         workerStateFilter,
@@ -1331,6 +1371,8 @@ export function WorkableConsole() {
     ) {
       pushCurrentNavigation();
     }
+
+    setRestoredWorkerUiState(null);
 
     if (nextView !== "worker" && nextView !== "iteration") {
       setSelectedWorkerId(null);
@@ -1380,7 +1422,9 @@ export function WorkableConsole() {
   const openWorkersFromOverview = (states: WorkerState[] = [], systemId = activeSystem?.id ?? "") => {
     pushCurrentNavigation();
     applyWorkerOverviewScope(overviewScopeBySystemId[systemId] ?? null);
+    setKeyKindFilter("Any");
     setKeyTypeFilter("");
+    setKeyValueFilter("");
     setWorkerStateFilter(states);
     openView("workers", systemId, false);
   };
@@ -1392,7 +1436,9 @@ export function WorkableConsole() {
   ) => {
     pushCurrentNavigation();
     applyIterationOverviewScope(overviewScopeBySystemId[systemId] ?? null);
+    setIterationKeyKindFilter("Any");
     setIterationKeyTypeFilter(keyType);
+    setIterationKeyValueFilter("");
     setIterationStatusFilter(statuses);
     openView("iterations", systemId, false);
   };
@@ -1486,6 +1532,7 @@ export function WorkableConsole() {
   };
 
   const restoreNavigation = useCallback((entry: NavigationEntry) => {
+    setRestoredWorkerUiState(entry.view === "worker" ? entry.workerUiState : null);
     setCatalogScopeBySystemId((current) => ({
       ...current,
       [entry.systemId]: cloneOverviewScope(entry.catalogScope) ?? undefined,
@@ -1496,11 +1543,15 @@ export function WorkableConsole() {
     }));
     setIterationCategoryFilter(entry.iterationCategoryFilter);
     setIterationDefinitionFilter(entry.iterationDefinitionFilter);
+    setIterationKeyKindFilter(entry.iterationKeyKindFilter);
     setIterationKeyTypeFilter(entry.iterationKeyTypeFilter);
+    setIterationKeyValueFilter(entry.iterationKeyValueFilter);
     setSelectedIterationSequence(entry.iterationSequence);
     setSelectedIterationWorkerId(entry.iterationWorkerId);
     setIterationStatusFilter(entry.iterationStatusFilter);
+    setKeyKindFilter(entry.keyKindFilter);
     setKeyTypeFilter(entry.keyTypeFilter);
+    setKeyValueFilter(entry.keyValueFilter);
     setSelectedDefinitionId(entry.definitionId);
     setSelectedDefinitionName(entry.definitionName);
     setSelectedWorkerId(entry.workerId);
@@ -1528,7 +1579,7 @@ export function WorkableConsole() {
 
     const currentEntry = currentNavigation();
     restoreNavigation(previous);
-    if (previous.view === "workers" || previous.view === "iterations") {
+    if (previous.view === "workers" || previous.view === "iterations" || previous.view === "worker") {
       refreshView(previous.view);
     }
     setForwardNavigation((current) =>
@@ -1546,7 +1597,7 @@ export function WorkableConsole() {
 
     const currentEntry = currentNavigation();
     restoreNavigation(next);
-    if (next.view === "workers" || next.view === "iterations") {
+    if (next.view === "workers" || next.view === "iterations" || next.view === "worker") {
       refreshView(next.view);
     }
     setNavigationHistory((current) =>
@@ -2116,7 +2167,9 @@ export function WorkableConsole() {
                                 activeCount: getQueryFilterActiveCount(
                                   createQueryCatalogScope(workerCategoryFilter, workerDefinitionFilter),
                                   workerStateFilter,
-                                  keyTypeFilter
+                                  keyKindFilter,
+                                  keyTypeFilter,
+                                  keyValueFilter
                                 ),
                                 content: (
                                   <QueryFilterPanelContent
@@ -2126,33 +2179,36 @@ export function WorkableConsole() {
                                     facetLabel="Worker states"
                                     facetOptions={states}
                                     facetValue={workerStateFilter}
+                                    isOpen={workersFilterOpen}
+                                    keyKindFilter={keyKindFilter}
                                     keyTypeFilter={keyTypeFilter}
-                                    onClearCatalog={() => {
-                                      setWorkerCategoryFilter("");
-                                      setWorkerDefinitionFilter("");
-                                    }}
-                                    onFacetChange={setWorkerStateFilter}
-                                    onKeyTypeFilterChange={setKeyTypeFilter}
-                                    onSelectCategory={(category) => {
-                                      setWorkerCategoryFilter(category);
-                                      setWorkerDefinitionFilter("");
-                                    }}
-                                    onSelectDefinition={(definitionName, category) => {
-                                      setWorkerCategoryFilter(category);
-                                      setWorkerDefinitionFilter(definitionName);
+                                    keyValueFilter={keyValueFilter}
+                                    onDismiss={() => setWorkersFilterOpen(false)}
+                                    onApply={({ categoryFilter, definitionFilter, facetValue, keyKindFilter, keyTypeFilter, keyValueFilter }) => {
+                                      setWorkerCategoryFilter(categoryFilter);
+                                      setWorkerDefinitionFilter(definitionFilter);
+                                      setWorkerStateFilter(facetValue);
+                                      setKeyKindFilter(keyKindFilter);
+                                      setKeyTypeFilter(keyTypeFilter);
+                                      setKeyValueFilter(keyValueFilter);
+                                      setWorkersFilterOpen(false);
                                     }}
                                     refreshToken={refreshTokens.workers}
                                   />
                                 ),
-                                contentClassName: "w-[26rem] p-0",
+                                contentClassName: "w-[min(58rem,calc(100vw-2rem))] p-0",
                                 label: "Filter workers",
+                                open: workersFilterOpen,
+                                onOpenChange: setWorkersFilterOpen,
                               }}
                               isLoadingTarget={visibleView === "workers" || pendingView === "workers"}
                               isVisible={visibleView === "workers"}
+                              keyKindFilter={keyKindFilter}
                               onOpenWorker={openWorker}
                               onReady={markWorkersReady}
                               definitionFilter={workerDefinitionFilter}
                               keyTypeFilter={keyTypeFilter}
+                              keyValueFilter={keyValueFilter}
                               stateFilter={workerStateFilter}
                               refreshToken={refreshTokens.workers}
                             />
@@ -2172,7 +2228,9 @@ export function WorkableConsole() {
                                 activeCount: getQueryFilterActiveCount(
                                   createQueryCatalogScope(iterationCategoryFilter, iterationDefinitionFilter),
                                   iterationStatusFilter,
-                                  iterationKeyTypeFilter
+                                  iterationKeyKindFilter,
+                                  iterationKeyTypeFilter,
+                                  iterationKeyValueFilter
                                 ),
                                 content: (
                                   <QueryFilterPanelContent
@@ -2182,30 +2240,33 @@ export function WorkableConsole() {
                                     facetLabel="Iteration statuses"
                                     facetOptions={iterationStatuses}
                                     facetValue={iterationStatusFilter}
+                                    isOpen={iterationsFilterOpen}
+                                    keyKindFilter={iterationKeyKindFilter}
                                     keyTypeFilter={iterationKeyTypeFilter}
-                                    onClearCatalog={() => {
-                                      setIterationCategoryFilter("");
-                                      setIterationDefinitionFilter("");
-                                    }}
-                                    onFacetChange={setIterationStatusFilter}
-                                    onKeyTypeFilterChange={setIterationKeyTypeFilter}
-                                    onSelectCategory={(category) => {
-                                      setIterationCategoryFilter(category);
-                                      setIterationDefinitionFilter("");
-                                    }}
-                                    onSelectDefinition={(definitionName, category) => {
-                                      setIterationCategoryFilter(category);
-                                      setIterationDefinitionFilter(definitionName);
+                                    keyValueFilter={iterationKeyValueFilter}
+                                    onDismiss={() => setIterationsFilterOpen(false)}
+                                    onApply={({ categoryFilter, definitionFilter, facetValue, keyKindFilter, keyTypeFilter, keyValueFilter }) => {
+                                      setIterationCategoryFilter(categoryFilter);
+                                      setIterationDefinitionFilter(definitionFilter);
+                                      setIterationStatusFilter(facetValue);
+                                      setIterationKeyKindFilter(keyKindFilter);
+                                      setIterationKeyTypeFilter(keyTypeFilter);
+                                      setIterationKeyValueFilter(keyValueFilter);
+                                      setIterationsFilterOpen(false);
                                     }}
                                     refreshToken={refreshTokens.iterations}
                                   />
                                 ),
-                                contentClassName: "w-[26rem] p-0",
+                                contentClassName: "w-[min(58rem,calc(100vw-2rem))] p-0",
                                 label: "Filter iterations",
+                                open: iterationsFilterOpen,
+                                onOpenChange: setIterationsFilterOpen,
                               }}
                               isLoadingTarget={visibleView === "iterations" || pendingView === "iterations"}
                               isVisible={visibleView === "iterations"}
+                              keyKindFilter={iterationKeyKindFilter}
                               keyTypeFilter={iterationKeyTypeFilter}
+                              keyValueFilter={iterationKeyValueFilter}
                               onOpenIteration={openIteration}
                               onReady={markIterationsReady}
                               refreshToken={refreshTokens.iterations}
@@ -2222,6 +2283,7 @@ export function WorkableConsole() {
                             <WorkerConsoleView
                               clearSystemNotification={clearSystemIssueNotification}
                               connection={hydratedConnection}
+                              initialUiState={restoredWorkerUiState}
                               key={selectedWorkerId}
                               onActiveRealtimeConnectionCountChange={ignoreRealtimeConnectionCountChange}
                               onOpenDefinitionCatalog={(definitionName, category) => openCatalogScope(
@@ -2235,6 +2297,7 @@ export function WorkableConsole() {
                               onOpenIteration={openIteration}
                               onOpenWorker={openWorker}
                               onRealtimePayloadOpenChange={setRealtimePayloadOpen}
+                              onUiStateChange={handleWorkerUiStateChange}
                               refreshToken={refreshTokens.worker}
                               realtimePayloadCaptureEnabled={realtimePayloadCaptureEnabled}
                               realtimePayloadMaxMessages={realtimePayloadMaxMessages}
@@ -2265,9 +2328,7 @@ export function WorkableConsole() {
                         <RealtimePayloadWindowHost
                           eventTabContent={(
                             <RealtimeEventsTabPanel
-                              definitionError={eventViewerDefinitionError}
-                              definitions={eventViewerDefinitions}
-                              definitionsLoading={eventViewerDefinitionsLoading}
+                              catalogConnection={realtimePayloadOpen ? hydratedConnection : null}
                               error={realtimeEvents.error}
                               eventTypes={eventViewerEventTypes}
                               maxMessages={eventViewerMaxMessages}
@@ -2504,9 +2565,7 @@ function DiagnosticsAlertSubscription({
 }
 
 function RealtimeEventsTabPanel({
-  definitionError,
-  definitions,
-  definitionsLoading,
+  catalogConnection,
   error,
   eventTypes,
   maxMessages,
@@ -2522,9 +2581,7 @@ function RealtimeEventsTabPanel({
   selectedEventTypes,
   selectedKeys,
 }: {
-  definitionError?: string;
-  definitions: WorkDefinition[];
-  definitionsLoading: boolean;
+  catalogConnection: WorkableConnection | null;
   error?: string;
   eventTypes: readonly string[];
   maxMessages: number;
@@ -2583,19 +2640,6 @@ function RealtimeEventsTabPanel({
   const selectedEventIndexInBounds = selectedEvent
     ? Math.min(selectedEventIndex, (selectedMessage?.events.length ?? 1) - 1)
     : 0;
-  const catalogLevel = useMemo(
-    () => createEventViewerCatalogLevel(definitions, catalogPath),
-    [catalogPath, definitions]
-  );
-  const catalogSegments = splitCatalogPath(catalogPath);
-  const catalogLabel = catalogSegments.at(-1) ?? "Catalog";
-  const canGoBackInCatalog = catalogSegments.length > 0;
-  const selectCatalogCategory = (category: string) => {
-    setCatalogPath(category);
-  };
-  const goBackInCatalog = () => {
-    setCatalogPath(catalogSegments.slice(0, -1).join(":"));
-  };
   const hasEventTable = Boolean(selectedMessage && selectedMessage.events.length > 1);
   const addKey = () => {
     const type = keyType.trim();
@@ -2895,73 +2939,57 @@ function RealtimeEventsTabPanel({
                 <div className="flex items-center justify-between gap-2 px-1">
                   <div className="font-medium text-muted-foreground text-xs">Catalog</div>
                 </div>
-                {definitionError && (
-                  <div className="rounded-md border border-red-500/30 bg-red-500/10 px-2 py-1.5 text-red-200 text-xs">
-                    {definitionError}
-                  </div>
-                )}
-                {definitionsLoading && definitions.length === 0 ? (
-                  <div className="px-2 py-1.5 text-muted-foreground text-xs">Loading definitions.</div>
-                ) : definitions.length === 0 ? (
-                  <div className="px-2 py-1.5 text-muted-foreground text-xs">No definitions loaded.</div>
-                ) : (
-                  <div className="overflow-hidden rounded-md border">
-                    <div className="flex h-9 min-w-0 items-center gap-1 border-b px-2">
-                      <button
-                        aria-label={canGoBackInCatalog ? "Back to parent category" : "Catalog root"}
-                        className="flex size-7 shrink-0 items-center justify-center rounded-md hover:bg-accent hover:text-accent-foreground disabled:pointer-events-none disabled:opacity-40"
-                        disabled={!canGoBackInCatalog}
-                        onClick={goBackInCatalog}
-                        type="button"
-                      >
-                        {canGoBackInCatalog ? <ChevronLeft className="size-4" /> : <Home className="size-4" />}
-                      </button>
-                      <span className="min-w-0 flex-1 truncate font-medium text-xs">
-                        {catalogLabel}
-                      </span>
+                <DefinitionCatalogBrowser
+                  backButtonClassName={defaultCatalogBrowserBackButtonClassName()}
+                  bodyClassName="py-1"
+                  connection={catalogConnection}
+                  emptyState={<div className="px-2 py-2 text-muted-foreground text-xs">No catalog entries.</div>}
+                  headerClassName={defaultCatalogBrowserHeaderClassName("h-9")}
+                  headerRight={(
+                    <span className="shrink-0 text-muted-foreground text-[11px] tabular-nums">
+                      {selectedDefinitionIds.length}
+                    </span>
+                  )}
+                  loadingState={<div className="px-2 py-2 text-muted-foreground text-xs">Loading definitions.</div>}
+                  onNavigate={setCatalogPath}
+                  path={catalogPath}
+                  renderCategory={(category) => (
+                    <button
+                      className="flex h-8 w-full min-w-0 items-center gap-2 px-2 text-left text-xs hover:bg-accent hover:text-accent-foreground"
+                      onClick={() => setCatalogPath(category.path)}
+                      type="button"
+                    >
+                      <Folder className="size-4 shrink-0 text-muted-foreground" />
+                      <span className="min-w-0 flex-1 truncate">{category.label}</span>
                       <span className="shrink-0 text-muted-foreground text-[11px] tabular-nums">
-                        {selectedDefinitionIds.length}
+                        {category.count}
                       </span>
+                    </button>
+                  )}
+                  renderDefinition={(definition) => (
+                    <label className="flex cursor-pointer items-start gap-2 px-2 py-1.5 text-xs hover:bg-accent/50">
+                      <input
+                        checked={selectedDefinitionIds.includes(definition.id.value)}
+                        className="mt-0.5 size-4 accent-primary"
+                        onChange={() => onDefinitionToggle(definition.id.value)}
+                        type="checkbox"
+                      />
+                      <FileCode2 className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
+                      <span className="min-w-0">
+                        <span className="block truncate font-medium">{definition.name}</span>
+                        <span className="block truncate font-mono text-muted-foreground">{definition.id.value}</span>
+                      </span>
+                    </label>
+                  )}
+                  renderError={(catalogError) => (
+                    <div className="rounded-md border border-red-500/30 bg-red-500/10 px-2 py-1.5 text-red-200 text-xs">
+                      {catalogError}
                     </div>
-                    <div className="py-1">
-                      {catalogLevel.categories.map((category) => (
-                        <button
-                          className="flex h-8 w-full min-w-0 items-center gap-2 px-2 text-left text-xs hover:bg-accent hover:text-accent-foreground"
-                          key={category.path}
-                          onClick={() => selectCatalogCategory(category.path)}
-                          type="button"
-                        >
-                          <Folder className="size-4 shrink-0 text-muted-foreground" />
-                          <span className="min-w-0 flex-1 truncate">{category.label}</span>
-                          <span className="shrink-0 text-muted-foreground text-[11px] tabular-nums">
-                            {category.count}
-                          </span>
-                        </button>
-                      ))}
-                      {catalogLevel.definitions.map((definition) => (
-                        <label
-                          className="flex cursor-pointer items-start gap-2 px-2 py-1.5 text-xs hover:bg-accent/50"
-                          key={definition.id.value}
-                        >
-                          <input
-                            checked={selectedDefinitionIds.includes(definition.id.value)}
-                            className="mt-0.5 size-4 accent-primary"
-                            onChange={() => onDefinitionToggle(definition.id.value)}
-                            type="checkbox"
-                          />
-                          <FileCode2 className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
-                          <span className="min-w-0">
-                            <span className="block truncate font-medium">{definition.name}</span>
-                            <span className="block truncate font-mono text-muted-foreground">{definition.id.value}</span>
-                          </span>
-                        </label>
-                      ))}
-                      {catalogLevel.categories.length === 0 && catalogLevel.definitions.length === 0 && (
-                        <div className="px-2 py-2 text-muted-foreground text-xs">No catalog entries.</div>
-                      )}
-                    </div>
-                  </div>
-                )}
+                  )}
+                  rootLabel="Catalog"
+                  titleClassName={defaultCatalogBrowserTitleClassName("text-xs")}
+                  wrapperClassName="overflow-hidden rounded-md border"
+                />
               </div>
               <div className="space-y-2 border-t pt-3">
                 <div className="flex items-center justify-between gap-2 px-1">
@@ -3100,44 +3128,6 @@ function RealtimeEventsTabPanel({
       </div>
     </div>
   );
-}
-
-function createEventViewerCatalogLevel(definitions: WorkDefinition[], path: string) {
-  const normalizedPath = normalizeCategoryFilter(path);
-  const pathSegments = splitCatalogPath(normalizedPath);
-  const categoriesByPath = new Map<string, { count: number; label: string; path: string }>();
-  const levelDefinitions: WorkDefinition[] = [];
-
-  definitions.forEach((definition) => {
-    const categorySegments = splitCatalogPath(definition.category);
-    if (!startsWithEventViewerCatalogPath(categorySegments, pathSegments)) {
-      return;
-    }
-
-    if (categorySegments.length > pathSegments.length) {
-      const childSegments = categorySegments.slice(0, pathSegments.length + 1);
-      const childPath = childSegments.join(":");
-      const category = categoriesByPath.get(childPath) ?? {
-        count: 0,
-        label: childSegments.at(-1) ?? childPath,
-        path: childPath,
-      };
-      category.count++;
-      categoriesByPath.set(childPath, category);
-      return;
-    }
-
-    levelDefinitions.push(definition);
-  });
-
-  return {
-    categories: [...categoriesByPath.values()].sort((left, right) => left.label.localeCompare(right.label)),
-    definitions: levelDefinitions.sort((left, right) => left.name.localeCompare(right.name)),
-  };
-}
-
-function startsWithEventViewerCatalogPath(categorySegments: string[], pathSegments: string[]) {
-  return pathSegments.every((segment, index) => categorySegments[index] === segment);
 }
 
 function formatEventBatchTypeSummary(eventTypes: string[]) {
@@ -4402,6 +4392,25 @@ function getWorkComponentData<T>(result: WorkComponentQueryResult | undefined, i
   return component?.status?.toLowerCase() === "ok" ? component.data as T : undefined;
 }
 
+function shouldClearDefinitionCatalogCacheForDiagnosticsTransition(
+  previousSnapshot: DiagnosticsAlertSnapshot | null,
+  nextSnapshot: DiagnosticsAlertSnapshot | null
+) {
+  const previousSystem = getWorkComponentData<WorkSystemDiagnosticsCompactComponent>(
+    previousSnapshot?.data,
+    "systemDiagnostics"
+  );
+  const nextSystem = getWorkComponentData<WorkSystemDiagnosticsCompactComponent>(
+    nextSnapshot?.data,
+    "systemDiagnostics"
+  );
+
+  return (
+    (nextSystem?.isShuttingDown === true && previousSystem?.isShuttingDown !== true) ||
+    (nextSystem?.systemState === "Started" && previousSystem?.systemState !== "Started")
+  );
+}
+
 function diagnosticsAlertSnapshotsEqual(
   left: DiagnosticsAlertSnapshot | null | undefined,
   right: DiagnosticsAlertSnapshot | null | undefined
@@ -4592,10 +4601,7 @@ function normalizeOverviewPanelShape(
 ): WorkComponentShape {
   const capabilities = overviewPanelShapeCapabilities[panelId];
   return typeof value === "string" &&
-    (
-      value === "compact" ||
-      capabilities.supportedShapes.includes(value as WorkComponentShape)
-    )
+    capabilities.supportedShapes.includes(value as WorkComponentShape)
     ? value as WorkComponentShape
     : capabilities.defaultShape;
 }
@@ -4937,13 +4943,17 @@ function navigationEntriesEqual(left: NavigationEntry | undefined, right: Naviga
     left.iterationSequence === right.iterationSequence &&
     left.iterationCategoryFilter === right.iterationCategoryFilter &&
     left.iterationDefinitionFilter === right.iterationDefinitionFilter &&
+    left.iterationKeyKindFilter === right.iterationKeyKindFilter &&
     left.iterationKeyTypeFilter === right.iterationKeyTypeFilter &&
+    left.iterationKeyValueFilter === right.iterationKeyValueFilter &&
     left.iterationStatusFilter.length === right.iterationStatusFilter.length &&
     left.iterationStatusFilter.every(
       (status, index) => status === right.iterationStatusFilter[index]
     ) &&
     left.iterationWorkerId === right.iterationWorkerId &&
+    left.keyKindFilter === right.keyKindFilter &&
     left.keyTypeFilter === right.keyTypeFilter &&
+    left.keyValueFilter === right.keyValueFilter &&
     overviewScopesEqual(left.overviewScope, right.overviewScope) &&
     left.view === right.view &&
     left.workerCategoryFilter === right.workerCategoryFilter &&

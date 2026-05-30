@@ -5,8 +5,10 @@ import { createWorkableRealtimeUrl, getWorkableRealtimeAccessToken } from "../..
 
 export const consoleRealtimeAutomaticReconnectDelaysMs = [0, 2000, 10000, 30000] as const;
 export const consoleRealtimeFallbackRestartDelayMs = 5000;
+const consoleRealtimeSharedConnectionReleaseDelayMs = 1000;
 
 type SharedConnectionSnapshot = {
+  connectionId?: string | null;
   connectionState: string;
   error?: string;
 };
@@ -54,14 +56,17 @@ type SharedConnectionEntry = {
   hubConnection: HubConnection;
   hubUrl: string;
   listeners: Map<string, SharedConnectionStateListener>;
+  releaseTimer: ReturnType<typeof setTimeout> | null;
   retryTimer: ReturnType<typeof setTimeout> | null;
   startPromise: Promise<void> | null;
 };
 
 export function createConsoleRealtimeSharedViewPool({
   createConnection = createConsoleRealtimeHubConnection,
+  stopDelayMs = consoleRealtimeSharedConnectionReleaseDelayMs,
 }: {
   createConnection?: SharedConnectionFactory;
+  stopDelayMs?: number;
 } = {}): ConsoleRealtimeSharedViewConnectionPool {
   const entries = new Map<string, SharedConnectionEntry>();
   let nextLeaseId = 0;
@@ -157,6 +162,7 @@ export function createConsoleRealtimeSharedViewPool({
       hubConnection,
       hubUrl,
       listeners: new Map(),
+      releaseTimer: null,
       retryTimer: null,
       startPromise: null,
     };
@@ -204,6 +210,11 @@ export function createConsoleRealtimeSharedViewPool({
   };
 
   const stopEntry = (entry: SharedConnectionEntry) => {
+    if (entry.releaseTimer) {
+      clearTimeout(entry.releaseTimer);
+      entry.releaseTimer = null;
+    }
+
     if (entry.retryTimer) {
       clearTimeout(entry.retryTimer);
       entry.retryTimer = null;
@@ -215,6 +226,7 @@ export function createConsoleRealtimeSharedViewPool({
   };
 
   const createSnapshot = (entry: SharedConnectionEntry): SharedConnectionSnapshot => ({
+    connectionId: entry.hubConnection.connectionId ?? null,
     connectionState: getEntryState(entry),
     error: entry.error,
   });
@@ -222,6 +234,10 @@ export function createConsoleRealtimeSharedViewPool({
   return {
     acquire({ apiUrl, connectionKey, hubUrl }) {
       const entry = entries.get(connectionKey) ?? createEntry({ apiUrl, connectionKey, hubUrl });
+      if (entry.releaseTimer) {
+        clearTimeout(entry.releaseTimer);
+        entry.releaseTimer = null;
+      }
       entry.consumerCount += 1;
       const leaseId = `lease:${++nextLeaseId}`;
       let released = false;
@@ -258,7 +274,12 @@ export function createConsoleRealtimeSharedViewPool({
 
           entry.consumerCount = Math.max(0, entry.consumerCount - 1);
           if (entry.consumerCount === 0) {
-            stopEntry(entry);
+            entry.releaseTimer = setTimeout(() => {
+              entry.releaseTimer = null;
+              if (entry.consumerCount === 0) {
+                stopEntry(entry);
+              }
+            }, Math.max(0, stopDelayMs));
           }
         },
         subscribeMethod<T = unknown>(method: string, handler: (payload: T) => void) {

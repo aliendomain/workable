@@ -187,6 +187,34 @@ public sealed class WorkableRealtimeWorkerOverviewSubscriptions
         }
     }
 
+    public IReadOnlyList<WorkableRealtimeDebugWorkerOverviewSubscriptionSnapshot> GetDebugSubscriptions(IWorkSystem system)
+    {
+        ArgumentNullException.ThrowIfNull(system);
+
+        lock (this.gate)
+        {
+            return [.. this.connectionGroups.Values
+                .Where(subscription => subscription.SystemId == system.Id)
+                .Select(subscription =>
+                {
+                    this.groups.TryGetValue(subscription.GroupName, out var group);
+                    return new WorkableRealtimeDebugWorkerOverviewSubscriptionSnapshot(
+                        subscription.ConnectionId,
+                        subscription.SubscriptionId,
+                        subscription.WorkerId,
+                        subscription.GroupName,
+                        subscription.Criteria,
+                        group?.ConnectionCount ?? 0,
+                        this.streamingGroups.Contains(subscription.GroupName),
+                        group?.LastActivityAt,
+                        group?.LastError,
+                        group?.StreamingStartedAt,
+                        group?.StreamingStoppedAt,
+                        group?.EventStreamDiagnosticsProvider?.Invoke());
+                })];
+        }
+    }
+
     internal Task WaitForChange(long observedVersion, CancellationToken cancellationToken)
     {
         Task wait;
@@ -209,11 +237,72 @@ public sealed class WorkableRealtimeWorkerOverviewSubscriptions
 
         lock (this.gate)
         {
+            if (this.groups.TryGetValue(groupName, out var group))
+            {
+                if (isStreaming)
+                {
+                    group.StreamingStartedAt = DateTimeOffset.UtcNow;
+                    group.StreamingStoppedAt = null;
+                    group.LastError = null;
+                }
+                else
+                {
+                    group.StreamingStoppedAt = DateTimeOffset.UtcNow;
+                }
+            }
+
             var changed = isStreaming
                 ? this.streamingGroups.Add(groupName)
                 : this.streamingGroups.Remove(groupName);
             if (changed)
             {
+                SignalChangedLocked();
+            }
+        }
+    }
+
+    internal void ReportActivity(string groupName, DateTimeOffset occurredAt)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(groupName);
+
+        lock (this.gate)
+        {
+            if (this.groups.TryGetValue(groupName, out var group))
+            {
+                group.LastActivityAt = occurredAt;
+                SignalChangedLocked();
+            }
+        }
+    }
+
+    internal void ReportError(string groupName, string? error)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(groupName);
+
+        lock (this.gate)
+        {
+            if (this.groups.TryGetValue(groupName, out var group))
+            {
+                group.LastError = string.IsNullOrWhiteSpace(error)
+                    ? null
+                    : error.Trim();
+                group.StreamingStoppedAt = DateTimeOffset.UtcNow;
+                SignalChangedLocked();
+            }
+        }
+    }
+
+    internal void SetEventStreamDiagnosticsProvider(
+        string groupName,
+        Func<WorkEventSubscriptionDiagnosticsSnapshot>? diagnosticsProvider)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(groupName);
+
+        lock (this.gate)
+        {
+            if (this.groups.TryGetValue(groupName, out var group))
+            {
+                group.EventStreamDiagnosticsProvider = diagnosticsProvider;
                 SignalChangedLocked();
             }
         }
@@ -319,5 +408,15 @@ public sealed class WorkableRealtimeWorkerOverviewSubscriptions
         public WorkableRealtimeWorkerOverviewSubscription Subscription { get; } = subscription;
 
         public int ConnectionCount { get; set; } = connectionCount;
+
+        public DateTimeOffset? LastActivityAt { get; set; }
+
+        public string? LastError { get; set; }
+
+        public DateTimeOffset? StreamingStartedAt { get; set; }
+
+        public DateTimeOffset? StreamingStoppedAt { get; set; }
+
+        public Func<WorkEventSubscriptionDiagnosticsSnapshot>? EventStreamDiagnosticsProvider { get; set; }
     }
 }

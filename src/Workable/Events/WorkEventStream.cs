@@ -161,7 +161,7 @@ internal sealed class WorkEventStream : IWorkEventStream, IAsyncDisposable
     private sealed class WorkEventSubscription(
         WorkEventStream owner,
         WorkEventFilter? filter,
-        WorkEventSubscriptionOptions options) : IWorkEventSubscription
+        WorkEventSubscriptionOptions options) : IWorkEventSubscription, IWorkEventSubscriptionDiagnostics
     {
         private readonly int capacity = options.Capacity;
         private readonly WorkEventOverflowBehavior overflowBehavior = options.OverflowBehavior;
@@ -174,6 +174,10 @@ internal sealed class WorkEventStream : IWorkEventStream, IAsyncDisposable
             });
         private int isDisposed;
         private int queuedCount;
+        private int peakQueuedCount;
+        private long acceptedEventCount;
+        private long deliveredEventCount;
+        private long droppedEventCount;
 
         public IAsyncEnumerable<WorkEvent> Read(CancellationToken cancellationToken = default)
             => new WorkEventSubscriptionEnumerable(this, cancellationToken);
@@ -183,6 +187,16 @@ internal sealed class WorkEventStream : IWorkEventStream, IAsyncDisposable
             this.DisposeSubscription();
             return ValueTask.CompletedTask;
         }
+
+        public WorkEventSubscriptionDiagnosticsSnapshot GetDiagnosticsSnapshot()
+            => new(
+                this.capacity,
+                this.overflowBehavior,
+                Volatile.Read(ref this.queuedCount),
+                Volatile.Read(ref this.peakQueuedCount),
+                Interlocked.Read(ref this.acceptedEventCount),
+                Interlocked.Read(ref this.deliveredEventCount),
+                Interlocked.Read(ref this.droppedEventCount));
 
         private void DisposeSubscription()
         {
@@ -206,9 +220,14 @@ internal sealed class WorkEventStream : IWorkEventStream, IAsyncDisposable
         internal void Publish(WorkEvent workEvent)
         {
             if (Volatile.Read(ref this.isDisposed) == 1 ||
-                filter?.Matches(workEvent) == false ||
-                !this.CanAcceptWrite())
+                filter?.Matches(workEvent) == false)
             {
+                return;
+            }
+
+            if (!this.CanAcceptWrite())
+            {
+                Interlocked.Increment(ref this.droppedEventCount);
                 return;
             }
 
@@ -217,9 +236,20 @@ internal sealed class WorkEventStream : IWorkEventStream, IAsyncDisposable
 
         internal void PublishMatched(WorkEvent workEvent)
         {
+            var replacedExistingEvent = this.overflowBehavior != WorkEventOverflowBehavior.DropWrite &&
+                Volatile.Read(ref this.queuedCount) >= this.capacity;
             if (this.events.Writer.TryWrite(workEvent))
             {
+                Interlocked.Increment(ref this.acceptedEventCount);
+                if (replacedExistingEvent)
+                {
+                    Interlocked.Increment(ref this.droppedEventCount);
+                }
                 this.TrackQueuedWrite();
+            }
+            else
+            {
+                Interlocked.Increment(ref this.droppedEventCount);
             }
         }
 
@@ -252,6 +282,24 @@ internal sealed class WorkEventStream : IWorkEventStream, IAsyncDisposable
                 }
 
                 if (Interlocked.CompareExchange(ref this.queuedCount, current + 1, current) == current)
+                {
+                    TrackPeakQueuedCount(current + 1);
+                    return;
+                }
+            }
+        }
+
+        private void TrackPeakQueuedCount(int queued)
+        {
+            while (true)
+            {
+                var currentPeak = Volatile.Read(ref this.peakQueuedCount);
+                if (queued <= currentPeak)
+                {
+                    return;
+                }
+
+                if (Interlocked.CompareExchange(ref this.peakQueuedCount, queued, currentPeak) == currentPeak)
                 {
                     return;
                 }
@@ -317,6 +365,7 @@ internal sealed class WorkEventStream : IWorkEventStream, IAsyncDisposable
                     }
 
                     Interlocked.Decrement(ref subscription.queuedCount);
+                    Interlocked.Increment(ref subscription.deliveredEventCount);
                     this.Current = workEvent;
                     return true;
                 }
