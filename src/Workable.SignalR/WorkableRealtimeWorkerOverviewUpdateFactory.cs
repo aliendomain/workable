@@ -389,6 +389,7 @@ internal static class WorkableRealtimeWorkerOverviewUpdateFactory
             return null;
         }
 
+        var sequenceValue = sequence.Value;
         var items = new List<WorkWorkerOverviewTimelineItem>();
         if (includeRetryPendingClear &&
             TryCreateClearedRetryPendingTimelineItem(current, latestIteration) is { } clearedRetryPendingItem &&
@@ -397,7 +398,7 @@ internal static class WorkableRealtimeWorkerOverviewUpdateFactory
             items.Add(clearedRetryPendingItem);
         }
 
-        if (latestIteration is not null && latestIteration.Sequence == sequence.Value)
+        if (latestIteration is not null && latestIteration.Sequence == sequenceValue)
         {
             var latestIterationItem = CreateIterationTimelineItem(
                 latestIteration,
@@ -413,7 +414,7 @@ internal static class WorkableRealtimeWorkerOverviewUpdateFactory
 
         var existingItems = current.TimelineItems
             .Where(item => item.Kind == WorkWorkerOverviewTimelineItemKind.Iteration &&
-                item.Sequence == sequence.Value)
+                item.Sequence == sequenceValue)
             .ToArray();
         if (existingItems.Length == 0)
         {

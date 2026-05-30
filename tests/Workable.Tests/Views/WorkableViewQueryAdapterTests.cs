@@ -133,19 +133,20 @@ public sealed class WorkableViewQueryAdapterTests
         var latestIteration = Assert.IsType<WorkWorkerOverviewLatestIteration>(landing?.LatestIteration);
 
         Assert.NotNull(landing);
-        Assert.Equal(WorkWorkerOverviewActivity.Timeline, landing.Activity);
-        Assert.Null(landing.Logs.Page);
-        Assert.NotNull(landing.Timeline.Page);
-        Assert.Single(landing.Timeline.Page.Items);
-        Assert.Equal(1, landing.Timeline.Summary.Total);
-        Assert.Equal(1, landing.Timeline.Summary.FailureCount);
-        Assert.Equal(0, landing.Timeline.Summary.UserActionCount);
+        var nonNullLanding = landing!;
+        Assert.Equal(WorkWorkerOverviewActivity.Timeline, nonNullLanding.Activity);
+        Assert.Null(nonNullLanding.Logs.Page);
+        Assert.NotNull(nonNullLanding.Timeline.Page);
+        Assert.Single(nonNullLanding.Timeline.Page.Items);
+        Assert.Equal(1, nonNullLanding.Timeline.Summary.Total);
+        Assert.Equal(1, nonNullLanding.Timeline.Summary.FailureCount);
+        Assert.Equal(0, nonNullLanding.Timeline.Summary.UserActionCount);
         Assert.Equal(WorkCompletionStatus.Failed, latestIteration.Status);
         Assert.NotNull(latestIteration.Failure);
         Assert.Equal(WorkWorkerOverviewFailureKind.Failure, latestIteration.Failure.Kind);
         Assert.Equal("view.failure", latestIteration.Failure.Code);
         Assert.Equal("The work failed.", latestIteration.Failure.Message);
-        Assert.Equal(WorkCompletionStatus.Failed, Assert.Single(landing.RecentIterations).Status);
+        Assert.Equal(WorkCompletionStatus.Failed, Assert.Single(nonNullLanding.RecentIterations).Status);
     }
 
     [Fact]
@@ -184,15 +185,16 @@ public sealed class WorkableViewQueryAdapterTests
         var latestIteration = Assert.IsType<WorkWorkerOverviewLatestIteration>(landing?.LatestIteration);
 
         Assert.NotNull(landing);
+        var nonNullLanding = landing!;
         Assert.Equal(WorkCompletionStatus.Executing, latestIteration.Status);
         Assert.Null(latestIteration.CompletedAt);
         Assert.Null(latestIteration.ExecutionDuration);
-        Assert.NotNull(landing.Timeline.Page);
-        Assert.Contains(landing.Timeline.Page.Items, item =>
+        Assert.NotNull(nonNullLanding.Timeline.Page);
+        Assert.Contains(nonNullLanding.Timeline.Page.Items, item =>
             item.Kind == WorkWorkerOverviewTimelineItemKind.Iteration &&
             item.Sequence == 1 &&
             item.IterationStatus == WorkCompletionStatus.Executing);
-        Assert.Equal(WorkCompletionStatus.Executing, Assert.Single(landing.RecentIterations).Status);
+        Assert.Equal(WorkCompletionStatus.Executing, Assert.Single(nonNullLanding.RecentIterations).Status);
     }
 
     [Fact]
@@ -295,8 +297,9 @@ public sealed class WorkableViewQueryAdapterTests
             var failedIteration = Assert.Single(timelinePage.Items, item =>
                 item.Kind == WorkWorkerOverviewTimelineItemKind.Iteration &&
                 item.Sequence == latestIteration.Sequence);
-            Assert.NotNull(failedIteration.Failure?.PendingState);
-            Assert.Equal(WorkWorkerOverviewPendingStateMode.Retry, failedIteration.Failure.PendingState.Mode);
+            var failedPendingState = failedIteration.Failure?.PendingState;
+            Assert.NotNull(failedPendingState);
+            Assert.Equal(WorkWorkerOverviewPendingStateMode.Retry, failedPendingState!.Mode);
             Assert.DoesNotContain(timelinePage.Items, item =>
                 item.Kind == WorkWorkerOverviewTimelineItemKind.StateChange &&
                 item.State == WorkerState.Retrying);
@@ -424,7 +427,8 @@ public sealed class WorkableViewQueryAdapterTests
                 Activity: WorkWorkerOverviewActivity.Logs,
                 ActivityTake: 10));
 
-        Assert.NotNull(overview?.Logs.Page);
+        Assert.NotNull(overview);
+        Assert.NotNull(overview.Logs.Page);
         Assert.Equal(2, overview.Logs.Summary.Total);
         Assert.Equal(2, overview.Logs.Summary.Information);
         Assert.Contains(overview.Logs.Page.Items, item => item.Message.Contains("attempt 1", StringComparison.Ordinal));
@@ -463,7 +467,8 @@ public sealed class WorkableViewQueryAdapterTests
                 ActivityTake: 10,
                 LogIterationSequence: 2));
 
-        Assert.NotNull(overview?.Logs.Page);
+        Assert.NotNull(overview);
+        Assert.NotNull(overview.Logs.Page);
         Assert.Equal(1, overview.Logs.Summary.Total);
         Assert.Equal(1, overview.Logs.Summary.Information);
         Assert.Collection(
@@ -527,14 +532,14 @@ public sealed class WorkableViewQueryAdapterTests
             Assert.IsType<WorkWorkerOverviewPage<WorkWorkerOverviewLogEntry>>(filtered.Logs.Page).Items,
             item => Assert.Equal(LogLevel.Warning, item.Level));
 
-        Assert.NotNull(firstPage?.Logs.Page);
-        Assert.Single(firstPage.Logs.Page.Items);
-        Assert.True(firstPage.Logs.Page.HasMore);
-        Assert.Equal("landing info", firstPage.Logs.Page.Items[0].Message);
+        var firstLogsPage = firstPage?.Logs.Page ?? throw new Xunit.Sdk.XunitException("Expected firstPage.Logs.Page to be non-null.");
+        Assert.Single(firstLogsPage.Items);
+        Assert.True(firstLogsPage.HasMore);
+        Assert.Equal("landing info", firstLogsPage.Items[0].Message);
 
-        Assert.NotNull(secondPage?.Logs.Page);
-        Assert.Single(secondPage.Logs.Page.Items);
-        Assert.Equal("landing warning", secondPage.Logs.Page.Items[0].Message);
+        var secondLogsPage = Assert.IsType<WorkWorkerOverviewPage<WorkWorkerOverviewLogEntry>>(secondPage?.Logs.Page);
+        Assert.Single(secondLogsPage.Items);
+        Assert.Equal("landing warning", secondLogsPage.Items[0].Message);
     }
 
     [Fact]

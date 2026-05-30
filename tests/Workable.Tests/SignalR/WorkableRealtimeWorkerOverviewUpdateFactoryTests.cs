@@ -1200,7 +1200,7 @@ public sealed class WorkableRealtimeWorkerOverviewUpdateFactoryTests
             item => item.Id == "iteration:20");
         Assert.NotNull(failedTimelineItem.Failure?.PendingState);
         Assert.Equal(WorkWorkerOverviewPendingStateMode.Retry, failedTimelineItem.Failure!.PendingState!.Mode);
-        Assert.Equal(retryAt, failedTimelineItem.Failure.PendingState.NextRunAt);
+        Assert.Equal(retryAt, failedTimelineItem.Failure!.PendingState!.NextRunAt);
     }
 
     private static WorkEvent CreateEvent(string eventType, object payload, DateTimeOffset? occurredAt = null)
