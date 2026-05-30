@@ -588,8 +588,14 @@ public sealed class WorkableHttpApiTests
             ?? throw new InvalidOperationException("Expected configured workers array.");
         Assert.Contains(workers, worker => worker?["state"]?.GetValue<string>() == "Completed");
         Assert.Contains(workers, worker => worker?["state"]?.GetValue<string>() == "Failed");
-        Assert.Contains(workers, worker => worker?["state"]?.GetValue<string>() == "Completed" && worker?["isFinal"]?.GetValue<bool>() == true);
-        Assert.Contains(workers, worker => worker?["state"]?.GetValue<string>() == "Failed" && worker?["isFinal"]?.GetValue<bool>() == false);
+        Assert.Contains(workers, worker =>
+            worker is not null &&
+            worker["state"]?.GetValue<string>() == "Completed" &&
+            worker["isFinal"]?.GetValue<bool>() == true);
+        Assert.Contains(workers, worker =>
+            worker is not null &&
+            worker["state"]?.GetValue<string>() == "Failed" &&
+            worker["isFinal"]?.GetValue<bool>() == false);
         Assert.NotNull(workers.FirstOrDefault()?["identifiers"]);
         Assert.Equal(1, configurationGrid["totalCount"]?.GetValue<int>());
         Assert.Equal("http.overview.complete", Assert.Single(configuredWorkers)?["definitionName"]?.GetValue<string>());

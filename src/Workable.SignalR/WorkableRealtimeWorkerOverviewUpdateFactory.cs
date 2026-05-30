@@ -318,14 +318,19 @@ internal static class WorkableRealtimeWorkerOverviewUpdateFactory
         WorkWorkerOverviewRealtimeCriteria criteria,
         WorkerOverviewRealtimeEventPayload? payload)
     {
-        var log = payload?.Log;
+        if (payload is null)
+        {
+            return null;
+        }
+
+        var log = payload.Log;
         if (log is null)
         {
             return null;
         }
 
         if (criteria.LogIterationSequence.HasValue &&
-            payload?.Iteration?.Sequence != criteria.LogIterationSequence.Value)
+            payload.Iteration?.Sequence != criteria.LogIterationSequence.Value)
         {
             return null;
         }
@@ -346,7 +351,7 @@ internal static class WorkableRealtimeWorkerOverviewUpdateFactory
                 log.EventId.Name,
                 log.ExceptionType,
                 log.ExceptionMessage,
-                payload?.Iteration?.Sequence,
+                payload.Iteration?.Sequence,
                 log.Ordinal),
         ];
     }

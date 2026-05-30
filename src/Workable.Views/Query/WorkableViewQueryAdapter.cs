@@ -1124,14 +1124,14 @@ public class WorkableViewQueryAdapter
         IReadOnlyList<WorkWorkerOverviewTimelineItem> items)
     {
         var retryPending = CreateWorkerOverviewRetryPendingState(worker, latestIteration);
-        if (retryPending is null || latestIteration is null)
+        if (retryPending is null)
         {
             return items;
         }
 
         return [.. items.Select(item =>
             item.Kind == WorkWorkerOverviewTimelineItemKind.Iteration &&
-            item.Sequence == latestIteration.Sequence &&
+            item.Sequence == latestIteration?.Sequence &&
             item.Failure is not null
                 ? item with
                 {

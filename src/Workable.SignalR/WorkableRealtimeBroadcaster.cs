@@ -566,55 +566,55 @@ internal sealed class WorkableRealtimeBroadcaster(
             if (current is null)
             {
                 workerOverviewSubscriptions.SetStreaming(subscription.GroupName, isStreaming: true);
-                return;
             }
-
-            var startupBufferedEventLimit = Math.Max(1, options.Value.EventMaxBatchSize);
-            var startupBufferedEventCount = 0;
-            while (true)
+            else
             {
-                var bufferedRead = reader.MoveNextAsync();
-                if (!bufferedRead.IsCompletedSuccessfully)
+                var startupBufferedEventLimit = Math.Max(1, options.Value.EventMaxBatchSize);
+                var startupBufferedEventCount = 0;
+                while (true)
                 {
-                    pendingRead = bufferedRead.AsTask();
-                    break;
-                }
+                    var bufferedRead = reader.MoveNextAsync();
+                    if (!bufferedRead.IsCompletedSuccessfully)
+                    {
+                        pendingRead = bufferedRead.AsTask();
+                        break;
+                    }
 
-                if (!bufferedRead.Result)
-                {
-                    return;
-                }
+                    if (!bufferedRead.Result)
+                    {
+                        return;
+                    }
 
-                var bufferedUpdate = WorkableRealtimeWorkerOverviewUpdateFactory.Create(
-                    reader.Current,
-                    current,
-                    subscription.Criteria);
-                if (bufferedUpdate is not null)
-                {
-                    current = WorkableRealtimeWorkerOverviewUpdateFactory.Apply(
+                    var bufferedUpdate = WorkableRealtimeWorkerOverviewUpdateFactory.Create(
+                        reader.Current,
                         current,
-                        bufferedUpdate,
                         subscription.Criteria);
+                    if (bufferedUpdate is not null)
+                    {
+                        current = WorkableRealtimeWorkerOverviewUpdateFactory.Apply(
+                            current,
+                            bufferedUpdate,
+                            subscription.Criteria);
+                    }
+
+                    startupBufferedEventCount++;
+                    if (startupBufferedEventCount >= startupBufferedEventLimit)
+                    {
+                        // Under a flood, MoveNextAsync can keep completing synchronously and prevent
+                        // the worker overview subscription from ever declaring itself live. Cap the
+                        // startup prebuffer and let the normal batched loop catch up from there.
+                        pendingRead = Task.FromResult(true);
+                        break;
+                    }
                 }
 
-                startupBufferedEventCount++;
-                if (startupBufferedEventCount >= startupBufferedEventLimit)
-                {
-                    // Under a flood, MoveNextAsync can keep completing synchronously and prevent
-                    // the worker overview subscription from ever declaring itself live. Cap the
-                    // startup prebuffer and let the normal batched loop catch up from there.
-                    pendingRead = Task.FromResult(true);
-                    break;
-                }
+                await this.SendWorkerOverviewUpdateToGroup(
+                    subscription.GroupName,
+                    WorkableRealtimeWorkerOverviewUpdateFactory.CreateInitial(current),
+                    cancellationToken);
+                workerOverviewSubscriptions.ReportActivity(subscription.GroupName, DateTimeOffset.UtcNow);
+                workerOverviewSubscriptions.SetStreaming(subscription.GroupName, isStreaming: true);
             }
-
-            await this.SendWorkerOverviewUpdateToGroup(
-                subscription.GroupName,
-                WorkableRealtimeWorkerOverviewUpdateFactory.CreateInitial(current),
-                cancellationToken);
-            workerOverviewSubscriptions.ReportActivity(subscription.GroupName, DateTimeOffset.UtcNow);
-
-            workerOverviewSubscriptions.SetStreaming(subscription.GroupName, isStreaming: true);
             while (!cancellationToken.IsCancellationRequested)
             {
                 pendingRead ??= reader.MoveNextAsync().AsTask();
@@ -629,6 +629,26 @@ internal sealed class WorkableRealtimeBroadcaster(
                     reader.Current,
                     cancellationToken);
                 pendingRead = batch.PendingRead;
+                if (current is null)
+                {
+                    current = await views.WorkerOverviewRealtimeState(
+                        session,
+                        subscription.WorkerId,
+                        subscription.Criteria,
+                        cancellationToken);
+                    if (current is null)
+                    {
+                        continue;
+                    }
+
+                    await this.SendWorkerOverviewUpdateToGroup(
+                        subscription.GroupName,
+                        WorkableRealtimeWorkerOverviewUpdateFactory.CreateInitial(current),
+                        cancellationToken);
+                    workerOverviewSubscriptions.ReportActivity(subscription.GroupName, DateTimeOffset.UtcNow);
+                    continue;
+                }
+
                 var updates = new List<WorkWorkerOverviewRealtimeUpdate>(batch.Events.Count);
                 var batchStartState = current;
                 var batchState = current;
@@ -677,15 +697,15 @@ internal sealed class WorkableRealtimeBroadcaster(
                 workerOverviewSubscriptions.ReportActivity(subscription.GroupName, batchedUpdate.GeneratedAt);
 
                 var diagnostics = eventStreamDiagnostics?.GetDiagnosticsSnapshot();
-                if (ShouldResyncWorkerOverviewFromLag(diagnostics, options.Value))
+                if (diagnostics is not null && ShouldResyncWorkerOverviewFromLag(diagnostics, options.Value))
                 {
                     logger.LogWarning(
                         "SignalR worker overview for worker '{WorkerId}' in system '{SystemName}' is falling behind and will request a resync. Queued={QueuedCount}, Dropped={DroppedEventCount}, Capacity={Capacity}.",
                         subscription.WorkerId.Value,
                         system.Name,
-                        diagnostics?.QueuedCount ?? 0,
-                        diagnostics?.DroppedEventCount ?? 0,
-                        diagnostics?.Capacity ?? 0);
+                        diagnostics.QueuedCount,
+                        diagnostics.DroppedEventCount,
+                        diagnostics.Capacity);
                     await this.SendWorkerOverviewUpdateToGroup(
                         subscription.GroupName,
                         CreateWorkerOverviewRefreshInstruction(diagnostics),
