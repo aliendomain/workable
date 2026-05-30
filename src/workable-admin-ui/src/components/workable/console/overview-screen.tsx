@@ -80,6 +80,7 @@ import { IdentifierSummary, TypedValueSummary } from "@/components/workable/cons
 import {
   stateTone,
   workableFetch,
+  workableQueryFetch,
   type WorkAction,
   type WorkCompletionStatus,
   type WorkComponentQueryResult,
@@ -184,8 +185,7 @@ export function getOverviewPanelShape(
   panelId: OverviewPanelId
 ) {
   const shape = shapes[panelId];
-  return shape === "compact" ||
-    overviewPanelShapeCapabilities[panelId].supportedShapes.includes(shape)
+  return overviewPanelShapeCapabilities[panelId].supportedShapes.includes(shape)
     ? shape
     : overviewPanelShapeCapabilities[panelId].defaultShape;
 }
@@ -521,7 +521,7 @@ export function OverviewView({
     }
 
     try {
-      const failedWorkersOverview = await workableFetch<WorkComponentQueryResult>(
+      const failedWorkersOverview = await workableQueryFetch<WorkComponentQueryResult>(
         connection,
         "views/overview",
         {
@@ -593,7 +593,6 @@ export function OverviewView({
   return (
     <ConsolePageLayout>
       <PanelAggregateFrame
-        className="space-y-2.5"
         controls={overviewControls}
         hiddenPanelIds={hiddenPanelIds}
         onPanelVisibilityChange={onPanelVisibilityChange}
@@ -3050,42 +3049,6 @@ export function useWorkableRealtimeView<T>(
   });
 }
 
-export function useWorkableRealtimeWorkerEvents(
-  connection: WorkableConnection | null,
-  workerId: string,
-  enabled: boolean,
-  captureEnabled: boolean,
-  maxMessages: number
-): RealtimeEventLoadable {
-  return useConsoleRealtimeEventStream({
-    captureEnabled,
-    connection,
-    createBatchMessage: (batch, nextMessageId) =>
-      createRealtimeEventMessage(
-        batch.events,
-        `worker-batch:${nextMessageId}`,
-        Date.now(),
-        batch.sentAt
-      ),
-    createSingleMessage: (workEvent, nextMessageId) =>
-      createRealtimeEventMessage(
-        [workEvent],
-        `worker-events:${nextMessageId}`,
-        Date.now()
-      ),
-    debugLabel: `worker:${workerId}`,
-    enabled,
-    maxMessages,
-    subscriptionErrorMessage: "Realtime worker subscription failed.",
-    unwatchMethod: "UnwatchWorker",
-    watchArgument: workerId,
-    watchArgumentKey: workerId,
-    watchMethod: "WatchWorker",
-    watchReady: workerId.trim().length > 0,
-    watchStoppedMessage: "Realtime worker connection closed.",
-  });
-}
-
 function createRealtimeEventMessage(
   events: WorkableRealtimeEvent[],
   id: string,
@@ -3232,7 +3195,7 @@ function useWorkablePostResource<T>(
     });
 
     const requestConnection = { apiUrl, systemName };
-    workableFetch<T>(requestConnection, path, {
+    workableQueryFetch<T>(requestConnection, path, {
       method: "POST",
       body: bodyKey,
     })

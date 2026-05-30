@@ -1,9 +1,13 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Routing;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Options;
+using System.Net;
 
 namespace Workable;
 
@@ -16,6 +20,14 @@ public static class WorkableHttpApiExtensions
         ArgumentNullException.ThrowIfNull(endpoints);
         ArgumentException.ThrowIfNullOrWhiteSpace(prefix);
         EnsureAllSystemsRequireAuthorization(endpoints.ServiceProvider.GetRequiredService<IWorkSystemRegistry>());
+
+        if (ShouldMapDebugRoutes(endpoints.ServiceProvider))
+        {
+            var debugGroup = endpoints.MapGroup(prefix);
+            WorkableHttpDebugRoutes.Map(debugGroup);
+            var namedDebugGroup = endpoints.MapGroup($"{prefix}/systems/{{systemName}}");
+            WorkableHttpDebugRoutes.Map(namedDebugGroup);
+        }
 
         var group = endpoints.MapGroup(prefix);
         ApplyTransportAuthorization(group, endpoints.ServiceProvider);
@@ -117,5 +129,41 @@ public static class WorkableHttpApiExtensions
 
         throw new InvalidOperationException(
             $"Workable HTTP API requires authorization-enabled systems. The following systems do not require authorization: {string.Join(", ", unsecuredSystems)}.");
+    }
+
+    private static bool ShouldMapDebugRoutes(IServiceProvider services)
+    {
+        var environment = services.GetService<IWebHostEnvironment>();
+        if (environment?.IsDevelopment() == true)
+        {
+            return true;
+        }
+
+        var configuration = services.GetService<IConfiguration>();
+        var configuredUrls = GetConfiguredUrls(configuration).ToArray();
+        return configuredUrls.Length > 0 && configuredUrls.All(IsLoopbackUrl);
+    }
+
+    private static IEnumerable<string> GetConfiguredUrls(IConfiguration? configuration)
+    {
+        return new[]
+        {
+            configuration?["ASPNETCORE_URLS"],
+            configuration?["URLS"],
+            configuration?["urls"],
+        }
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .SelectMany(value => value!.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
+    }
+
+    private static bool IsLoopbackUrl(string value)
+    {
+        if (!Uri.TryCreate(value, UriKind.Absolute, out var uri))
+        {
+            return false;
+        }
+
+        return string.Equals(uri.Host, "localhost", StringComparison.OrdinalIgnoreCase) ||
+            IPAddress.TryParse(uri.Host, out var address) && IPAddress.IsLoopback(address);
     }
 }

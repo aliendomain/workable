@@ -58,9 +58,9 @@ public sealed record WorkEvent(
     JsonElement? Data);
 ```
 
-The envelope is stable and filterable. It carries the system id, optional system name, worker, definition id and name, subject, concurrency key, identifiers, event type, and thin event data.
+The envelope is stable and filterable. It carries the system id, optional system name, worker, definition id and name, subject, concurrency key, identifiers, event type, and selective event data.
 
-Event data is intentionally thin. Worker lifecycle events include a worker summary and lightweight `keys` when keys are available. They do not include worker input, output, worker messages, logs, full iteration history, or full worker detail. Query worker detail when a consumer needs those heavier fields.
+Event data is selective and bounded. Worker lifecycle events include a worker summary and lightweight `keys` when keys are available, plus targeted enrichments for realtime consumers such as retained summary counts, latest iteration data, and structured log details. They still do not include worker input, full worker messages, full logs, full iteration history, or full worker detail. Query worker detail when a consumer needs those heavier fields.
 
 `worker.purge` is even smaller. It carries only the purge timestamp and purged worker ids; it does not include a worker summary or keys.
 
@@ -95,13 +95,11 @@ Action events such as `worker.cancel`, `worker.pause`, and `worker.push` describ
 
 `Data` uses camel-case JSON property names. Enum values are strings. Null properties are omitted.
 
-Most worker events share a common thin worker payload and then add a few event-specific fields when needed. The payload families below document the base shape once, then show only the JSON fields each event family adds or changes.
+Most worker events share a common base worker payload and then add a few event-specific fields when needed. The payload families below document the base shape once, then show only the JSON fields each event family adds or changes.
 
 ### Base Worker Payload
 
-Used as-is by:
-
-- `worker.started`
+Used by all non-purge worker payload families as the `worker` block.
 
 Shape:
 
@@ -127,6 +125,24 @@ Shape:
       "workerId": { "value": "00000000-0000-0000-0000-000000000000" },
       "revision": 1
     },
+    "configDifferenceCount": 0,
+    "logSummary": {
+      "total": 1,
+      "critical": 0,
+      "error": 1,
+      "errors": 1,
+      "warning": 0,
+      "warnings": 0,
+      "information": 0,
+      "debug": 0,
+      "trace": 0
+    },
+    "timelineSummary": {
+      "total": 2,
+      "userActionCount": 0,
+      "systemEventCount": 1,
+      "failureCount": 1
+    },
     "queueDuration": "00:00:01",
     "totalExecutionDuration": "00:00:00"
   },
@@ -142,8 +158,11 @@ Notes:
 
 - `queueDuration` is included after the worker has started at least once. It is omitted for work that is still queued and has never begun execution.
 - `nextRunAt` is included when the worker already has a scheduled future run. In practice that means recurring work in the `Waiting` state and transient-retry work in the `Retrying` state.
+- `retryAttempt` is included when the worker is currently retrying or executing a retry attempt.
 - `interruptionReason` is included when the worker is in the `Interrupted` state.
-- `worker.started` uses this base payload directly and does not include iteration data.
+- `configDifferenceCount` is the worker-level count of effective configuration differences from the current definition defaults.
+- `logSummary` is the retained worker-level aggregate across known retained iteration logs.
+- `timelineSummary` is the retained worker-level aggregate across the worker overview timeline model.
 - Every payload family below includes this full base worker payload unless noted otherwise.
 
 ### Event Origin Payload
@@ -191,6 +210,33 @@ Notes:
 - `worker.queued` always includes `origin`.
 - `origin.actor` is included only when the queue request carried caller identity.
 
+### Start Payload
+
+Used by:
+
+- `worker.started`
+
+Includes the base worker payload plus:
+
+```json
+{
+  "iteration": {
+    "sequence": 1,
+    "startedAt": "2026-05-17T12:00:00Z",
+    "completedAt": "2026-05-17T12:00:00Z",
+    "executionDuration": "00:00:00",
+    "status": "Executing",
+    "attemptCount": 1
+  }
+}
+```
+
+Notes:
+
+- `worker.started` includes the latest in-flight iteration snapshot for the execution attempt that just began.
+- `completedAt` and `executionDuration` reflect the observed state when the event payload was built.
+- `output` and `failure` are omitted because the iteration has not settled yet.
+
 ### Log Payload
 
 Used by:
@@ -201,7 +247,16 @@ Includes the base worker payload plus:
 
 ```json
 {
+  "iteration": {
+    "sequence": 1,
+    "startedAt": "2026-05-17T12:00:00Z",
+    "completedAt": "2026-05-17T12:00:00Z",
+    "executionDuration": "00:00:00",
+    "status": "Executing",
+    "attemptCount": 1
+  },
   "log": {
+    "id": "1dcf3f2ef3e74e6b92dbe56f3679d8cc",
     "category": "MyApp.Workers.EmailWelcomeSend",
     "level": "Error",
     "eventId": {
@@ -219,6 +274,8 @@ Notes:
 
 - `OccurredAt` on the event envelope is the captured log timestamp.
 - The event payload includes the core captured log fields.
+- `log.id` is a stable retained log entry id suitable for client-side identity and de-duplication.
+- The `iteration` block identifies the in-flight iteration that captured the log entry.
 - `exceptionType` and `exceptionMessage` are present only when the captured log included an exception.
 - Retained iteration logs on `WorkerSnapshot.Iterations[*].Logs` carry the same structured log entry fields as the event payload.
 
@@ -260,9 +317,26 @@ Includes the base worker payload plus:
 
 ```json
 {
-  "completionStatus": "Completed"
+  "completionStatus": "Completed",
+  "iteration": {
+    "sequence": 1,
+    "startedAt": "2026-05-17T12:00:00Z",
+    "completedAt": "2026-05-17T12:00:01Z",
+    "executionDuration": "00:00:01",
+    "status": "Completed",
+    "attemptCount": 1,
+    "output": {
+      "json": "{\"done\":true}",
+      "contentType": "application/json"
+    }
+  }
 }
 ```
+
+Notes:
+
+- Completion lifecycle events now include the latest retained iteration snapshot.
+- `worker.failed`, `worker.paused`, `worker.interrupted`, and `worker.canceled` follow the same shape, with `iteration.failure` and `iteration.output` present when they are relevant to the retained latest iteration.
 
 ### Waiting Payload
 
@@ -274,9 +348,22 @@ Includes the base worker payload plus:
 
 ```json
 {
-  "recurrenceInterval": "00:00:04"
+  "recurrenceInterval": "00:00:04",
+  "iteration": {
+    "sequence": 1,
+    "startedAt": "2026-05-17T12:00:00Z",
+    "completedAt": "2026-05-17T12:00:01Z",
+    "executionDuration": "00:00:01",
+    "status": "Completed",
+    "attemptCount": 1
+  }
 }
 ```
+
+Notes:
+
+- `worker.waiting` includes the latest retained iteration snapshot so consumers can correlate the wait with the iteration that just settled.
+- `iteration.output` is included when the retained iteration produced output.
 
 ### Retrying Payload
 
@@ -288,9 +375,29 @@ Includes the base worker payload plus:
 
 ```json
 {
-  "retryDelay": "00:00:00.8000000"
+  "retryDelay": "00:00:00.8000000",
+  "iteration": {
+    "sequence": 1,
+    "startedAt": "2026-05-17T12:00:00Z",
+    "completedAt": "2026-05-17T12:00:01Z",
+    "executionDuration": "00:00:01",
+    "status": "Failed",
+    "attemptCount": 2,
+    "failure": {
+      "kind": "Failure",
+      "message": "Retry me once.",
+      "code": "events.retrying.transient",
+      "declaredByWork": true
+    }
+  }
 }
 ```
+
+Notes:
+
+- `worker.retrying` includes the failed iteration snapshot that caused the retry delay.
+- `iteration.failure` is included when the retained failed iteration resolved a structured failure.
+- `iteration.output` is included only when the failed iteration retained output.
 
 ### Iteration Start Payload
 
@@ -305,8 +412,10 @@ Includes the base worker payload plus:
   "iteration": {
     "sequence": 1,
     "startedAt": "2026-05-17T12:00:00Z",
+    "completedAt": "2026-05-17T12:00:00Z",
     "executionDuration": "00:00:00",
-    "status": "Executing"
+    "status": "Executing",
+    "attemptCount": 1
   }
 }
 ```
@@ -314,8 +423,8 @@ Includes the base worker payload plus:
 Notes:
 
 - This payload uses the current in-flight iteration snapshot rather than a retained completed iteration.
-- `completedAt` is omitted because the iteration has not finished yet.
-- Iteration-heavy fields such as `output`, `messages`, and `logs` are still omitted from the event payload.
+- `completedAt` and `executionDuration` reflect the observed in-flight state when the payload was built.
+- Iteration-heavy fields such as `output`, `failure`, `messages`, and `logs` are still omitted from the start payload.
 
 ### Iteration Completion Payload
 
@@ -334,10 +443,20 @@ Includes the base worker payload plus:
     "startedAt": "2026-05-17T12:00:00Z",
     "completedAt": "2026-05-17T12:00:01Z",
     "executionDuration": "00:00:01",
-    "status": "Completed"
+    "status": "Completed",
+    "attemptCount": 1,
+    "output": {
+      "json": "{\"done\":true}",
+      "contentType": "application/json"
+    }
   }
 }
 ```
+
+Notes:
+
+- `worker.iteration.completed` includes retained output when the completed iteration produced output.
+- `worker.iteration.failed` includes `iteration.failure` and may also include `iteration.output` when the failed iteration retained output.
 
 ### Recurrence Circuit Payload
 
@@ -354,7 +473,8 @@ Includes the base worker payload plus:
     "startedAt": "2026-05-17T12:10:00Z",
     "completedAt": "2026-05-17T12:10:01Z",
     "executionDuration": "00:00:01",
-    "status": "Failed"
+    "status": "Failed",
+    "attemptCount": 3
   }
 }
 ```

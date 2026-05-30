@@ -46,7 +46,7 @@ internal sealed class WorkSystemQueueDiagnosticsTracker
 
     public void RecordRejected(WorkQueueOutcome outcome)
     {
-        var primaryMessage = outcome.Messages.FirstOrDefault(message => message.Severity is WorkMessageSeverity.Error) ??
+        var primaryMessage = outcome.Messages.FirstOrDefault(message => message.Severity.IsError()) ??
             outcome.Messages.FirstOrDefault();
         var primaryCode = primaryMessage?.Code;
         var primaryText = primaryMessage?.Text;

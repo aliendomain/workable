@@ -10,4 +10,5 @@ public sealed record WorkerActionHistoryEntry(
     long StateSequence,
     WorkerState State,
     IReadOnlyList<WorkMessage> Messages,
+    long? IterationSequence = null,
     WorkerReconfiguration? Reconfiguration = null);

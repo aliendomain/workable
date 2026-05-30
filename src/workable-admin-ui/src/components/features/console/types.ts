@@ -6,9 +6,10 @@ export type View =
   | "definition"
   | "workers"
   | "iterations"
-  | "worker";
+  | "worker"
+  | "iteration";
 
-export type ServerView = Exclude<View, "worker">;
+export type ServerView = Exclude<View, "worker" | "iteration">;
 
 export type OverviewScope = {
   category?: string;
@@ -39,6 +40,7 @@ export type WorkableSystemConnection = {
 export type Loadable<T> = {
   data?: T;
   error?: string;
+  errorCause?: unknown;
   loading: boolean;
   refreshing?: boolean;
 };

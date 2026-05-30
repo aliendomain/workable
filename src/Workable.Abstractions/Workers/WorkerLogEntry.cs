@@ -10,4 +10,9 @@ public sealed record WorkerLogEntry(
     EventId EventId,
     string Message,
     string? ExceptionType = null,
-    string? ExceptionMessage = null);
+    string? ExceptionMessage = null)
+{
+    public Guid Id { get; init; } = Guid.NewGuid();
+
+    public long Ordinal { get; init; }
+}

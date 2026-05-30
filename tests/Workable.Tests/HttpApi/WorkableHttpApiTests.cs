@@ -10,6 +10,7 @@ using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 using Workable;
 
 namespace Workable.Tests;
@@ -587,6 +588,14 @@ public sealed class WorkableHttpApiTests
             ?? throw new InvalidOperationException("Expected configured workers array.");
         Assert.Contains(workers, worker => worker?["state"]?.GetValue<string>() == "Completed");
         Assert.Contains(workers, worker => worker?["state"]?.GetValue<string>() == "Failed");
+        Assert.Contains(workers, worker =>
+            worker is not null &&
+            worker["state"]?.GetValue<string>() == "Completed" &&
+            worker["isFinal"]?.GetValue<bool>() == true);
+        Assert.Contains(workers, worker =>
+            worker is not null &&
+            worker["state"]?.GetValue<string>() == "Failed" &&
+            worker["isFinal"]?.GetValue<bool>() == false);
         Assert.NotNull(workers.FirstOrDefault()?["identifiers"]);
         Assert.Equal(1, configurationGrid["totalCount"]?.GetValue<int>());
         Assert.Equal("http.overview.complete", Assert.Single(configuredWorkers)?["definitionName"]?.GetValue<string>());
@@ -652,8 +661,357 @@ public sealed class WorkableHttpApiTests
         var iteration = Assert.Single(iterations);
         Assert.Equal(workerId.ToString("D"), iteration?["workerId"]?["value"]?.GetValue<string>());
         Assert.Equal("Completed", iteration?["status"]?.GetValue<string>());
+        Assert.True(iteration?["isFinal"]?.GetValue<bool>());
         Assert.NotNull(iteration?["workerState"]);
         Assert.NotNull(iteration?["identifiers"]);
+    }
+
+    [Fact]
+    public async Task MappedHttpRouteCanFilterWorkerOverviewActivity()
+    {
+        using var host = await CreateHttpHost(builder =>
+        {
+            builder.AddAuthorizedTransportWork(
+                WorkDefinition.Create("http.route.overview.activity"),
+                (context, input, cancellationToken) =>
+                {
+                    var logger = context.Services.GetRequiredService<ILoggerFactory>().CreateLogger("http.route.overview.activity");
+                    logger.LogInformation("http info");
+                    logger.LogWarning("http warning");
+                    logger.LogError("http error");
+                    return Task.FromResult(WorkExecutionResult.Success());
+                },
+                configuration => configuration.ConfigureLogging(level: LogLevel.Information));
+        });
+        var client = host.GetTestClient();
+        var system = host.Services.GetRequiredService<IWorkSystemRegistry>().Default;
+        var session = TransportAuthorizationTestSupport.CreateTransportSession(
+            system,
+            WorkInvocationChannel.HttpApi,
+            new WorkActor("http-overview-user", "HTTP Overview User"));
+
+        var handle = await session.Queue.Enqueue(
+            "http.route.overview.activity",
+            options: new WorkerOptions(ProfilingEnabled: true));
+        await handle.WaitForCompletion().WaitAsync(TimeSpan.FromSeconds(5));
+        await WaitForReadModel(system);
+        var workerId = handle.WorkerId?.Value
+            ?? throw new InvalidOperationException("Expected worker id.");
+
+        var logsResponse = await client.GetAsync(
+            $"/workable/workers/{workerId:D}/overview?activity=Logs&activityTake=10&logLevels=Warning&logSort=Asc");
+        var timelineResponse = await client.GetAsync(
+            $"/workable/workers/{workerId:D}/overview?activity=Timeline&activityTake=10&timelineCategories=SystemEvent");
+
+        logsResponse.EnsureSuccessStatusCode();
+        timelineResponse.EnsureSuccessStatusCode();
+
+        var logsJson = JsonNode.Parse(await logsResponse.Content.ReadAsStringAsync())
+            ?? throw new InvalidOperationException("Expected log overview JSON response.");
+        var timelineJson = JsonNode.Parse(await timelineResponse.Content.ReadAsStringAsync())
+            ?? throw new InvalidOperationException("Expected timeline overview JSON response.");
+        var timelineItems = timelineJson["timeline"]?["page"]?["items"]?.AsArray()
+            ?? throw new InvalidOperationException("Expected filtered timeline page.");
+
+        Assert.Equal("Logs", logsJson["activity"]?.GetValue<string>());
+        Assert.NotNull(logsJson["logs"]?["page"]);
+
+        Assert.NotEmpty(timelineItems);
+        Assert.All(timelineItems, item => Assert.Equal("SystemEvent", item?["category"]?.GetValue<string>()));
+    }
+
+    [Fact]
+    public async Task MappedHttpRouteCanScopeWorkerOverviewLogsToASpecificIteration()
+    {
+        using var host = await CreateHttpHost(builder =>
+        {
+            builder.AddAuthorizedTransportWork(
+                WorkDefinition.Create("http.route.overview.logs.sequence"),
+                (context, input, cancellationToken) =>
+                {
+                    var logger = context.Services.GetRequiredService<ILoggerFactory>().CreateLogger("http.route.overview.logs.sequence");
+                    logger.LogInformation("http overview info");
+                    logger.LogWarning("http overview warning");
+                    logger.LogError("http overview error");
+                    return Task.FromResult(WorkExecutionResult.Success());
+                },
+                configuration => configuration.ConfigureLogging(level: LogLevel.Information));
+        });
+        var client = host.GetTestClient();
+        var system = host.Services.GetRequiredService<IWorkSystemRegistry>().Default;
+        var session = TransportAuthorizationTestSupport.CreateTransportSession(system, WorkInvocationChannel.HttpApi);
+
+        var handle = await session.Queue.Enqueue(
+            "http.route.overview.logs.sequence",
+            options: new WorkerOptions(ProfilingEnabled: true));
+        await handle.WaitForCompletion().WaitAsync(TimeSpan.FromSeconds(5));
+        await WaitForReadModel(system);
+        var workerId = handle.WorkerId?.Value
+            ?? throw new InvalidOperationException("Expected worker id.");
+
+        var response = await client.GetAsync(
+            $"/workable/workers/{workerId:D}/overview?activity=Logs&activityTake=10&logIterationSequence=1");
+
+        response.EnsureSuccessStatusCode();
+
+        var json = JsonNode.Parse(await response.Content.ReadAsStringAsync())
+            ?? throw new InvalidOperationException("Expected log overview JSON response.");
+        Assert.Equal("Logs", json["activity"]?.GetValue<string>());
+        Assert.NotNull(json["logs"]?["page"]);
+    }
+
+    [Fact]
+    public async Task MappedHttpRouteCanReadWorkerOverviewLogsWithoutFullWorkerOverviewPayload()
+    {
+        using var host = await CreateHttpHost(builder =>
+        {
+            builder.AddAuthorizedTransportWork(
+                WorkDefinition.Create("http.route.overview.logs.tight"),
+                (context, input, cancellationToken) =>
+                {
+                    var logger = context.Services.GetRequiredService<ILoggerFactory>().CreateLogger("http.route.overview.logs.tight");
+                    logger.LogInformation("http overview info");
+                    logger.LogWarning("http overview warning");
+                    logger.LogError("http overview error");
+                    return Task.FromResult(WorkExecutionResult.Success());
+                },
+                configuration => configuration.ConfigureLogging(level: LogLevel.Information));
+        });
+        var client = host.GetTestClient();
+        var system = host.Services.GetRequiredService<IWorkSystemRegistry>().Default;
+        var session = TransportAuthorizationTestSupport.CreateTransportSession(system, WorkInvocationChannel.HttpApi);
+
+        var handle = await session.Queue.Enqueue(
+            "http.route.overview.logs.tight",
+            options: new WorkerOptions(ProfilingEnabled: true));
+        await handle.WaitForCompletion().WaitAsync(TimeSpan.FromSeconds(5));
+        await WaitForReadModel(system);
+        var workerId = handle.WorkerId?.Value
+            ?? throw new InvalidOperationException("Expected worker id.");
+
+        var json = await GetJson(
+            client,
+            $"/workable/workers/{workerId:D}/overview/logs?activityTake=10&logLevels=Warning&logSort=Asc");
+
+        Assert.NotNull(json["summary"]);
+        Assert.NotNull(json["page"]?["items"]);
+        Assert.Null(json["worker"]);
+        Assert.Null(json["timeline"]);
+        var items = json["page"]?["items"]?.AsArray()
+            ?? throw new InvalidOperationException("Expected log page items.");
+        Assert.NotNull(items);
+    }
+
+    [Fact]
+    public async Task MappedHttpRouteCanReadWorkerOverviewTimelineWithoutFullWorkerOverviewPayload()
+    {
+        using var host = await CreateHttpHost(builder =>
+        {
+            builder.AddAuthorizedTransportWork(
+                WorkDefinition.Create("http.route.overview.timeline.tight"),
+                (context, input, cancellationToken) =>
+                {
+                    return Task.FromResult(WorkExecutionResult.Success());
+                });
+        });
+        var client = host.GetTestClient();
+        var system = host.Services.GetRequiredService<IWorkSystemRegistry>().Default;
+        var session = TransportAuthorizationTestSupport.CreateTransportSession(
+            system,
+            WorkInvocationChannel.HttpApi,
+            new WorkActor("http-overview-user", "HTTP Overview User"));
+
+        var handle = await session.Queue.Enqueue("http.route.overview.timeline.tight");
+        await handle.WaitForCompletion().WaitAsync(TimeSpan.FromSeconds(5));
+        await WaitForReadModel(system);
+        var workerId = handle.WorkerId?.Value
+            ?? throw new InvalidOperationException("Expected worker id.");
+
+        var json = await GetJson(
+            client,
+            $"/workable/workers/{workerId:D}/overview/timeline?activityTake=10&timelineCategories=SystemEvent");
+
+        Assert.NotNull(json["summary"]);
+        Assert.NotNull(json["page"]?["items"]);
+        Assert.Null(json["worker"]);
+        Assert.Null(json["logs"]);
+        var items = json["page"]?["items"]?.AsArray()
+            ?? throw new InvalidOperationException("Expected timeline page items.");
+        Assert.NotEmpty(items);
+        Assert.All(items, item => Assert.Equal("SystemEvent", item?["category"]?.GetValue<string>()));
+    }
+
+    [Fact]
+    public async Task MappedHttpRouteCanReadPagedIterationMessages()
+    {
+        using var host = await CreateHttpHost(builder =>
+        {
+            builder.AddAuthorizedTransportWork(
+                WorkDefinition.Create("http.route.iteration.messages"),
+                (context, input, cancellationToken) => Task.FromResult(WorkExecutionResult.Success(messages:
+                [
+                    new WorkMessage(
+                        "http.iteration.warning",
+                        WorkMessageSeverity.Warning,
+                        "HTTP iteration warning.",
+                        "messages.warning",
+                        new Dictionary<string, object?> { ["slot"] = 2 })
+                    {
+                        OccurredAt = DateTimeOffset.Parse("2026-05-29T11:00:02Z"),
+                    },
+                    new WorkMessage(
+                        "http.iteration.information",
+                        WorkMessageSeverity.Information,
+                        "HTTP iteration information.",
+                        "messages.information",
+                        new Dictionary<string, object?> { ["slot"] = 1 })
+                    {
+                        OccurredAt = DateTimeOffset.Parse("2026-05-29T11:00:01Z"),
+                    },
+                    new WorkMessage(
+                        "http.iteration.debug",
+                        WorkMessageSeverity.Debug,
+                        "HTTP iteration debug.",
+                        "messages.debug",
+                        new Dictionary<string, object?> { ["slot"] = 3 })
+                    {
+                        OccurredAt = DateTimeOffset.Parse("2026-05-29T11:00:03Z"),
+                    },
+                ])));
+        });
+        var client = host.GetTestClient();
+        var system = host.Services.GetRequiredService<IWorkSystemRegistry>().Default;
+        var session = TransportAuthorizationTestSupport.CreateTransportSession(system, WorkInvocationChannel.HttpApi);
+
+        var handle = await session.Queue.Enqueue("http.route.iteration.messages");
+        await handle.WaitForCompletion().WaitAsync(TimeSpan.FromSeconds(5));
+        await WaitForReadModel(system);
+        var workerId = handle.WorkerId?.Value
+            ?? throw new InvalidOperationException("Expected worker id.");
+
+        var firstPage = await GetJson(
+            client,
+            $"/workable/workers/{workerId:D}/iterations/1/messages?take=1&sort=Asc&severities=Information,Warning");
+        var firstCursor = firstPage["page"]?["cursor"]?.GetValue<string>()
+            ?? throw new InvalidOperationException("Expected message page cursor.");
+        var secondPage = await GetJson(
+            client,
+            $"/workable/workers/{workerId:D}/iterations/1/messages?take=1&sort=Asc&severities=Information,Warning&cursor={Uri.EscapeDataString(firstCursor)}");
+
+        Assert.Equal(3, firstPage["summary"]?["total"]?.GetValue<int>());
+        Assert.Equal(1, firstPage["summary"]?["warning"]?.GetValue<int>());
+        Assert.Equal(1, firstPage["summary"]?["information"]?.GetValue<int>());
+        Assert.Equal(1, firstPage["summary"]?["debug"]?.GetValue<int>());
+        Assert.Equal("http.iteration.information", firstPage["page"]?["items"]?[0]?["code"]?.GetValue<string>());
+        Assert.Equal("messages.information", firstPage["page"]?["items"]?[0]?["target"]?.GetValue<string>());
+        Assert.NotNull(firstPage["page"]?["items"]?[0]?["occurredAt"]?.GetValue<string>());
+        Assert.Equal(1, firstPage["page"]?["items"]?[0]?["metadata"]?["slot"]?.GetValue<int>());
+        Assert.True(firstPage["page"]?["hasMore"]?.GetValue<bool>());
+
+        Assert.Equal("http.iteration.warning", secondPage["page"]?["items"]?[0]?["code"]?.GetValue<string>());
+        Assert.False(secondPage["page"]?["hasMore"]?.GetValue<bool>());
+    }
+
+    [Fact]
+    public async Task MappedHttpRouteCanReadIterationDetailSnapshot()
+    {
+        using var host = await CreateHttpHost(builder =>
+        {
+            builder.AddWork<HttpIterationDetailExecutor>(
+                WorkDefinition.Create("http.route.iteration.detail"),
+                configuration => configuration.ConfigureLogging(level: LogLevel.Information),
+                authorize => authorize.RequireGroups(
+                    TransportAuthorizationTestSupport.ReadGroups,
+                    TransportAuthorizationTestSupport.OperateGroups));
+        });
+        var client = host.GetTestClient();
+        var system = host.Services.GetRequiredService<IWorkSystemRegistry>().Default;
+        var session = TransportAuthorizationTestSupport.CreateTransportSession(system, WorkInvocationChannel.HttpApi);
+
+        var handle = await session.Queue.Enqueue(
+            "http.route.iteration.detail",
+            WorkInput.FromValue(new { attempt = 7 })
+                .WithSubject(new WorkSubjectId("claim", "CLM-123"))
+                .WithConcurrencyKey(new WorkConcurrencyKey("tenant", "west"))
+                .WithIdentifier(new WorkIdentifier("invoice", "INV-456")));
+        await handle.WaitForCompletion().WaitAsync(TimeSpan.FromSeconds(5));
+        await WaitForReadModel(system);
+        var workerId = handle.WorkerId?.Value
+            ?? throw new InvalidOperationException("Expected worker id.");
+        var snapshot = await Direct(system).Query.WorkerIteration(new WorkerIterationReference(new WorkerId(workerId), 1))
+            ?? throw new InvalidOperationException("Expected iteration snapshot.");
+
+        Assert.Equal(2, snapshot.Messages.Count);
+        Assert.Equal(3, snapshot.Logs.Count);
+        var json = await GetJson(client, $"/workable/workers/{workerId:D}/iterations/1/detail");
+
+        Assert.Equal(workerId.ToString("D"), json["workerId"]?["value"]?.GetValue<string>());
+        Assert.Equal("http.route.iteration.detail", json["definitionName"]?.GetValue<string>());
+        Assert.Equal("claim", json["subjectId"]?["type"]?.GetValue<string>());
+        Assert.Equal("CLM-123", json["subjectId"]?["value"]?.GetValue<string>());
+        Assert.Equal("tenant", json["concurrencyKey"]?["type"]?.GetValue<string>());
+        Assert.Equal("west", json["concurrencyKey"]?["value"]?.GetValue<string>());
+        Assert.Contains(json["identifiers"]?.AsArray() ?? [], identifier => identifier?["value"]?.GetValue<string>() == "INV-456");
+        Assert.Contains("\"attempt\":7", json["input"]?["json"]?.GetValue<string>() ?? string.Empty, StringComparison.Ordinal);
+        Assert.Equal(1, json["iteration"]?["sequence"]?.GetValue<int>());
+        Assert.Equal(1, json["iteration"]?["attemptCount"]?.GetValue<int>());
+        Assert.Equal("Completed", json["iteration"]?["status"]?.GetValue<string>());
+        Assert.Equal(2, json["messageSummary"]?["total"]?.GetValue<int>());
+        Assert.Equal(1, json["messageSummary"]?["warning"]?.GetValue<int>());
+        Assert.Equal(1, json["messageSummary"]?["information"]?.GetValue<int>());
+        Assert.Equal(3, json["logs"]?["summary"]?["total"]?.GetValue<int>());
+        Assert.Equal(1, json["logs"]?["summary"]?["information"]?.GetValue<int>());
+        Assert.Equal(1, json["logs"]?["summary"]?["warning"]?.GetValue<int>());
+        Assert.Equal(1, json["logs"]?["summary"]?["error"]?.GetValue<int>());
+        Assert.Equal("HTTP iteration error log.", json["logs"]?["page"]?["items"]?[0]?["message"]?.GetValue<string>());
+    }
+
+    [Fact]
+    public async Task MappedHttpRouteCanReadPagedIterationLogs()
+    {
+        using var host = await CreateHttpHost(builder =>
+        {
+            builder.AddWork<HttpIterationDetailExecutor>(
+                WorkDefinition.Create("http.route.iteration.logs"),
+                configuration => configuration.ConfigureLogging(level: LogLevel.Information),
+                authorize => authorize.RequireGroups(
+                    TransportAuthorizationTestSupport.ReadGroups,
+                    TransportAuthorizationTestSupport.OperateGroups));
+        });
+        var client = host.GetTestClient();
+        var system = host.Services.GetRequiredService<IWorkSystemRegistry>().Default;
+        var session = TransportAuthorizationTestSupport.CreateTransportSession(system, WorkInvocationChannel.HttpApi);
+
+        var handle = await session.Queue.Enqueue("http.route.iteration.logs");
+        await handle.WaitForCompletion().WaitAsync(TimeSpan.FromSeconds(5));
+        await WaitForReadModel(system);
+        var workerId = handle.WorkerId?.Value
+            ?? throw new InvalidOperationException("Expected worker id.");
+        var snapshot = await Direct(system).Query.WorkerIteration(new WorkerIterationReference(new WorkerId(workerId), 1))
+            ?? throw new InvalidOperationException("Expected iteration snapshot.");
+
+        Assert.Equal(3, snapshot.Logs.Count);
+
+        var firstPage = await GetJson(
+            client,
+            $"/workable/workers/{workerId:D}/iterations/1/logs?take=1&sort=Asc&logLevels=Warning,Error");
+        var firstCursor = firstPage["page"]?["cursor"]?.GetValue<string>()
+            ?? throw new InvalidOperationException("Expected log page cursor.");
+        var secondPage = await GetJson(
+            client,
+            $"/workable/workers/{workerId:D}/iterations/1/logs?take=1&sort=Asc&logLevels=Warning,Error&cursor={Uri.EscapeDataString(firstCursor)}");
+
+        Assert.Equal(3, firstPage["summary"]?["total"]?.GetValue<int>());
+        Assert.Equal(1, firstPage["summary"]?["warning"]?.GetValue<int>());
+        Assert.Equal(1, firstPage["summary"]?["error"]?.GetValue<int>());
+        Assert.Equal(1, firstPage["summary"]?["information"]?.GetValue<int>());
+        Assert.Equal("Warning", firstPage["page"]?["items"]?[0]?["level"]?.GetValue<string>());
+        Assert.Equal("HTTP iteration warning log.", firstPage["page"]?["items"]?[0]?["message"]?.GetValue<string>());
+        Assert.True(firstPage["page"]?["hasMore"]?.GetValue<bool>());
+
+        Assert.Equal("Error", secondPage["page"]?["items"]?[0]?["level"]?.GetValue<string>());
+        Assert.Equal("HTTP iteration error log.", secondPage["page"]?["items"]?[0]?["message"]?.GetValue<string>());
+        Assert.False(secondPage["page"]?["hasMore"]?.GetValue<bool>());
     }
 
     [Fact]
@@ -1010,6 +1368,56 @@ public sealed class WorkableHttpApiTests
     }
 
     [Fact]
+    public async Task MappedHttpWorkerConfigurationIncludesDefinitionInfoAndQueueSchema()
+    {
+        using var host = await CreateHttpHost();
+        var client = host.GetTestClient();
+        var system = host.Services.GetRequiredService<IWorkSystemRegistry>().Default;
+
+        var queueResponse = await client.PostAsJsonAsync(
+            "/workable/work/http.route.case",
+            new
+            {
+                completion = "returnAfterAccepted",
+                input = new
+                {
+                    attempt = 1,
+                },
+                subjectId = new
+                {
+                    type = "claim",
+                    value = "CLM-123",
+                },
+                concurrencyKey = new
+                {
+                    type = "tenant",
+                    value = "west",
+                },
+            });
+        queueResponse.EnsureSuccessStatusCode();
+        var queueJson = JsonNode.Parse(await queueResponse.Content.ReadAsStringAsync())
+            ?? throw new InvalidOperationException("Expected queue JSON response.");
+        var workerId = Guid.Parse(queueJson["workerId"]?["value"]?.GetValue<string>()
+            ?? throw new InvalidOperationException("Expected worker id."));
+
+        await WaitForReadModel(system);
+
+        var response = await client.GetAsync($"/workable/workers/{workerId:D}/configuration");
+        response.EnsureSuccessStatusCode();
+        var json = JsonNode.Parse(await response.Content.ReadAsStringAsync())
+            ?? throw new InvalidOperationException("Expected JSON response.");
+
+        Assert.NotNull(json["configuration"]);
+        Assert.Equal("CLM-123", json["subjectId"]?["value"]?.GetValue<string>());
+        Assert.Equal("west", json["concurrencyKey"]?["value"]?.GetValue<string>());
+        Assert.Contains("\"attempt\":1", json["input"]?["json"]?.GetValue<string>() ?? string.Empty, StringComparison.Ordinal);
+        Assert.NotNull(json["definitionInfo"]?["definition"]);
+        Assert.Equal("http.route.case", json["definitionInfo"]?["definition"]?["name"]?.GetValue<string>());
+        Assert.NotNull(json["queueRequestSchema"]?["schema"]?["jsonSchema"]);
+        Assert.NotNull(json["queueRequestSchema"]?["tabs"]);
+    }
+
+    [Fact]
     public async Task MappedHttpQueueByDefinitionIdRecordsHttpOrigin()
     {
         using var host = await CreateHttpHost();
@@ -1099,6 +1507,26 @@ public sealed class WorkableHttpApiTests
         var definition = Assert.Single(invoices["definitions"]?.AsArray()
             ?? throw new InvalidOperationException("Expected Invoices definitions."));
         Assert.Equal("billing.invoice.generate", definition?["name"]?.GetValue<string>());
+        Assert.Equal("Billing:Invoices", definition?["category"]?.GetValue<string>());
+        Assert.Null(definition?["configuration"]);
+        Assert.Null(definition?["defaultOptions"]);
+        Assert.Null(definition?["inputSchema"]);
+        Assert.Null(definition?["outputSchema"]);
+    }
+
+    [Fact]
+    public async Task MappedHttpDefinitionsCanReadSingleDefinition()
+    {
+        using var host = await CreateDefinitionCatalogHttpHost();
+        var client = host.GetTestClient();
+        var system = host.Services.GetRequiredService<IWorkSystemRegistry>().Default;
+        var definition = Direct(system).Catalog.Definitions.Single(definition => definition.Name == "billing.invoice.generate");
+
+        var json = await GetJson(client, $"/workable/definitions/{definition.Id.Value:D}");
+
+        Assert.Equal("billing.invoice.generate", json["name"]?.GetValue<string>());
+        Assert.NotNull(json["configuration"]);
+        Assert.NotNull(json["defaultOptions"]);
     }
 
     [Fact]
@@ -1121,6 +1549,8 @@ public sealed class WorkableHttpApiTests
 
         Assert.Equal("http.route.case", byNameJson["definition"]?["name"]?.GetValue<string>());
         Assert.Equal("http.route.case", byIdJson["definition"]?["name"]?.GetValue<string>());
+        Assert.NotNull(byNameJson["queueRequestSchema"]?["schema"]?["jsonSchema"]);
+        Assert.NotNull(byIdJson["queueRequestSchema"]?["tabs"]);
     }
 
     [Fact]
@@ -1185,6 +1615,57 @@ public sealed class WorkableHttpApiTests
             ?? throw new InvalidOperationException("Expected systems array.");
         var system = Assert.Single(systems);
         Assert.True(system?["access"]?["canConnect"]?.GetValue<bool>() == true);
+    }
+
+    [Fact]
+    public async Task DebugRealtimeEndpointIsAvailableWithoutAuthenticationForLocalRequests()
+    {
+        using var host = await CreateHttpHost(authenticated: false, development: true);
+        var client = host.GetTestClient();
+
+        var body = await GetJson(client, "/workable/debug/realtime");
+
+        Assert.NotNull(body["systemId"]);
+        Assert.NotNull(body["eventSubscriptions"]);
+        Assert.NotNull(body["viewSubscriptions"]);
+        Assert.NotNull(body["workerOverviewSubscriptions"]);
+    }
+
+    [Fact]
+    public async Task DebugRealtimeEndpointCanFilterByConnectionId()
+    {
+        using var host = await CreateHttpHost(authenticated: false, development: true);
+        var client = host.GetTestClient();
+
+        var body = await GetJson(client, "/workable/debug/realtime?connectionId=missing-connection");
+
+        Assert.Empty(body["eventSubscriptions"]?.AsArray() ?? []);
+        Assert.Empty(body["viewSubscriptions"]?.AsArray() ?? []);
+        Assert.Empty(body["workerOverviewSubscriptions"]?.AsArray() ?? []);
+    }
+
+    [Fact]
+    public async Task DebugRealtimeEndpointIsNotRegisteredOutsideDevelopmentOrLoopbackUrls()
+    {
+        using var host = await CreateHttpHost(authenticated: false);
+        var client = host.GetTestClient();
+
+        using var response = await client.GetAsync("/workable/debug/realtime");
+
+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task DebugRealtimeEndpointIsNotRegisteredWhenConfiguredUrlsMixLoopbackAndNonLoopbackHosts()
+    {
+        using var host = await CreateHttpHost(
+            authenticated: false,
+            configuredUrls: "http://localhost:5050;http://0.0.0.0:5051");
+        var client = host.GetTestClient();
+
+        using var response = await client.GetAsync("/workable/debug/realtime");
+
+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
     }
 
     [Fact]
@@ -1713,13 +2194,48 @@ public sealed class WorkableHttpApiTests
         WorkableHttpQueryAdapter Query,
         WorkableHttpWorkerAdapter Workers);
 
-    private static async Task<IHost> CreateHttpHost(
+    private static Task<IHost> CreateHttpHost(
         bool authenticated = true,
-        IEnumerable<string>? groups = null)
+        IEnumerable<string>? groups = null,
+        bool development = false,
+        string? configuredUrls = null)
+        => CreateHttpHost(
+            builder =>
+            {
+                builder.AddAuthorizedTransportWork(
+                    WorkDefinition.Create(
+                        "http.route.case",
+                        configuration: WorkConfiguration.Default with
+                        {
+                            Start = WorkStartConfiguration.DoNotStart,
+                        }),
+                    SuccessfulWork);
+            },
+            authenticated,
+            groups,
+            development,
+            configuredUrls);
+
+    private static async Task<IHost> CreateHttpHost(
+        Action<IWorkSystemBuilder> configure,
+        bool authenticated = true,
+        IEnumerable<string>? groups = null,
+        bool development = false,
+        string? configuredUrls = null)
     {
         var host = new HostBuilder()
             .ConfigureWebHost(web =>
             {
+                if (development)
+                {
+                    web.UseEnvironment(Environments.Development);
+                }
+
+                if (!string.IsNullOrWhiteSpace(configuredUrls))
+                {
+                    web.UseSetting(WebHostDefaults.ServerUrlsKey, configuredUrls);
+                }
+
                 web.UseTestServer();
                 web.ConfigureServices(services =>
                 {
@@ -1730,14 +2246,7 @@ public sealed class WorkableHttpApiTests
                         builder.StartWithHost();
                         builder.RequireAuthorization();
                         builder.ConfigureTransportSystemAuthorization();
-                        builder.AddAuthorizedTransportWork(
-                            WorkDefinition.Create(
-                                "http.route.case",
-                                configuration: WorkConfiguration.Default with
-                                {
-                                    Start = WorkStartConfiguration.DoNotStart,
-                                }),
-                            SuccessfulWork);
+                        configure(builder);
                     });
                     services.AddWorkableHttpApi();
                 });
@@ -2354,5 +2863,37 @@ public sealed class WorkableHttpApiTests
                 readableDefinitionIds: null),
         };
         return system.CreateSession(requestContext);
+    }
+
+    private sealed class HttpIterationDetailExecutor(ILogger<HttpIterationDetailExecutor> logger) : IWorkExecutor
+    {
+        public Task<WorkExecutionResult> Execute(IWorkExecutionContext context, WorkInput? input, CancellationToken cancellationToken)
+        {
+            logger.LogInformation("HTTP iteration info log.");
+            logger.LogWarning("HTTP iteration warning log.");
+            logger.LogError("HTTP iteration error log.");
+
+            return Task.FromResult(WorkExecutionResult.Success(messages:
+            [
+                new WorkMessage(
+                    "http.iteration.warning",
+                    WorkMessageSeverity.Warning,
+                    "HTTP iteration warning.",
+                    "messages.warning",
+                    new Dictionary<string, object?> { ["slot"] = 2 })
+                {
+                    OccurredAt = DateTimeOffset.Parse("2026-05-29T11:00:02Z"),
+                },
+                new WorkMessage(
+                    "http.iteration.information",
+                    WorkMessageSeverity.Information,
+                    "HTTP iteration information.",
+                    "messages.information",
+                    new Dictionary<string, object?> { ["slot"] = 1 })
+                {
+                    OccurredAt = DateTimeOffset.Parse("2026-05-29T11:00:01Z"),
+                },
+            ]));
+        }
     }
 }

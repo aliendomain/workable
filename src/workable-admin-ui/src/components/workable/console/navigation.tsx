@@ -31,7 +31,6 @@ import {
 } from "@/components/features/console/console-primitives";
 import { useResolvedConsoleHeaderCapabilities } from "@/components/features/console/header-capabilities";
 import type {
-  Loadable,
   OverviewScope,
   PendingDelete,
   PendingStopSystem,
@@ -75,15 +74,22 @@ import {
 } from "@/components/ui/sidebar";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import {
+  DefinitionCatalogBrowser,
+  defaultCatalogBrowserBackButtonClassName,
+  defaultCatalogBrowserHeaderClassName,
+  defaultCatalogBrowserTitleClassName,
+} from "@/components/workable/console/catalog-browser";
+import { normalizeCategoryFilter } from "@/components/workable/console/catalog-browser-data";
 import { QueueDialog } from "@/components/workable/console/detail-screens";
 import { ErrorBanner } from "@/components/workable/console/feedback-panel";
 import {
-  workableFetch,
   WorkableApiError,
+  workableFetch,
   type WorkDefinition,
-  type WorkOverviewCatalogCategoryItem,
   type WorkableConnection,
   type WorkableHttpHostDescriptor,
+  type QueueRequestSchemaDescriptor,
   type WorkSystemAccessSummary,
   type WorkableHttpSystemDescriptor,
 } from "@/lib/workable";
@@ -420,11 +426,6 @@ export function ServerTree({
   );
 }
 
-type DefinitionCatalogLevel = {
-  categories: WorkOverviewCatalogCategoryItem[];
-  definitions: WorkDefinition[];
-};
-
 function CatalogExplorer({
   activeDefinitionName,
   activeOverviewCategory,
@@ -456,133 +457,165 @@ function CatalogExplorer({
     [host.apiUrl, system.systemName]
   );
   const [path, setPath] = useState(activeOverviewCategory);
-  const catalogLevel = useWorkableResource<DefinitionCatalogLevel>(
-    connection,
-    createDefinitionCatalogLevelPath(path),
-    0
-  );
-  const [queueDefinition, setQueueDefinition] = useState<WorkDefinition | null>(null);
-  const categories = catalogLevel.data?.categories ?? [];
-  const definitions = catalogLevel.data?.definitions ?? [];
-  const pathSegments = splitCatalogPath(path);
-  const currentLabel = pathSegments.at(-1) ?? "All categories";
-  const canGoBack = pathSegments.length > 0;
+  const [queueDialogData, setQueueDialogData] = useState<{
+    definition: WorkDefinition;
+    queueRequestSchema: QueueRequestSchemaDescriptor;
+  } | null>(null);
+  const [queueDefinitionLoadingId, setQueueDefinitionLoadingId] = useState<string | null>(null);
+  const [queueDefinitionError, setQueueDefinitionError] = useState<string>();
 
-  const goBack = () => {
-    const nextPath = pathSegments.slice(0, -1).join(":");
-    setPath(nextPath);
-  };
   return (
-    <div className="relative z-10 -ml-11 mr-0 mt-1 w-[calc(var(--sidebar-width)-2rem)] overflow-hidden rounded-md border border-sidebar-border bg-sidebar group-data-[collapsible=icon]:hidden">
-      <div className="flex h-8 min-w-0 items-center gap-1 border-sidebar-border border-b px-1.5 text-sidebar-foreground/80 text-xs">
-        <button
-          aria-label={canGoBack ? "Back to parent category" : "Catalog root"}
-          className="flex size-5 shrink-0 items-center justify-center rounded-md hover:bg-sidebar-accent hover:text-sidebar-accent-foreground disabled:pointer-events-none disabled:opacity-40"
-          disabled={!canGoBack}
-          onClick={goBack}
-          type="button"
-        >
-          {canGoBack ? <ChevronLeft className="size-3.5" /> : <Home className="size-3.5" />}
-        </button>
-        <span className="min-w-0 flex-1 truncate">{currentLabel}</span>
-      </div>
-      <div className="py-1">
-        {catalogLevel.loading ? (
-          Array.from({ length: 4 }).map((_, index) => (
-            <Skeleton className="mx-2 my-1 h-7" key={index} />
-          ))
-        ) : (
-          <>
-            {categories.map((category) => (
-              <div
-                className="flex h-7 min-w-0 items-center text-sidebar-foreground text-sm hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
-                key={category.path}
-              >
-                <button
-                  className="flex h-full min-w-0 flex-1 items-center gap-2 px-2 text-left"
-                  onClick={() => {
-                    setPath(category.path);
-                  }}
-                  type="button"
-                >
-                  <Folder className="size-4 shrink-0 text-sidebar-accent-foreground" />
-                  <span className="min-w-0 flex-1 truncate">{category.label}</span>
-                  <span className="shrink-0 text-sidebar-foreground/60 text-xs tabular-nums">
-                    {category.count}
-                  </span>
-                </button>
-                <Tooltip delayDuration={500} disableHoverableContent>
-                  <TooltipTrigger asChild>
-                    <button
-                      aria-label={`Open Catalog filtered to ${category.label}`}
-                      className="mr-1 flex size-5 shrink-0 items-center justify-center rounded-md text-sidebar-foreground/70 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
-                      onClick={() => onOpenCatalogScope(system.id, {
-                        category: normalizeCategoryFilter(category.path),
-                        includeSubcategories: true,
-                      })}
-                      type="button"
-                    >
-                      <Boxes className="size-3.5" />
-                    </button>
-                  </TooltipTrigger>
-                  <TooltipContent side="right" sideOffset={6}>
-                    Open Catalog filtered to {category.label}
-                  </TooltipContent>
-                </Tooltip>
-              </div>
-            ))}
-            {definitions.map((definition) => (
-              <div
-                className={
-                  definition.name === activeDefinitionName
-                    ? "flex h-7 min-w-0 items-center bg-sidebar-accent text-sidebar-accent-foreground text-sm"
-                    : "flex h-7 min-w-0 items-center text-sidebar-foreground text-sm hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
-                }
-                key={definition.id.value}
-              >
-                <button
-                  className="flex h-full min-w-0 flex-1 items-center gap-2 px-2 text-left"
-                  onClick={() => onOpenDefinition(definition.id.value, {
-                    definitionName: definition.name,
-                    systemId: system.id,
-                  })}
-                  type="button"
-                >
-                  <FileCode2 className="size-4 shrink-0 text-sidebar-accent-foreground" />
-                  <span className="min-w-0 flex-1 truncate font-mono">{definition.name}</span>
-                </button>
-                <Tooltip delayDuration={500} disableHoverableContent>
-                  <TooltipTrigger asChild>
-                    <button
-                      aria-label={`Queue ${definition.name}`}
-                      className="mr-1 flex size-5 shrink-0 items-center justify-center rounded-md text-sidebar-foreground/70 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
-                      onClick={() => setQueueDefinition(definition)}
-                      type="button"
-                    >
-                      <Send className="size-3.5" />
-                    </button>
-                  </TooltipTrigger>
-                  <TooltipContent side="right" sideOffset={6}>
-                    Queue {definition.name}
-                  </TooltipContent>
-                </Tooltip>
-              </div>
-            ))}
-            {categories.length === 0 && definitions.length === 0 && (
-              <div className="px-2 py-2 text-sidebar-foreground/60 text-xs">
-                No catalog entries.
-              </div>
-            )}
-          </>
+    <>
+      <div className="relative z-10 -ml-11 mr-0 mt-1 w-[calc(var(--sidebar-width)-2rem)] overflow-hidden rounded-md border border-sidebar-border bg-sidebar group-data-[collapsible=icon]:hidden">
+        {queueDefinitionError && (
+          <div className="border-sidebar-border border-b">
+            <ErrorBanner
+              message={queueDefinitionError}
+              title="Queue configuration unavailable"
+            />
+          </div>
         )}
+        <DefinitionCatalogBrowser
+          backButtonClassName={defaultCatalogBrowserBackButtonClassName(
+            "size-5 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
+          )}
+          backIconClassName="size-3.5"
+          bodyClassName="py-1"
+          connection={connection}
+          emptyState={(
+            <div className="px-2 py-2 text-sidebar-foreground/60 text-xs">
+              No catalog entries.
+            </div>
+          )}
+          headerClassName={defaultCatalogBrowserHeaderClassName(
+            "h-8 border-sidebar-border px-1.5 text-sidebar-foreground/80 text-xs"
+          )}
+          loadingState={Array.from({ length: 4 }).map((_, index) => (
+            <Skeleton className="mx-2 my-1 h-7" key={index} />
+          ))}
+          onNavigate={setPath}
+          path={path}
+          renderCategory={(category) => (
+            <div className="flex h-7 min-w-0 items-center text-sidebar-foreground text-sm hover:bg-sidebar-accent hover:text-sidebar-accent-foreground">
+              <button
+                className="flex h-full min-w-0 flex-1 items-center gap-2 px-2 text-left"
+                onClick={() => {
+                  setPath(category.path);
+                }}
+                type="button"
+              >
+                <Folder className="size-4 shrink-0 text-sidebar-accent-foreground" />
+                <span className="min-w-0 flex-1 truncate">{category.label}</span>
+                <span className="shrink-0 text-sidebar-foreground/60 text-xs tabular-nums">
+                  {category.count}
+                </span>
+              </button>
+              <Tooltip delayDuration={500} disableHoverableContent>
+                <TooltipTrigger asChild>
+                  <button
+                    aria-label={`Open Catalog filtered to ${category.label}`}
+                    className="mr-1 flex size-5 shrink-0 items-center justify-center rounded-md text-sidebar-foreground/70 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
+                    onClick={() => onOpenCatalogScope(system.id, {
+                      category: normalizeCategoryFilter(category.path),
+                      includeSubcategories: true,
+                    })}
+                    type="button"
+                  >
+                    <Boxes className="size-3.5" />
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent side="right" sideOffset={6}>
+                  Open Catalog filtered to {category.label}
+                </TooltipContent>
+              </Tooltip>
+            </div>
+          )}
+          renderDefinition={(definition, catalog) => (
+            <div
+              className={
+                definition.name === activeDefinitionName
+                  ? "flex h-7 min-w-0 items-center bg-sidebar-accent text-sidebar-accent-foreground text-sm"
+                  : "flex h-7 min-w-0 items-center text-sidebar-foreground text-sm hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
+              }
+            >
+              <button
+                className="flex h-full min-w-0 flex-1 items-center gap-2 px-2 text-left"
+                onClick={() => onOpenDefinition(definition.id.value, {
+                  definitionName: definition.name,
+                  systemId: system.id,
+                })}
+                type="button"
+              >
+                <FileCode2 className="size-4 shrink-0 text-sidebar-accent-foreground" />
+                <span className="min-w-0 flex-1 truncate font-mono">{definition.name}</span>
+              </button>
+              <Tooltip delayDuration={500} disableHoverableContent>
+                <TooltipTrigger asChild>
+                  <button
+                    aria-label={`Queue ${definition.name}`}
+                    className="mr-1 flex size-5 shrink-0 items-center justify-center rounded-md text-sidebar-foreground/70 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
+                    disabled={queueDefinitionLoadingId === definition.id.value}
+                    onClick={async () => {
+                      setQueueDialogData(null);
+                      setQueueDefinitionError(undefined);
+                      setQueueDefinitionLoadingId(definition.id.value);
+
+                      try {
+                        const info = await catalog.loadDefinitionInfo(definition.id.value);
+                        setQueueDialogData({
+                          definition: info.definition,
+                          queueRequestSchema: info.queueRequestSchema,
+                        });
+                      } catch (error) {
+                        setQueueDefinitionError(
+                          error instanceof Error ? error.message : "Definition could not be loaded."
+                        );
+                      } finally {
+                        setQueueDefinitionLoadingId(null);
+                      }
+                    }}
+                    type="button"
+                  >
+                    {queueDefinitionLoadingId === definition.id.value ? (
+                      <Loader2 className="size-3.5 animate-spin" />
+                    ) : (
+                      <Send className="size-3.5" />
+                    )}
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent side="right" sideOffset={6}>
+                  Queue {definition.name}
+                </TooltipContent>
+              </Tooltip>
+            </div>
+          )}
+          renderError={(error) => (
+            <div className="border-sidebar-border border-b">
+              <ErrorBanner
+                message={error}
+                title="Catalog unavailable"
+              />
+            </div>
+          )}
+          titleClassName={defaultCatalogBrowserTitleClassName("text-xs font-normal")}
+          rootLabel="Catalog"
+        />
       </div>
       <QueueDialog
         connection={connection}
-        definition={queueDefinition}
+        definition={queueDialogData?.definition ?? null}
+        fetchQueueSchemaWhenNeeded={false}
         onQueuedWorker={onOpenWorker}
-        onOpenChange={(open) => !open && setQueueDefinition(null)}
+        preloadedQueueSchemaDescriptor={queueDialogData?.queueRequestSchema ?? null}
+        onOpenChange={(open) => {
+          if (!open) {
+            setQueueDialogData(null);
+            setQueueDefinitionLoadingId(null);
+            setQueueDefinitionError(undefined);
+          }
+        }}
       />
-    </div>
+    </>
   );
 }
 
@@ -994,6 +1027,7 @@ export function ConsoleNavigationHeader({
   definitionId,
   definitionName,
   host,
+  iterationSequence,
   onBack,
   onForward,
   onOpenView,
@@ -1011,6 +1045,7 @@ export function ConsoleNavigationHeader({
   definitionId: string | null;
   definitionName: string | null;
   host: WorkableHostConnection;
+  iterationSequence: number | null;
   onBack: () => void;
   onForward: () => void;
   onOpenView: (view: View, systemId?: string, trackHistory?: boolean) => void;
@@ -1024,6 +1059,8 @@ export function ConsoleNavigationHeader({
   const currentLabel =
     view === "definition" && definitionId
       ? definitionName ?? definitionId
+      : view === "iteration" && iterationSequence !== null
+        ? `#${iterationSequence}`
       : view === "worker" && workerId
         ? workerId
         : navTitle(view);
@@ -1435,39 +1472,14 @@ function navTitle(view: View) {
   if (view === "worker") {
     return "Worker Console";
   }
+  if (view === "iteration") {
+    return "Iteration";
+  }
   if (view === "definition") {
     return "Definition";
   }
 
   return navItems.find((item) => item.id === view)?.label ?? "Overview";
-}
-
-function createDefinitionCatalogLevelPath(category: string) {
-  const query = new URLSearchParams({ level: "true" });
-  const normalizedCategory = normalizeCategoryFilter(category);
-  if (normalizedCategory) {
-    query.set("category", normalizedCategory);
-  }
-
-  return `definitions?${query.toString()}`;
-}
-
-function normalizeScopeText(value: unknown) {
-  return typeof value === "string" ? value.trim() : "";
-}
-
-function splitCatalogPath(path: unknown) {
-  const value = normalizeScopeText(path);
-  return value
-    ? value
-        .split(":")
-        .map((segment) => segment.trim())
-        .filter(Boolean)
-    : [];
-}
-
-function normalizeCategoryFilter(path: unknown) {
-  return splitCatalogPath(path).join(":");
 }
 
 function getSystemLifecycleAction(state?: string | null): "start" | "stop" | null {
@@ -1511,60 +1523,3 @@ function systemStateDotClass(state?: string | null) {
   }
 }
 
-function useWorkableResource<T>(
-  connection: WorkableConnection,
-  path: string | null,
-  refreshToken: number
-): Loadable<T> {
-  const [state, setState] = useState<Loadable<T>>({ loading: !!path });
-  const apiUrl = connection.apiUrl;
-  const systemName = connection.systemName;
-
-  useEffect(() => {
-    if (!path) {
-      queueMicrotask(() => setState({ loading: false }));
-      return;
-    }
-
-    let canceled = false;
-    queueMicrotask(() => {
-      if (!canceled) {
-        setState((current) => ({
-          ...current,
-          error: undefined,
-          loading: current.data === undefined,
-          refreshing: current.data !== undefined,
-        }));
-      }
-    });
-
-    const requestConnection = { apiUrl, systemName };
-    workableFetch<T>(requestConnection, path)
-      .then((data) => {
-        if (!canceled) {
-          setState({ data, loading: false, refreshing: false });
-        }
-      })
-      .catch((error) => {
-        if (!canceled) {
-          const detail = error instanceof Error ? error.message : "Request failed.";
-          setState((current) =>
-            current.error === detail && !current.loading && !current.refreshing
-              ? current
-              : {
-                  data: current.data,
-                  error: detail,
-                  loading: false,
-                  refreshing: false,
-                }
-          );
-        }
-      });
-
-    return () => {
-      canceled = true;
-    };
-  }, [apiUrl, systemName, path, refreshToken]);
-
-  return state;
-}

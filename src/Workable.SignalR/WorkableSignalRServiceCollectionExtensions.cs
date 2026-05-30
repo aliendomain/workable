@@ -38,6 +38,7 @@ public static class WorkableSignalRServiceCollectionExtensions
         services.TryAddSingleton<WorkableViewQueryAdapter>();
         services.TryAddSingleton<WorkableRealtimeEventSubscriptions>();
         services.TryAddSingleton<WorkableRealtimeViewSubscriptions>();
+        services.TryAddSingleton<WorkableRealtimeWorkerOverviewSubscriptions>();
         services.TryAddSingleton<WorkableRealtimeBroadcaster>();
         services.AddSingleton<IHostedService>(services => services.GetRequiredService<WorkableRealtimeBroadcaster>());
         services.AddSingleton<IWorkSystemLifecycleObserver>(services => services.GetRequiredService<WorkableRealtimeBroadcaster>());

@@ -63,6 +63,8 @@ builder.Services.AddWorkableSignalR(options =>
     options.EventMaxBatchSize = 512;
     options.EventSubscriptionCapacity = 16_384;
     options.EventOverflowBehavior = WorkEventOverflowBehavior.DropWrite;
+    options.WorkerOverviewEventOverflowBehavior = WorkEventOverflowBehavior.DropOldest;
+    options.WorkerOverviewResyncQueuedEventThreshold = 512;
 });
 
 app.MapWorkableSignalR();
@@ -77,16 +79,25 @@ app.MapWorkableSignalR("/internal/work/realtime");
 `AddWorkableSignalR` accepts these options:
 
 - `HubPath`: the default path used by `MapWorkableSignalR()` when the map call does not supply one explicitly.
-- `PublishInterval`: how often non-diagnostics view subscriptions are recomputed and pushed while they are active.
-- `DiagnosticsPublishInterval`: how often diagnostics view subscriptions are recomputed and pushed while they are active.
-- `BatchTimeWindow`: how long the broadcaster waits to accumulate more events after the first event in a normal burst before sending.
-- `LiveTimeWindow`: how long the broadcaster waits to accumulate more events for live-style subscriptions such as `WatchWorker` before sending.
+- `PublishInterval`: how often non-diagnostics named view subscriptions are recomputed and pushed while they are active.
+- `DiagnosticsPublishInterval`: how often diagnostics named view subscriptions are recomputed and pushed while they are active.
+- `BatchTimeWindow`: how long the broadcaster waits to accumulate more events after the first event in a raw event-stream burst before sending.
+- `LiveTimeWindow`: how long the broadcaster waits to accumulate more worker-overview changes before sending one coalesced delta update.
 - `MinimumTimeWindow`: the minimum positive time window the broadcaster will honor for either mode, to avoid overly chatty sends from tiny configured values.
 - `EventMaxBatchSize`: the maximum number of events included in one `workable.events` batch.
 - `EventSubscriptionCapacity`: the number of events each active event subscription group can buffer before overflow handling applies.
 - `EventOverflowBehavior`: what happens when an event subscription group reaches its buffer limit, such as `DropWrite` or `DropOldest`.
+- `WorkerOverviewEventOverflowBehavior`: what happens when a worker-overview subscription reaches its event buffer limit.
+- `WorkerOverviewResyncQueuedEventThreshold`: how many queued worker-overview source events are tolerated before the server asks the client to refresh from a new synchronized snapshot instead of continuing to drain stale backlog.
 
-`AddWorkableSignalR` registers one background broadcaster that subscribes once to each hosted Workable system. Browser connections join SignalR groups; they do not create one Workable event-stream subscription per browser.
+`AddWorkableSignalR` registers one background broadcaster per host. Each hosted Workable system gets four coordinated realtime lanes:
+
+- raw event streaming
+- worker-overview streaming
+- named view streaming
+- diagnostics view streaming
+
+Browser connections join SignalR groups and share server-side recomputation or event readers when their normalized subscription request and effective read access match. One browser does not get its own private Workable event-stream subscription unless its request shape differs from the other active subscribers.
 
 ## Capability Discovery
 
@@ -126,52 +137,108 @@ When `Workable.SignalR` is not registered:
 }
 ```
 
-## Worker Events
+## Worker Overview Updates
 
-Worker detail pages should load their initial snapshot through HTTP, then subscribe to realtime worker events.
+Worker detail pages should load their initial worker-overview snapshot through HTTP, then subscribe to the dedicated realtime worker-overview stream.
 
 ```csharp
 HubConnection connection = new HubConnectionBuilder()
     .WithUrl("/workable/realtime")
     .Build();
 
-connection.On<WorkableRealtimeEvent>("workable.event", workEvent =>
-{
-    // Update the visible worker timeline, logs, action history, output, or state.
-});
+const string WorkerOverviewSubscriptionId = "worker-overview-main";
 
-connection.On<WorkableRealtimeEventBatch>("workable.events", batch =>
+connection.On<WorkableRealtimeViewEnvelope<WorkWorkerOverviewRealtimeUpdate>>(
+    "workable.workerOverview",
+    envelope =>
 {
-    foreach (var workEvent in batch.Events)
+    if (!string.Equals(envelope.SubscriptionId, WorkerOverviewSubscriptionId, StringComparison.Ordinal))
     {
-        // Handle each event in its original stream order.
+        return;
     }
+
+    // Merge the partial update into the visible worker overview state.
 });
 
 await connection.StartAsync();
 await connection.InvokeAsync(
-    "WatchWorker",
+    "WatchWorkerOverview",
+    WorkerOverviewSubscriptionId,
     workerId.ToString("D"),
+    new WorkWorkerOverviewRealtimeCriteria(
+        WorkerControls: WorkComponentShapes.Standard,
+        WorkerLogs: WorkComponentShapes.Detailed,
+        WorkerDuration: WorkComponentShapes.Standard,
+        WorkerTimeline: WorkComponentShapes.Standard,
+        LogSortDirection: WorkWorkerOverviewSortDirection.Desc,
+        TimelineSortDirection: WorkWorkerOverviewSortDirection.Desc),
     (string?)null);
 ```
 
-For a named system, pass the system name as the second argument.
+For a named system, pass the system name as the final argument.
 
 ```csharp
 await connection.InvokeAsync(
-    "WatchWorker",
+    "WatchWorkerOverview",
+    WorkerOverviewSubscriptionId,
     workerId.ToString("D"),
+    new WorkWorkerOverviewRealtimeCriteria(
+        WorkerControls: WorkComponentShapes.Standard,
+        WorkerLogs: WorkComponentShapes.Compact,
+        WorkerDuration: WorkComponentShapes.Compact,
+        WorkerTimeline: WorkComponentShapes.Standard),
     "email");
 ```
 
-Stop watching a worker when the page no longer needs live updates.
+`WatchWorkerOverview` immediately sends the current worker-overview state to the caller through `workable.workerOverview`. The payload uses the same `WorkableRealtimeViewEnvelope<T>` wrapper as named views, but the `Result` is a `WorkWorkerOverviewRealtimeUpdate` and `ViewName` is always `"worker-overview"`.
+
+The initial message is a full synchronized snapshot serialized as a worker-overview update. Later messages are partial deltas that include only the sections that changed.
+
+When the worker-overview lane falls too far behind its source event stream, the server can send a `WorkWorkerOverviewRealtimeUpdate` with `RequiresRefresh = true` and an optional `RefreshReason`. Clients should treat that as a resync instruction: reload fresh worker-overview state instead of continuing to apply stale deltas. Clients may keep the existing watch alive if they can safely resynchronize in place, or recreate it if that is simpler for their UI architecture.
+
+`WorkWorkerOverviewRealtimeCriteria` lets the caller describe the live screen state:
+
+- `WorkerControls`: `compact` or `standard`
+- `WorkerLogs`: `compact`, `standard`, or `detailed`
+- `WorkerDuration`: `compact`, `standard`, or `detailed`
+- `WorkerTimeline`: `compact`, `standard`, or `detailed`
+- `LogSortDirection`, `LogLevels`, and optional `LogIterationSequence`
+- `TimelineSortDirection` and optional `TimelineCategories`
+
+Those panel modes materially change what the server pushes:
+
+- controls are always live, but latest output is only pushed when controls are `standard`
+- logs in `compact` push only summary counts
+- logs in `standard` or `detailed` push summary counts plus matching log rows
+- recent iterations in `compact` push nothing
+- recent iterations in `standard` or `detailed` push matching iteration lifecycle rows
+- timeline in `compact` pushes nothing
+- timeline in `standard` or `detailed` pushes matching timeline rows
+
+Worker-overview updates are grouped by:
+
+- system
+- worker id
+- normalized panel modes
+- normalized filters and sort directions
+- effective read visibility
+
+Matching subscribers share one server-side worker-overview pump and one cached worker-overview state. The broadcaster applies incoming worker events to that cached state, coalesces the resulting deltas over `LiveTimeWindow`, and then fans the coalesced update out to each active subscriber in the group with that subscriber's own current `subscriptionId`.
+
+Stop watching a worker overview when the page no longer needs live updates.
 
 ```csharp
 await connection.InvokeAsync(
-    "UnwatchWorker",
-    workerId.ToString("D"),
+    "UnwatchWorkerOverview",
+    WorkerOverviewSubscriptionId,
     (string?)null);
 ```
+
+## Raw Event Streams
+
+Raw event subscriptions are for event viewers, diagnostics, and consumers that want low-level `WorkEvent` envelopes rather than worker-overview deltas.
+
+Worker detail pages should generally prefer `WatchWorkerOverview` over raw event handling.
 
 Worker messages are delivered through `workable.event` for single events and `workable.events` for batches.
 
@@ -179,15 +246,15 @@ Worker messages are delivered through `workable.event` for single events and `wo
 public sealed record WorkableRealtimeEvent(
     DateTimeOffset OccurredAt,
     WorkSystemId WorkSystemId,
+    string? WorkSystemName,
     WorkerId? WorkerId,
     WorkDefinitionId? DefinitionId,
+    string? WorkDefinitionName,
     WorkSubjectId? SubjectId,
     WorkConcurrencyKey? ConcurrencyKey,
     IReadOnlyList<WorkIdentifier> Identifiers,
-    WorkOrigin? Origin,
     string EventType,
-    JsonElement? Data,
-    IReadOnlyList<WorkMessage> Messages);
+    JsonElement? Data);
 ```
 
 ```csharp
@@ -229,29 +296,52 @@ await connection.InvokeAsync(
     (string?)null);
 ```
 
-`WatchWorker` is a convenience subscription for one worker id. `WatchSystem` subscribes to all worker events for the selected system.
-
 ### Event Batching
 
 The realtime broadcaster coalesces bursts into batches. This reduces SignalR send overhead during high-volume event spikes.
 
 - `BatchTimeWindow` controls how long the broadcaster waits to collect additional events after receiving the first event in a normal burst.
-- `LiveTimeWindow` does the same for live-style subscriptions. Today that primarily means `WatchWorker`, so worker detail screens can feel more immediate than broad event viewers.
+- `LiveTimeWindow` controls worker-overview delta coalescing so detail screens can feel live without sending one SignalR message per worker event.
 - `MinimumTimeWindow` prevents accidentally configuring an overly chatty event stream; smaller positive windows are raised to this value.
 - `EventMaxBatchSize` caps the number of events in one batch.
 - `EventSubscriptionCapacity` caps the number of individual events buffered by each active event subscription group before the configured overflow behavior applies.
 - `EventOverflowBehavior` controls what the per-subscription channel does when it reaches capacity.
+- `WorkerOverviewEventOverflowBehavior` controls worker-overview source-event overflow independently from the raw event viewer lane.
+- `WorkerOverviewResyncQueuedEventThreshold` lets the worker-overview lane give up on very deep backlog and instruct the client to resync from fresh query state.
 - A single collected event is sent through `workable.event`.
 - Multiple collected events are sent through `workable.events`.
 - Event order is preserved inside the batch.
 
-The defaults are a 1 second batch window, a 100ms live window, a 100ms minimum time window, 512 events per batch, 16,384 buffered events per active event subscription group, and `DropWrite` overflow behavior.
+The defaults are a 1 second batch window, a 100ms live window, a 100ms minimum time window, 512 events per batch, 16,384 buffered events per active event subscription group, `DropWrite` for raw event subscriptions, `DropOldest` for worker-overview subscriptions, and a worker-overview resync threshold of 512 queued source events.
 
 The chosen time window is also the send pace during bursts. If the batch reaches `EventMaxBatchSize` before the window expires, the broadcaster waits out the remaining window before sending. That gives the bounded event subscription channel room to absorb overflow according to `EventOverflowBehavior` instead of turning a large burst into a tight loop of SignalR sends.
 
-`DropWrite` is the default for SignalR because realtime event viewers are observational and bounded. When a SignalR event subscription is already full, lazy event payloads can be skipped before construction, which keeps high-throughput worker execution from paying to produce events the browser will never inspect. Use `DropOldest` only when keeping the newest event samples matters more than minimizing writer-path overhead.
+`DropWrite` remains the default for raw SignalR event viewers because those streams are observational and bounded. When a raw event subscription is already full, lazy event payloads can be skipped before construction, which keeps high-throughput worker execution from paying to produce events the browser will never inspect.
+
+Worker-overview subscriptions default to `DropOldest` instead. Detail pages behave more like a live tail than an audit log, so preserving the newest worker activity is usually more valuable than preserving the oldest buffered backlog. If that worker-overview backlog still grows beyond `WorkerOverviewResyncQueuedEventThreshold`, the server sends a resync instruction so the client can reload fresh state instead of slowly draining increasingly stale deltas.
 
 Batching changes transport shape, not event semantics. Clients should handle both methods and process each event individually.
+
+## Local Debug Routes
+
+When the HTTP adapter is running in `Development`, or when all configured listener URLs are loopback-only, Workable also exposes local realtime debug routes:
+
+```http
+GET /workable/debug/realtime
+GET /workable/debug/realtime?connectionId=abc123
+GET /workable/systems/fulfillment/debug/realtime
+```
+
+These endpoints are intentionally for local troubleshooting and are not registered at all on non-development, non-loopback deployments.
+
+They expose:
+
+- active raw event, named-view, and worker-overview subscriptions
+- current group membership and normalized worker-overview criteria
+- worker-overview lifecycle state such as `isStreaming`, `streamingStartedAt`, `streamingStoppedAt`, `lastActivityAt`, and `lastError`
+- worker-overview source-event queue diagnostics such as `capacity`, `overflowBehavior`, `queuedCount`, `peakQueuedCount`, `acceptedEventCount`, `deliveredEventCount`, and `droppedEventCount`
+
+Use the optional `connectionId` filter when you need to match one browser tab or one SignalR connection precisely instead of inspecting the whole system snapshot.
 
 ## Component View Updates
 
@@ -375,14 +465,10 @@ await connection.InvokeAsync(
 The hub exposes these observability methods:
 
 ```csharp
-Task WatchWorker(string workerId, string? systemName = null);
-Task UnwatchWorker(string workerId, string? systemName = null);
 Task WatchView(string subscriptionId, string viewName, WorkViewCriteria? criteria = null, string? systemName = null);
 Task UnwatchView(string subscriptionId, string? systemName = null);
+Task WatchWorkerOverview(string subscriptionId, string workerId, WorkWorkerOverviewRealtimeCriteria? criteria = null, string? systemName = null);
+Task UnwatchWorkerOverview(string subscriptionId, string? systemName = null);
 Task WatchEvents(WorkableRealtimeEventCriteria? criteria = null, string? systemName = null);
 Task UnwatchEvents(WorkableRealtimeEventCriteria? criteria = null, string? systemName = null);
-Task WatchSystem(string? systemName = null);
-Task UnwatchSystem(string? systemName = null);
 ```
-
-`WatchSystem` receives all realtime worker events for the selected system through the same `workable.event` and `workable.events` client methods.

@@ -9,5 +9,5 @@ public sealed record WorkExecutionResult(
     public static WorkExecutionResult Failure(IEnumerable<WorkMessage> messages, WorkOutput? output = null)
         => new(output, [.. messages]);
 
-    public bool HasErrors => this.Messages.Any(message => message.Severity == WorkMessageSeverity.Error);
+    public bool HasErrors => this.Messages.Any(message => message.Severity.IsError());
 }

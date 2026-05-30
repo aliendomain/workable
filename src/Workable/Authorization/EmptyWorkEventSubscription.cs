@@ -1,6 +1,6 @@
 namespace Workable;
 
-internal sealed class EmptyWorkEventSubscription : IWorkEventSubscription
+internal sealed class EmptyWorkEventSubscription : IWorkEventSubscription, IWorkEventSubscriptionDiagnostics
 {
     public static EmptyWorkEventSubscription Instance { get; } = new();
 
@@ -13,6 +13,16 @@ internal sealed class EmptyWorkEventSubscription : IWorkEventSubscription
 
     public ValueTask DisposeAsync()
         => ValueTask.CompletedTask;
+
+    public WorkEventSubscriptionDiagnosticsSnapshot GetDiagnosticsSnapshot()
+        => new(
+            Capacity: 0,
+            OverflowBehavior: WorkEventOverflowBehavior.DropOldest,
+            QueuedCount: 0,
+            PeakQueuedCount: 0,
+            AcceptedEventCount: 0,
+            DeliveredEventCount: 0,
+            DroppedEventCount: 0);
 
     private static async IAsyncEnumerable<WorkEvent> Empty(
         [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)

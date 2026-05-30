@@ -23,9 +23,13 @@ public sealed record WorkerSnapshot(
 {
     public WorkerVersion Version => new(this.Id, this.Revision);
 
+    public bool IsFinal => this.State.IsFinal();
+
     public int? RetryAttempt { get; init; }
 
     public IReadOnlyList<WorkerIterationSnapshot> Iterations { get; init; } = [];
+
+    public WorkerIterationSnapshot? CurrentIteration { get; init; }
 
     public WorkerIterationSnapshot? LastIteration { get; init; }
 

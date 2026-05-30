@@ -235,7 +235,13 @@ The definitions endpoint returns the work definitions visible to the current cal
 GET /workable/definitions
 ```
 
-`GET /workable/definitions` also supports `category`, `includeSubcategories`, and `level` query-string parameters. `level=true` returns the lightweight catalog level for one category instead of full definition records.
+`GET /workable/definitions` also supports `category`, `includeSubcategories`, and `level` query-string parameters. `level=true` returns the lightweight catalog level for one category instead of full definition records. Those lightweight definition rows include only `id`, `name`, and `category`.
+
+Read a single full definition by id.
+
+```http
+GET /workable/definitions/11111111-1111-1111-1111-111111111111
+```
 
 Definitions include their invocation configuration and authorization metadata. Definitions that the caller cannot read are filtered out entirely. Definitions that allow read but not operate access still appear in discovery responses so clients can display them as unavailable through HTTP queueing. Queueing that work through HTTP returns an authorization response.
 
@@ -278,11 +284,14 @@ The definition reconfiguration route requires the current definition revision. A
 
 ## Work Info
 
-Get work info by work name or work definition id.
+Get work info by work name or work definition id. The definition-id form is available under both `/work/id/{definitionId}/info` and `/definitions/{definitionId}/info`.
+
+The HTTP `info` payload includes the full definition, worker rollup/status, and `queueRequestSchema`, so clients can open definition configuration or queue UI without a second schema request.
 
 ```http
 GET /workable/work/email.welcome.send/info
 GET /workable/work/id/11111111-1111-1111-1111-111111111111/info
+GET /workable/definitions/11111111-1111-1111-1111-111111111111/info
 ```
 
 ## Queue Work
@@ -421,11 +430,107 @@ Get a worker snapshot.
 GET /workable/workers/22222222-2222-2222-2222-222222222222
 ```
 
+Get the worker configuration payload used by config panels and worker-scoped queue flows. This route returns the worker's effective runtime configuration, queue seed fields (`input`, `subjectId`, and `concurrencyKey`), plus the associated definition info and queue-request schema metadata needed to render configuration or queue editors without additional `info` or `queue-request/schema` calls.
+
+```http
+GET /workable/workers/22222222-2222-2222-2222-222222222222/configuration
+```
+
+Get the worker-overview landing payload used by detail screens. This returns the typed `WorkWorkerOverviewComponent` contract instead of the generic named-view component map.
+
+```http
+GET /workable/workers/22222222-2222-2222-2222-222222222222/overview
+GET /workable/workers/22222222-2222-2222-2222-222222222222/overview?activity=Timeline&activityTake=100&timelineSort=Asc&timelineCategories=Failure,UserAction
+GET /workable/workers/22222222-2222-2222-2222-222222222222/overview?activity=Logs&logSort=Desc&logLevels=Error,Warning&logIterationSequence=12
+```
+
+The worker-overview route accepts:
+
+- `activity`: `Auto`, `Logs`, or `Timeline`
+- `activityTake` and `activityCursor`
+- `recentIterationTake`
+- `logSort`, `logLevels`, and `logIterationSequence`
+- `timelineSort` and `timelineCategories`
+
+Get the narrow logs and timeline payloads used when the detail screen expands those panels or paginates them. These routes return only the relevant section contract instead of the full worker overview payload, so callers do not need to re-fetch worker metadata, input, or iteration data just to page logs or timeline items.
+
+```http
+GET /workable/workers/22222222-2222-2222-2222-222222222222/overview/logs?activityTake=100&logSort=Desc&logLevels=Error,Warning&logIterationSequence=12
+GET /workable/workers/22222222-2222-2222-2222-222222222222/overview/timeline?activityTake=100&timelineSort=Asc&timelineCategories=Failure,UserAction
+```
+
+The logs route accepts `activityTake`, `activityCursor`, `logSort`, `logLevels`, and `logIterationSequence`.
+
+The timeline route accepts `activityTake`, `activityCursor`, `timelineSort`, and `timelineCategories`.
+
+Retained log payloads include stable log entry ids plus `occurredAt`, iteration `sequence` when the row belongs to a retained iteration, and per-iteration `ordinal` for stable ordering among rows that share the same timestamp.
+
 Get one completed worker iteration by worker id and iteration sequence.
 
 ```http
 GET /workable/workers/22222222-2222-2222-2222-222222222222/iterations/1
 ```
+
+Get the iteration-detail landing payload used by the iteration screen. This route staples the iteration snapshot together with the worker context needed by that screen: definition link data, keys, worker input, compact message counts, and the first page of retained logs.
+
+```http
+GET /workable/workers/22222222-2222-2222-2222-222222222222/iterations/1/detail
+```
+
+Get paged retained logs for one worker iteration. This route returns a compact severity summary plus a paged log list so expanded iteration log panels can page more history without re-fetching the whole iteration landing payload.
+
+```http
+GET /workable/workers/22222222-2222-2222-2222-222222222222/iterations/1/logs?take=50&sort=Desc
+GET /workable/workers/22222222-2222-2222-2222-222222222222/iterations/1/logs?take=50&sort=Asc&logLevels=Error,Warning
+GET /workable/workers/22222222-2222-2222-2222-222222222222/iterations/1/logs?take=50&cursor=eyJvY2N1cnJlZEF0IjoiMjAyNi0wNS0yOVQxMTowMDowMloiLCJpZCI6IjEyMyJ9
+```
+
+The iteration-logs route accepts:
+
+- `take`
+- `cursor`
+- `sort`: `Asc` or `Desc`
+- `logLevels`: comma-separated log levels such as `Error,Warning`
+
+Iteration-log rows use the same retained log-entry shape as worker-overview log pages, including `occurredAt`, stable entry ids, iteration `sequence`, and per-iteration `ordinal`.
+
+Get paged retained messages for one worker iteration. This route returns a summary count block plus a paged message list so message panels can keep compact severity totals while loading large retained message sets incrementally.
+
+```http
+GET /workable/workers/22222222-2222-2222-2222-222222222222/iterations/1/messages?take=50&sort=Desc
+GET /workable/workers/22222222-2222-2222-2222-222222222222/iterations/1/messages?take=50&sort=Asc&severities=Information,Warning
+GET /workable/workers/22222222-2222-2222-2222-222222222222/iterations/1/messages?take=50&cursor=50
+```
+
+The iteration-messages route accepts:
+
+- `take`
+- `cursor`
+- `sort`: `Asc` or `Desc`
+- `severities`: comma-separated `WorkMessageSeverity` values such as `Information,Warning`
+
+Retained `WorkMessage` payloads now include `occurredAt` in addition to `code`, `severity`, `text`, optional `target`, and optional `metadata`.
+
+## Local Realtime Debug
+
+When the HTTP API is hosted in `Development`, or when all configured URLs are loopback-only (`localhost`, `127.0.0.1`, or `::1`), the adapter also registers local realtime debug routes:
+
+```http
+GET /workable/debug/realtime
+GET /workable/debug/realtime?connectionId=abc123
+GET /workable/systems/fulfillment/debug/realtime
+```
+
+These routes are intended for local troubleshooting. They are not registered at all on non-development, non-loopback deployments.
+
+The debug payload includes:
+
+- active raw event subscriptions
+- active named-view subscriptions
+- active worker-overview subscriptions
+- current criteria, group name, and logical subscription ids
+- worker-overview queue diagnostics such as `queuedCount`, `peakQueuedCount`, `acceptedEventCount`, `deliveredEventCount`, and `droppedEventCount`
+- worker-overview lifecycle fields such as `isStreaming`, `streamingStartedAt`, `streamingStoppedAt`, `lastActivityAt`, and `lastError`
 
 Worker and iteration collections can also be read through the shared views/component routes when a caller wants the transport-oriented `Workable.Views` contract instead of the narrower point routes shown here. The canonical component names and option shapes live in [Views](../concepts/views.md).
 

@@ -19,6 +19,8 @@ public sealed record WorkerSummary(
 {
     public WorkerVersion Version => new(this.Id, this.Revision);
 
+    public bool IsFinal => this.State.IsFinal();
+
     public int? RetryAttempt { get; init; }
 
     public TimeSpan? QueueDuration { get; init; }
@@ -26,4 +28,6 @@ public sealed record WorkerSummary(
     public TimeSpan TotalExecutionDuration { get; init; }
 
     public DateTimeOffset? NextRunAt { get; init; }
+
+    public int ConfigDifferenceCount { get; init; }
 }

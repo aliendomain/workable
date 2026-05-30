@@ -71,7 +71,8 @@ Applications reference `Workable.HttpApi` when they want to expose Workable syst
 - component and view request DTOs
 - component result envelopes
 - overview, worker-grid, iteration-grid, catalog, and throughput component projections
-- shared view normalization used by HTTP and realtime transports
+- the typed worker-overview landing and realtime contracts
+- shared view and worker-overview normalization used by HTTP and realtime transports
 
 Adapter packages reference `Workable.Views` when they need to expose the component-view contract over a transport.
 
@@ -104,10 +105,11 @@ Applications reference `Workable.Mcp` when they want to expose Workable systems 
 
 `src/Workable.SignalR` contains the realtime adapter surface:
 
-- SignalR hub mapping for worker event and component-view subscriptions
-- one Workable event-stream subscription per hosted system
-- worker detail event broadcasting
-- coalesced component-view broadcasting using shared view subscriptions
+- SignalR hub mapping for raw event, named view, and worker-overview subscriptions
+- shared subscription registries keyed by normalized request shape and read visibility
+- raw event broadcasting
+- worker-overview state caching, delta generation, and coalesced worker-overview broadcasting
+- coalesced named-view broadcasting using shared view subscriptions
 - HTTP realtime capability provider registration
 
 Applications reference `Workable.SignalR` when they want ASP.NET Core clients to receive realtime Workable updates.
@@ -171,7 +173,7 @@ Folder names are vocabulary, not decoration. A folder with the same name in two 
 
 `Systems` contains whole-system lifecycle and discovery concerns: `IWorkSystem`, registries, in-memory system implementations, HTTP system resolution, system capability metadata, and system start/stop routes.
 
-`Query` contains read-only query concerns. Public query inputs live in `Query/Criteria`, and returned query models live in `Query/Results`. Runtime query execution belongs in `src/Workable/Query`: `WorkSystemReadModel` projects worker lifecycle updates into immutable read snapshots, and `WorkSystemReadModelQueryService` is the discoverable facade exposed through `IWorkSystem.Query`. Shared component/view DTOs and component composition belong in `src/Workable.Views/Query`. Adapter route glue belongs in that adapter's `Query` folder. Do not use `Query` for mutable operations.
+`Query` contains read-only query concerns. Public query inputs live in `Query/Criteria`, and returned query models live in `Query/Results`. Runtime query execution belongs in `src/Workable/Query`: `WorkSystemReadModel` projects worker lifecycle updates into immutable read snapshots, and `WorkSystemReadModelQueryService` is the discoverable facade exposed through `IWorkSystem.Query`. Shared component/view DTOs, typed worker-overview DTOs, and query-side composition belong in `src/Workable.Views/Query`. Adapter route glue belongs in that adapter's `Query` folder. Do not use `Query` for mutable operations.
 
 `Events` contains event-stream contracts, event payloads, publishers, and subscription behavior.
 
@@ -193,7 +195,7 @@ Folder names are vocabulary, not decoration. A folder with the same name in two 
 
 `Identifiers` contains IDs, versions, subjects, identifiers, concurrency keys, and shared key contracts.
 
-`Messages` contains structured work messages and message severity.
+`Messages` contains structured work messages, including severity, text, timestamps, optional targets, and optional metadata.
 
 `Origins` contains actor/origin contracts and providers that describe where an invocation came from.
 

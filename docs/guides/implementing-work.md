@@ -152,7 +152,7 @@ Use `Fail(...)` when:
 
 What Workable does:
 
-- creates an `Error` `WorkMessage` from the supplied `code`, `message`, and optional `target`
+- creates an `Error` `WorkMessage` from the supplied `code`, `message`, and optional `target`, timestamped at the time `Fail(...)` is called
 - marks the execution result as failed when the executor returns
 - preserves any additional messages returned by the executor alongside the requested failure
 - when `transient` is `true`, lets transient retry treat the failure as retryable without using exception classification

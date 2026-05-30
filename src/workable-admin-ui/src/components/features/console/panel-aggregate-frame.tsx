@@ -13,6 +13,7 @@ export type PanelAggregateFrameScrollMode = "browser" | "panel";
 export function PanelAggregateFrame<TId extends string>({
   children,
   className,
+  contentClassName,
   controls,
   fill = false,
   hiddenPanelIds,
@@ -27,6 +28,7 @@ export function PanelAggregateFrame<TId extends string>({
   ...props
 }: HTMLAttributes<HTMLDivElement> & {
   children: ReactNode;
+  contentClassName?: string;
   controls?: ReactNode;
   fill?: boolean;
   hiddenPanelIds: readonly TId[];
@@ -64,8 +66,10 @@ export function PanelAggregateFrame<TId extends string>({
       </div>
       <div
         className={cn(
+          "space-y-6",
           fill && "flex min-h-0 flex-1 flex-col",
-          fill && scrollMode === "panel" && "overflow-hidden"
+          fill && scrollMode === "panel" && "overflow-hidden",
+          contentClassName
         )}
       >
         {children}

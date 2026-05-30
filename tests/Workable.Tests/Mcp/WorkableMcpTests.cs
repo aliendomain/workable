@@ -644,6 +644,7 @@ public sealed class WorkableMcpTests
             WorkInput.Empty,
             options: new WorkerOptions(ProfilingEnabled: true));
         var completion = await handle.WaitForCompletion();
+        await WaitForReadModel(system);
         Assert.Equal(WorkCompletionStatus.Completed, completion.Status);
 
         using var queryArguments = JsonDocument.Parse("""{"workName":"reports.generate","states":["Completed"],"profilingEnabled":true}""");
@@ -687,6 +688,7 @@ public sealed class WorkableMcpTests
                 .WithSubject(new WorkSubjectId("claim", "CLM-123"))
                 .WithIdentifier(new WorkIdentifier("invoice", "INV-456")));
         await handle.WaitForCompletion();
+        await WaitForReadModel(system);
 
         using var queryArguments = JsonDocument.Parse("""{"workName":"claim.review","statuses":["Completed"],"identifierType":"claim-note","identifierValue":"CLM-123-note"}""");
         using var getArguments = JsonDocument.Parse($$"""{"workerId":"{{handle.WorkerId!.Value.Value:D}}","sequence":1}""");
@@ -733,6 +735,7 @@ public sealed class WorkableMcpTests
                 .WithConcurrencyKey(new WorkConcurrencyKey("tenant", "west"))
                 .WithIdentifier(new WorkIdentifier("invoice", "INV-456")));
         await handle.WaitForCompletion();
+        await WaitForReadModel(system);
 
         using var keysArguments = JsonDocument.Parse("""{"search":"claim id CLM-123"}""");
         using var typesArguments = JsonDocument.Parse("""{"search":"claim work"}""");

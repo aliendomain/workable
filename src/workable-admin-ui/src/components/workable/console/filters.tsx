@@ -2,39 +2,41 @@
 
 import {
   CheckCircle2,
-  ChevronLeft,
   FileCode2,
   Folder,
-  Home,
   ListFilter,
   Square,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { Loadable, OverviewScope } from "@/components/features/console/types";
+import { useCallback, useEffect, useRef, useState } from "react";
+import type { OverviewScope } from "@/components/features/console/types";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import {
-  workableFetch,
-  type WorkComponentQueryResult,
-  type WorkComponentResult,
-  type WorkDefinition,
-  type WorkOverviewCatalogCategoryItem,
-  type WorkSystemOverview,
+  type WorkKeyKind,
   type WorkableConnection,
 } from "@/lib/workable";
+import {
+  DefinitionCatalogBrowser,
+  defaultCatalogBrowserBackButtonClassName,
+  defaultCatalogBrowserHeaderClassName,
+  defaultCatalogBrowserTitleClassName,
+} from "@/components/workable/console/catalog-browser";
+import {
+  normalizeCategoryFilter,
+  splitCatalogPath,
+} from "@/components/workable/console/catalog-browser-data";
 
-type WorkOverviewCatalogComponent = Pick<WorkSystemOverview, "catalogCategories" | "catalogDefinitions">;
-type DefinitionCatalogLevel = {
-  categories: WorkOverviewCatalogCategoryItem[];
-  definitions: WorkDefinition[];
-};
-type CatalogFilterDefinitionItem = Pick<WorkDefinition, "id" | "name"> & {
-  category?: string | null;
-};
+type QueryKeyKindFilter = WorkKeyKind | "Any";
 
 export function OverviewCatalogFilter({
   connection,
@@ -56,17 +58,14 @@ export function OverviewCatalogFilter({
   const [open, setOpen] = useState(false);
   const [tooltipOpen, setTooltipOpen] = useState(false);
   const tooltipOpenTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [draftCategoryFilter, setDraftCategoryFilter] = useState(scope?.category ?? "");
+  const [draftDefinitionFilter, setDraftDefinitionFilter] = useState(scope?.definitionName ?? "");
   const [path, setPath] = useState(scope?.category ?? "");
   const activeFilterCount = scope ? 1 : 0;
   const scopeLabel = formatOverviewScopeLabel(scope);
   const filterTooltip = scopeLabel
     ? `Filtered by catalog: ${scopeLabel}`
     : tooltipLabel;
-  const catalog = useWorkableResource<DefinitionCatalogLevel>(
-    connection,
-    open ? createDefinitionCatalogLevelPath(path) : null,
-    refreshToken
-  );
 
   const closeTooltip = useCallback(() => {
     if (tooltipOpenTimer.current) {
@@ -98,6 +97,8 @@ export function OverviewCatalogFilter({
   const handleOpenChange = (nextOpen: boolean) => {
     closeTooltip();
     if (nextOpen) {
+      setDraftCategoryFilter(scope?.category ?? "");
+      setDraftDefinitionFilter(scope?.definitionName ?? "");
       setPath(scope?.category ?? "");
     }
     setOpen(nextOpen);
@@ -105,9 +106,16 @@ export function OverviewCatalogFilter({
 
   const clearAll = () => {
     closeTooltip();
+    setDraftCategoryFilter("");
+    setDraftDefinitionFilter("");
     setPath("");
     onClear();
+    setOpen(false);
   };
+  const hasDraftChanges =
+    normalizeCategoryFilter(draftCategoryFilter) !== normalizeCategoryFilter(scope?.category ?? "") ||
+    draftDefinitionFilter.trim() !== (scope?.definitionName ?? "").trim();
+  const draftScope = createDraftQueryCatalogScope(draftCategoryFilter, draftDefinitionFilter);
 
   return (
     <Popover open={open} onOpenChange={handleOpenChange}>
@@ -146,24 +154,50 @@ export function OverviewCatalogFilter({
         </TooltipContent>
       </Tooltip>
       <PopoverContent align="end" className="w-[26rem] p-0">
-        <FilterPanelFrame onClear={clearAll}>
+        <FilterPanelFrame
+          footer={(
+            <div className="flex justify-end">
+              <Button
+                disabled={!hasDraftChanges}
+                onClick={() => {
+                  if (draftDefinitionFilter.trim()) {
+                    onSelectDefinition(draftDefinitionFilter.trim(), draftCategoryFilter);
+                  } else if (normalizeCategoryFilter(draftCategoryFilter)) {
+                    onSelectCategory(draftCategoryFilter);
+                  } else {
+                    onClear();
+                  }
+                  setOpen(false);
+                }}
+                size="sm"
+                type="button"
+              >
+                Apply
+              </Button>
+            </div>
+          )}
+          onClear={clearAll}
+        >
           <FilterPanelSection title="Catalog">
             <CatalogFilterPanel
-              categories={catalog.data?.categories ?? []}
-              definitions={catalog.data?.definitions ?? []}
-              loading={!catalog.data && (catalog.loading || !!catalog.refreshing)}
-              onClear={clearAll}
-              onClose={() => setOpen(false)}
+              connection={connection}
+              enabled={open}
+              onClear={() => {
+                setDraftCategoryFilter("");
+                setDraftDefinitionFilter("");
+                setPath("");
+              }}
               onSelectCategory={(category) => {
-                closeTooltip();
-                onSelectCategory(category);
+                setDraftCategoryFilter(category);
+                setDraftDefinitionFilter("");
               }}
               onSelectDefinition={(definitionName, category) => {
-                closeTooltip();
-                onSelectDefinition(definitionName, category);
+                setDraftCategoryFilter(category);
+                setDraftDefinitionFilter(definitionName);
               }}
               path={path}
-              scope={scope}
+              refreshToken={refreshToken}
+              scope={draftScope}
               setPath={setPath}
             />
           </FilterPanelSection>
@@ -174,32 +208,28 @@ export function OverviewCatalogFilter({
 }
 
 function CatalogFilterPanel({
-  categories,
-  definitions,
-  loading,
+  connection,
+  enabled = true,
   onClear,
   onClose,
   onSelectCategory,
   onSelectDefinition,
   path,
+  refreshToken = 0,
   scope,
   setPath,
 }: {
-  categories: WorkOverviewCatalogCategoryItem[];
-  definitions: CatalogFilterDefinitionItem[];
-  loading: boolean;
+  connection: WorkableConnection;
+  enabled?: boolean;
   onClear: () => void;
   onClose?: () => void;
   onSelectCategory: (category: string) => void;
   onSelectDefinition: (definitionName: string, category: string) => void;
   path: string;
+  refreshToken?: number;
   scope: OverviewScope | null;
   setPath: (path: string) => void;
 }) {
-  const pathSegments = splitCatalogPath(path);
-  const currentLabel = pathSegments.at(-1) ?? "All categories";
-  const canGoBack = pathSegments.length > 0;
-
   const selectCategory = (category: string) => {
     setPath(category);
     onSelectCategory(category);
@@ -210,95 +240,81 @@ function CatalogFilterPanel({
     onClear();
   };
 
-  const goBack = () => {
-    selectCategory(pathSegments.slice(0, -1).join(":"));
-  };
-
   return (
     <div className="flex h-[22rem] min-h-0 flex-col">
-      <div className="flex h-10 min-w-0 items-center gap-1 border-b px-2">
-        <button
-          aria-label={canGoBack ? "Back to parent category" : "Catalog root"}
-          className="flex size-7 shrink-0 items-center justify-center rounded-md hover:bg-accent hover:text-accent-foreground disabled:pointer-events-none disabled:opacity-40"
-          disabled={!canGoBack}
-          onClick={goBack}
-          type="button"
-        >
-          {canGoBack ? <ChevronLeft className="size-4" /> : <Home className="size-4" />}
-        </button>
-        <span className="min-w-0 flex-1 truncate font-medium text-sm">
-          {currentLabel}
-        </span>
-        <Button onClick={clear} size="sm" variant="ghost">
-          All
-        </Button>
-      </div>
       <ScrollArea className="min-h-0 flex-1">
-        <div className="py-1">
-          {loading ? (
-            <CatalogFilterPlaceholder />
-          ) : (
-            <>
-              {categories.map((category) => {
-                const isActive =
-                  !scope?.definitionName &&
-                  normalizeCategoryFilter(scope?.category ?? "") ===
-                    normalizeCategoryFilter(category.path);
-
-                return (
-                  <button
-                    className={
-                      isActive
-                        ? "flex h-8 w-full min-w-0 items-center gap-2 bg-accent px-2 text-left text-accent-foreground text-sm"
-                        : "flex h-8 w-full min-w-0 items-center gap-2 px-2 text-left text-sm hover:bg-accent hover:text-accent-foreground"
-                    }
-                    key={category.path}
-                    onClick={() => selectCategory(category.path)}
-                    type="button"
-                  >
-                    <Folder className="size-4 shrink-0 text-muted-foreground" />
-                    <span className="min-w-0 flex-1 truncate">{category.label}</span>
-                    <span className="shrink-0 text-muted-foreground text-xs tabular-nums">
-                      {category.count}
-                    </span>
-                  </button>
-                );
-              })}
-              {definitions.map((definition) => {
-                const isActive = definition.name === scope?.definitionName;
-
-                return (
-                  <button
-                    className={
-                      isActive
-                        ? "flex h-8 w-full min-w-0 items-center gap-2 bg-accent px-2 text-left text-accent-foreground text-sm"
-                        : "flex h-8 w-full min-w-0 items-center gap-2 px-2 text-left text-sm hover:bg-accent hover:text-accent-foreground"
-                    }
-                    key={definition.id.value}
-                    onClick={() => {
-                      onSelectDefinition(
-                        definition.name,
-                        definition.category ?? path
-                      );
-                      onClose?.();
-                    }}
-                    type="button"
-                  >
-                    <FileCode2 className="size-4 shrink-0 text-muted-foreground" />
-                    <span className="min-w-0 flex-1 truncate font-mono">
-                      {definition.name}
-                    </span>
-                  </button>
-                );
-              })}
-              {categories.length === 0 && definitions.length === 0 && (
-                <div className="px-3 py-3 text-muted-foreground text-sm">
-                  No catalog entries.
-                </div>
-              )}
-            </>
+        <DefinitionCatalogBrowser
+          backButtonClassName={defaultCatalogBrowserBackButtonClassName()}
+          bodyClassName="py-1"
+          connection={connection}
+          emptyState={(
+            <div className="px-3 py-3 text-muted-foreground text-sm">
+              No catalog entries.
+            </div>
           )}
-        </div>
+          enabled={enabled}
+          headerClassName={defaultCatalogBrowserHeaderClassName()}
+          headerRight={(
+            <Button onClick={clear} size="sm" variant="ghost">
+              All
+            </Button>
+          )}
+          loadingState={<CatalogFilterPlaceholder />}
+          onNavigate={selectCategory}
+          path={path}
+          refreshToken={refreshToken}
+          renderCategory={(category) => {
+            const isActive =
+              !scope?.definitionName &&
+              normalizeCategoryFilter(scope?.category ?? "") ===
+                normalizeCategoryFilter(category.path);
+
+            return (
+              <button
+                className={
+                  isActive
+                    ? "flex h-8 w-full min-w-0 items-center gap-2 bg-accent px-2 text-left text-accent-foreground text-sm"
+                    : "flex h-8 w-full min-w-0 items-center gap-2 px-2 text-left text-sm hover:bg-accent hover:text-accent-foreground"
+                }
+                onClick={() => selectCategory(category.path)}
+                type="button"
+              >
+                <Folder className="size-4 shrink-0 text-muted-foreground" />
+                <span className="min-w-0 flex-1 truncate">{category.label}</span>
+                <span className="shrink-0 text-muted-foreground text-xs tabular-nums">
+                  {category.count}
+                </span>
+              </button>
+            );
+          }}
+          renderDefinition={(definition) => {
+            const isActive = definition.name === scope?.definitionName;
+
+            return (
+              <button
+                className={
+                  isActive
+                    ? "flex h-8 w-full min-w-0 items-center gap-2 bg-accent px-2 text-left text-accent-foreground text-sm"
+                    : "flex h-8 w-full min-w-0 items-center gap-2 px-2 text-left text-sm hover:bg-accent hover:text-accent-foreground"
+                }
+                onClick={() => {
+                  onSelectDefinition(
+                    definition.name,
+                    definition.category ?? path
+                  );
+                  onClose?.();
+                }}
+                type="button"
+              >
+                <FileCode2 className="size-4 shrink-0 text-muted-foreground" />
+                <span className="min-w-0 flex-1 truncate font-mono">
+                  {definition.name}
+                </span>
+              </button>
+            );
+          }}
+          titleClassName={defaultCatalogBrowserTitleClassName()}
+        />
       </ScrollArea>
     </div>
   );
@@ -310,9 +326,11 @@ function CatalogFilterPlaceholder() {
 
 function FilterPanelFrame({
   children,
+  footer,
   onClear,
 }: {
   children: React.ReactNode;
+  footer?: React.ReactNode;
   onClear: () => void;
 }) {
   return (
@@ -328,6 +346,11 @@ function FilterPanelFrame({
           {children}
         </div>
       </ScrollArea>
+      {footer ? (
+        <div className="border-t px-3 py-3">
+          {footer}
+        </div>
+      ) : null}
     </>
   );
 }
@@ -419,76 +442,109 @@ function QueryFacetPanel<TValue extends string>({
 
 function QueryFilterSections<TValue extends string>({
   allFacetLabel,
-  catalogCategories,
-  catalogDefinitions,
-  catalogLoading,
   catalogScope,
+  connection,
   clearAll,
+  catalogEnabled = true,
   facetLabel,
   facetOptions,
   facetValue,
+  footer,
+  keyKindFilter,
   keyTypeFilter,
+  keyValueFilter,
   onClose,
   onFacetChange,
+  onKeyKindFilterChange,
   onKeyTypeFilterChange,
+  onKeyValueFilterChange,
   onSelectCategory,
   onSelectDefinition,
   path,
+  refreshToken,
   setPath,
 }: {
   allFacetLabel: string;
-  catalogCategories: WorkOverviewCatalogCategoryItem[];
-  catalogDefinitions: CatalogFilterDefinitionItem[];
-  catalogLoading: boolean;
   catalogScope: OverviewScope | null;
+  connection: WorkableConnection;
+  catalogEnabled?: boolean;
   clearAll: () => void;
   facetLabel: string;
   facetOptions: TValue[];
   facetValue: TValue[];
+  footer?: React.ReactNode;
+  keyKindFilter: QueryKeyKindFilter;
   keyTypeFilter: string;
+  keyValueFilter: string;
   onClose?: () => void;
   onFacetChange: (value: TValue[]) => void;
+  onKeyKindFilterChange: (keyKind: QueryKeyKindFilter) => void;
   onKeyTypeFilterChange: (keyType: string) => void;
+  onKeyValueFilterChange: (keyValue: string) => void;
   onSelectCategory: (category: string) => void;
   onSelectDefinition: (definitionName: string, category: string) => void;
   path: string;
+  refreshToken: number;
   setPath: (path: string) => void;
 }) {
   return (
-    <FilterPanelFrame onClear={clearAll}>
-      <FilterPanelSection title="Catalog">
-        <CatalogFilterPanel
-          categories={catalogCategories}
-          definitions={catalogDefinitions}
-          loading={catalogLoading}
-          onClear={clearAll}
-          onClose={onClose}
-          onSelectCategory={onSelectCategory}
-          onSelectDefinition={onSelectDefinition}
-          path={path}
-          scope={catalogScope}
-          setPath={setPath}
-        />
-      </FilterPanelSection>
-      <FilterPanelSection title={facetLabel}>
-        <QueryFacetPanel
-          allLabel={allFacetLabel}
-          onChange={onFacetChange}
-          options={facetOptions}
-          value={facetValue}
-        />
-      </FilterPanelSection>
-      <FilterPanelSection className="p-3" title="Key type">
-        <div className="grid gap-2">
-          <Label className="text-muted-foreground text-xs">Key type</Label>
-          <Input
-            className="h-8"
-            onChange={(event) => onKeyTypeFilterChange(event.target.value)}
-            placeholder="Any key type"
-            value={keyTypeFilter}
+    <FilterPanelFrame footer={footer} onClear={clearAll}>
+      <div className="grid gap-3 lg:grid-cols-[minmax(0,1.35fr)_minmax(14rem,0.9fr)_minmax(16rem,1fr)]">
+        <FilterPanelSection title="Catalog">
+          <CatalogFilterPanel
+            connection={connection}
+            enabled={catalogEnabled}
+            onClear={clearAll}
+            onClose={onClose}
+            onSelectCategory={onSelectCategory}
+            onSelectDefinition={onSelectDefinition}
+            path={path}
+            refreshToken={refreshToken}
+            scope={catalogScope}
+            setPath={setPath}
           />
-        </div>
-      </FilterPanelSection>
+        </FilterPanelSection>
+        <FilterPanelSection title={facetLabel}>
+          <QueryFacetPanel
+            allLabel={allFacetLabel}
+            onChange={onFacetChange}
+            options={facetOptions}
+            value={facetValue}
+          />
+        </FilterPanelSection>
+        <FilterPanelSection title="Key">
+          <div className="flex h-10 items-center border-b">
+            <Select
+              onValueChange={(value) => onKeyKindFilterChange(value as QueryKeyKindFilter)}
+              value={keyKindFilter}
+            >
+              <SelectTrigger className="h-10 w-full rounded-none border-0 bg-transparent px-3 shadow-none focus:ring-0 focus:ring-offset-0">
+                <SelectValue placeholder="Any" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="Any">Any</SelectItem>
+                <SelectItem value="Subject">Subject</SelectItem>
+                <SelectItem value="ConcurrencyKey">Concurrency</SelectItem>
+                <SelectItem value="Identifier">Identity</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="grid gap-3 p-3">
+            <Input
+              className="h-9"
+              onChange={(event) => onKeyTypeFilterChange(event.target.value)}
+              placeholder="Any key type"
+              value={keyTypeFilter}
+            />
+            <Input
+              className="h-9"
+              onChange={(event) => onKeyValueFilterChange(event.target.value)}
+              placeholder="Any key value"
+              value={keyValueFilter}
+            />
+          </div>
+        </FilterPanelSection>
+      </div>
     </FilterPanelFrame>
   );
 }
@@ -500,10 +556,14 @@ export function QueryFilterPopover<TValue extends string>({
   facetLabel,
   facetOptions,
   facetValue,
+  keyKindFilter,
   keyTypeFilter,
+  keyValueFilter,
   onClearCatalog,
   onFacetChange,
+  onKeyKindFilterChange,
   onKeyTypeFilterChange,
+  onKeyValueFilterChange,
   onSelectCategory,
   onSelectDefinition,
   refreshToken,
@@ -514,42 +574,33 @@ export function QueryFilterPopover<TValue extends string>({
   facetLabel: string;
   facetOptions: TValue[];
   facetValue: TValue[];
+  keyKindFilter: QueryKeyKindFilter;
   keyTypeFilter: string;
+  keyValueFilter: string;
   onClearCatalog: () => void;
   onFacetChange: (value: TValue[]) => void;
+  onKeyKindFilterChange: (keyKind: QueryKeyKindFilter) => void;
   onKeyTypeFilterChange: (keyType: string) => void;
+  onKeyValueFilterChange: (keyValue: string) => void;
   onSelectCategory: (category: string) => void;
   onSelectDefinition: (definitionName: string, category: string) => void;
   refreshToken: number;
 }) {
   const [open, setOpen] = useState(false);
   const [path, setPath] = useState(catalogScope?.category ?? "");
-  const catalogRequest = useMemo(
-    () => ({
-      components: [{ id: "catalog", type: "catalog" }],
-      scope: createOverviewComponentScope(catalogScope),
-    }),
-    [catalogScope]
-  );
-  const catalog = useWorkablePostResource<WorkComponentQueryResult>(
-    connection,
-    open ? "components/query" : null,
-    catalogRequest,
-    refreshToken
-  );
-  const catalogComponent = getWorkComponentData<WorkOverviewCatalogComponent>(
-    open ? catalog.data : undefined,
-    "catalog"
-  );
   const activeFilterCount =
     (catalogScope ? 1 : 0) +
+    (keyKindFilter !== "Any" ? 1 : 0) +
     (keyTypeFilter.trim() ? 1 : 0) +
+    (keyValueFilter.trim() ? 1 : 0) +
     (facetValue.length > 0 ? 1 : 0);
   const filterDescriptions = createQueryFilterDescriptions(
     catalogScope,
     facetLabel,
     facetValue,
-    keyTypeFilter
+    keyKindFilter,
+    keyTypeFilter,
+    keyValueFilter
   );
   const filterTooltip =
     filterDescriptions.length > 0
@@ -565,7 +616,9 @@ export function QueryFilterPopover<TValue extends string>({
 
   const clearAll = () => {
     onClearCatalog();
+    onKeyKindFilterChange("Any");
     onKeyTypeFilterChange("");
+    onKeyValueFilterChange("");
     onFacetChange([]);
     setPath("");
   };
@@ -601,21 +654,25 @@ export function QueryFilterPopover<TValue extends string>({
       <PopoverContent align="end" className="w-[26rem] p-0">
         <QueryFilterSections
           allFacetLabel={allFacetLabel}
-          catalogCategories={catalogComponent?.catalogCategories ?? []}
-          catalogDefinitions={catalogComponent?.catalogDefinitions ?? []}
-          catalogLoading={!catalogComponent && (catalog.loading || !!catalog.refreshing)}
           catalogScope={catalogScope}
+          connection={connection}
+          catalogEnabled={open}
           clearAll={clearAll}
           facetLabel={facetLabel}
           facetOptions={facetOptions}
           facetValue={facetValue}
+          keyKindFilter={keyKindFilter}
           keyTypeFilter={keyTypeFilter}
+          keyValueFilter={keyValueFilter}
           onClose={() => setOpen(false)}
           onFacetChange={onFacetChange}
+          onKeyKindFilterChange={onKeyKindFilterChange}
           onKeyTypeFilterChange={onKeyTypeFilterChange}
+          onKeyValueFilterChange={onKeyValueFilterChange}
           onSelectCategory={onSelectCategory}
           onSelectDefinition={onSelectDefinition}
           path={path}
+          refreshToken={refreshToken}
           setPath={setPath}
         />
       </PopoverContent>
@@ -626,9 +683,15 @@ export function QueryFilterPopover<TValue extends string>({
 export function getQueryFilterActiveCount<TValue extends string>(
   catalogScope: OverviewScope | null,
   facetValue: TValue[],
-  keyTypeFilter: string
+  keyKindFilter: QueryKeyKindFilter,
+  keyTypeFilter: string,
+  keyValueFilter: string
 ) {
-  return (catalogScope ? 1 : 0) + (keyTypeFilter.trim() ? 1 : 0) + (facetValue.length > 0 ? 1 : 0);
+  return (catalogScope ? 1 : 0) +
+    (facetValue.length > 0 ? 1 : 0) +
+    (keyKindFilter !== "Any" ? 1 : 0) +
+    (keyTypeFilter.trim() ? 1 : 0) +
+    (keyValueFilter.trim() ? 1 : 0);
 }
 
 export function QueryFilterPanelContent<TValue extends string>({
@@ -638,12 +701,12 @@ export function QueryFilterPanelContent<TValue extends string>({
   facetLabel,
   facetOptions,
   facetValue,
+  isOpen,
+  keyKindFilter,
   keyTypeFilter,
-  onClearCatalog,
-  onFacetChange,
-  onKeyTypeFilterChange,
-  onSelectCategory,
-  onSelectDefinition,
+  keyValueFilter,
+  onApply,
+  onDismiss,
   refreshToken,
 }: {
   allFacetLabel: string;
@@ -652,67 +715,164 @@ export function QueryFilterPanelContent<TValue extends string>({
   facetLabel: string;
   facetOptions: TValue[];
   facetValue: TValue[];
+  isOpen: boolean;
+  keyKindFilter: QueryKeyKindFilter;
   keyTypeFilter: string;
-  onClearCatalog: () => void;
-  onFacetChange: (value: TValue[]) => void;
-  onKeyTypeFilterChange: (keyType: string) => void;
-  onSelectCategory: (category: string) => void;
-  onSelectDefinition: (definitionName: string, category: string) => void;
+  keyValueFilter: string;
+  onApply: (next: {
+    categoryFilter: string;
+    definitionFilter: string;
+    facetValue: TValue[];
+    keyKindFilter: QueryKeyKindFilter;
+    keyTypeFilter: string;
+    keyValueFilter: string;
+  }) => void;
+  onDismiss?: () => void;
   refreshToken: number;
 }) {
-  const [path, setPath] = useState(catalogScope?.category ?? "");
-  const catalogRequest = useMemo(
-    () => ({
-      components: [{ id: "catalog", type: "catalog" }],
-      scope: createOverviewComponentScope(catalogScope),
-    }),
-    [catalogScope]
-  );
-  const catalog = useWorkablePostResource<WorkComponentQueryResult>(
-    connection,
-    "components/query",
-    catalogRequest,
-    refreshToken
-  );
-  const catalogComponent = getWorkComponentData<WorkOverviewCatalogComponent>(
-    catalog.data,
-    "catalog"
-  );
+  const appliedCategoryFilter = catalogScope?.category ?? "";
+  const appliedDefinitionFilter = catalogScope?.definitionName ?? "";
+  const [draftCategoryFilter, setDraftCategoryFilter] = useState(appliedCategoryFilter);
+  const [draftDefinitionFilter, setDraftDefinitionFilter] = useState(appliedDefinitionFilter);
+  const [draftFacetValue, setDraftFacetValue] = useState<TValue[]>(facetValue);
+  const [draftKeyKindFilter, setDraftKeyKindFilter] = useState<QueryKeyKindFilter>(keyKindFilter);
+  const [draftKeyTypeFilter, setDraftKeyTypeFilter] = useState(keyTypeFilter);
+  const [draftKeyValueFilter, setDraftKeyValueFilter] = useState(keyValueFilter);
+  const [path, setPath] = useState(appliedCategoryFilter);
+  const wasOpenRef = useRef(isOpen);
+  const draftScope = createDraftQueryCatalogScope(draftCategoryFilter, draftDefinitionFilter);
+
+  useEffect(() => {
+    if (isOpen && !wasOpenRef.current) {
+      setDraftCategoryFilter(appliedCategoryFilter);
+      setDraftDefinitionFilter(appliedDefinitionFilter);
+      setDraftFacetValue(facetValue);
+      setDraftKeyKindFilter(keyKindFilter);
+      setDraftKeyTypeFilter(keyTypeFilter);
+      setDraftKeyValueFilter(keyValueFilter);
+      setPath(appliedCategoryFilter);
+    }
+
+    wasOpenRef.current = isOpen;
+  }, [
+    appliedCategoryFilter,
+    appliedDefinitionFilter,
+    facetValue,
+    isOpen,
+    keyKindFilter,
+    keyTypeFilter,
+    keyValueFilter,
+  ]);
 
   const clearAll = () => {
-    onClearCatalog();
-    onKeyTypeFilterChange("");
-    onFacetChange([]);
+    setDraftCategoryFilter("");
+    setDraftDefinitionFilter("");
+    setDraftFacetValue([]);
+    setDraftKeyKindFilter("Any");
+    setDraftKeyTypeFilter("");
+    setDraftKeyValueFilter("");
     setPath("");
+    onApply({
+      categoryFilter: "",
+      definitionFilter: "",
+      facetValue: [],
+      keyKindFilter: "Any",
+      keyTypeFilter: "",
+      keyValueFilter: "",
+    });
+    onDismiss?.();
   };
+  const hasDraftChanges =
+    normalizeCategoryFilter(draftCategoryFilter) !== normalizeCategoryFilter(appliedCategoryFilter) ||
+    draftDefinitionFilter.trim() !== appliedDefinitionFilter.trim() ||
+    draftKeyKindFilter !== keyKindFilter ||
+    draftKeyTypeFilter.trim() !== keyTypeFilter.trim() ||
+    draftKeyValueFilter.trim() !== keyValueFilter.trim() ||
+    !areStringArraysEqual(draftFacetValue, facetValue);
 
   return (
     <QueryFilterSections
       allFacetLabel={allFacetLabel}
-      catalogCategories={catalogComponent?.catalogCategories ?? []}
-      catalogDefinitions={catalogComponent?.catalogDefinitions ?? []}
-      catalogLoading={!catalogComponent && (catalog.loading || !!catalog.refreshing)}
-      catalogScope={catalogScope}
+      catalogScope={draftScope}
+      connection={connection}
+      catalogEnabled={isOpen}
       clearAll={clearAll}
       facetLabel={facetLabel}
       facetOptions={facetOptions}
-      facetValue={facetValue}
-      keyTypeFilter={keyTypeFilter}
-      onFacetChange={onFacetChange}
-      onKeyTypeFilterChange={onKeyTypeFilterChange}
-      onSelectCategory={onSelectCategory}
-      onSelectDefinition={onSelectDefinition}
+      facetValue={draftFacetValue}
+      footer={(
+        <div className="flex justify-end">
+          <Button
+            disabled={!hasDraftChanges}
+            onClick={() => {
+              onApply({
+                categoryFilter: draftCategoryFilter,
+                definitionFilter: draftDefinitionFilter,
+                facetValue: draftFacetValue,
+                keyKindFilter: draftKeyKindFilter,
+                keyTypeFilter: draftKeyTypeFilter,
+                keyValueFilter: draftKeyValueFilter,
+              });
+              onDismiss?.();
+            }}
+            size="sm"
+            type="button"
+          >
+            Apply
+          </Button>
+        </div>
+      )}
+      keyKindFilter={draftKeyKindFilter}
+      keyTypeFilter={draftKeyTypeFilter}
+      keyValueFilter={draftKeyValueFilter}
+      onFacetChange={setDraftFacetValue}
+      onKeyKindFilterChange={setDraftKeyKindFilter}
+      onKeyTypeFilterChange={setDraftKeyTypeFilter}
+      onKeyValueFilterChange={setDraftKeyValueFilter}
+      onSelectCategory={(category) => {
+        setDraftCategoryFilter(category);
+        setDraftDefinitionFilter("");
+      }}
+      onSelectDefinition={(definitionName, category) => {
+        setDraftCategoryFilter(category);
+        setDraftDefinitionFilter(definitionName);
+      }}
       path={path}
+      refreshToken={refreshToken}
       setPath={setPath}
     />
   );
+}
+
+function createDraftQueryCatalogScope(
+  categoryFilter: string,
+  definitionFilter: string
+): OverviewScope | null {
+  const category = normalizeCategoryFilter(categoryFilter);
+  const definitionName = definitionFilter.trim();
+  if (!category && !definitionName) {
+    return null;
+  }
+
+  return {
+    category: category || undefined,
+    definitionName: definitionName || undefined,
+    includeSubcategories: true,
+  };
+}
+
+function areStringArraysEqual(left: readonly string[], right: readonly string[]) {
+  return left.length === right.length &&
+    left.every((value, index) => value === right[index]);
 }
 
 function createQueryFilterDescriptions<TValue extends string>(
   catalogScope: OverviewScope | null,
   facetLabel: string,
   facetValue: TValue[],
-  keyTypeFilter: string
+  keyKindFilter: QueryKeyKindFilter,
+  keyTypeFilter: string,
+  keyValueFilter: string
 ) {
   const descriptions: string[] = [];
   const catalogLabel = formatOverviewScopeLabel(catalogScope);
@@ -722,11 +882,30 @@ function createQueryFilterDescriptions<TValue extends string>(
   if (facetValue.length > 0) {
     descriptions.push(`${facetLabel.toLowerCase()}: ${formatFilterValues(facetValue)}`);
   }
+  if (keyKindFilter !== "Any") {
+    descriptions.push(`key kind: ${formatQueryKeyKindLabel(keyKindFilter)}`);
+  }
   if (keyTypeFilter.trim()) {
     descriptions.push(`key type: ${keyTypeFilter.trim()}`);
   }
+  if (keyValueFilter.trim()) {
+    descriptions.push(`key value: ${keyValueFilter.trim()}`);
+  }
 
   return descriptions;
+}
+
+function formatQueryKeyKindLabel(value: QueryKeyKindFilter) {
+  switch (value) {
+    case "Subject":
+      return "subject";
+    case "ConcurrencyKey":
+      return "concurrency";
+    case "Identifier":
+      return "identity";
+    default:
+      return "none";
+  }
 }
 
 function formatFilterValues(values: readonly string[]) {
@@ -737,77 +916,8 @@ function formatFilterValues(values: readonly string[]) {
   return `${visible.join(", ")}${suffix}`;
 }
 
-function getWorkComponentData<T>(
-  result: WorkComponentQueryResult | undefined,
-  id: string
-): T | undefined {
-  const component = result?.components[id] as WorkComponentResult<T> | undefined;
-  return component?.status?.toLowerCase() === "ok" ? component.data : undefined;
-}
-
-function createOverviewComponentScope(scope: OverviewScope | null) {
-  const normalizedScope = normalizeOverviewScope(scope);
-  const category = normalizeCategoryFilter(normalizedScope?.category ?? "");
-  const definitionName = normalizedScope?.definitionName ?? "";
-  if (!category && !definitionName) {
-    return null;
-  }
-
-  return {
-    category: category || undefined,
-    definitionName: definitionName || undefined,
-    includeSubcategories: category && !definitionName
-      ? scope?.includeSubcategories ?? true
-      : undefined,
-  };
-}
-
-function normalizeOverviewScope(scope: OverviewScope | null | undefined): OverviewScope | null {
-  if (!scope) {
-    return null;
-  }
-
-  const category = normalizeScopeText(scope.category);
-  const definitionName = normalizeScopeText(scope.definitionName);
-  if (!category && !definitionName) {
-    return null;
-  }
-
-  return {
-    category: category || undefined,
-    definitionName: definitionName || undefined,
-    includeSubcategories: category && !definitionName
-      ? scope.includeSubcategories ?? true
-      : undefined,
-  };
-}
-
 function normalizeScopeText(value: unknown) {
   return typeof value === "string" ? value.trim() : "";
-}
-
-function createDefinitionCatalogLevelPath(category: string) {
-  const query = new URLSearchParams({ level: "true" });
-  const normalizedCategory = normalizeCategoryFilter(category);
-  if (normalizedCategory) {
-    query.set("category", normalizedCategory);
-  }
-
-  return `definitions?${query.toString()}`;
-}
-
-function splitCatalogPath(path: unknown) {
-  const value = normalizeScopeText(path);
-  return value
-    ? value
-        .split(":")
-        .map((segment) => segment.trim())
-        .filter(Boolean)
-    : [];
-}
-
-function normalizeCategoryFilter(path: unknown) {
-  return splitCatalogPath(path).join(":");
 }
 
 function formatOverviewScopeLabel(scope: OverviewScope | null) {
@@ -823,129 +933,4 @@ function formatOverviewScopeLabel(scope: OverviewScope | null) {
   }
 
   return categoryLabel;
-}
-
-function useWorkableResource<T>(
-  connection: WorkableConnection,
-  path: string | null,
-  refreshToken: number
-): Loadable<T> {
-  const [state, setState] = useState<Loadable<T>>({ loading: !!path });
-  const apiUrl = connection.apiUrl;
-  const systemName = connection.systemName;
-
-  useEffect(() => {
-    if (!path) {
-      queueMicrotask(() => setState({ loading: false }));
-      return;
-    }
-
-    let canceled = false;
-    queueMicrotask(() => {
-      if (!canceled) {
-        setState((current) => ({
-          ...current,
-          error: undefined,
-          loading: current.data === undefined,
-          refreshing: current.data !== undefined,
-        }));
-      }
-    });
-
-    const requestConnection = { apiUrl, systemName };
-    workableFetch<T>(requestConnection, path)
-      .then((data) => {
-        if (!canceled) {
-          setState({ data, loading: false, refreshing: false });
-        }
-      })
-      .catch((error) => {
-        if (!canceled) {
-          const detail = error instanceof Error ? error.message : "Request failed.";
-          setState((current) =>
-            current.error === detail && !current.loading && !current.refreshing
-              ? current
-              : {
-                  data: current.data,
-                  error: detail,
-                  loading: false,
-                  refreshing: false,
-                }
-          );
-        }
-      });
-
-    return () => {
-      canceled = true;
-    };
-  }, [apiUrl, systemName, path, refreshToken]);
-
-  return state;
-}
-
-function useWorkablePostResource<T>(
-  connection: WorkableConnection,
-  path: string | null,
-  body: unknown,
-  refreshToken: number
-): Loadable<T> {
-  const [state, setState] = useState<Loadable<T>>({ loading: !!path });
-  const apiUrl = connection.apiUrl;
-  const systemName = connection.systemName;
-  const bodyKey = JSON.stringify(body);
-  const requestKey = `${apiUrl}\n${systemName ?? ""}\n${path ?? ""}\n${bodyKey}`;
-  const previousRequestKey = useRef<string | null>(null);
-
-  useEffect(() => {
-    if (!path) {
-      previousRequestKey.current = requestKey;
-      queueMicrotask(() => setState({ loading: false }));
-      return;
-    }
-
-    let canceled = false;
-    previousRequestKey.current = requestKey;
-    queueMicrotask(() => {
-      if (!canceled) {
-        setState((current) => ({
-          ...current,
-          error: undefined,
-          loading: current.data === undefined,
-          refreshing: current.data !== undefined,
-        }));
-      }
-    });
-
-    const requestConnection = { apiUrl, systemName };
-    workableFetch<T>(requestConnection, path, {
-      method: "POST",
-      body: bodyKey,
-    })
-      .then((data) => {
-        if (!canceled) {
-          setState({ data, loading: false, refreshing: false });
-        }
-      })
-      .catch((error) => {
-        if (!canceled) {
-          const detail = error instanceof Error ? error.message : "Request failed.";
-          setState((current) =>
-            current.error === detail && !current.loading && !current.refreshing
-              ? current
-              : {
-                  data: current.data,
-                  error: detail,
-                  loading: false,
-                  refreshing: false,
-                }
-          );
-        }
-      });
-
-    return () => {
-      canceled = true;
-    };
-  }, [apiUrl, bodyKey, path, refreshToken, requestKey, systemName]);
-
-  return state;
 }

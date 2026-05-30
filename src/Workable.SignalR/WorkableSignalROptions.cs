@@ -11,6 +11,10 @@ public sealed class WorkableSignalROptions
 
     public WorkEventOverflowBehavior EventOverflowBehavior { get; set; } = WorkEventOverflowBehavior.DropWrite;
 
+    public WorkEventOverflowBehavior WorkerOverviewEventOverflowBehavior { get; set; } = WorkEventOverflowBehavior.DropOldest;
+
+    public int WorkerOverviewResyncQueuedEventThreshold { get; set; } = 512;
+
     public TimeSpan BatchTimeWindow { get; set; } = TimeSpan.FromSeconds(1);
 
     public TimeSpan LiveTimeWindow { get; set; } = TimeSpan.FromMilliseconds(100);

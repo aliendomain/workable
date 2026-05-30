@@ -14,7 +14,7 @@ public sealed class DemoWorkloadController(
     ILogger<DemoWorkloadController> logger) : IHostedService, IAsyncDisposable
 {
     private static readonly TimeSpan DefaultQueueInterval = TimeSpan.FromMilliseconds(85);
-    private static readonly TimeSpan MinimumQueueInterval = TimeSpan.FromMilliseconds(5);
+    private static readonly TimeSpan MinimumQueueInterval = TimeSpan.FromMilliseconds(1);
     private static readonly TimeSpan MaximumQueueInterval = TimeSpan.FromSeconds(10);
     private static readonly TimeSpan FinishedWorkerCleanupInterval = TimeSpan.FromSeconds(1);
     private const int MaximumTrackedWorkerCleanupScanCount = 10_000;
@@ -384,6 +384,14 @@ public sealed class DemoWorkloadController(
                 new DemoRelationshipKeys(
                     Subject: new WorkSubjectId("demo-recurring", "iteration-lab"),
                     Identifier: new WorkIdentifier("sample-workload", "iteration-lab")),
+                cancellationToken);
+
+            await this.QueueDefault(
+                "sample.demo.message-flood",
+                new DemoRecurringMessageFloodInput(),
+                new DemoRelationshipKeys(
+                    Subject: new WorkSubjectId("demo-recurring", "message-flood"),
+                    Identifier: new WorkIdentifier("sample-workload", "message-flood")),
                 cancellationToken);
         }
 

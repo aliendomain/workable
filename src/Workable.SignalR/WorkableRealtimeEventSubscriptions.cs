@@ -14,39 +14,6 @@ public sealed class WorkableRealtimeEventSubscriptions
 
     internal long Version => Volatile.Read(ref this.version);
 
-    internal async Task WatchSystem(
-        string connectionId,
-        IGroupManager groupManager,
-        IWorkSystem system,
-        WorkAuthorizationSnapshot authorization,
-        CancellationToken cancellationToken)
-    {
-        ArgumentNullException.ThrowIfNull(authorization);
-
-        var groupName = CreateSystemEventsGroupName(system, null, authorization.ReadFingerprint);
-        await this.WatchGroup(
-            connectionId,
-            groupManager,
-            system.Id,
-            groupName,
-            filter: null,
-            authorization,
-            cancellationToken);
-        await this.WaitForStreaming(groupName, cancellationToken);
-    }
-
-    internal Task UnwatchSystem(
-        string connectionId,
-        IGroupManager groupManager,
-        IWorkSystem system,
-        CancellationToken cancellationToken)
-        => this.UnwatchGroup(
-            connectionId,
-            groupManager,
-            system.Id,
-            filter: null,
-            cancellationToken);
-
     internal async Task WatchEvents(
         string connectionId,
         IGroupManager groupManager,
@@ -85,41 +52,6 @@ public sealed class WorkableRealtimeEventSubscriptions
             filter,
             cancellationToken);
     }
-
-    internal async Task WatchWorker(
-        string connectionId,
-        IGroupManager groupManager,
-        IWorkSystem system,
-        WorkerId workerId,
-        WorkAuthorizationSnapshot authorization,
-        CancellationToken cancellationToken)
-    {
-        ArgumentNullException.ThrowIfNull(authorization);
-
-        var groupName = WorkableRealtimeGroups.Worker(system, workerId, authorization.ReadFingerprint);
-        await this.WatchGroup(
-            connectionId,
-            groupManager,
-            system.Id,
-            groupName,
-            new WorkEventFilter(WorkerId: workerId),
-            authorization,
-            cancellationToken);
-        await this.WaitForStreaming(groupName, cancellationToken);
-    }
-
-    internal Task UnwatchWorker(
-        string connectionId,
-        IGroupManager groupManager,
-        IWorkSystem system,
-        WorkerId workerId,
-        CancellationToken cancellationToken)
-        => this.UnwatchGroup(
-            connectionId,
-            groupManager,
-            system.Id,
-            new WorkEventFilter(WorkerId: workerId),
-            cancellationToken);
 
     internal async Task RemoveConnection(
         string connectionId,
@@ -167,6 +99,25 @@ public sealed class WorkableRealtimeEventSubscriptions
         }
     }
 
+    public IReadOnlyList<WorkableRealtimeDebugEventSubscriptionSnapshot> GetDebugSubscriptions(IWorkSystem system)
+    {
+        ArgumentNullException.ThrowIfNull(system);
+
+        lock (this.gate)
+        {
+            return [.. this.connectionGroups.Values
+                .Where(subscription => subscription.SystemId == system.Id)
+                .Select(subscription => new WorkableRealtimeDebugEventSubscriptionSnapshot(
+                    subscription.ConnectionId,
+                    subscription.GroupName,
+                    subscription.Filter,
+                    this.groups.TryGetValue(subscription.GroupName, out var group)
+                        ? group.ConnectionCount
+                        : 0,
+                    this.streamingGroups.Contains(subscription.GroupName)))];
+        }
+    }
+
     internal Task WaitForChange(long observedVersion, CancellationToken cancellationToken)
     {
         Task wait;
@@ -211,6 +162,11 @@ public sealed class WorkableRealtimeEventSubscriptions
                     return;
                 }
 
+                if (!this.groups.ContainsKey(groupName))
+                {
+                    return;
+                }
+
                 wait = this.changed.Task;
             }
 
@@ -250,7 +206,7 @@ public sealed class WorkableRealtimeEventSubscriptions
                 this.ReleaseGroupLocked(oldSubscription.GroupName);
             }
 
-            var subscription = new EventSubscription(systemId, groupName, filter, authorization);
+            var subscription = new EventSubscription(connectionId, systemId, groupName, filter, authorization);
             this.connectionGroups[connectionGroupKey] = subscription;
             if (this.groups.TryGetValue(groupName, out var group))
             {
@@ -503,6 +459,7 @@ public sealed class WorkableRealtimeEventSubscriptions
         => new(TaskCreationOptions.RunContinuationsAsynchronously);
 
     internal sealed record EventSubscription(
+        string ConnectionId,
         WorkSystemId SystemId,
         string GroupName,
         WorkEventFilter? Filter,

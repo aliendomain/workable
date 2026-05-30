@@ -17,7 +17,10 @@ internal sealed class WorkerEventPublisher(
             details: new WorkerEventPayloadDetails(Origin: worker.Origin));
 
     internal void Started(WorkerRecord worker)
-        => this.Publish(worker, "worker.started");
+        => this.Publish(
+            worker,
+            "worker.started",
+            details: new WorkerEventPayloadDetails(IncludeLatestIteration: true));
 
     internal void ActionApplied(WorkerRecord worker, WorkActionOutcome outcome, WorkOrigin origin)
     {
@@ -58,7 +61,8 @@ internal sealed class WorkerEventPublisher(
             worker,
             EventTypeFor(status),
             details: new WorkerEventPayloadDetails(
-                CompletionStatus: status));
+                CompletionStatus: status,
+                IncludeLatestIteration: true));
 
     internal void Waiting(WorkerRecord worker)
     {
@@ -66,14 +70,18 @@ internal sealed class WorkerEventPublisher(
         this.Publish(
             worker,
             "worker.waiting",
-                details: new WorkerEventPayloadDetails(RecurrenceInterval: recurrenceInterval));
+                details: new WorkerEventPayloadDetails(
+                    IncludeLatestIteration: true,
+                    RecurrenceInterval: recurrenceInterval));
     }
 
     internal void Retrying(WorkerRecord worker, TimeSpan retryDelay)
         => this.Publish(
             worker,
             "worker.retrying",
-            details: new WorkerEventPayloadDetails(RetryDelay: retryDelay));
+            details: new WorkerEventPayloadDetails(
+                IncludeLatestIteration: true,
+                RetryDelay: retryDelay));
 
     internal void IterationStarted(WorkerRecord worker)
         => this.Publish(
@@ -108,7 +116,8 @@ internal sealed class WorkerEventPublisher(
             worker,
             "worker.failed",
             details: new WorkerEventPayloadDetails(
-                CompletionStatus: WorkCompletionStatus.Failed));
+                CompletionStatus: WorkCompletionStatus.Failed,
+                IncludeLatestIteration: true));
 
     internal void Purged(WorkerRecord worker)
         => this.PublishWorkerPurge(worker);

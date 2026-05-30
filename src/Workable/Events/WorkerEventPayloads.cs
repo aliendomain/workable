@@ -2,6 +2,23 @@ using System.Text.Json;
 
 namespace Workable;
 
+internal sealed record WorkerEventRetainedLogSummary(
+    int Total,
+    int Critical,
+    int Error,
+    int Errors,
+    int Warning,
+    int Warnings,
+    int Information,
+    int Debug,
+    int Trace);
+
+internal sealed record WorkerEventRetainedTimelineSummary(
+    int Total,
+    int UserActionCount,
+    int SystemEventCount,
+    int FailureCount);
+
 internal static class WorkerEventPayloads
 {
     public static JsonElement Create(
@@ -16,11 +33,13 @@ internal static class WorkerEventPayloads
         WorkerIterationSnapshot? iteration = null,
         TimeSpan? recurrenceInterval = null,
         TimeSpan? retryDelay = null,
-        WorkerLogEntry? logEntry = null)
+        WorkerLogEntry? logEntry = null,
+        WorkerEventRetainedLogSummary? retainedLogSummary = null,
+        WorkerEventRetainedTimelineSummary? retainedTimelineSummary = null)
     {
         return JsonSerializer.SerializeToElement(
             new WorkerEventPayload(
-                WorkerEventWorkerPayload.From(worker),
+                WorkerEventWorkerPayload.From(worker, retainedLogSummary, retainedTimelineSummary),
                 keys,
                 origin is null ? null : WorkerEventOriginPayload.From(origin),
                 action,
@@ -93,7 +112,16 @@ internal static class WorkerEventPayloads
 
         public DateTimeOffset? NextRunAt { get; init; }
 
-        public static WorkerEventWorkerPayload From(WorkerSummary worker)
+        public int ConfigDifferenceCount { get; init; }
+
+        public WorkerEventRetainedLogSummary? LogSummary { get; init; }
+
+        public WorkerEventRetainedTimelineSummary? TimelineSummary { get; init; }
+
+        public static WorkerEventWorkerPayload From(
+            WorkerSummary worker,
+            WorkerEventRetainedLogSummary? retainedLogSummary = null,
+            WorkerEventRetainedTimelineSummary? retainedTimelineSummary = null)
             => new(
                 worker.Id,
                 worker.Revision,
@@ -114,6 +142,9 @@ internal static class WorkerEventPayloads
                 QueueDuration = worker.QueueDuration,
                 TotalExecutionDuration = worker.TotalExecutionDuration,
                 NextRunAt = worker.NextRunAt,
+                ConfigDifferenceCount = worker.ConfigDifferenceCount,
+                LogSummary = retainedLogSummary,
+                TimelineSummary = retainedTimelineSummary,
             };
     }
 
@@ -122,18 +153,30 @@ internal static class WorkerEventPayloads
         DateTimeOffset StartedAt,
         DateTimeOffset CompletedAt,
         TimeSpan ExecutionDuration,
-        WorkCompletionStatus Status)
+        WorkCompletionStatus Status,
+        int AttemptCount)
     {
+        public WorkOutput? Output { get; init; }
+
+        public WorkerIterationFailure? Failure { get; init; }
+
         public static WorkerIterationEventPayload From(WorkerIterationSnapshot iteration)
             => new(
                 iteration.Sequence,
                 iteration.StartedAt,
                 iteration.CompletedAt,
                 iteration.ExecutionDuration,
-                iteration.Status);
+                iteration.Status,
+                iteration.AttemptCount)
+            {
+                Output = iteration.Status == WorkCompletionStatus.Executing ? null : iteration.Output,
+                Failure = iteration.Failure,
+            };
     }
 
     private sealed record WorkerEventLogPayload(
+        string Id,
+        long Ordinal,
         string Category,
         string Level,
         WorkerEventLogEventIdPayload EventId,
@@ -143,6 +186,8 @@ internal static class WorkerEventPayloads
     {
         public static WorkerEventLogPayload From(WorkerLogEntry entry)
             => new(
+                entry.Id.ToString("N"),
+                entry.Ordinal,
                 entry.Category,
                 entry.Level.ToString(),
                 WorkerEventLogEventIdPayload.From(entry.EventId),

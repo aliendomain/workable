@@ -50,7 +50,7 @@ internal sealed class WorkableLogCaptureContext : IDisposable
             exception?.GetType().FullName,
             exception?.Message);
 
-        this.worker.RecordLog(entry);
+        entry = this.worker.RecordLog(entry);
         this.events.Log(this.worker, entry);
     }
 

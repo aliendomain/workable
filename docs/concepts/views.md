@@ -2,7 +2,7 @@
 
 `Workable.Views` is mostly a transitive package.
 
-Most applications use it indirectly through `Workable.HttpApi` or `Workable.SignalR`, because those adapters already expose the shared view and component contract. Reference `Workable.Views` directly only when you are building your own UI or your own transport on top of Workable's read model.
+Most applications use it indirectly through `Workable.HttpApi` or `Workable.SignalR`, because those adapters already expose the shared view/component contract and the typed worker-overview contract. Reference `Workable.Views` directly only when you are building your own UI or your own transport on top of Workable's read model.
 
 That direct-use story is powerful, but it is also stringly typed. Views, components, and shapes are identified by canonical names rather than a strongly typed page model. This document collects those names in one place so custom UI authors do not have to reverse-engineer them from the adapter code.
 
@@ -72,6 +72,57 @@ WorkComponentQueryResult result = await adapter.View(
 ```
 
 The same adapter also exposes targeted methods such as `Worker`, `Workers`, `WorkerIterations`, `WorkInfo`, `WorkDefinitions`, `WorkerKeys`, `WorkIterationKeys`, and `WorkerStatusSummary`. Those are useful when a custom UI needs one specific data set instead of a component envelope.
+
+## Worker Overview Contract
+
+Worker detail pages now use a dedicated typed contract instead of the generic named-view component map.
+
+The two main adapter entry points are:
+
+- `WorkerOverview(...)`: builds the HTTP landing payload for one worker
+- `WorkerOverviewRealtimeState(...)`: builds the current realtime state for one worker
+
+The HTTP landing criteria is `WorkWorkerOverviewCriteria`:
+
+- `Activity`: `Auto`, `Logs`, or `Timeline`
+- `ActivityTake` and `ActivityCursor` for paging the active log or timeline stream
+- `RecentIterationTake`
+- `LogSortDirection`, optional `LogLevels`, and optional `LogIterationSequence`
+- `TimelineSortDirection` and optional `TimelineCategories`
+
+The landing result is `WorkWorkerOverviewComponent`, which contains:
+
+- `Worker`: worker identity, state, timing, retry, origin, and configuration-difference summary
+- `Input`: retained worker input when available
+- `LatestIteration`
+- `RecentIterations`
+- `Logs`: aggregate log summary plus an optional paged log slice
+- `Timeline`: aggregate timeline summary plus an optional paged timeline slice
+
+The realtime criteria is `WorkWorkerOverviewRealtimeCriteria`:
+
+- `WorkerControls`
+- `WorkerLogs`
+- `WorkerDuration`
+- `WorkerTimeline`
+- the same log and timeline sort/filter options as the HTTP landing query
+
+The realtime transport uses two more types:
+
+- `WorkWorkerOverviewRealtimeState`: the full current worker-overview state used to seed a subscription
+- `WorkWorkerOverviewRealtimeUpdate`: a partial delta envelope that carries only the sections that changed
+
+This worker-overview contract exists because the detail screen has needs that do not fit the generic component map well:
+
+- panel-mode-aware realtime subscriptions
+- live log and timeline filters
+- log and timeline paging cursors
+- partial realtime deltas instead of full component replacement
+
+In other words, `Workable.Views` now contains two related but distinct UI contracts:
+
+- generic named views and component maps for dashboards
+- the typed worker-overview contract for one worker detail screen
 
 ## Consistency Note
 
@@ -190,6 +241,7 @@ That approach keeps the stringly-typed surface manageable and gives you room to 
 `Workable.HttpApi` and `Workable.SignalR` both reuse this package's view model rather than inventing transport-specific dashboard contracts.
 
 - See [HTTP API](../adapters/http-api.md#ui-views-and-components) for the HTTP route shape.
-- See [Realtime](../adapters/realtime.md#component-view-updates) for live pushed view updates over SignalR.
+- See [Realtime](../adapters/realtime.md#component-view-updates) for live pushed named-view updates over SignalR.
+- See [Realtime](../adapters/realtime.md#worker-overview-updates) for the dedicated worker-overview stream.
 
 If your custom UI can use those adapters directly, do that first. Reach for `Workable.Views` itself when you specifically need to own the transport or the server-side composition layer.

@@ -1,7 +1,11 @@
 namespace Workable;
 public enum WorkMessageSeverity
 {
-    Info,
+    Trace,
+    Debug,
+    Information,
+    Info = Information,
     Warning,
     Error,
+    Critical,
 }

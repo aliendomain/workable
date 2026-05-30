@@ -43,13 +43,24 @@ public sealed class WorkEventPayloadTests
             queuedData,
             WorkInvocationChannel.DotNet,
             "Queue work 'events.payload' through .NET.");
+        AssertWorkerSummaries(queuedData, logTotal: 0, timelineTotal: 0);
         AssertThinEvent(queued, queuedData);
         AssertEventKeys(queuedData, subject, concurrencyKey, identifier);
 
         var completedData = RequiredData(completed);
         Assert.Equal("Completed", completedData.GetProperty("worker").GetProperty("state").GetString());
         Assert.Equal("Completed", completedData.GetProperty("completionStatus").GetString());
+        var completedIteration = completedData.GetProperty("iteration");
+        Assert.Equal("Completed", completedIteration.GetProperty("status").GetString());
+        Assert.Equal("""{"done":true}""", completedIteration.GetProperty("output").GetProperty("json").GetString());
         Assert.False(completedData.TryGetProperty("origin", out _));
+        AssertWorkerSummaries(
+            completedData,
+            logTotal: 0,
+            timelineTotal: 1,
+            userActionCount: 0,
+            systemEventCount: 1,
+            failureCount: 0);
         AssertThinEvent(completed, completedData);
         AssertEventKeys(completedData, subject, concurrencyKey, identifier);
     }
@@ -206,6 +217,7 @@ public sealed class WorkEventPayloadTests
         Assert.Equal("Accepted", data.GetProperty("reconfigurationStatus").GetString());
         Assert.True(data.GetProperty("reconfiguration").GetProperty("profilingEnabled").GetBoolean());
         Assert.True(data.GetProperty("worker").GetProperty("revision").GetInt64() > worker.Revision);
+        Assert.Equal(1, data.GetProperty("worker").GetProperty("configDifferenceCount").GetInt32());
         AssertEventOrigin(
             data,
             WorkInvocationChannel.DotNet,
@@ -247,7 +259,9 @@ public sealed class WorkEventPayloadTests
             var iterationStartedData = RequiredData(iterationStarted);
             var startedIterationPayload = iterationStartedData.GetProperty("iteration");
             Assert.Equal("worker.iteration.started", iterationStarted.EventType);
-            Assert.Equal("Running", iterationStartedData.GetProperty("worker").GetProperty("state").GetString());
+            Assert.Contains(
+                iterationStartedData.GetProperty("worker").GetProperty("state").GetString(),
+                new[] { "Running", "Waiting" });
             Assert.Equal(1, startedIterationPayload.GetProperty("sequence").GetInt64());
             Assert.Equal("Executing", startedIterationPayload.GetProperty("status").GetString());
             Assert.False(startedIterationPayload.TryGetProperty("output", out _));
@@ -261,7 +275,9 @@ public sealed class WorkEventPayloadTests
             var iterationPayload = iterationData.GetProperty("iteration");
             Assert.Equal(1, iterationPayload.GetProperty("sequence").GetInt64());
             Assert.Equal("Completed", iterationPayload.GetProperty("status").GetString());
-            Assert.False(iterationPayload.TryGetProperty("output", out _));
+            Assert.True(iterationPayload.TryGetProperty("output", out var iterationOutput));
+            Assert.Equal("""{"attempt":1}""", iterationOutput.GetProperty("json").GetString());
+            Assert.False(iterationPayload.TryGetProperty("failure", out _));
             Assert.False(iterationPayload.TryGetProperty("messages", out _));
             Assert.False(iterationPayload.TryGetProperty("log", out _));
             Assert.False(iterationPayload.TryGetProperty("logs", out _));
@@ -270,6 +286,15 @@ public sealed class WorkEventPayloadTests
             var waitingData = RequiredData(waiting);
             Assert.Equal("Waiting", waitingData.GetProperty("worker").GetProperty("state").GetString());
             Assert.Equal("00:05:00", waitingData.GetProperty("recurrenceInterval").GetString());
+            Assert.Equal(1, waitingData.GetProperty("iteration").GetProperty("sequence").GetInt64());
+            Assert.Equal("Completed", waitingData.GetProperty("iteration").GetProperty("status").GetString());
+            AssertWorkerSummaries(
+                waitingData,
+                logTotal: 0,
+                timelineTotal: 2,
+                userActionCount: 0,
+                systemEventCount: 2,
+                failureCount: 0);
             AssertThinEvent(waiting, waitingData);
         }
         finally
@@ -328,19 +353,38 @@ public sealed class WorkEventPayloadTests
         var startedData = RequiredData(firstStarted);
         Assert.Equal("worker.started", firstStarted.EventType);
         Assert.Equal("Running", startedData.GetProperty("worker").GetProperty("state").GetString());
+        Assert.Equal(1, startedData.GetProperty("iteration").GetProperty("sequence").GetInt64());
+        Assert.Equal("Executing", startedData.GetProperty("iteration").GetProperty("status").GetString());
+        Assert.Equal(1, startedData.GetProperty("iteration").GetProperty("attemptCount").GetInt32());
 
         var firstIterationStartedData = RequiredData(firstIterationStarted);
         Assert.Equal("worker.iteration.started", firstIterationStarted.EventType);
         Assert.Equal(1, firstIterationStartedData.GetProperty("iteration").GetProperty("sequence").GetInt64());
+        Assert.Equal(1, firstIterationStartedData.GetProperty("iteration").GetProperty("attemptCount").GetInt32());
 
         var retryingData = RequiredData(retryingEvent);
         Assert.Equal("Retrying", retryingData.GetProperty("worker").GetProperty("state").GetString());
         Assert.Equal(1, retryingData.GetProperty("worker").GetProperty("retryAttempt").GetInt32());
         Assert.Equal("00:00:00.0500000", retryingData.GetProperty("retryDelay").GetString());
+        Assert.Equal(1, retryingData.GetProperty("iteration").GetProperty("sequence").GetInt64());
+        Assert.Equal("Failed", retryingData.GetProperty("iteration").GetProperty("status").GetString());
+        var retryingFailure = retryingData.GetProperty("iteration").GetProperty("failure");
+        Assert.Equal("Failure", retryingFailure.GetProperty("kind").GetString());
+        Assert.Equal("Retry me once.", retryingFailure.GetProperty("message").GetString());
+        Assert.Equal("events.retrying.transient", retryingFailure.GetProperty("code").GetString());
+        Assert.False(retryingData.GetProperty("iteration").TryGetProperty("output", out _));
+        AssertWorkerSummaries(
+            retryingData,
+            logTotal: 0,
+            timelineTotal: 1,
+            userActionCount: 0,
+            systemEventCount: 0,
+            failureCount: 1);
 
         var secondIterationStartedData = RequiredData(secondIterationStarted);
         Assert.Equal("worker.iteration.started", secondIterationStarted.EventType);
         Assert.Equal(2, secondIterationStartedData.GetProperty("iteration").GetProperty("sequence").GetInt64());
+        Assert.Equal(2, secondIterationStartedData.GetProperty("iteration").GetProperty("attemptCount").GetInt32());
 
         await AssertNoNextEvent(startedReader);
     }
@@ -391,12 +435,78 @@ public sealed class WorkEventPayloadTests
         Assert.Equal("events.thin-log", data.GetProperty("worker").GetProperty("definitionName").GetString());
         Assert.False(data.GetProperty("worker").TryGetProperty("origin", out _));
         Assert.Equal("test", log.GetProperty("category").GetString());
+        Assert.Equal(entry.Id.ToString("N"), log.GetProperty("id").GetString());
         Assert.Equal("Information", log.GetProperty("level").GetString());
         Assert.Equal(1, log.GetProperty("eventId").GetProperty("id").GetInt32());
         Assert.Equal("event", log.GetProperty("eventId").GetProperty("name").GetString());
         Assert.Equal("log message", log.GetProperty("message").GetString());
         Assert.False(log.TryGetProperty("metadata", out _));
         AssertThinEvent(workEvent, data);
+    }
+
+    [Fact]
+    public async Task RetainedSummariesTrackTrimmedLogsForgottenIterationsAndWaitingRows()
+    {
+        var configuration = WorkConfiguration.Default with
+        {
+            Recurrence = WorkRecurrenceConfiguration.Every(TimeSpan.FromMinutes(1)) with
+            {
+                RetainedIterations = 1,
+            },
+            Logging = WorkLoggingConfiguration.Default with
+            {
+                Level = Microsoft.Extensions.Logging.LogLevel.Trace,
+                MaximumBufferedEntries = 2,
+            },
+        };
+        var stream = new WorkEventStream();
+        var publisher = new WorkerEventPublisher(WorkSystemId.New(), null, stream, _ => { });
+        var worker = CreateWorker("events.retained-summaries", configuration);
+        await using var subscription = stream.Subscribe(new WorkEventFilter(WorkerId: worker.Id, EventType: "worker.waiting"));
+        await using var reader = subscription.Read().GetAsyncEnumerator();
+
+        Assert.True(worker.Start(worker.Revision, advancesRevision: false, out _, CancellationToken.None).IsAccepted);
+        worker.RecordLog(CreateLogEntry(worker, Microsoft.Extensions.Logging.LogLevel.Information, "info"));
+        worker.RecordLog(CreateLogEntry(worker, Microsoft.Extensions.Logging.LogLevel.Error, "error"));
+        worker.RecordLog(CreateLogEntry(worker, Microsoft.Extensions.Logging.LogLevel.Critical, "critical"));
+        worker.CompleteRecurringIteration(WorkExecutionResult.Success(), continueRecurrence: true);
+
+        Assert.True(worker.TryBeginNextRecurringIteration());
+        worker.RecordLog(CreateLogEntry(worker, Microsoft.Extensions.Logging.LogLevel.Warning, "warning"));
+        worker.CompleteRecurringIteration(WorkExecutionResult.Success(), continueRecurrence: true);
+
+        publisher.Waiting(worker);
+        var workEvent = await ReadNext(reader);
+        var data = RequiredData(workEvent);
+
+        AssertWorkerSummariesMatchSnapshot(worker.ToSnapshot(), data);
+        Assert.Equal(1, data.GetProperty("worker").GetProperty("logSummary").GetProperty("total").GetInt32());
+        Assert.Equal(1, data.GetProperty("worker").GetProperty("logSummary").GetProperty("warning").GetInt32());
+        Assert.Equal(2, data.GetProperty("worker").GetProperty("timelineSummary").GetProperty("total").GetInt32());
+    }
+
+    [Fact]
+    public async Task RetainedTimelineSummariesSuppressCurrentPausedStateRows()
+    {
+        var stream = new WorkEventStream();
+        var publisher = new WorkerEventPublisher(WorkSystemId.New(), null, stream, _ => { });
+        var worker = CreateWorker("events.timeline-summaries");
+        var origin = WorkOrigin.Create(WorkInvocationChannel.DotNet, description: "Pause worker through .NET.");
+        await using var subscription = stream.Subscribe(new WorkEventFilter(WorkerId: worker.Id, EventType: "worker.pause"));
+        await using var reader = subscription.Read().GetAsyncEnumerator();
+
+        Assert.True(worker.Start(worker.Revision, advancesRevision: false, out _, CancellationToken.None).IsAccepted);
+        var outcome = worker.RequestPause(worker.Revision);
+        worker.RecordActionHistory(outcome, origin);
+
+        publisher.ActionApplied(worker, outcome, origin);
+        var workEvent = await ReadNext(reader);
+        var data = RequiredData(workEvent);
+
+        AssertWorkerSummariesMatchSnapshot(worker.ToSnapshot(), data);
+        Assert.Equal(2, data.GetProperty("worker").GetProperty("timelineSummary").GetProperty("total").GetInt32());
+        Assert.Equal(2, data.GetProperty("worker").GetProperty("timelineSummary").GetProperty("systemEventCount").GetInt32());
+        Assert.Equal(0, data.GetProperty("worker").GetProperty("timelineSummary").GetProperty("failureCount").GetInt32());
     }
 
     [Fact]
@@ -508,16 +618,72 @@ public sealed class WorkEventPayloadTests
             key.GetProperty("type").GetString() == type &&
             key.GetProperty("value").GetString() == value;
 
-    private static WorkerRecord CreateWorker(string definitionName)
+    private static void AssertWorkerSummaries(
+        JsonElement data,
+        int logTotal,
+        int timelineTotal,
+        int? userActionCount = null,
+        int? systemEventCount = null,
+        int? failureCount = null)
     {
-        var definition = WorkDefinition.Create(definitionName);
+        var worker = data.GetProperty("worker");
+        Assert.Equal(logTotal, worker.GetProperty("logSummary").GetProperty("total").GetInt32());
+        Assert.Equal(timelineTotal, worker.GetProperty("timelineSummary").GetProperty("total").GetInt32());
+        if (userActionCount.HasValue)
+        {
+            Assert.Equal(userActionCount.Value, worker.GetProperty("timelineSummary").GetProperty("userActionCount").GetInt32());
+        }
+
+        if (systemEventCount.HasValue)
+        {
+            Assert.Equal(systemEventCount.Value, worker.GetProperty("timelineSummary").GetProperty("systemEventCount").GetInt32());
+        }
+
+        if (failureCount.HasValue)
+        {
+            Assert.Equal(failureCount.Value, worker.GetProperty("timelineSummary").GetProperty("failureCount").GetInt32());
+        }
+    }
+
+    private static void AssertWorkerSummariesMatchSnapshot(WorkerSnapshot snapshot, JsonElement data)
+    {
+        var logs = snapshot.GetMergedIterations()
+            .SelectMany(iteration => iteration.Logs)
+            .ToArray();
+        var activity = snapshot.GetActivityEvents();
+        var waitingRowCount = snapshot.State == WorkerState.Waiting ? 1 : 0;
+        var logSummary = data.GetProperty("worker").GetProperty("logSummary");
+        var timelineSummary = data.GetProperty("worker").GetProperty("timelineSummary");
+
+        Assert.Equal(logs.Length, logSummary.GetProperty("total").GetInt32());
+        Assert.Equal(logs.Count(entry => entry.Level == Microsoft.Extensions.Logging.LogLevel.Critical), logSummary.GetProperty("critical").GetInt32());
+        Assert.Equal(logs.Count(entry => entry.Level == Microsoft.Extensions.Logging.LogLevel.Error), logSummary.GetProperty("error").GetInt32());
+        Assert.Equal(logs.Count(entry => entry.Level is Microsoft.Extensions.Logging.LogLevel.Error or Microsoft.Extensions.Logging.LogLevel.Critical), logSummary.GetProperty("errors").GetInt32());
+        Assert.Equal(logs.Count(entry => entry.Level == Microsoft.Extensions.Logging.LogLevel.Warning), logSummary.GetProperty("warning").GetInt32());
+        Assert.Equal(logs.Count(entry => entry.Level == Microsoft.Extensions.Logging.LogLevel.Warning), logSummary.GetProperty("warnings").GetInt32());
+        Assert.Equal(logs.Count(entry => entry.Level == Microsoft.Extensions.Logging.LogLevel.Information), logSummary.GetProperty("information").GetInt32());
+        Assert.Equal(logs.Count(entry => entry.Level == Microsoft.Extensions.Logging.LogLevel.Debug), logSummary.GetProperty("debug").GetInt32());
+        Assert.Equal(logs.Count(entry => entry.Level == Microsoft.Extensions.Logging.LogLevel.Trace), logSummary.GetProperty("trace").GetInt32());
+
+        Assert.Equal(activity.Count + waitingRowCount, timelineSummary.GetProperty("total").GetInt32());
+        Assert.Equal(activity.Count(item => item.Category == WorkerActivityEventCategory.UserAction), timelineSummary.GetProperty("userActionCount").GetInt32());
+        Assert.Equal(activity.Count(item => item.Category == WorkerActivityEventCategory.SystemEvent) + waitingRowCount, timelineSummary.GetProperty("systemEventCount").GetInt32());
+        Assert.Equal(activity.Count(item => item.Category == WorkerActivityEventCategory.Failure), timelineSummary.GetProperty("failureCount").GetInt32());
+    }
+
+    private static WorkerRecord CreateWorker(string definitionName)
+        => CreateWorker(definitionName, WorkConfiguration.Default);
+
+    private static WorkerRecord CreateWorker(string definitionName, WorkConfiguration configuration)
+    {
+        var definition = WorkDefinition.Create(definitionName, configuration: configuration);
         var now = DateTimeOffset.UtcNow;
         return new WorkerRecord(
             WorkerId.New(),
             new RegisteredWork(definition, _ => new NoopExecutor(), []),
             WorkInput.Empty,
             WorkerOptions.Default,
-            WorkConfiguration.Default,
+            configuration,
             WorkOrigin.Create(WorkInvocationChannel.DotNet, description: "Test worker."),
             WorkerState.Queued,
             isStartDeferred: false,
@@ -525,6 +691,19 @@ public sealed class WorkEventPayloadTests
             createdAt: now,
             updatedAt: now);
     }
+
+    private static WorkerLogEntry CreateLogEntry(
+        WorkerRecord worker,
+        Microsoft.Extensions.Logging.LogLevel level,
+        string message)
+        => new(
+            DateTimeOffset.UtcNow,
+            worker.Id,
+            worker.Work.Definition.Id,
+            "tests",
+            level,
+            new Microsoft.Extensions.Logging.EventId(1, message),
+            message);
 
     private static async Task<WorkEvent> ReadNext(IAsyncEnumerator<WorkEvent> reader)
     {

@@ -15,6 +15,8 @@ public sealed record WorkerOverviewItem(
     DateTimeOffset StateChangedAt,
     DateTimeOffset UpdatedAt)
 {
+    public bool IsFinal => this.State.IsFinal();
+
     public TimeSpan? QueueDuration { get; init; }
 
     public TimeSpan TotalExecutionDuration { get; init; }
