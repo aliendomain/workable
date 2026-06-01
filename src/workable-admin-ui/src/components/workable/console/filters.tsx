@@ -8,6 +8,7 @@ import {
   Square,
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { ConsolePlaceholder } from "@/components/features/console/empty-state";
 import type { OverviewScope } from "@/components/features/console/types";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -32,11 +33,14 @@ import {
   defaultCatalogBrowserTitleClassName,
 } from "@/components/workable/console/catalog-browser";
 import {
+  createQueryCatalogScope,
+  formatOverviewScopeLabel,
   normalizeCategoryFilter,
-  splitCatalogPath,
-} from "@/components/workable/console/catalog-browser-data";
+} from "@/components/workable/console/catalog-path";
 
-type QueryKeyKindFilter = WorkKeyKind | "Any";
+export type QueryKeyKindFilter = WorkKeyKind | "Any";
+export const catalogFilterPanelFrameClassName = "flex min-h-[22rem] flex-1 flex-col";
+export const filterPanelSectionClassName = "flex min-h-0 flex-col overflow-hidden rounded-lg border";
 
 export function OverviewCatalogFilter({
   connection,
@@ -115,7 +119,7 @@ export function OverviewCatalogFilter({
   const hasDraftChanges =
     normalizeCategoryFilter(draftCategoryFilter) !== normalizeCategoryFilter(scope?.category ?? "") ||
     draftDefinitionFilter.trim() !== (scope?.definitionName ?? "").trim();
-  const draftScope = createDraftQueryCatalogScope(draftCategoryFilter, draftDefinitionFilter);
+  const draftScope = createQueryCatalogScope(draftCategoryFilter, draftDefinitionFilter);
 
   return (
     <Popover open={open} onOpenChange={handleOpenChange}>
@@ -241,11 +245,10 @@ function CatalogFilterPanel({
   };
 
   return (
-    <div className="flex h-[22rem] min-h-0 flex-col">
+    <div className={catalogFilterPanelFrameClassName}>
       <ScrollArea className="min-h-0 flex-1">
         <DefinitionCatalogBrowser
           backButtonClassName={defaultCatalogBrowserBackButtonClassName()}
-          bodyClassName="py-1"
           connection={connection}
           emptyState={(
             <div className="px-3 py-3 text-muted-foreground text-sm">
@@ -321,7 +324,7 @@ function CatalogFilterPanel({
 }
 
 function CatalogFilterPlaceholder() {
-  return <div className="mx-2 my-1 h-40 rounded-md border border-dashed" />;
+  return <ConsolePlaceholder className="mx-2 my-1 h-40 rounded-md" />;
 }
 
 function FilterPanelFrame({
@@ -365,7 +368,7 @@ function FilterPanelSection({
   title: string;
 }) {
   return (
-    <div className={`overflow-hidden rounded-lg border ${className ?? ""}`.trim()}>
+    <div className={`${filterPanelSectionClassName} ${className ?? ""}`.trim()}>
       <div className="border-b px-3 py-2 font-medium text-muted-foreground text-xs">
         {title}
       </div>
@@ -588,12 +591,13 @@ export function QueryFilterPopover<TValue extends string>({
 }) {
   const [open, setOpen] = useState(false);
   const [path, setPath] = useState(catalogScope?.category ?? "");
-  const activeFilterCount =
-    (catalogScope ? 1 : 0) +
-    (keyKindFilter !== "Any" ? 1 : 0) +
-    (keyTypeFilter.trim() ? 1 : 0) +
-    (keyValueFilter.trim() ? 1 : 0) +
-    (facetValue.length > 0 ? 1 : 0);
+  const activeFilterCount = getQueryFilterActiveCount(
+    catalogScope,
+    facetValue,
+    keyKindFilter,
+    keyTypeFilter,
+    keyValueFilter
+  );
   const filterDescriptions = createQueryFilterDescriptions(
     catalogScope,
     facetLabel,
@@ -740,7 +744,7 @@ export function QueryFilterPanelContent<TValue extends string>({
   const [draftKeyValueFilter, setDraftKeyValueFilter] = useState(keyValueFilter);
   const [path, setPath] = useState(appliedCategoryFilter);
   const wasOpenRef = useRef(isOpen);
-  const draftScope = createDraftQueryCatalogScope(draftCategoryFilter, draftDefinitionFilter);
+  const draftScope = createQueryCatalogScope(draftCategoryFilter, draftDefinitionFilter);
 
   useEffect(() => {
     if (isOpen && !wasOpenRef.current) {
@@ -844,29 +848,12 @@ export function QueryFilterPanelContent<TValue extends string>({
   );
 }
 
-function createDraftQueryCatalogScope(
-  categoryFilter: string,
-  definitionFilter: string
-): OverviewScope | null {
-  const category = normalizeCategoryFilter(categoryFilter);
-  const definitionName = definitionFilter.trim();
-  if (!category && !definitionName) {
-    return null;
-  }
-
-  return {
-    category: category || undefined,
-    definitionName: definitionName || undefined,
-    includeSubcategories: true,
-  };
-}
-
-function areStringArraysEqual(left: readonly string[], right: readonly string[]) {
+export function areStringArraysEqual(left: readonly string[], right: readonly string[]) {
   return left.length === right.length &&
     left.every((value, index) => value === right[index]);
 }
 
-function createQueryFilterDescriptions<TValue extends string>(
+export function createQueryFilterDescriptions<TValue extends string>(
   catalogScope: OverviewScope | null,
   facetLabel: string,
   facetValue: TValue[],
@@ -895,7 +882,7 @@ function createQueryFilterDescriptions<TValue extends string>(
   return descriptions;
 }
 
-function formatQueryKeyKindLabel(value: QueryKeyKindFilter) {
+export function formatQueryKeyKindLabel(value: QueryKeyKindFilter) {
   switch (value) {
     case "Subject":
       return "subject";
@@ -908,29 +895,10 @@ function formatQueryKeyKindLabel(value: QueryKeyKindFilter) {
   }
 }
 
-function formatFilterValues(values: readonly string[]) {
+export function formatFilterValues(values: readonly string[]) {
   const visible = values.slice(0, 3);
   const suffix = values.length > visible.length
     ? `, +${values.length - visible.length} more`
     : "";
   return `${visible.join(", ")}${suffix}`;
-}
-
-function normalizeScopeText(value: unknown) {
-  return typeof value === "string" ? value.trim() : "";
-}
-
-function formatOverviewScopeLabel(scope: OverviewScope | null) {
-  if (!scope) {
-    return "";
-  }
-
-  const categoryLabel = splitCatalogPath(scope.category ?? "").join(" / ");
-  if (scope.definitionName) {
-    return categoryLabel
-      ? `${categoryLabel} / ${scope.definitionName}`
-      : scope.definitionName;
-  }
-
-  return categoryLabel;
 }

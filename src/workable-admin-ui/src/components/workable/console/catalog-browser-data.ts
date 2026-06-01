@@ -10,6 +10,11 @@ import {
   type WorkableConnection,
   type WorkInfo,
 } from "@/lib/workable";
+import { normalizeCategoryFilter } from "@/components/workable/console/catalog-path";
+export {
+  normalizeCategoryFilter,
+  splitCatalogPath,
+} from "@/components/workable/console/catalog-path";
 
 export type DefinitionCatalogLevel = {
   categories: WorkOverviewCatalogCategoryItem[];
@@ -33,20 +38,6 @@ export function createDefinitionCatalogLevelPath(category: string) {
   }
 
   return `definitions?${query.toString()}`;
-}
-
-export function splitCatalogPath(path: unknown) {
-  const value = normalizeScopeText(path);
-  return value
-    ? value
-        .split(":")
-        .map((segment) => segment.trim())
-        .filter(Boolean)
-    : [];
-}
-
-export function normalizeCategoryFilter(path: unknown) {
-  return splitCatalogPath(path).join(":");
 }
 
 export function invalidateDefinitionCatalogLevelCache(connection: WorkableConnection) {
@@ -177,10 +168,6 @@ export function useDefinitionCatalogLevel(
   }, [apiUrl, systemName, path, refreshToken, connection, cacheKey, cacheVersion]);
 
   return state;
-}
-
-function normalizeScopeText(value: unknown) {
-  return typeof value === "string" ? value.trim() : "";
 }
 
 function createDefinitionCatalogConnectionKey(connection: WorkableConnection) {

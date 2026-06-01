@@ -23,7 +23,7 @@ import {
   X,
 } from "lucide-react";
 import type { Dispatch, ReactNode, SetStateAction } from "react";
-import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { Fragment, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import {
   AlertDialog,
@@ -47,11 +47,19 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { ConsoleEmptyState } from "@/components/features/console/empty-state";
+import {
+  FormEmptyState,
+  FormFieldHeader,
+  ReadonlyFormValue,
+} from "@/components/features/console/form-controls";
+import {
+  updateHiddenPanelIds,
+  usePanelVisibilityState,
+} from "@/components/features/console/panel-visibility-state";
 import {
   consoleBreadcrumbCurrentClassName,
   consoleBreadcrumbDefinitionClassName,
@@ -70,8 +78,10 @@ import {
 } from "@/components/features/console/header-capabilities";
 import { PanelScrollViewport, PanelShell } from "@/components/features/console/panel-shell";
 import type { PanelVisibilityOption } from "@/components/features/console/panel-visibility-settings";
+import { StackedSkeleton } from "@/components/features/console/stacked-skeleton";
 import { ToolbarIconButton } from "@/components/features/console/toolbar-icon-button";
 import type { Loadable, OverviewScope } from "@/components/features/console/types";
+import { splitCatalogPath } from "@/components/workable/console/catalog-path";
 import { invalidateDefinitionCatalogLevelCache } from "@/components/workable/console/catalog-browser-data";
 import {
   SchemaForm,
@@ -150,7 +160,7 @@ type QueueConfigurationFieldSection = {
   description?: string;
   fields: QueueConfigurationField[];
 };
-type WorkerConfigurationDifference = {
+export type WorkerConfigurationDifference = {
   currentValue: unknown;
   defaultValue: unknown;
   label: string;
@@ -163,7 +173,7 @@ type IterationDetailPanelId =
   | "iterationOutput"
   | "iterationLogs";
 type IterationFocusedPanelId = "iterationMessages";
-type WorkerReconfigurationRequest = {
+export type WorkerReconfigurationRequest = {
   profilingEnabled?: boolean;
   start?: WorkConfiguration["start"];
   coordination?: WorkConfiguration["coordination"];
@@ -194,8 +204,8 @@ type WorkerFailureException = {
   stackTrace?: string;
 };
 type WorkerConfigurationDisplayMode = "auto" | "all-values" | "only-changes";
-type StackFrameFilterKind = "application" | "library" | "work";
-type StackTraceDisplayEntry =
+export type StackFrameFilterKind = "application" | "library" | "work";
+export type StackTraceDisplayEntry =
   | {
       kind: "detail" | StackFrameFilterKind;
       line: string;
@@ -319,7 +329,12 @@ export function DefinitionsView({
   const [search, setSearch] = useState("");
   const [queueDefinition, setQueueDefinition] = useState<WorkDefinition | null>(null);
   const [gridShape, setGridShape] = useState<WorkComponentShape>("detailed");
-  const [hiddenPanelIds, setHiddenPanelIds] = useState<ReadonlySet<"catalog">>(() => new Set());
+  const {
+    hiddenPanelIdList,
+    isPanelVisible,
+    resetPanelVisibility,
+    setPanelVisible: setCatalogPanelVisible,
+  } = usePanelVisibilityState<"catalog">();
   const autoOpenedDefinitionScope = useRef("");
   const isReady = !definitions.loading;
 
@@ -361,30 +376,18 @@ export function DefinitionsView({
     }
   }, [autoOpenScopedDefinition, catalogScope?.definitionName, definitions.loading, filtered, onOpenDefinition]);
 
-  const setCatalogPanelVisible = useCallback((panelId: "catalog", visible: boolean) => {
-    setHiddenPanelIds((current) => {
-      const next = new Set(current);
-      if (visible) {
-        next.delete(panelId);
-      } else {
-        next.add(panelId);
-      }
-      return next;
-    });
-  }, []);
-
   const resetCatalogUiToDefaults = useCallback(() => {
-    setHiddenPanelIds(new Set());
+    resetPanelVisibility();
     setGridShape("detailed");
-  }, []);
+  }, [resetPanelVisibility]);
 
-  const isCatalogPanelVisible = !hiddenPanelIds.has("catalog");
+  const isCatalogPanelVisible = isPanelVisible("catalog");
 
   return (
     <ConsolePageLayout>
       <ErrorPanel errors={[definitions.error]} />
       <PanelAggregateFrame
-        hiddenPanelIds={[...hiddenPanelIds]}
+        hiddenPanelIds={hiddenPanelIdList}
         onPanelVisibilityChange={setCatalogPanelVisible}
         onResetUi={resetCatalogUiToDefaults}
         padding="tightTop"
@@ -614,9 +617,9 @@ export function DefinitionView({
       {info.loading ? (
         <StackedSkeleton count={6} />
       ) : !definition ? (
-        <div className="rounded-lg border border-dashed p-8 text-center text-muted-foreground text-sm">
+        <ConsoleEmptyState padding="spacious">
           Definition not found.
-        </div>
+        </ConsoleEmptyState>
       ) : (
         <>
           {saveStatus && (
@@ -855,10 +858,13 @@ export function WorkerConsoleView({
   const initializedWorkerConfigurationVisibilityRef = useRef<string | null>(restoredUiState ? workerId : null);
   const initializedWorkerConfigurationAutoModeRef = useRef<string | null>(restoredUiState ? workerId : null);
   const workerOverviewRealtimeResyncCooldownUntilRef = useRef(0);
+  const timelinePageRequestGenerationRef = useRef(0);
   const refreshSeed = refreshToken + actionRefreshToken + manualRefreshToken;
   const landingSnapshot = useWorkableResource<WorkWorkerOverviewComponent>(
     connection,
-    createWorkerOverviewPath(workerId),
+    createWorkerOverviewPath(workerId, {
+      activityTake: workerOverviewInitialActivityPageSize,
+    }),
     refreshSeed,
     {
       retainDataOnNull: true,
@@ -1074,7 +1080,7 @@ export function WorkerConsoleView({
     connection,
     landing && workerOverviewPanelsInitialized && isWorkerLogsPanelExpanded && !usingBootstrapLogsPage
       ? createWorkerOverviewLogsPath(workerId, {
-          activityTake: workerOverviewActivityPageSize,
+          activityTake: workerLogActivityPageSize,
           logLevels: normalizedSelectedLogLevels,
           logSortDirection,
         })
@@ -1089,7 +1095,7 @@ export function WorkerConsoleView({
     connection,
     landing && workerOverviewPanelsInitialized && isWorkerTimelinePanelExpanded && !usingBootstrapTimelinePage
       ? createWorkerOverviewTimelinePath(workerId, {
-          activityTake: workerOverviewActivityPageSize,
+          activityTake: workerTimelineActivityPageSize,
           timelineFilters: normalizedSelectedTimelineFilters,
           timelineSortDirection,
         })
@@ -1444,9 +1450,16 @@ export function WorkerConsoleView({
 
       if (update.timelineItems && update.timelineItems.length > 0) {
         const timelineItems = update.timelineItems;
-        setRealtimeTimelineItems((current) =>
-          mergeWorkerOverviewRealtimeEntries(current, timelineItems, timelineSortDirection)
-        );
+        setRealtimeTimelineItems((current) => {
+          const mergedItems = mergeWorkerOverviewRealtimeEntries(current, timelineItems, timelineSortDirection);
+          return current.length === 0
+            ? retainLatestWorkerTimelineRealtimeItems(
+                mergedItems,
+                timelineSortDirection,
+                workerTimelineRetainedRealtimeItemCount
+              )
+            : mergedItems;
+        });
       }
 
       setRealtimeUpdateError(undefined);
@@ -1474,6 +1487,7 @@ export function WorkerConsoleView({
   }, [logQueryKey, refreshSeed, workerId]);
 
   useEffect(() => {
+    timelinePageRequestGenerationRef.current += 1;
     setExtraTimelineItems([]);
     setRealtimeTimelineItems([]);
     setTimelinePageLoadState({
@@ -1521,6 +1535,7 @@ export function WorkerConsoleView({
   }, []);
 
   const releaseDetailedTimelineData = useCallback(() => {
+    timelinePageRequestGenerationRef.current += 1;
     setExtraTimelineItems([]);
     setRealtimeTimelineItems([]);
     setTimelinePageLoadState({
@@ -1574,7 +1589,7 @@ export function WorkerConsoleView({
         connection,
         createWorkerOverviewLogsPath(workerId, {
           activityCursor: logPageLoadState.nextCursor,
-          activityTake: workerOverviewActivityPageSize,
+          activityTake: workerLogActivityPageSize,
           logLevels: normalizedSelectedLogLevels,
           logSortDirection,
         })
@@ -1619,6 +1634,7 @@ export function WorkerConsoleView({
       return;
     }
 
+    const requestGeneration = timelinePageRequestGenerationRef.current;
     setTimelinePageLoadState((current) => ({
       ...current,
       error: undefined,
@@ -1630,12 +1646,16 @@ export function WorkerConsoleView({
         connection,
         createWorkerOverviewTimelinePath(workerId, {
           activityCursor: timelinePageLoadState.nextCursor,
-          activityTake: workerOverviewActivityPageSize,
+          activityTake: workerTimelineActivityPageSize,
           timelineFilters: normalizedSelectedTimelineFilters,
           timelineSortDirection,
         })
       );
       const page = timeline.page;
+      if (timelinePageRequestGenerationRef.current !== requestGeneration) {
+        return;
+      }
+
       if (!page) {
         setTimelinePageLoadState((current) => ({
           ...current,
@@ -1654,6 +1674,10 @@ export function WorkerConsoleView({
         nextCursor: page.cursor ?? null,
       });
     } catch (caught) {
+      if (timelinePageRequestGenerationRef.current !== requestGeneration) {
+        return;
+      }
+
       setTimelinePageLoadState((current) => ({
         ...current,
         error: caught instanceof Error ? caught.message : "Could not load more timeline events.",
@@ -1791,22 +1815,16 @@ export function WorkerConsoleView({
       focusedWorkerHiddenSnapshotRef.current = null;
       setFocusedWorkerPanel(null);
       setHiddenPanelIds(() => {
-        const next = new Set(snapshot ? snapshot : createDefaultWorkerHiddenPanels(workerConfigurationDifferenceCount > 0));
-        next.add(panelId);
-        return next;
+        return updateHiddenPanelIds(
+          snapshot ? snapshot : createDefaultWorkerHiddenPanels(workerConfigurationDifferenceCount > 0),
+          panelId,
+          false
+        );
       });
       return;
     }
 
-    setHiddenPanelIds((current) => {
-      const next = new Set(current);
-      if (visible) {
-        next.delete(panelId);
-      } else {
-        next.add(panelId);
-      }
-      return next;
-    });
+    setHiddenPanelIds((current) => updateHiddenPanelIds(current, panelId, visible));
   }, [focusedWorkerPanel, workerConfigurationDifferenceCount]);
   const openWorkerConfigurationPanel = useCallback(() => {
     if (focusedWorkerPanel !== null) {
@@ -1814,25 +1832,20 @@ export function WorkerConsoleView({
         focusedWorkerHiddenSnapshotRef.current ??
         createDefaultWorkerHiddenPanels(workerConfigurationDifferenceCount > 0)
       );
-      if (snapshot.has("workerConfiguration")) {
-        snapshot.delete("workerConfiguration");
+      const visible = snapshot.has("workerConfiguration");
+      if (visible) {
         setWorkerConfigurationPanelViewState("standard");
-      } else {
-        snapshot.add("workerConfiguration");
       }
-      focusedWorkerHiddenSnapshotRef.current = snapshot;
+      focusedWorkerHiddenSnapshotRef.current = updateHiddenPanelIds(snapshot, "workerConfiguration", visible);
       return;
     }
 
     setHiddenPanelIds((current) => {
-      const next = new Set(current);
-      if (next.has("workerConfiguration")) {
-        next.delete("workerConfiguration");
+      const visible = current.has("workerConfiguration");
+      if (visible) {
         setWorkerConfigurationPanelViewState("standard");
-      } else {
-        next.add("workerConfiguration");
       }
-      return next;
+      return updateHiddenPanelIds(current, "workerConfiguration", visible);
     });
   }, [focusedWorkerPanel, workerConfigurationDifferenceCount]);
 
@@ -1880,11 +1893,7 @@ export function WorkerConsoleView({
     }
 
     queueMicrotask(() => {
-      setHiddenPanelIds((current) => {
-        const next = new Set(current);
-        next.delete("workerConfiguration");
-        return next;
-      });
+      setHiddenPanelIds((current) => updateHiddenPanelIds(current, "workerConfiguration", true));
     });
   }, [worker, workerConfigurationDifferenceCount, workerId]);
 
@@ -1974,6 +1983,46 @@ export function WorkerConsoleView({
   }, []);
   const setTimelineFilterSelected = useCallback((filterKind: WorkerTimelineFilterKind, selected: boolean) => {
     setSelectedTimelineFilters((current) => updateSelectedTimelineFilters(current, filterKind, selected));
+  }, []);
+  const forgetPagedTimelineItems = useCallback(() => {
+    if (extraTimelineItems.length === 0) {
+      return;
+    }
+
+    timelinePageRequestGenerationRef.current += 1;
+    setExtraTimelineItems([]);
+    setTimelinePageLoadState({
+      error: undefined,
+      hasMore: timelineBasePage?.hasMore ?? false,
+      loadingMore: false,
+      nextCursor: timelineBasePage?.cursor ?? null,
+    });
+  }, [extraTimelineItems.length, timelineBasePage]);
+  const forgetPushedTimelineItems = useCallback(() => {
+    setRealtimeTimelineItems((current) => {
+      const retainedItems = retainLatestWorkerTimelineRealtimeItems(
+        current,
+        timelineSortDirection,
+        workerTimelineRetainedRealtimeItemCount
+      );
+
+      return retainedItems.length === current.length ? current : retainedItems;
+    });
+  }, [timelineSortDirection]);
+  const clearTimelineFilters = useCallback(() => {
+    setSelectedTimelineFilters(null);
+  }, []);
+  const closeWorkerTimelinePanel = useCallback(() => {
+    setWorkerPanelVisible("workerTimeline", false);
+  }, [setWorkerPanelVisible]);
+  const handleLoadMoreTimeline = useCallback(() => {
+    void loadMoreTimeline();
+  }, [loadMoreTimeline]);
+  const openWorkerIteration = useCallback((sequence: number) => {
+    onOpenIteration(workerId, sequence);
+  }, [onOpenIteration, workerId]);
+  const toggleTimelineSortDirection = useCallback(() => {
+    setTimelineSortDirection((current) => current === "desc" ? "asc" : "desc");
   }, []);
 
   return (
@@ -2230,7 +2279,7 @@ export function WorkerConsoleView({
                   <IterationDurationGraph
                     iterations={timelineIterations}
                     now={relativeNow}
-                    onOpenIteration={(sequence) => onOpenIteration(worker.id.value, sequence)}
+                    onOpenIteration={openWorkerIteration}
                   />
                   {timelineIterations.length <= 1 ? (
                     <EmptyListState message="At least two iteration points are needed to draw the duration chart." />
@@ -2267,14 +2316,17 @@ export function WorkerConsoleView({
                 items={timelineItems}
                 isLoading={timelineLoading}
                 isLoadingMore={timelinePageLoadState.loadingMore}
-                now={relativeNow}
-                onClearFilters={() => setSelectedTimelineFilters(null)}
-                onClose={() => setWorkerPanelVisible("workerTimeline", false)}
+                onClearFilters={clearTimelineFilters}
+                onClose={closeWorkerTimelinePanel}
+                onForgetPagedItems={forgetPagedTimelineItems}
+                onForgetPushedItems={forgetPushedTimelineItems}
                 onFocusFilter={focusTimelineFilter}
-                onLoadMore={() => void loadMoreTimeline()}
-                onOpenIteration={(sequence) => onOpenIteration(worker.id.value, sequence)}
+                onLoadMore={handleLoadMoreTimeline}
+                onOpenIteration={openWorkerIteration}
+                pagedItemCount={extraTimelineItems.length}
+                pushedItemCount={realtimeTimelineItems.length}
                 onSetFilterSelected={setTimelineFilterSelected}
-                onToggleSortDirection={() => setTimelineSortDirection((current) => current === "desc" ? "asc" : "desc")}
+                onToggleSortDirection={toggleTimelineSortDirection}
                 onViewStateChange={setWorkerTimelinePanelViewState}
                 selectedFilters={normalizedSelectedTimelineFilters}
                 sortDirection={timelineSortDirection}
@@ -2350,7 +2402,7 @@ export function IterationConsoleView({
       : createIterationLogsPath(workerId, sequence, {
           logLevels: normalizedSelectedIterationLogLevels,
           sortDirection: iterationLogSortDirection,
-          take: workerOverviewActivityPageSize,
+          take: workerLogActivityPageSize,
         }),
     refreshToken,
     {
@@ -2394,16 +2446,8 @@ export function IterationConsoleView({
       focusedIterationHiddenSnapshotRef.current = null;
       setFocusedIterationPanel(null);
     }
-    setHiddenPanelIds((current) => {
-      const next = new Set(current);
-      if (visible) {
-        next.delete(panelId);
-      } else {
-        next.add(panelId);
-      }
-      return next;
-    });
-  }, []);
+    setHiddenPanelIds((current) => updateHiddenPanelIds(current, panelId, visible));
+  }, [focusedIterationPanel]);
 
   const resetIterationUiToDefaults = useCallback(() => {
     setHiddenPanelIds(new Set());
@@ -2468,7 +2512,7 @@ export function IterationConsoleView({
           cursor: iterationLogPageLoadState.nextCursor,
           logLevels: normalizedSelectedIterationLogLevels,
           sortDirection: iterationLogSortDirection,
-          take: workerOverviewActivityPageSize,
+          take: workerLogActivityPageSize,
         })
       );
       const page = logs.page;
@@ -2514,9 +2558,9 @@ export function IterationConsoleView({
       >
         {iterationDetail.loading && !activeIteration ? <StackedSkeleton count={6} /> : null}
         {!iterationDetail.loading && !activeIteration ? (
-          <div className="rounded-lg border border-dashed p-8 text-center text-muted-foreground text-sm">
+          <ConsoleEmptyState padding="spacious">
             Iteration not found.
-          </div>
+          </ConsoleEmptyState>
         ) : null}
         {activeIteration ? (
           <div className="flex min-h-0 flex-1 flex-col gap-6">
@@ -3010,9 +3054,9 @@ function QueueConfigurationTabs({
 }) {
   if (!descriptor || !schema) {
     return (
-      <div className="rounded-lg border border-dashed p-6 text-muted-foreground text-sm">
+      <FormEmptyState>
         Queue configuration schema is not available from this Workable host.
-      </div>
+      </FormEmptyState>
     );
   }
 
@@ -3027,9 +3071,9 @@ function QueueConfigurationTabs({
 
   if (tabs.length === 0) {
     return (
-      <div className="rounded-lg border border-dashed p-6 text-muted-foreground text-sm">
+      <FormEmptyState>
         {emptyStateMessage ?? "No configuration fields are available in this view."}
-      </div>
+      </FormEmptyState>
     );
   }
 
@@ -3258,18 +3302,18 @@ function LockedConfigurationField({
 }) {
   return (
     <div className="w-full max-w-md space-y-2">
-      <div className="space-y-1">
-        <Label className="flex items-center gap-1.5">
-          {label}
-          <Info className="size-3.5 text-muted-foreground" />
-        </Label>
-        {description ? (
-          <p className="text-muted-foreground text-xs">{description}</p>
-        ) : null}
-      </div>
-      <div className="rounded-lg border bg-muted/30 px-3 py-2 font-mono text-sm">
+      <FormFieldHeader
+        description={description}
+        details={(
+          <div className="text-amber-200 text-xs">
+            {reason}
+          </div>
+        )}
+        label={label}
+      />
+      <ReadonlyFormValue>
         {String(value)}
-      </div>
+      </ReadonlyFormValue>
       <p className="text-amber-200 text-xs">{reason}</p>
     </div>
   );
@@ -3313,7 +3357,7 @@ function WorkerConfigurationStatusBadge({
   );
 }
 
-function createConfigurationFieldSections(tab: QueueConfigurationTab): QueueConfigurationFieldSection[] {
+export function createConfigurationFieldSections(tab: QueueConfigurationTab): QueueConfigurationFieldSection[] {
   const tabBasePath = findTabBasePath(tab);
   const sections = new Map<string, QueueConfigurationFieldSection>();
 
@@ -3336,7 +3380,7 @@ function createConfigurationFieldSections(tab: QueueConfigurationTab): QueueConf
   return Array.from(sections.values());
 }
 
-function findTabBasePath(tab: QueueConfigurationTab) {
+export function findTabBasePath(tab: QueueConfigurationTab) {
   const configurationPrefix = `options.configuration.${tab.id}`;
   if (tab.fields.some((field) => field.path === configurationPrefix || field.path.startsWith(`${configurationPrefix}.`))) {
     return configurationPrefix;
@@ -3345,7 +3389,7 @@ function findTabBasePath(tab: QueueConfigurationTab) {
   return "";
 }
 
-function getFieldSectionId(path: string, tabBasePath: string) {
+export function getFieldSectionId(path: string, tabBasePath: string) {
   if (tabBasePath && (path === tabBasePath || path.startsWith(`${tabBasePath}.`))) {
     const remaining = path === tabBasePath
       ? []
@@ -3357,7 +3401,7 @@ function getFieldSectionId(path: string, tabBasePath: string) {
   return segments.length > 1 ? segments[0] ?? "root" : "root";
 }
 
-function labelForFieldSection(sectionId: string, tab: QueueConfigurationTab) {
+export function labelForFieldSection(sectionId: string, tab: QueueConfigurationTab) {
   if (sectionId === "root") {
     return `${tab.label} settings`;
   }
@@ -3366,7 +3410,7 @@ function labelForFieldSection(sectionId: string, tab: QueueConfigurationTab) {
   return fieldSectionLabels[segment] ?? humanizePathSegment(segment);
 }
 
-function descriptionForFieldSection(sectionId: string, tab: QueueConfigurationTab) {
+export function descriptionForFieldSection(sectionId: string, tab: QueueConfigurationTab) {
   if (sectionId === "root") {
     return rootFieldSectionDescriptions[tab.id];
   }
@@ -3375,7 +3419,7 @@ function descriptionForFieldSection(sectionId: string, tab: QueueConfigurationTa
   return fieldSectionDescriptions[segment];
 }
 
-function humanizePathSegment(value: string) {
+export function humanizePathSegment(value: string) {
   return value
     .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
     .replace(/[_-]+/g, " ")
@@ -3403,7 +3447,7 @@ const rootFieldSectionDescriptions: Record<string, string> = {
   queue: "How the queue request returns and which worker-level options are applied.",
 };
 
-function createDefinitionConfigurationDescriptor(
+export function createDefinitionConfigurationDescriptor(
   descriptor: QueueRequestSchemaDescriptor | null
 ): QueueRequestSchemaDescriptor | null {
   if (!descriptor) {
@@ -3423,7 +3467,7 @@ function createDefinitionConfigurationDescriptor(
   };
 }
 
-function createWorkerConfigurationDescriptor(
+export function createWorkerConfigurationDescriptor(
   descriptor: QueueRequestSchemaDescriptor | null
 ): QueueRequestSchemaDescriptor | null {
   if (!descriptor) {
@@ -3672,7 +3716,7 @@ function WorkerStatusBadge({
   );
 }
 
-function workerStatusTextTone(state: WorkerState) {
+export function workerStatusTextTone(state: WorkerState) {
   switch (state) {
     case "Queued":
     case "Running":
@@ -3694,7 +3738,7 @@ function workerStatusTextTone(state: WorkerState) {
   }
 }
 
-function completionTone(status: WorkCompletionStatus) {
+export function detailCompletionTone(status: WorkCompletionStatus) {
   switch (status) {
     case "Completed":
       return "border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-200";
@@ -3712,7 +3756,7 @@ function completionTone(status: WorkCompletionStatus) {
   }
 }
 
-function messageSeverityTone(severity: string) {
+export function messageSeverityTone(severity: string) {
   switch (normalizeMessageSeverity(severity)) {
     case "critical":
       return "border-fuchsia-500/40 bg-fuchsia-500/10 text-fuchsia-800 dark:text-fuchsia-100";
@@ -3732,7 +3776,7 @@ function messageSeverityTone(severity: string) {
   }
 }
 
-function messageSeverityFilterTone(severity: string) {
+export function messageSeverityFilterTone(severity: string) {
   switch (normalizeMessageSeverity(severity)) {
     case "critical":
       return "border-fuchsia-500/30 bg-fuchsia-500/10 text-fuchsia-800 dark:text-fuchsia-100";
@@ -3752,7 +3796,7 @@ function messageSeverityFilterTone(severity: string) {
   }
 }
 
-function workerActionToneClassName(_action: WorkAction, disabled: boolean) {
+export function workerActionToneClassName(_action: WorkAction, disabled: boolean) {
   if (disabled) {
     return "";
   }
@@ -3935,7 +3979,7 @@ function IterationStatusBadge({
   return (
     <div className="flex flex-wrap items-center gap-2">
       <span className="font-medium">Iteration #{iteration.sequence}</span>
-      <Badge className={completionTone(iteration.status)} variant="outline">
+      <Badge className={detailCompletionTone(iteration.status)} variant="outline">
         {iteration.status}
       </Badge>
     </div>
@@ -3987,15 +4031,22 @@ function IterationMessagePanel({
   const [hiddenSeverities, setHiddenSeverities] = useState<Set<string>>(() => new Set());
   const [isolateOnNextFilterSelection, setIsolateOnNextFilterSelection] = useState(false);
   const [sortDirection, setSortDirection] = useState<"asc" | "desc">("desc");
+  const messagePageRequestGenerationRef = useRef(0);
   const [messagesState, setMessagesState] = useState<{
+    baseCursor?: string | null;
+    baseHasMore: boolean;
+    baseItems: WorkMessage[];
     error?: string;
     hasMore: boolean;
     items: WorkMessage[];
     loading: boolean;
     loadingMore: boolean;
     nextCursor?: string | null;
-    summary: ReturnType<typeof summarizeWorkMessages>;
+    summary: WorkIterationMessageSummary;
   }>(() => ({
+    baseCursor: null,
+    baseHasMore: false,
+    baseItems: [],
     hasMore: false,
     items: [],
     loading: false,
@@ -4027,6 +4078,7 @@ function IterationMessagePanel({
     [summary]
   );
   const visibleMessages = messagesState.items;
+  const pagedMessageCount = Math.max(0, messagesState.items.length - messagesState.baseItems.length);
   const hasMoreVisibleMessages = messagesState.hasMore;
   const filtersActive = hiddenSeverities.size > 0;
   const selectedSeverityCount = filtersActive
@@ -4067,45 +4119,75 @@ function IterationMessagePanel({
   };
 
   useEffect(() => {
-    setMessagesState((current) => ({
-      ...current,
-      summary: initialSummary,
-    }));
+    let canceled = false;
+    queueMicrotask(() => {
+      if (!canceled) {
+        setMessagesState((current) => ({
+          ...current,
+          summary: initialSummary,
+        }));
+      }
+    });
+    return () => {
+      canceled = true;
+    };
   }, [initialSummary]);
 
   useEffect(() => {
+    let canceled = false;
+    messagePageRequestGenerationRef.current += 1;
+
     if (viewState === "compact") {
-      setMessagesState((current) => ({
-        ...current,
-        error: undefined,
-        hasMore: false,
-        items: [],
-        loading: false,
-        loadingMore: false,
-        nextCursor: null,
-        summary: initialSummary,
-      }));
-      return;
+      queueMicrotask(() => {
+        if (!canceled) {
+          setMessagesState((current) => ({
+            ...current,
+            baseCursor: null,
+            baseHasMore: false,
+            baseItems: [],
+            error: undefined,
+            hasMore: false,
+            items: [],
+            loading: false,
+            loadingMore: false,
+            nextCursor: null,
+            summary: initialSummary,
+          }));
+        }
+      });
+      return () => {
+        canceled = true;
+      };
     }
 
-    let canceled = false;
-    setMessagesState((current) => ({
-      ...current,
-      error: undefined,
-      hasMore: false,
-      items: [],
-      loading: true,
-      loadingMore: false,
-      nextCursor: null,
-    }));
+    queueMicrotask(() => {
+      if (!canceled) {
+        setMessagesState((current) => ({
+          ...current,
+          baseCursor: null,
+          baseHasMore: false,
+          baseItems: [],
+          error: undefined,
+          hasMore: false,
+          items: [],
+          loading: true,
+          loadingMore: false,
+          nextCursor: null,
+        }));
+      }
+    });
 
+    const requestGeneration = messagePageRequestGenerationRef.current;
     workableFetch<WorkIterationMessageSection>(connection, requestPath)
       .then((data) => {
-        if (canceled) {
+        if (canceled || messagePageRequestGenerationRef.current !== requestGeneration) {
           return;
         }
 
         setMessagesState({
+          baseCursor: data.page.cursor ?? null,
+          baseHasMore: data.page.hasMore,
+          baseItems: data.page.items,
           hasMore: data.page.hasMore,
           items: data.page.items,
           loading: false,
@@ -4115,12 +4197,15 @@ function IterationMessagePanel({
         });
       })
       .catch((error) => {
-        if (canceled) {
+        if (canceled || messagePageRequestGenerationRef.current !== requestGeneration) {
           return;
         }
 
         setMessagesState((current) => ({
           ...current,
+          baseCursor: null,
+          baseHasMore: false,
+          baseItems: [],
           error: error instanceof Error ? error.message : "Unable to load messages.",
           hasMore: false,
           items: [],
@@ -4135,11 +4220,33 @@ function IterationMessagePanel({
     };
   }, [connection, initialSummary, refreshToken, requestPath, viewState]);
 
+  const forgetPagedMessages = useCallback(() => {
+    if (pagedMessageCount === 0) {
+      return;
+    }
+
+    messagePageRequestGenerationRef.current += 1;
+    setMessagesState((current) => {
+      if (current.items.length <= current.baseItems.length) {
+        return current;
+      }
+
+      return {
+        ...current,
+        hasMore: current.baseHasMore,
+        items: current.baseItems,
+        loadingMore: false,
+        nextCursor: current.baseCursor ?? null,
+      };
+    });
+  }, [pagedMessageCount]);
+
   const loadMore = useCallback(() => {
     if (messagesState.loading || messagesState.loadingMore || !messagesState.hasMore || !messagesState.nextCursor) {
       return;
     }
 
+    const requestGeneration = messagePageRequestGenerationRef.current;
     setMessagesState((current) => ({
       ...current,
       loadingMore: true,
@@ -4155,6 +4262,10 @@ function IterationMessagePanel({
       })
     )
       .then((data) => {
+        if (messagePageRequestGenerationRef.current !== requestGeneration) {
+          return;
+        }
+
         setMessagesState((current) => ({
           ...current,
           hasMore: data.page.hasMore,
@@ -4165,6 +4276,10 @@ function IterationMessagePanel({
         }));
       })
       .catch((error) => {
+        if (messagePageRequestGenerationRef.current !== requestGeneration) {
+          return;
+        }
+
         setMessagesState((current) => ({
           ...current,
           error: error instanceof Error ? error.message : "Unable to load more messages.",
@@ -4236,6 +4351,11 @@ function IterationMessagePanel({
             loadingMore={messagesState.loadingMore}
             noun="message"
             onLoadMore={loadMore}
+            onScroll={(event) => {
+              if (shouldForgetPagedIterationMessages(event.currentTarget.scrollTop, pagedMessageCount)) {
+                forgetPagedMessages();
+              }
+            }}
             showLoadedCount={false}
           >
             <IterationMessageList messages={visibleMessages} />
@@ -4430,9 +4550,9 @@ type WorkerTimelineItem = {
   tone: "danger" | "info" | "neutral" | "success" | "warning";
 };
 
-type WorkerTimelineFilterKind = "failures" | "system" | "user";
-type WorkerLogFilterLevel = "Critical" | "Debug" | "Error" | "Information" | "Trace" | "Warning";
-type WorkerSortDirection = "asc" | "desc";
+export type WorkerTimelineFilterKind = "failures" | "system" | "user";
+export type WorkerLogFilterLevel = "Critical" | "Debug" | "Error" | "Information" | "Trace" | "Warning";
+export type WorkerSortDirection = "asc" | "desc";
 type WorkerOverviewPageLoadState = {
   error?: string;
   hasMore: boolean;
@@ -4440,8 +4560,14 @@ type WorkerOverviewPageLoadState = {
   nextCursor?: string | null;
 };
 
-const workerOverviewActivityPageSize = 50;
-const iterationMessagePanelPageSize = 50;
+const workerLogActivityPageSize = 50;
+const workerTimelineActivityPageSize = 25;
+const workerOverviewInitialActivityPageSize = workerTimelineActivityPageSize;
+const iterationMessagePanelPageSize = 25;
+const panelForgetPagedItemsScrollTop = 160;
+const workerTimelineForgetPushedItemsIntervalMs = 5_000;
+const workerTimelineForgetPushedItemsThreshold = workerTimelineActivityPageSize * 2;
+const workerTimelineRetainedRealtimeItemCount = workerTimelineActivityPageSize;
 const iterationMessageSeverityLabels = ["Critical", "Error", "Warning", "Information", "Debug", "Trace"] as const;
 const workerLogFilterLevels: WorkerLogFilterLevel[] = [
   "Critical",
@@ -4483,18 +4609,21 @@ type WorkerTimelineRow =
     item: WorkerTimelineItem;
   };
 
-function WorkerTimelinePanel({
+const WorkerTimelinePanel = memo(function WorkerTimelinePanel({
   error,
   hasMore,
   items,
   isLoading,
   isLoadingMore,
-  now,
   onClearFilters,
   onClose,
+  onForgetPagedItems,
+  onForgetPushedItems,
   onFocusFilter,
   onLoadMore,
   onOpenIteration,
+  pagedItemCount,
+  pushedItemCount,
   onSetFilterSelected,
   onToggleSortDirection,
   onViewStateChange,
@@ -4507,12 +4636,15 @@ function WorkerTimelinePanel({
   items: WorkerTimelineItem[];
   isLoading: boolean;
   isLoadingMore: boolean;
-  now: number;
   onClearFilters: () => void;
   onClose: () => void;
+  onForgetPagedItems: () => void;
+  onForgetPushedItems: () => void;
   onFocusFilter: (filterKind: WorkerTimelineFilterKind) => void;
   onLoadMore: () => void;
   onOpenIteration: (sequence: number) => void;
+  pagedItemCount: number;
+  pushedItemCount: number;
   onSetFilterSelected: (filterKind: WorkerTimelineFilterKind, selected: boolean) => void;
   onToggleSortDirection: () => void;
   onViewStateChange: (shape: WorkComponentShape) => void;
@@ -4523,7 +4655,11 @@ function WorkerTimelinePanel({
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const rowRefs = useRef(new Map<string, HTMLDivElement>());
   const scrollAnchorRef = useRef<{ key: string; top: number } | null>(null);
+  const onForgetPushedItemsRef = useRef(onForgetPushedItems);
+  const pushedItemCountRef = useRef(pushedItemCount);
+  const sortDirectionRef = useRef(sortDirection);
   const [isolateOnNextFilterSelection, setIsolateOnNextFilterSelection] = useState(false);
+  const now = useLiveRelativeTimeNow();
   const normalizedSelectedFilters = useMemo(
     () => selectedFilters ?? workerTimelineFilterKinds,
     [selectedFilters]
@@ -4549,6 +4685,41 @@ function WorkerTimelinePanel({
     () => createTimelineRows(visibleItems),
     [visibleItems]
   );
+
+  useEffect(() => {
+    onForgetPushedItemsRef.current = onForgetPushedItems;
+  }, [onForgetPushedItems]);
+
+  useEffect(() => {
+    pushedItemCountRef.current = pushedItemCount;
+  }, [pushedItemCount]);
+
+  useEffect(() => {
+    sortDirectionRef.current = sortDirection;
+  }, [sortDirection]);
+
+  useEffect(() => {
+    const interval = window.setInterval(() => {
+      const viewport = scrollRef.current;
+      if (!viewport) {
+        return;
+      }
+
+      if (
+        shouldForgetPushedWorkerTimelineItems(
+          viewport.scrollTop,
+          pushedItemCountRef.current,
+          sortDirectionRef.current
+        )
+      ) {
+        onForgetPushedItemsRef.current();
+      }
+    }, workerTimelineForgetPushedItemsIntervalMs);
+
+    return () => {
+      window.clearInterval(interval);
+    };
+  }, []);
 
   useLayoutEffect(() => {
     const container = scrollRef.current;
@@ -4634,11 +4805,18 @@ function WorkerTimelinePanel({
             noun="timeline event"
             onLoadMore={onLoadMore}
             onScroll={(event) => {
+              const viewport = event.currentTarget;
               scrollAnchorRef.current = captureTimelineScrollAnchor(
                 visibleRows,
-                event.currentTarget,
+                viewport,
                 rowRefs.current
               );
+              if (shouldForgetPagedWorkerTimelineItems(viewport.scrollTop, pagedItemCount)) {
+                onForgetPagedItems();
+              }
+              if (shouldForgetPushedWorkerTimelineItems(viewport.scrollTop, pushedItemCount, sortDirection)) {
+                onForgetPushedItems();
+              }
             }}
             showLoadedCount={false}
             viewportRef={scrollRef}
@@ -4792,7 +4970,7 @@ function WorkerTimelinePanel({
       </section>
     </PanelShell>
   );
-}
+});
 
 function WorkerTimelineFilterContent({
   onClearFilters,
@@ -4895,12 +5073,8 @@ function IterationDurationGraph({
       .filter((point): point is NonNullable<typeof point> => point !== null),
     [iterations, now]
   );
-  const maxDuration = useMemo(
-    () => points.reduce((max, point) => Math.max(max, point.durationMs), 0),
-    [points]
-  );
-  const minDuration = useMemo(
-    () => points.reduce((min, point) => Math.min(min, point.durationMs), Number.POSITIVE_INFINITY),
+  const graphScale = useMemo(
+    () => createIterationDurationGraphScale(points),
     [points]
   );
   const lastPointKey = points[points.length - 1]?.sequence ?? null;
@@ -4908,19 +5082,13 @@ function IterationDurationGraph({
     () => Math.max(points.length * 14, 0),
     [points.length]
   );
-  const graphLowerBound = useMemo(
-    () => maxDuration > 0 && Number.isFinite(minDuration) && minDuration / maxDuration >= 0.6
-      ? minDuration
-      : 0,
-    [maxDuration, minDuration]
-  );
   const maxLabel = useMemo(
-    () => formatMillisecondsCompact(maxDuration),
-    [maxDuration]
+    () => formatMillisecondsCompact(graphScale.maxDuration),
+    [graphScale.maxDuration]
   );
   const minLabel = useMemo(
-    () => formatMillisecondsCompact(graphLowerBound),
-    [graphLowerBound]
+    () => formatMillisecondsCompact(graphScale.lowerBound),
+    [graphScale.lowerBound]
   );
   const oldestTimeLabel = useMemo(
     () => formatTimeOfDay(points[0]?.at),
@@ -4956,13 +5124,7 @@ function IterationDurationGraph({
             style={{ minWidth: `${trackMinWidth}px` }}
           >
             {points.map((point) => {
-              const scaledRange = Math.max(1, maxDuration - graphLowerBound);
-              const normalizedHeight = maxDuration > 0
-                ? Math.max(0, (point.durationMs - graphLowerBound) / scaledRange)
-                : 0;
-              const height = maxDuration > 0
-                ? Math.max(10, Math.round(normalizedHeight * 56))
-                : 10;
+              const height = getIterationDurationGraphBarHeight(point, graphScale);
               const isOpenable = point.isFinal;
               const label = `${formatMillisecondsCompact(point.durationMs)} (${formatIterationTimelineStatus(point.status)})`;
 
@@ -5019,6 +5181,49 @@ function IterationDurationGraph({
       </div>
     </div>
   );
+}
+
+export type IterationDurationGraphScalePoint = {
+  durationMs: number;
+  isFinal: boolean;
+};
+
+export type IterationDurationGraphScale = {
+  lowerBound: number;
+  maxDuration: number;
+};
+
+export function createIterationDurationGraphScale(points: readonly IterationDurationGraphScalePoint[]): IterationDurationGraphScale {
+  const finalPoints = points.filter((point) => point.isFinal);
+  const scalePoints = finalPoints.length > 0 ? finalPoints : points;
+  const maxDuration = scalePoints.reduce((max, point) => Math.max(max, point.durationMs), 0);
+  const minDuration = scalePoints.reduce(
+    (min, point) => Math.min(min, point.durationMs),
+    Number.POSITIVE_INFINITY
+  );
+  const lowerBound = maxDuration > 0 && Number.isFinite(minDuration) && minDuration / maxDuration >= 0.6
+    ? minDuration
+    : 0;
+
+  return {
+    lowerBound,
+    maxDuration,
+  };
+}
+
+export function getIterationDurationGraphBarHeight(
+  point: IterationDurationGraphScalePoint,
+  scale: IterationDurationGraphScale
+) {
+  const lowerBound = point.isFinal ? scale.lowerBound : 0;
+  const scaledRange = Math.max(1, scale.maxDuration - lowerBound);
+  const normalizedHeight = scale.maxDuration > 0
+    ? Math.max(0, Math.min(1, (point.durationMs - lowerBound) / scaledRange))
+    : 0;
+
+  return scale.maxDuration > 0
+    ? Math.max(10, Math.round(normalizedHeight * 56))
+    : 10;
 }
 
 function WorkerLogPanel({
@@ -5410,20 +5615,42 @@ function WorkerLogStreamCard({
     }
 
     const step = Math.min(count, windowedEntries.length);
+    const nextWindowStart = Math.min(windowStart + step, maxWindowStart);
+    const actualStep = nextWindowStart - windowStart;
+    if (actualStep <= 0) {
+      return;
+    }
+
     pendingScrollAdjustmentRef.current += windowedEntries
-      .slice(0, step)
+      .slice(0, actualStep)
       .reduce((sum, entry) => sum + (rowHeightsRef.current.get(entry.id) ?? 18), 0);
-    setWindowStart((current) => Math.min(current + step, maxWindowStart));
-  }, [maxWindowStart, windowedEntries]);
+    setWindowStart(nextWindowStart);
+  }, [maxWindowStart, windowedEntries, windowStart]);
 
   useEffect(() => {
-    setWindowStart(0);
+    let canceled = false;
+    queueMicrotask(() => {
+      if (!canceled) {
+        setWindowStart(0);
+      }
+    });
     pendingOlderPageAdvanceLengthRef.current = null;
     pendingScrollAdjustmentRef.current = 0;
+    return () => {
+      canceled = true;
+    };
   }, [isPaused, sortDirection]);
 
   useEffect(() => {
-    setWindowStart((current) => Math.min(current, maxWindowStart));
+    let canceled = false;
+    queueMicrotask(() => {
+      if (!canceled) {
+        setWindowStart((current) => Math.min(current, maxWindowStart));
+      }
+    });
+    return () => {
+      canceled = true;
+    };
   }, [maxWindowStart]);
 
   useEffect(() => {
@@ -5434,14 +5661,19 @@ function WorkerLogStreamCard({
 
     if (visibleEntries.length > previousLength) {
       pendingOlderPageAdvanceLengthRef.current = null;
-      advanceWindow(Math.min(workerOverviewActivityPageSize, visibleEntries.length - previousLength));
+      const advanceCount = getWorkerLogServerPageWindowAdvanceCount(
+        previousLength,
+        visibleEntries.length,
+        windowStart
+      );
+      advanceWindow(advanceCount);
       return;
     }
 
     if (!isLoadingMore && visibleEntries.length <= previousLength) {
       pendingOlderPageAdvanceLengthRef.current = null;
     }
-  }, [advanceWindow, isLoadingMore, visibleEntries.length]);
+  }, [advanceWindow, isLoadingMore, visibleEntries.length, windowStart]);
 
   useLayoutEffect(() => {
     const scrollAdjustment = pendingScrollAdjustmentRef.current;
@@ -5462,7 +5694,7 @@ function WorkerLogStreamCard({
   const handleLoadMore = useCallback(() => {
     if (localHasMore) {
       advanceWindow(Math.min(
-        workerOverviewActivityPageSize,
+        workerLogActivityPageSize,
         visibleEntries.length - (windowStart + maxWorkerLogPanelEntries)
       ));
       return;
@@ -5478,7 +5710,7 @@ function WorkerLogStreamCard({
 
   if (viewState === "compact") {
     return (
-      <section className="flex h-full min-h-0 flex-col rounded-xl border bg-muted/10 p-4">
+      <section className={getWorkerLogStreamCardClassName(viewState)}>
         {connectionError ? (
           <div className="mb-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-amber-900 text-sm dark:text-amber-100">
             {connectionError}
@@ -5489,13 +5721,7 @@ function WorkerLogStreamCard({
   }
 
   return (
-    <section
-      className={cn(
-        "flex h-full min-h-0 flex-col rounded-xl border bg-muted/10 p-4",
-        viewState === "standard" && "min-h-[24rem] max-h-[70vh]",
-        viewState === "detailed" && "max-h-[calc(100svh-11rem)]"
-      )}
-    >
+    <section className={getWorkerLogStreamCardClassName(viewState)}>
       <div className="mb-3 flex flex-wrap items-center justify-end gap-2">
         <Badge className="border-slate-500/30 bg-slate-500/10 text-slate-700 dark:text-slate-200" variant="outline">
           {windowedEntries.length} loaded
@@ -5513,7 +5739,7 @@ function WorkerLogStreamCard({
       ) : null}
       <PanelScrollViewport
         autoLoadMore={false}
-        className="rounded-xl border border-slate-800 bg-slate-950 text-slate-100 shadow-inner"
+        className={getWorkerLogStreamViewportClassName(viewState)}
         footerClassName="border-slate-800 text-slate-400"
         hasMore={effectiveHasMore}
         loadedCount={windowedEntries.length}
@@ -5601,6 +5827,43 @@ function WorkerLogStreamCard({
       </PanelScrollViewport>
     </section>
   );
+}
+
+export function getWorkerLogStreamCardClassName(viewState: WorkComponentShape) {
+  return cn(
+    "flex h-full min-h-0 flex-col rounded-xl border bg-muted/10 p-4",
+    viewState === "standard" && "min-h-[24rem] max-h-[70vh]",
+    viewState === "detailed" && "min-h-[24rem] max-h-[calc(100svh-11rem)]"
+  );
+}
+
+export function getWorkerLogStreamViewportClassName(viewState: WorkComponentShape) {
+  return cn(
+    "rounded-xl border border-slate-800 bg-slate-950 text-slate-100 shadow-inner",
+    viewState === "standard" && "max-h-[36rem]",
+    viewState === "detailed" && "max-h-[42rem]"
+  );
+}
+
+export function getWorkerLogServerPageWindowAdvanceCount(
+  previousLength: number,
+  nextLength: number,
+  windowStart: number,
+  pageSize = workerLogActivityPageSize,
+  windowLimit = maxWorkerLogPanelEntries
+) {
+  const appendedCount = nextLength - previousLength;
+  if (appendedCount <= 0) {
+    return 0;
+  }
+
+  const nextMaxWindowStart = Math.max(0, nextLength - windowLimit);
+  const availableAdvance = nextMaxWindowStart - windowStart;
+  if (availableAdvance <= 0) {
+    return 0;
+  }
+
+  return Math.min(pageSize, appendedCount, availableAdvance);
 }
 
 function WorkerFailureBanner({
@@ -5883,13 +6146,13 @@ function InlineFact({ label, value }: { label: string; value: string }) {
 
 function EmptyListState({ message }: { message: string }) {
   return (
-    <div className="rounded-lg border border-dashed p-4 text-muted-foreground text-sm">
+    <ConsoleEmptyState className="text-left" padding="compact">
       {message}
-    </div>
+    </ConsoleEmptyState>
   );
 }
 
-function describeWaitingTimelineItem(
+export function describeWaitingTimelineItem(
   worker: Pick<WorkerSummary, "nextRunAt" | "retryAttempt" | "stateChangedAt" | "updatedAt">,
   now: number,
   mode: "recurrence" | "retry"
@@ -5908,7 +6171,7 @@ function describeWaitingTimelineItem(
     : `This worker has been waiting for the next recurrence for ${elapsed}.`;
 }
 
-function formatPendingRetryText(
+export function formatPendingRetryText(
   retryPending: NonNullable<WorkerFailureDetails["retryPending"]>,
   now?: number
 ) {
@@ -5921,7 +6184,7 @@ function formatPendingRetryText(
   return `${retryLabel} is pending.`;
 }
 
-function formatFutureRelativeTime(value: string, now: number) {
+export function formatFutureRelativeTime(value: string, now: number) {
   const timestamp = Date.parse(value);
   if (Number.isFinite(timestamp) && timestamp <= now) {
     return "0.00s";
@@ -5931,7 +6194,7 @@ function formatFutureRelativeTime(value: string, now: number) {
   return relative.startsWith("in ") ? relative.slice(3) : "0.00s";
 }
 
-function formatWorkerStatusTiming(worker: WorkerSnapshot, now: number) {
+export function formatWorkerStatusTiming(worker: WorkerSnapshot, now: number) {
   switch (worker.state) {
     case "Running":
     case "Failed":
@@ -5946,7 +6209,7 @@ function formatWorkerStatusTiming(worker: WorkerSnapshot, now: number) {
   }
 }
 
-function renderTimelineItemTitle(item: WorkerTimelineItem, now: number) {
+export function renderTimelineItemTitle(item: WorkerTimelineItem, now: number) {
   if (item.kind === "iteration" &&
     item.iterationStatus === "Failed" &&
     item.sequence !== undefined &&
@@ -5990,7 +6253,7 @@ function renderTimelineItemTitle(item: WorkerTimelineItem, now: number) {
   return item.title;
 }
 
-function trimIterationTitlePrefix(title: string, sequence: number) {
+export function trimIterationTitlePrefix(title: string, sequence: number) {
   const prefix = `Iteration #${sequence}`;
   if (!title.startsWith(prefix)) {
     return title;
@@ -6000,12 +6263,12 @@ function trimIterationTitlePrefix(title: string, sequence: number) {
   return remainder.length > 0 ? remainder : "Iteration";
 }
 
-function itemDescriptionDurationLabel(item: WorkerTimelineItem) {
+export function itemDescriptionDurationLabel(item: WorkerTimelineItem) {
   const match = item.title.match(/after (.+)$/i);
   return match?.[1] ?? null;
 }
 
-function getRetryOriginIterationSequence(
+export function getRetryOriginIterationSequence(
   sequence?: number,
   attemptCount?: number | null) {
   if (sequence === null ||
@@ -6020,7 +6283,7 @@ function getRetryOriginIterationSequence(
   return originSequence > 0 ? originSequence : null;
 }
 
-function renderTimelineItemDescription(item: WorkerTimelineItem, now: number) {
+export function renderTimelineItemDescription(item: WorkerTimelineItem, now: number) {
   if (item.liveText?.kind === "state") {
     return describeWaitingTimelineItem(
       {
@@ -6037,7 +6300,7 @@ function renderTimelineItemDescription(item: WorkerTimelineItem, now: number) {
   return item.description;
 }
 
-function shouldRenderTimelineDescription(
+export function shouldRenderTimelineDescription(
   item: WorkerTimelineItem,
   title: string,
   description: string
@@ -6056,7 +6319,7 @@ function shouldRenderTimelineDescription(
     item.attemptCount > 1;
 }
 
-function renderTimelineItemMeta(item: WorkerTimelineItem, now: number) {
+export function renderTimelineItemMeta(item: WorkerTimelineItem, now: number) {
   if (item.liveText?.kind === "state") {
     return item.liveText.nextRunAt
       ? formatFutureRelativeTime(item.liveText.nextRunAt, now)
@@ -6070,7 +6333,7 @@ function renderTimelineItemMeta(item: WorkerTimelineItem, now: number) {
   return formatCompactTimelineRelativeTime(item.at, now);
 }
 
-function createTimelineRows(items: WorkerTimelineItem[]): WorkerTimelineRow[] {
+export function createTimelineRows(items: WorkerTimelineItem[]): WorkerTimelineRow[] {
   const rows: WorkerTimelineRow[] = [];
 
   for (let index = 0; index < items.length; index++) {
@@ -6096,12 +6359,48 @@ function createTimelineRows(items: WorkerTimelineItem[]): WorkerTimelineRow[] {
   return rows;
 }
 
-function shouldShowTimelineGap(currentItem: WorkerTimelineItem, nextItem: WorkerTimelineItem) {
+export function shouldShowTimelineGap(currentItem: WorkerTimelineItem, nextItem: WorkerTimelineItem) {
   return Boolean(currentItem && nextItem) &&
     !(
     isRecurrenceTimelineWaitItem(currentItem) &&
     nextItem.kind === "iteration"
     );
+}
+
+export function shouldForgetPagedWorkerTimelineItems(
+  scrollTop: number,
+  pagedItemCount: number,
+  threshold = panelForgetPagedItemsScrollTop
+) {
+  return shouldForgetPagedPanelItems(scrollTop, pagedItemCount, threshold);
+}
+
+export function shouldForgetPagedIterationMessages(
+  scrollTop: number,
+  pagedMessageCount: number,
+  threshold = panelForgetPagedItemsScrollTop
+) {
+  return shouldForgetPagedPanelItems(scrollTop, pagedMessageCount, threshold);
+}
+
+export function shouldForgetPagedPanelItems(
+  scrollTop: number,
+  pagedItemCount: number,
+  threshold = panelForgetPagedItemsScrollTop
+) {
+  return pagedItemCount > 0 && scrollTop <= threshold;
+}
+
+export function shouldForgetPushedWorkerTimelineItems(
+  scrollTop: number,
+  pushedItemCount: number,
+  sortDirection: WorkerSortDirection,
+  threshold = panelForgetPagedItemsScrollTop,
+  itemThreshold = workerTimelineForgetPushedItemsThreshold
+) {
+  return sortDirection === "desc" &&
+    pushedItemCount > itemThreshold &&
+    scrollTop <= threshold;
 }
 
 function captureTimelineScrollAnchor(
@@ -6138,7 +6437,7 @@ function captureTimelineScrollAnchor(
   return fallbackAnchor;
 }
 
-function isStableTimelineAnchorRow(row: WorkerTimelineRow) {
+export function isStableTimelineAnchorRow(row: WorkerTimelineRow) {
   if (row.kind !== "item") {
     return false;
   }
@@ -6150,12 +6449,12 @@ function isStableTimelineAnchorRow(row: WorkerTimelineRow) {
   return !row.item.liveText;
 }
 
-function isLiveTimelineGap(item: WorkerTimelineItem) {
+export function isLiveTimelineGap(item: WorkerTimelineItem) {
   return item.liveText?.kind === "state" ||
     (item.liveText?.kind === "iteration" && item.liveText.status === "Executing");
 }
 
-function formatIterationTimelineStatus(status: WorkCompletionStatus) {
+export function formatIterationTimelineStatus(status: WorkCompletionStatus) {
   switch (status) {
     case "Completed":
       return "completed";
@@ -6174,7 +6473,7 @@ function formatIterationTimelineStatus(status: WorkCompletionStatus) {
   }
 }
 
-function getChronologicalIterations(iterations?: WorkerIterationSnapshot[] | null) {
+export function getChronologicalIterations(iterations?: WorkerIterationSnapshot[] | null) {
   return [...(iterations ?? [])]
     .sort((left, right) => {
       if (left.sequence !== right.sequence) {
@@ -6185,7 +6484,7 @@ function getChronologicalIterations(iterations?: WorkerIterationSnapshot[] | nul
     });
 }
 
-function parseTimelineTimestamp(value: string) {
+export function parseTimelineTimestamp(value: string) {
   const timestamp = Date.parse(value);
   return Number.isFinite(timestamp) ? timestamp : 0;
 }
@@ -6264,18 +6563,6 @@ function workerTimelineFilterTone(filterKind: WorkerTimelineFilterKind) {
   }
 }
 
-function getIterationFailureDetails(iteration: WorkerIterationSnapshot): WorkerFailureDetails | null {
-  if (iteration.status !== "Failed") {
-    return null;
-  }
-
-  return resolveWorkerFailureDetails(
-    iteration.messages,
-    iteration.logs,
-    "The retained iteration ended in failure."
-  );
-}
-
 function createWorkerFailureDetailsFromIterationFailure(
   failure: WorkerIterationFailure
 ): WorkerFailureDetails {
@@ -6290,79 +6577,7 @@ function createWorkerFailureDetailsFromIterationFailure(
   };
 }
 
-function resolveWorkerFailureDetails(
-  messages: WorkMessage[] | null | undefined,
-  logs: WorkerLogEntry[] | null | undefined,
-  fallbackMessage: string
-): WorkerFailureDetails {
-  const errorMessage = getErrorWorkMessages(messages)[0];
-  return resolveFailureDetailsFromMessage(errorMessage, logs, fallbackMessage);
-}
-
-function resolveFailureDetailsFromMessage(
-  errorMessage: WorkMessage | undefined,
-  logs: WorkerLogEntry[] | null | undefined,
-  fallbackMessage: string
-): WorkerFailureDetails {
-  const metadata = getWorkMessageMetadata(errorMessage);
-  const code = errorMessage?.code?.trim() || undefined;
-  const declaredByWork = readMessageMetadataString(metadata, "failureSource") === "executionContext";
-  const target = errorMessage?.target?.trim() || undefined;
-  const exceptionType = formatExceptionTypeName(readMessageMetadataString(metadata, "exceptionType"));
-  const exceptionMessage = sanitizeWorkerFailureText(
-    readMessageMetadataString(metadata, "exceptionMessage") || errorMessage?.text
-  );
-  const stackTrace = readMessageMetadataString(metadata, "exceptionStackTrace");
-  const innerExceptions = readInnerExceptions(metadata);
-  if (exceptionType) {
-    return {
-      code,
-      declaredByWork,
-      exceptionType,
-      innerExceptions,
-      kind: "exception",
-      message: exceptionMessage || "The execution failed because an exception was raised.",
-      stackTrace: stackTrace?.trim() || undefined,
-      target,
-    };
-  }
-
-  const latestFailureLog = [...(logs ?? [])]
-    .reverse()
-    .find((entry) =>
-      normalizeLogLevel(entry.level) === "Error" ||
-      normalizeLogLevel(entry.level) === "Critical"
-    );
-  const fallbackExceptionType = formatExceptionTypeName(latestFailureLog?.exceptionType);
-  const fallbackExceptionMessage = sanitizeWorkerFailureText(latestFailureLog?.exceptionMessage);
-  if (fallbackExceptionType || fallbackExceptionMessage) {
-    return {
-      code,
-      declaredByWork,
-      exceptionType: fallbackExceptionType || undefined,
-      kind: fallbackExceptionType ? "exception" : "failure",
-      message: fallbackExceptionMessage || fallbackMessage,
-      target,
-    };
-  }
-
-  return {
-    code,
-    declaredByWork,
-    kind: "failure",
-    message: sanitizeWorkerFailureText(errorMessage?.text) || fallbackMessage,
-    target,
-  };
-}
-
-function getErrorWorkMessages(messages?: WorkMessage[] | null) {
-  return (messages ?? []).filter((message) => {
-    const severity = normalizeMessageSeverity(message.severity);
-    return severity === "error" || severity === "critical";
-  });
-}
-
-function getOrderedMessageSeverities(summary: ReturnType<typeof summarizeWorkMessages>) {
+function getOrderedMessageSeverities(summary: WorkIterationMessageSummary) {
   const available = new Set(
     iterationMessageSeverityLabels.filter((severity) => {
       switch (severity) {
@@ -6556,7 +6771,7 @@ const emptyAvailableWorkerActions: Record<WorkAction, boolean> = {
   Purge: false,
 };
 
-function getAvailableWorkerActions(state: WorkerState): Record<WorkAction, boolean> {
+export function getAvailableWorkerActions(state: WorkerState): Record<WorkAction, boolean> {
   if (state === "Pausing" || state === "Canceling" || state === "Interrupting") {
     return emptyAvailableWorkerActions;
   }
@@ -6570,7 +6785,7 @@ function getAvailableWorkerActions(state: WorkerState): Record<WorkAction, boole
   };
 }
 
-function formatCompactTimelineRelativeTime(value: string | null | undefined, now: number) {
+export function formatCompactTimelineRelativeTime(value: string | null | undefined, now: number) {
   if (!value) {
     return "-";
   }
@@ -6601,7 +6816,7 @@ function formatCompactTimelineRelativeTime(value: string | null | undefined, now
   return "99.99y";
 }
 
-function formatElapsedSince(value: string | null | undefined, now: number) {
+export function formatElapsedSince(value: string | null | undefined, now: number) {
   if (!value) {
     return "-";
   }
@@ -6614,12 +6829,12 @@ function formatElapsedSince(value: string | null | undefined, now: number) {
   return formatMillisecondsCompact(Math.max(0, now - timestamp));
 }
 
-function formatDurationLabel(value: string | null | undefined) {
+export function formatDurationLabel(value: string | null | undefined) {
   const milliseconds = parseDurationMilliseconds(value);
   return milliseconds === null ? (value?.trim() || "-") : formatMillisecondsCompact(milliseconds);
 }
 
-function getIterationDurationMilliseconds(iteration: WorkerIterationSnapshot, now: number) {
+export function getIterationDurationMilliseconds(iteration: WorkerIterationSnapshot, now: number) {
   if (iteration.status === "Executing" && iteration.startedAt) {
     return Math.max(0, now - parseTimelineTimestamp(iteration.startedAt));
   }
@@ -6640,7 +6855,7 @@ function getIterationDurationMilliseconds(iteration: WorkerIterationSnapshot, no
   return null;
 }
 
-function parseDurationMilliseconds(value: string | null | undefined) {
+export function parseDurationMilliseconds(value: string | null | undefined) {
   if (!value?.trim()) {
     return null;
   }
@@ -6664,7 +6879,7 @@ function parseDurationMilliseconds(value: string | null | undefined) {
   return Math.round(negative ? -totalMilliseconds : totalMilliseconds);
 }
 
-function formatMillisecondsCompact(value: number) {
+export function formatMillisecondsCompact(value: number) {
   const absolute = Math.abs(value);
   if (absolute < 10_000) {
     return `${(value / 1000).toFixed(2)}s`;
@@ -6751,11 +6966,11 @@ function iterationTimelineIcon(status: WorkCompletionStatus) {
   }
 }
 
-function normalizeMessageSeverity(severity: string) {
+export function normalizeMessageSeverity(severity: string) {
   return severity.trim().toLowerCase();
 }
 
-function normalizeMessageSeverityLabel(severity: string) {
+export function normalizeMessageSeverityLabel(severity: string) {
   switch (normalizeMessageSeverity(severity)) {
     case "critical":
       return "Critical";
@@ -6775,85 +6990,13 @@ function normalizeMessageSeverityLabel(severity: string) {
   }
 }
 
-function formatMessageSeverity(severity: string) {
+export function formatMessageSeverity(severity: string) {
   return normalizeMessageSeverityLabel(severity) === "Information"
     ? "Info"
     : normalizeMessageSeverityLabel(severity);
 }
 
-function getWorkMessageMetadata(message?: WorkMessage) {
-  return message?.metadata && typeof message.metadata === "object"
-    ? message.metadata
-    : null;
-}
-
-function readMessageMetadataString(
-  metadata: Record<string, unknown> | null,
-  key: string
-) {
-  const value = metadata?.[key];
-  return typeof value === "string" && value.trim()
-    ? value
-    : "";
-}
-
-function readInnerExceptions(metadata: Record<string, unknown> | null): WorkerFailureException[] {
-  const value = metadata?.innerExceptions;
-  if (!Array.isArray(value)) {
-    return [];
-  }
-
-  const exceptions: WorkerFailureException[] = [];
-
-  for (const entry of value) {
-    if (!entry || typeof entry !== "object") {
-      continue;
-    }
-
-    const record = entry as Record<string, unknown>;
-    const exceptionType = formatExceptionTypeName(readUnknownString(record.exceptionType));
-    const message = sanitizeWorkerFailureText(readUnknownString(record.exceptionMessage));
-    const stackTrace = readUnknownString(record.exceptionStackTrace).trim();
-    if (!exceptionType && !message && !stackTrace) {
-      continue;
-    }
-
-    exceptions.push({
-      exceptionType: exceptionType || undefined,
-      message: message || "Inner exception",
-      stackTrace: stackTrace || undefined,
-    });
-  }
-
-  return exceptions;
-}
-
-function readUnknownString(value: unknown) {
-  return typeof value === "string" ? value : "";
-}
-
-function formatExceptionTypeName(value?: string | null) {
-  if (!value?.trim()) {
-    return "";
-  }
-
-  const trimmed = value.trim();
-  const segments = trimmed.split(".");
-  return segments[segments.length - 1] ?? trimmed;
-}
-
-function sanitizeWorkerFailureText(value?: string | null) {
-  if (!value?.trim()) {
-    return "";
-  }
-
-  return value
-    .replace(/\s+after \d+ log entries?\.?$/i, ".")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-function getStackTraceLines(value?: string | null) {
+export function getStackTraceLines(value?: string | null) {
   return value
     ? value
       .split(/\r?\n/)
@@ -6862,7 +7005,7 @@ function getStackTraceLines(value?: string | null) {
     : [];
 }
 
-function createStackTraceDisplayEntries(
+export function createStackTraceDisplayEntries(
   lines: string[],
   hiddenKinds: StackFrameFilterKind[]
 ): StackTraceDisplayEntry[] {
@@ -6900,7 +7043,7 @@ function createStackTraceDisplayEntries(
   return entries;
 }
 
-function createCollapsedStackCounts(): Record<StackFrameFilterKind, number> {
+export function createCollapsedStackCounts(): Record<StackFrameFilterKind, number> {
   return {
     application: 0,
     library: 0,
@@ -6908,7 +7051,7 @@ function createCollapsedStackCounts(): Record<StackFrameFilterKind, number> {
   };
 }
 
-function formatCollapsedStackEntry(entry: Extract<StackTraceDisplayEntry, { type: "collapsed" }>) {
+export function formatCollapsedStackEntry(entry: Extract<StackTraceDisplayEntry, { type: "collapsed" }>) {
   const parts = [
     entry.counts.application > 0 ? `${entry.counts.application} app` : "",
     entry.counts.work > 0 ? `${entry.counts.work} workable` : "",
@@ -6918,7 +7061,7 @@ function formatCollapsedStackEntry(entry: Extract<StackTraceDisplayEntry, { type
   return `${entry.total} collapsed frame${entry.total === 1 ? "" : "s"}${parts.length > 0 ? `: ${parts.join(", ")}` : ""}`;
 }
 
-function classifyStackTraceLine(line: string) {
+export function classifyStackTraceLine(line: string) {
   const trimmed = line.trim();
   if (!trimmed.startsWith("at ")) {
     return "detail" as const;
@@ -6939,7 +7082,7 @@ function classifyStackTraceLine(line: string) {
   return "application" as const;
 }
 
-function stackFrameKindLabel(kind: StackFrameFilterKind) {
+export function stackFrameKindLabel(kind: StackFrameFilterKind) {
   switch (kind) {
     case "application":
       return "App";
@@ -6952,7 +7095,7 @@ function stackFrameKindLabel(kind: StackFrameFilterKind) {
   }
 }
 
-function stackFrameFilterTone(kind: StackFrameFilterKind, hidden: boolean) {
+export function stackFrameFilterTone(kind: StackFrameFilterKind, hidden: boolean) {
   const hiddenTone = "border-slate-700 bg-transparent text-slate-500";
   if (hidden) {
     return hiddenTone;
@@ -6970,7 +7113,7 @@ function stackFrameFilterTone(kind: StackFrameFilterKind, hidden: boolean) {
   }
 }
 
-function stackTraceLineTone(kind: "application" | "detail" | "library" | "work") {
+export function stackTraceLineTone(kind: "application" | "detail" | "library" | "work") {
   switch (kind) {
     case "application":
       return "border-emerald-500/20 bg-emerald-500/10 text-emerald-100";
@@ -6992,7 +7135,7 @@ function MetadataItem({ label, value }: { label: string; value: ReactNode }) {
   );
 }
 
-function createWorkerOverviewPath(
+export function createWorkerOverviewPath(
   workerId: string,
   options?: {
     activity?: Exclude<WorkWorkerOverviewActivity, "Auto">;
@@ -7011,7 +7154,7 @@ function createWorkerOverviewPath(
     : `workers/${workerId}/overview`;
 }
 
-function createWorkerOverviewLogsPath(
+export function createWorkerOverviewLogsPath(
   workerId: string,
   options?: {
     activityCursor?: string | null;
@@ -7027,7 +7170,7 @@ function createWorkerOverviewLogsPath(
     : `workers/${workerId}/overview/logs`;
 }
 
-function createWorkerOverviewTimelinePath(
+export function createWorkerOverviewTimelinePath(
   workerId: string,
   options?: {
     activityCursor?: string | null;
@@ -7042,7 +7185,7 @@ function createWorkerOverviewTimelinePath(
     : `workers/${workerId}/overview/timeline`;
 }
 
-function createWorkerOverviewActivityQuery(
+export function createWorkerOverviewActivityQuery(
   options?: {
     activity?: Exclude<WorkWorkerOverviewActivity, "Auto">;
     activityCursor?: string | null;
@@ -7086,35 +7229,35 @@ function createWorkerOverviewActivityQuery(
   return search.toString();
 }
 
-function serializeWorkerLogQuery(
+export function serializeWorkerLogQuery(
   selectedLevels: readonly WorkerLogFilterLevel[] | null,
   sortDirection: WorkerSortDirection
 ) {
   return `${sortDirection}:${(selectedLevels ?? workerLogFilterLevels).join(",")}`;
 }
 
-function serializeWorkerTimelineQuery(
+export function serializeWorkerTimelineQuery(
   selectedFilters: readonly WorkerTimelineFilterKind[] | null,
   sortDirection: WorkerSortDirection
 ) {
   return `${sortDirection}:${(selectedFilters ?? workerTimelineFilterKinds).join(",")}`;
 }
 
-function isDefaultWorkerLogQuery(
+export function isDefaultWorkerLogQuery(
   selectedLevels: readonly WorkerLogFilterLevel[] | null,
   sortDirection: WorkerSortDirection
 ) {
   return sortDirection === "desc" && selectedLevels === null;
 }
 
-function isDefaultWorkerTimelineQuery(
+export function isDefaultWorkerTimelineQuery(
   selectedFilters: readonly WorkerTimelineFilterKind[] | null,
   sortDirection: WorkerSortDirection
 ) {
   return sortDirection === "desc" && selectedFilters === null;
 }
 
-function normalizeSelectedLogLevelsForRequest(levels: WorkerLogFilterLevel[] | null) {
+export function normalizeSelectedLogLevelsForRequest(levels: WorkerLogFilterLevel[] | null) {
   if (!levels || levels.length === 0) {
     return levels;
   }
@@ -7123,7 +7266,7 @@ function normalizeSelectedLogLevelsForRequest(levels: WorkerLogFilterLevel[] | n
   return normalized.length === workerLogFilterLevels.length ? null : normalized;
 }
 
-function normalizeSelectedTimelineFiltersForRequest(filters: WorkerTimelineFilterKind[] | null) {
+export function normalizeSelectedTimelineFiltersForRequest(filters: WorkerTimelineFilterKind[] | null) {
   if (!filters || filters.length === 0) {
     return filters;
   }
@@ -7132,7 +7275,7 @@ function normalizeSelectedTimelineFiltersForRequest(filters: WorkerTimelineFilte
   return normalized.length === workerTimelineFilterKinds.length ? null : normalized;
 }
 
-function updateSelectedLogLevels(
+export function updateSelectedLogLevels(
   current: WorkerLogFilterLevel[] | null,
   level: WorkerLogFilterLevel,
   visible: boolean
@@ -7151,15 +7294,15 @@ function updateSelectedLogLevels(
   return normalizeSelectedLogLevelsForRequest([...activeLevels]);
 }
 
-function createSelectedLogLevelsForFocus(level: WorkerLogFilterLevel) {
+export function createSelectedLogLevelsForFocus(level: WorkerLogFilterLevel) {
   return [level] satisfies WorkerLogFilterLevel[];
 }
 
-function createSelectedTimelineFiltersForFocus(filterKind: WorkerTimelineFilterKind) {
+export function createSelectedTimelineFiltersForFocus(filterKind: WorkerTimelineFilterKind) {
   return [filterKind] satisfies WorkerTimelineFilterKind[];
 }
 
-function updateSelectedTimelineFilters(
+export function updateSelectedTimelineFilters(
   current: WorkerTimelineFilterKind[] | null,
   filterKind: WorkerTimelineFilterKind,
   selected: boolean
@@ -7178,7 +7321,7 @@ function updateSelectedTimelineFilters(
   return normalizeSelectedTimelineFiltersForRequest([...activeFilters]);
 }
 
-function mapTimelineFilterKindToServerCategory(filterKind: WorkerTimelineFilterKind) {
+export function mapTimelineFilterKindToServerCategory(filterKind: WorkerTimelineFilterKind) {
   switch (filterKind) {
     case "failures":
       return "Failure";
@@ -7270,19 +7413,20 @@ function createWorkerIterationSnapshotFromLandingRecentIteration(
   const matchedLatestIteration = latestIteration?.sequence === iteration.sequence
     ? latestIteration
     : null;
+  const source = matchedLatestIteration ?? iteration;
 
   return {
-    attemptCount: iteration.attemptCount,
-    completedAt: iteration.completedAt ?? undefined,
-    executionDuration: iteration.executionDuration ?? undefined,
-    isFinal: isFinalIterationStatus(iteration.status),
+    attemptCount: source.attemptCount,
+    completedAt: source.completedAt ?? undefined,
+    executionDuration: source.executionDuration ?? undefined,
+    isFinal: isFinalIterationStatus(source.status),
     logs: [],
     messages: [],
-    occurredAt: iteration.completedAt ?? iteration.startedAt,
+    occurredAt: source.completedAt ?? source.startedAt,
     output: matchedLatestIteration?.output ?? null,
-    sequence: iteration.sequence,
-    startedAt: iteration.startedAt,
-    status: iteration.status,
+    sequence: source.sequence,
+    startedAt: source.startedAt,
+    status: source.status,
   };
 }
 
@@ -7359,7 +7503,7 @@ function createWorkerTimelineItemFromLandingTimelineItem(
     badge: createTimelineBadgeFromLanding(item),
     description: createTimelineDescriptionFromLanding(item, failureDetails),
     failureDetails,
-    facts: createTimelineFactsFromLanding(item),
+    facts: createTimelineFactsFromLanding(),
     filterKind: createTimelineFilterKindFromLanding(item.category),
     icon: createTimelineIconFromLanding(item),
     id: item.id,
@@ -7672,7 +7816,7 @@ function createTimelineBadgeFromLanding(item: WorkWorkerOverviewTimelineItem) {
   return item.state ?? "State";
 }
 
-function createTimelineFactsFromLanding(_item: WorkWorkerOverviewTimelineItem) {
+function createTimelineFactsFromLanding() {
   return [];
 }
 
@@ -7726,7 +7870,7 @@ function formatLandingWorkerState(state: WorkerState) {
   return state.toLowerCase();
 }
 
-function isFinalIterationStatus(status: WorkCompletionStatus) {
+export function isFinalIterationStatus(status: WorkCompletionStatus) {
   return status === "Completed" ||
     status === "Failed" ||
     status === "Interrupted" ||
@@ -7735,20 +7879,20 @@ function isFinalIterationStatus(status: WorkCompletionStatus) {
     status === "NotFound";
 }
 
-function createDefaultWorkerHiddenPanels(showConfiguration = false) {
+export function createDefaultWorkerHiddenPanels(showConfiguration = false) {
   return showConfiguration
     ? new Set<WorkerDetailPanelId>()
     : new Set<WorkerDetailPanelId>(["workerConfiguration"]);
 }
 
-function createWorkerFocusedHiddenPanels(focusedPanelId: WorkerFocusedPanelId) {
+export function createWorkerFocusedHiddenPanels(focusedPanelId: WorkerFocusedPanelId) {
   return new Set<WorkerDetailPanelId>(
     ["workerConfiguration", "workerDuration", "workerLogs", "workerTimeline"]
       .filter((panelId): panelId is WorkerDetailPanelId => panelId !== focusedPanelId)
   );
 }
 
-function createIterationFocusedHiddenPanels(focusedPanelId: IterationFocusedPanelId) {
+export function createIterationFocusedHiddenPanels(focusedPanelId: IterationFocusedPanelId) {
   return new Set<IterationDetailPanelId>(
     ["iterationSummary", "iterationMessages", "iterationOutput", "iterationLogs"]
       .filter((panelId): panelId is IterationDetailPanelId => panelId !== focusedPanelId)
@@ -7783,7 +7927,7 @@ function applyWorkerOverviewRealtimeState(
   } satisfies WorkWorkerOverviewComponent;
 }
 
-function mergeWorkerOverviewRecentIterations(
+export function mergeWorkerOverviewRecentIterations(
   baseItems: readonly WorkWorkerOverviewRecentIteration[],
   nextItems: readonly WorkWorkerOverviewRecentIteration[]
 ) {
@@ -7793,7 +7937,8 @@ function mergeWorkerOverviewRecentIterations(
 
   const bySequence = new Map<number, WorkWorkerOverviewRecentIteration>();
   for (const item of [...baseItems, ...nextItems]) {
-    bySequence.set(item.sequence, item);
+    const current = bySequence.get(item.sequence);
+    bySequence.set(item.sequence, current ? getPreferredWorkerOverviewRecentIteration(current, item) : item);
   }
 
   return [...bySequence.values()]
@@ -7801,7 +7946,26 @@ function mergeWorkerOverviewRecentIterations(
     .slice(0, 25);
 }
 
-function mergeWorkerOverviewRealtimeEntries<T extends { id: string }>(
+export function getPreferredWorkerOverviewRecentIteration(
+  left: WorkWorkerOverviewRecentIteration,
+  right: WorkWorkerOverviewRecentIteration
+) {
+  const leftTime = parseTimelineTimestamp(left.completedAt ?? left.startedAt);
+  const rightTime = parseTimelineTimestamp(right.completedAt ?? right.startedAt);
+  if (leftTime !== rightTime) {
+    return rightTime > leftTime ? right : left;
+  }
+
+  const leftFinal = isFinalIterationStatus(left.status);
+  const rightFinal = isFinalIterationStatus(right.status);
+  if (leftFinal !== rightFinal) {
+    return rightFinal ? right : left;
+  }
+
+  return right;
+}
+
+export function mergeWorkerOverviewRealtimeEntries<T extends { id: string }>(
   current: readonly T[],
   next: readonly T[],
   sortDirection: WorkerSortDirection
@@ -7840,7 +8004,56 @@ function mergeWorkerOverviewRealtimeEntries<T extends { id: string }>(
   return merged;
 }
 
-function filterWorkerOverviewLogEntriesBySelectedLevels(
+export function retainLatestWorkerTimelineRealtimeItems(
+  items: readonly WorkWorkerOverviewTimelineItem[],
+  sortDirection: WorkerSortDirection,
+  maximum = workerTimelineRetainedRealtimeItemCount
+) {
+  const retainedCount = Math.max(0, maximum);
+  if (items.length <= retainedCount) {
+    return [...items];
+  }
+
+  const latestItems = sortWorkerOverviewTimelineItems(items, "desc").slice(0, retainedCount);
+  return sortWorkerOverviewTimelineItems(latestItems, sortDirection);
+}
+
+export function sortWorkerOverviewTimelineItems(
+  items: readonly WorkWorkerOverviewTimelineItem[],
+  sortDirection: WorkerSortDirection
+) {
+  return [...items].sort((left, right) => {
+    const comparison = compareWorkerOverviewTimelineItems(left, right);
+    return sortDirection === "asc" ? comparison : -comparison;
+  });
+}
+
+export function compareWorkerOverviewTimelineItems(
+  left: WorkWorkerOverviewTimelineItem,
+  right: WorkWorkerOverviewTimelineItem
+) {
+  const timestampDifference = parseTimelineTimestamp(left.at) - parseTimelineTimestamp(right.at);
+  if (timestampDifference !== 0) {
+    return timestampDifference;
+  }
+
+  const leftSequence = left.sequence ?? Number.MIN_SAFE_INTEGER;
+  const rightSequence = right.sequence ?? Number.MIN_SAFE_INTEGER;
+  const sequenceDifference = leftSequence - rightSequence;
+  if (sequenceDifference !== 0) {
+    return sequenceDifference;
+  }
+
+  const sortOrderDifference = createTimelineSortOrderFromLanding(left.kind) -
+    createTimelineSortOrderFromLanding(right.kind);
+  if (sortOrderDifference !== 0) {
+    return sortOrderDifference;
+  }
+
+  return left.id.localeCompare(right.id);
+}
+
+export function filterWorkerOverviewLogEntriesBySelectedLevels(
   entries: readonly WorkWorkerOverviewLogEntry[],
   selectedLevels: readonly WorkerLogFilterLevel[] | null
 ) {
@@ -7852,7 +8065,7 @@ function filterWorkerOverviewLogEntriesBySelectedLevels(
   return entries.filter((entry) => allowedLevels.has(normalizeLogLevel(entry.level) as WorkerLogFilterLevel));
 }
 
-function sortWorkerOverviewLogEntries(
+export function sortWorkerOverviewLogEntries(
   entries: readonly WorkWorkerOverviewLogEntry[],
   sortDirection: WorkerSortDirection
 ) {
@@ -7862,7 +8075,7 @@ function sortWorkerOverviewLogEntries(
   });
 }
 
-function capWorkerLogEntries<T extends { id: string; occurredAt: string }>(
+export function capWorkerLogEntries<T extends { id: string; occurredAt: string }>(
   entries: readonly T[],
   maximum: number
 ) {
@@ -7875,7 +8088,7 @@ function capWorkerLogEntries<T extends { id: string; occurredAt: string }>(
     .slice(0, maximum);
 }
 
-function mergeWorkerOverviewItemsById<T extends { id: string }>(
+export function mergeWorkerOverviewItemsById<T extends { id: string }>(
   baseItems: readonly T[],
   extraItems: readonly T[]
 ) {
@@ -7902,7 +8115,7 @@ function mergeWorkerOverviewItemsById<T extends { id: string }>(
   return merged;
 }
 
-function normalizeVisibleWorkerTimelineItems(
+export function normalizeVisibleWorkerTimelineItems(
   items: readonly WorkWorkerOverviewTimelineItem[],
   workerState: WorkerState | null
 ) {
@@ -7913,7 +8126,7 @@ function normalizeVisibleWorkerTimelineItems(
   return items.filter((item) => item.id !== "live-state:waiting");
 }
 
-function shouldRetainVisibleWorkerWaitingTile(
+export function shouldRetainVisibleWorkerWaitingTile(
   items: readonly WorkWorkerOverviewTimelineItem[],
   workerState: WorkerState | null
 ) {
@@ -7921,11 +8134,11 @@ function shouldRetainVisibleWorkerWaitingTile(
     items.every((item) => item.kind !== "Iteration" || item.iterationStatus !== "Executing");
 }
 
-function getWorkerTimelineWaitingPriority(item: WorkerTimelineItem) {
+export function getWorkerTimelineWaitingPriority(item: WorkerTimelineItem) {
   return item.id === "live-state:waiting" ? 1 : 0;
 }
 
-function summarizeWorkerLogEntries(entries: WorkerLogEntry[]) {
+export function summarizeWorkerLogEntries(entries: WorkerLogEntry[]) {
   return entries.reduce(
     (summary, entry) => {
       summary.total += 1;
@@ -7970,18 +8183,18 @@ function summarizeWorkerLogEntries(entries: WorkerLogEntry[]) {
   );
 }
 
-function sortWorkerLogEntries(entries: readonly WorkerLogEntry[], sortDirection: WorkerSortDirection) {
+export function sortWorkerLogEntries(entries: readonly WorkerLogEntry[], sortDirection: WorkerSortDirection) {
   return [...entries].sort((left, right) => {
     const comparison = compareWorkerLogEntries(left, right);
     return sortDirection === "desc" ? -comparison : comparison;
   });
 }
 
-function compareWorkerLogEntries(left: WorkerLogEntry, right: WorkerLogEntry) {
+export function compareWorkerLogEntries(left: WorkerLogEntry, right: WorkerLogEntry) {
   return compareLogLikeEntries(left, right);
 }
 
-function compareLogLikeEntries<T extends { id: string; occurredAt: string; sequence?: number | null; ordinal?: number | null }>(left: T, right: T) {
+export function compareLogLikeEntries<T extends { id: string; occurredAt: string; sequence?: number | null; ordinal?: number | null }>(left: T, right: T) {
   const timestampDifference = Date.parse(left.occurredAt) - Date.parse(right.occurredAt);
   if (timestampDifference !== 0) {
     return timestampDifference;
@@ -8008,88 +8221,17 @@ function isNearWorkerLogScrollBottom(element: HTMLElement) {
   return element.scrollHeight - element.clientHeight - element.scrollTop <= 96;
 }
 
-function summarizeWorkMessages(messages: WorkMessage[]) {
-  return messages.reduce(
-    (summary, message) => {
-      summary.total += 1;
-
-      switch (normalizeMessageSeverityLabel(message.severity)) {
-        case "Critical":
-          summary.critical += 1;
-          summary.errors += 1;
-          break;
-        case "Error":
-          summary.error += 1;
-          summary.errors += 1;
-          break;
-        case "Warning":
-          summary.warning += 1;
-          summary.warnings += 1;
-          break;
-        case "Information":
-          summary.information += 1;
-          break;
-        case "Debug":
-          summary.debug += 1;
-          break;
-        case "Trace":
-          summary.trace += 1;
-          break;
-      }
-
-      return summary;
-    },
-    {
-      critical: 0,
-      debug: 0,
-      error: 0,
-      errors: 0,
-      information: 0,
-      trace: 0,
-      total: 0,
-      warning: 0,
-      warnings: 0,
-    }
-  );
-}
-
 function getWorkerCreatedByLabel(worker: WorkerSnapshot) {
   return formatActionTimelineActorLabel(worker.origin) ??
     formatActionTimelineSourceLabel(worker.origin?.channel);
 }
 
-function StackedSkeleton({ count }: { count: number }) {
-  return (
-    <div className="space-y-3">
-      {Array.from({ length: count }).map((_, index) => (
-        <Skeleton className="h-10 w-full" key={index} />
-      ))}
-    </div>
-  );
+export function splitCategoryPath(category?: string | null) {
+  const segments = splitCatalogPath(category);
+  return segments.length > 0 ? segments : ["General"];
 }
 
-function normalizeScopeText(value: unknown) {
-  return typeof value === "string" ? value.trim() : "";
-}
-
-function splitCategoryPath(category?: string | null) {
-  return (category?.trim() || "General")
-    .split(":")
-    .map((segment) => segment.trim())
-    .filter(Boolean);
-}
-
-function splitCatalogPath(path: unknown) {
-  const value = normalizeScopeText(path);
-  return value
-    ? value
-        .split(":")
-        .map((segment) => segment.trim())
-        .filter(Boolean)
-    : [];
-}
-
-function startsWithCategoryPath(categorySegments: string[], pathSegments: string[]) {
+export function startsWithCategoryPath(categorySegments: string[], pathSegments: string[]) {
   return pathSegments.every((segment, index) =>
     segment.localeCompare(categorySegments[index] ?? "", undefined, {
       sensitivity: "accent",
@@ -8097,7 +8239,7 @@ function startsWithCategoryPath(categorySegments: string[], pathSegments: string
   );
 }
 
-function definitionMatchesCatalogScope(
+export function definitionMatchesCatalogScope(
   definition: WorkDefinition,
   scope: OverviewScope | null
 ) {
@@ -8121,7 +8263,7 @@ function definitionMatchesCatalogScope(
     : startsWithCategoryPath(categorySegments, scopeSegments);
 }
 
-function parseSchemaJsonValue(json?: string | null) {
+export function parseSchemaJsonValue(json?: string | null) {
   if (!json?.trim()) {
     return null;
   }
@@ -8133,7 +8275,7 @@ function parseSchemaJsonValue(json?: string | null) {
   }
 }
 
-function parseJsonText(value: string):
+export function parseJsonText(value: string):
   | { ok: true; value: unknown }
   | { error: string; ok: false } {
   if (!value.trim()) {
@@ -8150,7 +8292,7 @@ function parseJsonText(value: string):
   }
 }
 
-function parseQueueJson(value: string) {
+export function parseQueueJson(value: string) {
   if (!value.trim()) {
     return undefined;
   }
@@ -8162,7 +8304,7 @@ function parseQueueJson(value: string) {
   }
 }
 
-function parseOptionalObjectJson<T>(value: string, label: string): T | undefined {
+export function parseOptionalObjectJson<T>(value: string, label: string): T | undefined {
   const parsed = parseQueueJson(value);
 
   if (parsed === undefined) {
@@ -8180,7 +8322,7 @@ function parseOptionalObjectJson<T>(value: string, label: string): T | undefined
   return parsed as T;
 }
 
-function createEffectiveConfigurationOptions(
+export function createEffectiveConfigurationOptions(
   definition: WorkDefinition | null
 ): WorkerOptions {
   return {
@@ -8191,7 +8333,7 @@ function createEffectiveConfigurationOptions(
   };
 }
 
-function createWorkerConfigurationRequest(worker: WorkableHttpWorkerConfiguration): QueueWorkRequest {
+export function createWorkerConfigurationRequest(worker: WorkableHttpWorkerConfiguration): QueueWorkRequest {
   return {
     options: {
       profilingEnabled: worker.profilingEnabled,
@@ -8202,7 +8344,7 @@ function createWorkerConfigurationRequest(worker: WorkableHttpWorkerConfiguratio
   };
 }
 
-function createWorkerReconfiguration(request: QueueWorkRequest): WorkerReconfigurationRequest {
+export function createWorkerReconfiguration(request: QueueWorkRequest): WorkerReconfigurationRequest {
   const configuration = request.options?.configuration
     ? stripInvocationConfiguration(cloneConfiguration(request.options.configuration))
     : stripInvocationConfiguration(cloneConfiguration(defaultWorkConfiguration));
@@ -8218,7 +8360,7 @@ function createWorkerReconfiguration(request: QueueWorkRequest): WorkerReconfigu
   };
 }
 
-function createWorkerConfigurationDifferences(
+export function createWorkerConfigurationDifferences(
   currentRequest: QueueWorkRequest,
   defaultRequest: QueueWorkRequest,
   descriptor: QueueRequestSchemaDescriptor | null
@@ -8246,7 +8388,7 @@ function createWorkerConfigurationDifferences(
   );
 }
 
-function getValueAtPath(value: unknown, path: string): unknown {
+export function getValueAtPath(value: unknown, path: string): unknown {
   return path
     .split(".")
     .filter(Boolean)
@@ -8259,11 +8401,11 @@ function getValueAtPath(value: unknown, path: string): unknown {
     }, value);
 }
 
-function configurationValuesEqual(left: unknown, right: unknown) {
+export function configurationValuesEqual(left: unknown, right: unknown) {
   return JSON.stringify(left ?? null) === JSON.stringify(right ?? null);
 }
 
-function formatConfigurationValue(value: unknown) {
+export function formatConfigurationValue(value: unknown) {
   if (value === undefined || value === null) {
     return "null";
   }
@@ -8279,7 +8421,7 @@ function formatConfigurationValue(value: unknown) {
   return JSON.stringify(value);
 }
 
-function createQueueDialogRequest(
+export function createQueueDialogRequest(
   definition: WorkDefinition | null,
   initialRequest?: QueueWorkRequest | null
 ): QueueWorkRequest {
@@ -8298,14 +8440,14 @@ function createQueueDialogRequest(
   }));
 }
 
-function createDefaultQueueRequest(definition: WorkDefinition | null): QueueWorkRequest {
+export function createDefaultQueueRequest(definition: WorkDefinition | null): QueueWorkRequest {
   return {
     completion: "ReturnAfterAccepted",
     options: createEffectiveConfigurationOptions(definition),
   };
 }
 
-function createCopiedWorkerQueueRequest(
+export function createCopiedWorkerQueueRequest(
   worker: Pick<WorkableHttpWorkerConfiguration, "configuration" | "profilingEnabled" | "subjectId" | "concurrencyKey">,
   configurationOverride?: QueueWorkRequest | null
 ): QueueWorkRequest {
@@ -8326,7 +8468,7 @@ function createCopiedWorkerQueueRequest(
   });
 }
 
-function cloneQueueWorkRequest(request: QueueWorkRequest): QueueWorkRequest {
+export function cloneQueueWorkRequest(request: QueueWorkRequest): QueueWorkRequest {
   return {
     ...request,
     concurrencyKey: cloneTypedValue(request.concurrencyKey),
@@ -8337,7 +8479,7 @@ function cloneQueueWorkRequest(request: QueueWorkRequest): QueueWorkRequest {
   };
 }
 
-function cloneWorkerOptions(options?: WorkerOptions | null): WorkerOptions | undefined {
+export function cloneWorkerOptions(options?: WorkerOptions | null): WorkerOptions | undefined {
   if (!options) {
     return undefined;
   }
@@ -8350,7 +8492,7 @@ function cloneWorkerOptions(options?: WorkerOptions | null): WorkerOptions | und
   };
 }
 
-function cloneTypedValue<T extends { type: string; value: string } | null | undefined>(value: T): T {
+export function cloneTypedValue<T extends { type: string; value: string } | null | undefined>(value: T): T {
   if (!value) {
     return value;
   }
@@ -8358,11 +8500,11 @@ function cloneTypedValue<T extends { type: string; value: string } | null | unde
   return { ...value } as T;
 }
 
-function cloneTypedValues<T extends { type: string; value: string }>(values?: T[] | null): T[] | undefined {
+export function cloneTypedValues<T extends { type: string; value: string }>(values?: T[] | null): T[] | undefined {
   return values?.map((value) => ({ ...value }));
 }
 
-function cloneJsonValue<T>(value: T): T {
+export function cloneJsonValue<T>(value: T): T {
   if (value === undefined || value === null) {
     return value;
   }
@@ -8370,7 +8512,7 @@ function cloneJsonValue<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
 }
 
-function sanitizeQueueWorkRequest(request: QueueWorkRequest): QueueWorkRequest {
+export function sanitizeQueueWorkRequest(request: QueueWorkRequest): QueueWorkRequest {
   const sanitized: QueueWorkRequest = { ...request };
 
   if (sanitized.subjectId && (!sanitized.subjectId.type.trim() || !sanitized.subjectId.value.trim())) {
@@ -8394,7 +8536,7 @@ function sanitizeQueueWorkRequest(request: QueueWorkRequest): QueueWorkRequest {
   };
 }
 
-function applyQueueConfigurationRules(request: QueueWorkRequest): QueueWorkRequest {
+export function applyQueueConfigurationRules(request: QueueWorkRequest): QueueWorkRequest {
   const configuration = request.options?.configuration;
   const coordination = configuration?.coordination;
   if (
@@ -8437,7 +8579,7 @@ function applyQueueConfigurationRules(request: QueueWorkRequest): QueueWorkReque
   };
 }
 
-function getQueueConfigurationFieldConstraint(
+export function getQueueConfigurationFieldConstraint(
   request: QueueWorkRequest,
   path: string
 ): { reason: string; value: string | boolean } | null {
@@ -8461,17 +8603,17 @@ function getQueueConfigurationFieldConstraint(
   }
 }
 
-function isPersistentConcurrencyActive(request: QueueWorkRequest) {
+export function isPersistentConcurrencyActive(request: QueueWorkRequest) {
   const coordination = request.options?.configuration?.coordination;
   return coordination?.storage === "Persistent" &&
     coordination.concurrency.isEnabled;
 }
 
-function cloneConfiguration(configuration: WorkConfiguration): WorkConfiguration {
+export function cloneConfiguration(configuration: WorkConfiguration): WorkConfiguration {
   return JSON.parse(JSON.stringify(configuration)) as WorkConfiguration;
 }
 
-function stripInvocationConfiguration(configuration: WorkConfiguration): WorkConfiguration {
+export function stripInvocationConfiguration(configuration: WorkConfiguration): WorkConfiguration {
   const queueConfiguration = { ...configuration } as WorkConfiguration & {
     invocation?: unknown;
   };
@@ -8480,11 +8622,11 @@ function stripInvocationConfiguration(configuration: WorkConfiguration): WorkCon
   return queueConfiguration;
 }
 
-function isPlainObject(value: unknown): value is Record<string, unknown> {
+export function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-const defaultWorkConfiguration: WorkConfiguration = {
+export const defaultWorkConfiguration: WorkConfiguration = {
   start: {
     policy: "StartAndReturnAfterAccepted",
   },

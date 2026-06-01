@@ -19,6 +19,15 @@ import {
 } from "@/components/ui/select";
 import type { ConsoleRealtimeStatsSnapshot } from "@/components/features/console/realtime";
 import {
+  RealtimeCollapsedRail,
+  RealtimeMessageLimitField,
+  RealtimePanelFrame,
+  RealtimePanelHeader,
+  RealtimeToolbar,
+  RealtimeToolbarSearchInput,
+  normalizeRealtimeMessageLimit,
+} from "@/components/features/console/realtime-message-controls";
+import {
   getRealtimePayloadComponentData,
   type RealtimePayloadMessage,
 } from "@/components/features/console/realtime-payload";
@@ -38,8 +47,12 @@ export type RealtimePayloadWindowProps = {
 
 type PayloadInspectorView = "payload" | "componentData";
 export type RealtimePayloadWindowTab = "events" | "payloads";
-type RealtimePayloadWindowMode = "compact" | "standard" | "detailed";
-type RealtimePayloadDockSide = "left" | "right";
+export type RealtimePayloadWindowMode = "compact" | "standard" | "detailed";
+export type RealtimePayloadDockSide = "left" | "right";
+export type RealtimePayloadViewportSize = {
+  height: number;
+  width: number;
+};
 const allSubscriptionsValue = "__all_subscriptions__";
 
 export function RealtimePayloadWindow({
@@ -403,8 +416,8 @@ export function RealtimePayloadWindow({
             subscriptionOptions={subscriptionOptions}
             tablePaused={tablePaused}
           />
-          <div className="grid min-h-0 grid-rows-[auto_minmax(0,1fr)] overflow-hidden rounded-md border">
-            <div className="flex items-center justify-between gap-2 border-b px-2 py-1.5">
+          <RealtimePanelFrame>
+            <RealtimePanelHeader variant="compact-title">
               {!inspectorCollapsed && (
                 <div className="font-medium text-muted-foreground text-xs">Inspector</div>
               )}
@@ -421,13 +434,11 @@ export function RealtimePayloadWindow({
                   }`}
                 />
               </Button>
-            </div>
+            </RealtimePanelHeader>
             {inspectorCollapsed ? (
-              <div className="flex min-h-0 items-start justify-center overflow-hidden py-2">
-                <div className="font-mono text-muted-foreground text-xs [writing-mode:vertical-rl]">
-                  {selectedMessage ? selectedMessage.connectionLabel : "No selection"}
-                </div>
-              </div>
+              <RealtimeCollapsedRail>
+                {selectedMessage ? selectedMessage.connectionLabel : "No selection"}
+              </RealtimeCollapsedRail>
             ) : (
               <PayloadInspector
                 inspectorView={inspectorView}
@@ -440,7 +451,7 @@ export function RealtimePayloadWindow({
                 selectedMessage={selectedMessage}
               />
             )}
-          </div>
+          </RealtimePanelFrame>
         </div>
       )}
     </div>,
@@ -662,7 +673,7 @@ function PayloadMessageTable({
 }) {
   if (collapsed) {
     return (
-      <div className="grid min-h-0 grid-rows-[auto_minmax(0,1fr)] overflow-hidden rounded-md border">
+      <RealtimePanelFrame>
         <div className="border-b p-1">
           <Button
             aria-label="Show event stream"
@@ -674,22 +685,19 @@ function PayloadMessageTable({
             <ChevronRight className="size-4" />
           </Button>
         </div>
-        <div className="flex min-h-0 items-start justify-center overflow-hidden py-2">
-          <div className="font-mono text-muted-foreground text-xs [writing-mode:vertical-rl]">
-            {messages.length.toLocaleString()} events
-          </div>
-        </div>
-      </div>
+        <RealtimeCollapsedRail>
+          {messages.length.toLocaleString()} events
+        </RealtimeCollapsedRail>
+      </RealtimePanelFrame>
     );
   }
 
   return (
-    <div className="grid min-h-0 grid-rows-[auto_minmax(0,1fr)] overflow-hidden rounded-md border">
-      <div className="grid gap-2 border-b bg-muted/30 px-2 py-2">
-        <div className="flex min-w-0 flex-wrap items-center gap-1">
-          <input
-            className="h-7 min-w-48 flex-1 rounded-md border bg-background px-2 text-foreground text-xs"
-            onChange={(event) => onSearchTextChange(event.currentTarget.value)}
+    <RealtimePanelFrame>
+      <RealtimePanelHeader>
+        <RealtimeToolbar>
+          <RealtimeToolbarSearchInput
+            onChange={onSearchTextChange}
             placeholder="Filter payloads"
             value={searchText}
           />
@@ -736,19 +744,7 @@ function PayloadMessageTable({
               Show {newMessageCount.toLocaleString()} new
             </Button>
           )}
-          <label className="flex h-7 items-center gap-1.5 rounded-md border bg-background px-2 text-xs">
-            <span className="text-muted-foreground">Max</span>
-            <input
-              className="w-14 bg-transparent font-mono text-foreground outline-none"
-              max={1000}
-              min={1}
-              onChange={(event) =>
-                onMaxMessagesChange(normalizeRealtimeMaxMessages(event.currentTarget.value))
-              }
-              type="number"
-              value={maxMessages}
-            />
-          </label>
+          <RealtimeMessageLimitField onChange={onMaxMessagesChange} value={maxMessages} />
           <Button
             className="h-7 px-2 text-xs"
             disabled={!canClear}
@@ -767,7 +763,7 @@ function PayloadMessageTable({
           >
             <ChevronRight className="size-4 rotate-180" />
           </Button>
-        </div>
+        </RealtimeToolbar>
         <div className="grid grid-cols-[2rem_6.5rem_minmax(9rem,1fr)_8rem_minmax(10rem,1.2fr)_5rem] gap-3 font-medium text-muted-foreground text-xs">
           <span />
           <span>Time</span>
@@ -776,7 +772,7 @@ function PayloadMessageTable({
           <span>Components</span>
           <span className="text-right">Size</span>
         </div>
-      </div>
+      </RealtimePanelHeader>
       <div className="min-h-0 overflow-auto">
         {messages.length === 0 ? (
           <div className="p-4 text-muted-foreground text-sm">
@@ -824,7 +820,7 @@ function PayloadMessageTable({
           ))
         )}
       </div>
-    </div>
+    </RealtimePanelFrame>
   );
 }
 
@@ -1234,7 +1230,7 @@ function jsonIndent(level: number) {
   return <span>{Array.from({ length: level }).map(() => "  ").join("")}</span>;
 }
 
-function formatPayloadTime(value: number) {
+export function formatPayloadTime(value: number) {
   return new Intl.DateTimeFormat(undefined, {
     hour: "numeric",
     minute: "numeric",
@@ -1242,7 +1238,7 @@ function formatPayloadTime(value: number) {
   }).format(new Date(value));
 }
 
-function formatByteCount(value: number) {
+export function formatByteCount(value: number) {
   if (value < 1024) {
     return `${value}b`;
   }
@@ -1250,11 +1246,11 @@ function formatByteCount(value: number) {
   return `${(value / 1024).toFixed(1)}kb`;
 }
 
-function getRealtimePayloadSearchText(message: RealtimePayloadMessage) {
+export function getRealtimePayloadSearchText(message: RealtimePayloadMessage) {
   return message.searchText ?? stringifySearchValue(message.value).toLowerCase();
 }
 
-function stringifyJsonRawForDisplay(value: unknown) {
+export function stringifyJsonRawForDisplay(value: unknown) {
   try {
     return JSON.stringify(value) ?? "";
   } catch {
@@ -1262,7 +1258,7 @@ function stringifyJsonRawForDisplay(value: unknown) {
   }
 }
 
-function parseCapturedPayloadJson(payloadJson: string | undefined):
+export function parseCapturedPayloadJson(payloadJson: string | undefined):
   | { parsed: true; value: unknown }
   | { parsed: false; text: string } {
   if (!payloadJson) {
@@ -1285,7 +1281,7 @@ function parseCapturedPayloadJson(payloadJson: string | undefined):
   }
 }
 
-function stringifySearchValue(value: unknown) {
+export function stringifySearchValue(value: unknown) {
   try {
     return JSON.stringify(value) ?? "";
   } catch {
@@ -1293,7 +1289,7 @@ function stringifySearchValue(value: unknown) {
   }
 }
 
-function mergePinnedPayloadMessages(
+export function mergePinnedPayloadMessages(
   messages: RealtimePayloadMessage[],
   pinnedMessages: Record<string, RealtimePayloadMessage>
 ) {
@@ -1310,9 +1306,26 @@ function mergePinnedPayloadMessages(
   return Array.from(byId.values()).sort((left, right) => right.receivedAt - left.receivedAt);
 }
 
-function getRealtimePayloadWindowMetrics(mode: RealtimePayloadWindowMode) {
-  const viewportWidth = window.visualViewport?.width ?? window.innerWidth;
-  const viewportHeight = window.visualViewport?.height ?? window.innerHeight;
+export function getRealtimePayloadViewportSize(): RealtimePayloadViewportSize {
+  if (typeof window === "undefined") {
+    return {
+      height: 768,
+      width: 1024,
+    };
+  }
+
+  return {
+    height: window.visualViewport?.height ?? window.innerHeight,
+    width: window.visualViewport?.width ?? window.innerWidth,
+  };
+}
+
+export function getRealtimePayloadWindowMetrics(
+  mode: RealtimePayloadWindowMode,
+  viewport = getRealtimePayloadViewportSize()
+) {
+  const viewportWidth = viewport.width;
+  const viewportHeight = viewport.height;
 
   if (mode === "compact") {
     return {
@@ -1334,10 +1347,13 @@ function getRealtimePayloadWindowMetrics(mode: RealtimePayloadWindowMode) {
   };
 }
 
-function getCenteredRealtimePayloadPosition(mode: RealtimePayloadWindowMode) {
-  const viewportWidth = window.visualViewport?.width ?? window.innerWidth;
-  const viewportHeight = window.visualViewport?.height ?? window.innerHeight;
-  const panelMetrics = getRealtimePayloadWindowMetrics(mode);
+export function getCenteredRealtimePayloadPosition(
+  mode: RealtimePayloadWindowMode,
+  viewport = getRealtimePayloadViewportSize()
+) {
+  const viewportWidth = viewport.width;
+  const viewportHeight = viewport.height;
+  const panelMetrics = getRealtimePayloadWindowMetrics(mode, viewport);
 
   return {
     x: Math.max(8, Math.round((viewportWidth - panelMetrics.width) / 2)),
@@ -1345,13 +1361,14 @@ function getCenteredRealtimePayloadPosition(mode: RealtimePayloadWindowMode) {
   };
 }
 
-function getDockedRealtimePayloadPosition(
+export function getDockedRealtimePayloadPosition(
   side: RealtimePayloadDockSide,
-  mode: RealtimePayloadWindowMode
+  mode: RealtimePayloadWindowMode,
+  viewport = getRealtimePayloadViewportSize()
 ) {
-  const viewportWidth = window.visualViewport?.width ?? window.innerWidth;
-  const viewportHeight = window.visualViewport?.height ?? window.innerHeight;
-  const panelMetrics = getRealtimePayloadWindowMetrics(mode);
+  const viewportWidth = viewport.width;
+  const viewportHeight = viewport.height;
+  const panelMetrics = getRealtimePayloadWindowMetrics(mode, viewport);
   const inset = 12;
 
   return {
@@ -1362,13 +1379,14 @@ function getDockedRealtimePayloadPosition(
   };
 }
 
-function clampRealtimePayloadPosition(
+export function clampRealtimePayloadPosition(
   position: { x: number; y: number },
-  mode: RealtimePayloadWindowMode
+  mode: RealtimePayloadWindowMode,
+  viewport = getRealtimePayloadViewportSize()
 ) {
-  const viewportWidth = window.visualViewport?.width ?? window.innerWidth;
-  const viewportHeight = window.visualViewport?.height ?? window.innerHeight;
-  const panelMetrics = getRealtimePayloadWindowMetrics(mode);
+  const viewportWidth = viewport.width;
+  const viewportHeight = viewport.height;
+  const panelMetrics = getRealtimePayloadWindowMetrics(mode, viewport);
 
   return {
     x: clampFloatingWindowPosition(position.x, viewportWidth, panelMetrics.width),
@@ -1376,16 +1394,11 @@ function clampRealtimePayloadPosition(
   };
 }
 
-function normalizeRealtimeMaxMessages(value: string) {
-  const parsed = Number.parseInt(value, 10);
-  if (!Number.isFinite(parsed)) {
-    return 100;
-  }
-
-  return Math.min(1000, Math.max(1, parsed));
+export function normalizeRealtimeMaxMessages(value: string) {
+  return normalizeRealtimeMessageLimit(value);
 }
 
-function clampFloatingWindowPosition(value: number, viewport: number, size: number) {
+export function clampFloatingWindowPosition(value: number, viewport: number, size: number) {
   const visibleGrip = 40;
   const min = size > 0 ? Math.min(8, visibleGrip - size) : 8;
   const max = Math.max(8, viewport - visibleGrip);

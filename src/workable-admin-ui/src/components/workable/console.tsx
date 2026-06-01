@@ -6,13 +6,11 @@ import {
   Activity,
   Bell,
   Boxes,
-  ChevronLeft,
   ChevronRight,
   CircleAlert,
   Clock3,
   FileCode2,
   Folder,
-  Home,
   Info,
   Loader2,
   LogOut,
@@ -55,6 +53,16 @@ import {
   RealtimeStatsMenu,
   type RealtimePayloadWindowTab,
 } from "@/components/features/console/realtime-payload-window";
+import {
+  RealtimeCollapsedRail,
+  RealtimeMessageLimitField,
+  RealtimePanelFrame,
+  RealtimePanelHeader,
+  RealtimeToolbar,
+  RealtimeToolbarSearchInput,
+  RealtimeToolbarSurface,
+  normalizeRealtimeMessageLimit,
+} from "@/components/features/console/realtime-message-controls";
 import type {
   OverviewScope,
   PendingDelete,
@@ -121,6 +129,25 @@ import {
   invalidateDefinitionCatalogLevelCache,
   invalidateDefinitionCatalogLevelCacheByApiUrl,
 } from "@/components/workable/console/catalog-browser-data";
+import {
+  createQueryCatalogScope,
+  normalizeCategoryFilter,
+  normalizeOverviewScope,
+  overviewScopesEqual,
+} from "@/components/workable/console/catalog-path";
+import { getWorkComponentData } from "@/components/workable/console/component-results";
+import {
+  formatDateTimeShort,
+  formatDuration,
+  formatNumber,
+  parseDurationSeconds,
+} from "@/components/workable/console/console-format";
+import {
+  DiagnosticsDetailCard,
+  DiagnosticsEmptyState,
+  DiagnosticsLoadingState,
+  DiagnosticsSummarySection,
+} from "@/components/workable/console/diagnostics-summary";
 import { ErrorPanel } from "@/components/workable/console/feedback-panel";
 import {
   ConsoleNavigationHeader,
@@ -142,7 +169,6 @@ import {
   type WorkComponentShape,
   type WorkConcurrencyDiagnosticsCompactComponent,
   type WorkConcurrencyDiagnosticsDetailedComponent,
-  type WorkDefinition,
   type WorkDurabilityDiagnosticsCompactComponent,
   type WorkDurabilityDiagnosticsDetailedComponent,
   type WorkIdempotencyDiagnosticsCompactComponent,
@@ -168,12 +194,12 @@ import {
   type WorkerState,
 } from "@/lib/workable";
 
-const STORAGE_KEY = "workable-console.state.v1";
+export const STORAGE_KEY = "workable-console.state.v1";
 
 const throughputSeriesIds = ["started", "completed", "failed", "canceled"] as const;
-type ThroughputSeriesId = (typeof throughputSeriesIds)[number];
+export type ThroughputSeriesId = (typeof throughputSeriesIds)[number];
 
-type ConsoleStorage = {
+export type ConsoleStorage = {
   activeSystemId: string;
   expandedHostIds: string[];
   expandedSystemIds: string[];
@@ -185,7 +211,7 @@ type ConsoleStorage = {
   view: ServerView;
 };
 
-type NavigationEntry = {
+export type NavigationEntry = {
   catalogScope: OverviewScope | null;
   iterationSequence: number | null;
   iterationCategoryFilter: string;
@@ -310,19 +336,6 @@ export function WorkableConsole() {
   const realtimeEventCapture = useConsoleRealtimeEventCapture();
   const realtimeStats = useConsoleRealtimeStats();
   const ignoreRealtimeConnectionCountChange = useCallback<(count: number) => void>(() => undefined, []);
-  const handleWorkerUiStateChange = useCallback((snapshot: WorkerConsoleViewUiStateSnapshot) => {
-    setWorkerUiSnapshotsByWorkerId((current) => {
-      const previous = current[snapshot.workerId];
-      if (previous && JSON.stringify(previous) === JSON.stringify(snapshot)) {
-        return current;
-      }
-
-      return {
-        ...current,
-        [snapshot.workerId]: snapshot,
-      };
-    });
-  }, []);
   const [selectedDefinitionId, setSelectedDefinitionId] = useState<string | null>(null);
   const [selectedDefinitionName, setSelectedDefinitionName] = useState<string | null>(null);
   const [selectedWorkerId, setSelectedWorkerId] = useState<string | null>(null);
@@ -355,6 +368,19 @@ export function WorkableConsole() {
   const [workerUiSnapshotsByWorkerId, setWorkerUiSnapshotsByWorkerId] = useState<
     Record<string, WorkerConsoleViewUiStateSnapshot | undefined>
   >({});
+  const handleWorkerUiStateChange = useCallback((snapshot: WorkerConsoleViewUiStateSnapshot) => {
+    setWorkerUiSnapshotsByWorkerId((current) => {
+      const previous = current[snapshot.workerId];
+      if (previous && JSON.stringify(previous) === JSON.stringify(snapshot)) {
+        return current;
+      }
+
+      return {
+        ...current,
+        [snapshot.workerId]: snapshot,
+      };
+    });
+  }, []);
   const viewScrollPositions = useRef<Partial<Record<ServerView, number>>>({});
   const readyViews = useRef<Set<string>>(new Set());
   const restoredHostsRef = useRef<WorkableHostConnection[] | null>(null);
@@ -2734,11 +2760,10 @@ function RealtimeEventsTabPanel({
 
   return (
     <div className="grid h-full min-h-0 grid-rows-[auto_minmax(0,1fr)] gap-3 overflow-hidden">
-      <div className="grid gap-2 rounded-md border bg-muted/30 px-2 py-2">
-        <div className="flex min-w-0 flex-wrap items-center gap-1">
-          <input
-            className="h-7 min-w-48 flex-1 rounded-md border bg-background px-2 text-foreground text-xs"
-            onChange={(event) => setSearchText(event.currentTarget.value)}
+      <RealtimeToolbarSurface>
+        <RealtimeToolbar>
+          <RealtimeToolbarSearchInput
+            onChange={setSearchText}
             placeholder="Filter events"
             value={searchText}
           />
@@ -2763,19 +2788,7 @@ function RealtimeEventsTabPanel({
               Show {newMessageCount.toLocaleString()} new
             </Button>
           )}
-          <label className="flex h-7 items-center gap-1.5 rounded-md border bg-background px-2 text-xs">
-            <span className="text-muted-foreground">Max</span>
-            <input
-              className="w-14 bg-transparent font-mono text-foreground outline-none"
-              max={1000}
-              min={1}
-              onChange={(event) =>
-                onMaxMessagesChange(normalizeEventViewerMaxMessages(event.currentTarget.value))
-              }
-              type="number"
-              value={maxMessages}
-            />
-          </label>
+          <RealtimeMessageLimitField onChange={onMaxMessagesChange} value={maxMessages} />
           <Button
             className="h-7 px-2 text-xs"
             disabled={messages.length === 0}
@@ -2785,13 +2798,13 @@ function RealtimeEventsTabPanel({
           >
             Clear
           </Button>
-        </div>
+        </RealtimeToolbar>
         {error && (
           <div className="rounded-md border border-red-500/30 bg-red-500/10 px-2 py-1.5 text-red-200 text-xs">
             {error}
           </div>
         )}
-      </div>
+      </RealtimeToolbarSurface>
       <div
         className={`grid min-h-0 gap-3 ${
           messagesCollapsed && filtersCollapsed
@@ -2803,8 +2816,8 @@ function RealtimeEventsTabPanel({
                 : "md:grid-cols-[22rem_minmax(20rem,22rem)_minmax(0,1fr)]"
         }`}
       >
-        <div className="grid min-h-0 grid-rows-[auto_minmax(0,1fr)] overflow-hidden rounded-md border">
-          <div className="grid gap-2 border-b bg-muted/30 px-2 py-2">
+        <RealtimePanelFrame>
+          <RealtimePanelHeader>
             <div className="flex items-center justify-between gap-2">
               {!messagesCollapsed && (
                 <div className="font-medium text-muted-foreground text-xs">Batches</div>
@@ -2832,13 +2845,11 @@ function RealtimeEventsTabPanel({
                 <span className="text-right">Size</span>
               </div>
             )}
-          </div>
+          </RealtimePanelHeader>
           {messagesCollapsed ? (
-            <div className="flex min-h-0 items-start justify-center overflow-hidden py-2">
-              <div className="font-mono text-muted-foreground text-xs [writing-mode:vertical-rl]">
-                {filteredMessages.length.toLocaleString()} events
-              </div>
-            </div>
+            <RealtimeCollapsedRail>
+              {filteredMessages.length.toLocaleString()} events
+            </RealtimeCollapsedRail>
           ) : (
             <div className="min-h-0 overflow-auto p-2">
               {filteredMessages.length === 0 ? (
@@ -2886,9 +2897,9 @@ function RealtimeEventsTabPanel({
               )}
             </div>
           )}
-        </div>
-        <div className="grid min-h-0 grid-rows-[auto_minmax(0,1fr)] overflow-hidden rounded-md border">
-          <div className="flex items-center justify-between gap-2 border-b px-3 py-2">
+        </RealtimePanelFrame>
+        <RealtimePanelFrame>
+          <RealtimePanelHeader variant="title">
             {!filtersCollapsed && (
               <div className="font-medium text-muted-foreground text-xs">Filters</div>
             )}
@@ -2905,13 +2916,9 @@ function RealtimeEventsTabPanel({
                 }`}
               />
             </Button>
-          </div>
+          </RealtimePanelHeader>
           {filtersCollapsed ? (
-            <div className="flex min-h-0 items-start justify-center overflow-hidden py-2">
-              <div className="font-mono text-muted-foreground text-xs [writing-mode:vertical-rl]">
-                filters
-              </div>
-            </div>
+            <RealtimeCollapsedRail>filters</RealtimeCollapsedRail>
           ) : (
             <div className="min-h-0 space-y-3 overflow-auto overflow-x-hidden p-2">
               <div className="space-y-1">
@@ -2941,7 +2948,6 @@ function RealtimeEventsTabPanel({
                 </div>
                 <DefinitionCatalogBrowser
                   backButtonClassName={defaultCatalogBrowserBackButtonClassName()}
-                  bodyClassName="py-1"
                   connection={catalogConnection}
                   emptyState={<div className="px-2 py-2 text-muted-foreground text-xs">No catalog entries.</div>}
                   headerClassName={defaultCatalogBrowserHeaderClassName("h-9")}
@@ -3049,20 +3055,23 @@ function RealtimeEventsTabPanel({
               </div>
             </div>
           )}
-        </div>
-        <div className={`grid min-h-0 overflow-hidden rounded-md border ${
-          hasEventTable
-            ? "grid-rows-[auto_auto_auto_minmax(0,1fr)]"
-            : "grid-rows-[auto_minmax(0,1fr)]"
-        }`}>
-          <div className="flex items-center justify-between gap-2 border-b px-3 py-2">
+        </RealtimePanelFrame>
+        <RealtimePanelFrame
+          className={
+            hasEventTable
+              ? "grid-rows-[auto_auto_auto_minmax(0,1fr)]"
+              : "grid-rows-[auto_minmax(0,1fr)]"
+          }
+          defaultRows={false}
+        >
+          <RealtimePanelHeader variant="title">
             <div className="font-medium text-muted-foreground text-xs">Event JSON</div>
             <div className="min-w-0 truncate font-mono text-muted-foreground text-xs">
               {selectedMessage && selectedMessage.events.length > 1
                 ? `Event ${selectedEventIndexInBounds + 1}/${selectedMessage.events.length}`
                 : selectedEvent?.eventType ?? "No event selected"}
             </div>
-          </div>
+          </RealtimePanelHeader>
           {hasEventTable && selectedMessage && (
             <div
               className="grid min-h-0 grid-rows-[auto_minmax(0,1fr)] border-b"
@@ -3124,13 +3133,13 @@ function RealtimeEventsTabPanel({
               "Waiting for the first realtime event."
             )}
           </pre>
-        </div>
+        </RealtimePanelFrame>
       </div>
     </div>
   );
 }
 
-function formatEventBatchTypeSummary(eventTypes: string[]) {
+export function formatEventBatchTypeSummary(eventTypes: string[]) {
   if (eventTypes.length === 0) {
     return "No event types";
   }
@@ -3140,7 +3149,7 @@ function formatEventBatchTypeSummary(eventTypes: string[]) {
     : `${eventTypes.length} types: ${eventTypes.slice(0, 3).join(", ")}${eventTypes.length > 3 ? ", ..." : ""}`;
 }
 
-function formatEventBatchDefinitionSummary(events: WorkableRealtimeEvent[]) {
+export function formatEventBatchDefinitionSummary(events: WorkableRealtimeEvent[]) {
   const definitionIds = [...new Set(events
     .map((workEvent) => workEvent.workDefinitionId?.value)
     .filter((definitionId): definitionId is string => Boolean(definitionId)))];
@@ -3154,7 +3163,7 @@ function formatEventBatchDefinitionSummary(events: WorkableRealtimeEvent[]) {
     : `${definitionIds.length} definitions`;
 }
 
-function formatEventBatchWorkerSummary(events: WorkableRealtimeEvent[]) {
+export function formatEventBatchWorkerSummary(events: WorkableRealtimeEvent[]) {
   const workerIds = [...new Set(events
     .map((workEvent) => workEvent.workerId?.value)
     .filter((workerId): workerId is string => Boolean(workerId)))];
@@ -3168,7 +3177,7 @@ function formatEventBatchWorkerSummary(events: WorkableRealtimeEvent[]) {
     : `${workerIds.length} workers`;
 }
 
-function getRealtimeEventSearchText(message: RealtimeEventMessage) {
+export function getRealtimeEventSearchText(message: RealtimeEventMessage) {
   return [
     message.batchId,
     message.batchSize ? String(message.batchSize) : null,
@@ -3187,15 +3196,15 @@ function getRealtimeEventSearchText(message: RealtimeEventMessage) {
     .toLowerCase();
 }
 
-function formatEventByteCount(bytes: number, estimated?: boolean) {
+export function formatEventByteCount(bytes: number, estimated?: boolean) {
   return `${estimated ? ">=" : ""}${bytes.toLocaleString()}b`;
 }
 
-function clampEventTableHeight(value: number) {
+export function clampEventTableHeight(value: number) {
   return Math.min(Math.max(96, value), 520);
 }
 
-function formatEventViewerTime(value: number) {
+export function formatEventViewerTime(value: number) {
   return new Intl.DateTimeFormat(undefined, {
     hour: "numeric",
     minute: "2-digit",
@@ -3203,16 +3212,11 @@ function formatEventViewerTime(value: number) {
   }).format(value);
 }
 
-function normalizeEventViewerMaxMessages(value: string) {
-  const parsed = Number.parseInt(value, 10);
-  if (Number.isNaN(parsed)) {
-    return 100;
-  }
-
-  return Math.max(1, Math.min(1000, parsed));
+export function normalizeEventViewerMaxMessages(value: string) {
+  return normalizeRealtimeMessageLimit(value);
 }
 
-function eventTypeTone(eventType: string) {
+export function eventTypeTone(eventType: string) {
   if (eventType.includes("failed") || eventType === "worker.log") {
     return "border border-red-500/30 bg-red-500/10 text-red-200";
   }
@@ -3504,9 +3508,9 @@ function SystemNotificationTray({
                 </div>
               ))
             ) : (
-              <div className="rounded-md border border-border bg-muted/20 px-3 py-2 text-muted-foreground text-sm">
+              <DiagnosticsEmptyState>
                 No system notifications.
-              </div>
+              </DiagnosticsEmptyState>
             )}
           </div>
           {activeSystemDiagnosticsAvailable ? (
@@ -3586,40 +3590,29 @@ function ReadModelDiagnosticsSummary({
   readModel?: WorkSystemReadModelDiagnostics;
 }) {
   return (
-    <div className="border-b p-3 last:border-b-0">
-      <button
-        className="flex w-full items-center justify-between gap-3 text-left"
-        onClick={() => onExpandedChange(!expanded)}
-        type="button"
-      >
-        <div className="flex min-w-0 items-center gap-2">
-          <ChevronRight className={`size-4 shrink-0 transition-transform ${expanded ? "rotate-90" : ""}`} />
-          <div className="min-w-0">
-            <div className="font-medium text-sm">Read model diagnostics</div>
-            <div className="truncate text-muted-foreground text-xs">
-              Pending {formatNumber(compact?.pendingUpdateCount)}
-              {compact?.isReadModelBehind
-                ? `, threshold ${formatNumber(compact.readModelLagWarningThreshold)}`
-                : ""}
-            </div>
-          </div>
-        </div>
-        <div className="shrink-0 text-muted-foreground text-xs">
-          {expanded && lastUpdatedAt ? formatLocalTime(lastUpdatedAt) : expanded ? "Waiting" : "Collapsed"}
-        </div>
-      </button>
-      {expanded && (
-        <div className="mt-3 space-y-2">
+    <DiagnosticsSummarySection
+      expanded={expanded}
+      lastUpdatedAt={lastUpdatedAt}
+      onExpandedChange={onExpandedChange}
+      summary={(
+        <>
+          Pending {formatNumber(compact?.pendingUpdateCount)}
+          {compact?.isReadModelBehind
+            ? `, threshold ${formatNumber(compact.readModelLagWarningThreshold)}`
+            : ""}
+        </>
+      )}
+      title="Read model diagnostics"
+    >
           {loading && !readModel ? (
-            <div className="flex items-center gap-2 rounded-md border border-border px-3 py-2 text-muted-foreground text-sm">
-              <Loader2 className="size-4 animate-spin" />
+            <DiagnosticsLoadingState>
               Loading read model diagnostics.
-            </div>
+            </DiagnosticsLoadingState>
           ) : null}
           {!loading && !readModel ? (
-            <div className="rounded-md border border-border bg-muted/20 px-3 py-2 text-muted-foreground text-sm">
+            <DiagnosticsEmptyState>
               Expand this section while realtime is connected to load read model diagnostics.
-            </div>
+            </DiagnosticsEmptyState>
           ) : null}
           {readModel && (
             <>
@@ -3656,7 +3649,7 @@ function ReadModelDiagnosticsSummary({
                   value={formatDuration(readModel?.lastProjectionDuration)}
                 />
               </div>
-              <div className="rounded-md border border-border px-3 py-2 text-xs">
+              <DiagnosticsDetailCard className="text-xs">
                 <div className="flex items-center justify-between gap-3">
                   <span className="text-muted-foreground">
                     <TooltipLabel
@@ -3668,12 +3661,10 @@ function ReadModelDiagnosticsSummary({
                     {formatDateTimeShort(readModel?.lastProjectedAt)}
                   </span>
                 </div>
-              </div>
+              </DiagnosticsDetailCard>
             </>
           )}
-        </div>
-      )}
-    </div>
+    </DiagnosticsSummarySection>
   );
 }
 
@@ -3693,37 +3684,26 @@ function RetentionDiagnosticsSummary({
   retention?: WorkSystemRetentionDiagnostics;
 }) {
   return (
-    <div className="border-b p-3 last:border-b-0">
-      <button
-        className="flex w-full items-center justify-between gap-3 text-left"
-        onClick={() => onExpandedChange(!expanded)}
-        type="button"
-      >
-        <div className="flex min-w-0 items-center gap-2">
-          <ChevronRight className={`size-4 shrink-0 transition-transform ${expanded ? "rotate-90" : ""}`} />
-          <div className="min-w-0">
-            <div className="font-medium text-sm">Retention diagnostics</div>
-            <div className="truncate text-muted-foreground text-xs">
-              Scheduled {formatNumber(compact?.scheduledPurgeCount)}, tracked final {formatNumber(compact?.trackedFinalWorkerCount)}
-            </div>
-          </div>
-        </div>
-        <div className="shrink-0 text-muted-foreground text-xs">
-          {expanded && lastUpdatedAt ? formatLocalTime(lastUpdatedAt) : expanded ? "Waiting" : "Collapsed"}
-        </div>
-      </button>
-      {expanded && (
-        <div className="mt-3 space-y-2">
+    <DiagnosticsSummarySection
+      expanded={expanded}
+      lastUpdatedAt={lastUpdatedAt}
+      onExpandedChange={onExpandedChange}
+      summary={(
+        <>
+          Scheduled {formatNumber(compact?.scheduledPurgeCount)}, tracked final {formatNumber(compact?.trackedFinalWorkerCount)}
+        </>
+      )}
+      title="Retention diagnostics"
+    >
           {loading && !retention ? (
-            <div className="flex items-center gap-2 rounded-md border border-border px-3 py-2 text-muted-foreground text-sm">
-              <Loader2 className="size-4 animate-spin" />
+            <DiagnosticsLoadingState>
               Loading retention diagnostics.
-            </div>
+            </DiagnosticsLoadingState>
           ) : null}
           {!loading && !retention ? (
-            <div className="rounded-md border border-border bg-muted/20 px-3 py-2 text-muted-foreground text-sm">
+            <DiagnosticsEmptyState>
               Expand this section while realtime is connected to load retention diagnostics.
-            </div>
+            </DiagnosticsEmptyState>
           ) : null}
           {retention && (
             <>
@@ -3761,7 +3741,7 @@ function RetentionDiagnosticsSummary({
                   value={formatNumber(retention.totalPurgedCount)}
                 />
               </div>
-              <div className="rounded-md border border-border px-3 py-2 text-xs">
+              <DiagnosticsDetailCard className="text-xs">
                 <div className="flex items-center justify-between gap-3">
                   <span className="text-muted-foreground">
                     <TooltipLabel
@@ -3784,12 +3764,10 @@ function RetentionDiagnosticsSummary({
                     {formatDateTimeShort(retention.lastRunAt)}
                   </span>
                 </div>
-              </div>
+              </DiagnosticsDetailCard>
             </>
           )}
-        </div>
-      )}
-    </div>
+    </DiagnosticsSummarySection>
   );
 }
 
@@ -3809,37 +3787,26 @@ function ConcurrencyDiagnosticsSummary({
   onExpandedChange: (expanded: boolean) => void;
 }) {
   return (
-    <div className="border-b p-3 last:border-b-0">
-      <button
-        className="flex w-full items-center justify-between gap-3 text-left"
-        onClick={() => onExpandedChange(!expanded)}
-        type="button"
-      >
-        <div className="flex min-w-0 items-center gap-2">
-          <ChevronRight className={`size-4 shrink-0 transition-transform ${expanded ? "rotate-90" : ""}`} />
-          <div className="min-w-0">
-            <div className="font-medium text-sm">Concurrency diagnostics</div>
-            <div className="truncate text-muted-foreground text-xs">
-              Deferred {formatNumber(compact?.deferredStartCount)}, oldest {formatDuration(compact?.oldestDeferredStartAge)}
-            </div>
-          </div>
-        </div>
-        <div className="shrink-0 text-muted-foreground text-xs">
-          {expanded && lastUpdatedAt ? formatLocalTime(lastUpdatedAt) : expanded ? "Waiting" : "Collapsed"}
-        </div>
-      </button>
-      {expanded && (
-        <div className="mt-3 space-y-2">
+    <DiagnosticsSummarySection
+      expanded={expanded}
+      lastUpdatedAt={lastUpdatedAt}
+      onExpandedChange={onExpandedChange}
+      summary={(
+        <>
+          Deferred {formatNumber(compact?.deferredStartCount)}, oldest {formatDuration(compact?.oldestDeferredStartAge)}
+        </>
+      )}
+      title="Concurrency diagnostics"
+    >
           {loading && !concurrency ? (
-            <div className="flex items-center gap-2 rounded-md border border-border px-3 py-2 text-muted-foreground text-sm">
-              <Loader2 className="size-4 animate-spin" />
+            <DiagnosticsLoadingState>
               Loading concurrency diagnostics.
-            </div>
+            </DiagnosticsLoadingState>
           ) : null}
           {!loading && !concurrency ? (
-            <div className="rounded-md border border-border bg-muted/20 px-3 py-2 text-muted-foreground text-sm">
+            <DiagnosticsEmptyState>
               Expand this section while realtime is connected to load concurrency diagnostics.
-            </div>
+            </DiagnosticsEmptyState>
           ) : null}
           {concurrency && (
             <>
@@ -3862,11 +3829,10 @@ function ConcurrencyDiagnosticsSummary({
                   value={formatNumber(concurrency.lastDrainReleasedCount)}
                 />
               </div>
-              <div className={`rounded-md border px-3 py-2 text-xs ${
-                compact?.isConcurrencyBehind
-                  ? "border-amber-500/30 bg-amber-500/10"
-                  : "border-border bg-muted/10"
-              }`}>
+              <DiagnosticsDetailCard
+                className="text-xs"
+                tone={compact?.isConcurrencyBehind ? "warning" : "muted"}
+              >
                 <div className="flex items-center justify-between gap-3">
                   <TooltipLabel
                     description="A quick status view of whether deferred workers are waiting longer than the configured warning threshold."
@@ -3881,15 +3847,13 @@ function ConcurrencyDiagnosticsSummary({
                     ? `Oldest deferred start has been waiting longer than ${formatNumber(compact?.concurrencyLagWarningSeconds)} seconds.`
                     : "Deferred starts are within the warning threshold."}
                 </div>
-              </div>
-              <div className="rounded-md border border-border px-3 py-2 text-xs">
+              </DiagnosticsDetailCard>
+              <DiagnosticsDetailCard className="text-xs">
                 Concurrency diagnostics are intentionally limited to current backlog and the most recent drain result.
-              </div>
+              </DiagnosticsDetailCard>
             </>
           )}
-        </div>
-      )}
-    </div>
+    </DiagnosticsSummarySection>
   );
 }
 
@@ -3909,37 +3873,26 @@ function DurabilityDiagnosticsSummary({
   onExpandedChange: (expanded: boolean) => void;
 }) {
   return (
-    <div className="border-b p-3 last:border-b-0">
-      <button
-        className="flex w-full items-center justify-between gap-3 text-left"
-        onClick={() => onExpandedChange(!expanded)}
-        type="button"
-      >
-        <div className="flex min-w-0 items-center gap-2">
-          <ChevronRight className={`size-4 shrink-0 transition-transform ${expanded ? "rotate-90" : ""}`} />
-          <div className="min-w-0">
-            <div className="font-medium text-sm">Durability diagnostics</div>
-            <div className="truncate text-muted-foreground text-xs">
-              Waiters {formatNumber(compact?.acceptedWaiterCount)}, cleanup {formatNumber(compact?.pendingCleanupCount)}
-            </div>
-          </div>
-        </div>
-        <div className="shrink-0 text-muted-foreground text-xs">
-          {expanded && lastUpdatedAt ? formatLocalTime(lastUpdatedAt) : expanded ? "Waiting" : "Collapsed"}
-        </div>
-      </button>
-      {expanded && (
-        <div className="mt-3 space-y-2">
+    <DiagnosticsSummarySection
+      expanded={expanded}
+      lastUpdatedAt={lastUpdatedAt}
+      onExpandedChange={onExpandedChange}
+      summary={(
+        <>
+          Waiters {formatNumber(compact?.acceptedWaiterCount)}, cleanup {formatNumber(compact?.pendingCleanupCount)}
+        </>
+      )}
+      title="Durability diagnostics"
+    >
           {loading && !durability ? (
-            <div className="flex items-center gap-2 rounded-md border border-border px-3 py-2 text-muted-foreground text-sm">
-              <Loader2 className="size-4 animate-spin" />
+            <DiagnosticsLoadingState>
               Loading durability diagnostics.
-            </div>
+            </DiagnosticsLoadingState>
           ) : null}
           {!loading && !durability ? (
-            <div className="rounded-md border border-border bg-muted/20 px-3 py-2 text-muted-foreground text-sm">
+            <DiagnosticsEmptyState>
               Expand this section while realtime is connected to load durability diagnostics.
-            </div>
+            </DiagnosticsEmptyState>
           ) : null}
           {durability && (
             <>
@@ -3969,12 +3922,15 @@ function DurabilityDiagnosticsSummary({
                   value={formatDuration(durability.oldestPendingCleanupAge)}
                 />
               </div>
-              <div className={`rounded-md border px-3 py-2 text-xs ${
-                compact?.hasReaderFailure || compact?.hasLeaseRenewalFailure || compact?.hasCleanupFailure ||
-                compact?.isAcceptedWorkerMaterializationBehind || compact?.isCleanupBehind
-                  ? "border-amber-500/30 bg-amber-500/10"
-                  : "border-border bg-muted/10"
-              }`}>
+              <DiagnosticsDetailCard
+                className="text-xs"
+                tone={
+                  compact?.hasReaderFailure || compact?.hasLeaseRenewalFailure || compact?.hasCleanupFailure ||
+                  compact?.isAcceptedWorkerMaterializationBehind || compact?.isCleanupBehind
+                    ? "warning"
+                    : "muted"
+                }
+              >
                 <div className="flex items-center justify-between gap-3">
                   <TooltipLabel
                     description="Summarizes whether the durability background loops are healthy. Reader, lease renewal, or cleanup failures here usually need investigation."
@@ -4000,12 +3956,10 @@ function DurabilityDiagnosticsSummary({
                     Cleanup backlog is older than {formatNumber(compact?.cleanupWarningSeconds)} seconds.
                   </div>
                 ) : null}
-              </div>
+              </DiagnosticsDetailCard>
             </>
           )}
-        </div>
-      )}
-    </div>
+    </DiagnosticsSummarySection>
   );
 }
 
@@ -4025,37 +3979,26 @@ function IdempotencyDiagnosticsSummary({
   onExpandedChange: (expanded: boolean) => void;
 }) {
   return (
-    <div className="border-b p-3 last:border-b-0">
-      <button
-        className="flex w-full items-center justify-between gap-3 text-left"
-        onClick={() => onExpandedChange(!expanded)}
-        type="button"
-      >
-        <div className="flex min-w-0 items-center gap-2">
-          <ChevronRight className={`size-4 shrink-0 transition-transform ${expanded ? "rotate-90" : ""}`} />
-          <div className="min-w-0">
-            <div className="font-medium text-sm">Idempotency diagnostics</div>
-            <div className="truncate text-muted-foreground text-xs">
-              Duplicate rejects {formatNumber(compact?.duplicateRejectionCount)}, storage {compact?.lastDuplicateRejectedStorage ?? "-"}
-            </div>
-          </div>
-        </div>
-        <div className="shrink-0 text-muted-foreground text-xs">
-          {expanded && lastUpdatedAt ? formatLocalTime(lastUpdatedAt) : expanded ? "Waiting" : "Collapsed"}
-        </div>
-      </button>
-      {expanded && (
-        <div className="mt-3 space-y-2">
+    <DiagnosticsSummarySection
+      expanded={expanded}
+      lastUpdatedAt={lastUpdatedAt}
+      onExpandedChange={onExpandedChange}
+      summary={(
+        <>
+          Duplicate rejects {formatNumber(compact?.duplicateRejectionCount)}, storage {compact?.lastDuplicateRejectedStorage ?? "-"}
+        </>
+      )}
+      title="Idempotency diagnostics"
+    >
           {loading && !idempotency ? (
-            <div className="flex items-center gap-2 rounded-md border border-border px-3 py-2 text-muted-foreground text-sm">
-              <Loader2 className="size-4 animate-spin" />
+            <DiagnosticsLoadingState>
               Loading idempotency diagnostics.
-            </div>
+            </DiagnosticsLoadingState>
           ) : null}
           {!loading && !idempotency ? (
-            <div className="rounded-md border border-border bg-muted/20 px-3 py-2 text-muted-foreground text-sm">
+            <DiagnosticsEmptyState>
               Expand this section while realtime is connected to load idempotency diagnostics.
-            </div>
+            </DiagnosticsEmptyState>
           ) : null}
           {idempotency && (
             <>
@@ -4073,9 +4016,7 @@ function IdempotencyDiagnosticsSummary({
               </div>
             </>
           )}
-        </div>
-      )}
-    </div>
+    </DiagnosticsSummarySection>
   );
 }
 
@@ -4132,7 +4073,7 @@ function TooltipLabel({
   );
 }
 
-function createSystemNotifications(
+export function createSystemNotifications(
   system?: WorkSystemDiagnosticsCompactComponent,
   queue?: WorkQueueDiagnosticsCompactComponent,
   acknowledgedRejectedWorkCount = 0,
@@ -4214,7 +4155,7 @@ function createSystemNotifications(
     notifications.push({
       description: `Oldest due purge is overdue by ${formatDuration(retention.oldestDuePurgeAge)}${sourceSuffix}.`,
       id: `${source?.id ?? "active"}:retention-lag`,
-      tone: parseDurationSeconds(retention.oldestDuePurgeAge) >= retention.retentionLagWarningSeconds * 10
+      tone: (parseDurationSeconds(retention.oldestDuePurgeAge) ?? 0) >= retention.retentionLagWarningSeconds * 10
         ? "critical"
         : "warning",
       title: `${sourcePrefix}Retention is behind`,
@@ -4225,7 +4166,7 @@ function createSystemNotifications(
     notifications.push({
       description: `${formatNumber(concurrency.deferredStartCount)} deferred worker${concurrency.deferredStartCount === 1 ? "" : "s"} waiting, oldest deferred for ${formatDuration(concurrency.oldestDeferredStartAge)}${sourceSuffix}.`,
       id: `${source?.id ?? "active"}:concurrency-lag`,
-      tone: parseDurationSeconds(concurrency.oldestDeferredStartAge) >= concurrency.concurrencyLagWarningSeconds * 10
+      tone: (parseDurationSeconds(concurrency.oldestDeferredStartAge) ?? 0) >= concurrency.concurrencyLagWarningSeconds * 10
         ? "critical"
         : "warning",
       title: `${sourcePrefix}Concurrency is backed up`,
@@ -4263,7 +4204,7 @@ function createSystemNotifications(
     notifications.push({
       description: `${formatNumber(durability.acceptedWaiterCount)} accepted durable worker${durability.acceptedWaiterCount === 1 ? "" : "s"} waiting to materialize, oldest wait ${formatDuration(durability.oldestAcceptedWaiterAge)}${sourceSuffix}.`,
       id: `${source?.id ?? "active"}:durability-waiters`,
-      tone: parseDurationSeconds(durability.oldestAcceptedWaiterAge) >= durability.acceptedWorkerWarningSeconds * 10
+      tone: (parseDurationSeconds(durability.oldestAcceptedWaiterAge) ?? 0) >= durability.acceptedWorkerWarningSeconds * 10
         ? "critical"
         : "warning",
       title: `${sourcePrefix}Durable worker materialization is behind`,
@@ -4274,7 +4215,7 @@ function createSystemNotifications(
     notifications.push({
       description: `${formatNumber(durability.pendingCleanupCount)} durable cleanup item${durability.pendingCleanupCount === 1 ? "" : "s"} pending, oldest waiting ${formatDuration(durability.oldestPendingCleanupAge)}${sourceSuffix}.`,
       id: `${source?.id ?? "active"}:durability-cleanup-lag`,
-      tone: parseDurationSeconds(durability.oldestPendingCleanupAge) >= durability.cleanupWarningSeconds * 10
+      tone: (parseDurationSeconds(durability.oldestPendingCleanupAge) ?? 0) >= durability.cleanupWarningSeconds * 10
         ? "critical"
         : "warning",
       title: `${sourcePrefix}Durable cleanup is behind`,
@@ -4284,7 +4225,7 @@ function createSystemNotifications(
   return notifications;
 }
 
-function createCompactReadModelDiagnosticsFromDetailed(
+export function createCompactReadModelDiagnosticsFromDetailed(
   detailed?: WorkReadModelDiagnosticsDetailedComponent | WorkReadModelDiagnosticsCompactComponent
 ): WorkReadModelDiagnosticsCompactComponent | undefined {
   if (!detailed) {
@@ -4303,7 +4244,7 @@ function createCompactReadModelDiagnosticsFromDetailed(
   };
 }
 
-function createCompactRetentionDiagnosticsFromDetailed(
+export function createCompactRetentionDiagnosticsFromDetailed(
   detailed?: WorkRetentionDiagnosticsDetailedComponent | WorkRetentionDiagnosticsCompactComponent
 ): WorkRetentionDiagnosticsCompactComponent | undefined {
   if (!detailed) {
@@ -4324,7 +4265,7 @@ function createCompactRetentionDiagnosticsFromDetailed(
   };
 }
 
-function createCompactConcurrencyDiagnosticsFromDetailed(
+export function createCompactConcurrencyDiagnosticsFromDetailed(
   detailed?: WorkConcurrencyDiagnosticsDetailedComponent | WorkConcurrencyDiagnosticsCompactComponent
 ): WorkConcurrencyDiagnosticsCompactComponent | undefined {
   if (!detailed) {
@@ -4342,7 +4283,7 @@ function createCompactConcurrencyDiagnosticsFromDetailed(
   };
 }
 
-function createCompactDurabilityDiagnosticsFromDetailed(
+export function createCompactDurabilityDiagnosticsFromDetailed(
   detailed?: WorkDurabilityDiagnosticsDetailedComponent | WorkDurabilityDiagnosticsCompactComponent
 ): WorkDurabilityDiagnosticsCompactComponent | undefined {
   if (!detailed) {
@@ -4372,7 +4313,7 @@ function createCompactDurabilityDiagnosticsFromDetailed(
   };
 }
 
-function createCompactIdempotencyDiagnosticsFromDetailed(
+export function createCompactIdempotencyDiagnosticsFromDetailed(
   detailed?: WorkIdempotencyDiagnosticsDetailedComponent | WorkIdempotencyDiagnosticsCompactComponent
 ): WorkIdempotencyDiagnosticsCompactComponent | undefined {
   if (!detailed) {
@@ -4387,12 +4328,7 @@ function createCompactIdempotencyDiagnosticsFromDetailed(
   };
 }
 
-function getWorkComponentData<T>(result: WorkComponentQueryResult | undefined, id: string) {
-  const component = result?.components?.[id];
-  return component?.status?.toLowerCase() === "ok" ? component.data as T : undefined;
-}
-
-function shouldClearDefinitionCatalogCacheForDiagnosticsTransition(
+export function shouldClearDefinitionCatalogCacheForDiagnosticsTransition(
   previousSnapshot: DiagnosticsAlertSnapshot | null,
   nextSnapshot: DiagnosticsAlertSnapshot | null
 ) {
@@ -4411,7 +4347,7 @@ function shouldClearDefinitionCatalogCacheForDiagnosticsTransition(
   );
 }
 
-function diagnosticsAlertSnapshotsEqual(
+export function diagnosticsAlertSnapshotsEqual(
   left: DiagnosticsAlertSnapshot | null | undefined,
   right: DiagnosticsAlertSnapshot | null | undefined
 ) {
@@ -4431,64 +4367,7 @@ function diagnosticsAlertSnapshotsEqual(
     left.refreshing === right.refreshing;
 }
 
-function formatNumber(value?: number | null) {
-  return typeof value === "number" ? value.toLocaleString() : "-";
-}
-
-function formatLocalTime(value: Date) {
-  return new Intl.DateTimeFormat(undefined, {
-    hour: "numeric",
-    minute: "2-digit",
-    second: "2-digit",
-  }).format(value);
-}
-
-function formatDateTimeShort(value?: string | null) {
-  if (!value) {
-    return "-";
-  }
-
-  return new Intl.DateTimeFormat(undefined, {
-    hour: "numeric",
-    minute: "2-digit",
-    second: "2-digit",
-  }).format(new Date(value));
-}
-
-function formatDuration(value?: string | null) {
-  if (!value) {
-    return "-";
-  }
-
-  const milliseconds = parseTimeSpanMilliseconds(value);
-  if (milliseconds === null) {
-    return value;
-  }
-
-  return `${milliseconds.toLocaleString(undefined, {
-    maximumFractionDigits: milliseconds < 10 ? 3 : 1,
-  })} ms`;
-}
-
-function parseTimeSpanMilliseconds(value: string) {
-  const match = /^(?:(\d+)\.)?(\d{1,2}):(\d{2}):(\d{2})(?:\.(\d+))?$/.exec(value);
-  if (!match) {
-    return null;
-  }
-
-  const days = Number(match[1] ?? 0);
-  const hours = Number(match[2]);
-  const minutes = Number(match[3]);
-  const seconds = Number(match[4]);
-  const fraction = match[5] ? Number(`0.${match[5]}`) : 0;
-  return (((days * 24 + hours) * 60 + minutes) * 60 + seconds + fraction) * 1000;
-}
-
-function parseDurationSeconds(value: string) {
-  return (parseTimeSpanMilliseconds(value) ?? 0) / 1000;
-}
-
-function loadConsoleStorage(): ConsoleStorage {
+export function loadConsoleStorage(): ConsoleStorage {
   const fallback = createDefaultConsoleStorage();
 
   if (typeof window === "undefined") {
@@ -4557,7 +4436,7 @@ function loadConsoleStorage(): ConsoleStorage {
   return fallback;
 }
 
-function createDefaultConsoleStorage(): ConsoleStorage {
+export function createDefaultConsoleStorage(): ConsoleStorage {
   return {
     activeSystemId: "",
     expandedHostIds: [],
@@ -4571,7 +4450,7 @@ function createDefaultConsoleStorage(): ConsoleStorage {
   };
 }
 
-function createDefaultOverviewPanelShapes(): OverviewPanelShapeMap {
+export function createDefaultOverviewPanelShapes(): OverviewPanelShapeMap {
   return Object.fromEntries(
     overviewPanelIds.map((panelId) => [
       panelId,
@@ -4580,7 +4459,7 @@ function createDefaultOverviewPanelShapes(): OverviewPanelShapeMap {
   ) as OverviewPanelShapeMap;
 }
 
-function normalizeOverviewPanelShapes(
+export function normalizeOverviewPanelShapes(
   value: unknown
 ): OverviewPanelShapeMap {
   const shapes = createDefaultOverviewPanelShapes();
@@ -4595,7 +4474,7 @@ function normalizeOverviewPanelShapes(
   return shapes;
 }
 
-function normalizeOverviewPanelShape(
+export function normalizeOverviewPanelShape(
   panelId: OverviewPanelId,
   value: unknown
 ): WorkComponentShape {
@@ -4606,7 +4485,7 @@ function normalizeOverviewPanelShape(
     : capabilities.defaultShape;
 }
 
-function normalizeOverviewHiddenPanels(
+export function normalizeOverviewHiddenPanels(
   value: unknown,
   legacyThroughputHidden = false
 ): OverviewPanelId[] {
@@ -4619,7 +4498,7 @@ function normalizeOverviewHiddenPanels(
   return overviewPanelIds.filter((id) => requested.has(id));
 }
 
-function normalizeThroughputSeriesIds(value: unknown): ThroughputSeriesId[] {
+export function normalizeThroughputSeriesIds(value: unknown): ThroughputSeriesId[] {
   if (!Array.isArray(value)) {
     return [];
   }
@@ -4629,12 +4508,12 @@ function normalizeThroughputSeriesIds(value: unknown): ThroughputSeriesId[] {
   return hidden.length >= throughputSeriesIds.length ? hidden.slice(1) : hidden;
 }
 
-function isThroughputSeriesId(value: unknown): value is ThroughputSeriesId {
+export function isThroughputSeriesId(value: unknown): value is ThroughputSeriesId {
   return typeof value === "string" &&
     throughputSeriesIds.includes(value as ThroughputSeriesId);
 }
 
-function normalizeOverviewPanelIds(value: unknown): OverviewPanelId[] {
+export function normalizeOverviewPanelIds(value: unknown): OverviewPanelId[] {
   const requested = new Set(
     Array.isArray(value)
       ? value.filter((item): item is OverviewPanelId =>
@@ -4647,7 +4526,7 @@ function normalizeOverviewPanelIds(value: unknown): OverviewPanelId[] {
   return overviewPanelIds.filter((id) => requested.has(id));
 }
 
-function normalizeStoredHost(host: WorkableHostConnection): WorkableHostConnection {
+export function normalizeStoredHost(host: WorkableHostConnection): WorkableHostConnection {
   const hostId = host.id || createServerId();
   const isDefaultLocalSampleHost = hostId === "local-sample-host";
   const systems = Array.isArray(host.systems)
@@ -4683,7 +4562,7 @@ function normalizeStoredHost(host: WorkableHostConnection): WorkableHostConnecti
   };
 }
 
-function normalizeStoredSystem(
+export function normalizeStoredSystem(
   hostId: string,
   system: WorkableSystemConnection
 ): WorkableSystemConnection {
@@ -4698,7 +4577,7 @@ function normalizeStoredSystem(
   };
 }
 
-function findSystemLocation(
+export function findSystemLocation(
   state: ConsoleStorage,
   systemId: string
 ): { host: WorkableHostConnection; system: WorkableSystemConnection } | null {
@@ -4717,11 +4596,11 @@ function findSystemLocation(
   return { host: fallbackHost, system: fallbackHost.systems[0] };
 }
 
-function getFirstAvailableSystemId(hosts: WorkableHostConnection[]) {
+export function getFirstAvailableSystemId(hosts: WorkableHostConnection[]) {
   return hosts.find((host) => host.systems.length > 0)?.systems[0]?.id ?? "";
 }
 
-function createDiagnosticsAlertTargets(hosts: WorkableHostConnection[]): DiagnosticsAlertTarget[] {
+export function createDiagnosticsAlertTargets(hosts: WorkableHostConnection[]): DiagnosticsAlertTarget[] {
   const targetsById = new Map<string, DiagnosticsAlertTarget>();
 
   for (const host of hosts) {
@@ -4760,7 +4639,7 @@ function createDiagnosticsAlertTargets(hosts: WorkableHostConnection[]): Diagnos
   return [...targetsById.values()];
 }
 
-function createDiagnosticsAlertTargetId(
+export function createDiagnosticsAlertTargetId(
   apiUrl: string,
   realtimeHubPath: string | null | undefined,
   systemName: string | undefined
@@ -4768,7 +4647,7 @@ function createDiagnosticsAlertTargetId(
   return `${apiUrl}\n${realtimeHubPath ?? ""}\n${systemName ?? ""}`;
 }
 
-function isServerView(value: unknown): value is ServerView {
+export function isServerView(value: unknown): value is ServerView {
   return (
     value === "overview" ||
     value === "definitions" ||
@@ -4778,11 +4657,11 @@ function isServerView(value: unknown): value is ServerView {
   );
 }
 
-function getViewReadinessKey(systemId: string, view: View) {
+export function getViewReadinessKey(systemId: string, view: View) {
   return `${systemId}:${view}`;
 }
 
-function createDefaultSystem(hostId: string): WorkableSystemConnection {
+export function createDefaultSystem(hostId: string): WorkableSystemConnection {
   return {
     id: "local-sample-default",
     hostId,
@@ -4793,7 +4672,7 @@ function createDefaultSystem(hostId: string): WorkableSystemConnection {
   };
 }
 
-function createServerId() {
+export function createServerId() {
   if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
     return crypto.randomUUID();
   }
@@ -4801,7 +4680,7 @@ function createServerId() {
   return `server-${Date.now().toString(36)}`;
 }
 
-function createFullAccessSummary(): WorkSystemAccessSummary {
+export function createFullAccessSummary(): WorkSystemAccessSummary {
   return {
     canConnect: true,
     isSystemAdministrator: true,
@@ -4816,12 +4695,12 @@ function createFullAccessSummary(): WorkSystemAccessSummary {
   };
 }
 
-function normalizeOptional(value?: string | null) {
+export function normalizeOptional(value?: string | null) {
   const trimmed = value?.trim();
   return trimmed ? trimmed : undefined;
 }
 
-function navTitle(view: View) {
+export function navTitle(view: View) {
   if (view === "worker") {
     return "Worker Console";
   }
@@ -4835,7 +4714,7 @@ function navTitle(view: View) {
   return navItems.find((item) => item.id === view)?.label ?? "Overview";
 }
 
-function headerRefreshTitle(view: View) {
+export function headerRefreshTitle(view: View) {
   switch (view) {
     case "definitions":
       return "Refresh catalog";
@@ -4854,87 +4733,22 @@ function headerRefreshTitle(view: View) {
   }
 }
 
-function cloneOverviewScope(scope: OverviewScope | null): OverviewScope | null {
+export function cloneOverviewScope(scope: OverviewScope | null): OverviewScope | null {
   return normalizeOverviewScope(scope);
 }
 
-function normalizeOverviewScope(scope: OverviewScope | null | undefined): OverviewScope | null {
-  if (!scope) {
-    return null;
-  }
-
-  const category = normalizeScopeText(scope.category);
-  const definitionName = normalizeScopeText(scope.definitionName);
-  if (!category && !definitionName) {
-    return null;
-  }
-
-  return {
-    category: category || undefined,
-    definitionName: definitionName || undefined,
-    includeSubcategories: category && !definitionName
-      ? scope.includeSubcategories ?? true
-      : undefined,
-  };
-}
-
-function normalizeScopeText(value: unknown) {
-  return typeof value === "string" ? value.trim() : "";
-}
-
-function createQueryCatalogScope(categoryFilter: string, definitionFilter: string): OverviewScope | null {
-  const category = normalizeCategoryFilter(categoryFilter);
-  const definitionName = definitionFilter.trim();
-  if (!category && !definitionName) {
-    return null;
-  }
-
-  return {
-    category: category || undefined,
-    definitionName: definitionName || undefined,
-    includeSubcategories: true,
-  };
-}
-
-function overviewScopesEqual(
-  left: OverviewScope | null,
-  right: OverviewScope | null
-) {
-  const normalizedLeft = normalizeOverviewScope(left);
-  const normalizedRight = normalizeOverviewScope(right);
-  return (
-    normalizedLeft?.category === normalizedRight?.category &&
-    normalizedLeft?.definitionName === normalizedRight?.definitionName &&
-    normalizedLeft?.includeSubcategories === normalizedRight?.includeSubcategories
-  );
-}
-
-function splitCatalogPath(path: unknown) {
-  const value = normalizeScopeText(path);
-  return value
-    ? value
-        .split(":")
-        .map((segment) => segment.trim())
-        .filter(Boolean)
-    : [];
-}
-
-function normalizeCategoryFilter(path: unknown) {
-  return splitCatalogPath(path).join(":");
-}
-
-function getWindowScrollTop() {
+export function getWindowScrollTop() {
   return document.scrollingElement?.scrollTop ?? window.scrollY;
 }
 
-function getDocumentScrollHeight() {
+export function getDocumentScrollHeight() {
   return Math.max(
     document.body.scrollHeight,
     document.documentElement.scrollHeight
   );
 }
 
-function navigationEntriesEqual(left: NavigationEntry | undefined, right: NavigationEntry) {
+export function navigationEntriesEqual(left: NavigationEntry | undefined, right: NavigationEntry) {
   return (
     left?.systemId === right.systemId &&
     overviewScopesEqual(left.catalogScope, right.catalogScope) &&

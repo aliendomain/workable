@@ -1,7 +1,11 @@
 "use client";
 
-import { Check, Info, ListPlus, Minus, Plus, WandSparkles } from "lucide-react";
+import { Check, ListPlus, Minus, Plus, WandSparkles } from "lucide-react";
 import type { ReactNode } from "react";
+import {
+  FormEmptyState,
+  FormFieldHeader,
+} from "@/components/features/console/form-controls";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -38,9 +42,9 @@ type SchemaPathFieldProps = {
 export function SchemaForm({ schema, value, onChange }: SchemaFormProps) {
   if (!schema) {
     return (
-      <div className="rounded-lg border border-dashed p-6 text-muted-foreground text-sm">
+      <FormEmptyState>
         This definition does not expose a typed input schema.
-      </div>
+      </FormEmptyState>
     );
   }
 
@@ -71,9 +75,9 @@ export function SchemaPathField({
 
   if (!fieldSchema) {
     return (
-      <div className="rounded-lg border border-dashed p-4 text-muted-foreground text-sm">
+      <FormEmptyState padding="compact">
         {path}
-      </div>
+      </FormEmptyState>
     );
   }
 
@@ -388,9 +392,9 @@ function ArrayField({
         </Button>
       </div>
       {items.length === 0 ? (
-        <div className="rounded-md border border-dashed p-4 text-muted-foreground text-sm">
+        <FormEmptyState className="rounded-md" padding="compact">
           No items.
-        </div>
+        </FormEmptyState>
       ) : (
         <div className="space-y-3">
           {items.map((item, index) => (
@@ -467,9 +471,9 @@ function DictionaryField({
         </Button>
       </div>
       {entries.length === 0 ? (
-        <div className="rounded-md border border-dashed p-4 text-muted-foreground text-sm">
+        <FormEmptyState className="rounded-md" padding="compact">
           No key-value pairs.
-        </div>
+        </FormEmptyState>
       ) : (
         <div className="space-y-3">
           {entries.map(([key, entryValue]) => (
@@ -561,42 +565,19 @@ function FieldHeader({
   ].filter(Boolean);
 
   return (
-    <div className="flex min-w-0 items-center">
-      <Tooltip delayDuration={500} disableHoverableContent>
-        <TooltipTrigger asChild>
-          <button
-            aria-label={`${name} field details`}
-            className="group flex min-w-0 items-center gap-1.5 rounded-sm text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
-            type="button"
-          >
-            <span className="min-w-0 truncate font-medium text-foreground text-sm leading-none">
-              {name}
-            </span>
-            <Info className="size-3.5 shrink-0 text-muted-foreground transition-colors group-hover:text-foreground" />
-          </button>
-        </TooltipTrigger>
-        <TooltipContent
-          className="max-w-[min(18rem,calc(100vw-2rem))] items-start whitespace-normal break-words text-left"
-          collisionPadding={12}
-          sideOffset={6}
-        >
-          <div className="min-w-0 space-y-1.5">
-            {description && (
-              <p className="font-sans text-background text-xs leading-snug break-words">
-                {description}
-              </p>
-            )}
-            <div className="space-y-0.5 leading-snug">
-              {details.map((detail) => (
-                <div className="break-all font-mono" key={detail}>
-                  {detail}
-                </div>
-              ))}
+    <FormFieldHeader
+      description={description}
+      details={(
+        <div className="space-y-0.5 leading-snug">
+          {details.map((detail) => (
+            <div className="break-all font-mono" key={detail}>
+              {detail}
             </div>
-          </div>
-        </TooltipContent>
-      </Tooltip>
-    </div>
+          ))}
+        </div>
+      )}
+      label={name}
+    />
   );
 }
 

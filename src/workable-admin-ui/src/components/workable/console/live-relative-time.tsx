@@ -9,13 +9,13 @@ export function LiveRelativeTime({ value }: { value?: string | null }) {
   return <>{formatRelativeTime(value, now)}</>;
 }
 
-export function useLiveRelativeTimeNow() {
+export function useLiveRelativeTimeNow(intervalMs = 100) {
   const [now, setNow] = useState(() => Date.now());
 
   useEffect(() => {
-    const interval = window.setInterval(() => setNow(Date.now()), 100);
+    const interval = window.setInterval(() => setNow(Date.now()), intervalMs);
     return () => window.clearInterval(interval);
-  }, []);
+  }, [intervalMs]);
 
   return now;
 }

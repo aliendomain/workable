@@ -158,7 +158,7 @@ function useConsoleHeaderCapabilitiesContext() {
   return context;
 }
 
-function mergeConsoleHeaderCapabilities(
+export function mergeConsoleHeaderCapabilities(
   defaultCapabilities: ConsoleHeaderCapabilities | null | undefined,
   activeCapabilities: ConsoleHeaderCapabilities | null | undefined
 ) {
@@ -175,7 +175,7 @@ function mergeConsoleHeaderCapabilities(
   } satisfies ConsoleHeaderCapabilities;
 }
 
-function mergeConsoleHeaderRefreshCapability(
+export function mergeConsoleHeaderRefreshCapability(
   defaultRefresh: ConsoleHeaderRefreshCapability | null,
   activeRefresh: ConsoleHeaderRefreshCapability | null
 ) {

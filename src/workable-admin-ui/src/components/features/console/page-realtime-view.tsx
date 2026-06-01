@@ -170,7 +170,7 @@ function useConsolePageRealtimeViewContext() {
   return context;
 }
 
-function createDisabledConsolePageRealtimeView<T>(): ConsoleRealtimeViewLoadable<T, RealtimePayloadMessage> {
+export function createDisabledConsolePageRealtimeView<T>(): ConsoleRealtimeViewLoadable<T, RealtimePayloadMessage> {
   return {
     clearMessages: () => undefined,
     connectionState: "disabled",
