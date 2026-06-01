@@ -39,6 +39,17 @@ test("admin UI rejects unauthenticated users by default when credentials are con
   assert.equal(result.headers?.["www-authenticate"], undefined);
 });
 
+test("admin UI anonymous mode is rejected in production", () => {
+  const result = authenticateAdminRequest(new Headers(), {
+    NODE_ENV: "production",
+    WORKABLE_ADMIN_CONFIG_DISABLED: "true",
+    WORKABLE_ADMIN_UI_ALLOW_ANONYMOUS: "true",
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.status, 503);
+});
+
 test("login-created session cookie authenticates without browser basic auth", () => {
   const cookie = createAdminSessionCookie(
     "admin",
@@ -189,6 +200,8 @@ test("Entra login redirects to Microsoft with state, nonce, and PKCE cookies", (
   );
 
   assert.equal(response.status, 302);
+  assert.equal(response.headers.get("cache-control"), "no-store");
+  assert.equal(response.headers.get("x-content-type-options"), "nosniff");
   const location = response.headers.get("location");
   assert.ok(location);
   if (!location) {
@@ -293,6 +306,8 @@ test("hosted Workable token endpoint returns 200 with no token when no binding i
   );
 
   assert.equal(response.status, 200);
+  assert.equal(response.headers.get("cache-control"), "no-store");
+  assert.equal(response.headers.get("x-content-type-options"), "nosniff");
   assert.deepEqual(await response.json(), {
     accessToken: null,
   });
@@ -351,6 +366,33 @@ test("proxy preserves hosted Workable API authorization failures", async () => {
   assert.deepEqual(await response.json(), {
     error: "denied by hosted Workable API",
   });
+});
+
+test("proxy responses are not cacheable and do not serve hosted HTML as admin HTML", async () => {
+  const response = await proxyWorkableRequest(
+    new Request("https://admin.example.com/api/workable/host", {
+      headers: {
+        authorization: basic("admin", "correct horse battery staple"),
+      },
+    }),
+    ["host"],
+    {
+      env: secureEnv(),
+      fetch: async () =>
+        new Response("<script>alert(1)</script>", {
+          status: 200,
+          headers: {
+            "content-type": "text/html; charset=utf-8",
+          },
+        }),
+    }
+  );
+
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get("cache-control"), "no-store");
+  assert.equal(response.headers.get("x-content-type-options"), "nosniff");
+  assert.equal(response.headers.get("content-type"), "text/plain; charset=utf-8");
+  assert.equal(await response.text(), "<script>alert(1)</script>");
 });
 
 test("proxy forwards the configured Entra target API token to the configured host", async () => {

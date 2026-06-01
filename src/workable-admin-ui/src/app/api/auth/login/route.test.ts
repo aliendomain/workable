@@ -13,6 +13,7 @@ test("login route rejects unsafe POST requests without a same-origin Origin", as
     }));
 
     assert.equal(response.status, 403);
+    assert.equal(response.headers.get("cache-control"), "no-store");
     assert.deepEqual(await response.json(), {
       error: "Unsafe Workable admin UI requests require a same-origin Origin header.",
     });
@@ -32,6 +33,8 @@ test("login route accepts JSON credentials and writes an admin session cookie", 
 
     assert.equal(response.status, 200);
     assert.deepEqual(await response.json(), { userName: "admin" });
+    assert.equal(response.headers.get("cache-control"), "no-store");
+    assert.equal(response.headers.get("x-content-type-options"), "nosniff");
     assert.match(response.headers.get("set-cookie") ?? "", /workable_admin_session=/);
     assert.match(response.headers.get("set-cookie") ?? "", /HttpOnly/);
   });
@@ -68,6 +71,7 @@ test("login route reports bad credentials without creating a session", async () 
     }));
 
     assert.equal(response.status, 401);
+    assert.equal(response.headers.get("cache-control"), "no-store");
     assert.deepEqual(await response.json(), {
       error: "The username or password is not valid.",
     });

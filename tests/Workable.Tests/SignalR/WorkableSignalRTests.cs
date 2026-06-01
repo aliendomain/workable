@@ -888,6 +888,30 @@ public sealed class WorkableSignalRTests
         Assert.Empty(viewSubscriptions.GetDebugSubscriptions(system));
     }
 
+    [Fact]
+    public async Task NamedSystemWatchRequiresConnectPermission()
+    {
+        using var host = await CreateHost(
+            addSignalR: true,
+            groups: TransportAuthorizationTestSupport.ReadGroups.Concat(TransportAuthorizationTestSupport.OperateGroups),
+            configureServices: services => services.AddWorkableSystem("remote", builder =>
+            {
+                builder.StartWithHost();
+                builder.RequireAuthorization();
+                builder.ConfigureTransportSystemAuthorization();
+                builder.AddAuthorizedTransportWork(WorkDefinition.Create("signalr.remote"), SuccessfulWork);
+            }));
+        await using var connection = CreateConnection(host);
+        await connection.StartAsync();
+
+        var exception = await Assert.ThrowsAnyAsync<Exception>(() => connection.InvokeAsync(
+            "WatchEvents",
+            new WorkableRealtimeEventCriteria(),
+            "remote"));
+
+        Assert.Contains("connect permission", exception.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
     private static async Task<IHost> CreateHost(
         bool addSignalR,
         string? hubPath = null,

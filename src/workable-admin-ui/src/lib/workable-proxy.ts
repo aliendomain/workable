@@ -13,6 +13,11 @@ type WorkableProxyOptions = {
   fetch?: typeof fetch;
 };
 
+const noStoreHeaders = {
+  "cache-control": "no-store",
+  "x-content-type-options": "nosniff",
+};
+
 export async function proxyWorkableRequest(
   request: Request,
   path: readonly string[],
@@ -25,7 +30,7 @@ export async function proxyWorkableRequest(
       { error: authentication.error },
       {
         status: authentication.status,
-        headers: failureHeaders(authentication),
+        headers: secureJsonHeaders(failureHeaders(authentication)),
       }
     );
   }
@@ -36,20 +41,26 @@ export async function proxyWorkableRequest(
       { error: csrf.error },
       {
         status: csrf.status,
-        headers: failureHeaders(csrf),
+        headers: secureJsonHeaders(failureHeaders(csrf)),
       }
     );
   }
 
   const body = await readBody(request, getMaxProxyBodyBytes(env));
   if (!body.ok) {
-    return Response.json({ error: body.error }, { status: 413 });
+    return Response.json(
+      { error: body.error },
+      { status: 413, headers: secureJsonHeaders() }
+    );
   }
 
   const target = createWorkableTargetUrl(request, path, env);
 
   if (!target.ok) {
-    return Response.json({ error: target.error }, { status: 400 });
+    return Response.json(
+      { error: target.error },
+      { status: 400, headers: secureJsonHeaders() }
+    );
   }
 
   const targetAccessToken = await getEntraTargetAccessToken(
@@ -66,7 +77,7 @@ export async function proxyWorkableRequest(
       {
         status: targetAccessToken.status,
         headers: withCookies(
-          failureHeaders(targetAccessToken),
+          secureJsonHeaders(failureHeaders(targetAccessToken)),
           targetAccessToken.setCookieHeaders
         ),
       }
@@ -93,7 +104,10 @@ export async function proxyWorkableRequest(
       statusText: response.statusText,
       headers: withCookies(
         {
-          "content-type": response.headers.get("content-type") ?? "application/json",
+          ...noStoreHeaders,
+          "content-type": createSafeProxyContentType(
+            response.headers.get("content-type")
+          ),
         },
         [
           ...targetAccessToken.setCookieHeaders,
@@ -106,7 +120,7 @@ export async function proxyWorkableRequest(
       {
         error: createProxyReachabilityError(target.url),
       },
-      { status: 502 }
+      { status: 502, headers: secureJsonHeaders() }
     );
   }
 }
@@ -177,4 +191,23 @@ function withCookies(
   }
 
   return responseHeaders;
+}
+
+function secureJsonHeaders(headers: Record<string, string> = {}) {
+  return {
+    ...headers,
+    ...noStoreHeaders,
+  };
+}
+
+function createSafeProxyContentType(contentType: string | null) {
+  const normalized = contentType?.toLowerCase() ?? "";
+  if (
+    normalized.includes("application/json") ||
+    normalized.includes("+json")
+  ) {
+    return "application/json; charset=utf-8";
+  }
+
+  return "text/plain; charset=utf-8";
 }

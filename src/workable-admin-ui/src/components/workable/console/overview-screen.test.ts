@@ -28,6 +28,7 @@ import {
   measureJsonBytes,
   parseChartTimestamp,
   pluralize,
+  shouldRefreshFailedWorkersAfterAction,
   toFailedWorkerActionTarget,
 } from "@/components/workable/console/overview-screen";
 import type { OverviewPanelShapeMap } from "@/components/features/console/overview-panels";
@@ -105,6 +106,25 @@ test("overview worker helpers expose row actions and detailed failed-worker dete
     revision: 1,
     updatedAt: "2026-05-30T10:00:00.000Z",
   }), false);
+});
+
+test("overview action refresh helper trusts connected realtime and refreshes fallback states", () => {
+  assert.equal(shouldRefreshFailedWorkersAfterAction({
+    connectionState: "connected",
+    enabled: true,
+  }), false);
+  assert.equal(shouldRefreshFailedWorkersAfterAction({
+    connectionState: "connecting",
+    enabled: true,
+  }), true);
+  assert.equal(shouldRefreshFailedWorkersAfterAction({
+    connectionState: "reconnecting",
+    enabled: true,
+  }), true);
+  assert.equal(shouldRefreshFailedWorkersAfterAction({
+    connectionState: "disabled",
+    enabled: false,
+  }), true);
 });
 
 test("throughput bucket and chart helpers normalize missing data and format series", () => {

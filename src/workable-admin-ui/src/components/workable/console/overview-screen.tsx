@@ -178,6 +178,13 @@ export function getOverviewPanelShape(
     : overviewPanelShapeCapabilities[panelId].defaultShape;
 }
 
+export function shouldRefreshFailedWorkersAfterAction(realtime: {
+  connectionState: string;
+  enabled: boolean;
+}) {
+  return !realtime.enabled || realtime.connectionState !== "connected";
+}
+
 export function OverviewView({
   access,
   connection,
@@ -390,6 +397,7 @@ export function OverviewView({
     id: "overview",
   });
   const realtimeOverview = useConsolePageRealtimeView<WorkComponentQueryResult>("overview");
+  const shouldUseFailedWorkersActionRefresh = shouldRefreshFailedWorkersAfterAction(realtimeOverview);
   const overviewData = realtimeOverview.data ?? overview.data;
   const togglePayloadOpen = useCallback(() => {
     setPayloadOpen(!payloadOpen);
@@ -458,7 +466,8 @@ export function OverviewView({
     "throughput"
   );
   const throughputData = throughputComponent?.throughput;
-  const activeFailedWorkersSlice = failedWorkersSlice?.key === failedWorkersKey
+  const activeFailedWorkersSlice = shouldUseFailedWorkersActionRefresh &&
+    failedWorkersSlice?.key === failedWorkersKey
     ? failedWorkersSlice.data
     : undefined;
   const activeWorkerCount = activeFailedWorkersSlice?.activeWorkerCount ??
@@ -500,6 +509,11 @@ export function OverviewView({
       setActionError(
         error instanceof Error ? error.message : `Unable to ${action.toLowerCase()} worker.`
       );
+      setActionWorkerId(null);
+      return;
+    }
+
+    if (!shouldUseFailedWorkersActionRefresh) {
       setActionWorkerId(null);
       return;
     }

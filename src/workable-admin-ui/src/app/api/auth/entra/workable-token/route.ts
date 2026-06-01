@@ -4,6 +4,11 @@ import {
   failureHeaders,
 } from "@/lib/admin-security";
 
+const noStoreHeaders = {
+  "cache-control": "no-store",
+  "x-content-type-options": "nosniff",
+};
+
 export async function GET(request: Request) {
   const authentication = authenticateAdminRequest(request.headers, process.env, request);
   if (!authentication.ok) {
@@ -11,7 +16,7 @@ export async function GET(request: Request) {
       { error: authentication.error },
       {
         status: authentication.status,
-        headers: failureHeaders(authentication),
+        headers: secureJsonHeaders(failureHeaders(authentication)),
       }
     );
   }
@@ -21,4 +26,11 @@ export async function GET(request: Request) {
     response.headers.append("set-cookie", authentication.sessionCookieHeader);
   }
   return response;
+}
+
+function secureJsonHeaders(headers: Record<string, string> = {}) {
+  return {
+    ...headers,
+    ...noStoreHeaders,
+  };
 }

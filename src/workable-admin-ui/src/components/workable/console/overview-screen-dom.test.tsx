@@ -94,7 +94,7 @@ test("overview view surfaces request errors and reports connection failure", asy
   }
 });
 
-test("overview failed-worker actions post mutations and refresh the failed-worker slice", async () => {
+test("overview failed-worker actions refresh the failed-worker slice when realtime is not connected", async () => {
   const callbacks = createOverviewCallbacks();
   const fetchMock = installOverviewFetch((call) => {
     if (call.input === "/api/workable/systems/Ops/views/overview") {

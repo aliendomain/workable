@@ -300,6 +300,40 @@ public sealed class WorkableMcpTests
     }
 
     [Fact]
+    public async Task McpRouterNamedSystemRequiresConnectPermission()
+    {
+        await using var provider = new ServiceCollection()
+            .AddTransportTestAuthorization(
+                TransportAuthorizationTestSupport.ReadGroups.Concat(TransportAuthorizationTestSupport.OperateGroups))
+            .AddWorkableSystem("remote", builder =>
+            {
+                builder.RequireAuthorization();
+                builder.ConfigureTransportSystemAuthorization();
+                builder.AddAuthorizedTransportWork(
+                    WorkDefinition.Create("remote.echo", configuration: AllowMcp()),
+                    SuccessfulWork);
+            })
+            .AddWorkableMcpServer()
+            .BuildServiceProvider();
+        var router = provider.GetRequiredService<WorkableMcpToolRouter>();
+        var requestContext = CreateMcpRequestContext("Invoke MCP named system without connect.");
+
+        var toolsException = Assert.Throws<WorkSystemAccessDeniedException>(() => router.GetTools(
+            requestContext,
+            systemName: "remote"));
+        var result = await router.CallTool(
+            "workable_query_work_definitions",
+            arguments: null,
+            options: null,
+            systemName: "remote",
+            requestContext: requestContext);
+
+        Assert.Equal(WorkSystemPermission.Connect, toolsException.Permission);
+        Assert.True(result.IsError);
+        Assert.Contains("connect permission", result.Json, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public async Task MappedHttpMcpServerListsToolsAndCallsWorkThroughHttpTransport()
     {
         var observedOrigin = new TaskCompletionSource<WorkOrigin>(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -389,6 +423,33 @@ public sealed class WorkableMcpTests
         Assert.False(result.IsError);
         Assert.Equal(WorkInvocationChannel.Mcp, worker.Origin.Channel);
         Assert.Equal("/workable/systems/remote/mcp", worker.Origin.Url);
+    }
+
+    [Fact]
+    public async Task MappedHttpMcpNamedEndpointRequiresConnectPermission()
+    {
+        using var host = await CreateNamedMcpHttpHost(
+            groups: TransportAuthorizationTestSupport.ReadGroups.Concat(TransportAuthorizationTestSupport.OperateGroups));
+        var httpClient = host.GetTestClient();
+        var transport = new HttpClientTransport(
+            new HttpClientTransportOptions
+            {
+                Endpoint = new Uri("http://localhost/workable/systems/remote/mcp"),
+            },
+            httpClient,
+            loggerFactory: null,
+            ownsHttpClient: false);
+        await using var client = await McpClient.CreateAsync(transport);
+
+        var tools = await client.ListToolsAsync();
+        var result = await client.CallToolAsync(
+            "workable_query_work_definitions",
+            new Dictionary<string, object?>());
+        var json = JsonSerializer.Serialize(result);
+
+        Assert.Empty(tools);
+        Assert.True(result.IsError);
+        Assert.Contains("connect permission", json, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -936,7 +997,9 @@ public sealed class WorkableMcpTests
         return host;
     }
 
-    private static async Task<IHost> CreateNamedMcpHttpHost(WorkDefinition? remoteDefinition = null)
+    private static async Task<IHost> CreateNamedMcpHttpHost(
+        WorkDefinition? remoteDefinition = null,
+        IEnumerable<string>? groups = null)
     {
         remoteDefinition ??= WorkDefinition.Create("remote.echo", configuration: AllowMcp());
 
@@ -947,11 +1010,12 @@ public sealed class WorkableMcpTests
                 web.ConfigureServices(services =>
                 {
                     services.AddRouting();
-                    services.AddTransportTestAuthorization();
+                    services.AddTransportTestAuthorization(groups);
                     services.AddWorkableSystem(builder =>
                     {
                         builder.StartWithHost();
                         builder.RequireAuthorization();
+                        builder.ConfigureTransportSystemAuthorization();
                         builder.AddAuthorizedTransportWork(
                             WorkDefinition.Create("default.echo", configuration: AllowMcp()),
                             SuccessfulWork);
@@ -960,6 +1024,7 @@ public sealed class WorkableMcpTests
                     {
                         builder.StartWithHost();
                         builder.RequireAuthorization();
+                        builder.ConfigureTransportSystemAuthorization();
                         builder.AddAuthorizedTransportWork(remoteDefinition, (context, input, cancellationToken) =>
                             Task.FromResult(WorkExecutionResult.Success(input is null ? WorkOutput.Empty : WorkOutput.FromData(input))));
                     });
@@ -973,7 +1038,8 @@ public sealed class WorkableMcpTests
                         context.User = TransportAuthorizationTestSupport.CreateTransportPrincipal(
                             id: "mcp-user-1",
                             name: "MCP User",
-                            email: "mcp.user@example.com");
+                            email: "mcp.user@example.com",
+                            groups: groups);
                         await next();
                     });
                     app.UseEndpoints(endpoints =>

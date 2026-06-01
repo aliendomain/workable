@@ -41,6 +41,10 @@ const NONCE_COOKIE_NAME = "workable_admin_entra_nonce";
 const VERIFIER_COOKIE_NAME = "workable_admin_entra_verifier";
 const NEXT_COOKIE_NAME = "workable_admin_entra_next";
 const OAUTH_COOKIE_MAX_AGE_SECONDS = 10 * 60;
+const noStoreHeaders = {
+  "cache-control": "no-store",
+  "x-content-type-options": "nosniff",
+};
 
 type FetchLike = typeof fetch;
 
@@ -104,7 +108,7 @@ export function createEntraAuthorizationResponse(
   if (!validation.ok) {
     return Response.json(
       { error: validation.error },
-      { status: validation.status }
+      { status: validation.status, headers: noStoreHeaders }
     );
   }
 
@@ -563,6 +567,7 @@ function createRedirectResponse(location: URL, status = 302) {
   return new Response(null, {
     status,
     headers: {
+      ...noStoreHeaders,
       location: location.toString(),
     },
   });
