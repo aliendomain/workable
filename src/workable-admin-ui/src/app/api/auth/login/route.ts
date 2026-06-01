@@ -6,6 +6,11 @@ import {
   verifyAdminCredentials,
 } from "@/lib/admin-security";
 
+const noStoreHeaders = {
+  "cache-control": "no-store",
+  "x-content-type-options": "nosniff",
+};
+
 export async function POST(request: Request) {
   const csrf = validateUnsafeRequestOrigin(request);
   if (!csrf.ok) {
@@ -13,7 +18,7 @@ export async function POST(request: Request) {
       { error: csrf.error },
       {
         status: csrf.status,
-        headers: failureHeaders(csrf),
+        headers: secureJsonHeaders(failureHeaders(csrf)),
       }
     );
   }
@@ -22,7 +27,7 @@ export async function POST(request: Request) {
   if (!credentials) {
     return Response.json(
       { error: "Username and password are required." },
-      { status: 400 }
+      { status: 400, headers: secureJsonHeaders() }
     );
   }
 
@@ -35,7 +40,7 @@ export async function POST(request: Request) {
       { error: verification.error },
       {
         status: verification.status,
-        headers: failureHeaders(verification),
+        headers: secureJsonHeaders(failureHeaders(verification)),
       }
     );
   }
@@ -46,12 +51,12 @@ export async function POST(request: Request) {
       { error: cookie.error },
       {
         status: cookie.status,
-        headers: failureHeaders(cookie),
+        headers: secureJsonHeaders(failureHeaders(cookie)),
       }
     );
   }
 
-  const headers = new Headers();
+  const headers = new Headers(noStoreHeaders);
   headers.append("set-cookie", cookie.header);
   for (const staleCookie of createExpiredEntraTargetTokenCookies()) {
     headers.append("set-cookie", staleCookie);
@@ -65,6 +70,13 @@ export async function POST(request: Request) {
       headers,
     }
   );
+}
+
+function secureJsonHeaders(headers: Record<string, string> = {}) {
+  return {
+    ...headers,
+    ...noStoreHeaders,
+  };
 }
 
 async function readCredentials(request: Request) {

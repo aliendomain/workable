@@ -5,6 +5,11 @@ import {
   validateUnsafeRequestOrigin,
 } from "@/lib/admin-security";
 
+const noStoreHeaders = {
+  "cache-control": "no-store",
+  "x-content-type-options": "nosniff",
+};
+
 export async function POST(request: Request) {
   const csrf = validateUnsafeRequestOrigin(request);
   if (!csrf.ok) {
@@ -12,12 +17,12 @@ export async function POST(request: Request) {
       { error: csrf.error },
       {
         status: csrf.status,
-        headers: failureHeaders(csrf),
+        headers: secureJsonHeaders(failureHeaders(csrf)),
       }
     );
   }
 
-  const headers = new Headers();
+  const headers = new Headers(noStoreHeaders);
   headers.append("set-cookie", createExpiredAdminSessionCookie());
   for (const cookie of createExpiredEntraTargetTokenCookies()) {
     headers.append("set-cookie", cookie);
@@ -29,4 +34,11 @@ export async function POST(request: Request) {
       headers,
     }
   );
+}
+
+function secureJsonHeaders(headers: Record<string, string> = {}) {
+  return {
+    ...headers,
+    ...noStoreHeaders,
+  };
 }

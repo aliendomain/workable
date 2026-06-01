@@ -1,4 +1,5 @@
 using Microsoft.AspNetCore.Http;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace Workable;
 
@@ -48,6 +49,24 @@ internal static class WorkableHttpRouteResults
             : null;
         if (topology.TryResolveSystem(systemName, out var resolved))
         {
+            if (!string.IsNullOrWhiteSpace(systemName))
+            {
+                var requestContexts = httpContext.RequestServices.GetRequiredService<IWorkRequestContextFactory>();
+                var requestContext = WorkableHttpRequestContext.Create(
+                    httpContext,
+                    requestContexts,
+                    "Authorize Workable HTTP named-system access.");
+                if (!resolved.CanConnect(requestContext))
+                {
+                    system = null!;
+                    notFound = AuthorizationDenied(new WorkSystemAccessDeniedException(
+                        WorkSystemPermission.Connect,
+                        resolved.Id,
+                        resolved.Name));
+                    return false;
+                }
+            }
+
             system = resolved;
             notFound = Results.NotFound();
             return true;

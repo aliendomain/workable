@@ -85,6 +85,12 @@ export function getAdminSecuritySettings(
   const sessionCookieName = env.WORKABLE_ADMIN_UI_SESSION_COOKIE_NAME?.trim() ||
     config?.sessionCookieName?.trim() ||
     DEFAULT_SESSION_COOKIE_NAME;
+  const requestedAnonymousAccess = parseBoolean(env.WORKABLE_ADMIN_UI_ALLOW_ANONYMOUS) ??
+    config?.allowAnonymous ??
+    false;
+  const anonymousAccessError = requestedAnonymousAccess && isProductionEnvironment
+    ? "Workable admin UI anonymous access is only allowed outside production."
+    : undefined;
 
   return {
     authProvider: providerResult.provider ??
@@ -93,9 +99,7 @@ export function getAdminSecuritySettings(
     allowedApiUrls: env.WORKABLE_ALLOWED_API_URLS
       ? parseList(env.WORKABLE_ALLOWED_API_URLS)
       : config?.allowedApiUrls ?? [],
-    allowAnonymous: parseBoolean(env.WORKABLE_ADMIN_UI_ALLOW_ANONYMOUS) ??
-      config?.allowAnonymous ??
-      false,
+    allowAnonymous: requestedAnonymousAccess && !isProductionEnvironment,
     userName,
     password,
     entraId,
@@ -111,7 +115,7 @@ export function getAdminSecuritySettings(
       config?.maxProxyBodyBytes,
       1_048_576
     ),
-    configError: error ?? providerResult.error,
+    configError: error ?? providerResult.error ?? anonymousAccessError,
     isProduction: isProductionEnvironment,
   };
 }

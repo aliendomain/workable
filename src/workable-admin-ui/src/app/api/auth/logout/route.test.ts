@@ -8,6 +8,7 @@ test("logout route rejects unsafe POST requests without a same-origin Origin", a
   }));
 
   assert.equal(response.status, 403);
+  assert.equal(response.headers.get("cache-control"), "no-store");
   assert.deepEqual(await response.json(), {
     error: "Unsafe Workable admin UI requests require a same-origin Origin header.",
   });
@@ -22,6 +23,8 @@ test("logout route clears admin session cookies for same-origin requests", async
   }));
 
   assert.equal(response.status, 200);
+  assert.equal(response.headers.get("cache-control"), "no-store");
+  assert.equal(response.headers.get("x-content-type-options"), "nosniff");
   assert.deepEqual(await response.json(), { ok: true });
   assert.match(response.headers.get("set-cookie") ?? "", /workable_admin_session=;/);
   assert.match(response.headers.get("set-cookie") ?? "", /Max-Age=0/);

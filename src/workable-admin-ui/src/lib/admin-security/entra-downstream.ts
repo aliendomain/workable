@@ -21,6 +21,10 @@ const TOKEN_COOKIE_PURPOSE = "entra-target-token";
 const TOKEN_COOKIE_CHUNK_SIZE = 3000;
 const MAX_TOKEN_COOKIE_CHUNKS = 16;
 const TOKEN_REFRESH_SKEW_SECONDS = 60;
+const noStoreHeaders = {
+  "cache-control": "no-store",
+  "x-content-type-options": "nosniff",
+};
 
 type FetchLike = typeof fetch;
 
@@ -260,7 +264,7 @@ export async function createEntraTargetAccessTokenResponse(
       { error: token.error },
       {
         status: token.status,
-        headers: withCookies({ "cache-control": "no-store" }, token.setCookieHeaders),
+        headers: withCookies(noStoreHeaders, token.setCookieHeaders),
       }
     );
   }
@@ -269,7 +273,7 @@ export async function createEntraTargetAccessTokenResponse(
     return Response.json(
       { accessToken: null },
       {
-        headers: withCookies({ "cache-control": "no-store" }, token.setCookieHeaders),
+        headers: withCookies(noStoreHeaders, token.setCookieHeaders),
       }
     );
   }
@@ -277,7 +281,7 @@ export async function createEntraTargetAccessTokenResponse(
   return Response.json(
     { accessToken: token.accessToken },
     {
-      headers: withCookies({ "cache-control": "no-store" }, token.setCookieHeaders),
+      headers: withCookies(noStoreHeaders, token.setCookieHeaders),
     }
   );
 }

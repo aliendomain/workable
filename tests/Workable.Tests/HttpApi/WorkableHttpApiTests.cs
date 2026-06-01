@@ -1817,6 +1817,29 @@ public sealed class WorkableHttpApiTests
     }
 
     [Fact]
+    public async Task MappedHttpNamedSystemRoutesRequireConnectPermission()
+    {
+        using var host = await CreateMultiSystemHttpHost(
+            TransportAuthorizationTestSupport.ReadGroups.Concat(TransportAuthorizationTestSupport.OperateGroups));
+        var client = host.GetTestClient();
+
+        var definitionsResponse = await client.GetAsync("/workable/systems/background/definitions");
+        var definitionsJson = await definitionsResponse.Content.ReadAsStringAsync();
+        var queueResponse = await client.PostAsJsonAsync(
+            "/workable/systems/background/work/http.named",
+            new
+            {
+                completion = "returnAfterAccepted",
+            });
+        var queueJson = await queueResponse.Content.ReadAsStringAsync();
+
+        Assert.Equal(HttpStatusCode.Forbidden, definitionsResponse.StatusCode);
+        Assert.Contains("workable.http.system.connect_denied", definitionsJson);
+        Assert.Equal(HttpStatusCode.Forbidden, queueResponse.StatusCode);
+        Assert.Contains("workable.http.system.connect_denied", queueJson);
+    }
+
+    [Fact]
     public async Task MappedHttpRouteIncludesConnectOnlyAccessSummary()
     {
         using var host = await CreateMultiSystemHttpHost(TransportAuthorizationTestSupport.ConnectGroups);
