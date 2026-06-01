@@ -27,7 +27,7 @@ public sealed class WorkEventStreamTests
 
         await using var subscription = stream.Subscribe();
 
-        await AssertNoEvent(subscription);
+        AssertNoQueuedEvents(subscription);
     }
 
     [Fact]
@@ -42,7 +42,7 @@ public sealed class WorkEventStreamTests
 
         await using var subscription = stream.Subscribe();
 
-        await AssertNoEvent(subscription);
+        AssertNoQueuedEvents(subscription);
     }
 
     [Fact]
@@ -95,7 +95,7 @@ public sealed class WorkEventStreamTests
 
         Assert.False(created);
         Assert.False(loadedIdentifiers);
-        await AssertNoEvent(subscription);
+        AssertNoQueuedEvents(subscription);
     }
 
     [Fact]
@@ -126,6 +126,17 @@ public sealed class WorkEventStreamTests
 
         Assert.True(created);
         Assert.Equal(workEvent, await ReadNext(reader));
+    }
+
+    [Fact]
+    public async Task PublishRequiresEvent()
+    {
+        var stream = new WorkEventStream();
+
+        await using var _ = stream;
+        var exception = Assert.Throws<ArgumentNullException>(() => stream.Publish(null!));
+
+        Assert.Equal("workEvent", exception.ParamName);
     }
 
     [Fact]
@@ -343,7 +354,7 @@ public sealed class WorkEventStreamTests
 
         Assert.True(loadedIdentifiers);
         Assert.False(created);
-        await AssertNoEvent(subscription);
+        AssertNoQueuedEvents(subscription);
     }
 
     [Fact]
@@ -358,7 +369,7 @@ public sealed class WorkEventStreamTests
         stream.Publish(CreateEvent(eventType: "worker.queued"));
 
         Assert.Equal(0, stream.ActiveSubscriptionCount);
-        await AssertCompleted(subscription);
+        await AssertReadAlreadyCompleted(subscription);
     }
 
     [Fact]
@@ -369,7 +380,7 @@ public sealed class WorkEventStreamTests
 
         Assert.Equal(1, stream.ActiveSubscriptionCount);
 
-        await AssertNoEvent(subscription);
+        await CancelRead(subscription);
 
         Assert.Equal(0, stream.ActiveSubscriptionCount);
     }
@@ -380,10 +391,13 @@ public sealed class WorkEventStreamTests
         var stream = new WorkEventStream();
         await using var subscription = stream.Subscribe();
         await using var reader = subscription.Read().GetAsyncEnumerator();
+        var read = reader.MoveNextAsync().AsTask();
+
+        Assert.False(read.IsCompleted);
 
         await stream.DisposeAsync();
 
-        Assert.False(await reader.MoveNextAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(5)));
+        Assert.False(await ReadCompletion(read));
         Assert.Equal(0, stream.ActiveSubscriptionCount);
     }
 
@@ -424,8 +438,9 @@ public sealed class WorkEventStreamTests
         Assert.Equal(second, await ReadNext(reader));
         Assert.Equal(third, await ReadNext(reader));
 
-        cancellation.CancelAfter(TimeSpan.FromMilliseconds(50));
-        await Assert.ThrowsAsync<OperationCanceledException>(async () => await reader.MoveNextAsync().AsTask());
+        var diagnostics = AssertNoQueuedEvents(subscription);
+        Assert.Equal(3, diagnostics.AcceptedEventCount);
+        Assert.Equal(1, diagnostics.DroppedEventCount);
     }
 
     [Fact]
@@ -448,8 +463,9 @@ public sealed class WorkEventStreamTests
         Assert.Equal(first, await ReadNext(reader));
         Assert.Equal(third, await ReadNext(reader));
 
-        cancellation.CancelAfter(TimeSpan.FromMilliseconds(50));
-        await Assert.ThrowsAsync<OperationCanceledException>(async () => await reader.MoveNextAsync().AsTask());
+        var diagnostics = AssertNoQueuedEvents(subscription);
+        Assert.Equal(3, diagnostics.AcceptedEventCount);
+        Assert.Equal(1, diagnostics.DroppedEventCount);
     }
 
     [Fact]
@@ -472,8 +488,9 @@ public sealed class WorkEventStreamTests
         Assert.Equal(first, await ReadNext(reader));
         Assert.Equal(second, await ReadNext(reader));
 
-        cancellation.CancelAfter(TimeSpan.FromMilliseconds(50));
-        await Assert.ThrowsAsync<OperationCanceledException>(async () => await reader.MoveNextAsync().AsTask());
+        var diagnostics = AssertNoQueuedEvents(subscription);
+        Assert.Equal(2, diagnostics.AcceptedEventCount);
+        Assert.Equal(1, diagnostics.DroppedEventCount);
     }
 
     [Fact]
@@ -510,8 +527,9 @@ public sealed class WorkEventStreamTests
 
         Assert.Equal(1, created);
         Assert.Equal(first, await ReadNext(reader));
-        cancellation.CancelAfter(TimeSpan.FromMilliseconds(50));
-        await Assert.ThrowsAsync<OperationCanceledException>(async () => await reader.MoveNextAsync().AsTask());
+        var diagnostics = AssertNoQueuedEvents(subscription);
+        Assert.Equal(1, diagnostics.AcceptedEventCount);
+        Assert.Equal(0, diagnostics.DroppedEventCount);
     }
 
     [Fact]
@@ -574,19 +592,37 @@ public sealed class WorkEventStreamTests
         return reader.Current;
     }
 
-    private static async Task AssertNoEvent(IWorkEventSubscription subscription)
+    private static WorkEventSubscriptionDiagnosticsSnapshot AssertNoQueuedEvents(IWorkEventSubscription subscription)
     {
-        using var cancellation = new CancellationTokenSource(TimeSpan.FromMilliseconds(50));
-        await using var reader = subscription.Read(cancellation.Token).GetAsyncEnumerator();
+        var diagnostics = Assert
+            .IsAssignableFrom<IWorkEventSubscriptionDiagnostics>(subscription)
+            .GetDiagnosticsSnapshot();
 
-        await Assert.ThrowsAsync<OperationCanceledException>(async () => await reader.MoveNextAsync().AsTask());
+        Assert.Equal(0, diagnostics.QueuedCount);
+        return diagnostics;
     }
 
-    private static async Task AssertCompleted(IWorkEventSubscription subscription)
+    private static async Task CancelRead(IWorkEventSubscription subscription)
+    {
+        using var cancellation = new CancellationTokenSource();
+        await using var reader = subscription.Read(cancellation.Token).GetAsyncEnumerator();
+
+        var read = reader.MoveNextAsync().AsTask();
+        cancellation.Cancel();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => await read);
+    }
+
+    private static async Task<bool> ReadCompletion(Task<bool> read)
+        => await read.WaitAsync(TimeSpan.FromSeconds(5));
+
+    private static async Task AssertReadAlreadyCompleted(IWorkEventSubscription subscription)
     {
         await using var reader = subscription.Read().GetAsyncEnumerator();
+        var read = reader.MoveNextAsync().AsTask();
 
-        Assert.False(await reader.MoveNextAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(5)));
+        Assert.True(read.IsCompleted);
+        Assert.False(await read);
     }
 
     private static WorkEvent CreateEvent(

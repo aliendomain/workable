@@ -289,7 +289,7 @@ public sealed class WorkerStateTests
         var completed = await handle.WaitForCompletion();
         var completedWorker = RequiredCompletionWorker(completed);
 
-        await Eventually(async () => await system.Query.Worker(completedWorker.Id) is null);
+        await TestEventually.Until(async () => await system.Query.Worker(completedWorker.Id) is null);
 
         Assert.Equal(WorkCompletionStatus.Completed, completed.Status);
     }
@@ -315,7 +315,7 @@ public sealed class WorkerStateTests
         var worker = RequiredWorker(await system.Query.Worker(RequiredWorkerId(handle)));
         var cancel = await system.Workers.Execute(worker.Version, WorkAction.Cancel);
 
-        await Eventually(async () => await system.Query.Worker(worker.Id) is null);
+        await TestEventually.Until(async () => await system.Query.Worker(worker.Id) is null);
 
         Assert.True(cancel.IsAccepted);
         Assert.Equal(WorkerState.Canceled, cancel.Worker?.State);
@@ -339,13 +339,13 @@ public sealed class WorkerStateTests
         await system.Start();
 
         var first = RequiredCompletionWorker(await (await system.Queue.Enqueue("auto-purge-count")).WaitForCompletion());
-        await Task.Delay(TimeSpan.FromMilliseconds(20));
+        await TestEventually.ClockAfter(first.CreatedAt);
         var second = RequiredCompletionWorker(await (await system.Queue.Enqueue("auto-purge-count")).WaitForCompletion());
-        await Task.Delay(TimeSpan.FromMilliseconds(20));
+        await TestEventually.ClockAfter(second.CreatedAt);
         var third = RequiredCompletionWorker(await (await system.Queue.Enqueue("auto-purge-count")).WaitForCompletion());
         var workers = new[] { first, second, third };
 
-        await Eventually(async () => await system.Query.Worker(first.Id) is null);
+        await TestEventually.Until(async () => await system.Query.Worker(first.Id) is null);
 
         Assert.Equal(2, await CountExistingWorkers(system, workers));
         Assert.Null(await system.Query.Worker(first.Id));
@@ -366,15 +366,15 @@ public sealed class WorkerStateTests
         await system.Start();
 
         var first = RequiredCompletionWorker(await (await system.Queue.Enqueue("auto-purge-system-a")).WaitForCompletion());
-        await Task.Delay(TimeSpan.FromMilliseconds(20));
+        await TestEventually.ClockAfter(first.CreatedAt);
         var second = RequiredCompletionWorker(await (await system.Queue.Enqueue("auto-purge-system-b")).WaitForCompletion());
-        await Task.Delay(TimeSpan.FromMilliseconds(20));
+        await TestEventually.ClockAfter(second.CreatedAt);
         var third = RequiredCompletionWorker(await (await system.Queue.Enqueue("auto-purge-system-a")).WaitForCompletion());
-        await Task.Delay(TimeSpan.FromMilliseconds(20));
+        await TestEventually.ClockAfter(third.CreatedAt);
         var fourth = RequiredCompletionWorker(await (await system.Queue.Enqueue("auto-purge-system-b")).WaitForCompletion());
         var workers = new[] { first, second, third, fourth };
 
-        await Eventually(async () => await system.Query.Worker(first.Id) is null);
+        await TestEventually.Until(async () => await system.Query.Worker(first.Id) is null);
 
         Assert.Equal(3, await CountExistingWorkers(system, workers));
         Assert.Null(await system.Query.Worker(first.Id));
@@ -516,7 +516,7 @@ public sealed class WorkerStateTests
     }
 
     [Fact]
-    public async Task FailedWorkerIsNotAutomaticallyPurgedAfterPurgeInterval()
+    public async Task FailedWorkerIsNotScheduledForAutomaticPurge()
     {
         var definition = WorkDefinition.Create("failed-auto-purge", "Failed workers are not final.",
             configuration: WorkConfiguration.Default with
@@ -534,13 +534,14 @@ public sealed class WorkerStateTests
         var handle = await system.Queue.Enqueue("failed-auto-purge");
         var failed = await handle.WaitForCompletion();
         var failedWorker = RequiredCompletionWorker(failed);
-
-        await Task.Delay(TimeSpan.FromMilliseconds(100));
         var snapshot = await system.Query.Worker(failedWorker.Id);
+        var diagnostics = system.Diagnostics.Retention;
 
         Assert.Equal(WorkCompletionStatus.Failed, failed.Status);
         Assert.NotNull(snapshot);
         Assert.Equal(WorkerState.Failed, snapshot.State);
+        Assert.Equal(0, diagnostics.TrackedFinalWorkerCount);
+        Assert.Equal(0, diagnostics.ScheduledPurgeCount);
     }
 
     [Fact]
@@ -674,22 +675,6 @@ public sealed class WorkerStateTests
     {
         var existing = await Task.WhenAll(workers.Select(async worker => await system.Query.Worker(worker.Id) is not null));
         return existing.Count(exists => exists);
-    }
-
-    private static async Task Eventually(Func<Task<bool>> condition)
-    {
-        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
-        while (!timeout.IsCancellationRequested)
-        {
-            if (await condition())
-            {
-                return;
-            }
-
-            await Task.Delay(TimeSpan.FromMilliseconds(10), timeout.Token);
-        }
-
-        throw new TimeoutException("The expected condition did not happen.");
     }
 
     private static async Task<WorkEvent> ReadNext(IAsyncEnumerator<WorkEvent> reader)

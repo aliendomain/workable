@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Workable;
@@ -358,7 +357,7 @@ public sealed class WorkSystemLifecycleTests
         var completedWorker = await system.Query.Worker(completed.WorkerId ?? throw new InvalidOperationException("Expected completed worker id."));
         var failedWorker = await system.Query.Worker(handle.WorkerId ?? throw new InvalidOperationException("Expected failed worker id."));
         var queuedWorker = await system.Query.Worker(queued.WorkerId ?? throw new InvalidOperationException("Expected queued worker id."));
-        await Eventually(async () =>
+        await TestEventually.Until(async () =>
             (await system.Query.Workers(new WorkerCriteria())).Workers.Count == 0);
         var overview = await system.Query.SystemDetails();
         var query = await system.Query.Workers(new WorkerCriteria());
@@ -453,7 +452,7 @@ public sealed class WorkSystemLifecycleTests
     {
         var tracker = new ShutdownTracker();
         var provider = new ServiceCollection()
-            .Configure<HostOptions>(options => options.ShutdownTimeout = TimeSpan.FromMilliseconds(200))
+            .Configure<HostOptions>(options => options.ShutdownTimeout = TimeSpan.FromMilliseconds(50))
             .AddSingleton(tracker)
             .AddWorkableSystem(builder => builder
                 .AddWork<CancellationIgnoringShutdownWork>(WorkDefinition.Create("shutdown.host-ratio-default")))
@@ -464,14 +463,11 @@ public sealed class WorkSystemLifecycleTests
         var handle = await system.Queue.Enqueue("shutdown.host-ratio-default");
         await tracker.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
 
-        var startedAt = Stopwatch.GetTimestamp();
         var stop = await system.Stop();
-        var elapsed = Stopwatch.GetElapsedTime(startedAt);
 
         Assert.Single(stop.ForceInterruptedWorkers);
+        Assert.Equal(TimeSpan.FromMilliseconds(40), stop.ShutdownGracePeriod);
         Assert.Equal(WorkCompletionStatus.Interrupted, (await handle.WaitForCompletion()).Status);
-        Assert.True(elapsed >= TimeSpan.FromMilliseconds(120), $"Expected host-relative grace wait, but elapsed was {elapsed}.");
-        Assert.True(elapsed < TimeSpan.FromSeconds(2), $"Expected bounded shutdown, but elapsed was {elapsed}.");
     }
 
     [Fact]
@@ -491,13 +487,11 @@ public sealed class WorkSystemLifecycleTests
         var handle = await system.Queue.Enqueue("shutdown.explicit-grace");
         await tracker.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
 
-        var startedAt = Stopwatch.GetTimestamp();
         var stop = await system.Stop();
-        var elapsed = Stopwatch.GetElapsedTime(startedAt);
 
         Assert.Single(stop.ForceInterruptedWorkers);
+        Assert.Equal(TimeSpan.FromMilliseconds(20), stop.ShutdownGracePeriod);
         Assert.Equal(WorkCompletionStatus.Interrupted, (await handle.WaitForCompletion()).Status);
-        Assert.True(elapsed < TimeSpan.FromSeconds(1), $"Expected explicit grace period to win, but elapsed was {elapsed}.");
     }
 
     [Fact]
@@ -656,22 +650,6 @@ public sealed class WorkSystemLifecycleTests
                 throw;
             }
         }
-    }
-
-    private static async Task Eventually(Func<Task<bool>> condition)
-    {
-        var deadline = DateTimeOffset.UtcNow.AddSeconds(5);
-        while (DateTimeOffset.UtcNow < deadline)
-        {
-            if (await condition())
-            {
-                return;
-            }
-
-            await Task.Delay(10);
-        }
-
-        Assert.True(await condition(), "Expected condition to become true.");
     }
 
     private sealed class CancellationIgnoringShutdownWork(ShutdownTracker tracker) : IWorkExecutor

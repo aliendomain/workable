@@ -93,10 +93,15 @@ public sealed class QueueAndResultTests
     [Fact]
     public async Task AcceptedWorkDoesNotUseQueueCancellationTokenForExecution()
     {
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var executionTokenCanceled = false;
         var definition = WorkDefinition.Create("detached", "Runs after queue token cancellation.");
         var system = CreateSystem(definition, async (context, input, cancellationToken) =>
         {
-            await Task.Delay(TimeSpan.FromMilliseconds(25), cancellationToken);
+            using var registration = cancellationToken.Register(() => Volatile.Write(ref executionTokenCanceled, true));
+            started.SetResult();
+            await release.Task.WaitAsync(cancellationToken);
             return WorkExecutionResult.Success();
         });
 
@@ -104,11 +109,15 @@ public sealed class QueueAndResultTests
 
         using var queueCancellation = new CancellationTokenSource();
         var handle = await system.Queue.Enqueue("detached", cancellationToken: queueCancellation.Token);
+        await started.Task.WaitAsync(TimeSpan.FromSeconds(5));
         queueCancellation.Cancel();
+        Assert.False(Volatile.Read(ref executionTokenCanceled));
+        release.SetResult();
 
         var completion = await handle.WaitForCompletion();
 
         Assert.True(handle.QueueOutcome.IsAccepted);
+        Assert.False(Volatile.Read(ref executionTokenCanceled));
         Assert.True(completion.IsCompletedSuccessfully);
     }
 

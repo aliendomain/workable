@@ -20,6 +20,9 @@ namespace Workable.Tests;
 [Trait("Category", "SignalR")]
 public sealed class WorkableSignalRTests
 {
+    private static readonly TimeSpan ManualViewPublishInterval = TimeSpan.FromMinutes(7);
+    private static readonly TimeSpan ManualDiagnosticsPublishInterval = TimeSpan.FromMinutes(11);
+
     [Fact]
     public async Task HostEndpointReportsRealtimeDisabledWhenSignalRIsNotRegistered()
     {
@@ -105,11 +108,11 @@ public sealed class WorkableSignalRTests
 
         Assert.Equal(0, stream.ActiveSubscriptionCount);
         await connection.InvokeAsync("WatchEvents", new WorkableRealtimeEventCriteria(), null);
-        await Eventually(() => stream.ActiveSubscriptionCount == 1);
+        await TestEventually.Until(() => stream.ActiveSubscriptionCount == 1);
 
         await connection.InvokeAsync("UnwatchEvents", new WorkableRealtimeEventCriteria(), null);
 
-        await Eventually(() => stream.ActiveSubscriptionCount == 0);
+        await TestEventually.Until(() => stream.ActiveSubscriptionCount == 0);
     }
 
     [Fact]
@@ -117,6 +120,7 @@ public sealed class WorkableSignalRTests
     {
         using var host = await CreateHost(addSignalR: true);
         var system = host.Services.GetRequiredService<IWorkSystemRegistry>().Default;
+        var eventSubscriptions = host.Services.GetRequiredService<WorkableRealtimeEventSubscriptions>();
         var gate = host.Services.GetRequiredService<SignalRWorkGate>();
         await using var connection = CreateConnection(host);
         var events = Channel.CreateUnbounded<WorkableRealtimeEvent>();
@@ -127,7 +131,9 @@ public sealed class WorkableSignalRTests
             new WorkableRealtimeEventCriteria(["worker.completed"]),
             null);
 
-        var handle = await Session(system).Queue.Enqueue("signalr.view");
+        var session = Session(system);
+        var definition = session.Catalog.Definitions.Single(work => work.Name == "signalr.view");
+        var handle = await session.Queue.Enqueue(definition.Name);
         await gate.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
         gate.Release.SetResult();
         await handle.WaitForCompletion();
@@ -135,13 +141,14 @@ public sealed class WorkableSignalRTests
         var completed = await ReadUntil(
             events.Reader,
             workEvent => workEvent.EventType == "worker.completed");
-        var receivedQueued = await TryReadUntil(
-            events.Reader,
-            workEvent => workEvent.EventType == "worker.queued",
-            TimeSpan.FromMilliseconds(250));
+        var debugSubscription = Assert.Single(eventSubscriptions.GetDebugSubscriptions(system));
+        var filter = debugSubscription.Filter ?? throw new InvalidOperationException("Expected filtered event subscription.");
 
         Assert.Equal(handle.WorkerId, completed.WorkerId);
-        Assert.False(receivedQueued);
+        Assert.Equal("worker.completed", completed.EventType);
+        Assert.Equal(definition.Id, completed.WorkDefinitionId);
+        Assert.Equal(definition.Name, completed.WorkDefinitionName);
+        Assert.Equal(["worker.completed"], Required(filter.EventTypes).ToArray());
     }
 
     [Fact]
@@ -159,7 +166,9 @@ public sealed class WorkableSignalRTests
             new WorkableRealtimeEventCriteria(),
             null);
 
-        var handle = await Session(system).Queue.Enqueue("signalr.view");
+        var session = Session(system);
+        var definition = session.Catalog.Definitions.Single(work => work.Name == "signalr.view");
+        var handle = await session.Queue.Enqueue(definition.Name);
         await gate.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
         gate.Release.SetResult();
         await handle.WaitForCompletion();
@@ -172,7 +181,13 @@ public sealed class WorkableSignalRTests
             workEvent => workEvent.WorkerId == handle.WorkerId && workEvent.EventType == "worker.completed");
 
         Assert.Equal(handle.WorkerId, queued.WorkerId);
+        Assert.Equal("worker.queued", queued.EventType);
+        Assert.Equal(definition.Id, queued.WorkDefinitionId);
+        Assert.Equal(definition.Name, queued.WorkDefinitionName);
         Assert.Equal(handle.WorkerId, completed.WorkerId);
+        Assert.Equal("worker.completed", completed.EventType);
+        Assert.Equal(definition.Id, completed.WorkDefinitionId);
+        Assert.Equal(definition.Name, completed.WorkDefinitionName);
     }
 
     [Fact]
@@ -180,6 +195,7 @@ public sealed class WorkableSignalRTests
     {
         using var host = await CreateHost(addSignalR: true);
         var system = host.Services.GetRequiredService<IWorkSystemRegistry>().Default;
+        var eventSubscriptions = host.Services.GetRequiredService<WorkableRealtimeEventSubscriptions>();
         var gate = host.Services.GetRequiredService<SignalRWorkGate>();
         var definition = Session(system).Catalog.Definitions.Single(work => work.Name == "signalr.view");
         var acceptedIdentifier = new WorkIdentifier("batch", "accepted");
@@ -211,13 +227,19 @@ public sealed class WorkableSignalRTests
         var completed = await ReadUntil(
             events.Reader,
             workEvent => workEvent.EventType == "worker.completed");
-        var receivedIgnored = await TryReadUntil(
-            events.Reader,
-            workEvent => workEvent.WorkerId == ignored.WorkerId,
-            TimeSpan.FromMilliseconds(250));
+        var debugSubscription = Assert.Single(eventSubscriptions.GetDebugSubscriptions(system));
+        var filter = debugSubscription.Filter ?? throw new InvalidOperationException("Expected filtered event subscription.");
+        var key = Assert.Single(Required(filter.Keys));
 
         Assert.Equal(accepted.WorkerId, completed.WorkerId);
-        Assert.False(receivedIgnored);
+        Assert.Equal("worker.completed", completed.EventType);
+        Assert.Equal(definition.Id, completed.WorkDefinitionId);
+        Assert.Equal(definition.Name, completed.WorkDefinitionName);
+        Assert.Equal([acceptedIdentifier], completed.Identifiers.ToArray());
+        Assert.Equal([definition.Id], Required(filter.DefinitionIds).ToArray());
+        Assert.Equal(WorkKeyKind.Identifier, key.Kind);
+        Assert.Equal(acceptedIdentifier.Type, key.Type);
+        Assert.Equal(acceptedIdentifier.Value, key.Value);
     }
 
     [Fact]
@@ -225,7 +247,7 @@ public sealed class WorkableSignalRTests
     {
         using var host = await CreateHost(addSignalR: true, configureSignalR: options =>
         {
-            options.BatchTimeWindow = TimeSpan.FromMilliseconds(100);
+            options.BatchTimeWindow = TimeSpan.FromMilliseconds(500);
             options.EventMaxBatchSize = 10;
         });
         var system = host.Services.GetRequiredService<IWorkSystemRegistry>().Default;
@@ -242,16 +264,50 @@ public sealed class WorkableSignalRTests
             null);
 
         var session = Session(system);
-        var handles = await Task.WhenAll(Enumerable.Range(0, 3).Select(_ => session.Queue.Enqueue("signalr.view")));
+        var definition = session.Catalog.Definitions.Single(work => work.Name == "signalr.view");
+        var handles = await Task.WhenAll(Enumerable.Range(0, 3).Select(_ => session.Queue.Enqueue(definition.Name)));
         await gate.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
         gate.Release.SetResult();
         await Task.WhenAll(handles.Select(handle => handle.WaitForCompletion()));
+        var expectedWorkerIds = handles
+            .Select(handle => handle.WorkerId ?? throw new InvalidOperationException("Expected accepted worker."))
+            .ToHashSet();
 
         var batch = await ReadUntil(
             batches.Reader,
-            batch => batch.Events.Count >= 2);
+            batch => batch.Events.Count == expectedWorkerIds.Count &&
+                batch.Events.Select(workEvent => workEvent.WorkerId).OfType<WorkerId>().ToHashSet().SetEquals(expectedWorkerIds));
+        var actualWorkerIds = batch.Events
+            .Select(workEvent => workEvent.WorkerId)
+            .OfType<WorkerId>()
+            .ToHashSet();
 
-        Assert.All(batch.Events, workEvent => Assert.Equal("worker.completed", workEvent.EventType));
+        Assert.Equal(3, batch.Events.Count);
+        Assert.All(batch.Events, workEvent =>
+        {
+            Assert.Equal("worker.completed", workEvent.EventType);
+            Assert.Equal(definition.Id, workEvent.WorkDefinitionId);
+            Assert.Equal(definition.Name, workEvent.WorkDefinitionName);
+        });
+        Assert.Equal(
+            expectedWorkerIds.OrderBy(static workerId => workerId.Value).ToArray(),
+            actualWorkerIds.OrderBy(static workerId => workerId.Value).ToArray());
+    }
+
+    [Fact]
+    public async Task EventWatcherRejectsUnknownSystemNames()
+    {
+        using var host = await CreateHost(addSignalR: true);
+        await using var connection = CreateConnection(host);
+        await connection.StartAsync();
+
+        var exception = await Assert.ThrowsAnyAsync<Exception>(() => connection.InvokeAsync(
+            "WatchEvents",
+            new WorkableRealtimeEventCriteria(),
+            "missing-system"));
+
+        Assert.Contains("missing-system", exception.Message, StringComparison.Ordinal);
+        Assert.Contains("not found", exception.Message, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -277,6 +333,7 @@ public sealed class WorkableSignalRTests
             null);
 
         var initial = await ReadUntil(views.Reader, view => view.Components.ContainsKey("workers"));
+        var initialWorkers = Assert.IsType<JsonElement>(initial.Components["workers"].Data);
 
         var handle = await Session(system).Queue.Enqueue("signalr.view");
         await gate.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
@@ -289,57 +346,28 @@ public sealed class WorkableSignalRTests
 
         Assert.Equal(["system", "workers"], initial.Components.Keys.Order().ToArray());
         Assert.Equal(["system", "workers"], updated.Components.Keys.Order().ToArray());
+        Assert.Equal("compact", initial.Components["workers"].Shape);
         Assert.Equal("compact", updated.Components["workers"].Shape);
-        Assert.True(workers.TryGetProperty("activeWorkerCount", out _));
+        Assert.Equal(0, initialWorkers.GetProperty("activeWorkerCount").GetInt32());
+        Assert.Equal(0, initialWorkers.GetProperty("failedWorkerCount").GetInt32());
+        Assert.False(initialWorkers.TryGetProperty("finalWorkerCount", out _));
+        Assert.Equal(0, workers.GetProperty("activeWorkerCount").GetInt32());
+        Assert.Equal(0, workers.GetProperty("failedWorkerCount").GetInt32());
         Assert.False(workers.TryGetProperty("finalWorkerCount", out _));
-    }
-
-    [Fact]
-    public async Task ViewWatcherSkipsOverviewPublishUntilReadModelChanges()
-    {
-        using var host = await CreateHost(addSignalR: true);
-        var system = host.Services.GetRequiredService<IWorkSystemRegistry>().Default;
-        var gate = host.Services.GetRequiredService<SignalRWorkGate>();
-        var session = Session(system);
-        await Eventually(() => session.Diagnostics.ReadModel.PendingUpdateCount == 0);
-        await using var connection = CreateConnection(host);
-        const string subscriptionId = "overview";
-        var views = Channel.CreateUnbounded<WorkComponentQueryResult>();
-        CaptureRealtimeViews(connection, subscriptionId, views);
-        await connection.StartAsync();
-        await connection.InvokeAsync(
-            "WatchView",
-            subscriptionId,
-            "overview",
-            new WorkViewCriteria(Components:
-            [
-                new WorkComponentRequest("workers", "workers", Shape: WorkComponentShapes.Compact),
-            ]),
-            null);
-
-        var initial = await ReadUntil(views.Reader, view => view.Components.ContainsKey("workers"));
-        var unchanged = await TryReadUntil(
-            views.Reader,
-            view => view.GeneratedAt > initial.GeneratedAt,
-            TimeSpan.FromMilliseconds(250));
-        Assert.False(unchanged);
-
-        var handle = await session.Queue.Enqueue("signalr.view");
-        await gate.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
-        gate.Release.SetResult();
-        await handle.WaitForCompletion();
-        var updated = await ReadUntil(
-            views.Reader,
-            view => view.GeneratedAt > initial.GeneratedAt &&
-                view.Components.ContainsKey("workers"));
-
-        Assert.Equal(["workers"], updated.Components.Keys.ToArray());
     }
 
     [Fact]
     public async Task ViewWatcherContinuesPublishingOverviewThroughputWithoutReadModelChanges()
     {
-        using var host = await CreateHost(addSignalR: true);
+        var timers = new ManualRealtimeTimerFactory();
+        using var host = await CreateHost(
+            addSignalR: true,
+            configureServices: services => services.AddSingleton<IWorkableRealtimeTimerFactory>(timers),
+            configureSignalR: options =>
+            {
+                options.PublishInterval = ManualViewPublishInterval;
+                options.DiagnosticsPublishInterval = ManualDiagnosticsPublishInterval;
+            });
         await using var connection = CreateConnection(host);
         const string subscriptionId = "overview";
         var views = Channel.CreateUnbounded<WorkComponentQueryResult>();
@@ -360,6 +388,8 @@ public sealed class WorkableSignalRTests
             null);
 
         var initial = await ReadUntil(views.Reader, view => view.Components.ContainsKey("throughput"));
+        await TestEventually.ClockAfter(initial.GeneratedAt);
+        await timers.TickWhenReady(ManualViewPublishInterval);
         var updated = await ReadUntil(
             views.Reader,
             view => view.GeneratedAt > initial.GeneratedAt &&
@@ -397,8 +427,10 @@ public sealed class WorkableSignalRTests
             updates.Reader,
             update => update.Worker?.WorkerId == workerId);
 
-        Assert.NotNull(initial.Worker);
-        Assert.Equal(workerId, initial.Worker!.WorkerId);
+        var initialWorker = Require(initial.Worker);
+        Assert.Equal(workerId, initialWorker.WorkerId);
+        Assert.Equal(WorkerState.Queued, initialWorker.State);
+        Assert.Null(initial.LatestIteration);
 
         var session = Session(system);
         var worker = await session.Query.Worker(workerId)
@@ -414,18 +446,17 @@ public sealed class WorkableSignalRTests
             var started = await ReadUntil(
                 updates.Reader,
                 update =>
-                    (update.Worker?.WorkerId == workerId || update.LatestIteration?.WorkerId == workerId) &&
-                    (update.Worker?.State == WorkerState.Running ||
-                        update.LatestIteration?.Status == WorkCompletionStatus.Executing));
+                    update.Worker?.WorkerId == workerId &&
+                    update.Worker.State == WorkerState.Running &&
+                    update.LatestIteration?.WorkerId == workerId &&
+                    update.LatestIteration.Status == WorkCompletionStatus.Executing);
 
-            if (started.Worker is not null)
-            {
-                Assert.Equal(workerId, started.Worker.WorkerId);
-                Assert.Equal(WorkerState.Running, started.Worker.State);
-            }
-
-            Assert.NotNull(started.LatestIteration);
-            Assert.Equal(WorkCompletionStatus.Executing, started.LatestIteration!.Status);
+            var startedWorker = Require(started.Worker);
+            var startedIteration = Require(started.LatestIteration);
+            Assert.Equal(workerId, startedWorker.WorkerId);
+            Assert.Equal(WorkerState.Running, startedWorker.State);
+            Assert.Equal(workerId, startedIteration.WorkerId);
+            Assert.Equal(WorkCompletionStatus.Executing, startedIteration.Status);
 
             gate.Release.TrySetResult();
             var completion = await handle.WaitForCompletion();
@@ -434,22 +465,40 @@ public sealed class WorkableSignalRTests
             var completed = await ReadUntil(
                 updates.Reader,
                 update =>
-                    (update.Worker?.WorkerId == workerId || update.LatestIteration?.WorkerId == workerId) &&
-                    (update.Worker?.State == WorkerState.Completed ||
-                        update.LatestIteration?.Status == WorkCompletionStatus.Completed));
+                    update.Worker?.WorkerId == workerId &&
+                    update.Worker.State == WorkerState.Completed &&
+                    update.LatestIteration?.WorkerId == workerId &&
+                    update.LatestIteration.Status == WorkCompletionStatus.Completed);
 
-            if (completed.Worker is not null)
-            {
-                Assert.Equal(WorkerState.Completed, completed.Worker.State);
-            }
-
-            Assert.NotNull(completed.LatestIteration);
-            Assert.Equal(WorkCompletionStatus.Completed, completed.LatestIteration!.Status);
+            var completedWorker = Require(completed.Worker);
+            var completedIteration = Require(completed.LatestIteration);
+            Assert.Equal(WorkerState.Completed, completedWorker.State);
+            Assert.Equal(workerId, completedIteration.WorkerId);
+            Assert.Equal(WorkCompletionStatus.Completed, completedIteration.Status);
+            Assert.NotNull(completedIteration.CompletedAt);
         }
         finally
         {
             gate.Release.TrySetResult();
         }
+    }
+
+    [Fact]
+    public async Task WorkerOverviewWatcherRejectsInvalidWorkerIds()
+    {
+        using var host = await CreateHost(addSignalR: true);
+        await using var connection = CreateConnection(host);
+        await connection.StartAsync();
+
+        var exception = await Assert.ThrowsAnyAsync<Exception>(() => connection.InvokeAsync(
+            "WatchWorkerOverview",
+            "worker-panel",
+            "not-a-guid",
+            new WorkWorkerOverviewRealtimeCriteria(),
+            null));
+
+        Assert.Contains("not-a-guid", exception.Message, StringComparison.Ordinal);
+        Assert.Contains("not valid", exception.Message, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -510,13 +559,13 @@ public sealed class WorkableSignalRTests
             var started = await ReadUntil(
                 secondUpdates.Reader,
                 update =>
-                    (update.Worker?.WorkerId == workerId || update.LatestIteration?.WorkerId == workerId) &&
-                    (update.Worker?.State == WorkerState.Running ||
-                        update.LatestIteration?.Status == WorkCompletionStatus.Executing));
+                    update.Worker?.WorkerId == workerId &&
+                    update.Worker.State == WorkerState.Running &&
+                    update.LatestIteration?.WorkerId == workerId &&
+                    update.LatestIteration.Status == WorkCompletionStatus.Executing);
 
-            Assert.True(
-                started.Worker?.State == WorkerState.Running ||
-                started.LatestIteration?.Status == WorkCompletionStatus.Executing);
+            Assert.Equal(WorkerState.Running, Require(started.Worker).State);
+            Assert.Equal(WorkCompletionStatus.Executing, Require(started.LatestIteration).Status);
         }
         finally
         {
@@ -527,7 +576,15 @@ public sealed class WorkableSignalRTests
     [Fact]
     public async Task ViewWatcherReceivesDiagnosticsViewOnDiagnosticsInterval()
     {
-        using var host = await CreateHost(addSignalR: true);
+        var timers = new ManualRealtimeTimerFactory();
+        using var host = await CreateHost(
+            addSignalR: true,
+            configureServices: services => services.AddSingleton<IWorkableRealtimeTimerFactory>(timers),
+            configureSignalR: options =>
+            {
+                options.PublishInterval = ManualViewPublishInterval;
+                options.DiagnosticsPublishInterval = ManualDiagnosticsPublishInterval;
+            });
         await using var connection = CreateConnection(host);
         const string subscriptionId = "diagnostics";
         var views = Channel.CreateUnbounded<WorkComponentQueryResult>();
@@ -579,6 +636,8 @@ public sealed class WorkableSignalRTests
         var initial = await ReadUntil(
             views.Reader,
             view => view.Components.ContainsKey("readModelDiagnostics"));
+        await TestEventually.ClockAfter(initial.GeneratedAt);
+        await timers.TickWhenReady(ManualDiagnosticsPublishInterval);
         var updated = await ReadUntil(
             views.Reader,
             view => view.GeneratedAt > initial.GeneratedAt &&
@@ -604,120 +663,40 @@ public sealed class WorkableSignalRTests
             "idempotencyDiagnostics",
         ], updated.Components.Keys.ToArray());
         Assert.Equal("compact", updated.Components["queueDiagnostics"].Shape);
-        Assert.True(queue.TryGetProperty("rejectedWorkCount", out _));
-        Assert.True(queue.TryGetProperty("hasRejectedWork", out _));
-        Assert.True(queue.TryGetProperty("alertableRejectedWorkCount", out _));
-        Assert.True(queue.TryGetProperty("hasAlertableRejectedWork", out _));
+        Assert.Equal(0, queue.GetProperty("rejectedWorkCount").GetInt64());
+        Assert.False(queue.GetProperty("hasRejectedWork").GetBoolean());
+        Assert.Equal(0, queue.GetProperty("alertableRejectedWorkCount").GetInt64());
+        Assert.False(queue.GetProperty("hasAlertableRejectedWork").GetBoolean());
+        Assert.Equal(JsonValueKind.Null, queue.GetProperty("lastRejectedCode").ValueKind);
+        Assert.Equal(JsonValueKind.Null, queue.GetProperty("lastAlertableRejectedCode").ValueKind);
         Assert.Equal("compact", updated.Components["readModelDiagnostics"].Shape);
-        Assert.True(diagnostics.TryGetProperty("pendingUpdateCount", out _));
-        Assert.True(diagnostics.TryGetProperty("isReadModelBehind", out _));
-        Assert.True(diagnostics.TryGetProperty("readModelLagWarningThreshold", out _));
+        Assert.Equal(0, diagnostics.GetProperty("pendingUpdateCount").GetInt64());
+        Assert.False(diagnostics.GetProperty("isReadModelBehind").GetBoolean());
+        Assert.Equal(100, diagnostics.GetProperty("readModelLagWarningThreshold").GetInt32());
+        Assert.False(diagnostics.GetProperty("hasProjectorFailure").GetBoolean());
         Assert.Equal("compact", updated.Components["retentionDiagnostics"].Shape);
-        Assert.True(retention.TryGetProperty("scheduledPurgeCount", out _));
-        Assert.True(retention.TryGetProperty("isRetentionBehind", out _));
-        Assert.True(retention.TryGetProperty("retentionLagWarningSeconds", out _));
+        Assert.Equal(0, retention.GetProperty("scheduledPurgeCount").GetInt32());
+        Assert.False(retention.GetProperty("isRetentionBehind").GetBoolean());
+        Assert.Equal(30, retention.GetProperty("retentionLagWarningSeconds").GetInt32());
+        Assert.False(retention.GetProperty("hasSchedulerFailure").GetBoolean());
         Assert.Equal("compact", updated.Components["concurrencyDiagnostics"].Shape);
-        Assert.True(concurrency.TryGetProperty("deferredStartCount", out _));
-        Assert.True(concurrency.TryGetProperty("lastDrainReleasedCount", out _));
-        Assert.True(concurrency.TryGetProperty("isConcurrencyBehind", out _));
-        Assert.True(concurrency.TryGetProperty("concurrencyLagWarningSeconds", out _));
+        Assert.Equal(0, concurrency.GetProperty("deferredStartCount").GetInt32());
+        Assert.Equal(0, concurrency.GetProperty("lastDrainReleasedCount").GetInt32());
+        Assert.False(concurrency.GetProperty("isConcurrencyBehind").GetBoolean());
+        Assert.Equal(30, concurrency.GetProperty("concurrencyLagWarningSeconds").GetInt32());
         Assert.Equal("compact", updated.Components["durabilityDiagnostics"].Shape);
-        Assert.True(durability.TryGetProperty("acceptedWaiterCount", out _));
-        Assert.True(durability.TryGetProperty("pendingCleanupCount", out _));
-        Assert.True(durability.TryGetProperty("hasReaderFailure", out _));
+        Assert.Equal(0, durability.GetProperty("acceptedWaiterCount").GetInt32());
+        Assert.Equal(0, durability.GetProperty("pendingCleanupCount").GetInt32());
+        Assert.False(durability.GetProperty("isAcceptedWorkerMaterializationBehind").GetBoolean());
+        Assert.Equal(30, durability.GetProperty("acceptedWorkerWarningSeconds").GetInt32());
+        Assert.False(durability.GetProperty("isCleanupBehind").GetBoolean());
+        Assert.Equal(30, durability.GetProperty("cleanupWarningSeconds").GetInt32());
+        Assert.False(durability.GetProperty("hasReaderFailure").GetBoolean());
+        Assert.False(durability.GetProperty("hasLeaseRenewalFailure").GetBoolean());
+        Assert.False(durability.GetProperty("hasCleanupFailure").GetBoolean());
         Assert.Equal("compact", updated.Components["idempotencyDiagnostics"].Shape);
-        Assert.True(idempotency.TryGetProperty("duplicateRejectionCount", out _));
-        Assert.True(idempotency.TryGetProperty("lastDuplicateRejectedStorage", out _));
-    }
-
-    [Fact]
-    public async Task DiagnosticsAlertChangeWatcherDoesNotReceiveHealthyTimerPayloads()
-    {
-        using var host = await CreateHost(addSignalR: true);
-        await using var connection = CreateConnection(host);
-        const string subscriptionId = "diagnostics";
-        var views = Channel.CreateUnbounded<WorkComponentQueryResult>();
-        CaptureRealtimeViews(connection, subscriptionId, views);
-        await connection.StartAsync();
-        await connection.InvokeAsync(
-            "WatchView",
-            subscriptionId,
-            "diagnostics",
-            new WorkViewCriteria(Components:
-            [
-                new WorkComponentRequest(
-                    "readModelDiagnostics",
-                    "readModelDiagnostics",
-                    JsonSerializer.SerializeToElement(new
-                    {
-                        publishMode = "alertChanges",
-                        warningThreshold = 100,
-                    }),
-                    WorkComponentShapes.Compact),
-            ]),
-            null);
-
-        var initial = await ReadUntil(
-            views.Reader,
-            view => view.Components.ContainsKey("readModelDiagnostics"));
-        var receivedHealthyTick = await TryReadUntil(
-            views.Reader,
-            view => view.GeneratedAt > initial.GeneratedAt,
-            TimeSpan.FromMilliseconds(250));
-
-        Assert.False(receivedHealthyTick);
-    }
-
-    [Fact]
-    public async Task DiagnosticsAlertChangeWatcherDoesNotReceiveAlertPayloadWhenRejectedWorkIsNotAlertable()
-    {
-        using var host = await CreateHost(addSignalR: true);
-        var system = host.Services.GetRequiredService<IWorkSystemRegistry>().Default;
-        await using var connection = CreateConnection(host);
-        const string subscriptionId = "diagnostics";
-        var views = Channel.CreateUnbounded<WorkComponentQueryResult>();
-        CaptureRealtimeViews(connection, subscriptionId, views);
-        await connection.StartAsync();
-        await connection.InvokeAsync(
-            "WatchView",
-            subscriptionId,
-            "diagnostics",
-            new WorkViewCriteria(Components:
-            [
-                new WorkComponentRequest(
-                    "queueDiagnostics",
-                    "queueDiagnostics",
-                    JsonSerializer.SerializeToElement(new
-                    {
-                        publishMode = "alertChanges",
-                    }),
-                    WorkComponentShapes.Compact),
-            ]),
-            null);
-        var initial = await ReadUntil(
-            views.Reader,
-            view => view.Components.ContainsKey("queueDiagnostics"));
-
-        var rejected = await Session(system).Queue.Enqueue("signalr.missing");
-        Assert.False(rejected.QueueOutcome.IsAccepted);
-
-        var receivedAlert = await TryReadUntil(
-            views.Reader,
-            view =>
-            {
-                if (view.GeneratedAt <= initial.GeneratedAt ||
-                    !view.Components.TryGetValue("queueDiagnostics", out var component))
-                {
-                    return false;
-                }
-
-                var diagnostics = Assert.IsType<JsonElement>(component.Data);
-                return diagnostics.TryGetProperty("hasAlertableRejectedWork", out var hasRejectedWork) &&
-                    hasRejectedWork.GetBoolean();
-            },
-            TimeSpan.FromMilliseconds(250));
-
-        Assert.False(receivedAlert);
+        Assert.Equal(0, idempotency.GetProperty("duplicateRejectionCount").GetInt64());
+        Assert.Equal(JsonValueKind.Null, idempotency.GetProperty("lastDuplicateRejectedStorage").ValueKind);
     }
 
     [Fact]
@@ -777,7 +756,10 @@ public sealed class WorkableSignalRTests
         var data = Assert.IsType<JsonElement>(updated.Components["queueDiagnostics"].Data);
 
         Assert.Equal(1, data.GetProperty("rejectedWorkCount").GetInt64());
+        Assert.True(data.GetProperty("hasRejectedWork").GetBoolean());
         Assert.Equal(1, data.GetProperty("alertableRejectedWorkCount").GetInt64());
+        Assert.True(data.GetProperty("hasAlertableRejectedWork").GetBoolean());
+        Assert.Equal("workable.system.capacity_reached", data.GetProperty("lastRejectedCode").GetString());
         Assert.Equal("workable.system.capacity_reached", data.GetProperty("lastAlertableRejectedCode").GetString());
     }
 
@@ -827,7 +809,7 @@ public sealed class WorkableSignalRTests
 
         try
         {
-            await Eventually(() => session.Diagnostics.ReadModel.PendingUpdateCount >= 1);
+            await TestEventually.Until(() => session.Diagnostics.ReadModel.PendingUpdateCount >= 1);
 
             var updated = await ReadUntil(
                 views.Reader,
@@ -846,6 +828,9 @@ public sealed class WorkableSignalRTests
             var data = Assert.IsType<JsonElement>(updated.Components["readModelDiagnostics"].Data);
 
             Assert.True(data.GetProperty("pendingUpdateCount").GetInt64() >= 1);
+            Assert.True(data.GetProperty("isReadModelBehind").GetBoolean());
+            Assert.Equal(1, data.GetProperty("readModelLagWarningThreshold").GetInt32());
+            Assert.False(data.GetProperty("hasProjectorFailure").GetBoolean());
         }
         finally
         {
@@ -870,10 +855,9 @@ public sealed class WorkableSignalRTests
             }),
             groups: TransportAuthorizationTestSupport.ConnectGroups);
         var system = host.Services.GetRequiredService<IWorkSystemRegistry>().Default;
+        var viewSubscriptions = host.Services.GetRequiredService<WorkableRealtimeViewSubscriptions>();
         await using var connection = CreateConnection(host);
         const string subscriptionId = "diagnostics";
-        var views = Channel.CreateUnbounded<WorkComponentQueryResult>();
-        CaptureRealtimeViews(connection, subscriptionId, views);
         await connection.StartAsync();
 
         var exception = await Assert.ThrowsAnyAsync<Exception>(() => connection.InvokeAsync(
@@ -894,18 +878,14 @@ public sealed class WorkableSignalRTests
             null));
 
         Assert.Contains("diagnostics permission", exception.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Empty(viewSubscriptions.GetDebugSubscriptions(system));
 
         var session = Session(system);
         _ = await session.Queue.Enqueue("signalr.worker");
         var rejected = await session.Queue.Enqueue("signalr.worker");
+
         Assert.False(rejected.QueueOutcome.IsAccepted);
-
-        var receivedView = await TryReadUntil(
-            views.Reader,
-            static _ => true,
-            TimeSpan.FromMilliseconds(250));
-
-        Assert.False(receivedView);
+        Assert.Empty(viewSubscriptions.GetDebugSubscriptions(system));
     }
 
     private static async Task<IHost> CreateHost(
@@ -914,7 +894,8 @@ public sealed class WorkableSignalRTests
         Action<WorkableSignalROptions>? configureSignalR = null,
         Action<IWorkSystemBuilder>? configureWorkable = null,
         bool authenticated = true,
-        IEnumerable<string>? groups = null)
+        IEnumerable<string>? groups = null,
+        Action<IServiceCollection>? configureServices = null)
     {
         var host = new HostBuilder()
             .ConfigureWebHost(web =>
@@ -925,6 +906,7 @@ public sealed class WorkableSignalRTests
                     services.AddRouting();
                     services.AddTransportTestAuthorization(groups);
                     services.AddSingleton<SignalRWorkGate>();
+                    configureServices?.Invoke(services);
                     services.AddWorkableSystem(builder =>
                     {
                         builder.StartWithHost();
@@ -1213,44 +1195,14 @@ public sealed class WorkableSignalRTests
         throw new InvalidOperationException("Expected item was not received.");
     }
 
-    private static async Task<bool> TryReadUntil<T>(
-        ChannelReader<T> reader,
-        Func<T, bool> predicate,
-        TimeSpan timeout)
+    private static IReadOnlySet<T> Required<T>(IReadOnlySet<T>? values)
+        => values ?? throw new InvalidOperationException("Expected values.");
+
+    private static T Require<T>(T? value)
+        where T : class
     {
-        using var cancellation = new CancellationTokenSource(timeout);
-        try
-        {
-            await foreach (var item in reader.ReadAllAsync(cancellation.Token))
-            {
-                if (predicate(item))
-                {
-                    return true;
-                }
-            }
-        }
-        catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
-        {
-            return false;
-        }
-
-        return false;
-    }
-
-    private static async Task Eventually(Func<bool> condition)
-    {
-        var deadline = DateTimeOffset.UtcNow.AddSeconds(5);
-        while (DateTimeOffset.UtcNow < deadline)
-        {
-            if (condition())
-            {
-                return;
-            }
-
-            await Task.Delay(10);
-        }
-
-        Assert.True(condition(), "Expected condition to become true.");
+        Assert.NotNull(value);
+        return value;
     }
 
     private static IWorkSystemSession Session(IWorkSystem system)
@@ -1305,5 +1257,64 @@ public sealed class WorkableSignalRTests
         public TaskCompletionSource Entered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         public TaskCompletionSource Release { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    }
+
+    private sealed class ManualRealtimeTimerFactory : IWorkableRealtimeTimerFactory
+    {
+        private readonly object gate = new();
+        private readonly Dictionary<TimeSpan, ManualRealtimeTimer> timers = new();
+
+        public IWorkableRealtimeTimer Create(TimeSpan interval)
+        {
+            lock (this.gate)
+            {
+                if (!this.timers.TryGetValue(interval, out var timer))
+                {
+                    timer = new ManualRealtimeTimer();
+                    this.timers[interval] = timer;
+                }
+
+                return timer;
+            }
+        }
+
+        public async Task TickWhenReady(TimeSpan interval)
+        {
+            var timer = await TestEventually.UntilNotNull(
+                () => Task.FromResult(this.GetTimer(interval)),
+                $"Expected realtime timer for interval {interval} to be created.");
+            timer.Tick();
+        }
+
+        private ManualRealtimeTimer? GetTimer(TimeSpan interval)
+        {
+            lock (this.gate)
+            {
+                return this.timers.TryGetValue(interval, out var timer) ? timer : null;
+            }
+        }
+    }
+
+    private sealed class ManualRealtimeTimer : IWorkableRealtimeTimer
+    {
+        private readonly Channel<bool> ticks = Channel.CreateUnbounded<bool>();
+
+        public async ValueTask<bool> WaitForNextTickAsync(CancellationToken cancellationToken)
+        {
+            try
+            {
+                return await this.ticks.Reader.ReadAsync(cancellationToken);
+            }
+            catch (ChannelClosedException)
+            {
+                return false;
+            }
+        }
+
+        public void Tick()
+            => this.ticks.Writer.TryWrite(true);
+
+        public void Dispose()
+            => this.ticks.Writer.TryComplete();
     }
 }

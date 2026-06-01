@@ -67,7 +67,7 @@ public sealed class WorkerLoggingCaptureTests
 
         Assert.True(completion.IsCompletedSuccessfully);
         Assert.Empty(RequiredLastIteration(RequiredWorker(completion.Worker)).Logs);
-        await AssertNoEvent(subscription);
+        AssertNoQueuedEvents(subscription);
     }
 
     [Fact]
@@ -170,12 +170,15 @@ public sealed class WorkerLoggingCaptureTests
         return reader.Current;
     }
 
-    private static async Task AssertNoEvent(IWorkEventSubscription subscription)
+    private static void AssertNoQueuedEvents(IWorkEventSubscription subscription)
     {
-        using var cancellation = new CancellationTokenSource(TimeSpan.FromMilliseconds(50));
-        await using var reader = subscription.Read(cancellation.Token).GetAsyncEnumerator();
+        var diagnostics = Assert
+            .IsAssignableFrom<IWorkEventSubscriptionDiagnostics>(subscription)
+            .GetDiagnosticsSnapshot();
 
-        await Assert.ThrowsAsync<OperationCanceledException>(async () => await reader.MoveNextAsync().AsTask());
+        Assert.Equal(0, diagnostics.QueuedCount);
+        Assert.Equal(0, diagnostics.AcceptedEventCount);
+        Assert.Equal(0, diagnostics.DroppedEventCount);
     }
 
     private sealed class LoggedDependency

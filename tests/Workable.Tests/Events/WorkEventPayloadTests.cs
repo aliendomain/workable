@@ -386,7 +386,7 @@ public sealed class WorkEventPayloadTests
         Assert.Equal(2, secondIterationStartedData.GetProperty("iteration").GetProperty("sequence").GetInt64());
         Assert.Equal(2, secondIterationStartedData.GetProperty("iteration").GetProperty("attemptCount").GetInt32());
 
-        await AssertNoNextEvent(startedReader);
+        AssertNoQueuedEvents(startedSubscription);
     }
 
     [Fact]
@@ -735,16 +735,14 @@ public sealed class WorkEventPayloadTests
         throw new TimeoutException("The expected event did not happen.");
     }
 
-    private static async Task AssertNoNextEvent(IAsyncEnumerator<WorkEvent> reader)
+    private static void AssertNoQueuedEvents(IWorkEventSubscription subscription)
     {
-        try
-        {
-            Assert.False(await reader.MoveNextAsync().AsTask().WaitAsync(TimeSpan.FromMilliseconds(250)));
-        }
-        catch (TimeoutException)
-        {
-            // No event arrived within the window, which is the expected outcome.
-        }
+        var diagnostics = Assert
+            .IsAssignableFrom<IWorkEventSubscriptionDiagnostics>(subscription)
+            .GetDiagnosticsSnapshot();
+
+        Assert.Equal(0, diagnostics.QueuedCount);
+        Assert.Equal(diagnostics.AcceptedEventCount, diagnostics.DeliveredEventCount);
     }
 
     private sealed class NoopExecutor : IWorkExecutor

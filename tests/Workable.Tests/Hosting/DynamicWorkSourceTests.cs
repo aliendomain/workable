@@ -188,7 +188,7 @@ public sealed class DynamicWorkSourceTests
         await system.Start();
         await system.Stop();
         await system.Start();
-        await Eventually(async () =>
+        await TestEventually.Until(async () =>
             (await system.Query.Workers(new WorkerCriteria(DefinitionName: "runtime.generated", Take: 10))).TotalCount == 1);
 
         var workers = await system.Query.Workers(new WorkerCriteria(DefinitionName: "runtime.generated", Take: 10));
@@ -331,24 +331,8 @@ public sealed class DynamicWorkSourceTests
         return reader.Current;
     }
 
-    private static async Task Eventually(Func<Task<bool>> condition)
-    {
-        var deadline = DateTimeOffset.UtcNow.AddSeconds(5);
-        while (DateTimeOffset.UtcNow < deadline)
-        {
-            if (await condition())
-            {
-                return;
-            }
-
-            await Task.Delay(10);
-        }
-
-        Assert.True(await condition(), "Expected condition to become true.");
-    }
-
     private static Task WaitForReadModel(IWorkSystem system)
-        => Eventually(() => Task.FromResult(system.Diagnostics.ReadModel.PendingUpdateCount == 0));
+        => TestEventually.ReadModelDrained(system);
 
     private sealed record EchoInput(string Message);
 

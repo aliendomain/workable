@@ -100,10 +100,8 @@ public sealed class WorkConcurrencyTests
         var first = await system.Queue.Enqueue("deferred-limit");
         await firstStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
         var second = await system.Queue.Enqueue("deferred-limit");
-        var secondWorker = RequiredWorker(await system.Query.Worker(RequiredWorkerId(second)));
+        await RequiredQueuedWorker(system, second);
 
-        await Task.Delay(TimeSpan.FromMilliseconds(50));
-        Assert.Equal(WorkerState.Queued, secondWorker.State);
         Assert.False(secondStarted.Task.IsCompleted);
 
         release.SetResult();
@@ -141,10 +139,9 @@ public sealed class WorkConcurrencyTests
         var failedWorker = RequiredCompletionWorker(failed);
         var second = await system.Queue.Enqueue("failed-limit");
 
-        await Task.Delay(TimeSpan.FromMilliseconds(50));
         Assert.Equal(WorkCompletionStatus.Failed, failed.Status);
+        await RequiredQueuedWorker(system, second);
         Assert.False(secondStarted.Task.IsCompleted);
-        Assert.Equal(WorkerState.Queued, RequiredWorker(await system.Query.Worker(RequiredWorkerId(second))).State);
 
         var cancelFailed = await system.Workers.Execute(failedWorker.Version, WorkAction.Cancel);
         await secondStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
@@ -306,9 +303,8 @@ public sealed class WorkConcurrencyTests
         await secondStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
         var third = await system.Queue.Enqueue("capacity-two");
 
-        await Task.Delay(TimeSpan.FromMilliseconds(50));
+        await RequiredQueuedWorker(system, third);
         Assert.False(thirdStarted.Task.IsCompleted);
-        Assert.Equal(WorkerState.Queued, RequiredWorker(await system.Query.Worker(RequiredWorkerId(third))).State);
 
         release.SetResult();
         await thirdStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
@@ -425,9 +421,8 @@ public sealed class WorkConcurrencyTests
         await firstStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
         var second = await system.Queue.Enqueue("same-subject-capacity", SubjectInput("same"));
 
-        await Task.Delay(TimeSpan.FromMilliseconds(50));
+        await RequiredQueuedWorker(system, second);
         Assert.False(secondStarted.Task.IsCompleted);
-        Assert.Equal(WorkerState.Queued, RequiredWorker(await system.Query.Worker(RequiredWorkerId(second))).State);
 
         release.SetResult();
         await secondStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
@@ -544,9 +539,8 @@ public sealed class WorkConcurrencyTests
         await firstStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
         var second = await system.Queue.Enqueue("same-key-capacity", ConcurrencyKeyInput("same"));
 
-        await Task.Delay(TimeSpan.FromMilliseconds(50));
+        await RequiredQueuedWorker(system, second);
         Assert.False(secondStarted.Task.IsCompleted);
-        Assert.Equal(WorkerState.Queued, RequiredWorker(await system.Query.Worker(RequiredWorkerId(second))).State);
 
         release.SetResult();
         await secondStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
@@ -663,9 +657,8 @@ public sealed class WorkConcurrencyTests
         await secondStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
         var third = await system.Queue.Enqueue($"capacity-two-{scope}".ToLowerInvariant(), ScopedInput(scope, "same"));
 
-        await Task.Delay(TimeSpan.FromMilliseconds(50));
+        await RequiredQueuedWorker(system, third);
         Assert.False(thirdStarted.Task.IsCompleted);
-        Assert.Equal(WorkerState.Queued, RequiredWorker(await system.Query.Worker(RequiredWorkerId(third))).State);
 
         release.SetResult();
         await thirdStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
@@ -886,9 +879,8 @@ public sealed class WorkConcurrencyTests
         await firstStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
         var second = await system.Queue.Enqueue($"override-{scope}".ToLowerInvariant(), ScopedInput(scope, "same"), options);
 
-        await Task.Delay(TimeSpan.FromMilliseconds(50));
+        await RequiredQueuedWorker(system, second);
         Assert.False(secondStarted.Task.IsCompleted);
-        Assert.Equal(WorkerState.Queued, RequiredWorker(await system.Query.Worker(RequiredWorkerId(second))).State);
         release.SetResult();
         await secondStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
 
@@ -1067,7 +1059,7 @@ public sealed class WorkConcurrencyTests
 
         if (failedWorkerHoldsCapacity)
         {
-            await Task.Delay(TimeSpan.FromMilliseconds(50));
+            await RequiredQueuedWorker(system, second);
             Assert.False(secondStarted.Task.IsCompleted);
             var cancel = await system.Workers.Execute(RequiredCompletionWorker(failed).Version, WorkAction.Cancel);
             Assert.True(cancel.IsAccepted);
@@ -1116,7 +1108,7 @@ public sealed class WorkConcurrencyTests
 
         if (pausedWorkerHoldsCapacity)
         {
-            await Task.Delay(TimeSpan.FromMilliseconds(50));
+            await RequiredQueuedWorker(system, second);
             Assert.False(secondStarted.Task.IsCompleted);
             var cancel = await system.Workers.Execute(RequiredCompletionWorker(paused).Version, WorkAction.Cancel);
             Assert.True(cancel.IsAccepted);
@@ -1167,13 +1159,14 @@ public sealed class WorkConcurrencyTests
         var second = await system.Queue.Enqueue("deferred-order", WorkInput.FromValue(2));
         var third = await system.Queue.Enqueue("deferred-order", WorkInput.FromValue(3));
 
-        await Task.Delay(TimeSpan.FromMilliseconds(50));
+        await RequiredQueuedWorker(system, second);
+        await RequiredQueuedWorker(system, third);
         Assert.False(started[1].Task.IsCompleted);
         Assert.False(started[2].Task.IsCompleted);
 
         release[0].SetResult();
         await started[1].Task.WaitAsync(TimeSpan.FromSeconds(5));
-        await Task.Delay(TimeSpan.FromMilliseconds(50));
+        await RequiredQueuedWorker(system, third);
         Assert.False(started[2].Task.IsCompleted);
 
         release[1].SetResult();
@@ -1265,7 +1258,7 @@ public sealed class WorkConcurrencyTests
                     WorkConcurrencyLimitReachedBehavior.DeferStart,
                     overrideBehavior: WorkConcurrencyOverrideBehavior.Strict)));
 
-        await Task.Delay(TimeSpan.FromMilliseconds(50));
+        await RequiredQueuedWorker(system, second);
         Assert.False(secondStarted.Task.IsCompleted);
         release.SetResult();
 
@@ -1318,6 +1311,13 @@ public sealed class WorkConcurrencyTests
 
     private static WorkerId RequiredWorkerId(IWorkerHandle handle)
         => handle.WorkerId ?? throw new InvalidOperationException("Expected the queue to accept a worker.");
+
+    private static async Task<WorkerSnapshot> RequiredQueuedWorker(IWorkSystem system, IWorkerHandle handle)
+    {
+        var worker = RequiredWorker(await system.Query.Worker(RequiredWorkerId(handle)));
+        Assert.Equal(WorkerState.Queued, worker.State);
+        return worker;
+    }
 
     private static WorkerSnapshot RequiredWorker(WorkerSnapshot? worker)
         => worker ?? throw new InvalidOperationException("Expected worker to exist.");

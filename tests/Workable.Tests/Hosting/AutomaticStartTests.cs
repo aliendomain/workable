@@ -170,18 +170,10 @@ public sealed class AutomaticStartTests
         IWorkSystem system,
         int expectedCount,
         WorkerState state)
-    {
-        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
-        while (!timeout.IsCancellationRequested)
+        => await TestEventually.Until(async () =>
         {
-            var workers = (await system.Query.Workers(new WorkerCriteria(), timeout.Token)).Workers;
-            if (workers.Count == expectedCount &&
-                workers.All(worker => worker.State == state))
-            {
-                return;
-            }
-
-            await Task.Delay(TimeSpan.FromMilliseconds(10), timeout.Token);
-        }
-    }
+            var workers = (await system.Query.Workers()).Workers;
+            return workers.Count == expectedCount &&
+                workers.All(worker => worker.State == state);
+        });
 }
