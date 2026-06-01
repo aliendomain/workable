@@ -84,10 +84,11 @@ public sealed class WorkableRealtimeViewSubscriptions
             {
                 lock (this.gate)
                 {
-                    if (this.connectionViewGroups.Remove(connectionViewKey, out var removed) &&
-                        removed is not null)
+                    if (this.connectionViewGroups.TryGetValue(connectionViewKey, out var current) &&
+                        ReferenceEquals(current, subscription))
                     {
-                        ReleaseGroupLocked(removed.GroupName);
+                        this.connectionViewGroups.Remove(connectionViewKey);
+                        ReleaseGroupLocked(subscription.GroupName);
                     }
                 }
 

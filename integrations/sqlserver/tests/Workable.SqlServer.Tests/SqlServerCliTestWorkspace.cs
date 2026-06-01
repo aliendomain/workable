@@ -11,7 +11,7 @@ internal sealed class SqlServerCliTestWorkspace : IDisposable
 
     public static SqlServerCliTestWorkspace Create()
     {
-        var root = Path.Combine(Path.GetTempPath(), "WorkableSqlServerCliTests", Guid.NewGuid().ToString("N"));
+        var root = Path.Join(Path.GetTempPath(), "WorkableSqlServerCliTests", Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(root);
         return new SqlServerCliTestWorkspace(root);
     }
@@ -34,7 +34,12 @@ internal sealed class SqlServerCliTestWorkspace : IDisposable
 
     public string WriteFile(string relativePath, string content)
     {
-        var path = Path.Combine(this.Root, relativePath);
+        if (Path.IsPathRooted(relativePath))
+        {
+            throw new ArgumentException("Path must be relative to the test workspace.", nameof(relativePath));
+        }
+
+        var path = Path.Join(this.Root, relativePath);
         var directory = Path.GetDirectoryName(path)
             ?? throw new InvalidOperationException($"Could not resolve directory for '{path}'.");
         Directory.CreateDirectory(directory);

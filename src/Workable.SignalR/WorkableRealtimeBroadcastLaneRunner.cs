@@ -50,7 +50,7 @@ internal sealed class WorkableRealtimeBroadcastLaneRunner
             {
                 return;
             }
-            catch (Exception exception)
+            catch (Exception exception) when (exception is not OperationCanceledException)
             {
                 this.logger.LogError(
                     exception,

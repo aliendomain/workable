@@ -154,8 +154,11 @@ public sealed class AuthorizedWorkQueryServiceShould
 
         await query.SystemDetails(new WorkSystemCriteria(DefinitionId: hidden.Id));
 
-        Assert.NotNull(inner.LastSystemDetailsCriteria?.DefinitionIds);
-        Assert.Empty(inner.LastSystemDetailsCriteria.DefinitionIds);
+        var criteria = inner.LastSystemDetailsCriteria;
+        Assert.NotNull(criteria);
+        var definitionIds = criteria!.DefinitionIds;
+        Assert.NotNull(definitionIds);
+        Assert.Empty(definitionIds);
     }
 
     private static AuthorizedWorkQueryService CreateQueryService(

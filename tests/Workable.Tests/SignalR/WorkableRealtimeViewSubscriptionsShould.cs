@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Microsoft.AspNetCore.SignalR;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace Workable.Tests;
@@ -213,6 +214,44 @@ public sealed class WorkableRealtimeViewSubscriptionsShould
         Assert.Empty(groups.Removes);
     }
 
+    [Fact]
+    public async Task KeepNewerSubscriptionWhenPreviousGroupAddFailsAfterReplacement()
+    {
+        var subscriptions = new WorkableRealtimeViewSubscriptions();
+        var groups = new DelayedFirstAddGroupManager();
+        await using var system = CreateSystem();
+
+        var first = subscriptions.WatchView(
+            "connection-1",
+            groups,
+            system,
+            "panel",
+            "overview",
+            Criteria("workers", WorkComponentShapes.Compact),
+            Authorization(),
+            CancellationToken.None);
+        await groups.WaitForFirstAdd();
+
+        var second = await subscriptions.WatchView(
+            "connection-1",
+            groups,
+            system,
+            "panel",
+            "overview",
+            Criteria("logs", WorkComponentShapes.Compact),
+            Authorization(),
+            CancellationToken.None);
+
+        groups.FailFirstAdd();
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(() => first);
+        var snapshot = Assert.Single(subscriptions.GetDebugSubscriptions(system));
+
+        Assert.Equal("First add failed.", exception.Message);
+        Assert.Equal(second.GroupName, snapshot.GroupName);
+        Assert.Equal(second.GroupName, Assert.Single(groups.Adds).GroupName);
+        Assert.Equal(second.GroupName, Assert.Single(subscriptions.GetActiveSubscriptions(system)).GroupName);
+    }
+
     private static Task<WorkableRealtimeViewSubscription> Watch(
         WorkableRealtimeViewSubscriptions subscriptions,
         RecordingSignalRGroupManager groups,
@@ -254,4 +293,41 @@ public sealed class WorkableRealtimeViewSubscriptionsShould
             new WorkActor("signalr-view-subscription-user", "SignalR View Subscription User"),
             ["signalr.read"],
             readableDefinitionIds: null);
+
+    private sealed class DelayedFirstAddGroupManager : IGroupManager
+    {
+        private readonly TaskCompletionSource<object?> firstAddStarted = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource<object?> firstAddResult = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private int addCount;
+
+        public List<SignalRGroupCall> Adds { get; } = [];
+
+        public Task AddToGroupAsync(
+            string connectionId,
+            string groupName,
+            CancellationToken cancellationToken = default)
+        {
+            var call = new SignalRGroupCall(connectionId, groupName);
+            if (Interlocked.Increment(ref this.addCount) == 1)
+            {
+                this.firstAddStarted.SetResult(null);
+                return this.firstAddResult.Task;
+            }
+
+            this.Adds.Add(call);
+            return Task.CompletedTask;
+        }
+
+        public Task RemoveFromGroupAsync(
+            string connectionId,
+            string groupName,
+            CancellationToken cancellationToken = default)
+            => Task.CompletedTask;
+
+        public Task WaitForFirstAdd()
+            => this.firstAddStarted.Task.WaitAsync(TimeSpan.FromSeconds(1));
+
+        public void FailFirstAdd()
+            => this.firstAddResult.SetException(new InvalidOperationException("First add failed."));
+    }
 }
