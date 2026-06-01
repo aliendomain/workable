@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { useState } from "react";
 import {
   SchemaForm,
   SchemaPathField,
@@ -12,6 +13,7 @@ import {
   assertMarkupIncludes,
   renderMarkup,
 } from "@/test/render";
+import { renderDom } from "@/test/dom";
 import type { JsonSchemaNode } from "@/lib/workable";
 
 test("schema parsing and default values cover invalid, explicit, enum, object, array, formatted, and primitive schemas", () => {
@@ -223,3 +225,216 @@ test("schema preset button and compact JSON expose disabled, enabled, and undefi
     "{\n  \"nested\": {\n    \"kept\": true\n  },\n  \"values\": [\n    1,\n    null,\n    3\n  ]\n}"
   );
 });
+
+test("schema form updates object fields from boolean, number, and formatted string controls", async () => {
+  const schema: JsonSchemaNode = {
+    properties: {
+      callbackUrl: {
+        format: "uri",
+        title: "Callback URL",
+        type: "string",
+      },
+      enabled: {
+        title: "Enabled",
+        type: "boolean",
+      },
+      retries: {
+        title: "Retries",
+        type: "integer",
+      },
+    },
+    required: ["enabled"],
+    type: "object",
+  };
+  const values: unknown[] = [];
+  const result = await renderDom(
+    <ControlledSchemaForm
+      initialValue={{
+        callbackUrl: "",
+        enabled: false,
+        retries: 1,
+      }}
+      onValue={(value) => values.push(value)}
+      schema={schema}
+    />
+  );
+
+  try {
+    await result.click(result.getByRole("button", { name: "True" }));
+    assert.deepEqual(values.at(-1), {
+      callbackUrl: "",
+      enabled: true,
+      retries: 1,
+    });
+
+    const retriesInput = result.getByRole("spinbutton");
+    assert.ok(retriesInput instanceof result.dom.window.HTMLInputElement);
+    await result.input(retriesInput, "5");
+    assert.deepEqual(values.at(-1), {
+      callbackUrl: "",
+      enabled: true,
+      retries: 5,
+    });
+
+    const urlInput = result.container.ownerDocument.querySelector("input[type='url']");
+    assert.ok(urlInput instanceof result.dom.window.HTMLInputElement);
+    await result.input(urlInput, "https://example.test/callback");
+    assert.deepEqual(values.at(-1), {
+      callbackUrl: "https://example.test/callback",
+      enabled: true,
+      retries: 5,
+    });
+  } finally {
+    await result.restore();
+  }
+});
+
+test("schema form adds, edits, and removes array items", async () => {
+  const schema: JsonSchemaNode = {
+    items: { type: "string" },
+    title: "Recipients",
+    type: "array",
+  };
+  const values: unknown[] = [];
+  const result = await renderDom(
+    <ControlledSchemaForm
+      initialValue={[]}
+      onValue={(value) => values.push(value)}
+      schema={schema}
+    />
+  );
+
+  try {
+    result.getByText("No items.");
+
+    await result.click(result.getByRole("button", { name: "Add" }));
+    assert.deepEqual(values.at(-1), [""]);
+    result.getByText("Item 1");
+
+    const itemInput = result.container.ownerDocument.querySelector("input[type='text']");
+    assert.ok(itemInput instanceof result.dom.window.HTMLInputElement);
+    await result.input(itemInput, "ops@example.test");
+    assert.deepEqual(values.at(-1), ["ops@example.test"]);
+
+    await result.click(result.getByRole("button", { name: "Remove item 1" }));
+    assert.deepEqual(values.at(-1), []);
+    result.getByText("No items.");
+  } finally {
+    await result.restore();
+  }
+});
+
+test("schema form adds, renames, edits, and removes dictionary entries", async () => {
+  const schema: JsonSchemaNode = {
+    additionalProperties: { type: "number" },
+    title: "Headers",
+    type: "object",
+  };
+  const values: unknown[] = [];
+  const result = await renderDom(
+    <ControlledSchemaForm
+      initialValue={{}}
+      onValue={(value) => values.push(value)}
+      schema={schema}
+    />
+  );
+
+  try {
+    result.getByText("No key-value pairs.");
+
+    await result.click(result.getByRole("button", { name: "Add" }));
+    assert.deepEqual(values.at(-1), { key1: 0 });
+
+    const keyInput = result.getByLabelText("Dictionary key");
+    assert.ok(keyInput instanceof result.dom.window.HTMLInputElement);
+    await result.input(keyInput, "retryAfter");
+    assert.deepEqual(values.at(-1), { retryAfter: 0 });
+
+    const valueInput = result.getByRole("spinbutton");
+    assert.ok(valueInput instanceof result.dom.window.HTMLInputElement);
+    await result.input(valueInput, "30");
+    assert.deepEqual(values.at(-1), { retryAfter: 30 });
+
+    await result.click(result.getByRole("button", { name: "Remove retryAfter" }));
+    assert.deepEqual(values.at(-1), {});
+    result.getByText("No key-value pairs.");
+  } finally {
+    await result.restore();
+  }
+});
+
+test("schema form changes enum values through the shadcn select", async () => {
+  const values: unknown[] = [];
+  const result = await renderDom(
+    <ControlledSchemaForm
+      initialValue="fast"
+      onValue={(value) => values.push(value)}
+      schema={{
+        enum: ["fast", "safe"],
+        title: "Mode",
+      }}
+    />
+  );
+
+  try {
+    await result.click(result.getByRole("combobox"));
+    await result.click(result.getByRole("option", { name: "safe" }));
+
+    assert.deepEqual(values, ["safe"]);
+    assert.equal(result.getByRole("combobox").textContent?.trim(), "safe");
+  } finally {
+    await result.restore();
+  }
+});
+
+test("schema preset button applies generated defaults through its user action", async () => {
+  const applied: unknown[] = [];
+  const result = await renderDom(
+    <SchemaPresetButton
+      onApply={(value) => applied.push(value)}
+      schema={{
+        properties: {
+          enabled: { type: "boolean" },
+          mode: { enum: ["safe", "fast"] },
+        },
+        type: "object",
+      }}
+    />
+  );
+
+  try {
+    await result.click(result.getByRole("button", { name: "Use input defaults" }));
+
+    assert.deepEqual(applied, [
+      {
+        enabled: false,
+        mode: "safe",
+      },
+    ]);
+  } finally {
+    await result.restore();
+  }
+});
+
+function ControlledSchemaForm({
+  initialValue,
+  onValue,
+  schema,
+}: {
+  initialValue: unknown;
+  onValue: (value: unknown) => void;
+  schema: JsonSchemaNode;
+}) {
+  const [value, setValue] = useState(initialValue);
+
+  return (
+    <SchemaForm
+      onChange={(next) => {
+        onValue(next);
+        setValue(next);
+      }}
+      schema={schema}
+      value={value}
+    />
+  );
+}

@@ -49,6 +49,7 @@ import {
   formatFutureRelativeTime,
   formatMessageSeverity,
   formatMillisecondsCompact,
+  formatWorkerTimelineBadgeLabel,
   getAvailableWorkerActions,
   getFieldSectionId,
   getIterationDurationGraphBarHeight,
@@ -613,6 +614,26 @@ test("timeline, duration, hidden panel, and catalog helpers cover ordering and b
   );
   assert.equal(isFinalIterationStatus("Completed"), true);
   assert.equal(isFinalIterationStatus("Executing"), false);
+  assert.equal(formatWorkerTimelineBadgeLabel(overviewTimelineItem({
+    kind: "StateChange",
+    state: "Waiting",
+  })), "Waiting");
+  assert.equal(formatWorkerTimelineBadgeLabel(overviewTimelineItem({
+    kind: "StateChange",
+    state: "Queued",
+  })), "Queued");
+  assert.equal(formatWorkerTimelineBadgeLabel(overviewTimelineItem({
+    actionStatus: "Accepted",
+    kind: "ActionRequest",
+  })), "Accepted");
+  assert.equal(formatWorkerTimelineBadgeLabel(overviewTimelineItem({
+    actionStatus: null,
+    kind: "ActionRequest",
+  })), "Requested");
+  assert.equal(formatWorkerTimelineBadgeLabel(overviewTimelineItem({
+    iterationStatus: "Completed",
+    kind: "Iteration",
+  })), "Completed");
   assert.deepEqual([...createDefaultWorkerHiddenPanels()].sort(), ["workerConfiguration"]);
   assert.deepEqual([...createDefaultWorkerHiddenPanels(true)], []);
   assert.deepEqual([...createWorkerFocusedHiddenPanels("workerLogs")].sort(), ["workerConfiguration", "workerDuration", "workerTimeline"]);

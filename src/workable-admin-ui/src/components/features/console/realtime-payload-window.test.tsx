@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { useState } from "react";
 import {
   JsonValue,
   RealtimePayloadWindow,
@@ -22,7 +23,9 @@ import {
   assertMarkupIncludes,
   renderMarkup,
 } from "@/test/render";
+import { renderDom } from "@/test/dom";
 import type { RealtimePayloadMessage } from "@/components/features/console/realtime-payload";
+import type { RealtimePayloadWindowTab } from "@/components/features/console/realtime-payload-window";
 
 const stats = {
   activeConsumerCount: 0,
@@ -223,3 +226,145 @@ test("realtime payload collection and window helpers cover pin merging, metrics,
     width: 1024,
   });
 });
+
+test("realtime payload window switches tabs, filters, pins, changes limits, clears, and closes", async () => {
+  const callbacks = {
+    clearCount: 0,
+    maxChanges: [] as number[],
+    openChanges: [] as boolean[],
+    tabChanges: [] as RealtimePayloadWindowTab[],
+  };
+  const result = await renderDom(
+    <RealtimePayloadWindowHarness
+      onClearMessages={() => {
+        callbacks.clearCount += 1;
+      }}
+      onMaxMessagesChange={(value) => callbacks.maxChanges.push(value)}
+      onOpenChange={(open) => callbacks.openChanges.push(open)}
+      onTabChange={(tab) => callbacks.tabChanges.push(tab)}
+    />
+  );
+
+  try {
+    result.getByText("Realtime");
+    result.getByText("Overview");
+    result.getByText("workers");
+
+    await result.click(result.getByText("Events"));
+    result.getByText("Realtime event stream");
+    assert.deepEqual(callbacks.tabChanges, ["events"]);
+
+    await result.click(result.getByText("Payloads"));
+    assert.deepEqual(callbacks.tabChanges, ["events", "payloads"]);
+
+    const limit = result.getByRole("spinbutton") as HTMLInputElement;
+    await result.input(limit, "25");
+    assert.deepEqual(callbacks.maxChanges, [25]);
+
+    const search = result.container.ownerDocument.querySelector("input[placeholder='Filter payloads']");
+    assert.ok(search instanceof result.dom.window.HTMLInputElement);
+    await result.input(search, "worker.failed");
+
+    await result.waitFor(() => result.getByText("Worker Console"));
+    assert.equal(result.queryByText("workers"), null);
+
+    await result.click(result.getByRole("button", { name: "Pin payload" }));
+    result.getByText("Pinned 1");
+    result.getByRole("button", { name: "Unpin payload" });
+
+    await result.click(result.getByText("Clear"));
+    assert.equal(callbacks.clearCount, 1);
+    result.getByText("Waiting for realtime payloads.");
+    assert.equal(result.getByRole("button", { name: "Open pinned payloads" }).hasAttribute("disabled"), true);
+
+    await result.click(result.getByRole("button", { name: "Close realtime payloads" }));
+    assert.deepEqual(callbacks.openChanges, [false]);
+  } finally {
+    await result.restore();
+  }
+});
+
+function RealtimePayloadWindowHarness({
+  onClearMessages,
+  onMaxMessagesChange,
+  onOpenChange,
+  onTabChange,
+}: {
+  onClearMessages: () => void;
+  onMaxMessagesChange: (value: number) => void;
+  onOpenChange: (open: boolean) => void;
+  onTabChange: (tab: RealtimePayloadWindowTab) => void;
+}) {
+  const [activeTab, setActiveTab] = useState<RealtimePayloadWindowTab>("payloads");
+  const [maxMessages, setMaxMessages] = useState(10);
+  const [messages, setMessages] = useState([
+    payloadMessage({
+      bytes: 120,
+      components: [{ id: "workers", shape: "summary", status: "ok" }],
+      connectionId: "overview",
+      connectionLabel: "Overview",
+      id: "payload-overview",
+      payloadJson: "{\"components\":{\"workers\":{\"status\":\"ok\"}}}",
+      receivedAt: 100,
+      searchText: "overview workers",
+      subscription: "Overview",
+      value: {
+        components: {
+          workers: {
+            data: { activeWorkerCount: 2 },
+            status: "ok",
+          },
+        },
+      },
+      viewName: "Overview",
+    }),
+    payloadMessage({
+      bytes: 220,
+      components: [{ id: "logs", shape: "detailed", status: "ok" }],
+      connectionId: "worker",
+      connectionLabel: "Worker Console",
+      id: "payload-worker",
+      payloadJson: "{\"event\":\"worker.failed\"}",
+      receivedAt: 200,
+      searchText: "worker.failed logs",
+      subscription: "Worker",
+      value: {
+        components: {
+          logs: {
+            data: [{ level: "Error" }],
+            status: "ok",
+          },
+        },
+      },
+      viewName: "Worker",
+    }),
+  ]);
+  const [open, setOpen] = useState(true);
+
+  return (
+    <RealtimePayloadWindow
+      activeTab={activeTab}
+      eventTabContent={<div>Realtime event stream</div>}
+      maxMessages={maxMessages}
+      messages={messages}
+      onActiveTabChange={(tab) => {
+        onTabChange(tab);
+        setActiveTab(tab);
+      }}
+      onClearMessages={() => {
+        onClearMessages();
+        setMessages([]);
+      }}
+      onMaxMessagesChange={(value) => {
+        onMaxMessagesChange(value);
+        setMaxMessages(value);
+      }}
+      onOpenChange={(nextOpen) => {
+        onOpenChange(nextOpen);
+        setOpen(nextOpen);
+      }}
+      open={open}
+      realtimeStats={stats}
+    />
+  );
+}
