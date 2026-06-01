@@ -126,7 +126,14 @@ public sealed class WorkStartConfigurationTests
         var secondQueueTask = system.Queue.Enqueue("return-after-started");
 
         await firstStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
-        await Task.Delay(TimeSpan.FromMilliseconds(50));
+        await TestEventually.Until(async () =>
+        {
+            var queued = await system.Query.Workers(new WorkerCriteria(
+                DefinitionName: "return-after-started",
+                States: new HashSet<WorkerState> { WorkerState.Queued },
+                Take: 10));
+            return queued.Workers.Count == 1;
+        });
 
         Assert.False(secondQueueTask.IsCompleted);
 
@@ -157,7 +164,6 @@ public sealed class WorkStartConfigurationTests
         var queueTask = system.Queue.Enqueue("return-after-complete");
 
         await entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
-        await Task.Delay(TimeSpan.FromMilliseconds(50));
 
         Assert.False(queueTask.IsCompleted);
 
@@ -195,7 +201,7 @@ public sealed class WorkStartConfigurationTests
         var worker = Assert.Single((await system.Query.Workers(new WorkerCriteria(Take: 10))).Workers);
 
         release.SetResult();
-        await Eventually(async () =>
+        await TestEventually.Until(async () =>
         {
             var snapshot = await system.Query.Worker(worker.Id);
             return snapshot?.State == WorkerState.Completed;
@@ -308,10 +314,9 @@ public sealed class WorkStartConfigurationTests
             secondWorker.Version,
             new WorkerReconfiguration(Start: WorkStartConfiguration.Default));
 
-        await Task.Delay(TimeSpan.FromMilliseconds(50));
-
         Assert.True(firstStart.IsAccepted);
         Assert.True(reconfigureSecond.IsAccepted);
+        Assert.Equal(WorkerState.Queued, reconfigureSecond.Worker?.State);
         Assert.False(secondStarted.Task.IsCompleted);
 
         releaseFirst.SetResult();
@@ -357,22 +362,6 @@ public sealed class WorkStartConfigurationTests
 
     private static WorkerSnapshot RequiredWorker(WorkerSnapshot? worker)
         => worker ?? throw new InvalidOperationException("Expected worker to exist.");
-
-    private static async Task Eventually(Func<Task<bool>> condition)
-    {
-        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
-        while (!timeout.IsCancellationRequested)
-        {
-            if (await condition())
-            {
-                return;
-            }
-
-            await Task.Delay(TimeSpan.FromMilliseconds(10), timeout.Token);
-        }
-
-        Assert.Fail("Expected condition was not reached.");
-    }
 
     [WorkStart(WorkStartPolicy.DoNotStart)]
     private sealed class AttributedDoNotStartWork : IWorkExecutor

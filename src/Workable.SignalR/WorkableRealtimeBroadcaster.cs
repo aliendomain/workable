@@ -15,7 +15,9 @@ internal sealed class WorkableRealtimeBroadcaster(
     WorkableRealtimeViewSubscriptions viewSubscriptions,
     WorkableRealtimeWorkerOverviewSubscriptions workerOverviewSubscriptions,
     IHostApplicationLifetime lifetime,
-    IOptions<WorkableSignalROptions> options) : BackgroundService, IWorkSystemLifecycleObserver
+    IOptions<WorkableSignalROptions> options,
+    IWorkableRealtimeTimerFactory timerFactory,
+    WorkableRealtimeBroadcastLaneRunner laneRunner) : BackgroundService, IWorkSystemLifecycleObserver
 {
     private IDisposable? stoppingRegistration;
 
@@ -101,63 +103,14 @@ internal sealed class WorkableRealtimeBroadcaster(
         try
         {
             await Task.WhenAll(
-                this.RunBroadcastLane(system, "events", this.BroadcastEvents, cancellationToken),
-                this.RunBroadcastLane(system, "worker-overview", this.BroadcastWorkerOverviews, cancellationToken),
-                this.RunBroadcastLane(system, "views", this.BroadcastViews, cancellationToken),
-                this.RunBroadcastLane(system, "diagnostics", this.BroadcastDiagnosticsViews, cancellationToken));
+                laneRunner.Run(system, "events", this.BroadcastEvents, cancellationToken),
+                laneRunner.Run(system, "worker-overview", this.BroadcastWorkerOverviews, cancellationToken),
+                laneRunner.Run(system, "views", this.BroadcastViews, cancellationToken),
+                laneRunner.Run(system, "diagnostics", this.BroadcastDiagnosticsViews, cancellationToken));
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
             return;
-        }
-    }
-
-    private async Task RunBroadcastLane(
-        IWorkSystem system,
-        string laneName,
-        Func<IWorkSystem, CancellationToken, Task> broadcast,
-        CancellationToken cancellationToken)
-    {
-        var restartDelay = TimeSpan.FromSeconds(1);
-        while (!cancellationToken.IsCancellationRequested)
-        {
-            try
-            {
-                await broadcast(system, cancellationToken);
-                if (!cancellationToken.IsCancellationRequested)
-                {
-                    logger.LogWarning(
-                        "The SignalR {LaneName} lane for system '{SystemName}' stopped unexpectedly and will restart.",
-                        laneName,
-                        system.Name);
-                }
-            }
-            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-            {
-                return;
-            }
-            catch (Exception exception)
-            {
-                logger.LogError(
-                    exception,
-                    "The SignalR {LaneName} lane for system '{SystemName}' faulted and will restart.",
-                    laneName,
-                    system.Name);
-            }
-
-            if (cancellationToken.IsCancellationRequested)
-            {
-                return;
-            }
-
-            try
-            {
-                await Task.Delay(restartDelay, cancellationToken);
-            }
-            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-            {
-                return;
-            }
         }
     }
 
@@ -773,7 +726,7 @@ internal sealed class WorkableRealtimeBroadcaster(
         CancellationToken cancellationToken)
     {
         var lastPublishedSequencesByGroup = new Dictionary<string, long>(StringComparer.Ordinal);
-        using var timer = new PeriodicTimer(options.Value.PublishInterval);
+        using var timer = timerFactory.Create(options.Value.PublishInterval);
         while (await timer.WaitForNextTickAsync(cancellationToken))
         {
             var subscriptions = viewSubscriptions
@@ -831,7 +784,10 @@ internal sealed class WorkableRealtimeBroadcaster(
                 var lastPublishedSequence = lastPublishedSequencesByGroup.TryGetValue(subscription.GroupName, out var sequence)
                     ? sequence
                     : subscription.InitialReadModelSequence;
-                if (!requiresIntervalPublish && lastPublishedSequence == appliedSequence)
+                if (!WorkableRealtimeBroadcastRules.ShouldPublishView(
+                    requiresIntervalPublish,
+                    lastPublishedSequence,
+                    appliedSequence))
                 {
                     lastPublishedSequencesByGroup[subscription.GroupName] = appliedSequence;
                     continue;
@@ -863,8 +819,8 @@ internal sealed class WorkableRealtimeBroadcaster(
         IWorkSystem system,
         CancellationToken cancellationToken)
     {
-        var alertStatesByGroup = new Dictionary<string, DiagnosticsAlertState>(StringComparer.Ordinal);
-        using var timer = new PeriodicTimer(NormalizeInterval(
+        var alertStatesByGroup = new Dictionary<string, WorkableRealtimeDiagnosticsAlertState>(StringComparer.Ordinal);
+        using var timer = timerFactory.Create(NormalizeInterval(
             options.Value.DiagnosticsPublishInterval,
             TimeSpan.FromMilliseconds(750)));
         while (await timer.WaitForNextTickAsync(cancellationToken))
@@ -894,13 +850,8 @@ internal sealed class WorkableRealtimeBroadcaster(
                             subscription.Authorization,
                             "Broadcast Workable diagnostics alerts through SignalR.");
                         var alertState = CreateDiagnosticsAlertState(session, subscription);
-                        if (alertStatesByGroup.TryGetValue(subscription.GroupName, out var previous) &&
-                            previous == alertState)
-                        {
-                            continue;
-                        }
-
-                        if (previous is null && !alertState.IsAlerting)
+                        alertStatesByGroup.TryGetValue(subscription.GroupName, out var previous);
+                        if (!WorkableRealtimeBroadcastRules.ShouldPublishDiagnosticsAlertChange(previous, alertState))
                         {
                             alertStatesByGroup[subscription.GroupName] = alertState;
                             continue;
@@ -969,7 +920,7 @@ internal sealed class WorkableRealtimeBroadcaster(
 
     private async Task BroadcastDiagnosticsAlertView(
         WorkableRealtimeViewSubscription subscription,
-        DiagnosticsAlertState alertState,
+        WorkableRealtimeDiagnosticsAlertState alertState,
         CancellationToken cancellationToken)
     {
         var components = new Dictionary<string, WorkComponentResult>(StringComparer.OrdinalIgnoreCase);
@@ -1188,7 +1139,7 @@ internal sealed class WorkableRealtimeBroadcaster(
             string.Equals(component.Type, "concurrencyDiagnostics", StringComparison.OrdinalIgnoreCase) ||
             string.Equals(component.Type, "durabilityDiagnostics", StringComparison.OrdinalIgnoreCase);
 
-    private static DiagnosticsAlertState CreateDiagnosticsAlertState(
+    private static WorkableRealtimeDiagnosticsAlertState CreateDiagnosticsAlertState(
         IWorkSystemSession session,
         WorkableRealtimeViewSubscription subscription,
         WorkSystemState? systemState = null)
@@ -1197,45 +1148,45 @@ internal sealed class WorkableRealtimeBroadcaster(
         var readModel = session.Diagnostics.ReadModel;
         var readModelThreshold = GetReadModelDiagnosticsWarningThreshold(subscription);
         var readModelLagSeverity = readModel.PendingUpdateCount >= readModelThreshold * 10L
-            ? DiagnosticsLagSeverity.Critical
+            ? WorkableRealtimeDiagnosticsLagSeverity.Critical
             : readModel.PendingUpdateCount >= readModelThreshold
-                ? DiagnosticsLagSeverity.Warning
-                : DiagnosticsLagSeverity.Normal;
+                ? WorkableRealtimeDiagnosticsLagSeverity.Warning
+                : WorkableRealtimeDiagnosticsLagSeverity.Normal;
         var retention = session.Diagnostics.Retention;
         var retentionWarningSeconds = GetRetentionDiagnosticsWarningSeconds(subscription);
         var retentionLagSeverity = retention.OldestDuePurgeAge >= TimeSpan.FromSeconds(retentionWarningSeconds * 10L)
-            ? DiagnosticsLagSeverity.Critical
+            ? WorkableRealtimeDiagnosticsLagSeverity.Critical
             : retention.OldestDuePurgeAge >= TimeSpan.FromSeconds(retentionWarningSeconds)
-                ? DiagnosticsLagSeverity.Warning
-                : DiagnosticsLagSeverity.Normal;
+                ? WorkableRealtimeDiagnosticsLagSeverity.Warning
+                : WorkableRealtimeDiagnosticsLagSeverity.Normal;
         var concurrency = session.Diagnostics.Concurrency;
         var concurrencyWarningSeconds = GetConcurrencyDiagnosticsWarningSeconds(subscription);
         var concurrencyLagSeverity = concurrency.DeferredStartCount > 0 &&
             concurrency.OldestDeferredStartAge >= TimeSpan.FromSeconds(concurrencyWarningSeconds * 10L)
-            ? DiagnosticsLagSeverity.Critical
+            ? WorkableRealtimeDiagnosticsLagSeverity.Critical
             : concurrency.DeferredStartCount > 0 &&
                 concurrency.OldestDeferredStartAge >= TimeSpan.FromSeconds(concurrencyWarningSeconds)
-                ? DiagnosticsLagSeverity.Warning
-                : DiagnosticsLagSeverity.Normal;
+                ? WorkableRealtimeDiagnosticsLagSeverity.Warning
+                : WorkableRealtimeDiagnosticsLagSeverity.Normal;
         var durability = session.Diagnostics.Durability;
         var acceptedWorkerWarningSeconds = GetDurabilityAcceptedWorkerWarningSeconds(subscription);
         var cleanupWarningSeconds = GetDurabilityCleanupWarningSeconds(subscription);
         var acceptedWorkerLagSeverity = durability.AcceptedWaiterCount > 0 &&
             durability.OldestAcceptedWaiterAge >= TimeSpan.FromSeconds(acceptedWorkerWarningSeconds * 10L)
-            ? DiagnosticsLagSeverity.Critical
+            ? WorkableRealtimeDiagnosticsLagSeverity.Critical
             : durability.AcceptedWaiterCount > 0 &&
                 durability.OldestAcceptedWaiterAge >= TimeSpan.FromSeconds(acceptedWorkerWarningSeconds)
-                ? DiagnosticsLagSeverity.Warning
-                : DiagnosticsLagSeverity.Normal;
+                ? WorkableRealtimeDiagnosticsLagSeverity.Warning
+                : WorkableRealtimeDiagnosticsLagSeverity.Normal;
         var cleanupLagSeverity = durability.PendingCleanupCount > 0 &&
             durability.OldestPendingCleanupAge >= TimeSpan.FromSeconds(cleanupWarningSeconds * 10L)
-            ? DiagnosticsLagSeverity.Critical
+            ? WorkableRealtimeDiagnosticsLagSeverity.Critical
             : durability.PendingCleanupCount > 0 &&
                 durability.OldestPendingCleanupAge >= TimeSpan.FromSeconds(cleanupWarningSeconds)
-                ? DiagnosticsLagSeverity.Warning
-                : DiagnosticsLagSeverity.Normal;
+                ? WorkableRealtimeDiagnosticsLagSeverity.Warning
+                : WorkableRealtimeDiagnosticsLagSeverity.Normal;
 
-        return new DiagnosticsAlertState(
+        return new WorkableRealtimeDiagnosticsAlertState(
             session.SystemName,
             systemState ?? session.SystemState,
             queue.RejectedWorkCount,
@@ -1366,91 +1317,6 @@ internal sealed class WorkableRealtimeBroadcaster(
         => NormalizeInterval(
             signalROptions.MinimumTimeWindow,
             TimeSpan.FromMilliseconds(100));
-
-    private enum DiagnosticsLagSeverity
-    {
-        Normal,
-        Warning,
-        Critical,
-    }
-
-    private sealed record DiagnosticsAlertState(
-        string? SystemName,
-        WorkSystemState SystemState,
-        long RejectedWorkCount,
-        DateTimeOffset? LastRejectedAt,
-        string? LastRejectedCode,
-        string? LastRejectedMessage,
-        long AlertableRejectedWorkCount,
-        string? LastAlertableRejectedCode,
-        string? LastAlertableRejectedMessage,
-        long ReadModelPendingUpdateCount,
-        int ReadModelWarningThreshold,
-        DiagnosticsLagSeverity ReadModelLagSeverity,
-        bool HasProjectorFailure,
-        string? ProjectorFailureType,
-        string? ProjectorFailureMessage,
-        int TrackedFinalWorkerCount,
-        int ScheduledPurgeCount,
-        TimeSpan OldestDuePurgeAge,
-        int RetentionWarningSeconds,
-        DiagnosticsLagSeverity RetentionLagSeverity,
-        bool HasSchedulerFailure,
-        string? SchedulerFailureType,
-        string? SchedulerFailureMessage,
-        int DeferredStartCount,
-        TimeSpan OldestDeferredStartAge,
-        int LastDrainReleasedCount,
-        int ConcurrencyWarningSeconds,
-        DiagnosticsLagSeverity ConcurrencyLagSeverity,
-        int AcceptedWaiterCount,
-        TimeSpan OldestAcceptedWaiterAge,
-        int AcceptedWorkerWarningSeconds,
-        DiagnosticsLagSeverity AcceptedWorkerLagSeverity,
-        int PendingCleanupCount,
-        TimeSpan OldestPendingCleanupAge,
-        int CleanupWarningSeconds,
-        DiagnosticsLagSeverity CleanupLagSeverity,
-        bool HasReaderFailure,
-        string? ReaderFailureType,
-        string? ReaderFailureMessage,
-        bool HasLeaseRenewalFailure,
-        string? LeaseRenewalFailureType,
-        string? LeaseRenewalFailureMessage,
-        bool HasCleanupFailure,
-        string? CleanupFailureType,
-        string? CleanupFailureMessage)
-    {
-        public bool IsShuttingDown => this.SystemState == WorkSystemState.Stopping;
-
-        public bool HasRejectedWork => this.RejectedWorkCount > 0;
-
-        public bool HasAlertableRejectedWork => this.AlertableRejectedWorkCount > 0;
-
-        public bool IsReadModelBehind => this.ReadModelLagSeverity != DiagnosticsLagSeverity.Normal;
-
-        public bool IsRetentionBehind => this.RetentionLagSeverity != DiagnosticsLagSeverity.Normal;
-
-        public bool IsConcurrencyBehind => this.ConcurrencyLagSeverity != DiagnosticsLagSeverity.Normal;
-
-        public bool IsAcceptedWorkerMaterializationBehind => this.AcceptedWorkerLagSeverity != DiagnosticsLagSeverity.Normal;
-
-        public bool IsCleanupBehind => this.CleanupLagSeverity != DiagnosticsLagSeverity.Normal;
-
-        public bool IsAlerting =>
-            this.HasAlertableRejectedWork ||
-            this.IsReadModelBehind ||
-            this.HasProjectorFailure ||
-            this.IsRetentionBehind ||
-            this.HasSchedulerFailure ||
-            this.IsConcurrencyBehind ||
-            this.IsAcceptedWorkerMaterializationBehind ||
-            this.IsCleanupBehind ||
-            this.HasReaderFailure ||
-            this.HasLeaseRenewalFailure ||
-            this.HasCleanupFailure ||
-            this.IsShuttingDown;
-    }
 
     private sealed record EventPump(
         CancellationTokenSource Cancellation,

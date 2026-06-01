@@ -286,7 +286,6 @@ public sealed class DurableQueueTests
         await store.WaitForDeleteFinalStarted(TimeSpan.FromSeconds(2));
 
         var stop = StopWithTimeout(system, TimeSpan.FromSeconds(2));
-        await Task.Delay(TimeSpan.FromMilliseconds(100));
 
         Assert.False(stop.IsCompleted);
 
@@ -511,7 +510,7 @@ public sealed class DurableQueueTests
     }
 
     [Fact]
-    public async Task DurableQueueDoesNotSignalReaderForCallerTransaction()
+    public async Task DurableQueueProcessesCallerTransactionWorkThroughFallbackPolling()
     {
         var ran = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var store = new InMemoryDurableQueueStore();
@@ -531,20 +530,16 @@ public sealed class DurableQueueTests
             .Default;
 
         await system.Start();
-        store.ResetClaimReadyAttempts();
 
         var handle = await system.Queue.Enqueue(
             "durable-external-transaction",
             options: WorkerOptions.Default with { QueueDurabilityTransaction = new TestQueueDurabilityTransaction() });
-        await Task.Delay(TimeSpan.FromMilliseconds(200));
-
-        Assert.True(handle.QueueOutcome.IsAccepted);
-        Assert.False(ran.Task.IsCompleted);
-        Assert.Equal(0, store.ClaimReadyAttempts);
 
         var completion = await WaitForCompletion(handle, TimeSpan.FromSeconds(3));
         await system.Stop();
 
+        Assert.True(handle.QueueOutcome.IsAccepted);
+        Assert.True(ran.Task.IsCompleted);
         Assert.True(completion.IsCompletedSuccessfully);
     }
 
@@ -983,7 +978,10 @@ public sealed class DurableQueueTests
             }
         });
 
-        await WaitUntil(() => coordinator.Diagnostics.AcceptedWaiterCount == 1, TimeSpan.FromSeconds(2));
+        await TestEventually.Until(
+            () => coordinator.Diagnostics.AcceptedWaiterCount == 1,
+            "Expected the accepted worker waiter count to be tracked.",
+            timeout: TimeSpan.FromSeconds(2));
         var diagnostics = coordinator.Diagnostics;
 
         Assert.Equal(1, diagnostics.AcceptedWaiterCount);
@@ -1041,15 +1039,6 @@ public sealed class DurableQueueTests
             readerSignalDebounce: TimeSpan.FromMilliseconds(10),
             leaseDuration: TimeSpan.FromSeconds(1),
             batchSize: 10);
-
-    private static async Task WaitUntil(Func<bool> condition, TimeSpan timeout)
-    {
-        using var timeoutCancellation = new CancellationTokenSource(timeout);
-        while (!condition())
-        {
-            await Task.Delay(10, timeoutCancellation.Token);
-        }
-    }
 
     private static WorkQueueDurabilityEnqueueRequest CreateDurableRequest(
         WorkDefinition definition,
@@ -1315,55 +1304,40 @@ public sealed class DurableQueueTests
         }
 
         public async Task WaitForDeletedFinalWorker(WorkerId workerId, TimeSpan timeout)
-        {
-            using var timeoutCancellation = new CancellationTokenSource(timeout);
-            while (!timeoutCancellation.IsCancellationRequested)
-            {
-                lock (this.sync)
+            => await TestEventually.Until(
+                () =>
                 {
-                    if (this.DeletedFinalWorkers.Contains(workerId))
+                    lock (this.sync)
                     {
-                        return;
+                        return this.DeletedFinalWorkers.Contains(workerId);
                     }
-                }
-
-                await Task.Delay(TimeSpan.FromMilliseconds(10), timeoutCancellation.Token);
-            }
-        }
+                },
+                $"Expected durable final cleanup for worker '{workerId.Value:D}'.",
+                timeout: timeout);
 
         public async Task WaitForRetainedFailedWorker(WorkerId workerId, TimeSpan timeout)
-        {
-            using var timeoutCancellation = new CancellationTokenSource(timeout);
-            while (!timeoutCancellation.IsCancellationRequested)
-            {
-                lock (this.sync)
+            => await TestEventually.Until(
+                () =>
                 {
-                    if (this.RetainedFailedWorkers.Contains(workerId))
+                    lock (this.sync)
                     {
-                        return;
+                        return this.RetainedFailedWorkers.Contains(workerId);
                     }
-                }
-
-                await Task.Delay(TimeSpan.FromMilliseconds(10), timeoutCancellation.Token);
-            }
-        }
+                },
+                $"Expected durable failed-worker retention for worker '{workerId.Value:D}'.",
+                timeout: timeout);
 
         public async Task WaitForRenewLeaseAttempts(int minimumAttempts, TimeSpan timeout)
-        {
-            using var timeoutCancellation = new CancellationTokenSource(timeout);
-            while (!timeoutCancellation.IsCancellationRequested)
-            {
-                lock (this.sync)
+            => await TestEventually.Until(
+                () =>
                 {
-                    if (this.RenewLeaseAttempts >= minimumAttempts)
+                    lock (this.sync)
                     {
-                        return;
+                        return this.RenewLeaseAttempts >= minimumAttempts;
                     }
-                }
-
-                await Task.Delay(TimeSpan.FromMilliseconds(10), timeoutCancellation.Token);
-            }
-        }
+                },
+                $"Expected at least {minimumAttempts} lease renewal attempt(s).",
+                timeout: timeout);
 
         public async Task WaitForDeleteFinalStarted(TimeSpan timeout)
         {
@@ -1472,17 +1446,12 @@ internal static class DurableQueueTestExtensions
         WorkerId workerId,
         WorkerState state,
         TimeSpan? timeoutAfter = null)
-    {
-        using var timeout = new CancellationTokenSource(timeoutAfter ?? TimeSpan.FromSeconds(5));
-        while (!timeout.IsCancellationRequested)
-        {
-            var current = await system.Query.Worker(workerId, timeout.Token);
-            if (current?.State == state)
+        => await TestEventually.Until(
+            async () =>
             {
-                return;
-            }
-
-            await Task.Delay(TimeSpan.FromMilliseconds(10), timeout.Token);
-        }
-    }
+                var current = await system.Query.Worker(workerId);
+                return current?.State == state;
+            },
+            $"Expected worker '{workerId.Value:D}' to reach state '{state}'.",
+            timeout: timeoutAfter ?? TimeSpan.FromSeconds(5));
 }

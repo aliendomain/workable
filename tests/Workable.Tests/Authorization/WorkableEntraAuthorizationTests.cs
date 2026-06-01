@@ -8,6 +8,7 @@ using Workable;
 
 namespace Workable.Tests;
 
+[Trait("Category", "Authorization")]
 public sealed class WorkableEntraAuthorizationTests
 {
     [Fact]

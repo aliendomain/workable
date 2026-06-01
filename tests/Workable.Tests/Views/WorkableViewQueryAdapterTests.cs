@@ -218,7 +218,7 @@ public sealed class WorkableViewQueryAdapterTests
         var workerId = RequiredWorkerId(handle);
         try
         {
-            await Eventually(async () => (await system.Query.Worker(workerId))?.State == WorkerState.Waiting);
+            await TestEventually.Until(async () => (await system.Query.Worker(workerId))?.State == WorkerState.Waiting);
 
             var overview = await new WorkableViewQueryAdapter().WorkerOverview(
                 session,
@@ -278,7 +278,7 @@ public sealed class WorkableViewQueryAdapterTests
         var workerId = RequiredWorkerId(handle);
         try
         {
-            await Eventually(async () => (await system.Query.Worker(workerId))?.State == WorkerState.Retrying);
+            await TestEventually.Until(async () => (await system.Query.Worker(workerId))?.State == WorkerState.Retrying);
 
             var overview = await new WorkableViewQueryAdapter().WorkerOverview(
                 session,
@@ -333,38 +333,47 @@ public sealed class WorkableViewQueryAdapterTests
         await handle.WaitForCompletion();
 
         var adapter = new WorkableViewQueryAdapter();
-        var compact = await adapter.WorkerOverviewRealtimeState(
+        var compact = Require(await adapter.WorkerOverviewRealtimeState(
             session,
             RequiredWorkerId(handle),
             new WorkWorkerOverviewRealtimeCriteria(
                 WorkerControls: WorkComponentShapes.Compact,
                 WorkerLogs: WorkComponentShapes.Compact,
                 WorkerDuration: WorkComponentShapes.Compact,
-                WorkerTimeline: WorkComponentShapes.Compact));
-        var expanded = await adapter.WorkerOverviewRealtimeState(
+                WorkerTimeline: WorkComponentShapes.Compact)));
+        var expanded = Require(await adapter.WorkerOverviewRealtimeState(
             session,
             RequiredWorkerId(handle),
             new WorkWorkerOverviewRealtimeCriteria(
                 WorkerControls: WorkComponentShapes.Standard,
                 WorkerLogs: WorkComponentShapes.Standard,
                 WorkerDuration: WorkComponentShapes.Standard,
-                WorkerTimeline: WorkComponentShapes.Standard));
+                WorkerTimeline: WorkComponentShapes.Standard)));
 
-        Assert.NotNull(compact);
-        Assert.NotNull(compact.LogSummary);
+        var compactSummary = Require(compact.LogSummary);
+        Assert.Equal(3, compactSummary.Total);
+        Assert.Equal(1, compactSummary.Error);
+        Assert.Equal(1, compactSummary.Warning);
+        Assert.Equal(1, compactSummary.Information);
         Assert.Empty(compact.LogEntries);
         Assert.Empty(compact.RecentIterations);
         Assert.Null(compact.TimelineSummary);
         Assert.Empty(compact.TimelineItems);
-        Assert.NotNull(compact.LatestIteration);
-        Assert.Null(compact.LatestIteration.Output);
+        var compactIteration = Require(compact.LatestIteration);
+        Assert.Equal(WorkCompletionStatus.Completed, compactIteration.Status);
+        Assert.Null(compactIteration.Output);
 
-        Assert.NotNull(expanded);
-        Assert.NotNull(expanded.LogSummary);
+        var expandedSummary = Require(expanded.LogSummary);
+        Assert.Equal(3, expandedSummary.Total);
         Assert.Equal(3, expanded.LogEntries.Count);
+        Assert.Contains(expanded.LogEntries, entry => entry.Message == "landing info");
+        Assert.Contains(expanded.LogEntries, entry => entry.Message == "landing warning");
+        Assert.Contains(expanded.LogEntries, entry => entry.Message == "landing error");
         Assert.Single(expanded.RecentIterations);
-        Assert.NotNull(expanded.TimelineSummary);
-        Assert.Single(expanded.TimelineItems);
+        Assert.Equal(1, Require(expanded.TimelineSummary).Total);
+        var timelineItem = Assert.Single(expanded.TimelineItems);
+        Assert.Equal(WorkWorkerOverviewTimelineItemKind.Iteration, timelineItem.Kind);
+        Assert.Equal(WorkCompletionStatus.Completed, timelineItem.IterationStatus);
     }
 
     [Fact]
@@ -383,16 +392,15 @@ public sealed class WorkableViewQueryAdapterTests
         await handle.WaitForCompletion();
 
         var adapter = new WorkableViewQueryAdapter();
-        var expanded = await adapter.WorkerOverviewRealtimeState(
+        var expanded = Require(await adapter.WorkerOverviewRealtimeState(
             session,
             RequiredWorkerId(handle),
             new WorkWorkerOverviewRealtimeCriteria(
                 WorkerControls: WorkComponentShapes.Standard,
                 WorkerLogs: WorkComponentShapes.Standard,
                 WorkerDuration: WorkComponentShapes.Standard,
-                WorkerTimeline: WorkComponentShapes.Standard));
+                WorkerTimeline: WorkComponentShapes.Standard)));
 
-        Assert.NotNull(expanded);
         Assert.Equal(50, expanded.LogEntries.Count);
     }
 
@@ -407,7 +415,7 @@ public sealed class WorkableViewQueryAdapterTests
             definition,
             configuration => configuration
                 .ConfigureLogging(level: LogLevel.Information)
-                .UseRecurrence(WorkRecurrenceConfiguration.Every(TimeSpan.FromMilliseconds(10)) with
+                .UseRecurrence(WorkRecurrenceConfiguration.Every(TimeSpan.FromMinutes(5)) with
                 {
                     ContinueAfterFailure = false,
                     RetainedIterations = 10,
@@ -417,12 +425,14 @@ public sealed class WorkableViewQueryAdapterTests
 
         var session = CreateTransportSession(system);
         var handle = await session.Queue.Enqueue(definition.Name);
+        var workerId = RequiredWorkerId(handle);
+        await PushRecurringWorkerAfterFirstAttempt(system, workerId, attemptsByWorker);
         await handle.WaitForCompletion();
         await WaitForReadModel(system);
 
         var overview = await new WorkableViewQueryAdapter().WorkerOverview(
             session,
-            RequiredWorkerId(handle),
+            workerId,
             new WorkWorkerOverviewCriteria(
                 Activity: WorkWorkerOverviewActivity.Logs,
                 ActivityTake: 10));
@@ -446,7 +456,7 @@ public sealed class WorkableViewQueryAdapterTests
             definition,
             configuration => configuration
                 .ConfigureLogging(level: LogLevel.Information)
-                .UseRecurrence(WorkRecurrenceConfiguration.Every(TimeSpan.FromMilliseconds(10)) with
+                .UseRecurrence(WorkRecurrenceConfiguration.Every(TimeSpan.FromMinutes(5)) with
                 {
                     ContinueAfterFailure = false,
                     RetainedIterations = 10,
@@ -456,12 +466,14 @@ public sealed class WorkableViewQueryAdapterTests
 
         var session = CreateTransportSession(system);
         var handle = await session.Queue.Enqueue(definition.Name);
+        var workerId = RequiredWorkerId(handle);
+        await PushRecurringWorkerAfterFirstAttempt(system, workerId, attemptsByWorker);
         await handle.WaitForCompletion();
         await WaitForReadModel(system);
 
         var overview = await new WorkableViewQueryAdapter().WorkerOverview(
             session,
-            RequiredWorkerId(handle),
+            workerId,
             new WorkWorkerOverviewCriteria(
                 Activity: WorkWorkerOverviewActivity.Logs,
                 ActivityTake: 10,
@@ -737,26 +749,34 @@ public sealed class WorkableViewQueryAdapterTests
             description: "Use view adapter test session.");
 
     private static async Task WaitForReadModel(IWorkSystem system)
-        => await Eventually(() => Task.FromResult(system.Diagnostics.ReadModel.PendingUpdateCount == 0));
+        => await TestEventually.ReadModelDrained(system);
 
-    private static async Task Eventually(Func<Task<bool>> condition)
+    private static async Task PushRecurringWorkerAfterFirstAttempt(
+        IWorkSystem system,
+        WorkerId workerId,
+        ConcurrentDictionary<WorkerId, int> attemptsByWorker)
     {
-        var deadline = DateTimeOffset.UtcNow.AddSeconds(5);
-        while (DateTimeOffset.UtcNow < deadline)
+        var waiting = await TestEventually.UntilNotNull(async () =>
         {
-            if (await condition())
-            {
-                return;
-            }
+            attemptsByWorker.TryGetValue(workerId, out var attempts);
+            var worker = await system.Query.Worker(workerId);
+            return attempts == 1 && worker?.State == WorkerState.Waiting ? worker : null;
+        });
 
-            await Task.Delay(10);
-        }
+        var push = await system.Workers.Execute(waiting.Version, WorkAction.Push);
 
-        Assert.True(await condition(), "Expected condition to become true.");
+        Assert.True(push.IsAccepted);
     }
 
     private static WorkerId RequiredWorkerId(IWorkerHandle handle)
         => handle.WorkerId ?? throw new InvalidOperationException("Expected accepted worker.");
+
+    private static T Require<T>(T? value)
+        where T : class
+    {
+        Assert.NotNull(value);
+        return value;
+    }
 
     private sealed class LandingLoggedExecutor(ILogger<LandingLoggedExecutor> logger) : IWorkExecutor
     {

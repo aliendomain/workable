@@ -44,6 +44,7 @@ internal sealed class WorkQueueDurabilityCoordinator(
     private readonly int claimBatchSize = batchSize;
     private readonly IWorkPersistenceStore? activeStore = store;
     private long readerPollIntervalTicks = (readerPollInterval ?? WorkQueueDurabilityConfiguration.DefaultFallbackPollingInterval).Ticks;
+    private long readerSignals;
     private int readerSignalPending;
     private Task? readerTask;
     private Task? leaseRenewalTask;
@@ -67,6 +68,8 @@ internal sealed class WorkQueueDurabilityCoordinator(
                 oldestAcceptedWaiterAge);
         }
     }
+
+    internal long ReaderSignals => Volatile.Read(ref this.readerSignals);
 
     public async Task InitializeAndDrain(
         IReadOnlyList<WorkDefinition> definitions,
@@ -282,6 +285,7 @@ internal sealed class WorkQueueDurabilityCoordinator(
             return;
         }
 
+        Interlocked.Increment(ref this.readerSignals);
         this.readerSignal.Release();
     }
 

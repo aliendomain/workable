@@ -487,6 +487,7 @@ internal sealed class WorkerOperations :
         WorkRequestContext requestContext,
         CancellationToken cancellationToken)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         ArgumentNullException.ThrowIfNull(requestContext);
 
         filter ??= WorkerBulkActionFilter.All;

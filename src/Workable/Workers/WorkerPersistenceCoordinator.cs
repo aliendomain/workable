@@ -106,6 +106,8 @@ internal sealed class WorkerPersistenceCoordinator : IWorkerPersistenceCoordinat
 
     internal WorkSystemDurabilityDiagnostics DurabilityDiagnostics => this.durability.Diagnostics;
 
+    internal long DurableReaderSignals => this.durability.ReaderSignals;
+
     internal WorkSystemIdempotencyDiagnostics IdempotencyDiagnostics
         => this.idempotencyDiagnostics.Diagnostics();
 

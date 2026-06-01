@@ -118,7 +118,7 @@ public sealed class WorkSystemAuthorizationConfigurationTests
         var operatorSession = system.CreateSession(CreateRequestContext("operator"));
         await operatorSession.Queue.Enqueue(visible.Id);
         await operatorSession.Queue.Enqueue(hidden.Id);
-        await Eventually(async () =>
+        await TestEventually.Until(async () =>
             (await operatorSession.Query.Workers(new WorkerCriteria(Take: 10))).TotalCount == 2);
 
         var readerSession = system.CreateSession(CreateRequestContext("reader"));
@@ -581,22 +581,6 @@ public sealed class WorkSystemAuthorizationConfigurationTests
             WorkInvocationChannel.DotNet,
             new WorkActor(Id: actorId),
             $"Authorize actor '{actorId}' in tests.");
-
-    private static async Task Eventually(Func<Task<bool>> condition)
-    {
-        var deadline = DateTimeOffset.UtcNow.AddSeconds(5);
-        while (DateTimeOffset.UtcNow < deadline)
-        {
-            if (await condition())
-            {
-                return;
-            }
-
-            await Task.Delay(10);
-        }
-
-        Assert.True(await condition(), "Expected condition to become true.");
-    }
 
     private sealed class TestGroupProvider(IReadOnlyDictionary<string, IReadOnlySet<string>> groupsByActor) : IWorkAuthorizationGroupProvider
     {

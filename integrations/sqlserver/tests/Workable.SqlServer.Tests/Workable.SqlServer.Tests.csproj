@@ -19,7 +19,12 @@
   </ItemGroup>
 
   <ItemGroup>
+    <Compile Include="..\..\..\..\tests\Workable.Tests\TestSupport\TestEventually.cs" Link="TestSupport\TestEventually.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\..\src\Workable.SqlServer\Workable.SqlServer.csproj" />
+    <ProjectReference Include="..\..\tools\Workable.SqlServer.Cli\Workable.SqlServer.Cli.csproj" />
     <ProjectReference Include="..\..\..\..\src\Workable\Workable.csproj" />
   </ItemGroup>
 

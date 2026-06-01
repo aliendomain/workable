@@ -126,7 +126,7 @@ public sealed class WorkerBulkActionTests
 
         try
         {
-            await Eventually(async () =>
+            await TestEventually.Until(async () =>
                 Volatile.Read(ref billingAttempts) == 1 &&
                 Volatile.Read(ref emailAttempts) == 1 &&
                 await WorkerIsWaiting(system, billingWorkerId) &&
@@ -138,7 +138,7 @@ public sealed class WorkerBulkActionTests
 
             Assert.Equal(1, outcome.MatchedWorkerCount);
             Assert.Equal(1, outcome.AcceptedCount);
-            await Eventually(() => Task.FromResult(Volatile.Read(ref billingAttempts) >= 2));
+            await TestEventually.Until(() => Volatile.Read(ref billingAttempts) >= 2);
             Assert.Equal(1, Volatile.Read(ref emailAttempts));
         }
         finally
@@ -196,22 +196,6 @@ public sealed class WorkerBulkActionTests
 
     private static async Task<bool> WorkerIsWaiting(IWorkSystem system, WorkerId workerId)
         => (await system.Query.Worker(workerId))?.State == WorkerState.Waiting;
-
-    private static async Task Eventually(Func<Task<bool>> condition)
-    {
-        var deadline = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(5);
-        while (DateTimeOffset.UtcNow < deadline)
-        {
-            if (await condition())
-            {
-                return;
-            }
-
-            await Task.Delay(TimeSpan.FromMilliseconds(10));
-        }
-
-        Assert.Fail("Condition was not met before the test timeout elapsed.");
-    }
 
     private static async Task CancelIfActive(IWorkSystem system, WorkerId workerId)
     {

@@ -267,7 +267,7 @@ public sealed class WorkableHttpApiTests
         await (await Direct(system).Queue.Enqueue(
             "http.overview.failed",
             WorkInput.Empty.WithIdentifier(new WorkIdentifier("case", "failed")))).WaitForCompletion();
-        await WaitForThroughputBucketToClose();
+        await TestEventually.ThroughputBucketClosed();
         await WaitForReadModel(system);
 
         var viewResponse = await client.PostAsJsonAsync(
@@ -2820,30 +2820,12 @@ public sealed class WorkableHttpApiTests
         return reader.Current;
     }
 
-    private static async Task WaitForThroughputBucketToClose()
-    {
-        var currentSecond = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
-        while (DateTimeOffset.UtcNow.ToUnixTimeSeconds() <= currentSecond)
-        {
-            await Task.Delay(10);
-        }
-    }
-
     private static async Task WaitForReadModel(IWorkSystem system)
     {
         var session = DiagnosticsSession(system);
-        var deadline = DateTimeOffset.UtcNow.AddSeconds(5);
-        while (DateTimeOffset.UtcNow < deadline)
-        {
-            if (session.Diagnostics.ReadModel.PendingUpdateCount == 0)
-            {
-                return;
-            }
-
-            await Task.Delay(10);
-        }
-
-        Assert.Equal(0, session.Diagnostics.ReadModel.PendingUpdateCount);
+        await TestEventually.Until(
+            () => session.Diagnostics.ReadModel.PendingUpdateCount == 0,
+            "Expected the HTTP API test read model projection to drain.");
     }
 
     private static IWorkSystemSession DiagnosticsSession(IWorkSystem system)

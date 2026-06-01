@@ -73,7 +73,7 @@ public sealed class TransientRetryWorkerExecutionStrategyTests
 
         var handle = await system.Queue.Enqueue("retry-work");
         var workerId = handle.WorkerId!.Value;
-        var retrying = await Eventually(async () =>
+        var retrying = await TestEventually.UntilNotNull(async () =>
         {
             var worker = await system.Query.Worker(workerId);
             return worker?.State == WorkerState.Retrying ? worker : null;
@@ -316,23 +316,6 @@ public sealed class TransientRetryWorkerExecutionStrategyTests
 
     private static WorkerSnapshot RequiredWorker(WorkCompletion completion)
         => completion.Worker ?? throw new InvalidOperationException("Expected worker snapshot.");
-
-    private static async Task<T> Eventually<T>(Func<Task<T?>> getValue)
-        where T : class
-    {
-        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(2));
-        while (!timeout.IsCancellationRequested)
-        {
-            if (await getValue() is { } value)
-            {
-                return value;
-            }
-
-            await Task.Delay(10, timeout.Token);
-        }
-
-        throw new TimeoutException("Condition was not reached.");
-    }
 
     private sealed record AttemptResult(int Attempts);
 

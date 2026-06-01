@@ -6,6 +6,26 @@ namespace Workable.Tests;
 public sealed class WorkableRealtimeWorkerOverviewUpdateFactoryTests
 {
     [Fact]
+    public void PublicMethodsRejectNullInputs()
+    {
+        var current = CreateState();
+        var criteria = new WorkWorkerOverviewRealtimeCriteria();
+        var update = WorkableRealtimeWorkerOverviewUpdateFactory.CreateInitial(current);
+        var workEvent = CreateEvent("worker.completed", new { });
+
+        AssertRejectsNull("state", () => WorkableRealtimeWorkerOverviewUpdateFactory.CreateInitial(null!));
+        AssertRejectsNull("workEvent", () => WorkableRealtimeWorkerOverviewUpdateFactory.Create(null!, current, criteria));
+        AssertRejectsNull("current", () => WorkableRealtimeWorkerOverviewUpdateFactory.Create(workEvent, null!, criteria));
+        AssertRejectsNull("criteria", () => WorkableRealtimeWorkerOverviewUpdateFactory.Create(workEvent, current, null!));
+        AssertRejectsNull("current", () => WorkableRealtimeWorkerOverviewUpdateFactory.Apply(null!, update, criteria));
+        AssertRejectsNull("update", () => WorkableRealtimeWorkerOverviewUpdateFactory.Apply(current, null!, criteria));
+        AssertRejectsNull("criteria", () => WorkableRealtimeWorkerOverviewUpdateFactory.Apply(current, update, null!));
+        AssertRejectsNull("current", () => WorkableRealtimeWorkerOverviewUpdateFactory.Coalesce(null!, [update], criteria, out _));
+        AssertRejectsNull("updates", () => WorkableRealtimeWorkerOverviewUpdateFactory.Coalesce(current, null!, criteria, out _));
+        AssertRejectsNull("criteria", () => WorkableRealtimeWorkerOverviewUpdateFactory.Coalesce(current, [update], null!, out _));
+    }
+
+    [Fact]
     public void CreateInitialReturnsFullSnapshot()
     {
         var workerId = WorkerId.New();
@@ -96,12 +116,11 @@ public sealed class WorkableRealtimeWorkerOverviewUpdateFactoryTests
             },
             occurredAt);
 
-        var update = WorkableRealtimeWorkerOverviewUpdateFactory.Create(workEvent, current, criteria);
+        var update = RequireUpdate(WorkableRealtimeWorkerOverviewUpdateFactory.Create(workEvent, current, criteria));
 
-        Assert.NotNull(update);
-        Assert.NotNull(update.LogSummary);
+        Assert.Same(current.LogSummary, update.LogSummary);
         Assert.Collection(
-            Assert.IsAssignableFrom<IReadOnlyList<WorkWorkerOverviewLogEntry>>(update.LogEntries!),
+            Assert.IsAssignableFrom<IReadOnlyList<WorkWorkerOverviewLogEntry>>(update.LogEntries),
             entry =>
             {
                 Assert.Equal("log-b", entry.Id);
@@ -173,27 +192,25 @@ public sealed class WorkableRealtimeWorkerOverviewUpdateFactoryTests
                 },
             });
 
-        var update = WorkableRealtimeWorkerOverviewUpdateFactory.Create(workEvent, current, criteria);
+        var update = RequireUpdate(WorkableRealtimeWorkerOverviewUpdateFactory.Create(workEvent, current, criteria));
 
-        Assert.NotNull(update);
-        Assert.NotNull(update.Worker);
-        Assert.Equal(WorkerState.Retrying, update.Worker!.State);
-        Assert.Equal(nextRunAt, update.Worker.NextRunAt);
-        Assert.Equal(2, update.Worker.RetryAttempt);
-        Assert.NotNull(update.LatestIteration);
-        Assert.Equal(5, update.LatestIteration!.Sequence);
-        Assert.NotNull(update.LatestIteration.Failure?.PendingState);
-        Assert.Equal(WorkWorkerOverviewPendingStateMode.Retry, update.LatestIteration.Failure!.PendingState!.Mode);
-        Assert.NotNull(update.TimelineSummary);
+        var worker = Require(update.Worker);
+        Assert.Equal(WorkerState.Retrying, worker.State);
+        Assert.Equal(nextRunAt, worker.NextRunAt);
+        Assert.Equal(2, worker.RetryAttempt);
+        var iteration = Require(update.LatestIteration);
+        Assert.Equal(5, iteration.Sequence);
+        var pendingState = Require(iteration.Failure?.PendingState);
+        Assert.Equal(WorkWorkerOverviewPendingStateMode.Retry, pendingState.Mode);
+        Assert.Same(current.TimelineSummary, update.TimelineSummary);
         Assert.Collection(
-            Assert.IsAssignableFrom<IReadOnlyList<WorkWorkerOverviewTimelineItem>>(update.TimelineItems!),
+            Assert.IsAssignableFrom<IReadOnlyList<WorkWorkerOverviewTimelineItem>>(update.TimelineItems),
             item =>
             {
                 Assert.Equal(5, item.Sequence);
                 Assert.Equal(WorkWorkerOverviewTimelineItemKind.Iteration, item.Kind);
                 Assert.Equal(WorkWorkerOverviewTimelineCategory.Failure, item.Category);
-                Assert.NotNull(item.Failure?.PendingState);
-                Assert.Equal(WorkWorkerOverviewPendingStateMode.Retry, item.Failure!.PendingState!.Mode);
+                Assert.Equal(WorkWorkerOverviewPendingStateMode.Retry, Require(item.Failure?.PendingState).Mode);
             });
     }
 
@@ -261,20 +278,25 @@ public sealed class WorkableRealtimeWorkerOverviewUpdateFactoryTests
             },
             occurredAt);
 
-        var update = WorkableRealtimeWorkerOverviewUpdateFactory.Create(workEvent, current, criteria);
+        var update = RequireUpdate(WorkableRealtimeWorkerOverviewUpdateFactory.Create(workEvent, current, criteria));
 
-        Assert.NotNull(update);
-        Assert.NotNull(update.Worker);
-        Assert.Equal(WorkerState.Failed, update.Worker!.State);
-        Assert.NotNull(update.LatestIteration);
-        Assert.Equal(WorkCompletionStatus.Failed, update.LatestIteration!.Status);
-        Assert.NotNull(update.RecentIterations);
-        Assert.NotNull(update.TimelineItems);
-        Assert.Contains(update.TimelineItems, item =>
-            item.Kind == WorkWorkerOverviewTimelineItemKind.Iteration &&
-            item.Sequence == 5 &&
-            item.IterationStatus == WorkCompletionStatus.Failed &&
-            item.Failure is not null);
+        var worker = Require(update.Worker);
+        Assert.Equal(workerId, worker.WorkerId);
+        Assert.Equal(WorkerState.Failed, worker.State);
+        var iteration = Require(update.LatestIteration);
+        Assert.Equal(5, iteration.Sequence);
+        Assert.Equal(WorkCompletionStatus.Failed, iteration.Status);
+        Assert.Equal(TimeSpan.FromSeconds(10), iteration.ExecutionDuration);
+        Assert.Equal("Boom.", Require(iteration.Failure).Message);
+        var recent = Assert.Single(Assert.IsAssignableFrom<IReadOnlyList<WorkWorkerOverviewRecentIteration>>(update.RecentIterations));
+        Assert.Equal(5, recent.Sequence);
+        Assert.Equal(WorkCompletionStatus.Failed, recent.Status);
+        Assert.Equal(TimeSpan.FromSeconds(10), recent.ExecutionDuration);
+        var timelineItem = Assert.Single(Assert.IsAssignableFrom<IReadOnlyList<WorkWorkerOverviewTimelineItem>>(update.TimelineItems));
+        Assert.Equal(WorkWorkerOverviewTimelineItemKind.Iteration, timelineItem.Kind);
+        Assert.Equal(5, timelineItem.Sequence);
+        Assert.Equal(WorkCompletionStatus.Failed, timelineItem.IterationStatus);
+        Assert.Equal("sample.failed", Require(timelineItem.Failure).Code);
     }
 
     [Fact]
@@ -317,12 +339,13 @@ public sealed class WorkableRealtimeWorkerOverviewUpdateFactoryTests
             },
             occurredAt);
 
-        var update = WorkableRealtimeWorkerOverviewUpdateFactory.Create(workEvent, current, criteria);
+        var update = RequireUpdate(WorkableRealtimeWorkerOverviewUpdateFactory.Create(workEvent, current, criteria));
 
-        Assert.NotNull(update);
-        Assert.NotNull(update.Worker);
-        Assert.NotNull(update.LatestIteration);
-        Assert.Empty(update.TimelineItems ?? []);
+        Assert.Equal(WorkerState.Running, Require(update.Worker).State);
+        var iteration = Require(update.LatestIteration);
+        Assert.Equal(6, iteration.Sequence);
+        Assert.Equal(WorkCompletionStatus.Executing, iteration.Status);
+        Assert.Empty(Assert.IsAssignableFrom<IReadOnlyList<WorkWorkerOverviewTimelineItem>>(update.TimelineItems));
     }
 
     [Fact]
@@ -362,23 +385,22 @@ public sealed class WorkableRealtimeWorkerOverviewUpdateFactoryTests
                 },
             });
 
-        var update = WorkableRealtimeWorkerOverviewUpdateFactory.Create(workEvent, current, criteria);
+        var update = RequireUpdate(WorkableRealtimeWorkerOverviewUpdateFactory.Create(workEvent, current, criteria));
 
-        Assert.NotNull(update);
-        Assert.NotNull(update.Worker);
-        Assert.Equal(WorkerState.Waiting, update.Worker!.State);
-        Assert.Equal(nextRunAt, update.Worker.NextRunAt);
-        Assert.NotNull(update.TimelineSummary);
+        var worker = Require(update.Worker);
+        Assert.Equal(WorkerState.Waiting, worker.State);
+        Assert.Equal(nextRunAt, worker.NextRunAt);
+        Assert.Same(current.TimelineSummary, update.TimelineSummary);
         Assert.Collection(
-            Assert.IsAssignableFrom<IReadOnlyList<WorkWorkerOverviewTimelineItem>>(update.TimelineItems!),
+            Assert.IsAssignableFrom<IReadOnlyList<WorkWorkerOverviewTimelineItem>>(update.TimelineItems),
             item =>
             {
                 Assert.Equal("live-state:waiting", item.Id);
                 Assert.Equal(WorkWorkerOverviewTimelineItemKind.StateChange, item.Kind);
                 Assert.Equal(WorkerState.Waiting, item.State);
-                Assert.NotNull(item.PendingState);
-                Assert.Equal(WorkWorkerOverviewPendingStateMode.Recurrence, item.PendingState!.Mode);
-                Assert.Equal(nextRunAt, item.PendingState.NextRunAt);
+                var pendingState = Require(item.PendingState);
+                Assert.Equal(WorkWorkerOverviewPendingStateMode.Recurrence, pendingState.Mode);
+                Assert.Equal(nextRunAt, pendingState.NextRunAt);
             });
     }
 
@@ -417,13 +439,11 @@ public sealed class WorkableRealtimeWorkerOverviewUpdateFactoryTests
             },
             occurredAt);
 
-        var update = WorkableRealtimeWorkerOverviewUpdateFactory.Create(workEvent, current, criteria);
+        var update = RequireUpdate(WorkableRealtimeWorkerOverviewUpdateFactory.Create(workEvent, current, criteria));
 
-        Assert.NotNull(update);
-        Assert.NotNull(update.Worker);
-        Assert.Equal(WorkerState.Running, update.Worker!.State);
+        Assert.Equal(WorkerState.Running, Require(update.Worker).State);
         Assert.Collection(
-            Assert.IsAssignableFrom<IReadOnlyList<WorkWorkerOverviewTimelineItem>>(update.TimelineItems!),
+            Assert.IsAssignableFrom<IReadOnlyList<WorkWorkerOverviewTimelineItem>>(update.TimelineItems),
             item =>
             {
                 Assert.Equal(WorkWorkerOverviewTimelineItemKind.ActionRequest, item.Kind);
@@ -449,7 +469,7 @@ public sealed class WorkableRealtimeWorkerOverviewUpdateFactoryTests
         var criteria = new WorkWorkerOverviewRealtimeCriteria(
             WorkerTimeline: WorkComponentShapes.Standard,
             WorkerDuration: WorkComponentShapes.Standard);
-        var startUpdate = WorkableRealtimeWorkerOverviewUpdateFactory.Create(
+        var startUpdate = RequireUpdate(WorkableRealtimeWorkerOverviewUpdateFactory.Create(
             CreateEvent(
                 "worker.start",
                 new
@@ -471,9 +491,9 @@ public sealed class WorkableRealtimeWorkerOverviewUpdateFactoryTests
                 },
                 occurredAt),
             current,
-            criteria);
-        var afterStart = WorkableRealtimeWorkerOverviewUpdateFactory.Apply(current, startUpdate!, criteria);
-        var iterationUpdate = WorkableRealtimeWorkerOverviewUpdateFactory.Create(
+            criteria));
+        var afterStart = WorkableRealtimeWorkerOverviewUpdateFactory.Apply(current, startUpdate, criteria);
+        var iterationUpdate = RequireUpdate(WorkableRealtimeWorkerOverviewUpdateFactory.Create(
             CreateEvent(
                 "worker.iteration.started",
                 new
@@ -497,23 +517,70 @@ public sealed class WorkableRealtimeWorkerOverviewUpdateFactoryTests
                 },
                 occurredAt.AddMilliseconds(10)),
             afterStart,
-            criteria);
+            criteria));
 
         var batchedUpdate = WorkableRealtimeWorkerOverviewUpdateFactory.Coalesce(
             current,
-            [startUpdate!, iterationUpdate!],
+            [startUpdate, iterationUpdate],
             criteria,
             out var nextState);
 
-        Assert.NotNull(batchedUpdate);
+        batchedUpdate = RequireUpdate(batchedUpdate);
         Assert.Equal(WorkerState.Running, nextState.Worker.State);
-        Assert.NotNull(batchedUpdate!.Worker);
-        Assert.NotNull(batchedUpdate.RecentIterations);
-        var timelineItems = Assert.IsAssignableFrom<IReadOnlyList<WorkWorkerOverviewTimelineItem>>(batchedUpdate.TimelineItems!);
+        Assert.Equal(WorkerState.Running, Require(batchedUpdate.Worker).State);
+        Assert.Single(Assert.IsAssignableFrom<IReadOnlyList<WorkWorkerOverviewRecentIteration>>(batchedUpdate.RecentIterations));
+        var timelineItems = Assert.IsAssignableFrom<IReadOnlyList<WorkWorkerOverviewTimelineItem>>(batchedUpdate.TimelineItems);
         Assert.Contains(timelineItems, item => item.Kind == WorkWorkerOverviewTimelineItemKind.ActionRequest && item.Action == WorkAction.Start);
         Assert.Contains(timelineItems, item => item.Kind == WorkWorkerOverviewTimelineItemKind.Iteration &&
             item.Sequence == 1 &&
             item.IterationStatus == WorkCompletionStatus.Executing);
+    }
+
+    [Fact]
+    public void CoalesceReturnsNullAndPreservesStateWhenThereAreNoUpdates()
+    {
+        var current = CreateState();
+        var criteria = new WorkWorkerOverviewRealtimeCriteria();
+
+        var update = WorkableRealtimeWorkerOverviewUpdateFactory.Coalesce(
+            current,
+            [],
+            criteria,
+            out var nextState);
+
+        Assert.Null(update);
+        Assert.Same(current, nextState);
+    }
+
+    [Fact]
+    public void CoalesceReturnsSingleUpdateAndAppliesItToState()
+    {
+        var occurredAt = DateTimeOffset.UtcNow;
+        var current = CreateState();
+        var waitingWorker = current.Worker with
+        {
+            State = WorkerState.Waiting,
+            StateChangedAt = occurredAt,
+            UpdatedAt = occurredAt,
+            NextRunAt = occurredAt.AddMinutes(5),
+        };
+        var update = new WorkWorkerOverviewRealtimeUpdate(
+            occurredAt,
+            waitingWorker);
+        var criteria = new WorkWorkerOverviewRealtimeCriteria();
+
+        var coalesced = WorkableRealtimeWorkerOverviewUpdateFactory.Coalesce(
+            current,
+            [update],
+            criteria,
+            out var nextState);
+
+        Assert.Same(update, coalesced);
+        Assert.Same(waitingWorker, nextState.Worker);
+        Assert.Same(current.LatestIteration, nextState.LatestIteration);
+        Assert.Same(current.LogEntries, nextState.LogEntries);
+        Assert.Same(current.RecentIterations, nextState.RecentIterations);
+        Assert.Same(current.TimelineItems, nextState.TimelineItems);
     }
 
     [Fact]
@@ -1216,6 +1283,33 @@ public sealed class WorkableRealtimeWorkerOverviewUpdateFactoryTests
             new HashSet<WorkIdentifier>(),
             eventType,
             JsonSerializer.SerializeToElement(payload, WorkEventJson.Options));
+
+    private static WorkWorkerOverviewRealtimeUpdate RequireUpdate(WorkWorkerOverviewRealtimeUpdate? update)
+        => Require(update);
+
+    private static T Require<T>(T? value)
+        where T : class
+    {
+        Assert.NotNull(value);
+        return value;
+    }
+
+    private static void AssertRejectsNull(string parameterName, Action action)
+    {
+        var exception = Assert.Throws<ArgumentNullException>(action);
+
+        Assert.Equal(parameterName, exception.ParamName);
+    }
+
+    private static WorkWorkerOverviewRealtimeState CreateState()
+        => new(
+            CreateWorker(),
+            null,
+            null,
+            [],
+            [],
+            null,
+            []);
 
     private static WorkWorkerOverviewWorker CreateWorker(
         WorkerId? workerId = null,

@@ -407,7 +407,10 @@ WHERE SubjectType = N'order'
         var input = WorkInput.Empty.WithSubject(new WorkSubjectId("order", "transactional"));
 
         var handle = await system.Queue.Enqueue("sql-existing-transaction", input, options);
-        await Task.Delay(TimeSpan.FromMilliseconds(300));
+        await using (var visibilityConnection = await this.OpenConnection())
+        {
+            Assert.Equal(0, await CountReadableRowsForSubject(visibilityConnection, "transactional"));
+        }
 
         Assert.True(handle.QueueOutcome.IsAccepted);
         Assert.False(ran.Task.IsCompleted);
@@ -489,7 +492,10 @@ VALUES (@OrderId, @Payload);
         var input = WorkInput.Empty.WithSubject(new WorkSubjectId("order", orderId));
 
         var handle = await system.Queue.Enqueue("sql-business-transaction", input, options);
-        await Task.Delay(TimeSpan.FromMilliseconds(300));
+        await using (var visibilityConnection = await this.OpenConnection())
+        {
+            Assert.Equal(0, await CountReadableRowsForSubject(visibilityConnection, orderId));
+        }
 
         Assert.True(handle.QueueOutcome.IsAccepted);
         Assert.False(observedPayload.Task.IsCompleted);
@@ -687,14 +693,14 @@ SET ANSI_NULLS OFF;
 
         var handle = await system.Queue.Enqueue("sql-existing-transaction-rollback", input, options);
         var workerId = RequiredWorkerId(handle);
-        await transaction.RollbackAsync();
-        await Task.Delay(TimeSpan.FromMilliseconds(500));
+        await using (var visibilityConnection = await this.OpenConnection())
+        {
+            Assert.Equal(0, await CountReadableRowsForSubject(visibilityConnection, "rollback"));
+        }
 
-        var rows = await Scalar<int>(connection, """
-SELECT COUNT(*)
-FROM workable.WorkEntries
-WHERE SubjectValue = N'rollback';
-""");
+        await transaction.RollbackAsync();
+
+        var rows = await CountRowsForSubject(connection, "rollback");
         await system.Stop();
 
         Assert.True(handle.QueueOutcome.IsAccepted);
@@ -1779,8 +1785,9 @@ FROM workable.WorkEntries
         var options = WorkerOptions.Default.WithSqlServerQueueDurabilityTransaction(connection, transaction);
 
         await firstSystem.Queue.Enqueue(workName, OrderedInput("first"), options);
-        await Task.Delay(TimeSpan.FromMilliseconds(30));
         await firstSystem.Queue.Enqueue(workName, OrderedInput("second"), options);
+        await SetCreatedAt(connection, transaction, "first", new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero));
+        await SetCreatedAt(connection, transaction, "second", new DateTimeOffset(2026, 1, 1, 0, 0, 1, TimeSpan.Zero));
         await firstSystem.Stop();
         await transaction.CommitAsync();
 
@@ -1866,6 +1873,24 @@ FROM workable.WorkEntries
     {
         await using var command = connection.CreateCommand();
         command.CommandText = commandText;
+        await command.ExecuteNonQueryAsync();
+    }
+
+    private static async Task SetCreatedAt(
+        SqlConnection connection,
+        DbTransaction transaction,
+        string subjectValue,
+        DateTimeOffset createdAt)
+    {
+        await using var command = connection.CreateCommand();
+        command.Transaction = (SqlTransaction)transaction;
+        command.CommandText = """
+UPDATE workable.WorkEntries
+SET CreatedAt = @CreatedAt
+WHERE SubjectValue = @SubjectValue;
+""";
+        AddParameter(command, "@CreatedAt", createdAt);
+        AddParameter(command, "@SubjectValue", subjectValue);
         await command.ExecuteNonQueryAsync();
     }
 
@@ -2088,6 +2113,20 @@ VALUES
         return (T)Convert.ChangeType(value, typeof(T));
     }
 
+    private static Task<int> CountRowsForSubject(SqlConnection connection, string subjectValue)
+        => Scalar<int>(connection, $"""
+SELECT COUNT(*)
+FROM workable.WorkEntries
+WHERE SubjectValue = N'{Escape(subjectValue)}';
+""");
+
+    private static Task<int> CountReadableRowsForSubject(SqlConnection connection, string subjectValue)
+        => Scalar<int>(connection, $"""
+SELECT COUNT(*)
+FROM workable.WorkEntries WITH (READPAST)
+WHERE SubjectValue = N'{Escape(subjectValue)}';
+""");
+
     private static async Task<DateTimeOffset> ReadLeaseExpiry(SqlConnection connection, WorkerId workerId)
     {
         await using var command = connection.CreateCommand();
@@ -2104,45 +2143,14 @@ WHERE WorkerId = @WorkerId;
     }
 
     private static async Task WaitForEntryCount(SqlConnection connection, string subjectValue, int expected)
-    {
-        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
-        while (!timeout.IsCancellationRequested)
-        {
-            var count = await Scalar<int>(connection, $"""
-SELECT COUNT(*)
-FROM workable.WorkEntries
-WHERE SubjectValue = N'{Escape(subjectValue)}';
-""");
-            if (count == expected)
-            {
-                return;
-            }
-
-            await Task.Delay(TimeSpan.FromMilliseconds(25), timeout.Token);
-        }
-    }
+        => await TestEventually.Until(
+            async () => await CountRowsForSubject(connection, subjectValue) == expected,
+            $"Expected SQL Server work entry count for subject '{subjectValue}' to become {expected}.");
 
     private static async Task WaitForFailedEntryRetained(SqlConnection connection, string subjectValue)
-    {
-        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
-        while (!timeout.IsCancellationRequested)
-        {
-            var count = await Scalar<int>(connection, $"""
-SELECT COUNT(*)
-FROM workable.WorkEntries
-WHERE SubjectValue = N'{Escape(subjectValue)}'
-  AND IsDurableQueued = 0
-  AND LeaseId IS NULL
-  AND LeaseExpiresAt IS NULL;
-""");
-            if (count == 1)
-            {
-                return;
-            }
-
-            await Task.Delay(TimeSpan.FromMilliseconds(25), timeout.Token);
-        }
-    }
+        => await TestEventually.Until(
+            async () => await CountFailedRetainedRowsForSubject(connection, subjectValue) == 1,
+            $"Expected failed SQL Server work entry for subject '{subjectValue}' to be retained.");
 
     private static async Task ExpireLease(SqlConnection connection, string subjectValue)
     {
@@ -2159,19 +2167,19 @@ WHERE SubjectValue = N'{Escape(subjectValue)}';
         => handle.WorkerId ?? throw new InvalidOperationException("Expected worker id.");
 
     private static async Task WaitForWorkerState(IWorkSystem system, WorkerId workerId, WorkerState state)
-    {
-        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
-        while (!timeout.IsCancellationRequested)
-        {
-            var current = await system.Query.Worker(workerId, timeout.Token);
-            if (current?.State == state)
-            {
-                return;
-            }
+        => await TestEventually.Until(
+            async () => (await system.Query.Worker(workerId))?.State == state,
+            $"Expected worker '{workerId.Value:D}' to reach state '{state}'.");
 
-            await Task.Delay(TimeSpan.FromMilliseconds(25), timeout.Token);
-        }
-    }
+    private static Task<int> CountFailedRetainedRowsForSubject(SqlConnection connection, string subjectValue)
+        => Scalar<int>(connection, $"""
+SELECT COUNT(*)
+FROM workable.WorkEntries
+WHERE SubjectValue = N'{Escape(subjectValue)}'
+  AND IsDurableQueued = 0
+  AND LeaseId IS NULL
+  AND LeaseExpiresAt IS NULL;
+""");
 
     private static string BuildConnectionString(string database)
         => new SqlConnectionStringBuilder

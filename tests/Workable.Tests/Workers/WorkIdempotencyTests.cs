@@ -232,7 +232,9 @@ public sealed class WorkIdempotencyTests
         await system.Start();
 
         var first = await system.Queue.Enqueue("subject-query-one", SubjectInput(subject));
-        await Task.Delay(TimeSpan.FromMilliseconds(5));
+        await WaitForReadModel(system);
+        var firstWorker = RequiredWorker(await system.Query.Worker(RequiredWorkerId(first)));
+        await TestEventually.ClockAfter(firstWorker.CreatedAt);
         var second = await system.Queue.Enqueue("subject-query-two", SubjectInput(subject));
         await WaitForReadModel(system);
 
@@ -318,21 +320,8 @@ public sealed class WorkIdempotencyTests
         return reader.Current;
     }
 
-    private static async Task WaitForReadModel(IWorkSystem system)
-    {
-        var deadline = DateTimeOffset.UtcNow.AddSeconds(5);
-        while (DateTimeOffset.UtcNow < deadline)
-        {
-            if (system.Diagnostics.ReadModel.PendingUpdateCount == 0)
-            {
-                return;
-            }
-
-            await Task.Delay(10);
-        }
-
-        Assert.Equal(0, system.Diagnostics.ReadModel.PendingUpdateCount);
-    }
+    private static Task WaitForReadModel(IWorkSystem system)
+        => TestEventually.ReadModelDrained(system);
 
     private static WorkDefinition RequiredDefinition(IWorkSystem system, string name)
         => system.Catalog.TryGet(name, out var definition)

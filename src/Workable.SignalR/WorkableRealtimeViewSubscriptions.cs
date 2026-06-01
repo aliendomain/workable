@@ -76,7 +76,24 @@ public sealed class WorkableRealtimeViewSubscriptions
 
         if (addToGroup)
         {
-            await groupManager.AddToGroupAsync(connectionId, subscription.GroupName, cancellationToken);
+            try
+            {
+                await groupManager.AddToGroupAsync(connectionId, subscription.GroupName, cancellationToken);
+            }
+            catch
+            {
+                lock (this.gate)
+                {
+                    if (this.connectionViewGroups.TryGetValue(connectionViewKey, out var current) &&
+                        ReferenceEquals(current, subscription))
+                    {
+                        this.connectionViewGroups.Remove(connectionViewKey);
+                        ReleaseGroupLocked(subscription.GroupName);
+                    }
+                }
+
+                throw;
+            }
         }
 
         return subscription;

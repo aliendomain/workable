@@ -147,7 +147,7 @@ public sealed class WorkQueryServiceTests
 
         try
         {
-            await Eventually(async () =>
+            await TestEventually.Until(async () =>
             {
                 var executingProbe = await system.Query.WorkerIterations(new WorkerIterationCriteria(
                     Statuses: new HashSet<WorkCompletionStatus> { WorkCompletionStatus.Executing }));
@@ -463,7 +463,7 @@ public sealed class WorkQueryServiceTests
 
         try
         {
-            await Eventually(async () =>
+            await TestEventually.Until(async () =>
                 (await system.Query.WorkerKeys(new WorkerKeyCriteria(
                     Search: "claim id CLM-777",
                     States: new HashSet<WorkerState> { WorkerState.Running }))).Keys.Count == 1);
@@ -634,7 +634,7 @@ public sealed class WorkQueryServiceTests
         var handle = await system.Queue.Enqueue("long.running", WorkInput.Empty);
         await entered.Task.WaitAsync(TimeSpan.FromSeconds(1));
 
-        await Eventually(async () =>
+        await TestEventually.Until(async () =>
             (await system.Query.Workers(new WorkerCriteria(
                 States: new HashSet<WorkerState> { WorkerState.Running }))).Workers.Count == 1);
         var running = await system.Query.Workers(new WorkerCriteria(
@@ -868,11 +868,14 @@ public sealed class WorkQueryServiceTests
         await system.Start();
 
         var first = await system.Queue.Enqueue("query.window.workers");
-        await Task.Delay(20);
+        await WaitForReadModel(system);
+        var firstWorker = RequiredWorker(await system.Query.Worker(RequiredWorkerId(first)));
+        await TestEventually.ClockAfter(firstWorker.CreatedAt);
         var fromSecondWorker = DateTimeOffset.UtcNow;
-        await Task.Delay(20);
         var second = await system.Queue.Enqueue("query.window.workers");
-        await Task.Delay(20);
+        await WaitForReadModel(system);
+        var secondWorker = RequiredWorker(await system.Query.Worker(RequiredWorkerId(second)));
+        await TestEventually.ClockAfter(secondWorker.CreatedAt);
         var third = await system.Queue.Enqueue("query.window.workers");
         await WaitForReadModel(system);
 
@@ -920,13 +923,12 @@ public sealed class WorkQueryServiceTests
         await system.Start();
 
         var first = await system.Queue.Enqueue("query.window.iterations");
-        await first.WaitForCompletion();
-        await Task.Delay(20);
+        var firstCompletion = await first.WaitForCompletion();
+        await TestEventually.ClockAfter(RequiredLastIteration(firstCompletion).CompletedAt);
         var fromSecondIteration = DateTimeOffset.UtcNow;
-        await Task.Delay(20);
         var second = await system.Queue.Enqueue("query.window.iterations");
-        await second.WaitForCompletion();
-        await Task.Delay(20);
+        var secondCompletion = await second.WaitForCompletion();
+        await TestEventually.ClockAfter(RequiredLastIteration(secondCompletion).CompletedAt);
         var third = await system.Queue.Enqueue("query.window.iterations");
         await third.WaitForCompletion();
         await WaitForReadModel(system);
@@ -1564,18 +1566,16 @@ public sealed class WorkQueryServiceTests
 
         await system.Start();
         var shippingHandle = await system.Queue.Enqueue("queue.shipping");
-        await Task.Delay(10);
+        await WaitForReadModel(system);
+        var shipping = RequiredWorker(await system.Query.Worker(RequiredWorkerId(shippingHandle)));
+        await TestEventually.ClockAfter(shipping.StateChangedAt);
         var billingHandle = await system.Queue.Enqueue("queue.billing.root");
-        await Task.Delay(10);
+        await WaitForReadModel(system);
+        var billingRoot = RequiredWorker(await system.Query.Worker(RequiredWorkerId(billingHandle)));
+        await TestEventually.ClockAfter(billingRoot.StateChangedAt);
         var invoiceHandle = await system.Queue.Enqueue("queue.billing.invoice");
         await WaitForReadModel(system);
-
-        var shipping = await system.Query.Worker(RequiredWorkerId(shippingHandle))
-            ?? throw new InvalidOperationException("Expected shipping worker.");
-        var billingRoot = await system.Query.Worker(RequiredWorkerId(billingHandle))
-            ?? throw new InvalidOperationException("Expected billing worker.");
-        var billingInvoice = await system.Query.Worker(RequiredWorkerId(invoiceHandle))
-            ?? throw new InvalidOperationException("Expected billing invoice worker.");
+        var billingInvoice = RequiredWorker(await system.Query.Worker(RequiredWorkerId(invoiceHandle)));
 
         var wholeSystem = await system.Query.SystemDetails();
         var billing = await system.Query.SystemDetails(new WorkSystemCriteria(Category: "Billing"));
@@ -1637,7 +1637,7 @@ public sealed class WorkQueryServiceTests
         await canceled.WaitForCompletion();
         await (await system.Queue.Enqueue("metrics.other")).WaitForCompletion();
         await WaitForReadModel(system);
-        await WaitForThroughputBucketToClose();
+        await TestEventually.ThroughputBucketClosed();
 
         var overviewWithoutThroughput = await system.Query.SystemDetails(new WorkSystemCriteria(
             Category: "Metrics:Included"));
@@ -1678,7 +1678,7 @@ public sealed class WorkQueryServiceTests
         await system.Start();
         var handle = await system.Queue.Enqueue("metrics.purge");
         await handle.WaitForCompletion();
-        await WaitForThroughputBucketToClose();
+        await TestEventually.ThroughputBucketClosed();
 
         var workerId = RequiredWorkerId(handle);
         var beforePurge = await system.Query.SystemThroughput(new WorkSystemCriteria(Category: "Metrics:Purge"),
@@ -1717,7 +1717,7 @@ public sealed class WorkQueryServiceTests
 
         var beforeStop = await system.Query.Workers();
         await system.Stop();
-        await Eventually(async () =>
+        await TestEventually.Until(async () =>
             (await system.Query.Workers()).Workers.Count == 0);
         var afterStop = await system.Query.Workers();
         var overview = await system.Query.SystemDetails();
@@ -1740,11 +1740,11 @@ public sealed class WorkQueryServiceTests
         var handle = await system.Queue.Enqueue("readmodel.diagnostics");
         await handle.WaitForCompletion();
 
-        await Eventually(() => Task.FromResult(
+        await TestEventually.Until(() =>
             system.Diagnostics.ReadModel is { } current &&
             current.EnqueuedSequence > 0 &&
             current.EnqueuedSequence == current.AppliedSequence &&
-            current.PendingUpdateCount == 0));
+            current.PendingUpdateCount == 0);
         var diagnostics = system.Diagnostics.ReadModel;
 
         Assert.Equal(0, initial.EnqueuedSequence);
@@ -1962,10 +1962,10 @@ public sealed class WorkQueryServiceTests
             await system.Queue.Enqueue(definitionName);
         }
 
-        await Eventually(() => Task.FromResult(
+        await TestEventually.Until(() =>
             system.Diagnostics.ReadModel is { } diagnostics &&
             diagnostics.EnqueuedSequence == diagnostics.AppliedSequence &&
-            diagnostics.PendingUpdateCount == 0));
+            diagnostics.PendingUpdateCount == 0);
 
         var counts = await system.Query.SystemWorkerCounts();
         var diagnostics = system.Diagnostics.ReadModel;
@@ -2009,33 +2009,8 @@ public sealed class WorkQueryServiceTests
         Assert.Empty(afterStopAll);
     }
 
-    private static async Task WaitForThroughputBucketToClose()
-    {
-        var currentSecond = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
-        while (DateTimeOffset.UtcNow.ToUnixTimeSeconds() <= currentSecond)
-        {
-            await Task.Delay(10);
-        }
-    }
-
-    private static async Task Eventually(Func<Task<bool>> condition)
-    {
-        var deadline = DateTimeOffset.UtcNow.AddSeconds(5);
-        while (DateTimeOffset.UtcNow < deadline)
-        {
-            if (await condition())
-            {
-                return;
-            }
-
-            await Task.Delay(10);
-        }
-
-        Assert.True(await condition(), "Expected condition to become true.");
-    }
-
     private static Task WaitForReadModel(IWorkSystem system)
-        => Eventually(() => Task.FromResult(system.Diagnostics.ReadModel.PendingUpdateCount == 0));
+        => TestEventually.ReadModelDrained(system);
 
     private static IWorkSystem CreateSystem(
         WorkDefinition definition,
@@ -2054,6 +2029,13 @@ public sealed class WorkQueryServiceTests
 
     private static WorkerId RequiredWorkerId(IWorkerHandle handle)
         => handle.WorkerId ?? throw new InvalidOperationException("Expected accepted worker.");
+
+    private static WorkerSnapshot RequiredWorker(WorkerSnapshot? worker)
+        => worker ?? throw new InvalidOperationException("Expected worker to exist.");
+
+    private static WorkerIterationSnapshot RequiredLastIteration(WorkCompletion completion)
+        => RequiredWorker(completion.Worker).LastIteration
+            ?? throw new InvalidOperationException("Expected last iteration to exist.");
 
     [WorkMetadata("employee.onboard", "People:Onboarding", "Creates onboarding tasks for a new employee.")]
     private sealed class AttributedMetadataWork : IWorkExecutor

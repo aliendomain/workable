@@ -31,7 +31,7 @@ public sealed class RecurringWorkerExecutionStrategyTests
         var workerId = RequiredWorkerId(handle);
         try
         {
-            await Eventually(() => Task.FromResult(attempts >= 3));
+            await TestEventually.Until(() => attempts >= 3);
         }
         finally
         {
@@ -66,13 +66,13 @@ public sealed class RecurringWorkerExecutionStrategyTests
         var workerId = RequiredWorkerId(handle);
         try
         {
-            await Eventually(async () => attempts == 1 && await WorkerIsWaiting(system, workerId));
+            await TestEventually.Until(async () => attempts == 1 && await WorkerIsWaiting(system, workerId));
             var waitingWorker = RequiredWorker(await system.Query.Worker(workerId));
 
             var push = await system.Workers.Execute(waitingWorker.Version, WorkAction.Push);
 
             Assert.True(push.IsAccepted);
-            await Eventually(() => Task.FromResult(attempts >= 2));
+            await TestEventually.Until(() => attempts >= 2);
         }
         finally
         {
@@ -179,7 +179,7 @@ public sealed class RecurringWorkerExecutionStrategyTests
 
         var handle = await system.Queue.Enqueue("recurring-work");
         var workerId = RequiredWorkerId(handle);
-        await Eventually(async () => attempts == 1 && await WorkerIsWaiting(system, workerId));
+        await TestEventually.Until(async () => attempts == 1 && await WorkerIsWaiting(system, workerId));
         var worker = RequiredWorker(await system.Query.Worker(workerId));
 
         var reconfigure = await system.Workers.Reconfigure(
@@ -250,13 +250,13 @@ public sealed class RecurringWorkerExecutionStrategyTests
 
         var handle = await system.Queue.Enqueue("recurring-work");
         var workerId = RequiredWorkerId(handle);
-        await Eventually(async () => attempts == 1 && await WorkerIsWaiting(system, workerId));
+        await TestEventually.Until(async () => attempts == 1 && await WorkerIsWaiting(system, workerId));
         var waitingWorker = RequiredWorker(await system.Query.Worker(workerId));
 
         var pause = await system.Workers.Execute(waitingWorker.Version, WorkAction.Pause);
         var paused = await handle.WaitForCompletion();
         var start = await system.Workers.Execute(RequiredCompletionWorker(paused).Version, WorkAction.Start);
-        await Eventually(() => Task.FromResult(attempts >= 2));
+        await TestEventually.Until(() => attempts >= 2);
         await CancelIfActive(system, workerId);
         var canceled = await handle.WaitForCompletion();
 
@@ -324,7 +324,7 @@ public sealed class RecurringWorkerExecutionStrategyTests
 
         var handle = await system.Queue.Enqueue("recurring-work");
         var workerId = RequiredWorkerId(handle);
-        await Eventually(async () => attempts == 1 && await WorkerIsWaiting(system, workerId));
+        await TestEventually.Until(async () => attempts == 1 && await WorkerIsWaiting(system, workerId));
         var worker = RequiredWorker(await system.Query.Worker(workerId));
 
         var cancel = await system.Workers.Execute(worker.Version, WorkAction.Cancel);
@@ -364,7 +364,7 @@ public sealed class RecurringWorkerExecutionStrategyTests
 
         var handle = await system.Queue.Enqueue("recurring-work");
         var workerId = RequiredWorkerId(handle);
-        await Eventually(async () => attempts == 2 && await WorkerIsWaiting(system, workerId));
+        await TestEventually.Until(async () => attempts == 2 && await WorkerIsWaiting(system, workerId));
         await CancelIfActive(system, workerId);
         var completion = await handle.WaitForCompletion();
 
@@ -411,7 +411,7 @@ public sealed class RecurringWorkerExecutionStrategyTests
 
         var handle = await system.Queue.Enqueue("recurring-work");
         var workerId = RequiredWorkerId(handle);
-        await Eventually(async () => attempts == 2 && await WorkerIsWaiting(system, workerId));
+        await TestEventually.Until(async () => attempts == 2 && await WorkerIsWaiting(system, workerId));
         await CancelIfActive(system, workerId);
         var completion = await handle.WaitForCompletion();
 
@@ -478,7 +478,7 @@ public sealed class RecurringWorkerExecutionStrategyTests
 
         var handle = await system.Queue.Enqueue("recurring-work");
         var workerId = RequiredWorkerId(handle);
-        await Eventually(() => Task.FromResult(Volatile.Read(ref attempts) >= 6));
+        await TestEventually.Until(() => Volatile.Read(ref attempts) >= 6);
         await CancelIfActive(system, workerId);
         var completion = await handle.WaitForCompletion();
         var iterations = completion.Worker?.Iterations ?? [];
@@ -527,15 +527,17 @@ public sealed class RecurringWorkerExecutionStrategyTests
 
         var first = await system.Queue.Enqueue("recurring-work");
         var firstWorkerId = RequiredWorkerId(first);
-        await Eventually(async () => firstAttempts == 1 && await WorkerIsWaiting(system, firstWorkerId));
+        await TestEventually.Until(async () => firstAttempts == 1 && await WorkerIsWaiting(system, firstWorkerId));
         var second = await system.Queue.Enqueue("recurring-work");
+        var secondWorkerId = RequiredWorkerId(second);
+        var queuedSecond = RequiredWorker(await system.Query.Worker(secondWorkerId));
 
-        await Task.Delay(TimeSpan.FromMilliseconds(50));
+        Assert.Equal(WorkerState.Queued, queuedSecond.State);
         Assert.False(secondStarted.Task.IsCompleted);
 
         await CancelIfActive(system, firstWorkerId);
         await secondStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
-        await CancelIfActive(system, RequiredWorkerId(second));
+        await CancelIfActive(system, secondWorkerId);
     }
 
     private static IWorkSystem CreateSystem(
@@ -606,22 +608,6 @@ public sealed class RecurringWorkerExecutionStrategyTests
         var hasEvent = await reader.MoveNextAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(5));
         Assert.True(hasEvent);
         return reader.Current;
-    }
-
-    private static async Task Eventually(Func<Task<bool>> condition)
-    {
-        var timeout = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(5);
-        while (DateTimeOffset.UtcNow < timeout)
-        {
-            if (await condition())
-            {
-                return;
-            }
-
-            await Task.Delay(10);
-        }
-
-        Assert.True(await condition());
     }
 
     private sealed class ScopedMarker

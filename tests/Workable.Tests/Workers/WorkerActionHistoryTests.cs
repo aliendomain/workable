@@ -88,7 +88,7 @@ public sealed class WorkerActionHistoryTests
         var handle = await system.Queue.Enqueue("history.retention");
         var workerId = RequiredWorkerId(handle);
 
-        await Eventually(async () =>
+        await TestEventually.Until(async () =>
         {
             var current = await system.Query.Worker(workerId);
             return current is { State: WorkerState.Waiting, LastIterationSequence: >= 1 };
@@ -101,7 +101,7 @@ public sealed class WorkerActionHistoryTests
 
         Assert.True(outcome.IsAccepted);
 
-        await Eventually(async () =>
+        await TestEventually.Until(async () =>
         {
             var current = await system.Query.Worker(workerId);
             return current is { LastIterationSequence: >= 2 } && current.ActionHistory.Count == 0;
@@ -133,19 +133,4 @@ public sealed class WorkerActionHistoryTests
         return reader.Current;
     }
 
-    private static async Task Eventually(Func<Task<bool>> condition)
-    {
-        var timeoutAt = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(5);
-        while (DateTimeOffset.UtcNow < timeoutAt)
-        {
-            if (await condition())
-            {
-                return;
-            }
-
-            await Task.Delay(25);
-        }
-
-        Assert.True(await condition(), "Condition was not satisfied before the timeout.");
-    }
 }

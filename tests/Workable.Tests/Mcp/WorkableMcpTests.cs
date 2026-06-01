@@ -1135,18 +1135,9 @@ public sealed class WorkableMcpTests
             system,
             "Wait for MCP test read model projection.",
             InternalWorkAuthorizationGroups.SystemAdministrator);
-        var deadline = DateTimeOffset.UtcNow.AddSeconds(5);
-        while (DateTimeOffset.UtcNow < deadline)
-        {
-            if (session.Diagnostics.ReadModel.PendingUpdateCount == 0)
-            {
-                return;
-            }
-
-            await Task.Delay(10);
-        }
-
-        Assert.Equal(0, session.Diagnostics.ReadModel.PendingUpdateCount);
+        await TestEventually.Until(
+            () => session.Diagnostics.ReadModel.PendingUpdateCount == 0,
+            "Expected the MCP test read model projection to drain.");
     }
 
     private static WorkConfiguration AllowMcp()
