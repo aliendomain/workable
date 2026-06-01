@@ -67,7 +67,7 @@ export function PanelVisibilitySettings<TPanelId extends string>({
         </div>
         <div className="space-y-1 p-2">
           {panelOptions.map((panel) => {
-            const visible = !hiddenPanelIds.includes(panel.id);
+            const visible = isPanelVisibleInSettings(hiddenPanelIds, panel.id);
 
             return (
               <label
@@ -108,4 +108,11 @@ export function PanelVisibilitySettings<TPanelId extends string>({
       </PopoverContent>
     </Popover>
   );
+}
+
+export function isPanelVisibleInSettings<TPanelId extends string>(
+  hiddenPanelIds: readonly TPanelId[],
+  panelId: TPanelId
+) {
+  return !hiddenPanelIds.includes(panelId);
 }

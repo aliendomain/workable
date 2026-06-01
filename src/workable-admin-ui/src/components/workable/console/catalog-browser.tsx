@@ -13,6 +13,7 @@ import {
   type DefinitionCatalogLevel,
   useDefinitionCatalogLevel,
 } from "@/components/workable/console/catalog-browser-data";
+import { splitCatalogPath } from "@/components/workable/console/catalog-path";
 
 export function CatalogBrowser<TDefinition>({
   backButtonClassName,
@@ -53,7 +54,7 @@ export function CatalogBrowser<TDefinition>({
   titleClassName?: string;
   wrapperClassName?: string;
 }) {
-  const pathSegments = splitCatalogBrowserPath(path);
+  const pathSegments = splitCatalogPath(path);
   const currentLabel = pathSegments.at(-1) ?? rootLabel;
   const canGoBack = pathSegments.length > 0;
 
@@ -78,7 +79,7 @@ export function CatalogBrowser<TDefinition>({
         </span>
         {headerRight}
       </div>
-      <div className={bodyClassName}>
+      <div className={defaultCatalogBrowserBodyClassName(bodyClassName)}>
         {loading ? (
           loadingState
         ) : (
@@ -216,17 +217,10 @@ export function defaultCatalogBrowserBackButtonClassName(className?: string) {
   );
 }
 
-export function defaultCatalogBrowserTitleClassName(className?: string) {
-  return cn("min-w-0 flex-1 truncate font-medium text-sm", className);
+export function defaultCatalogBrowserBodyClassName(className?: string) {
+  return cn("pt-1 pb-8", className);
 }
 
-function splitCatalogBrowserPath(path: unknown) {
-  if (typeof path !== "string" || !path.trim()) {
-    return [];
-  }
-
-  return path
-    .split(":")
-    .map((segment) => segment.trim())
-    .filter(Boolean);
+export function defaultCatalogBrowserTitleClassName(className?: string) {
+  return cn("min-w-0 flex-1 truncate font-medium text-sm", className);
 }

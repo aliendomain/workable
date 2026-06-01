@@ -20,8 +20,9 @@ import {
   PanelShell,
   type PanelFilterControl,
 } from "@/components/features/console/panel-shell";
+import { usePanelVisibilityState } from "@/components/features/console/panel-visibility-state";
 import type { PanelVisibilityOption } from "@/components/features/console/panel-visibility-settings";
-import type { OverviewScope } from "@/components/features/console/types";
+import { ConsoleEmptyState, ConsolePlaceholder } from "@/components/features/console/empty-state";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -36,6 +37,20 @@ import {
   TableCell,
   TableRow,
 } from "@/components/ui/table";
+import {
+  createOverviewComponentScope,
+  normalizeCategoryFilter,
+} from "@/components/workable/console/catalog-path";
+import {
+  createWorkComponentRequest,
+  getWorkComponentData,
+  getWorkComponentErrors,
+} from "@/components/workable/console/component-results";
+import {
+  completionTone,
+  formatExecutionDuration,
+  type DurationDisplay,
+} from "@/components/workable/console/console-format";
 import { ErrorPanel } from "@/components/workable/console/feedback-panel";
 import {
   formatRelativeTime,
@@ -49,8 +64,6 @@ import {
   type WorkAction,
   type WorkCompletionStatus,
   type WorkComponentQueryResult,
-  type WorkComponentRequest,
-  type WorkComponentResult,
   type WorkComponentShape,
   type WorkKeyKind,
   type WorkTypedValue,
@@ -71,11 +84,6 @@ type InfiniteLoadable<TItem> = {
   loadMore: () => void;
   refreshLoadedWindow?: () => void;
   totalCount?: number;
-};
-
-type DurationDisplay = {
-  isWarning: boolean;
-  text: string;
 };
 
 type WorkerActionResult = {
@@ -180,7 +188,12 @@ export function WorkersView({
   );
   const [actionError, setActionError] = useState<string>();
   const [hiddenWorkerIds, setHiddenWorkerIds] = useState<ReadonlySet<string>>(() => new Set());
-  const [hiddenPanelIds, setHiddenPanelIds] = useState<ReadonlySet<"workers">>(() => new Set());
+  const {
+    hiddenPanelIdList,
+    hiddenPanelIds,
+    resetPanelVisibility: resetWorkersPanelVisibility,
+    setPanelVisible: setWorkersPanelVisible,
+  } = usePanelVisibilityState<"workers">();
   const [pendingActionWorkerId, setPendingActionWorkerId] = useState<string | null>(null);
   const refreshWorkers = useCallback((options?: { resetScroll?: boolean }) => {
     setActionError(undefined);
@@ -282,22 +295,10 @@ export function WorkersView({
     }
   }, [isLoadingTarget, isReady, onReady]);
 
-  const setWorkersPanelVisible = useCallback((panelId: "workers", visible: boolean) => {
-    setHiddenPanelIds((current) => {
-      const next = new Set(current);
-      if (visible) {
-        next.delete(panelId);
-      } else {
-        next.add(panelId);
-      }
-      return next;
-    });
-  }, []);
-
   const resetWorkersUiToDefaults = useCallback(() => {
-    setHiddenPanelIds(new Set());
+    resetWorkersPanelVisibility();
     setGridShape(queryGridShapeCapabilities.defaultShape);
-  }, []);
+  }, [resetWorkersPanelVisibility]);
 
   if (!isVisible) {
     return null;
@@ -316,7 +317,7 @@ export function WorkersView({
     <ConsolePageLayout fill scrollMode="panel">
       <PanelAggregateFrame
         fill
-        hiddenPanelIds={[...hiddenPanelIds]}
+        hiddenPanelIds={hiddenPanelIdList}
         onPanelVisibilityChange={setWorkersPanelVisible}
         onResetUi={resetWorkersUiToDefaults}
         padding="tightTop"
@@ -423,7 +424,12 @@ export function IterationsView({
   const [gridShape, setGridShape] = useState<WorkComponentShape>(
     queryGridShapeCapabilities.defaultShape
   );
-  const [hiddenPanelIds, setHiddenPanelIds] = useState<ReadonlySet<"iterations">>(() => new Set());
+  const {
+    hiddenPanelIdList,
+    hiddenPanelIds,
+    resetPanelVisibility: resetIterationsPanelVisibility,
+    setPanelVisible: setIterationsPanelVisible,
+  } = usePanelVisibilityState<"iterations">();
   const openIterationRow = useCallback((iteration: WorkViewIterationGridDetailed) => {
     if (!iteration.isFinal) {
       return;
@@ -440,22 +446,10 @@ export function IterationsView({
     }
   }, [isLoadingTarget, isReady, onReady]);
 
-  const setIterationsPanelVisible = useCallback((panelId: "iterations", visible: boolean) => {
-    setHiddenPanelIds((current) => {
-      const next = new Set(current);
-      if (visible) {
-        next.delete(panelId);
-      } else {
-        next.add(panelId);
-      }
-      return next;
-    });
-  }, []);
-
   const resetIterationsUiToDefaults = useCallback(() => {
-    setHiddenPanelIds(new Set());
+    resetIterationsPanelVisibility();
     setGridShape(queryGridShapeCapabilities.defaultShape);
-  }, []);
+  }, [resetIterationsPanelVisibility]);
 
   if (!isVisible) {
     return null;
@@ -468,7 +462,7 @@ export function IterationsView({
     <ConsolePageLayout fill scrollMode="panel">
       <PanelAggregateFrame
         fill
-        hiddenPanelIds={[...hiddenPanelIds]}
+        hiddenPanelIds={hiddenPanelIdList}
         onPanelVisibilityChange={setIterationsPanelVisible}
         onResetUi={resetIterationsUiToDefaults}
         padding="tightTop"
@@ -513,11 +507,11 @@ export function IterationsView({
   );
 }
 
-function getIterationRowKey(iteration: WorkViewIterationGridDetailed) {
+export function getIterationRowKey(iteration: WorkViewIterationGridDetailed) {
   return `${iteration.workerId.value}:${iteration.sequence}`;
 }
 
-function QueryPanelShell({
+export function QueryPanelShell({
   actions,
   children,
   filterControl,
@@ -558,23 +552,23 @@ function QueryPanelShell({
   );
 }
 
-function QueryTableStatus({
+export function QueryTableStatus({
   label,
 }: {
   label: string;
 }) {
   return (
-    <div className="flex min-h-0 flex-1 items-center justify-center rounded-lg border border-dashed p-8 text-center text-muted-foreground text-sm">
+    <ConsoleEmptyState fill padding="spacious">
       <span>{label}</span>
-    </div>
+    </ConsoleEmptyState>
   );
 }
 
-function QueryTablePlaceholder() {
-  return <div className="flex min-h-0 flex-1 rounded-lg border border-dashed" />;
+export function QueryTablePlaceholder() {
+  return <ConsolePlaceholder fill />;
 }
 
-function isWorkerNotFoundError(error: unknown) {
+export function isWorkerNotFoundError(error: unknown) {
   if (!(error instanceof WorkableApiError) || error.status !== 404) {
     return false;
   }
@@ -586,14 +580,14 @@ function isWorkerNotFoundError(error: unknown) {
   return error.body.messages.some((message) => message.code === "workable.worker.not_found");
 }
 
-function isObjectWithMessages(value: unknown): value is { messages: Array<{ code?: string }> } {
+export function isObjectWithMessages(value: unknown): value is { messages: Array<{ code?: string }> } {
   return typeof value === "object" &&
     value !== null &&
     "messages" in value &&
     Array.isArray((value as { messages?: unknown }).messages);
 }
 
-function getNextVisibleWorkerHighlight(
+export function getNextVisibleWorkerHighlight(
   workers: WorkViewWorkerGridDetailed[],
   workerId: string
 ): WorkerRowHighlight | null {
@@ -917,7 +911,7 @@ const workerActionIcons = {
   Start: Play,
 } satisfies Record<WorkAction, typeof Play>;
 
-function getWorkerActions(state: WorkerState): WorkAction[] {
+export function getWorkerActions(state: WorkerState): WorkAction[] {
   switch (state) {
     case "Queued":
     case "Paused":
@@ -940,7 +934,7 @@ function getWorkerActions(state: WorkerState): WorkAction[] {
   }
 }
 
-function isStartableWorker(state: WorkerState) {
+export function isStartableWorker(state: WorkerState) {
   return state === "Queued" || state === "Paused" || state === "Failed";
 }
 
@@ -1127,7 +1121,7 @@ function VirtualIterationTable({
   );
 }
 
-function QueryResultTotal({
+export function QueryResultTotal({
   noun,
   totalCount,
 }: {
@@ -1174,7 +1168,7 @@ export function TypedValueSummary({ values }: { values: WorkTypedValue[] }) {
   );
 }
 
-function DurationValue({
+export function DurationValue({
   className = "font-mono text-xs",
   duration,
 }: {
@@ -1247,7 +1241,7 @@ function useInfiniteWorkerQuery(
       method: "POST",
       body: JSON.stringify({
         components: [
-          overviewComponent("workerGrid", "workerGrid", "detailed", {
+          createWorkComponentRequest("workerGrid", "workerGrid", "detailed", {
             keyKind: parsedQuery.keyKind,
             keyType: parsedQuery.keyType,
             keyValue: parsedQuery.keyValue,
@@ -1260,7 +1254,7 @@ function useInfiniteWorkerQuery(
           category: parsedQuery.category,
           definitionName: parsedQuery.definitionName,
           includeSubcategories: parsedQuery.includeSubcategories,
-        }),
+        }, { emptyValue: undefined, includeSubcategoriesForDefinition: true }),
       }),
     });
     const data = getWorkComponentData<WorkerQueryResult>(result, "workerGrid");
@@ -1532,7 +1526,7 @@ function useInfiniteIterationQuery(
       method: "POST",
       body: JSON.stringify({
         components: [
-          overviewComponent("iterationGrid", "iterationGrid", "detailed", {
+          createWorkComponentRequest("iterationGrid", "iterationGrid", "detailed", {
             keyKind: parsedQuery.keyKind,
             keyType: parsedQuery.keyType,
             keyValue: parsedQuery.keyValue,
@@ -1545,7 +1539,7 @@ function useInfiniteIterationQuery(
           category: parsedQuery.category,
           definitionName: parsedQuery.definitionName,
           includeSubcategories: true,
-        }),
+        }, { emptyValue: undefined, includeSubcategoriesForDefinition: true }),
       }),
     });
     const data = getWorkComponentData<WorkerIterationQueryResult>(result, "iterationGrid");
@@ -1760,7 +1754,7 @@ function useInfiniteIterationQuery(
   };
 }
 
-function appendUniqueWorkers(
+export function appendUniqueWorkers(
   current: WorkViewWorkerGridDetailed[],
   next: WorkViewWorkerGridDetailed[]
 ) {
@@ -1783,7 +1777,7 @@ function appendUniqueWorkers(
   return items;
 }
 
-function appendUniqueIterations(
+export function appendUniqueIterations(
   current: WorkViewIterationGridDetailed[],
   next: WorkViewIterationGridDetailed[]
 ) {
@@ -1809,7 +1803,7 @@ function appendUniqueIterations(
   return items;
 }
 
-function isNewerWorkerRow(
+export function isNewerWorkerRow(
   current: WorkViewWorkerGridDetailed,
   next: WorkViewWorkerGridDetailed
 ) {
@@ -1817,163 +1811,15 @@ function isNewerWorkerRow(
     Date.parse(next.updatedAt) > Date.parse(current.updatedAt);
 }
 
-function isNewerIterationRow(
+export function isNewerIterationRow(
   current: WorkViewIterationGridDetailed,
   next: WorkViewIterationGridDetailed
 ) {
   return Date.parse(next.completedAt) > Date.parse(current.completedAt);
 }
 
-function overviewComponent(
-  id: string,
-  type = id,
-  shape?: WorkComponentShape,
-  options?: Record<string, unknown>
-): WorkComponentRequest {
-  return {
-    id,
-    type,
-    ...(shape ? { shape } : {}),
-    ...(options ? { options } : {}),
-  };
-}
-
-function createOverviewComponentScope(scope: OverviewScope | null) {
-  const normalizedScope = normalizeOverviewScope(scope);
-  if (!normalizedScope) {
-    return undefined;
-  }
-
-  return {
-    category: normalizedScope.category,
-    definitionName: normalizedScope.definitionName,
-    includeSubcategories: normalizedScope.definitionName
-      ? scope?.includeSubcategories ?? true
-      : normalizedScope.includeSubcategories,
-  };
-}
-
-function normalizeOverviewScope(scope: OverviewScope | null | undefined): OverviewScope | null {
-  if (!scope) {
-    return null;
-  }
-
-  const category = normalizeScopeText(scope.category);
-  const definitionName = normalizeScopeText(scope.definitionName);
-  if (!category && !definitionName) {
-    return null;
-  }
-
-  return {
-    ...(category ? { category } : {}),
-    ...(definitionName ? { definitionName } : {}),
-    includeSubcategories: definitionName
-      ? scope.includeSubcategories ?? true
-      : scope.includeSubcategories ?? true,
-  };
-}
-
-function normalizeScopeText(value: unknown) {
-  return typeof value === "string" ? value.trim() : "";
-}
-
-function normalizeCategoryFilter(path: unknown) {
-  return splitCatalogPath(path).join(":");
-}
-
-function splitCatalogPath(path: unknown) {
-  if (typeof path !== "string") {
-    return [];
-  }
-
-  return path
-    .split(":")
-    .map((segment) => segment.trim())
-    .filter(Boolean);
-}
-
-function getWorkComponentData<T>(
-  result: WorkComponentQueryResult | undefined,
-  id: string
-): T | undefined {
-  const component = result?.components?.[id] as WorkComponentResult<T> | undefined;
-  return component?.status === "ok" ? component.data : undefined;
-}
-
-function getWorkComponentErrors(result: WorkComponentQueryResult | undefined) {
-  return Object.values(result?.components ?? {})
-    .map((component) => component.error)
-    .filter((error): error is string => !!error);
-}
-
-function formatWorkerDuration(worker: WorkViewWorkerGridDetailed): DurationDisplay {
+export function formatWorkerDuration(worker: WorkViewWorkerGridDetailed): DurationDisplay {
   return worker.totalExecutionDuration
     ? formatExecutionDuration(worker.totalExecutionDuration)
     : { isWarning: false, text: "-" };
-}
-
-function formatExecutionDuration(value?: string | null): DurationDisplay {
-  const seconds = parseDurationSeconds(value);
-  if (seconds === null) {
-    return { isWarning: false, text: "-" };
-  }
-
-  return formatDurationSeconds(seconds);
-}
-
-function formatDurationSeconds(seconds: number): DurationDisplay {
-  if (seconds < 0.005) {
-    return { isWarning: false, text: "~0s" };
-  }
-  if (seconds < 60) {
-    return { isWarning: false, text: `${seconds.toFixed(2)}s` };
-  }
-
-  return { isWarning: true, text: `${(seconds / 60).toFixed(2)}m` };
-}
-
-function parseDurationSeconds(value?: string | null) {
-  if (!value) {
-    return null;
-  }
-
-  const parts = value.split(":");
-  if (parts.length !== 3) {
-    return null;
-  }
-
-  const [daysPart, hoursPart] = parts[0].includes(".")
-    ? parts[0].split(".")
-    : ["0", parts[0]];
-  const days = Number(daysPart);
-  const hours = Number(hoursPart);
-  const minutes = Number(parts[1]);
-  const seconds = Number(parts[2]);
-  if (
-    !Number.isFinite(days) ||
-    !Number.isFinite(hours) ||
-    !Number.isFinite(minutes) ||
-    !Number.isFinite(seconds)
-  ) {
-    return null;
-  }
-
-  return (days * 24 * 60 * 60) + (hours * 60 * 60) + (minutes * 60) + seconds;
-}
-
-function completionTone(status: WorkCompletionStatus) {
-  switch (status) {
-    case "Executing":
-      return "border-emerald-500/40 bg-emerald-500/10 text-emerald-300";
-    case "Completed":
-      return "border-emerald-500/40 bg-emerald-500/10 text-emerald-300";
-    case "Failed":
-    case "Canceled":
-      return "bg-red-500/15 text-red-300 border-red-500/30";
-    case "Paused":
-    case "Interrupted":
-      return "border-amber-500/40 bg-amber-500/10 text-amber-300";
-    default:
-      return "border-muted-foreground/30 text-muted-foreground";
-  }
 }

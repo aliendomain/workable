@@ -22,6 +22,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ConsolePageLayout,
 } from "@/components/features/console/console-primitives";
+import { ConsoleEmptyState } from "@/components/features/console/empty-state";
 import { PanelAggregateFrame } from "@/components/features/console/panel-aggregate-frame";
 import {
   useConsolePageRealtimeView,
@@ -43,6 +44,7 @@ import {
   type OverviewPanelShapeMap,
 } from "@/components/features/console/overview-panels";
 import { PanelShell } from "@/components/features/console/panel-shell";
+import { StackedSkeleton } from "@/components/features/console/stacked-skeleton";
 import {
   type ConsoleRealtimeEventMessage,
   type ConsoleRealtimeViewLoadable,
@@ -71,6 +73,18 @@ import {
 } from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { createOverviewComponentScope } from "@/components/workable/console/catalog-path";
+import {
+  createWorkComponentRequest,
+  getWorkComponentData,
+  getWorkComponentErrors,
+} from "@/components/workable/console/component-results";
+import {
+  completionTone,
+  formatExecutionDuration,
+  formatQueueAge,
+  type DurationDisplay,
+} from "@/components/workable/console/console-format";
 import { ErrorPanel } from "@/components/workable/console/feedback-panel";
 import {
   formatRelativeTime,
@@ -85,7 +99,6 @@ import {
   type WorkCompletionStatus,
   type WorkComponentQueryResult,
   type WorkComponentRequest,
-  type WorkComponentResult,
   type WorkComponentShape,
   type WorkOverviewFailedWorker,
   type WorkOverviewFailedWorkerDetailed,
@@ -105,7 +118,7 @@ import {
   type WorkerState,
 } from "@/lib/workable";
 
-type ThroughputMode = "completion" | "execution";
+export type ThroughputMode = "completion" | "execution";
 const throughputSeriesIds = ["started", "completed", "failed", "canceled"] as const;
 const jsonByteEncoder = new TextEncoder();
 const noop = () => undefined;
@@ -190,14 +203,6 @@ export function getOverviewPanelShape(
     : overviewPanelShapeCapabilities[panelId].defaultShape;
 }
 
-function overviewComponent(
-  id: string,
-  type: string = id,
-  shape: WorkComponentShape = "detailed",
-  options?: unknown
-): WorkComponentRequest {
-  return options === undefined ? { id, shape, type } : { id, options, shape, type };
-}
 export function OverviewView({
   access,
   connection,
@@ -304,26 +309,26 @@ export function OverviewView({
   const completedIterationsShape = panelShape("completedIterations");
   const overviewComponents = useMemo(() => {
     const components: WorkComponentRequest[] = [
-      overviewComponent("system"),
+      createWorkComponentRequest("system", "system", "detailed"),
     ];
 
     if (shouldFetchPanel("workers")) {
-      components.push(overviewComponent("workers", "workers", workersShape));
+      components.push(createWorkComponentRequest("workers", "workers", workersShape));
     }
     if (shouldFetchPanel("failedWorkers")) {
-      components.push(overviewComponent("failedWorkers", "failedWorkers", failedWorkersShape));
+      components.push(createWorkComponentRequest("failedWorkers", "failedWorkers", failedWorkersShape));
     }
     if (shouldFetchPanel("iterations")) {
-      components.push(overviewComponent("iterations", "iterations", iterationsShape));
+      components.push(createWorkComponentRequest("iterations", "iterations", iterationsShape));
     }
     if (shouldFetchPanel("failedIterations")) {
-      components.push(overviewComponent("failedIterations", "failedIterations", failedIterationsShape));
+      components.push(createWorkComponentRequest("failedIterations", "failedIterations", failedIterationsShape));
     }
     if (shouldFetchPanel("completedIterations")) {
-      components.push(overviewComponent("completedIterations", "completedIterations", completedIterationsShape));
+      components.push(createWorkComponentRequest("completedIterations", "completedIterations", completedIterationsShape));
     }
     if (shouldFetchPanel("throughput")) {
-      components.push(overviewComponent(
+      components.push(createWorkComponentRequest(
         "throughput",
         "throughput",
         throughputShape,
@@ -355,7 +360,7 @@ export function OverviewView({
   );
   const systemOnlyOverviewRequest = useMemo(
     () => ({
-      components: [overviewComponent("system")],
+      components: [createWorkComponentRequest("system", "system", "detailed")],
       scope: createOverviewComponentScope(overviewScope),
     }),
     [overviewScope]
@@ -366,8 +371,8 @@ export function OverviewView({
   const failedWorkersRefreshRequest = useMemo(
     () => ({
       components: [
-        overviewComponent("workers", "workers", workersShape),
-        overviewComponent("failedWorkers", "failedWorkers", failedWorkersShape),
+        createWorkComponentRequest("workers", "workers", workersShape),
+        createWorkComponentRequest("failedWorkers", "failedWorkers", failedWorkersShape),
       ],
       scope: createOverviewComponentScope(overviewScope),
     }),
@@ -1370,9 +1375,9 @@ function OverviewIterationList({
       {loading ? (
         <StackedSkeleton count={4} />
       ) : iterations.length === 0 ? (
-        <div className="rounded-lg border border-dashed p-6 text-center text-muted-foreground text-sm">
+        <ConsoleEmptyState>
           {emptyText}
-        </div>
+        </ConsoleEmptyState>
       ) : shape === "detailed" ? (
         <OverviewIterationTable
           iterations={iterations}
@@ -1520,9 +1525,9 @@ function FailedWorkerTable({
 
   if (workers.length === 0) {
     return (
-      <div className="rounded-lg border border-dashed p-8 text-center text-muted-foreground text-sm">
+      <ConsoleEmptyState padding="spacious">
         {emptyText}
-      </div>
+      </ConsoleEmptyState>
     );
   }
 
@@ -1622,9 +1627,9 @@ function WorkerTable({
 
   if (workers.length === 0) {
     return (
-      <div className="rounded-lg border border-dashed p-8 text-center text-muted-foreground text-sm">
+      <ConsoleEmptyState padding="spacious">
         {emptyText}
-      </div>
+      </ConsoleEmptyState>
     );
   }
 
@@ -1779,7 +1784,7 @@ function WorkerRowActionMenu({
   );
 }
 
-function getWorkerRowActions(worker: WorkerActionTarget): WorkAction[] {
+export function getWorkerRowActions(worker: WorkerActionTarget): WorkAction[] {
   if (worker.state === "Failed" || worker.state === "Paused" || worker.state === "Queued") {
     return ["Start", "Cancel"];
   }
@@ -1791,7 +1796,7 @@ function getWorkerRowActions(worker: WorkerActionTarget): WorkAction[] {
   return [];
 }
 
-function toFailedWorkerActionTarget(worker: WorkOverviewFailedWorker): WorkerActionTarget {
+export function toFailedWorkerActionTarget(worker: WorkOverviewFailedWorker): WorkerActionTarget {
   return {
     definitionName: worker.definitionName,
     id: worker.id,
@@ -1800,7 +1805,7 @@ function toFailedWorkerActionTarget(worker: WorkOverviewFailedWorker): WorkerAct
   };
 }
 
-function isDetailedWorkerOverviewItem(
+export function isDetailedWorkerOverviewItem(
   worker: WorkOverviewFailedWorker
 ): worker is WorkOverviewFailedWorkerDetailed | WorkerOverviewItem {
   return "subjectId" in worker || "identifiers" in worker;
@@ -2288,7 +2293,7 @@ function ThroughputMetricPill({
   );
 }
 
-function getThroughputBuckets(throughput?: WorkSystemThroughput) {
+export function getThroughputBuckets(throughput?: WorkSystemThroughput) {
   if (!throughput) {
     return [];
   }
@@ -2323,7 +2328,7 @@ function getThroughputBuckets(throughput?: WorkSystemThroughput) {
   });
 }
 
-function createEmptyThroughputBucket(second: number): WorkThroughputBucket {
+export function createEmptyThroughputBucket(second: number): WorkThroughputBucket {
   return {
     at: new Date(second * 1000).toISOString(),
     averageExecutionMilliseconds: 0,
@@ -2334,7 +2339,7 @@ function createEmptyThroughputBucket(second: number): WorkThroughputBucket {
   };
 }
 
-function createThroughputSeries(
+export function createThroughputSeries(
   mode: ThroughputMode,
   buckets: WorkThroughputBucket[],
   bucketSeconds: number
@@ -2391,7 +2396,7 @@ function createThroughputSeries(
   ];
 }
 
-function createLinePath(values: number[], maxValue: number) {
+export function createLinePath(values: number[], maxValue: number) {
   if (values.length === 0) {
     return "";
   }
@@ -2404,7 +2409,7 @@ function createLinePath(values: number[], maxValue: number) {
     .join(" ");
 }
 
-function createAreaPath(values: number[], maxValue: number) {
+export function createAreaPath(values: number[], maxValue: number) {
   const line = createLinePath(values, maxValue);
   if (!line) {
     return "";
@@ -2416,21 +2421,21 @@ function createAreaPath(values: number[], maxValue: number) {
   return `${line} L ${last.x.toFixed(2)} ${baselineY.toFixed(2)} L ${first.x.toFixed(2)} ${baselineY.toFixed(2)} Z`;
 }
 
-function chartPoint(value: number, index: number, count: number, maxValue: number) {
+export function chartPoint(value: number, index: number, count: number, maxValue: number) {
   const x = count <= 1 ? 0 : (index / (count - 1)) * chartViewBoxWidth;
   const y = chartY(value, maxValue);
   return { x, y };
 }
 
-function chartY(value: number, maxValue: number) {
+export function chartY(value: number, maxValue: number) {
   return chartTopInset + (1 - value / maxValue) * chartValueRange;
 }
 
-function isZeroOnlySeries(values: number[]) {
+export function isZeroOnlySeries(values: number[]) {
   return values.length > 0 && values.every((value) => value === 0);
 }
 
-function createThroughputMetrics(
+export function createThroughputMetrics(
   mode: ThroughputMode,
   chartThroughput: WorkSystemThroughput | undefined,
   chartWindowSeconds: number
@@ -2647,7 +2652,7 @@ function createThroughputMetrics(
   ];
 }
 
-function createExecutionPressureMetric(summary: WorkThroughputLiveSummary): ThroughputMetric {
+export function createExecutionPressureMetric(summary: WorkThroughputLiveSummary): ThroughputMetric {
   const deltaPerSecond = summary.inFlightDeltaPerSecond;
   if (deltaPerSecond > 0) {
     return {
@@ -2688,7 +2693,7 @@ function createExecutionPressureMetric(summary: WorkThroughputLiveSummary): Thro
   };
 }
 
-function formatThroughputWindowLabel(seconds: number) {
+export function formatThroughputWindowLabel(seconds: number) {
   if (seconds === 60) {
     return "60-second";
   }
@@ -2705,7 +2710,7 @@ function formatThroughputWindowLabel(seconds: number) {
   return `${seconds}-second`;
 }
 
-function getNiceChartMax(value: number, mode: ThroughputMode) {
+export function getNiceChartMax(value: number, mode: ThroughputMode) {
   if (value <= 0) {
     return mode === "execution" ? 100 : 1;
   }
@@ -2723,11 +2728,11 @@ function getNiceChartMax(value: number, mode: ThroughputMode) {
   return nice * magnitude;
 }
 
-function createYAxisTicks(maxValue: number) {
+export function createYAxisTicks(maxValue: number) {
   return [maxValue, maxValue * 2 / 3, maxValue / 3, 0];
 }
 
-function formatThroughputAxisValue(mode: ThroughputMode, value: number) {
+export function formatThroughputAxisValue(mode: ThroughputMode, value: number) {
   if (mode === "execution") {
     return formatMilliseconds(value);
   }
@@ -2735,7 +2740,7 @@ function formatThroughputAxisValue(mode: ThroughputMode, value: number) {
   return `${formatRate(value)}/s`;
 }
 
-function createTimeAxisTicks(throughput: WorkSystemThroughput | undefined, buckets: WorkThroughputBucket[]) {
+export function createTimeAxisTicks(throughput: WorkSystemThroughput | undefined, buckets: WorkThroughputBucket[]) {
   if (!throughput || buckets.length === 0 || !throughput.bucketSeconds) {
     return [];
   }
@@ -2761,7 +2766,7 @@ function createTimeAxisTicks(throughput: WorkSystemThroughput | undefined, bucke
   });
 }
 
-function parseChartTimestamp(value: string | undefined) {
+export function parseChartTimestamp(value: string | undefined) {
   if (!value) {
     return null;
   }
@@ -2770,7 +2775,7 @@ function parseChartTimestamp(value: string | undefined) {
   return Number.isFinite(timestamp) ? timestamp : null;
 }
 
-function formatChartTimeAxisLabel(timestamp: number, windowSeconds: number) {
+export function formatChartTimeAxisLabel(timestamp: number, windowSeconds: number) {
   const options: Intl.DateTimeFormatOptions =
     windowSeconds >= 3600
       ? { hour: "numeric", minute: "2-digit" }
@@ -2778,7 +2783,7 @@ function formatChartTimeAxisLabel(timestamp: number, windowSeconds: number) {
   return new Intl.DateTimeFormat(undefined, options).format(new Date(timestamp));
 }
 
-function formatRate(value: number) {
+export function formatRate(value: number) {
   if (value >= 100) {
     return value.toFixed(0);
   }
@@ -2791,7 +2796,7 @@ function formatRate(value: number) {
   return value.toFixed(2);
 }
 
-function formatMilliseconds(value: number) {
+export function formatMilliseconds(value: number) {
   if (value >= 1000) {
     return `${(value / 1000).toFixed(value >= 60_000 ? 0 : 1)}s`;
   }
@@ -2799,186 +2804,22 @@ function formatMilliseconds(value: number) {
   return `${Math.round(value)}ms`;
 }
 
-function pluralize(word: string, count: number) {
+export function pluralize(word: string, count: number) {
   return count === 1 ? word : `${word}s`;
 }
 
-function isThroughputSeriesId(value: unknown): value is ThroughputSeriesId {
+export function isThroughputSeriesId(value: unknown): value is ThroughputSeriesId {
   return typeof value === "string" && throughputSeriesIds.includes(value as ThroughputSeriesId);
 }
 
-function getWorkComponentData<T>(
-  result: WorkComponentQueryResult | undefined,
-  id: string
-): T | undefined {
-  const component = result?.components[id] as WorkComponentResult<T> | undefined;
-  return component?.status?.toLowerCase() === "ok" ? component.data : undefined;
-}
-
-function getWorkComponentErrors(result: WorkComponentQueryResult | undefined) {
-  return Object.entries(result?.components ?? {})
-    .filter(([, component]) => component.status?.toLowerCase() !== "ok")
-    .map(([id, component]) => component.error ?? `${id} failed to load.`);
-}
-
-function StackedSkeleton({ count }: { count: number }) {
-  return (
-    <div className="space-y-3">
-      {Array.from({ length: count }).map((_, index) => (
-        <Skeleton className="h-10 w-full" key={index} />
-      ))}
-    </div>
-  );
-}
-
-function createOverviewComponentScope(scope: OverviewScope | null) {
-  const normalizedScope = normalizeOverviewScope(scope);
-  const category = normalizeCategoryFilter(normalizedScope?.category ?? "");
-  const definitionName = normalizedScope?.definitionName ?? "";
-  if (!category && !definitionName) {
-    return null;
-  }
-
-  return {
-    category: category || undefined,
-    definitionName: definitionName || undefined,
-    includeSubcategories: category && !definitionName
-      ? scope?.includeSubcategories ?? true
-      : undefined,
-  };
-}
-
-function normalizeOverviewScope(scope: OverviewScope | null | undefined): OverviewScope | null {
-  if (!scope) {
-    return null;
-  }
-
-  const category = normalizeScopeText(scope.category);
-  const definitionName = normalizeScopeText(scope.definitionName);
-  if (!category && !definitionName) {
-    return null;
-  }
-
-  return {
-    category: category || undefined,
-    definitionName: definitionName || undefined,
-    includeSubcategories: category && !definitionName
-      ? scope.includeSubcategories ?? true
-      : undefined,
-  };
-}
-
-function normalizeScopeText(value: unknown) {
-  return typeof value === "string" ? value.trim() : "";
-}
-
-function splitCatalogPath(path: unknown) {
-  const value = normalizeScopeText(path);
-  return value
-    ? value
-        .split(":")
-        .map((segment) => segment.trim())
-        .filter(Boolean)
-    : [];
-}
-
-function normalizeCategoryFilter(path: unknown) {
-  return splitCatalogPath(path).join(":");
-}
-
-function formatIterationCount(count: number) {
+export function formatIterationCount(count: number) {
   return `${count} ${count === 1 ? "iteration" : "iterations"}`;
 }
 
-type DurationDisplay = {
-  isWarning: boolean;
-  text: string;
-};
-
-function formatExecutionDuration(value?: string | null): DurationDisplay {
-  const seconds = parseDurationSeconds(value);
-  if (seconds === null) {
-    return { isWarning: false, text: "-" };
-  }
-
-  return formatDurationSeconds(seconds);
-}
-
-
-function formatFailedWorkerDuration(worker: WorkOverviewFailedWorker): DurationDisplay {
+export function formatFailedWorkerDuration(worker: WorkOverviewFailedWorker): DurationDisplay {
   return worker.totalExecutionDuration
     ? formatExecutionDuration(worker.totalExecutionDuration)
     : { isWarning: false, text: "-" };
-}
-
-function formatQueueAge(value?: string | null): DurationDisplay {
-  if (!value) {
-    return { isWarning: false, text: "-" };
-  }
-
-  const timestamp = Date.parse(value);
-  if (!Number.isFinite(timestamp)) {
-    return { isWarning: false, text: "-" };
-  }
-
-  return formatDurationSeconds(Math.max(0, (Date.now() - timestamp) / 1000));
-}
-
-function formatDurationSeconds(seconds: number): DurationDisplay {
-  if (seconds < 0.005) {
-    return { isWarning: false, text: "~0s" };
-  }
-  if (seconds < 60) {
-    return { isWarning: false, text: `${seconds.toFixed(2)}s` };
-  }
-
-  return { isWarning: true, text: `${(seconds / 60).toFixed(2)}m` };
-}
-
-function parseDurationSeconds(value?: string | null) {
-  if (!value) {
-    return null;
-  }
-
-  const parts = value.split(":");
-  if (parts.length !== 3) {
-    return null;
-  }
-
-  const [daysPart, hoursPart] = parts[0].includes(".")
-    ? parts[0].split(".")
-    : ["0", parts[0]];
-  const days = Number(daysPart);
-  const hours = Number(hoursPart);
-  const minutes = Number(parts[1]);
-  const seconds = Number(parts[2]);
-  if (
-    !Number.isFinite(days) ||
-    !Number.isFinite(hours) ||
-    !Number.isFinite(minutes) ||
-    !Number.isFinite(seconds)
-  ) {
-    return null;
-  }
-
-  return (days * 24 * 60 * 60) + (hours * 60 * 60) + (minutes * 60) + seconds;
-}
-
-function completionTone(status: WorkCompletionStatus) {
-  switch (status) {
-    case "Executing":
-      return "border-emerald-500/40 bg-emerald-500/10 text-emerald-300";
-    case "Completed":
-      return "border-emerald-500/40 bg-emerald-500/10 text-emerald-300";
-    case "Failed":
-    case "Canceled":
-      return "bg-red-500/15 text-red-300 border-red-500/30";
-    case "Paused":
-    case "Interrupted":
-      return "border-amber-500/40 bg-amber-500/10 text-amber-300";
-    default:
-      return "border-muted-foreground/30 text-muted-foreground";
-  }
 }
 
 export function useWorkableRealtimeEvents(
@@ -3049,7 +2890,7 @@ export function useWorkableRealtimeView<T>(
   });
 }
 
-function createRealtimeEventMessage(
+export function createRealtimeEventMessage(
   events: WorkableRealtimeEvent[],
   id: string,
   receivedAt: number,
@@ -3078,7 +2919,7 @@ function createRealtimeEventMessage(
   };
 }
 
-function measureJsonBytes(value: unknown, budget = 250_000) {
+export function measureJsonBytes(value: unknown, budget = 250_000) {
   const seen = new WeakSet<object>();
   const state = {
     bytes: 0,

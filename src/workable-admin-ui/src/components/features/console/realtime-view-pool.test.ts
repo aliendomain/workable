@@ -2,9 +2,38 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { HubConnectionState, type HubConnection } from "@microsoft/signalr";
 import {
+  createConsoleRealtimeSharedConnectionKey,
   createConsoleRealtimeSharedViewPool,
+  createWorkableRealtimeHubUrl,
   type ConsoleRealtimeSharedViewConnectionLease,
 } from "./realtime-view-pool.ts";
+
+test("realtime view helpers build stable shared keys and same-origin hub urls", () => {
+  assert.equal(
+    createConsoleRealtimeSharedConnectionKey(
+      "https://workable.example/workable",
+      "Ops",
+      "https://workable.example/workable/realtime",
+      "events"
+    ),
+    "https://workable.example/workable::Ops::https://workable.example/workable/realtime::events"
+  );
+  assert.equal(
+    createWorkableRealtimeHubUrl({
+      apiUrl: "https://workable.example/workable/api",
+      realtimeHubPath: "../realtime",
+    }),
+    "https://workable.example/workable/realtime"
+  );
+  assert.equal(
+    createWorkableRealtimeHubUrl({
+      apiUrl: "https://workable.example/workable",
+      realtimeHubPath: "https://other.example/realtime",
+    }),
+    null
+  );
+  assert.equal(createWorkableRealtimeHubUrl(null), null);
+});
 
 test("shared view pool reuses one physical connection for matching keys", async () => {
   const created: FakeHubConnection[] = [];

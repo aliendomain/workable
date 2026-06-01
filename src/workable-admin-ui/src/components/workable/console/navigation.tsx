@@ -8,7 +8,6 @@ import {
   Clock3,
   FileCode2,
   Folder,
-  Home,
   Loader2,
   Pencil,
   Play,
@@ -22,7 +21,9 @@ import {
   Workflow,
 } from "lucide-react";
 import { Fragment, type ReactNode, useCallback, useEffect, useMemo, useState } from "react";
+import { ConsoleEmptyState } from "@/components/features/console/empty-state";
 import { ConsoleHeaderCapabilityControls } from "@/components/features/console/header-capability-controls";
+import { FormField } from "@/components/features/console/form-controls";
 import {
   consoleBreadcrumbCurrentClassName,
   consoleBreadcrumbDefinitionClassName,
@@ -30,6 +31,7 @@ import {
   consoleBreadcrumbTextClassName,
 } from "@/components/features/console/console-primitives";
 import { useResolvedConsoleHeaderCapabilities } from "@/components/features/console/header-capabilities";
+import { StackedSkeleton } from "@/components/features/console/stacked-skeleton";
 import type {
   OverviewScope,
   PendingDelete,
@@ -60,7 +62,6 @@ import {
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
 import {
   SidebarMenu,
@@ -99,6 +100,11 @@ const navItems: Array<{ id: ServerView; label: string; icon: typeof Activity }> 
   { id: "workers", label: "Workers", icon: Workflow },
   { id: "iterations", label: "Iterations", icon: Clock3 },
 ];
+export const catalogExplorerShellClassName =
+  "relative z-10 -ml-11 mr-0 mb-2 mt-1 w-[calc(var(--sidebar-width)-2rem)] overflow-hidden rounded-md border border-sidebar-border bg-sidebar group-data-[collapsible=icon]:hidden";
+export const catalogExplorerBodyClassName =
+  "workable-grid-scrollbar max-h-72 overflow-y-auto";
+
 export function ServerTree({
   activeSystemId,
   catalogScopeBySystemId,
@@ -466,7 +472,7 @@ function CatalogExplorer({
 
   return (
     <>
-      <div className="relative z-10 -ml-11 mr-0 mt-1 w-[calc(var(--sidebar-width)-2rem)] overflow-hidden rounded-md border border-sidebar-border bg-sidebar group-data-[collapsible=icon]:hidden">
+      <div className={catalogExplorerShellClassName}>
         {queueDefinitionError && (
           <div className="border-sidebar-border border-b">
             <ErrorBanner
@@ -480,7 +486,7 @@ function CatalogExplorer({
             "size-5 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
           )}
           backIconClassName="size-3.5"
-          bodyClassName="py-1"
+          bodyClassName={catalogExplorerBodyClassName}
           connection={connection}
           emptyState={(
             <div className="px-2 py-2 text-sidebar-foreground/60 text-xs">
@@ -630,7 +636,7 @@ export function EmptyServerState({
 }) {
   return (
     <div className="flex min-h-[calc(100vh-8rem)] items-center justify-center">
-      <div className="max-w-md rounded-lg border border-dashed p-8 text-center">
+      <ConsoleEmptyState className="max-w-md text-foreground" padding="spacious">
         <div className="mx-auto flex size-10 items-center justify-center rounded-md bg-muted">
           <Server className="size-5 text-muted-foreground" />
         </div>
@@ -640,7 +646,7 @@ export function EmptyServerState({
           <Plus className="size-4" />
           Add server
         </Button>
-      </div>
+      </ConsoleEmptyState>
     </div>
   );
 }
@@ -703,18 +709,7 @@ export function DeleteTargetDialog({
   onOpenChange: (open: boolean) => void;
   target: PendingDelete | null;
 }) {
-  const title =
-    target?.kind === "host"
-      ? `Remove ${target.host.name}?`
-      : target
-        ? `Remove ${target.system.name}?`
-        : "Remove item?";
-  const description =
-    target?.kind === "host"
-      ? "This removes the server group and every Workable system saved under it from this browser."
-      : target?.host.systems.length === 1
-        ? `This removes ${target.system.name}. Because it is the last system under ${target.host.name}, the server group will be removed too.`
-        : "This removes only this Workable system from the sidebar.";
+  const { description, title } = getDeleteTargetDialogText(target);
 
   return (
     <AlertDialog onOpenChange={onOpenChange} open={!!target}>
@@ -734,6 +729,21 @@ export function DeleteTargetDialog({
   );
 }
 
+export function getDeleteTargetDialogText(target: PendingDelete | null) {
+  return {
+    title: target?.kind === "host"
+      ? `Remove ${target.host.name}?`
+      : target
+        ? `Remove ${target.system.name}?`
+        : "Remove item?",
+    description: target?.kind === "host"
+      ? "This removes the server group and every Workable system saved under it from this browser."
+      : target?.host.systems.length === 1
+        ? `This removes ${target.system.name}. Because it is the last system under ${target.host.name}, the server group will be removed too.`
+        : "This removes only this Workable system from the sidebar.",
+  };
+}
+
 export function StopSystemDialog({
   onConfirm,
   onOpenChange,
@@ -747,7 +757,7 @@ export function StopSystemDialog({
     <AlertDialog onOpenChange={onOpenChange} open={!!target}>
       <AlertDialogContent>
         <AlertDialogHeader>
-          <AlertDialogTitle>Stop {target?.system.name ?? "system"}?</AlertDialogTitle>
+          <AlertDialogTitle>{getStopSystemDialogTitle(target)}</AlertDialogTitle>
           <AlertDialogDescription>
             This stops the Workable system and may affect queued or running workers.
           </AlertDialogDescription>
@@ -761,6 +771,10 @@ export function StopSystemDialog({
       </AlertDialogContent>
     </AlertDialog>
   );
+}
+
+export function getStopSystemDialogTitle(target: PendingStopSystem | null) {
+  return `Stop ${target?.system.name ?? "system"}?`;
 }
 
 export function ServerDialog({
@@ -897,15 +911,13 @@ export function ServerDialog({
           </DialogDescription>
         </DialogHeader>
         <div className="space-y-4">
-          <div className="grid gap-2">
-            <Label>Host name</Label>
+          <FormField label="Host name" maxWidth="none">
             <Input
               onChange={(event) => setName(event.target.value)}
               value={name}
             />
-          </div>
-          <div className="grid gap-2">
-            <Label>HTTP API URL</Label>
+          </FormField>
+          <FormField label="HTTP API URL" maxWidth="none">
             <div className="flex gap-2">
               <Input
                 onChange={(event) => {
@@ -932,7 +944,7 @@ export function ServerDialog({
                 Load systems
               </Button>
             </div>
-          </div>
+          </FormField>
           {systemsError && (
             <ErrorBanner key={systemsError} message={systemsError} title="Discovery failed" />
           )}
@@ -1192,7 +1204,7 @@ function findStoredSystemByKey(
   );
 }
 
-function getSystemAccessBadges(access: WorkSystemAccessSummary) {
+export function getSystemAccessBadges(access: WorkSystemAccessSummary) {
   const badges = ["Connect"];
 
   if (access.isSystemAdministrator) {
@@ -1238,7 +1250,7 @@ function getSystemAccessBadges(access: WorkSystemAccessSummary) {
   return badges;
 }
 
-function createUnknownAccessSummary(): WorkSystemAccessSummary {
+export function createUnknownAccessSummary(): WorkSystemAccessSummary {
   return {
     canConnect: true,
     isSystemAdministrator: false,
@@ -1253,7 +1265,7 @@ function createUnknownAccessSummary(): WorkSystemAccessSummary {
   };
 }
 
-function getWorkAccessBadge(
+export function getWorkAccessBadge(
   label: "Read" | "Operate",
   count: number,
   total: number,
@@ -1270,7 +1282,7 @@ function getWorkAccessBadge(
   return `${label} ${formatCompactCount(count)}/${formatCompactCount(total)} defs`;
 }
 
-function formatCompactCount(value: number) {
+export function formatCompactCount(value: number) {
   return new Intl.NumberFormat("en-US", { notation: value >= 1000 ? "compact" : "standard" }).format(value);
 }
 
@@ -1330,7 +1342,7 @@ export async function discoverHost(apiUrl: string): Promise<WorkableHttpHostDesc
   );
 }
 
-function createWorkableApiUrlCandidates(value: string) {
+export function createWorkableApiUrlCandidates(value: string) {
   const trimmed = value.trim().replace(/\/+$/, "");
   if (!trimmed) {
     return [];
@@ -1365,7 +1377,7 @@ function createWorkableApiUrlCandidates(value: string) {
   }
 }
 
-function stripTrailingPathSegment(url: URL, segment: string) {
+export function stripTrailingPathSegment(url: URL, segment: string) {
   const next = new URL(url.toString());
   const path = next.pathname.replace(/\/+$/, "");
 
@@ -1376,17 +1388,17 @@ function stripTrailingPathSegment(url: URL, segment: string) {
   return next;
 }
 
-function formatWorkableApiUrl(url: URL) {
+export function formatWorkableApiUrl(url: URL) {
   const path = url.pathname === "/" ? "" : url.pathname.replace(/\/+$/, "");
   return `${url.origin}${path}${url.search}`;
 }
 
-function formatHostEndpoint(apiUrl: string) {
+export function formatHostEndpoint(apiUrl: string) {
   const normalized = apiUrl.replace(/\/+$/, "");
   return `${normalized}/host`;
 }
 
-function isWorkableHostResponse(value: unknown): value is WorkableHttpHostDescriptor {
+export function isWorkableHostResponse(value: unknown): value is WorkableHttpHostDescriptor {
   return Boolean(
     value &&
       typeof value === "object" &&
@@ -1433,15 +1445,15 @@ export function reconcileStoredHostWithDiscovery(
   };
 }
 
-function getSystemStorageKey(system: WorkableHttpSystemDescriptor) {
+export function getSystemStorageKey(system: WorkableHttpSystemDescriptor) {
   return system.name?.trim() ?? "";
 }
 
-function getSystemDisplayName(system: WorkableHttpSystemDescriptor) {
+export function getSystemDisplayName(system: WorkableHttpSystemDescriptor) {
   return normalizeOptional(system.name) ?? "Default";
 }
 
-function getSystemSecondaryText(system: WorkableHttpSystemDescriptor) {
+export function getSystemSecondaryText(system: WorkableHttpSystemDescriptor) {
   return system.isDefault ? "Default system" : null;
 }
 
@@ -1453,22 +1465,12 @@ function createServerId() {
   return `server-${Date.now().toString(36)}`;
 }
 
-function normalizeOptional(value?: string | null) {
+export function normalizeOptional(value?: string | null) {
   const trimmed = value?.trim();
   return trimmed ? trimmed : undefined;
 }
 
-function StackedSkeleton({ count }: { count: number }) {
-  return (
-    <div className="space-y-3">
-      {Array.from({ length: count }).map((_, index) => (
-        <Skeleton className="h-10 w-full" key={index} />
-      ))}
-    </div>
-  );
-}
-
-function navTitle(view: View) {
+export function navTitle(view: View) {
   if (view === "worker") {
     return "Worker Console";
   }
@@ -1482,7 +1484,7 @@ function navTitle(view: View) {
   return navItems.find((item) => item.id === view)?.label ?? "Overview";
 }
 
-function getSystemLifecycleAction(state?: string | null): "start" | "stop" | null {
+export function getSystemLifecycleAction(state?: string | null): "start" | "stop" | null {
   const normalized = state?.toLowerCase();
   if (normalized === "created" || normalized === "stopped") {
     return "start";
@@ -1493,7 +1495,7 @@ function getSystemLifecycleAction(state?: string | null): "start" | "stop" | nul
   return null;
 }
 
-function getSystemLifecycleActionLabel(
+export function getSystemLifecycleActionLabel(
   state: string | null | undefined,
   system: WorkableSystemConnection,
   host: WorkableHostConnection
@@ -1508,7 +1510,7 @@ function getSystemLifecycleActionLabel(
   return "Lifecycle action unavailable";
 }
 
-function systemStateDotClass(state?: string | null) {
+export function systemStateDotClass(state?: string | null) {
   switch (state) {
     case "Started":
       return "bg-emerald-400";

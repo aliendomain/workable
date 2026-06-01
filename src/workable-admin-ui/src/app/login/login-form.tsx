@@ -4,6 +4,7 @@ import { useState } from "react";
 import type { FormEvent } from "react";
 import { useRouter } from "next/navigation";
 import { AuthShell } from "@/components/layout/auth-shell";
+import { FormField } from "@/components/features/console/form-controls";
 import { WorkableLogo } from "@/components/shared/workable-logo";
 import {
   Alert,
@@ -17,7 +18,6 @@ import {
   CardHeader,
 } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import type { AdminAuthProvider } from "@/lib/admin-security";
 
 type LoginFormProps = {
@@ -94,8 +94,7 @@ export function LoginForm({
             </div>
           ) : (
             <form className="space-y-4" onSubmit={submit}>
-              <div className="space-y-2">
-                <Label htmlFor="userName">Username</Label>
+              <FormField htmlFor="userName" label="Username" maxWidth="none">
                 <Input
                   autoComplete="username"
                   autoFocus
@@ -105,9 +104,8 @@ export function LoginForm({
                   required
                   value={userName}
                 />
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="password">Password</Label>
+              </FormField>
+              <FormField htmlFor="password" label="Password" maxWidth="none">
                 <Input
                   autoComplete="current-password"
                   id="password"
@@ -117,7 +115,7 @@ export function LoginForm({
                   type="password"
                   value={password}
                 />
-              </div>
+              </FormField>
 
               {error && (
                 <Alert variant="destructive">
