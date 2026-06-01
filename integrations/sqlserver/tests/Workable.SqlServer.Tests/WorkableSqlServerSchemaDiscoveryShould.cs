@@ -1,5 +1,6 @@
 namespace Workable.Tests;
 
+[Trait("Category", "SqlServerIntegration")]
 public sealed class WorkableSqlServerSchemaDiscoveryShould
 {
     [Fact]

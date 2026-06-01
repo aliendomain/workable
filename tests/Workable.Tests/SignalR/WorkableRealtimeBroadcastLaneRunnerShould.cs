@@ -2,6 +2,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 
 namespace Workable.Tests;
 
+[Trait("Category", "SignalR")]
 public sealed class WorkableRealtimeBroadcastLaneRunnerShould
 {
     [Fact]

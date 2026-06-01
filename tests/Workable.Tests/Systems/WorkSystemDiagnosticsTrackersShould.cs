@@ -1,5 +1,6 @@
 namespace Workable.Tests;
 
+[Trait("Category", "Systems")]
 public sealed class WorkSystemDiagnosticsTrackersShould
 {
     [Fact]

@@ -1,5 +1,6 @@
 namespace Workable.Tests;
 
+[Trait("Category", "SignalR")]
 public sealed class WorkableRealtimeBroadcastRulesShould
 {
     [Fact]

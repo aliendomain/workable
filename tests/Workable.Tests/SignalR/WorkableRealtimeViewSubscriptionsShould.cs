@@ -3,6 +3,7 @@ using Microsoft.Extensions.DependencyInjection;
 
 namespace Workable.Tests;
 
+[Trait("Category", "SignalR")]
 public sealed class WorkableRealtimeViewSubscriptionsShould
 {
     [Fact]
