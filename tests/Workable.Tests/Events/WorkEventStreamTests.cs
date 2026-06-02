@@ -64,6 +64,142 @@ public sealed class WorkEventStreamTests
     }
 
     [Fact]
+    public void LazyPublishWithMetadataFactoryWithoutSubscribersDoesNotCreateMetadataOrEvent()
+    {
+        var stream = new WorkEventStream();
+        var metadataCreated = false;
+        var eventCreated = false;
+        var workEvent = CreateEvent(eventType: "worker.queued");
+
+        stream.Publish(
+            workEvent,
+            state =>
+            {
+                metadataCreated = true;
+                return new WorkEventMetadata(
+                    state.WorkSystemId,
+                    state.WorkerId,
+                    state.WorkDefinitionId,
+                    state.SubjectId,
+                    state.ConcurrencyKey,
+                    state.EventType);
+            },
+            state =>
+            {
+                eventCreated = true;
+                return state;
+            });
+
+        Assert.False(metadataCreated);
+        Assert.False(eventCreated);
+    }
+
+    [Fact]
+    public async Task LazyPublishWithMetadataFactoryDeliversUnfilteredSubscribersWithoutCreatingMetadata()
+    {
+        var stream = new WorkEventStream();
+        var metadataCreated = false;
+        var eventCreated = false;
+        await using var subscription = stream.Subscribe();
+        await using var reader = subscription.Read().GetAsyncEnumerator();
+        var workEvent = CreateEvent(eventType: "worker.queued");
+
+        stream.Publish(
+            workEvent,
+            state =>
+            {
+                metadataCreated = true;
+                return new WorkEventMetadata(
+                    state.WorkSystemId,
+                    state.WorkerId,
+                    state.WorkDefinitionId,
+                    state.SubjectId,
+                    state.ConcurrencyKey,
+                    state.EventType);
+            },
+            state =>
+            {
+                eventCreated = true;
+                return state;
+            });
+
+        Assert.False(metadataCreated);
+        Assert.True(eventCreated);
+        Assert.Equal(workEvent, await ReadNext(reader));
+    }
+
+    [Fact]
+    public async Task LazyPublishWithMetadataFactoryCreatesMetadataForFilteredSubscribers()
+    {
+        var stream = new WorkEventStream();
+        var acceptedWorkerId = WorkerId.New();
+        var metadataCreated = false;
+        var eventCreated = false;
+        await using var subscription = stream.Subscribe(new WorkEventFilter(WorkerId: acceptedWorkerId));
+        await using var reader = subscription.Read().GetAsyncEnumerator();
+        var workEvent = CreateEvent(workerId: acceptedWorkerId, eventType: "worker.queued");
+
+        stream.Publish(
+            workEvent,
+            state =>
+            {
+                metadataCreated = true;
+                return new WorkEventMetadata(
+                    state.WorkSystemId,
+                    state.WorkerId,
+                    state.WorkDefinitionId,
+                    state.SubjectId,
+                    state.ConcurrencyKey,
+                    state.EventType);
+            },
+            state =>
+            {
+                eventCreated = true;
+                return state;
+            });
+
+        Assert.True(metadataCreated);
+        Assert.True(eventCreated);
+        Assert.Equal(workEvent, await ReadNext(reader));
+    }
+
+    [Fact]
+    public async Task LazyPublishWithMetadataFactoryCreatesMetadataBeforeEventForMixedSubscribers()
+    {
+        var stream = new WorkEventStream();
+        var acceptedWorkerId = WorkerId.New();
+        var order = new List<string>();
+        await using var unfiltered = stream.Subscribe();
+        await using var filtered = stream.Subscribe(new WorkEventFilter(WorkerId: acceptedWorkerId));
+        await using var unfilteredReader = unfiltered.Read().GetAsyncEnumerator();
+        await using var filteredReader = filtered.Read().GetAsyncEnumerator();
+        var workEvent = CreateEvent(workerId: acceptedWorkerId, eventType: "worker.queued");
+
+        stream.Publish(
+            workEvent,
+            state =>
+            {
+                order.Add("metadata");
+                return new WorkEventMetadata(
+                    state.WorkSystemId,
+                    state.WorkerId,
+                    state.WorkDefinitionId,
+                    state.SubjectId,
+                    state.ConcurrencyKey,
+                    state.EventType);
+            },
+            state =>
+            {
+                order.Add("event");
+                return state;
+            });
+
+        Assert.Equal(new[] { "metadata", "event" }, order);
+        Assert.Equal(workEvent, await ReadNext(unfilteredReader));
+        Assert.Equal(workEvent, await ReadNext(filteredReader));
+    }
+
+    [Fact]
     public async Task LazyPublishWithMetadataDoesNotCreateEventWhenFiltersDoNotMatch()
     {
         var stream = new WorkEventStream();

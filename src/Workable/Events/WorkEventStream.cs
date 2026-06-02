@@ -59,6 +59,22 @@ internal sealed class WorkEventStream : IWorkEventStream, IAsyncDisposable
     }
 
     internal void Publish<TState>(
+        TState state,
+        Func<TState, WorkEventMetadata> createMetadata,
+        Func<TState, WorkEvent> createEvent)
+    {
+        ArgumentNullException.ThrowIfNull(createMetadata);
+        ArgumentNullException.ThrowIfNull(createEvent);
+
+        if (!this.TryGetActiveSubscribers(out var subscribers))
+        {
+            return;
+        }
+
+        PublishToSubscribers(subscribers, state, createMetadata, createEvent);
+    }
+
+    internal void Publish<TState>(
         WorkEventMetadata metadata,
         TState state,
         Func<TState, WorkEvent> createEvent)
@@ -158,6 +174,50 @@ internal sealed class WorkEventStream : IWorkEventStream, IAsyncDisposable
         }
     }
 
+    private static void PublishToSubscribers<TState>(
+        WorkEventSubscription[] subscribers,
+        TState state,
+        Func<TState, WorkEventMetadata> createMetadata,
+        Func<TState, WorkEvent> createEvent)
+    {
+        var hasFilteredSubscribers = false;
+        foreach (var subscription in subscribers)
+        {
+            if (subscription.HasFilter)
+            {
+                hasFilteredSubscribers = true;
+                break;
+            }
+        }
+
+        WorkEvent? workEvent = null;
+        WorkEventMetadata? metadata = hasFilteredSubscribers
+            ? createMetadata(state)
+            : null;
+        foreach (var subscription in subscribers)
+        {
+            if (!subscription.HasFilter)
+            {
+                if (!subscription.ShouldPublishUnfiltered())
+                {
+                    continue;
+                }
+
+                workEvent ??= createEvent(state);
+                subscription.PublishMatched(workEvent);
+                continue;
+            }
+
+            if (!subscription.ShouldPublish(metadata!))
+            {
+                continue;
+            }
+
+            workEvent ??= createEvent(state);
+            subscription.PublishMatched(workEvent);
+        }
+    }
+
     private sealed class WorkEventSubscription(
         WorkEventStream owner,
         WorkEventFilter? filter,
@@ -178,6 +238,8 @@ internal sealed class WorkEventStream : IWorkEventStream, IAsyncDisposable
         private long acceptedEventCount;
         private long deliveredEventCount;
         private long droppedEventCount;
+
+        internal bool HasFilter => filter is not null;
 
         public IAsyncEnumerable<WorkEvent> Read(CancellationToken cancellationToken = default)
             => new WorkEventSubscriptionEnumerable(this, cancellationToken);
@@ -266,6 +328,10 @@ internal sealed class WorkEventStream : IWorkEventStream, IAsyncDisposable
                         (filter.Identifier is null || metadata.ContainsIdentifier(filter.Identifier.Value)) &&
                         metadata.ContainsAnyKey(filter.Keys) &&
                         filter.EventTypeMatches(metadata.EventType)));
+
+        internal bool ShouldPublishUnfiltered()
+            => Volatile.Read(ref this.isDisposed) == 0 &&
+                this.CanAcceptWrite();
 
         private bool CanAcceptWrite()
             => this.overflowBehavior != WorkEventOverflowBehavior.DropWrite ||

@@ -1764,6 +1764,36 @@ public sealed class WorkQueryServiceTests
     }
 
     [Fact]
+    public async Task QueryReadModelTracksFastCompletionThroughIterationUpdates()
+    {
+        await using var system = CreateSystem(
+            WorkDefinition.Create("readmodel.fast-completion", category: "ReadModel"),
+            SuccessfulWork);
+
+        await system.Start();
+        var handle = await system.Queue.Enqueue("readmodel.fast-completion");
+        await handle.WaitForCompletion();
+        await WaitForReadModel(system);
+
+        var workerId = RequiredWorkerId(handle);
+        var completedWorkers = await system.Query.Workers(new WorkerCriteria(
+            States: new HashSet<WorkerState> { WorkerState.Completed }));
+        var completedIterations = await system.Query.WorkerIterations(new WorkerIterationCriteria(
+            WorkerId: workerId,
+            Statuses: new HashSet<WorkCompletionStatus> { WorkCompletionStatus.Completed }));
+        var diagnostics = system.Diagnostics.ReadModel;
+
+        var worker = Assert.Single(completedWorkers.Workers);
+        var iteration = Assert.Single(completedIterations.Iterations);
+        Assert.Equal(workerId, worker.Id);
+        Assert.Equal(WorkerState.Completed, worker.State);
+        Assert.Equal(workerId, iteration.WorkerId);
+        Assert.Equal(WorkCompletionStatus.Completed, iteration.Status);
+        Assert.Equal(3, diagnostics.EnqueuedSequence);
+        Assert.Equal(diagnostics.EnqueuedSequence, diagnostics.AppliedSequence);
+    }
+
+    [Fact]
     public async Task QueryQueueDiagnosticsReportRejectedQueueRequests()
     {
         await using var system = CreateSystem(

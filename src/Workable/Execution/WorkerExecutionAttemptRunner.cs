@@ -9,7 +9,10 @@ internal sealed class WorkerExecutionAttemptRunner(
         int retryAttempts,
         CancellationToken cancellationToken)
     {
-        var execution = await CaptureExecution(invoker.Execute(worker, cancellationToken));
+        var invocationTask = invoker.Execute(worker, cancellationToken);
+        var execution = invocationTask.IsCompletedSuccessfully
+            ? ExecutionCapture.Completed(invocationTask.Result)
+            : await CaptureIncompleteExecution(invocationTask).ConfigureAwait(false);
         if (execution.InvocationResult is { } invocation)
         {
             return invocation.RequestedFailureIsTransient
@@ -36,7 +39,7 @@ internal sealed class WorkerExecutionAttemptRunner(
     public void LogFinalException(WorkerRecord worker, WorkerExecutionAttempt attempt, int retryAttempts)
         => exceptionHandler.LogFinalException(worker, attempt.RequiredException, attempt.RequiredExceptionClassification, retryAttempts);
 
-    private static async Task<ExecutionCapture> CaptureExecution(Task<WorkerExecutionInvocationResult> execution)
+    private static async Task<ExecutionCapture> CaptureIncompleteExecution(Task<WorkerExecutionInvocationResult> execution)
     {
         await Task.WhenAny(execution).ConfigureAwait(false);
 
@@ -61,7 +64,7 @@ internal sealed class WorkerExecutionAttemptRunner(
             _ => new InvalidOperationException("Worker execution task faulted without an exception."),
         };
 
-    private sealed record ExecutionCapture(
+    private readonly record struct ExecutionCapture(
         WorkerExecutionInvocationResult? InvocationResult,
         bool WasCanceled,
         Exception? Exception)

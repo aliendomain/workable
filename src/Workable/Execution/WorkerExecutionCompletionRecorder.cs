@@ -14,7 +14,7 @@ internal sealed class WorkerExecutionCompletionRecorder(WorkerEventPublisher wor
             workerEvents.IterationFailed(worker);
         }
 
-        workerEvents.CompletionRecorded(worker, status);
+        workerEvents.CompletionRecorded(worker, status, recordReadModel: false);
         return worker.ToCompletion(status);
     }
 
@@ -25,7 +25,7 @@ internal sealed class WorkerExecutionCompletionRecorder(WorkerEventPublisher wor
             : worker.CompleteCancellation();
         if (status != WorkCompletionStatus.Invalid)
         {
-            workerEvents.CompletionRecorded(worker, status);
+            workerEvents.CompletionRecorded(worker, status, recordReadModel: false);
         }
 
         return worker.ToCompletion(status);
