@@ -402,7 +402,6 @@ internal static class ScenarioBenchmarkSuite
     {
         await using var harness = await HarnessSystem.Create(options, cancellationToken);
         var metrics = new ScenarioMetrics(scenario);
-        ForceFullCollection();
         var beforeManaged = GC.GetTotalMemory(forceFullCollection: true);
         var beforePrivate = Process.GetCurrentProcess().PrivateMemorySize64;
 
@@ -416,7 +415,6 @@ internal static class ScenarioBenchmarkSuite
             cancellationToken);
         var catchup = await WaitForReadModel(harness.System, cancellationToken);
 
-        ForceFullCollection();
         var afterManaged = GC.GetTotalMemory(forceFullCollection: true);
         var afterPrivate = Process.GetCurrentProcess().PrivateMemorySize64;
         var managedDelta = afterManaged - beforeManaged;
@@ -988,7 +986,9 @@ internal static class ScenarioBenchmarkSuite
         metrics.Add($"{prefix}_completed_per_sec", result.CompletedPerSecond, "workers/sec");
         metrics.Add(
             $"{prefix}_completed_per_sec_ratio",
-            baselineCompletedPerSecond == 0 ? 0 : result.CompletedPerSecond / baselineCompletedPerSecond,
+            Math.Abs(baselineCompletedPerSecond) <= double.Epsilon
+                ? 0
+                : result.CompletedPerSecond / baselineCompletedPerSecond,
             "ratio");
         metrics.Add($"{prefix}_allocated_bytes", result.AllocatedBytes, "bytes");
         metrics.Add($"{prefix}_allocated_bytes_per_worker", PerWorker(result.AllocatedBytes, result.CompletedWorkers), "bytes/worker");
@@ -1087,13 +1087,6 @@ internal static class ScenarioBenchmarkSuite
 
     private static double PerWorker(long bytes, int workers)
         => workers <= 0 ? 0 : (double)bytes / workers;
-
-    private static void ForceFullCollection()
-    {
-        GC.Collect();
-        GC.WaitForPendingFinalizers();
-        GC.Collect();
-    }
 
     private sealed class HarnessSystem : IAsyncDisposable
     {
