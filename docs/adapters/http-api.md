@@ -513,7 +513,7 @@ Retained `WorkMessage` payloads now include `occurredAt` in addition to `code`, 
 
 ## Local Realtime Debug
 
-When the HTTP API is hosted in `Development`, or when all configured URLs are loopback-only (`localhost`, `127.0.0.1`, or `::1`), the adapter also registers local realtime debug routes:
+When the HTTP API is hosted in `Development`, or when the configured listener URLs are all loopback-only (`localhost`, `127.0.0.1`, or `::1`), the adapter also registers local realtime debug routes:
 
 ```http
 GET /workable/debug/realtime
@@ -521,7 +521,7 @@ GET /workable/debug/realtime?connectionId=abc123
 GET /workable/systems/fulfillment/debug/realtime
 ```
 
-These routes are intended for local troubleshooting. They are not registered at all on non-development, non-loopback deployments.
+These routes are intended for local troubleshooting. In non-development environments, Workable registers them only for loopback-only listener configurations, and each request must also come from a loopback address. Other callers receive `404 Not Found`.
 
 The debug payload includes:
 
@@ -635,6 +635,7 @@ Bulk worker actions use the current server-side worker revision for each matched
   "acceptedCount": 0,
   "conflictCount": 0,
   "invalidCount": 0,
+  "unauthorizedCount": 0,
   "notFoundCount": 0
 }
 ```

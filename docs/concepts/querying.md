@@ -640,7 +640,8 @@ The examples below show the serialized JSON shape returned by HTTP and MCP adapt
       },
       "durability": {
         "isEnabled": false,
-        "completeDurably": false
+        "completeDurably": false,
+        "fallbackPollingInterval": "00:00:05"
       }
     },
     "recurrence": {
@@ -652,7 +653,7 @@ The examples below show the serialized JSON shape returned by HTTP and MCP adapt
       "raiseCircuitBreakerOpenedEvent": true
     },
     "transientRetry": {
-      "count": 0,
+      "count": 3,
       "initialDelay": "00:00:00.8000000",
       "jitter": "00:00:00.5000000",
       "maximumDelay": "00:00:30",
@@ -768,12 +769,12 @@ The examples below show the serialized JSON shape returned by HTTP and MCP adapt
       "origin": {
         "id": { "value": "00000000-0000-0000-0000-000000000000" },
         "createdAt": "2026-05-11T12:00:03Z",
-        "channel": "Mcp",
+        "channel": "HttpApi",
         "actor": {
-          "id": "assistant-user"
+          "id": "user-123"
         },
-        "description": "MCP tool 'workable_reconfigure_worker'",
-        "url": "/workable/mcp"
+        "description": "Reconfigure worker through HTTP API.",
+        "url": "/workable/workers/00000000-0000-0000-0000-000000000000/reconfigure"
       },
       "revision": 3,
       "stateSequence": 4,
@@ -846,7 +847,8 @@ The examples below show the serialized JSON shape returned by HTTP and MCP adapt
           },
           "durability": {
             "isEnabled": false,
-            "completeDurably": false
+            "completeDurably": false,
+            "fallbackPollingInterval": "00:00:05"
           }
         },
         "recurrence": {
@@ -858,7 +860,7 @@ The examples below show the serialized JSON shape returned by HTTP and MCP adapt
           "raiseCircuitBreakerOpenedEvent": true
         },
         "transientRetry": {
-          "count": 0,
+          "count": 3,
           "initialDelay": "00:00:00.8000000",
           "jitter": "00:00:00.5000000",
           "maximumDelay": "00:00:30",
@@ -949,7 +951,8 @@ The examples below show the serialized JSON shape returned by HTTP and MCP adapt
         },
         "durability": {
           "isEnabled": false,
-          "completeDurably": false
+          "completeDurably": false,
+          "fallbackPollingInterval": "00:00:05"
         }
       },
       "recurrence": {
@@ -961,7 +964,7 @@ The examples below show the serialized JSON shape returned by HTTP and MCP adapt
         "raiseCircuitBreakerOpenedEvent": true
       },
       "transientRetry": {
-        "count": 0,
+        "count": 3,
         "initialDelay": "00:00:00.8000000",
         "jitter": "00:00:00.5000000",
         "maximumDelay": "00:00:30",

@@ -183,7 +183,6 @@ var result = await session.InvokeMcpTool(
 WorkerId? workerId = result.WorkerId;
 ```
 
-`WorkableMcpInvocationOptions` can also stamp queue-time `WorkerOptions` onto the invocation and bound how long completion waits.
 `WorkableMcpInvocationOptions` can also stamp queue-time `WorkerOptions` onto the invocation and set a bound on how long completion waits.
 
 ```csharp

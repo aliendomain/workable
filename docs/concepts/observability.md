@@ -257,6 +257,7 @@ Includes the base worker payload plus:
   },
   "log": {
     "id": "1dcf3f2ef3e74e6b92dbe56f3679d8cc",
+    "ordinal": 1,
     "category": "MyApp.Workers.EmailWelcomeSend",
     "level": "Error",
     "eventId": {

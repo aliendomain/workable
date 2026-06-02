@@ -216,6 +216,7 @@ Queue outcome statuses are:
 
 - `Accepted`: a worker was created.
 - `Invalid`: validation rejected the request.
+- `Unauthorized`: the caller cannot operate the target work definition.
 - `NotFound`: no matching work definition was found.
 
 Validation failures are returned as structured `WorkMessage` values. If the system is stopping, queueing returns `Invalid` with message code `workable.system.stopping`.

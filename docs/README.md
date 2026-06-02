@@ -36,7 +36,7 @@ Start with [Getting Started](guides/getting-started.md) if you are evaluating wh
 ## Adapters
 
 - [HTTP API](adapters/http-api.md): expose registered work through HTTP endpoints.
-- [MCP](adapters/mcp.md): expose registered work and read-only query tools through an MCP server.
+- [MCP](adapters/mcp.md): expose registered work, query tools, worker action tools, and definition-default reconfiguration through an MCP server.
 - [Realtime](adapters/realtime.md): stream worker events, component-view updates, diagnostics, and admin event-viewer traffic through SignalR.
 
 ## Concepts
@@ -62,3 +62,10 @@ Start with [Getting Started](guides/getting-started.md) if you are evaluating wh
 - [Sample Host](../samples/Workable.SampleHost/README.md): runnable host that exposes HTTP, MCP, and SignalR adapters.
 - [Admin UI](../src/workable-admin-ui/README.md): local setup and security model for the Next.js admin UI.
 - [Performance Harness](../src/Workable.PerformanceHarness/README.md): benchmark and load-harness usage for runtime and adapter performance work.
+
+## Maintenance Audits
+
+- [Documentation Audit](documentation-audit.md): current source-to-doc verification notes, fixes, and remaining doc debt.
+- [Backend Performance Audit](backend-performance-audit.md): benchmark scenarios, measured bottlenecks, and backend optimization results.
+- [Frontend Test Audit](frontend-test-audit.md): frontend route/component test coverage and gaps.
+- [Test Suite Audit](test-suite-audit.md): backend and integration test coverage notes.

@@ -47,13 +47,18 @@ This is why fire-and-forget and request/response queueing can use the same queue
 
 `WorkCompletion` and `WorkCompletion<TOutput>` describe final worker execution, not queue acceptance.
 
-`WorkCompletionStatus` values include:
+`WorkCompletionStatus` values are:
 
+- `Executing`
 - `Completed`
 - `Failed`
-- `Canceled`
+- `Paused`
 - `Interrupted`
-- `Executing` for iteration filtering
+- `Canceled`
+- `Invalid`
+- `NotFound`
+
+`Executing` is used for iteration filtering and active iteration snapshots. `Paused`, `Invalid`, and `NotFound` are also part of the public enum, though ordinary successful queue-and-wait flows most often return `Completed`, `Failed`, `Canceled`, or `Interrupted`.
 
 The completion result includes:
 
