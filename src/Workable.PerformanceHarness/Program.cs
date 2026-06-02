@@ -26,6 +26,12 @@ Console.WriteLine("Workable performance harness");
 Console.WriteLine();
 PrintOptions(options);
 
+if (!options.Scenario.Equals("lifecycle-fanout", StringComparison.OrdinalIgnoreCase))
+{
+    await ScenarioBenchmarkSuite.Run(options);
+    return 0;
+}
+
 if (options.QueueMode.IsDurable())
 {
     await PrepareDurabilityStore(options);
@@ -415,6 +421,7 @@ static JsonElement CreateThroughputOptions(HarnessOptions options)
 static void PrintOptions(HarnessOptions options)
 {
     Console.WriteLine("Configuration");
+    Console.WriteLine($"  Scenario:           {options.Scenario}");
     Console.WriteLine($"  Queue mode:         {options.QueueMode.ToOptionValue()}");
     Console.WriteLine($"  Workers:            {options.Workers:N0}");
     Console.WriteLine($"  Parallelism:        {options.Parallelism:N0}");
@@ -537,6 +544,7 @@ internal static class HarnessQueueModeExtensions
 }
 
 internal sealed record HarnessOptions(
+    string Scenario,
     HarnessQueueMode QueueMode,
     int Workers,
     int Parallelism,
@@ -556,6 +564,7 @@ internal sealed record HarnessOptions(
     public static HarnessOptions Parse(string[] args)
     {
         var options = new HarnessOptions(
+            Scenario: "lifecycle-fanout",
             QueueMode: HarnessQueueMode.InMemory,
             Workers: 1_000,
             Parallelism: Math.Max(1, Environment.ProcessorCount),
@@ -587,6 +596,7 @@ internal sealed record HarnessOptions(
             options = name switch
             {
                 "--queue-mode" => options with { QueueMode = ParseQueueMode(name, value) },
+                "--scenario" => options with { Scenario = Required(name, value) },
                 "--workers" => options with { Workers = PositiveInt(name, value) },
                 "--parallelism" => options with { Parallelism = PositiveInt(name, value) },
                 "--work-delay-ms" => options with { WorkDelay = TimeSpan.FromMilliseconds(NonNegativeInt(name, value)) },
@@ -616,6 +626,7 @@ internal sealed record HarnessOptions(
         Console.WriteLine("  dotnet run --project src/Workable.PerformanceHarness -c Release -- --benchmarks [BenchmarkDotNet options]");
         Console.WriteLine();
         Console.WriteLine("Options:");
+        Console.WriteLine("  --scenario <name>                  Scenario: lifecycle-fanout, all, queue-only, start-to-completion, completion-only, mixed-queue-complete, completion-while-queue-heavy, queue-while-completion-heavy, mixed-90-10, mixed-50-50, mixed-10-90, read-model-latency, visibility-latency, index-update-cost, memory-growth, event-fanout, event-fanout-matrix. Default: lifecycle-fanout");
         Console.WriteLine("  --queue-mode <mode>               Queue mode: in-memory, durable-idempotent, durable-non-idempotent. Default: in-memory");
         Console.WriteLine("  --workers <n>                     Workers to queue. Default: 1000");
         Console.WriteLine("  --parallelism <n>                 Concurrent queue/wait operations. Default: processor count");

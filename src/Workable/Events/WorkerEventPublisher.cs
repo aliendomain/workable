@@ -20,7 +20,8 @@ internal sealed class WorkerEventPublisher(
         => this.Publish(
             worker,
             "worker.started",
-            details: new WorkerEventPayloadDetails(IncludeLatestIteration: true));
+            details: new WorkerEventPayloadDetails(IncludeLatestIteration: true),
+            recordReadModel: false);
 
     internal void ActionApplied(WorkerRecord worker, WorkActionOutcome outcome, WorkOrigin origin)
     {
@@ -40,7 +41,12 @@ internal sealed class WorkerEventPublisher(
             return;
         }
 
-        this.Publish(worker, eventType, origin, details);
+        this.Publish(
+            worker,
+            eventType,
+            origin,
+            details,
+            recordReadModel: action != WorkAction.Start || !outcome.IsAccepted);
     }
 
     internal void Reconfigured(
@@ -56,13 +62,17 @@ internal sealed class WorkerEventPublisher(
                 ReconfigurationStatus: outcome.Status,
                 Reconfiguration: changes));
 
-    internal void CompletionRecorded(WorkerRecord worker, WorkCompletionStatus status)
+    internal void CompletionRecorded(
+        WorkerRecord worker,
+        WorkCompletionStatus status,
+        bool recordReadModel = true)
         => this.Publish(
             worker,
             EventTypeFor(status),
             details: new WorkerEventPayloadDetails(
                 CompletionStatus: status,
-                IncludeLatestIteration: true));
+                IncludeLatestIteration: true),
+            recordReadModel: recordReadModel);
 
     internal void Waiting(WorkerRecord worker)
     {
@@ -72,7 +82,8 @@ internal sealed class WorkerEventPublisher(
             "worker.waiting",
                 details: new WorkerEventPayloadDetails(
                     IncludeLatestIteration: true,
-                    RecurrenceInterval: recurrenceInterval));
+                    RecurrenceInterval: recurrenceInterval),
+                recordReadModel: false);
     }
 
     internal void Retrying(WorkerRecord worker, TimeSpan retryDelay)
@@ -81,13 +92,15 @@ internal sealed class WorkerEventPublisher(
             "worker.retrying",
             details: new WorkerEventPayloadDetails(
                 IncludeLatestIteration: true,
-                RetryDelay: retryDelay));
+                RetryDelay: retryDelay),
+            recordReadModel: false);
 
     internal void IterationStarted(WorkerRecord worker)
         => this.Publish(
             worker,
             "worker.iteration.started",
-            details: new WorkerEventPayloadDetails(IncludeLatestIteration: true));
+            details: new WorkerEventPayloadDetails(IncludeLatestIteration: true),
+            recordReadModel: false);
 
     internal void IterationCompleted(WorkerRecord worker)
         => this.Publish(
@@ -95,7 +108,8 @@ internal sealed class WorkerEventPublisher(
             "worker.iteration.completed",
             details: new WorkerEventPayloadDetails(
                 CompletionStatus: WorkCompletionStatus.Completed,
-                IncludeLatestIteration: true));
+                IncludeLatestIteration: true),
+            recordReadModel: false);
 
     internal void IterationFailed(WorkerRecord worker)
         => this.Publish(
@@ -103,13 +117,15 @@ internal sealed class WorkerEventPublisher(
             "worker.iteration.failed",
             details: new WorkerEventPayloadDetails(
                 CompletionStatus: WorkCompletionStatus.Failed,
-                IncludeLatestIteration: true));
+                IncludeLatestIteration: true),
+            recordReadModel: false);
 
     internal void RecurrenceCircuitOpened(WorkerRecord worker)
         => this.Publish(
             worker,
             "worker.recurrence.circuit_opened",
-            details: new WorkerEventPayloadDetails(IncludeLatestIteration: true));
+            details: new WorkerEventPayloadDetails(IncludeLatestIteration: true),
+            recordReadModel: false);
 
     internal void Failed(WorkerRecord worker)
         => this.Publish(
@@ -117,7 +133,8 @@ internal sealed class WorkerEventPublisher(
             "worker.failed",
             details: new WorkerEventPayloadDetails(
                 CompletionStatus: WorkCompletionStatus.Failed,
-                IncludeLatestIteration: true));
+                IncludeLatestIteration: true),
+            recordReadModel: false);
 
     internal void Purged(WorkerRecord worker)
         => this.PublishWorkerPurge(worker);
@@ -145,13 +162,6 @@ internal sealed class WorkerEventPublisher(
         var occurredAt = DateTimeOffset.UtcNow;
         var workerId = purgedWorkerIds.Length == 1 ? purgedWorkerIds[0] : (WorkerId?)null;
         events.Publish(
-            new WorkEventMetadata(
-                workSystemId,
-                workerId,
-                definitionId,
-                subjectId: null,
-                concurrencyKey: null,
-                PurgeEventType),
             new PurgeEventState(
                 occurredAt,
                 workSystemId,
@@ -161,6 +171,13 @@ internal sealed class WorkerEventPublisher(
                 definitionName,
                 purgedWorkerIds,
                 null),
+            static state => new WorkEventMetadata(
+                state.WorkSystemId,
+                state.WorkerId,
+                state.DefinitionId,
+                subjectId: null,
+                concurrencyKey: null,
+                PurgeEventType),
             static state => new WorkEvent(
                 state.OccurredAt,
                 state.WorkSystemId,
@@ -179,8 +196,8 @@ internal sealed class WorkerEventPublisher(
     {
         readModel?.RecordWorker(worker.ToReadModelWorker());
         events.Publish(
-            worker.ToEventMetadata(workSystemId, "worker.log"),
             (WorkSystemId: workSystemId, WorkSystemName: workSystemName, Worker: worker, Entry: entry),
+            static state => state.Worker.ToEventMetadata(state.WorkSystemId, "worker.log"),
             static state => state.Worker.ToLogEvent(state.WorkSystemId, state.WorkSystemName, state.Entry));
     }
 
@@ -193,17 +210,19 @@ internal sealed class WorkerEventPublisher(
         WorkerRecord worker,
         string eventType,
         WorkOrigin? origin = null,
-        WorkerEventPayloadDetails? details = null)
+        WorkerEventPayloadDetails? details = null,
+        bool recordReadModel = true)
     {
         synchronize(worker);
-        this.PublishWithoutSynchronize(worker, eventType, origin, details);
+        this.PublishWithoutSynchronize(worker, eventType, origin, details, recordReadModel);
     }
 
     private void PublishWithoutSynchronize(
         WorkerRecord worker,
         string eventType,
         WorkOrigin? origin = null,
-        WorkerEventPayloadDetails? details = null)
+        WorkerEventPayloadDetails? details = null,
+        bool recordReadModel = true)
     {
         if (eventType == PurgeEventType)
         {
@@ -211,11 +230,14 @@ internal sealed class WorkerEventPublisher(
             return;
         }
 
-        readModel?.RecordWorker(worker.ToReadModelWorker());
+        if (recordReadModel)
+        {
+            readModel?.RecordWorker(worker.ToReadModelWorker());
+        }
 
         events.Publish(
-            worker.ToEventMetadata(workSystemId, eventType),
             (WorkSystemId: workSystemId, WorkSystemName: workSystemName, Worker: worker, EventType: eventType, Details: details),
+            static state => state.Worker.ToEventMetadata(state.WorkSystemId, state.EventType),
             static state => state.Worker.ToEvent(
                 state.WorkSystemId,
                 state.WorkSystemName,
@@ -229,8 +251,8 @@ internal sealed class WorkerEventPublisher(
 
         var occurredAt = DateTimeOffset.UtcNow;
         events.Publish(
-            worker.ToEventMetadata(workSystemId, PurgeEventType),
             new WorkerPurgeEventState(occurredAt, workSystemId, workSystemName, worker, origin),
+            static state => state.Worker.ToEventMetadata(state.WorkSystemId, PurgeEventType),
             static state => new WorkEvent(
                 state.OccurredAt,
                 state.WorkSystemId,
