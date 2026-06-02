@@ -248,7 +248,7 @@ public sealed record WorkableRealtimeEvent(
     WorkSystemId WorkSystemId,
     string? WorkSystemName,
     WorkerId? WorkerId,
-    WorkDefinitionId? DefinitionId,
+    WorkDefinitionId? WorkDefinitionId,
     string? WorkDefinitionName,
     WorkSubjectId? SubjectId,
     WorkConcurrencyKey? ConcurrencyKey,
@@ -324,7 +324,7 @@ Batching changes transport shape, not event semantics. Clients should handle bot
 
 ## Local Debug Routes
 
-When the HTTP adapter is running in `Development`, or when all configured listener URLs are loopback-only, Workable also exposes local realtime debug routes:
+When the HTTP adapter is running in `Development`, or when the configured listener URLs are all loopback-only, Workable also exposes local realtime debug routes:
 
 ```http
 GET /workable/debug/realtime
@@ -332,7 +332,7 @@ GET /workable/debug/realtime?connectionId=abc123
 GET /workable/systems/fulfillment/debug/realtime
 ```
 
-These endpoints are intentionally for local troubleshooting and are not registered at all on non-development, non-loopback deployments.
+These endpoints are intentionally for local troubleshooting. In non-development environments, Workable registers them only for loopback-only listener configurations, and each request must also come from a loopback address. Other callers receive `404 Not Found`.
 
 They expose:
 

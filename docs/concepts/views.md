@@ -139,6 +139,7 @@ These view names are built in:
 - `overview`: returns a dashboard-style component map
 - `workers`: defaults to one `workerGrid` component
 - `iterations`: defaults to one `iterationGrid` component
+- `worker`: defaults to `workerDetail` and `workerCurrentIteration` components
 - `diagnostics`: defaults to the compact diagnostics component set
 
 Unknown view names do not throw. They return an error component in the result map instead.
@@ -157,6 +158,8 @@ These component names are built in:
 - `throughput`
 - `workerGrid`
 - `iterationGrid`
+- `workerDetail`
+- `workerCurrentIteration`
 - `systemDiagnostics`
 - `queueDiagnostics`
 - `readModelDiagnostics`
@@ -172,6 +175,7 @@ When a caller omits components, Workable fills in defaults:
 - `overview` defaults to `system`, `workers`, `failedWorkers`, `iterations`, `failedIterations`, and `completedIterations`
 - `workers` defaults to `workerGrid`
 - `iterations` defaults to `iterationGrid`
+- `worker` defaults to `workerDetail` and `workerCurrentIteration`
 - `diagnostics` defaults to compact `queueDiagnostics`, `readModelDiagnostics`, `retentionDiagnostics`, `concurrencyDiagnostics`, `durabilityDiagnostics`, and `idempotencyDiagnostics`
 
 This makes the default experience convenient, but it also means custom UIs should be explicit about components once the layout diverges from the built-in admin story.
@@ -213,8 +217,9 @@ This lets a custom UI reuse the same component names for global dashboards, one 
 Most components need only `id`, `type`, and `shape`. A few also accept JSON options:
 
 - `throughput`: `windowSeconds` and `bucketSeconds`
-- `workerGrid`: `states`, `configuration`, `skip`, `take`, and optional `keyType`
-- `iterationGrid`: `statuses`, `skip`, `take`, and optional `keyType`
+- `workerGrid`: `states`, `configuration`, `skip`, `take`, and optional `keyKind`, `keyType`, and `keyValue`
+- `iterationGrid`: `statuses`, `skip`, `take`, and optional `keyKind`, `keyType`, and `keyValue`
+- `workerDetail` and `workerCurrentIteration`: `workerId`
 - `readModelDiagnostics`: `warningThreshold`
 - `retentionDiagnostics`: `warningSeconds`
 - `concurrencyDiagnostics`: `warningSeconds`
@@ -240,7 +245,7 @@ That approach keeps the stringly-typed surface manageable and gives you room to 
 
 `Workable.HttpApi` and `Workable.SignalR` both reuse this package's view model rather than inventing transport-specific dashboard contracts.
 
-- See [HTTP API](../adapters/http-api.md#ui-views-and-components) for the HTTP route shape.
+- See [HTTP API](../adapters/http-api.md#views-and-components) for the HTTP route shape.
 - See [Realtime](../adapters/realtime.md#component-view-updates) for live pushed named-view updates over SignalR.
 - See [Realtime](../adapters/realtime.md#worker-overview-updates) for the dedicated worker-overview stream.
 
