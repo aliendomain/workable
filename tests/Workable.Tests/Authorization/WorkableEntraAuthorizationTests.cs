@@ -56,6 +56,50 @@ public sealed class WorkableEntraAuthorizationTests
     }
 
     [Fact]
+    public async Task AddWorkableEntraAuthorizationAcceptsBareGuidAudienceWhenConfiguredAudienceUsesApiUri()
+    {
+        const string audience = "api://aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+
+        var services = new ServiceCollection();
+        services.AddWorkableEntraAuthorization(options =>
+        {
+            options.TenantId = "tenant-id";
+            options.Audience = audience;
+        });
+
+        await using var provider = services.BuildServiceProvider();
+        var jwtOptions = provider
+            .GetRequiredService<IOptionsMonitor<JwtBearerOptions>>()
+            .Get(JwtBearerDefaults.AuthenticationScheme);
+        var acceptedAudiences = (jwtOptions.TokenValidationParameters.ValidAudiences ?? []).ToArray();
+
+        Assert.Contains(audience, acceptedAudiences);
+        Assert.Contains("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", acceptedAudiences);
+    }
+
+    [Fact]
+    public async Task AddWorkableEntraAuthorizationAcceptsApiUriAudienceWhenConfiguredAudienceUsesBareGuid()
+    {
+        const string audience = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+
+        var services = new ServiceCollection();
+        services.AddWorkableEntraAuthorization(options =>
+        {
+            options.TenantId = "tenant-id";
+            options.Audience = audience;
+        });
+
+        await using var provider = services.BuildServiceProvider();
+        var jwtOptions = provider
+            .GetRequiredService<IOptionsMonitor<JwtBearerOptions>>()
+            .Get(JwtBearerDefaults.AuthenticationScheme);
+        var acceptedAudiences = (jwtOptions.TokenValidationParameters.ValidAudiences ?? []).ToArray();
+
+        Assert.Contains(audience, acceptedAudiences);
+        Assert.Contains("api://aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", acceptedAudiences);
+    }
+
+    [Fact]
     public async Task AddWorkableEntraAuthorizationDoesNotOverrideExistingAuthenticationDefaults()
     {
         var services = new ServiceCollection();
