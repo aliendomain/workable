@@ -38,7 +38,7 @@ Add the package:
 
 Before wiring up the host, make sure the target Entra app registration is configured for v2 access tokens:
 
-- Under the app manifest, set `requestedAccessTokenVersion` to `2`.
+- Under the app manifest, set `accessTokenAcceptedVersion` to `2`.
 - Under **Expose an API**, assign an Application ID URI.
 - A good default is `api://<client-id>`, because it stays unique and keeps the audience/scope values predictable.
 
@@ -92,6 +92,8 @@ Minimal configuration:
 ```
 
 That `Audience` value should match the Application ID URI from the target app registration.
+
+When that configured audience is either `api://<client-id>` or the bare `<client-id>` form and the identifier portion is a GUID, `Workable.Entra` automatically accepts the paired form too. That keeps the common Entra audience mismatch from forcing every host to repeat both values in configuration.
 
 ## How It Fits Workable Authorization
 
@@ -180,6 +182,8 @@ That is useful when:
 - different clients receive different audience values for the same host
 
 Keep the list tight. This is an allow-list of accepted audiences for Workable bearer auth.
+
+`AdditionalAudiences` is still useful for truly separate audience values. You do not need to duplicate `api://<client-id>` and bare `<client-id>` there when they refer to the same GUID-based app registration, because `Workable.Entra` accepts that pair automatically.
 
 ## Custom Authentication Scheme
 

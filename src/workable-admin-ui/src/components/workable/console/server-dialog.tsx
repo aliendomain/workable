@@ -413,9 +413,7 @@ export async function discoverHost(apiUrl: string): Promise<WorkableHttpHostDesc
   const attempted = candidates.map(formatHostEndpoint).join(", ");
   if (lastError instanceof WorkableApiError) {
     if (lastError.status === 401) {
-      throw new Error(
-        "This Workable host requires authentication before its systems can be discovered. Sign in and try again."
-      );
+      throw new Error(getDiscoveryAuthenticationError(lastError));
     }
 
     if (lastError.status === 403) {
@@ -431,14 +429,29 @@ export async function discoverHost(apiUrl: string): Promise<WorkableHttpHostDesc
     }
   }
 
+  throw new Error(getDiscoveryReachabilityError(lastError, attempted));
+}
+
+function getDiscoveryAuthenticationError(error: WorkableApiError) {
+  const message = error.message.trim();
+  if (message && message !== "Authentication is required for the Workable admin UI.") {
+    return message;
+  }
+
+  return "This Workable host requires authentication before its systems can be discovered. Sign in and try again.";
+}
+
+function getDiscoveryReachabilityError(lastError: unknown, attempted: string) {
   const detail =
     lastError instanceof Error && lastError.message !== "fetch failed"
-      ? ` ${lastError.message}`
+      ? lastError.message.trim()
       : "";
 
-  throw new Error(
-    `Unable to reach the Workable API.${detail} Tried ${attempted}. Check that the protocol and port match the server.`
-  );
+  if (/^Unable to reach the Workable /i.test(detail)) {
+    return `${detail} Tried ${attempted}. Check that the protocol and port match the server.`;
+  }
+
+  return `Unable to reach the Workable API.${detail ? ` ${detail}` : ""} Tried ${attempted}. Check that the protocol and port match the server.`;
 }
 
 export function createWorkableApiUrlCandidates(value: string) {

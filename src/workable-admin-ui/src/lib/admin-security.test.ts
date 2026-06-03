@@ -368,6 +368,62 @@ test("proxy preserves hosted Workable API authorization failures", async () => {
   });
 });
 
+test("proxy surfaces hosted issuer mismatch hints from bearer challenges", async () => {
+  const response = await proxyWorkableRequest(
+    new Request("https://admin.example.com/api/workable/host", {
+      headers: {
+        authorization: basic("admin", "correct horse battery staple"),
+      },
+    }),
+    ["host"],
+    {
+      env: secureEnv(),
+      fetch: async () =>
+        new Response(JSON.stringify({ error: "Unauthorized" }), {
+          status: 401,
+          headers: {
+            "content-type": "application/json",
+            "www-authenticate": 'Bearer error="invalid_token", error_description="IDX10205: Issuer validation failed."',
+          },
+        }),
+    }
+  );
+
+  assert.equal(response.status, 401);
+  assert.deepEqual(await response.json(), {
+    error:
+      "The hosted Workable API rejected the bearer token because the token issuer does not match its Entra configuration. Check that the target API app registration is configured to issue v2 access tokens.",
+  });
+});
+
+test("proxy surfaces hosted audience mismatch hints from bearer challenges", async () => {
+  const response = await proxyWorkableRequest(
+    new Request("https://admin.example.com/api/workable/host", {
+      headers: {
+        authorization: basic("admin", "correct horse battery staple"),
+      },
+    }),
+    ["host"],
+    {
+      env: secureEnv(),
+      fetch: async () =>
+        new Response(JSON.stringify({ error: "Unauthorized" }), {
+          status: 401,
+          headers: {
+            "content-type": "application/json",
+            "www-authenticate": 'Bearer error="invalid_token", error_description="IDX10214: Audience validation failed."',
+          },
+        }),
+    }
+  );
+
+  assert.equal(response.status, 401);
+  assert.deepEqual(await response.json(), {
+    error:
+      "The hosted Workable API rejected the bearer token because the token audience does not match its Entra configuration. Check that the admin UI target scope and the hosted API accepted audiences refer to the same app registration.",
+  });
+});
+
 test("proxy responses are not cacheable and do not serve hosted HTML as admin HTML", async () => {
   const response = await proxyWorkableRequest(
     new Request("https://admin.example.com/api/workable/host", {

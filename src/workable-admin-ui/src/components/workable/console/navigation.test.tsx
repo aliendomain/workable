@@ -376,6 +376,73 @@ test("server dialog explains discovery authorization failures", async () => {
   }
 });
 
+test("server dialog preserves specific hosted authentication guidance for discovery failures", async () => {
+  const previousFetch = globalThis.fetch;
+  globalThis.fetch = (async () =>
+    Response.json(
+      {
+        error:
+          "The hosted Workable API rejected the bearer token because the token issuer does not match its Entra configuration. Check that the target API app registration is configured to issue v2 access tokens.",
+      },
+      { status: 401 }
+    )) as typeof fetch;
+  const result = await renderDom(
+    <ServerDialog
+      mode="add"
+      onOpenChange={() => undefined}
+      onSave={() => assert.fail("Failed discovery should not save.")}
+      open
+    />
+  );
+
+  try {
+    const [, urlInput] = textInputs(result.dom.window.document.body);
+    await result.input(urlInput, "https://issuer.example.com/workable");
+    await result.click(result.getByRole("button", { name: "Load systems" }));
+
+    result.getByText("Discovery failed");
+    result.getByText(
+      "The hosted Workable API rejected the bearer token because the token issuer does not match its Entra configuration. Check that the target API app registration is configured to issue v2 access tokens."
+    );
+  } finally {
+    globalThis.fetch = previousFetch;
+    await result.restore();
+  }
+});
+
+test("server dialog avoids duplicating reachability wording when the hosted error already explains it", async () => {
+  const previousFetch = globalThis.fetch;
+  globalThis.fetch = (async () =>
+    Response.json(
+      {
+        error: "Unable to reach the Workable HTTP API.",
+      },
+      { status: 502 }
+    )) as typeof fetch;
+  const result = await renderDom(
+    <ServerDialog
+      mode="add"
+      onOpenChange={() => undefined}
+      onSave={() => assert.fail("Failed discovery should not save.")}
+      open
+    />
+  );
+
+  try {
+    const [, urlInput] = textInputs(result.dom.window.document.body);
+    await result.input(urlInput, "http://localhost:5187");
+    await result.click(result.getByRole("button", { name: "Load systems" }));
+
+    result.getByText("Discovery failed");
+    result.getByText(
+      "Unable to reach the Workable HTTP API. Tried http://localhost:5187/host, http://localhost:5187/workable/host. Check that the protocol and port match the server."
+    );
+  } finally {
+    globalThis.fetch = previousFetch;
+    await result.restore();
+  }
+});
+
 test("server dialog edit mode refreshes discovery, preserves matched systems, and drops missing systems", async () => {
   const existingHost: WorkableHostConnection = {
     apiUrl: "https://old.example.com/workable",

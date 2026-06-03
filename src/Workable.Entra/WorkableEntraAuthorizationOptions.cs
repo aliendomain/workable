@@ -86,14 +86,14 @@ public sealed class WorkableEntraAuthorizationOptions
 
     internal IReadOnlyList<string> GetAudiences()
     {
-        var audiences = new List<string>();
-        AddIfNotEmpty(audiences, this.Audience);
+        var audiences = new HashSet<string>(StringComparer.Ordinal);
+        AddAcceptedAudience(audiences, this.Audience);
         foreach (var audience in this.AdditionalAudiences)
         {
-            AddIfNotEmpty(audiences, audience);
+            AddAcceptedAudience(audiences, audience);
         }
 
-        return audiences;
+        return [.. audiences];
     }
 
     internal IReadOnlyList<string> GetSignalRAccessTokenQueryStringPaths()
@@ -171,5 +171,43 @@ public sealed class WorkableEntraAuthorizationOptions
         {
             values.Add(normalized);
         }
+    }
+
+    private static void AddAcceptedAudience(ISet<string> values, string? value)
+    {
+        var normalized = value?.Trim();
+        if (string.IsNullOrWhiteSpace(normalized))
+        {
+            return;
+        }
+
+        values.Add(normalized);
+        if (TryGetPairedGuidAudience(normalized, out var pairedAudience))
+        {
+            values.Add(pairedAudience);
+        }
+    }
+
+    private static bool TryGetPairedGuidAudience(string audience, out string pairedAudience)
+    {
+        const string ApiPrefix = "api://";
+
+        if (audience.StartsWith(ApiPrefix, StringComparison.OrdinalIgnoreCase))
+        {
+            var bareAudience = audience[ApiPrefix.Length..];
+            if (Guid.TryParse(bareAudience, out _))
+            {
+                pairedAudience = bareAudience;
+                return true;
+            }
+        }
+        else if (Guid.TryParse(audience, out _))
+        {
+            pairedAudience = $"{ApiPrefix}{audience}";
+            return true;
+        }
+
+        pairedAudience = string.Empty;
+        return false;
     }
 }

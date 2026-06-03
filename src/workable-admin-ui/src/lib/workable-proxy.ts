@@ -18,6 +18,13 @@ const noStoreHeaders = {
   "x-content-type-options": "nosniff",
 };
 
+const hostedIssuerMismatchError =
+  "The hosted Workable API rejected the bearer token because the token issuer does not match its Entra configuration. Check that the target API app registration is configured to issue v2 access tokens.";
+const hostedAudienceMismatchError =
+  "The hosted Workable API rejected the bearer token because the token audience does not match its Entra configuration. Check that the admin UI target scope and the hosted API accepted audiences refer to the same app registration.";
+const hostedInvalidTokenError =
+  "The hosted Workable API rejected the bearer token. Check the target API token version, audience, and delegated scope configuration.";
+
 export async function proxyWorkableRequest(
   request: Request,
   path: readonly string[],
@@ -98,6 +105,26 @@ export async function proxyWorkableRequest(
       cache: "no-store",
     });
 
+    const hostedAuthenticationError =
+      response.status === 401
+        ? createHostedAuthenticationError(response.headers.get("www-authenticate"))
+        : null;
+    if (hostedAuthenticationError) {
+      return Response.json(
+        { error: hostedAuthenticationError },
+        {
+          status: response.status,
+          headers: withCookies(
+            secureJsonHeaders(),
+            [
+              ...targetAccessToken.setCookieHeaders,
+              ...(authentication.sessionCookieHeader ? [authentication.sessionCookieHeader] : []),
+            ]
+          ),
+        }
+      );
+    }
+
     const responseBody = await response.arrayBuffer();
     return new Response(responseBody, {
       status: response.status,
@@ -123,6 +150,41 @@ export async function proxyWorkableRequest(
       { status: 502, headers: secureJsonHeaders() }
     );
   }
+}
+
+function createHostedAuthenticationError(challenge: string | null) {
+  if (!challenge || !/\bbearer\b/i.test(challenge)) {
+    return null;
+  }
+
+  const error = readBearerChallengeParameter(challenge, "error")?.toLowerCase() ?? "";
+  const description = readBearerChallengeParameter(challenge, "error_description") ?? "";
+  const normalizedDescription = description.toLowerCase();
+
+  if (
+    description.includes("IDX10205") ||
+    normalizedDescription.includes("issuer validation failed")
+  ) {
+    return hostedIssuerMismatchError;
+  }
+
+  if (
+    description.includes("IDX10214") ||
+    normalizedDescription.includes("audience validation failed")
+  ) {
+    return hostedAudienceMismatchError;
+  }
+
+  if (error === "invalid_token") {
+    return hostedInvalidTokenError;
+  }
+
+  return null;
+}
+
+function readBearerChallengeParameter(challenge: string, name: string) {
+  const match = new RegExp(`${name}="([^"]+)"`, "i").exec(challenge);
+  return match?.[1]?.trim() ?? null;
 }
 
 async function readBody(request: Request, maximumBytes: number) {

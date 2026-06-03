@@ -240,6 +240,7 @@ export async function renderDom(
       await act(async () => {
         root.unmount();
       });
+      await flushDomEffects();
       dom.window.close();
       restoreDomGlobals(previousGlobals);
     },
@@ -319,8 +320,20 @@ export async function renderDom(
 }
 
 async function flushDomEffects() {
-  await Promise.resolve();
-  await new Promise((resolve) => setTimeout(resolve, 0));
+  for (let index = 0; index < 2; index += 1) {
+    await act(async () => {
+      await Promise.resolve();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      await new Promise<void>((resolve) => {
+        if (typeof requestAnimationFrame === "function") {
+          requestAnimationFrame(() => resolve());
+          return;
+        }
+
+        setTimeout(resolve, 0);
+      });
+    });
+  }
 }
 
 function installDomGlobals(dom: JSDOM) {
