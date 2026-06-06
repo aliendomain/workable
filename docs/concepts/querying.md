@@ -68,7 +68,7 @@ Use `IWorkQueryService.Worker` when you need full authoritative worker detail.
 WorkerSnapshot? worker = await workSystem.Query.Worker(workerId, cancellationToken: cancellationToken);
 ```
 
-`WorkerSnapshot.ActionHistory` records worker action and reconfiguration attempts that were applied to that worker. Each entry includes the operation kind, action when applicable, outcome status, origin, revision, state sequence, messages, the associated iteration sequence when the action was recorded against a tracked iteration, and requested reconfiguration changes when applicable.
+`WorkerSnapshot.ActionHistory` records worker action and reconfiguration attempts that were applied to that worker. Each entry includes the operation kind, action when applicable, outcome status, `RequestContext`, revision, state sequence, messages, the associated iteration sequence when the action was recorded against a tracked iteration, and requested reconfiguration changes when applicable. `RequestContext.Origin` still carries the durable actor/channel provenance.
 
 Use `IWorkQueryService.Workers` to retrieve workers that match a `WorkerCriteria`. It returns `WorkerOverviewItem` rows instead of full snapshots.
 

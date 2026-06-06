@@ -1051,7 +1051,7 @@ public sealed class DurableQueueTests
             WorkInput.Empty,
             WorkerOptions.Default,
             WorkConfiguration.Default,
-            WorkOrigin.Create(WorkInvocationChannel.DotNet, description: "Test durable queue request."),
+            WorkRequestContext.Create(WorkInvocationChannel.DotNet, description: "Test durable queue request."),
             DateTimeOffset.UtcNow,
             Idempotency: null,
             Transaction: null);
@@ -1198,7 +1198,7 @@ public sealed class DurableQueueTests
                     entry.Input,
                     entry.Options,
                     entry.Configuration,
-                    entry.Origin,
+                    entry.RequestContext,
                     entry.CreatedAt);
             }
 

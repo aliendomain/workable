@@ -114,7 +114,7 @@ public sealed class WorkerSnapshotExtensionsTests
     [Fact]
     public void GetActivityEventsIncludesAcceptedStateChangesAndFailureIterations()
     {
-        var origin = WorkOrigin.Create(
+        var requestContext = WorkRequestContext.Create(
             WorkInvocationChannel.HttpApi,
             actor: new WorkActor("user-1", "Test User"));
         var iteration = new WorkerIterationSnapshot(
@@ -139,7 +139,7 @@ public sealed class WorkerSnapshotExtensionsTests
                     Kind: WorkerActionHistoryKind.WorkerAction,
                     Action: WorkAction.Cancel,
                     Status: WorkActionStatus.Accepted,
-                    Origin: origin,
+                    RequestContext: requestContext,
                     Revision: 1,
                     StateSequence: 1,
                     State: WorkerState.Canceled,
@@ -210,7 +210,7 @@ public sealed class WorkerSnapshotExtensionsTests
             SubjectId: null,
             ConcurrencyKey: null,
             Identifiers: new HashSet<WorkIdentifier>(),
-            Origin: WorkOrigin.Create(WorkInvocationChannel.DotNet),
+            RequestContext: WorkRequestContext.Create(WorkInvocationChannel.DotNet),
             State: state,
             Input: null,
             Output: null,

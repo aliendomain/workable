@@ -9,7 +9,7 @@ public sealed record WorkerSnapshot(
     WorkSubjectId? SubjectId,
     WorkConcurrencyKey? ConcurrencyKey,
     IReadOnlySet<WorkIdentifier> Identifiers,
-    WorkOrigin Origin,
+    WorkRequestContext RequestContext,
     WorkerState State,
     WorkInput? Input,
     WorkOutput? Output,
@@ -21,6 +21,8 @@ public sealed record WorkerSnapshot(
     DateTimeOffset StateChangedAt,
     DateTimeOffset UpdatedAt) : IWorkQueryResult
 {
+    public WorkOrigin Origin => this.RequestContext.Origin;
+
     public WorkerVersion Version => new(this.Id, this.Revision);
 
     public bool IsFinal => this.State.IsFinal();

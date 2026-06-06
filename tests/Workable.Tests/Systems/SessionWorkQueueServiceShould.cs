@@ -80,10 +80,10 @@ public sealed class SessionWorkQueueServiceShould
             CancellationToken cancellationToken)
             => Task.FromResult(WorkExecutionResult<SessionQueueResult>.Success(new SessionQueueResult(
                 input.Value,
-                context.Origin.Channel,
-                context.Origin.Actor.Id,
-                context.Origin.Actor.Name,
-                context.Origin.Description,
-                context.Origin.Url)));
+                context.RequestContext.Channel,
+                context.RequestContext.Actor.Id,
+                context.RequestContext.Actor.Name,
+                context.RequestContext.Description,
+                context.RequestContext.Url)));
     }
 }

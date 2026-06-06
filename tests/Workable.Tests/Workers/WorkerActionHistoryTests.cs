@@ -35,7 +35,7 @@ public sealed class WorkerActionHistoryTests
         Assert.Equal(WorkAction.Cancel, history.Action);
         Assert.Equal(WorkActionStatus.Accepted, history.Status);
         Assert.Equal(WorkInvocationChannel.DotNet, history.Origin.Channel);
-        Assert.Null(history.Origin.Description);
+        Assert.Null(history.RequestContext.Description);
         Assert.Equal(worker.DefinitionName, actionEvent.WorkDefinitionName);
     }
 
@@ -66,7 +66,7 @@ public sealed class WorkerActionHistoryTests
         Assert.Null(history.Action);
         Assert.Equal(WorkActionStatus.Accepted, history.Status);
         Assert.Equal(WorkInvocationChannel.DotNet, history.Origin.Channel);
-        Assert.Null(history.Origin.Description);
+        Assert.Null(history.RequestContext.Description);
         Assert.Same(changes, history.Reconfiguration);
     }
 

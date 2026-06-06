@@ -13,7 +13,7 @@ internal sealed class WorkerRecord(
     WorkInput? input,
     WorkerOptions options,
     WorkConfiguration configuration,
-    WorkOrigin origin,
+    WorkRequestContext requestContext,
     WorkerState state,
     bool isStartDeferred,
     IReadOnlyList<WorkMessage> messages,
@@ -68,7 +68,9 @@ internal sealed class WorkerRecord(
 
     public WorkConcurrencyKey? ConcurrencyKey => this.Input?.ConcurrencyKey;
 
-    public WorkOrigin Origin { get; } = origin;
+    public WorkRequestContext RequestContext { get; } = requestContext;
+
+    public WorkOrigin Origin => this.RequestContext.Origin;
 
     public IReadOnlySet<WorkIdentifier> Identifiers
     {
@@ -804,10 +806,10 @@ internal sealed class WorkerRecord(
         }
     }
 
-    public void RecordActionHistory(WorkActionOutcome outcome, WorkOrigin origin)
+    public void RecordActionHistory(WorkActionOutcome outcome, WorkRequestContext requestContext)
     {
         ArgumentNullException.ThrowIfNull(outcome);
-        ArgumentNullException.ThrowIfNull(origin);
+        ArgumentNullException.ThrowIfNull(requestContext);
 
         lock (this.sync)
         {
@@ -816,7 +818,7 @@ internal sealed class WorkerRecord(
                 WorkerActionHistoryKind.WorkerAction,
                 outcome.Action,
                 outcome.Status,
-                origin,
+                requestContext,
                 this.Revision,
                 this.StateSequence,
                 this.State,
@@ -831,11 +833,11 @@ internal sealed class WorkerRecord(
     public void RecordReconfigurationHistory(
         WorkerReconfiguration reconfiguration,
         WorkActionOutcome outcome,
-        WorkOrigin origin)
+        WorkRequestContext requestContext)
     {
         ArgumentNullException.ThrowIfNull(reconfiguration);
         ArgumentNullException.ThrowIfNull(outcome);
-        ArgumentNullException.ThrowIfNull(origin);
+        ArgumentNullException.ThrowIfNull(requestContext);
 
         lock (this.sync)
         {
@@ -844,7 +846,7 @@ internal sealed class WorkerRecord(
                 WorkerActionHistoryKind.Reconfiguration,
                 null,
                 outcome.Status,
-                origin,
+                requestContext,
                 this.Revision,
                 this.StateSequence,
                 this.State,
@@ -957,7 +959,7 @@ internal sealed class WorkerRecord(
             this.SubjectId,
             this.ConcurrencyKey,
             this.identifiers.ToHashSet(),
-            this.Origin,
+            this.RequestContext,
             this.State,
             this.Input,
             this.Output,
@@ -1478,7 +1480,7 @@ internal sealed class WorkerRecord(
             this.SubjectId,
             this.ConcurrencyKey,
             this.identifiers.ToHashSet(),
-            this.Origin,
+            this.RequestContext,
             this.State,
             this.interruptionReason,
             this.CreatedAt,
@@ -1526,7 +1528,7 @@ internal sealed class WorkerRecord(
         return WorkerEventPayloads.Create(
             this.ToSummaryLocked(),
             this.CreateEventKeysLocked(),
-            details.Origin,
+            details.RequestContext,
             details.Action,
             details.ActionStatus,
             details.ReconfigurationStatus,

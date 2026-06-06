@@ -934,9 +934,7 @@ internal static class WorkableRealtimeWorkerOverviewUpdateFactory
 
     private sealed record WorkerOverviewRealtimeEventOrigin(
         string Channel,
-        WorkerOverviewRealtimeEventActor? Actor = null,
-        string? Description = null,
-        string? Url = null);
+        WorkerOverviewRealtimeEventActor? Actor = null);
 
     private sealed record WorkerOverviewRealtimeEventActor(
         string? Id = null,

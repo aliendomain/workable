@@ -14,7 +14,7 @@ internal sealed class WorkerEventPublisher(
         => this.PublishWithoutSynchronize(
             worker,
             "worker.queued",
-            details: new WorkerEventPayloadDetails(Origin: worker.Origin));
+            details: new WorkerEventPayloadDetails(RequestContext: worker.RequestContext));
 
     internal void Started(WorkerRecord worker)
         => this.Publish(
@@ -23,19 +23,19 @@ internal sealed class WorkerEventPublisher(
             details: new WorkerEventPayloadDetails(IncludeLatestIteration: true),
             recordReadModel: false);
 
-    internal void ActionApplied(WorkerRecord worker, WorkActionOutcome outcome, WorkOrigin origin)
+    internal void ActionApplied(WorkerRecord worker, WorkActionOutcome outcome, WorkRequestContext requestContext)
     {
         var action = outcome.Action;
         var eventType = $"worker.{action.ToString().ToLowerInvariant()}";
         var details = new WorkerEventPayloadDetails(
-            Origin: action == WorkAction.Purge && !ShouldIncludeExplicitPurgeOrigin(origin) ? null : origin,
+            RequestContext: action == WorkAction.Purge && !ShouldIncludeExplicitPurgeOrigin(requestContext) ? null : requestContext,
             Action: action,
             ActionStatus: outcome.Status);
         if (action == WorkAction.Purge)
         {
             if (outcome.IsAccepted)
             {
-                this.PublishWorkerPurge(worker, ShouldIncludeExplicitPurgeOrigin(origin) ? origin : null);
+                this.PublishWorkerPurge(worker, ShouldIncludeExplicitPurgeOrigin(requestContext) ? requestContext : null);
             }
 
             return;
@@ -44,7 +44,7 @@ internal sealed class WorkerEventPublisher(
         this.Publish(
             worker,
             eventType,
-            origin,
+            requestContext,
             details,
             recordReadModel: action != WorkAction.Start || !outcome.IsAccepted);
     }
@@ -53,12 +53,12 @@ internal sealed class WorkerEventPublisher(
         WorkerRecord worker,
         WorkerReconfiguration changes,
         WorkActionOutcome outcome,
-        WorkOrigin origin)
+        WorkRequestContext requestContext)
         => this.Publish(
             worker,
             "worker.reconfigured",
             details: new WorkerEventPayloadDetails(
-                Origin: origin,
+                RequestContext: requestContext,
                 ReconfigurationStatus: outcome.Status,
                 Reconfiguration: changes));
 
@@ -189,7 +189,7 @@ internal sealed class WorkerEventPublisher(
                 null,
                 EmptyIdentifiers,
                 PurgeEventType,
-                WorkerEventPayloads.CreatePurge(state.WorkerIds, state.OccurredAt, state.Origin)));
+                WorkerEventPayloads.CreatePurge(state.WorkerIds, state.OccurredAt, state.RequestContext)));
     }
 
     internal void Log(WorkerRecord worker, WorkerLogEntry entry)
@@ -209,24 +209,24 @@ internal sealed class WorkerEventPublisher(
     private void Publish(
         WorkerRecord worker,
         string eventType,
-        WorkOrigin? origin = null,
+        WorkRequestContext? requestContext = null,
         WorkerEventPayloadDetails? details = null,
         bool recordReadModel = true)
     {
         synchronize(worker);
-        this.PublishWithoutSynchronize(worker, eventType, origin, details, recordReadModel);
+        this.PublishWithoutSynchronize(worker, eventType, requestContext, details, recordReadModel);
     }
 
     private void PublishWithoutSynchronize(
         WorkerRecord worker,
         string eventType,
-        WorkOrigin? origin = null,
+        WorkRequestContext? requestContext = null,
         WorkerEventPayloadDetails? details = null,
         bool recordReadModel = true)
     {
         if (eventType == PurgeEventType)
         {
-            this.PublishWorkerPurge(worker, origin);
+            this.PublishWorkerPurge(worker, requestContext);
             return;
         }
 
@@ -245,13 +245,13 @@ internal sealed class WorkerEventPublisher(
                 state.Details));
     }
 
-    private void PublishWorkerPurge(WorkerRecord worker, WorkOrigin? origin = null)
+    private void PublishWorkerPurge(WorkerRecord worker, WorkRequestContext? requestContext = null)
     {
         readModel?.ForgetWorker(worker.Id);
 
         var occurredAt = DateTimeOffset.UtcNow;
         events.Publish(
-            new WorkerPurgeEventState(occurredAt, workSystemId, workSystemName, worker, origin),
+            new WorkerPurgeEventState(occurredAt, workSystemId, workSystemName, worker, requestContext),
             static state => state.Worker.ToEventMetadata(state.WorkSystemId, PurgeEventType),
             static state => new WorkEvent(
                 state.OccurredAt,
@@ -264,7 +264,7 @@ internal sealed class WorkerEventPublisher(
                 state.Worker.ConcurrencyKey,
                 state.Worker.Identifiers,
                 PurgeEventType,
-                WorkerEventPayloads.CreatePurge(new[] { state.Worker.Id }, state.OccurredAt, state.Origin)));
+                WorkerEventPayloads.CreatePurge(new[] { state.Worker.Id }, state.OccurredAt, state.RequestContext)));
     }
 
     private sealed record PurgeEventState(
@@ -275,17 +275,17 @@ internal sealed class WorkerEventPublisher(
         WorkDefinitionId? DefinitionId,
         string? DefinitionName,
         IReadOnlyList<WorkerId> WorkerIds,
-        WorkOrigin? Origin);
+        WorkRequestContext? RequestContext);
 
     private sealed record WorkerPurgeEventState(
         DateTimeOffset OccurredAt,
         WorkSystemId WorkSystemId,
         string? WorkSystemName,
         WorkerRecord Worker,
-        WorkOrigin? Origin);
+        WorkRequestContext? RequestContext);
 
-    private static bool ShouldIncludeExplicitPurgeOrigin(WorkOrigin origin)
-        => !string.IsNullOrWhiteSpace(origin.Actor.Id) ||
-            !string.IsNullOrWhiteSpace(origin.Actor.Name) ||
-            !string.IsNullOrWhiteSpace(origin.Actor.Email);
+    private static bool ShouldIncludeExplicitPurgeOrigin(WorkRequestContext requestContext)
+        => !string.IsNullOrWhiteSpace(requestContext.Actor.Id) ||
+            !string.IsNullOrWhiteSpace(requestContext.Actor.Name) ||
+            !string.IsNullOrWhiteSpace(requestContext.Actor.Email);
 }

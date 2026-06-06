@@ -1291,7 +1291,7 @@ public sealed class WorkableHttpApiTests
         Assert.Equal(WorkInvocationChannel.HttpApi, worker.Origin.Channel);
         Assert.Equal("user-123", worker.Origin.Actor.Id);
         Assert.Equal("greya@example.test", worker.Origin.Actor.Email);
-        Assert.Contains("/WORKABLE/WORK/http.route.case", worker.Origin.Url, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("/WORKABLE/WORK/http.route.case", worker.RequestContext.Url, StringComparison.OrdinalIgnoreCase);
 
         var actionResponse = await client.PostAsJsonAsync(
             $"/WORKABLE/WORKERS/{workerId:D}/ACTIONS/cancel",
@@ -1449,7 +1449,7 @@ public sealed class WorkableHttpApiTests
         Assert.Equal(WorkInvocationChannel.HttpApi, worker.Origin.Channel);
         Assert.Equal("user-123", worker.Origin.Actor.Id);
         Assert.Equal("greya@example.test", worker.Origin.Actor.Email);
-        Assert.Contains($"/workable/definitions/{definition.Id.Value:D}/queue", worker.Origin.Url, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains($"/workable/definitions/{definition.Id.Value:D}/queue", worker.RequestContext.Url, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -1755,7 +1755,7 @@ public sealed class WorkableHttpApiTests
 
         Assert.Equal("http.named", worker.DefinitionName);
         Assert.Equal(WorkInvocationChannel.HttpApi, worker.Origin.Channel);
-        Assert.Contains("/workable/systems/background/work/http.named", worker.Origin.Url, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("/workable/systems/background/work/http.named", worker.RequestContext.Url, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -2075,8 +2075,8 @@ public sealed class WorkableHttpApiTests
         Assert.Equal(WorkerState.Canceled, billing.State);
         Assert.Equal(WorkerState.Queued, email.State);
         Assert.Equal(WorkInvocationChannel.HttpApi, billing.ActionHistory[^1].Origin.Channel);
-        Assert.Equal("Cancel all billing workers from the HTTP API test.", billing.ActionHistory[^1].Origin.Description);
-        Assert.Contains("/workable/workers/actions/cancel", billing.ActionHistory[^1].Origin.Url, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal("Cancel all billing workers from the HTTP API test.", billing.ActionHistory[^1].RequestContext.Description);
+        Assert.Contains("/workable/workers/actions/cancel", billing.ActionHistory[^1].RequestContext.Url, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -2145,7 +2145,7 @@ public sealed class WorkableHttpApiTests
             ?? throw new InvalidOperationException("Expected worker.");
         Assert.Equal(WorkerState.Canceled, canceled.State);
         Assert.Equal(WorkInvocationChannel.HttpApi, canceled.ActionHistory[^1].Origin.Channel);
-        Assert.Contains("/workable/systems/background/workers/", canceled.ActionHistory[^1].Origin.Url, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("/workable/systems/background/workers/", canceled.ActionHistory[^1].RequestContext.Url, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]

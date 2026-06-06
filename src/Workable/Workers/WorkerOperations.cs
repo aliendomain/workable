@@ -137,6 +137,8 @@ internal sealed class WorkerOperations :
             return this.RejectQueue(rejection);
         }
 
+        var storedRequestContext = requestContext.WithoutAuthorization();
+
         var workerId = WorkerId.New();
         var runtimePlan = options is null
             ? registeredWork.DefaultRuntimePlan
@@ -167,7 +169,7 @@ internal sealed class WorkerOperations :
             registeredWork,
             input,
             runtimePlan,
-            requestContext.Origin,
+            storedRequestContext,
             DateTimeOffset.UtcNow,
             cancellationToken);
 
@@ -463,7 +465,7 @@ internal sealed class WorkerOperations :
     {
         cancellationToken.ThrowIfCancellationRequested();
 
-        return Task.FromResult(this.ApplyAction(worker, action, requestContext.Origin));
+        return Task.FromResult(this.ApplyAction(worker, action, requestContext));
     }
 
     public Task<WorkerBulkActionOutcome> ExecuteAll(
@@ -492,7 +494,7 @@ internal sealed class WorkerOperations :
         {
             cancellationToken.ThrowIfCancellationRequested();
             var version = candidate.ToSummary().Version;
-            outcomes.Add(this.ApplyAction(version, action, requestContext.Origin));
+            outcomes.Add(this.ApplyAction(version, action, requestContext));
         }
 
         return Task.FromResult(new WorkerBulkActionOutcome(
@@ -505,7 +507,7 @@ internal sealed class WorkerOperations :
     private WorkActionOutcome ApplyAction(
         WorkerVersion worker,
         WorkAction action,
-        WorkOrigin origin)
+        WorkRequestContext requestContext)
     {
         if (!this.workers.TryGetValue(worker.WorkerId, out var record))
         {
@@ -522,7 +524,8 @@ internal sealed class WorkerOperations :
             _ => WorkActionOutcome.Invalid(action, record.ToSnapshot(), [WorkMessage.Error("workable.action.invalid", $"Action '{action}' is not supported.")]),
         };
 
-        record.RecordActionHistory(outcome, origin);
+        var storedRequestContext = requestContext.WithoutAuthorization();
+        record.RecordActionHistory(outcome, storedRequestContext);
 
         if (outcome.IsAccepted)
         {
@@ -537,7 +540,7 @@ internal sealed class WorkerOperations :
             }
         }
 
-        this.workerEvents.ActionApplied(record, outcome, origin);
+        this.workerEvents.ActionApplied(record, outcome, storedRequestContext);
         return outcome;
     }
 
@@ -571,7 +574,8 @@ internal sealed class WorkerOperations :
         }
 
         var outcome = record.Reconfigure(changes, worker.Revision, this.persistenceStoreAvailable);
-        record.RecordReconfigurationHistory(changes, outcome, requestContext.Origin);
+        var storedRequestContext = requestContext.WithoutAuthorization();
+        record.RecordReconfigurationHistory(changes, outcome, storedRequestContext);
         if (outcome.IsAccepted)
         {
             this.concurrency.Synchronize(record);
@@ -594,7 +598,7 @@ internal sealed class WorkerOperations :
 
         if (outcome.IsAccepted)
         {
-            this.workerEvents.Reconfigured(record, changes, outcome, requestContext.Origin);
+            this.workerEvents.Reconfigured(record, changes, outcome, storedRequestContext);
         }
 
         return Task.FromResult(outcome);

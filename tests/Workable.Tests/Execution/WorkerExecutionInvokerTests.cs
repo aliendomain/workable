@@ -108,7 +108,7 @@ public sealed class WorkerExecutionInvokerTests
             WorkInput.Empty,
             WorkerOptions.Default,
             WorkConfiguration.Default,
-            WorkOrigin.Create(WorkInvocationChannel.DotNet),
+            WorkRequestContext.Create(WorkInvocationChannel.DotNet),
             WorkerState.Running,
             isStartDeferred: false,
             messages: [],
@@ -133,7 +133,7 @@ public sealed class WorkerExecutionInvokerTests
             RegisteredWork registeredWork,
             WorkInput? input,
             RegisteredWorkRuntimePlan runtimePlan,
-            WorkOrigin origin,
+            WorkRequestContext requestContext,
             DateTimeOffset now,
             CancellationToken cancellationToken)
             => throw new NotSupportedException();

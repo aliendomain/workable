@@ -129,7 +129,7 @@ public sealed class AuthorizedWorkerOperationsShould
             SubjectId: null,
             ConcurrencyKey: null,
             Identifiers: new HashSet<WorkIdentifier>(),
-            WorkOrigin.Create(WorkInvocationChannel.DotNet),
+            WorkRequestContext.Create(WorkInvocationChannel.DotNet),
             WorkerState.Queued,
             Input: null,
             Output: null,

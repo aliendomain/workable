@@ -28,7 +28,7 @@ public sealed class AutomaticStartTests
             ?? throw new InvalidOperationException("Expected worker snapshot.");
         Assert.Equal("automatic.start", worker.DefinitionName);
         Assert.Equal(WorkerState.Completed, worker.State);
-        Assert.Null(snapshot.Origin.Description);
+        Assert.Null(snapshot.RequestContext.Description);
     }
 
     [Fact]

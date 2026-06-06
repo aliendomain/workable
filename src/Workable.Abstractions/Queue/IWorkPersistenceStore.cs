@@ -40,10 +40,13 @@ public sealed record WorkQueueDurabilityEnqueueRequest(
     WorkInput? Input,
     WorkerOptions Options,
     WorkConfiguration Configuration,
-    WorkOrigin Origin,
+    WorkRequestContext RequestContext,
     DateTimeOffset CreatedAt,
     WorkQueueDurabilityIdempotency? Idempotency,
-    IWorkQueueDurabilityTransaction? Transaction);
+    IWorkQueueDurabilityTransaction? Transaction)
+{
+    public WorkOrigin Origin => this.RequestContext.Origin;
+}
 
 public sealed record WorkQueueDurabilityIdempotency(
     WorkSubjectId SubjectId);
@@ -54,9 +57,12 @@ public sealed record WorkIdempotencyPersistenceRequest(
     WorkerId WorkerId,
     WorkDefinition Definition,
     WorkSubjectId SubjectId,
-    WorkOrigin Origin,
+    WorkRequestContext RequestContext,
     DateTimeOffset CreatedAt,
-    IWorkQueueDurabilityTransaction? Transaction);
+    IWorkQueueDurabilityTransaction? Transaction)
+{
+    public WorkOrigin Origin => this.RequestContext.Origin;
+}
 
 public sealed record WorkQueueDurabilityClaimRequest(
     string? WorkSystemName,
@@ -70,8 +76,11 @@ public sealed record WorkQueueDurabilityEntry(
     WorkInput? Input,
     WorkerOptions Options,
     WorkConfiguration Configuration,
-    WorkOrigin Origin,
-    DateTimeOffset CreatedAt);
+    WorkRequestContext RequestContext,
+    DateTimeOffset CreatedAt)
+{
+    public WorkOrigin Origin => this.RequestContext.Origin;
+}
 
 public sealed record WorkQueueDurabilityLease(
     WorkerId WorkerId,

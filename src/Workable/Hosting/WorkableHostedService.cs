@@ -197,11 +197,10 @@ internal sealed class WorkableHostedService(
 
     private static WorkRequestContext CreateSystemAdministratorRequestContext()
         => new(
-            HostActor,
             WorkOrigin.Create(
                 WorkInvocationChannel.DotNet,
                 HostActor),
-            WorkAuthorizationSnapshot.Create(
+            Authorization: WorkAuthorizationSnapshot.Create(
                 HostActor,
                 [InternalWorkAuthorizationGroups.SystemAdministrator],
                 readableDefinitionIds: null));

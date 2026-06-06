@@ -170,13 +170,13 @@ public sealed class WorkEventPayloadTests
         await using var subscription = stream.Subscribe(new WorkEventFilter(WorkerId: worker.Id, EventType: "worker.purge"));
         await using var reader = subscription.Read().GetAsyncEnumerator();
         var outcome = WorkActionOutcome.Accepted(WorkAction.Purge, worker.ToSnapshot());
-        var origin = WorkOrigin.Create(
+        var requestContext = WorkRequestContext.Create(
             WorkInvocationChannel.HttpApi,
             new WorkActor(Id: "user-123", Email: "greya@example.test"),
             "Purge worker through the HTTP API.",
             "/workable/workers/123/actions/purge");
 
-        publisher.ActionApplied(worker, outcome, origin);
+        publisher.ActionApplied(worker, outcome, requestContext);
 
         var workEvent = await ReadNext(reader);
         var data = RequiredData(workEvent);
@@ -491,15 +491,15 @@ public sealed class WorkEventPayloadTests
         var stream = new WorkEventStream();
         var publisher = new WorkerEventPublisher(WorkSystemId.New(), null, stream, _ => { });
         var worker = CreateWorker("events.timeline-summaries");
-        var origin = WorkOrigin.Create(WorkInvocationChannel.DotNet);
+        var requestContext = WorkRequestContext.Create(WorkInvocationChannel.DotNet);
         await using var subscription = stream.Subscribe(new WorkEventFilter(WorkerId: worker.Id, EventType: "worker.pause"));
         await using var reader = subscription.Read().GetAsyncEnumerator();
 
         Assert.True(worker.Start(worker.Revision, advancesRevision: false, out _, CancellationToken.None).IsAccepted);
         var outcome = worker.RequestPause(worker.Revision);
-        worker.RecordActionHistory(outcome, origin);
+        worker.RecordActionHistory(outcome, requestContext);
 
-        publisher.ActionApplied(worker, outcome, origin);
+        publisher.ActionApplied(worker, outcome, requestContext);
         var workEvent = await ReadNext(reader);
         var data = RequiredData(workEvent);
 
@@ -692,7 +692,7 @@ public sealed class WorkEventPayloadTests
             WorkInput.Empty,
             WorkerOptions.Default,
             configuration,
-            WorkOrigin.Create(WorkInvocationChannel.DotNet),
+            WorkRequestContext.Create(WorkInvocationChannel.DotNet),
             WorkerState.Queued,
             isStartDeferred: false,
             messages: [],

@@ -5,10 +5,13 @@ public sealed record WorkerActionHistoryEntry(
     WorkerActionHistoryKind Kind,
     WorkAction? Action,
     WorkActionStatus Status,
-    WorkOrigin Origin,
+    WorkRequestContext RequestContext,
     long Revision,
     long StateSequence,
     WorkerState State,
     IReadOnlyList<WorkMessage> Messages,
     long? IterationSequence = null,
-    WorkerReconfiguration? Reconfiguration = null);
+    WorkerReconfiguration? Reconfiguration = null)
+{
+    public WorkOrigin Origin => this.RequestContext.Origin;
+}

@@ -135,9 +135,8 @@ internal sealed class WorkableBenchmarkSystem : IAsyncDisposable
             Name: "Workable Performance Benchmark");
         var origin = WorkOrigin.Create(WorkInvocationChannel.DotNet, actor);
         return new WorkRequestContext(
-            actor,
-            origin,
-            WorkAuthorizationSnapshot.Create(actor, [OperatorGroup], readableDefinitionIds: null));
+            Origin: origin,
+            Authorization: WorkAuthorizationSnapshot.Create(actor, [OperatorGroup], readableDefinitionIds: null));
     }
 
     private static Task<WorkExecutionResult> SuccessfulWork(

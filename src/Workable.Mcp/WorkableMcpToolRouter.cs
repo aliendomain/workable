@@ -644,10 +644,7 @@ public sealed class WorkableMcpToolRouter(IWorkSystemRegistry registry)
             ? requestContext
             : requestContext with
             {
-                Origin = requestContext.Origin with
-                {
-                    Description = description,
-                },
+                Description = description,
             };
 
     private static string? ReadWorkToolInvocationDescription(JsonElement? arguments)

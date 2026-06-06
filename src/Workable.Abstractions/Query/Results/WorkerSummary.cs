@@ -10,13 +10,15 @@ public sealed record WorkerSummary(
     WorkSubjectId? SubjectId,
     WorkConcurrencyKey? ConcurrencyKey,
     IReadOnlySet<WorkIdentifier> Identifiers,
-    WorkOrigin Origin,
+    WorkRequestContext RequestContext,
     WorkerState State,
     WorkInterruptionReason? InterruptionReason,
     DateTimeOffset CreatedAt,
     DateTimeOffset StateChangedAt,
     DateTimeOffset UpdatedAt)
 {
+    public WorkOrigin Origin => this.RequestContext.Origin;
+
     public WorkerVersion Version => new(this.Id, this.Revision);
 
     public bool IsFinal => this.State.IsFinal();

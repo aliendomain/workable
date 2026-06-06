@@ -21,9 +21,9 @@ public sealed class HttpContextWorkRequestContextFactoryShould
         Assert.Null(actors.LastHttpContext);
         Assert.Equal(WorkActor.Unknown, context.Actor);
         Assert.False(context.IsAuthenticated);
-        Assert.Equal(WorkInvocationChannel.HttpApi, context.Origin.Channel);
-        Assert.Equal("Missing HTTP context.", context.Origin.Description);
-        Assert.Null(context.Origin.Url);
+        Assert.Equal(WorkInvocationChannel.HttpApi, context.Channel);
+        Assert.Equal("Missing HTTP context.", context.Description);
+        Assert.Null(context.Url);
     }
 
     [Fact]
@@ -42,9 +42,9 @@ public sealed class HttpContextWorkRequestContextFactoryShould
         Assert.Same(httpContext, actors.LastHttpContext);
         Assert.Equal(actor, context.Actor);
         Assert.False(context.IsAuthenticated);
-        Assert.Equal(WorkInvocationChannel.HttpApi, context.Origin.Channel);
-        Assert.Null(context.Origin.Description);
-        Assert.Equal("/custom/queue", context.Origin.Url);
+        Assert.Equal(WorkInvocationChannel.HttpApi, context.Channel);
+        Assert.Null(context.Description);
+        Assert.Equal("/custom/queue", context.Url);
     }
 
     [Fact]
@@ -70,9 +70,9 @@ public sealed class HttpContextWorkRequestContextFactoryShould
         Assert.Equal(actor, context.Actor);
         Assert.Equal(actor, context.Origin.Actor);
         Assert.True(context.IsAuthenticated);
-        Assert.Equal(WorkInvocationChannel.HttpApi, context.Origin.Channel);
-        Assert.Equal("Queue through HTTP.", context.Origin.Description);
-        Assert.Equal("/workable/custom/queue?definition=demo", context.Origin.Url);
+        Assert.Equal(WorkInvocationChannel.HttpApi, context.Channel);
+        Assert.Equal("Queue through HTTP.", context.Description);
+        Assert.Equal("/workable/custom/queue?definition=demo", context.Url);
     }
 
     private sealed class RecordingActorFactory(WorkActor actor) : IWorkActorFactory

@@ -41,13 +41,13 @@ public sealed class SessionWorkerOperationsShould
                 Assert.Equal(WorkerActionHistoryKind.Reconfiguration, history.Kind);
                 Assert.Null(history.Action);
                 Assert.Equal(changes, history.Reconfiguration);
-                AssertSessionOrigin(history.Origin);
+                AssertSessionRequestContext(history.RequestContext);
             },
             history =>
             {
                 Assert.Equal(WorkerActionHistoryKind.WorkerAction, history.Kind);
                 Assert.Equal(WorkAction.Cancel, history.Action);
-                AssertSessionOrigin(history.Origin);
+                AssertSessionRequestContext(history.RequestContext);
             });
     }
 
@@ -73,12 +73,12 @@ public sealed class SessionWorkerOperationsShould
             ?? throw new InvalidOperationException("Expected worker.");
     }
 
-    private static void AssertSessionOrigin(WorkOrigin origin)
+    private static void AssertSessionRequestContext(WorkRequestContext requestContext)
     {
-        Assert.Equal(WorkInvocationChannel.HttpApi, origin.Channel);
-        Assert.Equal("session-worker-user", origin.Actor.Id);
-        Assert.Equal("Session Worker User", origin.Actor.Name);
-        Assert.Equal("Operate worker through a session.", origin.Description);
-        Assert.Equal("https://workable.test/workers", origin.Url);
+        Assert.Equal(WorkInvocationChannel.HttpApi, requestContext.Channel);
+        Assert.Equal("session-worker-user", requestContext.Actor.Id);
+        Assert.Equal("Session Worker User", requestContext.Actor.Name);
+        Assert.Equal("Operate worker through a session.", requestContext.Description);
+        Assert.Equal("https://workable.test/workers", requestContext.Url);
     }
 }

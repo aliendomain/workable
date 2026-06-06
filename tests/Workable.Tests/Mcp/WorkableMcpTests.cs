@@ -261,7 +261,7 @@ public sealed class WorkableMcpTests
         Assert.False(result.IsError);
         Assert.Contains("\"status\":\"Completed\"", result.Json);
         Assert.Contains("\"json\":\"{\\u0022message\\u0022:\\u0022hello\\u0022}\"", result.Json);
-        Assert.Equal("Queue this work from the MCP router test.", worker.Origin.Description);
+        Assert.Equal("Queue this work from the MCP router test.", worker.RequestContext.Description);
     }
 
     [Fact]
@@ -356,10 +356,10 @@ public sealed class WorkableMcpTests
     [Fact]
     public async Task MappedHttpMcpServerListsToolsAndCallsWorkThroughHttpTransport()
     {
-        var observedOrigin = new TaskCompletionSource<WorkOrigin>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var observedRequestContext = new TaskCompletionSource<WorkRequestContext>(TaskCreationOptions.RunContinuationsAsynchronously);
         using var host = await CreateMcpHttpHost(execute: (context, input, cancellationToken) =>
         {
-            observedOrigin.TrySetResult(context.Origin);
+            observedRequestContext.TrySetResult(context.RequestContext);
             return Task.FromResult(WorkExecutionResult.Success(input is null ? WorkOutput.Empty : WorkOutput.FromData(input)));
         });
         var httpClient = host.GetTestClient();
@@ -399,11 +399,11 @@ public sealed class WorkableMcpTests
         Assert.Equal(WorkInvocationChannel.Mcp, worker.Origin.Channel);
         Assert.Equal("mcp-user-1", worker.Origin.Actor.Id);
         Assert.Equal("mcp.user@example.com", worker.Origin.Actor.Email);
-        Assert.Equal("/workable/mcp", worker.Origin.Url);
+        Assert.Equal("/workable/mcp", worker.RequestContext.Url);
 
-        var executionOrigin = await observedOrigin.Task.WaitAsync(TimeSpan.FromSeconds(1));
-        Assert.Equal(WorkInvocationChannel.Mcp, executionOrigin.Channel);
-        Assert.Equal("mcp-user-1", executionOrigin.Actor.Id);
+        var executionRequestContext = await observedRequestContext.Task.WaitAsync(TimeSpan.FromSeconds(1));
+        Assert.Equal(WorkInvocationChannel.Mcp, executionRequestContext.Channel);
+        Assert.Equal("mcp-user-1", executionRequestContext.Actor.Id);
     }
 
     [Fact]
@@ -442,7 +442,7 @@ public sealed class WorkableMcpTests
 
         Assert.False(result.IsError);
         Assert.Equal(WorkInvocationChannel.Mcp, worker.Origin.Channel);
-        Assert.Equal("/workable/systems/remote/mcp", worker.Origin.Url);
+        Assert.Equal("/workable/systems/remote/mcp", worker.RequestContext.Url);
     }
 
     [Fact]
@@ -519,7 +519,7 @@ public sealed class WorkableMcpTests
         Assert.Equal(WorkerState.Canceled, updated.State);
         Assert.Equal(WorkAction.Cancel, history.Action);
         Assert.Equal(WorkInvocationChannel.Mcp, history.Origin.Channel);
-        Assert.Equal("/workable/systems/remote/mcp", history.Origin.Url);
+        Assert.Equal("/workable/systems/remote/mcp", history.RequestContext.Url);
     }
 
     [Fact]
@@ -629,7 +629,7 @@ public sealed class WorkableMcpTests
         Assert.Equal(WorkAction.Cancel, history.Action);
         Assert.Equal(WorkInvocationChannel.Mcp, history.Origin.Channel);
         Assert.Equal("mcp-user-1", history.Origin.Actor.Id);
-        Assert.Equal("Cancel this worker from the MCP HTTP transport test.", history.Origin.Description);
+        Assert.Equal("Cancel this worker from the MCP HTTP transport test.", history.RequestContext.Description);
     }
 
     [Fact]

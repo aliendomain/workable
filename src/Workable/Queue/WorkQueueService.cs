@@ -29,9 +29,9 @@ internal sealed class WorkQueueService(
             return Task.FromResult<IWorkerHandle>(Reject(WorkQueueOutcome.NotFound(definitionId.ToString())));
         }
 
-        if (!registeredWork.Definition.Configuration.Invocation.Allows(requestContext.Origin.Channel))
+        if (!registeredWork.Definition.Configuration.Invocation.Allows(requestContext.Channel))
         {
-            return Task.FromResult<IWorkerHandle>(Reject(ChannelNotAllowed(registeredWork.Definition, requestContext.Origin.Channel)));
+            return Task.FromResult<IWorkerHandle>(Reject(ChannelNotAllowed(registeredWork.Definition, requestContext.Channel)));
         }
 
         return workers.CreateWorker(registeredWork, input, options, requestContext, cancellationToken);
@@ -74,9 +74,9 @@ internal sealed class WorkQueueService(
             return Task.FromResult<IWorkerHandle>(Reject(WorkQueueOutcome.NotFound(name)));
         }
 
-        if (!registeredWork.Definition.Configuration.Invocation.Allows(requestContext.Origin.Channel))
+        if (!registeredWork.Definition.Configuration.Invocation.Allows(requestContext.Channel))
         {
-            return Task.FromResult<IWorkerHandle>(Reject(ChannelNotAllowed(registeredWork.Definition, requestContext.Origin.Channel)));
+            return Task.FromResult<IWorkerHandle>(Reject(ChannelNotAllowed(registeredWork.Definition, requestContext.Channel)));
         }
 
         return workers.CreateWorker(registeredWork, input, options, requestContext, cancellationToken);

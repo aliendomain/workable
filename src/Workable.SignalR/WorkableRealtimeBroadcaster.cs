@@ -1110,11 +1110,10 @@ internal sealed class WorkableRealtimeBroadcaster(
         ArgumentNullException.ThrowIfNull(authorization);
 
         return system.CreateSession(new WorkRequestContext(
-            authorization.Actor,
-            WorkOrigin.Create(
+            Origin: WorkOrigin.Create(
                 WorkInvocationChannel.SignalR,
                 authorization.Actor),
-            authorization));
+            Authorization: authorization));
     }
 
     private static bool IsDiagnosticsAlertChangesSubscription(WorkableRealtimeViewSubscription subscription)

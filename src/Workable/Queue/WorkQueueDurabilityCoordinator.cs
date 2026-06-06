@@ -217,7 +217,7 @@ internal sealed class WorkQueueDurabilityCoordinator(
         WorkInput? input,
         WorkerOptions options,
         WorkConfiguration configuration,
-        WorkOrigin origin,
+        WorkRequestContext requestContext,
         DateTimeOffset createdAt,
         WorkQueueDurabilityIdempotency? idempotency)
         => new(
@@ -228,7 +228,7 @@ internal sealed class WorkQueueDurabilityCoordinator(
             input,
             options,
             configuration,
-            origin,
+            requestContext,
             createdAt,
             idempotency,
             options.QueueDurabilityTransaction);
@@ -238,7 +238,7 @@ internal sealed class WorkQueueDurabilityCoordinator(
         RegisteredWork registeredWork,
         WorkSubjectId subjectId,
         WorkerOptions options,
-        WorkOrigin origin,
+        WorkRequestContext requestContext,
         DateTimeOffset createdAt)
         => new(
             workSystemId,
@@ -246,7 +246,7 @@ internal sealed class WorkQueueDurabilityCoordinator(
             workerId,
             registeredWork.Definition,
             subjectId,
-            origin,
+            requestContext,
             createdAt,
             options.QueueDurabilityTransaction);
 

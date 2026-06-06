@@ -28,11 +28,10 @@ internal static class WorkSystemLifecycleTestExtensions
 
     private static WorkRequestContext CreateSystemAdministratorRequestContext()
         => new(
-            TestActor,
             WorkOrigin.Create(
                 WorkInvocationChannel.DotNet,
                 TestActor),
-            WorkAuthorizationSnapshot.Create(
+            Authorization: WorkAuthorizationSnapshot.Create(
                 TestActor,
                 [InternalWorkAuthorizationGroups.SystemAdministrator],
                 readableDefinitionIds: null));

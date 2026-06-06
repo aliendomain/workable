@@ -60,11 +60,10 @@ Use the root system when the caller is trusted, in-process, and not user-scoped.
 var actor = new WorkActor("user-123", "Taylor");
 
 var requestContext = new WorkRequestContext(
-    actor: actor,
-    origin: WorkOrigin.Create(
+    WorkOrigin.Create(
         WorkInvocationChannel.HttpApi,
-        actor: actor,
-        url: "/workable/workers"),
+        actor: actor),
+    url: "/workable/workers",
     isAuthenticated: true);
 
 IWorkSystemSession session = workSystem.CreateSession(requestContext);
