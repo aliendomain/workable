@@ -1051,7 +1051,7 @@ public sealed class DurableQueueTests
             WorkInput.Empty,
             WorkerOptions.Default,
             WorkConfiguration.Default,
-            WorkRequestContext.Create(WorkInvocationChannel.DotNet, description: "Test durable queue request."),
+            WorkRequestContext.Create(WorkInvocationChannel.InProcess, description: "Test durable queue request."),
             DateTimeOffset.UtcNow,
             Idempotency: null,
             Transaction: null);

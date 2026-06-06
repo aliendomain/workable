@@ -110,7 +110,7 @@ public sealed class WorkableHttpApiTests
             "dotnet.only",
             configuration: WorkConfiguration.Default with
             {
-                Invocation = WorkInvocationConfiguration.Allow(WorkInvocationChannel.DotNet),
+                Invocation = WorkInvocationConfiguration.Allow(WorkInvocationChannel.InProcess),
             });
         var (system, http) = CreateHost(definition, SuccessfulWork);
         await system.Start();
@@ -128,7 +128,7 @@ public sealed class WorkableHttpApiTests
             "dotnet.visible",
             configuration: WorkConfiguration.Default with
             {
-                Invocation = WorkInvocationConfiguration.Allow(WorkInvocationChannel.DotNet),
+                Invocation = WorkInvocationConfiguration.Allow(WorkInvocationChannel.InProcess),
             });
         var (system, http) = CreateHost(definition, SuccessfulWork);
         await system.Start();
@@ -137,7 +137,7 @@ public sealed class WorkableHttpApiTests
         var listed = Assert.Single(definitions);
 
         Assert.Equal("dotnet.visible", listed.Name);
-        Assert.Contains(WorkInvocationChannel.DotNet, listed.Configuration.Invocation.AllowedChannels);
+        Assert.Contains(WorkInvocationChannel.InProcess, listed.Configuration.Invocation.AllowedChannels);
         Assert.DoesNotContain(WorkInvocationChannel.HttpApi, listed.Configuration.Invocation.AllowedChannels);
     }
 
@@ -1470,7 +1470,7 @@ public sealed class WorkableHttpApiTests
             ?? throw new InvalidOperationException("Expected invocation channels.");
         var jsonText = dotNetOnly.ToJsonString();
 
-        Assert.Contains(channels, channel => channel?.GetValue<string>() == "DotNet");
+        Assert.Contains(channels, channel => channel?.GetValue<string>() == "InProcess");
         Assert.DoesNotContain(channels, channel => channel?.GetValue<string>() == "HttpApi");
         Assert.DoesNotContain("usesPersistentStorage", jsonText, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("isIdempotencyEnabled", jsonText, StringComparison.OrdinalIgnoreCase);
@@ -2489,7 +2489,7 @@ public sealed class WorkableHttpApiTests
                                 "http.discovery.dotnet-only",
                                 configuration: WorkConfiguration.Default with
                                 {
-                                    Invocation = WorkInvocationConfiguration.Allow(WorkInvocationChannel.DotNet),
+                                    Invocation = WorkInvocationConfiguration.Allow(WorkInvocationChannel.InProcess),
                                 }),
                             SuccessfulWork);
                     });

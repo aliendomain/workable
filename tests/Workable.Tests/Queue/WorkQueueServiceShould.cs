@@ -22,7 +22,7 @@ public sealed class WorkQueueServiceShould
             "queue.dotnet.only",
             configuration: WorkConfiguration.Default with
             {
-                Invocation = WorkInvocationConfiguration.Allow(WorkInvocationChannel.DotNet),
+                Invocation = WorkInvocationConfiguration.Allow(WorkInvocationChannel.InProcess),
             });
         await using var system = CreateSystem(definition);
         await system.Start();

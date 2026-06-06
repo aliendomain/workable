@@ -553,7 +553,7 @@ public sealed class WorkSystemAuthorizationConfigurationTests
         await system.Start();
         var actor = new WorkActor(Id: "snapshot-user");
         var requestContext = WorkRequestContext.Create(
-            WorkInvocationChannel.DotNet,
+            WorkInvocationChannel.InProcess,
             actor,
             "Authorize with a pre-resolved snapshot.") with
         {
@@ -606,7 +606,7 @@ public sealed class WorkSystemAuthorizationConfigurationTests
         var system = provider.GetRequiredService<IWorkSystem>();
         await system.Start();
         var session = system.CreateSession(WorkRequestContext.Create(
-            WorkInvocationChannel.DotNet,
+            WorkInvocationChannel.InProcess,
             actor: WorkActor.Unknown,
             description: "Authenticated but unknown actor.",
             isAuthenticated: true));
@@ -653,13 +653,13 @@ public sealed class WorkSystemAuthorizationConfigurationTests
 
     private static WorkRequestContext CreateRequestContext(string actorId)
         => WorkRequestContext.Create(
-            WorkInvocationChannel.DotNet,
+            WorkInvocationChannel.InProcess,
             new WorkActor(Id: actorId),
             $"Authorize actor '{actorId}' in tests.");
 
     private static WorkRequestContext CreateKnownAuthenticatedRequestContext(string actorId)
         => WorkRequestContext.Create(
-            WorkInvocationChannel.DotNet,
+            WorkInvocationChannel.InProcess,
             new WorkActor(Id: actorId),
             $"Authorize known authenticated actor '{actorId}' in tests.",
             isAuthenticated: true);

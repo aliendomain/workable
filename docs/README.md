@@ -6,7 +6,7 @@ This folder groups Workable documentation by the kind of question you are trying
 
 Workable is for applications that have background jobs, recurring tasks, operational work, or user-triggered actions that need more than "start a task and hope for the best."
 
-- Define work once and expose it consistently through direct .NET calls, HTTP, or MCP when those adapters are enabled.
+- Define work once and expose it consistently through direct in-process calls, HTTP, or MCP when those adapters are enabled.
 - Let feature libraries author work near the feature while the host application stays in control of runtime policy.
 - Keep queued work observable and controllable with worker history, status, diagnostics, events, and operator actions.
 - Attach runtime behavior such as recurrence, retry, idempotency, concurrency, retention, logging, and profiling without reinventing those concerns per feature.

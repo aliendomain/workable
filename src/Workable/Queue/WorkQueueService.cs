@@ -14,7 +14,7 @@ internal sealed class WorkQueueService(
             definitionId,
             input,
             options,
-            WorkRequestContext.Create(WorkInvocationChannel.DotNet),
+            WorkRequestContext.Create(WorkInvocationChannel.InProcess),
             cancellationToken);
 
     internal Task<IWorkerHandle> Enqueue(
@@ -56,7 +56,7 @@ internal sealed class WorkQueueService(
             name,
             input,
             options,
-            WorkRequestContext.Create(WorkInvocationChannel.DotNet),
+            WorkRequestContext.Create(WorkInvocationChannel.InProcess),
             cancellationToken);
     }
 
@@ -116,7 +116,7 @@ internal sealed class WorkQueueService(
     private static string DescribeChannel(WorkInvocationChannel channel)
         => channel switch
         {
-            WorkInvocationChannel.DotNet => ".NET",
+            WorkInvocationChannel.InProcess => "in-process code",
             WorkInvocationChannel.HttpApi => "the HTTP API",
             WorkInvocationChannel.Mcp => "MCP",
             WorkInvocationChannel.SignalR => "SignalR",

@@ -34,7 +34,7 @@ internal static class TransportAuthorizationTestSupport
 
     public static IWorkSystemSession CreateTransportSession(
         IWorkSystem system,
-        WorkInvocationChannel channel = WorkInvocationChannel.DotNet,
+        WorkInvocationChannel channel = WorkInvocationChannel.InProcess,
         WorkActor? actor = null,
         string description = "Create transport test session.")
     {

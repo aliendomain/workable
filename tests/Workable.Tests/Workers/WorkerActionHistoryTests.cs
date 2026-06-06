@@ -7,7 +7,7 @@ namespace Workable.Tests;
 public sealed class WorkerActionHistoryTests
 {
     [Fact]
-    public async Task DirectDotNetWorkerActionsRecordDurableHistory()
+    public async Task DirectInProcessWorkerActionsRecordDurableHistory()
     {
         var definition = WorkDefinition.Create(
             "history.action",
@@ -34,7 +34,7 @@ public sealed class WorkerActionHistoryTests
         Assert.Equal(WorkerActionHistoryKind.WorkerAction, history.Kind);
         Assert.Equal(WorkAction.Cancel, history.Action);
         Assert.Equal(WorkActionStatus.Accepted, history.Status);
-        Assert.Equal(WorkInvocationChannel.DotNet, history.Origin.Channel);
+        Assert.Equal(WorkInvocationChannel.InProcess, history.Origin.Channel);
         Assert.Null(history.RequestContext.Description);
         Assert.Equal(worker.DefinitionName, actionEvent.WorkDefinitionName);
     }
@@ -65,7 +65,7 @@ public sealed class WorkerActionHistoryTests
         Assert.Equal(WorkerActionHistoryKind.Reconfiguration, history.Kind);
         Assert.Null(history.Action);
         Assert.Equal(WorkActionStatus.Accepted, history.Status);
-        Assert.Equal(WorkInvocationChannel.DotNet, history.Origin.Channel);
+        Assert.Equal(WorkInvocationChannel.InProcess, history.Origin.Channel);
         Assert.Null(history.RequestContext.Description);
         Assert.Same(changes, history.Reconfiguration);
     }

@@ -32,7 +32,7 @@ internal static class WorkSystemLifecycleTestExtensions
 
     private static WorkRequestContext CreateRequestContext(string description)
         => WorkRequestContext.Create(
-            WorkInvocationChannel.DotNet,
+                WorkInvocationChannel.InProcess,
             TestActor,
             description);
 }

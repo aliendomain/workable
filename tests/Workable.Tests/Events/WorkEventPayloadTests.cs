@@ -41,7 +41,7 @@ public sealed class WorkEventPayloadTests
         Assert.Equal("Queued", queuedData.GetProperty("worker").GetProperty("state").GetString());
         AssertEventOrigin(
             queuedData,
-            WorkInvocationChannel.DotNet,
+            WorkInvocationChannel.InProcess,
             description: null);
         AssertWorkerSummaries(queuedData, logTotal: 0, timelineTotal: 0);
         AssertThinEvent(queued, queuedData);
@@ -93,7 +93,7 @@ public sealed class WorkEventPayloadTests
         Assert.Equal("Canceled", data.GetProperty("worker").GetProperty("state").GetString());
         AssertEventOrigin(
             data,
-            WorkInvocationChannel.DotNet,
+            WorkInvocationChannel.InProcess,
             description: null);
     }
 
@@ -220,7 +220,7 @@ public sealed class WorkEventPayloadTests
         Assert.Equal(1, data.GetProperty("worker").GetProperty("configDifferenceCount").GetInt32());
         AssertEventOrigin(
             data,
-            WorkInvocationChannel.DotNet,
+            WorkInvocationChannel.InProcess,
             description: null);
     }
 
@@ -491,7 +491,7 @@ public sealed class WorkEventPayloadTests
         var stream = new WorkEventStream();
         var publisher = new WorkerEventPublisher(WorkSystemId.New(), null, stream, _ => { });
         var worker = CreateWorker("events.timeline-summaries");
-        var requestContext = WorkRequestContext.Create(WorkInvocationChannel.DotNet);
+        var requestContext = WorkRequestContext.Create(WorkInvocationChannel.InProcess);
         await using var subscription = stream.Subscribe(new WorkEventFilter(WorkerId: worker.Id, EventType: "worker.pause"));
         await using var reader = subscription.Read().GetAsyncEnumerator();
 
@@ -692,7 +692,7 @@ public sealed class WorkEventPayloadTests
             WorkInput.Empty,
             WorkerOptions.Default,
             configuration,
-            WorkRequestContext.Create(WorkInvocationChannel.DotNet),
+            WorkRequestContext.Create(WorkInvocationChannel.InProcess),
             WorkerState.Queued,
             isStartDeferred: false,
             messages: [],

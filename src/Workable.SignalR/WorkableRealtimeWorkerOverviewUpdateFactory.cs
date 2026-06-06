@@ -949,7 +949,7 @@ internal static class WorkableRealtimeWorkerOverviewUpdateFactory
         => new(
             Enum.TryParse<WorkInvocationChannel>(origin.Channel, ignoreCase: true, out var channel)
                 ? channel
-                : WorkInvocationChannel.DotNet,
+                : WorkInvocationChannel.InProcess,
             origin.Actor?.Id,
             origin.Actor?.Name,
             origin.Actor?.Email);

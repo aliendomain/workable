@@ -1233,7 +1233,7 @@ public sealed class WorkableSignalRTests
     private static IWorkSystemSession Session(IWorkSystem system)
         => TransportAuthorizationTestSupport.CreateTransportSession(
             system,
-            WorkInvocationChannel.DotNet,
+            WorkInvocationChannel.InProcess,
             description: "Use SignalR test session.");
 
     private static ClaimsPrincipal CreateTransportPrincipal(IEnumerable<string>? groups = null)

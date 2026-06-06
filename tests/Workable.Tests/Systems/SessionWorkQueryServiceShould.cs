@@ -10,7 +10,7 @@ public sealed class SessionWorkQueryServiceShould
     {
         var inner = new RecordingWorkQueryService();
         var requestContext = WorkRequestContext.Create(
-            WorkInvocationChannel.DotNet,
+            WorkInvocationChannel.InProcess,
             new WorkActor("session-user", "Session User"),
             "Session query test.");
         var query = new SessionWorkQueryService(inner, requestContext);

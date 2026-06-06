@@ -81,7 +81,7 @@ public sealed class WorkerExecutionExceptionHandlerShould
             input: null,
             WorkerOptions.Default,
             definition.Configuration,
-            WorkRequestContext.Create(WorkInvocationChannel.DotNet),
+            WorkRequestContext.Create(WorkInvocationChannel.InProcess),
             WorkerState.Queued,
             isStartDeferred: false,
             messages: [],

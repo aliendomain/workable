@@ -14,7 +14,7 @@ public sealed class WorkQueueAcceptanceCoordinatorShould
         var registeredWork = CreateRegisteredWork(definition);
         var workerId = WorkerId.New();
         var input = WorkInput.Empty.WithSubject(new WorkSubjectId("order", "durable"));
-        var requestContext = WorkRequestContext.Create(WorkInvocationChannel.DotNet, description: "Durable acceptance test.");
+        var requestContext = WorkRequestContext.Create(WorkInvocationChannel.InProcess, description: "Durable acceptance test.");
 
         var prepared = coordinator.Prepare(
             workerId,
@@ -45,7 +45,7 @@ public sealed class WorkQueueAcceptanceCoordinatorShould
         var registeredWork = CreateRegisteredWork(definition);
         var workerId = WorkerId.New();
         var input = WorkInput.Empty.WithSubject(new WorkSubjectId("order", "idempotent"));
-        var requestContext = WorkRequestContext.Create(WorkInvocationChannel.DotNet, description: "Persistent idempotency acceptance test.");
+        var requestContext = WorkRequestContext.Create(WorkInvocationChannel.InProcess, description: "Persistent idempotency acceptance test.");
 
         var prepared = coordinator.Prepare(
             workerId,
@@ -82,7 +82,7 @@ public sealed class WorkQueueAcceptanceCoordinatorShould
             RegisteredWorkRuntimePlan.Create(
                 definition,
                 WorkerOptions.Default with { QueueDurabilityTransaction = new TestQueueDurabilityTransaction() }),
-            WorkRequestContext.Create(WorkInvocationChannel.DotNet),
+            WorkRequestContext.Create(WorkInvocationChannel.InProcess),
             DateTimeOffset.UtcNow);
 
         Assert.Equal(WorkQueueStatus.Invalid, prepared.Outcome.Status);
@@ -106,7 +106,7 @@ public sealed class WorkQueueAcceptanceCoordinatorShould
             registeredWork,
             input: null,
             RegisteredWorkRuntimePlan.Create(definition, WorkerOptions.Default),
-            WorkRequestContext.Create(WorkInvocationChannel.DotNet),
+            WorkRequestContext.Create(WorkInvocationChannel.InProcess),
             DateTimeOffset.UtcNow);
 
         Assert.Equal(WorkQueueStatus.Invalid, prepared.Outcome.Status);
@@ -126,7 +126,7 @@ public sealed class WorkQueueAcceptanceCoordinatorShould
             ConcurrencyCoordination(WorkConcurrencyLimitReachedBehavior.DeferStart));
         var registeredWork = CreateRegisteredWork(definition);
         var runtimePlan = RegisteredWorkRuntimePlan.Create(definition, WorkerOptions.Default);
-        var requestContext = WorkRequestContext.Create(WorkInvocationChannel.DotNet);
+        var requestContext = WorkRequestContext.Create(WorkInvocationChannel.InProcess);
 
         var first = coordinator.Prepare(
             WorkerId.New(),
@@ -163,7 +163,7 @@ public sealed class WorkQueueAcceptanceCoordinatorShould
             ConcurrencyCoordination(WorkConcurrencyLimitReachedBehavior.Ignore));
         var registeredWork = CreateRegisteredWork(definition);
         var runtimePlan = RegisteredWorkRuntimePlan.Create(definition, WorkerOptions.Default);
-        var requestContext = WorkRequestContext.Create(WorkInvocationChannel.DotNet);
+        var requestContext = WorkRequestContext.Create(WorkInvocationChannel.InProcess);
 
         var first = coordinator.Prepare(
             WorkerId.New(),

@@ -176,7 +176,7 @@ public sealed class WorkOutcomeTests
             SubjectId: null,
             ConcurrencyKey: null,
             Identifiers: new HashSet<WorkIdentifier>(),
-            WorkRequestContext.Create(WorkInvocationChannel.DotNet),
+            WorkRequestContext.Create(WorkInvocationChannel.InProcess),
             state,
             WorkInput.Empty,
             Output: null,

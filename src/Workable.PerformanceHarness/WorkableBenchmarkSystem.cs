@@ -133,7 +133,7 @@ internal sealed class WorkableBenchmarkSystem : IAsyncDisposable
         var actor = new WorkActor(
             Id: "workable.performance.benchmark",
             Name: "Workable Performance Benchmark");
-        var origin = WorkOrigin.Create(WorkInvocationChannel.DotNet, actor);
+        var origin = WorkOrigin.Create(WorkInvocationChannel.InProcess, actor);
         return new WorkRequestContext(
             Origin: origin,
             Authorization: WorkAuthorizationSnapshot.Create(actor, [OperatorGroup], readableDefinitionIds: null));

@@ -2,7 +2,7 @@ namespace Workable;
 
 public enum WorkInvocationChannel
 {
-    DotNet,
+    InProcess,
     HttpApi,
     Mcp,
     SignalR,

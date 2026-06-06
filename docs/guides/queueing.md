@@ -166,13 +166,13 @@ Configuration supplied through queue options is merged over the definition defau
 
 ## Request Context And Origin
 
-Direct .NET queue calls record a `WorkOrigin` with `WorkInvocationChannel.DotNet`. By default, the actor is unknown.
+Direct in-process queue calls record a `WorkOrigin` with `WorkInvocationChannel.InProcess`. By default, the actor is unknown.
 
 When the caller already knows who is making the request, create a `WorkRequestContext` and queue through a session instead of calling `IWorkSystem.Queue` directly.
 
 ```csharp
 var requestContext = WorkRequestContext.Create(
-    WorkInvocationChannel.DotNet,
+    WorkInvocationChannel.InProcess,
     new WorkActor(Id: "current-user-id"),
     "Queue welcome email from application service.");
 
@@ -190,7 +190,7 @@ Trusted direct in-process callers can also set `isAuthenticated: true` when the 
 
 ```csharp
 var requestContext = WorkRequestContext.Create(
-    WorkInvocationChannel.DotNet,
+    WorkInvocationChannel.InProcess,
     new WorkActor(Id: "current-user-id"),
     "Queue welcome email from application service.",
     isAuthenticated: true);

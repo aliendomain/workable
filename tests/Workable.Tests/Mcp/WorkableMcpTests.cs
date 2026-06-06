@@ -1234,7 +1234,7 @@ public sealed class WorkableMcpTests
         => WorkConfiguration.Default with
         {
             Invocation = WorkInvocationConfiguration.Allow(
-                WorkInvocationChannel.DotNet,
+                WorkInvocationChannel.InProcess,
                 WorkInvocationChannel.HttpApi,
                 WorkInvocationChannel.Mcp),
         };

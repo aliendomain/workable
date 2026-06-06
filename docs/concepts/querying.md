@@ -669,7 +669,7 @@ The examples below show the serialized JSON shape returned by HTTP and MCP adapt
       "maximumFinalWorkers": 1000
     },
     "invocation": {
-      "allowedChannels": ["DotNet", "HttpApi"]
+      "allowedChannels": ["InProcess", "HttpApi"]
     }
   },
   "messages": [
@@ -878,7 +878,7 @@ Origin descriptions are optional. Built-in HTTP and MCP transports preserve them
           "maximumFinalWorkers": 1000
         },
         "invocation": {
-          "allowedChannels": ["DotNet", "HttpApi"]
+          "allowedChannels": ["InProcess", "HttpApi"]
         }
       },
       "metadata": {
@@ -984,7 +984,7 @@ Origin descriptions are optional. Built-in HTTP and MCP transports preserve them
         "maximumFinalWorkers": 1000
       },
       "invocation": {
-        "allowedChannels": ["DotNet", "HttpApi"]
+        "allowedChannels": ["InProcess", "HttpApi"]
       }
     },
     "metadata": null,

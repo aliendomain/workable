@@ -365,7 +365,7 @@ internal sealed class WorkerOperations :
 
     internal Task<WorkSystemStopResult> StopDispatching(CancellationToken cancellationToken)
         => this.StopDispatching(
-            new WorkRequestContext(WorkOrigin.Create(WorkInvocationChannel.DotNet)),
+            new WorkRequestContext(WorkOrigin.Create(WorkInvocationChannel.InProcess)),
             cancellationToken);
 
     internal async Task<WorkSystemStopResult> StopDispatching(
@@ -453,7 +453,7 @@ internal sealed class WorkerOperations :
         return this.Execute(
             worker,
             action,
-            WorkRequestContext.Create(WorkInvocationChannel.DotNet),
+            WorkRequestContext.Create(WorkInvocationChannel.InProcess),
             cancellationToken);
     }
 
@@ -475,7 +475,7 @@ internal sealed class WorkerOperations :
         => this.ExecuteAll(
             action,
             filter,
-            WorkRequestContext.Create(WorkInvocationChannel.DotNet),
+            WorkRequestContext.Create(WorkInvocationChannel.InProcess),
             cancellationToken);
 
     internal Task<WorkerBulkActionOutcome> ExecuteAll(
@@ -556,7 +556,7 @@ internal sealed class WorkerOperations :
         return this.Reconfigure(
             worker,
             changes,
-            WorkRequestContext.Create(WorkInvocationChannel.DotNet),
+            WorkRequestContext.Create(WorkInvocationChannel.InProcess),
             cancellationToken);
     }
 

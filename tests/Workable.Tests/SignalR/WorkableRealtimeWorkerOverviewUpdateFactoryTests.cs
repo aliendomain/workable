@@ -432,7 +432,7 @@ public sealed class WorkableRealtimeWorkerOverviewUpdateFactoryTests
                 },
                 Origin = new
                 {
-                    Channel = "DotNet",
+                    Channel = "InProcess",
                 },
                 Action = WorkAction.Start,
                 ActionStatus = WorkActionStatus.Accepted,
@@ -484,7 +484,7 @@ public sealed class WorkableRealtimeWorkerOverviewUpdateFactoryTests
                     },
                     Origin = new
                     {
-                        Channel = "DotNet",
+                        Channel = "InProcess",
                     },
                     Action = WorkAction.Start,
                     ActionStatus = WorkActionStatus.Accepted,

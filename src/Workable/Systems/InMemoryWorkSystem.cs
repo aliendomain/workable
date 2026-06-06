@@ -334,7 +334,7 @@ internal sealed class InMemoryWorkSystem :
     public async ValueTask DisposeAsync()
     {
         await this.StopCore(
-            WorkRequestContext.Create(WorkInvocationChannel.DotNet));
+            WorkRequestContext.Create(WorkInvocationChannel.InProcess));
         this.workers.Dispose();
         this.lifecycleLock.Dispose();
         await this.readModel.DisposeAsync();
@@ -383,7 +383,7 @@ internal sealed class InMemoryWorkSystem :
                         $"Startup work '{registeredWork.Definition.Name}' cannot use '{nameof(WorkStartPolicy.StartAndReturnAfterCompleted)}'. Startup work is queued during system start and cannot wait for worker completion.");
                 }
 
-                var requestContext = WorkRequestContext.Create(WorkInvocationChannel.DotNet);
+                var requestContext = WorkRequestContext.Create(WorkInvocationChannel.InProcess);
                 var handle = request.DefinitionId is { } definitionId
                     ? await this.queue.Enqueue(definitionId, request.Input, request.Options, requestContext, cancellationToken)
                     : await this.queue.Enqueue(request.Name ?? throw new InvalidOperationException("Startup work requests must provide a work definition id or name."), request.Input, request.Options, requestContext, cancellationToken);
@@ -437,7 +437,7 @@ internal sealed class InMemoryWorkSystem :
         {
             cancellationToken.ThrowIfCancellationRequested();
             var input = automaticStart.InputFactory(services);
-            var requestContext = WorkRequestContext.Create(WorkInvocationChannel.DotNet);
+            var requestContext = WorkRequestContext.Create(WorkInvocationChannel.InProcess);
             var handle = await this.queue.Enqueue(
                 registeredWork.Definition.Id,
                 input,

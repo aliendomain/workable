@@ -2018,7 +2018,7 @@ VALUES
         command.Parameters.AddWithValue(
             "@OriginJson",
             JsonSerializer.Serialize(
-                WorkOrigin.Create(WorkInvocationChannel.DotNet, description: "Inserted test durable row."),
+                WorkOrigin.Create(WorkInvocationChannel.InProcess),
                 DurableJsonOptions));
         command.Parameters.AddWithValue("@CreatedAt", createdAt);
         command.Parameters.AddWithValue("@ClaimedBy", (object?)claimedBy ?? DBNull.Value);

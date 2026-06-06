@@ -198,7 +198,7 @@ internal sealed class WorkableHostedService(
     private static WorkRequestContext CreateSystemAdministratorRequestContext()
         => new(
             WorkOrigin.Create(
-                WorkInvocationChannel.DotNet,
+                WorkInvocationChannel.InProcess,
                 HostActor),
             Authorization: WorkAuthorizationSnapshot.Create(
                 HostActor,

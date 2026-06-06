@@ -29,7 +29,7 @@ internal static class WorkSystemLifecycleTestExtensions
     private static WorkRequestContext CreateSystemAdministratorRequestContext()
         => new(
             WorkOrigin.Create(
-                WorkInvocationChannel.DotNet,
+                WorkInvocationChannel.InProcess,
                 TestActor),
             Authorization: WorkAuthorizationSnapshot.Create(
                 TestActor,

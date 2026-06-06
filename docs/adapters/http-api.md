@@ -2,7 +2,7 @@
 
 Workable can expose queueing, worker operations, system operations, and query APIs through the `Workable.HttpApi` adapter package.
 
-The HTTP API adapter uses the same Workable catalog and queueing system as direct .NET code. A work definition can be queued through HTTP only when its invocation configuration allows `WorkInvocationChannel.HttpApi`.
+The HTTP API adapter uses the same Workable catalog and queueing system as direct in-process code. A work definition can be queued through HTTP only when its invocation configuration allows `WorkInvocationChannel.HttpApi`.
 
 Invocation-channel rules matter for work invocation, not for general system/query/worker discovery routes. Definition listing, diagnostics, worker reads, lifecycle routes, and other read/control surfaces are governed by authorization and route shape, not by definition invocation-channel settings.
 

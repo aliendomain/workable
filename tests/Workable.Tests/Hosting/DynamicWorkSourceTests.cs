@@ -169,7 +169,7 @@ public sealed class DynamicWorkSourceTests
         var snapshot = await system.Query.Worker(worker.Id)
             ?? throw new InvalidOperationException("Expected worker snapshot.");
         Assert.Equal(WorkerState.Completed, worker.State);
-        Assert.Equal(WorkInvocationChannel.DotNet, snapshot.Origin.Channel);
+        Assert.Equal(WorkInvocationChannel.InProcess, snapshot.Origin.Channel);
         Assert.Null(snapshot.RequestContext.Description);
     }
 

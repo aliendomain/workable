@@ -172,7 +172,7 @@ public sealed class WorkerSnapshotExtensionsTests
         };
         var defaultConfiguration = WorkConfiguration.Default with
         {
-            Invocation = WorkInvocationConfiguration.Allow(WorkInvocationChannel.DotNet),
+            Invocation = WorkInvocationConfiguration.Allow(WorkInvocationChannel.InProcess),
         };
 
         var invocationOnlyDifferences = WorkerConfigurationDifferenceCounter.CountDifferences(
@@ -210,7 +210,7 @@ public sealed class WorkerSnapshotExtensionsTests
             SubjectId: null,
             ConcurrencyKey: null,
             Identifiers: new HashSet<WorkIdentifier>(),
-            RequestContext: WorkRequestContext.Create(WorkInvocationChannel.DotNet),
+            RequestContext: WorkRequestContext.Create(WorkInvocationChannel.InProcess),
             State: state,
             Input: null,
             Output: null,

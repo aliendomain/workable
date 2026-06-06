@@ -6418,8 +6418,8 @@ function formatActionTimelineActorLabel(origin?: WorkableRealtimeOrigin | null) 
 
 function formatActionTimelineSourceLabel(channel?: string | null) {
   switch ((channel ?? "").trim()) {
-    case "DotNet":
-      return ".NET";
+    case "InProcess":
+      return "In-process";
     case "HttpApi":
       return "HTTP";
     case "Mcp":

@@ -108,7 +108,7 @@ public sealed class WorkerExecutionInvokerTests
             WorkInput.Empty,
             WorkerOptions.Default,
             WorkConfiguration.Default,
-            WorkRequestContext.Create(WorkInvocationChannel.DotNet),
+            WorkRequestContext.Create(WorkInvocationChannel.InProcess),
             WorkerState.Running,
             isStartDeferred: false,
             messages: [],
