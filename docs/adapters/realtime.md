@@ -24,9 +24,10 @@ The default hub path is `/workable/realtime`.
 
 That transport scheme is not automatic. `AddWorkableSignalR()` by itself does not choose one. It is commonly set by [Workable.Entra](../guides/entra-authentication.md), or by host code that wants Workable SignalR requests to authenticate with one specific ASP.NET Core scheme instead of inheriting the ambient default.
 
-When a transport scheme is configured, the host pipeline must run authorization middleware before the hub endpoint executes. If your host already runs `app.UseAuthorization()`, no extra step is needed. If you are using [Microsoft Entra Authentication](../guides/entra-authentication.md), `app.UseWorkableEntraAuthorization()` already calls both `UseAuthentication()` and `UseAuthorization()`.
+When a transport scheme is configured, the host pipeline must run authentication and authorization middleware before the hub endpoint executes. If your host already runs `app.UseAuthentication()` and `app.UseAuthorization()`, no extra step is needed.
 
 ```csharp
+app.UseAuthentication();
 app.UseAuthorization();
 app.MapWorkableSignalR("/internal/work/realtime");
 ```

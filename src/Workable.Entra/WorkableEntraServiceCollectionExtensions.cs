@@ -1,6 +1,5 @@
 using System.Security.Claims;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
-using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -32,15 +31,6 @@ public static class WorkableEntraServiceCollectionExtensions
         var options = new WorkableEntraAuthorizationOptions();
         configure(options);
         return services.AddWorkableEntraAuthorization(options);
-    }
-
-    public static IApplicationBuilder UseWorkableEntraAuthorization(this IApplicationBuilder app)
-    {
-        ArgumentNullException.ThrowIfNull(app);
-
-        app.UseAuthentication();
-        app.UseAuthorization();
-        return app;
     }
 
     private static IServiceCollection AddWorkableEntraAuthorization(
