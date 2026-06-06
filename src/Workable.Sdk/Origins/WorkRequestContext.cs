@@ -13,8 +13,6 @@ public sealed record WorkRequestContext(
 
     public DateTimeOffset CreatedAt => this.Origin.CreatedAt;
 
-    public IReadOnlySet<WorkIdentifier>? Identifiers => this.Origin.Identifiers;
-
     public WorkRequestContext(WorkOrigin origin)
         : this(origin ?? throw new ArgumentNullException(nameof(origin)), null, null, null, false)
     {
