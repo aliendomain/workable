@@ -1,6 +1,5 @@
 namespace Workable;
 public sealed record WorkableHttpSystemDescriptor(
-    WorkSystemId Id,
     string? Name,
     WorkSystemState State,
     bool IsDefault,

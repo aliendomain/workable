@@ -18,8 +18,8 @@ public sealed class WorkEventPayloadTests
             Task.FromResult(WorkExecutionResult.Success(WorkOutput.FromJson("""{"done":true}"""))));
         await system.Start();
 
-        await using var queuedSubscription = system.Events.Subscribe(new WorkEventFilter(DefinitionId: definition.Id, EventType: "worker.queued"));
-        await using var completedSubscription = system.Events.Subscribe(new WorkEventFilter(DefinitionId: definition.Id, EventType: "worker.completed"));
+        await using var queuedSubscription = system.Events.Subscribe(new WorkEventFilter(DefinitionName: definition.Name, EventType: "worker.queued"));
+        await using var completedSubscription = system.Events.Subscribe(new WorkEventFilter(DefinitionName: definition.Name, EventType: "worker.completed"));
         await using var queuedReader = queuedSubscription.Read().GetAsyncEnumerator();
         await using var completedReader = completedSubscription.Read().GetAsyncEnumerator();
 
@@ -241,9 +241,9 @@ public sealed class WorkEventPayloadTests
         });
         await system.Start();
 
-        await using var iterationStartedSubscription = system.Events.Subscribe(new WorkEventFilter(DefinitionId: definition.Id, EventType: "worker.iteration.started"));
-        await using var iterationSubscription = system.Events.Subscribe(new WorkEventFilter(DefinitionId: definition.Id, EventType: "worker.iteration.completed"));
-        await using var waitingSubscription = system.Events.Subscribe(new WorkEventFilter(DefinitionId: definition.Id, EventType: "worker.waiting"));
+        await using var iterationStartedSubscription = system.Events.Subscribe(new WorkEventFilter(DefinitionName: definition.Name, EventType: "worker.iteration.started"));
+        await using var iterationSubscription = system.Events.Subscribe(new WorkEventFilter(DefinitionName: definition.Name, EventType: "worker.iteration.completed"));
+        await using var waitingSubscription = system.Events.Subscribe(new WorkEventFilter(DefinitionName: definition.Name, EventType: "worker.waiting"));
         await using var iterationStartedReader = iterationStartedSubscription.Read().GetAsyncEnumerator();
         await using var iterationReader = iterationSubscription.Read().GetAsyncEnumerator();
         await using var waitingReader = waitingSubscription.Read().GetAsyncEnumerator();
@@ -336,9 +336,9 @@ public sealed class WorkEventPayloadTests
         });
         await system.Start();
 
-        await using var retryingSubscription = system.Events.Subscribe(new WorkEventFilter(DefinitionId: definition.Id, EventType: "worker.retrying"));
-        await using var startedSubscription = system.Events.Subscribe(new WorkEventFilter(DefinitionId: definition.Id, EventType: "worker.started"));
-        await using var iterationStartedSubscription = system.Events.Subscribe(new WorkEventFilter(DefinitionId: definition.Id, EventType: "worker.iteration.started"));
+        await using var retryingSubscription = system.Events.Subscribe(new WorkEventFilter(DefinitionName: definition.Name, EventType: "worker.retrying"));
+        await using var startedSubscription = system.Events.Subscribe(new WorkEventFilter(DefinitionName: definition.Name, EventType: "worker.started"));
+        await using var iterationStartedSubscription = system.Events.Subscribe(new WorkEventFilter(DefinitionName: definition.Name, EventType: "worker.iteration.started"));
         await using var retryingReader = retryingSubscription.Read().GetAsyncEnumerator();
         await using var startedReader = startedSubscription.Read().GetAsyncEnumerator();
         await using var iterationStartedReader = iterationStartedSubscription.Read().GetAsyncEnumerator();
@@ -762,3 +762,10 @@ public sealed class WorkEventPayloadTests
             => Task.FromResult(WorkExecutionResult.Success());
     }
 }
+
+
+
+
+
+
+

@@ -147,7 +147,6 @@ public sealed class WorkableSignalRTests
 
         Assert.Equal(handle.WorkerId, completed.WorkerId);
         Assert.Equal("worker.completed", completed.EventType);
-        Assert.Equal(definition.Id, completed.WorkDefinitionId);
         Assert.Equal(definition.Name, completed.WorkDefinitionName);
         Assert.Equal(["worker.completed"], Required(filter.EventTypes).ToArray());
     }
@@ -183,11 +182,9 @@ public sealed class WorkableSignalRTests
 
         Assert.Equal(handle.WorkerId, queued.WorkerId);
         Assert.Equal("worker.queued", queued.EventType);
-        Assert.Equal(definition.Id, queued.WorkDefinitionId);
         Assert.Equal(definition.Name, queued.WorkDefinitionName);
         Assert.Equal(handle.WorkerId, completed.WorkerId);
         Assert.Equal("worker.completed", completed.EventType);
-        Assert.Equal(definition.Id, completed.WorkDefinitionId);
         Assert.Equal(definition.Name, completed.WorkDefinitionName);
     }
 
@@ -208,7 +205,7 @@ public sealed class WorkableSignalRTests
             "WatchEvents",
             new WorkableRealtimeEventCriteria(
                 EventTypes: ["worker.completed"],
-                DefinitionIds: [definition.Id.Value.ToString("D")],
+                DefinitionNames: [definition.Name],
                 Keys:
                 [
                     new WorkableRealtimeEventKeyCriteria(
@@ -234,10 +231,9 @@ public sealed class WorkableSignalRTests
 
         Assert.Equal(accepted.WorkerId, completed.WorkerId);
         Assert.Equal("worker.completed", completed.EventType);
-        Assert.Equal(definition.Id, completed.WorkDefinitionId);
         Assert.Equal(definition.Name, completed.WorkDefinitionName);
         Assert.Equal([acceptedIdentifier], completed.Identifiers.ToArray());
-        Assert.Equal([definition.Id], Required(filter.DefinitionIds).ToArray());
+        Assert.Equal([definition.Name], Required(filter.DefinitionNames).ToArray());
         Assert.Equal(WorkKeyKind.Identifier, key.Kind);
         Assert.Equal(acceptedIdentifier.Type, key.Type);
         Assert.Equal(acceptedIdentifier.Value, key.Value);
@@ -287,7 +283,6 @@ public sealed class WorkableSignalRTests
         Assert.All(batch.Events, workEvent =>
         {
             Assert.Equal("worker.completed", workEvent.EventType);
-            Assert.Equal(definition.Id, workEvent.WorkDefinitionId);
             Assert.Equal(definition.Name, workEvent.WorkDefinitionName);
         });
         Assert.Equal(

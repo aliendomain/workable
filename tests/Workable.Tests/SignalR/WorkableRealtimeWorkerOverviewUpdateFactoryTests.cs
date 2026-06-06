@@ -1327,7 +1327,6 @@ public sealed class WorkableRealtimeWorkerOverviewUpdateFactoryTests
             DateTimeOffset.UtcNow.AddMinutes(5),
             retryAttempt,
             new WorkWorkerOverviewOrigin(WorkInvocationChannel.HttpApi),
-            new WorkDefinitionId(Guid.NewGuid()),
             "signalr.worker-overview",
             "SignalR",
             0);

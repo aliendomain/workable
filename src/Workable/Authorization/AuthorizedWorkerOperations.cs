@@ -1,6 +1,7 @@
 namespace Workable;
 
 internal sealed class AuthorizedWorkerOperations(
+    IWorkCatalog catalog,
     IWorkerOperations inner,
     IWorkQueryService query,
     WorkAuthorizationEvaluator authorization) : IWorkerOperations
@@ -30,10 +31,12 @@ internal sealed class AuthorizedWorkerOperations(
         CancellationToken cancellationToken = default)
     {
         filter ??= WorkerBulkActionFilter.All;
-        var definitionIds = authorization.HasOperateAllWorkAccess()
+        var definitionNames = authorization.HasOperateAllWorkAccess()
             ? null
-            : authorization.OperableDefinitionIds();
-        if (definitionIds is { Count: 0 })
+            : authorization.OperableDefinitions()
+                .Select(definition => definition.Name)
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        if (definitionNames is { Count: 0 })
         {
             return new WorkerBulkActionOutcome(action, filter, 0, []);
         }
@@ -48,7 +51,7 @@ internal sealed class AuthorizedWorkerOperations(
                 IncludeSubcategories: filter.IncludeSubcategories,
                 Skip: skip,
                 Take: WorkerCriteria.MaximumTake,
-                DefinitionIds: definitionIds);
+                DefinitionNames: definitionNames);
             var result = await query.Workers(criteria, cancellationToken);
             if (result.Workers.Count == 0)
             {
@@ -98,7 +101,8 @@ internal sealed class AuthorizedWorkerOperations(
             return WorkerAuthorizationResult.NotFound;
         }
 
-        return authorization.CanOperate(worker.DefinitionId)
+        return catalog.TryGet(worker.DefinitionName, out var definition) &&
+            authorization.CanOperate(definition)
             ? WorkerAuthorizationResult.Authorized
             : WorkerAuthorizationResult.Unauthorized;
     }

@@ -4,6 +4,7 @@ internal sealed class WorkEventMetadata(
     WorkSystemId workSystemId,
     WorkerId? workerId,
     WorkDefinitionId? definitionId,
+    string? definitionName,
     WorkSubjectId? subjectId,
     WorkConcurrencyKey? concurrencyKey,
     string eventType,
@@ -17,6 +18,8 @@ internal sealed class WorkEventMetadata(
     public WorkerId? WorkerId { get; } = workerId;
 
     public WorkDefinitionId? DefinitionId { get; } = definitionId;
+
+    public string? DefinitionName { get; } = definitionName;
 
     public WorkSubjectId? SubjectId { get; } = subjectId;
 

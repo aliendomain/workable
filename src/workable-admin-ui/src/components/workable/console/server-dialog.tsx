@@ -522,7 +522,6 @@ function createDiscoveredSystemFromStored(
   system: WorkableSystemConnection
 ): WorkableHttpSystemDescriptor {
   return {
-    id: { value: system.id },
     name: system.systemName ?? null,
     state: system.state ?? "Unknown",
     isDefault: !system.systemName,

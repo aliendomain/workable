@@ -11,16 +11,18 @@ public sealed class WorkableRealtimeEventSubscriptionsShould
         var subscriptions = new WorkableRealtimeEventSubscriptions();
         var groups = new RecordingSignalRGroupManager();
         await using var system = CreateSystem();
-        var definitionId = DefinitionId(system, "signalr.subscription.first");
+        const string definitionName = "signalr.subscription.first";
+        var definitionId = DefinitionId(system, definitionName);
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
 
         var watch = subscriptions.WatchEvents(
             "connection-1",
             groups,
             system,
+            system.Catalog,
             new WorkableRealtimeEventCriteria(
                 EventTypes: [" worker.completed ", "WORKER.COMPLETED", " "],
-                DefinitionIds: [definitionId.Value.ToString("D"), "not-a-guid", definitionId.Value.ToString("N")],
+                DefinitionNames: [$" {definitionName} ", definitionName, " "],
                 Keys:
                 [
                     new WorkableRealtimeEventKeyCriteria(WorkKeyKind.Identifier, " batch ", " accepted "),
@@ -41,7 +43,7 @@ public sealed class WorkableRealtimeEventSubscriptionsShould
         Assert.Equal(1, snapshot.GroupConnectionCount);
         Assert.False(snapshot.IsStreaming);
         Assert.Equal(["worker.completed"], Required(filter.EventTypes).ToArray());
-        Assert.Equal([definitionId], Required(filter.DefinitionIds).ToArray());
+        Assert.Equal([definitionName], Required(filter.DefinitionNames).ToArray());
         Assert.Equal(WorkKeyKind.Identifier, key.Kind);
         Assert.Equal("batch", key.Type);
         Assert.Equal("accepted", key.Value);
@@ -65,6 +67,7 @@ public sealed class WorkableRealtimeEventSubscriptionsShould
             "connection-1",
             groups,
             system,
+            system.Catalog,
             new WorkableRealtimeEventCriteria(["worker.completed"]),
             Authorization(readableDefinitionIds: [firstDefinitionId]),
             CancellationToken.None);
@@ -76,6 +79,7 @@ public sealed class WorkableRealtimeEventSubscriptionsShould
             "connection-1",
             groups,
             system,
+            system.Catalog,
             new WorkableRealtimeEventCriteria(["worker.completed"]),
             Authorization(readableDefinitionIds: [secondDefinitionId]),
             CancellationToken.None);
@@ -104,6 +108,7 @@ public sealed class WorkableRealtimeEventSubscriptionsShould
             "connection-1",
             groups,
             system,
+            system.Catalog,
             criteria,
             Authorization(),
             CancellationToken.None);
@@ -115,6 +120,7 @@ public sealed class WorkableRealtimeEventSubscriptionsShould
             "connection-1",
             groups,
             system,
+            system.Catalog,
             criteria,
             CancellationToken.None);
 
@@ -154,6 +160,7 @@ public sealed class WorkableRealtimeEventSubscriptionsShould
             "connection-1",
             groups,
             system,
+            system.Catalog,
             new WorkableRealtimeEventCriteria(["worker.completed"]),
             Authorization(),
             CancellationToken.None));
@@ -174,6 +181,7 @@ public sealed class WorkableRealtimeEventSubscriptionsShould
             connectionId,
             groups,
             system,
+            system.Catalog,
             criteria,
             Authorization(),
             CancellationToken.None);

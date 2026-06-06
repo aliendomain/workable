@@ -16,7 +16,6 @@ public sealed class SessionWorkQueryServiceShould
         var query = new SessionWorkQueryService(inner, requestContext);
         var workerId = WorkerId.New();
         var iteration = new WorkerIterationReference(workerId, 42);
-        var definitionId = WorkDefinitionId.New();
         var workers = new WorkerCriteria(DefinitionName: "session.workers", Take: 7);
         var iterations = new WorkerIterationCriteria(DefinitionName: "session.iterations", Take: 8);
         var definitions = new WorkDefinitionCriteria(Name: "session.definition");
@@ -32,7 +31,6 @@ public sealed class SessionWorkQueryServiceShould
         await query.WorkerIteration(iteration, cancellation.Token);
         await query.Workers(workers, cancellation.Token);
         await query.WorkerIterations(iterations, cancellation.Token);
-        await query.WorkInfo(definitionId, cancellation.Token);
         await query.WorkInfo("session.work", cancellation.Token);
         await query.WorkDefinitions(definitions, cancellation.Token);
         await query.WorkerKeys(workerKeys, cancellation.Token);
@@ -57,7 +55,6 @@ public sealed class SessionWorkQueryServiceShould
             call => AssertCall(call, "WorkerIteration", cancellation.Token, iteration),
             call => AssertCall(call, "Workers", cancellation.Token, workers),
             call => AssertCall(call, "WorkerIterations", cancellation.Token, iterations),
-            call => AssertCall(call, "WorkInfoById", cancellation.Token, definitionId),
             call => AssertCall(call, "WorkInfoByName", cancellation.Token, "session.work"),
             call => AssertCall(call, "WorkDefinitions", cancellation.Token, definitions),
             call => AssertCall(call, "WorkerKeys", cancellation.Token, workerKeys),
@@ -153,11 +150,6 @@ public sealed class SessionWorkQueryServiceShould
                 cancellationToken,
                 new WorkerIterationQueryResult([], 0, 0, 0),
                 criteria);
-
-        public Task<WorkInfo?> WorkInfo(
-            WorkDefinitionId definitionId,
-            CancellationToken cancellationToken = default)
-            => this.Record<WorkInfo?>("WorkInfoById", cancellationToken, null, definitionId);
 
         public Task<WorkInfo?> WorkInfo(
             string name,

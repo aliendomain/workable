@@ -547,7 +547,7 @@ Use `WorkEventFilter` to subscribe only to events the caller can use.
 ```csharp
 await using var subscription = workSystem.Events.Subscribe(
     new WorkEventFilter(
-        DefinitionIds: new HashSet<WorkDefinitionId> { sendWelcomeEmail.Id },
+        DefinitionNames: new HashSet<string>(StringComparer.OrdinalIgnoreCase) { sendWelcomeEmail.Name },
         Keys: new HashSet<WorkEventKeyFilter>
         {
             new(WorkKeyKind.Identifier, "order", "order-789")
@@ -562,7 +562,7 @@ await using var subscription = workSystem.Events.Subscribe(
 Filters can match:
 
 - one worker id
-- one definition id or a set of definition ids
+- one definition name or a set of definition names
 - one subject id
 - one concurrency key
 - one identifier
@@ -607,7 +607,7 @@ Create the subscription before the event you want to observe.
 ```csharp
 await using var subscription = workSystem.Events.Subscribe(
     new WorkEventFilter(
-        DefinitionId: sendWelcomeEmail.Id,
+        DefinitionName: sendWelcomeEmail.Name,
         EventType: "worker.completed"));
 
 await using var reader = subscription.Read(cancellationToken).GetAsyncEnumerator();

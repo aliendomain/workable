@@ -246,10 +246,8 @@ Worker messages are delivered through `workable.event` for single events and `wo
 ```csharp
 public sealed record WorkableRealtimeEvent(
     DateTimeOffset OccurredAt,
-    WorkSystemId WorkSystemId,
     string? WorkSystemName,
     WorkerId? WorkerId,
-    WorkDefinitionId? WorkDefinitionId,
     string? WorkDefinitionName,
     WorkSubjectId? SubjectId,
     WorkConcurrencyKey? ConcurrencyKey,
@@ -275,7 +273,7 @@ await connection.InvokeAsync(
     "WatchEvents",
     new WorkableRealtimeEventCriteria(
         EventTypes: ["worker.completed", "worker.failed"],
-        DefinitionIds: [sendWelcomeEmail.Id.Value.ToString("D")],
+        DefinitionNames: [sendWelcomeEmail.Name],
         Keys:
         [
             new WorkableRealtimeEventKeyCriteria(

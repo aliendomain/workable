@@ -7,4 +7,4 @@ public sealed record WorkIterationKeyTypeCriteria(
     IReadOnlySet<WorkCompletionStatus>? Statuses = null,
     int Skip = 0,
     int Take = WorkIterationKeyCriteria.DefaultTake,
-    IReadOnlySet<WorkDefinitionId>? DefinitionIds = null);
+    IReadOnlySet<string>? DefinitionNames = null);

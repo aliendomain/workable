@@ -119,7 +119,6 @@ internal sealed class WorkQueueDurabilityCoordinator(
         if (this.activeStore is null)
         {
             return WorkQueueOutcome.Invalid(
-                request.Definition.Id,
                 [WorkMessage.Error(
                     "workable.queue_durability.store_required",
                     "Durable queueing is enabled for this work, but no durable queue store is registered.",
@@ -141,7 +140,6 @@ internal sealed class WorkQueueDurabilityCoordinator(
             }
 
             return WorkQueueOutcome.Invalid(
-                request.Definition.Id,
                 [WorkMessage.Error(
                     "workable.queue_durability.duplicate",
                     exception.Message,
@@ -150,7 +148,6 @@ internal sealed class WorkQueueDurabilityCoordinator(
         catch (WorkPersistenceStoreUnavailableException exception)
         {
             return WorkQueueOutcome.Invalid(
-                request.Definition.Id,
                 [WorkMessage.Error(
                     "workable.queue_durability.store_unreachable",
                     this.CreateStoreUnreachableMessage(exception),
@@ -158,7 +155,6 @@ internal sealed class WorkQueueDurabilityCoordinator(
         }
 
         return WorkQueueOutcome.Accepted(
-            request.Definition.Id,
             request.WorkerId,
             [WorkMessage.Info(
                 "workable.queue_durability.persisted",
@@ -173,7 +169,6 @@ internal sealed class WorkQueueDurabilityCoordinator(
         if (this.activeStore is null)
         {
             return WorkQueueOutcome.Invalid(
-                request.Definition.Id,
                 [WorkMessage.Error(
                     "workable.idempotency.persistence_store_required",
                     "Persistence-backed idempotency is enabled for this work, but no work persistence store is registered.",
@@ -192,7 +187,6 @@ internal sealed class WorkQueueDurabilityCoordinator(
                 request.SubjectId,
                 WorkCoordinationStorage.Persistent);
             return WorkQueueOutcome.Invalid(
-                request.Definition.Id,
                 [WorkMessage.Error(
                     "workable.idempotency.duplicate_subject",
                     exception.Message,
@@ -201,14 +195,13 @@ internal sealed class WorkQueueDurabilityCoordinator(
         catch (WorkPersistenceStoreUnavailableException exception)
         {
             return WorkQueueOutcome.Invalid(
-                request.Definition.Id,
                 [WorkMessage.Error(
                     "workable.idempotency.persistence_store_unreachable",
                     this.CreateStoreUnreachableMessage(exception),
                     "configuration.coordination.storage")]);
         }
 
-        return WorkQueueOutcome.Accepted(request.Definition.Id, request.WorkerId);
+        return WorkQueueOutcome.Accepted(request.WorkerId);
     }
 
     public WorkQueueDurabilityEnqueueRequest CreateRequest(

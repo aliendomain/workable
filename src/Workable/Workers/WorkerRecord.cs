@@ -953,7 +953,6 @@ internal sealed class WorkerRecord(
             this.Id,
             this.Revision,
             this.StateSequence,
-            this.Work.Definition.Id,
             this.Work.Definition.Name,
             this.Work.Definition.Category,
             this.SubjectId,
@@ -987,6 +986,7 @@ internal sealed class WorkerRecord(
 
     private WorkerReadModelWorker CreateReadModelWorkerLocked()
         => WorkerReadModelWorker.From(
+            this.Work.Definition.Id,
             this.ToOverviewItemLocked(),
             this.Configuration.Recurrence.IsEnabled,
             this.Configuration.Coordination.IsConcurrencyEnabled,
@@ -1409,6 +1409,7 @@ internal sealed class WorkerRecord(
             workSystemId,
             this.Id,
             this.Work.Definition.Id,
+            this.Work.Definition.Name,
             this.SubjectId,
             this.ConcurrencyKey,
             eventType,
@@ -1474,7 +1475,6 @@ internal sealed class WorkerRecord(
             this.Id,
             this.Revision,
             this.StateSequence,
-            this.Work.Definition.Id,
             this.Work.Definition.Name,
             this.Work.Definition.Category,
             this.SubjectId,
@@ -1501,7 +1501,6 @@ internal sealed class WorkerRecord(
     private WorkerOverviewItem ToOverviewItemLocked()
         => new(
             this.Id,
-            this.Work.Definition.Id,
             this.Work.Definition.Name,
             this.SubjectId,
             this.ConcurrencyKey,

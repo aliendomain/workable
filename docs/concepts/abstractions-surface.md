@@ -25,13 +25,12 @@ The package revolves around three root contracts:
 - `IWorkSystem`: one hosted system and its public facets
 - `IWorkSystemSession`: the caller-scoped version of that same surface
 
-Inject `IWorkSystem` when you just need the default hosted system. Inject `IWorkSystemRegistry` when the caller needs to choose by `WorkSystemId` or by name.
+Inject `IWorkSystem` when you just need the default hosted system. Inject `IWorkSystemRegistry` when the caller needs to choose among named systems.
 
 `IWorkSystemRegistry` is intentionally small:
 
 - `Default`
 - `Systems`
-- `TryGet(...)` by id
 - `TryGet(...)` by name
 
 That keeps multi-system discovery on the public contract without forcing consumers to know anything about the host's internal registration model.

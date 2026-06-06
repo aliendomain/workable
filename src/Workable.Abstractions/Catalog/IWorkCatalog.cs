@@ -9,8 +9,6 @@ public interface IWorkCatalog
 
     IReadOnlyList<WorkDefinition> ListByCategory(string category, bool includeSubcategories = true);
 
-    bool TryGet(WorkDefinitionId id, [NotNullWhen(true)] out WorkDefinition? definition);
-
     bool TryGet(string name, [NotNullWhen(true)] out WorkDefinition? definition);
 
     Task<WorkDefinitionReconfigurationOutcome> Reconfigure(

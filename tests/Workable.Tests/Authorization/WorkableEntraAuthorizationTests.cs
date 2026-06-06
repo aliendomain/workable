@@ -213,7 +213,7 @@ public sealed class WorkableEntraAuthorizationTests
 
         var definition = Assert.Single(session.Catalog.Definitions);
         await system.Start(requestContext);
-        var handle = await session.Queue.Enqueue(definition.Id);
+        var handle = await session.Queue.Enqueue(definition.Name);
 
         Assert.Equal("entra.target", definition.Name);
         Assert.True(handle.QueueOutcome.IsAccepted);
@@ -240,3 +240,4 @@ public sealed class WorkableEntraAuthorizationTests
         return new MessageReceivedContext(httpContext, scheme, options);
     }
 }
+

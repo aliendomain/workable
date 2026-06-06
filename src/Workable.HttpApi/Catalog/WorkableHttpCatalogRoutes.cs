@@ -43,9 +43,9 @@ internal static class WorkableHttpCatalogRoutes
             return Results.Ok(catalog.GetDefinitions(session));
         });
 
-        group.MapGet("/definitions/{definitionId:guid}", (
+        group.MapGet("/definitions/{name}", (
             HttpContext httpContext,
-            Guid definitionId,
+            string name,
             WorkableHttpTopologyResolver topology,
             WorkableHttpCatalogAdapter catalog,
             IWorkRequestContextFactory requestContexts) =>
@@ -59,13 +59,13 @@ internal static class WorkableHttpCatalogRoutes
                 httpContext,
                 system,
                 requestContexts);
-            var definition = catalog.GetDefinition(session, new WorkDefinitionId(definitionId));
+            var definition = catalog.GetDefinition(session, name);
             return definition is null ? Results.NotFound() : Results.Ok(definition);
         });
 
-        group.MapPost("/definitions/{definitionId:guid}/reconfigure", async (
+        group.MapPost("/definitions/{name}/reconfigure", async (
             HttpContext httpContext,
-            Guid definitionId,
+            string name,
             WorkableHttpDefinitionReconfigurationRequest request,
             WorkableHttpTopologyResolver topology,
             WorkableHttpCatalogAdapter catalog,
@@ -83,7 +83,7 @@ internal static class WorkableHttpCatalogRoutes
                 requestContexts);
             var result = await catalog.ReconfigureDefinition(
                 session,
-                new WorkDefinitionId(definitionId),
+                name,
                 request,
                 cancellationToken);
             return WorkableHttpRouteResults.ToDefinitionReconfigurationHttpResult(result);

@@ -5,22 +5,6 @@ public sealed class WorkableHttpQueryAdapter : WorkableViewQueryAdapter
     public async Task<WorkableHttpWorkInfo?> DefinitionInfo(
         IWorkSystemSession session,
         IWorkSystem system,
-        WorkDefinitionId definitionId,
-        CancellationToken cancellationToken = default)
-    {
-        var info = await this.WorkInfo(session, definitionId, cancellationToken);
-        return info is null
-            ? null
-            : new WorkableHttpWorkInfo(
-                info.Definition,
-                info.Status,
-                info.Workers,
-                WorkableHttpQueueRequestDescriptor.Create(system));
-    }
-
-    public async Task<WorkableHttpWorkInfo?> DefinitionInfo(
-        IWorkSystemSession session,
-        IWorkSystem system,
         string name,
         CancellationToken cancellationToken = default)
     {
@@ -49,7 +33,7 @@ public sealed class WorkableHttpQueryAdapter : WorkableViewQueryAdapter
                 worker.Input,
                 worker.SubjectId,
                 worker.ConcurrencyKey,
-                await this.WorkInfo(session, worker.DefinitionId, cancellationToken),
+                await this.WorkInfo(session, worker.DefinitionName, cancellationToken),
                 WorkableHttpQueueRequestDescriptor.Create(system));
     }
 
@@ -87,7 +71,6 @@ public sealed class WorkableHttpQueryAdapter : WorkableViewQueryAdapter
 
         return new WorkableHttpWorkerIterationDetail(
             worker.Id,
-            worker.DefinitionId,
             worker.DefinitionName,
             worker.SubjectId,
             worker.ConcurrencyKey,

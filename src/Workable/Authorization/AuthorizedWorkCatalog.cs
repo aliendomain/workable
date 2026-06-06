@@ -13,17 +13,6 @@ internal sealed class AuthorizedWorkCatalog(IWorkCatalog inner, WorkAuthorizatio
         => [.. inner.ListByCategory(category, includeSubcategories)
             .Where(authorization.CanRead)];
 
-    public bool TryGet(WorkDefinitionId id, [NotNullWhen(true)] out WorkDefinition? definition)
-    {
-        if (inner.TryGet(id, out definition) && authorization.CanRead(definition))
-        {
-            return true;
-        }
-
-        definition = null;
-        return false;
-    }
-
     public bool TryGet(string name, [NotNullWhen(true)] out WorkDefinition? definition)
     {
         if (inner.TryGet(name, out var found) && authorization.CanRead(found))
@@ -40,7 +29,21 @@ internal sealed class AuthorizedWorkCatalog(IWorkCatalog inner, WorkAuthorizatio
         WorkDefinitionVersion definition,
         WorkDefinitionReconfiguration changes,
         CancellationToken cancellationToken = default)
-        => authorization.CanOperate(definition.DefinitionId)
-            ? inner.Reconfigure(definition, changes, cancellationToken)
-            : Task.FromResult(WorkDefinitionReconfigurationOutcome.Unauthorized(definition.DefinitionId));
+    {
+        if (TryGetDefinition(definition.DefinitionId, out var target) &&
+            authorization.CanOperate(target))
+        {
+            return inner.Reconfigure(definition, changes, cancellationToken);
+        }
+
+        return TryGetDefinition(definition.DefinitionId, out target)
+            ? Task.FromResult(WorkDefinitionReconfigurationOutcome.Unauthorized(target.Name))
+            : Task.FromResult(WorkDefinitionReconfigurationOutcome.Unauthorized(definition.DefinitionId.ToString()));
+    }
+
+    private bool TryGetDefinition(WorkDefinitionId id, [NotNullWhen(true)] out WorkDefinition? definition)
+    {
+        definition = inner.Definitions.SingleOrDefault(candidate => candidate.Id == id);
+        return definition is not null;
+    }
 }

@@ -116,8 +116,8 @@ public sealed class WorkSystemAuthorizationConfigurationTests
         var system = provider.GetRequiredService<IWorkSystem>();
         await system.Start();
         var operatorSession = system.CreateSession(CreateRequestContext("operator"));
-        await operatorSession.Queue.Enqueue(visible.Id);
-        await operatorSession.Queue.Enqueue(hidden.Id);
+        await operatorSession.Queue.Enqueue(visible.Name);
+        await operatorSession.Queue.Enqueue(hidden.Name);
         await TestEventually.Until(async () =>
             (await operatorSession.Query.Workers(new WorkerCriteria(Take: 10))).TotalCount == 2);
 
@@ -125,8 +125,8 @@ public sealed class WorkSystemAuthorizationConfigurationTests
 
         Assert.Equal(visible.Id, Assert.Single(readerSession.Catalog.Definitions).Id);
         Assert.Equal(visible.Id, Assert.Single((await readerSession.Query.WorkDefinitions()).Definitions).Id);
-        Assert.Equal(visible.Id, Assert.Single((await readerSession.Query.Workers(new WorkerCriteria(Take: 10))).Workers).DefinitionId);
-        Assert.Null(await readerSession.Query.WorkInfo(hidden.Id));
+        Assert.Equal(visible.Name, Assert.Single((await readerSession.Query.Workers(new WorkerCriteria(Take: 10))).Workers).DefinitionName);
+        Assert.Null(await readerSession.Query.WorkInfo(hidden.Name));
     }
 
     [Fact]
@@ -151,8 +151,8 @@ public sealed class WorkSystemAuthorizationConfigurationTests
         await system.Start();
         var session = system.CreateSession(CreateRequestContext("operator"));
 
-        var accepted = await session.Queue.Enqueue(visible.Id);
-        var rejected = await session.Queue.Enqueue(hidden.Id);
+        var accepted = await session.Queue.Enqueue(visible.Name);
+        var rejected = await session.Queue.Enqueue(hidden.Name);
 
         Assert.True(accepted.QueueOutcome.IsAccepted);
         Assert.Equal(WorkQueueStatus.Unauthorized, rejected.QueueOutcome.Status);
@@ -178,7 +178,7 @@ public sealed class WorkSystemAuthorizationConfigurationTests
             .BuildServiceProvider();
         var system = provider.GetRequiredService<IWorkSystem>();
         await system.Start();
-        var queued = await system.CreateSession(CreateRequestContext("operator")).Queue.Enqueue(definition.Id);
+        var queued = await system.CreateSession(CreateRequestContext("operator")).Queue.Enqueue(definition.Name);
         var worker = await system.CreateSession(CreateRequestContext("operator")).Query.Worker(
             queued.WorkerId ?? throw new InvalidOperationException("Expected queued worker."));
 
@@ -247,7 +247,7 @@ public sealed class WorkSystemAuthorizationConfigurationTests
         await system.Start();
 
         var session = system.CreateSession(CreateRequestContext("operator"));
-        var queued = await session.Queue.Enqueue(definition.Id);
+        var queued = await session.Queue.Enqueue(definition.Name);
 
         Assert.Empty(session.Catalog.Definitions);
         Assert.Equal(WorkQueueStatus.Unauthorized, queued.QueueOutcome.Status);
@@ -267,7 +267,7 @@ public sealed class WorkSystemAuthorizationConfigurationTests
         await system.Start();
 
         var session = system.CreateSession(CreateRequestContext("operator"));
-        var queued = await session.Queue.Enqueue(definition.Id);
+        var queued = await session.Queue.Enqueue(definition.Name);
 
         Assert.Single(session.Catalog.Definitions);
         Assert.True(queued.QueueOutcome.IsAccepted);
@@ -295,7 +295,7 @@ public sealed class WorkSystemAuthorizationConfigurationTests
 
         var session = system.CreateSession(CreateRequestContext("operator"));
         var registeredDefinition = Assert.Single(session.Catalog.Definitions);
-        var queued = await session.Queue.Enqueue(definition.Id);
+        var queued = await session.Queue.Enqueue(definition.Name);
 
         Assert.Equal(WorkAuthorizationRegistrationSource.Fluent, registeredDefinition.Authorization.Read.Source);
         Assert.Equal(["explicit.read"], registeredDefinition.Authorization.Read.Groups.OrderBy(group => group).ToArray());
@@ -459,7 +459,7 @@ public sealed class WorkSystemAuthorizationConfigurationTests
         await system.Start();
 
         var session = system.CreateSession(CreateRequestContext("work-admin"));
-        var queued = await session.Queue.Enqueue(definition.Id);
+        var queued = await session.Queue.Enqueue(definition.Name);
 
         Assert.Single(session.Catalog.Definitions);
         Assert.True(queued.QueueOutcome.IsAccepted);
@@ -482,7 +482,7 @@ public sealed class WorkSystemAuthorizationConfigurationTests
         await system.Start();
 
         var session = system.CreateSession(CreateRequestContext("system-admin"));
-        var queued = await session.Queue.Enqueue(definition.Id);
+        var queued = await session.Queue.Enqueue(definition.Name);
 
         Assert.Single(session.Catalog.Definitions);
         Assert.Equal(WorkQueueStatus.Unauthorized, queued.QueueOutcome.Status);
@@ -564,7 +564,7 @@ public sealed class WorkSystemAuthorizationConfigurationTests
         };
 
         var session = system.CreateSession(requestContext);
-        var queued = await session.Queue.Enqueue(definition.Id);
+        var queued = await session.Queue.Enqueue(definition.Name);
 
         Assert.Single(session.Catalog.Definitions);
         Assert.True(queued.QueueOutcome.IsAccepted);
@@ -586,7 +586,7 @@ public sealed class WorkSystemAuthorizationConfigurationTests
         await system.Start();
         var session = system.CreateSession(CreateKnownAuthenticatedRequestContext("known-user"));
 
-        var queued = await session.Queue.Enqueue(definition.Id);
+        var queued = await session.Queue.Enqueue(definition.Name);
 
         Assert.True(queued.QueueOutcome.IsAccepted);
     }
@@ -611,7 +611,7 @@ public sealed class WorkSystemAuthorizationConfigurationTests
             description: "Authenticated but unknown actor.",
             isAuthenticated: true));
 
-        var queued = await session.Queue.Enqueue(definition.Id);
+        var queued = await session.Queue.Enqueue(definition.Name);
 
         Assert.Equal(WorkQueueStatus.Unauthorized, queued.QueueOutcome.Status);
     }
@@ -703,3 +703,4 @@ internal static class WorkSystemAuthorizationConfigurationTestExtensions
         Action<IWorkSystemBuilder> configure)
         => global::Workable.WorkableServiceCollectionExtensions.AddWorkableSystem(services, name, configure);
 }
+

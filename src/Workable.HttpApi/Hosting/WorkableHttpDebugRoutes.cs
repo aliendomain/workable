@@ -38,7 +38,6 @@ internal static class WorkableHttpDebugRoutes
                 : connectionId.Trim();
 
             return Results.Ok(new WorkableRealtimeDebugSystemSnapshot(
-                system.Id,
                 system.Name,
                 system.State.ToString(),
                 FilterByConnectionId(

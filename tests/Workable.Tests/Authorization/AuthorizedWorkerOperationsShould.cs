@@ -74,9 +74,9 @@ public sealed class AuthorizedWorkerOperationsShould
         Assert.False(criteria.IncludeSubcategories);
         Assert.Equal(0, criteria.Skip);
         Assert.Equal(WorkerCriteria.MaximumTake, criteria.Take);
-        var definitionIds = criteria.DefinitionIds
-            ?? throw new InvalidOperationException("Expected scoped definition ids.");
-        Assert.Equal(visible.Id, Assert.Single(definitionIds));
+        var definitionNames = criteria.DefinitionNames
+            ?? throw new InvalidOperationException("Expected scoped definition names.");
+        Assert.Equal(visible.Name, Assert.Single(definitionNames));
         Assert.Equal([
             new RecordedAction(new WorkerVersion(first, Revision: 3), WorkAction.Cancel),
             new RecordedAction(new WorkerVersion(second, Revision: 5), WorkAction.Cancel),
@@ -101,6 +101,7 @@ public sealed class AuthorizedWorkerOperationsShould
         query = new RecordingWorkQueryService();
         inner = new RecordingWorkerOperations();
         return new AuthorizedWorkerOperations(
+            catalog,
             inner,
             query,
             new WorkAuthorizationEvaluator(catalog, Groups(groups), false));
@@ -122,24 +123,23 @@ public sealed class AuthorizedWorkerOperationsShould
         return new WorkerSnapshot(
             workerId,
             revision,
-            StateSequence: 1,
-            definition.Id,
+            1,
             definition.Name,
             definition.Category,
-            SubjectId: null,
-            ConcurrencyKey: null,
-            Identifiers: new HashSet<WorkIdentifier>(),
+            null,
+            null,
+            new HashSet<WorkIdentifier>(),
             WorkRequestContext.Create(WorkInvocationChannel.InProcess),
             WorkerState.Queued,
-            Input: null,
-            Output: null,
+            null,
+            null,
             WorkerOptions.Default,
             definition.Configuration,
-            Messages: [],
-            InterruptionReason: null,
-            CreatedAt: now,
-            StateChangedAt: now,
-            UpdatedAt: now);
+            [],
+            null,
+            now,
+            now,
+            now);
     }
 
     private static WorkerOverviewItem CreateWorkerOverview(
@@ -150,15 +150,14 @@ public sealed class AuthorizedWorkerOperationsShould
         var now = DateTimeOffset.UtcNow;
         return new WorkerOverviewItem(
             workerId,
-            definition.Id,
             definition.Name,
-            SubjectId: null,
-            ConcurrencyKey: null,
-            Identifiers: new HashSet<WorkIdentifier>(),
+            null,
+            null,
+            new HashSet<WorkIdentifier>(),
             revision,
             definition.Category,
             WorkerState.Queued,
-            InterruptionReason: null,
+            null,
             now,
             now,
             now);

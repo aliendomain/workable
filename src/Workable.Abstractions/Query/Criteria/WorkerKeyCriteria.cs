@@ -8,7 +8,7 @@ public sealed record WorkerKeyCriteria(
     IReadOnlySet<WorkerState>? States = null,
     int Skip = 0,
     int Take = WorkerKeyCriteria.DefaultTake,
-    IReadOnlySet<WorkDefinitionId>? DefinitionIds = null)
+    IReadOnlySet<string>? DefinitionNames = null)
 {
     public const int DefaultTake = 50;
     public const int MaximumTake = 50;

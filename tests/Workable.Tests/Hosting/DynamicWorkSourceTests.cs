@@ -220,7 +220,7 @@ public sealed class DynamicWorkSourceTests
         await tracker.StartupWorkCompleted.Task.WaitAsync(TimeSpan.FromSeconds(5));
 
         var workers = (await system.Query.Workers(new WorkerCriteria())).Workers;
-        Assert.Contains(workers, worker => worker.DefinitionId == StartupByIdSource.DefinitionId);
+        Assert.Contains(workers, worker => worker.DefinitionName == "startup.by-id");
     }
 
     [Fact]

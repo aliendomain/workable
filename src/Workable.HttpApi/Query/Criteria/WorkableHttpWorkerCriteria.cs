@@ -1,7 +1,6 @@
 namespace Workable;
 
 public sealed record WorkableHttpWorkerCriteria(
-    WorkDefinitionId? DefinitionId = null,
     string? DefinitionName = null,
     WorkSubjectId? SubjectId = null,
     WorkConcurrencyKey? ConcurrencyKey = null,
@@ -21,21 +20,20 @@ public sealed record WorkableHttpWorkerCriteria(
 {
     public WorkerCriteria ToWorkerCriteria()
         => new(
-            this.DefinitionId,
-            this.DefinitionName,
-            this.SubjectId,
-            this.ConcurrencyKey,
-            this.Identifier,
-            this.States?.ToHashSet(),
-            this.Configuration,
-            this.CreatedFrom,
-            this.CreatedTo,
-            this.UpdatedFrom,
-            this.UpdatedTo,
-            this.Sort,
-            this.Direction,
-            this.Skip,
-            this.Take,
-            this.Category,
-            this.IncludeSubcategories);
+            DefinitionName: this.DefinitionName,
+            SubjectId: this.SubjectId,
+            ConcurrencyKey: this.ConcurrencyKey,
+            Identifier: this.Identifier,
+            States: this.States?.ToHashSet(),
+            Configuration: this.Configuration,
+            CreatedFrom: this.CreatedFrom,
+            CreatedTo: this.CreatedTo,
+            UpdatedFrom: this.UpdatedFrom,
+            UpdatedTo: this.UpdatedTo,
+            Sort: this.Sort,
+            Direction: this.Direction,
+            Skip: this.Skip,
+            Take: this.Take,
+            Category: this.Category,
+            IncludeSubcategories: this.IncludeSubcategories);
 }

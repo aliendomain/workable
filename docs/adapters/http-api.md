@@ -117,14 +117,12 @@ Diagnostics require the system-level `Diagnostics` permission or `SystemAdminist
 
 ```json
 {
-  "id": { "value": "11111111-1111-1111-1111-111111111111" },
   "name": "email",
   "state": "Started",
   "queue": {
     "rejectedWorkCount": 0,
     "lastRejectedAt": null,
     "lastRejectedStatus": null,
-    "lastRejectedDefinitionId": null,
     "lastRejectedCode": null,
     "lastRejectedMessage": null,
     "alertableRejectedWorkCount": 0,
@@ -215,7 +213,6 @@ Stopping a system stops accepting new work, interrupts active workers, waits for
 
 ```json
 {
-  "id": { "value": "11111111-1111-1111-1111-111111111111" },
   "name": "email",
   "state": "Stopped",
   "forceInterruptedWorkers": [],
@@ -235,12 +232,12 @@ The definitions endpoint returns the work definitions visible to the current cal
 GET /workable/definitions
 ```
 
-`GET /workable/definitions` also supports `category`, `includeSubcategories`, and `level` query-string parameters. `level=true` returns the lightweight catalog level for one category instead of full definition records. Those lightweight definition rows include only `id`, `name`, and `category`.
+`GET /workable/definitions` also supports `category`, `includeSubcategories`, and `level` query-string parameters. `level=true` returns the lightweight catalog level for one category instead of full definition records. Those lightweight definition rows include only `name` and `category`.
 
-Read a single full definition by id.
+Read a single full definition by name.
 
 ```http
-GET /workable/definitions/11111111-1111-1111-1111-111111111111
+GET /workable/definitions/email.welcome.send
 ```
 
 Definitions include their invocation configuration and authorization metadata. Definitions that the caller cannot read are filtered out entirely. Definitions that allow read but not operate access still appear in discovery responses so clients can display them as unavailable through HTTP queueing. Queueing that work through HTTP returns an authorization response.
@@ -262,7 +259,7 @@ Content-Type: application/json
 Reconfigure a definition's default worker options and default runtime configuration for future workers.
 
 ```http
-POST /workable/definitions/11111111-1111-1111-1111-111111111111/reconfigure
+POST /workable/definitions/email.welcome.send/reconfigure
 Content-Type: application/json
 
 {
@@ -284,14 +281,13 @@ The definition reconfiguration route requires the current definition revision. A
 
 ## Work Info
 
-Get work info by work name or work definition id. The definition-id form is available under both `/work/id/{definitionId}/info` and `/definitions/{definitionId}/info`.
+Get work info by work name. The same definition can be addressed under either `/work/{name}/info` or `/definitions/{name}/info`.
 
 The HTTP `info` payload includes the full definition, worker rollup/status, and `queueRequestSchema`, so clients can open definition configuration or queue UI without a second schema request.
 
 ```http
 GET /workable/work/email.welcome.send/info
-GET /workable/work/id/11111111-1111-1111-1111-111111111111/info
-GET /workable/definitions/11111111-1111-1111-1111-111111111111/info
+GET /workable/definitions/email.welcome.send/info
 ```
 
 ## Queue Work
@@ -300,19 +296,6 @@ Queue work by name.
 
 ```http
 POST /workable/work/email.welcome.send
-Content-Type: application/json
-
-{
-  "input": {
-    "userId": "user-123"
-  }
-}
-```
-
-Queue work by definition id.
-
-```http
-POST /workable/definitions/11111111-1111-1111-1111-111111111111/queue
 Content-Type: application/json
 
 {
@@ -422,7 +405,7 @@ Content-Type: application/json
 }
 ```
 
-Component and view requests accept an optional `scope`. Scopes can target `definitionId`, `definitionName`, or `category`. When `category` is supplied, `includeSubcategories` defaults to `true`. Requests can also supply component `shape` and component-specific `options`.
+Component and view requests accept an optional `scope`. Scopes can target `definitionName` or `category`. When `category` is supplied, `includeSubcategories` defaults to `true`. Requests can also supply component `shape` and component-specific `options`.
 
 Use these routes when the caller wants the shared transport-oriented view contract over HTTP. See [Views](../concepts/views.md) for canonical view names, component names, default compositions, shapes, scope behavior, and the efficiency model behind the contract.
 

@@ -22,7 +22,6 @@ internal sealed class WorkQueueAcceptanceCoordinator(
         if (idempotencyErrors.Count > 0)
         {
             return PreparedWorkQueueAcceptance.Rejected(WorkQueueOutcome.Invalid(
-                registeredWork.Definition.Id,
                 idempotencyErrors));
         }
 
@@ -43,7 +42,6 @@ internal sealed class WorkQueueAcceptanceCoordinator(
             runtimePlan.Options.QueueDurabilityTransaction is not null)
         {
             return PreparedWorkQueueAcceptance.Rejected(WorkQueueOutcome.Invalid(
-                registeredWork.Definition.Id,
                 [WorkMessage.Error(
                     "workable.idempotency.persistence_transaction_requires_durable_queue",
                     "Caller-owned persistence transactions require durable queueing so Workable can wait until the transaction commits before materializing the worker.",
@@ -69,13 +67,11 @@ internal sealed class WorkQueueAcceptanceCoordinator(
             if (reservation.Status == WorkConcurrencyReservationStatus.Rejected)
             {
                 return PreparedWorkQueueAcceptance.Rejected(WorkQueueOutcome.Invalid(
-                    registeredWork.Definition.Id,
                     [WorkMessage.Info("workable.concurrency.capacity_reached", "Concurrency capacity has been reached for this work group.", "configuration.coordination.concurrency.maximumCapacity")]));
             }
 
             var reservedWorker = reservation.Worker ?? throw new InvalidOperationException("Accepted concurrency queue reservation did not include a worker.");
             var outcome = WorkQueueOutcome.Accepted(
-                registeredWork.Definition.Id,
                 workerId,
                 reservation.Status == WorkConcurrencyReservationStatus.Deferred
                     ? [WorkMessage.Info("workable.concurrency.start_deferred", "Worker start was deferred until concurrency capacity is available.", "configuration.coordination.concurrency")]
@@ -98,7 +94,7 @@ internal sealed class WorkQueueAcceptanceCoordinator(
             now);
 
         return PreparedWorkQueueAcceptance.InMemory(
-            WorkQueueOutcome.Accepted(registeredWork.Definition.Id, workerId),
+            WorkQueueOutcome.Accepted(workerId),
             record,
             this.CreateIdempotencyRequest(workerId, registeredWork, input, runtimePlan, requestContext, now),
             shouldScheduleStart: shouldStart,

@@ -24,12 +24,6 @@ public sealed class SessionWorkQueueServiceShould
             "https://workable.test/session");
         var session = system.CreateSession(requestContext);
 
-        var byIdUntyped = await session.Queue.Enqueue(
-            definition.Id,
-            WorkInput.FromValue(new SessionQueueInput("id-untyped")));
-        var byIdTyped = await session.Queue.Enqueue(
-            definition.Id,
-            new SessionQueueInput("id-typed"));
         var byNameUntyped = await session.Queue.Enqueue(
             definition.Name,
             WorkInput.FromValue(new SessionQueueInput("name-untyped")));
@@ -37,8 +31,6 @@ public sealed class SessionWorkQueueServiceShould
             definition.Name,
             new SessionQueueInput("name-typed"));
 
-        AssertQueueResult("id-untyped", await byIdUntyped.WaitForCompletion<SessionQueueResult>());
-        AssertQueueResult("id-typed", await byIdTyped.WaitForCompletion<SessionQueueResult>());
         AssertQueueResult("name-untyped", await byNameUntyped.WaitForCompletion<SessionQueueResult>());
         AssertQueueResult("name-typed", await byNameTyped.WaitForCompletion<SessionQueueResult>());
     }

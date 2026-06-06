@@ -3,7 +3,6 @@ public sealed record WorkerSnapshot(
     WorkerId Id,
     long Revision,
     long StateSequence,
-    WorkDefinitionId DefinitionId,
     string DefinitionName,
     string DefinitionCategory,
     WorkSubjectId? SubjectId,

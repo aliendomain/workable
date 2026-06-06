@@ -107,7 +107,6 @@ internal sealed class WorkQueueService(
         WorkDefinition definition,
         WorkInvocationChannel channel)
         => WorkQueueOutcome.Invalid(
-            definition.Id,
             [WorkMessage.Error(
                 "workable.invocation.channel_not_allowed",
                 $"Work '{definition.Name}' cannot be invoked through {DescribeChannel(channel)}.",

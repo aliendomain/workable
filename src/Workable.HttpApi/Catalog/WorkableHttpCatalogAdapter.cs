@@ -7,26 +7,33 @@ public sealed class WorkableHttpCatalogAdapter
 
     public WorkDefinition? GetDefinition(
         IWorkSystemSession session,
-        WorkDefinitionId definitionId)
+        string name)
     {
         ArgumentNullException.ThrowIfNull(session);
+        ArgumentException.ThrowIfNullOrWhiteSpace(name);
 
-        return session.Catalog.TryGet(definitionId, out var definition)
+        return session.Catalog.TryGet(name, out var definition)
             ? definition
             : null;
     }
 
     public Task<WorkDefinitionReconfigurationOutcome> ReconfigureDefinition(
         IWorkSystemSession session,
-        WorkDefinitionId definitionId,
+        string name,
         WorkableHttpDefinitionReconfigurationRequest request,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(session);
         ArgumentNullException.ThrowIfNull(request);
+        ArgumentException.ThrowIfNullOrWhiteSpace(name);
+
+        if (!session.Catalog.TryGet(name, out var definition))
+        {
+            return Task.FromResult(WorkDefinitionReconfigurationOutcome.NotFound(name));
+        }
 
         return session.Catalog.Reconfigure(
-            new WorkDefinitionVersion(definitionId, request.Revision),
+            new WorkDefinitionVersion(definition.Id, request.Revision),
             request.Changes,
             cancellationToken);
     }
@@ -100,7 +107,6 @@ public sealed class WorkableHttpCatalogAdapter
 
     private static WorkableHttpDefinitionCatalogItem CreateDefinitionCatalogItem(WorkDefinition definition)
         => new(
-            definition.Id,
             definition.Name,
             string.IsNullOrWhiteSpace(definition.Category)
                 ? WorkDefinitionMetadataDefaults.Category

@@ -2,39 +2,35 @@ namespace Workable;
 
 public sealed record WorkDefinitionReconfigurationOutcome(
     WorkDefinitionReconfigurationStatus Status,
-    WorkDefinitionId DefinitionId,
     WorkDefinition? Definition,
     IReadOnlyList<WorkMessage> Messages)
 {
     public bool IsAccepted => this.Status == WorkDefinitionReconfigurationStatus.Accepted;
 
     public static WorkDefinitionReconfigurationOutcome Accepted(WorkDefinition definition, IEnumerable<WorkMessage>? messages = null)
-        => new(WorkDefinitionReconfigurationStatus.Accepted, definition.Id, definition, [.. messages ?? []]);
+        => new(WorkDefinitionReconfigurationStatus.Accepted, definition, [.. messages ?? []]);
 
-    public static WorkDefinitionReconfigurationOutcome Unauthorized(WorkDefinitionId definitionId)
+    public static WorkDefinitionReconfigurationOutcome Unauthorized(string target)
         => new(
             WorkDefinitionReconfigurationStatus.Unauthorized,
-            definitionId,
             null,
             [WorkMessage.Error(
                 "workable.definition.unauthorized",
-                $"You are not authorized to operate work definition '{definitionId}'.",
+                $"You are not authorized to operate work definition '{target}'.",
                 "definition.authorization")]);
 
-    public static WorkDefinitionReconfigurationOutcome NotFound(WorkDefinitionId definitionId)
+    public static WorkDefinitionReconfigurationOutcome NotFound(string target)
         => new(
             WorkDefinitionReconfigurationStatus.NotFound,
-            definitionId,
             null,
-            [WorkMessage.Error("workable.definition.not_found", $"No work definition was found for '{definitionId}'.", "definition")]);
+            [WorkMessage.Error("workable.definition.not_found", $"No work definition was found for '{target}'.", "definition")]);
 
     public static WorkDefinitionReconfigurationOutcome Invalid(WorkDefinition definition, IEnumerable<WorkMessage> messages)
-        => new(WorkDefinitionReconfigurationStatus.Invalid, definition.Id, definition, [.. messages]);
+        => new(WorkDefinitionReconfigurationStatus.Invalid, definition, [.. messages]);
 
     public static WorkDefinitionReconfigurationOutcome Conflict(WorkDefinition definition, long expectedRevision)
         => new(
             WorkDefinitionReconfigurationStatus.Conflict,
-            definition.Id,
             definition,
             [WorkMessage.Error(
                 "workable.definition.revision_conflict",

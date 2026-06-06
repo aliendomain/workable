@@ -31,7 +31,6 @@ public sealed record WorkableRealtimeDebugWorkerOverviewSubscriptionSnapshot(
     WorkEventSubscriptionDiagnosticsSnapshot? EventStreamDiagnostics);
 
 public sealed record WorkableRealtimeDebugSystemSnapshot(
-    WorkSystemId SystemId,
     string? SystemName,
     string? SystemState,
     IReadOnlyList<WorkableRealtimeDebugEventSubscriptionSnapshot> EventSubscriptions,

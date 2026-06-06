@@ -8,15 +8,13 @@ public sealed class WorkOutcomeTests
     [Fact]
     public void WorkQueueOutcomeAcceptedIncludesIdentityAndMessages()
     {
-        var definitionId = WorkDefinitionId.New();
         var workerId = WorkerId.New();
         var messages = new[] { WorkMessage.Info("sample.accepted", "Accepted.") };
 
-        var outcome = WorkQueueOutcome.Accepted(definitionId, workerId, messages);
+        var outcome = WorkQueueOutcome.Accepted(workerId, messages);
 
         Assert.Equal(WorkQueueStatus.Accepted, outcome.Status);
         Assert.True(outcome.IsAccepted);
-        Assert.Equal(definitionId, outcome.DefinitionId);
         Assert.Equal(workerId, outcome.WorkerId);
         Assert.Equal(messages, outcome.Messages);
     }
@@ -28,7 +26,6 @@ public sealed class WorkOutcomeTests
 
         Assert.Equal(WorkQueueStatus.NotFound, outcome.Status);
         Assert.False(outcome.IsAccepted);
-        Assert.Null(outcome.DefinitionId);
         Assert.Null(outcome.WorkerId);
         var message = Assert.Single(outcome.Messages);
         Assert.Equal("workable.definition.not_found", message.Code);
@@ -38,30 +35,25 @@ public sealed class WorkOutcomeTests
     }
 
     [Fact]
-    public void WorkQueueOutcomeInvalidIncludesDefinitionAndMessages()
+    public void WorkQueueOutcomeInvalidIncludesMessages()
     {
-        var definitionId = WorkDefinitionId.New();
         var messages = new[] { WorkMessage.Error("sample.invalid", "Invalid.") };
 
-        var outcome = WorkQueueOutcome.Invalid(definitionId, messages);
+        var outcome = WorkQueueOutcome.Invalid(messages);
 
         Assert.Equal(WorkQueueStatus.Invalid, outcome.Status);
         Assert.False(outcome.IsAccepted);
-        Assert.Equal(definitionId, outcome.DefinitionId);
         Assert.Null(outcome.WorkerId);
         Assert.Equal(messages, outcome.Messages);
     }
 
     [Fact]
-    public void WorkQueueOutcomeUnauthorizedIncludesDefinitionAndMessages()
+    public void WorkQueueOutcomeUnauthorizedIncludesMessages()
     {
-        var definitionId = WorkDefinitionId.New();
-
-        var outcome = WorkQueueOutcome.Unauthorized("secured-work", definitionId);
+        var outcome = WorkQueueOutcome.Unauthorized("secured-work");
 
         Assert.Equal(WorkQueueStatus.Unauthorized, outcome.Status);
         Assert.False(outcome.IsAccepted);
-        Assert.Equal(definitionId, outcome.DefinitionId);
         Assert.Null(outcome.WorkerId);
         var message = Assert.Single(outcome.Messages);
         Assert.Equal("workable.definition.unauthorized", message.Code);
@@ -168,22 +160,21 @@ public sealed class WorkOutcomeTests
     private static WorkerSnapshot CreateWorkerSnapshot(WorkerState state)
         => new(
             WorkerId.New(),
-            Revision: 3,
-            StateSequence: 5,
-            WorkDefinitionId.New(),
+            3,
+            5,
             "sample.work",
             WorkDefinitionMetadataDefaults.Category,
-            SubjectId: null,
-            ConcurrencyKey: null,
-            Identifiers: new HashSet<WorkIdentifier>(),
+            null,
+            null,
+            new HashSet<WorkIdentifier>(),
             WorkRequestContext.Create(WorkInvocationChannel.InProcess),
             state,
             WorkInput.Empty,
-            Output: null,
+            null,
             WorkerOptions.Default,
             WorkConfiguration.Default,
-            Messages: [],
-            InterruptionReason: null,
+            [],
+            null,
             DateTimeOffset.UtcNow,
             DateTimeOffset.UtcNow,
             DateTimeOffset.UtcNow);

@@ -20,5 +20,5 @@ internal sealed record PreparedWorkQueueAcceptance(
         => new(outcome, worker, null, idempotencyRequest, shouldScheduleStart, shouldDrainQueuedWorkers);
 
     public static PreparedWorkQueueAcceptance Persistent(WorkQueueDurabilityEnqueueRequest request)
-        => new(WorkQueueOutcome.Accepted(request.Definition.Id, request.WorkerId), null, request, null, false, false);
+        => new(WorkQueueOutcome.Accepted(request.WorkerId), null, request, null, false, false);
 }

@@ -17,17 +17,12 @@ public sealed class AuthorizedWorkCatalogShould
 
         var definitions = authorized.Definitions;
         var categoryDefinitions = authorized.ListByCategory("Operations");
-        var byId = RequireFound(authorized.TryGet(visible.Id, out var foundById), foundById);
         var byName = RequireFound(authorized.TryGet(visible.Name, out var foundByName), foundByName);
-        var hiddenById = authorized.TryGet(hidden.Id, out var hiddenId);
         var hiddenByName = authorized.TryGet(hidden.Name, out var hiddenName);
 
         Assert.Equal(visible.Id, Assert.Single(definitions).Id);
         Assert.Equal(visible.Id, Assert.Single(categoryDefinitions).Id);
-        Assert.Equal(visible.Id, byId.Id);
         Assert.Equal(visible.Id, byName.Id);
-        Assert.False(hiddenById);
-        Assert.Null(hiddenId);
         Assert.False(hiddenByName);
         Assert.Null(hiddenName);
     }
@@ -49,7 +44,7 @@ public sealed class AuthorizedWorkCatalogShould
         Assert.Equal(WorkDefinitionReconfigurationStatus.Accepted, outcome.Status);
         Assert.NotNull(outcome.Definition);
         Assert.True(outcome.Definition.DefaultOptions.ProfilingEnabled);
-        var updated = RequireFound(catalog.TryGet(visible.Id, out var found), found);
+        var updated = RequireFound(catalog.TryGet(visible.Name, out var found), found);
         Assert.True(updated.DefaultOptions.ProfilingEnabled);
         Assert.Equal(visible.Revision + 1, updated.Revision);
     }
@@ -69,9 +64,9 @@ public sealed class AuthorizedWorkCatalogShould
             new WorkDefinitionReconfiguration(WorkerOptions.Default with { ProfilingEnabled = true }));
 
         Assert.Equal(WorkDefinitionReconfigurationStatus.Unauthorized, outcome.Status);
-        Assert.Equal(hidden.Id, outcome.DefinitionId);
         Assert.Null(outcome.Definition);
-        var current = RequireFound(catalog.TryGet(hidden.Id, out var found), found);
+        Assert.Contains(hidden.Name, Assert.Single(outcome.Messages).Text);
+        var current = RequireFound(catalog.TryGet(hidden.Name, out var found), found);
         Assert.False(current.DefaultOptions.ProfilingEnabled);
         Assert.Equal(hidden.Revision, current.Revision);
     }

@@ -132,7 +132,7 @@ internal sealed class WorkerOperations :
     {
         cancellationToken.ThrowIfCancellationRequested();
 
-        if (!this.TryAcceptWork(registeredWork.Definition.Id, out var rejection))
+        if (!this.TryAcceptWork(out var rejection))
         {
             return this.RejectQueue(rejection);
         }
@@ -145,7 +145,7 @@ internal sealed class WorkerOperations :
             : RegisteredWorkRuntimePlan.Create(registeredWork.Definition, options);
         if (runtimePlan.ConfigurationErrors.Count > 0)
         {
-            return this.RejectQueue(WorkQueueOutcome.Invalid(registeredWork.Definition.Id, runtimePlan.ConfigurationErrors));
+            return this.RejectQueue(WorkQueueOutcome.Invalid(runtimePlan.ConfigurationErrors));
         }
 
         var persistenceStoreErrors = WorkConfigurationValidator.ValidatePersistenceStore(
@@ -153,7 +153,7 @@ internal sealed class WorkerOperations :
             this.persistenceStoreAvailable);
         if (persistenceStoreErrors.Count > 0)
         {
-            return this.RejectQueue(WorkQueueOutcome.Invalid(registeredWork.Definition.Id, persistenceStoreErrors));
+            return this.RejectQueue(WorkQueueOutcome.Invalid(persistenceStoreErrors));
         }
 
         var concurrencyInputErrors = WorkConfigurationValidator.ValidateConcurrencyInput(
@@ -161,7 +161,7 @@ internal sealed class WorkerOperations :
             input: input);
         if (concurrencyInputErrors.Count > 0)
         {
-            return this.RejectQueue(WorkQueueOutcome.Invalid(registeredWork.Definition.Id, concurrencyInputErrors));
+            return this.RejectQueue(WorkQueueOutcome.Invalid(concurrencyInputErrors));
         }
 
         var acceptance = await this.persistence.AcceptQueuedWorker(
@@ -208,9 +208,7 @@ internal sealed class WorkerOperations :
         return WorkerHandle.Rejected(rejection);
     }
 
-    private bool TryAcceptWork(
-        WorkDefinitionId definitionId,
-        [NotNullWhen(false)] out WorkQueueOutcome? rejection)
+    private bool TryAcceptWork([NotNullWhen(false)] out WorkQueueOutcome? rejection)
     {
         lock (this.lifecycleSync)
         {
@@ -218,7 +216,6 @@ internal sealed class WorkerOperations :
             if (systemState is WorkSystemState.Stopping)
             {
                 rejection = WorkQueueOutcome.Invalid(
-                    definitionId,
                     [WorkMessage.Warning(
                         "workable.system.stopping",
                         "Workable is stopping and is not accepting new work.",
@@ -229,7 +226,6 @@ internal sealed class WorkerOperations :
             if (systemState is not WorkSystemState.Started)
             {
                 rejection = WorkQueueOutcome.Invalid(
-                    definitionId,
                     [WorkMessage.Warning(
                         "workable.system.not_started",
                         $"Workable is '{systemState}' and is not accepting new work.",
@@ -240,7 +236,6 @@ internal sealed class WorkerOperations :
             if (!this.acceptingWork)
             {
                 rejection = WorkQueueOutcome.Invalid(
-                    definitionId,
                     [WorkMessage.Warning(
                         "workable.system.stopping",
                         "Workable is stopping and is not accepting new work.",
@@ -252,7 +247,6 @@ internal sealed class WorkerOperations :
         if (this.GetNonFinalWorkerCount() >= this.capacity.MaximumWorkers)
         {
             rejection = WorkQueueOutcome.Invalid(
-                definitionId,
                 [WorkMessage.Warning(
                     "workable.system.capacity_reached",
                     $"Workable has reached the configured maximum non-final worker count of {this.capacity.MaximumWorkers}.",

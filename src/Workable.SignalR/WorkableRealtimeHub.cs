@@ -132,11 +132,12 @@ public sealed class WorkableRealtimeHub(
         var system = ResolveSystem(systemName);
         try
         {
-            var authorization = CreateAuthorization(system, systemName, out _);
+            var authorization = CreateAuthorization(system, systemName, out var session);
             await eventSubscriptions.WatchEvents(
                 this.Context.ConnectionId,
                 this.Groups,
                 system,
+                session.Catalog,
                 criteria,
                 authorization,
                 this.Context.ConnectionAborted);
@@ -152,14 +153,14 @@ public sealed class WorkableRealtimeHub(
         string? systemName = null)
     {
         var system = ResolveSystem(systemName);
-        EnsureCanAccessNamedSystem(
-            system,
-            systemName,
-            CreateRequestContext());
+        var requestContext = CreateRequestContext();
+        EnsureCanAccessNamedSystem(system, systemName, requestContext);
+        var session = system.CreateSession(requestContext);
         await eventSubscriptions.UnwatchEvents(
             this.Context.ConnectionId,
             this.Groups,
             system,
+            session.Catalog,
             criteria,
             this.Context.ConnectionAborted);
     }

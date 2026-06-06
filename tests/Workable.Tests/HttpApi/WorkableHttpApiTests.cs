@@ -55,21 +55,20 @@ public sealed class WorkableHttpApiTests
     }
 
     [Fact]
-    public async Task HttpApiCanQueueByDefinitionId()
+    public async Task HttpApiCanQueueByName()
     {
-        var definition = WorkDefinition.Create("http.by-id");
+        var definition = WorkDefinition.Create("http.by-name");
         var (system, http) = CreateHost(definition, (context, input, cancellationToken) =>
             Task.FromResult(WorkExecutionResult.Success(input is null ? WorkOutput.Empty : WorkOutput.FromData(input))));
         await system.Start();
 
-        using var input = JsonDocument.Parse("""{"id":"by-id"}""");
+        using var input = JsonDocument.Parse("""{"id":"by-name"}""");
         var result = await http.Queue.Enqueue(Direct(system),
-            definition.Id,
+            definition.Name,
             new WorkableHttpWorkRequest(input.RootElement, WorkableHttpCompletion.WaitForCompletion));
 
         Assert.Equal(WorkableHttpWorkStatus.Completed, result.Status);
-        Assert.Equal(definition.Id, result.QueueOutcome.DefinitionId);
-        Assert.Equal("""{"id":"by-id"}""", result.Output?.Json);
+        Assert.Equal("""{"id":"by-name"}""", result.Output?.Json);
     }
 
     [Fact]
@@ -222,7 +221,6 @@ public sealed class WorkableHttpApiTests
         var worker = await http.Query.Worker(Direct(system), workerId);
         var workers = await http.Query.Workers(Direct(system), new WorkerCriteria(Identifier: new WorkIdentifier("batch", "1")));
         var byName = await http.Query.WorkInfo(Direct(system), "http.query.one");
-        var byId = await http.Query.WorkInfo(Direct(system), byName?.Definition.Id ?? throw new InvalidOperationException("Expected work info."));
         var definitions = await http.Query.WorkDefinitions(Direct(system), new WorkDefinitionCriteria(Category: "Http"));
         var summary = await http.Query.WorkerStatusSummary(Direct(system), new WorkerCriteria(DefinitionName: "http.query.one"));
         var systemSummary = await http.Query.WorkerStatusSummary(Direct(system));
@@ -232,7 +230,6 @@ public sealed class WorkableHttpApiTests
         Assert.NotNull(byName);
         var requiredByName = byName;
         Assert.Equal("http.query.one", requiredByName.Definition.Name);
-        Assert.Equal(requiredByName.Definition.Id, byId?.Definition.Id);
         Assert.Equal(2, definitions.Count);
         Assert.Equal(1, summary.Total);
         Assert.Equal(1, summary.Counts[WorkerState.Completed]);
@@ -1187,13 +1184,13 @@ public sealed class WorkableHttpApiTests
         var session = Direct(system);
 
         var outcome = await http.Catalog.ReconfigureDefinition(session,
-            definition.Id,
+            definition.Name,
             new WorkableHttpDefinitionReconfigurationRequest(
                 definition.Revision,
                 new WorkDefinitionReconfiguration(
                     DefaultOptions: new WorkerOptions(ProfilingEnabled: true))));
 
-        var handle = await Direct(system).Queue.Enqueue(definition.Id);
+        var handle = await Direct(system).Queue.Enqueue(definition.Name);
         var worker = await Direct(system).Query.Worker(handle.WorkerId ?? throw new InvalidOperationException("Expected worker id."));
 
         Assert.True(outcome.IsAccepted);
@@ -1212,7 +1209,7 @@ public sealed class WorkableHttpApiTests
         var definition = Direct(system).Catalog.Definitions.Single(definition => definition.Name == "http.route.case");
 
         var response = await client.PostAsJsonAsync(
-            $"/workable/definitions/{definition.Id.Value:D}/reconfigure",
+            $"/workable/definitions/{definition.Name}/reconfigure",
             new WorkableHttpDefinitionReconfigurationRequest(
                 definition.Revision,
                 new WorkDefinitionReconfiguration(
@@ -1223,7 +1220,7 @@ public sealed class WorkableHttpApiTests
 
         Assert.Equal("Accepted", json["status"]?.GetValue<string>());
         Assert.Equal(1, json["definition"]?["revision"]?.GetValue<int>());
-        Assert.True(Direct(system).Catalog.TryGet(definition.Id, out var updated));
+        Assert.True(Direct(system).Catalog.TryGet(definition.Name, out var updated));
         Assert.True(updated.DefaultOptions.ProfilingEnabled);
     }
 
@@ -1236,12 +1233,12 @@ public sealed class WorkableHttpApiTests
         var definition = Direct(system).Catalog.Definitions.Single(definition => definition.Name == "http.route.case");
 
         var first = await client.PostAsJsonAsync(
-            $"/workable/definitions/{definition.Id.Value:D}/reconfigure",
+            $"/workable/definitions/{definition.Name}/reconfigure",
             new WorkableHttpDefinitionReconfigurationRequest(
                 definition.Revision,
                 new WorkDefinitionReconfiguration(DefaultOptions: new WorkerOptions(ProfilingEnabled: true))));
         var second = await client.PostAsJsonAsync(
-            $"/workable/definitions/{definition.Id.Value:D}/reconfigure",
+            $"/workable/definitions/{definition.Name}/reconfigure",
             new WorkableHttpDefinitionReconfigurationRequest(
                 definition.Revision,
                 new WorkDefinitionReconfiguration(DefaultOptions: new WorkerOptions(ProfilingEnabled: false))));
@@ -1267,7 +1264,7 @@ public sealed class WorkableHttpApiTests
         var client = host.GetTestClient();
         var system = host.Services.GetRequiredService<IWorkSystemRegistry>().Default;
         Assert.True(Direct(system).Catalog.TryGet("http.route.case", out var definition));
-        await using var queuedSubscription = Direct(system).Events.Subscribe(new WorkEventFilter(DefinitionId: definition.Id, EventType: "worker.queued"));
+        await using var queuedSubscription = Direct(system).Events.Subscribe(new WorkEventFilter(DefinitionName: definition.Name, EventType: "worker.queued"));
         await using var queuedReader = queuedSubscription.Read().GetAsyncEnumerator();
 
         var queueResponse = await client.PostAsJsonAsync(
@@ -1424,7 +1421,7 @@ public sealed class WorkableHttpApiTests
     }
 
     [Fact]
-    public async Task MappedHttpQueueByDefinitionIdRecordsHttpOrigin()
+    public async Task MappedHttpQueueByNameRecordsHttpOrigin()
     {
         using var host = await CreateHttpHost();
         var client = host.GetTestClient();
@@ -1432,7 +1429,7 @@ public sealed class WorkableHttpApiTests
         Assert.True(Direct(system).Catalog.TryGet("http.route.case", out var definition));
 
         var response = await client.PostAsJsonAsync(
-            $"/workable/definitions/{definition.Id.Value:D}/queue",
+            $"/workable/work/{definition.Name}",
             new
             {
                 completion = "returnAfterAccepted",
@@ -1449,7 +1446,7 @@ public sealed class WorkableHttpApiTests
         Assert.Equal(WorkInvocationChannel.HttpApi, worker.Origin.Channel);
         Assert.Equal("user-123", worker.Origin.Actor.Id);
         Assert.Equal("greya@example.test", worker.Origin.Actor.Email);
-        Assert.Contains($"/workable/definitions/{definition.Id.Value:D}/queue", worker.RequestContext.Url, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains($"/workable/work/{definition.Name}", worker.RequestContext.Url, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -1528,7 +1525,7 @@ public sealed class WorkableHttpApiTests
         var system = host.Services.GetRequiredService<IWorkSystemRegistry>().Default;
         var definition = Direct(system).Catalog.Definitions.Single(definition => definition.Name == "billing.invoice.generate");
 
-        var json = await GetJson(client, $"/workable/definitions/{definition.Id.Value:D}");
+        var json = await GetJson(client, $"/workable/definitions/{definition.Name}");
 
         Assert.Equal("billing.invoice.generate", json["name"]?.GetValue<string>());
         Assert.NotNull(json["configuration"]);
@@ -1536,7 +1533,7 @@ public sealed class WorkableHttpApiTests
     }
 
     [Fact]
-    public async Task MappedHttpWorkInfoCanBeReadByWorkNameOrId()
+    public async Task MappedHttpWorkInfoCanBeReadByWorkName()
     {
         using var host = await CreateHttpHost();
         var client = host.GetTestClient();
@@ -1544,19 +1541,14 @@ public sealed class WorkableHttpApiTests
         Assert.True(Direct(system).Catalog.TryGet("http.route.case", out var definition));
 
         var byName = await client.GetAsync("/workable/work/http.route.case/info");
-        var byId = await client.GetAsync($"/workable/work/id/{definition.Id.Value:D}/info");
 
         byName.EnsureSuccessStatusCode();
-        byId.EnsureSuccessStatusCode();
         var byNameJson = JsonNode.Parse(await byName.Content.ReadAsStringAsync())
-            ?? throw new InvalidOperationException("Expected JSON response.");
-        var byIdJson = JsonNode.Parse(await byId.Content.ReadAsStringAsync())
             ?? throw new InvalidOperationException("Expected JSON response.");
 
         Assert.Equal("http.route.case", byNameJson["definition"]?["name"]?.GetValue<string>());
-        Assert.Equal("http.route.case", byIdJson["definition"]?["name"]?.GetValue<string>());
         Assert.NotNull(byNameJson["queueRequestSchema"]?["schema"]?["jsonSchema"]);
-        Assert.NotNull(byIdJson["queueRequestSchema"]?["tabs"]);
+        Assert.NotNull(byNameJson["queueRequestSchema"]?["tabs"]);
     }
 
     [Fact]
@@ -1631,7 +1623,6 @@ public sealed class WorkableHttpApiTests
 
         var body = await GetJson(client, "/workable/debug/realtime");
 
-        Assert.NotNull(body["systemId"]);
         Assert.NotNull(body["eventSubscriptions"]);
         Assert.NotNull(body["viewSubscriptions"]);
         Assert.NotNull(body["workerOverviewSubscriptions"]);
@@ -1909,7 +1900,6 @@ public sealed class WorkableHttpApiTests
         var idempotency = json["idempotency"]
             ?? throw new InvalidOperationException("Expected idempotency diagnostics.");
 
-        Assert.Equal(system.Id.Value.ToString(), json["id"]?["value"]?.GetValue<string>());
         Assert.Equal("Started", json["state"]?.GetValue<string>());
         Assert.Equal(0, queue["rejectedWorkCount"]?.GetValue<long>());
         Assert.Null(queue["lastRejectedAt"]);
@@ -2909,3 +2899,6 @@ public sealed class WorkableHttpApiTests
         }
     }
 }
+
+
+

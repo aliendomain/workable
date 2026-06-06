@@ -23,7 +23,6 @@ public sealed class SessionWorkCatalogShould
 
         var definitions = sessionCatalog.Definitions;
         var category = sessionCatalog.ListByCategory("Session");
-        var byId = RequireFound(sessionCatalog.TryGet(definition.Id, out var foundById), foundById);
         var byName = RequireFound(sessionCatalog.TryGet("SESSION.CATALOG.WORK", out var foundByName), foundByName);
         var outcome = await sessionCatalog.Reconfigure(
             definition.Version,
@@ -33,12 +32,11 @@ public sealed class SessionWorkCatalogShould
         Assert.True(sessionCatalog.IsFrozen);
         Assert.Equal(definition.Id, Assert.Single(definitions).Id);
         Assert.Equal(definition.Id, Assert.Single(category).Id);
-        Assert.Equal(definition.Id, byId.Id);
         Assert.Equal(definition.Id, byName.Id);
         Assert.Equal(WorkDefinitionReconfigurationStatus.Accepted, outcome.Status);
         Assert.NotNull(outcome.Definition);
         Assert.True(outcome.Definition.DefaultOptions.ProfilingEnabled);
-        var updated = RequireFound(catalog.TryGet(definition.Id, out var foundUpdated), foundUpdated);
+        var updated = RequireFound(catalog.TryGet(definition.Name, out var foundUpdated), foundUpdated);
         Assert.True(updated.DefaultOptions.ProfilingEnabled);
     }
 

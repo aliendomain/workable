@@ -20,10 +20,10 @@ The core API defines the public shape of Workable for discovering work, queueing
 - `Stop` clears in-memory worker and iteration records after shutdown interruption completes.
 - `IWorkSystem` is asynchronously disposable.
 
-`IWorkSystemRegistry` exposes the default system, lookup by `WorkSystemId`, optional lookup by name, and enumeration of registered systems.
+`IWorkSystemRegistry` exposes the default system, lookup by name for named systems, and enumeration of registered systems.
 
 Work execution receives scoped services and profile access through `IWorkExecutionContext`.
-Execution context also exposes the worker's `WorkOrigin`, whether interruption is currently being applied through `IsInterrupted`, and the nullable `InterruptionReason` (`Shutdown` or `LeaseLost`).
+Execution context also exposes the worker's `WorkRequestContext` (including `Origin`), whether interruption is currently being applied through `IsInterrupted`, and the nullable `InterruptionReason` (`Shutdown` or `LeaseLost`).
 
 ## Definition Rules
 
@@ -50,7 +50,7 @@ Execution context also exposes the worker's `WorkOrigin`, whether interruption i
 
 ## Work Identity And Grouping
 
-- `WorkDefinitionId` identifies what work should run.
+- `WorkDefinition.Name` is the caller-facing identity used to queue and query one definition.
 - `WorkSubjectId` identifies the business subject of a worker, such as a user, order, customer, or cache key.
 - `WorkSubjectId` can be used for lookup, correlation, and idempotency.
 - `WorkConcurrencyKey` groups workers for concurrency capacity when concurrency is configured by key.
@@ -61,7 +61,7 @@ Execution context also exposes the worker's `WorkOrigin`, whether interruption i
 
 ## Queue Rules
 
-- Queue work by passing a `WorkDefinitionId` or name to `IWorkQueueService`.
+- Queue work by passing the definition name to `IWorkQueueService`.
 - `IStartupWorkSource` can return startup queue requests after the catalog is ready.
 - Starting a stopped system runs automatic starts and startup work sources again without rebuilding work definitions that were already added by work definition sources.
 - Queue input can be supplied as `WorkInput` or as a typed CLR value that Workable serializes into `WorkInput`.
@@ -79,7 +79,7 @@ Execution context also exposes the worker's `WorkOrigin`, whether interruption i
 - Worker handles can be awaited for completion and final result details.
 - Completed work results are exposed as `WorkOutput`.
 - Worker snapshots can expose captured logs and profile snapshots.
-- Worker snapshots expose the `WorkOrigin` that queued the worker.
+- Worker snapshots expose the `WorkRequestContext` that queued the worker, including its durable `Origin`.
 - `IWorkQueryService.Worker` returns a full `WorkerSnapshot`.
 - `IWorkQueryService.Worker` and `IWorkQueryService.WorkerIteration` return authoritative retained detail.
 - Aggregate and list-style query methods read from the runtime read model; the in-memory model starts empty with the process and is cleared when the system stops.

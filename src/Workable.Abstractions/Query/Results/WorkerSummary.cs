@@ -4,7 +4,6 @@ public sealed record WorkerSummary(
     WorkerId Id,
     long Revision,
     long StateSequence,
-    WorkDefinitionId DefinitionId,
     string DefinitionName,
     string DefinitionCategory,
     WorkSubjectId? SubjectId,

@@ -105,7 +105,7 @@ function event(overrides: Partial<WorkableRealtimeEvent> = {}): WorkableRealtime
     eventType: "worker.completed",
     sentAt: "2026-05-30T10:00:00.000Z",
     workerId: { value: "worker-1" },
-    workDefinitionId: { value: "definition-1" },
+    workDefinitionName: "definition-1",
     ...overrides,
   } as WorkableRealtimeEvent;
 }
@@ -121,8 +121,8 @@ test("realtime event helpers summarize batches, search text, byte counts, limits
   assert.equal(formatEventBatchDefinitionSummary([event(), event({ workerId: { value: "worker-2" } })]), "definition-1");
   assert.equal(
     formatEventBatchDefinitionSummary([
-      event({ workDefinitionId: { value: "definition-1" } }),
-      event({ workDefinitionId: { value: "definition-2" } }),
+      event({ workDefinitionName: "definition-1" }),
+      event({ workDefinitionName: "definition-2" }),
     ]),
     "2 definitions"
   );

@@ -27,11 +27,6 @@ internal sealed class SessionWorkQueryService(
         => inner.WorkerIterations(criteria, cancellationToken);
 
     public Task<WorkInfo?> WorkInfo(
-        WorkDefinitionId definitionId,
-        CancellationToken cancellationToken = default)
-        => inner.WorkInfo(definitionId, cancellationToken);
-
-    public Task<WorkInfo?> WorkInfo(
         string name,
         CancellationToken cancellationToken = default)
         => inner.WorkInfo(name, cancellationToken);

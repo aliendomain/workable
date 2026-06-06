@@ -89,9 +89,9 @@ internal static class WorkableHttpQueryRoutes
             return Results.Ok(definitions);
         });
 
-        group.MapGet("/definitions/{definitionId:guid}/info", async (
+        group.MapGet("/definitions/{name}/info", async (
             HttpContext httpContext,
-            Guid definitionId,
+            string name,
             WorkableHttpTopologyResolver topology,
             WorkableHttpQueryAdapter queries,
             IWorkRequestContextFactory requestContexts,
@@ -103,25 +103,7 @@ internal static class WorkableHttpQueryRoutes
             }
 
             var session = WorkableHttpRequestContext.CreateSession(httpContext, system, requestContexts);
-            var info = await queries.DefinitionInfo(session, system, new WorkDefinitionId(definitionId), cancellationToken: cancellationToken);
-            return info is null ? Results.NotFound() : Results.Ok(info);
-        });
-
-        group.MapGet("/work/id/{definitionId:guid}/info", async (
-            HttpContext httpContext,
-            Guid definitionId,
-            WorkableHttpTopologyResolver topology,
-            WorkableHttpQueryAdapter queries,
-            IWorkRequestContextFactory requestContexts,
-            CancellationToken cancellationToken) =>
-        {
-            if (!WorkableHttpRouteResults.TryResolveSystem(httpContext, topology, out var system, out var notFound))
-            {
-                return notFound;
-            }
-
-            var session = WorkableHttpRequestContext.CreateSession(httpContext, system, requestContexts);
-            var info = await queries.DefinitionInfo(session, system, new WorkDefinitionId(definitionId), cancellationToken: cancellationToken);
+            var info = await queries.DefinitionInfo(session, system, name, cancellationToken: cancellationToken);
             return info is null ? Results.NotFound() : Results.Ok(info);
         });
 

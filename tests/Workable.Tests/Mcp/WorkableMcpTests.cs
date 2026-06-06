@@ -39,7 +39,6 @@ public sealed class WorkableMcpTests
         Assert.Equal("cache.refresh", descriptor.Name);
         Assert.Equal("Refreshes cached data.", descriptor.Description);
         Assert.Equal("Cache", descriptor.Category);
-        Assert.Equal(definition.Id, descriptor.DefinitionId);
         Assert.Equal(definition.InputSchema.JsonSchema, descriptor.InputSchemaJson);
         Assert.Equal(definition.OutputSchema.JsonSchema, descriptor.OutputSchemaJson);
         Assert.False(descriptor.UsesFallbackInputSchema);
@@ -890,7 +889,7 @@ public sealed class WorkableMcpTests
         using var arguments = JsonDocument.Parse($$"""
             {
               "description": "Reconfigure defaults from the MCP tool test.",
-              "definitionId": "{{definition.Id.Value:D}}",
+              "name": "{{definition.Name}}",
               "revision": {{definition.Revision}},
               "defaultOptions": {
                 "profilingEnabled": true
@@ -904,7 +903,7 @@ public sealed class WorkableMcpTests
             systemName: null,
             requestContext: CreateMcpRequestContext("Invoke MCP action tool."));
         var session = CreateMcpSession(system, "Inspect reconfigured MCP definition.");
-        var handle = await session.Queue.Enqueue(definition.Id);
+        var handle = await session.Queue.Enqueue(definition.Name);
         var worker = await session.Query.Worker(handle.WorkerId ?? throw new InvalidOperationException("Expected worker."));
 
         Assert.False(result.IsError);
@@ -1239,3 +1238,4 @@ public sealed class WorkableMcpTests
                 WorkInvocationChannel.Mcp),
         };
 }
+

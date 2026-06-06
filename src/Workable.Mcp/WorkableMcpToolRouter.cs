@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -134,26 +135,17 @@ public sealed class WorkableMcpToolRouter(IWorkSystemRegistry registry)
                     case GetWorkInfoTool:
                     {
                         var name = ReadString(arguments, "name");
-                        var definitionId = ReadGuid(arguments, "definitionId");
-                        WorkInfo? info = null;
-
-                        if (definitionId.HasValue)
-                        {
-                            info = await session.Query.WorkInfo(new WorkDefinitionId(definitionId.Value), cancellationToken: cancellationToken);
-                        }
-                        else if (!string.IsNullOrWhiteSpace(name))
-                        {
-                            info = await session.Query.WorkInfo(name, cancellationToken: cancellationToken);
-                        }
+                        var info = !string.IsNullOrWhiteSpace(name)
+                            ? await session.Query.WorkInfo(name, cancellationToken: cancellationToken)
+                            : null;
 
                         return ToToolResult(info is null
-                            ? new { found = false, name, definitionId = definitionId?.ToString("D") }
+                            ? new { found = false, name }
                             : new { found = true, info });
                     }
                     case QueryWorkDefinitionsTool:
                     {
                         var query = new WorkDefinitionCriteria(
-                            Id: ReadGuid(arguments, "definitionId") is { } id ? new WorkDefinitionId(id) : null,
                             Name: ReadString(arguments, "name"),
                             Category: ReadString(arguments, "category"),
                             Search: ReadString(arguments, "search"),
@@ -233,7 +225,7 @@ public sealed class WorkableMcpToolRouter(IWorkSystemRegistry registry)
                     }
                     case ReconfigureWorkDefinitionTool:
                     {
-                        var definitionId = new WorkDefinitionId(ReadRequiredGuid(arguments, "definitionId"));
+                        var definitionName = ReadRequiredString(arguments, "name");
                         var revision = ReadRequiredLong(arguments, "revision");
                         var changes = TryGetProperty(arguments, "changes", out var changesProperty) &&
                             changesProperty.ValueKind == JsonValueKind.Object
@@ -242,8 +234,13 @@ public sealed class WorkableMcpToolRouter(IWorkSystemRegistry registry)
                                     DefaultOptions: ReadObject<WorkerOptions>(arguments, "defaultOptions"),
                                     Configuration: ReadObject<WorkConfiguration>(arguments, "configuration"));
                         var reconfigureSession = system.CreateSession(WithDescription(requestContext, ReadString(arguments, "description")));
+                        if (!reconfigureSession.Catalog.TryGet(definitionName, out var definition))
+                        {
+                            return ToToolResult(WorkDefinitionReconfigurationOutcome.NotFound(definitionName));
+                        }
+
                         return ToToolResult(await reconfigureSession.Catalog.Reconfigure(
-                            new WorkDefinitionVersion(definitionId, revision),
+                            new WorkDefinitionVersion(definition.Id, revision),
                             changes,
                             cancellationToken));
                     }
@@ -306,7 +303,7 @@ public sealed class WorkableMcpToolRouter(IWorkSystemRegistry registry)
             var baseName = CreateWorkToolName(descriptor.Name);
             var toolName = baseNameCounts[baseName] == 1
                 ? baseName
-                : LimitToolName(baseName, descriptor.DefinitionId.Value.ToString("N")[..8]);
+                : LimitToolName(baseName, CreateNameSuffix(descriptor.Name));
 
             return new WorkableMcpServerToolDescriptor(
                 toolName,
@@ -347,13 +344,13 @@ public sealed class WorkableMcpToolRouter(IWorkSystemRegistry registry)
                 WorkableMcpServerToolKind.Query),
             new(
                 GetWorkInfoTool,
-                "Get one work definition plus worker rollup counts by work name or definition id. Use this to understand whether a kind of work is healthy or active.",
-                """{"type":"object","properties":{"name":{"type":"string"},"definitionId":{"type":"string"}},"additionalProperties":false}""",
+                "Get one work definition plus worker rollup counts by work name. Use this to understand whether a kind of work is healthy or active.",
+                """{"type":"object","properties":{"name":{"type":"string"}},"additionalProperties":false}""",
                 null,
                 WorkableMcpServerToolKind.Query),
             new(
                 QueryWorkDefinitionsTool,
-                "Browse available work definitions by name, category, search text, or definition id. Use this to discover what work can be queued.",
+                "Browse available work definitions by name, category, or search text. Use this to discover what work can be queued.",
                 WorkDefinitionQuerySchema,
                 null,
                 WorkableMcpServerToolKind.Query),
@@ -424,7 +421,7 @@ public sealed class WorkableMcpToolRouter(IWorkSystemRegistry registry)
                 WorkableMcpServerToolKind.Action),
             new(
                 ReconfigureWorkDefinitionTool,
-                "Change a work definition's default worker options and/or default configuration for future queued workers. Requires the current definition id and revision from query_work_definitions or get_work_info.",
+                "Change a work definition's default worker options and/or default configuration for future queued workers. Requires the current work name and revision from query_work_definitions or get_work_info.",
                 WorkDefinitionReconfigurationSchema,
                 null,
                 WorkableMcpServerToolKind.Action),
@@ -433,7 +430,6 @@ public sealed class WorkableMcpToolRouter(IWorkSystemRegistry registry)
     private static WorkerCriteria ToWorkerCriteria(JsonElement? arguments)
     {
         return new WorkerCriteria(
-            DefinitionId: ReadGuid(arguments, "definitionId") is { } definitionId ? new WorkDefinitionId(definitionId) : null,
             DefinitionName: ReadString(arguments, "definitionName") ?? ReadString(arguments, "workName"),
             SubjectId: ReadPair(arguments, "subjectType", "subjectValue") is { } subject ? new WorkSubjectId(subject.Type, subject.Value) : null,
             ConcurrencyKey: ReadPair(arguments, "concurrencyKeyType", "concurrencyKeyValue") is { } key ? new WorkConcurrencyKey(key.Type, key.Value) : null,
@@ -471,7 +467,6 @@ public sealed class WorkableMcpToolRouter(IWorkSystemRegistry registry)
     {
         return new WorkerIterationCriteria(
             WorkerId: ReadGuid(arguments, "workerId") is { } workerId ? new WorkerId(workerId) : null,
-            DefinitionId: ReadGuid(arguments, "definitionId") is { } definitionId ? new WorkDefinitionId(definitionId) : null,
             DefinitionName: ReadString(arguments, "definitionName") ?? ReadString(arguments, "workName"),
             Category: ReadString(arguments, "category"),
             SubjectId: ReadPair(arguments, "subjectType", "subjectValue") is { } subject ? new WorkSubjectId(subject.Type, subject.Value) : null,
@@ -811,11 +806,18 @@ public sealed class WorkableMcpToolRouter(IWorkSystemRegistry registry)
         return false;
     }
 
+    private static string ReadRequiredString(JsonElement? arguments, string propertyName)
+        => ReadString(arguments, propertyName) is { Length: > 0 } value
+            ? value
+            : throw new ArgumentException($"Missing required argument '{propertyName}'.");
+
+    private static string CreateNameSuffix(string value)
+        => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value)))[..8].ToLowerInvariant();
+
     private const string WorkerQuerySchema = """
         {
           "type": "object",
           "properties": {
-            "definitionId": { "type": "string" },
             "definitionName": { "type": "string" },
             "workName": { "type": "string" },
             "subjectType": { "type": "string" },
@@ -855,7 +857,6 @@ public sealed class WorkableMcpToolRouter(IWorkSystemRegistry registry)
           "type": "object",
           "properties": {
             "workerId": { "type": "string" },
-            "definitionId": { "type": "string" },
             "definitionName": { "type": "string" },
             "workName": { "type": "string" },
             "category": { "type": "string" },
@@ -887,7 +888,6 @@ public sealed class WorkableMcpToolRouter(IWorkSystemRegistry registry)
         {
           "type": "object",
           "properties": {
-            "definitionId": { "type": "string" },
             "name": { "type": "string" },
             "category": { "type": "string" },
             "search": { "type": "string" },
@@ -1043,9 +1043,9 @@ public sealed class WorkableMcpToolRouter(IWorkSystemRegistry registry)
         {
           "type": "object",
           "properties": {
-            "definitionId": {
+            "name": {
               "type": "string",
-              "description": "Work definition id from query_work_definitions or get_work_info."
+              "description": "Work definition name from query_work_definitions or get_work_info."
             },
             "revision": {
               "type": "integer",
@@ -1068,7 +1068,7 @@ public sealed class WorkableMcpToolRouter(IWorkSystemRegistry registry)
               "description": "Optional request context stored on the operation origin so callers can attach human-readable intent or audit notes."
             }
           },
-          "required": ["definitionId", "revision"],
+          "required": ["name", "revision"],
           "additionalProperties": false
         }
         """;

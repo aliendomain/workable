@@ -36,17 +36,16 @@ public sealed class WorkableHttpQueueAdapterShould
     }
 
     [Fact]
-    public async Task EnqueueByDefinitionIdWithEmptyInputWhenRequestIsMissing()
+    public async Task EnqueueByNameWithEmptyInputWhenRequestIsMissing()
     {
-        var definitionId = WorkDefinitionId.New();
         var queue = new RecordingQueueService();
         var session = new RecordingSession(queue);
         var adapter = new WorkableHttpQueueAdapter();
 
-        var result = await adapter.Enqueue(session, definitionId);
+        var result = await adapter.Enqueue(session, "http.queue");
 
         Assert.Equal(WorkableHttpWorkStatus.Accepted, result.Status);
-        Assert.Equal(definitionId, queue.DefinitionId);
+        Assert.Equal("http.queue", queue.Name);
         Assert.Equal(WorkInput.Empty, queue.Input);
         Assert.Null(queue.Options);
     }
@@ -55,7 +54,7 @@ public sealed class WorkableHttpQueueAdapterShould
     public async Task ReturnRejectedResultWithoutWaitingForCompletion()
     {
         var message = WorkMessage.Error("queue.invalid", "Nope.");
-        var handle = RecordingWorkerHandle.Rejected(WorkQueueOutcome.Invalid(WorkDefinitionId.New(), [message]));
+        var handle = RecordingWorkerHandle.Rejected(WorkQueueOutcome.Invalid([message]));
         var queue = new RecordingQueueService(handle);
         var session = new RecordingSession(queue);
         var adapter = new WorkableHttpQueueAdapter();
@@ -106,7 +105,6 @@ public sealed class WorkableHttpQueueAdapterShould
 
         await Assert.ThrowsAsync<ArgumentNullException>(() => adapter.Enqueue(null!, "http.queue"));
         await Assert.ThrowsAsync<ArgumentException>(() => adapter.Enqueue(session, " "));
-        await Assert.ThrowsAsync<ArgumentNullException>(() => adapter.Enqueue(null!, WorkDefinitionId.New()));
     }
 
     private sealed class RecordingSession(IWorkQueueService queue) : IWorkSystemSession
@@ -134,31 +132,9 @@ public sealed class WorkableHttpQueueAdapterShould
 
         public string? Name { get; private set; }
 
-        public WorkDefinitionId? DefinitionId { get; private set; }
-
         public WorkInput? Input { get; private set; }
 
         public WorkerOptions? Options { get; private set; }
-
-        public Task<IWorkerHandle> Enqueue(
-            WorkDefinitionId definitionId,
-            WorkInput? input = null,
-            WorkerOptions? options = null,
-            CancellationToken cancellationToken = default)
-        {
-            this.DefinitionId = definitionId;
-            this.Input = input;
-            this.Options = options;
-
-            return Task.FromResult<IWorkerHandle>(this.handle);
-        }
-
-        public Task<IWorkerHandle> Enqueue<TInput>(
-            WorkDefinitionId definitionId,
-            TInput input,
-            WorkerOptions? options = null,
-            CancellationToken cancellationToken = default)
-            => throw new NotSupportedException();
 
         public Task<IWorkerHandle> Enqueue(
             string name,
@@ -197,7 +173,7 @@ public sealed class WorkableHttpQueueAdapterShould
         {
             var workerId = global::Workable.WorkerId.New();
             return new(
-                WorkQueueOutcome.Accepted(WorkDefinitionId.New(), workerId),
+                WorkQueueOutcome.Accepted(workerId),
                 completion ?? new WorkCompletion(WorkCompletionStatus.Completed, Worker: null, WorkOutput.Empty, []));
         }
 

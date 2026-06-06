@@ -175,6 +175,7 @@ internal sealed class WorkerEventPublisher(
                 state.WorkSystemId,
                 state.WorkerId,
                 state.DefinitionId,
+                state.DefinitionName,
                 subjectId: null,
                 concurrencyKey: null,
                 PurgeEventType),

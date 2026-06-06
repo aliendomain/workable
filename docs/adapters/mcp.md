@@ -137,7 +137,7 @@ Worker action tool calls record a `WorkOrigin` with `WorkInvocationChannel.Mcp`.
 
 ```json
 {
-  "definitionId": "11111111-1111-1111-1111-111111111111",
+  "definitionName": "email.welcome.send",
   "revision": 7,
   "description": "Enable profiling for future workers during the incident.",
   "changes": {

@@ -92,7 +92,6 @@ public static class WorkableMcpExtensions
         return new WorkableMcpToolDescriptor(
             definition.Name,
             definition.Description,
-            definition.Id,
             definition.Category,
             inputSchema ?? options.FallbackInputSchemaJson,
             "application/schema+json",

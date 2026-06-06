@@ -2,7 +2,6 @@ namespace Workable;
 
 public sealed record WorkableHttpWorkerIterationCriteria(
     WorkerId? WorkerId = null,
-    WorkDefinitionId? DefinitionId = null,
     string? DefinitionName = null,
     string? Category = null,
     WorkSubjectId? SubjectId = null,
@@ -20,20 +19,19 @@ public sealed record WorkableHttpWorkerIterationCriteria(
 {
     public WorkerIterationCriteria ToWorkerIterationCriteria()
         => new(
-            this.WorkerId,
-            this.DefinitionId,
-            this.DefinitionName,
-            this.Category,
-            this.SubjectId,
-            this.ConcurrencyKey,
-            this.Identifier,
-            this.Statuses?.ToHashSet(),
-            this.StartedFrom,
-            this.StartedTo,
-            this.CompletedFrom,
-            this.CompletedTo,
-            this.Sort,
-            this.Direction,
-            this.Skip,
-            this.Take);
+            WorkerId: this.WorkerId,
+            DefinitionName: this.DefinitionName,
+            Category: this.Category,
+            SubjectId: this.SubjectId,
+            ConcurrencyKey: this.ConcurrencyKey,
+            Identifier: this.Identifier,
+            Statuses: this.Statuses?.ToHashSet(),
+            StartedFrom: this.StartedFrom,
+            StartedTo: this.StartedTo,
+            CompletedFrom: this.CompletedFrom,
+            CompletedTo: this.CompletedTo,
+            Sort: this.Sort,
+            Direction: this.Direction,
+            Skip: this.Skip,
+            Take: this.Take);
 }

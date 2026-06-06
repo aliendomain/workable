@@ -963,7 +963,7 @@ public sealed class DurableQueueTests
         var store = new InMemoryDurableQueueStore();
         var coordinator = CreateCoordinator(store, (_, _) => Task.CompletedTask);
         var workerId = WorkerId.New();
-        var outcome = WorkQueueOutcome.Accepted(WorkDefinitionId.New(), workerId);
+        var outcome = WorkQueueOutcome.Accepted(workerId);
         var handle = coordinator.CreateHandle(outcome, _ => null);
         using var waitCancellation = new CancellationTokenSource();
         var waiting = Task.Run(async () =>

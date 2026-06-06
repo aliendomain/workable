@@ -18,13 +18,14 @@ public sealed class WorkableRealtimeEventSubscriptions
         string connectionId,
         IGroupManager groupManager,
         IWorkSystem system,
+        IWorkCatalog catalog,
         WorkableRealtimeEventCriteria? criteria,
         WorkAuthorizationSnapshot authorization,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(authorization);
 
-        var filter = CreateFilter(criteria);
+        var filter = CreateFilter(catalog, criteria);
         var groupName = CreateSystemEventsGroupName(system, filter, authorization.ReadFingerprint);
         await this.WatchGroup(
             connectionId,
@@ -41,10 +42,11 @@ public sealed class WorkableRealtimeEventSubscriptions
         string connectionId,
         IGroupManager groupManager,
         IWorkSystem system,
+        IWorkCatalog catalog,
         WorkableRealtimeEventCriteria? criteria,
         CancellationToken cancellationToken)
     {
-        var filter = CreateFilter(criteria);
+        var filter = CreateFilter(catalog, criteria);
         return this.UnwatchGroup(
             connectionId,
             groupManager,
@@ -287,7 +289,7 @@ public sealed class WorkableRealtimeEventSubscriptions
         WorkEventFilter? filter)
         => $"{connectionId}:{systemId.Value:N}:{CreateFilterKey(filter)}";
 
-    private static WorkEventFilter? CreateFilter(WorkableRealtimeEventCriteria? criteria)
+    private static WorkEventFilter? CreateFilter(IWorkCatalog catalog, WorkableRealtimeEventCriteria? criteria)
     {
         var eventTypes = criteria?.EventTypes?
             .Select(eventType => eventType.Trim())
@@ -296,12 +298,12 @@ public sealed class WorkableRealtimeEventSubscriptions
             .Order(StringComparer.OrdinalIgnoreCase)
             .ToArray();
 
-        var definitionIds = criteria?.DefinitionIds?
-            .Select(definitionId => definitionId.Trim())
-            .Where(definitionId => Guid.TryParse(definitionId, out _))
-            .Select(definitionId => new WorkDefinitionId(Guid.Parse(definitionId)))
-            .Distinct()
-            .OrderBy(definitionId => definitionId.Value)
+        var definitionNames = criteria?.DefinitionNames?
+            .Select(definitionName => definitionName.Trim())
+            .Where(definitionName => definitionName.Length > 0)
+            .Where(definitionName => catalog.TryGet(definitionName, out _))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Order(StringComparer.OrdinalIgnoreCase)
             .ToArray();
 
         var keys = criteria?.Keys?
@@ -315,10 +317,10 @@ public sealed class WorkableRealtimeEventSubscriptions
             .ToArray();
 
         return eventTypes is { Length: > 0 } ||
-            definitionIds is { Length: > 0 } ||
+            definitionNames is { Length: > 0 } ||
             keys is { Length: > 0 }
             ? new WorkEventFilter(
-                DefinitionIds: definitionIds?.ToHashSet(),
+                DefinitionNames: definitionNames?.ToHashSet(StringComparer.OrdinalIgnoreCase),
                 Keys: keys?.ToHashSet(),
                 EventTypes: eventTypes?.ToHashSet(StringComparer.OrdinalIgnoreCase))
             : null;
@@ -331,7 +333,7 @@ public sealed class WorkableRealtimeEventSubscriptions
     {
         if (filter is null ||
             (filter.EventTypes is not { Count: > 0 } &&
-                filter.DefinitionIds is not { Count: > 0 } &&
+                filter.DefinitionNames is not { Count: > 0 } &&
                 filter.Keys is not { Count: > 0 }))
         {
             return WorkableRealtimeGroups.SystemEvents(system, readFingerprint);
@@ -347,13 +349,13 @@ public sealed class WorkableRealtimeEventSubscriptions
                     .Select(Uri.EscapeDataString)));
         }
 
-        if (filter.DefinitionIds is { Count: > 0 })
+        if (filter.DefinitionNames is { Count: > 0 })
         {
             parts.Add("definitions:" + string.Join(
                 ",",
-                filter.DefinitionIds
-                    .OrderBy(definitionId => definitionId.Value)
-                    .Select(definitionId => definitionId.Value.ToString("N"))));
+                filter.DefinitionNames
+                    .Order(StringComparer.OrdinalIgnoreCase)
+                    .Select(Uri.EscapeDataString)));
         }
 
         if (filter.Keys is { Count: > 0 })
@@ -394,18 +396,18 @@ public sealed class WorkableRealtimeEventSubscriptions
             parts.Add($"worker:{workerId.Value:N}");
         }
 
-        if (filter.DefinitionId is { } definitionId)
+        if (!string.IsNullOrWhiteSpace(filter.DefinitionName))
         {
-            parts.Add($"definition:{definitionId.Value:N}");
+            parts.Add($"definition:{Uri.EscapeDataString(filter.DefinitionName)}");
         }
 
-        if (filter.DefinitionIds is { Count: > 0 })
+        if (filter.DefinitionNames is { Count: > 0 })
         {
             parts.Add("definitions:" + string.Join(
                 ",",
-                filter.DefinitionIds
-                    .OrderBy(static definition => definition.Value)
-                    .Select(static definition => definition.Value.ToString("N"))));
+                filter.DefinitionNames
+                    .Order(StringComparer.OrdinalIgnoreCase)
+                    .Select(Uri.EscapeDataString)));
         }
 
         if (filter.Keys is { Count: > 0 })

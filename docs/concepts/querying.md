@@ -351,7 +351,6 @@ The examples below show the serialized JSON shape returned by HTTP and MCP adapt
   "workers": [
     {
       "id": { "value": "00000000-0000-0000-0000-000000000000" },
-      "definitionId": { "value": "00000000-0000-0000-0000-000000000000" },
       "definitionName": "email.welcome.send",
       "subjectId": { "type": "user", "value": "user-123" },
       "concurrencyKey": { "type": "tenant", "value": "tenant-456" },
@@ -386,7 +385,6 @@ The examples below show the serialized JSON shape returned by HTTP and MCP adapt
     {
       "workerId": { "value": "00000000-0000-0000-0000-000000000000" },
       "sequence": 2,
-      "definitionId": { "value": "00000000-0000-0000-0000-000000000000" },
       "definitionName": "email.welcome.send",
       "category": "Email",
       "workerState": "Completed",
@@ -444,7 +442,6 @@ The examples below show the serialized JSON shape returned by HTTP and MCP adapt
       "workers": [
         {
           "id": { "value": "00000000-0000-0000-0000-000000000000" },
-          "definitionId": { "value": "00000000-0000-0000-0000-000000000000" },
           "definitionName": "claim.review",
           "subjectId": { "type": "claim", "value": "CLM-123" },
           "concurrencyKey": null,
@@ -485,7 +482,6 @@ The examples below show the serialized JSON shape returned by HTTP and MCP adapt
       "workers": [
         {
           "id": { "value": "00000000-0000-0000-0000-000000000000" },
-          "definitionId": { "value": "00000000-0000-0000-0000-000000000000" },
           "definitionName": "claim.review",
           "subjectId": { "type": "claim", "value": "CLM-123" },
           "concurrencyKey": null,
@@ -527,7 +523,6 @@ The examples below show the serialized JSON shape returned by HTTP and MCP adapt
         {
           "workerId": { "value": "00000000-0000-0000-0000-000000000000" },
           "sequence": 2,
-          "definitionId": { "value": "00000000-0000-0000-0000-000000000000" },
           "definitionName": "claim.review",
           "category": "Claims",
           "workerState": "Completed",
@@ -579,7 +574,6 @@ The examples below show the serialized JSON shape returned by HTTP and MCP adapt
   "id": { "value": "00000000-0000-0000-0000-000000000000" },
   "revision": 3,
   "stateSequence": 5,
-  "definitionId": { "value": "00000000-0000-0000-0000-000000000000" },
   "definitionName": "email.welcome.send",
   "definitionCategory": "Email",
   "subjectId": { "type": "user", "value": "user-123" },
@@ -1108,7 +1102,6 @@ For incremental refreshes, the system state can be queried in smaller slices:
   "failedWorkers": [
     {
       "id": { "value": "00000000-0000-0000-0000-000000000000" },
-      "definitionId": { "value": "00000000-0000-0000-0000-000000000000" },
       "definitionName": "email.digest.send",
       "subjectId": { "type": "claim", "value": "CLM-123" },
       "concurrencyKey": null,
@@ -1129,7 +1122,6 @@ For incremental refreshes, the system state can be queried in smaller slices:
     {
       "workerId": { "value": "00000000-0000-0000-0000-000000000000" },
       "sequence": 2,
-      "definitionId": { "value": "00000000-0000-0000-0000-000000000000" },
       "definitionName": "email.digest.send",
       "category": "Email",
       "workerState": "Retrying",

@@ -16,16 +16,16 @@ IWorkerHandle handle = await workSystem.Queue.Enqueue(
 
 The name is matched case-insensitively within the system catalog.
 
-## Queue By Definition Id
+## Queue By Catalog Name
 
-Queue by `WorkDefinitionId` when the caller already has a definition from the catalog or query API.
+Queue by the definition name even when the caller already has a `WorkDefinition` from the catalog or query API.
 
 ```csharp
 WorkDefinition definition = workSystem.Catalog.Definitions
     .Single(definition => definition.Name == "email.welcome.send");
 
 IWorkerHandle handle = await workSystem.Queue.Enqueue(
-    definition.Id,
+    definition.Name,
     cancellationToken: cancellationToken);
 ```
 
@@ -53,11 +53,11 @@ IWorkerHandle handle = await workSystem.Queue.Enqueue(
     cancellationToken: cancellationToken);
 ```
 
-Typed input can also be queued by definition id.
+Typed input can also be queued by name when the caller already has the definition object.
 
 ```csharp
 IWorkerHandle handle = await workSystem.Queue.Enqueue(
-    definition.Id,
+    definition.Name,
     new SendWelcomeEmailArgs("user-123"),
     cancellationToken: cancellationToken);
 ```

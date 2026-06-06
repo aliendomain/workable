@@ -34,7 +34,6 @@ public sealed class WorkQueueServiceShould
         var completion = await handle.WaitForCompletion();
 
         Assert.Equal(WorkQueueStatus.Invalid, handle.QueueOutcome.Status);
-        Assert.Equal(definition.Id, handle.QueueOutcome.DefinitionId);
         Assert.Null(handle.QueueOutcome.WorkerId);
         var message = Assert.Single(handle.QueueOutcome.Messages);
         Assert.Equal("workable.invocation.channel_not_allowed", message.Code);

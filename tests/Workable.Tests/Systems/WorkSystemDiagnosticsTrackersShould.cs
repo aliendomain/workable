@@ -7,23 +7,18 @@ public sealed class WorkSystemDiagnosticsTrackersShould
     public void QueueTrackerCaptureRejectedOutcomeDetailsAndAlertableCounts()
     {
         var tracker = new WorkSystemQueueDiagnosticsTracker();
-        var definitionId = WorkDefinitionId.New();
-
         tracker.RecordRejected(WorkQueueOutcome.Invalid(
-            definitionId,
             [
                 WorkMessage.Warning("workable.queue.warning", "A warning."),
                 WorkMessage.Error("workable.system.capacity_reached", "Capacity reached."),
             ]));
         tracker.RecordRejected(WorkQueueOutcome.Invalid(
-            definitionId,
             [WorkMessage.Error("workable.queue.validation", "Validation failed.")]));
 
         var diagnostics = tracker.Diagnostics;
 
         Assert.Equal(2, diagnostics.RejectedWorkCount);
         Assert.Equal(WorkQueueStatus.Invalid, diagnostics.LastRejectedStatus);
-        Assert.Equal(definitionId, diagnostics.LastRejectedDefinitionId);
         Assert.Equal("workable.queue.validation", diagnostics.LastRejectedCode);
         Assert.Equal("Validation failed.", diagnostics.LastRejectedMessage);
         Assert.NotNull(diagnostics.LastRejectedAt);
@@ -38,7 +33,6 @@ public sealed class WorkSystemDiagnosticsTrackersShould
         var tracker = new WorkSystemQueueDiagnosticsTracker();
 
         tracker.RecordRejected(WorkQueueOutcome.Invalid(
-            null,
             [
                 WorkMessage.Warning("workable.queue.warning", "A warning."),
                 WorkMessage.Information("workable.queue.info", "An info message."),
