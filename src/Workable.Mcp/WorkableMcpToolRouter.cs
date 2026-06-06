@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
 
 namespace Workable;
@@ -92,7 +93,14 @@ public sealed class WorkableMcpToolRouter(IWorkSystemRegistry registry)
 
             if (TryGetWorkToolName(workTools, toolName, out var workName))
             {
-                var invocation = await session.InvokeMcpTool(workName, arguments, options.Invocation, cancellationToken);
+                var invocation = await system.CreateSession(WithDescription(
+                        requestContext,
+                        ReadWorkToolInvocationDescription(arguments)))
+                    .InvokeMcpTool(
+                        workName,
+                        ReadWorkToolInvocationInput(arguments),
+                        options.Invocation,
+                        cancellationToken);
                 return ToToolResult(invocation, invocation.Status == WorkableMcpInvocationStatus.Rejected);
             }
 
@@ -220,7 +228,8 @@ public sealed class WorkableMcpToolRouter(IWorkSystemRegistry registry)
                             PushWorkerTool => WorkAction.Push,
                             _ => WorkAction.Purge,
                         };
-                        return ToToolResult(await session.Workers.Execute(version, action, cancellationToken));
+                        var actionSession = system.CreateSession(WithDescription(requestContext, ReadString(arguments, "description")));
+                        return ToToolResult(await actionSession.Workers.Execute(version, action, cancellationToken));
                     }
                     case ReconfigureWorkDefinitionTool:
                     {
@@ -232,7 +241,8 @@ public sealed class WorkableMcpToolRouter(IWorkSystemRegistry registry)
                                 : new WorkDefinitionReconfiguration(
                                     DefaultOptions: ReadObject<WorkerOptions>(arguments, "defaultOptions"),
                                     Configuration: ReadObject<WorkConfiguration>(arguments, "configuration"));
-                        return ToToolResult(await session.Catalog.Reconfigure(
+                        var reconfigureSession = system.CreateSession(WithDescription(requestContext, ReadString(arguments, "description")));
+                        return ToToolResult(await reconfigureSession.Catalog.Reconfigure(
                             new WorkDefinitionVersion(definitionId, revision),
                             changes,
                             cancellationToken));
@@ -301,7 +311,7 @@ public sealed class WorkableMcpToolRouter(IWorkSystemRegistry registry)
             return new WorkableMcpServerToolDescriptor(
                 toolName,
                 CreateWorkToolDescription(descriptor),
-                descriptor.InputSchemaJson,
+                CreateWorkToolInputSchema(descriptor.InputSchemaJson),
                 descriptor.OutputSchemaJson,
                 WorkableMcpServerToolKind.Work,
                 descriptor.Name);
@@ -625,6 +635,75 @@ public sealed class WorkableMcpToolRouter(IWorkSystemRegistry registry)
             : baseName[..baseLength].TrimEnd('_');
 
         return $"{limitedBase}_{suffix}";
+    }
+
+    private static WorkRequestContext WithDescription(
+        WorkRequestContext requestContext,
+        string? description)
+        => string.IsNullOrWhiteSpace(description)
+            ? requestContext
+            : requestContext with
+            {
+                Origin = requestContext.Origin with
+                {
+                    Description = description,
+                },
+            };
+
+    private static string? ReadWorkToolInvocationDescription(JsonElement? arguments)
+        => TryGetProperty(arguments, "input", out _) ? ReadString(arguments, "description") : null;
+
+    private static JsonElement? ReadWorkToolInvocationInput(JsonElement? arguments)
+    {
+        if (TryGetProperty(arguments, "input", out var input) &&
+            TryGetProperty(arguments, "description", out var description) &&
+            description.ValueKind == JsonValueKind.String)
+        {
+            return input.ValueKind == JsonValueKind.Null
+                ? null
+                : input;
+        }
+
+        return arguments;
+    }
+
+    private static string CreateWorkToolInputSchema(string inputSchemaJson)
+    {
+        var inputSchema = JsonNode.Parse(inputSchemaJson)
+            ?? throw new InvalidOperationException("Expected an MCP work tool input schema.");
+        return new JsonObject
+        {
+            ["type"] = "object",
+            ["oneOf"] = new JsonArray
+            {
+                inputSchema.DeepClone(),
+                new JsonObject
+                {
+                    ["type"] = "object",
+                    ["properties"] = new JsonObject
+                    {
+                        ["input"] = new JsonObject
+                        {
+                            ["anyOf"] = new JsonArray
+                            {
+                                inputSchema.DeepClone(),
+                                new JsonObject
+                                {
+                                    ["type"] = "null",
+                                },
+                            },
+                        },
+                        ["description"] = new JsonObject
+                        {
+                            ["type"] = "string",
+                            ["description"] = "Optional request context stored on the worker origin so callers can attach human-readable intent or audit notes.",
+                        },
+                    },
+                    ["required"] = new JsonArray("input", "description"),
+                    ["additionalProperties"] = false,
+                },
+            },
+        }.ToJsonString();
     }
 
     private static JsonElement? ToJsonObject(string json)
@@ -952,6 +1031,10 @@ public sealed class WorkableMcpToolRouter(IWorkSystemRegistry registry)
             "revision": {
               "type": "integer",
               "description": "Current worker revision from query_workers or get_worker. Required for optimistic concurrency."
+            },
+            "description": {
+              "type": "string",
+              "description": "Optional request context stored on the worker origin so callers can attach human-readable intent or audit notes."
             }
           },
           "required": ["workerId", "revision"],
@@ -982,6 +1065,10 @@ public sealed class WorkableMcpToolRouter(IWorkSystemRegistry registry)
             "changes": {
               "type": "object",
               "description": "Optional WorkDefinitionReconfiguration object containing defaultOptions and/or configuration."
+            },
+            "description": {
+              "type": "string",
+              "description": "Optional request context stored on the operation origin so callers can attach human-readable intent or audit notes."
             }
           },
           "required": ["definitionId", "revision"],

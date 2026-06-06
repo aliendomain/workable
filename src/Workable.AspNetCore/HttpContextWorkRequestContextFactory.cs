@@ -8,7 +8,7 @@ public sealed class HttpContextWorkRequestContextFactory(
     public WorkRequestContext Create(
         HttpContext? httpContext,
         WorkInvocationChannel channel,
-        string description)
+        string? description = null)
     {
         var actor = actors.Create(httpContext);
         var url = httpContext is null

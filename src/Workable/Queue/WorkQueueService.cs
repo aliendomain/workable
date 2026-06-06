@@ -14,9 +14,7 @@ internal sealed class WorkQueueService(
             definitionId,
             input,
             options,
-            WorkRequestContext.Create(
-                WorkInvocationChannel.DotNet,
-                description: $"Queue work definition '{definitionId.Value:D}' through .NET."),
+            WorkRequestContext.Create(WorkInvocationChannel.DotNet),
             cancellationToken);
 
     internal Task<IWorkerHandle> Enqueue(
@@ -58,9 +56,7 @@ internal sealed class WorkQueueService(
             name,
             input,
             options,
-            WorkRequestContext.Create(
-                WorkInvocationChannel.DotNet,
-                description: $"Queue work '{name}' through .NET."),
+            WorkRequestContext.Create(WorkInvocationChannel.DotNet),
             cancellationToken);
     }
 

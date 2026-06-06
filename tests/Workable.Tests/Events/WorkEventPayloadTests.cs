@@ -42,7 +42,7 @@ public sealed class WorkEventPayloadTests
         AssertEventOrigin(
             queuedData,
             WorkInvocationChannel.DotNet,
-            "Queue work 'events.payload' through .NET.");
+            description: null);
         AssertWorkerSummaries(queuedData, logTotal: 0, timelineTotal: 0);
         AssertThinEvent(queued, queuedData);
         AssertEventKeys(queuedData, subject, concurrencyKey, identifier);
@@ -94,7 +94,7 @@ public sealed class WorkEventPayloadTests
         AssertEventOrigin(
             data,
             WorkInvocationChannel.DotNet,
-            "Apply worker action 'Cancel' through .NET.");
+            description: null);
     }
 
     [Fact]
@@ -221,7 +221,7 @@ public sealed class WorkEventPayloadTests
         AssertEventOrigin(
             data,
             WorkInvocationChannel.DotNet,
-            "Reconfigure worker through .NET.");
+            description: null);
     }
 
     [Fact]
@@ -491,7 +491,7 @@ public sealed class WorkEventPayloadTests
         var stream = new WorkEventStream();
         var publisher = new WorkerEventPublisher(WorkSystemId.New(), null, stream, _ => { });
         var worker = CreateWorker("events.timeline-summaries");
-        var origin = WorkOrigin.Create(WorkInvocationChannel.DotNet, description: "Pause worker through .NET.");
+        var origin = WorkOrigin.Create(WorkInvocationChannel.DotNet);
         await using var subscription = stream.Subscribe(new WorkEventFilter(WorkerId: worker.Id, EventType: "worker.pause"));
         await using var reader = subscription.Read().GetAsyncEnumerator();
 
@@ -573,14 +573,22 @@ public sealed class WorkEventPayloadTests
     private static void AssertEventOrigin(
         JsonElement data,
         WorkInvocationChannel channel,
-        string description,
+        string? description,
         string? actorId = null,
         string? actorEmail = null,
         string? urlContains = null)
     {
         var origin = data.GetProperty("origin");
         Assert.Equal(channel.ToString(), origin.GetProperty("channel").GetString());
-        Assert.Equal(description, origin.GetProperty("description").GetString());
+        if (description is null)
+        {
+            Assert.False(origin.TryGetProperty("description", out _));
+        }
+        else
+        {
+            Assert.Equal(description, origin.GetProperty("description").GetString());
+        }
+
         if (urlContains is null)
         {
             Assert.False(origin.TryGetProperty("url", out _));
@@ -684,7 +692,7 @@ public sealed class WorkEventPayloadTests
             WorkInput.Empty,
             WorkerOptions.Default,
             configuration,
-            WorkOrigin.Create(WorkInvocationChannel.DotNet, description: "Test worker."),
+            WorkOrigin.Create(WorkInvocationChannel.DotNet),
             WorkerState.Queued,
             isStartDeferred: false,
             messages: [],

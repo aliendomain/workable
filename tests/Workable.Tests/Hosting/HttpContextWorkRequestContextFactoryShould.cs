@@ -26,6 +26,26 @@ public sealed class HttpContextWorkRequestContextFactoryShould
     }
 
     [Fact]
+    public void CreateRequestContextWithNullDescriptionByDefault()
+    {
+        var actor = new WorkActor("user-123", "Test User", "user@example.test");
+        var actors = new RecordingActorFactory(actor);
+        var factory = new HttpContextWorkRequestContextFactory(actors);
+        var httpContext = new DefaultHttpContext();
+        httpContext.Request.Path = "/custom/queue";
+
+        var context = factory.Create(
+            httpContext,
+            WorkInvocationChannel.HttpApi);
+
+        Assert.Same(httpContext, actors.LastHttpContext);
+        Assert.Equal(actor, context.Actor);
+        Assert.Equal(WorkInvocationChannel.HttpApi, context.Origin.Channel);
+        Assert.Null(context.Origin.Description);
+        Assert.Equal("/custom/queue", context.Origin.Url);
+    }
+
+    [Fact]
     public void CreateRequestContextFromActorFactoryAndHttpRequestUrl()
     {
         var actor = new WorkActor("user-123", "Test User", "user@example.test");

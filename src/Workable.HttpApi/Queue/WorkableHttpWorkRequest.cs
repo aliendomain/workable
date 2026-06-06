@@ -8,4 +8,5 @@ public sealed record WorkableHttpWorkRequest(
     WorkableHttpWorkerOptions? Options = null,
     WorkSubjectId? SubjectId = null,
     WorkConcurrencyKey? ConcurrencyKey = null,
-    IReadOnlySet<WorkIdentifier>? Identifiers = null);
+    IReadOnlySet<WorkIdentifier>? Identifiers = null,
+    string? Description = null);

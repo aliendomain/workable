@@ -510,8 +510,7 @@ static WorkRequestContext CreateHarnessRequestContext()
         WorkInvocationChannel.DotNet,
         actor: new WorkActor(
             Id: "workable.perf.harness",
-            Name: "Workable Performance Harness"),
-        description: "Run Workable performance harness view queries.");
+            Name: "Workable Performance Harness"));
 
 internal static class HarnessJson
 {

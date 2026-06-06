@@ -170,7 +170,7 @@ public sealed class DynamicWorkSourceTests
             ?? throw new InvalidOperationException("Expected worker snapshot.");
         Assert.Equal(WorkerState.Completed, worker.State);
         Assert.Equal(WorkInvocationChannel.DotNet, snapshot.Origin.Channel);
-        Assert.Contains(nameof(RuntimeStartupSource), snapshot.Origin.Description);
+        Assert.Null(snapshot.Origin.Description);
     }
 
     [Fact]

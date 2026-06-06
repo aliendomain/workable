@@ -59,7 +59,7 @@ public sealed class WorkableRealtimeHub(
         EnsureCanAccessNamedSystem(
             system,
             systemName,
-            CreateRequestContext("Authorize Workable SignalR view unsubscription."));
+            CreateRequestContext());
         return viewSubscriptions.UnwatchView(
             this.Context.ConnectionId,
             this.Groups,
@@ -116,7 +116,7 @@ public sealed class WorkableRealtimeHub(
         EnsureCanAccessNamedSystem(
             system,
             systemName,
-            CreateRequestContext("Authorize Workable SignalR worker overview unsubscription."));
+            CreateRequestContext());
         return workerOverviewSubscriptions.Unwatch(
             this.Context.ConnectionId,
             this.Groups,
@@ -155,7 +155,7 @@ public sealed class WorkableRealtimeHub(
         EnsureCanAccessNamedSystem(
             system,
             systemName,
-            CreateRequestContext("Authorize Workable SignalR event unsubscription."));
+            CreateRequestContext());
         await eventSubscriptions.UnwatchEvents(
             this.Context.ConnectionId,
             this.Groups,
@@ -220,7 +220,7 @@ public sealed class WorkableRealtimeHub(
         string? systemName,
         out IWorkSystemSession session)
     {
-        var requestContext = CreateRequestContext("Authorize Workable SignalR subscription.");
+        var requestContext = CreateRequestContext();
         EnsureCanAccessNamedSystem(system, systemName, requestContext);
         var groups = groupProvider.GetGroups(requestContext.Actor, system.Name);
         session = system.CreateSession(requestContext with
@@ -237,11 +237,10 @@ public sealed class WorkableRealtimeHub(
             session.Catalog.Definitions.Select(static definition => definition.Id));
     }
 
-    private WorkRequestContext CreateRequestContext(string description)
+    private WorkRequestContext CreateRequestContext()
         => requestContexts.Create(
             this.Context.GetHttpContext(),
-            WorkInvocationChannel.SignalR,
-            description);
+            WorkInvocationChannel.SignalR);
 
     private static void EnsureCanAccessNamedSystem(
         IWorkSystem system,

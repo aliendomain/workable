@@ -31,10 +31,7 @@ internal sealed class WorkableHostedService(
 
         foreach (var system in registry.Systems.Where(system => autoStartIds.Contains(system.Id)))
         {
-            await system.Start(
-                CreateSystemAdministratorRequestContext(
-                    "Start Workable system with the application host."),
-                cancellationToken);
+            await system.Start(CreateSystemAdministratorRequestContext(), cancellationToken);
         }
     }
 
@@ -53,10 +50,7 @@ internal sealed class WorkableHostedService(
         {
             return new SystemShutdownResult(
                 plan,
-                await plan.System.Stop(
-                    CreateSystemAdministratorRequestContext(
-                        "Stop Workable system with the application host."),
-                    CancellationToken.None),
+                await plan.System.Stop(CreateSystemAdministratorRequestContext(), CancellationToken.None),
                 Exception: null);
         }
         catch (Exception exception)
@@ -67,8 +61,7 @@ internal sealed class WorkableHostedService(
 
     private static async Task<SystemShutdownPlan> CreateShutdownPlan(IWorkSystem system)
     {
-        var requestContext = CreateSystemAdministratorRequestContext(
-            "Inspect Workable system shutdown state with the application host.");
+        var requestContext = CreateSystemAdministratorRequestContext();
         var session = system.CreateSession(requestContext);
         return new(
             system,
@@ -202,13 +195,12 @@ internal sealed class WorkableHostedService(
             ? value.ToString("g")
             : "unknown";
 
-    private static WorkRequestContext CreateSystemAdministratorRequestContext(string description)
+    private static WorkRequestContext CreateSystemAdministratorRequestContext()
         => new(
             HostActor,
             WorkOrigin.Create(
                 WorkInvocationChannel.DotNet,
-                HostActor,
-                description),
+                HostActor),
             WorkAuthorizationSnapshot.Create(
                 HostActor,
                 [InternalWorkAuthorizationGroups.SystemAdministrator],

@@ -56,7 +56,39 @@ Work tools use MCP-safe names. For example, a Workable work definition named `em
 
 If multiple work definitions normalize to the same MCP-safe name, the server disambiguates them by appending a short definition-id suffix.
 
-Work queued through the ASP.NET Core MCP server records a `WorkOrigin` with `WorkInvocationChannel.Mcp`. When an HTTP context is available, the origin uses `HttpContext.User` for actor identity and records the MCP request path as the origin URL.
+Work queued through the ASP.NET Core MCP server records a `WorkOrigin` with `WorkInvocationChannel.Mcp`. When an HTTP context is available, the origin uses `HttpContext.User` for actor identity and records the MCP request path as the origin URL. Protocol-facing work tools, action tools, and reconfiguration tools can also carry an optional caller-supplied `description`, which Workable copies into the origin.
+
+## Work Tool Inputs
+
+Protocol-facing MCP work tools accept either the raw work input directly or a wrapped object when the caller wants to attach an origin description.
+
+Raw input:
+
+```json
+{
+  "userId": "user-123"
+}
+```
+
+Wrapped input with origin description:
+
+```json
+{
+  "input": {
+    "userId": "user-123"
+  },
+  "description": "Send the delayed welcome email after support verified the account."
+}
+```
+
+For inputless work, use `null` for `input` when you still want to attach a description.
+
+```json
+{
+  "input": null,
+  "description": "Run the daily cache refresh now."
+}
+```
 
 ## Query Tools
 
@@ -93,7 +125,28 @@ Action tools are exposed by default so an MCP client can control workers after i
 - `workable_purge_worker`: permanently remove a completed or canceled worker from memory.
 - `workable_reconfigure_work_definition`: change a work definition's default worker options and/or default runtime configuration for future queued workers.
 
-Worker action tool calls record a `WorkOrigin` with `WorkInvocationChannel.Mcp`. The origin is retained in the worker's action history and is published on the action event. Definition default reconfiguration requires the current definition id and revision from `workable_query_work_definitions` or `workable_get_work_info`.
+Worker action tool calls record a `WorkOrigin` with `WorkInvocationChannel.Mcp`. The origin is retained in the worker's action history and is published on the action event. Action tools accept an optional top-level `description` that is copied into that origin. Definition default reconfiguration requires the current definition id and revision from `workable_query_work_definitions` or `workable_get_work_info`, and `workable_reconfigure_work_definition` also accepts an optional top-level `description`.
+
+```json
+{
+  "workerId": "22222222-2222-2222-2222-222222222222",
+  "revision": 3,
+  "description": "Cancel the duplicate worker after operator review."
+}
+```
+
+```json
+{
+  "definitionId": "11111111-1111-1111-1111-111111111111",
+  "revision": 7,
+  "description": "Enable profiling for future workers during the incident.",
+  "changes": {
+    "defaultOptions": {
+      "profilingEnabled": true
+    }
+  }
+}
+```
 
 ## Tool Descriptors
 
@@ -129,6 +182,8 @@ foreach (var tool in tools)
 Typed executors and typed delegate registrations generate schemas from their input and output CLR types using the same System.Text.Json web defaults Workable uses for input and output payloads. Explicit schemas can still be supplied on `WorkDefinition` when a host needs full control.
 
 The MCP adapter uses a work schema directly when it has JSON content and a schema document. If a work definition does not provide a compatible input schema, the adapter can expose a permissive object schema instead. Output schemas are only exposed when the work definition provides a compatible JSON schema.
+
+On the protocol-facing server surface, work-tool schemas are wrapped so clients can either send the raw work input directly or send `{ input, description }` when they want to attach an origin description. This wrapper behavior applies to `MapWorkableMcp()` and other server transport surfaces, not to the direct `IWorkSystemSession.InvokeMcpTool(...)` API.
 
 ```csharp
 var tools = session.GetMcpToolDescriptors(

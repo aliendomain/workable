@@ -38,7 +38,7 @@ internal static class WorkableHttpQueueRoutes
                 httpContext,
                 system,
                 requestContexts,
-                $"Queue work '{name}' through HTTP API.");
+                request?.Description);
             var result = await queue.Enqueue(session, name, request, cancellationToken);
             return WorkableHttpRouteResults.ToQueueHttpResult(result);
         });
@@ -61,7 +61,7 @@ internal static class WorkableHttpQueueRoutes
                 httpContext,
                 system,
                 requestContexts,
-                $"Queue work definition '{definitionId:D}' through HTTP API.");
+                request?.Description);
             var result = await queue.Enqueue(session, new WorkDefinitionId(definitionId), request, cancellationToken);
             return WorkableHttpRouteResults.ToQueueHttpResult(result);
         });

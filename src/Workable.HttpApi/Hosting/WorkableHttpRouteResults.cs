@@ -54,8 +54,7 @@ internal static class WorkableHttpRouteResults
                 var requestContexts = httpContext.RequestServices.GetRequiredService<IWorkRequestContextFactory>();
                 var requestContext = WorkableHttpRequestContext.Create(
                     httpContext,
-                    requestContexts,
-                    "Authorize Workable HTTP named-system access.");
+                    requestContexts);
                 if (!resolved.DescribeAccess(requestContext).HasAnyAccess())
                 {
                     system = null!;

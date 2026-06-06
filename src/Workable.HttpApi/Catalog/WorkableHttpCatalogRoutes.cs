@@ -26,8 +26,7 @@ internal static class WorkableHttpCatalogRoutes
             var session = WorkableHttpRequestContext.CreateSession(
                 httpContext,
                 system,
-                requestContexts,
-                "Browse work definitions through HTTP API.");
+                requestContexts);
             if (level == true)
             {
                 return Results.Ok(WorkableHttpCatalogAdapter.GetDefinitionCatalogLevel(session.Catalog, category));
@@ -59,8 +58,7 @@ internal static class WorkableHttpCatalogRoutes
             var session = WorkableHttpRequestContext.CreateSession(
                 httpContext,
                 system,
-                requestContexts,
-                "Read a work definition through HTTP API.");
+                requestContexts);
             var definition = catalog.GetDefinition(session, new WorkDefinitionId(definitionId));
             return definition is null ? Results.NotFound() : Results.Ok(definition);
         });
@@ -82,8 +80,7 @@ internal static class WorkableHttpCatalogRoutes
             var session = WorkableHttpRequestContext.CreateSession(
                 httpContext,
                 system,
-                requestContexts,
-                "Reconfigure work definition through HTTP API.");
+                requestContexts);
             var result = await catalog.ReconfigureDefinition(
                 session,
                 new WorkDefinitionId(definitionId),

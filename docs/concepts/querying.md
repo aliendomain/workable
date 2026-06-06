@@ -595,7 +595,7 @@ The examples below show the serialized JSON shape returned by HTTP and MCP adapt
       "id": "assistant-user",
       "name": "Assistant User"
     },
-    "description": "MCP tool 'workable_work_email_welcome_send'",
+    "description": "Send the delayed welcome email after support verified the account.",
     "url": "/workable/mcp"
   },
   "state": "Completed",
@@ -754,7 +754,7 @@ The examples below show the serialized JSON shape returned by HTTP and MCP adapt
         "actor": {
           "id": "user-123"
         },
-        "description": "Apply worker action 'Cancel' through HTTP API.",
+        "description": "Cancel the duplicate worker after operator review.",
         "url": "/workable/workers/00000000-0000-0000-0000-000000000000/actions/cancel"
       },
       "revision": 2,
@@ -773,7 +773,7 @@ The examples below show the serialized JSON shape returned by HTTP and MCP adapt
         "actor": {
           "id": "user-123"
         },
-        "description": "Reconfigure worker through HTTP API.",
+        "description": "Enable profiling while investigating this worker.",
         "url": "/workable/workers/00000000-0000-0000-0000-000000000000/reconfigure"
       },
       "revision": 3,
@@ -799,6 +799,8 @@ The examples below show the serialized JSON shape returned by HTTP and MCP adapt
   }
 }
 ```
+
+Origin descriptions are optional. Built-in HTTP and MCP transports preserve them when the caller supplies one, but Workable does not invent transport descriptions on its own.
 
 ### Work Definition
 

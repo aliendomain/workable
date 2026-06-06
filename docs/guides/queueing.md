@@ -184,6 +184,8 @@ IWorkerHandle handle = await session.Queue.Enqueue(
     cancellationToken: cancellationToken);
 ```
 
+The `description` argument is optional. Use it when the caller wants to preserve additional human-readable context on the worker origin.
+
 ASP.NET Core hosts can use `Workable.AspNetCore` to create authenticated request contexts from `HttpContext` inside their own controllers or minimal API routes. This does not expose Workable's built-in HTTP API endpoints.
 
 ```csharp

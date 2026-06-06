@@ -6,7 +6,7 @@ The HTTP API adapter uses the same Workable catalog and queueing system as direc
 
 Invocation-channel rules matter for work invocation, not for general system/query/worker discovery routes. Definition listing, diagnostics, worker reads, lifecycle routes, and other read/control surfaces are governed by authorization and route shape, not by definition invocation-channel settings.
 
-HTTP queueing, worker actions, and worker reconfiguration record a `WorkOrigin` from the request. The origin uses `HttpContext.User` for actor identity and records the HTTP path as the origin URL.
+HTTP queueing, worker actions, and worker reconfiguration record a `WorkOrigin` from the request. The origin uses `HttpContext.User` for actor identity and records the HTTP path as the origin URL. Built-in queue, action, bulk-action, and reconfiguration request bodies can also supply an optional `description` value, which Workable copies into `WorkOrigin.Description`.
 
 `Workable.HttpApi` is an authenticated transport. Anonymous callers are rejected before Workable routes run or request bodies are bound, and mapped systems must be authorization-enabled.
 
@@ -325,7 +325,18 @@ By default, the HTTP adapter returns after queue acceptance.
 
 By default, worker options and runtime configuration come from the targeted work definition. Include HTTP queue options only when you want to override those defaults for this one request.
 
-Use `GET /workable/queue-request/schema` when a client wants to discover the accepted HTTP queue request shape for the selected system at runtime.
+Queue requests can also include an optional `description` when the caller wants to attach human-readable request context to the worker origin.
+
+```json
+{
+  "input": {
+    "userId": "user-123"
+  },
+  "description": "Retry welcome email after the user corrected their address."
+}
+```
+
+Use `GET /workable/queue-request/schema` when a client wants to discover the accepted HTTP queue request shape for the selected system at runtime, including the optional `description` field.
 
 Request completion when the caller needs the final worker output in the HTTP response.
 
@@ -605,11 +616,12 @@ POST /workable/workers/22222222-2222-2222-2222-222222222222/actions/cancel
 Content-Type: application/json
 
 {
-  "revision": 3
+  "revision": 3,
+  "description": "Cancel the duplicate worker after operator review."
 }
 ```
 
-The action route supports `Start`, `Pause`, `Cancel`, `Push`, and `Purge`.
+The action route supports `Start`, `Pause`, `Cancel`, `Push`, and `Purge`. `description` is optional and is copied into the action-history origin when supplied.
 
 Apply a worker action to all workers in the system.
 
@@ -647,9 +659,12 @@ Content-Type: application/json
 
 {
   "category": "Billing",
-  "includeSubcategories": true
+  "includeSubcategories": true,
+  "description": "Pause billing workers while the downstream service is unavailable."
 }
 ```
+
+Bulk action requests also accept an optional top-level `description`.
 
 Runtime reconfiguration uses the same revision rule.
 
@@ -659,6 +674,7 @@ Content-Type: application/json
 
 {
   "revision": 3,
+  "description": "Enable profiling while investigating this worker.",
   "changes": {
     "profilingEnabled": true
   }
@@ -673,8 +689,11 @@ Content-Type: application/json
 
 {
   "revision": 3,
+  "description": "Enable profiling while investigating this worker.",
   "changes": {
     "profilingEnabled": true
   }
 }
 ```
+
+Worker reconfiguration requests also accept an optional `description`, which is retained in reconfiguration history.

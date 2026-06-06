@@ -180,7 +180,7 @@ Shape:
       "name": "Greya",
       "email": "greya@example.test"
     },
-    "description": "Queue work 'email.welcome.send' through the HTTP API.",
+    "description": "Retry welcome email after support verified the corrected address.",
     "url": "/workable/work/email.welcome.send"
   }
 }
@@ -190,6 +190,7 @@ Notes:
 
 - `actor` is omitted when the origin does not carry caller identity.
 - `description` and `url` are included only when the source request supplied them.
+- Built-in HTTP and MCP transports can supply `description` through their request payloads or tool arguments, but Workable does not fabricate one automatically.
 
 ### Queue Payload
 

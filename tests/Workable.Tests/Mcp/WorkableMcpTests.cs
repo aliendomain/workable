@@ -1,5 +1,6 @@
 using System.Security.Claims;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.TestHost;
@@ -196,6 +197,21 @@ public sealed class WorkableMcpTests
             tool.Kind == WorkableMcpServerToolKind.Action &&
             tool.ToolName == "workable_reconfigure_work_definition" &&
             tool.Description?.Contains("future queued workers", StringComparison.OrdinalIgnoreCase) == true);
+
+        var workTool = Assert.Single(tools.Where(tool => tool.ToolName == "workable_work_cache_refresh"));
+        var workSchema = JsonNode.Parse(workTool.InputSchemaJson)
+            ?? throw new InvalidOperationException("Expected work tool schema JSON.");
+        Assert.NotNull(workSchema["oneOf"]?[1]?["properties"]?["description"]);
+
+        var actionTool = Assert.Single(tools.Where(tool => tool.ToolName == "workable_cancel_worker"));
+        var actionSchema = JsonNode.Parse(actionTool.InputSchemaJson)
+            ?? throw new InvalidOperationException("Expected action tool schema JSON.");
+        Assert.NotNull(actionSchema["properties"]?["description"]);
+
+        var reconfigureTool = Assert.Single(tools.Where(tool => tool.ToolName == "workable_reconfigure_work_definition"));
+        var reconfigureSchema = JsonNode.Parse(reconfigureTool.InputSchemaJson)
+            ?? throw new InvalidOperationException("Expected reconfigure tool schema JSON.");
+        Assert.NotNull(reconfigureSchema["properties"]?["description"]);
     }
 
     [Fact]
@@ -230,17 +246,22 @@ public sealed class WorkableMcpTests
         var router = provider.GetRequiredService<WorkableMcpToolRouter>();
         await system.Start();
 
-        using var document = JsonDocument.Parse("""{"message":"hello"}""");
+        using var document = JsonDocument.Parse("""{"input":{"message":"hello"},"description":"Queue this work from the MCP router test."}""");
         var result = await router.CallTool(
             "workable_work_echo_message",
             document.RootElement,
             options: null,
             systemName: null,
             requestContext: CreateMcpRequestContext("Invoke MCP work tool."));
+        var session = CreateMcpSession(system, "Inspect MCP work tool invocation.");
+        var workers = await session.Query.Workers(new WorkerCriteria(DefinitionName: "echo.message"));
+        var worker = await session.Query.Worker(Assert.Single(workers.Workers).Id)
+            ?? throw new InvalidOperationException("Expected worker.");
 
         Assert.False(result.IsError);
         Assert.Contains("\"status\":\"Completed\"", result.Json);
         Assert.Contains("\"json\":\"{\\u0022message\\u0022:\\u0022hello\\u0022}\"", result.Json);
+        Assert.Equal("Queue this work from the MCP router test.", worker.Origin.Description);
     }
 
     [Fact]
@@ -486,6 +507,7 @@ public sealed class WorkableMcpTests
             {
                 ["workerId"] = worker.Id.Value.ToString("D"),
                 ["revision"] = worker.Revision,
+                ["description"] = "Cancel this worker from the MCP HTTP transport test.",
             });
 
         await WaitForReadModel(remote);
@@ -592,6 +614,7 @@ public sealed class WorkableMcpTests
             {
                 ["workerId"] = worker.Id.Value.ToString("D"),
                 ["revision"] = worker.Revision,
+                ["description"] = "Cancel this worker from the MCP HTTP transport test.",
             });
 
         await WaitForReadModel(system);
@@ -606,6 +629,7 @@ public sealed class WorkableMcpTests
         Assert.Equal(WorkAction.Cancel, history.Action);
         Assert.Equal(WorkInvocationChannel.Mcp, history.Origin.Channel);
         Assert.Equal("mcp-user-1", history.Origin.Actor.Id);
+        Assert.Equal("Cancel this worker from the MCP HTTP transport test.", history.Origin.Description);
     }
 
     [Fact]
@@ -865,6 +889,7 @@ public sealed class WorkableMcpTests
 
         using var arguments = JsonDocument.Parse($$"""
             {
+              "description": "Reconfigure defaults from the MCP tool test.",
               "definitionId": "{{definition.Id.Value:D}}",
               "revision": {{definition.Revision}},
               "defaultOptions": {

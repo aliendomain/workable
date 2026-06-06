@@ -1275,6 +1275,7 @@ public sealed class WorkableHttpApiTests
             new
             {
                 completion = "returnafteraccepted",
+                description = "Queue this worker from the HTTP API test.",
             });
         queueResponse.EnsureSuccessStatusCode();
         var queueJson = JsonNode.Parse(await queueResponse.Content.ReadAsStringAsync())
@@ -1297,6 +1298,7 @@ public sealed class WorkableHttpApiTests
             new
             {
                 revision = worker.Revision,
+                description = "Cancel this worker from the HTTP API test.",
             });
         actionResponse.EnsureSuccessStatusCode();
         var summaryResponse = await client.GetAsync("/workable/workers/status-summary");
@@ -1315,10 +1317,12 @@ public sealed class WorkableHttpApiTests
         Assert.Equal("HttpApi", queuedOrigin.GetProperty("channel").GetString());
         Assert.Equal("user-123", queuedOrigin.GetProperty("actor").GetProperty("id").GetString());
         Assert.Equal("greya@example.test", queuedOrigin.GetProperty("actor").GetProperty("email").GetString());
+        Assert.Equal("Queue this worker from the HTTP API test.", queuedOrigin.GetProperty("description").GetString());
         Assert.Contains("/WORKABLE/WORK/http.route.case", queuedOrigin.GetProperty("url").GetString(), StringComparison.OrdinalIgnoreCase);
         Assert.Equal("HttpApi", actionOrigin.GetProperty("channel").GetString());
         Assert.Equal("user-123", actionOrigin.GetProperty("actor").GetProperty("id").GetString());
         Assert.Equal("greya@example.test", actionOrigin.GetProperty("actor").GetProperty("email").GetString());
+        Assert.Equal("Cancel this worker from the HTTP API test.", actionOrigin.GetProperty("description").GetString());
         Assert.Contains("/WORKABLE/WORKERS/", actionOrigin.GetProperty("url").GetString(), StringComparison.OrdinalIgnoreCase);
     }
 
@@ -1337,6 +1341,7 @@ public sealed class WorkableHttpApiTests
             ?? throw new InvalidOperationException("Expected queue request schema."))
             ?? throw new InvalidOperationException("Expected queue request schema JSON.");
         Assert.NotNull(schema["properties"]?["completion"]);
+        Assert.NotNull(schema["properties"]?["description"]);
         Assert.NotNull(schema["properties"]?["options"]);
         Assert.False(json["capabilities"]?["persistentCoordinationAvailable"]?.GetValue<bool>());
         var queue = json["tabs"]?.AsArray().FirstOrDefault(tab => tab?["id"]?.GetValue<string>() == "queue")
@@ -1349,6 +1354,7 @@ public sealed class WorkableHttpApiTests
             ?? throw new InvalidOperationException("Expected coordination fields.");
         var schemaJson = schema.ToJsonString();
 
+        Assert.Contains(queueFields, field => field?["path"]?.GetValue<string>() == "description");
         Assert.Contains(queueFields, field => field?["path"]?.GetValue<string>() == "subjectId.type");
         Assert.Contains(queueFields, field => field?["path"]?.GetValue<string>() == "subjectId.value");
         Assert.DoesNotContain(fields, field => field?["path"]?.GetValue<string>() == "subjectId.type");
@@ -1679,6 +1685,7 @@ public sealed class WorkableHttpApiTests
             "/workable/work/http.route.case",
             new
             {
+                description = "Queue this worker from the HTTP API test.",
                 completion = "returnAfterAccepted",
             });
         queueResponse.EnsureSuccessStatusCode();
@@ -1697,6 +1704,7 @@ public sealed class WorkableHttpApiTests
             new
             {
                 revision = worker.Revision,
+                description = "Reconfigure this worker from the HTTP API test.",
                 changes = new
                 {
                     profilingEnabled = true,
@@ -1711,6 +1719,7 @@ public sealed class WorkableHttpApiTests
         Assert.Equal("HttpApi", origin.GetProperty("channel").GetString());
         Assert.Equal("user-123", origin.GetProperty("actor").GetProperty("id").GetString());
         Assert.Equal("greya@example.test", origin.GetProperty("actor").GetProperty("email").GetString());
+        Assert.Equal("Reconfigure this worker from the HTTP API test.", origin.GetProperty("description").GetString());
         Assert.Contains("/workable/workers/", origin.GetProperty("url").GetString(), StringComparison.OrdinalIgnoreCase);
     }
 
@@ -2049,6 +2058,7 @@ public sealed class WorkableHttpApiTests
             new
             {
                 category = "Billing",
+                description = "Cancel all billing workers from the HTTP API test.",
             });
         actionResponse.EnsureSuccessStatusCode();
         var actionJson = JsonNode.Parse(await actionResponse.Content.ReadAsStringAsync())
@@ -2065,6 +2075,7 @@ public sealed class WorkableHttpApiTests
         Assert.Equal(WorkerState.Canceled, billing.State);
         Assert.Equal(WorkerState.Queued, email.State);
         Assert.Equal(WorkInvocationChannel.HttpApi, billing.ActionHistory[^1].Origin.Channel);
+        Assert.Equal("Cancel all billing workers from the HTTP API test.", billing.ActionHistory[^1].Origin.Description);
         Assert.Contains("/workable/workers/actions/cancel", billing.ActionHistory[^1].Origin.Url, StringComparison.OrdinalIgnoreCase);
     }
 

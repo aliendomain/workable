@@ -37,7 +37,7 @@ internal static class WorkableHttpWorkerRoutes
                 httpContext,
                 system,
                 requestContexts,
-                $"Apply worker action '{parsedAction}' to multiple workers through HTTP API.");
+                request?.Description);
             var result = await workers.ExecuteAll(session, parsedAction, request, cancellationToken);
             return Results.Ok(result);
         });
@@ -72,7 +72,7 @@ internal static class WorkableHttpWorkerRoutes
                 httpContext,
                 system,
                 requestContexts,
-                $"Apply worker action '{parsedAction}' through HTTP API.");
+                request.Description);
             var result = await workers.Execute(session, new WorkerId(workerId), parsedAction, request, cancellationToken);
             return WorkableHttpRouteResults.ToActionHttpResult(result);
         });
@@ -95,7 +95,7 @@ internal static class WorkableHttpWorkerRoutes
                 httpContext,
                 system,
                 requestContexts,
-                "Reconfigure worker through HTTP API.");
+                request.Description);
             var result = await workers.Reconfigure(session, new WorkerId(workerId), request, cancellationToken);
             return WorkableHttpRouteResults.ToActionHttpResult(result);
         });

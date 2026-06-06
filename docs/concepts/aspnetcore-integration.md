@@ -35,7 +35,7 @@ That registers:
 
 The usual direct-use entry point is `IWorkRequestContextFactory`.
 
-It builds a `WorkRequestContext` from the current `HttpContext`, the intended `WorkInvocationChannel`, and a short description of what the request is doing.
+It builds a `WorkRequestContext` from the current `HttpContext`, the intended `WorkInvocationChannel`, and an optional short description of what the request is doing.
 
 ```csharp
 app.MapPost("/welcome/{userId}", async (
@@ -64,6 +64,8 @@ The created context includes:
 - a `WorkActor` derived from the current authenticated user
 - a `WorkOrigin` that records the invocation channel and request URL
 - any authorization group resolution performed by Workable later through the registered group provider
+
+The `description` argument is optional. Supply it only when the endpoint has useful human-readable context worth preserving on the Workable origin.
 
 ## Actor Resolution
 
