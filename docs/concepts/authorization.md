@@ -3,7 +3,7 @@
 Workable supports authorization at two levels:
 
 - work-definition authorization controls who can read or operate individual work definitions
-- system authorization controls who can discover a system, view diagnostics, or start and stop it
+- system authorization controls who can discover a system when they have actual access to it, view diagnostics, or start and stop it
 
 The model is request-context based. Callers create or receive a `WorkRequestContext`, Workable creates an `IWorkSystemSession`, and that session exposes the caller-scoped catalog, queue, worker operations, query service, event stream, and diagnostics.
 
@@ -18,7 +18,7 @@ When authorization is enabled on a system:
 - queueing and worker operations return unauthorized outcomes when the caller cannot operate the target work
 - diagnostics require system-level diagnostics permission
 - start and stop require system-level control permission
-- system discovery is filtered by system-level connect permission
+- system discovery is filtered to systems where the caller has actual access
 
 Turn authorization off only when the system is intentionally open to all callers:
 
@@ -127,7 +127,6 @@ services.AddWorkableSystem(builder =>
     builder.ConfigureAuthorization(auth => auth
         .SystemAdministrators("workable.sysadmin")
         .WorkAdministrators("workable.workadmin")
-        .AllowConnectToGroups("workable.connect")
         .AllowDiagnosticsToGroups("workable.diagnostics")
         .AllowControlSystemToGroups("workable.control")
         .AllowReadAllWorkToGroups("support.readall")
@@ -138,7 +137,6 @@ services.AddWorkableSystem(builder =>
 Built-in role semantics are:
 
 - `SystemAdministrators(...)`
-  - grants `Connect`
   - grants `Diagnostics`
   - grants `ControlSystem`
   - grants `ReadAllWork`
@@ -148,8 +146,6 @@ Built-in role semantics are:
 
 Granular system permissions are:
 
-- `AllowConnectToGroups(...)`
-  - controls whether a caller can discover the system in transport-level system lists
 - `AllowDiagnosticsToGroups(...)`
   - controls `IWorkSystemSession.Diagnostics` and transport diagnostics routes/views
 - `AllowControlSystemToGroups(...)`
@@ -163,12 +159,10 @@ Granular system permissions are:
 
 Hosts can inspect system access explicitly through `IWorkSystem`.
 
-- `CanConnect(requestContext)` answers whether the caller can discover the system through transport-facing surfaces.
 - `DescribeAccess(requestContext)` returns a `WorkSystemAccessSummary` with the caller's current system-level access.
 
 `WorkSystemAccessSummary` reports:
 
-- `CanConnect`
 - `IsSystemAdministrator`
 - `IsWorkAdministrator`
 - `CanViewDiagnostics`
@@ -176,6 +170,8 @@ Hosts can inspect system access explicitly through `IWorkSystem`.
 - `CanReadAllWork`
 - `CanOperateAllWork`
 - total, readable, and operable definition counts
+
+`DescribeAccess(...).HasAnyAccess()` answers whether the caller has enough real access for the system to appear in transport discovery or to be selected by name through transport adapters.
 
 This is especially useful for custom UIs, capability negotiation, or host-specific feature gating before a caller attempts the broader session surface.
 

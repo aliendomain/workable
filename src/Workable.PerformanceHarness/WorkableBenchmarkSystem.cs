@@ -51,7 +51,6 @@ internal sealed class WorkableBenchmarkSystem : IAsyncDisposable
             if (requiresAuthorization)
             {
                 builder.ConfigureAuthorization(authorization => authorization
-                    .AllowConnectToGroups(OperatorGroup)
                     .AllowControlSystemToGroups(OperatorGroup)
                     .AllowDiagnosticsToGroups(OperatorGroup));
             }

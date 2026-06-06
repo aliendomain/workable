@@ -18,7 +18,7 @@ public sealed class WorkableEntraAuthorizationTests
         {
             User = new ClaimsPrincipal(new ClaimsIdentity(
                 [
-                    new Claim(WorkableEntraAuthorizationDefaults.ScopeClaimType, "Workable.Connect Workable.Read"),
+                    new Claim(WorkableEntraAuthorizationDefaults.ScopeClaimType, "Workable.Read"),
                     new Claim(WorkableEntraAuthorizationDefaults.RolesClaimType, "Workable.Admin"),
                 ],
                 "Test")),
@@ -37,7 +37,6 @@ public sealed class WorkableEntraAuthorizationTests
 
         var groups = provider.GetGroups(new WorkActor("entra-user"), systemName: null);
 
-        Assert.Contains(WorkableEntraAuthorizationDefaults.ConnectScope, groups);
         Assert.Contains(WorkableEntraAuthorizationDefaults.ReadScope, groups);
         Assert.Contains(WorkableEntraAuthorizationDefaults.AdminScope, groups);
     }
@@ -190,7 +189,6 @@ public sealed class WorkableEntraAuthorizationTests
         var services = new ServiceCollection();
         services.AddSingleton<IWorkAuthorizationGroupProvider>(_ => new FixedGroupProvider(
             [
-                WorkableEntraAuthorizationDefaults.ConnectScope,
                 WorkableEntraAuthorizationDefaults.ReadScope,
                 WorkableEntraAuthorizationDefaults.ExecuteScope,
                 WorkableEntraAuthorizationDefaults.ControlScope,
@@ -198,7 +196,6 @@ public sealed class WorkableEntraAuthorizationTests
         services.AddWorkableSystem(builder =>
         {
             builder.ConfigureAuthorization(authorization => authorization
-                .AllowConnectToGroups(WorkableEntraAuthorizationDefaults.ConnectScope)
                 .AllowReadAllWorkToGroups(WorkableEntraAuthorizationDefaults.ReadScope)
                 .AllowOperateAllWorkToGroups(WorkableEntraAuthorizationDefaults.ExecuteScope)
                 .AllowControlSystemToGroups(WorkableEntraAuthorizationDefaults.ControlScope));

@@ -288,7 +288,6 @@ builder.Services.AddWorkableEntraAuthorization(
 services.AddWorkableSystem(builder =>
 {
     builder.ConfigureAuthorization(auth => auth
-        .AllowConnectToGroups("11111111-2222-3333-4444-555555555555")
         .AllowReadAllWorkToGroups("11111111-2222-3333-4444-555555555555")
         .AllowOperateAllWorkToGroups("11111111-2222-3333-4444-555555555555"));
 });

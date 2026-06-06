@@ -65,7 +65,6 @@ export type WorkableHttpSystemCapabilities = {
 };
 
 export type WorkSystemAccessSummary = {
-  canConnect: boolean;
   isSystemAdministrator: boolean;
   isWorkAdministrator: boolean;
   canViewDiagnostics: boolean;

@@ -1614,7 +1614,7 @@ public sealed class WorkableHttpApiTests
         var systems = body["systems"]?.AsArray()
             ?? throw new InvalidOperationException("Expected systems array.");
         var system = Assert.Single(systems);
-        Assert.True(system?["access"]?["canConnect"]?.GetValue<bool>() == true);
+        Assert.NotNull(system?["access"]);
     }
 
     [Fact]
@@ -1771,8 +1771,6 @@ public sealed class WorkableHttpApiTests
             isDefault.GetValue<bool>() &&
             candidate["capabilities"]?["persistentCoordinationAvailable"] is JsonValue persistentCoordinationAvailable &&
             !persistentCoordinationAvailable.GetValue<bool>() &&
-            candidate["access"]?["canConnect"] is JsonValue canConnect &&
-            canConnect.GetValue<bool>() &&
             candidate["access"]?["isSystemAdministrator"] is JsonValue isSystemAdministrator &&
             isSystemAdministrator.GetValue<bool>() &&
             candidate["access"]?["isWorkAdministrator"] is JsonValue isWorkAdministrator &&
@@ -1801,9 +1799,9 @@ public sealed class WorkableHttpApiTests
     }
 
     [Fact]
-    public async Task MappedHttpRouteFiltersSystemsWithoutConnectPermission()
+    public async Task MappedHttpRouteFiltersSystemsWithoutAnyAccess()
     {
-        using var host = await CreateMultiSystemHttpHost(TransportAuthorizationTestSupport.ReadGroups);
+        using var host = await CreateMultiSystemHttpHost(Array.Empty<string>());
         var client = host.GetTestClient();
 
         var response = await client.GetAsync("/workable/host");
@@ -1817,10 +1815,9 @@ public sealed class WorkableHttpApiTests
     }
 
     [Fact]
-    public async Task MappedHttpNamedSystemRoutesRequireConnectPermission()
+    public async Task MappedHttpNamedSystemRoutesRequireAnySystemAccess()
     {
-        using var host = await CreateMultiSystemHttpHost(
-            TransportAuthorizationTestSupport.ReadGroups.Concat(TransportAuthorizationTestSupport.OperateGroups));
+        using var host = await CreateMultiSystemHttpHost(Array.Empty<string>());
         var client = host.GetTestClient();
 
         var definitionsResponse = await client.GetAsync("/workable/systems/background/definitions");
@@ -1834,15 +1831,15 @@ public sealed class WorkableHttpApiTests
         var queueJson = await queueResponse.Content.ReadAsStringAsync();
 
         Assert.Equal(HttpStatusCode.Forbidden, definitionsResponse.StatusCode);
-        Assert.Contains("workable.http.system.connect_denied", definitionsJson);
+        Assert.Contains("workable.http.system.access_denied", definitionsJson);
         Assert.Equal(HttpStatusCode.Forbidden, queueResponse.StatusCode);
-        Assert.Contains("workable.http.system.connect_denied", queueJson);
+        Assert.Contains("workable.http.system.access_denied", queueJson);
     }
 
     [Fact]
-    public async Task MappedHttpRouteIncludesConnectOnlyAccessSummary()
+    public async Task MappedHttpRouteIncludesReadOnlyAccessSummary()
     {
-        using var host = await CreateMultiSystemHttpHost(TransportAuthorizationTestSupport.ConnectGroups);
+        using var host = await CreateMultiSystemHttpHost(TransportAuthorizationTestSupport.ReadGroups);
         var client = host.GetTestClient();
 
         var response = await client.GetAsync("/workable/host");
@@ -1858,7 +1855,6 @@ public sealed class WorkableHttpApiTests
             var access = system?["access"]?.AsObject()
                 ?? throw new InvalidOperationException("Expected access object.");
 
-            Assert.True(access["canConnect"]?.GetValue<bool>());
             Assert.False(access["isSystemAdministrator"]?.GetValue<bool>());
             Assert.False(access["isWorkAdministrator"]?.GetValue<bool>());
             Assert.False(access["canViewDiagnostics"]?.GetValue<bool>());
@@ -1866,7 +1862,7 @@ public sealed class WorkableHttpApiTests
             Assert.False(access["canReadAllWork"]?.GetValue<bool>());
             Assert.False(access["canOperateAllWork"]?.GetValue<bool>());
             Assert.Equal(1, access["totalDefinitionCount"]?.GetValue<int>());
-            Assert.Equal(0, access["readableDefinitionCount"]?.GetValue<int>());
+            Assert.Equal(1, access["readableDefinitionCount"]?.GetValue<int>());
             Assert.Equal(0, access["operableDefinitionCount"]?.GetValue<int>());
         });
     }

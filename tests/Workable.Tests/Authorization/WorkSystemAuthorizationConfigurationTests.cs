@@ -465,22 +465,27 @@ public sealed class WorkSystemAuthorizationConfigurationTests
     }
 
     [Fact]
-    public void SystemConnectPermissionUsesConfiguredGroups()
+    public void AccessSummaryHasAnyAccessUsesActualSystemOrWorkRights()
     {
         var provider = new ServiceCollection()
             .AddSingleton<IWorkAuthorizationGroupProvider>(new TestGroupProvider(new Dictionary<string, IReadOnlySet<string>>
             {
-                ["connector"] = Groups("system.connect"),
                 ["reader"] = Groups("work.read"),
+                ["diagnostics"] = Groups("system.diagnostics"),
             }))
             .AddDefaultWorkableSystemForAuthorizationTests(builder => builder
-                .ConfigureAuthorization(authorization => authorization.AllowConnectToGroups("system.connect"))
-                .AddWork(WorkDefinition.Create("connect.permission"), SuccessfulWork))
+                .ConfigureAuthorization(authorization => authorization.AllowDiagnosticsToGroups("system.diagnostics"))
+                .AddWork(
+                    WorkDefinition.Create("connect.permission"),
+                    SuccessfulWork,
+                    configure: null,
+                    authorize: authorize => authorize.AllowReadToGroups("work.read")))
             .BuildServiceProvider();
         var system = provider.GetRequiredService<IWorkSystem>();
 
-        Assert.True(system.CanConnect(CreateRequestContext("connector")));
-        Assert.False(system.CanConnect(CreateRequestContext("reader")));
+        Assert.True(system.DescribeAccess(CreateRequestContext("reader")).HasAnyAccess());
+        Assert.True(system.DescribeAccess(CreateRequestContext("diagnostics")).HasAnyAccess());
+        Assert.False(system.DescribeAccess(CreateRequestContext("unknown")).HasAnyAccess());
     }
 
     [Fact]

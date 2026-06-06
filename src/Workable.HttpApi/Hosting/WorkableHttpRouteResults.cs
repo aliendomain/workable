@@ -20,7 +20,7 @@ internal static class WorkableHttpRouteResults
 
         var code = exception.Permission switch
         {
-            WorkSystemPermission.Connect => "workable.http.system.connect_denied",
+            WorkSystemPermission.AccessSystem => "workable.http.system.access_denied",
             WorkSystemPermission.ViewDiagnostics => "workable.http.system.diagnostics_denied",
             WorkSystemPermission.ControlSystem => "workable.http.system.control_denied",
             _ => "workable.http.system.authorization_denied",
@@ -56,11 +56,11 @@ internal static class WorkableHttpRouteResults
                     httpContext,
                     requestContexts,
                     "Authorize Workable HTTP named-system access.");
-                if (!resolved.CanConnect(requestContext))
+                if (!resolved.DescribeAccess(requestContext).HasAnyAccess())
                 {
                     system = null!;
                     notFound = AuthorizationDenied(new WorkSystemAccessDeniedException(
-                        WorkSystemPermission.Connect,
+                        WorkSystemPermission.AccessSystem,
                         resolved.Id,
                         resolved.Name));
                     return false;

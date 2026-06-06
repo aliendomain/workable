@@ -44,7 +44,7 @@ public sealed class WorkableMcpToolRouter(IWorkSystemRegistry registry)
         options ??= WorkableMcpServerOptions.Default;
         var tools = new List<WorkableMcpServerToolDescriptor>();
         var system = ResolveSystem(systemName);
-        EnsureCanConnectToNamedSystem(system, systemName, requestContext);
+        EnsureCanAccessNamedSystem(system, systemName, requestContext);
         var session = system.CreateSession(requestContext);
 
         if (options.IncludeWorkTools)
@@ -84,7 +84,7 @@ public sealed class WorkableMcpToolRouter(IWorkSystemRegistry registry)
                 return systemError;
             }
 
-            EnsureCanConnectToNamedSystem(system, systemName, requestContext);
+            EnsureCanAccessNamedSystem(system, systemName, requestContext);
             var session = system.CreateSession(requestContext);
             var workTools = options.IncludeWorkTools
                 ? CreateWorkTools(session, options.ToolCatalog)
@@ -549,18 +549,18 @@ public sealed class WorkableMcpToolRouter(IWorkSystemRegistry registry)
         return false;
     }
 
-    private static void EnsureCanConnectToNamedSystem(
+    private static void EnsureCanAccessNamedSystem(
         IWorkSystem system,
         string? systemName,
         WorkRequestContext requestContext)
     {
-        if (string.IsNullOrWhiteSpace(systemName) || system.CanConnect(requestContext))
+        if (string.IsNullOrWhiteSpace(systemName) || system.DescribeAccess(requestContext).HasAnyAccess())
         {
             return;
         }
 
         throw new WorkSystemAccessDeniedException(
-            WorkSystemPermission.Connect,
+            WorkSystemPermission.AccessSystem,
             system.Id,
             system.Name);
     }

@@ -164,7 +164,6 @@ internal sealed class InMemoryWorkSystem :
         if (!this.RequiresAuthorization)
         {
             return new WorkSystemAccessSummary(
-                CanConnect: true,
                 IsSystemAdministrator: false,
                 IsWorkAdministrator: false,
                 CanViewDiagnostics: true,
@@ -183,7 +182,6 @@ internal sealed class InMemoryWorkSystem :
         var operableDefinitionCount = this.catalog.Definitions.Count(authorization.CanOperate);
 
         return new WorkSystemAccessSummary(
-            systemAuthorization.CanConnect(),
             systemAuthorization.IsSystemAdministrator(),
             systemAuthorization.IsWorkAdministrator(),
             systemAuthorization.CanViewDiagnostics(),
@@ -193,13 +191,6 @@ internal sealed class InMemoryWorkSystem :
             totalDefinitionCount,
             readableDefinitionCount,
             operableDefinitionCount);
-    }
-
-    public bool CanConnect(WorkRequestContext requestContext)
-    {
-        ArgumentNullException.ThrowIfNull(requestContext);
-
-        return this.DescribeAccess(requestContext).CanConnect;
     }
 
     public IWorkSystemSession CreateSession(WorkRequestContext requestContext)

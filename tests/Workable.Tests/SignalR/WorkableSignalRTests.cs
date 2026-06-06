@@ -53,11 +53,11 @@ public sealed class WorkableSignalRTests
     }
 
     [Fact]
-    public async Task HostEndpointReportsRealtimeForConnectOnlyCaller()
+    public async Task HostEndpointReportsRealtimeForAuthenticatedCallerWithoutSystemAccess()
     {
         using var host = await CreateHost(
             addSignalR: true,
-            groups: TransportAuthorizationTestSupport.ConnectGroups);
+            groups: Array.Empty<string>());
         var client = host.GetTestClient();
 
         var response = await client.GetFromJsonAsync<WorkableHttpHostDescriptor>("/workable/host", JsonOptions());
@@ -66,6 +66,7 @@ public sealed class WorkableSignalRTests
         Assert.True(response.Capabilities.Realtime.Enabled);
         Assert.Equal("signalr", response.Capabilities.Realtime.Transport);
         Assert.Equal("/workable/realtime", response.Capabilities.Realtime.HubPath);
+        Assert.Empty(response.Systems);
     }
 
     [Fact]
@@ -853,7 +854,7 @@ public sealed class WorkableSignalRTests
             {
                 MaximumWorkers = 1,
             }),
-            groups: TransportAuthorizationTestSupport.ConnectGroups);
+            groups: TransportAuthorizationTestSupport.ReadGroups.Concat(TransportAuthorizationTestSupport.OperateGroups));
         var system = host.Services.GetRequiredService<IWorkSystemRegistry>().Default;
         var viewSubscriptions = host.Services.GetRequiredService<WorkableRealtimeViewSubscriptions>();
         await using var connection = CreateConnection(host);
@@ -889,11 +890,11 @@ public sealed class WorkableSignalRTests
     }
 
     [Fact]
-    public async Task NamedSystemWatchRequiresConnectPermission()
+    public async Task NamedSystemWatchRequiresAnySystemAccess()
     {
         using var host = await CreateHost(
             addSignalR: true,
-            groups: TransportAuthorizationTestSupport.ReadGroups.Concat(TransportAuthorizationTestSupport.OperateGroups),
+            groups: Array.Empty<string>(),
             configureServices: services => services.AddWorkableSystem("remote", builder =>
             {
                 builder.StartWithHost();
@@ -909,7 +910,7 @@ public sealed class WorkableSignalRTests
             new WorkableRealtimeEventCriteria(),
             "remote"));
 
-        Assert.Contains("connect permission", exception.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("system-level access", exception.Message, StringComparison.OrdinalIgnoreCase);
     }
 
     private static async Task<IHost> CreateHost(

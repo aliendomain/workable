@@ -78,7 +78,6 @@ The response includes host capabilities plus each visible system's id, optional 
         "persistentCoordinationAvailable": true
       },
       "access": {
-        "canConnect": true,
         "isSystemAdministrator": false,
         "isWorkAdministrator": false,
         "canViewDiagnostics": true,
@@ -98,7 +97,7 @@ The host-level `capabilities` object lets clients discover optional transport fe
 
 The per-system `capabilities` object is reserved for system-specific runtime behavior. `persistentCoordinationAvailable` tells clients whether that system currently has persistent coordination available through a registered persistence store. In practice, that means persistent coordination settings such as `storage: "Persistent"` can be honored for features like durable queueing, persistence-backed idempotency, and persistence-backed coordination.
 
-The systems list is filtered by the system-level `Connect` permission. Callers only see systems they are allowed to discover.
+The systems list is filtered to systems where the caller has actual access. Read access, operate access, diagnostics access, control access, or administrator roles are all enough to make a system visible.
 
 When realtime is not registered, `enabled` is `false`.
 

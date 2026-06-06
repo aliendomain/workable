@@ -120,9 +120,6 @@ public sealed class WorkableRealtimeBroadcastLaneRunnerShould
         public WorkSystemAccessSummary DescribeAccess(WorkRequestContext requestContext)
             => throw new NotSupportedException();
 
-        public bool CanConnect(WorkRequestContext requestContext)
-            => throw new NotSupportedException();
-
         public IWorkSystemSession CreateSession(WorkRequestContext requestContext)
             => throw new NotSupportedException();
 

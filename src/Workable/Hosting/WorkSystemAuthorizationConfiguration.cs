@@ -8,8 +8,6 @@ public sealed record WorkSystemAuthorizationConfiguration
 
     public IReadOnlySet<string> WorkAdministratorGroups { get; init; } = EmptySet();
 
-    public IReadOnlySet<string> ConnectGroups { get; init; } = EmptySet();
-
     public IReadOnlySet<string> DiagnosticsGroups { get; init; } = EmptySet();
 
     public IReadOnlySet<string> ControlSystemGroups { get; init; } = EmptySet();

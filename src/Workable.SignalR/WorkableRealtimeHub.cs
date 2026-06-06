@@ -56,7 +56,7 @@ public sealed class WorkableRealtimeHub(
     public Task UnwatchView(string subscriptionId, string? systemName = null)
     {
         var system = ResolveSystem(systemName);
-        EnsureCanConnectToNamedSystem(
+        EnsureCanAccessNamedSystem(
             system,
             systemName,
             CreateRequestContext("Authorize Workable SignalR view unsubscription."));
@@ -113,7 +113,7 @@ public sealed class WorkableRealtimeHub(
     public Task UnwatchWorkerOverview(string subscriptionId, string? systemName = null)
     {
         var system = ResolveSystem(systemName);
-        EnsureCanConnectToNamedSystem(
+        EnsureCanAccessNamedSystem(
             system,
             systemName,
             CreateRequestContext("Authorize Workable SignalR worker overview unsubscription."));
@@ -152,7 +152,7 @@ public sealed class WorkableRealtimeHub(
         string? systemName = null)
     {
         var system = ResolveSystem(systemName);
-        EnsureCanConnectToNamedSystem(
+        EnsureCanAccessNamedSystem(
             system,
             systemName,
             CreateRequestContext("Authorize Workable SignalR event unsubscription."));
@@ -221,7 +221,7 @@ public sealed class WorkableRealtimeHub(
         out IWorkSystemSession session)
     {
         var requestContext = CreateRequestContext("Authorize Workable SignalR subscription.");
-        EnsureCanConnectToNamedSystem(system, systemName, requestContext);
+        EnsureCanAccessNamedSystem(system, systemName, requestContext);
         var groups = groupProvider.GetGroups(requestContext.Actor, system.Name);
         session = system.CreateSession(requestContext with
         {
@@ -243,18 +243,18 @@ public sealed class WorkableRealtimeHub(
             WorkInvocationChannel.SignalR,
             description);
 
-    private static void EnsureCanConnectToNamedSystem(
+    private static void EnsureCanAccessNamedSystem(
         IWorkSystem system,
         string? systemName,
         WorkRequestContext requestContext)
     {
-        if (string.IsNullOrWhiteSpace(systemName) || system.CanConnect(requestContext))
+        if (string.IsNullOrWhiteSpace(systemName) || system.DescribeAccess(requestContext).HasAnyAccess())
         {
             return;
         }
 
         throw new WorkSystemAccessDeniedException(
-            WorkSystemPermission.Connect,
+            WorkSystemPermission.AccessSystem,
             system.Id,
             system.Name);
     }

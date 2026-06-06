@@ -2035,7 +2035,7 @@ export function WorkableConsole() {
                 <EmptyServerState
                   description={
                     consoleState.hosts.length > 0
-                      ? "Your saved servers are still configured, but the current user cannot Connect to any currently discovered Workable systems."
+                      ? "Your saved servers are still configured, but the current user cannot access any currently discovered Workable systems."
                       : undefined
                   }
                   onAddServer={() => setServerDialog({ mode: "add" })}

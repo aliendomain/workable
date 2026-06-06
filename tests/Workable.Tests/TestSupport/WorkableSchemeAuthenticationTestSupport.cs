@@ -114,7 +114,6 @@ internal static class WorkableSchemeAuthenticationTestSupport
         private static IEnumerable<string> DefaultGroups()
             => TransportAuthorizationTestSupport.ReadGroups
                 .Concat(TransportAuthorizationTestSupport.OperateGroups)
-                .Concat(TransportAuthorizationTestSupport.ConnectGroups)
                 .Concat(TransportAuthorizationTestSupport.DiagnosticsGroups)
                 .Concat(TransportAuthorizationTestSupport.ControlSystemGroups)
                 .Concat(TransportAuthorizationTestSupport.ReadAllWorkGroups)

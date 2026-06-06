@@ -48,7 +48,6 @@ That keeps multi-system discovery on the public contract without forcing consume
 - `Events`
 - `Diagnostics`
 - `DescribeAccess(...)`
-- `CanConnect(...)`
 - `CreateSession(...)`
 - `Start(...)`
 - `Stop(...)`
@@ -76,13 +75,12 @@ That session-bound model is the most important mental model in this package: the
 
 ## Access Introspection
 
-`CanConnect(...)` and `DescribeAccess(...)` let a host or custom adapter reason about access before creating a broader session experience.
+`DescribeAccess(...)` lets a host or custom adapter reason about access before creating a broader session experience.
 
-`CanConnect(...)` is the simple yes-or-no check for "may this caller discover or connect to this system?"
+`DescribeAccess(...).HasAnyAccess()` is the simple yes-or-no check for "does this caller have enough real access for this system to be visible or selected by name through a transport-facing surface?"
 
 `DescribeAccess(...)` returns a `WorkSystemAccessSummary`:
 
-- `CanConnect`
 - `IsSystemAdministrator`
 - `IsWorkAdministrator`
 - `CanViewDiagnostics`

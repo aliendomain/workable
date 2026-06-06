@@ -1,7 +1,6 @@
 namespace Workable;
 
 public sealed record WorkSystemAccessSummary(
-    bool CanConnect,
     bool IsSystemAdministrator,
     bool IsWorkAdministrator,
     bool CanViewDiagnostics,
@@ -10,4 +9,15 @@ public sealed record WorkSystemAccessSummary(
     bool CanOperateAllWork,
     int TotalDefinitionCount,
     int ReadableDefinitionCount,
-    int OperableDefinitionCount);
+    int OperableDefinitionCount)
+{
+    public bool HasAnyAccess()
+        => this.IsSystemAdministrator ||
+            this.IsWorkAdministrator ||
+            this.CanViewDiagnostics ||
+            this.CanControlSystem ||
+            this.CanReadAllWork ||
+            this.CanOperateAllWork ||
+            this.ReadableDefinitionCount > 0 ||
+            this.OperableDefinitionCount > 0;
+}

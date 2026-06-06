@@ -300,11 +300,10 @@ public sealed class WorkableMcpTests
     }
 
     [Fact]
-    public async Task McpRouterNamedSystemRequiresConnectPermission()
+    public async Task McpRouterNamedSystemRequiresAnySystemAccess()
     {
         await using var provider = new ServiceCollection()
-            .AddTransportTestAuthorization(
-                TransportAuthorizationTestSupport.ReadGroups.Concat(TransportAuthorizationTestSupport.OperateGroups))
+            .AddTransportTestAuthorization(Array.Empty<string>())
             .AddWorkableSystem("remote", builder =>
             {
                 builder.RequireAuthorization();
@@ -328,9 +327,9 @@ public sealed class WorkableMcpTests
             systemName: "remote",
             requestContext: requestContext);
 
-        Assert.Equal(WorkSystemPermission.Connect, toolsException.Permission);
+        Assert.Equal(WorkSystemPermission.AccessSystem, toolsException.Permission);
         Assert.True(result.IsError);
-        Assert.Contains("connect permission", result.Json, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("system-level access", result.Json, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -426,10 +425,10 @@ public sealed class WorkableMcpTests
     }
 
     [Fact]
-    public async Task MappedHttpMcpNamedEndpointRequiresConnectPermission()
+    public async Task MappedHttpMcpNamedEndpointRequiresAnySystemAccess()
     {
         using var host = await CreateNamedMcpHttpHost(
-            groups: TransportAuthorizationTestSupport.ReadGroups.Concat(TransportAuthorizationTestSupport.OperateGroups));
+            groups: Array.Empty<string>());
         var httpClient = host.GetTestClient();
         var transport = new HttpClientTransport(
             new HttpClientTransportOptions
@@ -449,7 +448,7 @@ public sealed class WorkableMcpTests
 
         Assert.Empty(tools);
         Assert.True(result.IsError);
-        Assert.Contains("connect permission", json, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("system-level access", json, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]

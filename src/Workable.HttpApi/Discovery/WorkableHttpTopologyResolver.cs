@@ -22,7 +22,7 @@ public sealed class WorkableHttpTopologyResolver(
         var defaultSystemId = registry.Default.Id;
         var systems = registry.Systems
             .Select(system => (System: system, Access: system.DescribeAccess(requestContext)))
-            .Where(result => result.Access.CanConnect)
+            .Where(result => result.Access.HasAnyAccess())
             .OrderBy(result => result.System.Name is null ? 0 : 1)
             .ThenBy(result => result.System.Name, StringComparer.OrdinalIgnoreCase)
             .Select(result => new WorkableHttpSystemDescriptor(
