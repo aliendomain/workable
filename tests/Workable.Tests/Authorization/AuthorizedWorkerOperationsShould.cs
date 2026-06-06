@@ -103,7 +103,7 @@ public sealed class AuthorizedWorkerOperationsShould
         return new AuthorizedWorkerOperations(
             inner,
             query,
-            new WorkAuthorizationEvaluator(catalog, Groups(groups)));
+            new WorkAuthorizationEvaluator(catalog, Groups(groups), false));
     }
 
     private static WorkDefinition CreateDefinition(string name, string operateGroup)

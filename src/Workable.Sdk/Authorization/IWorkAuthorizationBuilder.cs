@@ -9,4 +9,6 @@ public interface IWorkAuthorizationBuilder
     IWorkAuthorizationBuilder AllowReadToGroups(params string[] groups);
 
     IWorkAuthorizationBuilder AllowOperateToGroups(params string[] groups);
+
+    IWorkAuthorizationBuilder AllowOperateToKnownAuthenticatedUsers();
 }

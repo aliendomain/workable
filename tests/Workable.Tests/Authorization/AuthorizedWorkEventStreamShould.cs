@@ -97,7 +97,7 @@ public sealed class AuthorizedWorkEventStreamShould
         inner = new RecordingWorkEventStream();
         return new AuthorizedWorkEventStream(
             inner,
-            new WorkAuthorizationEvaluator(catalog, groups));
+            new WorkAuthorizationEvaluator(catalog, groups, false));
     }
 
     private static WorkDefinition CreateDefinition(string name, params string[] readGroups)

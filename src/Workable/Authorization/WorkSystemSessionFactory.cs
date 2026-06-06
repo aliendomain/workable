@@ -40,7 +40,11 @@ internal sealed class WorkSystemSessionFactory(
             ?? groupProvider.GetGroups(requestContext.Actor, systemName)
             ?? new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var systemAuthorization = new WorkSystemAuthorizationEvaluator(systemAuthorizationConfiguration, groups);
-        var authorization = new WorkAuthorizationEvaluator(catalog, groups, systemAuthorization);
+        var authorization = new WorkAuthorizationEvaluator(
+            catalog,
+            groups,
+            requestContext.IsAuthenticated && requestContext.Actor.IsKnown,
+            systemAuthorization);
         return new WorkSystemSession(
             systemName,
             getSystemState,

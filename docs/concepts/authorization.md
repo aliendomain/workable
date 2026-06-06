@@ -49,6 +49,7 @@ Each `WorkDefinition` carries non-null authorization metadata:
 
 - read groups
 - operate groups
+- whether operate access is also allowed to known authenticated users
 - the source of each permission set: `None`, `Attribute`, or `Fluent`
 
 That metadata is visible through catalog and definition queries so callers can inspect what a work definition requires.
@@ -93,6 +94,20 @@ builder.AddWork<SyncInvoicesWork>(
         .AllowOperateToGroups("billing.ops", "billing.admin"));
 ```
 
+Or allow queueing and worker operations for callers that are both authenticated and resolved to a known `WorkActor`:
+
+```csharp
+builder.AddWork<SyncInvoicesWork>(
+    configure: null,
+    authorize: auth => auth.AllowOperateToKnownAuthenticatedUsers());
+```
+
+This capability is currently available through the fluent builder API, not through `WorkAuthorizationAttribute`.
+
+This rule is intentionally narrower than "authenticated transport request." The caller must be authenticated and the request context must carry a known actor with at least one non-blank identity field such as `Id`, `Name`, or `Email`.
+
+For ASP.NET Core transports and custom endpoints that use `IWorkRequestContextFactory`, Workable sets this automatically from `HttpContext`. For trusted direct in-process callers that build `WorkRequestContext` values manually, the caller is responsible for setting `isAuthenticated: true` when that meaning is intended.
+
 Fluent authorization overrides attribute authorization.
 
 ### Read And Operate Rules
@@ -111,6 +126,8 @@ Operate permission affects:
 - queueing work
 - worker actions
 - worker reconfiguration
+
+`AllowOperateToKnownAuthenticatedUsers()` participates in the same operate surface. It is an alternative operate grant, not a separate permission kind.
 
 With authorization enabled:
 
@@ -218,6 +235,8 @@ Authorization data comes from either:
 
 - `WorkRequestContext.Authorization`, when the caller already has a trusted authorization snapshot
 - `IWorkAuthorizationGroupProvider`, when groups should be resolved for the current request
+
+The request context can also carry `IsAuthenticated`. Workable uses that together with the resolved actor to evaluate `AllowOperateToKnownAuthenticatedUsers()`.
 
 SignalR needs one extra step because broadcasts happen after the original request is gone. On subscribe:
 

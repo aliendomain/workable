@@ -3,11 +3,12 @@ namespace Workable;
 internal sealed class WorkAuthorizationEvaluator(
     IWorkCatalog catalog,
     IReadOnlySet<string> groups,
+    bool isKnownAuthenticatedUser,
     WorkSystemAuthorizationEvaluator? systemAuthorization = null)
 {
     public bool CanRead(WorkDefinition definition)
         => systemAuthorization?.HasReadAllWorkAccess() == true
-            || definition.Authorization.CanRead(groups);
+            || definition.Authorization.CanRead(groups, isKnownAuthenticatedUser);
 
     public bool CanRead(WorkDefinitionId definitionId)
     {
@@ -21,7 +22,7 @@ internal sealed class WorkAuthorizationEvaluator(
 
     public bool CanOperate(WorkDefinition definition)
         => systemAuthorization?.HasOperateAllWorkAccess() == true
-            || definition.Authorization.CanOperate(groups);
+            || definition.Authorization.CanOperate(groups, isKnownAuthenticatedUser);
 
     public bool CanOperate(WorkDefinitionId definitionId)
     {

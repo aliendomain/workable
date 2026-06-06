@@ -13,7 +13,7 @@ public sealed class AuthorizedWorkCatalogShould
             out var hidden);
         var authorized = new AuthorizedWorkCatalog(
             catalog,
-            new WorkAuthorizationEvaluator(catalog, Groups("visible.read")));
+            new WorkAuthorizationEvaluator(catalog, Groups("visible.read"), false));
 
         var definitions = authorized.Definitions;
         var categoryDefinitions = authorized.ListByCategory("Operations");
@@ -40,7 +40,7 @@ public sealed class AuthorizedWorkCatalogShould
             out _);
         var authorized = new AuthorizedWorkCatalog(
             catalog,
-            new WorkAuthorizationEvaluator(catalog, Groups("visible.operate")));
+            new WorkAuthorizationEvaluator(catalog, Groups("visible.operate"), false));
 
         var outcome = await authorized.Reconfigure(
             visible.Version,
@@ -62,7 +62,7 @@ public sealed class AuthorizedWorkCatalogShould
             out var hidden);
         var authorized = new AuthorizedWorkCatalog(
             catalog,
-            new WorkAuthorizationEvaluator(catalog, Groups("visible.operate")));
+            new WorkAuthorizationEvaluator(catalog, Groups("visible.operate"), false));
 
         var outcome = await authorized.Reconfigure(
             hidden.Version,

@@ -186,6 +186,18 @@ IWorkerHandle handle = await session.Queue.Enqueue(
 
 The `description` argument is optional. Use it when the caller wants to preserve additional human-readable context on the worker origin.
 
+Trusted direct in-process callers can also set `isAuthenticated: true` when the request should count as an authenticated caller for authorization rules such as `AllowOperateToKnownAuthenticatedUsers()`.
+
+```csharp
+var requestContext = WorkRequestContext.Create(
+    WorkInvocationChannel.DotNet,
+    new WorkActor(Id: "current-user-id"),
+    "Queue welcome email from application service.",
+    isAuthenticated: true);
+```
+
+Only set that flag when the host has already authenticated the caller and the supplied actor is a real known identity. ASP.NET Core hosts that use `IWorkRequestContextFactory` do not need to set it manually.
+
 ASP.NET Core hosts can use `Workable.AspNetCore` to create authenticated request contexts from `HttpContext` inside their own controllers or minimal API routes. This does not expose Workable's built-in HTTP API endpoints.
 
 ```csharp

@@ -890,11 +890,13 @@ Origin descriptions are optional. Built-in HTTP and MCP transports preserve them
       "authorization": {
         "read": {
           "groups": [],
-          "source": "None"
+          "source": "None",
+          "allowsKnownAuthenticatedUsers": false
         },
         "operate": {
           "groups": [],
-          "source": "None"
+          "source": "None",
+          "allowsKnownAuthenticatedUsers": false
         }
       },
       "revision": 0,
@@ -989,11 +991,13 @@ Origin descriptions are optional. Built-in HTTP and MCP transports preserve them
     "authorization": {
       "read": {
         "groups": [],
-        "source": "None"
+        "source": "None",
+        "allowsKnownAuthenticatedUsers": false
       },
       "operate": {
         "groups": [],
-        "source": "None"
+        "source": "None",
+        "allowsKnownAuthenticatedUsers": false
       }
     },
     "revision": 0,

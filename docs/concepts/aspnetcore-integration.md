@@ -4,7 +4,7 @@
 
 Most applications pick it up indirectly through `Workable.HttpApi`, `Workable.Mcp`, or `Workable.SignalR`. Reference it directly when you are building your own ASP.NET Core endpoints or your own transport and need to turn the current `HttpContext` into a Workable request context.
 
-This package does not add Workable routes. It does not choose your authentication strategy. Its job is narrower: take the authenticated ASP.NET Core request you already have and translate it into Workable's actor, origin, and authorization-group model.
+This package does not add Workable routes. It does not choose your authentication strategy. Its job is narrower: take the authenticated ASP.NET Core request you already have and translate it into Workable's actor, origin, authenticated-caller signal, and authorization-group model.
 
 ## When To Use It
 
@@ -63,9 +63,12 @@ The created context includes:
 
 - a `WorkActor` derived from the current authenticated user
 - a `WorkOrigin` that records the invocation channel and request URL
+- `IsAuthenticated`, derived from the current ASP.NET Core principal
 - any authorization group resolution performed by Workable later through the registered group provider
 
 The `description` argument is optional. Supply it only when the endpoint has useful human-readable context worth preserving on the Workable origin.
+
+That authenticated-caller signal is what lets work definitions use `AllowOperateToKnownAuthenticatedUsers()` without inventing a synthetic authorization group.
 
 ## Actor Resolution
 
@@ -78,7 +81,7 @@ By default:
 - actor email comes from the configured `ActorEmailClaimTypes`
 - anonymous users become `WorkActor.Unknown`
 
-This is usually enough for custom endpoints that already have authenticated users and just need Workable to preserve that identity in queue origins, action history, and authorization evaluation.
+This is usually enough for custom endpoints that already have authenticated users and just need Workable to preserve that identity in queue origins, action history, and authorization evaluation. It also means a caller only qualifies for `AllowOperateToKnownAuthenticatedUsers()` when ASP.NET Core authentication succeeds and Workable can resolve a known actor.
 
 ## Authorization Group Resolution
 
@@ -149,7 +152,7 @@ That means:
 
 - system-level rules still come from `RequireAuthorization` and `ConfigureAuthorization`
 - work-level rules still come from `WorkAuthorizationAttribute` or fluent authorization builders
-- ASP.NET Core integration only controls how the current request is mapped into the actor and group values used by those rules
+- ASP.NET Core integration only controls how the current request is mapped into the actor, authenticated-caller, and group values used by those rules
 
 See [Work Authorization](authorization.md) for the rule model itself.
 

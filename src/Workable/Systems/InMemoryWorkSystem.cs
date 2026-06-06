@@ -177,7 +177,7 @@ internal sealed class InMemoryWorkSystem :
 
         var groups = this.ResolveGroups(requestContext);
         var systemAuthorization = new WorkSystemAuthorizationEvaluator(this.authorization, groups);
-        var authorization = new WorkAuthorizationEvaluator(this.catalog, groups, systemAuthorization);
+        var authorization = new WorkAuthorizationEvaluator(this.catalog, groups, false, systemAuthorization);
         var readableDefinitionCount = this.catalog.Definitions.Count(authorization.CanRead);
         var operableDefinitionCount = this.catalog.Definitions.Count(authorization.CanOperate);
 

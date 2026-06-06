@@ -394,6 +394,30 @@ public sealed class WorkSystemAuthorizationConfigurationTests
     }
 
     [Fact]
+    public void FluentAllowOperateToKnownAuthenticatedUsersSetsOperateAuthorization()
+    {
+        var provider = new ServiceCollection()
+            .AddSingleton<IWorkAuthorizationGroupProvider, ThrowingGroupProvider>()
+            .AddDefaultWorkableSystemForAuthorizationTests(builder => builder
+                .RequireAuthorization(false)
+                .AddWork(
+                    PausedDefinition("allow.known.authenticated.definition"),
+                    SuccessfulWork,
+                    configure: null,
+                    authorize: authorize => authorize.AllowOperateToKnownAuthenticatedUsers()))
+            .BuildServiceProvider();
+        var system = provider.GetRequiredService<IWorkSystem>();
+
+        var definition = Assert.Single(system.Catalog.Definitions);
+
+        Assert.Equal(WorkAuthorizationRegistrationSource.None, definition.Authorization.Read.Source);
+        Assert.Empty(definition.Authorization.Read.Groups);
+        Assert.Equal(WorkAuthorizationRegistrationSource.Fluent, definition.Authorization.Operate.Source);
+        Assert.True(definition.Authorization.Operate.AllowsKnownAuthenticatedUsers);
+        Assert.Empty(definition.Authorization.Operate.Groups);
+    }
+
+    [Fact]
     public void FluentAllowReadAndOperateToGroupsCanBeChained()
     {
         var provider = new ServiceCollection()
@@ -547,6 +571,52 @@ public sealed class WorkSystemAuthorizationConfigurationTests
     }
 
     [Fact]
+    public async Task KnownAuthenticatedUsersCanOperateWithoutGroupsWhenExplicitlyAllowed()
+    {
+        var definition = PausedDefinition("known.authenticated.operate");
+        var provider = new ServiceCollection()
+            .AddSingleton<IWorkAuthorizationGroupProvider>(new TestGroupProvider(new Dictionary<string, IReadOnlySet<string>>()))
+            .AddDefaultWorkableSystemForAuthorizationTests(builder => builder.AddWork(
+                definition,
+                SuccessfulWork,
+                configure: null,
+                authorize: authorize => authorize.AllowOperateToKnownAuthenticatedUsers()))
+            .BuildServiceProvider();
+        var system = provider.GetRequiredService<IWorkSystem>();
+        await system.Start();
+        var session = system.CreateSession(CreateKnownAuthenticatedRequestContext("known-user"));
+
+        var queued = await session.Queue.Enqueue(definition.Id);
+
+        Assert.True(queued.QueueOutcome.IsAccepted);
+    }
+
+    [Fact]
+    public async Task UnknownActorsDoNotQualifyForKnownAuthenticatedUserOperateAccess()
+    {
+        var definition = PausedDefinition("known.authenticated.denied");
+        var provider = new ServiceCollection()
+            .AddSingleton<IWorkAuthorizationGroupProvider>(new TestGroupProvider(new Dictionary<string, IReadOnlySet<string>>()))
+            .AddDefaultWorkableSystemForAuthorizationTests(builder => builder.AddWork(
+                definition,
+                SuccessfulWork,
+                configure: null,
+                authorize: authorize => authorize.AllowOperateToKnownAuthenticatedUsers()))
+            .BuildServiceProvider();
+        var system = provider.GetRequiredService<IWorkSystem>();
+        await system.Start();
+        var session = system.CreateSession(WorkRequestContext.Create(
+            WorkInvocationChannel.DotNet,
+            actor: WorkActor.Unknown,
+            description: "Authenticated but unknown actor.",
+            isAuthenticated: true));
+
+        var queued = await session.Queue.Enqueue(definition.Id);
+
+        Assert.Equal(WorkQueueStatus.Unauthorized, queued.QueueOutcome.Status);
+    }
+
+    [Fact]
     public void AuthorizationSnapshotFingerprintDependsOnReadableDefinitionsNotGroups()
     {
         var actor = new WorkActor(Id: "snapshot-user");
@@ -586,6 +656,13 @@ public sealed class WorkSystemAuthorizationConfigurationTests
             WorkInvocationChannel.DotNet,
             new WorkActor(Id: actorId),
             $"Authorize actor '{actorId}' in tests.");
+
+    private static WorkRequestContext CreateKnownAuthenticatedRequestContext(string actorId)
+        => WorkRequestContext.Create(
+            WorkInvocationChannel.DotNet,
+            new WorkActor(Id: actorId),
+            $"Authorize known authenticated actor '{actorId}' in tests.",
+            isAuthenticated: true);
 
     private sealed class TestGroupProvider(IReadOnlyDictionary<string, IReadOnlySet<string>> groupsByActor) : IWorkAuthorizationGroupProvider
     {

@@ -89,7 +89,7 @@ public sealed class AuthorizedWorkQueueServiceShould
         return new AuthorizedWorkQueueService(
             catalog,
             inner,
-            new WorkAuthorizationEvaluator(catalog, Groups(groups)));
+            new WorkAuthorizationEvaluator(catalog, Groups(groups), false));
     }
 
     private static WorkDefinition CreateDefinition(string name, string operateGroup)

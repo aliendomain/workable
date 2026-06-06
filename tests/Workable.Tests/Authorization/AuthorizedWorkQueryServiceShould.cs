@@ -178,7 +178,7 @@ public sealed class AuthorizedWorkQueryServiceShould
         return new AuthorizedWorkQueryService(
             catalog,
             inner,
-            new WorkAuthorizationEvaluator(catalog, Groups("visible.read")));
+            new WorkAuthorizationEvaluator(catalog, Groups("visible.read"), false));
     }
 
     private static WorkDefinition CreateDefinition(string name, string readGroup)
