@@ -22,6 +22,7 @@ public static class WorkableAspNetCoreServiceCollectionExtensions
 
         services.TryAddSingleton<IWorkActorFactory, HttpContextWorkActorFactory>();
         services.TryAddSingleton<IWorkRequestContextFactory, HttpContextWorkRequestContextFactory>();
+        services.TryAddSingleton<IHttpContextWorkCommandDispatcher, HttpContextWorkCommandDispatcher>();
         UseHttpContextAuthorizationGroupProvider(services);
         return services;
     }
