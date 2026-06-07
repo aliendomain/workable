@@ -7,7 +7,7 @@ internal static class WorkableHttpRequestContext
     internal static WorkRequestContext Create(
         HttpContext httpContext,
         IWorkRequestContextFactory requestContexts,
-        string description)
+        string? description = null)
     {
         ArgumentNullException.ThrowIfNull(httpContext);
         ArgumentNullException.ThrowIfNull(requestContexts);
@@ -19,7 +19,7 @@ internal static class WorkableHttpRequestContext
         HttpContext httpContext,
         IWorkSystem system,
         IWorkRequestContextFactory requestContexts,
-        string description)
+        string? description = null)
     {
         ArgumentNullException.ThrowIfNull(system);
         return system.CreateSession(Create(httpContext, requestContexts, description));

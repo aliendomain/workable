@@ -262,7 +262,7 @@ export function OverviewView({
     !access.canReadAllWork &&
     access.readableDefinitionCount === 0;
   const canUseRealtimeOverview = lacksReadableWorkAccess
-    ? (access?.canConnect ?? true)
+    ? true
     : (access?.canReadAllWork ?? true) || (access?.readableDefinitionCount ?? 0) > 0;
   const canOperateWork =
     access === undefined ||

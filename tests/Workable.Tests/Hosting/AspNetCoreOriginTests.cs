@@ -31,8 +31,8 @@ public sealed class AspNetCoreOriginTests
         Assert.Equal(WorkInvocationChannel.HttpApi, worker.Origin.Channel);
         Assert.Equal("user-123", worker.Origin.Actor.Id);
         Assert.Equal("greya@example.test", worker.Origin.Actor.Email);
-        Assert.Equal("Queue work 'direct.http' through custom HTTP endpoint.", worker.Origin.Description);
-        Assert.Equal("/custom/queue", worker.Origin.Url);
+        Assert.Equal("Queue work 'direct.http' through custom HTTP endpoint.", worker.RequestContext.Description);
+        Assert.Equal("/custom/queue", worker.RequestContext.Url);
     }
 
     private static async Task<IHost> CreateHost()

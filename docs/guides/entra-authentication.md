@@ -58,7 +58,6 @@ builder.Services.AddWorkableSystem(workable =>
 {
     workable.RequireAuthorization();
     workable.ConfigureAuthorization(auth => auth
-        .AllowConnectToGroups("11111111-2222-3333-4444-555555555555")
         .AllowReadAllWorkToGroups("11111111-2222-3333-4444-555555555555")
         .AllowOperateAllWorkToGroups("11111111-2222-3333-4444-555555555555"));
 });
@@ -69,14 +68,13 @@ Add the middleware:
 ```csharp
 var app = builder.Build();
 app.UseRouting();
-app.UseWorkableEntraAuthorization();
+app.UseAuthentication();
+app.UseAuthorization();
 
 app.MapWorkableApi("/workable");
 app.MapWorkableMcp("/workable/mcp");
 app.MapWorkableSignalR("/workable/realtime");
 ```
-
-`UseWorkableEntraAuthorization()` calls both `UseAuthentication()` and `UseAuthorization()` for you. In the usual Entra setup, you do not need to call those separately just to support the Workable endpoints above.
 
 Minimal configuration:
 
@@ -121,7 +119,7 @@ SignalR:
 
 Custom ASP.NET Core endpoints:
 
-- once `UseWorkableEntraAuthorization` is active, your endpoint can use `IWorkRequestContextFactory` exactly like any other ASP.NET Core surface
+- once the host pipeline is running `UseAuthentication()` and `UseAuthorization()`, your endpoint can use `IWorkRequestContextFactory` exactly like any other ASP.NET Core surface
 
 ## Common Group Sources
 
@@ -195,7 +193,7 @@ That is important when:
 - Workable surfaces use bearer tokens
 - both need to coexist in the same ASP.NET Core host
 
-`UseWorkableEntraAuthorization` runs `UseAuthentication()` and `UseAuthorization()`, but Workable's own request-context creation will explicitly authenticate the configured transport scheme when needed.
+Your host pipeline still needs `UseAuthentication()` and `UseAuthorization()`, but Workable's own request-context creation will explicitly authenticate the configured transport scheme when needed.
 
 ## Choosing What Becomes A Workable Group
 

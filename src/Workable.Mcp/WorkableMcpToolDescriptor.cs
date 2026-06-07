@@ -3,7 +3,6 @@ namespace Workable;
 public sealed record WorkableMcpToolDescriptor(
     string Name,
     string? Description,
-    WorkDefinitionId DefinitionId,
     string Category,
     string InputSchemaJson,
     string InputSchemaContentType,

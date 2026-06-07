@@ -3,8 +3,8 @@ using System.Diagnostics.CodeAnalysis;
 namespace Workable;
 public sealed record WorkEventFilter(
     WorkerId? WorkerId = null,
-    WorkDefinitionId? DefinitionId = null,
-    IReadOnlySet<WorkDefinitionId>? DefinitionIds = null,
+    string? DefinitionName = null,
+    IReadOnlySet<string>? DefinitionNames = null,
     WorkSubjectId? SubjectId = null,
     WorkConcurrencyKey? ConcurrencyKey = null,
     WorkIdentifier? Identifier = null,
@@ -17,9 +17,10 @@ public sealed record WorkEventFilter(
         ArgumentNullException.ThrowIfNull(workEvent);
 
         return (this.WorkerId is null || this.WorkerId == workEvent.WorkerId) &&
-            (this.DefinitionId is null || this.DefinitionId == workEvent.WorkDefinitionId) &&
-            (this.DefinitionIds is not { Count: > 0 } ||
-                (workEvent.WorkDefinitionId is { } definitionId && this.DefinitionIds.Contains(definitionId))) &&
+            (this.DefinitionName is null || string.Equals(this.DefinitionName, workEvent.WorkDefinitionName, StringComparison.OrdinalIgnoreCase)) &&
+            (this.DefinitionNames is not { Count: > 0 } ||
+                (!string.IsNullOrWhiteSpace(workEvent.WorkDefinitionName) &&
+                    this.DefinitionNames.Contains(workEvent.WorkDefinitionName, StringComparer.OrdinalIgnoreCase))) &&
             (this.SubjectId is null || this.SubjectId == workEvent.SubjectId) &&
             (this.ConcurrencyKey is null || this.ConcurrencyKey == workEvent.ConcurrencyKey) &&
             (this.Identifier is null || workEvent.Identifiers.Contains(this.Identifier.Value)) &&

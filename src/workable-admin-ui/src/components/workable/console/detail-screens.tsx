@@ -361,7 +361,7 @@ export function DefinitionsView({
   catalogScope: OverviewScope | null;
   connection: WorkableConnection;
   onCatalogScopeChange: (scope: OverviewScope | null) => void;
-  onOpenDefinition: (definitionId: string, definitionName?: string) => void;
+  onOpenDefinition: (definitionName: string, definitionLabel?: string) => void;
   onOpenWorker: (workerId: string) => void;
   onReady: () => void;
   refreshToken: number;
@@ -407,7 +407,7 @@ export function DefinitionsView({
     }
     const autoOpenKey =
       catalogScope?.definitionName && filtered.length === 1
-        ? `${catalogScope.definitionName}:${filtered[0].id.value}`
+        ? `${catalogScope.definitionName}:${filtered[0].name}`
         : "";
     if (
       autoOpenScopedDefinition &&
@@ -417,7 +417,7 @@ export function DefinitionsView({
       autoOpenedDefinitionScope.current !== autoOpenKey
     ) {
       autoOpenedDefinitionScope.current = autoOpenKey;
-      onOpenDefinition(filtered[0].id.value, filtered[0].name);
+      onOpenDefinition(filtered[0].name, filtered[0].name);
     }
   }, [autoOpenScopedDefinition, catalogScope?.definitionName, definitions.loading, filtered, onOpenDefinition]);
 
@@ -478,7 +478,7 @@ export function DefinitionsView({
                   {filtered.map((definition) => (
                     <div
                       className="rounded-lg border bg-card p-4"
-                      key={definition.id.value}
+                      key={definition.name}
                     >
                       <div className="flex items-start justify-between gap-4">
                         <div className="min-w-0">
@@ -491,7 +491,7 @@ export function DefinitionsView({
                       </div>
                       <div className="mt-4 flex justify-end gap-2">
                         <Button
-                          onClick={() => onOpenDefinition(definition.id.value, definition.name)}
+                          onClick={() => onOpenDefinition(definition.name, definition.name)}
                           size="sm"
                           variant="outline"
                         >
@@ -586,12 +586,12 @@ export function DefinitionView({
   }, [definition]);
 
   useEffect(() => {
-    if (updatedDefinition?.id.value === definitionId) {
+    if (updatedDefinition?.name === definitionId) {
       onDefinitionResolved(updatedDefinition.name);
       return;
     }
 
-    if (info.data?.definition?.id.value === definitionId) {
+    if (info.data?.definition?.name === definitionId) {
       onDefinitionResolved(info.data.definition.name);
       return;
     }
@@ -632,7 +632,7 @@ export function DefinitionView({
       };
       const result = await workableFetch<WorkDefinitionReconfigurationOutcome>(
         connection,
-        `definitions/${definition.id.value}/reconfigure`,
+        `definitions/${definition.name}/reconfigure`,
         {
           method: "POST",
           body: JSON.stringify({
@@ -2404,7 +2404,7 @@ export function IterationConsoleView({
 }: {
   connection: WorkableConnection;
   onNavigateBack: () => void;
-  onOpenDefinition: (definitionId: string, definitionName?: string | null) => void;
+  onOpenDefinition: (definitionName: string, definitionLabel?: string | null) => void;
   refreshToken: number;
   sequence: number;
   workerId: string;
@@ -2633,7 +2633,7 @@ export function IterationConsoleView({
                         <button
                           className="cursor-pointer text-left text-sky-700 underline underline-offset-4 transition-colors hover:text-sky-600 dark:text-sky-300 dark:hover:text-sky-200"
                           onClick={() => onOpenDefinition(
-                            detail.definitionId.value,
+                            detail.definitionName,
                             detail.definitionName
                           )}
                           type="button"
@@ -6418,8 +6418,8 @@ function formatActionTimelineActorLabel(origin?: WorkableRealtimeOrigin | null) 
 
 function formatActionTimelineSourceLabel(channel?: string | null) {
   switch ((channel ?? "").trim()) {
-    case "DotNet":
-      return ".NET";
+    case "InProcess":
+      return "In-process";
     case "HttpApi":
       return "HTTP";
     case "Mcp":
@@ -7257,7 +7257,6 @@ function createWorkerSnapshotFromLanding(landing: WorkWorkerOverviewComponent): 
     id: landing.worker.workerId,
     revision: landing.worker.revision,
     stateSequence: landing.worker.stateSequence,
-    definitionId: landing.worker.definitionId,
     definitionName: landing.worker.definitionName,
     definitionCategory: landing.worker.definitionCategory,
     origin: createRealtimeOriginFromLandingOrigin(landing.worker.createdOrigin),

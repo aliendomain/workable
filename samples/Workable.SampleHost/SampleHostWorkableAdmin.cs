@@ -28,13 +28,16 @@ internal static class SampleHostWorkableAdmin
         ArgumentException.ThrowIfNullOrWhiteSpace(description);
 
         var origin = WorkOrigin.Create(
-            WorkInvocationChannel.DotNet,
-            Actor,
-            description);
+            WorkInvocationChannel.InProcess,
+            Actor);
         var authorization = WorkAuthorizationSnapshot.Create(
             Actor,
             Groups,
             readableDefinitionIds: null);
-        return new WorkRequestContext(Actor, origin, authorization);
+        return new WorkRequestContext(
+            origin,
+            description,
+            Authorization: authorization,
+            IsAuthenticated: true);
     }
 }

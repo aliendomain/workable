@@ -17,7 +17,7 @@ public sealed class WorkInvocationConfigurationTests
 
         var definition = RequiredDefinition(system, "attributed.invocation");
 
-        Assert.True(definition.Configuration.Invocation.Allows(WorkInvocationChannel.DotNet));
+        Assert.True(definition.Configuration.Invocation.Allows(WorkInvocationChannel.InProcess));
         Assert.True(definition.Configuration.Invocation.Allows(WorkInvocationChannel.HttpApi));
         Assert.True(definition.Configuration.Invocation.Allows(WorkInvocationChannel.Mcp));
     }
@@ -36,7 +36,7 @@ public sealed class WorkInvocationConfigurationTests
 
         var definition = RequiredDefinition(system, "bootstrap.invocation");
 
-        Assert.True(definition.Configuration.Invocation.Allows(WorkInvocationChannel.DotNet));
+        Assert.True(definition.Configuration.Invocation.Allows(WorkInvocationChannel.InProcess));
         Assert.True(definition.Configuration.Invocation.Allows(WorkInvocationChannel.HttpApi));
         Assert.True(definition.Configuration.Invocation.Allows(WorkInvocationChannel.Mcp));
     }
@@ -50,7 +50,7 @@ public sealed class WorkInvocationConfigurationTests
                     "bootstrap.invocation.additive",
                     configuration: WorkConfiguration.Default with
                     {
-                        Invocation = WorkInvocationConfiguration.Allow(WorkInvocationChannel.DotNet),
+                        Invocation = WorkInvocationConfiguration.Allow(WorkInvocationChannel.InProcess),
                     }),
                 SuccessfulWork,
                 configuration => configuration.AllowInvocationFrom(WorkInvocationChannel.Mcp)))
@@ -60,7 +60,7 @@ public sealed class WorkInvocationConfigurationTests
 
         var definition = RequiredDefinition(system, "bootstrap.invocation.additive");
 
-        Assert.True(definition.Configuration.Invocation.Allows(WorkInvocationChannel.DotNet));
+        Assert.True(definition.Configuration.Invocation.Allows(WorkInvocationChannel.InProcess));
         Assert.True(definition.Configuration.Invocation.Allows(WorkInvocationChannel.Mcp));
         Assert.False(definition.Configuration.Invocation.Allows(WorkInvocationChannel.HttpApi));
     }
@@ -81,7 +81,7 @@ public sealed class WorkInvocationConfigurationTests
         var definition = RequiredDefinition(system, "bootstrap.invocation.replace");
 
         Assert.True(definition.Configuration.Invocation.Allows(WorkInvocationChannel.Mcp));
-        Assert.False(definition.Configuration.Invocation.Allows(WorkInvocationChannel.DotNet));
+        Assert.False(definition.Configuration.Invocation.Allows(WorkInvocationChannel.InProcess));
         Assert.False(definition.Configuration.Invocation.Allows(WorkInvocationChannel.HttpApi));
     }
 

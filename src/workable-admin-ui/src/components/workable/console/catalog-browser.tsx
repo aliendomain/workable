@@ -106,7 +106,7 @@ export type DefinitionCatalogBrowserContext = {
   connection: WorkableConnection | null;
   invalidate: () => void;
   level: Loadable<DefinitionCatalogLevel>;
-  loadDefinitionInfo: (definitionId: string) => Promise<WorkInfo>;
+  loadDefinitionInfo: (definitionName: string) => Promise<WorkInfo>;
   navigate: (path: string) => void;
   path: string;
 };
@@ -164,11 +164,11 @@ export function DefinitionCatalogBrowser({
         }
       },
       level,
-      loadDefinitionInfo: async (definitionId: string) => {
+      loadDefinitionInfo: async (definitionName: string) => {
         if (!connection) {
           throw new Error("Catalog connection is unavailable.");
         }
-        return fetchDefinitionCatalogInfo(connection, definitionId);
+        return fetchDefinitionCatalogInfo(connection, definitionName);
       },
       navigate: onNavigate,
       path,
@@ -190,7 +190,7 @@ export function DefinitionCatalogBrowser({
         categories={level.data?.categories ?? []}
         definitions={level.data?.definitions ?? []}
         emptyState={emptyState}
-        getDefinitionKey={(definition) => definition.id.value}
+        getDefinitionKey={(definition) => definition.name}
         headerClassName={headerClassName}
         headerRight={resolvedHeaderRight}
         loading={!level.data && (level.loading || !!level.refreshing)}

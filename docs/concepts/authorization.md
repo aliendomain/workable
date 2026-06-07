@@ -3,7 +3,7 @@
 Workable supports authorization at two levels:
 
 - work-definition authorization controls who can read or operate individual work definitions
-- system authorization controls who can discover a system, view diagnostics, or start and stop it
+- system authorization controls who can discover a system when they have actual access to it, view diagnostics, or start and stop it
 
 The model is request-context based. Callers create or receive a `WorkRequestContext`, Workable creates an `IWorkSystemSession`, and that session exposes the caller-scoped catalog, queue, worker operations, query service, event stream, and diagnostics.
 
@@ -18,7 +18,7 @@ When authorization is enabled on a system:
 - queueing and worker operations return unauthorized outcomes when the caller cannot operate the target work
 - diagnostics require system-level diagnostics permission
 - start and stop require system-level control permission
-- system discovery is filtered by system-level connect permission
+- system discovery is filtered to systems where the caller has actual access
 
 Turn authorization off only when the system is intentionally open to all callers:
 
@@ -49,6 +49,7 @@ Each `WorkDefinition` carries non-null authorization metadata:
 
 - read groups
 - operate groups
+- whether operate access is also allowed to known authenticated users
 - the source of each permission set: `None`, `Attribute`, or `Fluent`
 
 That metadata is visible through catalog and definition queries so callers can inspect what a work definition requires.
@@ -93,6 +94,20 @@ builder.AddWork<SyncInvoicesWork>(
         .AllowOperateToGroups("billing.ops", "billing.admin"));
 ```
 
+Or allow queueing and worker operations for callers that are both authenticated and resolved to a known `WorkActor`:
+
+```csharp
+builder.AddWork<SyncInvoicesWork>(
+    configure: null,
+    authorize: auth => auth.AllowOperateToKnownAuthenticatedUsers());
+```
+
+This capability is currently available through the fluent builder API, not through `WorkAuthorizationAttribute`.
+
+This rule is intentionally narrower than "authenticated transport request." The caller must be authenticated and the request context must carry a known actor with at least one non-blank identity field such as `Id`, `Name`, or `Email`.
+
+For ASP.NET Core transports and custom endpoints that use `IWorkRequestContextFactory`, Workable sets this automatically from `HttpContext`. For trusted direct in-process callers that build `WorkRequestContext` values manually, the caller is responsible for setting `isAuthenticated: true` when that meaning is intended.
+
 Fluent authorization overrides attribute authorization.
 
 ### Read And Operate Rules
@@ -112,6 +127,8 @@ Operate permission affects:
 - worker actions
 - worker reconfiguration
 
+`AllowOperateToKnownAuthenticatedUsers()` participates in the same operate surface. It is an alternative operate grant, not a separate permission kind.
+
 With authorization enabled:
 
 - if a caller cannot read a work definition, it is filtered out
@@ -127,7 +144,6 @@ services.AddWorkableSystem(builder =>
     builder.ConfigureAuthorization(auth => auth
         .SystemAdministrators("workable.sysadmin")
         .WorkAdministrators("workable.workadmin")
-        .AllowConnectToGroups("workable.connect")
         .AllowDiagnosticsToGroups("workable.diagnostics")
         .AllowControlSystemToGroups("workable.control")
         .AllowReadAllWorkToGroups("support.readall")
@@ -138,7 +154,6 @@ services.AddWorkableSystem(builder =>
 Built-in role semantics are:
 
 - `SystemAdministrators(...)`
-  - grants `Connect`
   - grants `Diagnostics`
   - grants `ControlSystem`
   - grants `ReadAllWork`
@@ -148,8 +163,6 @@ Built-in role semantics are:
 
 Granular system permissions are:
 
-- `AllowConnectToGroups(...)`
-  - controls whether a caller can discover the system in transport-level system lists
 - `AllowDiagnosticsToGroups(...)`
   - controls `IWorkSystemSession.Diagnostics` and transport diagnostics routes/views
 - `AllowControlSystemToGroups(...)`
@@ -163,12 +176,10 @@ Granular system permissions are:
 
 Hosts can inspect system access explicitly through `IWorkSystem`.
 
-- `CanConnect(requestContext)` answers whether the caller can discover the system through transport-facing surfaces.
 - `DescribeAccess(requestContext)` returns a `WorkSystemAccessSummary` with the caller's current system-level access.
 
 `WorkSystemAccessSummary` reports:
 
-- `CanConnect`
 - `IsSystemAdministrator`
 - `IsWorkAdministrator`
 - `CanViewDiagnostics`
@@ -176,6 +187,8 @@ Hosts can inspect system access explicitly through `IWorkSystem`.
 - `CanReadAllWork`
 - `CanOperateAllWork`
 - total, readable, and operable definition counts
+
+`DescribeAccess(...).HasAnyAccess()` answers whether the caller has enough real access for the system to appear in transport discovery or to be selected by name through transport adapters.
 
 This is especially useful for custom UIs, capability negotiation, or host-specific feature gating before a caller attempts the broader session surface.
 
@@ -222,6 +235,8 @@ Authorization data comes from either:
 
 - `WorkRequestContext.Authorization`, when the caller already has a trusted authorization snapshot
 - `IWorkAuthorizationGroupProvider`, when groups should be resolved for the current request
+
+The request context can also carry `IsAuthenticated`. Workable uses that together with the resolved actor to evaluate `AllowOperateToKnownAuthenticatedUsers()`.
 
 SignalR needs one extra step because broadcasts happen after the original request is gone. On subscribe:
 

@@ -25,7 +25,7 @@ sequenceDiagram
     participant Dispatcher as WorkerDispatcher
     participant Handle as IWorkerHandle / WorkerHandle
 
-    Caller->>Queue: Enqueue(definitionId or name, WorkInput, queueToken)
+    Caller->>Queue: Enqueue(definitionName, WorkInput, queueToken)
     Queue->>Catalog: TryGetWork(...)
     Catalog-->>Queue: RegisteredWork
     Queue->>Ops: CreateWorker(RegisteredWork, input, options)
@@ -271,7 +271,7 @@ Hosts can use lifecycle observers to coordinate external resources, mirror stop 
 
 ## Classes
 
-- `IWorkQueueService` accepts work by `WorkDefinitionId` or name.
+- `IWorkQueueService` accepts work by definition name.
 - `WorkQueueService` resolves queued work and delegates worker creation.
 - `WorkSystemCatalog` stores the system's immutable work definitions.
 - `RegisteredWork` connects a `WorkDefinition` to an executor factory.

@@ -10,7 +10,7 @@ public sealed class QueueAndResultTests
     private static readonly AsyncLocal<string?> AmbientRequestValue = new();
 
     [Fact]
-    public async Task QueueByIdReturnsAwaitableHandleAndSerializedOutput()
+    public async Task QueueByNameReturnsAwaitableHandleAndSerializedOutput()
     {
         var definition = WorkDefinition.Create("echo", "Returns its input.");
         var system = CreateSystem(definition, (context, input, cancellationToken) =>
@@ -19,7 +19,7 @@ public sealed class QueueAndResultTests
         await system.Start();
 
         var input = WorkInput.FromValue(new EchoArgs("hello"));
-        var handle = await system.Queue.Enqueue(definition.Id, input);
+        var handle = await system.Queue.Enqueue(definition.Name, input);
         var completion = await handle.WaitForCompletion();
 
         Assert.True(handle.QueueOutcome.IsAccepted);
@@ -40,7 +40,6 @@ public sealed class QueueAndResultTests
         var handle = await system.Queue.Enqueue("named-work");
 
         Assert.True(handle.QueueOutcome.IsAccepted);
-        Assert.Equal(definition.Id, handle.QueueOutcome.DefinitionId);
     }
 
     [Fact]
@@ -171,7 +170,7 @@ public sealed class QueueAndResultTests
 
         await system.Start();
 
-        var handle = await system.Queue.Enqueue(WorkDefinitionId.New());
+        var handle = await system.Queue.Enqueue("missing.work");
         var completion = await handle.WaitForCompletion();
 
         Assert.Equal(WorkQueueStatus.NotFound, handle.QueueOutcome.Status);
@@ -191,7 +190,7 @@ public sealed class QueueAndResultTests
         {
             var firstParameter = method.GetParameters().FirstOrDefault();
             Assert.NotNull(firstParameter);
-            Assert.Contains(firstParameter.ParameterType, new[] { typeof(WorkDefinitionId), typeof(string) });
+            Assert.Equal(typeof(string), firstParameter.ParameterType);
         });
         Assert.DoesNotContain(enqueueMethods, method => method.GetParameters().Any(parameter => parameter.ParameterType == typeof(Type)));
         Assert.DoesNotContain(enqueueMethods, method => method.GetParameters().First().ParameterType.IsGenericParameter);

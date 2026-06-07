@@ -169,8 +169,8 @@ public sealed class DynamicWorkSourceTests
         var snapshot = await system.Query.Worker(worker.Id)
             ?? throw new InvalidOperationException("Expected worker snapshot.");
         Assert.Equal(WorkerState.Completed, worker.State);
-        Assert.Equal(WorkInvocationChannel.DotNet, snapshot.Origin.Channel);
-        Assert.Contains(nameof(RuntimeStartupSource), snapshot.Origin.Description);
+        Assert.Equal(WorkInvocationChannel.InProcess, snapshot.Origin.Channel);
+        Assert.Null(snapshot.RequestContext.Description);
     }
 
     [Fact]
@@ -220,7 +220,7 @@ public sealed class DynamicWorkSourceTests
         await tracker.StartupWorkCompleted.Task.WaitAsync(TimeSpan.FromSeconds(5));
 
         var workers = (await system.Query.Workers(new WorkerCriteria())).Workers;
-        Assert.Contains(workers, worker => worker.DefinitionId == StartupByIdSource.DefinitionId);
+        Assert.Contains(workers, worker => worker.DefinitionName == "startup.by-id");
     }
 
     [Fact]

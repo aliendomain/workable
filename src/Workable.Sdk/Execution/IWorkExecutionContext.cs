@@ -9,7 +9,7 @@ public interface IWorkExecutionContext
 
     WorkDefinition Definition { get; }
 
-    WorkOrigin Origin { get; }
+    WorkRequestContext RequestContext { get; }
 
     WorkerOptions Options { get; }
 

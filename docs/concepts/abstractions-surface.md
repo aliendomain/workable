@@ -25,13 +25,12 @@ The package revolves around three root contracts:
 - `IWorkSystem`: one hosted system and its public facets
 - `IWorkSystemSession`: the caller-scoped version of that same surface
 
-Inject `IWorkSystem` when you just need the default hosted system. Inject `IWorkSystemRegistry` when the caller needs to choose by `WorkSystemId` or by name.
+Inject `IWorkSystem` when you just need the default hosted system. Inject `IWorkSystemRegistry` when the caller needs to choose among named systems.
 
 `IWorkSystemRegistry` is intentionally small:
 
 - `Default`
 - `Systems`
-- `TryGet(...)` by id
 - `TryGet(...)` by name
 
 That keeps multi-system discovery on the public contract without forcing consumers to know anything about the host's internal registration model.
@@ -48,7 +47,6 @@ That keeps multi-system discovery on the public contract without forcing consume
 - `Events`
 - `Diagnostics`
 - `DescribeAccess(...)`
-- `CanConnect(...)`
 - `CreateSession(...)`
 - `Start(...)`
 - `Stop(...)`
@@ -61,11 +59,11 @@ Use the root system when the caller is trusted, in-process, and not user-scoped.
 var actor = new WorkActor("user-123", "Taylor");
 
 var requestContext = new WorkRequestContext(
-    actor: actor,
-    origin: WorkOrigin.Create(
+    WorkOrigin.Create(
         WorkInvocationChannel.HttpApi,
-        actor: actor,
-        url: "/workable/workers"));
+        actor: actor),
+    url: "/workable/workers",
+    isAuthenticated: true);
 
 IWorkSystemSession session = workSystem.CreateSession(requestContext);
 
@@ -74,15 +72,16 @@ WorkerQueryResult workers = await session.Query.Workers(cancellationToken: cance
 
 That session-bound model is the most important mental model in this package: the same catalog, queue, worker, query, event, and diagnostics contracts still exist, but they can now be filtered or rejected according to the bound caller.
 
+For trusted in-process callers, `WorkRequestContext.IsAuthenticated` is also part of that bound caller state. Workable uses it together with a known actor to evaluate rules such as `AllowOperateToKnownAuthenticatedUsers()`.
+
 ## Access Introspection
 
-`CanConnect(...)` and `DescribeAccess(...)` let a host or custom adapter reason about access before creating a broader session experience.
+`DescribeAccess(...)` lets a host or custom adapter reason about access before creating a broader session experience.
 
-`CanConnect(...)` is the simple yes-or-no check for "may this caller discover or connect to this system?"
+`DescribeAccess(...).HasAnyAccess()` is the simple yes-or-no check for "does this caller have enough real access for this system to be visible or selected by name through a transport-facing surface?"
 
 `DescribeAccess(...)` returns a `WorkSystemAccessSummary`:
 
-- `CanConnect`
 - `IsSystemAdministrator`
 - `IsWorkAdministrator`
 - `CanViewDiagnostics`

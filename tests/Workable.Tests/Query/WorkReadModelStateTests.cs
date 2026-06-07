@@ -121,20 +121,20 @@ public sealed class WorkReadModelStateTests
         WorkConcurrencyKey? concurrencyKey = null,
         IReadOnlySet<WorkIdentifier>? identifiers = null)
         => WorkerReadModelWorker.From(
+            definitionId,
             new WorkerOverviewItem(
                 workerId,
-                definitionId,
                 definitionName,
                 subjectId,
                 concurrencyKey,
                 identifiers ?? new HashSet<WorkIdentifier>(),
-                Revision: 1,
-                Category: "ReadModel",
+                1,
+                "ReadModel",
                 state,
-                InterruptionReason: null,
-                CreatedAt: timestamp,
-                StateChangedAt: timestamp,
-                UpdatedAt: timestamp),
+                null,
+                timestamp,
+                timestamp,
+                timestamp),
             recurrenceEnabled: false,
             concurrencyEnabled: false,
             profilingEnabled: false);
@@ -144,18 +144,18 @@ public sealed class WorkReadModelStateTests
         long sequence,
         WorkCompletionStatus status)
         => new(
+            worker.DefinitionId,
             new WorkerIterationReference(worker.Id, sequence),
             new WorkerIterationOverviewItem(
                 worker.Id,
                 sequence,
-                worker.DefinitionId,
                 worker.DefinitionName,
                 worker.Category,
                 worker.State,
                 status,
-                StartedAt: worker.UpdatedAt,
-                CompletedAt: worker.UpdatedAt,
-                ExecutionDuration: TimeSpan.Zero,
+                worker.UpdatedAt,
+                worker.UpdatedAt,
+                TimeSpan.Zero,
                 worker.SubjectId,
                 worker.ConcurrencyKey,
                 worker.Identifiers.ToArray()));

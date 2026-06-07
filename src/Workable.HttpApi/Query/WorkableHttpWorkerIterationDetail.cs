@@ -2,7 +2,6 @@ namespace Workable;
 
 public sealed record WorkableHttpWorkerIterationDetail(
     WorkerId WorkerId,
-    WorkDefinitionId DefinitionId,
     string DefinitionName,
     WorkSubjectId? SubjectId,
     WorkConcurrencyKey? ConcurrencyKey,

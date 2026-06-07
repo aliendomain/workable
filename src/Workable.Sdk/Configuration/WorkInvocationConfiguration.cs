@@ -5,7 +5,7 @@ public sealed record WorkInvocationConfiguration
     private static readonly IReadOnlySet<WorkInvocationChannel> DefaultChannels =
         new HashSet<WorkInvocationChannel>
         {
-            WorkInvocationChannel.DotNet,
+            WorkInvocationChannel.InProcess,
             WorkInvocationChannel.HttpApi,
         };
 

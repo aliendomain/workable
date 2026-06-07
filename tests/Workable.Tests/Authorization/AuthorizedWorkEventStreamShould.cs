@@ -26,7 +26,7 @@ public sealed class AuthorizedWorkEventStreamShould
         var hidden = CreateDefinition("hidden.events", "hidden.read");
         var stream = CreateStream(Groups("visible.read"), out var inner, visible, hidden);
 
-        var subscription = stream.Subscribe(new WorkEventFilter(DefinitionId: hidden.Id));
+        var subscription = stream.Subscribe(new WorkEventFilter(DefinitionName: hidden.Name));
 
         Assert.Empty(inner.Subscriptions);
         var diagnostics = Assert.IsAssignableFrom<IWorkEventSubscriptionDiagnostics>(subscription);
@@ -39,7 +39,7 @@ public sealed class AuthorizedWorkEventStreamShould
         var visible = CreateDefinition("visible.events", "visible.read");
         var hidden = CreateDefinition("hidden.events", "hidden.read");
         var stream = CreateStream(Groups("visible.read"), out var inner, visible, hidden);
-        var filter = new WorkEventFilter(DefinitionId: visible.Id, EventType: "worker.completed");
+        var filter = new WorkEventFilter(DefinitionName: visible.Name, EventType: "worker.completed");
         var options = new WorkEventSubscriptionOptions(Capacity: 12);
 
         stream.Subscribe(filter, options);
@@ -56,7 +56,7 @@ public sealed class AuthorizedWorkEventStreamShould
         var hidden = CreateDefinition("hidden.events", "hidden.read");
         var stream = CreateStream(Groups("visible.read"), out var inner, visible, hidden);
         var filter = new WorkEventFilter(
-            DefinitionIds: new HashSet<WorkDefinitionId> { visible.Id, hidden.Id },
+            DefinitionNames: new HashSet<string>(StringComparer.OrdinalIgnoreCase) { visible.Name, hidden.Name },
             EventType: "worker.failed");
 
         stream.Subscribe(filter);
@@ -64,7 +64,7 @@ public sealed class AuthorizedWorkEventStreamShould
         var forwarded = Assert.Single(inner.Subscriptions).Filter;
         Assert.NotNull(forwarded);
         Assert.Equal("worker.failed", forwarded.EventType);
-        Assert.Equal([visible.Id], forwarded.DefinitionIds);
+        Assert.Equal([visible.Name], forwarded.DefinitionNames);
     }
 
     [Fact]
@@ -83,7 +83,9 @@ public sealed class AuthorizedWorkEventStreamShould
         Assert.NotSame(filter, forwarded);
         Assert.Equal(filter.WorkerId, forwarded.WorkerId);
         Assert.Equal(filter.EventType, forwarded.EventType);
-        Assert.Equal(new HashSet<WorkDefinitionId> { first.Id, second.Id }, forwarded.DefinitionIds);
+        Assert.Equal(
+            new HashSet<string>(StringComparer.OrdinalIgnoreCase) { first.Name, second.Name },
+            forwarded.DefinitionNames);
     }
 
     private static AuthorizedWorkEventStream CreateStream(
@@ -97,7 +99,7 @@ public sealed class AuthorizedWorkEventStreamShould
         inner = new RecordingWorkEventStream();
         return new AuthorizedWorkEventStream(
             inner,
-            new WorkAuthorizationEvaluator(catalog, groups));
+            new WorkAuthorizationEvaluator(catalog, groups, false));
     }
 
     private static WorkDefinition CreateDefinition(string name, params string[] readGroups)

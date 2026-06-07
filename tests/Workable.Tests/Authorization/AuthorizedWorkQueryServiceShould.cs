@@ -31,23 +31,23 @@ public sealed class AuthorizedWorkQueryServiceShould
         await query.SystemFailedIterations();
         await query.SystemCompletedIterations();
 
-        AssertOnlyDefinition(visible.Id, inner.LastWorkDefinitionsCriteria?.DefinitionIds);
-        AssertOnlyDefinition(visible.Id, inner.LastWorkersCriteria?.DefinitionIds);
-        AssertOnlyDefinition(visible.Id, inner.LastWorkerIterationsCriteria?.DefinitionIds);
-        AssertOnlyDefinition(visible.Id, inner.LastWorkerKeysCriteria?.DefinitionIds);
-        AssertOnlyDefinition(visible.Id, inner.LastWorkerKeyTypesCriteria?.DefinitionIds);
-        AssertOnlyDefinition(visible.Id, inner.LastWorkIterationKeysCriteria?.DefinitionIds);
-        AssertOnlyDefinition(visible.Id, inner.LastWorkIterationKeyTypesCriteria?.DefinitionIds);
-        AssertOnlyDefinition(visible.Id, inner.LastWorkerStatusSummaryCriteria?.DefinitionIds);
-        AssertOnlyDefinition(visible.Id, inner.LastSystemDetailsCriteria?.DefinitionIds);
-        AssertOnlyDefinition(visible.Id, inner.LastSystemThroughputCriteria?.DefinitionIds);
-        AssertOnlyDefinition(visible.Id, inner.LastSystemThroughputSummaryCriteria?.DefinitionIds);
-        AssertOnlyDefinition(visible.Id, inner.LastSystemWorkerCountsCriteria?.DefinitionIds);
-        AssertOnlyDefinition(visible.Id, inner.LastSystemIterationCountsCriteria?.DefinitionIds);
-        AssertOnlyDefinition(visible.Id, inner.LastSystemCommonKeyTypesCriteria?.DefinitionIds);
-        AssertOnlyDefinition(visible.Id, inner.LastSystemFailedWorkersCriteria?.DefinitionIds);
-        AssertOnlyDefinition(visible.Id, inner.LastSystemFailedIterationsCriteria?.DefinitionIds);
-        AssertOnlyDefinition(visible.Id, inner.LastSystemCompletedIterationsCriteria?.DefinitionIds);
+        AssertOnlyDefinition(visible.Name, inner.LastWorkDefinitionsCriteria?.Names);
+        AssertOnlyDefinition(visible.Name, inner.LastWorkersCriteria?.DefinitionNames);
+        AssertOnlyDefinition(visible.Name, inner.LastWorkerIterationsCriteria?.DefinitionNames);
+        AssertOnlyDefinition(visible.Name, inner.LastWorkerKeysCriteria?.DefinitionNames);
+        AssertOnlyDefinition(visible.Name, inner.LastWorkerKeyTypesCriteria?.DefinitionNames);
+        AssertOnlyDefinition(visible.Name, inner.LastWorkIterationKeysCriteria?.DefinitionNames);
+        AssertOnlyDefinition(visible.Name, inner.LastWorkIterationKeyTypesCriteria?.DefinitionNames);
+        AssertOnlyDefinition(visible.Name, inner.LastWorkerStatusSummaryCriteria?.DefinitionNames);
+        AssertOnlyDefinition(visible.Name, inner.LastSystemDetailsCriteria?.DefinitionNames);
+        AssertOnlyDefinition(visible.Name, inner.LastSystemThroughputCriteria?.DefinitionNames);
+        AssertOnlyDefinition(visible.Name, inner.LastSystemThroughputSummaryCriteria?.DefinitionNames);
+        AssertOnlyDefinition(visible.Name, inner.LastSystemWorkerCountsCriteria?.DefinitionNames);
+        AssertOnlyDefinition(visible.Name, inner.LastSystemIterationCountsCriteria?.DefinitionNames);
+        AssertOnlyDefinition(visible.Name, inner.LastSystemCommonKeyTypesCriteria?.DefinitionNames);
+        AssertOnlyDefinition(visible.Name, inner.LastSystemFailedWorkersCriteria?.DefinitionNames);
+        AssertOnlyDefinition(visible.Name, inner.LastSystemFailedIterationsCriteria?.DefinitionNames);
+        AssertOnlyDefinition(visible.Name, inner.LastSystemCompletedIterationsCriteria?.DefinitionNames);
     }
 
     [Fact]
@@ -57,34 +57,34 @@ public sealed class AuthorizedWorkQueryServiceShould
             out _,
             out var hidden,
             out var inner);
-        var hiddenDefinitions = new HashSet<WorkDefinitionId> { hidden.Id };
+        var hiddenDefinitions = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { hidden.Name };
 
-        var definitions = await query.WorkDefinitions(new WorkDefinitionCriteria(Id: hidden.Id));
+        var definitions = await query.WorkDefinitions(new WorkDefinitionCriteria(Name: hidden.Name));
         var workers = await query.Workers(new WorkerCriteria(
-            DefinitionIds: hiddenDefinitions,
+            DefinitionNames: hiddenDefinitions,
             Skip: -1,
             Take: WorkerCriteria.MaximumTake + 10));
         var iterations = await query.WorkerIterations(new WorkerIterationCriteria(
-            DefinitionIds: hiddenDefinitions,
+            DefinitionNames: hiddenDefinitions,
             Skip: -1,
             Take: WorkerIterationCriteria.MaximumTake + 10));
         var workerKeys = await query.WorkerKeys(new WorkerKeyCriteria(
-            DefinitionIds: hiddenDefinitions,
+            DefinitionNames: hiddenDefinitions,
             Skip: -1,
             Take: WorkerKeyCriteria.MaximumTake + 10));
         var workerKeyTypes = await query.WorkerKeyTypes(new WorkerKeyTypeCriteria(
-            DefinitionIds: hiddenDefinitions,
+            DefinitionNames: hiddenDefinitions,
             Skip: -1,
             Take: WorkerKeyCriteria.MaximumTake + 10));
         var iterationKeys = await query.WorkIterationKeys(new WorkIterationKeyCriteria(
-            DefinitionIds: hiddenDefinitions,
+            DefinitionNames: hiddenDefinitions,
             Skip: -1,
             Take: WorkIterationKeyCriteria.MaximumTake + 10));
         var iterationKeyTypes = await query.WorkIterationKeyTypes(new WorkIterationKeyTypeCriteria(
-            DefinitionIds: hiddenDefinitions,
+            DefinitionNames: hiddenDefinitions,
             Skip: -1,
             Take: WorkIterationKeyCriteria.MaximumTake + 10));
-        var status = await query.WorkerStatusSummary(new WorkerCriteria(DefinitionIds: hiddenDefinitions));
+        var status = await query.WorkerStatusSummary(new WorkerCriteria(DefinitionNames: hiddenDefinitions));
 
         Assert.Empty(definitions.Definitions);
         Assert.Empty(workers.Workers);
@@ -123,24 +123,20 @@ public sealed class AuthorizedWorkQueryServiceShould
 
         Assert.Null(await query.Worker(workerId));
         Assert.Null(await query.WorkerIteration(new WorkerIterationReference(workerId, 1)));
-        Assert.Null(await query.WorkInfo(hidden.Id));
         Assert.Null(await query.WorkInfo(hidden.Name));
 
         Assert.Equal(2, inner.WorkerCallCount);
         Assert.Equal(0, inner.WorkerIterationCallCount);
-        Assert.Equal(0, inner.WorkInfoByIdCallCount);
         Assert.Equal(0, inner.WorkInfoByNameCallCount);
 
         inner.WorkerToReturn = CreateWorker(workerId, visible);
 
         Assert.NotNull(await query.Worker(workerId));
         Assert.NotNull(await query.WorkerIteration(new WorkerIterationReference(workerId, 1)));
-        Assert.NotNull(await query.WorkInfo(visible.Id));
         Assert.NotNull(await query.WorkInfo(visible.Name));
 
         Assert.Equal(4, inner.WorkerCallCount);
         Assert.Equal(1, inner.WorkerIterationCallCount);
-        Assert.Equal(1, inner.WorkInfoByIdCallCount);
         Assert.Equal(1, inner.WorkInfoByNameCallCount);
     }
 
@@ -152,13 +148,13 @@ public sealed class AuthorizedWorkQueryServiceShould
             out var hidden,
             out var inner);
 
-        await query.SystemDetails(new WorkSystemCriteria(DefinitionId: hidden.Id));
+        await query.SystemDetails(new WorkSystemCriteria(DefinitionName: hidden.Name));
 
         var criteria = inner.LastSystemDetailsCriteria;
         Assert.NotNull(criteria);
-        var definitionIds = criteria!.DefinitionIds;
-        Assert.NotNull(definitionIds);
-        Assert.Empty(definitionIds);
+        var definitionNames = criteria!.DefinitionNames;
+        Assert.NotNull(definitionNames);
+        Assert.Empty(definitionNames);
     }
 
     private static AuthorizedWorkQueryService CreateQueryService(
@@ -178,7 +174,7 @@ public sealed class AuthorizedWorkQueryServiceShould
         return new AuthorizedWorkQueryService(
             catalog,
             inner,
-            new WorkAuthorizationEvaluator(catalog, Groups("visible.read")));
+            new WorkAuthorizationEvaluator(catalog, Groups("visible.read"), false));
     }
 
     private static WorkDefinition CreateDefinition(string name, string readGroup)
@@ -194,25 +190,24 @@ public sealed class AuthorizedWorkQueryServiceShould
         var now = DateTimeOffset.UtcNow;
         return new WorkerSnapshot(
             workerId,
-            Revision: 1,
-            StateSequence: 1,
-            definition.Id,
+            1,
+            1,
             definition.Name,
             definition.Category,
-            SubjectId: null,
-            ConcurrencyKey: null,
-            Identifiers: new HashSet<WorkIdentifier>(),
-            WorkOrigin.Create(WorkInvocationChannel.DotNet),
+            null,
+            null,
+            new HashSet<WorkIdentifier>(),
+            WorkRequestContext.Create(WorkInvocationChannel.InProcess),
             WorkerState.Queued,
-            Input: null,
-            Output: null,
+            null,
+            null,
             WorkerOptions.Default,
             definition.Configuration,
-            Messages: [],
-            InterruptionReason: null,
-            CreatedAt: now,
-            StateChangedAt: now,
-            UpdatedAt: now);
+            [],
+            null,
+            now,
+            now,
+            now);
     }
 
     private static WorkerIterationSnapshot CreateIteration()
@@ -238,11 +233,11 @@ public sealed class AuthorizedWorkQueryServiceShould
         => new HashSet<string>(groups, StringComparer.OrdinalIgnoreCase);
 
     private static void AssertOnlyDefinition(
-        WorkDefinitionId expected,
-        IReadOnlySet<WorkDefinitionId>? definitionIds)
+        string expected,
+        IReadOnlySet<string>? definitionNames)
     {
-        Assert.NotNull(definitionIds);
-        Assert.Equal(expected, Assert.Single(definitionIds));
+        Assert.NotNull(definitionNames);
+        Assert.Equal(expected, Assert.Single(definitionNames));
     }
 
     private sealed class RecordingWorkQueryService : IWorkQueryService
@@ -276,8 +271,6 @@ public sealed class AuthorizedWorkQueryServiceShould
         public int WorkerCallCount { get; private set; }
 
         public int WorkerIterationCallCount { get; private set; }
-
-        public int WorkInfoByIdCallCount { get; private set; }
 
         public int WorkInfoByNameCallCount { get; private set; }
 
@@ -349,14 +342,6 @@ public sealed class AuthorizedWorkQueryServiceShould
             this.CollectionQueryCallCount++;
             this.LastWorkerIterationsCriteria = criteria;
             return Task.FromResult(new WorkerIterationQueryResult([], 0, criteria?.Skip ?? 0, criteria?.Take ?? 0));
-        }
-
-        public Task<WorkInfo?> WorkInfo(
-            WorkDefinitionId definitionId,
-            CancellationToken cancellationToken = default)
-        {
-            this.WorkInfoByIdCallCount++;
-            return Task.FromResult(this.WorkInfoToReturn);
         }
 
         public Task<WorkInfo?> WorkInfo(

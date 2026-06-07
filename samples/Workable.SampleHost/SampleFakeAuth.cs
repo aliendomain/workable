@@ -10,7 +10,6 @@ internal static class SampleFakeAuth
     public const string SystemAdministratorGroup = "sample.system-admin";
     public const string WorkAdministratorGroup = "sample.work-admin";
 
-    public const string OperationsConnectGroup = "sample.operations.connect";
     public const string OperationsDiagnosticsGroup = "sample.operations.diagnostics";
     public const string OperationsControlGroup = "sample.operations.control";
     public const string OperationsReadAllGroup = "sample.operations.read-all";
@@ -18,7 +17,6 @@ internal static class SampleFakeAuth
     public const string OperationsCustomReadGroup = "sample.operations.custom.read";
     public const string OperationsCustomOperateGroup = "sample.operations.custom.operate";
 
-    public const string FulfillmentConnectGroup = "sample.fulfillment.connect";
     public const string FulfillmentDiagnosticsGroup = "sample.fulfillment.diagnostics";
     public const string FulfillmentControlGroup = "sample.fulfillment.control";
     public const string FulfillmentReadAllGroup = "sample.fulfillment.read-all";
@@ -36,47 +34,40 @@ internal static class SampleFakeAuth
             IsAuthenticated: false,
             Groups: []),
         new(
-            "no-connect",
-            "Rights But No Connect",
-            "Authenticated and broadly allowed to read and operate work, but missing Connect on both systems.",
-            "Discovery should succeed but return zero systems because this user cannot connect to either system.",
+            "no-access",
+            "No System Access",
+            "Authenticated but not allowed to read work, operate work, inspect diagnostics, or control either system.",
+            "Discovery should succeed but return zero systems because this user has no access to either system.",
             IsAuthenticated: true,
-            Groups:
-            [
-                OperationsReadAllGroup,
-                OperationsOperateAllGroup,
-                FulfillmentReadAllGroup,
-                FulfillmentOperateAllGroup,
-            ]),
+            Groups: []),
         new(
             "operations-only",
-            "Connect One System",
-            "Can connect to only the default Operations system and has broad work access there.",
+            "Operations Only",
+            "Has broad work access plus diagnostics and control on only the default Operations system.",
             "Discovery should show only the default Operations system.",
             IsAuthenticated: true,
             Groups:
             [
-                OperationsConnectGroup,
                 OperationsReadAllGroup,
                 OperationsOperateAllGroup,
                 OperationsDiagnosticsGroup,
                 OperationsControlGroup,
             ]),
         new(
-            "connect-only",
-            "Connect Only",
-            "Can discover both systems but has no work read, operate, diagnostics, or control permissions.",
-            "Discovery should show both systems, but the system contents should mostly come back empty or denied.",
+            "diagnostics-only",
+            "Diagnostics Only",
+            "Can discover both systems and inspect diagnostics, but has no work read, operate, or control permissions.",
+            "Discovery should show both systems. Diagnostics should be available, but work and lifecycle operations should be denied.",
             IsAuthenticated: true,
             Groups:
             [
-                OperationsConnectGroup,
-                FulfillmentConnectGroup,
+                OperationsDiagnosticsGroup,
+                FulfillmentDiagnosticsGroup,
             ]),
         new(
             "system-admin",
             "System Admin",
-            "System administrator across both systems. This user should be able to connect, inspect diagnostics, control systems, and operate work everywhere.",
+            "System administrator across both systems. This user should be able to inspect diagnostics, control systems, and operate work everywhere.",
             "Discovery should show both systems and all system-level features should be available.",
             IsAuthenticated: true,
             Groups:
@@ -97,25 +88,18 @@ internal static class SampleFakeAuth
         new(
             "work-admin",
             "Work Admin",
-            "Work administrator across both systems with enough Connect access to add the host, but without diagnostics or system control permissions.",
+            "Work administrator across both systems, but without diagnostics or system control permissions.",
             "Discovery should show both systems. Work should be fully visible and operable, but diagnostics and lifecycle control should still be denied.",
             IsAuthenticated: true,
-            Groups:
-            [
-                WorkAdministratorGroup,
-                OperationsConnectGroup,
-                FulfillmentConnectGroup,
-            ]),
+            Groups: [WorkAdministratorGroup]),
         new(
             "custom",
             "Custom Rights",
-            "Connects to both systems, can fully read and operate sample.echo on Operations, and can only read fulfillment.picklist.create on Fulfillment.",
+            "Can fully read and operate sample.echo on Operations, and can only read fulfillment.picklist.create on Fulfillment.",
             "Discovery should show both systems. Operations should expose only sample.echo to this user, and Fulfillment should expose only fulfillment.picklist.create as read-only.",
             IsAuthenticated: true,
             Groups:
             [
-                OperationsConnectGroup,
-                FulfillmentConnectGroup,
                 OperationsCustomReadGroup,
                 OperationsCustomOperateGroup,
                 FulfillmentCustomReadGroup,
@@ -181,7 +165,6 @@ internal static class SampleFakeAuth
         builder.ConfigureAuthorization(authorization => authorization
             .SystemAdministrators(SystemAdministratorGroup)
             .WorkAdministrators(WorkAdministratorGroup)
-            .AllowConnectToGroups(OperationsConnectGroup)
             .AllowDiagnosticsToGroups(OperationsDiagnosticsGroup)
             .AllowControlSystemToGroups(OperationsControlGroup)
             .AllowReadAllWorkToGroups(OperationsReadAllGroup)
@@ -195,7 +178,6 @@ internal static class SampleFakeAuth
         builder.ConfigureAuthorization(authorization => authorization
             .SystemAdministrators(SystemAdministratorGroup)
             .WorkAdministrators(WorkAdministratorGroup)
-            .AllowConnectToGroups(FulfillmentConnectGroup)
             .AllowDiagnosticsToGroups(FulfillmentDiagnosticsGroup)
             .AllowControlSystemToGroups(FulfillmentControlGroup)
             .AllowReadAllWorkToGroups(FulfillmentReadAllGroup)

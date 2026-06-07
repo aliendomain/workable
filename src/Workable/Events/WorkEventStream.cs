@@ -320,9 +320,10 @@ internal sealed class WorkEventStream : IWorkEventStream, IAsyncDisposable
                 this.CanAcceptWrite() &&
                 (filter is null ||
                     ((filter.WorkerId is null || filter.WorkerId == metadata.WorkerId) &&
-                        (filter.DefinitionId is null || filter.DefinitionId == metadata.DefinitionId) &&
-                        (filter.DefinitionIds is not { Count: > 0 } ||
-                            (metadata.DefinitionId is { } definitionId && filter.DefinitionIds.Contains(definitionId))) &&
+                        (filter.DefinitionName is null || string.Equals(filter.DefinitionName, metadata.DefinitionName, StringComparison.OrdinalIgnoreCase)) &&
+                        (filter.DefinitionNames is not { Count: > 0 } ||
+                            (!string.IsNullOrWhiteSpace(metadata.DefinitionName) &&
+                                filter.DefinitionNames.Contains(metadata.DefinitionName, StringComparer.OrdinalIgnoreCase))) &&
                         (filter.SubjectId is null || filter.SubjectId == metadata.SubjectId) &&
                         (filter.ConcurrencyKey is null || filter.ConcurrencyKey == metadata.ConcurrencyKey) &&
                         (filter.Identifier is null || metadata.ContainsIdentifier(filter.Identifier.Value)) &&

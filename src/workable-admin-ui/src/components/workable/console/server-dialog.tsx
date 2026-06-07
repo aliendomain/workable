@@ -203,7 +203,7 @@ export function ServerDialog({
               ) : discovered.length === 0 ? (
                 <div className="p-6 text-center text-muted-foreground text-sm">
                   {hasLoadedSystems && !systemsError
-                    ? "Connected to the host, but this signed-in user does not have Connect permission for any Workable systems exposed there."
+                    ? "Connected to the host, but this signed-in user does not have access to any Workable systems exposed there."
                     : "Enter a URL and load systems."}
                 </div>
               ) : (
@@ -304,7 +304,7 @@ function findStoredSystemByKey(
 }
 
 export function getSystemAccessBadges(access: WorkSystemAccessSummary) {
-  const badges = ["Connect"];
+  const badges: string[] = [];
 
   if (access.isSystemAdministrator) {
     badges.push("System admin");
@@ -351,7 +351,6 @@ export function getSystemAccessBadges(access: WorkSystemAccessSummary) {
 
 export function createUnknownAccessSummary(): WorkSystemAccessSummary {
   return {
-    canConnect: true,
     isSystemAdministrator: false,
     isWorkAdministrator: false,
     canViewDiagnostics: false,
@@ -418,7 +417,7 @@ export async function discoverHost(apiUrl: string): Promise<WorkableHttpHostDesc
 
     if (lastError.status === 403) {
       throw new Error(
-        "This user cannot discover systems on that host. Workable Connect access is required to add the server."
+        "This user is not allowed to access Workable system discovery on that host."
       );
     }
 
@@ -523,7 +522,6 @@ function createDiscoveredSystemFromStored(
   system: WorkableSystemConnection
 ): WorkableHttpSystemDescriptor {
   return {
-    id: { value: system.id },
     name: system.systemName ?? null,
     state: system.state ?? "Unknown",
     isDefault: !system.systemName,

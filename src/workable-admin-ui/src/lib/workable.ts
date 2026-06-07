@@ -7,7 +7,7 @@ export type WorkableConnection = {
 };
 
 export type WorkableRealtimeEventCriteria = {
-  definitionIds?: string[] | null;
+  definitionNames?: string[] | null;
   eventTypes?: string[] | null;
   keys?: WorkableRealtimeEventKeyCriteria[] | null;
 };
@@ -33,10 +33,8 @@ export type WorkableRealtimeOrigin = {
 
 export type WorkableRealtimeEvent = {
   occurredAt: string;
-  workSystemId: { value: string };
   workSystemName?: string | null;
   workerId?: { value: string } | null;
-  workDefinitionId?: { value: string } | null;
   workDefinitionName?: string | null;
   subjectId?: WorkTypedValue | null;
   concurrencyKey?: WorkTypedValue | null;
@@ -65,7 +63,6 @@ export type WorkableHttpSystemCapabilities = {
 };
 
 export type WorkSystemAccessSummary = {
-  canConnect: boolean;
   isSystemAdministrator: boolean;
   isWorkAdministrator: boolean;
   canViewDiagnostics: boolean;
@@ -83,7 +80,6 @@ export type WorkableHttpHostDescriptor = {
 };
 
 export type WorkableHttpSystemDescriptor = {
-  id: { value: string };
   name?: string | null;
   state: string;
   isDefault: boolean;
@@ -92,7 +88,6 @@ export type WorkableHttpSystemDescriptor = {
 };
 
 export type WorkableHttpSystemDiagnostics = {
-  id: { value: string };
   name?: string | null;
   state: string;
   queue: WorkSystemQueueDiagnostics;
@@ -107,7 +102,6 @@ export type WorkSystemQueueDiagnostics = {
   rejectedWorkCount: number;
   lastRejectedAt?: string | null;
   lastRejectedStatus?: string | null;
-  lastRejectedDefinitionId?: { value: string } | null;
   lastRejectedCode?: string | null;
   lastRejectedMessage?: string | null;
   alertableRejectedWorkCount: number;
@@ -255,7 +249,6 @@ export type WorkerSummary = {
   id: { value: string };
   revision: number;
   stateSequence: number;
-  definitionId: { value: string };
   definitionName: string;
   definitionCategory?: string | null;
   subjectId?: WorkTypedValue | null;
@@ -273,7 +266,6 @@ export type WorkerSummary = {
 
 export type WorkerOverviewItem = {
   id: { value: string };
-  definitionId: { value: string };
   definitionName: string;
   subjectId?: WorkTypedValue | null;
   concurrencyKey?: WorkTypedValue | null;
@@ -497,7 +489,6 @@ export type WorkableHttpWorkerIterationSnapshot = {
 
 export type WorkableHttpWorkerIterationDetail = {
   workerId: { value: string };
-  definitionId: { value: string };
   definitionName: string;
   subjectId?: WorkTypedValue | null;
   concurrencyKey?: WorkTypedValue | null;
@@ -574,7 +565,6 @@ export type WorkWorkerOverviewWorker = {
   nextRunAt?: string | null;
   retryAttempt?: number | null;
   createdOrigin: WorkWorkerOverviewOrigin;
-  definitionId: { value: string };
   definitionName: string;
   definitionCategory: string;
   configDifferenceCount: number;
@@ -688,7 +678,6 @@ export type WorkWorkerOverviewRealtimeUpdate = {
 export type WorkerIterationOverviewItem = {
   workerId: { value: string };
   sequence: number;
-  definitionId: { value: string };
   definitionName: string;
   category?: string | null;
   workerState: WorkerState;
@@ -992,7 +981,6 @@ export type WorkOverviewCatalogCategoryItem = {
 };
 
 export type WorkOverviewDefinitionItem = {
-  id: { value: string };
   name: string;
   category: string;
 };
@@ -1007,7 +995,6 @@ export type WorkSystemFailedWorkersOverview = {
 };
 
 export type WorkSystemLifecycleResult = {
-  id: { value: string };
   name?: string | null;
   state: string;
   forceCanceledWorkers?: WorkerSnapshot[];
@@ -1033,7 +1020,6 @@ export type WorkInfo = {
 
 export type WorkDefinitionReconfigurationOutcome = {
   status: "Accepted" | "NotFound" | "Invalid" | "Conflict";
-  definitionId: { value: string };
   definition?: WorkDefinition | null;
   messages: WorkMessage[];
 };

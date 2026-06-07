@@ -19,10 +19,6 @@ public interface IWorkQueryService
         CancellationToken cancellationToken = default);
 
     Task<WorkInfo?> WorkInfo(
-        WorkDefinitionId definitionId,
-        CancellationToken cancellationToken = default);
-
-    Task<WorkInfo?> WorkInfo(
         string name,
         CancellationToken cancellationToken = default);
 

@@ -10,13 +10,13 @@ Invocation is definition-level configuration. It can be supplied at startup and 
 
 | Setting | Default | Description |
 | --- | --- | --- |
-| `AllowedChannels` | `DotNet`, `HttpApi` | The entry points that may start the work definition. The default allows direct .NET queueing and the Workable HTTP API. `Mcp` and `SignalR` are not allowed by default. |
+| `AllowedChannels` | `InProcess`, `HttpApi` | The entry points that may start the work definition. The default allows direct in-process queueing and the Workable HTTP API. `Mcp` and `SignalR` are not allowed by default. |
 
 ## Channels
 
 | Channel | Description |
 | --- | --- |
-| `DotNet` | Direct in-process calls to `IWorkQueueService`. |
+| `InProcess` | Direct in-process calls to `IWorkQueueService`. |
 | `HttpApi` | The Workable HTTP API adapter. |
 | `Mcp` | The Workable MCP adapter. |
 | `SignalR` | The Workable SignalR adapter. |
@@ -56,7 +56,7 @@ services.AddWorkableSystem(builder =>
             {
                 AllowedChannels = new HashSet<WorkInvocationChannel>
                 {
-                    WorkInvocationChannel.DotNet,
+                    WorkInvocationChannel.InProcess,
                     WorkInvocationChannel.HttpApi,
                     WorkInvocationChannel.SignalR,
                 },
@@ -98,7 +98,7 @@ WorkDefinitionReconfigurationOutcome outcome =
                 {
                     AllowedChannels = new HashSet<WorkInvocationChannel>
                     {
-                        WorkInvocationChannel.DotNet,
+                        WorkInvocationChannel.InProcess,
                         WorkInvocationChannel.HttpApi,
                         WorkInvocationChannel.Mcp,
                     },

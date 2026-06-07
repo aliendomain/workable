@@ -3,7 +3,6 @@ namespace Workable;
 public sealed record WorkerIterationOverviewItem(
     WorkerId WorkerId,
     long Sequence,
-    WorkDefinitionId DefinitionId,
     string DefinitionName,
     string Category,
     WorkerState WorkerState,

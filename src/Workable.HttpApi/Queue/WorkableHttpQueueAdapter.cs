@@ -15,18 +15,6 @@ public sealed class WorkableHttpQueueAdapter
         return await CreateQueueResult(handle, request, cancellationToken);
     }
 
-    public async Task<WorkableHttpWorkResult> Enqueue(
-        IWorkSystemSession session,
-        WorkDefinitionId definitionId,
-        WorkableHttpWorkRequest? request = null,
-        CancellationToken cancellationToken = default)
-    {
-        ArgumentNullException.ThrowIfNull(session);
-
-        var handle = await session.Queue.Enqueue(definitionId, CreateInput(request), request?.Options?.ToWorkerOptions(), cancellationToken);
-        return await CreateQueueResult(handle, request, cancellationToken);
-    }
-
     private static async Task<WorkableHttpWorkResult> CreateQueueResult(
         IWorkerHandle handle,
         WorkableHttpWorkRequest? request,

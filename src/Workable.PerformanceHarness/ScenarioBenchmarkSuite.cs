@@ -1122,7 +1122,7 @@ internal static class ScenarioBenchmarkSuite
             var provider = services.BuildServiceProvider();
             var system = provider.GetRequiredService<IWorkSystemRegistry>().Default;
             var context = WorkRequestContext.Create(
-                WorkInvocationChannel.DotNet,
+                WorkInvocationChannel.InProcess,
                 new WorkActor(Id: "workable.perf.scenario", Name: "Workable Scenario Benchmark"),
                 "Run Workable performance harness scenario.");
             await system.Start(context, cancellationToken);

@@ -63,7 +63,7 @@ That means executor code should treat each execution attempt as a clean DI scope
 - `WorkSystemName`: the optional name of that system.
 - `WorkerId`: the worker currently executing.
 - `Definition`: the `WorkDefinition` being executed.
-- `Origin`: the `WorkOrigin` that originally queued the worker.
+- `RequestContext`: the original `WorkRequestContext` for this worker. Use `RequestContext.Origin` for durable provenance and `RequestContext.Description` / `RequestContext.Url` for caller-supplied request metadata.
 - `Options`: the effective `WorkerOptions` for this worker.
 - `Configuration`: the effective `WorkConfiguration` for this worker.
 

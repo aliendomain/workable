@@ -1,12 +1,20 @@
 namespace Workable;
 
 public sealed record WorkRequestContext(
-    WorkActor Actor,
     WorkOrigin Origin,
-    WorkAuthorizationSnapshot? Authorization = null)
+    string? Description = null,
+    string? Url = null,
+    WorkAuthorizationSnapshot? Authorization = null,
+    bool IsAuthenticated = false)
 {
+    public WorkActor Actor => this.Origin.Actor;
+
+    public WorkInvocationChannel Channel => this.Origin.Channel;
+
+    public DateTimeOffset CreatedAt => this.Origin.CreatedAt;
+
     public WorkRequestContext(WorkOrigin origin)
-        : this(origin?.Actor ?? throw new ArgumentNullException(nameof(origin)), origin, null)
+        : this(origin ?? throw new ArgumentNullException(nameof(origin)), null, null, null, false)
     {
     }
 
@@ -14,12 +22,20 @@ public sealed record WorkRequestContext(
         WorkInvocationChannel channel,
         WorkActor? actor = null,
         string? description = null,
-        string? url = null)
+        string? url = null,
+        bool isAuthenticated = false)
     {
         var resolvedActor = actor ?? WorkActor.Unknown;
         return new WorkRequestContext(
-            resolvedActor,
-            WorkOrigin.Create(channel, resolvedActor, description, url),
-            null);
+            WorkOrigin.Create(channel, resolvedActor),
+            description,
+            url,
+            null,
+            isAuthenticated);
     }
+
+    public WorkRequestContext WithoutAuthorization()
+        => this.Authorization is null
+            ? this
+            : this with { Authorization = null };
 }

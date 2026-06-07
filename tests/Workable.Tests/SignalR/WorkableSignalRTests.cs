@@ -53,11 +53,11 @@ public sealed class WorkableSignalRTests
     }
 
     [Fact]
-    public async Task HostEndpointReportsRealtimeForConnectOnlyCaller()
+    public async Task HostEndpointReportsRealtimeForAuthenticatedCallerWithoutSystemAccess()
     {
         using var host = await CreateHost(
             addSignalR: true,
-            groups: TransportAuthorizationTestSupport.ConnectGroups);
+            groups: Array.Empty<string>());
         var client = host.GetTestClient();
 
         var response = await client.GetFromJsonAsync<WorkableHttpHostDescriptor>("/workable/host", JsonOptions());
@@ -66,6 +66,7 @@ public sealed class WorkableSignalRTests
         Assert.True(response.Capabilities.Realtime.Enabled);
         Assert.Equal("signalr", response.Capabilities.Realtime.Transport);
         Assert.Equal("/workable/realtime", response.Capabilities.Realtime.HubPath);
+        Assert.Empty(response.Systems);
     }
 
     [Fact]
@@ -146,7 +147,6 @@ public sealed class WorkableSignalRTests
 
         Assert.Equal(handle.WorkerId, completed.WorkerId);
         Assert.Equal("worker.completed", completed.EventType);
-        Assert.Equal(definition.Id, completed.WorkDefinitionId);
         Assert.Equal(definition.Name, completed.WorkDefinitionName);
         Assert.Equal(["worker.completed"], Required(filter.EventTypes).ToArray());
     }
@@ -182,11 +182,9 @@ public sealed class WorkableSignalRTests
 
         Assert.Equal(handle.WorkerId, queued.WorkerId);
         Assert.Equal("worker.queued", queued.EventType);
-        Assert.Equal(definition.Id, queued.WorkDefinitionId);
         Assert.Equal(definition.Name, queued.WorkDefinitionName);
         Assert.Equal(handle.WorkerId, completed.WorkerId);
         Assert.Equal("worker.completed", completed.EventType);
-        Assert.Equal(definition.Id, completed.WorkDefinitionId);
         Assert.Equal(definition.Name, completed.WorkDefinitionName);
     }
 
@@ -207,7 +205,7 @@ public sealed class WorkableSignalRTests
             "WatchEvents",
             new WorkableRealtimeEventCriteria(
                 EventTypes: ["worker.completed"],
-                DefinitionIds: [definition.Id.Value.ToString("D")],
+                DefinitionNames: [definition.Name],
                 Keys:
                 [
                     new WorkableRealtimeEventKeyCriteria(
@@ -233,10 +231,9 @@ public sealed class WorkableSignalRTests
 
         Assert.Equal(accepted.WorkerId, completed.WorkerId);
         Assert.Equal("worker.completed", completed.EventType);
-        Assert.Equal(definition.Id, completed.WorkDefinitionId);
         Assert.Equal(definition.Name, completed.WorkDefinitionName);
         Assert.Equal([acceptedIdentifier], completed.Identifiers.ToArray());
-        Assert.Equal([definition.Id], Required(filter.DefinitionIds).ToArray());
+        Assert.Equal([definition.Name], Required(filter.DefinitionNames).ToArray());
         Assert.Equal(WorkKeyKind.Identifier, key.Kind);
         Assert.Equal(acceptedIdentifier.Type, key.Type);
         Assert.Equal(acceptedIdentifier.Value, key.Value);
@@ -286,7 +283,6 @@ public sealed class WorkableSignalRTests
         Assert.All(batch.Events, workEvent =>
         {
             Assert.Equal("worker.completed", workEvent.EventType);
-            Assert.Equal(definition.Id, workEvent.WorkDefinitionId);
             Assert.Equal(definition.Name, workEvent.WorkDefinitionName);
         });
         Assert.Equal(
@@ -853,7 +849,7 @@ public sealed class WorkableSignalRTests
             {
                 MaximumWorkers = 1,
             }),
-            groups: TransportAuthorizationTestSupport.ConnectGroups);
+            groups: TransportAuthorizationTestSupport.ReadGroups.Concat(TransportAuthorizationTestSupport.OperateGroups));
         var system = host.Services.GetRequiredService<IWorkSystemRegistry>().Default;
         var viewSubscriptions = host.Services.GetRequiredService<WorkableRealtimeViewSubscriptions>();
         await using var connection = CreateConnection(host);
@@ -889,11 +885,11 @@ public sealed class WorkableSignalRTests
     }
 
     [Fact]
-    public async Task NamedSystemWatchRequiresConnectPermission()
+    public async Task NamedSystemWatchRequiresAnySystemAccess()
     {
         using var host = await CreateHost(
             addSignalR: true,
-            groups: TransportAuthorizationTestSupport.ReadGroups.Concat(TransportAuthorizationTestSupport.OperateGroups),
+            groups: Array.Empty<string>(),
             configureServices: services => services.AddWorkableSystem("remote", builder =>
             {
                 builder.StartWithHost();
@@ -909,7 +905,7 @@ public sealed class WorkableSignalRTests
             new WorkableRealtimeEventCriteria(),
             "remote"));
 
-        Assert.Contains("connect permission", exception.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("system-level access", exception.Message, StringComparison.OrdinalIgnoreCase);
     }
 
     private static async Task<IHost> CreateHost(
@@ -1232,7 +1228,7 @@ public sealed class WorkableSignalRTests
     private static IWorkSystemSession Session(IWorkSystem system)
         => TransportAuthorizationTestSupport.CreateTransportSession(
             system,
-            WorkInvocationChannel.DotNet,
+            WorkInvocationChannel.InProcess,
             description: "Use SignalR test session.");
 
     private static ClaimsPrincipal CreateTransportPrincipal(IEnumerable<string>? groups = null)

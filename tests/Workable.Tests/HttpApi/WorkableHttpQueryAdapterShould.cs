@@ -7,7 +7,7 @@ namespace Workable.Tests;
 public sealed class WorkableHttpQueryAdapterShould
 {
     [Fact]
-    public async Task ReturnDefinitionInfoWithQueueRequestSchemaByNameAndId()
+    public async Task ReturnDefinitionInfoWithQueueRequestSchemaByName()
     {
         var definition = WorkDefinition.Create("http.query.adapter.info");
         var services = new ServiceCollection();
@@ -18,15 +18,11 @@ public sealed class WorkableHttpQueryAdapterShould
         var adapter = new WorkableHttpQueryAdapter();
 
         var byName = await adapter.DefinitionInfo(session, system, definition.Name);
-        var byId = await adapter.DefinitionInfo(session, system, definition.Id);
 
         Assert.NotNull(byName);
         Assert.Equal(definition.Id, byName.Definition.Id);
         Assert.NotNull(byName.QueueRequestSchema.Schema.JsonSchema);
         Assert.Contains(byName.QueueRequestSchema.Tabs, tab => tab.Id == "queue");
-        Assert.NotNull(byId);
-        Assert.Equal(byName.Definition.Id, byId.Definition.Id);
-        Assert.Equal(byName.QueueRequestSchema.Schema.JsonSchema, byId.QueueRequestSchema.Schema.JsonSchema);
     }
 
     [Fact]
@@ -86,7 +82,6 @@ public sealed class WorkableHttpQueryAdapterShould
 
         Assert.NotNull(detail);
         Assert.Equal(RequiredWorkerId(handle), detail.WorkerId);
-        Assert.Equal(definition.Id, detail.DefinitionId);
         Assert.Equal(definition.Name, detail.DefinitionName);
         Assert.Equal(1, detail.Iteration.Sequence);
         Assert.Equal(WorkCompletionStatus.Completed, detail.Iteration.Status);

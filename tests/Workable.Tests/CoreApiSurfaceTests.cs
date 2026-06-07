@@ -54,16 +54,8 @@ public sealed class CoreApiSurfaceTests
 
         Assert.Contains(methods, method =>
             !method.IsGenericMethodDefinition &&
-            method.GetParameters()[0].ParameterType == typeof(WorkDefinitionId) &&
-            method.GetParameters()[1].ParameterType == typeof(WorkInput));
-        Assert.Contains(methods, method =>
-            !method.IsGenericMethodDefinition &&
             method.GetParameters()[0].ParameterType == typeof(string) &&
             method.GetParameters()[1].ParameterType == typeof(WorkInput));
-        Assert.Contains(methods, method =>
-            method.IsGenericMethodDefinition &&
-            method.GetParameters()[0].ParameterType == typeof(WorkDefinitionId) &&
-            method.GetParameters()[1].ParameterType.IsGenericParameter);
         Assert.Contains(methods, method =>
             method.IsGenericMethodDefinition &&
             method.GetParameters()[0].ParameterType == typeof(string) &&

@@ -587,7 +587,6 @@ function defaultPanelShapes(): OverviewPanelShapeMap {
 
 function fullAccess(): WorkSystemAccessSummary {
   return {
-    canConnect: true,
     canControlSystem: true,
     canOperateAllWork: true,
     canReadAllWork: true,

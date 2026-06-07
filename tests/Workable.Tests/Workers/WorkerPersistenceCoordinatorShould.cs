@@ -19,14 +19,15 @@ public sealed class WorkerPersistenceCoordinatorShould
             out var acceptedWorkers);
         var workerId = WorkerId.New();
         var input = WorkInput.Empty.WithSubject(new WorkSubjectId("order", "accepted"));
-        var origin = WorkOrigin.Create(WorkInvocationChannel.DotNet);
+        var origin = WorkOrigin.Create(WorkInvocationChannel.InProcess);
+        var requestContext = new WorkRequestContext(origin);
 
         var acceptance = await coordinator.AcceptQueuedWorker(
             workerId,
             registeredWork,
             input,
             RegisteredWorkRuntimePlan.Create(definition, WorkerOptions.Default),
-            origin,
+            requestContext,
             DateTimeOffset.UtcNow,
             CancellationToken.None);
 
@@ -61,7 +62,7 @@ public sealed class WorkerPersistenceCoordinatorShould
             registeredWork,
             WorkInput.Empty.WithSubject(new WorkSubjectId("order", "duplicate")),
             RegisteredWorkRuntimePlan.Create(definition, WorkerOptions.Default),
-            WorkOrigin.Create(WorkInvocationChannel.DotNet),
+            WorkRequestContext.Create(WorkInvocationChannel.InProcess),
             DateTimeOffset.UtcNow,
             CancellationToken.None);
 
@@ -93,7 +94,7 @@ public sealed class WorkerPersistenceCoordinatorShould
             registeredWork,
             input,
             RegisteredWorkRuntimePlan.Create(definition, WorkerOptions.Default),
-            WorkOrigin.Create(WorkInvocationChannel.DotNet),
+            WorkRequestContext.Create(WorkInvocationChannel.InProcess),
             DateTimeOffset.UtcNow,
             CancellationToken.None);
 
@@ -128,7 +129,7 @@ public sealed class WorkerPersistenceCoordinatorShould
             registeredWork,
             WorkInput.Empty.WithSubject(new WorkSubjectId("order", "own-transaction")),
             RegisteredWorkRuntimePlan.Create(definition, WorkerOptions.Default),
-            WorkOrigin.Create(WorkInvocationChannel.DotNet),
+            WorkRequestContext.Create(WorkInvocationChannel.InProcess),
             DateTimeOffset.UtcNow,
             CancellationToken.None);
         await callerTransactionCoordinator.AcceptQueuedWorker(
@@ -138,7 +139,7 @@ public sealed class WorkerPersistenceCoordinatorShould
             RegisteredWorkRuntimePlan.Create(
                 definition,
                 WorkerOptions.Default with { QueueDurabilityTransaction = new TestQueueDurabilityTransaction() }),
-            WorkOrigin.Create(WorkInvocationChannel.DotNet),
+            WorkRequestContext.Create(WorkInvocationChannel.InProcess),
             DateTimeOffset.UtcNow,
             CancellationToken.None);
 
@@ -165,7 +166,7 @@ public sealed class WorkerPersistenceCoordinatorShould
             registeredWork,
             WorkInput.Empty.WithSubject(new WorkSubjectId("order", "durable-duplicate")),
             RegisteredWorkRuntimePlan.Create(definition, WorkerOptions.Default),
-            WorkOrigin.Create(WorkInvocationChannel.DotNet),
+            WorkRequestContext.Create(WorkInvocationChannel.InProcess),
             DateTimeOffset.UtcNow,
             CancellationToken.None);
 

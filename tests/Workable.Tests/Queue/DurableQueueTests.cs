@@ -963,7 +963,7 @@ public sealed class DurableQueueTests
         var store = new InMemoryDurableQueueStore();
         var coordinator = CreateCoordinator(store, (_, _) => Task.CompletedTask);
         var workerId = WorkerId.New();
-        var outcome = WorkQueueOutcome.Accepted(WorkDefinitionId.New(), workerId);
+        var outcome = WorkQueueOutcome.Accepted(workerId);
         var handle = coordinator.CreateHandle(outcome, _ => null);
         using var waitCancellation = new CancellationTokenSource();
         var waiting = Task.Run(async () =>
@@ -1051,7 +1051,7 @@ public sealed class DurableQueueTests
             WorkInput.Empty,
             WorkerOptions.Default,
             WorkConfiguration.Default,
-            WorkOrigin.Create(WorkInvocationChannel.DotNet, description: "Test durable queue request."),
+            WorkRequestContext.Create(WorkInvocationChannel.InProcess, description: "Test durable queue request."),
             DateTimeOffset.UtcNow,
             Idempotency: null,
             Transaction: null);
@@ -1198,7 +1198,7 @@ public sealed class DurableQueueTests
                     entry.Input,
                     entry.Options,
                     entry.Configuration,
-                    entry.Origin,
+                    entry.RequestContext,
                     entry.CreatedAt);
             }
 

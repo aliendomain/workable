@@ -21,8 +21,7 @@ internal static class WorkableHttpSystemRoutes
             var session = WorkableHttpRequestContext.CreateSession(
                 httpContext,
                 system,
-                requestContexts,
-                "View Workable system diagnostics through HTTP API.");
+                requestContexts);
             return Results.Ok(WorkableHttpTopologyResolver.Diagnostics(system, session));
         });
 
@@ -39,8 +38,7 @@ internal static class WorkableHttpSystemRoutes
 
             var requestContext = WorkableHttpRequestContext.Create(
                 httpContext,
-                requestContexts,
-                "Start Workable system through HTTP API.");
+                requestContexts);
             var result = await WorkableHttpTopologyResolver.Start(system, requestContext, cancellationToken);
             return Results.Ok(result);
         });
@@ -58,8 +56,7 @@ internal static class WorkableHttpSystemRoutes
 
             var requestContext = WorkableHttpRequestContext.Create(
                 httpContext,
-                requestContexts,
-                "Stop Workable system through HTTP API.");
+                requestContexts);
             var result = await WorkableHttpTopologyResolver.Stop(system, requestContext, cancellationToken);
             return Results.Ok(result);
         });

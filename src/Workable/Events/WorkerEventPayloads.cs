@@ -24,7 +24,7 @@ internal static class WorkerEventPayloads
     public static JsonElement Create(
         WorkerSummary worker,
         IReadOnlyList<WorkerEventKey> keys,
-        WorkOrigin? origin = null,
+        WorkRequestContext? requestContext = null,
         WorkAction? action = null,
         WorkActionStatus? actionStatus = null,
         WorkActionStatus? reconfigurationStatus = null,
@@ -41,7 +41,7 @@ internal static class WorkerEventPayloads
             new WorkerEventPayload(
                 WorkerEventWorkerPayload.From(worker, retainedLogSummary, retainedTimelineSummary),
                 keys,
-                origin is null ? null : WorkerEventOriginPayload.From(origin),
+                requestContext is null ? null : WorkerEventOriginPayload.From(requestContext),
                 action,
                 actionStatus,
                 reconfigurationStatus,
@@ -57,13 +57,13 @@ internal static class WorkerEventPayloads
     public static JsonElement CreatePurge(
         IReadOnlyList<WorkerId> workerIds,
         DateTimeOffset purgedAt,
-        WorkOrigin? origin = null)
+        WorkRequestContext? requestContext = null)
     {
         return JsonSerializer.SerializeToElement(
             new WorkerPurgePayload(
                 purgedAt,
                 workerIds,
-                origin is null ? null : WorkerEventOriginPayload.From(origin)),
+                requestContext is null ? null : WorkerEventOriginPayload.From(requestContext)),
             WorkEventJson.Options);
     }
 
@@ -90,7 +90,6 @@ internal static class WorkerEventPayloads
         WorkerId Id,
         long Revision,
         long StateSequence,
-        WorkDefinitionId DefinitionId,
         string DefinitionName,
         string DefinitionCategory,
         WorkSubjectId? SubjectId,
@@ -126,7 +125,6 @@ internal static class WorkerEventPayloads
                 worker.Id,
                 worker.Revision,
                 worker.StateSequence,
-                worker.DefinitionId,
                 worker.DefinitionName,
                 worker.DefinitionCategory,
                 worker.SubjectId,
@@ -207,15 +205,15 @@ internal static class WorkerEventPayloads
     private sealed record WorkerEventOriginPayload(
         string Channel,
         WorkerEventOriginActorPayload? Actor,
-        string? Description,
-        string? Url)
+        string? Description = null,
+        string? Url = null)
     {
-        public static WorkerEventOriginPayload From(WorkOrigin origin)
+        public static WorkerEventOriginPayload From(WorkRequestContext requestContext)
             => new(
-                origin.Channel.ToString(),
-                WorkerEventOriginActorPayload.From(origin.Actor),
-                origin.Description,
-                origin.Url);
+                requestContext.Channel.ToString(),
+                WorkerEventOriginActorPayload.From(requestContext.Actor),
+                requestContext.Description,
+                requestContext.Url);
     }
 
     private sealed record WorkerEventOriginActorPayload(

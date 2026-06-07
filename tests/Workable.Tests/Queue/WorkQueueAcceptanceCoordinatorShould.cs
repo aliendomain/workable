@@ -14,14 +14,14 @@ public sealed class WorkQueueAcceptanceCoordinatorShould
         var registeredWork = CreateRegisteredWork(definition);
         var workerId = WorkerId.New();
         var input = WorkInput.Empty.WithSubject(new WorkSubjectId("order", "durable"));
-        var origin = WorkOrigin.Create(WorkInvocationChannel.DotNet, description: "Durable acceptance test.");
+        var requestContext = WorkRequestContext.Create(WorkInvocationChannel.InProcess, description: "Durable acceptance test.");
 
         var prepared = coordinator.Prepare(
             workerId,
             registeredWork,
             input,
             RegisteredWorkRuntimePlan.Create(definition, WorkerOptions.Default),
-            origin,
+            requestContext,
             DateTimeOffset.UtcNow);
 
         Assert.True(prepared.Outcome.IsAccepted);
@@ -34,7 +34,7 @@ public sealed class WorkQueueAcceptanceCoordinatorShould
         Assert.Equal(workerId, prepared.PersistenceRequest.WorkerId);
         Assert.Equal(definition.Id, prepared.PersistenceRequest.Definition.Id);
         Assert.Equal(input.SubjectId, prepared.PersistenceRequest.Idempotency?.SubjectId);
-        Assert.Equal(origin, prepared.PersistenceRequest.Origin);
+        Assert.Equal(requestContext, prepared.PersistenceRequest.RequestContext);
     }
 
     [Fact]
@@ -45,14 +45,14 @@ public sealed class WorkQueueAcceptanceCoordinatorShould
         var registeredWork = CreateRegisteredWork(definition);
         var workerId = WorkerId.New();
         var input = WorkInput.Empty.WithSubject(new WorkSubjectId("order", "idempotent"));
-        var origin = WorkOrigin.Create(WorkInvocationChannel.DotNet, description: "Persistent idempotency acceptance test.");
+        var requestContext = WorkRequestContext.Create(WorkInvocationChannel.InProcess, description: "Persistent idempotency acceptance test.");
 
         var prepared = coordinator.Prepare(
             workerId,
             registeredWork,
             input,
             RegisteredWorkRuntimePlan.Create(definition, WorkerOptions.Default),
-            origin,
+            requestContext,
             DateTimeOffset.UtcNow);
 
         Assert.True(prepared.Outcome.IsAccepted);
@@ -63,7 +63,7 @@ public sealed class WorkQueueAcceptanceCoordinatorShould
         Assert.False(prepared.ShouldDrainQueuedWorkers);
         Assert.Equal(workerId, prepared.Worker.Id);
         Assert.Equal(input.SubjectId, prepared.IdempotencyRequest.SubjectId);
-        Assert.Equal(origin, prepared.IdempotencyRequest.Origin);
+        Assert.Equal(requestContext, prepared.IdempotencyRequest.RequestContext);
     }
 
     [Fact]
@@ -82,7 +82,7 @@ public sealed class WorkQueueAcceptanceCoordinatorShould
             RegisteredWorkRuntimePlan.Create(
                 definition,
                 WorkerOptions.Default with { QueueDurabilityTransaction = new TestQueueDurabilityTransaction() }),
-            WorkOrigin.Create(WorkInvocationChannel.DotNet),
+            WorkRequestContext.Create(WorkInvocationChannel.InProcess),
             DateTimeOffset.UtcNow);
 
         Assert.Equal(WorkQueueStatus.Invalid, prepared.Outcome.Status);
@@ -106,7 +106,7 @@ public sealed class WorkQueueAcceptanceCoordinatorShould
             registeredWork,
             input: null,
             RegisteredWorkRuntimePlan.Create(definition, WorkerOptions.Default),
-            WorkOrigin.Create(WorkInvocationChannel.DotNet),
+            WorkRequestContext.Create(WorkInvocationChannel.InProcess),
             DateTimeOffset.UtcNow);
 
         Assert.Equal(WorkQueueStatus.Invalid, prepared.Outcome.Status);
@@ -126,21 +126,21 @@ public sealed class WorkQueueAcceptanceCoordinatorShould
             ConcurrencyCoordination(WorkConcurrencyLimitReachedBehavior.DeferStart));
         var registeredWork = CreateRegisteredWork(definition);
         var runtimePlan = RegisteredWorkRuntimePlan.Create(definition, WorkerOptions.Default);
-        var origin = WorkOrigin.Create(WorkInvocationChannel.DotNet);
+        var requestContext = WorkRequestContext.Create(WorkInvocationChannel.InProcess);
 
         var first = coordinator.Prepare(
             WorkerId.New(),
             registeredWork,
             input: null,
             runtimePlan,
-            origin,
+            requestContext,
             DateTimeOffset.UtcNow);
         var second = coordinator.Prepare(
             WorkerId.New(),
             registeredWork,
             input: null,
             runtimePlan,
-            origin,
+            requestContext,
             DateTimeOffset.UtcNow);
 
         Assert.True(first.Outcome.IsAccepted);
@@ -163,21 +163,21 @@ public sealed class WorkQueueAcceptanceCoordinatorShould
             ConcurrencyCoordination(WorkConcurrencyLimitReachedBehavior.Ignore));
         var registeredWork = CreateRegisteredWork(definition);
         var runtimePlan = RegisteredWorkRuntimePlan.Create(definition, WorkerOptions.Default);
-        var origin = WorkOrigin.Create(WorkInvocationChannel.DotNet);
+        var requestContext = WorkRequestContext.Create(WorkInvocationChannel.InProcess);
 
         var first = coordinator.Prepare(
             WorkerId.New(),
             registeredWork,
             input: null,
             runtimePlan,
-            origin,
+            requestContext,
             DateTimeOffset.UtcNow);
         var second = coordinator.Prepare(
             WorkerId.New(),
             registeredWork,
             input: null,
             runtimePlan,
-            origin,
+            requestContext,
             DateTimeOffset.UtcNow);
 
         Assert.True(first.Outcome.IsAccepted);

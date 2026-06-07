@@ -145,7 +145,7 @@ export function ServerTree({
   onEditHost: (host: WorkableHostConnection) => void;
   onOpenCatalogScope: (systemId: string, scope: OverviewScope | null) => void;
   onOpenDefinition: (
-    definitionId: string,
+    definitionName: string,
     options?: {
       definitionName?: string;
       systemId?: string;
@@ -457,7 +457,7 @@ function CatalogExplorer({
   host: WorkableHostConnection;
   onOpenCatalogScope: (systemId: string, scope: OverviewScope | null) => void;
   onOpenDefinition: (
-    definitionId: string,
+    definitionName: string,
     options?: {
       definitionName?: string;
       systemId?: string;
@@ -558,7 +558,7 @@ function CatalogExplorer({
             >
               <button
                 className="flex h-full min-w-0 flex-1 items-center gap-2 px-2 text-left"
-                onClick={() => onOpenDefinition(definition.id.value, {
+                onClick={() => onOpenDefinition(definition.name, {
                   definitionName: definition.name,
                   systemId: system.id,
                 })}
@@ -573,14 +573,14 @@ function CatalogExplorer({
                     <button
                       aria-label={`Queue ${definition.name}`}
                       className="mr-1 flex size-5 shrink-0 items-center justify-center rounded-md text-sidebar-foreground/70 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
-                      disabled={queueDefinitionLoadingId === definition.id.value}
+                      disabled={queueDefinitionLoadingId === definition.name}
                       onClick={async () => {
                         setQueueDialogData(null);
                         setQueueDefinitionError(undefined);
-                        setQueueDefinitionLoadingId(definition.id.value);
+                        setQueueDefinitionLoadingId(definition.name);
 
                         try {
-                          const info = await catalog.loadDefinitionInfo(definition.id.value);
+                          const info = await catalog.loadDefinitionInfo(definition.name);
                           setQueueDialogData({
                             definition: info.definition,
                             queueRequestSchema: info.queueRequestSchema,
@@ -595,7 +595,7 @@ function CatalogExplorer({
                       }}
                       type="button"
                     >
-                      {queueDefinitionLoadingId === definition.id.value ? (
+                      {queueDefinitionLoadingId === definition.name ? (
                         <Loader2 className="size-3.5 animate-spin" />
                       ) : (
                         <Send className="size-3.5" />

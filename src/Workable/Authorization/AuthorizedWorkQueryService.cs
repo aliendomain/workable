@@ -10,7 +10,14 @@ internal sealed class AuthorizedWorkQueryService(
         CancellationToken cancellationToken = default)
     {
         var worker = await inner.Worker(workerId, cancellationToken);
-        return worker is not null && authorization.CanRead(worker.DefinitionId) ? worker : null;
+        if (worker is null)
+        {
+            return null;
+        }
+
+        return catalog.TryGet(worker.DefinitionName, out var definition) && authorization.CanRead(definition)
+            ? worker
+            : null;
     }
 
     public async Task<WorkerIterationSnapshot?> WorkerIteration(
@@ -46,13 +53,6 @@ internal sealed class AuthorizedWorkQueryService(
             ? new WorkerIterationQueryResult([], 0, skip, take)
             : await inner.WorkerIterations(authorized with { Skip = skip, Take = take }, cancellationToken);
     }
-
-    public Task<WorkInfo?> WorkInfo(
-        WorkDefinitionId definitionId,
-        CancellationToken cancellationToken = default)
-        => authorization.CanRead(definitionId)
-            ? inner.WorkInfo(definitionId, cancellationToken)
-            : Task.FromResult<WorkInfo?>(null);
 
     public async Task<WorkInfo?> WorkInfo(
         string name,
@@ -182,143 +182,146 @@ internal sealed class AuthorizedWorkQueryService(
     private WorkDefinitionCriteria? AuthorizeDefinitionCriteria(WorkDefinitionCriteria criteria)
         => ApplyDefinitionScope(
             criteria,
-            this.ResolveReadableDefinitionScope(criteria.Id, criteria.Name, criteria.DefinitionIds));
+            this.ResolveReadableDefinitionScope(criteria.Name, criteria.Names));
 
     private WorkerCriteria? AuthorizeWorkerCriteria(WorkerCriteria criteria)
         => ApplyDefinitionScope(
             criteria,
-            this.ResolveReadableDefinitionScope(criteria.DefinitionId, criteria.DefinitionName, criteria.DefinitionIds));
+            this.ResolveReadableDefinitionScope(criteria.DefinitionName, criteria.DefinitionNames));
 
     private WorkerIterationCriteria? AuthorizeIterationCriteria(WorkerIterationCriteria criteria)
         => ApplyDefinitionScope(
             criteria,
-            this.ResolveReadableDefinitionScope(criteria.DefinitionId, criteria.DefinitionName, criteria.DefinitionIds));
+            this.ResolveReadableDefinitionScope(criteria.DefinitionName, criteria.DefinitionNames));
 
     private WorkerKeyCriteria? AuthorizeWorkerKeyCriteria(WorkerKeyCriteria criteria)
-        => ApplyDefinitionScope(criteria, this.ResolveReadableDefinitionScope(criteria.DefinitionIds));
+        => ApplyDefinitionScope(criteria, this.ResolveReadableDefinitionScope(criteria.DefinitionNames));
 
     private WorkerKeyTypeCriteria? AuthorizeWorkerKeyTypeCriteria(WorkerKeyTypeCriteria criteria)
-        => ApplyDefinitionScope(criteria, this.ResolveReadableDefinitionScope(criteria.DefinitionIds));
+        => ApplyDefinitionScope(criteria, this.ResolveReadableDefinitionScope(criteria.DefinitionNames));
 
     private WorkIterationKeyCriteria? AuthorizeIterationKeyCriteria(WorkIterationKeyCriteria criteria)
-        => ApplyDefinitionScope(criteria, this.ResolveReadableDefinitionScope(criteria.DefinitionIds));
+        => ApplyDefinitionScope(criteria, this.ResolveReadableDefinitionScope(criteria.DefinitionNames));
 
     private WorkIterationKeyTypeCriteria? AuthorizeIterationKeyTypeCriteria(WorkIterationKeyTypeCriteria criteria)
-        => ApplyDefinitionScope(criteria, this.ResolveReadableDefinitionScope(criteria.DefinitionIds));
+        => ApplyDefinitionScope(criteria, this.ResolveReadableDefinitionScope(criteria.DefinitionNames));
 
     private WorkSystemCriteria? AuthorizeSystemCriteria(WorkSystemCriteria? criteria)
     {
         var query = criteria ?? new WorkSystemCriteria();
-        var definitionIds = this.ResolveReadableDefinitionScope(
-            query.DefinitionId,
+        var definitionNames = this.ResolveReadableDefinitionScope(
             query.DefinitionName,
-            query.DefinitionIds);
+            query.DefinitionNames);
 
-        return definitionIds is null
+        return definitionNames is null
             ? criteria
-            : query with { DefinitionIds = definitionIds };
+            : query with { DefinitionNames = definitionNames };
     }
 
-    private IReadOnlySet<WorkDefinitionId>? ResolveReadableDefinitionScope(
-        IReadOnlySet<WorkDefinitionId>? requestedDefinitionIds)
-        => this.ResolveReadableDefinitionScope(null, null, requestedDefinitionIds);
+    private IReadOnlySet<string>? ResolveReadableDefinitionScope(
+        IReadOnlySet<string>? requestedDefinitionNames)
+        => this.ResolveReadableDefinitionScope(null, requestedDefinitionNames);
 
-    private IReadOnlySet<WorkDefinitionId>? ResolveReadableDefinitionScope(
-        WorkDefinitionId? definitionId,
+    private IReadOnlySet<string>? ResolveReadableDefinitionScope(
         string? definitionName,
-        IReadOnlySet<WorkDefinitionId>? requestedDefinitionIds)
+        IReadOnlySet<string>? requestedDefinitionNames)
     {
         var hasAllDefinitions = authorization.HasReadAllWorkAccess();
         return this.ResolveDefinitionScope(
-            definitionId,
             definitionName,
-            requestedDefinitionIds,
+            requestedDefinitionNames,
             hasAllDefinitions,
-            hasAllDefinitions ? new HashSet<WorkDefinitionId>() : authorization.ReadableDefinitionIds());
+            hasAllDefinitions
+                ? new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+                : catalog.Definitions
+                    .Where(definition => authorization.CanRead(definition))
+                    .Select(definition => definition.Name)
+                    .ToHashSet(StringComparer.OrdinalIgnoreCase));
     }
 
-    private IReadOnlySet<WorkDefinitionId>? ResolveDefinitionScope(
-        WorkDefinitionId? definitionId,
+    private IReadOnlySet<string>? ResolveDefinitionScope(
         string? definitionName,
-        IReadOnlySet<WorkDefinitionId>? requestedDefinitionIds,
+        IReadOnlySet<string>? requestedDefinitionNames,
         bool hasAllDefinitions,
-        IReadOnlySet<WorkDefinitionId> allowedDefinitionIds)
+        IReadOnlySet<string> allowedDefinitionNames)
     {
-        HashSet<WorkDefinitionId>? definitionIds = requestedDefinitionIds?.ToHashSet();
-        if (definitionId is { } id)
-        {
-            definitionIds = IntersectDefinitionScope(definitionIds, [id]);
-        }
-
+        HashSet<string>? definitionNames = requestedDefinitionNames is null
+            ? null
+            : requestedDefinitionNames.Count == 0
+                ? []
+                : requestedDefinitionNames
+                    .Select(name => catalog.TryGet(name, out var definition) ? definition?.Name : null)
+                    .OfType<string>()
+                    .ToHashSet(StringComparer.OrdinalIgnoreCase);
         if (!string.IsNullOrWhiteSpace(definitionName))
         {
             if (!catalog.TryGet(definitionName, out var definition))
             {
-                return new HashSet<WorkDefinitionId>();
+                return new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             }
 
-            definitionIds = IntersectDefinitionScope(definitionIds, [definition.Id]);
+            definitionNames = IntersectDefinitionScope(definitionNames, [definition.Name]);
         }
 
         return hasAllDefinitions
-            ? definitionIds
-            : IntersectDefinitionScope(definitionIds, allowedDefinitionIds);
+            ? definitionNames
+            : IntersectDefinitionScope(definitionNames, allowedDefinitionNames);
     }
 
     private static WorkDefinitionCriteria? ApplyDefinitionScope(
         WorkDefinitionCriteria criteria,
-        IReadOnlySet<WorkDefinitionId>? definitionIds)
-        => definitionIds is null
+        IReadOnlySet<string>? definitionNames)
+        => definitionNames is null
             ? criteria
-            : definitionIds.Count == 0 ? null : criteria with { DefinitionIds = definitionIds };
+            : definitionNames.Count == 0 ? null : criteria with { Names = definitionNames };
 
     private static WorkerCriteria? ApplyDefinitionScope(
         WorkerCriteria criteria,
-        IReadOnlySet<WorkDefinitionId>? definitionIds)
-        => definitionIds is null
+        IReadOnlySet<string>? definitionNames)
+        => definitionNames is null
             ? criteria
-            : definitionIds.Count == 0 ? null : criteria with { DefinitionIds = definitionIds };
+            : definitionNames.Count == 0 ? null : criteria with { DefinitionNames = definitionNames };
 
     private static WorkerIterationCriteria? ApplyDefinitionScope(
         WorkerIterationCriteria criteria,
-        IReadOnlySet<WorkDefinitionId>? definitionIds)
-        => definitionIds is null
+        IReadOnlySet<string>? definitionNames)
+        => definitionNames is null
             ? criteria
-            : definitionIds.Count == 0 ? null : criteria with { DefinitionIds = definitionIds };
+            : definitionNames.Count == 0 ? null : criteria with { DefinitionNames = definitionNames };
 
     private static WorkerKeyCriteria? ApplyDefinitionScope(
         WorkerKeyCriteria criteria,
-        IReadOnlySet<WorkDefinitionId>? definitionIds)
-        => definitionIds is null
+        IReadOnlySet<string>? definitionNames)
+        => definitionNames is null
             ? criteria
-            : definitionIds.Count == 0 ? null : criteria with { DefinitionIds = definitionIds };
+            : definitionNames.Count == 0 ? null : criteria with { DefinitionNames = definitionNames };
 
     private static WorkerKeyTypeCriteria? ApplyDefinitionScope(
         WorkerKeyTypeCriteria criteria,
-        IReadOnlySet<WorkDefinitionId>? definitionIds)
-        => definitionIds is null
+        IReadOnlySet<string>? definitionNames)
+        => definitionNames is null
             ? criteria
-            : definitionIds.Count == 0 ? null : criteria with { DefinitionIds = definitionIds };
+            : definitionNames.Count == 0 ? null : criteria with { DefinitionNames = definitionNames };
 
     private static WorkIterationKeyCriteria? ApplyDefinitionScope(
         WorkIterationKeyCriteria criteria,
-        IReadOnlySet<WorkDefinitionId>? definitionIds)
-        => definitionIds is null
+        IReadOnlySet<string>? definitionNames)
+        => definitionNames is null
             ? criteria
-            : definitionIds.Count == 0 ? null : criteria with { DefinitionIds = definitionIds };
+            : definitionNames.Count == 0 ? null : criteria with { DefinitionNames = definitionNames };
 
     private static WorkIterationKeyTypeCriteria? ApplyDefinitionScope(
         WorkIterationKeyTypeCriteria criteria,
-        IReadOnlySet<WorkDefinitionId>? definitionIds)
-        => definitionIds is null
+        IReadOnlySet<string>? definitionNames)
+        => definitionNames is null
             ? criteria
-            : definitionIds.Count == 0 ? null : criteria with { DefinitionIds = definitionIds };
+            : definitionNames.Count == 0 ? null : criteria with { DefinitionNames = definitionNames };
 
-    private static HashSet<WorkDefinitionId> IntersectDefinitionScope(
-        HashSet<WorkDefinitionId>? current,
-        IEnumerable<WorkDefinitionId> requested)
+    private static HashSet<string> IntersectDefinitionScope(
+        HashSet<string>? current,
+        IEnumerable<string> requested)
     {
-        var requestedSet = requested.ToHashSet();
+        var requestedSet = requested.ToHashSet(StringComparer.OrdinalIgnoreCase);
         if (current is null)
         {
             return requestedSet;

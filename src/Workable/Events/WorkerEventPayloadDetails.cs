@@ -1,7 +1,7 @@
 namespace Workable;
 
 internal sealed record WorkerEventPayloadDetails(
-    WorkOrigin? Origin = null,
+    WorkRequestContext? RequestContext = null,
     WorkAction? Action = null,
     WorkActionStatus? ActionStatus = null,
     WorkActionStatus? ReconfigurationStatus = null,

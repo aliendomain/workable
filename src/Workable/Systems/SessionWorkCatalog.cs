@@ -15,9 +15,6 @@ internal sealed class SessionWorkCatalog(
     public IReadOnlyList<WorkDefinition> ListByCategory(string category, bool includeSubcategories = true)
         => inner.ListByCategory(category, includeSubcategories);
 
-    public bool TryGet(WorkDefinitionId id, [NotNullWhen(true)] out WorkDefinition? definition)
-        => inner.TryGet(id, out definition);
-
     public bool TryGet(string name, [NotNullWhen(true)] out WorkDefinition? definition)
         => inner.TryGet(name, out definition);
 

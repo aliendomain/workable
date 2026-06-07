@@ -3,10 +3,8 @@ using System.Text.Json;
 namespace Workable;
 public sealed record WorkableRealtimeEvent(
     DateTimeOffset OccurredAt,
-    WorkSystemId WorkSystemId,
     string? WorkSystemName,
     WorkerId? WorkerId,
-    WorkDefinitionId? WorkDefinitionId,
     string? WorkDefinitionName,
     WorkSubjectId? SubjectId,
     WorkConcurrencyKey? ConcurrencyKey,
@@ -20,10 +18,8 @@ public sealed record WorkableRealtimeEvent(
 
         return new WorkableRealtimeEvent(
             workEvent.OccurredAt,
-            workEvent.WorkSystemId,
             workEvent.WorkSystemName,
             workEvent.WorkerId,
-            workEvent.WorkDefinitionId,
             workEvent.WorkDefinitionName,
             workEvent.SubjectId,
             workEvent.ConcurrencyKey,

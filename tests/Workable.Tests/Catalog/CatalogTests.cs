@@ -201,7 +201,7 @@ public sealed class CatalogTests
         Assert.True(outcome.Definition.DefaultOptions.ProfilingEnabled);
         Assert.Equal(WorkStartPolicy.DoNotStart, outcome.Definition.Configuration.Start.Policy);
 
-        Assert.True(system.Catalog.TryGet(definition.Id, out var catalogDefinition));
+        Assert.True(system.Catalog.TryGet(definition.Name, out var catalogDefinition));
         Assert.Equal(outcome.Definition, catalogDefinition);
         Assert.Equal(0, definition.Revision);
         Assert.False(definition.DefaultOptions.ProfilingEnabled);
@@ -219,7 +219,7 @@ public sealed class CatalogTests
 
         var byCategory = Assert.Single(system.Catalog.ListByCategory("Catalog:Refresh"));
         var byQuery = Assert.Single(await system.Query.WorkDefinitions(new WorkDefinitionCriteria(Name: "definition.query.refresh")));
-        var info = await system.Query.WorkInfo(definition.Id);
+        var info = await system.Query.WorkInfo(definition.Name);
 
         Assert.True(outcome.IsAccepted);
         Assert.Equal(1, byCategory.Revision);
@@ -281,7 +281,7 @@ public sealed class CatalogTests
         Assert.Equal(WorkDefinitionReconfigurationStatus.Invalid, outcome.Status);
         Assert.Equal(0, outcome.Definition?.Revision);
         Assert.Contains(outcome.Messages, message => message.Code == "workable.configuration.recurrence.interval_required");
-        Assert.True(system.Catalog.TryGet(definition.Id, out var current));
+        Assert.True(system.Catalog.TryGet(definition.Name, out var current));
         Assert.Equal(0, current.Revision);
         Assert.False(current.Configuration.Recurrence.IsEnabled);
     }
@@ -325,7 +325,7 @@ public sealed class CatalogTests
 
         Assert.Equal(1, attempts.Count(outcome => outcome.Status == WorkDefinitionReconfigurationStatus.Accepted));
         Assert.Equal(1, attempts.Count(outcome => outcome.Status == WorkDefinitionReconfigurationStatus.Conflict));
-        Assert.True(system.Catalog.TryGet(definition.Id, out var current));
+        Assert.True(system.Catalog.TryGet(definition.Name, out var current));
         Assert.Equal(1, current.Revision);
     }
 
@@ -337,7 +337,7 @@ public sealed class CatalogTests
 
         await system.Start();
 
-        var first = await system.Queue.Enqueue(definition.Id);
+        var first = await system.Queue.Enqueue(definition.Name);
         await first.WaitForCompletion();
         var firstWorker = await system.Query.Worker(RequiredWorkerId(first));
 
@@ -349,7 +349,7 @@ public sealed class CatalogTests
                 {
                     Start = WorkStartConfiguration.DoNotStart,
                 }));
-        var second = await system.Queue.Enqueue(definition.Id);
+        var second = await system.Queue.Enqueue(definition.Name);
         var secondWorker = await system.Query.Worker(RequiredWorkerId(second));
 
         Assert.True(reconfigured.IsAccepted);

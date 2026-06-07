@@ -26,8 +26,7 @@ internal static class WorkableHttpCatalogRoutes
             var session = WorkableHttpRequestContext.CreateSession(
                 httpContext,
                 system,
-                requestContexts,
-                "Browse work definitions through HTTP API.");
+                requestContexts);
             if (level == true)
             {
                 return Results.Ok(WorkableHttpCatalogAdapter.GetDefinitionCatalogLevel(session.Catalog, category));
@@ -44,9 +43,9 @@ internal static class WorkableHttpCatalogRoutes
             return Results.Ok(catalog.GetDefinitions(session));
         });
 
-        group.MapGet("/definitions/{definitionId:guid}", (
+        group.MapGet("/definitions/{name}", (
             HttpContext httpContext,
-            Guid definitionId,
+            string name,
             WorkableHttpTopologyResolver topology,
             WorkableHttpCatalogAdapter catalog,
             IWorkRequestContextFactory requestContexts) =>
@@ -59,15 +58,14 @@ internal static class WorkableHttpCatalogRoutes
             var session = WorkableHttpRequestContext.CreateSession(
                 httpContext,
                 system,
-                requestContexts,
-                "Read a work definition through HTTP API.");
-            var definition = catalog.GetDefinition(session, new WorkDefinitionId(definitionId));
+                requestContexts);
+            var definition = catalog.GetDefinition(session, name);
             return definition is null ? Results.NotFound() : Results.Ok(definition);
         });
 
-        group.MapPost("/definitions/{definitionId:guid}/reconfigure", async (
+        group.MapPost("/definitions/{name}/reconfigure", async (
             HttpContext httpContext,
-            Guid definitionId,
+            string name,
             WorkableHttpDefinitionReconfigurationRequest request,
             WorkableHttpTopologyResolver topology,
             WorkableHttpCatalogAdapter catalog,
@@ -82,11 +80,10 @@ internal static class WorkableHttpCatalogRoutes
             var session = WorkableHttpRequestContext.CreateSession(
                 httpContext,
                 system,
-                requestContexts,
-                "Reconfigure work definition through HTTP API.");
+                requestContexts);
             var result = await catalog.ReconfigureDefinition(
                 session,
-                new WorkDefinitionId(definitionId),
+                name,
                 request,
                 cancellationToken);
             return WorkableHttpRouteResults.ToDefinitionReconfigurationHttpResult(result);

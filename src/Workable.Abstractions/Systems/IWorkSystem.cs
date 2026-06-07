@@ -25,8 +25,6 @@ public interface IWorkSystem : IAsyncDisposable
 
     WorkSystemAccessSummary DescribeAccess(WorkRequestContext requestContext);
 
-    bool CanConnect(WorkRequestContext requestContext);
-
     IWorkSystemSession CreateSession(WorkRequestContext requestContext);
 
     Task Start(

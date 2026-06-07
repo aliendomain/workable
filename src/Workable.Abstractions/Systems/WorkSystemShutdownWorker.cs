@@ -2,7 +2,6 @@ namespace Workable;
 
 public sealed record WorkSystemShutdownWorker(
     WorkerId Id,
-    WorkDefinitionId DefinitionId,
     string DefinitionName,
     string DefinitionCategory,
     WorkerState State,
@@ -13,7 +12,6 @@ public sealed record WorkSystemShutdownWorker(
     public static WorkSystemShutdownWorker From(WorkerOverviewItem worker)
         => new(
             worker.Id,
-            worker.DefinitionId,
             worker.DefinitionName,
             worker.Category,
             worker.State,
@@ -22,7 +20,6 @@ public sealed record WorkSystemShutdownWorker(
     public static WorkSystemShutdownWorker From(WorkerSnapshot worker)
         => new(
             worker.Id,
-            worker.DefinitionId,
             worker.DefinitionName,
             worker.DefinitionCategory,
             worker.State,

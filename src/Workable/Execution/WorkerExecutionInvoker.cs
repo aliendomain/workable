@@ -83,7 +83,7 @@ internal sealed class WorkerExecutionInvoker(
             workSystemName,
             worker.Id,
             worker.Work.Definition,
-            worker.Origin,
+            worker.RequestContext,
             worker.Options,
             worker.Configuration,
             () => worker.InterruptionReason,

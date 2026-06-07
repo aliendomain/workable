@@ -28,7 +28,7 @@ public sealed class BaselineReadModelPublishBenchmarks
     public async Task<WorkerQueryResult> FlushSingleWorkerUpdateIntoSnapshot()
     {
         await this.fixture.Session.Queue.Enqueue(
-            this.fixture.Definitions[0].Id,
+            this.fixture.Definitions[0].Name,
             WorkableBenchmarkSystem.CreateInput(this.nextWorkerIndex++));
         return await this.fixture.Session.Query.Workers(this.flushCriteria);
     }

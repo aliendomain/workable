@@ -5,20 +5,6 @@ internal sealed class SessionWorkQueueService(
     WorkRequestContext requestContext) : IWorkQueueService
 {
     public Task<IWorkerHandle> Enqueue(
-        WorkDefinitionId definitionId,
-        WorkInput? input = null,
-        WorkerOptions? options = null,
-        CancellationToken cancellationToken = default)
-        => inner.Enqueue(definitionId, input, options, requestContext, cancellationToken);
-
-    public Task<IWorkerHandle> Enqueue<TInput>(
-        WorkDefinitionId definitionId,
-        TInput input,
-        WorkerOptions? options = null,
-        CancellationToken cancellationToken = default)
-        => inner.Enqueue(definitionId, ToWorkInput(input), options, requestContext, cancellationToken);
-
-    public Task<IWorkerHandle> Enqueue(
         string name,
         WorkInput? input = null,
         WorkerOptions? options = null,

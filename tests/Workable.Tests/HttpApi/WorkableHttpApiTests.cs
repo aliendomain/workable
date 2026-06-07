@@ -55,21 +55,20 @@ public sealed class WorkableHttpApiTests
     }
 
     [Fact]
-    public async Task HttpApiCanQueueByDefinitionId()
+    public async Task HttpApiCanQueueByName()
     {
-        var definition = WorkDefinition.Create("http.by-id");
+        var definition = WorkDefinition.Create("http.by-name");
         var (system, http) = CreateHost(definition, (context, input, cancellationToken) =>
             Task.FromResult(WorkExecutionResult.Success(input is null ? WorkOutput.Empty : WorkOutput.FromData(input))));
         await system.Start();
 
-        using var input = JsonDocument.Parse("""{"id":"by-id"}""");
+        using var input = JsonDocument.Parse("""{"id":"by-name"}""");
         var result = await http.Queue.Enqueue(Direct(system),
-            definition.Id,
+            definition.Name,
             new WorkableHttpWorkRequest(input.RootElement, WorkableHttpCompletion.WaitForCompletion));
 
         Assert.Equal(WorkableHttpWorkStatus.Completed, result.Status);
-        Assert.Equal(definition.Id, result.QueueOutcome.DefinitionId);
-        Assert.Equal("""{"id":"by-id"}""", result.Output?.Json);
+        Assert.Equal("""{"id":"by-name"}""", result.Output?.Json);
     }
 
     [Fact]
@@ -110,7 +109,7 @@ public sealed class WorkableHttpApiTests
             "dotnet.only",
             configuration: WorkConfiguration.Default with
             {
-                Invocation = WorkInvocationConfiguration.Allow(WorkInvocationChannel.DotNet),
+                Invocation = WorkInvocationConfiguration.Allow(WorkInvocationChannel.InProcess),
             });
         var (system, http) = CreateHost(definition, SuccessfulWork);
         await system.Start();
@@ -128,7 +127,7 @@ public sealed class WorkableHttpApiTests
             "dotnet.visible",
             configuration: WorkConfiguration.Default with
             {
-                Invocation = WorkInvocationConfiguration.Allow(WorkInvocationChannel.DotNet),
+                Invocation = WorkInvocationConfiguration.Allow(WorkInvocationChannel.InProcess),
             });
         var (system, http) = CreateHost(definition, SuccessfulWork);
         await system.Start();
@@ -137,7 +136,7 @@ public sealed class WorkableHttpApiTests
         var listed = Assert.Single(definitions);
 
         Assert.Equal("dotnet.visible", listed.Name);
-        Assert.Contains(WorkInvocationChannel.DotNet, listed.Configuration.Invocation.AllowedChannels);
+        Assert.Contains(WorkInvocationChannel.InProcess, listed.Configuration.Invocation.AllowedChannels);
         Assert.DoesNotContain(WorkInvocationChannel.HttpApi, listed.Configuration.Invocation.AllowedChannels);
     }
 
@@ -222,7 +221,6 @@ public sealed class WorkableHttpApiTests
         var worker = await http.Query.Worker(Direct(system), workerId);
         var workers = await http.Query.Workers(Direct(system), new WorkerCriteria(Identifier: new WorkIdentifier("batch", "1")));
         var byName = await http.Query.WorkInfo(Direct(system), "http.query.one");
-        var byId = await http.Query.WorkInfo(Direct(system), byName?.Definition.Id ?? throw new InvalidOperationException("Expected work info."));
         var definitions = await http.Query.WorkDefinitions(Direct(system), new WorkDefinitionCriteria(Category: "Http"));
         var summary = await http.Query.WorkerStatusSummary(Direct(system), new WorkerCriteria(DefinitionName: "http.query.one"));
         var systemSummary = await http.Query.WorkerStatusSummary(Direct(system));
@@ -232,7 +230,6 @@ public sealed class WorkableHttpApiTests
         Assert.NotNull(byName);
         var requiredByName = byName;
         Assert.Equal("http.query.one", requiredByName.Definition.Name);
-        Assert.Equal(requiredByName.Definition.Id, byId?.Definition.Id);
         Assert.Equal(2, definitions.Count);
         Assert.Equal(1, summary.Total);
         Assert.Equal(1, summary.Counts[WorkerState.Completed]);
@@ -1187,13 +1184,13 @@ public sealed class WorkableHttpApiTests
         var session = Direct(system);
 
         var outcome = await http.Catalog.ReconfigureDefinition(session,
-            definition.Id,
+            definition.Name,
             new WorkableHttpDefinitionReconfigurationRequest(
                 definition.Revision,
                 new WorkDefinitionReconfiguration(
                     DefaultOptions: new WorkerOptions(ProfilingEnabled: true))));
 
-        var handle = await Direct(system).Queue.Enqueue(definition.Id);
+        var handle = await Direct(system).Queue.Enqueue(definition.Name);
         var worker = await Direct(system).Query.Worker(handle.WorkerId ?? throw new InvalidOperationException("Expected worker id."));
 
         Assert.True(outcome.IsAccepted);
@@ -1212,7 +1209,7 @@ public sealed class WorkableHttpApiTests
         var definition = Direct(system).Catalog.Definitions.Single(definition => definition.Name == "http.route.case");
 
         var response = await client.PostAsJsonAsync(
-            $"/workable/definitions/{definition.Id.Value:D}/reconfigure",
+            $"/workable/definitions/{definition.Name}/reconfigure",
             new WorkableHttpDefinitionReconfigurationRequest(
                 definition.Revision,
                 new WorkDefinitionReconfiguration(
@@ -1223,7 +1220,7 @@ public sealed class WorkableHttpApiTests
 
         Assert.Equal("Accepted", json["status"]?.GetValue<string>());
         Assert.Equal(1, json["definition"]?["revision"]?.GetValue<int>());
-        Assert.True(Direct(system).Catalog.TryGet(definition.Id, out var updated));
+        Assert.True(Direct(system).Catalog.TryGet(definition.Name, out var updated));
         Assert.True(updated.DefaultOptions.ProfilingEnabled);
     }
 
@@ -1236,12 +1233,12 @@ public sealed class WorkableHttpApiTests
         var definition = Direct(system).Catalog.Definitions.Single(definition => definition.Name == "http.route.case");
 
         var first = await client.PostAsJsonAsync(
-            $"/workable/definitions/{definition.Id.Value:D}/reconfigure",
+            $"/workable/definitions/{definition.Name}/reconfigure",
             new WorkableHttpDefinitionReconfigurationRequest(
                 definition.Revision,
                 new WorkDefinitionReconfiguration(DefaultOptions: new WorkerOptions(ProfilingEnabled: true))));
         var second = await client.PostAsJsonAsync(
-            $"/workable/definitions/{definition.Id.Value:D}/reconfigure",
+            $"/workable/definitions/{definition.Name}/reconfigure",
             new WorkableHttpDefinitionReconfigurationRequest(
                 definition.Revision,
                 new WorkDefinitionReconfiguration(DefaultOptions: new WorkerOptions(ProfilingEnabled: false))));
@@ -1267,7 +1264,7 @@ public sealed class WorkableHttpApiTests
         var client = host.GetTestClient();
         var system = host.Services.GetRequiredService<IWorkSystemRegistry>().Default;
         Assert.True(Direct(system).Catalog.TryGet("http.route.case", out var definition));
-        await using var queuedSubscription = Direct(system).Events.Subscribe(new WorkEventFilter(DefinitionId: definition.Id, EventType: "worker.queued"));
+        await using var queuedSubscription = Direct(system).Events.Subscribe(new WorkEventFilter(DefinitionName: definition.Name, EventType: "worker.queued"));
         await using var queuedReader = queuedSubscription.Read().GetAsyncEnumerator();
 
         var queueResponse = await client.PostAsJsonAsync(
@@ -1275,6 +1272,7 @@ public sealed class WorkableHttpApiTests
             new
             {
                 completion = "returnafteraccepted",
+                description = "Queue this worker from the HTTP API test.",
             });
         queueResponse.EnsureSuccessStatusCode();
         var queueJson = JsonNode.Parse(await queueResponse.Content.ReadAsStringAsync())
@@ -1290,13 +1288,14 @@ public sealed class WorkableHttpApiTests
         Assert.Equal(WorkInvocationChannel.HttpApi, worker.Origin.Channel);
         Assert.Equal("user-123", worker.Origin.Actor.Id);
         Assert.Equal("greya@example.test", worker.Origin.Actor.Email);
-        Assert.Contains("/WORKABLE/WORK/http.route.case", worker.Origin.Url, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("/WORKABLE/WORK/http.route.case", worker.RequestContext.Url, StringComparison.OrdinalIgnoreCase);
 
         var actionResponse = await client.PostAsJsonAsync(
             $"/WORKABLE/WORKERS/{workerId:D}/ACTIONS/cancel",
             new
             {
                 revision = worker.Revision,
+                description = "Cancel this worker from the HTTP API test.",
             });
         actionResponse.EnsureSuccessStatusCode();
         var summaryResponse = await client.GetAsync("/workable/workers/status-summary");
@@ -1315,10 +1314,12 @@ public sealed class WorkableHttpApiTests
         Assert.Equal("HttpApi", queuedOrigin.GetProperty("channel").GetString());
         Assert.Equal("user-123", queuedOrigin.GetProperty("actor").GetProperty("id").GetString());
         Assert.Equal("greya@example.test", queuedOrigin.GetProperty("actor").GetProperty("email").GetString());
+        Assert.Equal("Queue this worker from the HTTP API test.", queuedOrigin.GetProperty("description").GetString());
         Assert.Contains("/WORKABLE/WORK/http.route.case", queuedOrigin.GetProperty("url").GetString(), StringComparison.OrdinalIgnoreCase);
         Assert.Equal("HttpApi", actionOrigin.GetProperty("channel").GetString());
         Assert.Equal("user-123", actionOrigin.GetProperty("actor").GetProperty("id").GetString());
         Assert.Equal("greya@example.test", actionOrigin.GetProperty("actor").GetProperty("email").GetString());
+        Assert.Equal("Cancel this worker from the HTTP API test.", actionOrigin.GetProperty("description").GetString());
         Assert.Contains("/WORKABLE/WORKERS/", actionOrigin.GetProperty("url").GetString(), StringComparison.OrdinalIgnoreCase);
     }
 
@@ -1337,6 +1338,7 @@ public sealed class WorkableHttpApiTests
             ?? throw new InvalidOperationException("Expected queue request schema."))
             ?? throw new InvalidOperationException("Expected queue request schema JSON.");
         Assert.NotNull(schema["properties"]?["completion"]);
+        Assert.NotNull(schema["properties"]?["description"]);
         Assert.NotNull(schema["properties"]?["options"]);
         Assert.False(json["capabilities"]?["persistentCoordinationAvailable"]?.GetValue<bool>());
         var queue = json["tabs"]?.AsArray().FirstOrDefault(tab => tab?["id"]?.GetValue<string>() == "queue")
@@ -1349,6 +1351,7 @@ public sealed class WorkableHttpApiTests
             ?? throw new InvalidOperationException("Expected coordination fields.");
         var schemaJson = schema.ToJsonString();
 
+        Assert.Contains(queueFields, field => field?["path"]?.GetValue<string>() == "description");
         Assert.Contains(queueFields, field => field?["path"]?.GetValue<string>() == "subjectId.type");
         Assert.Contains(queueFields, field => field?["path"]?.GetValue<string>() == "subjectId.value");
         Assert.DoesNotContain(fields, field => field?["path"]?.GetValue<string>() == "subjectId.type");
@@ -1418,7 +1421,7 @@ public sealed class WorkableHttpApiTests
     }
 
     [Fact]
-    public async Task MappedHttpQueueByDefinitionIdRecordsHttpOrigin()
+    public async Task MappedHttpQueueByNameRecordsHttpOrigin()
     {
         using var host = await CreateHttpHost();
         var client = host.GetTestClient();
@@ -1426,7 +1429,7 @@ public sealed class WorkableHttpApiTests
         Assert.True(Direct(system).Catalog.TryGet("http.route.case", out var definition));
 
         var response = await client.PostAsJsonAsync(
-            $"/workable/definitions/{definition.Id.Value:D}/queue",
+            $"/workable/work/{definition.Name}",
             new
             {
                 completion = "returnAfterAccepted",
@@ -1443,7 +1446,7 @@ public sealed class WorkableHttpApiTests
         Assert.Equal(WorkInvocationChannel.HttpApi, worker.Origin.Channel);
         Assert.Equal("user-123", worker.Origin.Actor.Id);
         Assert.Equal("greya@example.test", worker.Origin.Actor.Email);
-        Assert.Contains($"/workable/definitions/{definition.Id.Value:D}/queue", worker.Origin.Url, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains($"/workable/work/{definition.Name}", worker.RequestContext.Url, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -1464,7 +1467,7 @@ public sealed class WorkableHttpApiTests
             ?? throw new InvalidOperationException("Expected invocation channels.");
         var jsonText = dotNetOnly.ToJsonString();
 
-        Assert.Contains(channels, channel => channel?.GetValue<string>() == "DotNet");
+        Assert.Contains(channels, channel => channel?.GetValue<string>() == "InProcess");
         Assert.DoesNotContain(channels, channel => channel?.GetValue<string>() == "HttpApi");
         Assert.DoesNotContain("usesPersistentStorage", jsonText, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("isIdempotencyEnabled", jsonText, StringComparison.OrdinalIgnoreCase);
@@ -1522,7 +1525,7 @@ public sealed class WorkableHttpApiTests
         var system = host.Services.GetRequiredService<IWorkSystemRegistry>().Default;
         var definition = Direct(system).Catalog.Definitions.Single(definition => definition.Name == "billing.invoice.generate");
 
-        var json = await GetJson(client, $"/workable/definitions/{definition.Id.Value:D}");
+        var json = await GetJson(client, $"/workable/definitions/{definition.Name}");
 
         Assert.Equal("billing.invoice.generate", json["name"]?.GetValue<string>());
         Assert.NotNull(json["configuration"]);
@@ -1530,7 +1533,7 @@ public sealed class WorkableHttpApiTests
     }
 
     [Fact]
-    public async Task MappedHttpWorkInfoCanBeReadByWorkNameOrId()
+    public async Task MappedHttpWorkInfoCanBeReadByWorkName()
     {
         using var host = await CreateHttpHost();
         var client = host.GetTestClient();
@@ -1538,19 +1541,14 @@ public sealed class WorkableHttpApiTests
         Assert.True(Direct(system).Catalog.TryGet("http.route.case", out var definition));
 
         var byName = await client.GetAsync("/workable/work/http.route.case/info");
-        var byId = await client.GetAsync($"/workable/work/id/{definition.Id.Value:D}/info");
 
         byName.EnsureSuccessStatusCode();
-        byId.EnsureSuccessStatusCode();
         var byNameJson = JsonNode.Parse(await byName.Content.ReadAsStringAsync())
-            ?? throw new InvalidOperationException("Expected JSON response.");
-        var byIdJson = JsonNode.Parse(await byId.Content.ReadAsStringAsync())
             ?? throw new InvalidOperationException("Expected JSON response.");
 
         Assert.Equal("http.route.case", byNameJson["definition"]?["name"]?.GetValue<string>());
-        Assert.Equal("http.route.case", byIdJson["definition"]?["name"]?.GetValue<string>());
         Assert.NotNull(byNameJson["queueRequestSchema"]?["schema"]?["jsonSchema"]);
-        Assert.NotNull(byIdJson["queueRequestSchema"]?["tabs"]);
+        Assert.NotNull(byNameJson["queueRequestSchema"]?["tabs"]);
     }
 
     [Fact]
@@ -1614,7 +1612,7 @@ public sealed class WorkableHttpApiTests
         var systems = body["systems"]?.AsArray()
             ?? throw new InvalidOperationException("Expected systems array.");
         var system = Assert.Single(systems);
-        Assert.True(system?["access"]?["canConnect"]?.GetValue<bool>() == true);
+        Assert.NotNull(system?["access"]);
     }
 
     [Fact]
@@ -1625,7 +1623,6 @@ public sealed class WorkableHttpApiTests
 
         var body = await GetJson(client, "/workable/debug/realtime");
 
-        Assert.NotNull(body["systemId"]);
         Assert.NotNull(body["eventSubscriptions"]);
         Assert.NotNull(body["viewSubscriptions"]);
         Assert.NotNull(body["workerOverviewSubscriptions"]);
@@ -1679,6 +1676,7 @@ public sealed class WorkableHttpApiTests
             "/workable/work/http.route.case",
             new
             {
+                description = "Queue this worker from the HTTP API test.",
                 completion = "returnAfterAccepted",
             });
         queueResponse.EnsureSuccessStatusCode();
@@ -1697,6 +1695,7 @@ public sealed class WorkableHttpApiTests
             new
             {
                 revision = worker.Revision,
+                description = "Reconfigure this worker from the HTTP API test.",
                 changes = new
                 {
                     profilingEnabled = true,
@@ -1711,6 +1710,7 @@ public sealed class WorkableHttpApiTests
         Assert.Equal("HttpApi", origin.GetProperty("channel").GetString());
         Assert.Equal("user-123", origin.GetProperty("actor").GetProperty("id").GetString());
         Assert.Equal("greya@example.test", origin.GetProperty("actor").GetProperty("email").GetString());
+        Assert.Equal("Reconfigure this worker from the HTTP API test.", origin.GetProperty("description").GetString());
         Assert.Contains("/workable/workers/", origin.GetProperty("url").GetString(), StringComparison.OrdinalIgnoreCase);
     }
 
@@ -1746,7 +1746,7 @@ public sealed class WorkableHttpApiTests
 
         Assert.Equal("http.named", worker.DefinitionName);
         Assert.Equal(WorkInvocationChannel.HttpApi, worker.Origin.Channel);
-        Assert.Contains("/workable/systems/background/work/http.named", worker.Origin.Url, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("/workable/systems/background/work/http.named", worker.RequestContext.Url, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -1771,8 +1771,6 @@ public sealed class WorkableHttpApiTests
             isDefault.GetValue<bool>() &&
             candidate["capabilities"]?["persistentCoordinationAvailable"] is JsonValue persistentCoordinationAvailable &&
             !persistentCoordinationAvailable.GetValue<bool>() &&
-            candidate["access"]?["canConnect"] is JsonValue canConnect &&
-            canConnect.GetValue<bool>() &&
             candidate["access"]?["isSystemAdministrator"] is JsonValue isSystemAdministrator &&
             isSystemAdministrator.GetValue<bool>() &&
             candidate["access"]?["isWorkAdministrator"] is JsonValue isWorkAdministrator &&
@@ -1801,9 +1799,9 @@ public sealed class WorkableHttpApiTests
     }
 
     [Fact]
-    public async Task MappedHttpRouteFiltersSystemsWithoutConnectPermission()
+    public async Task MappedHttpRouteFiltersSystemsWithoutAnyAccess()
     {
-        using var host = await CreateMultiSystemHttpHost(TransportAuthorizationTestSupport.ReadGroups);
+        using var host = await CreateMultiSystemHttpHost(Array.Empty<string>());
         var client = host.GetTestClient();
 
         var response = await client.GetAsync("/workable/host");
@@ -1817,10 +1815,9 @@ public sealed class WorkableHttpApiTests
     }
 
     [Fact]
-    public async Task MappedHttpNamedSystemRoutesRequireConnectPermission()
+    public async Task MappedHttpNamedSystemRoutesRequireAnySystemAccess()
     {
-        using var host = await CreateMultiSystemHttpHost(
-            TransportAuthorizationTestSupport.ReadGroups.Concat(TransportAuthorizationTestSupport.OperateGroups));
+        using var host = await CreateMultiSystemHttpHost(Array.Empty<string>());
         var client = host.GetTestClient();
 
         var definitionsResponse = await client.GetAsync("/workable/systems/background/definitions");
@@ -1834,15 +1831,15 @@ public sealed class WorkableHttpApiTests
         var queueJson = await queueResponse.Content.ReadAsStringAsync();
 
         Assert.Equal(HttpStatusCode.Forbidden, definitionsResponse.StatusCode);
-        Assert.Contains("workable.http.system.connect_denied", definitionsJson);
+        Assert.Contains("workable.http.system.access_denied", definitionsJson);
         Assert.Equal(HttpStatusCode.Forbidden, queueResponse.StatusCode);
-        Assert.Contains("workable.http.system.connect_denied", queueJson);
+        Assert.Contains("workable.http.system.access_denied", queueJson);
     }
 
     [Fact]
-    public async Task MappedHttpRouteIncludesConnectOnlyAccessSummary()
+    public async Task MappedHttpRouteIncludesReadOnlyAccessSummary()
     {
-        using var host = await CreateMultiSystemHttpHost(TransportAuthorizationTestSupport.ConnectGroups);
+        using var host = await CreateMultiSystemHttpHost(TransportAuthorizationTestSupport.ReadGroups);
         var client = host.GetTestClient();
 
         var response = await client.GetAsync("/workable/host");
@@ -1858,7 +1855,6 @@ public sealed class WorkableHttpApiTests
             var access = system?["access"]?.AsObject()
                 ?? throw new InvalidOperationException("Expected access object.");
 
-            Assert.True(access["canConnect"]?.GetValue<bool>());
             Assert.False(access["isSystemAdministrator"]?.GetValue<bool>());
             Assert.False(access["isWorkAdministrator"]?.GetValue<bool>());
             Assert.False(access["canViewDiagnostics"]?.GetValue<bool>());
@@ -1866,7 +1862,7 @@ public sealed class WorkableHttpApiTests
             Assert.False(access["canReadAllWork"]?.GetValue<bool>());
             Assert.False(access["canOperateAllWork"]?.GetValue<bool>());
             Assert.Equal(1, access["totalDefinitionCount"]?.GetValue<int>());
-            Assert.Equal(0, access["readableDefinitionCount"]?.GetValue<int>());
+            Assert.Equal(1, access["readableDefinitionCount"]?.GetValue<int>());
             Assert.Equal(0, access["operableDefinitionCount"]?.GetValue<int>());
         });
     }
@@ -1904,7 +1900,6 @@ public sealed class WorkableHttpApiTests
         var idempotency = json["idempotency"]
             ?? throw new InvalidOperationException("Expected idempotency diagnostics.");
 
-        Assert.Equal(system.Id.Value.ToString(), json["id"]?["value"]?.GetValue<string>());
         Assert.Equal("Started", json["state"]?.GetValue<string>());
         Assert.Equal(0, queue["rejectedWorkCount"]?.GetValue<long>());
         Assert.Null(queue["lastRejectedAt"]);
@@ -2053,6 +2048,7 @@ public sealed class WorkableHttpApiTests
             new
             {
                 category = "Billing",
+                description = "Cancel all billing workers from the HTTP API test.",
             });
         actionResponse.EnsureSuccessStatusCode();
         var actionJson = JsonNode.Parse(await actionResponse.Content.ReadAsStringAsync())
@@ -2069,7 +2065,8 @@ public sealed class WorkableHttpApiTests
         Assert.Equal(WorkerState.Canceled, billing.State);
         Assert.Equal(WorkerState.Queued, email.State);
         Assert.Equal(WorkInvocationChannel.HttpApi, billing.ActionHistory[^1].Origin.Channel);
-        Assert.Contains("/workable/workers/actions/cancel", billing.ActionHistory[^1].Origin.Url, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal("Cancel all billing workers from the HTTP API test.", billing.ActionHistory[^1].RequestContext.Description);
+        Assert.Contains("/workable/workers/actions/cancel", billing.ActionHistory[^1].RequestContext.Url, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -2138,7 +2135,7 @@ public sealed class WorkableHttpApiTests
             ?? throw new InvalidOperationException("Expected worker.");
         Assert.Equal(WorkerState.Canceled, canceled.State);
         Assert.Equal(WorkInvocationChannel.HttpApi, canceled.ActionHistory[^1].Origin.Channel);
-        Assert.Contains("/workable/systems/background/workers/", canceled.ActionHistory[^1].Origin.Url, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("/workable/systems/background/workers/", canceled.ActionHistory[^1].RequestContext.Url, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -2482,7 +2479,7 @@ public sealed class WorkableHttpApiTests
                                 "http.discovery.dotnet-only",
                                 configuration: WorkConfiguration.Default with
                                 {
-                                    Invocation = WorkInvocationConfiguration.Allow(WorkInvocationChannel.DotNet),
+                                    Invocation = WorkInvocationConfiguration.Allow(WorkInvocationChannel.InProcess),
                                 }),
                             SuccessfulWork);
                     });
@@ -2902,3 +2899,6 @@ public sealed class WorkableHttpApiTests
         }
     }
 }
+
+
+

@@ -1,5 +1,6 @@
 using System.Security.Claims;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.TestHost;
@@ -38,7 +39,6 @@ public sealed class WorkableMcpTests
         Assert.Equal("cache.refresh", descriptor.Name);
         Assert.Equal("Refreshes cached data.", descriptor.Description);
         Assert.Equal("Cache", descriptor.Category);
-        Assert.Equal(definition.Id, descriptor.DefinitionId);
         Assert.Equal(definition.InputSchema.JsonSchema, descriptor.InputSchemaJson);
         Assert.Equal(definition.OutputSchema.JsonSchema, descriptor.OutputSchemaJson);
         Assert.False(descriptor.UsesFallbackInputSchema);
@@ -196,6 +196,21 @@ public sealed class WorkableMcpTests
             tool.Kind == WorkableMcpServerToolKind.Action &&
             tool.ToolName == "workable_reconfigure_work_definition" &&
             tool.Description?.Contains("future queued workers", StringComparison.OrdinalIgnoreCase) == true);
+
+        var workTool = Assert.Single(tools.Where(tool => tool.ToolName == "workable_work_cache_refresh"));
+        var workSchema = JsonNode.Parse(workTool.InputSchemaJson)
+            ?? throw new InvalidOperationException("Expected work tool schema JSON.");
+        Assert.NotNull(workSchema["oneOf"]?[1]?["properties"]?["description"]);
+
+        var actionTool = Assert.Single(tools.Where(tool => tool.ToolName == "workable_cancel_worker"));
+        var actionSchema = JsonNode.Parse(actionTool.InputSchemaJson)
+            ?? throw new InvalidOperationException("Expected action tool schema JSON.");
+        Assert.NotNull(actionSchema["properties"]?["description"]);
+
+        var reconfigureTool = Assert.Single(tools.Where(tool => tool.ToolName == "workable_reconfigure_work_definition"));
+        var reconfigureSchema = JsonNode.Parse(reconfigureTool.InputSchemaJson)
+            ?? throw new InvalidOperationException("Expected reconfigure tool schema JSON.");
+        Assert.NotNull(reconfigureSchema["properties"]?["description"]);
     }
 
     [Fact]
@@ -230,17 +245,22 @@ public sealed class WorkableMcpTests
         var router = provider.GetRequiredService<WorkableMcpToolRouter>();
         await system.Start();
 
-        using var document = JsonDocument.Parse("""{"message":"hello"}""");
+        using var document = JsonDocument.Parse("""{"input":{"message":"hello"},"description":"Queue this work from the MCP router test."}""");
         var result = await router.CallTool(
             "workable_work_echo_message",
             document.RootElement,
             options: null,
             systemName: null,
             requestContext: CreateMcpRequestContext("Invoke MCP work tool."));
+        var session = CreateMcpSession(system, "Inspect MCP work tool invocation.");
+        var workers = await session.Query.Workers(new WorkerCriteria(DefinitionName: "echo.message"));
+        var worker = await session.Query.Worker(Assert.Single(workers.Workers).Id)
+            ?? throw new InvalidOperationException("Expected worker.");
 
         Assert.False(result.IsError);
         Assert.Contains("\"status\":\"Completed\"", result.Json);
         Assert.Contains("\"json\":\"{\\u0022message\\u0022:\\u0022hello\\u0022}\"", result.Json);
+        Assert.Equal("Queue this work from the MCP router test.", worker.RequestContext.Description);
     }
 
     [Fact]
@@ -300,11 +320,10 @@ public sealed class WorkableMcpTests
     }
 
     [Fact]
-    public async Task McpRouterNamedSystemRequiresConnectPermission()
+    public async Task McpRouterNamedSystemRequiresAnySystemAccess()
     {
         await using var provider = new ServiceCollection()
-            .AddTransportTestAuthorization(
-                TransportAuthorizationTestSupport.ReadGroups.Concat(TransportAuthorizationTestSupport.OperateGroups))
+            .AddTransportTestAuthorization(Array.Empty<string>())
             .AddWorkableSystem("remote", builder =>
             {
                 builder.RequireAuthorization();
@@ -328,18 +347,18 @@ public sealed class WorkableMcpTests
             systemName: "remote",
             requestContext: requestContext);
 
-        Assert.Equal(WorkSystemPermission.Connect, toolsException.Permission);
+        Assert.Equal(WorkSystemPermission.AccessSystem, toolsException.Permission);
         Assert.True(result.IsError);
-        Assert.Contains("connect permission", result.Json, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("system-level access", result.Json, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
     public async Task MappedHttpMcpServerListsToolsAndCallsWorkThroughHttpTransport()
     {
-        var observedOrigin = new TaskCompletionSource<WorkOrigin>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var observedRequestContext = new TaskCompletionSource<WorkRequestContext>(TaskCreationOptions.RunContinuationsAsynchronously);
         using var host = await CreateMcpHttpHost(execute: (context, input, cancellationToken) =>
         {
-            observedOrigin.TrySetResult(context.Origin);
+            observedRequestContext.TrySetResult(context.RequestContext);
             return Task.FromResult(WorkExecutionResult.Success(input is null ? WorkOutput.Empty : WorkOutput.FromData(input)));
         });
         var httpClient = host.GetTestClient();
@@ -379,11 +398,11 @@ public sealed class WorkableMcpTests
         Assert.Equal(WorkInvocationChannel.Mcp, worker.Origin.Channel);
         Assert.Equal("mcp-user-1", worker.Origin.Actor.Id);
         Assert.Equal("mcp.user@example.com", worker.Origin.Actor.Email);
-        Assert.Equal("/workable/mcp", worker.Origin.Url);
+        Assert.Equal("/workable/mcp", worker.RequestContext.Url);
 
-        var executionOrigin = await observedOrigin.Task.WaitAsync(TimeSpan.FromSeconds(1));
-        Assert.Equal(WorkInvocationChannel.Mcp, executionOrigin.Channel);
-        Assert.Equal("mcp-user-1", executionOrigin.Actor.Id);
+        var executionRequestContext = await observedRequestContext.Task.WaitAsync(TimeSpan.FromSeconds(1));
+        Assert.Equal(WorkInvocationChannel.Mcp, executionRequestContext.Channel);
+        Assert.Equal("mcp-user-1", executionRequestContext.Actor.Id);
     }
 
     [Fact]
@@ -422,14 +441,14 @@ public sealed class WorkableMcpTests
 
         Assert.False(result.IsError);
         Assert.Equal(WorkInvocationChannel.Mcp, worker.Origin.Channel);
-        Assert.Equal("/workable/systems/remote/mcp", worker.Origin.Url);
+        Assert.Equal("/workable/systems/remote/mcp", worker.RequestContext.Url);
     }
 
     [Fact]
-    public async Task MappedHttpMcpNamedEndpointRequiresConnectPermission()
+    public async Task MappedHttpMcpNamedEndpointRequiresAnySystemAccess()
     {
         using var host = await CreateNamedMcpHttpHost(
-            groups: TransportAuthorizationTestSupport.ReadGroups.Concat(TransportAuthorizationTestSupport.OperateGroups));
+            groups: Array.Empty<string>());
         var httpClient = host.GetTestClient();
         var transport = new HttpClientTransport(
             new HttpClientTransportOptions
@@ -449,7 +468,7 @@ public sealed class WorkableMcpTests
 
         Assert.Empty(tools);
         Assert.True(result.IsError);
-        Assert.Contains("connect permission", json, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("system-level access", json, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -487,6 +506,7 @@ public sealed class WorkableMcpTests
             {
                 ["workerId"] = worker.Id.Value.ToString("D"),
                 ["revision"] = worker.Revision,
+                ["description"] = "Cancel this worker from the MCP HTTP transport test.",
             });
 
         await WaitForReadModel(remote);
@@ -498,7 +518,7 @@ public sealed class WorkableMcpTests
         Assert.Equal(WorkerState.Canceled, updated.State);
         Assert.Equal(WorkAction.Cancel, history.Action);
         Assert.Equal(WorkInvocationChannel.Mcp, history.Origin.Channel);
-        Assert.Equal("/workable/systems/remote/mcp", history.Origin.Url);
+        Assert.Equal("/workable/systems/remote/mcp", history.RequestContext.Url);
     }
 
     [Fact]
@@ -593,6 +613,7 @@ public sealed class WorkableMcpTests
             {
                 ["workerId"] = worker.Id.Value.ToString("D"),
                 ["revision"] = worker.Revision,
+                ["description"] = "Cancel this worker from the MCP HTTP transport test.",
             });
 
         await WaitForReadModel(system);
@@ -607,6 +628,7 @@ public sealed class WorkableMcpTests
         Assert.Equal(WorkAction.Cancel, history.Action);
         Assert.Equal(WorkInvocationChannel.Mcp, history.Origin.Channel);
         Assert.Equal("mcp-user-1", history.Origin.Actor.Id);
+        Assert.Equal("Cancel this worker from the MCP HTTP transport test.", history.RequestContext.Description);
     }
 
     [Fact]
@@ -866,7 +888,8 @@ public sealed class WorkableMcpTests
 
         using var arguments = JsonDocument.Parse($$"""
             {
-              "definitionId": "{{definition.Id.Value:D}}",
+              "description": "Reconfigure defaults from the MCP tool test.",
+              "name": "{{definition.Name}}",
               "revision": {{definition.Revision}},
               "defaultOptions": {
                 "profilingEnabled": true
@@ -880,7 +903,7 @@ public sealed class WorkableMcpTests
             systemName: null,
             requestContext: CreateMcpRequestContext("Invoke MCP action tool."));
         var session = CreateMcpSession(system, "Inspect reconfigured MCP definition.");
-        var handle = await session.Queue.Enqueue(definition.Id);
+        var handle = await session.Queue.Enqueue(definition.Name);
         var worker = await session.Query.Worker(handle.WorkerId ?? throw new InvalidOperationException("Expected worker."));
 
         Assert.False(result.IsError);
@@ -1210,8 +1233,9 @@ public sealed class WorkableMcpTests
         => WorkConfiguration.Default with
         {
             Invocation = WorkInvocationConfiguration.Allow(
-                WorkInvocationChannel.DotNet,
+                WorkInvocationChannel.InProcess,
                 WorkInvocationChannel.HttpApi,
                 WorkInvocationChannel.Mcp),
         };
 }
+

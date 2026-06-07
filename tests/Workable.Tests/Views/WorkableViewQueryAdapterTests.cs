@@ -740,7 +740,7 @@ public sealed class WorkableViewQueryAdapterTests
 
     private static IWorkSystemSession CreateTransportSession(
         IWorkSystem system,
-        WorkInvocationChannel channel = WorkInvocationChannel.DotNet,
+        WorkInvocationChannel channel = WorkInvocationChannel.InProcess,
         WorkActor? actor = null)
         => TransportAuthorizationTestSupport.CreateTransportSession(
             system,

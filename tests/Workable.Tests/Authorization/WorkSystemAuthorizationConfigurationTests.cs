@@ -116,8 +116,8 @@ public sealed class WorkSystemAuthorizationConfigurationTests
         var system = provider.GetRequiredService<IWorkSystem>();
         await system.Start();
         var operatorSession = system.CreateSession(CreateRequestContext("operator"));
-        await operatorSession.Queue.Enqueue(visible.Id);
-        await operatorSession.Queue.Enqueue(hidden.Id);
+        await operatorSession.Queue.Enqueue(visible.Name);
+        await operatorSession.Queue.Enqueue(hidden.Name);
         await TestEventually.Until(async () =>
             (await operatorSession.Query.Workers(new WorkerCriteria(Take: 10))).TotalCount == 2);
 
@@ -125,8 +125,8 @@ public sealed class WorkSystemAuthorizationConfigurationTests
 
         Assert.Equal(visible.Id, Assert.Single(readerSession.Catalog.Definitions).Id);
         Assert.Equal(visible.Id, Assert.Single((await readerSession.Query.WorkDefinitions()).Definitions).Id);
-        Assert.Equal(visible.Id, Assert.Single((await readerSession.Query.Workers(new WorkerCriteria(Take: 10))).Workers).DefinitionId);
-        Assert.Null(await readerSession.Query.WorkInfo(hidden.Id));
+        Assert.Equal(visible.Name, Assert.Single((await readerSession.Query.Workers(new WorkerCriteria(Take: 10))).Workers).DefinitionName);
+        Assert.Null(await readerSession.Query.WorkInfo(hidden.Name));
     }
 
     [Fact]
@@ -151,8 +151,8 @@ public sealed class WorkSystemAuthorizationConfigurationTests
         await system.Start();
         var session = system.CreateSession(CreateRequestContext("operator"));
 
-        var accepted = await session.Queue.Enqueue(visible.Id);
-        var rejected = await session.Queue.Enqueue(hidden.Id);
+        var accepted = await session.Queue.Enqueue(visible.Name);
+        var rejected = await session.Queue.Enqueue(hidden.Name);
 
         Assert.True(accepted.QueueOutcome.IsAccepted);
         Assert.Equal(WorkQueueStatus.Unauthorized, rejected.QueueOutcome.Status);
@@ -178,7 +178,7 @@ public sealed class WorkSystemAuthorizationConfigurationTests
             .BuildServiceProvider();
         var system = provider.GetRequiredService<IWorkSystem>();
         await system.Start();
-        var queued = await system.CreateSession(CreateRequestContext("operator")).Queue.Enqueue(definition.Id);
+        var queued = await system.CreateSession(CreateRequestContext("operator")).Queue.Enqueue(definition.Name);
         var worker = await system.CreateSession(CreateRequestContext("operator")).Query.Worker(
             queued.WorkerId ?? throw new InvalidOperationException("Expected queued worker."));
 
@@ -247,7 +247,7 @@ public sealed class WorkSystemAuthorizationConfigurationTests
         await system.Start();
 
         var session = system.CreateSession(CreateRequestContext("operator"));
-        var queued = await session.Queue.Enqueue(definition.Id);
+        var queued = await session.Queue.Enqueue(definition.Name);
 
         Assert.Empty(session.Catalog.Definitions);
         Assert.Equal(WorkQueueStatus.Unauthorized, queued.QueueOutcome.Status);
@@ -267,7 +267,7 @@ public sealed class WorkSystemAuthorizationConfigurationTests
         await system.Start();
 
         var session = system.CreateSession(CreateRequestContext("operator"));
-        var queued = await session.Queue.Enqueue(definition.Id);
+        var queued = await session.Queue.Enqueue(definition.Name);
 
         Assert.Single(session.Catalog.Definitions);
         Assert.True(queued.QueueOutcome.IsAccepted);
@@ -295,7 +295,7 @@ public sealed class WorkSystemAuthorizationConfigurationTests
 
         var session = system.CreateSession(CreateRequestContext("operator"));
         var registeredDefinition = Assert.Single(session.Catalog.Definitions);
-        var queued = await session.Queue.Enqueue(definition.Id);
+        var queued = await session.Queue.Enqueue(definition.Name);
 
         Assert.Equal(WorkAuthorizationRegistrationSource.Fluent, registeredDefinition.Authorization.Read.Source);
         Assert.Equal(["explicit.read"], registeredDefinition.Authorization.Read.Groups.OrderBy(group => group).ToArray());
@@ -394,6 +394,30 @@ public sealed class WorkSystemAuthorizationConfigurationTests
     }
 
     [Fact]
+    public void FluentAllowOperateToKnownAuthenticatedUsersSetsOperateAuthorization()
+    {
+        var provider = new ServiceCollection()
+            .AddSingleton<IWorkAuthorizationGroupProvider, ThrowingGroupProvider>()
+            .AddDefaultWorkableSystemForAuthorizationTests(builder => builder
+                .RequireAuthorization(false)
+                .AddWork(
+                    PausedDefinition("allow.known.authenticated.definition"),
+                    SuccessfulWork,
+                    configure: null,
+                    authorize: authorize => authorize.AllowOperateToKnownAuthenticatedUsers()))
+            .BuildServiceProvider();
+        var system = provider.GetRequiredService<IWorkSystem>();
+
+        var definition = Assert.Single(system.Catalog.Definitions);
+
+        Assert.Equal(WorkAuthorizationRegistrationSource.None, definition.Authorization.Read.Source);
+        Assert.Empty(definition.Authorization.Read.Groups);
+        Assert.Equal(WorkAuthorizationRegistrationSource.Fluent, definition.Authorization.Operate.Source);
+        Assert.True(definition.Authorization.Operate.AllowsKnownAuthenticatedUsers);
+        Assert.Empty(definition.Authorization.Operate.Groups);
+    }
+
+    [Fact]
     public void FluentAllowReadAndOperateToGroupsCanBeChained()
     {
         var provider = new ServiceCollection()
@@ -435,7 +459,7 @@ public sealed class WorkSystemAuthorizationConfigurationTests
         await system.Start();
 
         var session = system.CreateSession(CreateRequestContext("work-admin"));
-        var queued = await session.Queue.Enqueue(definition.Id);
+        var queued = await session.Queue.Enqueue(definition.Name);
 
         Assert.Single(session.Catalog.Definitions);
         Assert.True(queued.QueueOutcome.IsAccepted);
@@ -458,29 +482,34 @@ public sealed class WorkSystemAuthorizationConfigurationTests
         await system.Start();
 
         var session = system.CreateSession(CreateRequestContext("system-admin"));
-        var queued = await session.Queue.Enqueue(definition.Id);
+        var queued = await session.Queue.Enqueue(definition.Name);
 
         Assert.Single(session.Catalog.Definitions);
         Assert.Equal(WorkQueueStatus.Unauthorized, queued.QueueOutcome.Status);
     }
 
     [Fact]
-    public void SystemConnectPermissionUsesConfiguredGroups()
+    public void AccessSummaryHasAnyAccessUsesActualSystemOrWorkRights()
     {
         var provider = new ServiceCollection()
             .AddSingleton<IWorkAuthorizationGroupProvider>(new TestGroupProvider(new Dictionary<string, IReadOnlySet<string>>
             {
-                ["connector"] = Groups("system.connect"),
                 ["reader"] = Groups("work.read"),
+                ["diagnostics"] = Groups("system.diagnostics"),
             }))
             .AddDefaultWorkableSystemForAuthorizationTests(builder => builder
-                .ConfigureAuthorization(authorization => authorization.AllowConnectToGroups("system.connect"))
-                .AddWork(WorkDefinition.Create("connect.permission"), SuccessfulWork))
+                .ConfigureAuthorization(authorization => authorization.AllowDiagnosticsToGroups("system.diagnostics"))
+                .AddWork(
+                    WorkDefinition.Create("connect.permission"),
+                    SuccessfulWork,
+                    configure: null,
+                    authorize: authorize => authorize.AllowReadToGroups("work.read")))
             .BuildServiceProvider();
         var system = provider.GetRequiredService<IWorkSystem>();
 
-        Assert.True(system.CanConnect(CreateRequestContext("connector")));
-        Assert.False(system.CanConnect(CreateRequestContext("reader")));
+        Assert.True(system.DescribeAccess(CreateRequestContext("reader")).HasAnyAccess());
+        Assert.True(system.DescribeAccess(CreateRequestContext("diagnostics")).HasAnyAccess());
+        Assert.False(system.DescribeAccess(CreateRequestContext("unknown")).HasAnyAccess());
     }
 
     [Fact]
@@ -524,7 +553,7 @@ public sealed class WorkSystemAuthorizationConfigurationTests
         await system.Start();
         var actor = new WorkActor(Id: "snapshot-user");
         var requestContext = WorkRequestContext.Create(
-            WorkInvocationChannel.DotNet,
+            WorkInvocationChannel.InProcess,
             actor,
             "Authorize with a pre-resolved snapshot.") with
         {
@@ -535,10 +564,56 @@ public sealed class WorkSystemAuthorizationConfigurationTests
         };
 
         var session = system.CreateSession(requestContext);
-        var queued = await session.Queue.Enqueue(definition.Id);
+        var queued = await session.Queue.Enqueue(definition.Name);
 
         Assert.Single(session.Catalog.Definitions);
         Assert.True(queued.QueueOutcome.IsAccepted);
+    }
+
+    [Fact]
+    public async Task KnownAuthenticatedUsersCanOperateWithoutGroupsWhenExplicitlyAllowed()
+    {
+        var definition = PausedDefinition("known.authenticated.operate");
+        var provider = new ServiceCollection()
+            .AddSingleton<IWorkAuthorizationGroupProvider>(new TestGroupProvider(new Dictionary<string, IReadOnlySet<string>>()))
+            .AddDefaultWorkableSystemForAuthorizationTests(builder => builder.AddWork(
+                definition,
+                SuccessfulWork,
+                configure: null,
+                authorize: authorize => authorize.AllowOperateToKnownAuthenticatedUsers()))
+            .BuildServiceProvider();
+        var system = provider.GetRequiredService<IWorkSystem>();
+        await system.Start();
+        var session = system.CreateSession(CreateKnownAuthenticatedRequestContext("known-user"));
+
+        var queued = await session.Queue.Enqueue(definition.Name);
+
+        Assert.True(queued.QueueOutcome.IsAccepted);
+    }
+
+    [Fact]
+    public async Task UnknownActorsDoNotQualifyForKnownAuthenticatedUserOperateAccess()
+    {
+        var definition = PausedDefinition("known.authenticated.denied");
+        var provider = new ServiceCollection()
+            .AddSingleton<IWorkAuthorizationGroupProvider>(new TestGroupProvider(new Dictionary<string, IReadOnlySet<string>>()))
+            .AddDefaultWorkableSystemForAuthorizationTests(builder => builder.AddWork(
+                definition,
+                SuccessfulWork,
+                configure: null,
+                authorize: authorize => authorize.AllowOperateToKnownAuthenticatedUsers()))
+            .BuildServiceProvider();
+        var system = provider.GetRequiredService<IWorkSystem>();
+        await system.Start();
+        var session = system.CreateSession(WorkRequestContext.Create(
+            WorkInvocationChannel.InProcess,
+            actor: WorkActor.Unknown,
+            description: "Authenticated but unknown actor.",
+            isAuthenticated: true));
+
+        var queued = await session.Queue.Enqueue(definition.Name);
+
+        Assert.Equal(WorkQueueStatus.Unauthorized, queued.QueueOutcome.Status);
     }
 
     [Fact]
@@ -578,9 +653,16 @@ public sealed class WorkSystemAuthorizationConfigurationTests
 
     private static WorkRequestContext CreateRequestContext(string actorId)
         => WorkRequestContext.Create(
-            WorkInvocationChannel.DotNet,
+            WorkInvocationChannel.InProcess,
             new WorkActor(Id: actorId),
             $"Authorize actor '{actorId}' in tests.");
+
+    private static WorkRequestContext CreateKnownAuthenticatedRequestContext(string actorId)
+        => WorkRequestContext.Create(
+            WorkInvocationChannel.InProcess,
+            new WorkActor(Id: actorId),
+            $"Authorize known authenticated actor '{actorId}' in tests.",
+            isAuthenticated: true);
 
     private sealed class TestGroupProvider(IReadOnlyDictionary<string, IReadOnlySet<string>> groupsByActor) : IWorkAuthorizationGroupProvider
     {
@@ -621,3 +703,4 @@ internal static class WorkSystemAuthorizationConfigurationTestExtensions
         Action<IWorkSystemBuilder> configure)
         => global::Workable.WorkableServiceCollectionExtensions.AddWorkableSystem(services, name, configure);
 }
+

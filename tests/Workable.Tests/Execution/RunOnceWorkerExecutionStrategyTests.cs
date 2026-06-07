@@ -46,7 +46,7 @@ public sealed class RunOnceWorkerExecutionStrategyTests
 
         await system.Start();
 
-        await using var subscription = system.Events.Subscribe(new WorkEventFilter(DefinitionId: definition.Id, EventType: "worker.failed"));
+        await using var subscription = system.Events.Subscribe(new WorkEventFilter(DefinitionName: definition.Name, EventType: "worker.failed"));
         await using var reader = subscription.Read().GetAsyncEnumerator();
 
         var handle = await system.Queue.Enqueue("throws");
@@ -99,3 +99,4 @@ public sealed class RunOnceWorkerExecutionStrategyTests
         return reader.Current;
     }
 }
+

@@ -937,14 +937,13 @@ internal sealed class WorkSystemReadModelSnapshot
 }
 
 internal sealed record WorkerReadModelWorker(
+    WorkDefinitionId DefinitionId,
     WorkerOverviewItem Overview,
     bool RecurrenceEnabled,
     bool ConcurrencyEnabled,
     bool ProfilingEnabled)
 {
     public WorkerId Id => this.Overview.Id;
-
-    public WorkDefinitionId DefinitionId => this.Overview.DefinitionId;
 
     public string DefinitionName => this.Overview.DefinitionName;
 
@@ -966,48 +965,23 @@ internal sealed record WorkerReadModelWorker(
 
     public DateTimeOffset UpdatedAt => this.Overview.UpdatedAt;
 
-    public static WorkerReadModelWorker From(WorkerSnapshot snapshot)
-        => From(
-            new WorkerOverviewItem(
-                snapshot.Id,
-                snapshot.DefinitionId,
-                snapshot.DefinitionName,
-                snapshot.SubjectId,
-                snapshot.ConcurrencyKey,
-                snapshot.Identifiers,
-                snapshot.Revision,
-                snapshot.DefinitionCategory,
-                snapshot.State,
-                snapshot.InterruptionReason,
-                snapshot.CreatedAt,
-                snapshot.StateChangedAt,
-                snapshot.UpdatedAt)
-            {
-                QueueDuration = snapshot.QueueDuration,
-                TotalExecutionDuration = snapshot.TotalExecutionDuration,
-                NextRunAt = snapshot.NextRunAt,
-            },
-            snapshot.Configuration.Recurrence.IsEnabled,
-            snapshot.Configuration.Coordination.IsConcurrencyEnabled,
-            snapshot.Options.ProfilingEnabled);
-
     public static WorkerReadModelWorker From(
+        WorkDefinitionId definitionId,
         WorkerOverviewItem overview,
         bool recurrenceEnabled,
         bool concurrencyEnabled,
         bool profilingEnabled)
-        => new(overview, recurrenceEnabled, concurrencyEnabled, profilingEnabled);
+        => new(definitionId, overview, recurrenceEnabled, concurrencyEnabled, profilingEnabled);
 }
 
 internal sealed record WorkerReadModelIteration(
+    WorkDefinitionId DefinitionId,
     WorkerIterationReference Reference,
     WorkerIterationOverviewItem Overview)
 {
     public WorkerId WorkerId => this.Reference.WorkerId;
 
     public long Sequence => this.Reference.Sequence;
-
-    public WorkDefinitionId DefinitionId => this.Overview.DefinitionId;
 
     public string DefinitionName => this.Overview.DefinitionName;
 
@@ -1033,11 +1007,11 @@ internal sealed record WorkerReadModelIteration(
     {
         var reference = new WorkerIterationReference(worker.Id, iteration.Sequence);
         return new(
+            worker.DefinitionId,
             reference,
             new WorkerIterationOverviewItem(
                 worker.Id,
                 iteration.Sequence,
-                worker.DefinitionId,
                 worker.DefinitionName,
                 worker.Category,
                 worker.State,
