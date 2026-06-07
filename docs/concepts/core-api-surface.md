@@ -62,6 +62,8 @@ Execution context also exposes the worker's `WorkRequestContext` (including `Ori
 ## Queue Rules
 
 - Queue work by passing the definition name to `IWorkQueueService`.
+- `IWorkCommandDispatcher` provides a standardized queue-and-optionally-wait path for callers that want system resolution, session creation, queueing, and completion mapping in one helper.
+- `IHttpContextWorkCommandDispatcher` is the ASP.NET Core convenience wrapper for that same path when the current `HttpContext` should define the `WorkRequestContext`.
 - `IStartupWorkSource` can return startup queue requests after the catalog is ready.
 - Starting a stopped system runs automatic starts and startup work sources again without rebuilding work definitions that were already added by work definition sources.
 - Queue input can be supplied as `WorkInput` or as a typed CLR value that Workable serializes into `WorkInput`.

@@ -10,7 +10,7 @@ This package does not add Workable routes. It does not choose your authenticatio
 
 Use `Workable.AspNetCore` directly when:
 
-- your application has custom controllers or minimal APIs that queue work through `IWorkSystem`
+- your application has custom controllers or minimal APIs that queue work through `IHttpContextWorkCommandDispatcher`
 - you are building your own ASP.NET Core transport instead of using Workable's built-in HTTP, MCP, or SignalR adapters
 - you want Workable actor and authorization-group resolution to come from `HttpContext.User`
 
@@ -28,12 +28,50 @@ That registers:
 
 - `IWorkActorFactory`
 - `IWorkRequestContextFactory`
+- `IHttpContextWorkCommandDispatcher`
 - a default `IWorkAuthorizationGroupProvider`
 - `IHttpContextAccessor` when one is not already registered
 
+## Preferred HTTP Queueing Path
+
+For custom ASP.NET Core endpoints that need to queue work, prefer `IHttpContextWorkCommandDispatcher`.
+
+It wraps the common HTTP orchestration path:
+
+- create a `WorkRequestContext` from the current `HttpContext`
+- resolve the current actor, URL, and authenticated-caller signal
+- dispatch the request through Workable using a standardized `WorkDispatchResult<T>`
+
+```csharp
+app.MapPost("/welcome/{userId}", async (
+    string userId,
+    IHttpContextWorkCommandDispatcher commands,
+    CancellationToken cancellationToken) =>
+{
+    var result = await commands.Dispatch<SendWelcomeEmailArgs, object?>(
+        "email.welcome.send",
+        new SendWelcomeEmailArgs(userId),
+        "Queue welcome email from custom endpoint.",
+        new WorkDispatchOptions(WorkDispatchCompletion.ReturnAfterAccepted),
+        cancellationToken);
+
+    return Results.Ok(new
+    {
+        result.Status,
+        result.WorkerId,
+        result.ErrorCode,
+        result.ErrorMessage,
+    });
+});
+```
+
+Use `WorkDispatchCompletion.WaitForCompletion` when the caller needs the final output in the HTTP response instead of returning after acceptance.
+
 ## Request Context Creation
 
-The usual direct-use entry point is `IWorkRequestContextFactory`.
+`IWorkRequestContextFactory` is still the lower-level entry point.
+
+Use it when you need more than queueing, such as creating a session for direct query, worker action, catalog, or lifecycle access, or when you are building a custom transport that does not fit the dispatcher abstraction.
 
 It builds a `WorkRequestContext` from the current `HttpContext`, the intended `WorkInvocationChannel`, and an optional short description of what the request is doing.
 
