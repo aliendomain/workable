@@ -40,4 +40,41 @@ internal static class SampleHostWorkableAdmin
             Authorization: authorization,
             IsAuthenticated: true);
     }
+
+    public static Task<WorkDispatchResult<object?>> QueueWork(
+        this IWorkCommandDispatcher commands,
+        string workName,
+        WorkInput input,
+        string description,
+        WorkerOptions? workerOptions = null,
+        CancellationToken cancellationToken = default)
+        => commands.QueueWork(
+            systemName: null,
+            workName,
+            input,
+            description,
+            workerOptions,
+            cancellationToken);
+
+    public static Task<WorkDispatchResult<object?>> QueueWork(
+        this IWorkCommandDispatcher commands,
+        string? systemName,
+        string workName,
+        WorkInput input,
+        string description,
+        WorkerOptions? workerOptions = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(commands);
+        ArgumentException.ThrowIfNullOrWhiteSpace(workName);
+        ArgumentNullException.ThrowIfNull(input);
+
+        return commands.Dispatch<WorkInput, object?>(
+            systemName,
+            workName,
+            input,
+            CreateRequestContext(description),
+            new WorkDispatchOptions(WorkDispatchCompletion.ReturnAfterAccepted, workerOptions),
+            cancellationToken);
+    }
 }

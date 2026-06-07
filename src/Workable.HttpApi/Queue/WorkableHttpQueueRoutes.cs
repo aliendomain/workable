@@ -34,12 +34,11 @@ internal static class WorkableHttpQueueRoutes
                 return notFound;
             }
 
-            var session = WorkableHttpRequestContext.CreateSession(
+            var requestContext = WorkableHttpRequestContext.Create(
                 httpContext,
-                system,
                 requestContexts,
                 request?.Description);
-            var result = await queue.Enqueue(session, name, request, cancellationToken);
+            var result = await queue.Enqueue(system.Name, name, requestContext, request, cancellationToken);
             return WorkableHttpRouteResults.ToQueueHttpResult(result);
         });
 

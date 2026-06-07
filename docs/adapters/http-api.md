@@ -12,6 +12,8 @@ HTTP queueing, worker actions, and worker reconfiguration record a `WorkRequestC
 
 Each request creates a `WorkRequestContext` and an `IWorkSystemSession` for the selected system. Work-definition read access filters catalog, query, event, and view results. Work-definition operate access controls queueing, worker actions, and reconfiguration.
 
+If your host also exposes custom controllers or minimal APIs that need to queue work, prefer `IHttpContextWorkCommandDispatcher` from `Workable.AspNetCore` instead of recreating that orchestration yourself. The built-in HTTP adapter now follows the same dispatcher-first pattern internally for queue requests.
+
 ## Map Endpoints
 
 Map the default Workable API endpoints from the host application.
@@ -49,6 +51,46 @@ POST /workable/systems/email/workers/22222222-2222-2222-2222-222222222222/action
 Route matching is case-insensitive. Worker action route values are also parsed case-insensitively, so `/actions/cancel`, `/actions/Cancel`, and `/actions/CANCEL` all target `WorkAction.Cancel`.
 
 `AddWorkableHttpApi` configures HTTP JSON enum handling so enum strings in request bodies can also be supplied without matching .NET enum casing exactly.
+
+## Queue Work From Your Own HTTP Endpoints
+
+`MapWorkableApi()` is for Workable's built-in transport routes. When your application also needs custom HTTP endpoints that trigger Workable work, the simplest path is `IHttpContextWorkCommandDispatcher`.
+
+```csharp
+app.MapPost("/admin/retry-welcome-email/{userId}", async (
+    string userId,
+    IHttpContextWorkCommandDispatcher commands,
+    CancellationToken cancellationToken) =>
+{
+    var result = await commands.Dispatch<SendWelcomeEmailArgs, object?>(
+        "email.welcome.send",
+        new SendWelcomeEmailArgs(userId),
+        "Retry welcome email from custom admin endpoint.",
+        new WorkDispatchOptions(WorkDispatchCompletion.ReturnAfterAccepted),
+        cancellationToken);
+
+    return Results.Ok(new
+    {
+        result.Status,
+        result.WorkerId,
+        result.ErrorCode,
+        result.ErrorMessage,
+    });
+});
+```
+
+That gives custom HTTP code the same behavior the built-in adapter already needs:
+
+- create an HTTP-bound `WorkRequestContext`
+- preserve actor, URL, and authenticated-caller information
+- resolve the target system
+- queue work
+- optionally wait for completion
+- return a standardized `WorkDispatchResult<T>`
+
+Use `WorkDispatchCompletion.WaitForCompletion` when the endpoint should return the worker's final output instead of returning after acceptance.
+
+Drop down to `IWorkRequestContextFactory` and `IWorkSystem.CreateSession(...)` only when the endpoint needs broader session work such as direct query, worker action, catalog, or lifecycle access.
 
 ## Capabilities
 

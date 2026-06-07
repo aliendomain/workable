@@ -15,7 +15,7 @@ Start with [Getting Started](guides/getting-started.md) if you are evaluating wh
 
 ## Guides
 
-- [Getting Started](guides/getting-started.md): package split, work author setup, host setup, and queueing work.
+- [Getting Started](guides/getting-started.md): package split, work author setup, host setup, queueing work, and the preferred ASP.NET Core dispatcher path for custom HTTP endpoints.
 - [Implementing Work](guides/implementing-work.md): write executor code, use `IWorkExecutionContext`, and understand failure, cancellation, pause, and interruption behavior.
 - [Microsoft Entra Authentication](guides/entra-authentication.md): configure Entra bearer-token authentication and claim mapping for Workable surfaces.
 - [Registration](guides/registration.md): define work in feature assemblies, generate definitions from sources, queue startup work, target named systems, and isolate catalogs.

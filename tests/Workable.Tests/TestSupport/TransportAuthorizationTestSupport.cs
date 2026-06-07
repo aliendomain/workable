@@ -40,11 +40,20 @@ internal static class TransportAuthorizationTestSupport
     {
         ArgumentNullException.ThrowIfNull(system);
 
-        return system.CreateSession(WorkRequestContext.Create(
+        return system.CreateSession(CreateTransportRequestContext(
             channel,
-            actor ?? CreateActor(),
+            actor,
             description));
     }
+
+    public static WorkRequestContext CreateTransportRequestContext(
+        WorkInvocationChannel channel = WorkInvocationChannel.InProcess,
+        WorkActor? actor = null,
+        string description = "Create transport test request context.")
+        => WorkRequestContext.Create(
+            channel,
+            actor ?? CreateActor(),
+            description);
 
     public static ClaimsPrincipal CreateTransportPrincipal(
         string id = "transport-user-1",

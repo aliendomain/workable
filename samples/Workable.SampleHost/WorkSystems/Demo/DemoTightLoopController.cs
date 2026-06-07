@@ -3,7 +3,7 @@ using Workable.SampleHost;
 namespace Workable.SampleHost.Demo;
 
 public sealed class DemoTightLoopController(
-    IWorkSystemRegistry registry,
+    IWorkCommandDispatcher commands,
     DemoSampleSystemSelection systemSelection,
     ILogger<DemoTightLoopController> logger) : IAsyncDisposable
 {
@@ -186,13 +186,13 @@ public sealed class DemoTightLoopController(
                     new WorkIdentifier("tight-loop-sequence", sequenceNumber.ToString()),
                 ]);
 
-            var session = registry.Default.CreateSession("Queue tight-loop operations sample work from the sample host.");
-            var handle = await session.Queue.Enqueue(
+            var result = await commands.QueueWork(
                 "sample.demo.quick",
                 input,
+                "Queue tight-loop operations sample work from the sample host.",
                 cancellationToken: cancellationToken);
 
-            this.TrackQueueOutcome(handle.QueueOutcome, DemoTightLoopSystem.Operations);
+            this.TrackQueueOutcome(result.QueueOutcome ?? WorkQueueOutcome.Invalid(result.Messages), DemoTightLoopSystem.Operations);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -210,12 +210,6 @@ public sealed class DemoTightLoopController(
     {
         try
         {
-            if (!registry.TryGet("fulfillment", out var system))
-            {
-                Interlocked.Increment(ref this.failedCount);
-                return;
-            }
-
             var input = WorkInput.FromValue(
                 new DemoTimedInput(
                     $"tight fulfillment #{sequenceNumber}",
@@ -230,13 +224,14 @@ public sealed class DemoTightLoopController(
                     new WorkIdentifier("tight-loop-sequence", sequenceNumber.ToString()),
                 ]);
 
-            var session = system.CreateSession("Queue tight-loop fulfillment sample work from the sample host.");
-            var handle = await session.Queue.Enqueue(
+            var result = await commands.QueueWork(
+                "fulfillment",
                 "fulfillment.demo.quick",
                 input,
+                "Queue tight-loop fulfillment sample work from the sample host.",
                 cancellationToken: cancellationToken);
 
-            this.TrackQueueOutcome(handle.QueueOutcome, DemoTightLoopSystem.Fulfillment);
+            this.TrackQueueOutcome(result.QueueOutcome ?? WorkQueueOutcome.Invalid(result.Messages), DemoTightLoopSystem.Fulfillment);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {

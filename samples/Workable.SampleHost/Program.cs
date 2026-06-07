@@ -904,7 +904,7 @@ sampleWorkload.MapPost("/tight-loops/start", (DemoTightLoopController controller
 sampleWorkload.MapPost("/tight-loops/stop", async (DemoTightLoopController controller, CancellationToken cancellationToken)
     => Results.Ok(await controller.Stop(cancellationToken)));
 sampleWorkload.MapPost("/force-cancel", async (
-    IWorkSystemRegistry registry,
+    IHttpContextWorkCommandDispatcher commands,
     DemoSampleSystemSelection systemSelection,
     CancellationToken cancellationToken) =>
 {
@@ -919,18 +919,19 @@ sampleWorkload.MapPost("/force-cancel", async (
         });
     }
 
-    var session = registry.Default.CreateSession("Queue force-cancel sample work from the sample host.");
-    var handle = await session.Queue.Enqueue(
+    var result = await commands.Dispatch<WorkInput, object?>(
         "sample.demo.force-cancel",
         WorkInput.FromValue(new DemoForceCancelInput(), identifiers: [new WorkIdentifier("sample-workload", "force-cancel")]),
+        "Queue force-cancel sample work from the sample host.",
+        new WorkDispatchOptions(WorkDispatchCompletion.ReturnAfterAccepted),
         cancellationToken: cancellationToken);
 
     return Results.Ok(new
     {
         definitionName = "sample.demo.force-cancel",
-        workerId = handle.WorkerId?.ToString(),
-        status = handle.QueueOutcome.Status.ToString(),
-        message = "Queued force-cancel worker.",
+        workerId = result.WorkerId?.ToString(),
+        status = result.QueueOutcome?.Status.ToString() ?? result.Status.ToString(),
+        message = result.ErrorMessage ?? "Queued force-cancel worker.",
     });
 });
 

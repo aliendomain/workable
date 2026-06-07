@@ -9,6 +9,7 @@ namespace Workable.SampleHost.Demo;
 
 public sealed class DemoWorkloadController(
     IWorkSystemRegistry registry,
+    IWorkCommandDispatcher commands,
     DemoSampleSystemSelection systemSelection,
     DemoRecurringIterationPlanStore recurringIterationPlans,
     ILogger<DemoWorkloadController> logger) : IHostedService, IAsyncDisposable
@@ -248,28 +249,29 @@ public sealed class DemoWorkloadController(
 
         try
         {
-            var session = registry.Default.CreateSession("Queue idempotency sample work from the sample host.");
-            var first = await session.Queue.Enqueue(
+            var first = await commands.QueueWork(
                 "sample.demo.idempotent",
                 input,
+                "Queue idempotency sample work from the sample host.",
                 cancellationToken: cancellationToken);
-            if (first.QueueOutcome.IsAccepted && first.WorkerId is { } workerId)
+            if (first.QueueOutcome?.IsAccepted == true && first.WorkerId is { } workerId)
             {
                 this.activeDemoWorkers[workerId] = 0;
             }
 
-            var duplicate = await session.Queue.Enqueue(
+            var duplicate = await commands.QueueWork(
                 "sample.demo.idempotent",
                 input,
+                "Queue idempotency sample work from the sample host.",
                 cancellationToken: cancellationToken);
-            var duplicateMessage = duplicate.QueueOutcome.Messages.FirstOrDefault();
+            var duplicateMessage = duplicate.Messages.FirstOrDefault();
 
             return new DemoIdempotencySampleResult(
                 SubjectValue: subjectValue,
-                AcceptedCount: (first.QueueOutcome.IsAccepted ? 1 : 0) + (duplicate.QueueOutcome.IsAccepted ? 1 : 0),
-                RejectedCount: (!first.QueueOutcome.IsAccepted ? 1 : 0) + (!duplicate.QueueOutcome.IsAccepted ? 1 : 0),
-                FirstStatus: first.QueueOutcome.Status.ToString(),
-                SecondStatus: duplicate.QueueOutcome.Status.ToString(),
+                AcceptedCount: (first.QueueOutcome?.IsAccepted == true ? 1 : 0) + (duplicate.QueueOutcome?.IsAccepted == true ? 1 : 0),
+                RejectedCount: (first.QueueOutcome?.IsAccepted == true ? 0 : 1) + (duplicate.QueueOutcome?.IsAccepted == true ? 0 : 1),
+                FirstStatus: first.QueueOutcome?.Status.ToString() ?? first.Status.ToString(),
+                SecondStatus: duplicate.QueueOutcome?.Status.ToString() ?? duplicate.Status.ToString(),
                 RejectionCode: duplicateMessage?.Code,
                 RejectionMessage: duplicateMessage?.Text,
                 Status: "Completed",
@@ -498,27 +500,36 @@ public sealed class DemoWorkloadController(
         TInput payload,
         DemoRelationshipKeys keys,
         CancellationToken cancellationToken)
-        => await this.Queue(registry.Default, workName, payload, keys, cancellationToken);
+        => await this.Queue(
+            systemName: null,
+            workName,
+            payload,
+            keys,
+            $"Queue sample workload '{workName}' from the sample host.",
+            workerOptions: null,
+            cancellationToken);
 
     private async Task QueueFulfillment<TInput>(
         string workName,
         TInput payload,
         DemoRelationshipKeys keys,
         CancellationToken cancellationToken)
-    {
-        if (!registry.TryGet("fulfillment", out var system))
-        {
-            return;
-        }
-
-        await this.Queue(system, workName, payload, keys, cancellationToken);
-    }
+        => await this.Queue(
+            "fulfillment",
+            workName,
+            payload,
+            keys,
+            $"Queue sample workload '{workName}' from the sample host.",
+            workerOptions: null,
+            cancellationToken);
 
     private async Task Queue<TInput>(
-        IWorkSystem system,
+        string? systemName,
         string workName,
         TInput payload,
         DemoRelationshipKeys keys,
+        string description,
+        WorkerOptions? workerOptions,
         CancellationToken cancellationToken)
     {
         try
@@ -529,9 +540,14 @@ public sealed class DemoWorkloadController(
                 identifiers: keys.Identifier is null
                     ? [new WorkIdentifier("sample-workload", "home-toggle")]
                     : [new WorkIdentifier("sample-workload", "home-toggle"), keys.Identifier.Value]);
-            var session = system.CreateSession($"Queue sample workload '{workName}' from the sample host.");
-            var handle = await session.Queue.Enqueue(workName, input, cancellationToken: cancellationToken);
-            if (handle.WorkerId is { } workerId)
+            var result = await commands.QueueWork(
+                systemName,
+                workName,
+                input,
+                description,
+                workerOptions,
+                cancellationToken);
+            if (result.QueueOutcome?.IsAccepted == true && result.WorkerId is { } workerId)
             {
                 this.activeDemoWorkers[workerId] = 0;
             }
@@ -554,17 +570,6 @@ public sealed class DemoWorkloadController(
         try
         {
             var useFulfillment = systems.Fulfillment && (!systems.Operations || sequenceNumber % 2 == 1);
-            var system = registry.Default;
-            if (useFulfillment)
-            {
-                if (!registry.TryGet("fulfillment", out var fulfillment))
-                {
-                    return false;
-                }
-
-                system = fulfillment;
-            }
-
             var systemName = useFulfillment ? "fulfillment" : "operations";
             var workName = useFulfillment ? "fulfillment.demo.quick" : "sample.demo.quick";
             var input = WorkInput.FromValue(
@@ -580,10 +585,14 @@ public sealed class DemoWorkloadController(
                     new WorkIdentifier("burst-sequence", sequenceNumber.ToString()),
                 ]);
 
-            var session = system.CreateSession($"Queue burst sample workload '{workName}' from the sample host.");
-            var handle = await session.Queue.Enqueue(workName, input, cancellationToken: cancellationToken);
+            var result = await commands.QueueWork(
+                useFulfillment ? "fulfillment" : null,
+                workName,
+                input,
+                $"Queue burst sample workload '{workName}' from the sample host.",
+                cancellationToken: cancellationToken);
 
-            return handle.QueueOutcome.IsAccepted;
+            return result.QueueOutcome?.IsAccepted == true;
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -613,14 +622,17 @@ public sealed class DemoWorkloadController(
                     new WorkIdentifier("durable-burst-sequence", sequenceNumber.ToString()),
                 ]);
 
-            var session = registry.Default.CreateSession("Queue durable-burst sample work from the sample host.");
-            var handle = await session.Queue.Enqueue("sample.demo.durable", input, cancellationToken: cancellationToken);
-            if (handle.QueueOutcome.IsAccepted && handle.WorkerId is { } workerId)
+            var result = await commands.QueueWork(
+                "sample.demo.durable",
+                input,
+                "Queue durable-burst sample work from the sample host.",
+                cancellationToken: cancellationToken);
+            if (result.QueueOutcome?.IsAccepted == true && result.WorkerId is { } workerId)
             {
                 this.activeDemoWorkers[workerId] = 0;
             }
 
-            return handle.QueueOutcome.IsAccepted;
+            return result.QueueOutcome?.IsAccepted == true;
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {

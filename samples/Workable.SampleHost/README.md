@@ -53,6 +53,8 @@ Invoke-RestMethod http://localhost:61932/sample-workload/interval -Method Post -
 Invoke-RestMethod http://localhost:61932/sample-workload/failures -Method Post -ContentType application/json -Body '{"percentage":8}'
 ```
 
+If you want a concrete example of the recommended "queue work from my own HTTP endpoint" path, see the `/sample-workload/force-cancel` endpoint in `samples/Workable.SampleHost/Program.cs`. It uses `IHttpContextWorkCommandDispatcher` instead of building a session by hand, which is the intended pattern for custom ASP.NET Core endpoints that just need to dispatch Workable work.
+
 MCP exposes default-system work definitions with protocol-safe names such as:
 
 - `workable_work_sample_echo`
