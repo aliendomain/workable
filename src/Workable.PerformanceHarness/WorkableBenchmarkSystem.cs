@@ -89,7 +89,7 @@ internal sealed class WorkableBenchmarkSystem : IAsyncDisposable
         {
             var definition = definitions[index % definitions.Length];
             var handle = await session.Queue.Enqueue(
-                definition.Id,
+                definition.Name,
                 CreateInput(index),
                 cancellationToken: cancellationToken);
             if (!handle.QueueOutcome.IsAccepted)
