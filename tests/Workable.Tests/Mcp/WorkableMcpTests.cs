@@ -197,17 +197,17 @@ public sealed class WorkableMcpTests
             tool.ToolName == "workable_reconfigure_work_definition" &&
             tool.Description?.Contains("future queued workers", StringComparison.OrdinalIgnoreCase) == true);
 
-        var workTool = Assert.Single(tools.Where(tool => tool.ToolName == "workable_work_cache_refresh"));
+        var workTool = Assert.Single(tools, tool => tool.ToolName == "workable_work_cache_refresh");
         var workSchema = JsonNode.Parse(workTool.InputSchemaJson)
             ?? throw new InvalidOperationException("Expected work tool schema JSON.");
         Assert.NotNull(workSchema["oneOf"]?[1]?["properties"]?["description"]);
 
-        var actionTool = Assert.Single(tools.Where(tool => tool.ToolName == "workable_cancel_worker"));
+        var actionTool = Assert.Single(tools, tool => tool.ToolName == "workable_cancel_worker");
         var actionSchema = JsonNode.Parse(actionTool.InputSchemaJson)
             ?? throw new InvalidOperationException("Expected action tool schema JSON.");
         Assert.NotNull(actionSchema["properties"]?["description"]);
 
-        var reconfigureTool = Assert.Single(tools.Where(tool => tool.ToolName == "workable_reconfigure_work_definition"));
+        var reconfigureTool = Assert.Single(tools, tool => tool.ToolName == "workable_reconfigure_work_definition");
         var reconfigureSchema = JsonNode.Parse(reconfigureTool.InputSchemaJson)
             ?? throw new InvalidOperationException("Expected reconfigure tool schema JSON.");
         Assert.NotNull(reconfigureSchema["properties"]?["description"]);

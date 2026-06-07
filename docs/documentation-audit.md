@@ -1,8 +1,8 @@
 # Documentation Audit
 
-Date: 2026-06-01
+Date: 2026-06-06
 
-This audit verifies the 39 Markdown documentation files under `Docs` against the current source. Source code is the source of truth. Historical audit documents were checked for broken links and stale public names, but were otherwise preserved as historical records.
+This audit expands the earlier docs-folder-only pass to the full repository documentation surface. It verifies all 48 Markdown files plus the checked-in JSON and launch/config reference files that the docs tell readers to use for setup or local testing. Source code is the source of truth. Historical audit documents were checked for broken links and stale public names, but were otherwise preserved as historical records.
 
 ## Doc Inventory
 
@@ -48,6 +48,21 @@ This audit verifies the 39 Markdown documentation files under `Docs` against the
 | `Docs/guides/registration.md` | definition sources, startup work, named systems, invocation defaults |
 | `Docs/test-suite-audit.md` | historical test audit; links and public route names checked |
 
+## Additional Repo-Level Docs And Config References Reviewed
+
+- `README.md`
+- `AGENTS.md`
+- `samples/Workable.SampleHost/README.md`
+- `integrations/sqlserver/README.md`
+- `src/Workable.PerformanceHarness/README.md`
+- `src/workable-admin-ui/README.md`
+- `src/workable-admin-ui/AGENTS.md`
+- `src/workable-admin-ui/CLAUDE.md`
+- `src/workable-admin-ui/workable-admin.basic.config.example.json`
+- `src/workable-admin-ui/workable-admin.entra.config.example.json`
+- `src/workable-admin-ui/workable-admin.config.json`
+- `samples/Workable.SampleHost/Properties/launchSettings.json`
+
 ## Source Areas Verified
 
 - HTTP API route map in `src/Workable.HttpApi`: catalog, queue, query, worker operations, diagnostics, lifecycle, host capabilities, and local debug routes.
@@ -68,6 +83,9 @@ This audit verifies the 39 Markdown documentation files under `Docs` against the
 - `Docs/concepts/views.md`: added the current `worker` named view and its `workerDetail` / `workerCurrentIteration` components; fixed the HTTP API anchor link.
 - `Docs/concepts/views.md`: corrected `workerGrid` and `iterationGrid` option names to include `keyKind`, `keyType`, and `keyValue`.
 - `Docs/guides/queueing.md`: added the current `Unauthorized` queue outcome.
+- `docs/adapters/mcp.md`: corrected `workable_reconfigure_work_definition` to use `name` plus `revision`, removed the nonexistent definition-id requirement, and fixed the `WorkableMcpToolDescriptor` field list to match the current record type.
+- `samples/Workable.SampleHost/README.md`: corrected the MCP sample-host section. The sample currently exposes MCP query/action tools only; it does not expose any `workable_work_*` tools because no sample definition opts into `WorkInvocationChannel.Mcp`.
+- `src/workable-admin-ui/README.md`: clarified that production can source the target API URL from `WORKABLE_API_URL` or server-side config.
 
 ## Missing Docs For Public Features
 
@@ -170,4 +188,24 @@ No broken relative Markdown file links or checked anchors found.
 
 No configured markdownlint, lychee, remark, docfx, or markdown-link-check command was found. `Workable.slnx` lists the main docs as solution files, but the audit files are not part of that list.
 
-No .NET build or test command was run because this pass changed Markdown documentation only and did not change generated docs, examples that compile as part of the solution, or source behavior.
+Validation commands run for this repo-wide pass:
+
+```powershell
+npm.cmd test
+```
+
+Run from `src/workable-admin-ui`. Result:
+
+```text
+Passed, 202 tests
+```
+
+```powershell
+dotnet test .\Workable.slnx --no-restore --logger "console;verbosity=minimal" --blame-hang-timeout 2m
+```
+
+Run outside the sandbox from the repository root. Result:
+
+```text
+Passed, 1030 Workable.Tests + 45 Workable.SqlServer.Tests
+```

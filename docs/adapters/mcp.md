@@ -125,7 +125,7 @@ Action tools are exposed by default so an MCP client can control workers after i
 - `workable_purge_worker`: permanently remove a completed or canceled worker from memory.
 - `workable_reconfigure_work_definition`: change a work definition's default worker options and/or default runtime configuration for future queued workers.
 
-Worker action tool calls record a `WorkOrigin` with `WorkInvocationChannel.Mcp`. The origin is retained in the worker's action history and is published on the action event. Action tools accept an optional top-level `description` that is copied into that origin. Definition default reconfiguration requires the current definition id and revision from `workable_query_work_definitions` or `workable_get_work_info`, and `workable_reconfigure_work_definition` also accepts an optional top-level `description`.
+Worker action tool calls record a `WorkOrigin` with `WorkInvocationChannel.Mcp`. The origin is retained in the worker's action history and is published on the action event. Action tools accept an optional top-level `description` that is copied into that origin. Definition default reconfiguration requires the current definition name and revision from `workable_query_work_definitions` or `workable_get_work_info`, and `workable_reconfigure_work_definition` also accepts an optional top-level `description`.
 
 ```json
 {
@@ -137,7 +137,7 @@ Worker action tool calls record a `WorkOrigin` with `WorkInvocationChannel.Mcp`.
 
 ```json
 {
-  "definitionName": "email.welcome.send",
+  "name": "email.welcome.send",
   "revision": 7,
   "description": "Enable profiling for future workers during the incident.",
   "changes": {
@@ -159,7 +159,7 @@ IReadOnlyList<WorkableMcpToolDescriptor> tools =
     session.GetMcpToolDescriptors();
 ```
 
-Each descriptor includes the work name, description, category, definition id, input schema, output schema, schema content types, fallback-schema usage, and definition metadata. Definitions that do not allow `WorkInvocationChannel.Mcp` are omitted.
+Each descriptor includes the work name, description, category, input schema, output schema, schema content types, fallback-schema usage, and definition metadata. Definitions that do not allow `WorkInvocationChannel.Mcp` are omitted.
 
 Definitions the caller cannot read are also omitted from the descriptor list.
 

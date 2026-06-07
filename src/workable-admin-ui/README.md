@@ -187,7 +187,7 @@ Do not use anonymous mode for deployed environments. Anonymous mode only opens t
 
 The Next.js route at `/api/workable/*` proxies requests to a Workable HTTP API host.
 
-In production, `WORKABLE_API_URL` must be configured. Local development defaults to:
+In production, configure the target Workable API URL with `WORKABLE_API_URL` or `apiUrl` in the server-side config file. Local development defaults to:
 
 ```text
 http://localhost:61932/workable

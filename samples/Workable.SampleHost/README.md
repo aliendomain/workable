@@ -53,15 +53,13 @@ Invoke-RestMethod http://localhost:61932/sample-workload/interval -Method Post -
 Invoke-RestMethod http://localhost:61932/sample-workload/failures -Method Post -ContentType application/json -Body '{"percentage":8}'
 ```
 
-MCP exposes default-system work definitions with protocol-safe names such as:
+The sample maps the default system at `/workable/mcp`. Because the sample definitions keep the default invocation configuration, the MCP endpoint currently exposes Workable query and action tools such as:
 
-- `workable_work_sample_echo`
-- `workable_work_sample_delay`
-- `workable_work_fulfillment_picklist_create`
+- `workable_query_work_definitions`
+- `workable_query_workers`
+- `workable_get_worker_status_summary`
 
-The MCP server also exposes Workable query tools such as `workable_query_workers` and `workable_get_worker_status_summary`.
-
-MCP work calls wait for completion by default. Calling `workable_work_sample_echo` returns the completed worker output in the tool result. HTTP work calls return after queue acceptance by default.
+The sample does not currently expose any `workable_work_*` tools because no sample definition opts into `WorkInvocationChannel.Mcp`. HTTP work calls still return after queue acceptance by default.
 
 The HTTP API exposes the standard Workable routes. For example:
 
@@ -125,12 +123,12 @@ Point an MCP client that supports HTTP transport at:
 http://localhost:61932/fake-auth/system-admin/workable/mcp
 ```
 
-List tools and call `workable_work_sample_echo` with:
+List tools and call `workable_query_work_definitions` with:
 
 ```json
 {
-  "message": "hello"
+  "search": "sample"
 }
 ```
 
-The tool result should include a completed Workable invocation and an output payload containing the echoed message.
+The tool result should return visible definition records for the default system. The sample does not currently expose any `workable_work_*` tools because none of its work definitions allow `WorkInvocationChannel.Mcp`.
