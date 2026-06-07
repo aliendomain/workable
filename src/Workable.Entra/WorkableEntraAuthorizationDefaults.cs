@@ -18,8 +18,6 @@ public static class WorkableEntraAuthorizationDefaults
 
     public const string SignalRHubPath = "/workable/realtime";
 
-    public const string ConnectScope = "Workable.Connect";
-
     public const string ReadScope = "Workable.Read";
 
     public const string ExecuteScope = "Workable.Execute";

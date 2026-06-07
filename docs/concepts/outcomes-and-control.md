@@ -175,6 +175,7 @@ Each `WorkerActionHistoryEntry` captures:
 
 - when it happened
 - whether it was a worker action or reconfiguration
+- the `RequestContext` that applied it, including durable `RequestContext.Origin` provenance plus optional request-level `Description` and `Url`
 - the action, when applicable
 - the resulting `WorkActionStatus`
 - the `WorkOrigin`

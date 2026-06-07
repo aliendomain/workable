@@ -114,7 +114,7 @@ public sealed class WorkerSnapshotExtensionsTests
     [Fact]
     public void GetActivityEventsIncludesAcceptedStateChangesAndFailureIterations()
     {
-        var origin = WorkOrigin.Create(
+        var requestContext = WorkRequestContext.Create(
             WorkInvocationChannel.HttpApi,
             actor: new WorkActor("user-1", "Test User"));
         var iteration = new WorkerIterationSnapshot(
@@ -139,7 +139,7 @@ public sealed class WorkerSnapshotExtensionsTests
                     Kind: WorkerActionHistoryKind.WorkerAction,
                     Action: WorkAction.Cancel,
                     Status: WorkActionStatus.Accepted,
-                    Origin: origin,
+                    RequestContext: requestContext,
                     Revision: 1,
                     StateSequence: 1,
                     State: WorkerState.Canceled,
@@ -172,7 +172,7 @@ public sealed class WorkerSnapshotExtensionsTests
         };
         var defaultConfiguration = WorkConfiguration.Default with
         {
-            Invocation = WorkInvocationConfiguration.Allow(WorkInvocationChannel.DotNet),
+            Invocation = WorkInvocationConfiguration.Allow(WorkInvocationChannel.InProcess),
         };
 
         var invocationOnlyDifferences = WorkerConfigurationDifferenceCounter.CountDifferences(
@@ -202,25 +202,24 @@ public sealed class WorkerSnapshotExtensionsTests
         var now = DateTimeOffset.UtcNow;
         return new WorkerSnapshot(
             workerId,
-            Revision: 1,
-            StateSequence: stateSequence,
-            DefinitionId: definitionId,
-            DefinitionName: "tests.worker.snapshot",
-            DefinitionCategory: "Tests",
-            SubjectId: null,
-            ConcurrencyKey: null,
-            Identifiers: new HashSet<WorkIdentifier>(),
-            Origin: WorkOrigin.Create(WorkInvocationChannel.DotNet),
-            State: state,
-            Input: null,
-            Output: null,
-            Options: WorkerOptions.Default,
-            Configuration: WorkConfiguration.Default,
-            Messages: [],
-            InterruptionReason: null,
-            CreatedAt: now.AddMinutes(-5),
-            StateChangedAt: now.AddMinutes(-1),
-            UpdatedAt: now)
+            1,
+            stateSequence,
+            "tests.worker.snapshot",
+            "Tests",
+            null,
+            null,
+            new HashSet<WorkIdentifier>(),
+            WorkRequestContext.Create(WorkInvocationChannel.InProcess),
+            state,
+            null,
+            null,
+            WorkerOptions.Default,
+            WorkConfiguration.Default,
+            [],
+            null,
+            now.AddMinutes(-5),
+            now.AddMinutes(-1),
+            now)
         {
             ActionHistory = actionHistory ?? [],
             CurrentIteration = currentIteration,

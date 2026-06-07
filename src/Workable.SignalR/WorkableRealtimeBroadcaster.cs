@@ -80,8 +80,7 @@ internal sealed class WorkableRealtimeBroadcaster(
         {
             var session = CreateAuthorizedSession(
                 system,
-                subscription.Authorization,
-                "Broadcast Workable diagnostics alerts through SignalR.");
+                subscription.Authorization);
             await this.BroadcastDiagnosticsAlertView(
                 subscription,
                 CreateDiagnosticsAlertState(session, subscription, systemState),
@@ -184,8 +183,7 @@ internal sealed class WorkableRealtimeBroadcaster(
     {
         var session = CreateAuthorizedSession(
             system,
-            subscription.Authorization,
-            "Stream Workable realtime events through SignalR.");
+            subscription.Authorization);
         await using var events = session.Events.Subscribe(
             subscription.Filter,
             new WorkEventSubscriptionOptions(
@@ -492,8 +490,7 @@ internal sealed class WorkableRealtimeBroadcaster(
     {
         var session = CreateAuthorizedSession(
             system,
-            subscription.Authorization,
-            $"Stream worker overview updates for worker '{subscription.WorkerId.Value:D}' through SignalR.");
+            subscription.Authorization);
         await using var events = session.Events.Subscribe(
             new WorkEventFilter(WorkerId: subscription.WorkerId),
             new WorkEventSubscriptionOptions(
@@ -847,8 +844,7 @@ internal sealed class WorkableRealtimeBroadcaster(
                     {
                         var session = CreateAuthorizedSession(
                             system,
-                            subscription.Authorization,
-                            "Broadcast Workable diagnostics alerts through SignalR.");
+                            subscription.Authorization);
                         var alertState = CreateDiagnosticsAlertState(session, subscription);
                         alertStatesByGroup.TryGetValue(subscription.GroupName, out var previous);
                         if (!WorkableRealtimeBroadcastRules.ShouldPublishDiagnosticsAlertChange(previous, alertState))
@@ -904,8 +900,7 @@ internal sealed class WorkableRealtimeBroadcaster(
     {
         var session = CreateAuthorizedSession(
             system,
-            subscription.Authorization,
-            $"Broadcast Workable view '{subscription.ViewName}' through SignalR.");
+            subscription.Authorization);
         var view = await views.View(
             session,
             subscription.ViewName,
@@ -1109,19 +1104,16 @@ internal sealed class WorkableRealtimeBroadcaster(
 
     private static IWorkSystemSession CreateAuthorizedSession(
         IWorkSystem system,
-        WorkAuthorizationSnapshot authorization,
-        string description)
+        WorkAuthorizationSnapshot authorization)
     {
         ArgumentNullException.ThrowIfNull(system);
         ArgumentNullException.ThrowIfNull(authorization);
 
         return system.CreateSession(new WorkRequestContext(
-            authorization.Actor,
-            WorkOrigin.Create(
+            Origin: WorkOrigin.Create(
                 WorkInvocationChannel.SignalR,
-                authorization.Actor,
-                description),
-            authorization));
+                authorization.Actor),
+            Authorization: authorization));
     }
 
     private static bool IsDiagnosticsAlertChangesSubscription(WorkableRealtimeViewSubscription subscription)

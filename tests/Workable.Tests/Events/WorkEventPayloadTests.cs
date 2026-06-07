@@ -18,8 +18,8 @@ public sealed class WorkEventPayloadTests
             Task.FromResult(WorkExecutionResult.Success(WorkOutput.FromJson("""{"done":true}"""))));
         await system.Start();
 
-        await using var queuedSubscription = system.Events.Subscribe(new WorkEventFilter(DefinitionId: definition.Id, EventType: "worker.queued"));
-        await using var completedSubscription = system.Events.Subscribe(new WorkEventFilter(DefinitionId: definition.Id, EventType: "worker.completed"));
+        await using var queuedSubscription = system.Events.Subscribe(new WorkEventFilter(DefinitionName: definition.Name, EventType: "worker.queued"));
+        await using var completedSubscription = system.Events.Subscribe(new WorkEventFilter(DefinitionName: definition.Name, EventType: "worker.completed"));
         await using var queuedReader = queuedSubscription.Read().GetAsyncEnumerator();
         await using var completedReader = completedSubscription.Read().GetAsyncEnumerator();
 
@@ -41,8 +41,8 @@ public sealed class WorkEventPayloadTests
         Assert.Equal("Queued", queuedData.GetProperty("worker").GetProperty("state").GetString());
         AssertEventOrigin(
             queuedData,
-            WorkInvocationChannel.DotNet,
-            "Queue work 'events.payload' through .NET.");
+            WorkInvocationChannel.InProcess,
+            description: null);
         AssertWorkerSummaries(queuedData, logTotal: 0, timelineTotal: 0);
         AssertThinEvent(queued, queuedData);
         AssertEventKeys(queuedData, subject, concurrencyKey, identifier);
@@ -93,8 +93,8 @@ public sealed class WorkEventPayloadTests
         Assert.Equal("Canceled", data.GetProperty("worker").GetProperty("state").GetString());
         AssertEventOrigin(
             data,
-            WorkInvocationChannel.DotNet,
-            "Apply worker action 'Cancel' through .NET.");
+            WorkInvocationChannel.InProcess,
+            description: null);
     }
 
     [Fact]
@@ -170,13 +170,13 @@ public sealed class WorkEventPayloadTests
         await using var subscription = stream.Subscribe(new WorkEventFilter(WorkerId: worker.Id, EventType: "worker.purge"));
         await using var reader = subscription.Read().GetAsyncEnumerator();
         var outcome = WorkActionOutcome.Accepted(WorkAction.Purge, worker.ToSnapshot());
-        var origin = WorkOrigin.Create(
+        var requestContext = WorkRequestContext.Create(
             WorkInvocationChannel.HttpApi,
             new WorkActor(Id: "user-123", Email: "greya@example.test"),
             "Purge worker through the HTTP API.",
             "/workable/workers/123/actions/purge");
 
-        publisher.ActionApplied(worker, outcome, origin);
+        publisher.ActionApplied(worker, outcome, requestContext);
 
         var workEvent = await ReadNext(reader);
         var data = RequiredData(workEvent);
@@ -220,8 +220,8 @@ public sealed class WorkEventPayloadTests
         Assert.Equal(1, data.GetProperty("worker").GetProperty("configDifferenceCount").GetInt32());
         AssertEventOrigin(
             data,
-            WorkInvocationChannel.DotNet,
-            "Reconfigure worker through .NET.");
+            WorkInvocationChannel.InProcess,
+            description: null);
     }
 
     [Fact]
@@ -241,9 +241,9 @@ public sealed class WorkEventPayloadTests
         });
         await system.Start();
 
-        await using var iterationStartedSubscription = system.Events.Subscribe(new WorkEventFilter(DefinitionId: definition.Id, EventType: "worker.iteration.started"));
-        await using var iterationSubscription = system.Events.Subscribe(new WorkEventFilter(DefinitionId: definition.Id, EventType: "worker.iteration.completed"));
-        await using var waitingSubscription = system.Events.Subscribe(new WorkEventFilter(DefinitionId: definition.Id, EventType: "worker.waiting"));
+        await using var iterationStartedSubscription = system.Events.Subscribe(new WorkEventFilter(DefinitionName: definition.Name, EventType: "worker.iteration.started"));
+        await using var iterationSubscription = system.Events.Subscribe(new WorkEventFilter(DefinitionName: definition.Name, EventType: "worker.iteration.completed"));
+        await using var waitingSubscription = system.Events.Subscribe(new WorkEventFilter(DefinitionName: definition.Name, EventType: "worker.waiting"));
         await using var iterationStartedReader = iterationStartedSubscription.Read().GetAsyncEnumerator();
         await using var iterationReader = iterationSubscription.Read().GetAsyncEnumerator();
         await using var waitingReader = waitingSubscription.Read().GetAsyncEnumerator();
@@ -336,9 +336,9 @@ public sealed class WorkEventPayloadTests
         });
         await system.Start();
 
-        await using var retryingSubscription = system.Events.Subscribe(new WorkEventFilter(DefinitionId: definition.Id, EventType: "worker.retrying"));
-        await using var startedSubscription = system.Events.Subscribe(new WorkEventFilter(DefinitionId: definition.Id, EventType: "worker.started"));
-        await using var iterationStartedSubscription = system.Events.Subscribe(new WorkEventFilter(DefinitionId: definition.Id, EventType: "worker.iteration.started"));
+        await using var retryingSubscription = system.Events.Subscribe(new WorkEventFilter(DefinitionName: definition.Name, EventType: "worker.retrying"));
+        await using var startedSubscription = system.Events.Subscribe(new WorkEventFilter(DefinitionName: definition.Name, EventType: "worker.started"));
+        await using var iterationStartedSubscription = system.Events.Subscribe(new WorkEventFilter(DefinitionName: definition.Name, EventType: "worker.iteration.started"));
         await using var retryingReader = retryingSubscription.Read().GetAsyncEnumerator();
         await using var startedReader = startedSubscription.Read().GetAsyncEnumerator();
         await using var iterationStartedReader = iterationStartedSubscription.Read().GetAsyncEnumerator();
@@ -491,15 +491,15 @@ public sealed class WorkEventPayloadTests
         var stream = new WorkEventStream();
         var publisher = new WorkerEventPublisher(WorkSystemId.New(), null, stream, _ => { });
         var worker = CreateWorker("events.timeline-summaries");
-        var origin = WorkOrigin.Create(WorkInvocationChannel.DotNet, description: "Pause worker through .NET.");
+        var requestContext = WorkRequestContext.Create(WorkInvocationChannel.InProcess);
         await using var subscription = stream.Subscribe(new WorkEventFilter(WorkerId: worker.Id, EventType: "worker.pause"));
         await using var reader = subscription.Read().GetAsyncEnumerator();
 
         Assert.True(worker.Start(worker.Revision, advancesRevision: false, out _, CancellationToken.None).IsAccepted);
         var outcome = worker.RequestPause(worker.Revision);
-        worker.RecordActionHistory(outcome, origin);
+        worker.RecordActionHistory(outcome, requestContext);
 
-        publisher.ActionApplied(worker, outcome, origin);
+        publisher.ActionApplied(worker, outcome, requestContext);
         var workEvent = await ReadNext(reader);
         var data = RequiredData(workEvent);
 
@@ -573,14 +573,22 @@ public sealed class WorkEventPayloadTests
     private static void AssertEventOrigin(
         JsonElement data,
         WorkInvocationChannel channel,
-        string description,
+        string? description,
         string? actorId = null,
         string? actorEmail = null,
         string? urlContains = null)
     {
         var origin = data.GetProperty("origin");
         Assert.Equal(channel.ToString(), origin.GetProperty("channel").GetString());
-        Assert.Equal(description, origin.GetProperty("description").GetString());
+        if (description is null)
+        {
+            Assert.False(origin.TryGetProperty("description", out _));
+        }
+        else
+        {
+            Assert.Equal(description, origin.GetProperty("description").GetString());
+        }
+
         if (urlContains is null)
         {
             Assert.False(origin.TryGetProperty("url", out _));
@@ -684,7 +692,7 @@ public sealed class WorkEventPayloadTests
             WorkInput.Empty,
             WorkerOptions.Default,
             configuration,
-            WorkOrigin.Create(WorkInvocationChannel.DotNet, description: "Test worker."),
+            WorkRequestContext.Create(WorkInvocationChannel.InProcess),
             WorkerState.Queued,
             isStartDeferred: false,
             messages: [],
@@ -754,3 +762,10 @@ public sealed class WorkEventPayloadTests
             => Task.FromResult(WorkExecutionResult.Success());
     }
 }
+
+
+
+
+
+
+

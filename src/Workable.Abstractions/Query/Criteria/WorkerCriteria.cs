@@ -1,8 +1,8 @@
 namespace Workable;
 
 public sealed record WorkerCriteria(
-    WorkDefinitionId? DefinitionId = null,
     string? DefinitionName = null,
+    IReadOnlySet<string>? DefinitionNames = null,
     WorkSubjectId? SubjectId = null,
     WorkConcurrencyKey? ConcurrencyKey = null,
     WorkIdentifier? Identifier = null,
@@ -17,8 +17,7 @@ public sealed record WorkerCriteria(
     int Skip = 0,
     int Take = 50,
     string? Category = null,
-    bool IncludeSubcategories = true,
-    IReadOnlySet<WorkDefinitionId>? DefinitionIds = null)
+    bool IncludeSubcategories = true)
 {
     public const int DefaultTake = 50;
     public const int MaximumTake = 50;

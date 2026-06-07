@@ -26,6 +26,5 @@ public sealed record WorkSystemCatalogCategoryItem(
     int Count);
 
 public sealed record WorkSystemDefinitionItem(
-    WorkDefinitionId Id,
     string Name,
     string Category);

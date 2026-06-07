@@ -47,7 +47,6 @@ public sealed record WorkWorkerOverviewWorker(
     DateTimeOffset? NextRunAt,
     int? RetryAttempt,
     WorkWorkerOverviewOrigin CreatedOrigin,
-    WorkDefinitionId DefinitionId,
     string DefinitionName,
     string DefinitionCategory,
     int ConfigDifferenceCount);

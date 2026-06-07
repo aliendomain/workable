@@ -103,7 +103,7 @@ This audit verifies the 39 Markdown documentation files under `Docs` against the
 
 - Verified defaults documented for start, recurrence, transient retry, logging, retention, coordination, queue durability, invocation, system capacity, and system retention.
 - Corrected stale query JSON defaults for retry count and queue durability fallback polling.
-- Verified `WorkInvocationConfiguration.Default` allows `DotNet` and `HttpApi`; `Mcp` and `SignalR` remain opt-in.
+- Verified `WorkInvocationConfiguration.Default` allows `InProcess` and `HttpApi`; `Mcp` and `SignalR` remain opt-in.
 - Verified HTTP queue-time configuration intentionally omits invocation configuration and maps to `WorkInvocationConfiguration.Default`.
 
 ## Enum And Option Names

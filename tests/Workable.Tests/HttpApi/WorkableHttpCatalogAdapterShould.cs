@@ -57,8 +57,8 @@ public sealed class WorkableHttpCatalogAdapterShould
 
         Assert.Empty(level.Categories);
         Assert.Equal(
-            [general.Id],
-            level.Definitions.Select(definition => definition.Id).ToArray());
+            [general.Name],
+            level.Definitions.Select(definition => definition.Name).ToArray());
         Assert.Equal(
             [WorkDefinitionMetadataDefaults.Category],
             level.Definitions.Select(definition => definition.Category).ToArray());

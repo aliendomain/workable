@@ -14,9 +14,7 @@ internal static class WorkSystemLifecycleTestExtensions
     {
         ArgumentNullException.ThrowIfNull(system);
 
-        return system.Start(
-            CreateSystemAdministratorRequestContext("Start Workable system in tests."),
-            cancellationToken);
+        return system.Start(CreateSystemAdministratorRequestContext(), cancellationToken);
     }
 
     public static Task<WorkSystemStopResult> Stop(
@@ -25,19 +23,15 @@ internal static class WorkSystemLifecycleTestExtensions
     {
         ArgumentNullException.ThrowIfNull(system);
 
-        return system.Stop(
-            CreateSystemAdministratorRequestContext("Stop Workable system in tests."),
-            cancellationToken);
+        return system.Stop(CreateSystemAdministratorRequestContext(), cancellationToken);
     }
 
-    private static WorkRequestContext CreateSystemAdministratorRequestContext(string description)
+    private static WorkRequestContext CreateSystemAdministratorRequestContext()
         => new(
-            TestActor,
             WorkOrigin.Create(
-                WorkInvocationChannel.DotNet,
-                TestActor,
-                description),
-            WorkAuthorizationSnapshot.Create(
+                WorkInvocationChannel.InProcess,
+                TestActor),
+            Authorization: WorkAuthorizationSnapshot.Create(
                 TestActor,
                 [InternalWorkAuthorizationGroups.SystemAdministrator],
                 readableDefinitionIds: null));

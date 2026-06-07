@@ -30,7 +30,7 @@ public sealed class TypedWorkExecutorTests
     }
 
     [Fact]
-    public async Task TypedQueueOverloadsWorkThroughInterfaceByNameAndDefinitionId()
+    public async Task TypedQueueOverloadsWorkThroughInterfaceByName()
     {
         await using var system = new ServiceCollection()
             .AddWorkableSystem(builder => builder.AddWork<EchoTypedWork>())
@@ -43,16 +43,11 @@ public sealed class TypedWorkExecutorTests
         IWorkQueueService queue = system.Queue;
 
         var byName = await queue.Enqueue("typed.echo", new EchoInput("name"));
-        var byId = await queue.Enqueue(definition.Id, new EchoInput("id"));
         var nameCompletion = await byName.WaitForCompletion<EchoOutput>();
-        var idCompletion = await byId.WaitForCompletion<EchoOutput>();
 
         Assert.Equal(WorkCompletionStatus.Completed, nameCompletion.Status);
         Assert.Equal(4, nameCompletion.Output?.Echoed);
         Assert.Contains("\"echoed\":4", nameCompletion.RawOutput?.Json);
-        Assert.Equal(WorkCompletionStatus.Completed, idCompletion.Status);
-        Assert.Equal(2, idCompletion.Output?.Echoed);
-        Assert.Contains("\"echoed\":2", idCompletion.RawOutput?.Json);
     }
 
     [Fact]
@@ -116,7 +111,7 @@ public sealed class TypedWorkExecutorTests
         await system.Start();
 
         var definition = RequiredDefinition(system, "typed.delegate.input.only");
-        var handle = await system.Queue.Enqueue(definition.Id, new EchoInput("hello"));
+        var handle = await system.Queue.Enqueue(definition.Name, new EchoInput("hello"));
         var completion = await handle.WaitForCompletion();
 
         Assert.Contains("message", definition.InputSchema.JsonSchema, StringComparison.OrdinalIgnoreCase);

@@ -10,8 +10,6 @@ internal static class TransportAuthorizationTestSupport
 
     public static IReadOnlyList<string> OperateGroups { get; } = ["transport.operate"];
 
-    public static IReadOnlyList<string> ConnectGroups { get; } = ["transport.connect"];
-
     public static IReadOnlyList<string> DiagnosticsGroups { get; } = ["transport.diagnostics"];
 
     public static IReadOnlyList<string> ControlSystemGroups { get; } = ["transport.control"];
@@ -36,7 +34,7 @@ internal static class TransportAuthorizationTestSupport
 
     public static IWorkSystemSession CreateTransportSession(
         IWorkSystem system,
-        WorkInvocationChannel channel = WorkInvocationChannel.DotNet,
+        WorkInvocationChannel channel = WorkInvocationChannel.InProcess,
         WorkActor? actor = null,
         string description = "Create transport test session.")
     {
@@ -70,7 +68,6 @@ internal static class TransportAuthorizationTestSupport
         builder.ConfigureAuthorization(authorization => authorization
             .SystemAdministrators(SystemAdministratorGroups.ToArray())
             .WorkAdministrators(WorkAdministratorGroups.ToArray())
-            .AllowConnectToGroups(ConnectGroups.ToArray())
             .AllowDiagnosticsToGroups(DiagnosticsGroups.ToArray())
             .AllowControlSystemToGroups(ControlSystemGroups.ToArray())
             .AllowReadAllWorkToGroups(ReadAllWorkGroups.ToArray())
@@ -125,7 +122,6 @@ internal static class TransportAuthorizationTestSupport
     private static IEnumerable<string> DefaultGroups()
         => ReadGroups
             .Concat(OperateGroups)
-            .Concat(ConnectGroups)
             .Concat(DiagnosticsGroups)
             .Concat(ControlSystemGroups)
             .Concat(ReadAllWorkGroups)

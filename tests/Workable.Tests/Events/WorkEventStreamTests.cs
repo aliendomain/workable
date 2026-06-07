@@ -80,6 +80,7 @@ public sealed class WorkEventStreamTests
                     state.WorkSystemId,
                     state.WorkerId,
                     state.WorkDefinitionId,
+                    state.WorkDefinitionName,
                     state.SubjectId,
                     state.ConcurrencyKey,
                     state.EventType);
@@ -113,6 +114,7 @@ public sealed class WorkEventStreamTests
                     state.WorkSystemId,
                     state.WorkerId,
                     state.WorkDefinitionId,
+                    state.WorkDefinitionName,
                     state.SubjectId,
                     state.ConcurrencyKey,
                     state.EventType);
@@ -148,6 +150,7 @@ public sealed class WorkEventStreamTests
                     state.WorkSystemId,
                     state.WorkerId,
                     state.WorkDefinitionId,
+                    state.WorkDefinitionName,
                     state.SubjectId,
                     state.ConcurrencyKey,
                     state.EventType);
@@ -184,6 +187,7 @@ public sealed class WorkEventStreamTests
                     state.WorkSystemId,
                     state.WorkerId,
                     state.WorkDefinitionId,
+                    state.WorkDefinitionName,
                     state.SubjectId,
                     state.ConcurrencyKey,
                     state.EventType);
@@ -211,6 +215,7 @@ public sealed class WorkEventStreamTests
             WorkSystemId.New(),
             WorkerId.New(),
             WorkDefinitionId.New(),
+            null,
             null,
             null,
             "worker.queued",
@@ -247,6 +252,7 @@ public sealed class WorkEventStreamTests
             WorkSystemId.New(),
             acceptedWorkerId,
             WorkDefinitionId.New(),
+            null,
             null,
             null,
             "worker.started");
@@ -312,7 +318,8 @@ public sealed class WorkEventStreamTests
     {
         var stream = new WorkEventStream();
         var acceptedDefinitionId = WorkDefinitionId.New();
-        await using var subscription = stream.Subscribe(new WorkEventFilter(DefinitionId: acceptedDefinitionId));
+        var acceptedDefinitionName = $"definition-{acceptedDefinitionId.Value:N}";
+        await using var subscription = stream.Subscribe(new WorkEventFilter(DefinitionName: acceptedDefinitionName));
         await using var reader = subscription.Read().GetAsyncEnumerator();
         var ignored = CreateEvent(definitionId: WorkDefinitionId.New(), eventType: "worker.queued");
         var accepted = CreateEvent(definitionId: acceptedDefinitionId, eventType: "worker.queued");
@@ -359,12 +366,13 @@ public sealed class WorkEventStreamTests
     }
 
     [Fact]
-    public async Task FiltersByDefinitionIds()
+    public async Task FiltersByDefinitionNames()
     {
         var stream = new WorkEventStream();
         var acceptedDefinitionId = WorkDefinitionId.New();
+        var acceptedDefinitionName = $"definition-{acceptedDefinitionId.Value:N}";
         await using var subscription = stream.Subscribe(new WorkEventFilter(
-            DefinitionIds: new HashSet<WorkDefinitionId> { acceptedDefinitionId }));
+            DefinitionNames: new HashSet<string>(StringComparer.OrdinalIgnoreCase) { acceptedDefinitionName }));
         await using var reader = subscription.Read().GetAsyncEnumerator();
         var ignored = CreateEvent(definitionId: WorkDefinitionId.New(), eventType: "worker.queued");
         var accepted = CreateEvent(definitionId: acceptedDefinitionId, eventType: "worker.queued");
@@ -381,9 +389,10 @@ public sealed class WorkEventStreamTests
         var stream = new WorkEventStream();
         var acceptedWorkerId = WorkerId.New();
         var acceptedDefinitionId = WorkDefinitionId.New();
+        var acceptedDefinitionName = $"definition-{acceptedDefinitionId.Value:N}";
         await using var subscription = stream.Subscribe(new WorkEventFilter(
             WorkerId: acceptedWorkerId,
-            DefinitionId: acceptedDefinitionId,
+            DefinitionName: acceptedDefinitionName,
             EventType: "worker.completed"));
         await using var reader = subscription.Read().GetAsyncEnumerator();
         var ignoredByDefinition = CreateEvent(acceptedWorkerId, WorkDefinitionId.New(), eventType: "worker.completed");
@@ -432,6 +441,7 @@ public sealed class WorkEventStreamTests
             WorkDefinitionId.New(),
             null,
             null,
+            null,
             "worker.queued",
             () =>
             {
@@ -470,6 +480,7 @@ public sealed class WorkEventStreamTests
             WorkSystemId.New(),
             WorkerId.New(),
             WorkDefinitionId.New(),
+            null,
             null,
             null,
             "worker.queued",
@@ -647,6 +658,7 @@ public sealed class WorkEventStreamTests
             WorkDefinitionId.New(),
             null,
             null,
+            null,
             "worker.completed");
         var created = 0;
 
@@ -703,7 +715,7 @@ public sealed class WorkEventStreamTests
 
         await system.Start();
 
-        await using var subscription = system.Events.Subscribe(new WorkEventFilter(DefinitionId: definition.Id, EventType: "worker.queued"));
+        await using var subscription = system.Events.Subscribe(new WorkEventFilter(DefinitionName: definition.Name, EventType: "worker.queued"));
         await using var reader = subscription.Read().GetAsyncEnumerator();
 
         var handle = await system.Queue.Enqueue("observe-queue");

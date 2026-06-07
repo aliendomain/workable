@@ -2,11 +2,11 @@
 
 Workable can expose queueing, worker operations, system operations, and query APIs through the `Workable.HttpApi` adapter package.
 
-The HTTP API adapter uses the same Workable catalog and queueing system as direct .NET code. A work definition can be queued through HTTP only when its invocation configuration allows `WorkInvocationChannel.HttpApi`.
+The HTTP API adapter uses the same Workable catalog and queueing system as direct in-process code. A work definition can be queued through HTTP only when its invocation configuration allows `WorkInvocationChannel.HttpApi`.
 
 Invocation-channel rules matter for work invocation, not for general system/query/worker discovery routes. Definition listing, diagnostics, worker reads, lifecycle routes, and other read/control surfaces are governed by authorization and route shape, not by definition invocation-channel settings.
 
-HTTP queueing, worker actions, and worker reconfiguration record a `WorkOrigin` from the request. The origin uses `HttpContext.User` for actor identity and records the HTTP path as the origin URL.
+HTTP queueing, worker actions, and worker reconfiguration record a `WorkRequestContext` from the request. Its nested `Origin` carries the durable actor/channel provenance, and the request context also captures the HTTP path as `RequestContext.Url`. Built-in queue, action, bulk-action, and reconfiguration request bodies can also supply an optional `description` value, which Workable stores on `RequestContext.Description`.
 
 `Workable.HttpApi` is an authenticated transport. Anonymous callers are rejected before Workable routes run or request bodies are bound, and mapped systems must be authorization-enabled.
 
@@ -28,9 +28,10 @@ The default prefix is `/workable`.
 
 That transport scheme is not automatic. `AddWorkableHttpApi()` by itself does not choose one. It is commonly set by [Workable.Entra](../guides/entra-authentication.md), or by host code that wants Workable HTTP requests to authenticate with one specific ASP.NET Core scheme instead of inheriting the ambient default.
 
-When a transport scheme is configured, the host pipeline must run authorization middleware before those endpoints execute. If your host already runs `app.UseAuthorization()`, no extra step is needed. If you are using [Microsoft Entra Authentication](../guides/entra-authentication.md), `app.UseWorkableEntraAuthorization()` already calls both `UseAuthentication()` and `UseAuthorization()`.
+When a transport scheme is configured, the host pipeline must run authentication and authorization middleware before those endpoints execute. If your host already runs `app.UseAuthentication()` and `app.UseAuthorization()`, no extra step is needed.
 
 ```csharp
+app.UseAuthentication();
 app.UseAuthorization();
 app.MapWorkableApi("/internal/work");
 ```
@@ -78,7 +79,6 @@ The response includes host capabilities plus each visible system's id, optional 
         "persistentCoordinationAvailable": true
       },
       "access": {
-        "canConnect": true,
         "isSystemAdministrator": false,
         "isWorkAdministrator": false,
         "canViewDiagnostics": true,
@@ -98,7 +98,7 @@ The host-level `capabilities` object lets clients discover optional transport fe
 
 The per-system `capabilities` object is reserved for system-specific runtime behavior. `persistentCoordinationAvailable` tells clients whether that system currently has persistent coordination available through a registered persistence store. In practice, that means persistent coordination settings such as `storage: "Persistent"` can be honored for features like durable queueing, persistence-backed idempotency, and persistence-backed coordination.
 
-The systems list is filtered by the system-level `Connect` permission. Callers only see systems they are allowed to discover.
+The systems list is filtered to systems where the caller has actual access. Read access, operate access, diagnostics access, control access, or administrator roles are all enough to make a system visible.
 
 When realtime is not registered, `enabled` is `false`.
 
@@ -117,14 +117,12 @@ Diagnostics require the system-level `Diagnostics` permission or `SystemAdminist
 
 ```json
 {
-  "id": { "value": "11111111-1111-1111-1111-111111111111" },
   "name": "email",
   "state": "Started",
   "queue": {
     "rejectedWorkCount": 0,
     "lastRejectedAt": null,
     "lastRejectedStatus": null,
-    "lastRejectedDefinitionId": null,
     "lastRejectedCode": null,
     "lastRejectedMessage": null,
     "alertableRejectedWorkCount": 0,
@@ -215,7 +213,6 @@ Stopping a system stops accepting new work, interrupts active workers, waits for
 
 ```json
 {
-  "id": { "value": "11111111-1111-1111-1111-111111111111" },
   "name": "email",
   "state": "Stopped",
   "forceInterruptedWorkers": [],
@@ -235,12 +232,12 @@ The definitions endpoint returns the work definitions visible to the current cal
 GET /workable/definitions
 ```
 
-`GET /workable/definitions` also supports `category`, `includeSubcategories`, and `level` query-string parameters. `level=true` returns the lightweight catalog level for one category instead of full definition records. Those lightweight definition rows include only `id`, `name`, and `category`.
+`GET /workable/definitions` also supports `category`, `includeSubcategories`, and `level` query-string parameters. `level=true` returns the lightweight catalog level for one category instead of full definition records. Those lightweight definition rows include only `name` and `category`.
 
-Read a single full definition by id.
+Read a single full definition by name.
 
 ```http
-GET /workable/definitions/11111111-1111-1111-1111-111111111111
+GET /workable/definitions/email.welcome.send
 ```
 
 Definitions include their invocation configuration and authorization metadata. Definitions that the caller cannot read are filtered out entirely. Definitions that allow read but not operate access still appear in discovery responses so clients can display them as unavailable through HTTP queueing. Queueing that work through HTTP returns an authorization response.
@@ -262,7 +259,7 @@ Content-Type: application/json
 Reconfigure a definition's default worker options and default runtime configuration for future workers.
 
 ```http
-POST /workable/definitions/11111111-1111-1111-1111-111111111111/reconfigure
+POST /workable/definitions/email.welcome.send/reconfigure
 Content-Type: application/json
 
 {
@@ -284,14 +281,13 @@ The definition reconfiguration route requires the current definition revision. A
 
 ## Work Info
 
-Get work info by work name or work definition id. The definition-id form is available under both `/work/id/{definitionId}/info` and `/definitions/{definitionId}/info`.
+Get work info by work name. The same definition can be addressed under either `/work/{name}/info` or `/definitions/{name}/info`.
 
 The HTTP `info` payload includes the full definition, worker rollup/status, and `queueRequestSchema`, so clients can open definition configuration or queue UI without a second schema request.
 
 ```http
 GET /workable/work/email.welcome.send/info
-GET /workable/work/id/11111111-1111-1111-1111-111111111111/info
-GET /workable/definitions/11111111-1111-1111-1111-111111111111/info
+GET /workable/definitions/email.welcome.send/info
 ```
 
 ## Queue Work
@@ -309,24 +305,22 @@ Content-Type: application/json
 }
 ```
 
-Queue work by definition id.
-
-```http
-POST /workable/definitions/11111111-1111-1111-1111-111111111111/queue
-Content-Type: application/json
-
-{
-  "input": {
-    "userId": "user-123"
-  }
-}
-```
-
 By default, the HTTP adapter returns after queue acceptance.
 
 By default, worker options and runtime configuration come from the targeted work definition. Include HTTP queue options only when you want to override those defaults for this one request.
 
-Use `GET /workable/queue-request/schema` when a client wants to discover the accepted HTTP queue request shape for the selected system at runtime.
+Queue requests can also include an optional `description` when the caller wants to attach human-readable request context to the worker origin.
+
+```json
+{
+  "input": {
+    "userId": "user-123"
+  },
+  "description": "Retry welcome email after the user corrected their address."
+}
+```
+
+Use `GET /workable/queue-request/schema` when a client wants to discover the accepted HTTP queue request shape for the selected system at runtime, including the optional `description` field.
 
 Request completion when the caller needs the final worker output in the HTTP response.
 
@@ -411,7 +405,7 @@ Content-Type: application/json
 }
 ```
 
-Component and view requests accept an optional `scope`. Scopes can target `definitionId`, `definitionName`, or `category`. When `category` is supplied, `includeSubcategories` defaults to `true`. Requests can also supply component `shape` and component-specific `options`.
+Component and view requests accept an optional `scope`. Scopes can target `definitionName` or `category`. When `category` is supplied, `includeSubcategories` defaults to `true`. Requests can also supply component `shape` and component-specific `options`.
 
 Use these routes when the caller wants the shared transport-oriented view contract over HTTP. See [Views](../concepts/views.md) for canonical view names, component names, default compositions, shapes, scope behavior, and the efficiency model behind the contract.
 
@@ -606,11 +600,12 @@ POST /workable/workers/22222222-2222-2222-2222-222222222222/actions/cancel
 Content-Type: application/json
 
 {
-  "revision": 3
+  "revision": 3,
+  "description": "Cancel the duplicate worker after operator review."
 }
 ```
 
-The action route supports `Start`, `Pause`, `Cancel`, `Push`, and `Purge`.
+The action route supports `Start`, `Pause`, `Cancel`, `Push`, and `Purge`. `description` is optional and is copied into the action-history origin when supplied.
 
 Apply a worker action to all workers in the system.
 
@@ -648,9 +643,12 @@ Content-Type: application/json
 
 {
   "category": "Billing",
-  "includeSubcategories": true
+  "includeSubcategories": true,
+  "description": "Pause billing workers while the downstream service is unavailable."
 }
 ```
+
+Bulk action requests also accept an optional top-level `description`.
 
 Runtime reconfiguration uses the same revision rule.
 
@@ -660,6 +658,7 @@ Content-Type: application/json
 
 {
   "revision": 3,
+  "description": "Enable profiling while investigating this worker.",
   "changes": {
     "profilingEnabled": true
   }
@@ -674,8 +673,11 @@ Content-Type: application/json
 
 {
   "revision": 3,
+  "description": "Enable profiling while investigating this worker.",
   "changes": {
     "profilingEnabled": true
   }
 }
 ```
+
+Worker reconfiguration requests also accept an optional `description`, which is retained in reconfiguration history.

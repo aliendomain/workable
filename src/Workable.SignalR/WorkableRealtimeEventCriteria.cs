@@ -2,7 +2,7 @@ namespace Workable;
 
 public sealed record WorkableRealtimeEventCriteria(
     IReadOnlyList<string>? EventTypes = null,
-    IReadOnlyList<string>? DefinitionIds = null,
+    IReadOnlyList<string>? DefinitionNames = null,
     IReadOnlyList<WorkableRealtimeEventKeyCriteria>? Keys = null);
 
 public sealed record WorkableRealtimeEventKeyCriteria(

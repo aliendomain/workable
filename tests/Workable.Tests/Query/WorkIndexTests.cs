@@ -315,7 +315,7 @@ public sealed class WorkIndexTests
         await WaitForReadModel(system);
 
         var matches = await system.Query.Workers(new WorkerCriteria(
-            DefinitionId: targetDefinition.Id,
+            DefinitionName: targetDefinition.Name,
             SubjectId: sharedSubject,
             Identifier: targetIdentifier,
             States: new HashSet<WorkerState> { WorkerState.Queued },
@@ -796,3 +796,4 @@ public sealed class WorkIndexTests
         CancellationToken cancellationToken)
         => Task.FromResult(WorkExecutionResult.Success());
 }
+

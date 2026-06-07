@@ -17,7 +17,6 @@ internal sealed class WorkSystemQueueDiagnosticsTracker
     private long rejectedWorkCount;
     private DateTimeOffset? lastRejectedAt;
     private WorkQueueStatus? lastRejectedStatus;
-    private WorkDefinitionId? lastRejectedDefinitionId;
     private string? lastRejectedCode;
     private string? lastRejectedMessage;
     private long alertableRejectedWorkCount;
@@ -34,7 +33,6 @@ internal sealed class WorkSystemQueueDiagnosticsTracker
                     this.rejectedWorkCount,
                     this.lastRejectedAt,
                     this.lastRejectedStatus,
-                    this.lastRejectedDefinitionId,
                     this.lastRejectedCode,
                     this.lastRejectedMessage,
                     this.alertableRejectedWorkCount,
@@ -56,7 +54,6 @@ internal sealed class WorkSystemQueueDiagnosticsTracker
             this.rejectedWorkCount++;
             this.lastRejectedAt = DateTimeOffset.UtcNow;
             this.lastRejectedStatus = outcome.Status;
-            this.lastRejectedDefinitionId = outcome.DefinitionId;
             this.lastRejectedCode = primaryCode;
             this.lastRejectedMessage = primaryText;
             if (IsAlertableRejectionCode(primaryCode))

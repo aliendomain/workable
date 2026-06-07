@@ -22,7 +22,7 @@ public sealed class WorkQueueServiceShould
             "queue.dotnet.only",
             configuration: WorkConfiguration.Default with
             {
-                Invocation = WorkInvocationConfiguration.Allow(WorkInvocationChannel.DotNet),
+                Invocation = WorkInvocationConfiguration.Allow(WorkInvocationChannel.InProcess),
             });
         await using var system = CreateSystem(definition);
         await system.Start();
@@ -34,7 +34,6 @@ public sealed class WorkQueueServiceShould
         var completion = await handle.WaitForCompletion();
 
         Assert.Equal(WorkQueueStatus.Invalid, handle.QueueOutcome.Status);
-        Assert.Equal(definition.Id, handle.QueueOutcome.DefinitionId);
         Assert.Null(handle.QueueOutcome.WorkerId);
         var message = Assert.Single(handle.QueueOutcome.Messages);
         Assert.Equal("workable.invocation.channel_not_allowed", message.Code);

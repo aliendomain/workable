@@ -64,7 +64,7 @@ public static class WorkableMcpServerExtensions
         var router = services.GetRequiredService<WorkableMcpToolRouter>();
         var options = services.GetRequiredService<IOptions<WorkableMcpServerOptions>>().Value;
         var systemName = GetSystemName(services);
-        var requestContext = await GetRequestContext(services, "List Workable MCP tools.");
+        var requestContext = await GetRequestContext(services);
         var tools = GetTools(router, requestContext, options, systemName)
             .Select(descriptor =>
             {
@@ -101,7 +101,7 @@ public static class WorkableMcpServerExtensions
             ? null
             : JsonSerializer.SerializeToElement(request.Params.Arguments);
         var toolName = request.Params?.Name ?? string.Empty;
-        var requestContext = await GetRequestContext(services, $"MCP tool '{toolName}'");
+        var requestContext = await GetRequestContext(services);
         var result = await router.CallTool(toolName, arguments, options, GetSystemName(services), requestContext, cancellationToken);
 
         return new CallToolResult
@@ -142,9 +142,7 @@ public static class WorkableMcpServerExtensions
         }
     }
 
-    private static async Task<WorkRequestContext> GetRequestContext(
-        IServiceProvider services,
-        string description)
+    private static async Task<WorkRequestContext> GetRequestContext(IServiceProvider services)
     {
         var httpContext = services.GetService<IHttpContextAccessor>()?.HttpContext;
         if (httpContext is null)
@@ -158,7 +156,7 @@ public static class WorkableMcpServerExtensions
         }
 
         return services.GetRequiredService<IWorkRequestContextFactory>()
-            .Create(httpContext, WorkInvocationChannel.Mcp, description);
+            .Create(httpContext, WorkInvocationChannel.Mcp);
     }
 
     private static void EnsureSystemRequiresAuthorization(

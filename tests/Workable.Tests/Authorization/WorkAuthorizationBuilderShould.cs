@@ -45,4 +45,35 @@ public sealed class WorkAuthorizationBuilderShould
         Assert.Equal(["read.final"], afterOperateChange.Read.Groups);
         Assert.Equal(["operate.final"], afterOperateChange.Operate.Groups);
     }
+
+    [Fact]
+    public void AllowOperateToKnownAuthenticatedUsersMarksOperateAuthorization()
+    {
+        var builder = new WorkAuthorizationBuilder();
+
+        builder.AllowOperateToKnownAuthenticatedUsers();
+
+        var authorization = builder.Build();
+
+        Assert.Equal(WorkAuthorizationRegistrationSource.None, authorization.Read.Source);
+        Assert.False(authorization.Read.AllowsKnownAuthenticatedUsers);
+        Assert.Empty(authorization.Read.Groups);
+        Assert.Equal(WorkAuthorizationRegistrationSource.Fluent, authorization.Operate.Source);
+        Assert.True(authorization.Operate.AllowsKnownAuthenticatedUsers);
+        Assert.Empty(authorization.Operate.Groups);
+    }
+
+    [Fact]
+    public void AllowOperateToKnownAuthenticatedUsersCanBeCombinedWithOperateGroups()
+    {
+        var builder = new WorkAuthorizationBuilder();
+
+        builder.AllowOperateToGroups("operate.final");
+        builder.AllowOperateToKnownAuthenticatedUsers();
+
+        var authorization = builder.Build();
+
+        Assert.True(authorization.Operate.AllowsKnownAuthenticatedUsers);
+        Assert.Equal(["operate.final"], authorization.Operate.Groups);
+    }
 }

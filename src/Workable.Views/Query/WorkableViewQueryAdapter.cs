@@ -149,12 +149,6 @@ public class WorkableViewQueryAdapter
 
     public async Task<WorkInfo?> WorkInfo(
         IWorkSystemSession session,
-        WorkDefinitionId definitionId,
-        CancellationToken cancellationToken = default)
-        => await session.Query.WorkInfo(definitionId, cancellationToken: cancellationToken);
-
-    public async Task<WorkInfo?> WorkInfo(
-        IWorkSystemSession session,
         string name,
         CancellationToken cancellationToken = default)
         => await session.Query.WorkInfo(name, cancellationToken: cancellationToken);
@@ -174,7 +168,7 @@ public class WorkableViewQueryAdapter
         }
 
         var query = NormalizeWorkerOverviewCriteria(criteria);
-        session.Catalog.TryGet(worker.DefinitionId, out var definition);
+        session.Catalog.TryGet(worker.DefinitionName, out var definition);
         var activity = ResolveWorkerOverviewActivity(worker, query.Activity);
         var mergedIterations = worker.GetMergedIterations();
         var latestIteration = mergedIterations.FirstOrDefault();
@@ -219,7 +213,6 @@ public class WorkableViewQueryAdapter
                 worker.NextRunAt,
                 worker.RetryAttempt,
                 CreateWorkerOverviewOrigin(worker.Origin),
-                worker.DefinitionId,
                 worker.DefinitionName,
                 worker.DefinitionCategory,
                 CountWorkerOverviewConfigurationDifferences(worker, definition)),
@@ -314,7 +307,7 @@ public class WorkableViewQueryAdapter
         }
 
         var query = NormalizeWorkerOverviewRealtimeCriteria(criteria);
-        session.Catalog.TryGet(worker.DefinitionId, out var definition);
+        session.Catalog.TryGet(worker.DefinitionName, out var definition);
         var mergedIterations = worker.GetMergedIterations();
         var latestIteration = mergedIterations.FirstOrDefault();
         var recentIterations = IsExpandedRealtimeShape(query.WorkerDuration)
@@ -361,7 +354,6 @@ public class WorkableViewQueryAdapter
                 worker.NextRunAt,
                 worker.RetryAttempt,
                 CreateWorkerOverviewOrigin(worker.Origin),
-                worker.DefinitionId,
                 worker.DefinitionName,
                 worker.DefinitionCategory,
                 CountWorkerOverviewConfigurationDifferences(worker, definition)),
@@ -1866,16 +1858,16 @@ public class WorkableViewQueryAdapter
         return new WorkViewWorkerGridCriteria(
             ApplyExactWorkerKeyCriteria(
                 new WorkerCriteria(
-                DefinitionId: scope?.DefinitionId,
-                DefinitionName: scope?.DefinitionName,
-                States: query.States?.ToHashSet(),
-                Configuration: query.Configuration,
-                Sort: WorkerCriteriaSort.UpdatedAt,
-                Direction: WorkCriteriaSortDirection.Descending,
-                Skip: skip,
-                Take: take,
-                Category: scope?.Category,
-                IncludeSubcategories: scope?.IncludeSubcategories ?? true),
+                    DefinitionName: scope?.DefinitionName,
+                    DefinitionNames: scope?.DefinitionNames,
+                    States: query.States?.ToHashSet(),
+                    Configuration: query.Configuration,
+                    Sort: WorkerCriteriaSort.UpdatedAt,
+                    Direction: WorkCriteriaSortDirection.Descending,
+                    Skip: skip,
+                    Take: take,
+                    Category: scope?.Category,
+                    IncludeSubcategories: scope?.IncludeSubcategories ?? true),
                 keyKind,
                 keyType,
                 keyValue),
@@ -1897,14 +1889,14 @@ public class WorkableViewQueryAdapter
         return new WorkViewIterationGridCriteria(
             ApplyExactIterationKeyCriteria(
                 new WorkerIterationCriteria(
-                DefinitionId: scope?.DefinitionId,
-                DefinitionName: scope?.DefinitionName,
-                Category: scope?.Category,
-                Statuses: query.Statuses?.ToHashSet(),
-                Sort: WorkerIterationCriteriaSort.CompletedAt,
-                Direction: WorkCriteriaSortDirection.Descending,
-                Skip: skip,
-                Take: take),
+                    DefinitionName: scope?.DefinitionName,
+                    DefinitionNames: scope?.DefinitionNames,
+                    Category: scope?.Category,
+                    Statuses: query.Statuses?.ToHashSet(),
+                    Sort: WorkerIterationCriteriaSort.CompletedAt,
+                    Direction: WorkCriteriaSortDirection.Descending,
+                    Skip: skip,
+                    Take: take),
                 keyKind,
                 keyType,
                 keyValue),

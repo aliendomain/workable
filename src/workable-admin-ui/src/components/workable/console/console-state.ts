@@ -389,7 +389,6 @@ export function createServerId() {
 
 export function createFullAccessSummary(): WorkSystemAccessSummary {
   return {
-    canConnect: true,
     isSystemAdministrator: true,
     isWorkAdministrator: true,
     canViewDiagnostics: true,

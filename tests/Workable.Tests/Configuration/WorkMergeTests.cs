@@ -98,7 +98,7 @@ public sealed class WorkMergeTests
             {
                 PurgeInterval = TimeSpan.FromSeconds(30),
             },
-            Invocation = WorkInvocationConfiguration.Allow(WorkInvocationChannel.DotNet),
+            Invocation = WorkInvocationConfiguration.Allow(WorkInvocationChannel.InProcess),
         };
 
         var merged = original.MergeRuntimeOptions(overrides);
@@ -113,9 +113,9 @@ public sealed class WorkMergeTests
     }
 
     [Fact]
-    public void DefaultInvocationAllowsDotNetAndHttpApi()
+    public void DefaultInvocationAllowsInProcessAndHttpApi()
     {
-        Assert.True(WorkConfiguration.Default.Invocation.Allows(WorkInvocationChannel.DotNet));
+        Assert.True(WorkConfiguration.Default.Invocation.Allows(WorkInvocationChannel.InProcess));
         Assert.True(WorkConfiguration.Default.Invocation.Allows(WorkInvocationChannel.HttpApi));
         Assert.False(WorkConfiguration.Default.Invocation.Allows(WorkInvocationChannel.Mcp));
     }

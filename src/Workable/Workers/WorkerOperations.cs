@@ -132,10 +132,12 @@ internal sealed class WorkerOperations :
     {
         cancellationToken.ThrowIfCancellationRequested();
 
-        if (!this.TryAcceptWork(registeredWork.Definition.Id, out var rejection))
+        if (!this.TryAcceptWork(out var rejection))
         {
             return this.RejectQueue(rejection);
         }
+
+        var storedRequestContext = requestContext.WithoutAuthorization();
 
         var workerId = WorkerId.New();
         var runtimePlan = options is null
@@ -143,7 +145,7 @@ internal sealed class WorkerOperations :
             : RegisteredWorkRuntimePlan.Create(registeredWork.Definition, options);
         if (runtimePlan.ConfigurationErrors.Count > 0)
         {
-            return this.RejectQueue(WorkQueueOutcome.Invalid(registeredWork.Definition.Id, runtimePlan.ConfigurationErrors));
+            return this.RejectQueue(WorkQueueOutcome.Invalid(runtimePlan.ConfigurationErrors));
         }
 
         var persistenceStoreErrors = WorkConfigurationValidator.ValidatePersistenceStore(
@@ -151,7 +153,7 @@ internal sealed class WorkerOperations :
             this.persistenceStoreAvailable);
         if (persistenceStoreErrors.Count > 0)
         {
-            return this.RejectQueue(WorkQueueOutcome.Invalid(registeredWork.Definition.Id, persistenceStoreErrors));
+            return this.RejectQueue(WorkQueueOutcome.Invalid(persistenceStoreErrors));
         }
 
         var concurrencyInputErrors = WorkConfigurationValidator.ValidateConcurrencyInput(
@@ -159,7 +161,7 @@ internal sealed class WorkerOperations :
             input: input);
         if (concurrencyInputErrors.Count > 0)
         {
-            return this.RejectQueue(WorkQueueOutcome.Invalid(registeredWork.Definition.Id, concurrencyInputErrors));
+            return this.RejectQueue(WorkQueueOutcome.Invalid(concurrencyInputErrors));
         }
 
         var acceptance = await this.persistence.AcceptQueuedWorker(
@@ -167,7 +169,7 @@ internal sealed class WorkerOperations :
             registeredWork,
             input,
             runtimePlan,
-            requestContext.Origin,
+            storedRequestContext,
             DateTimeOffset.UtcNow,
             cancellationToken);
 
@@ -206,9 +208,7 @@ internal sealed class WorkerOperations :
         return WorkerHandle.Rejected(rejection);
     }
 
-    private bool TryAcceptWork(
-        WorkDefinitionId definitionId,
-        [NotNullWhen(false)] out WorkQueueOutcome? rejection)
+    private bool TryAcceptWork([NotNullWhen(false)] out WorkQueueOutcome? rejection)
     {
         lock (this.lifecycleSync)
         {
@@ -216,7 +216,6 @@ internal sealed class WorkerOperations :
             if (systemState is WorkSystemState.Stopping)
             {
                 rejection = WorkQueueOutcome.Invalid(
-                    definitionId,
                     [WorkMessage.Warning(
                         "workable.system.stopping",
                         "Workable is stopping and is not accepting new work.",
@@ -227,7 +226,6 @@ internal sealed class WorkerOperations :
             if (systemState is not WorkSystemState.Started)
             {
                 rejection = WorkQueueOutcome.Invalid(
-                    definitionId,
                     [WorkMessage.Warning(
                         "workable.system.not_started",
                         $"Workable is '{systemState}' and is not accepting new work.",
@@ -238,7 +236,6 @@ internal sealed class WorkerOperations :
             if (!this.acceptingWork)
             {
                 rejection = WorkQueueOutcome.Invalid(
-                    definitionId,
                     [WorkMessage.Warning(
                         "workable.system.stopping",
                         "Workable is stopping and is not accepting new work.",
@@ -250,7 +247,6 @@ internal sealed class WorkerOperations :
         if (this.GetNonFinalWorkerCount() >= this.capacity.MaximumWorkers)
         {
             rejection = WorkQueueOutcome.Invalid(
-                definitionId,
                 [WorkMessage.Warning(
                     "workable.system.capacity_reached",
                     $"Workable has reached the configured maximum non-final worker count of {this.capacity.MaximumWorkers}.",
@@ -363,8 +359,7 @@ internal sealed class WorkerOperations :
 
     internal Task<WorkSystemStopResult> StopDispatching(CancellationToken cancellationToken)
         => this.StopDispatching(
-            new WorkRequestContext(
-                WorkOrigin.Create(WorkInvocationChannel.DotNet, description: "Stop Workable system through .NET.")),
+            new WorkRequestContext(WorkOrigin.Create(WorkInvocationChannel.InProcess)),
             cancellationToken);
 
     internal async Task<WorkSystemStopResult> StopDispatching(
@@ -452,9 +447,7 @@ internal sealed class WorkerOperations :
         return this.Execute(
             worker,
             action,
-            WorkRequestContext.Create(
-                WorkInvocationChannel.DotNet,
-                description: $"Apply worker action '{action}' through .NET."),
+            WorkRequestContext.Create(WorkInvocationChannel.InProcess),
             cancellationToken);
     }
 
@@ -466,7 +459,7 @@ internal sealed class WorkerOperations :
     {
         cancellationToken.ThrowIfCancellationRequested();
 
-        return Task.FromResult(this.ApplyAction(worker, action, requestContext.Origin));
+        return Task.FromResult(this.ApplyAction(worker, action, requestContext));
     }
 
     public Task<WorkerBulkActionOutcome> ExecuteAll(
@@ -476,9 +469,7 @@ internal sealed class WorkerOperations :
         => this.ExecuteAll(
             action,
             filter,
-            WorkRequestContext.Create(
-                WorkInvocationChannel.DotNet,
-                description: $"Apply worker action '{action}' to multiple workers through .NET."),
+            WorkRequestContext.Create(WorkInvocationChannel.InProcess),
             cancellationToken);
 
     internal Task<WorkerBulkActionOutcome> ExecuteAll(
@@ -497,7 +488,7 @@ internal sealed class WorkerOperations :
         {
             cancellationToken.ThrowIfCancellationRequested();
             var version = candidate.ToSummary().Version;
-            outcomes.Add(this.ApplyAction(version, action, requestContext.Origin));
+            outcomes.Add(this.ApplyAction(version, action, requestContext));
         }
 
         return Task.FromResult(new WorkerBulkActionOutcome(
@@ -510,7 +501,7 @@ internal sealed class WorkerOperations :
     private WorkActionOutcome ApplyAction(
         WorkerVersion worker,
         WorkAction action,
-        WorkOrigin origin)
+        WorkRequestContext requestContext)
     {
         if (!this.workers.TryGetValue(worker.WorkerId, out var record))
         {
@@ -527,7 +518,8 @@ internal sealed class WorkerOperations :
             _ => WorkActionOutcome.Invalid(action, record.ToSnapshot(), [WorkMessage.Error("workable.action.invalid", $"Action '{action}' is not supported.")]),
         };
 
-        record.RecordActionHistory(outcome, origin);
+        var storedRequestContext = requestContext.WithoutAuthorization();
+        record.RecordActionHistory(outcome, storedRequestContext);
 
         if (outcome.IsAccepted)
         {
@@ -542,7 +534,7 @@ internal sealed class WorkerOperations :
             }
         }
 
-        this.workerEvents.ActionApplied(record, outcome, origin);
+        this.workerEvents.ActionApplied(record, outcome, storedRequestContext);
         return outcome;
     }
 
@@ -558,9 +550,7 @@ internal sealed class WorkerOperations :
         return this.Reconfigure(
             worker,
             changes,
-            WorkRequestContext.Create(
-                WorkInvocationChannel.DotNet,
-                description: "Reconfigure worker through .NET."),
+            WorkRequestContext.Create(WorkInvocationChannel.InProcess),
             cancellationToken);
     }
 
@@ -578,7 +568,8 @@ internal sealed class WorkerOperations :
         }
 
         var outcome = record.Reconfigure(changes, worker.Revision, this.persistenceStoreAvailable);
-        record.RecordReconfigurationHistory(changes, outcome, requestContext.Origin);
+        var storedRequestContext = requestContext.WithoutAuthorization();
+        record.RecordReconfigurationHistory(changes, outcome, storedRequestContext);
         if (outcome.IsAccepted)
         {
             this.concurrency.Synchronize(record);
@@ -601,7 +592,7 @@ internal sealed class WorkerOperations :
 
         if (outcome.IsAccepted)
         {
-            this.workerEvents.Reconfigured(record, changes, outcome, requestContext.Origin);
+            this.workerEvents.Reconfigured(record, changes, outcome, storedRequestContext);
         }
 
         return Task.FromResult(outcome);

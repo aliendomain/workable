@@ -42,7 +42,7 @@ var system = provider.GetRequiredService<IWorkSystemRegistry>().Default;
 var views = new WorkableViewQueryAdapter();
 var readModelLag = new ReadModelLagTracker();
 var lifecycleContext = WorkRequestContext.Create(
-    WorkInvocationChannel.DotNet,
+    WorkInvocationChannel.InProcess,
     new WorkActor(Id: "performance-harness", Name: "Performance Harness"),
     "Control Workable performance harness.");
 
@@ -507,11 +507,10 @@ static string FormatDuration(TimeSpan duration)
 
 static WorkRequestContext CreateHarnessRequestContext()
     => WorkRequestContext.Create(
-        WorkInvocationChannel.DotNet,
+        WorkInvocationChannel.InProcess,
         actor: new WorkActor(
             Id: "workable.perf.harness",
-            Name: "Workable Performance Harness"),
-        description: "Run Workable performance harness view queries.");
+            Name: "Workable Performance Harness"));
 
 internal static class HarnessJson
 {

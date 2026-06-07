@@ -2,7 +2,7 @@ namespace Workable;
 
 public enum WorkSystemPermission
 {
-    Connect,
+    AccessSystem,
     ViewDiagnostics,
     ControlSystem,
 }

@@ -49,7 +49,6 @@ import type {
 } from "@/lib/workable";
 
 const access: WorkSystemAccessSummary = {
-  canConnect: true,
   canControlSystem: true,
   canOperateAllWork: false,
   canReadAllWork: true,
@@ -368,7 +367,7 @@ test("server dialog explains discovery authorization failures", async () => {
     await result.click(result.getByRole("button", { name: "Load systems" }));
 
     result.getByText("Discovery failed");
-    result.getByText("This user cannot discover systems on that host. Workable Connect access is required to add the server.");
+    result.getByText("This user is not allowed to access Workable system discovery on that host.");
     assert.equal(result.getByRole("button", { name: "Save" }).hasAttribute("disabled"), true);
   } finally {
     globalThis.fetch = previousFetch;
@@ -601,7 +600,7 @@ test("server dialog disables actions while loading and retries discovery failure
 
     pending.resolve(Response.json({ error: "Forbidden" }, { status: 403 }));
     await result.waitFor(() => result.getByText("Discovery failed"));
-    result.getByText("This user cannot discover systems on that host. Workable Connect access is required to add the server.");
+    result.getByText("This user is not allowed to access Workable system discovery on that host.");
 
     await result.click(result.getByRole("button", { name: "Load systems" }));
     await result.waitFor(() => result.getByText("Ops"));
@@ -618,7 +617,6 @@ test("server dialog disables actions while loading and retries discovery failure
 
 test("navigation system helpers cover access badges, names, lifecycle, and states", () => {
   assert.deepEqual(getSystemAccessBadges(access), [
-    "Connect",
     "Work admin",
     "Diagnostics",
     "Control system",
@@ -626,7 +624,6 @@ test("navigation system helpers cover access badges, names, lifecycle, and state
     "Operate 2/5 defs",
   ]);
   assert.deepEqual(getSystemAccessBadges(createUnknownAccessSummary()), [
-    "Connect",
     "No work access",
   ]);
   assert.equal(getWorkAccessBadge("Read", 0, 5, false), null);
@@ -833,7 +830,6 @@ test("server tree and navigation header render expanded and breadcrumb option pa
 test("server tree hides lifecycle and queue controls when system access is restricted", async () => {
   clearDefinitionCatalogLevelCache();
   const restrictedAccess: WorkSystemAccessSummary = {
-    canConnect: true,
     canControlSystem: false,
     canOperateAllWork: false,
     canReadAllWork: true,

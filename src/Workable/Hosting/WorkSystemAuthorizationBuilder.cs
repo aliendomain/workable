@@ -5,7 +5,6 @@ internal sealed class WorkSystemAuthorizationBuilder(
 {
     private IReadOnlySet<string> systemAdministratorGroups = configuration.SystemAdministratorGroups;
     private IReadOnlySet<string> workAdministratorGroups = configuration.WorkAdministratorGroups;
-    private IReadOnlySet<string> connectGroups = configuration.ConnectGroups;
     private IReadOnlySet<string> diagnosticsGroups = configuration.DiagnosticsGroups;
     private IReadOnlySet<string> controlSystemGroups = configuration.ControlSystemGroups;
     private IReadOnlySet<string> readAllWorkGroups = configuration.ReadAllWorkGroups;
@@ -20,12 +19,6 @@ internal sealed class WorkSystemAuthorizationBuilder(
     public IWorkSystemAuthorizationBuilder WorkAdministrators(params string[] groups)
     {
         this.workAdministratorGroups = ToSet(groups);
-        return this;
-    }
-
-    public IWorkSystemAuthorizationBuilder AllowConnectToGroups(params string[] groups)
-    {
-        this.connectGroups = ToSet(groups);
         return this;
     }
 
@@ -58,7 +51,6 @@ internal sealed class WorkSystemAuthorizationBuilder(
         {
             SystemAdministratorGroups = this.systemAdministratorGroups,
             WorkAdministratorGroups = this.workAdministratorGroups,
-            ConnectGroups = this.connectGroups,
             DiagnosticsGroups = this.diagnosticsGroups,
             ControlSystemGroups = this.controlSystemGroups,
             ReadAllWorkGroups = this.readAllWorkGroups,

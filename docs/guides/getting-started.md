@@ -275,6 +275,8 @@ app.MapPost("/welcome/{userId}", async (
 });
 ```
 
+The `description` argument is optional. Keep it when the endpoint should preserve user-facing request context on the queued worker origin, or omit it when the route shape and actor identity already tell the whole story.
+
 If the ASP.NET Core host should validate Microsoft Entra ID bearer tokens for Workable adapters, reference `Workable.Entra` and configure the target app tenant/audience:
 
 ```xml
@@ -288,7 +290,6 @@ builder.Services.AddWorkableEntraAuthorization(
 services.AddWorkableSystem(builder =>
 {
     builder.ConfigureAuthorization(auth => auth
-        .AllowConnectToGroups("11111111-2222-3333-4444-555555555555")
         .AllowReadAllWorkToGroups("11111111-2222-3333-4444-555555555555")
         .AllowOperateAllWorkToGroups("11111111-2222-3333-4444-555555555555"));
 });

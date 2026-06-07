@@ -8,9 +8,10 @@ public sealed class HttpContextWorkRequestContextFactory(
     public WorkRequestContext Create(
         HttpContext? httpContext,
         WorkInvocationChannel channel,
-        string description)
+        string? description = null)
     {
         var actor = actors.Create(httpContext);
+        var isAuthenticated = WorkableAspNetCoreAuthentication.IsAuthenticated(httpContext);
         var url = httpContext is null
             ? null
             : $"{httpContext.Request.PathBase}{httpContext.Request.Path}{httpContext.Request.QueryString}";
@@ -18,6 +19,7 @@ public sealed class HttpContextWorkRequestContextFactory(
             channel,
             actor,
             description,
-            url);
+            url,
+            isAuthenticated);
     }
 }

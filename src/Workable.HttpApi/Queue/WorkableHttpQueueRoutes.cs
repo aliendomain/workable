@@ -38,32 +38,10 @@ internal static class WorkableHttpQueueRoutes
                 httpContext,
                 system,
                 requestContexts,
-                $"Queue work '{name}' through HTTP API.");
+                request?.Description);
             var result = await queue.Enqueue(session, name, request, cancellationToken);
             return WorkableHttpRouteResults.ToQueueHttpResult(result);
         });
 
-        group.MapPost("/definitions/{definitionId:guid}/queue", async (
-            Guid definitionId,
-            WorkableHttpWorkRequest? request,
-            HttpContext httpContext,
-            WorkableHttpTopologyResolver topology,
-            WorkableHttpQueueAdapter queue,
-            IWorkRequestContextFactory requestContexts,
-            CancellationToken cancellationToken) =>
-        {
-            if (!WorkableHttpRouteResults.TryResolveSystem(httpContext, topology, out var system, out var notFound))
-            {
-                return notFound;
-            }
-
-            var session = WorkableHttpRequestContext.CreateSession(
-                httpContext,
-                system,
-                requestContexts,
-                $"Queue work definition '{definitionId:D}' through HTTP API.");
-            var result = await queue.Enqueue(session, new WorkDefinitionId(definitionId), request, cancellationToken);
-            return WorkableHttpRouteResults.ToQueueHttpResult(result);
-        });
     }
 }

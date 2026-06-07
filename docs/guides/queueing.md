@@ -16,16 +16,16 @@ IWorkerHandle handle = await workSystem.Queue.Enqueue(
 
 The name is matched case-insensitively within the system catalog.
 
-## Queue By Definition Id
+## Queue By Catalog Name
 
-Queue by `WorkDefinitionId` when the caller already has a definition from the catalog or query API.
+Queue by the definition name even when the caller already has a `WorkDefinition` from the catalog or query API.
 
 ```csharp
 WorkDefinition definition = workSystem.Catalog.Definitions
     .Single(definition => definition.Name == "email.welcome.send");
 
 IWorkerHandle handle = await workSystem.Queue.Enqueue(
-    definition.Id,
+    definition.Name,
     cancellationToken: cancellationToken);
 ```
 
@@ -53,11 +53,11 @@ IWorkerHandle handle = await workSystem.Queue.Enqueue(
     cancellationToken: cancellationToken);
 ```
 
-Typed input can also be queued by definition id.
+Typed input can also be queued by name when the caller already has the definition object.
 
 ```csharp
 IWorkerHandle handle = await workSystem.Queue.Enqueue(
-    definition.Id,
+    definition.Name,
     new SendWelcomeEmailArgs("user-123"),
     cancellationToken: cancellationToken);
 ```
@@ -166,13 +166,13 @@ Configuration supplied through queue options is merged over the definition defau
 
 ## Request Context And Origin
 
-Direct .NET queue calls record a `WorkOrigin` with `WorkInvocationChannel.DotNet`. By default, the actor is unknown.
+Direct in-process queue calls record a `WorkOrigin` with `WorkInvocationChannel.InProcess`. By default, the actor is unknown.
 
 When the caller already knows who is making the request, create a `WorkRequestContext` and queue through a session instead of calling `IWorkSystem.Queue` directly.
 
 ```csharp
 var requestContext = WorkRequestContext.Create(
-    WorkInvocationChannel.DotNet,
+    WorkInvocationChannel.InProcess,
     new WorkActor(Id: "current-user-id"),
     "Queue welcome email from application service.");
 
@@ -183,6 +183,20 @@ IWorkerHandle handle = await session.Queue.Enqueue(
     input: WorkInput.Empty,
     cancellationToken: cancellationToken);
 ```
+
+The `description` argument is optional. Use it when the caller wants to preserve additional human-readable context on the worker origin.
+
+Trusted direct in-process callers can also set `isAuthenticated: true` when the request should count as an authenticated caller for authorization rules such as `AllowOperateToKnownAuthenticatedUsers()`.
+
+```csharp
+var requestContext = WorkRequestContext.Create(
+    WorkInvocationChannel.InProcess,
+    new WorkActor(Id: "current-user-id"),
+    "Queue welcome email from application service.",
+    isAuthenticated: true);
+```
+
+Only set that flag when the host has already authenticated the caller and the supplied actor is a real known identity. ASP.NET Core hosts that use `IWorkRequestContextFactory` do not need to set it manually.
 
 ASP.NET Core hosts can use `Workable.AspNetCore` to create authenticated request contexts from `HttpContext` inside their own controllers or minimal API routes. This does not expose Workable's built-in HTTP API endpoints.
 

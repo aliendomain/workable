@@ -353,13 +353,15 @@ ORDER BY CreatedAt, WorkerId;
                     while (await reader.ReadAsync(cancellationToken))
                     {
                         var workerId = new WorkerId(reader.GetGuid(0));
+                        var requestContext = DeserializeRequestContext(reader, 5);
+
                         entries.Add(new WorkQueueDurabilityEntry(
                             new WorkQueueDurabilityLease(workerId, request.OwnerId, leaseId),
                             reader.GetString(1),
                             Deserialize<WorkInput>(reader, 2),
                             Deserialize<WorkerOptions>(reader, 3) ?? WorkerOptions.Default,
                             Deserialize<WorkConfiguration>(reader, 4) ?? WorkConfiguration.Default,
-                            Deserialize<WorkOrigin>(reader, 5) ?? WorkOrigin.Create(WorkInvocationChannel.DotNet, description: "Durable queue replay."),
+                            requestContext,
                             reader.GetFieldValue<DateTimeOffset>(6)));
                     }
                 }
@@ -673,7 +675,7 @@ VALUES
         Add(command, "@InputJson", Serialize(request.Input));
         Add(command, "@OptionsJson", Serialize(request.Options with { QueueDurabilityTransaction = null }));
         Add(command, "@ConfigurationJson", Serialize(request.Configuration));
-        Add(command, "@OriginJson", Serialize(request.Origin));
+        Add(command, "@OriginJson", Serialize(request.RequestContext));
         Add(command, "@CreatedAt", request.CreatedAt);
 
         try
@@ -729,7 +731,7 @@ VALUES
         Add(command, "@HasIdempotencyReservation", true);
         Add(command, "@SubjectType", request.SubjectId.Type);
         Add(command, "@SubjectValue", request.SubjectId.Value);
-        Add(command, "@OriginJson", Serialize(request.Origin));
+        Add(command, "@OriginJson", Serialize(request.RequestContext));
         Add(command, "@CreatedAt", request.CreatedAt);
 
         try
@@ -879,6 +881,30 @@ VALUES
             ? default
             : JsonSerializer.Deserialize<T>(reader.GetString(ordinal), JsonOptions);
 
+    private static WorkRequestContext DeserializeRequestContext(DbDataReader reader, int ordinal)
+    {
+        if (reader.IsDBNull(ordinal))
+        {
+            return new WorkRequestContext(WorkOrigin.Create(WorkInvocationChannel.InProcess));
+        }
+
+        var json = reader.GetString(ordinal);
+        var payload = JsonSerializer.Deserialize<WorkRequestContextPayload>(json, JsonOptions);
+        if (payload?.Origin is not null)
+        {
+            return new WorkRequestContext(
+                payload.Origin,
+                payload.Description,
+                payload.Url,
+                payload.Authorization,
+                payload.IsAuthenticated);
+        }
+
+        return new WorkRequestContext(
+            JsonSerializer.Deserialize<WorkOrigin>(json, JsonOptions) ??
+            WorkOrigin.Create(WorkInvocationChannel.InProcess));
+    }
+
     private static void Add(DbCommand command, string name, object? value)
     {
         var parameter = command.CreateParameter();
@@ -890,6 +916,13 @@ VALUES
     private sealed record RenewalLeasePayload(Guid WorkerId, string LeaseId);
 
     private sealed record CleanupWorkerPayload(Guid WorkerId, string? LeaseId);
+
+    private sealed record WorkRequestContextPayload(
+        WorkOrigin? Origin,
+        string? Description,
+        string? Url,
+        WorkAuthorizationSnapshot? Authorization,
+        bool IsAuthenticated);
 
     private sealed class IReadOnlySetJsonConverterFactory : JsonConverterFactory
     {

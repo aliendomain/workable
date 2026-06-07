@@ -68,7 +68,7 @@ Use `IWorkQueryService.Worker` when you need full authoritative worker detail.
 WorkerSnapshot? worker = await workSystem.Query.Worker(workerId, cancellationToken: cancellationToken);
 ```
 
-`WorkerSnapshot.ActionHistory` records worker action and reconfiguration attempts that were applied to that worker. Each entry includes the operation kind, action when applicable, outcome status, origin, revision, state sequence, messages, the associated iteration sequence when the action was recorded against a tracked iteration, and requested reconfiguration changes when applicable.
+`WorkerSnapshot.ActionHistory` records worker action and reconfiguration attempts that were applied to that worker. Each entry includes the operation kind, action when applicable, outcome status, `RequestContext`, revision, state sequence, messages, the associated iteration sequence when the action was recorded against a tracked iteration, and requested reconfiguration changes when applicable. `RequestContext.Origin` still carries the durable actor/channel provenance.
 
 Use `IWorkQueryService.Workers` to retrieve workers that match a `WorkerCriteria`. It returns `WorkerOverviewItem` rows instead of full snapshots.
 
@@ -351,7 +351,6 @@ The examples below show the serialized JSON shape returned by HTTP and MCP adapt
   "workers": [
     {
       "id": { "value": "00000000-0000-0000-0000-000000000000" },
-      "definitionId": { "value": "00000000-0000-0000-0000-000000000000" },
       "definitionName": "email.welcome.send",
       "subjectId": { "type": "user", "value": "user-123" },
       "concurrencyKey": { "type": "tenant", "value": "tenant-456" },
@@ -386,7 +385,6 @@ The examples below show the serialized JSON shape returned by HTTP and MCP adapt
     {
       "workerId": { "value": "00000000-0000-0000-0000-000000000000" },
       "sequence": 2,
-      "definitionId": { "value": "00000000-0000-0000-0000-000000000000" },
       "definitionName": "email.welcome.send",
       "category": "Email",
       "workerState": "Completed",
@@ -444,7 +442,6 @@ The examples below show the serialized JSON shape returned by HTTP and MCP adapt
       "workers": [
         {
           "id": { "value": "00000000-0000-0000-0000-000000000000" },
-          "definitionId": { "value": "00000000-0000-0000-0000-000000000000" },
           "definitionName": "claim.review",
           "subjectId": { "type": "claim", "value": "CLM-123" },
           "concurrencyKey": null,
@@ -485,7 +482,6 @@ The examples below show the serialized JSON shape returned by HTTP and MCP adapt
       "workers": [
         {
           "id": { "value": "00000000-0000-0000-0000-000000000000" },
-          "definitionId": { "value": "00000000-0000-0000-0000-000000000000" },
           "definitionName": "claim.review",
           "subjectId": { "type": "claim", "value": "CLM-123" },
           "concurrencyKey": null,
@@ -527,7 +523,6 @@ The examples below show the serialized JSON shape returned by HTTP and MCP adapt
         {
           "workerId": { "value": "00000000-0000-0000-0000-000000000000" },
           "sequence": 2,
-          "definitionId": { "value": "00000000-0000-0000-0000-000000000000" },
           "definitionName": "claim.review",
           "category": "Claims",
           "workerState": "Completed",
@@ -579,7 +574,6 @@ The examples below show the serialized JSON shape returned by HTTP and MCP adapt
   "id": { "value": "00000000-0000-0000-0000-000000000000" },
   "revision": 3,
   "stateSequence": 5,
-  "definitionId": { "value": "00000000-0000-0000-0000-000000000000" },
   "definitionName": "email.welcome.send",
   "definitionCategory": "Email",
   "subjectId": { "type": "user", "value": "user-123" },
@@ -595,7 +589,7 @@ The examples below show the serialized JSON shape returned by HTTP and MCP adapt
       "id": "assistant-user",
       "name": "Assistant User"
     },
-    "description": "MCP tool 'workable_work_email_welcome_send'",
+    "description": "Send the delayed welcome email after support verified the account.",
     "url": "/workable/mcp"
   },
   "state": "Completed",
@@ -669,7 +663,7 @@ The examples below show the serialized JSON shape returned by HTTP and MCP adapt
       "maximumFinalWorkers": 1000
     },
     "invocation": {
-      "allowedChannels": ["DotNet", "HttpApi"]
+      "allowedChannels": ["InProcess", "HttpApi"]
     }
   },
   "messages": [
@@ -754,7 +748,7 @@ The examples below show the serialized JSON shape returned by HTTP and MCP adapt
         "actor": {
           "id": "user-123"
         },
-        "description": "Apply worker action 'Cancel' through HTTP API.",
+        "description": "Cancel the duplicate worker after operator review.",
         "url": "/workable/workers/00000000-0000-0000-0000-000000000000/actions/cancel"
       },
       "revision": 2,
@@ -773,7 +767,7 @@ The examples below show the serialized JSON shape returned by HTTP and MCP adapt
         "actor": {
           "id": "user-123"
         },
-        "description": "Reconfigure worker through HTTP API.",
+        "description": "Enable profiling while investigating this worker.",
         "url": "/workable/workers/00000000-0000-0000-0000-000000000000/reconfigure"
       },
       "revision": 3,
@@ -799,6 +793,8 @@ The examples below show the serialized JSON shape returned by HTTP and MCP adapt
   }
 }
 ```
+
+Origin descriptions are optional. Built-in HTTP and MCP transports preserve them when the caller supplies one, but Workable does not invent transport descriptions on its own.
 
 ### Work Definition
 
@@ -876,7 +872,7 @@ The examples below show the serialized JSON shape returned by HTTP and MCP adapt
           "maximumFinalWorkers": 1000
         },
         "invocation": {
-          "allowedChannels": ["DotNet", "HttpApi"]
+          "allowedChannels": ["InProcess", "HttpApi"]
         }
       },
       "metadata": {
@@ -888,11 +884,13 @@ The examples below show the serialized JSON shape returned by HTTP and MCP adapt
       "authorization": {
         "read": {
           "groups": [],
-          "source": "None"
+          "source": "None",
+          "allowsKnownAuthenticatedUsers": false
         },
         "operate": {
           "groups": [],
-          "source": "None"
+          "source": "None",
+          "allowsKnownAuthenticatedUsers": false
         }
       },
       "revision": 0,
@@ -980,18 +978,20 @@ The examples below show the serialized JSON shape returned by HTTP and MCP adapt
         "maximumFinalWorkers": 1000
       },
       "invocation": {
-        "allowedChannels": ["DotNet", "HttpApi"]
+        "allowedChannels": ["InProcess", "HttpApi"]
       }
     },
     "metadata": null,
     "authorization": {
       "read": {
         "groups": [],
-        "source": "None"
+        "source": "None",
+        "allowsKnownAuthenticatedUsers": false
       },
       "operate": {
         "groups": [],
-        "source": "None"
+        "source": "None",
+        "allowsKnownAuthenticatedUsers": false
       }
     },
     "revision": 0,
@@ -1102,7 +1102,6 @@ For incremental refreshes, the system state can be queried in smaller slices:
   "failedWorkers": [
     {
       "id": { "value": "00000000-0000-0000-0000-000000000000" },
-      "definitionId": { "value": "00000000-0000-0000-0000-000000000000" },
       "definitionName": "email.digest.send",
       "subjectId": { "type": "claim", "value": "CLM-123" },
       "concurrencyKey": null,
@@ -1123,7 +1122,6 @@ For incremental refreshes, the system state can be queried in smaller slices:
     {
       "workerId": { "value": "00000000-0000-0000-0000-000000000000" },
       "sequence": 2,
-      "definitionId": { "value": "00000000-0000-0000-0000-000000000000" },
       "definitionName": "email.digest.send",
       "category": "Email",
       "workerState": "Retrying",

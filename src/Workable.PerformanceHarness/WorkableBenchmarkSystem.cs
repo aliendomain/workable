@@ -51,7 +51,6 @@ internal sealed class WorkableBenchmarkSystem : IAsyncDisposable
             if (requiresAuthorization)
             {
                 builder.ConfigureAuthorization(authorization => authorization
-                    .AllowConnectToGroups(OperatorGroup)
                     .AllowControlSystemToGroups(OperatorGroup)
                     .AllowDiagnosticsToGroups(OperatorGroup));
             }
@@ -90,7 +89,7 @@ internal sealed class WorkableBenchmarkSystem : IAsyncDisposable
         {
             var definition = definitions[index % definitions.Length];
             var handle = await session.Queue.Enqueue(
-                definition.Id,
+                definition.Name,
                 CreateInput(index),
                 cancellationToken: cancellationToken);
             if (!handle.QueueOutcome.IsAccepted)
@@ -134,14 +133,10 @@ internal sealed class WorkableBenchmarkSystem : IAsyncDisposable
         var actor = new WorkActor(
             Id: "workable.performance.benchmark",
             Name: "Workable Performance Benchmark");
-        var origin = WorkOrigin.Create(
-            WorkInvocationChannel.DotNet,
-            actor,
-            "Run Workable BenchmarkDotNet scenario.");
+        var origin = WorkOrigin.Create(WorkInvocationChannel.InProcess, actor);
         return new WorkRequestContext(
-            actor,
-            origin,
-            WorkAuthorizationSnapshot.Create(actor, [OperatorGroup], readableDefinitionIds: null));
+            Origin: origin,
+            Authorization: WorkAuthorizationSnapshot.Create(actor, [OperatorGroup], readableDefinitionIds: null));
     }
 
     private static Task<WorkExecutionResult> SuccessfulWork(

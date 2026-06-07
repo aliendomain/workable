@@ -19,17 +19,16 @@ public sealed class WorkableHttpTopologyResolver(
     {
         ArgumentNullException.ThrowIfNull(requestContext);
 
-        var defaultSystemId = registry.Default.Id;
+        var defaultSystem = registry.Default;
         var systems = registry.Systems
             .Select(system => (System: system, Access: system.DescribeAccess(requestContext)))
-            .Where(result => result.Access.CanConnect)
+            .Where(result => result.Access.HasAnyAccess())
             .OrderBy(result => result.System.Name is null ? 0 : 1)
             .ThenBy(result => result.System.Name, StringComparer.OrdinalIgnoreCase)
             .Select(result => new WorkableHttpSystemDescriptor(
-                result.System.Id,
                 result.System.Name,
                 result.System.State,
-                result.System.Id == defaultSystemId,
+                ReferenceEquals(result.System, defaultSystem),
                 CreateSystemCapabilities(result.System),
                 result.Access))
             .ToList();
@@ -48,7 +47,7 @@ public sealed class WorkableHttpTopologyResolver(
         ArgumentNullException.ThrowIfNull(requestContext);
 
         await system.Start(requestContext, cancellationToken);
-        return new WorkableHttpSystemLifecycleResult(system.Id, system.Name, system.State);
+        return new WorkableHttpSystemLifecycleResult(system.Name, system.State);
     }
 
     internal static WorkableHttpSystemDiagnostics Diagnostics(
@@ -59,7 +58,6 @@ public sealed class WorkableHttpTopologyResolver(
         ArgumentNullException.ThrowIfNull(session);
 
         return new WorkableHttpSystemDiagnostics(
-            system.Id,
             system.Name,
             system.State,
             session.Diagnostics.Queue,
@@ -80,7 +78,6 @@ public sealed class WorkableHttpTopologyResolver(
 
         var result = await system.Stop(requestContext, cancellationToken);
         return new WorkableHttpSystemStopResult(
-            system.Id,
             system.Name,
             system.State,
             result.ForceInterruptedWorkers)

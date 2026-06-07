@@ -65,7 +65,7 @@ public sealed class WorkSystemLifecycleTests
     }
 
     [Fact]
-    public void RegistryCanLookupSystemsByIdAndName()
+    public void RegistryCanLookupNamedSystemsByName()
     {
         var registry = new ServiceCollection()
             .AddWorkableSystem(builder => builder.StartWithHost())
@@ -74,11 +74,10 @@ public sealed class WorkSystemLifecycleTests
             .GetRequiredService<IWorkSystemRegistry>();
         var background = registry.Systems.Single(system => system.Name == "background");
 
-        Assert.True(registry.TryGet(registry.Default.Id, out var byId));
-        Assert.Same(registry.Default, byId);
-        Assert.True(registry.TryGet("BACKGROUND", out var byName));
-        Assert.Same(background, byName);
-        Assert.False(registry.TryGet(WorkSystemId.New(), out _));
+        Assert.Null(registry.Default.Name);
+        Assert.True(registry.TryGet("BACKGROUND", out var byBackgroundName));
+        Assert.Same(background, byBackgroundName);
+        Assert.False(registry.TryGet("missing-system", out _));
         Assert.False(registry.TryGet("missing", out _));
     }
 
@@ -665,3 +664,5 @@ public sealed class WorkSystemLifecycleTests
         }
     }
 }
+
+

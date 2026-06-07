@@ -715,7 +715,7 @@ export function WorkableConsole() {
   );
   const eventViewerCriteria = useMemo<WorkableRealtimeEventCriteria>(
     () => ({
-      definitionIds: selectedEventViewerDefinitionIds.length > 0
+      definitionNames: selectedEventViewerDefinitionIds.length > 0
         ? selectedEventViewerDefinitionIds
         : null,
       eventTypes: selectedEventViewerEventTypes.length > 0
@@ -747,11 +747,11 @@ export function WorkableConsole() {
         : [...current, eventType].sort((left, right) => left.localeCompare(right))
     );
   }, []);
-  const toggleEventViewerDefinition = useCallback((definitionId: string) => {
+  const toggleEventViewerDefinition = useCallback((definitionName: string) => {
     setSelectedEventViewerDefinitionIds((current) =>
-      current.includes(definitionId)
-        ? current.filter((candidate) => candidate !== definitionId)
-        : [...current, definitionId].sort((left, right) => left.localeCompare(right))
+      current.includes(definitionName)
+        ? current.filter((candidate) => candidate !== definitionName)
+        : [...current, definitionName].sort((left, right) => left.localeCompare(right))
     );
   }, []);
   const addEventViewerKey = useCallback((key: WorkableRealtimeEventKeyCriteria) => {
@@ -1341,7 +1341,7 @@ export function WorkableConsole() {
   };
 
   const openDefinition = (
-    definitionId: string,
+    definitionName: string,
     options?: {
       definitionName?: string;
       systemId?: string;
@@ -1354,8 +1354,8 @@ export function WorkableConsole() {
     setSelectedWorkerId(null);
     setSelectedIterationWorkerId(null);
     setSelectedIterationSequence(null);
-    setSelectedDefinitionId(definitionId);
-    setSelectedDefinitionName(options?.definitionName ?? null);
+    setSelectedDefinitionId(definitionName);
+    setSelectedDefinitionName(options?.definitionName ?? definitionName);
     const isSystemChange = systemId !== activeSystem?.id;
     setConsoleState((current) => ({
       ...current,
@@ -2035,7 +2035,7 @@ export function WorkableConsole() {
                 <EmptyServerState
                   description={
                     consoleState.hosts.length > 0
-                      ? "Your saved servers are still configured, but the current user cannot Connect to any currently discovered Workable systems."
+                      ? "Your saved servers are still configured, but the current user cannot access any currently discovered Workable systems."
                       : undefined
                   }
                   onAddServer={() => setServerDialog({ mode: "add" })}
@@ -2975,15 +2975,14 @@ function RealtimeEventsTabPanel({
                   renderDefinition={(definition) => (
                     <label className="flex cursor-pointer items-start gap-2 px-2 py-1.5 text-xs hover:bg-accent/50">
                       <input
-                        checked={selectedDefinitionIds.includes(definition.id.value)}
+                        checked={selectedDefinitionIds.includes(definition.name)}
                         className="mt-0.5 size-4 accent-primary"
-                        onChange={() => onDefinitionToggle(definition.id.value)}
+                        onChange={() => onDefinitionToggle(definition.name)}
                         type="checkbox"
                       />
                       <FileCode2 className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
                       <span className="min-w-0">
                         <span className="block truncate font-medium">{definition.name}</span>
-                        <span className="block truncate font-mono text-muted-foreground">{definition.id.value}</span>
                       </span>
                     </label>
                   )}
@@ -3107,7 +3106,7 @@ function RealtimeEventsTabPanel({
                       {workEvent.workerId?.value ?? "-"}
                     </span>
                     <span className="truncate font-mono text-muted-foreground">
-                      {workEvent.workDefinitionId?.value ?? "-"}
+                      {workEvent.workDefinitionName ?? "-"}
                     </span>
                   </button>
                 ))}
@@ -3150,17 +3149,17 @@ export function formatEventBatchTypeSummary(eventTypes: string[]) {
 }
 
 export function formatEventBatchDefinitionSummary(events: WorkableRealtimeEvent[]) {
-  const definitionIds = [...new Set(events
-    .map((workEvent) => workEvent.workDefinitionId?.value)
-    .filter((definitionId): definitionId is string => Boolean(definitionId)))];
+  const definitionNames = [...new Set(events
+    .map((workEvent) => workEvent.workDefinitionName)
+    .filter((definitionName): definitionName is string => Boolean(definitionName)))];
 
-  if (definitionIds.length === 0) {
+  if (definitionNames.length === 0) {
     return "No definition";
   }
 
-  return definitionIds.length === 1
-    ? definitionIds[0]
-    : `${definitionIds.length} definitions`;
+  return definitionNames.length === 1
+    ? definitionNames[0]
+    : `${definitionNames.length} definitions`;
 }
 
 export function formatEventBatchWorkerSummary(events: WorkableRealtimeEvent[]) {
@@ -3185,7 +3184,7 @@ export function getRealtimeEventSearchText(message: RealtimeEventMessage) {
     ...message.events.flatMap((workEvent) => [
       workEvent.eventType,
       workEvent.workerId?.value ?? null,
-      workEvent.workDefinitionId?.value ?? null,
+      workEvent.workDefinitionName ?? null,
       workEvent.subjectId?.type ?? null,
       workEvent.subjectId?.value ?? null,
     ]),

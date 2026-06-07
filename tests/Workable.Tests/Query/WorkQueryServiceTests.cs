@@ -45,7 +45,7 @@ public sealed class WorkQueryServiceTests
         await WaitForReadModel(system);
 
         var result = await system.Query.Workers(new WorkerCriteria(
-            DefinitionId: definition.Id,
+            DefinitionName: definition.Name,
             SubjectId: subject,
             ConcurrencyKey: key,
             Identifier: identifier));
@@ -229,7 +229,6 @@ public sealed class WorkQueryServiceTests
         Assert.Contains("processed", snapshot.Output?.Json);
         var item = Assert.Single(byDefinitionNameAndStatus.Iterations);
         Assert.Equal(workerId, item.WorkerId);
-        Assert.Equal(definition.Id, item.DefinitionId);
         Assert.Equal("iteration.query", item.DefinitionName);
         Assert.Equal("Claims", item.Category);
         Assert.Equal(WorkerState.Completed, item.WorkerState);
@@ -1191,7 +1190,7 @@ public sealed class WorkQueryServiceTests
         await WaitForReadModel(system);
 
         var exact = await system.Query.WorkerStatusSummary(new WorkerCriteria(
-            DefinitionId: targetDefinition.Id,
+            DefinitionName: targetDefinition.Name,
             SubjectId: subject,
             ConcurrencyKey: concurrencyKey,
             Identifier: identifier));
@@ -2074,3 +2073,5 @@ public sealed class WorkQueryServiceTests
             => Task.FromResult(WorkExecutionResult.Success());
     }
 }
+
+

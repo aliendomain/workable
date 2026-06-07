@@ -14,23 +14,25 @@ internal sealed class AuthorizedWorkEventStream(IWorkEventStream inner, WorkAuth
 
     private WorkEventFilter? CreateAuthorizedFilter(WorkEventFilter? filter)
     {
-        var readable = authorization.ReadableDefinitionIds();
+        var readable = authorization.ReadableDefinitions()
+            .Select(definition => definition.Name)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
         if (readable.Count == 0)
         {
             return null;
         }
 
-        if (filter?.DefinitionId is { } definitionId)
+        if (!string.IsNullOrWhiteSpace(filter?.DefinitionName))
         {
-            return readable.Contains(definitionId) ? filter : null;
+            return readable.Contains(filter.DefinitionName) ? filter : null;
         }
 
-        var definitionIds = filter?.DefinitionIds is { Count: > 0 } requested
-            ? requested.Where(readable.Contains).ToHashSet()
+        var definitionNames = filter?.DefinitionNames is { Count: > 0 } requested
+            ? requested.Where(readable.Contains).ToHashSet(StringComparer.OrdinalIgnoreCase)
             : readable;
 
-        return definitionIds.Count == 0
+        return definitionNames.Count == 0
             ? null
-            : (filter ?? new WorkEventFilter()) with { DefinitionIds = definitionIds };
+            : (filter ?? new WorkEventFilter()) with { DefinitionNames = definitionNames };
     }
 }

@@ -3,11 +3,12 @@ namespace Workable;
 internal sealed class WorkAuthorizationEvaluator(
     IWorkCatalog catalog,
     IReadOnlySet<string> groups,
+    bool isKnownAuthenticatedUser,
     WorkSystemAuthorizationEvaluator? systemAuthorization = null)
 {
     public bool CanRead(WorkDefinition definition)
         => systemAuthorization?.HasReadAllWorkAccess() == true
-            || definition.Authorization.CanRead(groups);
+            || definition.Authorization.CanRead(groups, isKnownAuthenticatedUser);
 
     public bool CanRead(WorkDefinitionId definitionId)
     {
@@ -21,7 +22,7 @@ internal sealed class WorkAuthorizationEvaluator(
 
     public bool CanOperate(WorkDefinition definition)
         => systemAuthorization?.HasOperateAllWorkAccess() == true
-            || definition.Authorization.CanOperate(groups);
+            || definition.Authorization.CanOperate(groups, isKnownAuthenticatedUser);
 
     public bool CanOperate(WorkDefinitionId definitionId)
     {
@@ -42,17 +43,24 @@ internal sealed class WorkAuthorizationEvaluator(
             this.OperableDefinitionIds().Count == catalog.Definitions.Count;
 
     public IReadOnlySet<WorkDefinitionId> ReadableDefinitionIds()
-        => catalog.Definitions
-            .Where(this.CanRead)
+        => this.ReadableDefinitions()
             .Select(definition => definition.Id)
             .ToHashSet();
 
     public IReadOnlySet<WorkDefinitionId> OperableDefinitionIds()
-        => catalog.Definitions
-            .Where(this.CanOperate)
+        => this.OperableDefinitions()
             .Select(definition => definition.Id)
             .ToHashSet();
 
+    public IReadOnlyList<WorkDefinition> ReadableDefinitions()
+        => [.. catalog.Definitions.Where(this.CanRead)];
+
+    public IReadOnlyList<WorkDefinition> OperableDefinitions()
+        => [.. catalog.Definitions.Where(this.CanOperate)];
+
     private bool TryGet(WorkDefinitionId definitionId, [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out WorkDefinition? definition)
-        => catalog.TryGet(definitionId, out definition);
+    {
+        definition = catalog.Definitions.SingleOrDefault(candidate => candidate.Id == definitionId);
+        return definition is not null;
+    }
 }

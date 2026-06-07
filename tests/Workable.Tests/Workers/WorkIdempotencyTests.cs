@@ -82,7 +82,7 @@ public sealed class WorkIdempotencyTests
         var first = await system.Queue.Enqueue("subject-only", SubjectInput(subject));
         var second = await system.Queue.Enqueue("subject-only", SubjectInput(subject));
         await WaitForReadModel(system);
-        var matches = (await system.Query.Workers(new WorkerCriteria(DefinitionId: definition.Id, SubjectId: subject, Take: 10))).Workers;
+        var matches = (await system.Query.Workers(new WorkerCriteria(DefinitionName: definition.Name, SubjectId: subject, Take: 10))).Workers;
 
         Assert.True(first.QueueOutcome.IsAccepted);
         Assert.True(second.QueueOutcome.IsAccepted);
@@ -205,7 +205,7 @@ public sealed class WorkIdempotencyTests
         var cancel = await system.Workers.Execute(firstWorker.Version, WorkAction.Cancel);
         var second = await system.Queue.Enqueue("duplicate-canceled", SubjectInput(subject));
         await WaitForReadModel(system);
-        var matches = (await system.Query.Workers(new WorkerCriteria(DefinitionId: definition.Id, SubjectId: subject, Take: 10))).Workers;
+        var matches = (await system.Query.Workers(new WorkerCriteria(DefinitionName: definition.Name, SubjectId: subject, Take: 10))).Workers;
 
         Assert.True(cancel.IsAccepted);
         Assert.True(second.QueueOutcome.IsAccepted);
@@ -239,7 +239,7 @@ public sealed class WorkIdempotencyTests
         await WaitForReadModel(system);
 
         var allMatches = (await system.Query.Workers(new WorkerCriteria(SubjectId: subject, Take: 10))).Workers;
-        var definitionMatches = (await system.Query.Workers(new WorkerCriteria(DefinitionId: firstDefinition.Id, SubjectId: subject, Take: 10))).Workers;
+        var definitionMatches = (await system.Query.Workers(new WorkerCriteria(DefinitionName: firstDefinition.Name, SubjectId: subject, Take: 10))).Workers;
 
         Assert.Equal([RequiredWorkerId(second), RequiredWorkerId(first)], allMatches.Select(worker => worker.Id));
         Assert.Equal([RequiredWorkerId(first)], definitionMatches.Select(worker => worker.Id));

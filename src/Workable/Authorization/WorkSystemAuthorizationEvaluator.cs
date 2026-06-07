@@ -4,9 +4,6 @@ internal sealed class WorkSystemAuthorizationEvaluator(
     WorkSystemAuthorizationConfiguration configuration,
     IReadOnlySet<string> groups)
 {
-    public bool CanConnect()
-        => this.IsSystemAdministrator() || this.IsSatisfied(configuration.ConnectGroups);
-
     public bool CanViewDiagnostics()
         => this.IsSystemAdministrator() || this.IsSatisfied(configuration.DiagnosticsGroups);
 

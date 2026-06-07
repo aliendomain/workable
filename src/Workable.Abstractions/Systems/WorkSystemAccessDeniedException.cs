@@ -16,7 +16,7 @@ public sealed class WorkSystemAccessDeniedException(
         var name = string.IsNullOrWhiteSpace(systemName) ? "<default>" : systemName;
         return permission switch
         {
-            WorkSystemPermission.Connect => $"Access to Workable system '{name}' requires connect permission.",
+            WorkSystemPermission.AccessSystem => $"Access to Workable system '{name}' requires some system-level access.",
             WorkSystemPermission.ViewDiagnostics => $"Viewing diagnostics for Workable system '{name}' requires diagnostics permission.",
             WorkSystemPermission.ControlSystem => $"Controlling Workable system '{name}' requires control-system permission.",
             _ => $"Access to Workable system '{name}' was denied.",

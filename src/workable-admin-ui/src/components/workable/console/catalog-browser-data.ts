@@ -70,10 +70,10 @@ export function invalidateDefinitionCatalogLevelCacheByApiUrl(apiUrl: string) {
 
 export async function fetchDefinitionCatalogInfo(
   connection: WorkableConnection,
-  definitionId: string
+  definitionName: string
 ) {
   try {
-    return await workableFetch<WorkInfo>(connection, `definitions/${definitionId}/info`);
+    return await workableFetch<WorkInfo>(connection, `definitions/${definitionName}/info`);
   } catch (error) {
     if (error instanceof WorkableApiError && error.status === 404) {
       invalidateDefinitionCatalogLevelCache(connection);

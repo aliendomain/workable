@@ -24,7 +24,7 @@ public sealed class WorkerLoggingCaptureTests
         var system = services.BuildServiceProvider().GetRequiredService<IWorkSystemRegistry>().Default;
         await system.Start();
 
-        await using var subscription = system.Events.Subscribe(new WorkEventFilter(DefinitionId: definition.Id, EventType: "worker.log"));
+        await using var subscription = system.Events.Subscribe(new WorkEventFilter(DefinitionName: definition.Name, EventType: "worker.log"));
         await using var reader = subscription.Read().GetAsyncEnumerator();
 
         var handle = await system.Queue.Enqueue("logged-work");
@@ -60,7 +60,7 @@ public sealed class WorkerLoggingCaptureTests
         var system = services.BuildServiceProvider().GetRequiredService<IWorkSystemRegistry>().Default;
         await system.Start();
 
-        await using var subscription = system.Events.Subscribe(new WorkEventFilter(DefinitionId: definition.Id, EventType: "worker.log"));
+        await using var subscription = system.Events.Subscribe(new WorkEventFilter(DefinitionName: definition.Name, EventType: "worker.log"));
 
         var handle = await system.Queue.Enqueue("disabled-logging");
         var completion = await handle.WaitForCompletion();
@@ -81,7 +81,7 @@ public sealed class WorkerLoggingCaptureTests
         var system = services.BuildServiceProvider().GetRequiredService<IWorkSystemRegistry>().Default;
         await system.Start();
 
-        await using var subscription = system.Events.Subscribe(new WorkEventFilter(DefinitionId: definition.Id, EventType: "worker.log"));
+        await using var subscription = system.Events.Subscribe(new WorkEventFilter(DefinitionName: definition.Name, EventType: "worker.log"));
         await using var reader = subscription.Read().GetAsyncEnumerator();
 
         var handle = await system.Queue.Enqueue("filtered-logging");
@@ -276,3 +276,4 @@ public sealed class WorkerLoggingCaptureTests
 
     private sealed record LogEntry(string Category, LogLevel Level, string Message, Exception? Exception);
 }
+

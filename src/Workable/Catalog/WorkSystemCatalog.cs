@@ -97,7 +97,7 @@ internal sealed class WorkSystemCatalog : IWorkCatalog
         {
             if (!this.workById.TryGetValue(definition.DefinitionId, out var registeredWork))
             {
-                return Task.FromResult(WorkDefinitionReconfigurationOutcome.NotFound(definition.DefinitionId));
+                return Task.FromResult(WorkDefinitionReconfigurationOutcome.NotFound(definition.DefinitionId.ToString()));
             }
 
             if (registeredWork.Definition.Revision != definition.Revision)
@@ -122,7 +122,7 @@ internal sealed class WorkSystemCatalog : IWorkCatalog
             var index = this.work.IndexOf(registeredWork);
             if (index < 0)
             {
-                return Task.FromResult(WorkDefinitionReconfigurationOutcome.NotFound(definition.DefinitionId));
+                return Task.FromResult(WorkDefinitionReconfigurationOutcome.NotFound(definition.DefinitionId.ToString()));
             }
 
             this.work[index] = registeredWork.WithDefinition(updatedDefinition);

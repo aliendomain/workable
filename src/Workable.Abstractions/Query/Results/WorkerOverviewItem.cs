@@ -2,7 +2,6 @@ namespace Workable;
 
 public sealed record WorkerOverviewItem(
     WorkerId Id,
-    WorkDefinitionId DefinitionId,
     string DefinitionName,
     WorkSubjectId? SubjectId,
     WorkConcurrencyKey? ConcurrencyKey,
@@ -26,7 +25,6 @@ public sealed record WorkerOverviewItem(
     public static WorkerOverviewItem From(WorkerSummary worker)
         => new(
             worker.Id,
-            worker.DefinitionId,
             worker.DefinitionName,
             worker.SubjectId,
             worker.ConcurrencyKey,

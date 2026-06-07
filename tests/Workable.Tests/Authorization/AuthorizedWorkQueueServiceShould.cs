@@ -13,13 +13,8 @@ public sealed class AuthorizedWorkQueueServiceShould
             out _,
             out _,
             out var inner);
-        var missingId = WorkDefinitionId.New();
-
-        var byId = await queue.Enqueue(missingId);
         var byName = await queue.Enqueue("missing.work");
 
-        Assert.Equal(WorkQueueStatus.NotFound, byId.QueueOutcome.Status);
-        Assert.Null(byId.QueueOutcome.DefinitionId);
         Assert.Equal(WorkQueueStatus.NotFound, byName.QueueOutcome.Status);
         Assert.Empty(inner.Calls);
     }
@@ -33,11 +28,8 @@ public sealed class AuthorizedWorkQueueServiceShould
             out var hidden,
             out var inner);
 
-        var byId = await queue.Enqueue(hidden.Id);
         var byName = await queue.Enqueue(hidden.Name);
 
-        Assert.Equal(WorkQueueStatus.Unauthorized, byId.QueueOutcome.Status);
-        Assert.Equal(hidden.Id, byId.QueueOutcome.DefinitionId);
         Assert.Equal(WorkQueueStatus.Unauthorized, byName.QueueOutcome.Status);
         Assert.Empty(inner.Calls);
     }
@@ -51,20 +43,15 @@ public sealed class AuthorizedWorkQueueServiceShould
             out _,
             out var inner);
         var input = WorkInput.FromValue(new QueueInput("direct"), WorkData.DefaultJsonOptions);
-        var typedById = new QueueInput("typed-id");
         var typedByName = new QueueInput("typed-name");
         var options = WorkerOptions.Default with { ProfilingEnabled = true };
         using var cancellation = new CancellationTokenSource();
 
-        await queue.Enqueue(visible.Id, input, options, cancellation.Token);
-        await queue.Enqueue(visible.Id, typedById, options, cancellation.Token);
         await queue.Enqueue(visible.Name, input, options, cancellation.Token);
         await queue.Enqueue(visible.Name, typedByName, options, cancellation.Token);
 
         Assert.Equal(
             [
-                new RecordedQueueCall("id", visible.Id, null, input, options, cancellation.Token),
-                new RecordedQueueCall("id-typed", visible.Id, null, typedById, options, cancellation.Token),
                 new RecordedQueueCall("name", null, visible.Name, input, options, cancellation.Token),
                 new RecordedQueueCall("name-typed", null, visible.Name, typedByName, options, cancellation.Token),
             ],
@@ -89,7 +76,7 @@ public sealed class AuthorizedWorkQueueServiceShould
         return new AuthorizedWorkQueueService(
             catalog,
             inner,
-            new WorkAuthorizationEvaluator(catalog, Groups(groups)));
+            new WorkAuthorizationEvaluator(catalog, Groups(groups), false));
     }
 
     private static WorkDefinition CreateDefinition(string name, string operateGroup)
@@ -120,26 +107,6 @@ public sealed class AuthorizedWorkQueueServiceShould
         public List<RecordedQueueCall> Calls { get; } = [];
 
         public Task<IWorkerHandle> Enqueue(
-            WorkDefinitionId definitionId,
-            WorkInput? input = null,
-            WorkerOptions? options = null,
-            CancellationToken cancellationToken = default)
-        {
-            this.Calls.Add(new("id", definitionId, null, input, options, cancellationToken));
-            return Accepted(definitionId);
-        }
-
-        public Task<IWorkerHandle> Enqueue<TInput>(
-            WorkDefinitionId definitionId,
-            TInput input,
-            WorkerOptions? options = null,
-            CancellationToken cancellationToken = default)
-        {
-            this.Calls.Add(new("id-typed", definitionId, null, input, options, cancellationToken));
-            return Accepted(definitionId);
-        }
-
-        public Task<IWorkerHandle> Enqueue(
             string name,
             WorkInput? input = null,
             WorkerOptions? options = null,
@@ -159,9 +126,9 @@ public sealed class AuthorizedWorkQueueServiceShould
             return Accepted();
         }
 
-        private static Task<IWorkerHandle> Accepted(WorkDefinitionId? definitionId = null)
+        private static Task<IWorkerHandle> Accepted()
             => Task.FromResult<IWorkerHandle>(new RecordingWorkerHandle(
-                WorkQueueOutcome.Accepted(definitionId ?? WorkDefinitionId.New(), WorkerId.New())));
+                WorkQueueOutcome.Accepted(WorkerId.New())));
     }
 
     private sealed class RecordingWorkerHandle(WorkQueueOutcome queueOutcome) : IWorkerHandle

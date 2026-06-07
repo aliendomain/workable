@@ -1,9 +1,8 @@
 namespace Workable;
 
 public sealed record WorkSystemCriteria(
-    WorkDefinitionId? DefinitionId = null,
     string? DefinitionName = null,
+    IReadOnlySet<string>? DefinitionNames = null,
     string? Category = null,
     bool IncludeSubcategories = true,
-    bool IncludeThroughput = false,
-    IReadOnlySet<WorkDefinitionId>? DefinitionIds = null);
+    bool IncludeThroughput = false);

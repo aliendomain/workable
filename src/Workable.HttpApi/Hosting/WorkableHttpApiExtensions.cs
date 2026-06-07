@@ -39,8 +39,7 @@ public static class WorkableHttpApiExtensions
             IWorkRequestContextFactory requestContexts)
             => Results.Ok(topology.DescribeHost(WorkableHttpRequestContext.Create(
                 httpContext,
-                requestContexts,
-                "Discover Workable host capabilities through HTTP API."))));
+                requestContexts))));
 
         MapWorkableApiRoutes(group);
         var namedGroup = group.MapGroup("/systems/{systemName}");

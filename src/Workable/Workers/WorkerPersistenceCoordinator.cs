@@ -16,7 +16,7 @@ internal interface IWorkerPersistenceCoordinator
         RegisteredWork registeredWork,
         WorkInput? input,
         RegisteredWorkRuntimePlan runtimePlan,
-        WorkOrigin origin,
+        WorkRequestContext requestContext,
         DateTimeOffset now,
         CancellationToken cancellationToken);
 
@@ -116,7 +116,7 @@ internal sealed class WorkerPersistenceCoordinator : IWorkerPersistenceCoordinat
         RegisteredWork registeredWork,
         WorkInput? input,
         RegisteredWorkRuntimePlan runtimePlan,
-        WorkOrigin origin,
+        WorkRequestContext requestContext,
         DateTimeOffset now,
         CancellationToken cancellationToken)
     {
@@ -130,7 +130,7 @@ internal sealed class WorkerPersistenceCoordinator : IWorkerPersistenceCoordinat
                 registeredWork,
                 input,
                 runtimePlan,
-                origin,
+                requestContext,
                 now);
             if (acceptance.Outcome.IsAccepted &&
                 acceptance.PersistenceRequest is null &&
@@ -208,7 +208,7 @@ internal sealed class WorkerPersistenceCoordinator : IWorkerPersistenceCoordinat
             entry.Input,
             entry.Options,
             entry.Configuration,
-            entry.Origin,
+            entry.RequestContext,
             WorkerState.Queued,
             isStartDeferred: false,
             messages: [],
