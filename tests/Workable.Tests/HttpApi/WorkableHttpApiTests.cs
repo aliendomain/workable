@@ -29,7 +29,7 @@ public sealed class WorkableHttpApiTests
         await system.Start();
 
         using var input = JsonDocument.Parse("""{"id":"123"}""");
-        var result = await http.Queue.Enqueue(Direct(system), "http.default", new WorkableHttpWorkRequest(input.RootElement));
+        var result = await http.Queue.Enqueue(system.Name, "http.default", DirectRequestContext(), new WorkableHttpWorkRequest(input.RootElement));
 
         Assert.Equal(WorkableHttpWorkStatus.Accepted, result.Status);
         Assert.True(result.QueueOutcome.IsAccepted);
@@ -46,8 +46,9 @@ public sealed class WorkableHttpApiTests
         await system.Start();
 
         using var input = JsonDocument.Parse("""{"id":"123"}""");
-        var result = await http.Queue.Enqueue(Direct(system),
+        var result = await http.Queue.Enqueue(system.Name,
             "http.wait",
+            DirectRequestContext(),
             new WorkableHttpWorkRequest(input.RootElement, WorkableHttpCompletion.WaitForCompletion));
 
         Assert.Equal(WorkableHttpWorkStatus.Completed, result.Status);
@@ -63,8 +64,9 @@ public sealed class WorkableHttpApiTests
         await system.Start();
 
         using var input = JsonDocument.Parse("""{"id":"by-name"}""");
-        var result = await http.Queue.Enqueue(Direct(system),
+        var result = await http.Queue.Enqueue(system.Name,
             definition.Name,
+            DirectRequestContext(),
             new WorkableHttpWorkRequest(input.RootElement, WorkableHttpCompletion.WaitForCompletion));
 
         Assert.Equal(WorkableHttpWorkStatus.Completed, result.Status);
@@ -84,8 +86,9 @@ public sealed class WorkableHttpApiTests
         await system.Start();
 
         using var input = JsonDocument.Parse("""{"id":"metadata"}""");
-        var result = await http.Queue.Enqueue(Direct(system),
+        var result = await http.Queue.Enqueue(system.Name,
             "http.metadata",
+            DirectRequestContext(),
             new WorkableHttpWorkRequest(
                 input.RootElement,
                 Options: new WorkableHttpWorkerOptions(ProfilingEnabled: true),
@@ -114,7 +117,7 @@ public sealed class WorkableHttpApiTests
         var (system, http) = CreateHost(definition, SuccessfulWork);
         await system.Start();
 
-        var result = await http.Queue.Enqueue(Direct(system), "dotnet.only");
+        var result = await http.Queue.Enqueue(system.Name, "dotnet.only", DirectRequestContext());
 
         Assert.Equal(WorkableHttpWorkStatus.Rejected, result.Status);
         Assert.Contains(result.Messages, message => message.Code == "workable.invocation.channel_not_allowed");
@@ -167,8 +170,9 @@ public sealed class WorkableHttpApiTests
         var (system, http) = CreateHost(definition, SuccessfulWork);
         await system.Start();
 
-        var result = await http.Queue.Enqueue(Direct(system),
+        var result = await http.Queue.Enqueue(system.Name,
             "http.invocation.dto",
+            DirectRequestContext(),
             new WorkableHttpWorkRequest(
                 Options: new WorkableHttpWorkerOptions(
                     Configuration: WorkableHttpWorkConfiguration.From(WorkConfiguration.Default with
@@ -193,8 +197,9 @@ public sealed class WorkableHttpApiTests
         var (system, http) = CreateHost(definition, SuccessfulWork);
         await system.Start();
 
-        var result = await http.Queue.Enqueue(Direct(system),
+        var result = await http.Queue.Enqueue(system.Name,
             "manual.http",
+            DirectRequestContext(),
             new WorkableHttpWorkRequest(Completion: WorkableHttpCompletion.ReturnAfterAccepted));
 
         Assert.Equal(WorkableHttpWorkStatus.Accepted, result.Status);
@@ -1133,7 +1138,7 @@ public sealed class WorkableHttpApiTests
         await system.Start();
         var session = Direct(system);
 
-        var queue = await http.Queue.Enqueue(session, "http.action");
+        var queue = await http.Queue.Enqueue(system.Name, "http.action", DirectRequestContext());
         var worker = await http.Query.Worker(session, queue.WorkerId ?? throw new InvalidOperationException("Expected worker id."));
         var outcome = await http.Workers.Execute(session,
             worker!.Id,
@@ -1158,7 +1163,7 @@ public sealed class WorkableHttpApiTests
         await system.Start();
         var session = Direct(system);
 
-        var queue = await http.Queue.Enqueue(session, "http.reconfigure");
+        var queue = await http.Queue.Enqueue(system.Name, "http.reconfigure", DirectRequestContext());
         var worker = await http.Query.Worker(session, queue.WorkerId ?? throw new InvalidOperationException("Expected worker id."));
         var outcome = await http.Workers.Reconfigure(session,
             worker!.Id,
@@ -2780,12 +2785,24 @@ public sealed class WorkableHttpApiTests
             WorkInvocationChannel.HttpApi,
             description: "Use HTTP API test session.");
 
+    private static WorkRequestContext DirectRequestContext(string description = "Use HTTP API test request context.")
+        => CreateTransportRequestContext(
+            WorkInvocationChannel.HttpApi,
+            description);
+
     private static IWorkSystemSession CreateTransportSession(
         IWorkSystem system,
         WorkInvocationChannel channel,
         string description)
         => TransportAuthorizationTestSupport.CreateTransportSession(
             system,
+            channel,
+            description: description);
+
+    private static WorkRequestContext CreateTransportRequestContext(
+        WorkInvocationChannel channel,
+        string description)
+        => TransportAuthorizationTestSupport.CreateTransportRequestContext(
             channel,
             description: description);
 

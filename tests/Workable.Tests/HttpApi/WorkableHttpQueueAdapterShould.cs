@@ -12,13 +12,13 @@ public sealed class WorkableHttpQueueAdapterShould
         var subject = new WorkSubjectId("account", "123");
         var concurrency = new WorkConcurrencyKey("tenant", "west");
         var identifier = new WorkIdentifier("invoice", "456");
-        var queue = new RecordingQueueService();
-        var session = new RecordingSession(queue);
-        var adapter = new WorkableHttpQueueAdapter();
+        var commands = new RecordingCommandDispatcher();
+        var adapter = new WorkableHttpQueueAdapter(commands);
 
         var result = await adapter.Enqueue(
-            session,
+            systemName: null,
             "http.queue",
+            WorkRequestContext.Create(WorkInvocationChannel.HttpApi),
             new WorkableHttpWorkRequest(
                 input.RootElement,
                 Options: new WorkableHttpWorkerOptions(ProfilingEnabled: true),
@@ -27,166 +27,156 @@ public sealed class WorkableHttpQueueAdapterShould
                 Identifiers: new HashSet<WorkIdentifier> { identifier }));
 
         Assert.Equal(WorkableHttpWorkStatus.Accepted, result.Status);
-        Assert.Equal("http.queue", queue.Name);
-        Assert.Equal("""{"id":"alpha"}""", queue.Input?.Json);
-        Assert.Equal(subject, queue.Input?.SubjectId);
-        Assert.Equal(concurrency, queue.Input?.ConcurrencyKey);
-        Assert.Contains(identifier, queue.Input?.Identifiers ?? new HashSet<WorkIdentifier>());
-        Assert.True(queue.Options?.ProfilingEnabled);
+        Assert.Equal("http.queue", commands.WorkName);
+        Assert.Equal("""{"id":"alpha"}""", commands.Input?.Json);
+        Assert.Equal(subject, commands.Input?.SubjectId);
+        Assert.Equal(concurrency, commands.Input?.ConcurrencyKey);
+        Assert.Contains(identifier, commands.Input?.Identifiers ?? new HashSet<WorkIdentifier>());
+        Assert.True(commands.Options?.WorkerOptions?.ProfilingEnabled);
     }
 
     [Fact]
     public async Task EnqueueByNameWithEmptyInputWhenRequestIsMissing()
     {
-        var queue = new RecordingQueueService();
-        var session = new RecordingSession(queue);
-        var adapter = new WorkableHttpQueueAdapter();
+        var commands = new RecordingCommandDispatcher();
+        var adapter = new WorkableHttpQueueAdapter(commands);
 
-        var result = await adapter.Enqueue(session, "http.queue");
+        var result = await adapter.Enqueue(
+            systemName: null,
+            "http.queue",
+            WorkRequestContext.Create(WorkInvocationChannel.HttpApi));
 
         Assert.Equal(WorkableHttpWorkStatus.Accepted, result.Status);
-        Assert.Equal("http.queue", queue.Name);
-        Assert.Equal(WorkInput.Empty, queue.Input);
-        Assert.Null(queue.Options);
+        Assert.Equal("http.queue", commands.WorkName);
+        Assert.Equal(WorkInput.Empty, commands.Input);
+        Assert.Null(commands.Options?.WorkerOptions);
     }
 
     [Fact]
     public async Task ReturnRejectedResultWithoutWaitingForCompletion()
     {
         var message = WorkMessage.Error("queue.invalid", "Nope.");
-        var handle = RecordingWorkerHandle.Rejected(WorkQueueOutcome.Invalid([message]));
-        var queue = new RecordingQueueService(handle);
-        var session = new RecordingSession(queue);
-        var adapter = new WorkableHttpQueueAdapter();
+        var queueOutcome = WorkQueueOutcome.Invalid([message]);
+        var commands = new RecordingCommandDispatcher(
+            status: WorkDispatchStatus.Invalid,
+            queueOutcome: queueOutcome,
+            messages: [message]);
+        var adapter = new WorkableHttpQueueAdapter(commands);
 
-        var result = await adapter.Enqueue(session, "http.rejected", new WorkableHttpWorkRequest(Completion: WorkableHttpCompletion.WaitForCompletion));
+        var result = await adapter.Enqueue(
+            systemName: null,
+            "http.rejected",
+            WorkRequestContext.Create(WorkInvocationChannel.HttpApi),
+            new WorkableHttpWorkRequest(Completion: WorkableHttpCompletion.WaitForCompletion));
 
         Assert.Equal(WorkableHttpWorkStatus.Rejected, result.Status);
-        Assert.Same(handle.QueueOutcome, result.QueueOutcome);
+        Assert.Same(queueOutcome, result.QueueOutcome);
         Assert.Null(result.Completion);
         Assert.Null(result.Output);
         Assert.Equal([message], result.Messages);
-        Assert.Equal(0, handle.WaitForCompletionCalls);
     }
 
     [Theory]
-    [InlineData(WorkCompletionStatus.Completed, WorkableHttpWorkStatus.Completed)]
-    [InlineData(WorkCompletionStatus.Failed, WorkableHttpWorkStatus.Failed)]
-    [InlineData(WorkCompletionStatus.Interrupted, WorkableHttpWorkStatus.Interrupted)]
-    [InlineData(WorkCompletionStatus.Canceled, WorkableHttpWorkStatus.Canceled)]
-    [InlineData(WorkCompletionStatus.Invalid, WorkableHttpWorkStatus.Failed)]
+    [InlineData(WorkCompletionStatus.Completed, WorkableHttpWorkStatus.Completed, WorkDispatchStatus.Completed)]
+    [InlineData(WorkCompletionStatus.Failed, WorkableHttpWorkStatus.Failed, WorkDispatchStatus.Failed)]
+    [InlineData(WorkCompletionStatus.Interrupted, WorkableHttpWorkStatus.Interrupted, WorkDispatchStatus.Interrupted)]
+    [InlineData(WorkCompletionStatus.Canceled, WorkableHttpWorkStatus.Canceled, WorkDispatchStatus.Canceled)]
+    [InlineData(WorkCompletionStatus.Invalid, WorkableHttpWorkStatus.Failed, WorkDispatchStatus.Invalid)]
     public async Task MapCompletionStatusWhenWaitingForCompletion(
         WorkCompletionStatus completionStatus,
-        WorkableHttpWorkStatus expectedStatus)
+        WorkableHttpWorkStatus expectedStatus,
+        WorkDispatchStatus dispatchStatus)
     {
         var output = WorkOutput.FromJson("""{"ok":true}""");
         var completion = new WorkCompletion(completionStatus, Worker: null, output, []);
-        var handle = RecordingWorkerHandle.Accepted(completion);
-        var queue = new RecordingQueueService(handle);
-        var session = new RecordingSession(queue);
-        var adapter = new WorkableHttpQueueAdapter();
+        var workerId = global::Workable.WorkerId.New();
+        var commands = new RecordingCommandDispatcher(
+            status: dispatchStatus,
+            queueOutcome: WorkQueueOutcome.Accepted(workerId),
+            completion: completion,
+            workerId: workerId);
+        var adapter = new WorkableHttpQueueAdapter(commands);
 
         var result = await adapter.Enqueue(
-            session,
+            systemName: null,
             "http.wait",
+            WorkRequestContext.Create(WorkInvocationChannel.HttpApi),
             new WorkableHttpWorkRequest(Completion: WorkableHttpCompletion.WaitForCompletion));
 
         Assert.Equal(expectedStatus, result.Status);
-        Assert.Same(completion, result.Completion);
+        Assert.NotNull(result.Completion);
         Assert.Same(output, result.Output);
-        Assert.Equal(1, handle.WaitForCompletionCalls);
     }
 
     [Fact]
     public async Task RejectNullAndBlankInputs()
     {
-        var adapter = new WorkableHttpQueueAdapter();
-        var session = new RecordingSession(new RecordingQueueService());
+        var adapter = new WorkableHttpQueueAdapter(new RecordingCommandDispatcher());
+        var requestContext = WorkRequestContext.Create(WorkInvocationChannel.HttpApi);
 
-        await Assert.ThrowsAsync<ArgumentNullException>(() => adapter.Enqueue(null!, "http.queue"));
-        await Assert.ThrowsAsync<ArgumentException>(() => adapter.Enqueue(session, " "));
+        await Assert.ThrowsAsync<ArgumentNullException>(() => adapter.Enqueue(null, "http.queue", null!));
+        await Assert.ThrowsAsync<ArgumentException>(() => adapter.Enqueue(null, " ", requestContext));
     }
 
-    private sealed class RecordingSession(IWorkQueueService queue) : IWorkSystemSession
+    private sealed class RecordingCommandDispatcher(
+        WorkDispatchStatus status = WorkDispatchStatus.Accepted,
+        WorkQueueOutcome? queueOutcome = null,
+        WorkCompletion? completion = null,
+        IReadOnlyList<WorkMessage>? messages = null,
+        WorkerId? workerId = null) : IWorkCommandDispatcher
     {
-        public string? SystemName => throw new NotSupportedException();
+        private readonly WorkDispatchStatus status = status;
+        private readonly WorkQueueOutcome queueOutcome = queueOutcome ?? WorkQueueOutcome.Accepted(workerId ?? global::Workable.WorkerId.New());
+        private readonly WorkCompletion? completion = completion;
+        private readonly IReadOnlyList<WorkMessage> messages = messages ?? completion?.Messages ?? queueOutcome?.Messages ?? [];
 
-        public WorkSystemState SystemState => throw new NotSupportedException();
+        public string? SystemName { get; private set; }
 
-        public IWorkSystemDiagnostics Diagnostics => throw new NotSupportedException();
+        public string? WorkName { get; private set; }
 
-        public IWorkCatalog Catalog => throw new NotSupportedException();
-
-        public IWorkQueueService Queue { get; } = queue;
-
-        public IWorkerOperations Workers => throw new NotSupportedException();
-
-        public IWorkQueryService Query => throw new NotSupportedException();
-
-        public IWorkEventStream Events => throw new NotSupportedException();
-    }
-
-    private sealed class RecordingQueueService(RecordingWorkerHandle? handle = null) : IWorkQueueService
-    {
-        private readonly RecordingWorkerHandle handle = handle ?? RecordingWorkerHandle.Accepted();
-
-        public string? Name { get; private set; }
+        public WorkRequestContext? RequestContext { get; private set; }
 
         public WorkInput? Input { get; private set; }
 
-        public WorkerOptions? Options { get; private set; }
+        public WorkDispatchOptions? Options { get; private set; }
 
-        public Task<IWorkerHandle> Enqueue(
-            string name,
-            WorkInput? input = null,
-            WorkerOptions? options = null,
+        public Task<WorkDispatchResult<TResponse>> Dispatch<TRequest, TResponse>(
+            string workName,
+            TRequest request,
+            WorkRequestContext requestContext,
+            WorkDispatchOptions? options = null,
+            CancellationToken cancellationToken = default)
+            => this.Dispatch<TRequest, TResponse>(
+                systemName: null,
+                workName,
+                request,
+                requestContext,
+                options,
+                cancellationToken);
+
+        public Task<WorkDispatchResult<TResponse>> Dispatch<TRequest, TResponse>(
+            string? systemName,
+            string workName,
+            TRequest request,
+            WorkRequestContext requestContext,
+            WorkDispatchOptions? options = null,
             CancellationToken cancellationToken = default)
         {
-            this.Name = name;
-            this.Input = input;
+            this.SystemName = systemName;
+            this.WorkName = workName;
+            this.RequestContext = requestContext;
             this.Options = options;
+            this.Input = request as WorkInput;
 
-            return Task.FromResult<IWorkerHandle>(this.handle);
+            return Task.FromResult(new WorkDispatchResult<TResponse>(
+                this.status,
+                Response: default,
+                WorkerId: this.queueOutcome.WorkerId,
+                ErrorCode: this.messages.FirstOrDefault()?.Code,
+                ErrorMessage: this.messages.FirstOrDefault()?.Text,
+                Messages: this.messages,
+                QueueOutcome: this.queueOutcome,
+                Completion: this.completion?.ToTyped<TResponse>()));
         }
-
-        public Task<IWorkerHandle> Enqueue<TInput>(
-            string name,
-            TInput input,
-            WorkerOptions? options = null,
-            CancellationToken cancellationToken = default)
-            => throw new NotSupportedException();
-    }
-
-    private sealed class RecordingWorkerHandle(
-        WorkQueueOutcome queueOutcome,
-        WorkCompletion? completion) : IWorkerHandle
-    {
-        private readonly WorkCompletion? completion = completion;
-
-        public WorkQueueOutcome QueueOutcome { get; } = queueOutcome;
-
-        public WorkerId? WorkerId => this.QueueOutcome.WorkerId;
-
-        public int WaitForCompletionCalls { get; private set; }
-
-        public static RecordingWorkerHandle Accepted(WorkCompletion? completion = null)
-        {
-            var workerId = global::Workable.WorkerId.New();
-            return new(
-                WorkQueueOutcome.Accepted(workerId),
-                completion ?? new WorkCompletion(WorkCompletionStatus.Completed, Worker: null, WorkOutput.Empty, []));
-        }
-
-        public static RecordingWorkerHandle Rejected(WorkQueueOutcome queueOutcome)
-            => new(queueOutcome, completion: null);
-
-        public Task<WorkCompletion> WaitForCompletion(CancellationToken cancellationToken = default)
-        {
-            this.WaitForCompletionCalls++;
-            return Task.FromResult(this.completion ?? new WorkCompletion(WorkCompletionStatus.Failed, Worker: null, null, this.QueueOutcome.Messages));
-        }
-
-        public Task<WorkCompletion<TOutput>> WaitForCompletion<TOutput>(CancellationToken cancellationToken = default)
-            => throw new NotSupportedException();
     }
 }

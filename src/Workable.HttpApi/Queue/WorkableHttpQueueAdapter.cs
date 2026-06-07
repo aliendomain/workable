@@ -1,57 +1,74 @@
 namespace Workable;
 
-public sealed class WorkableHttpQueueAdapter
+public sealed class WorkableHttpQueueAdapter(
+    IWorkCommandDispatcher commands)
 {
     public async Task<WorkableHttpWorkResult> Enqueue(
-        IWorkSystemSession session,
+        string? systemName,
         string name,
+        WorkRequestContext requestContext,
         WorkableHttpWorkRequest? request = null,
         CancellationToken cancellationToken = default)
     {
-        ArgumentNullException.ThrowIfNull(session);
         ArgumentException.ThrowIfNullOrWhiteSpace(name);
+        ArgumentNullException.ThrowIfNull(requestContext);
 
-        var handle = await session.Queue.Enqueue(name, CreateInput(request), request?.Options?.ToWorkerOptions(), cancellationToken);
-        return await CreateQueueResult(handle, request, cancellationToken);
+        var result = await commands.Dispatch<WorkInput, object?>(
+            systemName,
+            name,
+            CreateInput(request),
+            requestContext,
+            new WorkDispatchOptions(
+                request?.Completion == WorkableHttpCompletion.WaitForCompletion
+                    ? WorkDispatchCompletion.WaitForCompletion
+                    : WorkDispatchCompletion.ReturnAfterAccepted,
+                request?.Options?.ToWorkerOptions()),
+            cancellationToken);
+
+        return CreateQueueResult(result);
     }
 
-    private static async Task<WorkableHttpWorkResult> CreateQueueResult(
-        IWorkerHandle handle,
-        WorkableHttpWorkRequest? request,
-        CancellationToken cancellationToken)
+    private static WorkableHttpWorkResult CreateQueueResult(
+        WorkDispatchResult<object?> result)
     {
-        if (!handle.QueueOutcome.IsAccepted)
+        var queueOutcome = result.QueueOutcome ?? WorkQueueOutcome.Invalid(result.Messages);
+        if (!queueOutcome.IsAccepted)
         {
             return new WorkableHttpWorkResult(
                 WorkableHttpWorkStatus.Rejected,
-                handle.QueueOutcome,
-                handle.WorkerId,
+                queueOutcome,
+                result.WorkerId,
                 Completion: null,
                 Output: null,
-                handle.QueueOutcome.Messages);
+                result.Messages);
         }
 
-        var completionMode = request?.Completion ?? WorkableHttpCompletion.ReturnAfterAccepted;
-        if (completionMode == WorkableHttpCompletion.ReturnAfterAccepted)
+        if (result.Status == WorkDispatchStatus.Accepted)
         {
             return new WorkableHttpWorkResult(
                 WorkableHttpWorkStatus.Accepted,
-                handle.QueueOutcome,
-                handle.WorkerId,
+                queueOutcome,
+                result.WorkerId,
                 Completion: null,
                 Output: null,
-                handle.QueueOutcome.Messages);
+                result.Messages);
         }
 
-        var completion = await handle.WaitForCompletion(cancellationToken);
+        var completion = result.Completion;
 
         return new WorkableHttpWorkResult(
-            ToHttpStatus(completion.Status),
-            handle.QueueOutcome,
-            handle.WorkerId,
-            completion,
-            completion.Output,
-            completion.Messages);
+            completion is null ? WorkableHttpWorkStatus.Failed : ToHttpStatus(completion.Status),
+            queueOutcome,
+            result.WorkerId,
+            completion is null
+                ? null
+                : new WorkCompletion(
+                    completion.Status,
+                    completion.Worker,
+                    completion.RawOutput,
+                    completion.Messages),
+            completion?.RawOutput,
+            result.Messages);
     }
 
     private static WorkInput CreateInput(WorkableHttpWorkRequest? request)

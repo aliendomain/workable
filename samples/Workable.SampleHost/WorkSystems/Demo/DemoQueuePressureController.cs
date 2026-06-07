@@ -5,6 +5,7 @@ namespace Workable.SampleHost.Demo;
 
 public sealed class DemoQueuePressureController(
     IWorkSystemRegistry registry,
+    IWorkCommandDispatcher commands,
     DemoSampleSystemSelection systemSelection,
     ILogger<DemoQueuePressureController> logger) : IAsyncDisposable
 {
@@ -184,12 +185,12 @@ public sealed class DemoQueuePressureController(
                     new WorkIdentifier("queue-pressure-sequence", current.ToString()),
                 ]);
 
-            var session = registry.Default.CreateSession("Queue queue-pressure sample work from the sample host.");
-            var handle = await session.Queue.Enqueue(
+            var result = await commands.QueueWork(
                 DefinitionName,
                 input,
+                "Queue queue-pressure sample work from the sample host.",
                 cancellationToken: cancellationToken);
-            if (handle.WorkerId is { } workerId)
+            if (result.QueueOutcome?.IsAccepted == true && result.WorkerId is { } workerId)
             {
                 this.trackedWorkers[workerId] = 0;
             }
