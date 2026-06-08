@@ -372,7 +372,11 @@ export function OverviewView({
     connection,
     isVisible ? "views/overview" : null,
     effectiveOverviewRequest,
-    refreshToken
+    refreshToken,
+    {
+      resetKey: `${connection.apiUrl}\n${connection.systemName ?? ""}`,
+      retainDataOnRequestChange: true,
+    }
   );
   const realtimeOverviewDescriptor = useMemo<ConsolePageRealtimeViewDescriptor>(
     () => ({
@@ -1227,7 +1231,11 @@ function useWorkablePostResource<T>(
   connection: WorkableConnection,
   path: string | null,
   body: unknown,
-  refreshToken: number
+  refreshToken: number,
+  options?: {
+    resetKey?: string | number | null;
+    retainDataOnRequestChange?: boolean;
+  }
 ): Loadable<T> {
   const [state, setState] = useState<Loadable<T>>({ loading: !!path });
   const apiUrl = connection.apiUrl;
@@ -1235,9 +1243,13 @@ function useWorkablePostResource<T>(
   const bodyKey = JSON.stringify(body);
   const requestKey = `${apiUrl}\n${systemName ?? ""}\n${path ?? ""}\n${bodyKey}`;
   const previousRequestKey = useRef<string | null>(null);
+  const retainDataOnRequestChange = options?.retainDataOnRequestChange === true;
+  const resetKey = options?.resetKey ?? null;
+  const lastResetKeyRef = useRef<string | number | null>(resetKey);
 
   useEffect(() => {
     if (!path) {
+      lastResetKeyRef.current = resetKey;
       previousRequestKey.current = requestKey;
       queueMicrotask(() =>
         setState((current) =>
@@ -1251,15 +1263,25 @@ function useWorkablePostResource<T>(
 
     let canceled = false;
     const requestChanged = previousRequestKey.current !== requestKey;
+    const resetChanged = lastResetKeyRef.current !== resetKey;
+    lastResetKeyRef.current = resetKey;
     previousRequestKey.current = requestKey;
     queueMicrotask(() => {
       if (!canceled) {
-        setState((current) => ({
-          ...(requestChanged ? {} : current),
-          error: undefined,
-          loading: requestChanged || current.data === undefined,
-          refreshing: !requestChanged && current.data !== undefined,
-        }));
+        setState((current) => {
+          const retainCurrentData =
+            !resetChanged &&
+            requestChanged &&
+            retainDataOnRequestChange &&
+            current.data !== undefined;
+
+          return {
+            ...(requestChanged && !retainCurrentData ? {} : current),
+            error: undefined,
+            loading: retainCurrentData ? false : requestChanged || current.data === undefined,
+            refreshing: retainCurrentData || (!requestChanged && current.data !== undefined),
+          };
+        });
       }
     });
 
@@ -1292,7 +1314,7 @@ function useWorkablePostResource<T>(
     return () => {
       canceled = true;
     };
-  }, [apiUrl, bodyKey, path, refreshToken, requestKey, systemName]);
+  }, [apiUrl, bodyKey, path, refreshToken, requestKey, resetKey, retainDataOnRequestChange, systemName]);
 
   return state;
 }

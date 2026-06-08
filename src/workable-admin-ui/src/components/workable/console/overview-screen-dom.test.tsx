@@ -177,8 +177,21 @@ test("overview hides failed-worker mutation controls without operate permission"
 
 test("overview throughput panel switches chart window, mode, and series visibility", async () => {
   const callbacks = createOverviewCallbacks();
+  const delayedWindowResponse = deferred<Response>();
+  let delayedRequested = false;
   const fetchMock = installOverviewFetch((call) => {
     if (call.input === "/api/workable/systems/Ops/views/overview") {
+      const throughputRequest = requestBody(call).components.find((component) =>
+        component.id === "throughput"
+      );
+      const options = throughputRequest?.options as
+        | { bucketSeconds?: number; windowSeconds?: number }
+        | undefined;
+      if (options?.bucketSeconds === 5 && options?.windowSeconds === 300) {
+        delayedRequested = true;
+        return delayedWindowResponse.promise;
+      }
+
       return Response.json(overviewResult({
         throughput: populatedThroughput(),
       }));
@@ -200,20 +213,14 @@ test("overview throughput panel switches chart window, mode, and series visibili
 
     await result.click(result.getByRole("button", { name: "5m" }));
     await result.waitFor(() => {
-      assert.equal(fetchMock.calls.some((call) => {
-        if (call.input !== "/api/workable/systems/Ops/views/overview") {
-          return false;
-        }
-
-        const throughputRequest = requestBody(call).components.find((component) =>
-          component.id === "throughput"
-        );
-        const options = throughputRequest?.options as
-          | { bucketSeconds?: number; windowSeconds?: number }
-          | undefined;
-        return options?.bucketSeconds === 5 && options.windowSeconds === 300;
-      }), true);
+      assert.equal(delayedRequested, true);
     });
+    assert.ok(result.container.querySelector("svg[aria-label='Throughput chart']"));
+    assert.equal(result.queryByText("Waiting for throughput data."), null);
+
+    delayedWindowResponse.resolve(Response.json(overviewResult({
+      throughput: populatedThroughput(),
+    })));
 
     await result.mouseDown(result.getByRole("tab", { name: "Execution" }));
     await result.waitFor(() => {

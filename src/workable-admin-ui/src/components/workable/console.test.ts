@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  applySystemNotificationDismissals,
   cloneOverviewScope,
   clampEventTableHeight,
   createCompactConcurrencyDiagnosticsFromDetailed,
@@ -38,7 +39,9 @@ import {
   normalizeStoredHost,
   normalizeStoredSystem,
   normalizeThroughputSeriesIds,
+  pruneDismissedSystemNotificationKeys,
   shouldClearDefinitionCatalogCacheForDiagnosticsTransition,
+  systemNotificationDismissalKey,
   eventTypeTone,
   type ConsoleStorage,
   type NavigationEntry,
@@ -330,6 +333,40 @@ test("diagnostics target and notification helpers deduplicate targets and descri
       "Default @ Workable: Durable worker materialization is behind",
       "Default @ Workable: Durable cleanup is behind",
     ]
+  );
+  assert.equal(notifications[0]?.dismissible, true);
+});
+
+test("dismissed shutdown notifications reappear after that shutdown warning clears", () => {
+  const notifications = createSystemNotifications(
+    { isShuttingDown: true } as never,
+    undefined,
+    0,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    {
+      apiUrl: "https://workable.test",
+      displayName: "Default @ Workable",
+      id: "target-default",
+      systemName: "Default",
+    }
+  );
+  const dismissalKey = systemNotificationDismissalKey(notifications[0]!);
+
+  assert.deepEqual(
+    applySystemNotificationDismissals(notifications, new Set([dismissalKey]), () => undefined),
+    []
+  );
+  assert.equal(
+    pruneDismissedSystemNotificationKeys(new Set([dismissalKey]), notifications).has(dismissalKey),
+    true
+  );
+  assert.equal(
+    pruneDismissedSystemNotificationKeys(new Set([dismissalKey]), []).has(dismissalKey),
+    false
   );
 });
 

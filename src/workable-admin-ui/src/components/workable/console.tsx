@@ -3228,6 +3228,7 @@ export function eventTypeTone(eventType: string) {
 
 type SystemNotification = {
   description: string;
+  dismissible?: boolean;
   id: string;
   onDismiss?: () => void;
   rejectedWorkCount?: number;
@@ -3235,6 +3236,53 @@ type SystemNotification = {
   tone: "critical" | "warning";
   title: string;
 };
+
+export function systemNotificationDismissalKey(
+  notification: Pick<SystemNotification, "description" | "id" | "title" | "tone">
+) {
+  return `${notification.id}:${notification.tone}:${notification.title}:${notification.description}`;
+}
+
+export function pruneDismissedSystemNotificationKeys(
+  dismissedKeys: ReadonlySet<string>,
+  notifications: readonly SystemNotification[]
+): ReadonlySet<string> {
+  const activeKeys = new Set(
+    notifications
+      .filter((notification) => notification.dismissible)
+      .map(systemNotificationDismissalKey)
+  );
+  const next = new Set(
+    [...dismissedKeys].filter((dismissedKey) => activeKeys.has(dismissedKey))
+  );
+
+  return next.size === dismissedKeys.size ? dismissedKeys : next;
+}
+
+export function applySystemNotificationDismissals(
+  notifications: readonly SystemNotification[],
+  dismissedKeys: ReadonlySet<string>,
+  dismissNotification: (notification: SystemNotification) => void
+): SystemNotification[] {
+  return notifications.flatMap((notification) => {
+    if (!notification.dismissible) {
+      return [notification];
+    }
+
+    const dismissalKey = systemNotificationDismissalKey(notification);
+    if (dismissedKeys.has(dismissalKey)) {
+      return [];
+    }
+
+    return [{
+      ...notification,
+      onDismiss: () => {
+        notification.onDismiss?.();
+        dismissNotification(notification);
+      },
+    }];
+  });
+}
 
 function SystemNotificationTray({
   acknowledgedRejectedWorkCounts,
@@ -3368,24 +3416,60 @@ function SystemNotificationTray({
   const idempotencyCompact = open
     ? (idempotencyExpanded ? idempotencyDetailCompact ?? trayIdempotencyCompact : trayIdempotencyCompact) ?? trayIdempotencyCompact
     : trayIdempotencyCompact;
-  const notifications = [
-    ...extraNotifications,
-    ...alertSources.flatMap((source) =>
-    createSystemNotifications(
-      getWorkComponentData<WorkSystemDiagnosticsCompactComponent>(source.data, "systemDiagnostics"),
-      getWorkComponentData<WorkQueueDiagnosticsCompactComponent>(source.data, "queueDiagnostics"),
-      acknowledgedRejectedWorkCounts[source.target.id] ?? 0,
-      getWorkComponentData<WorkReadModelDiagnosticsCompactComponent>(source.data, "readModelDiagnostics"),
-      getWorkComponentData<WorkRetentionDiagnosticsCompactComponent>(source.data, "retentionDiagnostics"),
-      getWorkComponentData<WorkConcurrencyDiagnosticsCompactComponent>(source.data, "concurrencyDiagnostics"),
-      getWorkComponentData<WorkDurabilityDiagnosticsCompactComponent>(source.data, "durabilityDiagnostics"),
-      source.error,
-      source.target
-    )
-    ),
-  ];
-  const hasNotifications = notifications.length > 0;
-  const hasCriticalNotifications = notifications.some((notification) => notification.tone === "critical");
+  const [dismissedNotificationKeys, setDismissedNotificationKeys] = useState<ReadonlySet<string>>(() => new Set());
+  const notifications = useMemo(
+    () => [
+      ...extraNotifications,
+      ...alertSources.flatMap((source) =>
+        createSystemNotifications(
+          getWorkComponentData<WorkSystemDiagnosticsCompactComponent>(source.data, "systemDiagnostics"),
+          getWorkComponentData<WorkQueueDiagnosticsCompactComponent>(source.data, "queueDiagnostics"),
+          acknowledgedRejectedWorkCounts[source.target.id] ?? 0,
+          getWorkComponentData<WorkReadModelDiagnosticsCompactComponent>(source.data, "readModelDiagnostics"),
+          getWorkComponentData<WorkRetentionDiagnosticsCompactComponent>(source.data, "retentionDiagnostics"),
+          getWorkComponentData<WorkConcurrencyDiagnosticsCompactComponent>(source.data, "concurrencyDiagnostics"),
+          getWorkComponentData<WorkDurabilityDiagnosticsCompactComponent>(source.data, "durabilityDiagnostics"),
+          source.error,
+          source.target
+        )
+      ),
+    ],
+    [acknowledgedRejectedWorkCounts, alertSources, extraNotifications]
+  );
+  useEffect(() => {
+    let canceled = false;
+    queueMicrotask(() => {
+      if (!canceled) {
+        setDismissedNotificationKeys((current) =>
+          pruneDismissedSystemNotificationKeys(current, notifications)
+        );
+      }
+    });
+
+    return () => {
+      canceled = true;
+    };
+  }, [notifications]);
+  const visibleNotifications = useMemo(
+    () =>
+      applySystemNotificationDismissals(
+        notifications,
+        dismissedNotificationKeys,
+        (notification) => {
+          const dismissalKey = systemNotificationDismissalKey(notification);
+          setDismissedNotificationKeys((current) => {
+            if (current.has(dismissalKey)) {
+              return current;
+            }
+
+            return new Set(current).add(dismissalKey);
+          });
+        }
+      ),
+    [dismissedNotificationKeys, notifications]
+  );
+  const hasNotifications = visibleNotifications.length > 0;
+  const hasCriticalNotifications = visibleNotifications.some((notification) => notification.tone === "critical");
   const busy = alertSources.some((source) => source.loading || source.refreshing) ||
     (open && !readModelExpanded && !retentionExpanded && !concurrencyExpanded && !durabilityExpanded && !idempotencyExpanded && (trayDiagnostics.loading || trayDiagnostics.refreshing)) ||
     (readModelExpanded && (readModelDetailDiagnostics.loading || readModelDetailDiagnostics.refreshing)) ||
@@ -3441,7 +3525,7 @@ function SystemNotificationTray({
                     ? semanticIndicatorToneClass("danger")
                     : semanticIndicatorToneClass("warning")
                 }`}>
-                  {notifications.length}
+                  {visibleNotifications.length}
                 </span>
               )}
             </Button>
@@ -3461,13 +3545,13 @@ function SystemNotificationTray({
         </div>
         <div className="max-h-[70vh] overflow-auto">
           <div className="space-y-2 border-b p-3">
-            {alertSources.some((source) => source.loading) && notifications.length === 0 ? (
+            {alertSources.some((source) => source.loading) && visibleNotifications.length === 0 ? (
               <div className="flex items-center gap-2 text-muted-foreground text-sm">
                 <Loader2 className="size-4 animate-spin" />
                 Loading diagnostics.
               </div>
-            ) : notifications.length > 0 ? (
-              notifications.map((notification) => (
+            ) : visibleNotifications.length > 0 ? (
+              visibleNotifications.map((notification) => (
                 <div
                   className={`rounded-md border px-3 py-2 ${semanticBadgeToneClass(
                     semanticToneForNotificationTone(notification.tone)
@@ -4093,6 +4177,7 @@ export function createSystemNotifications(
   if (system?.isShuttingDown) {
     notifications.push({
       description: `Workable is shutting down${sourceSuffix}. Active workers are being asked to stop.`,
+      dismissible: true,
       id: `${source?.id ?? "active"}:system-stopping`,
       tone: "warning",
       title: `${sourcePrefix}System is shutting down`,
