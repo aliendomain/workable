@@ -3,6 +3,9 @@ using System.Text.Json.Serialization;
 
 namespace Workable;
 
+/// <summary>
+/// Counts how many effective worker settings differ from system or definition defaults.
+/// </summary>
 public static class WorkerConfigurationDifferenceCounter
 {
     private static readonly JsonSerializerOptions ComparisonJson = new(JsonSerializerDefaults.Web)
@@ -10,6 +13,14 @@ public static class WorkerConfigurationDifferenceCounter
         Converters = { new JsonStringEnumConverter() },
     };
 
+    /// <summary>
+    /// Counts the number of serialized option and configuration fields whose effective values differ from defaults.
+    /// </summary>
+    /// <param name="currentOptions">The effective worker options to compare.</param>
+    /// <param name="currentConfiguration">The effective work configuration to compare.</param>
+    /// <param name="defaultOptions">The default worker options to compare against.</param>
+    /// <param name="defaultConfiguration">The default work configuration to compare against.</param>
+    /// <returns>The number of serialized field differences.</returns>
     public static int CountDifferences(
         WorkerOptions currentOptions,
         WorkConfiguration currentConfiguration,
@@ -84,6 +95,7 @@ public static class WorkerConfigurationDifferenceCounter
             configuration.Coordination,
             configuration.Recurrence,
             configuration.TransientRetry,
+            configuration.FailedWorker,
             configuration.Logging,
             configuration.Retention);
 
@@ -93,6 +105,7 @@ public static class WorkerConfigurationDifferenceCounter
         WorkCoordinationConfiguration Coordination,
         WorkRecurrenceConfiguration Recurrence,
         WorkTransientRetryConfiguration TransientRetry,
+        WorkFailedWorkerConfiguration FailedWorker,
         WorkLoggingConfiguration Logging,
         WorkRetentionConfiguration Retention);
 }

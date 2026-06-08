@@ -30,6 +30,7 @@ export type WorkerReconfigurationRequest = {
   coordination?: WorkConfiguration["coordination"];
   recurrence?: WorkConfiguration["recurrence"];
   transientRetry?: WorkConfiguration["transientRetry"];
+  failedWorker?: WorkConfiguration["failedWorker"];
   logging?: WorkConfiguration["logging"];
   retention?: WorkConfiguration["retention"];
 };
@@ -261,6 +262,7 @@ export function createWorkerReconfiguration(request: QueueWorkRequest): WorkerRe
     coordination: configuration.coordination,
     recurrence: configuration.recurrence,
     transientRetry: configuration.transientRetry,
+    failedWorker: configuration.failedWorker,
     logging: configuration.logging,
     retention: configuration.retention,
   };
@@ -570,6 +572,10 @@ export const defaultWorkConfiguration: WorkConfiguration = {
     jitter: "00:00:00.5000000",
     maximumDelay: "00:00:30",
     backoff: "Exponential",
+  },
+  failedWorker: {
+    handling: "Manual",
+    autoCancelAfter: "00:10:00",
   },
   logging: {
     isEnabled: true,

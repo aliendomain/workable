@@ -1,10 +1,21 @@
 namespace Workable;
 
+/// <summary>
+/// Describes the HTTP queue request schema and UI-oriented field groupings for a system.
+/// </summary>
+/// <param name="Schema">The JSON schema for the HTTP queue request body.</param>
+/// <param name="Tabs">The presentation-oriented field groups for queue-editor experiences.</param>
+/// <param name="Capabilities">System capabilities that affect which queue settings are meaningful.</param>
 public sealed record WorkableHttpQueueRequestDescriptor(
     WorkSchema Schema,
     IReadOnlyList<WorkableHttpQueueRequestTab> Tabs,
     WorkableHttpQueueRequestCapabilities Capabilities)
 {
+    /// <summary>
+    /// Creates the standard HTTP queue request descriptor for a system.
+    /// </summary>
+    /// <param name="system">The system whose capabilities should be reflected in the descriptor, or <see langword="null"/> when only the generic descriptor is needed.</param>
+    /// <returns>The queue request descriptor.</returns>
     public static WorkableHttpQueueRequestDescriptor Create(IWorkSystem? system = null)
         => new(
             WorkSchema.FromType<WorkableHttpWorkRequest>(),
@@ -73,6 +84,14 @@ public sealed record WorkableHttpQueueRequestDescriptor(
                 Field("options.configuration.transientRetry.backoff", "Backoff", "Controls whether retry delays stay flat or grow exponentially between attempts."),
             ]),
         new(
+            "failedWorker",
+            "Failed Worker",
+            "Controls whether non-recurring workers that end in Failed require manual handling or are auto-canceled after a delay.",
+            [
+                Field("options.configuration.failedWorker.handling", "Handling", "Choose whether failed workers remain for manual handling or are auto-canceled after the configured delay."),
+                Field("options.configuration.failedWorker.autoCancelAfter", "Auto-cancel after", "How long a non-recurring worker may remain failed before Workable auto-cancels it. Use .NET TimeSpan text such as 00:10:00."),
+            ]),
+        new(
             "logging",
             "Logging",
             "Controls worker log capture for execution diagnostics and worker snapshots.",
@@ -99,16 +118,35 @@ public sealed record WorkableHttpQueueRequestDescriptor(
             capabilities.PersistentCoordinationAvailable;
 }
 
+/// <summary>
+/// Represents one presentation-oriented section in the HTTP queue request descriptor.
+/// </summary>
+/// <param name="Id">The stable section identifier.</param>
+/// <param name="Label">The display label for the section.</param>
+/// <param name="Description">The consumer-facing description of the section.</param>
+/// <param name="Fields">The field descriptors that belong to the section.</param>
 public sealed record WorkableHttpQueueRequestTab(
     string Id,
     string Label,
     string Description,
     IReadOnlyList<WorkableHttpQueueRequestField> Fields);
 
+/// <summary>
+/// Represents one documented field within the HTTP queue request descriptor.
+/// </summary>
+/// <param name="Path">The dotted request-body path of the field.</param>
+/// <param name="Label">The display label for the field.</param>
+/// <param name="Description">The consumer-facing description of the field.</param>
 public sealed record WorkableHttpQueueRequestField(
     string Path,
     string Label,
     string Description);
 
+/// <summary>
+/// Represents system capabilities that affect which HTTP queue settings can be honored.
+/// </summary>
+/// <param name="PersistentCoordinationAvailable">
+/// Whether the system currently supports persistent coordination features such as durable queueing and persistence-backed idempotency.
+/// </param>
 public sealed record WorkableHttpQueueRequestCapabilities(
     bool PersistentCoordinationAvailable);

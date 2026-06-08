@@ -545,6 +545,166 @@ public sealed class WorkerStateTests
     }
 
     [Fact]
+    public async Task FailedWorkerCanBeAutomaticallyCanceledAfterConfiguredDelay()
+    {
+        var definition = WorkDefinition.Create("failed-auto-cancel", "Failed workers can be auto-canceled.",
+            configuration: WorkConfiguration.Default with
+            {
+                FailedWorker = new WorkFailedWorkerConfiguration
+                {
+                    Handling = WorkFailedWorkerHandling.AutoCancel,
+                    AutoCancelAfter = TimeSpan.FromMilliseconds(20),
+                },
+                Retention = WorkRetentionConfiguration.Default with
+                {
+                    PurgeInterval = TimeSpan.FromMinutes(10),
+                },
+            });
+        var system = CreateSystem(definition, (context, input, cancellationToken) =>
+            Task.FromResult(WorkExecutionResult.Failure([WorkMessage.Error("test.failure", "The work failed.")])));
+
+        await system.Start();
+
+        var handle = await system.Queue.Enqueue("failed-auto-cancel");
+        var failed = await handle.WaitForCompletion();
+        var failedWorker = RequiredCompletionWorker(failed);
+
+        await TestEventually.Until(async () =>
+            (await system.Query.Worker(failedWorker.Id))?.State == WorkerState.Canceled);
+        var canceled = RequiredWorker(await system.Query.Worker(failedWorker.Id));
+
+        Assert.Equal(WorkCompletionStatus.Failed, failed.Status);
+        Assert.Equal(WorkerState.Canceled, canceled.State);
+    }
+
+    [Fact]
+    public async Task FailedWorkerAutoCancelHandsOffToFinalWorkerRetention()
+    {
+        var definition = WorkDefinition.Create("failed-auto-cancel-retention", "Auto-cancel hands off to retention.",
+            configuration: WorkConfiguration.Default with
+            {
+                FailedWorker = new WorkFailedWorkerConfiguration
+                {
+                    Handling = WorkFailedWorkerHandling.AutoCancel,
+                    AutoCancelAfter = TimeSpan.FromMilliseconds(20),
+                },
+                Retention = WorkRetentionConfiguration.Default with
+                {
+                    PurgeInterval = TimeSpan.FromMilliseconds(20),
+                },
+            });
+        var system = CreateSystem(definition, (context, input, cancellationToken) =>
+            Task.FromResult(WorkExecutionResult.Failure([WorkMessage.Error("test.failure", "The work failed.")])));
+
+        await system.Start();
+
+        var handle = await system.Queue.Enqueue("failed-auto-cancel-retention");
+        var failed = await handle.WaitForCompletion();
+        var failedWorker = RequiredCompletionWorker(failed);
+
+        await TestEventually.Until(async () => await system.Query.Worker(failedWorker.Id) is null);
+
+        Assert.Equal(WorkCompletionStatus.Failed, failed.Status);
+    }
+
+    [Fact]
+    public async Task RuntimeOverrideCanRequireManualFailedWorkerHandling()
+    {
+        var definition = WorkDefinition.Create("failed-runtime-manual", "Execution can force manual failed-worker handling.",
+            configuration: WorkConfiguration.Default with
+            {
+                FailedWorker = new WorkFailedWorkerConfiguration
+                {
+                    Handling = WorkFailedWorkerHandling.AutoCancel,
+                    AutoCancelAfter = TimeSpan.FromMilliseconds(20),
+                },
+            });
+        var system = CreateSystem(definition, (context, input, cancellationToken) =>
+        {
+            context.RequireManualFailedWorkerHandling();
+            return Task.FromResult(WorkExecutionResult.Failure([WorkMessage.Error("test.failure", "The work failed.")]));
+        });
+
+        await system.Start();
+
+        var handle = await system.Queue.Enqueue("failed-runtime-manual");
+        var failed = await handle.WaitForCompletion();
+        var failedWorker = RequiredCompletionWorker(failed);
+
+        await Task.Delay(120);
+        var snapshot = RequiredWorker(await system.Query.Worker(failedWorker.Id));
+
+        Assert.Equal(WorkCompletionStatus.Failed, failed.Status);
+        Assert.Equal(WorkerState.Failed, snapshot.State);
+    }
+
+    [Fact]
+    public async Task RuntimeOverrideCanAllowFailedWorkerAutoCancel()
+    {
+        var definition = WorkDefinition.Create("failed-runtime-auto", "Execution can opt into failed-worker auto-cancel.",
+            configuration: WorkConfiguration.Default with
+            {
+                FailedWorker = new WorkFailedWorkerConfiguration
+                {
+                    Handling = WorkFailedWorkerHandling.Manual,
+                    AutoCancelAfter = TimeSpan.FromMilliseconds(20),
+                },
+            });
+        var system = CreateSystem(definition, (context, input, cancellationToken) =>
+        {
+            context.AllowFailedWorkerAutoCancel();
+            return Task.FromResult(WorkExecutionResult.Failure([WorkMessage.Error("test.failure", "The work failed.")]));
+        });
+
+        await system.Start();
+
+        var handle = await system.Queue.Enqueue("failed-runtime-auto");
+        var failed = await handle.WaitForCompletion();
+        var failedWorker = RequiredCompletionWorker(failed);
+
+        await TestEventually.Until(async () =>
+            (await system.Query.Worker(failedWorker.Id))?.State == WorkerState.Canceled);
+        var canceled = RequiredWorker(await system.Query.Worker(failedWorker.Id));
+
+        Assert.Equal(WorkCompletionStatus.Failed, failed.Status);
+        Assert.Equal(WorkerState.Canceled, canceled.State);
+    }
+
+    [Fact]
+    public async Task ReconfiguringFailedWorkerToAutoCancelSchedulesIt()
+    {
+        var definition = WorkDefinition.Create("failed-reconfigure-auto", "Failed workers can be reconfigured to auto-cancel.",
+            configuration: WorkConfiguration.Default with
+            {
+                FailedWorker = new WorkFailedWorkerConfiguration
+                {
+                    Handling = WorkFailedWorkerHandling.Manual,
+                    AutoCancelAfter = TimeSpan.FromMilliseconds(20),
+                },
+            });
+        var system = CreateSystem(definition, (context, input, cancellationToken) =>
+            Task.FromResult(WorkExecutionResult.Failure([WorkMessage.Error("test.failure", "The work failed.")])));
+
+        await system.Start();
+
+        var handle = await system.Queue.Enqueue("failed-reconfigure-auto");
+        var failed = await handle.WaitForCompletion();
+        var failedWorker = RequiredCompletionWorker(failed);
+
+        var outcome = await system.Workers.Reconfigure(
+            failedWorker.Version,
+            new WorkerReconfiguration(FailedWorker: new WorkFailedWorkerConfiguration
+            {
+                Handling = WorkFailedWorkerHandling.AutoCancel,
+                AutoCancelAfter = TimeSpan.FromMilliseconds(20),
+            }));
+
+        Assert.True(outcome.IsAccepted);
+        await TestEventually.Until(async () =>
+            (await system.Query.Worker(failedWorker.Id))?.State == WorkerState.Canceled);
+    }
+
+    [Fact]
     public async Task WorkerActionsCanRejectStaleRevisions()
     {
         var running = CreateSignal();

@@ -19,6 +19,7 @@ internal static class WorkConfigurationValidator
         var messages = new List<WorkMessage>();
         ValidateRecurrence(configuration.Recurrence, messages);
         ValidateTransientRetry(configuration.TransientRetry, messages);
+        ValidateFailedWorker(configuration.FailedWorker, configuration.Recurrence, messages);
         ValidateLogging(configuration.Logging, messages);
         ValidateRetention(configuration.Retention, messages);
         ValidateCoordination(configuration.Coordination, configuration.Recurrence, messages);
@@ -137,6 +138,28 @@ internal static class WorkConfigurationValidator
                 "workable.configuration.transient_retry.initial_delay_exceeds_maximum",
                 "Transient retry initial delay cannot be greater than the maximum retry delay.",
                 "configuration.transientRetry.initialDelay"));
+        }
+    }
+
+    private static void ValidateFailedWorker(
+        WorkFailedWorkerConfiguration failedWorker,
+        WorkRecurrenceConfiguration recurrence,
+        List<WorkMessage> messages)
+    {
+        if (failedWorker.AutoCancelAfter <= TimeSpan.Zero)
+        {
+            messages.Add(WorkMessage.Error(
+                "workable.configuration.failed_worker.auto_cancel_after_required",
+                "Failed-worker auto-cancel delay must be greater than zero.",
+                "configuration.failedWorker.autoCancelAfter"));
+        }
+
+        if (recurrence.IsEnabled && failedWorker.Handling == WorkFailedWorkerHandling.AutoCancel)
+        {
+            messages.Add(WorkMessage.Error(
+                "workable.configuration.failed_worker.auto_cancel_recurring_not_supported",
+                "Failed-worker auto-cancel is not supported for recurring work.",
+                "configuration.failedWorker.handling"));
         }
     }
 

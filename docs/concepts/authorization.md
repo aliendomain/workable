@@ -102,6 +102,24 @@ builder.AddWork<SyncInvoicesWork>(
     authorize: auth => auth.AllowOperateToKnownAuthenticatedUsers());
 ```
 
+When several registrations inside one system share the same work-level authorization, group them with `WithWorkDefaults(...)`:
+
+```csharp
+services.AddWorkableSystem(builder =>
+{
+    builder.AddWork<SubmitSurveyWork>(
+        authorize: auth => auth.AllowOperateToKnownAuthenticatedUsers());
+
+    builder.WithWorkDefaults(
+        register: work => work
+            .AddWork<CreateSurveyAreaWork>()
+            .AddWork<CreateSurveyTemplateWork>()
+            .AddWork<DeleteSurveyAreaWork>()
+            .AddWork<UpdateSurveyTemplateWork>(),
+        authorize: auth => auth.AllowOperateToGroups("survey.admin"));
+});
+```
+
 This capability is currently available through the fluent builder API, not through `WorkAuthorizationAttribute`.
 
 This rule is intentionally narrower than "authenticated transport request." The caller must be authenticated and the request context must carry a known actor with at least one non-blank identity field such as `Id`, `Name`, or `Email`.
@@ -109,6 +127,8 @@ This rule is intentionally narrower than "authenticated transport request." The 
 For ASP.NET Core transports and custom endpoints that use `IWorkRequestContextFactory`, Workable sets this automatically from `HttpContext`. For trusted direct in-process callers that build `WorkRequestContext` values manually, the caller is responsible for setting `isAuthenticated: true` when that meaning is intended.
 
 Fluent authorization overrides attribute authorization.
+
+Within `WithWorkDefaults(...)`, the group-level `authorize` callback runs before any per-work `authorize` callback. That means a specific work can refine or replace the grouped authorization without repeating the shared policy for every sibling registration.
 
 ### Read And Operate Rules
 

@@ -33,6 +33,10 @@ import {
   type WorkIterationKeyTypeFacet,
   type WorkOverviewIteration,
 } from "@/lib/workable";
+import {
+  semanticTextToneClass,
+  semanticToneForStateName,
+} from "@/lib/ui/state-tones";
 
 const iterationStatuses: WorkCompletionStatus[] = [
   "Executing",
@@ -83,7 +87,12 @@ export function IterationStatusStrip({
           <Badge className={`justify-center ${completionTone(status)}`} variant="outline">
             {status}
           </Badge>
-          <span className={`font-mono text-sm leading-none ${status === "Failed" ? "text-red-300" : ""}`}>
+          <span
+            className={`font-mono text-sm leading-none ${semanticTextToneClass(
+              semanticToneForStateName(status),
+              "strong"
+            )}`}
+          >
             {counts[status] ?? 0}
           </span>
         </button>
@@ -121,7 +130,10 @@ export function CompactIterationStrip({
           label={status}
           onClick={() => onSelectStatus(status)}
           value={counts[status] ?? 0}
-          valueClassName={status === "Failed" ? "text-red-300" : undefined}
+          valueClassName={semanticTextToneClass(
+            semanticToneForStateName(status),
+            "strong"
+          )}
         />
       ))}
     </div>
@@ -491,7 +503,7 @@ function DurationValue({
   muted?: boolean;
 }) {
   const tone = duration.isWarning
-    ? "text-amber-300"
+    ? semanticTextToneClass("warning")
     : muted
       ? "text-muted-foreground"
       : "";

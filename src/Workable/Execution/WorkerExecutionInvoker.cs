@@ -99,6 +99,7 @@ internal sealed class WorkerExecutionInvoker(
 
                 return added;
             },
+            failedWorkerOverride => worker.SetFailedWorkerAutoCancelOverride(failedWorkerOverride),
             (transaction, durableCompletionCancellation) =>
                 persistence.CompleteDurably(worker, transaction, durableCompletionCancellation));
     }

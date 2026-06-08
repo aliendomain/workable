@@ -3,6 +3,16 @@ using Microsoft.Extensions.Logging;
 
 namespace Workable;
 
+/// <summary>
+/// Represents derived failure details for a retained worker iteration.
+/// </summary>
+/// <param name="Kind">Whether the failure was represented as a declared failure or an exception.</param>
+/// <param name="Message">The most useful human-readable failure message Workable could derive.</param>
+/// <param name="Code">The structured failure code, when one exists.</param>
+/// <param name="Target">The structured failure target, when one exists.</param>
+/// <param name="ExceptionType">The exception type, when the failure was exception-based.</param>
+/// <param name="StackTrace">The retained stack trace, when one was captured.</param>
+/// <param name="DeclaredByWork">Whether the failure was explicitly declared by work code instead of inferred from logs or exceptions.</param>
 public sealed record WorkerIterationFailure(
     WorkerIterationFailureKind Kind,
     string Message,
@@ -12,14 +22,32 @@ public sealed record WorkerIterationFailure(
     string? StackTrace = null,
     bool DeclaredByWork = false);
 
+/// <summary>
+/// Identifies how Workable classified a retained iteration failure.
+/// </summary>
 public enum WorkerIterationFailureKind
 {
+    /// <summary>
+    /// The iteration failed without a retained exception type.
+    /// </summary>
     Failure,
+
+    /// <summary>
+    /// The iteration failed because of an exception.
+    /// </summary>
     Exception,
 }
 
+/// <summary>
+/// Derives a compact failure view from retained iteration messages and logs.
+/// </summary>
 public static class WorkerIterationFailureResolver
 {
+    /// <summary>
+    /// Resolves derived failure details from a retained iteration snapshot.
+    /// </summary>
+    /// <param name="iteration">The iteration snapshot to inspect.</param>
+    /// <returns>The derived failure details, or <see langword="null"/> when the iteration did not fail.</returns>
     public static WorkerIterationFailure? Resolve(WorkerIterationSnapshot iteration)
     {
         ArgumentNullException.ThrowIfNull(iteration);
@@ -31,6 +59,13 @@ public static class WorkerIterationFailureResolver
         return Resolve(iteration.Messages, iteration.Logs, "The retained iteration ended in failure.");
     }
 
+    /// <summary>
+    /// Resolves derived failure details from retained messages and logs.
+    /// </summary>
+    /// <param name="messages">The retained work messages to inspect.</param>
+    /// <param name="logs">The retained worker log entries to inspect.</param>
+    /// <param name="fallbackMessage">The fallback message to use when no better failure text can be derived.</param>
+    /// <returns>The derived failure details.</returns>
     public static WorkerIterationFailure Resolve(
         IReadOnlyList<WorkMessage>? messages,
         IReadOnlyList<WorkerLogEntry>? logs,

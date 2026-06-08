@@ -26,6 +26,7 @@ internal sealed class WorkerOperations :
     private readonly List<CancellationTokenSource> retiredSystemExecutionLifetimes = [];
     private readonly WorkerDispatcher dispatcher;
     private readonly WorkConcurrencyCoordinator concurrency;
+    private readonly FailedWorkerAutoCancelScheduler failedWorkerAutoCancel;
     private readonly WorkerRetentionScheduler retention;
     private readonly TimeSpan shutdownGracePeriod;
     private readonly WorkSystemCapacityConfiguration capacity;
@@ -112,6 +113,8 @@ internal sealed class WorkerOperations :
             this.iterationTransitions);
         this.executionStrategy = new ConfiguredWorkerExecutionStrategy(runOnce, transientRetry, recurring);
         this.dispatcher = new WorkerDispatcher(this.DispatchQueuedWorker);
+        var failedWorkerLogger = rootServices.GetService<ILoggerFactory>()?.CreateLogger("Workable.FailedWorkerHandling");
+        this.failedWorkerAutoCancel = new FailedWorkerAutoCancelScheduler(this.AutoCancelFailedWorkers, failedWorkerLogger);
         this.retention = new WorkerRetentionScheduler(this.index, retentionConfiguration, this.PurgeFinalWorkersForRetention);
     }
 
@@ -353,6 +356,7 @@ internal sealed class WorkerOperations :
             cancellationToken);
 
         this.dispatcher.Start(this.GetSystemExecutionLifetimeToken());
+        this.failedWorkerAutoCancel.Start();
         this.retention.Start();
         this.persistence.StartBackgroundTasks();
     }
@@ -375,6 +379,7 @@ internal sealed class WorkerOperations :
 
         var interruptedWorkers = this.InterruptActiveForSystemStop();
         await this.dispatcher.Stop(cancellationToken);
+        await this.failedWorkerAutoCancel.Stop(cancellationToken);
         await this.retention.Stop(cancellationToken);
         await this.WaitForInterruptedWorkers(interruptedWorkers, cancellationToken);
         var forceInterruptedWorkers = this.ForceInterruptRemaining(interruptedWorkers);
@@ -573,6 +578,7 @@ internal sealed class WorkerOperations :
         if (outcome.IsAccepted)
         {
             this.concurrency.Synchronize(record);
+            this.SynchronizeFailedWorkerAutoCancel(record);
 
             if (record.ShouldStartWithoutConcurrency())
             {
@@ -650,6 +656,7 @@ internal sealed class WorkerOperations :
         this.readModel.Clear();
         this.concurrency.Clear();
         this.dispatcher.ClearScheduledWork();
+        this.failedWorkerAutoCancel.Clear();
         this.retention.Clear();
     }
 
@@ -676,6 +683,7 @@ internal sealed class WorkerOperations :
     private void HandleAcceptedInterruption(WorkerRecord worker, bool signalCompletion = true)
     {
         this.concurrency.Synchronize(worker);
+        this.failedWorkerAutoCancel.Forget(worker.Id);
         this.SynchronizeWorkerIfTracked(worker);
         if (signalCompletion && worker.SignalCurrentCompletion())
         {
@@ -761,6 +769,7 @@ internal sealed class WorkerOperations :
         {
             this.systemExecutionLifetime.Cancel();
             this.dispatcher.Dispose();
+            this.failedWorkerAutoCancel.Dispose();
             this.retention.Dispose();
             this.systemExecutionLifetime.Dispose();
             foreach (var retiredLifetime in this.retiredSystemExecutionLifetimes)
@@ -863,6 +872,7 @@ internal sealed class WorkerOperations :
             this.persistence.SynchronizeWorkerState(worker);
         }
 
+        this.SynchronizeFailedWorkerAutoCancel(worker);
         this.ScheduleConcurrencyDrain(worker.Work.Definition.Id);
     }
 
@@ -877,6 +887,7 @@ internal sealed class WorkerOperations :
         }
 
         this.persistence.SynchronizeWorkerState(worker);
+        this.SynchronizeFailedWorkerAutoCancel(worker);
 
         this.ScheduleConcurrencyDrain(worker.Work.Definition.Id);
     }
@@ -890,6 +901,7 @@ internal sealed class WorkerOperations :
         }
 
         this.TryRemoveWorker(worker.Id, out _);
+        this.failedWorkerAutoCancel.Forget(worker.Id);
         this.retention.Forget(worker.Id);
         this.concurrency.Forget(worker);
         this.index.Forget(worker);
@@ -897,6 +909,52 @@ internal sealed class WorkerOperations :
         this.ScheduleConcurrencyDrain(worker.Work.Definition.Id);
         this.persistence.SynchronizeWorkerState(worker);
         return outcome;
+    }
+
+    private void SynchronizeFailedWorkerAutoCancel(WorkerRecord worker)
+    {
+        if (worker.State == WorkerState.Failed)
+        {
+            this.failedWorkerAutoCancel.Schedule(worker);
+            return;
+        }
+
+        this.failedWorkerAutoCancel.Forget(worker.Id);
+    }
+
+    private int AutoCancelFailedWorkers(IReadOnlyList<FailedWorkerAutoCancelSchedule> schedules)
+    {
+        if (schedules.Count == 0)
+        {
+            return 0;
+        }
+
+        var autoCanceledCount = 0;
+        var requestContext = WorkRequestContext.Create(
+            WorkInvocationChannel.InProcess,
+            description: "Workable auto-canceled a failed worker after the configured failed-state delay.");
+        foreach (var schedule in schedules)
+        {
+            if (!this.workers.TryGetValue(schedule.WorkerId, out var worker) ||
+                !worker.TryAutoCancelFailedWorker(schedule.StateSequence, out var outcome) ||
+                outcome is null)
+            {
+                continue;
+            }
+
+            worker.RecordActionHistory(outcome, requestContext);
+            this.HandleAcceptedWorkerChange(worker, WorkAction.Cancel);
+            this.SynchronizeWorkerIfTracked(worker);
+            if (ShouldSignalCurrentCompletion(WorkAction.Cancel))
+            {
+                worker.SignalCurrentCompletion();
+            }
+
+            this.workerEvents.ActionApplied(worker, outcome, requestContext);
+            autoCanceledCount++;
+        }
+
+        return autoCanceledCount;
     }
 
     private int PurgeFinalWorkersForRetention(

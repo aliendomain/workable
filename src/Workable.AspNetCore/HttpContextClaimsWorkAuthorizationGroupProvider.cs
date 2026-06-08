@@ -3,6 +3,9 @@ using Microsoft.Extensions.Options;
 
 namespace Workable;
 
+/// <summary>
+/// Resolves authorization groups from the current HTTP user's claims.
+/// </summary>
 public sealed class HttpContextClaimsWorkAuthorizationGroupProvider(
     IHttpContextAccessor httpContextAccessor,
     IOptions<WorkableAspNetCoreAuthorizationOptions> options) : IWorkAuthorizationGroupProvider
@@ -10,6 +13,12 @@ public sealed class HttpContextClaimsWorkAuthorizationGroupProvider(
     private static readonly object GroupsCacheKey = new();
     private const string DefaultSystemCacheKey = "<default>";
 
+    /// <summary>
+    /// Gets the group values associated with the current authenticated HTTP user.
+    /// </summary>
+    /// <param name="actor">The actor being authorized.</param>
+    /// <param name="systemName">The system name being authorized, or <see langword="null"/> for the default unnamed system.</param>
+    /// <returns>The resolved group values for the current authenticated user.</returns>
     public IReadOnlySet<string> GetGroups(WorkActor actor, string? systemName)
     {
         var httpContext = httpContextAccessor.HttpContext;

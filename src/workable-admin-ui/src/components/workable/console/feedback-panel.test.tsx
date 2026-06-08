@@ -24,7 +24,7 @@ test("feedback panel filters empty messages and de-duplicates repeated messages"
   assert.equal(countMarkupOccurrences(markup, "Host unavailable"), 1);
   assert.equal(countMarkupOccurrences(markup, "Timed out"), 1);
   assert.equal(countMarkupOccurrences(markup, "Connection issue"), 2);
-  assertMarkupIncludes(markup, "border-amber-500/30");
+  assertMarkupIncludes(markup, "border-[var(--status-warning-border)]");
 });
 
 test("feedback banners cover tone, dismissal, error alias, and empty-message paths", () => {
@@ -36,21 +36,21 @@ test("feedback banners cover tone, dismissal, error alias, and empty-message pat
   const info = renderMarkup(
     <FeedbackBanner message="Details loaded" title="Info" tone="info" />
   );
-  assertMarkupIncludes(info, "border-slate-600/80");
+  assertMarkupIncludes(info, "border-[var(--status-info-border)]");
   assertMarkupIncludes(info, "Details loaded");
   assertMarkupIncludes(info, "aria-label=\"Dismiss message\"");
 
   const success = renderMarkup(
     <FeedbackBanner message="Saved" title="Success" tone="success" />
   );
-  assertMarkupIncludes(success, "border-emerald-500/30");
+  assertMarkupIncludes(success, "border-[var(--status-success-border)]");
 
   const error = renderMarkup(
     <ErrorBanner message="Denied" title="Access issue" />
   );
   assertMarkupIncludes(error, "Denied");
   assertMarkupIncludes(error, "Access issue");
-  assertMarkupIncludes(error, "text-destructive");
+  assertMarkupIncludes(error, "text-[var(--status-danger-text)]");
 });
 
 test("error panel uses the default title and hides when no errors are active", () => {

@@ -18,7 +18,7 @@ Those six sources apply in two phases:
 - Definition defaults are built from Workable defaults, then attributes, then bootstrap configuration, then definition default reconfiguration.
 - Worker-specific state starts from the definition's current defaults when the worker is queued, then applies queue-time `WorkerOptions`, then later applies runtime `WorkerReconfiguration`.
 
-Queue-time and runtime worker overrides merge at the top-level `WorkConfiguration` facet boundary. Supplying `Start`, `Coordination`, `Recurrence`, `TransientRetry`, `Logging`, or `Retention` replaces that whole facet for that worker. Supplying `null` leaves the existing facet unchanged.
+Queue-time and runtime worker overrides merge at the top-level `WorkConfiguration` facet boundary. Supplying `Start`, `Coordination`, `Recurrence`, `TransientRetry`, `FailedWorker`, `Logging`, or `Retention` replaces that whole facet for that worker. Supplying `null` leaves the existing facet unchanged.
 
 Invocation configuration is definition-level. It can be supplied by attributes, bootstrap configuration, or definition default reconfiguration. Queue-time options and runtime worker reconfiguration do not change which channels may start a work definition.
 
@@ -31,7 +31,7 @@ Some registration-time behavior is attached with the same fluent builder but is 
 Workable exposes configuration in four related shapes:
 
 - `WorkerOptions`: queue-time or definition-default worker options such as `ProfilingEnabled`, `Configuration`, and `QueueDurabilityTransaction`.
-- `WorkConfiguration`: per-definition and per-worker runtime behavior with `Start`, `Coordination`, `Recurrence`, `TransientRetry`, `Logging`, `Retention`, and `Invocation`.
+- `WorkConfiguration`: per-definition and per-worker runtime behavior with `Start`, `Coordination`, `Recurrence`, `TransientRetry`, `FailedWorker`, `Logging`, `Retention`, and `Invocation`.
 - Nested coordination facets inside `WorkCoordinationConfiguration`: `Idempotency`, `Concurrency`, and `Durability`.
 - System bootstrap configuration on `IWorkSystemBuilder`: `WorkSystemRetentionConfiguration`, `WorkSystemCapacityConfiguration`, and shutdown grace period settings.
 
@@ -86,6 +86,7 @@ The rest of the direct setters follow the same pattern:
 - `UseStart(new WorkStartConfiguration { ... })`
 - `UseRecurrence(new WorkRecurrenceConfiguration { ... })`
 - `UseTransientRetry(new WorkTransientRetryConfiguration { ... })`
+- `UseFailedWorker(new WorkFailedWorkerConfiguration { ... })`
 - `UseLogging(new WorkLoggingConfiguration { ... })`
 - `UseRetention(new WorkRetentionConfiguration { ... })`
 - `UseInvocation(new WorkInvocationConfiguration { ... })`
@@ -95,6 +96,7 @@ The rest of the direct setters follow the same pattern:
 - [Idempotency Configuration](idempotency.md): duplicate prevention by `WorkSubjectId`.
 - [Recurrence Configuration](recurrence.md): repeated execution, iteration waits, and recurrence circuit behavior.
 - [Transient Retry Configuration](transient-retry.md): transient exception classification and retry behavior.
+- [Failed-Worker Handling Configuration](failed-worker.md): opt into auto-cancel for failed non-recurring workers and control runtime overrides.
 - [Logging Configuration](logging.md): worker-scoped logging behavior.
 - [Retention Configuration](retention.md): automatic purge timing and background count-target cleanup for completed and canceled workers.
 - [System Settings](system-settings.md): startup-only system-wide limits for admission capacity and retained final workers.

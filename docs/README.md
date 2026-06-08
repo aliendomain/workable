@@ -25,6 +25,7 @@ Start with [Getting Started](guides/getting-started.md) if you are evaluating wh
   - [Idempotency Configuration](guides/configuration/idempotency.md): duplicate prevention by `WorkSubjectId`.
   - [Recurrence Configuration](guides/configuration/recurrence.md): repeated execution, iteration waits, and recurrence circuit behavior.
   - [Transient Retry Configuration](guides/configuration/transient-retry.md): transient exception classification and retry behavior.
+  - [Failed-Worker Handling Configuration](guides/configuration/failed-worker.md): opt into auto-cancel for failed non-recurring workers and control runtime overrides.
   - [Logging Configuration](guides/configuration/logging.md): worker-scoped logging behavior.
   - [Retention Configuration](guides/configuration/retention.md): automatic purge timing and final-worker count cleanup.
   - [System Settings](guides/configuration/system-settings.md): startup-only system-wide limits for admission capacity and retained final workers.

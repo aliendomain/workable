@@ -6,6 +6,13 @@ using Microsoft.AspNetCore.SignalR;
 
 namespace Workable;
 
+/// <summary>
+/// Tracks active worker-overview subscriptions for the Workable SignalR adapter.
+/// </summary>
+/// <remarks>
+/// Most hosts use this type indirectly through <see cref="WorkableRealtimeHub"/>. The public debug snapshot method
+/// exists so local diagnostics endpoints can inspect shared worker-overview subscription state and streaming health.
+/// </remarks>
 public sealed class WorkableRealtimeWorkerOverviewSubscriptions
 {
     private static readonly JsonSerializerOptions KeyJsonOptions = new(JsonSerializerDefaults.Web)
@@ -187,6 +194,11 @@ public sealed class WorkableRealtimeWorkerOverviewSubscriptions
         }
     }
 
+    /// <summary>
+    /// Gets debug snapshots for the active worker-overview subscriptions that belong to one Workable system.
+    /// </summary>
+    /// <param name="system">The system whose worker-overview subscriptions should be described.</param>
+    /// <returns>The current worker-overview subscription snapshots for the system.</returns>
     public IReadOnlyList<WorkableRealtimeDebugWorkerOverviewSubscriptionSnapshot> GetDebugSubscriptions(IWorkSystem system)
     {
         ArgumentNullException.ThrowIfNull(system);

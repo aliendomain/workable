@@ -4,7 +4,7 @@ Retention configuration controls how many final workers Workable keeps available
 
 For configuration source order, precedence, and override rules that apply to every configuration facet, see [Work Configuration](README.md).
 
-`PurgeInterval` is the maximum retention age for final workers. Worker-level `MaximumFinalWorkers` is an asynchronously enforced retained final-worker target for a work definition. Final workers are `Completed` or `Canceled`. Failed and interrupted workers are not final and are handled separately because they can still require retry, replay, inspection, or explicit cancellation.
+`PurgeInterval` is the maximum retention age for final workers. Worker-level `MaximumFinalWorkers` is an asynchronously enforced retained final-worker target for a work definition. Final workers are `Completed` or `Canceled`. Failed and interrupted workers are not final and are handled separately because they can still require retry, replay, inspection, or explicit cancellation. When failed-worker auto-cancel is enabled, Workable changes that failed worker state into `Canceled` after the configured delay, and retention then treats it like any other final worker.
 
 ## Settings
 

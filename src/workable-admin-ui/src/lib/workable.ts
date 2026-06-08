@@ -390,6 +390,10 @@ export type WorkConfiguration = {
     maximumDelay: string;
     backoff: "None" | "Exponential";
   };
+  failedWorker: {
+    handling: "Manual" | "AutoCancel";
+    autoCancelAfter: string;
+  };
   logging: {
     isEnabled: boolean;
     level:

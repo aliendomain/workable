@@ -52,6 +52,26 @@ services.AddWorkableSystem("email", builder =>
 });
 ```
 
+When a subset of registrations in one system share the same work-level configuration or authorization, use `WithWorkDefaults(...)` to keep the registration block compact.
+
+```csharp
+services.AddWorkableSystem("backstage", builder =>
+{
+    builder.StartWithHost();
+    builder.RequireAuthorization();
+
+    builder.AddWork<SubmitSurveyWork>(
+        authorize: auth => auth.AllowOperateToKnownAuthenticatedUsers());
+
+    builder.WithWorkDefaults(
+        register: work => work
+            .AddWork<CreateSurveyAreaWork>()
+            .AddWork<CreateSurveyTemplateWork>()
+            .AddWork<DeleteSurveyAreaWork>(),
+        authorize: auth => auth.AllowOperateToGroups("survey.admin"));
+});
+```
+
 ### Lifecycle Options
 
 The system builder has three lifecycle controls:

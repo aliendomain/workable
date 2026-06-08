@@ -4,6 +4,9 @@ using Microsoft.Extensions.Logging;
 
 namespace Workable;
 
+/// <summary>
+/// Projects Workable query data into the shared view/component and worker-overview contracts.
+/// </summary>
 public class WorkableViewQueryAdapter
 {
     private const int InitialWorkerOverviewRealtimeActivityTake = 50;
@@ -19,6 +22,9 @@ public class WorkableViewQueryAdapter
             ["throughput"] = new(RequiresIntervalPublish: true),
         };
 
+    /// <summary>
+    /// Builds a component result map from an arbitrary component request list.
+    /// </summary>
     public async Task<WorkComponentQueryResult> Components(
         IWorkSystemSession session,
         WorkComponentCriteria? criteria = null,
@@ -47,6 +53,9 @@ public class WorkableViewQueryAdapter
         return new WorkComponentQueryResult(DateTimeOffset.UtcNow, components);
     }
 
+    /// <summary>
+    /// Builds a named view using the built-in default component composition or caller-supplied overrides.
+    /// </summary>
     public Task<WorkComponentQueryResult> View(
         IWorkSystemSession session,
         string name,
@@ -75,18 +84,27 @@ public class WorkableViewQueryAdapter
             cancellationToken: cancellationToken);
     }
 
+    /// <summary>
+    /// Reads one raw worker snapshot for custom transports or custom UI flows.
+    /// </summary>
     public async Task<WorkerSnapshot?> Worker(
         IWorkSystemSession session,
         WorkerId workerId,
         CancellationToken cancellationToken = default)
         => await session.Query.Worker(workerId, cancellationToken: cancellationToken);
 
+    /// <summary>
+    /// Reads one raw worker-iteration snapshot for custom transports or custom UI flows.
+    /// </summary>
     public async Task<WorkerIterationSnapshot?> WorkerIteration(
         IWorkSystemSession session,
         WorkerIterationReference iteration,
         CancellationToken cancellationToken = default)
         => await session.Query.WorkerIteration(iteration, cancellationToken: cancellationToken);
 
+    /// <summary>
+    /// Builds the paged structured-message section for one worker iteration.
+    /// </summary>
     public async Task<WorkIterationMessageSection?> WorkerIterationMessages(
         IWorkSystemSession session,
         WorkerIterationReference iteration,
@@ -111,6 +129,9 @@ public class WorkableViewQueryAdapter
             CreateIterationMessagePage(filteredMessages, query.Cursor, query.Take));
     }
 
+    /// <summary>
+    /// Builds the paged log section for one worker iteration.
+    /// </summary>
     public async Task<WorkIterationLogSection?> WorkerIterationLogs(
         IWorkSystemSession session,
         WorkerIterationReference iteration,
@@ -135,24 +156,36 @@ public class WorkableViewQueryAdapter
             CreateIterationLogPage(filteredLogs, query.Cursor, query.Take));
     }
 
+    /// <summary>
+    /// Queries workers for grid-style UI surfaces.
+    /// </summary>
     public Task<WorkerQueryResult> Workers(
         IWorkSystemSession session,
         WorkerCriteria? criteria = null,
         CancellationToken cancellationToken = default)
         => session.Query.Workers(criteria, cancellationToken: cancellationToken);
 
+    /// <summary>
+    /// Queries worker iterations for grid-style UI surfaces.
+    /// </summary>
     public Task<WorkerIterationQueryResult> WorkerIterations(
         IWorkSystemSession session,
         WorkerIterationCriteria? criteria = null,
         CancellationToken cancellationToken = default)
         => session.Query.WorkerIterations(criteria, cancellationToken: cancellationToken);
 
+    /// <summary>
+    /// Reads one definition summary from the caller-scoped catalog.
+    /// </summary>
     public async Task<WorkInfo?> WorkInfo(
         IWorkSystemSession session,
         string name,
         CancellationToken cancellationToken = default)
         => await session.Query.WorkInfo(name, cancellationToken: cancellationToken);
 
+    /// <summary>
+    /// Builds the HTTP landing payload for one worker detail screen.
+    /// </summary>
     public async Task<WorkWorkerOverviewComponent?> WorkerOverview(
         IWorkSystemSession session,
         WorkerId workerId,
@@ -233,6 +266,9 @@ public class WorkableViewQueryAdapter
                     : null));
     }
 
+    /// <summary>
+    /// Builds only the worker-log section for one worker detail screen.
+    /// </summary>
     public async Task<WorkWorkerOverviewLogSection?> WorkerOverviewLogs(
         IWorkSystemSession session,
         WorkerId workerId,
@@ -259,6 +295,9 @@ public class WorkableViewQueryAdapter
             CreateWorkerOverviewLogPage(filteredLogEntries, query.ActivityCursor, query.ActivityTake));
     }
 
+    /// <summary>
+    /// Builds only the worker-timeline section for one worker detail screen.
+    /// </summary>
     public async Task<WorkWorkerOverviewTimelineSection?> WorkerOverviewTimeline(
         IWorkSystemSession session,
         WorkerId workerId,
@@ -292,6 +331,9 @@ public class WorkableViewQueryAdapter
             CreateWorkerOverviewTimelinePage(filteredTimelineItems, query.ActivityCursor, query.ActivityTake));
     }
 
+    /// <summary>
+    /// Builds the full realtime seed state for a worker-overview SignalR subscription.
+    /// </summary>
     public async Task<WorkWorkerOverviewRealtimeState?> WorkerOverviewRealtimeState(
         IWorkSystemSession session,
         WorkerId workerId,
@@ -392,42 +434,63 @@ public class WorkableViewQueryAdapter
                 : []);
     }
 
+    /// <summary>
+    /// Queries caller-visible work definitions.
+    /// </summary>
     public async Task<IReadOnlyList<WorkDefinition>> WorkDefinitions(
         IWorkSystemSession session,
         WorkDefinitionCriteria? criteria = null,
         CancellationToken cancellationToken = default)
         => (await session.Query.WorkDefinitions(criteria, cancellationToken: cancellationToken)).Definitions;
 
+    /// <summary>
+    /// Queries worker keys for scope-building and filter UIs.
+    /// </summary>
     public Task<WorkerKeyQueryResult> WorkerKeys(
         IWorkSystemSession session,
         WorkerKeyCriteria? criteria = null,
         CancellationToken cancellationToken = default)
         => session.Query.WorkerKeys(criteria, cancellationToken: cancellationToken);
 
+    /// <summary>
+    /// Queries worker key-type facets for scope-building and filter UIs.
+    /// </summary>
     public Task<WorkerKeyTypeQueryResult> WorkerKeyTypes(
         IWorkSystemSession session,
         WorkerKeyTypeCriteria? criteria = null,
         CancellationToken cancellationToken = default)
         => session.Query.WorkerKeyTypes(criteria, cancellationToken: cancellationToken);
 
+    /// <summary>
+    /// Queries iteration keys for scope-building and filter UIs.
+    /// </summary>
     public Task<WorkIterationKeyQueryResult> WorkIterationKeys(
         IWorkSystemSession session,
         WorkIterationKeyCriteria? criteria = null,
         CancellationToken cancellationToken = default)
         => session.Query.WorkIterationKeys(criteria, cancellationToken: cancellationToken);
 
+    /// <summary>
+    /// Queries iteration key-type facets for scope-building and filter UIs.
+    /// </summary>
     public Task<WorkIterationKeyTypeQueryResult> WorkIterationKeyTypes(
         IWorkSystemSession session,
         WorkIterationKeyTypeCriteria? criteria = null,
         CancellationToken cancellationToken = default)
         => session.Query.WorkIterationKeyTypes(criteria, cancellationToken: cancellationToken);
 
+    /// <summary>
+    /// Queries worker status counts for summary widgets.
+    /// </summary>
     public Task<WorkerStatusSummary> WorkerStatusSummary(
         IWorkSystemSession session,
         WorkerCriteria? criteria = null,
         CancellationToken cancellationToken = default)
         => session.Query.WorkerStatusSummary(criteria, cancellationToken: cancellationToken);
 
+    /// <summary>
+    /// Normalizes a named view request into the canonical shape used by the adapter and realtime grouping.
+    /// </summary>
     public WorkViewCriteria NormalizeViewCriteria(
         string name,
         WorkViewCriteria? criteria = null)
@@ -439,6 +502,9 @@ public class WorkableViewQueryAdapter
             : new WorkViewCriteria(query.Scope, [.. requests.Select(NormalizeComponentRequest)]);
     }
 
+    /// <summary>
+    /// Determines whether a named view contains any components that require interval-based publishing.
+    /// </summary>
     public bool RequiresIntervalPublish(
         string name,
         WorkViewCriteria? criteria = null)
@@ -451,6 +517,9 @@ public class WorkableViewQueryAdapter
                 .Any(ComponentRequiresIntervalPublish);
     }
 
+    /// <summary>
+    /// Normalizes a component query into the canonical shape used by the adapter and realtime grouping.
+    /// </summary>
     public WorkComponentCriteria NormalizeComponentCriteria(WorkComponentCriteria? criteria = null)
     {
         var query = criteria ?? new WorkComponentCriteria();
@@ -849,6 +918,9 @@ public class WorkableViewQueryAdapter
         };
     }
 
+    /// <summary>
+    /// Normalizes worker-overview realtime criteria into the canonical shape used by the adapter and SignalR grouping.
+    /// </summary>
     public WorkWorkerOverviewRealtimeCriteria NormalizeWorkerOverviewRealtimeCriteria(
         WorkWorkerOverviewRealtimeCriteria? criteria = null)
     {

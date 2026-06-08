@@ -1,8 +1,18 @@
 namespace Workable;
 
+/// <summary>
+/// Dispatches request/response-style work through a Workable system and returns queue plus completion status.
+/// </summary>
+/// <remarks>
+/// This adapter is useful when an application wants to treat a work definition like a command handler while still
+/// flowing through Workable queueing, authorization, execution, and completion semantics.
+/// </remarks>
 public sealed class WorkCommandDispatcher(
     IWorkSystemRegistry workSystems) : IWorkCommandDispatcher
 {
+    /// <summary>
+    /// Dispatches work through the default Workable system.
+    /// </summary>
     public Task<WorkDispatchResult<TResponse>> Dispatch<TRequest, TResponse>(
         string workName,
         TRequest request,
@@ -17,6 +27,9 @@ public sealed class WorkCommandDispatcher(
             options,
             cancellationToken);
 
+    /// <summary>
+    /// Dispatches work through a specific named Workable system.
+    /// </summary>
     public async Task<WorkDispatchResult<TResponse>> Dispatch<TRequest, TResponse>(
         string? systemName,
         string workName,

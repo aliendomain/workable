@@ -105,6 +105,10 @@ import {
   workerActionToneClassName,
   workerStatusTextTone,
 } from "@/components/workable/console/detail-screens";
+import {
+  semanticBadgeToneClass,
+  semanticTextToneClass,
+} from "@/lib/ui/state-tones";
 import type {
   QueueRequestSchemaDescriptor,
   QueueWorkRequest,
@@ -311,22 +315,23 @@ test("configuration section helpers group fields and filter descriptors for defi
 });
 
 test("detail tone and action helpers cover status, completion, severity, and worker action options", () => {
-  assert.equal(workerStatusTextTone("Queued"), "text-sky-300");
-  assert.equal(workerStatusTextTone("Retrying"), "text-amber-300");
-  assert.equal(workerStatusTextTone("Failed"), "text-red-300");
-  assert.equal(workerStatusTextTone("Completed"), "text-emerald-300");
-  assert.equal(workerStatusTextTone("Canceled"), "text-foreground/80");
-  assert.ok(detailCompletionTone("Completed").includes("emerald"));
-  assert.ok(detailCompletionTone("Executing").includes("sky"));
-  assert.ok(detailCompletionTone("Failed").includes("red"));
-  assert.ok(detailCompletionTone("Paused").includes("amber"));
-  assert.ok(detailCompletionTone("Canceled").includes("bg-muted"));
-  assert.ok(messageSeverityTone("critical").includes("fuchsia"));
-  assert.ok(messageSeverityTone("ERROR").includes("red"));
-  assert.ok(messageSeverityTone("warning").includes("amber"));
-  assert.ok(messageSeverityTone("information").includes("sky"));
-  assert.ok(messageSeverityFilterTone("debug").includes("violet"));
-  assert.ok(messageSeverityFilterTone("trace").includes("slate"));
+  assert.equal(workerStatusTextTone("Queued"), semanticTextToneClass("info", "strong"));
+  assert.equal(workerStatusTextTone("Waiting"), semanticTextToneClass("info", "strong"));
+  assert.equal(workerStatusTextTone("Retrying"), semanticTextToneClass("warning", "strong"));
+  assert.equal(workerStatusTextTone("Failed"), semanticTextToneClass("danger", "strong"));
+  assert.equal(workerStatusTextTone("Completed"), semanticTextToneClass("success", "strong"));
+  assert.equal(workerStatusTextTone("Canceled"), semanticTextToneClass("warning", "strong"));
+  assert.equal(detailCompletionTone("Completed"), semanticBadgeToneClass("success"));
+  assert.equal(detailCompletionTone("Executing"), semanticBadgeToneClass("info"));
+  assert.equal(detailCompletionTone("Failed"), semanticBadgeToneClass("danger"));
+  assert.equal(detailCompletionTone("Paused"), semanticBadgeToneClass("warning"));
+  assert.equal(detailCompletionTone("Canceled"), semanticBadgeToneClass("warning"));
+  assert.equal(messageSeverityTone("critical"), semanticBadgeToneClass("danger"));
+  assert.equal(messageSeverityTone("ERROR"), semanticBadgeToneClass("danger"));
+  assert.equal(messageSeverityTone("warning"), semanticBadgeToneClass("warning"));
+  assert.equal(messageSeverityTone("information"), semanticBadgeToneClass("info"));
+  assert.equal(messageSeverityFilterTone("debug"), semanticBadgeToneClass("neutral"));
+  assert.equal(messageSeverityFilterTone("trace"), semanticBadgeToneClass("neutral"));
   assert.equal(workerActionToneClassName("Start", true), "");
   assert.ok(workerActionToneClassName("Start", false).includes("hover:bg-muted/35"));
   assert.deepEqual(getAvailableWorkerActions("Pausing"), {

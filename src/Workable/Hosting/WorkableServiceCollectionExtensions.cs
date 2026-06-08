@@ -4,10 +4,19 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 
 namespace Workable;
+/// <summary>
+/// Registers hosted Workable systems and host-wide Workable services with dependency injection.
+/// </summary>
 public static class WorkableServiceCollectionExtensions
 {
     private static readonly Type HostedServiceType = typeof(WorkableHostedService);
 
+    /// <summary>
+    /// Adds host-wide Workable configuration that applies across all systems registered in the container.
+    /// </summary>
+    /// <param name="services">The service collection that should receive the Workable host services.</param>
+    /// <param name="configure">The callback that configures global Workable behavior.</param>
+    /// <returns>The same service collection so additional application services can be registered.</returns>
     public static IServiceCollection AddWorkable(
         this IServiceCollection services,
         Action<IWorkableBuilder> configure)
@@ -23,11 +32,26 @@ public static class WorkableServiceCollectionExtensions
         return services;
     }
 
+    /// <summary>
+    /// Adds the default Workable system to the service collection.
+    /// </summary>
+    /// <param name="services">The service collection that should receive the system registration.</param>
+    /// <param name="configure">The callback that configures the system before the container is built.</param>
+    /// <returns>The same service collection so additional application services can be registered.</returns>
     public static IServiceCollection AddWorkableSystem(
         this IServiceCollection services,
         Action<IWorkSystemBuilder> configure)
         => services.AddWorkableSystem(name: null, configure);
 
+    /// <summary>
+    /// Adds a named Workable system to the service collection.
+    /// </summary>
+    /// <param name="services">The service collection that should receive the system registration.</param>
+    /// <param name="name">
+    /// The optional system name. Use <see langword="null"/> to register the default unnamed system.
+    /// </param>
+    /// <param name="configure">The callback that configures the system before the container is built.</param>
+    /// <returns>The same service collection so additional application services can be registered.</returns>
     public static IServiceCollection AddWorkableSystem(
         this IServiceCollection services,
         string? name,

@@ -34,6 +34,7 @@ import {
   formatExecutionDuration,
   type DurationDisplay,
 } from "@/components/workable/console/console-format";
+import { semanticTextToneClass } from "@/lib/ui/state-tones";
 import {
   formatRelativeTime,
   useLiveRelativeTimeNow,
@@ -683,7 +684,7 @@ export function DurationValue({
   duration: DurationDisplay;
 }) {
   return (
-    <span className={`${className} ${duration.isWarning ? "text-amber-300" : "text-muted-foreground"}`}>
+    <span className={`${className} ${duration.isWarning ? semanticTextToneClass("warning") : "text-muted-foreground"}`}>
       {duration.text}
     </span>
   );

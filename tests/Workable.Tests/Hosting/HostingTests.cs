@@ -1,4 +1,5 @@
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using Workable;
 
 namespace Workable.Tests;
@@ -163,6 +164,56 @@ public sealed class HostingTests
         var system = services.BuildServiceProvider().GetRequiredService<IWorkSystemRegistry>().Default;
 
         Assert.False(system.Catalog.TryGet("feature.work", out _));
+    }
+
+    [Fact]
+    public void WorkDefaultsApplySharedConfigurationAndAuthorizationToGroupedRegistrations()
+    {
+        var system = new ServiceCollection()
+            .AddWorkableSystem(builder => builder
+                .RequireAuthorization(false)
+                .WithWorkDefaults(
+                    register: work => work
+                        .AddWork(WorkDefinition.Create("grouped.first"), SuccessfulWork)
+                        .AddWork(WorkDefinition.Create("grouped.second"), SuccessfulWork),
+                    configure: configure => configure.ConfigureLogging(level: LogLevel.Warning, maximumBufferedEntries: 12),
+                    authorize: authorize => authorize.AllowOperateToGroups("grouped.admin")))
+            .BuildServiceProvider()
+            .GetRequiredService<IWorkSystemRegistry>()
+            .Default;
+
+        Assert.True(system.Catalog.TryGet("grouped.first", out var first));
+        Assert.True(system.Catalog.TryGet("grouped.second", out var second));
+        Assert.Equal(LogLevel.Warning, first.Configuration.Logging.Level);
+        Assert.Equal(12, first.Configuration.Logging.MaximumBufferedEntries);
+        Assert.Equal(["grouped.admin"], first.Authorization.Operate.Groups.OrderBy(group => group).ToArray());
+        Assert.Equal(LogLevel.Warning, second.Configuration.Logging.Level);
+        Assert.Equal(12, second.Configuration.Logging.MaximumBufferedEntries);
+        Assert.Equal(["grouped.admin"], second.Authorization.Operate.Groups.OrderBy(group => group).ToArray());
+    }
+
+    [Fact]
+    public void WorkDefaultsCanBeOverriddenByIndividualRegistrations()
+    {
+        var system = new ServiceCollection()
+            .AddWorkableSystem(builder => builder
+                .RequireAuthorization(false)
+                .WithWorkDefaults(
+                    register: work => work.AddWork(
+                        WorkDefinition.Create("grouped.override"),
+                        SuccessfulWork,
+                        configure: configure => configure.ConfigureLogging(level: LogLevel.Error, maximumBufferedEntries: 3),
+                        authorize: authorize => authorize.AllowOperateToGroups("grouped.support")),
+                    configure: configure => configure.ConfigureLogging(level: LogLevel.Warning, maximumBufferedEntries: 12),
+                    authorize: authorize => authorize.AllowOperateToGroups("grouped.admin")))
+            .BuildServiceProvider()
+            .GetRequiredService<IWorkSystemRegistry>()
+            .Default;
+
+        Assert.True(system.Catalog.TryGet("grouped.override", out var definition));
+        Assert.Equal(LogLevel.Error, definition.Configuration.Logging.Level);
+        Assert.Equal(3, definition.Configuration.Logging.MaximumBufferedEntries);
+        Assert.Equal(["grouped.support"], definition.Authorization.Operate.Groups.OrderBy(group => group).ToArray());
     }
 
     private static Task<WorkExecutionResult> SuccessfulWork(IWorkExecutionContext context, WorkInput? input, CancellationToken cancellationToken)

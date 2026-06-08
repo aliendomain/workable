@@ -37,6 +37,7 @@ internal sealed class WorkerRecord(
     private DateTimeOffset? firstStartedAt;
     private DateTimeOffset? nextRunAt;
     private int? retryAttempt;
+    private FailedWorkerAutoCancelOverride failedWorkerAutoCancelOverride = FailedWorkerAutoCancelOverride.None;
     private TimeSpan totalExecutionDuration;
     private long? lastIterationSequence;
     private long iterationSequence;
@@ -225,6 +226,7 @@ internal sealed class WorkerRecord(
             this.IsStartDeferred = false;
             this.Output = null;
             this.retryAttempt = null;
+            this.failedWorkerAutoCancelOverride = FailedWorkerAutoCancelOverride.None;
             this.BeginIterationLocked();
             if (this.started.Task.IsCompleted)
             {
@@ -590,6 +592,14 @@ internal sealed class WorkerRecord(
                 };
             }
 
+            if (changes.FailedWorker is not null)
+            {
+                configuration = configuration with
+                {
+                    FailedWorker = changes.FailedWorker,
+                };
+            }
+
             if (changes.Logging is not null)
             {
                 configuration = configuration with
@@ -655,6 +665,66 @@ internal sealed class WorkerRecord(
                 WorkAction.Start,
                 this.ToSnapshotLocked(),
                 [WorkMessage.Info("workable.worker.reconfigured", "Worker configuration was updated.")]);
+        }
+    }
+
+    public void SetFailedWorkerAutoCancelOverride(FailedWorkerAutoCancelOverride failedWorkerAutoCancelOverride)
+    {
+        lock (this.sync)
+        {
+            this.failedWorkerAutoCancelOverride = failedWorkerAutoCancelOverride;
+        }
+    }
+
+    public FailedWorkerAutoCancelSchedule? GetFailedWorkerAutoCancelSchedule()
+    {
+        lock (this.sync)
+        {
+            if (this.State != WorkerState.Failed)
+            {
+                return null;
+            }
+
+            var autoCancelAfter = this.ResolveFailedWorkerAutoCancelDelayLocked();
+            if (autoCancelAfter is null)
+            {
+                return null;
+            }
+
+            return new FailedWorkerAutoCancelSchedule(
+                this.Id,
+                this.StateSequence,
+                this.StateChangedAt + autoCancelAfter.Value);
+        }
+    }
+
+    public bool TryAutoCancelFailedWorker(long requiredStateSequence, out WorkActionOutcome? outcome)
+    {
+        lock (this.sync)
+        {
+            outcome = null;
+            if (this.State != WorkerState.Failed || this.StateSequence != requiredStateSequence)
+            {
+                return false;
+            }
+
+            var autoCancelAfter = this.ResolveFailedWorkerAutoCancelDelayLocked();
+            if (autoCancelAfter is null || this.StateChangedAt + autoCancelAfter.Value > DateTimeOffset.UtcNow)
+            {
+                return false;
+            }
+
+            var checkedTransition = this.CheckTransitionLocked(WorkAction.Cancel, this.Revision);
+            if (checkedTransition.Rejection is not null)
+            {
+                return false;
+            }
+
+            var transition = checkedTransition.RequiredTransition;
+            this.ApplyAcceptedTransitionLocked(transition);
+            this.SignalRecurrenceWaitLocked();
+            outcome = this.ToOutcomeLocked(transition);
+            return true;
         }
     }
 
@@ -1381,6 +1451,17 @@ internal sealed class WorkerRecord(
 
         return bucket is not null;
     }
+
+    private TimeSpan? ResolveFailedWorkerAutoCancelDelayLocked()
+        => this.failedWorkerAutoCancelOverride.Mode switch
+        {
+            FailedWorkerAutoCancelOverrideMode.Manual => null,
+            FailedWorkerAutoCancelOverrideMode.Configured => this.Configuration.FailedWorker.AutoCancelAfter,
+            FailedWorkerAutoCancelOverrideMode.Explicit => this.failedWorkerAutoCancelOverride.AutoCancelAfter,
+            _ => this.Configuration.FailedWorker.Handling == WorkFailedWorkerHandling.AutoCancel
+                ? this.Configuration.FailedWorker.AutoCancelAfter
+                : null,
+        };
 
     private void ReleaseExecutionCancellationLocked()
     {

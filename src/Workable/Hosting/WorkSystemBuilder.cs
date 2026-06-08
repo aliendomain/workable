@@ -21,6 +21,20 @@ internal sealed class WorkSystemBuilder(IServiceCollection services, string? nam
     private WorkSystemRetentionConfiguration retention = WorkSystemRetentionConfiguration.Default;
     private WorkSystemCapacityConfiguration capacity = WorkSystemCapacityConfiguration.Default;
 
+    public IWorkSystemBuilder WithWorkDefaults(
+        Action<IWorkDefinitionBuilder> register,
+        Action<IWorkConfigurationBuilder>? configure = null,
+        Action<IWorkAuthorizationBuilder>? authorize = null)
+    {
+        ArgumentNullException.ThrowIfNull(register);
+
+        register(new DefaultingWorkDefinitionBuilder(
+            new SystemWorkDefinitionBuilderAdapter(this),
+            configure,
+            authorize));
+        return this;
+    }
+
     public IWorkSystemBuilder AddWork(
         WorkDefinition definition,
         Func<IWorkExecutionContext, WorkInput?, CancellationToken, Task<WorkExecutionResult>> execute)

@@ -2,6 +2,9 @@ using Microsoft.Extensions.Logging;
 
 namespace Workable;
 
+/// <summary>
+/// Describes the live panel state for a worker-overview realtime subscription.
+/// </summary>
 public sealed record WorkWorkerOverviewRealtimeCriteria(
     string WorkerControls = WorkComponentShapes.Compact,
     string WorkerLogs = WorkComponentShapes.Compact,
@@ -13,6 +16,9 @@ public sealed record WorkWorkerOverviewRealtimeCriteria(
     WorkWorkerOverviewSortDirection TimelineSortDirection = WorkWorkerOverviewSortDirection.Desc,
     IReadOnlyList<WorkWorkerOverviewTimelineCategory>? TimelineCategories = null);
 
+/// <summary>
+/// Represents the full current worker-overview realtime state used to seed a subscription.
+/// </summary>
 public sealed record WorkWorkerOverviewRealtimeState(
     WorkWorkerOverviewWorker Worker,
     WorkWorkerOverviewLatestIteration? LatestIteration,
@@ -22,6 +28,9 @@ public sealed record WorkWorkerOverviewRealtimeState(
     WorkWorkerOverviewTimelineSummary? TimelineSummary,
     IReadOnlyList<WorkWorkerOverviewTimelineItem> TimelineItems);
 
+/// <summary>
+/// Represents a partial worker-overview realtime update.
+/// </summary>
 public sealed record WorkWorkerOverviewRealtimeUpdate(
     DateTimeOffset GeneratedAt,
     WorkWorkerOverviewWorker? Worker = null,

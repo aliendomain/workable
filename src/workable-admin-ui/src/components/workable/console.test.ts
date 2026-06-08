@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  applySystemNotificationDismissals,
   cloneOverviewScope,
   clampEventTableHeight,
   createCompactConcurrencyDiagnosticsFromDetailed,
@@ -38,7 +39,9 @@ import {
   normalizeStoredHost,
   normalizeStoredSystem,
   normalizeThroughputSeriesIds,
+  pruneDismissedSystemNotificationKeys,
   shouldClearDefinitionCatalogCacheForDiagnosticsTransition,
+  systemNotificationDismissalKey,
   eventTypeTone,
   type ConsoleStorage,
   type NavigationEntry,
@@ -47,6 +50,7 @@ import type {
   WorkableHostConnection,
   WorkableSystemConnection,
 } from "@/components/features/console/types";
+import { semanticBadgeToneClass } from "@/lib/ui/state-tones";
 import type { WorkableRealtimeEvent } from "@/lib/workable";
 
 function system(overrides: Partial<WorkableSystemConnection> = {}): WorkableSystemConnection {
@@ -136,10 +140,10 @@ test("realtime event helpers summarize batches, search text, byte counts, limits
   assert.equal(normalizeEventViewerMaxMessages("bad"), 100);
   assert.equal(normalizeEventViewerMaxMessages("0"), 1);
   assert.equal(normalizeEventViewerMaxMessages("2500"), 1000);
-  assert.ok(eventTypeTone("worker.failed").includes("red"));
-  assert.ok(eventTypeTone("worker.completed").includes("emerald"));
-  assert.ok(eventTypeTone("worker.waiting").includes("amber"));
-  assert.ok(eventTypeTone("worker.cancel.requested").includes("sky"));
+  assert.equal(eventTypeTone("worker.failed"), semanticBadgeToneClass("danger"));
+  assert.equal(eventTypeTone("worker.completed"), semanticBadgeToneClass("success"));
+  assert.equal(eventTypeTone("worker.waiting"), semanticBadgeToneClass("info"));
+  assert.equal(eventTypeTone("worker.cancel.requested"), semanticBadgeToneClass("warning"));
 
   const search = getRealtimeEventSearchText({
     batchId: "batch-1",
@@ -329,6 +333,40 @@ test("diagnostics target and notification helpers deduplicate targets and descri
       "Default @ Workable: Durable worker materialization is behind",
       "Default @ Workable: Durable cleanup is behind",
     ]
+  );
+  assert.equal(notifications[0]?.dismissible, true);
+});
+
+test("dismissed shutdown notifications reappear after that shutdown warning clears", () => {
+  const notifications = createSystemNotifications(
+    { isShuttingDown: true } as never,
+    undefined,
+    0,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    {
+      apiUrl: "https://workable.test",
+      displayName: "Default @ Workable",
+      id: "target-default",
+      systemName: "Default",
+    }
+  );
+  const dismissalKey = systemNotificationDismissalKey(notifications[0]!);
+
+  assert.deepEqual(
+    applySystemNotificationDismissals(notifications, new Set([dismissalKey]), () => undefined),
+    []
+  );
+  assert.equal(
+    pruneDismissedSystemNotificationKeys(new Set([dismissalKey]), notifications).has(dismissalKey),
+    true
+  );
+  assert.equal(
+    pruneDismissedSystemNotificationKeys(new Set([dismissalKey]), []).has(dismissalKey),
+    false
   );
 });
 

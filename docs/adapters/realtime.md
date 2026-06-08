@@ -32,7 +32,7 @@ app.UseAuthorization();
 app.MapWorkableSignalR("/internal/work/realtime");
 ```
 
-When a browser connects to the Workable hub from a different origin, such as a local admin UI at `http://localhost:3000` calling `https://localhost:7058/workable/realtime`, the host must also configure CORS for the hub endpoint. Workable does not add CORS automatically because allowed origins are a host policy decision.
+When a browser connects to the Workable hub from a different origin, such as a local admin UI at `http://localhost:3000` calling `https://localhost:7058/workable/realtime`, the host must also configure CORS for the hub endpoint. Workable does not add CORS automatically.
 
 ```csharp
 builder.Services.AddCors(options =>

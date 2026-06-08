@@ -16,9 +16,20 @@ internal sealed record WorkInitializationRegistration(
         typeof(WorkInitializationRegistration).GetMethod(nameof(InvokeTypedInitializer), BindingFlags.NonPublic | BindingFlags.Static)
         ?? throw new InvalidOperationException("The typed initializer invoker could not be found.");
 
+    /// <summary>
+    /// Gets a value indicating whether the initializer uses the typed <see cref="IWorkInitializer{TInput}"/> contract.
+    /// </summary>
     public bool IsTyped { get; } =
         InitializerType.GetInterfaces().Any(IsTypedInitializerInterface);
 
+    /// <summary>
+    /// Invokes the registered initializer for the current worker iteration.
+    /// </summary>
+    /// <param name="initializer">The initializer instance to invoke.</param>
+    /// <param name="context">The execution context for the current worker iteration.</param>
+    /// <param name="input">The raw worker input payload, when one exists.</param>
+    /// <param name="cancellationToken">A token that cancels initialization.</param>
+    /// <returns>The initialization result.</returns>
     public Task<WorkExecutionResult> Invoke(
         object initializer,
         IWorkExecutionContext context,
@@ -26,6 +37,13 @@ internal sealed record WorkInitializationRegistration(
         CancellationToken cancellationToken)
         => this.Invoker(initializer, context, input, cancellationToken);
 
+    /// <summary>
+    /// Creates an initialization registration for the supplied initializer type.
+    /// </summary>
+    /// <typeparam name="TInitializer">The initializer service type to register.</typeparam>
+    /// <param name="timing">When the initializer should run relative to worker lifecycle.</param>
+    /// <param name="executionOrder">The optional execution-order hint used to order multiple initializers.</param>
+    /// <returns>The created initialization registration.</returns>
     public static WorkInitializationRegistration Create<TInitializer>(
         WorkInitializationTiming timing,
         int? executionOrder)
@@ -54,6 +72,11 @@ internal sealed record WorkInitializationRegistration(
             CreateInvoker(initializerType));
     }
 
+    /// <summary>
+    /// Orders initialization registrations by their configured execution order.
+    /// </summary>
+    /// <param name="registrations">The registrations to order.</param>
+    /// <returns>The registrations in execution order.</returns>
     public static IReadOnlyList<WorkInitializationRegistration> Order(
         IReadOnlyList<WorkInitializationRegistration> registrations)
         => registrations.Count <= 1

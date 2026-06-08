@@ -674,12 +674,12 @@ test("navigation system helpers cover access badges, names, lifecycle, and state
     getSystemLifecycleActionLabel("Unknown", host.systems[0], host),
     "Lifecycle action unavailable"
   );
-  assert.equal(systemStateDotClass("Started"), "bg-emerald-400");
-  assert.equal(systemStateDotClass("Starting"), "bg-amber-300");
-  assert.equal(systemStateDotClass("Stopping"), "bg-amber-300");
-  assert.equal(systemStateDotClass("Stopped"), "bg-zinc-500");
-  assert.equal(systemStateDotClass("Created"), "bg-zinc-500");
-  assert.equal(systemStateDotClass("Unknown"), "bg-muted-foreground/45");
+  assert.equal(systemStateDotClass("Started"), "bg-[var(--status-success-solid)]");
+  assert.equal(systemStateDotClass("Starting"), "bg-[var(--status-info-solid)]");
+  assert.equal(systemStateDotClass("Stopping"), "bg-[var(--status-info-solid)]");
+  assert.equal(systemStateDotClass("Stopped"), "bg-[var(--status-neutral-solid)]");
+  assert.equal(systemStateDotClass("Created"), "bg-[var(--status-neutral-solid)]");
+  assert.equal(systemStateDotClass("Unknown"), "bg-[var(--status-neutral-solid)]");
   assert.equal(navTitle("worker"), "Worker Console");
   assert.equal(navTitle("iteration"), "Iteration");
   assert.equal(navTitle("definition"), "Definition");

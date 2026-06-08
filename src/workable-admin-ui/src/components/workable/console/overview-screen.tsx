@@ -95,6 +95,9 @@ import {
   type WorkableRealtimeEventCriteria,
   type WorkerState,
 } from "@/lib/workable";
+import {
+  semanticTextToneClass,
+} from "@/lib/ui/state-tones";
 
 export {
   formatFailedWorkerDuration,
@@ -369,7 +372,11 @@ export function OverviewView({
     connection,
     isVisible ? "views/overview" : null,
     effectiveOverviewRequest,
-    refreshToken
+    refreshToken,
+    {
+      resetKey: `${connection.apiUrl}\n${connection.systemName ?? ""}`,
+      retainDataOnRequestChange: true,
+    }
   );
   const realtimeOverviewDescriptor = useMemo<ConsolePageRealtimeViewDescriptor>(
     () => ({
@@ -700,7 +707,7 @@ export function OverviewView({
                   label="Oldest queued"
                   loading={overview.loading}
                   onClick={() => onViewWorkersByState(["Queued"])}
-                  tone={oldestQueuedAge.isWarning ? "text-amber-300" : undefined}
+                  tone={oldestQueuedAge.isWarning ? semanticTextToneClass("warning", "strong") : undefined}
                   value={oldestQueuedAge.text}
                 />
                 <MetricCard
@@ -719,7 +726,7 @@ export function OverviewView({
                   label="Failed workers"
                   loading={overview.loading}
                   onClick={() => onViewWorkersByState(failedWorkerStates)}
-                  tone="text-red-300"
+                  tone={semanticTextToneClass("danger", "strong")}
                   value={failedWorkerCount}
                 />
               </div>
@@ -892,7 +899,7 @@ function CompactWorkerStrip({
         label="Oldest queued"
         onClick={onOpenQueued}
         value={oldestQueuedText}
-        valueClassName={oldestQueuedWarning ? "text-amber-300" : undefined}
+        valueClassName={oldestQueuedWarning ? semanticTextToneClass("warning", "strong") : undefined}
       />
       <CompactWorkerStripItem
         label="Active workers"
@@ -903,7 +910,7 @@ function CompactWorkerStrip({
         label="Failed workers"
         onClick={onOpenFailed}
         value={failedWorkerCount}
-        valueClassName="text-red-300"
+        valueClassName={semanticTextToneClass("danger", "strong")}
       />
     </div>
   );
@@ -1224,7 +1231,11 @@ function useWorkablePostResource<T>(
   connection: WorkableConnection,
   path: string | null,
   body: unknown,
-  refreshToken: number
+  refreshToken: number,
+  options?: {
+    resetKey?: string | number | null;
+    retainDataOnRequestChange?: boolean;
+  }
 ): Loadable<T> {
   const [state, setState] = useState<Loadable<T>>({ loading: !!path });
   const apiUrl = connection.apiUrl;
@@ -1232,9 +1243,13 @@ function useWorkablePostResource<T>(
   const bodyKey = JSON.stringify(body);
   const requestKey = `${apiUrl}\n${systemName ?? ""}\n${path ?? ""}\n${bodyKey}`;
   const previousRequestKey = useRef<string | null>(null);
+  const retainDataOnRequestChange = options?.retainDataOnRequestChange === true;
+  const resetKey = options?.resetKey ?? null;
+  const lastResetKeyRef = useRef<string | number | null>(resetKey);
 
   useEffect(() => {
     if (!path) {
+      lastResetKeyRef.current = resetKey;
       previousRequestKey.current = requestKey;
       queueMicrotask(() =>
         setState((current) =>
@@ -1248,15 +1263,25 @@ function useWorkablePostResource<T>(
 
     let canceled = false;
     const requestChanged = previousRequestKey.current !== requestKey;
+    const resetChanged = lastResetKeyRef.current !== resetKey;
+    lastResetKeyRef.current = resetKey;
     previousRequestKey.current = requestKey;
     queueMicrotask(() => {
       if (!canceled) {
-        setState((current) => ({
-          ...(requestChanged ? {} : current),
-          error: undefined,
-          loading: requestChanged || current.data === undefined,
-          refreshing: !requestChanged && current.data !== undefined,
-        }));
+        setState((current) => {
+          const retainCurrentData =
+            !resetChanged &&
+            requestChanged &&
+            retainDataOnRequestChange &&
+            current.data !== undefined;
+
+          return {
+            ...(requestChanged && !retainCurrentData ? {} : current),
+            error: undefined,
+            loading: retainCurrentData ? false : requestChanged || current.data === undefined,
+            refreshing: retainCurrentData || (!requestChanged && current.data !== undefined),
+          };
+        });
       }
     });
 
@@ -1289,7 +1314,7 @@ function useWorkablePostResource<T>(
     return () => {
       canceled = true;
     };
-  }, [apiUrl, bodyKey, path, refreshToken, requestKey, systemName]);
+  }, [apiUrl, bodyKey, path, refreshToken, requestKey, resetKey, retainDataOnRequestChange, systemName]);
 
   return state;
 }

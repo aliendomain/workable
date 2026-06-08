@@ -81,6 +81,41 @@
   --sidebar-accent-foreground: oklch(0.205 0 0);
   --sidebar-border: oklch(0.922 0 0);
   --sidebar-ring: oklch(0.708 0 0);
+  --status-success-solid: oklch(0.696 0.17 162.48);
+  --status-success-soft: oklch(0.96 0.03 162.48);
+  --status-success-border: oklch(0.89 0.06 162.48);
+  --status-success-text: oklch(0.43 0.12 162.48);
+  --status-success-strong: oklch(0.38 0.11 162.48);
+  --status-success-contrast: oklch(0.985 0 0);
+  --status-success-glow: color-mix(in srgb, var(--status-success-solid) 72%, transparent);
+  --status-info-solid: oklch(0.685 0.145 235.12);
+  --status-info-soft: oklch(0.96 0.02 235.12);
+  --status-info-border: oklch(0.88 0.045 235.12);
+  --status-info-text: oklch(0.47 0.09 235.12);
+  --status-info-strong: oklch(0.42 0.08 235.12);
+  --status-info-contrast: oklch(0.985 0 0);
+  --status-info-glow: color-mix(in srgb, var(--status-info-solid) 72%, transparent);
+  --status-warning-solid: oklch(0.77 0.16 82.19);
+  --status-warning-soft: oklch(0.975 0.02 82.19);
+  --status-warning-border: oklch(0.92 0.04 82.19);
+  --status-warning-text: oklch(0.53 0.11 82.19);
+  --status-warning-strong: oklch(0.47 0.1 82.19);
+  --status-warning-contrast: oklch(0.24 0 0);
+  --status-warning-glow: color-mix(in srgb, var(--status-warning-solid) 72%, transparent);
+  --status-danger-solid: var(--destructive);
+  --status-danger-soft: oklch(0.975 0.02 27.325);
+  --status-danger-border: oklch(0.9 0.05 27.325);
+  --status-danger-text: oklch(0.5 0.17 27.325);
+  --status-danger-strong: oklch(0.45 0.17 27.325);
+  --status-danger-contrast: oklch(0.985 0 0);
+  --status-danger-glow: color-mix(in srgb, var(--status-danger-solid) 72%, transparent);
+  --status-neutral-solid: oklch(0.56 0 0);
+  --status-neutral-soft: oklch(0.97 0 0);
+  --status-neutral-border: oklch(0.9 0 0);
+  --status-neutral-text: oklch(0.49 0 0);
+  --status-neutral-strong: oklch(0.36 0 0);
+  --status-neutral-contrast: oklch(0.985 0 0);
+  --status-neutral-glow: color-mix(in srgb, var(--status-neutral-solid) 72%, transparent);
 }
 
 .dark {
@@ -115,6 +150,41 @@
   --sidebar-accent-foreground: oklch(0.985 0 0);
   --sidebar-border: oklch(1 0 0 / 10%);
   --sidebar-ring: oklch(0.556 0 0);
+  --status-success-solid: oklch(0.766 0.16 162.48);
+  --status-success-soft: oklch(0.3 0.035 162.48);
+  --status-success-border: oklch(0.45 0.07 162.48);
+  --status-success-text: oklch(0.82 0.11 162.48);
+  --status-success-strong: oklch(0.89 0.1 162.48);
+  --status-success-contrast: oklch(0.145 0 0);
+  --status-success-glow: color-mix(in srgb, var(--status-success-solid) 76%, transparent);
+  --status-info-solid: oklch(0.76 0.13 235.12);
+  --status-info-soft: oklch(0.29 0.028 235.12);
+  --status-info-border: oklch(0.42 0.05 235.12);
+  --status-info-text: oklch(0.83 0.08 235.12);
+  --status-info-strong: oklch(0.89 0.07 235.12);
+  --status-info-contrast: oklch(0.145 0 0);
+  --status-info-glow: color-mix(in srgb, var(--status-info-solid) 76%, transparent);
+  --status-warning-solid: oklch(0.8 0.15 82.19);
+  --status-warning-soft: oklch(0.31 0.03 82.19);
+  --status-warning-border: oklch(0.47 0.06 82.19);
+  --status-warning-text: oklch(0.84 0.09 82.19);
+  --status-warning-strong: oklch(0.9 0.08 82.19);
+  --status-warning-contrast: oklch(0.145 0 0);
+  --status-warning-glow: color-mix(in srgb, var(--status-warning-solid) 76%, transparent);
+  --status-danger-solid: oklch(0.704 0.191 22.216);
+  --status-danger-soft: oklch(0.3 0.04 22.216);
+  --status-danger-border: oklch(0.45 0.08 22.216);
+  --status-danger-text: oklch(0.83 0.11 22.216);
+  --status-danger-strong: oklch(0.9 0.1 22.216);
+  --status-danger-contrast: oklch(0.985 0 0);
+  --status-danger-glow: color-mix(in srgb, var(--status-danger-solid) 76%, transparent);
+  --status-neutral-solid: oklch(0.63 0 0);
+  --status-neutral-soft: oklch(0.28 0 0);
+  --status-neutral-border: oklch(0.38 0 0);
+  --status-neutral-text: oklch(0.75 0 0);
+  --status-neutral-strong: oklch(0.88 0 0);
+  --status-neutral-contrast: oklch(0.145 0 0);
+  --status-neutral-glow: color-mix(in srgb, var(--status-neutral-solid) 76%, transparent);
 }
 
 @layer base {

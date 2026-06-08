@@ -6,6 +6,13 @@ using Microsoft.AspNetCore.SignalR;
 
 namespace Workable;
 
+/// <summary>
+/// Tracks active named-view subscriptions for the Workable SignalR adapter.
+/// </summary>
+/// <remarks>
+/// Most hosts use this type indirectly through <see cref="WorkableRealtimeHub"/>. The public debug snapshot method
+/// exists so local diagnostics endpoints can inspect current grouped subscription state.
+/// </remarks>
 public sealed class WorkableRealtimeViewSubscriptions
 {
     private static readonly JsonSerializerOptions KeyJsonOptions = new(JsonSerializerDefaults.Web)
@@ -185,6 +192,11 @@ public sealed class WorkableRealtimeViewSubscriptions
         }
     }
 
+    /// <summary>
+    /// Gets debug snapshots for the active named-view subscriptions that belong to one Workable system.
+    /// </summary>
+    /// <param name="system">The system whose realtime view subscriptions should be described.</param>
+    /// <returns>The current named-view subscription snapshots for the system.</returns>
     public IReadOnlyList<WorkableRealtimeDebugViewSubscriptionSnapshot> GetDebugSubscriptions(IWorkSystem system)
     {
         ArgumentNullException.ThrowIfNull(system);

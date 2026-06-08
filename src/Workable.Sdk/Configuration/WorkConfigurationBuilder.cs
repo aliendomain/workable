@@ -52,6 +52,17 @@ internal sealed class WorkConfigurationBuilder(WorkConfiguration configuration) 
         return this;
     }
 
+    public IWorkConfigurationBuilder UseFailedWorker(WorkFailedWorkerConfiguration failedWorker)
+    {
+        ArgumentNullException.ThrowIfNull(failedWorker);
+
+        this.configuration = this.configuration with
+        {
+            FailedWorker = failedWorker,
+        };
+        return this;
+    }
+
     public IWorkConfigurationBuilder UseLogging(WorkLoggingConfiguration logging)
     {
         ArgumentNullException.ThrowIfNull(logging);
@@ -163,6 +174,24 @@ internal sealed class WorkConfigurationBuilder(WorkConfiguration configuration) 
         };
         return this;
     }
+
+    public IWorkConfigurationBuilder ConfigureFailedWorker(
+        WorkFailedWorkerHandling? handling = null,
+        TimeSpan? autoCancelAfter = null)
+    {
+        this.configuration = this.configuration with
+        {
+            FailedWorker = this.configuration.FailedWorker with
+            {
+                Handling = handling ?? this.configuration.FailedWorker.Handling,
+                AutoCancelAfter = autoCancelAfter ?? this.configuration.FailedWorker.AutoCancelAfter,
+            },
+        };
+        return this;
+    }
+
+    public IWorkConfigurationBuilder AutoCancelFailedWorkersAfter(TimeSpan autoCancelAfter)
+        => this.ConfigureFailedWorker(WorkFailedWorkerHandling.AutoCancel, autoCancelAfter);
 
     public IWorkConfigurationBuilder ConfigureLogging(
         bool isEnabled = true,

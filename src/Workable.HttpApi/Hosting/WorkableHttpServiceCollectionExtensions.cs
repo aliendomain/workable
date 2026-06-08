@@ -4,8 +4,16 @@ using Microsoft.Extensions.DependencyInjection.Extensions;
 
 namespace Workable;
 
+/// <summary>
+/// Registers the services required by the Workable HTTP API adapter.
+/// </summary>
 public static class WorkableHttpServiceCollectionExtensions
 {
+    /// <summary>
+    /// Adds the built-in Workable HTTP API adapter services to the host.
+    /// </summary>
+    /// <param name="services">The service collection to configure.</param>
+    /// <returns>The same service collection for chaining.</returns>
     public static IServiceCollection AddWorkableHttpApi(this IServiceCollection services)
     {
         ArgumentNullException.ThrowIfNull(services);

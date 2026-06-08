@@ -61,7 +61,7 @@ test("header realtime control renders status-only, single-action, and menu-trigg
   );
   assertMarkupIncludes(statusOnly, "role=\"img\"");
   assertMarkupIncludes(statusOnly, "aria-label=\"Realtime disconnected\"");
-  assertMarkupIncludes(statusOnly, "text-red-500");
+  assertMarkupIncludes(statusOnly, "text-[var(--status-danger-text)]");
   assertMarkupIncludes(statusOnly, ">!<");
 
   const singleAction = renderMarkup(
@@ -113,7 +113,7 @@ test("header realtime control renders status-only, single-action, and menu-trigg
     />
   );
   assertMarkupIncludes(menuTrigger, "aria-label=\"Realtime connecting\"");
-  assertMarkupIncludes(menuTrigger, "text-sky-500");
+  assertMarkupIncludes(menuTrigger, "text-[var(--status-info-text)]");
   assertMarkupIncludes(menuTrigger, "aria-label=\"Refresh data\"");
   assertMarkupExcludes(menuTrigger, "animate-spin");
 });

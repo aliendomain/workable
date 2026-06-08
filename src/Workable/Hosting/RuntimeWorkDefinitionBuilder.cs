@@ -4,6 +4,17 @@ namespace Workable;
 
 internal sealed class RuntimeWorkDefinitionBuilder(WorkSystemCatalog catalog) : IWorkDefinitionBuilder
 {
+    public IWorkDefinitionBuilder WithWorkDefaults(
+        Action<IWorkDefinitionBuilder> register,
+        Action<IWorkConfigurationBuilder>? configure = null,
+        Action<IWorkAuthorizationBuilder>? authorize = null)
+    {
+        ArgumentNullException.ThrowIfNull(register);
+
+        register(new DefaultingWorkDefinitionBuilder(this, configure, authorize));
+        return this;
+    }
+
     public IWorkDefinitionBuilder AddWork(
         WorkDefinition definition,
         Func<IWorkExecutionContext, WorkInput?, CancellationToken, Task<WorkExecutionResult>> execute)

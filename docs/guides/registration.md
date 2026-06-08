@@ -180,6 +180,28 @@ Work added through `IWorkSystemBuilder.AddWork(...)` is bound to that system by 
 
 This shape means the host is choosing and registering that work directly. That can be a good fit when the host wants explicit control over which system owns the work. It is a different shape from feature-style `AddWorkableWork(...)` registration, where a feature package contributes work without hosting the system itself.
 
+When several registrations share the same fluent work configuration or authorization, group them with `WithWorkDefaults(...)`.
+
+```csharp
+services.AddWorkableSystem("backstage", builder =>
+{
+    builder.RequireAuthorization();
+
+    builder.AddWork<SubmitSurveyWork>(
+        authorize: auth => auth.AllowOperateToKnownAuthenticatedUsers());
+
+    builder.WithWorkDefaults(
+        register: work => work
+            .AddWork<CreateSurveyAreaWork>()
+            .AddWork<CreateSurveyTemplateWork>()
+            .AddWork<DeleteSurveyAreaWork>()
+            .AddWork<UpdateSurveyTemplateWork>(),
+        authorize: auth => auth.AllowOperateToGroups("survey.admin"));
+});
+```
+
+The defaults run before each individual registration. If one work supplies its own `configure` or `authorize` callback, that callback runs after the group defaults and can override them.
+
 ## Work Definition Sources
 
 Use a work definition source when a feature needs to create work definitions from configuration or runtime discovery before the Workable catalog is frozen.
@@ -255,6 +277,36 @@ public sealed class ProcessMailboxExecutor(MailboxProcessor processor)
     {
         await processor.Process(input, cancellationToken);
         return WorkExecutionResult.Success();
+    }
+}
+```
+
+Definition sources can use the same `WithWorkDefaults(...)` pattern when several generated definitions share the same fluent defaults.
+
+```csharp
+public sealed class MailboxWorkDefinitionSource(
+    IReadOnlyList<MailboxOptions> mailboxes) : IWorkDefinitionSource
+{
+    public Task DefineWork(
+        IWorkDefinitionBuilder builder,
+        CancellationToken cancellationToken = default)
+    {
+        builder.WithWorkDefaults(
+            register: work =>
+            {
+                foreach (var mailbox in mailboxes)
+                {
+                    work.AddWork<ProcessMailboxExecutor>(
+                        WorkDefinition.Create(
+                            name: $"email.mailbox.process.{mailbox.Name}",
+                            description: $"Processes messages for {mailbox.Address}.",
+                            category: "Email:Mailboxes"));
+                }
+            },
+            configure: configure => configure.ConfigureLogging(level: LogLevel.Information),
+            authorize: authorize => authorize.AllowOperateToGroups("mailbox.operators"));
+
+        return Task.CompletedTask;
     }
 }
 ```

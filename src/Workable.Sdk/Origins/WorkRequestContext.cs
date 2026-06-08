@@ -1,5 +1,17 @@
 namespace Workable;
 
+/// <summary>
+/// Carries caller identity, origin, and authorization context into Workable system operations.
+/// </summary>
+/// <param name="Origin">The origin metadata to record for the caller and invocation channel.</param>
+/// <param name="Description">Optional human-readable context describing why the caller is performing the action.</param>
+/// <param name="Url">Optional URL that points back to the caller's originating page or resource.</param>
+/// <param name="Authorization">
+/// An optional precomputed authorization snapshot that Workable can use instead of resolving groups on demand.
+/// </param>
+/// <param name="IsAuthenticated">
+/// Indicates whether the caller should count as authenticated for rules that distinguish authenticated known actors.
+/// </param>
 public sealed record WorkRequestContext(
     WorkOrigin Origin,
     string? Description = null,
@@ -7,17 +19,42 @@ public sealed record WorkRequestContext(
     WorkAuthorizationSnapshot? Authorization = null,
     bool IsAuthenticated = false)
 {
+    /// <summary>
+    /// Gets the actor associated with the request origin.
+    /// </summary>
     public WorkActor Actor => this.Origin.Actor;
 
+    /// <summary>
+    /// Gets the invocation channel associated with the request origin.
+    /// </summary>
     public WorkInvocationChannel Channel => this.Origin.Channel;
 
+    /// <summary>
+    /// Gets the time the request origin was created.
+    /// </summary>
     public DateTimeOffset CreatedAt => this.Origin.CreatedAt;
 
+    /// <summary>
+    /// Creates a request context from an existing origin record.
+    /// </summary>
+    /// <param name="origin">The origin metadata to carry into Workable.</param>
     public WorkRequestContext(WorkOrigin origin)
         : this(origin ?? throw new ArgumentNullException(nameof(origin)), null, null, null, false)
     {
     }
 
+    /// <summary>
+    /// Creates a request context for the supplied invocation channel and optional actor.
+    /// </summary>
+    /// <param name="channel">The invocation channel through which the caller is entering Workable.</param>
+    /// <param name="actor">The caller identity to record, or <see cref="WorkActor.Unknown"/> when omitted.</param>
+    /// <param name="description">Optional human-readable context describing why the caller is performing the action.</param>
+    /// <param name="url">Optional URL that points back to the caller's originating page or resource.</param>
+    /// <param name="isAuthenticated">
+    /// Whether the caller should count as authenticated for rules such as
+    /// <c>AllowOperateToKnownAuthenticatedUsers()</c>.
+    /// </param>
+    /// <returns>A new request context with a generated origin record.</returns>
     public static WorkRequestContext Create(
         WorkInvocationChannel channel,
         WorkActor? actor = null,
@@ -34,6 +71,10 @@ public sealed record WorkRequestContext(
             isAuthenticated);
     }
 
+    /// <summary>
+    /// Returns a copy of the request context with any precomputed authorization snapshot removed.
+    /// </summary>
+    /// <returns>The original context when no authorization snapshot is present; otherwise a copy without it.</returns>
     public WorkRequestContext WithoutAuthorization()
         => this.Authorization is null
             ? this

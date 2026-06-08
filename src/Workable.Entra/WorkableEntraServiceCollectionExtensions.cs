@@ -8,8 +8,18 @@ using System.Linq;
 
 namespace Workable;
 
+/// <summary>
+/// Registers Microsoft Entra authentication and Workable claim-mapping integration for ASP.NET Core hosts.
+/// </summary>
 public static class WorkableEntraServiceCollectionExtensions
 {
+    /// <summary>
+    /// Adds Workable Entra authentication using values from configuration.
+    /// </summary>
+    /// <param name="services">The service collection to configure.</param>
+    /// <param name="configuration">The configuration section containing Entra settings.</param>
+    /// <returns>The same service collection for chaining.</returns>
+    /// <exception cref="InvalidOperationException">Thrown when the configured Entra options are invalid.</exception>
     public static IServiceCollection AddWorkableEntraAuthorization(
         this IServiceCollection services,
         IConfiguration configuration)
@@ -21,6 +31,13 @@ public static class WorkableEntraServiceCollectionExtensions
             WorkableEntraAuthorizationOptions.FromConfiguration(configuration));
     }
 
+    /// <summary>
+    /// Adds Workable Entra authentication using an imperative options callback.
+    /// </summary>
+    /// <param name="services">The service collection to configure.</param>
+    /// <param name="configure">The callback that configures Entra options.</param>
+    /// <returns>The same service collection for chaining.</returns>
+    /// <exception cref="InvalidOperationException">Thrown when the configured Entra options are invalid.</exception>
     public static IServiceCollection AddWorkableEntraAuthorization(
         this IServiceCollection services,
         Action<WorkableEntraAuthorizationOptions> configure)
