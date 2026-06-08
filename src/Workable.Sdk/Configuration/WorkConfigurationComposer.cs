@@ -78,6 +78,15 @@ internal static class WorkConfigurationComposer
             };
         }
 
+        var failedWorkerAttribute = executorType?.GetCustomAttribute<WorkFailedWorkerAttribute>(inherit: true);
+        if (failedWorkerAttribute is not null)
+        {
+            configuration = configuration with
+            {
+                FailedWorker = failedWorkerAttribute.Configuration,
+            };
+        }
+
         var loggingAttribute = executorType?.GetCustomAttribute<WorkLoggingAttribute>(inherit: true);
         if (loggingAttribute is not null)
         {

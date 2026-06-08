@@ -4,6 +4,7 @@ import {
   ArrowDown,
   ArrowUp,
   Equal,
+  Info,
 } from "lucide-react";
 import { PanelShell } from "@/components/features/console/panel-shell";
 import { Button } from "@/components/ui/button";
@@ -125,11 +126,29 @@ export function ThroughputChartPanel({
       centerActions={compact}
       className={compact ? "w-full" : undefined}
       contentClassName={compact ? "hidden" : undefined}
-      description={compact ? undefined : chartDescription}
+      description={undefined}
       onClose={onClose}
       onViewStateChange={onShapeChange}
       supportedViewStates={supportedShapes}
-      title={compact ? "Throughput & Execution" : chartLabel}
+      title={compact ? "Throughput & Execution" : (
+        <>
+          {chartLabel}
+          <Tooltip delayDuration={500} disableHoverableContent>
+            <TooltipTrigger asChild>
+              <button
+                aria-label={`${chartLabel}: ${chartDescription}`}
+                className="group inline-flex size-5 items-center justify-center rounded-sm text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+                type="button"
+              >
+                <Info className="size-3.5 shrink-0" />
+              </button>
+            </TooltipTrigger>
+            <TooltipContent className="max-w-64 whitespace-normal text-left" side="top" sideOffset={6}>
+              {chartDescription}
+            </TooltipContent>
+          </Tooltip>
+        </>
+      )}
       viewState={shape}
     >
       {!compact && (

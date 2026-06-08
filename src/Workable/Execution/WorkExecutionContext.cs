@@ -11,6 +11,7 @@ internal sealed class WorkExecutionContext(
     IWorkProfiler Profile,
     IServiceProvider Services,
     Func<WorkIdentifier, bool> AddIdentifierCallback,
+    Action<FailedWorkerAutoCancelOverride> ConfigureFailedWorkerAutoCancelCallback,
     Func<IWorkQueueDurabilityTransaction, CancellationToken, Task> CompleteDurablyCallback) : IWorkExecutionContext
 {
     private const string RequestedFailureSourceMetadataKey = "failureSource";
@@ -63,6 +64,27 @@ internal sealed class WorkExecutionContext(
                     [RequestedFailureSourceMetadataKey] = RequestedFailureSourceMetadataValue,
                 }),
             transient);
+    }
+
+    public void RequireManualFailedWorkerHandling()
+        => ConfigureFailedWorkerAutoCancelCallback(FailedWorkerAutoCancelOverride.Manual);
+
+    public void AllowFailedWorkerAutoCancel(TimeSpan? autoCancelAfter = null)
+    {
+        if (this.Configuration.Recurrence.IsEnabled)
+        {
+            throw new InvalidOperationException("Failed-worker auto-cancel is not supported for recurring work.");
+        }
+
+        if (autoCancelAfter is { } delay && delay <= TimeSpan.Zero)
+        {
+            throw new ArgumentOutOfRangeException(nameof(autoCancelAfter), "Failed-worker auto-cancel delay must be greater than zero.");
+        }
+
+        ConfigureFailedWorkerAutoCancelCallback(
+            autoCancelAfter is { } explicitDelay
+                ? FailedWorkerAutoCancelOverride.Explicit(explicitDelay)
+                : FailedWorkerAutoCancelOverride.Configured);
     }
 
     internal bool IsDurableCompletionRecorded

@@ -35,6 +35,13 @@ public interface IWorkConfigurationBuilder
     IWorkConfigurationBuilder UseTransientRetry(WorkTransientRetryConfiguration transientRetry);
 
     /// <summary>
+    /// Replaces the failed-worker handling configuration.
+    /// </summary>
+    /// <param name="failedWorker">The failed-worker handling configuration to apply to the registration.</param>
+    /// <returns>The same builder so additional configuration can be chained.</returns>
+    IWorkConfigurationBuilder UseFailedWorker(WorkFailedWorkerConfiguration failedWorker);
+
+    /// <summary>
     /// Replaces the retained logging configuration.
     /// </summary>
     /// <param name="logging">The logging configuration to apply to the registration.</param>
@@ -89,6 +96,25 @@ public interface IWorkConfigurationBuilder
         TimeSpan? jitter = null,
         TimeSpan? maximumDelay = null,
         WorkRetryBackoff backoff = WorkRetryBackoff.Exponential);
+
+    /// <summary>
+    /// Configures how Workable should treat workers that settle into the <c>Failed</c> state.
+    /// </summary>
+    /// <param name="handling">Whether failed workers require manual handling or may be auto-canceled.</param>
+    /// <param name="autoCancelAfter">
+    /// Optional delay before auto-cancel occurs when failed-worker auto-cancel handling is enabled.
+    /// </param>
+    /// <returns>The same builder so additional configuration can be chained.</returns>
+    IWorkConfigurationBuilder ConfigureFailedWorker(
+        WorkFailedWorkerHandling? handling = null,
+        TimeSpan? autoCancelAfter = null);
+
+    /// <summary>
+    /// Configures failed workers to be auto-canceled after the supplied delay.
+    /// </summary>
+    /// <param name="autoCancelAfter">The failed-state delay before Workable auto-cancels the worker.</param>
+    /// <returns>The same builder so additional configuration can be chained.</returns>
+    IWorkConfigurationBuilder AutoCancelFailedWorkersAfter(TimeSpan autoCancelAfter);
 
     /// <summary>
     /// Configures whether retained worker logging is enabled and how much data Workable keeps.

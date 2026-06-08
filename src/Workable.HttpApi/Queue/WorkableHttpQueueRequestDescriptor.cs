@@ -84,6 +84,14 @@ public sealed record WorkableHttpQueueRequestDescriptor(
                 Field("options.configuration.transientRetry.backoff", "Backoff", "Controls whether retry delays stay flat or grow exponentially between attempts."),
             ]),
         new(
+            "failedWorker",
+            "Failed Worker",
+            "Controls whether non-recurring workers that end in Failed require manual handling or are auto-canceled after a delay.",
+            [
+                Field("options.configuration.failedWorker.handling", "Handling", "Choose whether failed workers remain for manual handling or are auto-canceled after the configured delay."),
+                Field("options.configuration.failedWorker.autoCancelAfter", "Auto-cancel after", "How long a non-recurring worker may remain failed before Workable auto-cancels it. Use .NET TimeSpan text such as 00:10:00."),
+            ]),
+        new(
             "logging",
             "Logging",
             "Controls worker log capture for execution diagnostics and worker snapshots.",

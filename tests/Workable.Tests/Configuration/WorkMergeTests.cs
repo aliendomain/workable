@@ -89,6 +89,11 @@ public sealed class WorkMergeTests
             {
                 Count = 2,
             },
+            FailedWorker = new WorkFailedWorkerConfiguration
+            {
+                Handling = WorkFailedWorkerHandling.AutoCancel,
+                AutoCancelAfter = TimeSpan.FromMinutes(3),
+            },
             Logging = new WorkLoggingConfiguration
             {
                 IsEnabled = false,
@@ -107,6 +112,7 @@ public sealed class WorkMergeTests
         Assert.Equal(overrides.Coordination, merged.Coordination);
         Assert.Equal(overrides.Recurrence, merged.Recurrence);
         Assert.Equal(overrides.TransientRetry, merged.TransientRetry);
+        Assert.Equal(overrides.FailedWorker, merged.FailedWorker);
         Assert.Equal(overrides.Logging, merged.Logging);
         Assert.Equal(overrides.Retention, merged.Retention);
         Assert.Equal(original.Invocation, merged.Invocation);

@@ -7,6 +7,7 @@ namespace Workable;
 /// <param name="Coordination">The per-request coordination and durability override.</param>
 /// <param name="Recurrence">The per-request recurrence override.</param>
 /// <param name="TransientRetry">The per-request transient retry override.</param>
+/// <param name="FailedWorker">The per-request failed-worker handling override.</param>
 /// <param name="Logging">The per-request log-capture override.</param>
 /// <param name="Retention">The per-request retention override.</param>
 public sealed record WorkableHttpWorkConfiguration(
@@ -14,6 +15,7 @@ public sealed record WorkableHttpWorkConfiguration(
     WorkCoordinationConfiguration Coordination,
     WorkRecurrenceConfiguration Recurrence,
     WorkTransientRetryConfiguration TransientRetry,
+    WorkFailedWorkerConfiguration FailedWorker,
     WorkLoggingConfiguration Logging,
     WorkRetentionConfiguration Retention)
 {
@@ -36,6 +38,7 @@ public sealed record WorkableHttpWorkConfiguration(
             configuration.Coordination,
             configuration.Recurrence,
             configuration.TransientRetry,
+            configuration.FailedWorker,
             configuration.Logging,
             configuration.Retention);
     }
@@ -46,6 +49,7 @@ public sealed record WorkableHttpWorkConfiguration(
             Coordination,
             Recurrence,
             TransientRetry,
+            FailedWorker,
             Logging,
             Retention,
             WorkInvocationConfiguration.Default);

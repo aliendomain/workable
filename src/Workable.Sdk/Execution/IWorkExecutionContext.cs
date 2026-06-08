@@ -77,6 +77,20 @@ public interface IWorkExecutionContext
     void Fail(string code, string message, string? target = null, bool transient = false);
 
     /// <summary>
+    /// Forces the current worker to remain in <c>Failed</c> for manual handling if this execution fails.
+    /// </summary>
+    void RequireManualFailedWorkerHandling();
+
+    /// <summary>
+    /// Allows the current worker to be auto-canceled if this execution fails.
+    /// </summary>
+    /// <param name="autoCancelAfter">
+    /// Optional failed-state delay override. When omitted, Workable uses the worker's configured failed-worker
+    /// auto-cancel delay.
+    /// </param>
+    void AllowFailedWorkerAutoCancel(TimeSpan? autoCancelAfter = null);
+
+    /// <summary>
     /// Completes the worker durably within a store-specific transaction.
     /// </summary>
     /// <param name="transaction">The store-specific durability transaction to complete within.</param>

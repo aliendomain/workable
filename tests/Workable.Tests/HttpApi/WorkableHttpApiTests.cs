@@ -153,6 +153,7 @@ public sealed class WorkableHttpApiTests
                 nameof(WorkableHttpWorkConfiguration.Coordination),
                 nameof(WorkableHttpWorkConfiguration.Recurrence),
                 nameof(WorkableHttpWorkConfiguration.TransientRetry),
+                nameof(WorkableHttpWorkConfiguration.FailedWorker),
                 nameof(WorkableHttpWorkConfiguration.Logging),
                 nameof(WorkableHttpWorkConfiguration.Retention),
             ],

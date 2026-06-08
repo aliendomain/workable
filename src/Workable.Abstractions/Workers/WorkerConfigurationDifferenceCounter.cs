@@ -95,6 +95,7 @@ public static class WorkerConfigurationDifferenceCounter
             configuration.Coordination,
             configuration.Recurrence,
             configuration.TransientRetry,
+            configuration.FailedWorker,
             configuration.Logging,
             configuration.Retention);
 
@@ -104,6 +105,7 @@ public static class WorkerConfigurationDifferenceCounter
         WorkCoordinationConfiguration Coordination,
         WorkRecurrenceConfiguration Recurrence,
         WorkTransientRetryConfiguration TransientRetry,
+        WorkFailedWorkerConfiguration FailedWorker,
         WorkLoggingConfiguration Logging,
         WorkRetentionConfiguration Retention);
 }

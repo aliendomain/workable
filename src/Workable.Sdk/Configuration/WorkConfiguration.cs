@@ -11,6 +11,7 @@ namespace Workable;
 /// <param name="Coordination">The coordination features for idempotency, concurrency, and durability.</param>
 /// <param name="Recurrence">The recurrence behavior used after each iteration completes.</param>
 /// <param name="TransientRetry">The transient retry strategy for retryable failures.</param>
+/// <param name="FailedWorker">The policy used when a worker settles into the failed state.</param>
 /// <param name="Logging">The worker-scoped log capture settings.</param>
 /// <param name="Retention">The final-worker retention settings.</param>
 /// <param name="Invocation">The allowed invocation channels for the work definition.</param>
@@ -19,6 +20,7 @@ public sealed record WorkConfiguration(
     WorkCoordinationConfiguration Coordination,
     WorkRecurrenceConfiguration Recurrence,
     WorkTransientRetryConfiguration TransientRetry,
+    WorkFailedWorkerConfiguration FailedWorker,
     WorkLoggingConfiguration Logging,
     WorkRetentionConfiguration Retention,
     WorkInvocationConfiguration Invocation)
@@ -31,6 +33,7 @@ public sealed record WorkConfiguration(
         WorkCoordinationConfiguration.Default,
         WorkRecurrenceConfiguration.Default,
         WorkTransientRetryConfiguration.Default,
+        WorkFailedWorkerConfiguration.Default,
         WorkLoggingConfiguration.Default,
         WorkRetentionConfiguration.Default,
         WorkInvocationConfiguration.Default);
@@ -51,6 +54,7 @@ public sealed record WorkConfiguration(
                 Coordination = overrides.Coordination,
                 Recurrence = overrides.Recurrence,
                 TransientRetry = overrides.TransientRetry,
+                FailedWorker = overrides.FailedWorker,
                 Logging = overrides.Logging,
                 Retention = overrides.Retention,
                 // Invocation is intentionally excluded. Allowed invocation channels are a

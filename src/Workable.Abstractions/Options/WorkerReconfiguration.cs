@@ -8,6 +8,7 @@ namespace Workable;
 /// <param name="Coordination">Optional worker-level coordination changes.</param>
 /// <param name="Recurrence">Optional worker-level recurrence changes.</param>
 /// <param name="TransientRetry">Optional worker-level transient retry changes.</param>
+/// <param name="FailedWorker">Optional failed-worker handling changes.</param>
 /// <param name="Logging">Optional worker-level retained logging changes.</param>
 /// <param name="Retention">Optional worker-level retention changes.</param>
 public sealed record WorkerReconfiguration(
@@ -16,5 +17,6 @@ public sealed record WorkerReconfiguration(
     WorkCoordinationConfiguration? Coordination = null,
     WorkRecurrenceConfiguration? Recurrence = null,
     WorkTransientRetryConfiguration? TransientRetry = null,
+    WorkFailedWorkerConfiguration? FailedWorker = null,
     WorkLoggingConfiguration? Logging = null,
     WorkRetentionConfiguration? Retention = null);

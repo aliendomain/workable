@@ -13,7 +13,7 @@ This guide focuses on executor code: what runs when a worker executes and how th
 Some work authoring features are closely related, but they are documented in other guides because they are registration-time or configuration-time concerns rather than execution-time implementation details:
 
 - [Work Registration](registration.md): automatic start, startup work sources, named systems, and feature-contributed work.
-- [Work Configuration](configuration/README.md): runtime behavior such as start policy, retry, recurrence, concurrency, retention, logging, durability, and invocation rules.
+- [Work Configuration](configuration/README.md): runtime behavior such as start policy, retry, recurrence, failed-worker handling, concurrency, retention, logging, durability, and invocation rules.
 
 ## Basic Shape
 
@@ -175,6 +175,31 @@ In practice:
 
 - return `WorkExecutionResult.Failure(...)` when the whole method naturally resolves to a failure result
 - call `Fail(...)` when failure is discovered mid-flow, when cleanup or additional result shaping still needs to happen before returning, or when the failure should be marked transient without throwing
+
+### Failed-Worker Handling Override
+
+Executor code can also control whether a failed worker should remain for manual handling or be auto-canceled after failure.
+
+```csharp
+if (input.RequestCameFromInteractiveCaller)
+{
+    context.AllowFailedWorkerAutoCancel(TimeSpan.FromMinutes(1));
+}
+else
+{
+    context.RequireManualFailedWorkerHandling();
+}
+```
+
+Use these methods when the current execution has stronger operational knowledge than the static work configuration:
+
+- `RequireManualFailedWorkerHandling()` forces the worker to stay in `Failed` if execution fails.
+- `AllowFailedWorkerAutoCancel()` uses the worker's configured failed-worker auto-cancel delay if execution fails.
+- `AllowFailedWorkerAutoCancel(TimeSpan delay)` uses an execution-specific failed-worker auto-cancel delay if execution fails.
+
+These overrides affect the worker disposition after failure. They do not erase the failed iteration, messages, or other failure evidence Workable retains.
+
+Recurring work cannot opt into failed-worker auto-cancel. Calling `AllowFailedWorkerAutoCancel(...)` on a recurring worker throws.
 
 ### CompleteDurably
 
@@ -359,6 +384,7 @@ See [Recurrence Configuration](configuration/recurrence.md), [Transient Retry Co
 - Prefer constructor injection for normal executor dependencies; use `context.Services` when execution-scoped or dynamic lookup is the better fit.
 - Use `context.AddIdentifier(...)` when execution discovers a durable correlation key.
 - Use `context.Fail(...)` for expected business failures.
+- Use `RequireManualFailedWorkerHandling()` or `AllowFailedWorkerAutoCancel(...)` only when the current execution should override the configured failed-worker policy.
 - Let `OperationCanceledException` propagate unless you have a clear reason to translate it.
 - Check `context.IsInterrupted` and `context.InterruptionReason` only when you need to distinguish interruption from pause or cancel.
 - Use `context.Profile` when timing or diagnostic detail would help future operators understand expensive work.
@@ -369,6 +395,7 @@ See [Recurrence Configuration](configuration/recurrence.md), [Transient Retry Co
 - [Getting Started](getting-started.md)
 - [Registration](registration.md)
 - [Queueing](queueing.md)
+- [Failed-Worker Handling Configuration](configuration/failed-worker.md)
 - [Recurrence Configuration](configuration/recurrence.md)
 - [Transient Retry Configuration](configuration/transient-retry.md)
 - [Queue Durability Configuration](configuration/queue-durability.md)

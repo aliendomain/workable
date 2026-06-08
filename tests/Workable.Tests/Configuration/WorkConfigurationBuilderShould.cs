@@ -24,6 +24,7 @@ public sealed class WorkConfigurationBuilderShould
                 jitter: TimeSpan.FromMilliseconds(4),
                 maximumDelay: TimeSpan.FromSeconds(5),
                 backoff: WorkRetryBackoff.None)
+            .AutoCancelFailedWorkersAfter(TimeSpan.FromSeconds(6))
             .ConfigureLogging(isEnabled: false, LogLevel.Warning, maximumBufferedEntries: 7)
             .ConfigureRetention(purgeInterval: TimeSpan.FromSeconds(8), maximumFinalWorkers: 9)
             .LimitConcurrency(
@@ -51,6 +52,8 @@ public sealed class WorkConfigurationBuilderShould
         Assert.Equal(TimeSpan.FromMilliseconds(4), configuration.TransientRetry.Jitter);
         Assert.Equal(TimeSpan.FromSeconds(5), configuration.TransientRetry.MaximumDelay);
         Assert.Equal(WorkRetryBackoff.None, configuration.TransientRetry.Backoff);
+        Assert.Equal(WorkFailedWorkerHandling.AutoCancel, configuration.FailedWorker.Handling);
+        Assert.Equal(TimeSpan.FromSeconds(6), configuration.FailedWorker.AutoCancelAfter);
         Assert.False(configuration.Logging.IsEnabled);
         Assert.Equal(LogLevel.Warning, configuration.Logging.Level);
         Assert.Equal(7, configuration.Logging.MaximumBufferedEntries);
@@ -110,6 +113,7 @@ public sealed class WorkConfigurationBuilderShould
         Assert.Throws<ArgumentNullException>(() => builder.UseCoordination(null!));
         Assert.Throws<ArgumentNullException>(() => builder.UseRecurrence(null!));
         Assert.Throws<ArgumentNullException>(() => builder.UseTransientRetry(null!));
+        Assert.Throws<ArgumentNullException>(() => builder.UseFailedWorker(null!));
         Assert.Throws<ArgumentNullException>(() => builder.UseLogging(null!));
         Assert.Throws<ArgumentNullException>(() => builder.UseRetention(null!));
         Assert.Throws<ArgumentNullException>(() => builder.UseInvocation(null!));

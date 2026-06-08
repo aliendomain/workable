@@ -18,6 +18,7 @@ This page does not describe one standalone configuration object. It describes th
 | `Queue Durability` and `Idempotency` | `WorkCoordinationConfiguration.Durability`, `WorkCoordinationConfiguration.Idempotency` | Durable persistence and duplicate protection can share one persisted row. |
 | `Queue Durability` and `Concurrency` | `WorkCoordinationConfiguration.Durability`, `WorkCoordinationConfiguration.Concurrency` | Persistence-backed concurrency is enforced while durable rows are claimed. |
 | `Durable Completion` and transactions | `WorkCoordinationConfiguration.Durability` | Successful business work and Workable final cleanup can be committed together. |
+| `Failed-worker handling` and `Recurrence` | `WorkFailedWorkerConfiguration`, `WorkRecurrenceConfiguration` | Failed-worker auto-cancel is supported only for non-recurring work. |
 | `Retention` and failure states | `WorkRetentionConfiguration`, `WorkSystemRetentionConfiguration` | Final-worker retention does not automatically purge failed or interrupted workers. |
 | `Logging` and service lifetimes | `WorkLoggingConfiguration` | Log capture depends on the logger instances used during execution. |
 | Reconfiguration and versions | `WorkerReconfiguration`, `WorkDefinitionReconfiguration` | Reconfiguration is optimistic and requires the current version. |
@@ -147,6 +148,14 @@ Durable completion requires durable queueing or persistent coordination with ide
 Retention applies to final workers. Final workers are `Completed` and `Canceled`, so automatic purge uses the configured retention interval and asynchronously enforced final-worker count targets for those states.
 
 Failed and interrupted workers remain available for inspection and control because they are not final. Failed workers can be started again or canceled. Interrupted durable work can be replayed by the durable queue reader after lease expiry, or explicitly canceled through the worker API when it is materialized. Neither state is automatically purged by final-worker retention.
+
+When failed-worker auto-cancel is enabled, Workable transitions the failed worker through the normal `Cancel` path after the configured delay. That makes the worker final, and final-worker retention can then purge it later using the existing retention interval and count-target rules.
+
+## Failed-Worker Handling And Recurrence
+
+Recurring workers already have their own failure flow through `ContinueAfterFailure`, retry, waiting, and circuit-breaker behavior. Because of that, failed-worker auto-cancel is not supported for recurring work.
+
+Workable rejects any configuration that combines enabled recurrence with `WorkFailedWorkerHandling.AutoCancel`, whether the configuration comes from registration, queue-time overrides, or runtime worker reconfiguration.
 
 ## Logging And Service Lifetimes
 
