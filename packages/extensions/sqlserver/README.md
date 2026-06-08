@@ -97,31 +97,31 @@ The SQL Server integration includes a CLI project at `tools/Workable.SqlServer.C
 Generate the schema script:
 
 ```powershell
-dotnet run --project integrations\sqlserver\tools\Workable.SqlServer.Cli -- schema generate --schema workable --output workable.sql
+dotnet run --project apps\tools\Workable.SqlServer.Cli -- schema generate --schema workable --output workable.sql
 ```
 
 Print the schema script to stdout:
 
 ```powershell
-dotnet run --project integrations\sqlserver\tools\Workable.SqlServer.Cli -- schema generate --schema workable
+dotnet run --project apps\tools\Workable.SqlServer.Cli -- schema generate --schema workable
 ```
 
 Apply the schema directly:
 
 ```powershell
-dotnet run --project integrations\sqlserver\tools\Workable.SqlServer.Cli -- schema apply --connection-string "Server=(localdb)\MSSQLLocalDB;Database=Workable;Integrated Security=true;TrustServerCertificate=true" --schema workable
+dotnet run --project apps\tools\Workable.SqlServer.Cli -- schema apply --connection-string "Server=(localdb)\MSSQLLocalDB;Database=Workable;Integrated Security=true;TrustServerCertificate=true" --schema workable
 ```
 
 Generate the schema only when a project or solution contains Workable configuration that needs SQL Server persistence:
 
 ```powershell
-dotnet run --project integrations\sqlserver\tools\Workable.SqlServer.Cli -- schema generate --solution .\Workable.slnx --schema workable --output workable.sql
+dotnet run --project apps\tools\Workable.SqlServer.Cli -- schema generate --solution .\Workable.slnx --schema workable --output workable.sql
 ```
 
 Deploy after scanning a project or solution:
 
 ```powershell
-dotnet run --project integrations\sqlserver\tools\Workable.SqlServer.Cli -- schema apply --project .\src\MyApp\MyApp.csproj --connection-string "Server=(localdb)\MSSQLLocalDB;Database=Workable;Integrated Security=true;TrustServerCertificate=true" --schema workable
+dotnet run --project apps\tools\Workable.SqlServer.Cli -- schema apply --project .\src\MyApp\MyApp.csproj --connection-string "Server=(localdb)\MSSQLLocalDB;Database=Workable;Integrated Security=true;TrustServerCertificate=true" --schema workable
 ```
 
 `--project` can be repeated, and `--solution` scans all non-test projects in the solution. Pass `--include-tests` when a test project is intentionally part of the scan. `schema apply` also accepts repeated `--connection-string` values so the same detected schema requirements can be deployed to multiple databases.
@@ -132,7 +132,7 @@ You can also provide the connection string with `WORKABLE_SQLSERVER_CONNECTION_S
 
 ```powershell
 $env:WORKABLE_SQLSERVER_CONNECTION_STRING="Server=(localdb)\MSSQLLocalDB;Database=Workable;Integrated Security=true;TrustServerCertificate=true"
-dotnet run --project integrations\sqlserver\tools\Workable.SqlServer.Cli -- schema apply --schema workable
+dotnet run --project apps\tools\Workable.SqlServer.Cli -- schema apply --schema workable
 ```
 
 The generated and applied schema are produced by the same `WorkableSqlServerSchema` helper used by the runtime initializer, so the CLI and runtime stay in sync.

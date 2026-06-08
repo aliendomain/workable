@@ -15,9 +15,9 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\..\integrations\sqlserver\src\Workable.SqlServer\Workable.SqlServer.csproj" />
-    <ProjectReference Include="..\Workable\Workable.csproj" />
-    <ProjectReference Include="..\Workable.Views\Workable.Views.csproj" />
+    <ProjectReference Include="..\..\..\packages\extensions\sqlserver\Workable.SqlServer\Workable.SqlServer.csproj" />
+    <ProjectReference Include="..\..\..\packages\core\Workable\Workable.csproj" />
+    <ProjectReference Include="..\..\..\packages\core\Workable.Views\Workable.Views.csproj" />
   </ItemGroup>
 
 </Project>

@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <GenerateMvcApplicationPartsAssemblyAttributes>false</GenerateMvcApplicationPartsAssemblyAttributes>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\..\packages\core\Workable\Workable.csproj" />
+    <ProjectReference Include="..\..\..\packages\core\Workable.HttpApi\Workable.HttpApi.csproj" />
+    <ProjectReference Include="..\..\..\packages\core\Workable.Mcp\Workable.Mcp.csproj" />
+    <ProjectReference Include="..\..\..\packages\core\Workable.SignalR\Workable.SignalR.csproj" />
+    <ProjectReference Include="..\..\..\packages\extensions\sqlserver\Workable.SqlServer\Workable.SqlServer.csproj" />
+  </ItemGroup>
+
+</Project>

@@ -2,7 +2,7 @@ This is the Workable admin UI.
 
 ## Getting Started
 
-From `src/workable-admin-ui`, install dependencies and run the development server:
+From `apps/web/workable-admin-ui`, install dependencies and run the development server:
 
 ```bash
 npm install

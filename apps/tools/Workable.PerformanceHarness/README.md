@@ -5,25 +5,25 @@ This is an opt-in runner for maintainers working on Workable runtime, query, vie
 Run it from the repository root:
 
 ```powershell
-dotnet run --project src\Workable.PerformanceHarness --configuration Release -- --workers 1000 --view-subscriptions 6 --view-iterations 50
+dotnet run --project apps\tools\Workable.PerformanceHarness --configuration Release -- --workers 1000 --view-subscriptions 6 --view-iterations 50
 ```
 
 Useful quick run:
 
 ```powershell
-dotnet run --project src\Workable.PerformanceHarness --configuration Release -- --workers 100 --view-subscriptions 3 --view-iterations 10
+dotnet run --project apps\tools\Workable.PerformanceHarness --configuration Release -- --workers 100 --view-subscriptions 3 --view-iterations 10
 ```
 
 Durable queueing with SQL Server LocalDB and persistence-backed idempotency:
 
 ```powershell
-dotnet run --project src\Workable.PerformanceHarness --configuration Release -- --queue-mode durable-idempotent --workers 1000 --parallelism 16
+dotnet run --project apps\tools\Workable.PerformanceHarness --configuration Release -- --queue-mode durable-idempotent --workers 1000 --parallelism 16
 ```
 
 Durable queueing without idempotency requirements:
 
 ```powershell
-dotnet run --project src\Workable.PerformanceHarness --configuration Release -- --queue-mode durable-non-idempotent --workers 1000 --parallelism 16
+dotnet run --project apps\tools\Workable.PerformanceHarness --configuration Release -- --queue-mode durable-non-idempotent --workers 1000 --parallelism 16
 ```
 
 The harness queues simple workers while concurrently recomputing overview component views. It reports worker throughput, completion latency, overview view latency, serialized payload size, and read-model diagnostics such as pending update count and projection duration.
@@ -45,7 +45,7 @@ The project also includes focused BenchmarkDotNet baselines for the hot paths id
 Run the default baseline set:
 
 ```powershell
-dotnet run --project src\Workable.PerformanceHarness --configuration Release -- --benchmarks
+dotnet run --project apps\tools\Workable.PerformanceHarness --configuration Release -- --benchmarks
 ```
 
 The default `--benchmarks` command runs only benchmark classes whose names contain `Baseline`. That keeps the million-worker stress benchmark opt-in.
@@ -53,13 +53,13 @@ The default `--benchmarks` command runs only benchmark classes whose names conta
 Run a single benchmark group:
 
 ```powershell
-dotnet run --project src\Workable.PerformanceHarness --configuration Release -- --benchmarks --filter *BaselineWorkerQuery*
+dotnet run --project apps\tools\Workable.PerformanceHarness --configuration Release -- --benchmarks --filter *BaselineWorkerQuery*
 ```
 
 Run the opt-in million-worker query stress benchmark:
 
 ```powershell
-dotnet run --project src\Workable.PerformanceHarness --configuration Release -- --benchmarks --filter *StressMillionWorkerQuery*
+dotnet run --project apps\tools\Workable.PerformanceHarness --configuration Release -- --benchmarks --filter *StressMillionWorkerQuery*
 ```
 
 Current benchmark groups:

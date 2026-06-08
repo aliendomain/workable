@@ -1,16 +1,20 @@
 <Solution>
-  <Folder Name="/Samples/">
-    <Project Path="samples/Workable.SampleHost/Workable.SampleHost.csproj" />
+  <Folder Name="/Apps/Samples/">
+    <Project Path="apps/samples/Workable.SampleHost/Workable.SampleHost.csproj" />
   </Folder>
-  <Folder Name="/Tests/">
-    <Project Path="src/Workable.PerformanceHarness/Workable.PerformanceHarness.csproj" />
+  <Folder Name="/Apps/Tools/">
+    <Project Path="apps/tools/Workable.PerformanceHarness/Workable.PerformanceHarness.csproj" />
+    <Project Path="apps/tools/Workable.SqlServer.Cli/Workable.SqlServer.Cli.csproj" />
+  </Folder>
+  <Folder Name="/Packages/Extensions/SqlServer/">
+    <Project Path="packages/extensions/sqlserver/Workable.SqlServer/Workable.SqlServer.csproj" />
+    <File Path="packages/extensions/sqlserver/README.md" />
+  </Folder>
+  <Folder Name="/Tests/Core/">
     <Project Path="tests/Workable.Tests/Workable.Tests.csproj" />
   </Folder>
-  <Folder Name="/Integrations/SqlServer/">
-    <Project Path="integrations/sqlserver/src/Workable.SqlServer/Workable.SqlServer.csproj" />
-    <Project Path="integrations/sqlserver/tests/Workable.SqlServer.Tests/Workable.SqlServer.Tests.csproj" />
-    <Project Path="integrations/sqlserver/tools/Workable.SqlServer.Cli/Workable.SqlServer.Cli.csproj" />
-    <File Path="integrations/sqlserver/README.md" />
+  <Folder Name="/Tests/Extensions/SqlServer/">
+    <Project Path="tests/extensions/sqlserver/Workable.SqlServer.Tests/Workable.SqlServer.Tests.csproj" />
   </Folder>
   <Folder Name="/Solution Items/">
     <File Path=".editorconfig" />
@@ -60,13 +64,15 @@
     <File Path="docs/guides/configuration/system-settings.md" />
     <File Path="docs/guides/configuration/transient-retry.md" />
   </Folder>
-  <Project Path="src/Workable.Abstractions/Workable.Abstractions.csproj" />
-  <Project Path="src/Workable.AspNetCore/Workable.AspNetCore.csproj" />
-  <Project Path="src/Workable.Entra/Workable.Entra.csproj" />
-  <Project Path="src/Workable.HttpApi/Workable.HttpApi.csproj" />
-  <Project Path="src/Workable.Mcp/Workable.Mcp.csproj" />
-  <Project Path="src/Workable.Sdk/Workable.Sdk.csproj" />
-  <Project Path="src/Workable.SignalR/Workable.SignalR.csproj" />
-  <Project Path="src/Workable.Views/Workable.Views.csproj" />
-  <Project Path="src/Workable/Workable.csproj" />
+  <Folder Name="/Packages/Core/">
+    <Project Path="packages/core/Workable.Abstractions/Workable.Abstractions.csproj" />
+    <Project Path="packages/core/Workable.AspNetCore/Workable.AspNetCore.csproj" />
+    <Project Path="packages/core/Workable.Entra/Workable.Entra.csproj" />
+    <Project Path="packages/core/Workable.HttpApi/Workable.HttpApi.csproj" />
+    <Project Path="packages/core/Workable.Mcp/Workable.Mcp.csproj" />
+    <Project Path="packages/core/Workable.Sdk/Workable.Sdk.csproj" />
+    <Project Path="packages/core/Workable.SignalR/Workable.SignalR.csproj" />
+    <Project Path="packages/core/Workable.Views/Workable.Views.csproj" />
+    <Project Path="packages/core/Workable/Workable.csproj" />
+  </Folder>
 </Solution>

@@ -73,7 +73,7 @@ The public exceptions here matter because they communicate expected provider-lev
 
 That last one is especially important. Lease loss is not a generic error; it is part of the durable replay model and can lead to worker interruption and later replay.
 
-If you are implementing a provider, study [Workable SQL Server Integration](../../integrations/sqlserver/README.md) as the concrete example.
+If you are implementing a provider, study [Workable SQL Server Integration](../../packages/extensions/sqlserver/README.md) as the concrete example.
 
 ## Metrics Sink
 

@@ -4,7 +4,7 @@ Date: 2026-06-01
 
 ## Scope
 
-Frontend app audited: `src/workable-admin-ui`.
+Frontend app audited: `apps/web/workable-admin-ui`.
 
 This is a TypeScript, Next.js App Router, React, Tailwind, shadcn/ui admin console. The current goal is refactor safety, not 100% coverage.
 
@@ -42,7 +42,7 @@ The local Next.js docs recommend e2e tests for async Server Components where uni
 
 ## Commands Discovered
 
-From `src/workable-admin-ui/package.json`:
+From `apps/web/workable-admin-ui/package.json`:
 
 - `npm run dev`: `set NODE_OPTIONS=--use-system-ca && next dev`
 - `npm run build`: `next build`
@@ -54,7 +54,7 @@ Additional practical command:
 
 - `.\node_modules\.bin\tsc.cmd --noEmit`
 
-Repository CI currently runs .NET restore/build/test only. It does not install, lint, typecheck, build, or test `src/workable-admin-ui`.
+Repository CI currently runs .NET restore/build/test only. It does not install, lint, typecheck, build, or test `apps/web/workable-admin-ui`.
 
 ## Commands Run And Current State
 

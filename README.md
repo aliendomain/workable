@@ -40,10 +40,10 @@ Workable also gives applications a path to expose the same authored work through
 
 ### Apps And Tools
 
-- `samples/Workable.SampleHost`: runnable ASP.NET Core sample app with HTTP API, MCP, SignalR, fake-auth profiles, and SQL Server LocalDB durability scenarios.
-- `src/Workable.PerformanceHarness`: opt-in scenario runner and BenchmarkDotNet harness for runtime, query, view, realtime, and SQL durability performance work.
-- `integrations/sqlserver/tools/Workable.SqlServer.Cli`: SQL Server schema generation and deployment CLI for Workable persistence.
-- `src/workable-admin-ui`: Next.js admin UI for inspecting and operating Workable systems through the HTTP API and SignalR realtime updates.
+- `apps/samples/Workable.SampleHost`: runnable ASP.NET Core sample app with HTTP API, MCP, SignalR, fake-auth profiles, and SQL Server LocalDB durability scenarios.
+- `apps/tools/Workable.PerformanceHarness`: opt-in scenario runner and BenchmarkDotNet harness for runtime, query, view, realtime, and SQL durability performance work.
+- `apps/tools/Workable.SqlServer.Cli`: SQL Server schema generation and deployment CLI for Workable persistence.
+- `apps/web/workable-admin-ui`: Next.js admin UI for inspecting and operating Workable systems through the HTTP API and SignalR realtime updates.
 
 ## Documentation
 
@@ -58,7 +58,7 @@ Recommended entry points:
 - [Configuration](https://github.com/aliendomain/workable/blob/main/docs/guides/configuration/README.md) if you are tuning start behavior, retry, recurrence, concurrency, durability, logging, retention, or invocation rules.
 - [HTTP API](https://github.com/aliendomain/workable/blob/main/docs/adapters/http-api.md), [MCP](https://github.com/aliendomain/workable/blob/main/docs/adapters/mcp.md), and [Realtime](https://github.com/aliendomain/workable/blob/main/docs/adapters/realtime.md) if you are exposing Workable over transports.
 - [Abstractions Surface](https://github.com/aliendomain/workable/blob/main/docs/concepts/abstractions-surface.md) if you are consuming a hosted system from another library.
-- [Workable SQL Server Integration](https://github.com/aliendomain/workable/blob/main/integrations/sqlserver/README.md) if you need durable queueing or persistence-backed coordination.
-- [Sample Host](https://github.com/aliendomain/workable/blob/main/samples/Workable.SampleHost/README.md) if you want a runnable reference app.
-- [Admin UI](https://github.com/aliendomain/workable/blob/main/src/workable-admin-ui/README.md) if you want the browser-based operator surface.
-- [Performance Harness](https://github.com/aliendomain/workable/blob/main/src/Workable.PerformanceHarness/README.md) if you are measuring runtime or adapter performance.
+- [Workable SQL Server Integration](https://github.com/aliendomain/workable/blob/main/packages/extensions/sqlserver/README.md) if you need durable queueing or persistence-backed coordination.
+- [Sample Host](https://github.com/aliendomain/workable/blob/main/apps/samples/Workable.SampleHost/README.md) if you want a runnable reference app.
+- [Admin UI](https://github.com/aliendomain/workable/blob/main/apps/web/workable-admin-ui/README.md) if you want the browser-based operator surface.
+- [Performance Harness](https://github.com/aliendomain/workable/blob/main/apps/tools/Workable.PerformanceHarness/README.md) if you are measuring runtime or adapter performance.

@@ -15,7 +15,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\..\..\..\src\Workable.Abstractions\Workable.Abstractions.csproj" />
+    <ProjectReference Include="..\..\..\..\packages\core\Workable.Abstractions\Workable.Abstractions.csproj" />
   </ItemGroup>
 
 </Project>

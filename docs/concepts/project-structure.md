@@ -1,16 +1,14 @@
 # Project Structure
 
-Workable is split across shipping source projects, integration projects, samples, and tests so feature assemblies can define work without depending on the in-process host runtime.
+Workable is split across shipping packages, runnable apps, and tests so feature assemblies can define work without depending on the in-process host runtime.
 
 ## Repo Roots
 
-`src` contains the main shipping packages, the admin UI, and the benchmark harness.
+`packages` contains the shipping .NET packages. `packages/core` holds the main Workable product surface, and `packages/extensions` holds optional provider-specific packages such as SQL Server.
 
-`integrations` contains package-specific integrations that ship beside the core runtime. Each integration can have its own `src`, `tools`, and `tests` layout.
+`apps` contains runnable surfaces. `apps/web` holds browser applications, `apps/tools` holds operational and benchmarking tools, and `apps/samples` holds runnable reference hosts.
 
-`samples` contains runnable sample hosts and supporting sample assets.
-
-`tests` contains the primary automated test suite for the core packages.
+`tests` contains the primary automated test suite. `tests/extensions` groups provider-specific verification beside the shared core test suite.
 
 `docs` contains product and architecture documentation.
 
@@ -20,7 +18,7 @@ Generated or local-run folders such as `bin`, `obj`, `TestResults`, `artifacts`,
 
 ## Projects
 
-`src/Workable.Sdk` contains the work-authoring contracts and primitives:
+`packages/core/Workable.Sdk` contains the work-authoring contracts and primitives:
 
 - work definitions and metadata
 - work input, output, schema, and identifiers
@@ -32,7 +30,7 @@ Generated or local-run folders such as `bin`, `obj`, `TestResults`, `artifacts`,
 
 Feature libraries reference `Workable.Sdk` when they need to declare work, configure work defaults, or implement executors.
 
-`src/Workable.Abstractions` contains the consumer-facing contracts for using an already-hosted system:
+`packages/core/Workable.Abstractions` contains the consumer-facing contracts for using an already-hosted system:
 
 - `IWorkSystem`
 - `IWorkSystemRegistry`
@@ -46,7 +44,7 @@ Feature libraries reference `Workable.Sdk` when they need to declare work, confi
 
 Libraries reference `Workable.Abstractions` when they need to queue, query, observe, or control work but do not host Workable themselves.
 
-`src/Workable` contains the host/runtime surface:
+`packages/core/Workable` contains the host/runtime surface:
 
 - in-memory system implementation
 - worker lifecycle, queueing, dispatch, retention, coordination, durability, concurrency, and event-stream behavior
@@ -54,7 +52,7 @@ Libraries reference `Workable.Abstractions` when they need to queue, query, obse
 
 Host applications reference `Workable` when they need to create systems and run the in-process runtime. `Workable` also references the abstractions package, so host applications can inject and use `IWorkSystem` directly.
 
-`src/Workable.HttpApi` contains the HTTP API adapter surface:
+`packages/core/Workable.HttpApi` contains the HTTP API adapter surface:
 
 - host setup and route entry points under `Hosting`
 - system discovery and lifecycle routes under `Systems`
@@ -66,7 +64,7 @@ Host applications reference `Workable` when they need to create systems and run 
 
 Applications reference `Workable.HttpApi` when they want to expose Workable systems through HTTP endpoints.
 
-`src/Workable.Views` contains reusable component-view composition:
+`packages/core/Workable.Views` contains reusable component-view composition:
 
 - component and view request DTOs
 - component result envelopes
@@ -76,7 +74,7 @@ Applications reference `Workable.HttpApi` when they want to expose Workable syst
 
 Adapter packages reference `Workable.Views` when they need to expose the component-view contract over a transport.
 
-`src/Workable.AspNetCore` contains ASP.NET Core integration that does not expose routes:
+`packages/core/Workable.AspNetCore` contains ASP.NET Core integration that does not expose routes:
 
 - `IWorkActorFactory` and `IWorkRequestContextFactory`
 - default claims-based `IWorkAuthorizationGroupProvider`
@@ -84,7 +82,7 @@ Adapter packages reference `Workable.Views` when they need to expose the compone
 
 ASP.NET Core applications reference `Workable.AspNetCore` when their own controllers, minimal API routes, or custom transports need authenticated `WorkRequestContext` values and default claims-based group resolution from `HttpContext`.
 
-`src/Workable.Entra` contains Microsoft Entra ID target-app integration:
+`packages/core/Workable.Entra` contains Microsoft Entra ID target-app integration:
 
 - JWT bearer setup for Microsoft Entra ID
 - Entra `scp`, `roles`, and `groups` claim mapping into Workable authorization groups
@@ -92,7 +90,7 @@ ASP.NET Core applications reference `Workable.AspNetCore` when their own control
 
 ASP.NET Core applications reference `Workable.Entra` when Workable adapter requests should validate Entra bearer tokens and map target-token claims into Workable authorization groups.
 
-`src/Workable.Mcp` contains the MCP adapter surface:
+`packages/core/Workable.Mcp` contains the MCP adapter surface:
 
 - MCP-style tool descriptors for work definitions
 - work invocation through `IWorkQueueService`
@@ -103,7 +101,7 @@ ASP.NET Core applications reference `Workable.Entra` when Workable adapter reque
 
 Applications reference `Workable.Mcp` when they want to expose Workable systems through an MCP transport.
 
-`src/Workable.SignalR` contains the realtime adapter surface:
+`packages/core/Workable.SignalR` contains the realtime adapter surface:
 
 - SignalR hub mapping for raw event, named view, and worker-overview subscriptions
 - shared subscription registries keyed by normalized request shape and read visibility
@@ -114,7 +112,7 @@ Applications reference `Workable.Mcp` when they want to expose Workable systems 
 
 Applications reference `Workable.SignalR` when they want ASP.NET Core clients to receive realtime Workable updates.
 
-`integrations/sqlserver/src/Workable.SqlServer` contains the SQL Server durability integration:
+`packages/extensions/sqlserver/Workable.SqlServer` contains the SQL Server durability integration:
 
 - SQL Server-backed `IWorkPersistenceStore` implementation
 - SQL Server queue durability option records and worker option helpers
@@ -123,14 +121,14 @@ Applications reference `Workable.SignalR` when they want ASP.NET Core clients to
 
 Applications reference `Workable.SqlServer` when they want durable queueing, persistence-backed idempotency, or persistence-backed coordination backed by SQL Server.
 
-`integrations/sqlserver/tools/Workable.SqlServer.Cli` contains the SQL Server support CLI:
+`apps/tools/Workable.SqlServer.Cli` contains the SQL Server support CLI:
 
 - schema discovery
 - command-line entry point for SQL Server schema or setup workflows
 
 This is an operational tool project, not a runtime dependency of hosted systems.
 
-`src/Workable.PerformanceHarness` contains benchmark and load-harness code:
+`apps/tools/Workable.PerformanceHarness` contains benchmark and load-harness code:
 
 - benchmark entry point and scale definitions
 - benchmark scenarios for publish, query, and authorized bulk-action workloads
@@ -138,7 +136,7 @@ This is an operational tool project, not a runtime dependency of hosted systems.
 
 This project exists to measure runtime characteristics; it is not a host/runtime package consumed by applications.
 
-`src/workable-admin-ui` contains the Next.js admin UI:
+`apps/web/workable-admin-ui` contains the Next.js admin UI:
 
 - `src/app` contains App Router pages, layouts, and route handlers
 - `src/components/ui` contains reusable UI primitives
@@ -149,9 +147,9 @@ This project exists to measure runtime characteristics; it is not a host/runtime
 
 `tests/Workable.Tests` contains the contract, configuration, lifecycle, queueing, event stream, and in-memory runtime tests.
 
-`integrations/sqlserver/tests/Workable.SqlServer.Tests` contains SQL Server integration tests.
+`tests/extensions/sqlserver/Workable.SqlServer.Tests` contains SQL Server integration tests.
 
-`samples/Workable.SampleHost` contains the sample ASP.NET Core host used to demonstrate Workable systems, adapters, auth stubs, and sample work definitions.
+`apps/samples/Workable.SampleHost` contains the sample ASP.NET Core host used to demonstrate Workable systems, adapters, auth stubs, and sample work definitions.
 
 ## Namespace
 
@@ -173,7 +171,7 @@ Folder names are vocabulary, not decoration. A folder with the same name in two 
 
 `Systems` contains whole-system lifecycle and discovery concerns: `IWorkSystem`, registries, in-memory system implementations, HTTP system resolution, system capability metadata, and system start/stop routes.
 
-`Query` contains read-only query concerns. Public query inputs live in `Query/Criteria`, and returned query models live in `Query/Results`. Runtime query execution belongs in `src/Workable/Query`: `WorkSystemReadModel` projects worker lifecycle updates into immutable read snapshots, and `WorkSystemReadModelQueryService` is the discoverable facade exposed through `IWorkSystem.Query`. Shared component/view DTOs, typed worker-overview DTOs, and query-side composition belong in `src/Workable.Views/Query`. Adapter route glue belongs in that adapter's `Query` folder. Do not use `Query` for mutable operations.
+`Query` contains read-only query concerns. Public query inputs live in `Query/Criteria`, and returned query models live in `Query/Results`. Runtime query execution belongs in `packages/core/Workable/Query`: `WorkSystemReadModel` projects worker lifecycle updates into immutable read snapshots, and `WorkSystemReadModelQueryService` is the discoverable facade exposed through `IWorkSystem.Query`. Shared component/view DTOs, typed worker-overview DTOs, and query-side composition belong in `packages/core/Workable.Views/Query`. Adapter route glue belongs in that adapter's `Query` folder. Do not use `Query` for mutable operations.
 
 `Events` contains event-stream contracts, event payloads, publishers, and subscription behavior.
 

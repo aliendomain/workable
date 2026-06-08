@@ -1,4 +1,4 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
@@ -22,11 +22,11 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\..\src\Workable.AspNetCore\Workable.AspNetCore.csproj" />
-    <ProjectReference Include="..\..\src\Workable.Entra\Workable.Entra.csproj" />
-    <ProjectReference Include="..\..\src\Workable.HttpApi\Workable.HttpApi.csproj" />
-    <ProjectReference Include="..\..\src\Workable.Mcp\Workable.Mcp.csproj" />
-    <ProjectReference Include="..\..\src\Workable.SignalR\Workable.SignalR.csproj" />
+    <ProjectReference Include="..\..\packages\core\Workable.AspNetCore\Workable.AspNetCore.csproj" />
+    <ProjectReference Include="..\..\packages\core\Workable.Entra\Workable.Entra.csproj" />
+    <ProjectReference Include="..\..\packages\core\Workable.HttpApi\Workable.HttpApi.csproj" />
+    <ProjectReference Include="..\..\packages\core\Workable.Mcp\Workable.Mcp.csproj" />
+    <ProjectReference Include="..\..\packages\core\Workable.SignalR\Workable.SignalR.csproj" />
   </ItemGroup>
 
 </Project>

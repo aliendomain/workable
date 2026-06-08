@@ -9,7 +9,7 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\..\src\Workable.SqlServer\Workable.SqlServer.csproj" />
+    <ProjectReference Include="..\..\..\packages\extensions\sqlserver\Workable.SqlServer\Workable.SqlServer.csproj" />
   </ItemGroup>
 
   <ItemGroup>

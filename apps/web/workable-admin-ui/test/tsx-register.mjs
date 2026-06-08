@@ -185,9 +185,9 @@ registerHooks({
     }
     if (specifier === "next/server") {
       return {
-        format: "commonjs",
+        format: "module",
         shortCircuit: true,
-        url: pathToFileURL(path.join(projectRoot, "node_modules", "next", "server.js")).href,
+        url: pathToFileURL(path.join(projectRoot, "test", "next-server-shim.mjs")).href,
       };
     }
 

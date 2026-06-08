@@ -14,7 +14,7 @@ All three packages use the `Workable` namespace.
 
 Optional packages add persistence, security, transport, and realtime integrations:
 
-- Use [`Workable.SqlServer`](../../integrations/sqlserver/README.md) when the host wants SQL Server persistence for durable queueing, persistence-backed idempotency, and persistence-backed concurrency.
+- Use [`Workable.SqlServer`](../../packages/extensions/sqlserver/README.md) when the host wants SQL Server persistence for durable queueing, persistence-backed idempotency, and persistence-backed concurrency.
 - Use `Workable.AspNetCore` when the host needs its own controllers, minimal APIs, or custom transports to dispatch Workable work from the current `HttpContext`.
 - Use `Workable.Entra` when an ASP.NET Core target app should validate Microsoft Entra ID bearer tokens for Workable HTTP, MCP, and SignalR adapter calls.
 - `Workable.Views` provides shared component-view contracts and projections used by HTTP and SignalR adapters. Most applications receive it transitively through `Workable.HttpApi` or `Workable.SignalR` instead of referencing it directly.
