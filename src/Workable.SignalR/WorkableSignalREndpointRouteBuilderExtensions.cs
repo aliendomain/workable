@@ -6,8 +6,25 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
 
 namespace Workable;
+
+/// <summary>
+/// Maps the Workable SignalR hub into an ASP.NET Core endpoint route builder.
+/// </summary>
 public static class WorkableSignalREndpointRouteBuilderExtensions
 {
+    /// <summary>
+    /// Maps the authenticated Workable realtime hub.
+    /// </summary>
+    /// <param name="endpoints">The route builder that exposes the hub endpoint.</param>
+    /// <param name="path">
+    /// Optional hub path override. When omitted, the configured <see cref="WorkableSignalROptions.HubPath"/> is used.
+    /// </param>
+    /// <returns>The endpoint convention builder for further endpoint customization.</returns>
+    /// <remarks>
+    /// Workable SignalR requires authorization-enabled systems and rejects anonymous requests. When a transport
+    /// authentication scheme is configured through ASP.NET Core authorization options, that scheme is also attached
+    /// as endpoint authorization metadata.
+    /// </remarks>
     public static IEndpointConventionBuilder MapWorkableSignalR(
         this IEndpointRouteBuilder endpoints,
         string? path = null)

@@ -2,11 +2,25 @@ using Microsoft.AspNetCore.Http;
 
 namespace Workable;
 
+/// <summary>
+/// Dispatches request/response commands using the current HTTP request context.
+/// </summary>
 public sealed class HttpContextWorkCommandDispatcher(
     IWorkCommandDispatcher commands,
     IHttpContextAccessor httpContextAccessor,
     IWorkRequestContextFactory requestContexts) : IHttpContextWorkCommandDispatcher
 {
+    /// <summary>
+    /// Dispatches a request to a work definition in the default unnamed system using the current HTTP request context.
+    /// </summary>
+    /// <typeparam name="TRequest">The request payload type.</typeparam>
+    /// <typeparam name="TResponse">The response payload type.</typeparam>
+    /// <param name="workName">The registered work definition name.</param>
+    /// <param name="request">The request payload to send.</param>
+    /// <param name="description">Optional caller-supplied request description.</param>
+    /// <param name="options">Optional dispatch behavior overrides.</param>
+    /// <param name="cancellationToken">A token that cancels the dispatch operation.</param>
+    /// <returns>The dispatch result.</returns>
     public Task<WorkDispatchResult<TResponse>> Dispatch<TRequest, TResponse>(
         string workName,
         TRequest request,
@@ -21,6 +35,18 @@ public sealed class HttpContextWorkCommandDispatcher(
             options,
             cancellationToken);
 
+    /// <summary>
+    /// Dispatches a request to a work definition in a specific system using the current HTTP request context.
+    /// </summary>
+    /// <typeparam name="TRequest">The request payload type.</typeparam>
+    /// <typeparam name="TResponse">The response payload type.</typeparam>
+    /// <param name="systemName">The target system name, or <see langword="null"/> for the default unnamed system.</param>
+    /// <param name="workName">The registered work definition name.</param>
+    /// <param name="request">The request payload to send.</param>
+    /// <param name="description">Optional caller-supplied request description.</param>
+    /// <param name="options">Optional dispatch behavior overrides.</param>
+    /// <param name="cancellationToken">A token that cancels the dispatch operation.</param>
+    /// <returns>The dispatch result.</returns>
     public Task<WorkDispatchResult<TResponse>> Dispatch<TRequest, TResponse>(
         string? systemName,
         string workName,

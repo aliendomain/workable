@@ -5,8 +5,23 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.AspNetCore.SignalR;
 
 namespace Workable;
+
+/// <summary>
+/// Registers the Workable SignalR realtime adapter and its supporting services.
+/// </summary>
 public static class WorkableSignalRServiceCollectionExtensions
 {
+    /// <summary>
+    /// Adds the Workable SignalR hub, realtime broadcaster, authorization filters, and view adapters.
+    /// </summary>
+    /// <param name="services">The service collection to configure.</param>
+    /// <param name="configure">Optional callback used to configure realtime transport behavior.</param>
+    /// <returns>The same <paramref name="services"/> instance for chaining.</returns>
+    /// <remarks>
+    /// This registration enables authenticated SignalR clients to subscribe to Workable event streams, named views,
+    /// and worker-overview updates. Endpoint mapping is performed separately by
+    /// <see cref="WorkableSignalREndpointRouteBuilderExtensions.MapWorkableSignalR(Microsoft.AspNetCore.Routing.IEndpointRouteBuilder, string?)"/>.
+    /// </remarks>
     public static IServiceCollection AddWorkableSignalR(
         this IServiceCollection services,
         Action<WorkableSignalROptions>? configure = null)

@@ -3,6 +3,13 @@ using Microsoft.AspNetCore.SignalR;
 
 namespace Workable;
 
+/// <summary>
+/// Tracks active raw event subscriptions for the Workable SignalR adapter.
+/// </summary>
+/// <remarks>
+/// Most hosts use this type indirectly through <see cref="WorkableRealtimeHub"/>. The public debug snapshot method
+/// exists so local diagnostics endpoints can inspect current subscription state.
+/// </remarks>
 public sealed class WorkableRealtimeEventSubscriptions
 {
     private readonly object gate = new();
@@ -101,6 +108,11 @@ public sealed class WorkableRealtimeEventSubscriptions
         }
     }
 
+    /// <summary>
+    /// Gets debug snapshots for the active raw event subscriptions that belong to one Workable system.
+    /// </summary>
+    /// <param name="system">The system whose realtime event subscriptions should be described.</param>
+    /// <returns>The current raw event subscription snapshots for the system.</returns>
     public IReadOnlyList<WorkableRealtimeDebugEventSubscriptionSnapshot> GetDebugSubscriptions(IWorkSystem system)
     {
         ArgumentNullException.ThrowIfNull(system);

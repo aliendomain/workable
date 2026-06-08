@@ -5,18 +5,30 @@ namespace Workable.PerformanceHarness;
 
 [MemoryDiagnoser]
 [ShortRunJob]
+/// <summary>
+/// Benchmarks the cost of publishing read-model updates after queue-time mutations.
+/// </summary>
 public sealed class BaselineReadModelPublishBenchmarks
 {
     private WorkableBenchmarkSystem fixture = null!;
     private WorkerCriteria flushCriteria = null!;
     private int nextWorkerIndex;
 
+    /// <summary>
+    /// Gets the worker-count scale used by this benchmark.
+    /// </summary>
     public IEnumerable<int> WorkerCounts => BenchmarkScales.MutationWorkerCounts;
 
     [ParamsSource(nameof(WorkerCounts))]
+    /// <summary>
+    /// Gets or sets the worker count for the current benchmark run.
+    /// </summary>
     public int WorkerCount { get; set; }
 
     [IterationSetup]
+    /// <summary>
+    /// Creates the benchmark fixture for the current iteration.
+    /// </summary>
     public void IterationSetup()
     {
         this.fixture = WorkableBenchmarkSystem.CreateQueued(this.WorkerCount).GetAwaiter().GetResult();
@@ -25,6 +37,9 @@ public sealed class BaselineReadModelPublishBenchmarks
     }
 
     [Benchmark]
+    /// <summary>
+    /// Measures queueing one additional worker and then flushing the updated read-model snapshot.
+    /// </summary>
     public async Task<WorkerQueryResult> FlushSingleWorkerUpdateIntoSnapshot()
     {
         await this.fixture.Session.Queue.Enqueue(
@@ -34,6 +49,9 @@ public sealed class BaselineReadModelPublishBenchmarks
     }
 
     [IterationCleanup]
+    /// <summary>
+    /// Disposes the benchmark fixture for the current iteration.
+    /// </summary>
     public void IterationCleanup()
         => this.fixture.DisposeAsync().AsTask().GetAwaiter().GetResult();
 }

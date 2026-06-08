@@ -1,10 +1,24 @@
 namespace Workable;
 
+/// <summary>
+/// Adapts catalog and definition-reconfiguration operations to the HTTP API surface.
+/// </summary>
 public sealed class WorkableHttpCatalogAdapter
 {
+    /// <summary>
+    /// Gets the visible definitions for the current session in stable catalog order.
+    /// </summary>
+    /// <param name="session">The authorized session whose catalog should be read.</param>
+    /// <returns>The definitions visible to the caller.</returns>
     public IReadOnlyList<WorkDefinition> GetDefinitions(IWorkSystemSession session)
         => GetDefinitionsForCatalog(session.Catalog);
 
+    /// <summary>
+    /// Gets one visible definition by name.
+    /// </summary>
+    /// <param name="session">The authorized session whose catalog should be read.</param>
+    /// <param name="name">The definition name to resolve.</param>
+    /// <returns>The matching definition, or <see langword="null"/> when it is not visible to the caller.</returns>
     public WorkDefinition? GetDefinition(
         IWorkSystemSession session,
         string name)
@@ -17,6 +31,14 @@ public sealed class WorkableHttpCatalogAdapter
             : null;
     }
 
+    /// <summary>
+    /// Applies definition-default reconfiguration through the selected session.
+    /// </summary>
+    /// <param name="session">The authorized session that owns the target catalog.</param>
+    /// <param name="name">The definition name to reconfigure.</param>
+    /// <param name="request">The HTTP reconfiguration request payload.</param>
+    /// <param name="cancellationToken">A token that cancels the reconfiguration operation.</param>
+    /// <returns>The outcome of the definition reconfiguration request.</returns>
     public Task<WorkDefinitionReconfigurationOutcome> ReconfigureDefinition(
         IWorkSystemSession session,
         string name,

@@ -11,8 +11,18 @@ using System.Net;
 
 namespace Workable;
 
+/// <summary>
+/// Maps the standard Workable HTTP API routes into an ASP.NET Core endpoint builder.
+/// </summary>
 public static class WorkableHttpApiExtensions
 {
+    /// <summary>
+    /// Maps the default Workable HTTP API route set at the supplied prefix.
+    /// </summary>
+    /// <param name="endpoints">The endpoint route builder to configure.</param>
+    /// <param name="prefix">The route prefix under which Workable HTTP endpoints should be exposed.</param>
+    /// <returns>The same endpoint route builder for chaining.</returns>
+    /// <exception cref="InvalidOperationException">Thrown when any registered system does not require authorization.</exception>
     public static IEndpointRouteBuilder MapWorkableApi(
         this IEndpointRouteBuilder endpoints,
         string prefix = "/workable")

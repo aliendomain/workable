@@ -10,8 +10,17 @@ using ModelContextProtocol.Server;
 
 namespace Workable;
 
+/// <summary>
+/// Registers and maps the standard ASP.NET Core MCP server surface for Workable.
+/// </summary>
 public static class WorkableMcpServerExtensions
 {
+    /// <summary>
+    /// Adds the ASP.NET Core MCP server integration for Workable.
+    /// </summary>
+    /// <param name="services">The service collection to configure.</param>
+    /// <param name="configure">Optional server configuration for tool exposure and invocation behavior.</param>
+    /// <returns>The same service collection for chaining.</returns>
     public static IServiceCollection AddWorkableMcpServer(
         this IServiceCollection services,
         Action<WorkableMcpServerOptions>? configure = null)
@@ -39,6 +48,14 @@ public static class WorkableMcpServerExtensions
         return services;
     }
 
+    /// <summary>
+    /// Maps the Workable MCP endpoint for the default or a named system.
+    /// </summary>
+    /// <param name="endpoints">The endpoint route builder to configure.</param>
+    /// <param name="pattern">The HTTP route pattern to map.</param>
+    /// <param name="systemName">The Workable system name to expose, or <see langword="null"/> for the default unnamed system.</param>
+    /// <returns>The endpoint convention builder for further endpoint customization.</returns>
+    /// <exception cref="InvalidOperationException">Thrown when the selected system does not exist or does not require authorization.</exception>
     public static IEndpointConventionBuilder MapWorkableMcp(
         this IEndpointRouteBuilder endpoints,
         string pattern = "/workable/mcp",

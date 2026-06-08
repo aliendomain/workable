@@ -4,32 +4,71 @@ using System.Linq;
 
 namespace Workable;
 
+/// <summary>
+/// Configures Microsoft Entra bearer authentication and group mapping for Workable ASP.NET Core surfaces.
+/// </summary>
 public sealed class WorkableEntraAuthorizationOptions
 {
+    /// <summary>
+    /// Gets or sets the Microsoft Entra tenant identifier used to build the authority URL.
+    /// </summary>
     public string? TenantId { get; set; }
 
+    /// <summary>
+    /// Gets or sets the primary accepted audience for Workable bearer tokens.
+    /// </summary>
     public string? Audience { get; set; }
 
+    /// <summary>
+    /// Gets the additional accepted audiences for the same host.
+    /// </summary>
     public IList<string> AdditionalAudiences { get; } = [];
 
+    /// <summary>
+    /// Gets or sets the authority host used to validate tokens.
+    /// </summary>
     public string AuthorityHost { get; set; } = WorkableEntraAuthorizationDefaults.AuthorityHost;
 
+    /// <summary>
+    /// Gets or sets the ASP.NET Core authentication scheme name Workable should register and use.
+    /// </summary>
     public string AuthenticationScheme { get; set; } = JwtBearerDefaults.AuthenticationScheme;
 
+    /// <summary>
+    /// Gets or sets a value indicating whether delegated scope values should become Workable authorization groups.
+    /// </summary>
     public bool MapScopesToWorkableGroups { get; set; } = true;
 
+    /// <summary>
+    /// Gets or sets a value indicating whether Entra app-role values should become Workable authorization groups.
+    /// </summary>
     public bool MapAppRolesToWorkableGroups { get; set; } = true;
 
+    /// <summary>
+    /// Gets or sets a value indicating whether Entra security-group ids should become Workable authorization groups.
+    /// </summary>
     public bool MapGroupsToWorkableGroups { get; set; } = true;
 
+    /// <summary>
+    /// Gets or sets a value indicating whether SignalR browser access tokens may be accepted from the query string on configured paths.
+    /// </summary>
     public bool AllowSignalRAccessTokensFromQueryString { get; set; } = true;
 
+    /// <summary>
+    /// Gets or sets the query-string parameter name used for SignalR browser access tokens.
+    /// </summary>
     public string SignalRAccessTokenQueryStringName { get; set; } =
         WorkableEntraAuthorizationDefaults.SignalRAccessTokenQueryStringName;
 
+    /// <summary>
+    /// Gets the absolute application paths on which SignalR query-string access tokens are accepted.
+    /// </summary>
     public IList<string> SignalRAccessTokenQueryStringPaths { get; } =
         [WorkableEntraAuthorizationDefaults.SignalRHubPath];
 
+    /// <summary>
+    /// Gets the full v2 authority URL derived from <see cref="AuthorityHost"/> and <see cref="TenantId"/>.
+    /// </summary>
     public string Authority
     {
         get

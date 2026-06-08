@@ -1,6 +1,14 @@
 using Microsoft.AspNetCore.SignalR;
 
 namespace Workable;
+
+/// <summary>
+/// SignalR hub that exposes Workable realtime event, named-view, and worker-overview subscriptions.
+/// </summary>
+/// <remarks>
+/// This hub is observability-focused. Clients subscribe to updates here, then use direct .NET or HTTP APIs for
+/// queueing, querying, and worker actions.
+/// </remarks>
 public sealed class WorkableRealtimeHub(
     IWorkSystemRegistry registry,
     IWorkAuthorizationGroupProvider groupProvider,
@@ -10,6 +18,13 @@ public sealed class WorkableRealtimeHub(
     WorkableRealtimeViewSubscriptions viewSubscriptions,
     WorkableRealtimeWorkerOverviewSubscriptions workerOverviewSubscriptions) : Hub
 {
+    /// <summary>
+    /// Starts or replaces a named view subscription for the current connection.
+    /// </summary>
+    /// <param name="subscriptionId">The caller-defined logical handle for this live view stream.</param>
+    /// <param name="viewName">The built-in or custom view name to subscribe to.</param>
+    /// <param name="criteria">Optional criteria used to scope the view components.</param>
+    /// <param name="systemName">Optional named system. When omitted, the default Workable system is used.</param>
     public async Task WatchView(
         string subscriptionId,
         string viewName,
@@ -53,6 +68,11 @@ public sealed class WorkableRealtimeHub(
         }
     }
 
+    /// <summary>
+    /// Stops a named view subscription for the current connection.
+    /// </summary>
+    /// <param name="subscriptionId">The subscription id originally passed to <see cref="WatchView"/>.</param>
+    /// <param name="systemName">Optional named system. When omitted, the default Workable system is used.</param>
     public Task UnwatchView(string subscriptionId, string? systemName = null)
     {
         var system = ResolveSystem(systemName);
@@ -68,6 +88,13 @@ public sealed class WorkableRealtimeHub(
             this.Context.ConnectionAborted);
     }
 
+    /// <summary>
+    /// Starts or replaces a worker-overview subscription for the current connection.
+    /// </summary>
+    /// <param name="subscriptionId">The caller-defined logical handle for this live worker-overview stream.</param>
+    /// <param name="workerId">The worker identifier as a string-form GUID.</param>
+    /// <param name="criteria">Optional realtime criteria that describe the visible worker detail screen state.</param>
+    /// <param name="systemName">Optional named system. When omitted, the default Workable system is used.</param>
     public async Task WatchWorkerOverview(
         string subscriptionId,
         string workerId,
@@ -110,6 +137,11 @@ public sealed class WorkableRealtimeHub(
         }
     }
 
+    /// <summary>
+    /// Stops a worker-overview subscription for the current connection.
+    /// </summary>
+    /// <param name="subscriptionId">The subscription id originally passed to <see cref="WatchWorkerOverview"/>.</param>
+    /// <param name="systemName">Optional named system. When omitted, the default Workable system is used.</param>
     public Task UnwatchWorkerOverview(string subscriptionId, string? systemName = null)
     {
         var system = ResolveSystem(systemName);
@@ -125,6 +157,11 @@ public sealed class WorkableRealtimeHub(
             this.Context.ConnectionAborted);
     }
 
+    /// <summary>
+    /// Starts or replaces a raw event subscription for the current connection.
+    /// </summary>
+    /// <param name="criteria">Optional event-type, definition, and key filters.</param>
+    /// <param name="systemName">Optional named system. When omitted, the default Workable system is used.</param>
     public async Task WatchEvents(
         WorkableRealtimeEventCriteria? criteria = null,
         string? systemName = null)
@@ -148,6 +185,11 @@ public sealed class WorkableRealtimeHub(
         }
     }
 
+    /// <summary>
+    /// Stops a raw event subscription for the current connection.
+    /// </summary>
+    /// <param name="criteria">The same normalized filter shape originally used to watch the event stream.</param>
+    /// <param name="systemName">Optional named system. When omitted, the default Workable system is used.</param>
     public async Task UnwatchEvents(
         WorkableRealtimeEventCriteria? criteria = null,
         string? systemName = null)
@@ -165,6 +207,10 @@ public sealed class WorkableRealtimeHub(
             this.Context.ConnectionAborted);
     }
 
+    /// <summary>
+    /// Removes all active subscriptions for the connection that is disconnecting.
+    /// </summary>
+    /// <param name="exception">The disconnect exception, if one caused the disconnect.</param>
     public override async Task OnDisconnectedAsync(Exception? exception)
     {
         await eventSubscriptions.RemoveConnection(this.Context.ConnectionId, this.Groups, this.Context.ConnectionAborted);

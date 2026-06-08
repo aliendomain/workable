@@ -2,10 +2,19 @@ using System.Text.Json;
 
 namespace Workable;
 
+/// <summary>
+/// Provides MCP-oriented descriptor and invocation helpers for <see cref="IWorkSystemSession"/>.
+/// </summary>
 public static class WorkableMcpExtensions
 {
     private const string JsonSchemaContentTypeSuffix = "+json";
 
+    /// <summary>
+    /// Projects MCP-eligible work definitions visible to the current caller into tool descriptors.
+    /// </summary>
+    /// <param name="session">The authorized work-system session to inspect.</param>
+    /// <param name="options">Optional descriptor-projection settings.</param>
+    /// <returns>The MCP tool descriptors for work definitions the caller may read and invoke through MCP.</returns>
     public static IReadOnlyList<WorkableMcpToolDescriptor> GetMcpToolDescriptors(
         this IWorkSystemSession session,
         WorkableMcpToolCatalogOptions? options = null)
@@ -21,6 +30,15 @@ public static class WorkableMcpExtensions
             .ThenBy(descriptor => descriptor.Name, StringComparer.OrdinalIgnoreCase)];
     }
 
+    /// <summary>
+    /// Queues a work definition by Workable work name using MCP-oriented completion semantics.
+    /// </summary>
+    /// <param name="session">The authorized work-system session that will queue the work.</param>
+    /// <param name="name">The original Workable work definition name, not the protocol-safe MCP tool name.</param>
+    /// <param name="input">The optional JSON input payload to queue.</param>
+    /// <param name="options">Optional MCP invocation behavior and queue-time worker options.</param>
+    /// <param name="cancellationToken">A token that cancels queueing or completion waiting.</param>
+    /// <returns>The MCP invocation result.</returns>
     public static async Task<WorkableMcpInvocationResult> InvokeMcpTool(
         this IWorkSystemSession session,
         string name,

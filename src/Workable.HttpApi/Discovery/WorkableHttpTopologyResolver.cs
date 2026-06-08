@@ -1,9 +1,18 @@
 namespace Workable;
 
+/// <summary>
+/// Resolves systems and projects host/system discovery data for the HTTP API.
+/// </summary>
 public sealed class WorkableHttpTopologyResolver(
     IWorkSystemRegistry registry,
     IEnumerable<IWorkRealtimeCapabilityProvider> realtimeCapabilityProviders)
 {
+    /// <summary>
+    /// Resolves the default or a named system for an HTTP request.
+    /// </summary>
+    /// <param name="systemName">The requested system name, or <see langword="null"/> for the default unnamed system.</param>
+    /// <param name="system">When this method returns <see langword="true"/>, receives the resolved system.</param>
+    /// <returns><see langword="true"/> when the requested system exists; otherwise <see langword="false"/>.</returns>
     public bool TryResolveSystem(string? systemName, [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out IWorkSystem? system)
     {
         if (string.IsNullOrWhiteSpace(systemName))
@@ -15,6 +24,11 @@ public sealed class WorkableHttpTopologyResolver(
         return registry.TryGet(systemName, out system);
     }
 
+    /// <summary>
+    /// Builds the host-level discovery payload visible to the caller.
+    /// </summary>
+    /// <param name="requestContext">The caller context used to determine system visibility and access summaries.</param>
+    /// <returns>The host discovery payload for the caller.</returns>
     public WorkableHttpHostDescriptor DescribeHost(WorkRequestContext requestContext)
     {
         ArgumentNullException.ThrowIfNull(requestContext);

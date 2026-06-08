@@ -1,7 +1,18 @@
 namespace Workable;
 
+/// <summary>
+/// Adapts Workable query and view data into the HTTP API's specialized response shapes.
+/// </summary>
 public sealed class WorkableHttpQueryAdapter : WorkableViewQueryAdapter
 {
+    /// <summary>
+    /// Builds the HTTP work-info payload for a visible definition.
+    /// </summary>
+    /// <param name="session">The authorized session used to read the definition and worker rollup.</param>
+    /// <param name="system">The system whose queue-request schema should be advertised.</param>
+    /// <param name="name">The definition name to resolve.</param>
+    /// <param name="cancellationToken">A token that cancels the query.</param>
+    /// <returns>The HTTP work-info payload, or <see langword="null"/> when the definition is not visible to the caller.</returns>
     public async Task<WorkableHttpWorkInfo?> DefinitionInfo(
         IWorkSystemSession session,
         IWorkSystem system,
@@ -18,6 +29,14 @@ public sealed class WorkableHttpQueryAdapter : WorkableViewQueryAdapter
                 WorkableHttpQueueRequestDescriptor.Create(system));
     }
 
+    /// <summary>
+    /// Builds the worker-configuration payload used by HTTP configuration and queue-editor screens.
+    /// </summary>
+    /// <param name="session">The authorized session used to read the worker and definition data.</param>
+    /// <param name="system">The system whose queue-request schema should be advertised.</param>
+    /// <param name="workerId">The worker identifier to resolve.</param>
+    /// <param name="cancellationToken">A token that cancels the query.</param>
+    /// <returns>The worker-configuration payload, or <see langword="null"/> when the worker is not visible to the caller.</returns>
     public async Task<WorkableHttpWorkerConfiguration?> WorkerConfiguration(
         IWorkSystemSession session,
         IWorkSystem system,
@@ -37,6 +56,14 @@ public sealed class WorkableHttpQueryAdapter : WorkableViewQueryAdapter
                 WorkableHttpQueueRequestDescriptor.Create(system));
     }
 
+    /// <summary>
+    /// Builds the worker-iteration detail payload used by HTTP iteration detail screens.
+    /// </summary>
+    /// <param name="session">The authorized session used to read the worker, iteration, message, and log data.</param>
+    /// <param name="workerId">The worker identifier that owns the iteration.</param>
+    /// <param name="sequence">The iteration sequence to resolve.</param>
+    /// <param name="cancellationToken">A token that cancels the query.</param>
+    /// <returns>The iteration detail payload, or <see langword="null"/> when the worker or iteration is not visible to the caller.</returns>
     public async Task<WorkableHttpWorkerIterationDetail?> WorkerIterationDetail(
         IWorkSystemSession session,
         WorkerId workerId,

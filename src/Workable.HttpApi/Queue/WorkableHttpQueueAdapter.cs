@@ -1,8 +1,20 @@
 namespace Workable;
 
+/// <summary>
+/// Adapts HTTP queue requests to the core command-dispatch and queueing APIs.
+/// </summary>
 public sealed class WorkableHttpQueueAdapter(
     IWorkCommandDispatcher commands)
 {
+    /// <summary>
+    /// Queues work through the selected system using the HTTP request contract.
+    /// </summary>
+    /// <param name="systemName">The target system name, or <see langword="null"/> for the default unnamed system.</param>
+    /// <param name="name">The definition name to queue.</param>
+    /// <param name="requestContext">The request context to record on the queued worker.</param>
+    /// <param name="request">The optional HTTP queue request payload.</param>
+    /// <param name="cancellationToken">A token that cancels the queue or completion wait.</param>
+    /// <returns>The HTTP queue result.</returns>
     public async Task<WorkableHttpWorkResult> Enqueue(
         string? systemName,
         string name,

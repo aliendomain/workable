@@ -7,6 +7,9 @@ using System.Text.Json.Serialization;
 
 namespace Workable;
 
+/// <summary>
+/// Routes protocol-facing MCP tool discovery and invocation to Workable systems.
+/// </summary>
 public sealed class WorkableMcpToolRouter(IWorkSystemRegistry registry)
 {
     private const string WorkToolNamePrefix = "workable_work_";
@@ -36,6 +39,13 @@ public sealed class WorkableMcpToolRouter(IWorkSystemRegistry registry)
     private const string PurgeWorkerTool = "workable_purge_worker";
     private const string ReconfigureWorkDefinitionTool = "workable_reconfigure_work_definition";
 
+    /// <summary>
+    /// Gets the protocol-facing MCP tools visible to the caller for the selected system.
+    /// </summary>
+    /// <param name="requestContext">The caller context used to authorize tool visibility.</param>
+    /// <param name="options">Optional server settings that control which tool categories are exposed.</param>
+    /// <param name="systemName">The Workable system name to expose, or <see langword="null"/> for the default unnamed system.</param>
+    /// <returns>The MCP tools visible to the caller.</returns>
     public IReadOnlyList<WorkableMcpServerToolDescriptor> GetTools(
         WorkRequestContext requestContext,
         WorkableMcpServerOptions? options = null,
@@ -67,6 +77,16 @@ public sealed class WorkableMcpToolRouter(IWorkSystemRegistry registry)
         return [.. tools.OrderBy(tool => tool.Kind).ThenBy(tool => tool.ToolName, StringComparer.OrdinalIgnoreCase)];
     }
 
+    /// <summary>
+    /// Invokes one protocol-facing MCP tool against the selected system.
+    /// </summary>
+    /// <param name="toolName">The protocol-safe MCP tool name to invoke.</param>
+    /// <param name="arguments">The optional JSON argument payload supplied by the MCP client.</param>
+    /// <param name="options">Optional server settings that control which tool categories are exposed and how work tools invoke.</param>
+    /// <param name="systemName">The Workable system name to target, or <see langword="null"/> for the default unnamed system.</param>
+    /// <param name="requestContext">The caller context used for authorization and recorded origin metadata.</param>
+    /// <param name="cancellationToken">A token that cancels the invocation.</param>
+    /// <returns>The protocol-facing tool result.</returns>
     public async Task<WorkableMcpToolResult> CallTool(
         string toolName,
         JsonElement? arguments,
@@ -263,6 +283,11 @@ public sealed class WorkableMcpToolRouter(IWorkSystemRegistry registry)
         }
     }
 
+    /// <summary>
+    /// Converts a Workable definition name into the normalized MCP-safe tool name used by the protocol-facing server surface.
+    /// </summary>
+    /// <param name="workName">The original Workable definition name.</param>
+    /// <returns>The normalized MCP-safe tool name.</returns>
     public static string CreateWorkToolName(string workName)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(workName);

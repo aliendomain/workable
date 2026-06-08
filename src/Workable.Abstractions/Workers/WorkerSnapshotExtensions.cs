@@ -1,7 +1,15 @@
 namespace Workable;
 
+/// <summary>
+/// Provides projection helpers for retained worker snapshots.
+/// </summary>
 public static class WorkerSnapshotExtensions
 {
+    /// <summary>
+    /// Merges retained and current-iteration views into one descending sequence of iterations.
+    /// </summary>
+    /// <param name="worker">The worker snapshot to project.</param>
+    /// <returns>The merged iteration list, ordered by descending sequence.</returns>
     public static IReadOnlyList<WorkerIterationSnapshot> GetMergedIterations(this WorkerSnapshot worker)
     {
         ArgumentNullException.ThrowIfNull(worker);
@@ -24,12 +32,23 @@ public static class WorkerSnapshotExtensions
         return [.. merged.Values.OrderByDescending(iteration => iteration.Sequence)];
     }
 
+    /// <summary>
+    /// Gets the most recently known iteration for a worker.
+    /// </summary>
+    /// <param name="worker">The worker snapshot to inspect.</param>
+    /// <returns>The latest known iteration, or <see langword="null"/> when none is retained.</returns>
     public static WorkerIterationSnapshot? GetLatestKnownIteration(this WorkerSnapshot worker)
     {
         ArgumentNullException.ThrowIfNull(worker);
         return worker.GetMergedIterations().FirstOrDefault();
     }
 
+    /// <summary>
+    /// Builds a presentation-oriented activity timeline from worker action history and iterations.
+    /// </summary>
+    /// <param name="worker">The worker snapshot to inspect.</param>
+    /// <param name="iterations">An optional iteration set to use instead of the merged retained iterations.</param>
+    /// <returns>The derived activity events ordered newest first.</returns>
     public static IReadOnlyList<WorkerActivityEvent> GetActivityEvents(
         this WorkerSnapshot worker,
         IReadOnlyList<WorkerIterationSnapshot>? iterations = null)

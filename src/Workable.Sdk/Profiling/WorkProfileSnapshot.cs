@@ -3,6 +3,12 @@ using System.Text.Json;
 
 namespace Workable;
 
+/// <summary>
+/// Represents a captured worker profile tree.
+/// </summary>
+/// <param name="Root">The root node of the captured profile tree.</param>
+/// <param name="StartedAt">The time the profile capture began.</param>
+/// <param name="CapturedAt">The time the profile snapshot was captured.</param>
 public sealed record WorkProfileSnapshot(
     WorkProfileSnapshotNode Root,
     DateTimeOffset StartedAt,
@@ -13,6 +19,10 @@ public sealed record WorkProfileSnapshot(
         WriteIndented = true,
     };
 
+    /// <summary>
+    /// Renders the captured profile tree as an ASCII timeline.
+    /// </summary>
+    /// <returns>The rendered ASCII tree.</returns>
     public string ToAsciiTree()
     {
         var builder = new StringBuilder();

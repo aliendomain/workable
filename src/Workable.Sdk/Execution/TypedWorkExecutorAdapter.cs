@@ -9,6 +9,13 @@ internal sealed class TypedWorkExecutorAdapter(
     bool hasTypedOutput,
     MethodInfo executeMethod) : IWorkExecutor
 {
+    /// <summary>
+    /// Deserializes typed input and invokes the typed executor instance for the current worker iteration.
+    /// </summary>
+    /// <param name="context">The execution context for the current worker iteration.</param>
+    /// <param name="input">The raw input payload supplied to the worker, when one exists.</param>
+    /// <param name="cancellationToken">A token that cancels execution.</param>
+    /// <returns>The untyped execution result produced by the typed executor or an input-validation failure.</returns>
     public async Task<WorkExecutionResult> Execute(
         IWorkExecutionContext context,
         WorkInput? input,
@@ -54,6 +61,11 @@ internal sealed class TypedWorkExecutorAdapter(
         }
     }
 
+    /// <summary>
+    /// Creates the standard failure result used when typed work is invoked without required input.
+    /// </summary>
+    /// <param name="inputType">The typed input contract that was required.</param>
+    /// <returns>The execution result describing the missing-input failure.</returns>
     internal static WorkExecutionResult CreateMissingInputFailure(Type inputType)
         => WorkExecutionResult.Failure(
         [
