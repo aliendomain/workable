@@ -3,6 +3,11 @@ using System.Diagnostics.CodeAnalysis;
 namespace Workable;
 public interface IWorkSystemBuilder
 {
+    IWorkSystemBuilder WithWorkDefaults(
+        Action<IWorkDefinitionBuilder> register,
+        Action<IWorkConfigurationBuilder>? configure = null,
+        Action<IWorkAuthorizationBuilder>? authorize = null);
+
     IWorkSystemBuilder AddWork(
         WorkDefinition definition,
         Func<IWorkExecutionContext, WorkInput?, CancellationToken, Task<WorkExecutionResult>> execute);

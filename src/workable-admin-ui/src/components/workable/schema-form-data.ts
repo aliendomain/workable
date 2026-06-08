@@ -2,6 +2,10 @@ import type { JsonSchemaNode } from "@/lib/workable";
 
 export type FieldPath = Array<string | number>;
 
+function isSchemaObject(value: unknown): value is JsonSchemaNode {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
 export function parseJsonSchema(json?: string | null): JsonSchemaNode | null {
   if (!json?.trim()) {
     return null;
@@ -18,6 +22,10 @@ export function parseJsonSchema(json?: string | null): JsonSchemaNode | null {
 export function createDefaultValue(schema: JsonSchemaNode | null): unknown {
   if (!schema) {
     return undefined;
+  }
+
+  if (!isSchemaObject(schema)) {
+    return "";
   }
 
   if ("default" in schema) {
@@ -86,6 +94,10 @@ export function resolveNullableSchema(schema: JsonSchemaNode | null): JsonSchema
     return null;
   }
 
+  if (!isSchemaObject(schema)) {
+    return schema;
+  }
+
   const nestedSchemas = [
     ...("anyOf" in schema && Array.isArray(schema.anyOf) ? schema.anyOf : []),
     ...("oneOf" in schema && Array.isArray(schema.oneOf) ? schema.oneOf : []),
@@ -146,6 +158,10 @@ export function compactJson(value: unknown) {
 }
 
 export function getSchemaType(schema: JsonSchemaNode) {
+  if (!isSchemaObject(schema)) {
+    return "string";
+  }
+
   const types = Array.isArray(schema.type) ? schema.type : schema.type ? [schema.type] : [];
 
   if (schema.properties || schema.additionalProperties) {
@@ -184,6 +200,10 @@ export function getSchemaType(schema: JsonSchemaNode) {
 }
 
 export function isNullable(schema: JsonSchemaNode) {
+  if (!isSchemaObject(schema)) {
+    return false;
+  }
+
   return Array.isArray(schema.type) && schema.type.includes("null");
 }
 

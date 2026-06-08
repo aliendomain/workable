@@ -1,4 +1,5 @@
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using Workable;
 
 namespace Workable.Tests;
@@ -56,6 +57,24 @@ public sealed class DynamicWorkSourceTests
 
         Assert.True(completion.IsCompletedSuccessfully);
         Assert.Equal("service", completion.Output?.Message);
+    }
+
+    [Fact]
+    public async Task WorkDefinitionSourceCanApplyScopedDefaultsToRuntimeDefinitions()
+    {
+        var system = new ServiceCollection()
+            .AddWorkableSystem(builder => builder
+                .RequireAuthorization(false)
+                .AddWorkDefinitionSource<DefaultedDefinitionSource>())
+            .BuildServiceProvider()
+            .GetRequiredService<IWorkSystemRegistry>()
+            .Default;
+
+        await system.Start();
+
+        Assert.True(system.Catalog.TryGet("runtime.defaulted", out var definition));
+        Assert.Equal(LogLevel.Warning, definition.Configuration.Logging.Level);
+        Assert.Equal(["runtime.admin"], definition.Authorization.Operate.Groups.OrderBy(group => group).ToArray());
     }
 
     [Fact]
@@ -400,6 +419,20 @@ public sealed class DynamicWorkSourceTests
         public Task DefineWork(IWorkDefinitionBuilder builder, CancellationToken cancellationToken = default)
         {
             builder.AddWork<RuntimeEchoExecutor>(WorkDefinition.Create("runtime.service"));
+            return Task.CompletedTask;
+        }
+    }
+
+    private sealed class DefaultedDefinitionSource : IWorkDefinitionSource
+    {
+        public Task DefineWork(IWorkDefinitionBuilder builder, CancellationToken cancellationToken = default)
+        {
+            builder.WithWorkDefaults(
+                register: work => work.AddWork(
+                    WorkDefinition.Create("runtime.defaulted", category: "Dynamic:Definitions"),
+                    SuccessfulWork),
+                configure: configure => configure.ConfigureLogging(level: LogLevel.Warning),
+                authorize: authorize => authorize.AllowOperateToGroups("runtime.admin"));
             return Task.CompletedTask;
         }
     }

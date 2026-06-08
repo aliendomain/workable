@@ -181,6 +181,46 @@ test("queue dialog keeps the dialog open and reports server queue failures", asy
   }
 });
 
+test("queue dialog tolerates boolean property schemas from the API", async () => {
+  const fetchMock = installQueueFetch((call) => {
+    if (call.input === "/api/workable/systems/Ops/work/ImportOrders") {
+      return Response.json({ workerId: { value: "worker-boolean-schema" } });
+    }
+
+    return Response.json({ error: `Unhandled request: ${call.input}` }, { status: 500 });
+  });
+  const result = await renderDom(
+    <QueueDialog
+      connection={connection}
+      definition={booleanPropertyDefinition()}
+      fetchQueueSchemaWhenNeeded={false}
+      onOpenChange={() => undefined}
+      onQueuedWorker={() => undefined}
+    />
+  );
+
+  try {
+    await result.waitFor(() => result.getByText("ImportOrders"));
+
+    const payloadInput = result.getByRole("textbox");
+    assert.ok(payloadInput instanceof result.dom.window.HTMLInputElement);
+    assert.equal(payloadInput.value, "");
+
+    await result.input(payloadInput, "{\"source\":\"backstage\"}");
+    await result.click(result.getByRole("button", { name: "Queue" }));
+
+    await result.waitFor(() => {
+      assert.equal(fetchMock.calls.length, 1);
+    });
+    assert.deepEqual(queueRequest(fetchMock.calls[0]).input, {
+      payload: "{\"source\":\"backstage\"}",
+    });
+  } finally {
+    fetchMock.restore();
+    await result.restore();
+  }
+});
+
 type FetchCall = {
   input: string;
   init?: RequestInit;
@@ -247,5 +287,19 @@ function manualDefinition(): WorkDefinition {
   return {
     ...definition(),
     inputSchema: null,
+  };
+}
+
+function booleanPropertyDefinition(): WorkDefinition {
+  return {
+    ...definition(),
+    inputSchema: {
+      jsonSchema: JSON.stringify({
+        properties: {
+          payload: true,
+        },
+        type: "object",
+      }),
+    },
   };
 }

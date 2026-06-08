@@ -1,8 +1,9 @@
-using Microsoft.Extensions.DependencyInjection;
-
 namespace Workable;
 
-internal sealed class RuntimeWorkDefinitionBuilder(WorkSystemCatalog catalog) : IWorkDefinitionBuilder
+internal sealed class DefaultingWorkDefinitionBuilder(
+    IWorkDefinitionBuilder inner,
+    Action<IWorkConfigurationBuilder>? defaultConfigure,
+    Action<IWorkAuthorizationBuilder>? defaultAuthorize) : IWorkDefinitionBuilder
 {
     public IWorkDefinitionBuilder WithWorkDefaults(
         Action<IWorkDefinitionBuilder> register,
@@ -11,7 +12,10 @@ internal sealed class RuntimeWorkDefinitionBuilder(WorkSystemCatalog catalog) : 
     {
         ArgumentNullException.ThrowIfNull(register);
 
-        register(new DefaultingWorkDefinitionBuilder(this, configure, authorize));
+        register(new DefaultingWorkDefinitionBuilder(
+            inner,
+            Compose(defaultConfigure, configure),
+            Compose(defaultAuthorize, authorize)));
         return this;
     }
 
@@ -23,7 +27,7 @@ internal sealed class RuntimeWorkDefinitionBuilder(WorkSystemCatalog catalog) : 
     public IWorkDefinitionBuilder AddWork(
         WorkDefinition definition,
         Func<IWorkExecutionContext, WorkInput?, CancellationToken, Task<WorkExecutionResult>> execute,
-        Action<IWorkConfigurationBuilder>? configure)
+        Action<IWorkConfigurationBuilder> configure)
         => this.AddWork(definition, execute, configure, authorize: null);
 
     public IWorkDefinitionBuilder AddWork(
@@ -32,16 +36,7 @@ internal sealed class RuntimeWorkDefinitionBuilder(WorkSystemCatalog catalog) : 
         Action<IWorkConfigurationBuilder>? configure,
         Action<IWorkAuthorizationBuilder>? authorize)
     {
-        ArgumentNullException.ThrowIfNull(definition);
-        ArgumentNullException.ThrowIfNull(execute);
-
-        var registration = WorkConfigurationComposer.ApplyRegistration(definition, executorType: null, configure, authorize);
-        catalog.AddWork(new RegisteredWork(
-            registration.Definition,
-            _ => new DelegateWorkExecutor(execute),
-            registration.ExceptionClassifiers,
-            registration.AutomaticStarts,
-            registration.Initializers));
+        inner.AddWork(definition, execute, Compose(defaultConfigure, configure), Compose(defaultAuthorize, authorize));
         return this;
     }
 
@@ -53,7 +48,7 @@ internal sealed class RuntimeWorkDefinitionBuilder(WorkSystemCatalog catalog) : 
     public IWorkDefinitionBuilder AddWork<TInput>(
         WorkDefinition definition,
         Func<IWorkExecutionContext, TInput, CancellationToken, Task<WorkExecutionResult>> execute,
-        Action<IWorkConfigurationBuilder>? configure)
+        Action<IWorkConfigurationBuilder> configure)
         => this.AddWork(definition, execute, configure, authorize: null);
 
     public IWorkDefinitionBuilder AddWork<TInput>(
@@ -62,17 +57,7 @@ internal sealed class RuntimeWorkDefinitionBuilder(WorkSystemCatalog catalog) : 
         Action<IWorkConfigurationBuilder>? configure,
         Action<IWorkAuthorizationBuilder>? authorize)
     {
-        ArgumentNullException.ThrowIfNull(definition);
-        ArgumentNullException.ThrowIfNull(execute);
-
-        definition = WorkExecutorAdapterFactory.ApplyTypedSchemas<TInput>(definition);
-        var registration = WorkConfigurationComposer.ApplyRegistration(definition, executorType: null, configure, authorize);
-        catalog.AddWork(new RegisteredWork(
-            registration.Definition,
-            _ => new TypedDelegateWorkExecutor<TInput>(execute),
-            registration.ExceptionClassifiers,
-            registration.AutomaticStarts,
-            registration.Initializers));
+        inner.AddWork(definition, execute, Compose(defaultConfigure, configure), Compose(defaultAuthorize, authorize));
         return this;
     }
 
@@ -84,7 +69,7 @@ internal sealed class RuntimeWorkDefinitionBuilder(WorkSystemCatalog catalog) : 
     public IWorkDefinitionBuilder AddWork<TInput, TOutput>(
         WorkDefinition definition,
         Func<IWorkExecutionContext, TInput, CancellationToken, Task<WorkExecutionResult<TOutput>>> execute,
-        Action<IWorkConfigurationBuilder>? configure)
+        Action<IWorkConfigurationBuilder> configure)
         => this.AddWork(definition, execute, configure, authorize: null);
 
     public IWorkDefinitionBuilder AddWork<TInput, TOutput>(
@@ -93,17 +78,7 @@ internal sealed class RuntimeWorkDefinitionBuilder(WorkSystemCatalog catalog) : 
         Action<IWorkConfigurationBuilder>? configure,
         Action<IWorkAuthorizationBuilder>? authorize)
     {
-        ArgumentNullException.ThrowIfNull(definition);
-        ArgumentNullException.ThrowIfNull(execute);
-
-        definition = WorkExecutorAdapterFactory.ApplyTypedSchemas<TInput, TOutput>(definition);
-        var registration = WorkConfigurationComposer.ApplyRegistration(definition, executorType: null, configure, authorize);
-        catalog.AddWork(new RegisteredWork(
-            registration.Definition,
-            _ => new TypedDelegateWorkExecutor<TInput, TOutput>(execute),
-            registration.ExceptionClassifiers,
-            registration.AutomaticStarts,
-            registration.Initializers));
+        inner.AddWork(definition, execute, Compose(defaultConfigure, configure), Compose(defaultAuthorize, authorize));
         return this;
     }
 
@@ -113,14 +88,11 @@ internal sealed class RuntimeWorkDefinitionBuilder(WorkSystemCatalog catalog) : 
 
     public IWorkDefinitionBuilder AddWork<TExecutor>()
         where TExecutor : class
-        => this.AddWork<TExecutor>(
-            WorkConfigurationComposer.CreateDefinitionFromAttributes(typeof(TExecutor)),
-            configure: null,
-            authorize: null);
+        => this.AddWork<TExecutor>(configure: null, authorize: null);
 
     public IWorkDefinitionBuilder AddWork<TExecutor>(
         WorkDefinition definition,
-        Action<IWorkConfigurationBuilder>? configure)
+        Action<IWorkConfigurationBuilder> configure)
         where TExecutor : class
         => this.AddWork<TExecutor>(definition, configure, authorize: null);
 
@@ -130,32 +102,42 @@ internal sealed class RuntimeWorkDefinitionBuilder(WorkSystemCatalog catalog) : 
         Action<IWorkAuthorizationBuilder>? authorize)
         where TExecutor : class
     {
-        ArgumentNullException.ThrowIfNull(definition);
-        WorkExecutorAdapterFactory.ThrowIfUnsupported(typeof(TExecutor));
-
-        var registration = WorkConfigurationComposer.ApplyRegistration(definition, typeof(TExecutor), configure, authorize);
-        catalog.AddWork(new RegisteredWork(
-            registration.Definition,
-            serviceProvider => WorkExecutorAdapterFactory.Create(serviceProvider.GetRequiredService<TExecutor>()),
-            registration.ExceptionClassifiers,
-            registration.AutomaticStarts,
-            registration.Initializers));
+        inner.AddWork<TExecutor>(definition, Compose(defaultConfigure, configure), Compose(defaultAuthorize, authorize));
         return this;
     }
 
-    public IWorkDefinitionBuilder AddWork<TExecutor>(Action<IWorkConfigurationBuilder> configure)
+    public IWorkDefinitionBuilder AddWork<TExecutor>(
+        Action<IWorkConfigurationBuilder> configure)
         where TExecutor : class
-        => this.AddWork<TExecutor>(
-            WorkConfigurationComposer.CreateDefinitionFromAttributes(typeof(TExecutor)),
-            configure,
-            authorize: null);
+        => this.AddWork<TExecutor>(configure, authorize: null);
 
     public IWorkDefinitionBuilder AddWork<TExecutor>(
         Action<IWorkConfigurationBuilder>? configure,
         Action<IWorkAuthorizationBuilder>? authorize)
         where TExecutor : class
-        => this.AddWork<TExecutor>(
-            WorkConfigurationComposer.CreateDefinitionFromAttributes(typeof(TExecutor)),
-            configure,
-            authorize);
+    {
+        inner.AddWork<TExecutor>(Compose(defaultConfigure, configure), Compose(defaultAuthorize, authorize));
+        return this;
+    }
+
+    private static Action<TBuilder>? Compose<TBuilder>(
+        Action<TBuilder>? first,
+        Action<TBuilder>? second)
+    {
+        if (first is null)
+        {
+            return second;
+        }
+
+        if (second is null)
+        {
+            return first;
+        }
+
+        return builder =>
+        {
+            first(builder);
+            second(builder);
+        };
+    }
 }

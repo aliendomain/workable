@@ -2,6 +2,11 @@ namespace Workable;
 
 public interface IWorkDefinitionBuilder
 {
+    IWorkDefinitionBuilder WithWorkDefaults(
+        Action<IWorkDefinitionBuilder> register,
+        Action<IWorkConfigurationBuilder>? configure = null,
+        Action<IWorkAuthorizationBuilder>? authorize = null);
+
     IWorkDefinitionBuilder AddWork(
         WorkDefinition definition,
         Func<IWorkExecutionContext, WorkInput?, CancellationToken, Task<WorkExecutionResult>> execute);

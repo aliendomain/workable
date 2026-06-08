@@ -43,6 +43,17 @@ test("schema parsing and default values cover invalid, explicit, enum, object, a
     }
   );
   assert.deepEqual(createDefaultValue({ items: { type: "string" }, type: "array" }), []);
+  assert.deepEqual(
+    createDefaultValue({
+      properties: {
+        flexible: true as unknown as JsonSchemaNode,
+      },
+      type: "object",
+    }),
+    {
+      flexible: "",
+    }
+  );
   assert.match(String(createDefaultValue({ format: "date", type: "string" })), /^\d{4}-\d{2}-\d{2}$/);
   assert.match(String(createDefaultValue({ format: "date-time", type: "string" })), /^\d{4}-\d{2}-\d{2}T/);
   assert.equal(createDefaultValue({ type: "number" }), 0);
