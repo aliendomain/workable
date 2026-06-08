@@ -86,7 +86,7 @@ test("query table helper components render status, totals, placeholders, and dur
   assertMarkupIncludes(renderMarkup(<QueryResultTotal noun="worker" totalCount={2} />), "2 workers");
   assertMarkupIncludes(
     renderMarkup(<DurationValue duration={{ isWarning: true, text: "2.00m" }} />),
-    "text-amber-300"
+    "text-[var(--status-warning-text)]"
   );
 });
 

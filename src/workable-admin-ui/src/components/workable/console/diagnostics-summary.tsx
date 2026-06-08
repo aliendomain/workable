@@ -4,10 +4,11 @@ import { ChevronRight, Loader2 } from "lucide-react";
 import type { ReactNode } from "react";
 import { cn } from "@/lib/utils";
 import { formatLocalTime } from "@/components/workable/console/console-format";
+import { semanticBadgeToneClass } from "@/lib/ui/state-tones";
 
 const diagnosticsDetailCardToneClassNames = {
   muted: "border-border bg-muted/10",
-  warning: "border-amber-500/30 bg-amber-500/10",
+  warning: semanticBadgeToneClass("warning"),
 } as const;
 
 export function DiagnosticsSummarySection({

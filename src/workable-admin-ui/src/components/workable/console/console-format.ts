@@ -1,4 +1,8 @@
 import type { WorkCompletionStatus } from "@/lib/workable";
+import {
+  semanticBadgeToneClass,
+  semanticToneForStateName,
+} from "@/lib/ui/state-tones";
 
 export type DurationDisplay = {
   isWarning: boolean;
@@ -101,18 +105,5 @@ export function parseTimeSpanMilliseconds(value: string) {
 }
 
 export function completionTone(status: WorkCompletionStatus) {
-  switch (status) {
-    case "Executing":
-      return "border-emerald-500/40 bg-emerald-500/10 text-emerald-300";
-    case "Completed":
-      return "border-emerald-500/40 bg-emerald-500/10 text-emerald-300";
-    case "Failed":
-    case "Canceled":
-      return "bg-red-500/15 text-red-300 border-red-500/30";
-    case "Paused":
-    case "Interrupted":
-      return "border-amber-500/40 bg-amber-500/10 text-amber-300";
-    default:
-      return "border-muted-foreground/30 text-muted-foreground";
-  }
+  return semanticBadgeToneClass(semanticToneForStateName(status));
 }

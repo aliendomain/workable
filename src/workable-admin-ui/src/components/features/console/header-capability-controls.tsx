@@ -15,6 +15,11 @@ import {
   consoleMenuItemDisabledClassName,
   consoleMutedMetaClassName,
 } from "@/lib/ui/console";
+import {
+  semanticIndicatorToneClass,
+  semanticTextToneClass,
+  semanticToneForRealtimeConnectionState,
+} from "@/lib/ui/state-tones";
 import { cn } from "@/lib/utils";
 
 export function ConsoleHeaderCapabilityControls({
@@ -146,7 +151,10 @@ function RealtimeStatusIcon({
     <span className="relative inline-flex size-4 items-center justify-center">
       <Radio className={cn("size-4", realtimeConnectionTone(realtime.connectionState, realtime.enabled))} />
       {showDisconnectedBadge && (
-        <span className="-right-1 -top-1 absolute flex size-3 items-center justify-center rounded-full bg-red-500 font-semibold text-[9px] leading-none text-white">
+        <span className={cn(
+          "-right-1 -top-1 absolute flex size-3 items-center justify-center rounded-full font-semibold text-[9px] leading-none",
+          semanticIndicatorToneClass("danger")
+        )}>
           !
         </span>
       )}
@@ -182,23 +190,9 @@ function formatRealtimeTooltip(
 }
 
 function realtimeConnectionTone(connectionState: string, enabled: boolean) {
-  if (!enabled) {
-    return "text-slate-500 dark:text-slate-300";
-  }
-
-  switch (connectionState) {
-    case "connected":
-      return "text-emerald-500 dark:text-emerald-300";
-    case "connecting":
-      return "text-sky-500 dark:text-sky-300";
-    case "reconnecting":
-      return "text-amber-500 dark:text-amber-300";
-    case "error":
-    case "disconnected":
-      return "text-red-500 dark:text-red-300";
-    default:
-      return "text-slate-500 dark:text-slate-300";
-  }
+  return semanticTextToneClass(
+    semanticToneForRealtimeConnectionState(connectionState, enabled)
+  );
 }
 
 function formatRealtimeActionLabel(

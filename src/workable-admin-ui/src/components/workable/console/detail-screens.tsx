@@ -176,6 +176,12 @@ import {
   type WorkerState,
   type WorkerSnapshot,
 } from "@/lib/workable";
+import {
+  semanticBadgeToneClass,
+  semanticColorValue,
+  semanticTextToneClass,
+  semanticToneForStateName,
+} from "@/lib/ui/state-tones";
 import { cn } from "@/lib/utils";
 
 export {
@@ -3350,7 +3356,7 @@ function LockedConfigurationField({
       <FormFieldHeader
         description={description}
         details={(
-          <div className="text-amber-200 text-xs">
+          <div className={`text-xs ${semanticTextToneClass("warning")}`}>
             {reason}
           </div>
         )}
@@ -3359,7 +3365,7 @@ function LockedConfigurationField({
       <ReadonlyFormValue>
         {String(value)}
       </ReadonlyFormValue>
-      <p className="text-amber-200 text-xs">{reason}</p>
+      <p className={`text-xs ${semanticTextToneClass("warning")}`}>{reason}</p>
     </div>
   );
 }
@@ -3376,12 +3382,12 @@ function WorkerConfigurationStatusBadge({
   if (!definition) {
     return differenceCount === 0
       ? (
-        <div className="rounded-md border border-emerald-500/25 bg-emerald-500/8 px-3 py-1.5 text-emerald-900 text-sm dark:text-emerald-100">
+        <div className={`rounded-md border px-3 py-1.5 text-sm ${semanticBadgeToneClass("success")}`}>
           Matches default configuration
         </div>
       )
       : (
-        <div className="rounded-md border border-amber-500/25 bg-amber-500/10 px-3 py-1.5 text-amber-900 text-sm dark:text-amber-100">
+        <div className={`rounded-md border px-3 py-1.5 text-sm ${semanticBadgeToneClass("warning")}`}>
           Differs from defaults in {differenceCount} place{differenceCount === 1 ? "" : "s"}
         </div>
       );
@@ -3389,14 +3395,14 @@ function WorkerConfigurationStatusBadge({
 
   if (differences.length === 0) {
     return (
-      <div className="rounded-md border border-emerald-500/25 bg-emerald-500/8 px-3 py-1.5 text-emerald-900 text-sm dark:text-emerald-100">
+      <div className={`rounded-md border px-3 py-1.5 text-sm ${semanticBadgeToneClass("success")}`}>
         Matches default <span className="font-mono">{definition.name}</span> configuration
       </div>
     );
   }
 
   return (
-    <div className="rounded-md border border-amber-500/25 bg-amber-500/10 px-3 py-1.5 text-amber-900 text-sm dark:text-amber-100">
+    <div className={`rounded-md border px-3 py-1.5 text-sm ${semanticBadgeToneClass("warning")}`}>
       Differs from <span className="font-mono">{definition.name}</span> defaults in {differences.length} place{differences.length === 1 ? "" : "s"}
     </div>
   );
@@ -3561,8 +3567,8 @@ function WorkerActionButton({
             <AlertDialogAction
               variant="default"
               className={isCancel
-                ? "bg-red-600 text-white hover:bg-red-700 focus-visible:ring-red-500"
-                : "!bg-amber-400 !text-amber-950 hover:!bg-amber-500 focus-visible:ring-amber-500"}
+                ? "bg-[var(--status-danger-solid)] text-[var(--status-danger-contrast)] hover:bg-[var(--status-danger-text)] focus-visible:ring-[var(--status-danger-border)]"
+                : "!bg-[var(--status-warning-solid)] !text-[var(--status-warning-contrast)] hover:!bg-[var(--status-warning-text)] focus-visible:ring-[var(--status-warning-border)]"}
               onClick={() => {
                 setConfirmOpen(false);
                 void onAction(action);
@@ -3627,60 +3633,27 @@ function WorkerStatusBadge({
 }
 
 export function workerStatusTextTone(state: WorkerState) {
-  switch (state) {
-    case "Queued":
-    case "Running":
-    case "Waiting":
-      return "text-sky-300";
-    case "Retrying":
-    case "Paused":
-    case "Interrupting":
-    case "Interrupted":
-      return "text-amber-300";
-    case "Failed":
-      return "text-red-300";
-    case "Completed":
-      return "text-emerald-300";
-    case "Canceled":
-      return "text-foreground/80";
-    default:
-      return "text-muted-foreground";
-  }
+  return semanticTextToneClass(semanticToneForStateName(state), "strong");
 }
 
 export function detailCompletionTone(status: WorkCompletionStatus) {
-  switch (status) {
-    case "Completed":
-      return "border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-200";
-    case "Executing":
-      return "border-sky-500/40 bg-sky-500/10 text-sky-700 dark:text-sky-200";
-    case "Failed":
-      return "border-red-500/40 bg-red-500/10 text-red-700 dark:text-red-200";
-    case "Paused":
-    case "Interrupted":
-      return "border-amber-500/40 bg-amber-500/10 text-amber-800 dark:text-amber-100";
-    case "Canceled":
-      return "border-border bg-muted/40 text-foreground";
-    default:
-      return "border-border bg-muted/40 text-foreground";
-  }
+  return semanticBadgeToneClass(semanticToneForStateName(status));
 }
 
 export function messageSeverityTone(severity: string) {
   switch (normalizeMessageSeverity(severity)) {
     case "critical":
-      return "border-fuchsia-500/40 bg-fuchsia-500/10 text-fuchsia-800 dark:text-fuchsia-100";
     case "error":
-      return "border-red-500/40 bg-red-500/10 text-red-700 dark:text-red-200";
+      return semanticBadgeToneClass("danger");
     case "warning":
-      return "border-amber-500/40 bg-amber-500/10 text-amber-800 dark:text-amber-100";
+      return semanticBadgeToneClass("warning");
     case "debug":
-      return "border-violet-500/40 bg-violet-500/10 text-violet-800 dark:text-violet-100";
+      return semanticBadgeToneClass("neutral");
     case "info":
     case "information":
-      return "border-sky-500/40 bg-sky-500/10 text-sky-700 dark:text-sky-200";
+      return semanticBadgeToneClass("info");
     case "trace":
-      return "border-slate-500/40 bg-slate-500/10 text-slate-700 dark:text-slate-200";
+      return semanticBadgeToneClass("neutral");
     default:
       return "border-border bg-muted/40 text-foreground";
   }
@@ -3689,18 +3662,17 @@ export function messageSeverityTone(severity: string) {
 export function messageSeverityFilterTone(severity: string) {
   switch (normalizeMessageSeverity(severity)) {
     case "critical":
-      return "border-fuchsia-500/30 bg-fuchsia-500/10 text-fuchsia-800 dark:text-fuchsia-100";
     case "error":
-      return "border-rose-500/30 bg-rose-500/10 text-rose-700 dark:text-rose-200";
+      return semanticBadgeToneClass("danger");
     case "warning":
-      return "border-amber-500/30 bg-amber-500/10 text-amber-800 dark:text-amber-100";
+      return semanticBadgeToneClass("warning");
     case "debug":
-      return "border-violet-500/30 bg-violet-500/10 text-violet-800 dark:text-violet-100";
+      return semanticBadgeToneClass("neutral");
     case "info":
     case "information":
-      return "border-sky-500/30 bg-sky-500/10 text-sky-700 dark:text-sky-200";
+      return semanticBadgeToneClass("info");
     case "trace":
-      return "border-slate-500/30 bg-slate-500/10 text-slate-700 dark:text-slate-200";
+      return semanticBadgeToneClass("neutral");
     default:
       return "border-border bg-muted/40 text-foreground";
   }
@@ -3765,7 +3737,7 @@ function JsonTextEditor({
           {parsed.ok ? (
             <JsonValue value={parsed.value} />
           ) : (
-            <span className="text-red-300">{parsed.error}</span>
+            <span className={semanticTextToneClass("danger", "strong")}>{parsed.error}</span>
           )}
         </pre>
       </TabsContent>
@@ -4242,7 +4214,7 @@ function IterationMessagePanel({
       viewState={viewState}
       >
         {messagesState.error ? (
-          <div className="mb-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-amber-100 text-sm">
+          <div className={`mb-3 rounded-lg border px-3 py-2 text-sm ${semanticBadgeToneClass("warning")}`}>
             {messagesState.error}
           </div>
         ) : null}
@@ -4693,7 +4665,7 @@ const WorkerTimelinePanel = memo(function WorkerTimelinePanel({
         )}
       >
         {error ? (
-          <div className="mb-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-amber-900 text-sm dark:text-amber-100">
+          <div className={`mb-3 rounded-lg border px-3 py-2 text-sm ${semanticBadgeToneClass("warning")}`}>
             {error}
           </div>
         ) : null}
@@ -5061,20 +5033,11 @@ function IterationDurationGraph({
                   type="button"
                 >
                   <div
-                    className={`w-full rounded-t-sm transition-opacity group-hover:opacity-85 ${
-                      point.status === "Completed"
-                        ? "bg-emerald-400/80"
-                        : point.status === "Failed"
-                          ? "bg-red-400/85"
-                          : point.status === "Executing"
-                            ? "bg-sky-400/90"
-                            : point.status === "Paused"
-                              ? "bg-amber-400/85"
-                              : point.status === "Canceled"
-                                ? "bg-slate-400/80"
-                                : "bg-muted-foreground/70"
-                    } ${point.isExecuting ? "animate-pulse" : ""}`}
-                    style={{ height }}
+                    className={`w-full rounded-t-sm transition-opacity group-hover:opacity-85 ${point.isExecuting ? "animate-pulse" : ""}`}
+                    style={{
+                      backgroundColor: semanticColorValue(semanticToneForStateName(point.status)),
+                      height,
+                    }}
                   />
                 </button>
               );
@@ -5622,7 +5585,7 @@ function WorkerLogStreamCard({
     return (
       <section className={getWorkerLogStreamCardClassName(viewState)}>
         {connectionError ? (
-          <div className="mb-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-amber-900 text-sm dark:text-amber-100">
+          <div className={`mb-3 rounded-lg border px-3 py-2 text-sm ${semanticBadgeToneClass("warning")}`}>
             {connectionError}
           </div>
         ) : null}
@@ -5633,17 +5596,17 @@ function WorkerLogStreamCard({
   return (
     <section className={getWorkerLogStreamCardClassName(viewState)}>
       <div className="mb-3 flex flex-wrap items-center justify-end gap-2">
-        <Badge className="border-slate-500/30 bg-slate-500/10 text-slate-700 dark:text-slate-200" variant="outline">
+        <Badge className={semanticBadgeToneClass("neutral")} variant="outline">
           {windowedEntries.length} loaded
         </Badge>
         {pauseEnabled && isPaused && pendingPausedCount > 0 ? (
-          <Badge className="border-amber-500/30 bg-amber-500/10 text-amber-800 dark:text-amber-100" variant="outline">
+          <Badge className={semanticBadgeToneClass("warning")} variant="outline">
             {pendingPausedCount} buffered
           </Badge>
         ) : null}
       </div>
       {connectionError ? (
-        <div className="mb-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-amber-900 text-sm dark:text-amber-100">
+        <div className={`mb-3 rounded-lg border px-3 py-2 text-sm ${semanticBadgeToneClass("warning")}`}>
           {connectionError}
         </div>
       ) : null}
@@ -5723,8 +5686,8 @@ function WorkerLogStreamCard({
                     </span>
                   </div>
                   {(entry.exceptionType || entry.exceptionMessage) ? (
-                    <div className="pl-[7.5rem] leading-[1.15rem] text-amber-300/90">
-                      <span className="text-amber-400">! </span>
+                    <div className={`pl-[7.5rem] leading-[1.15rem] ${semanticTextToneClass("warning")}`}>
+                      <span className={semanticTextToneClass("warning", "strong")}>! </span>
                       {entry.exceptionType ?? "Exception"}
                       {entry.exceptionMessage ? `: ${entry.exceptionMessage}` : ""}
                     </div>
@@ -5849,16 +5812,16 @@ function WorkerFailureBanner({
     : null;
 
   return (
-    <section className="rounded-xl border border-red-500/30 bg-red-500/10 p-4 text-red-50 shadow-lg">
+    <section className={`rounded-xl border p-4 shadow-lg ${semanticBadgeToneClass("danger")}`}>
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0 flex-1 space-y-2">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div className="flex min-w-0 flex-wrap items-center gap-2">
-              <Ban className="size-4 text-red-300" />
-              <div className="font-semibold text-red-100">Execution failed</div>
+              <Ban className={`size-4 ${semanticTextToneClass("danger", "strong")}`} />
+              <div className={`font-semibold ${semanticTextToneClass("danger", "strong")}`}>Execution failed</div>
               {details.kind === "exception" ? (
                 <Badge
-                  className="border-red-400/40 bg-red-500/20 text-red-100"
+                  className={semanticBadgeToneClass("danger")}
                   variant="outline"
                 >
                   Exception
@@ -5868,7 +5831,7 @@ function WorkerFailureBanner({
                 <Tooltip delayDuration={300}>
                   <TooltipTrigger asChild>
                     <Badge
-                      className="border-amber-400/40 bg-amber-500/20 text-amber-100"
+                      className={semanticBadgeToneClass("warning")}
                       variant="outline"
                     >
                       Marked by work
@@ -5885,30 +5848,30 @@ function WorkerFailureBanner({
               ) : null}
             </div>
             {retrySummary ? (
-              <div className="flex flex-1 items-center justify-center text-amber-100 text-sm">
+              <div className={`flex flex-1 items-center justify-center text-sm ${semanticTextToneClass("warning", "strong")}`}>
                 <span className="truncate">Retrying • {retrySummary}</span>
               </div>
             ) : null}
           </div>
-          <p className="text-sm leading-6 text-red-100">
+          <p className={`text-sm leading-6 ${semanticTextToneClass("danger", "strong")}`}>
             {details.message}
           </p>
           {details.code || details.target ? (
             <div className="flex flex-wrap items-center gap-2 text-xs">
               {details.code ? (
-                <span className="rounded-md border border-red-400/20 bg-red-500/10 px-2 py-1 text-red-200/90">
-                  Code: <span className="font-mono text-red-100">{details.code}</span>
+                <span className={`rounded-md border px-2 py-1 ${semanticBadgeToneClass("danger")}`}>
+                  Code: <span className={`font-mono ${semanticTextToneClass("danger", "strong")}`}>{details.code}</span>
                 </span>
               ) : null}
               {details.target ? (
-                <span className="rounded-md border border-red-400/20 bg-red-500/10 px-2 py-1 text-red-200/90">
-                  Target: <span className="font-mono text-red-100">{details.target}</span>
+                <span className={`rounded-md border px-2 py-1 ${semanticBadgeToneClass("danger")}`}>
+                  Target: <span className={`font-mono ${semanticTextToneClass("danger", "strong")}`}>{details.target}</span>
                 </span>
               ) : null}
             </div>
           ) : null}
           {details.kind === "exception" && details.exceptionType ? (
-            <div className="font-mono text-xs text-red-200/85">
+            <div className={`font-mono text-xs ${semanticTextToneClass("danger")}`}>
               {details.exceptionType}
             </div>
           ) : null}
@@ -5916,7 +5879,7 @@ function WorkerFailureBanner({
         <div className="flex shrink-0 items-center gap-2">
           {details.kind === "exception" && exceptionChain.some((item) => getStackTraceLines(item.stackTrace).length > 0) ? (
             <Button
-              className="h-8 border-red-400/30 bg-red-500/10 text-red-100 hover:bg-red-500/20 hover:text-white"
+              className={`h-8 ${semanticBadgeToneClass("danger")} hover:bg-[var(--status-danger-border)] hover:text-[var(--status-danger-strong)]`}
               onClick={() => setStackOpen(true)}
               size="sm"
               type="button"
@@ -5929,7 +5892,7 @@ function WorkerFailureBanner({
           {onDismiss ? (
             <Button
               aria-label="Dismiss failure banner"
-              className="h-8 border-red-400/30 bg-red-500/10 px-2 text-red-100 hover:bg-red-500/20 hover:text-white"
+              className={`h-8 px-2 ${semanticBadgeToneClass("danger")} hover:bg-[var(--status-danger-border)] hover:text-[var(--status-danger-strong)]`}
               onClick={onDismiss}
               size="sm"
               type="button"
@@ -5943,7 +5906,7 @@ function WorkerFailureBanner({
       <Dialog onOpenChange={setStackOpen} open={stackOpen && exceptionChain.length > 0}>
         <DialogContent className={`${stackMaximized
           ? "h-[92vh] max-h-[92vh] w-[96vw] max-w-[96vw] xl:w-[92vw] xl:max-w-[92vw]"
-          : "max-h-[88vh] sm:max-w-4xl xl:max-w-6xl"} overflow-hidden border-red-400/20 bg-slate-950 p-0 text-slate-50`}>
+          : "max-h-[88vh] sm:max-w-4xl xl:max-w-6xl"} overflow-hidden border-[var(--status-danger-border)] bg-slate-950 p-0 text-slate-50`}>
           <Button
             aria-label={stackMaximized ? "Restore stack viewer" : "Maximize stack viewer"}
             className="absolute right-10 top-2 z-10 cursor-pointer text-slate-300 hover:bg-slate-800 hover:text-white"
@@ -5996,14 +5959,14 @@ function WorkerFailureBanner({
                 return (
                   <div className="space-y-2" key={`${exceptionItem.exceptionType ?? "exception"}:${exceptionIndex}`}>
                     <div className="flex flex-wrap items-center gap-2">
-                      <Badge className="border-red-400/30 bg-red-500/10 text-red-100" variant="outline">
+                      <Badge className={semanticBadgeToneClass("danger")} variant="outline">
                         {label}
                       </Badge>
                       {exceptionItem.exceptionType ? (
-                        <span className="font-mono text-sm text-red-100">{exceptionItem.exceptionType}</span>
+                        <span className={`font-mono text-sm ${semanticTextToneClass("danger", "strong")}`}>{exceptionItem.exceptionType}</span>
                       ) : null}
                     </div>
-                    <div className="rounded-md border border-red-400/20 bg-red-500/10 px-3 py-2 text-sm text-red-50">
+                    <div className={`rounded-md border px-3 py-2 text-sm ${semanticBadgeToneClass("danger")}`}>
                       {exceptionItem.message}
                     </div>
                     {stackDisplayEntries.length > 0 ? (
@@ -6463,11 +6426,11 @@ function workerTimelineFilterLabel(filterKind: WorkerTimelineFilterKind) {
 function workerTimelineFilterTone(filterKind: WorkerTimelineFilterKind) {
   switch (filterKind) {
     case "user":
-      return "border-sky-500/30 bg-sky-500/10 text-sky-700 dark:text-sky-200";
+      return semanticBadgeToneClass("info");
     case "system":
-      return "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-200";
+      return semanticBadgeToneClass("success");
     case "failures":
-      return "border-red-500/30 bg-red-500/10 text-red-700 dark:text-red-200";
+      return semanticBadgeToneClass("danger");
     default:
       return "border-border bg-muted/40 text-foreground";
   }
@@ -6643,16 +6606,16 @@ function consoleLogLevelTone(level: string) {
   switch (normalizeLogLevel(level)) {
     case "Trace":
     case "Debug":
-      return "text-slate-500";
+      return semanticTextToneClass("neutral");
     case "Information":
-      return "text-sky-300";
+      return semanticTextToneClass("info", "strong");
     case "Warning":
-      return "text-amber-300";
+      return semanticTextToneClass("warning", "strong");
     case "Error":
     case "Critical":
-      return "text-rose-300";
+      return semanticTextToneClass("danger", "strong");
     default:
-      return "text-slate-300";
+      return semanticTextToneClass("neutral", "strong");
   }
 }
 
@@ -6660,14 +6623,14 @@ function logLevelFilterTone(level: string) {
   switch (normalizeLogLevel(level)) {
     case "Critical":
     case "Error":
-      return "border-rose-500/30 bg-rose-500/10 text-rose-700 dark:text-rose-200";
+      return semanticBadgeToneClass("danger");
     case "Warning":
-      return "border-amber-500/30 bg-amber-500/10 text-amber-800 dark:text-amber-100";
+      return semanticBadgeToneClass("warning");
     case "Information":
-      return "border-sky-500/30 bg-sky-500/10 text-sky-700 dark:text-sky-200";
+      return semanticBadgeToneClass("info");
     case "Debug":
     case "Trace":
-      return "border-slate-400/40 bg-slate-500/10 text-slate-700 dark:text-slate-200";
+      return semanticBadgeToneClass("neutral");
     default:
       return "border-border bg-muted/40 text-foreground";
   }
@@ -6812,52 +6775,15 @@ export function formatMillisecondsCompact(value: number) {
 }
 
 function timelineIconTone(item: WorkerTimelineItem) {
-  switch (item.tone) {
-    case "success":
-      return "border-emerald-500/40 bg-emerald-500/10 text-emerald-600 dark:text-emerald-300";
-    case "danger":
-      return "border-red-500/40 bg-red-500/10 text-red-600 dark:text-red-300";
-    case "warning":
-      return "border-amber-500/40 bg-amber-500/10 text-amber-600 dark:text-amber-300";
-    case "info":
-      return "border-sky-500/40 bg-sky-500/10 text-sky-600 dark:text-sky-300";
-    default:
-      return "border-border bg-muted/40 text-muted-foreground";
-  }
+  return semanticBadgeToneClass(item.tone);
 }
 
 function timelineBadgeTone(tone: WorkerTimelineItem["tone"]) {
-  switch (tone) {
-    case "success":
-      return "border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-200";
-    case "danger":
-      return "border-red-500/40 bg-red-500/10 text-red-700 dark:text-red-200";
-    case "warning":
-      return "border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-200";
-    case "info":
-      return "border-sky-500/40 bg-sky-500/10 text-sky-700 dark:text-sky-200";
-    default:
-      return "border-border bg-muted/40 text-foreground";
-  }
+  return semanticBadgeToneClass(tone);
 }
 
 function iterationTimelineTone(status: WorkCompletionStatus): WorkerTimelineItem["tone"] {
-  switch (status) {
-    case "Executing":
-      return "info";
-    case "Completed":
-      return "success";
-    case "Failed":
-      return "danger";
-    case "Paused":
-      return "warning";
-    case "Interrupted":
-      return "warning";
-    case "Canceled":
-      return "neutral";
-    default:
-      return "neutral";
-    }
+  return semanticToneForStateName(status) as WorkerTimelineItem["tone"];
 }
 
 function iterationTimelineIcon(status: WorkCompletionStatus) {
@@ -7578,7 +7504,7 @@ function createTimelineToneFromLanding(item: WorkWorkerOverviewTimelineItem): Wo
         return "warning";
       case "Cancel":
       case "Purge":
-        return "neutral";
+        return "warning";
       case "Start":
         return "success";
       case "Push":
@@ -7588,23 +7514,10 @@ function createTimelineToneFromLanding(item: WorkWorkerOverviewTimelineItem): Wo
     }
   }
 
-  switch (item.state) {
-    case "Completed":
-      return "success";
-    case "Failed":
-    case "Canceled":
-      return "neutral";
-    case "Paused":
-    case "Interrupted":
-      return "warning";
-    case "Queued":
-    case "Running":
-    case "Retrying":
-    case "Waiting":
-      return "info";
-    default:
-      return item.category === "UserAction" ? "info" : "neutral";
-  }
+  const tone = semanticToneForStateName(item.state);
+  return item.category === "UserAction" && tone === "neutral"
+    ? "info"
+    : tone;
 }
 
 function createTimelineIconFromLanding(item: WorkWorkerOverviewTimelineItem) {

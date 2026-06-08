@@ -47,6 +47,7 @@ import type {
   WorkableHostConnection,
   WorkableSystemConnection,
 } from "@/components/features/console/types";
+import { semanticBadgeToneClass } from "@/lib/ui/state-tones";
 import type { WorkableRealtimeEvent } from "@/lib/workable";
 
 function system(overrides: Partial<WorkableSystemConnection> = {}): WorkableSystemConnection {
@@ -136,10 +137,10 @@ test("realtime event helpers summarize batches, search text, byte counts, limits
   assert.equal(normalizeEventViewerMaxMessages("bad"), 100);
   assert.equal(normalizeEventViewerMaxMessages("0"), 1);
   assert.equal(normalizeEventViewerMaxMessages("2500"), 1000);
-  assert.ok(eventTypeTone("worker.failed").includes("red"));
-  assert.ok(eventTypeTone("worker.completed").includes("emerald"));
-  assert.ok(eventTypeTone("worker.waiting").includes("amber"));
-  assert.ok(eventTypeTone("worker.cancel.requested").includes("sky"));
+  assert.equal(eventTypeTone("worker.failed"), semanticBadgeToneClass("danger"));
+  assert.equal(eventTypeTone("worker.completed"), semanticBadgeToneClass("success"));
+  assert.equal(eventTypeTone("worker.waiting"), semanticBadgeToneClass("info"));
+  assert.equal(eventTypeTone("worker.cancel.requested"), semanticBadgeToneClass("warning"));
 
   const search = getRealtimeEventSearchText({
     batchId: "batch-1",

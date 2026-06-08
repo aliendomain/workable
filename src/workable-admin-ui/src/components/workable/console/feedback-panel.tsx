@@ -3,39 +3,43 @@
 import { CheckCircle2, CircleDot, ShieldAlert, TriangleAlert, X } from "lucide-react";
 import { useState } from "react";
 import { Alert, AlertAction, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import {
+  semanticBadgeToneClass,
+  semanticTextToneClass,
+  semanticToneForFeedbackTone,
+} from "@/lib/ui/state-tones";
 
 export type FeedbackTone = "error" | "info" | "success" | "warning";
 
 const feedbackToneStyles = {
   error: {
-    button: "text-destructive/70 hover:bg-destructive/10 hover:text-destructive",
-    className: "pr-10",
+    button:
+      `${semanticTextToneClass("danger")} hover:bg-[var(--status-danger-soft)] hover:text-[var(--status-danger-strong)]`,
+    className: `pr-10 ${semanticBadgeToneClass(semanticToneForFeedbackTone("error"))}`,
     icon: ShieldAlert,
-    variant: "destructive" as const,
   },
   info: {
-    button: "text-slate-300/80 hover:bg-slate-700/40 hover:text-white",
-    className: "border-slate-600/80 bg-slate-950 pr-10 text-slate-50 shadow-lg",
+    button:
+      `${semanticTextToneClass("info")} hover:bg-[var(--status-info-soft)] hover:text-[var(--status-info-strong)]`,
+    className: `pr-10 ${semanticBadgeToneClass(semanticToneForFeedbackTone("info"))}`,
     icon: CircleDot,
-    variant: "default" as const,
   },
   success: {
-    button: "text-emerald-300/70 hover:bg-emerald-500/10 hover:text-emerald-200",
-    className: "border-emerald-500/30 bg-emerald-500/10 pr-10 text-emerald-100",
+    button:
+      `${semanticTextToneClass("success")} hover:bg-[var(--status-success-soft)] hover:text-[var(--status-success-strong)]`,
+    className: `pr-10 ${semanticBadgeToneClass(semanticToneForFeedbackTone("success"))}`,
     icon: CheckCircle2,
-    variant: "default" as const,
   },
   warning: {
-    button: "text-amber-300/70 hover:bg-amber-500/10 hover:text-amber-200",
-    className: "border-amber-500/30 bg-amber-500/10 pr-10 text-amber-100",
+    button:
+      `${semanticTextToneClass("warning")} hover:bg-[var(--status-warning-soft)] hover:text-[var(--status-warning-strong)]`,
+    className: `pr-10 ${semanticBadgeToneClass(semanticToneForFeedbackTone("warning"))}`,
     icon: TriangleAlert,
-    variant: "default" as const,
   },
 } satisfies Record<FeedbackTone, {
   button: string;
   className: string;
   icon: typeof ShieldAlert;
-  variant: "default" | "destructive";
 }>;
 
 export function ErrorPanel({
@@ -120,7 +124,7 @@ export function FeedbackBanner({
   const Icon = toneStyle.icon;
 
   return (
-    <Alert className={toneStyle.className} variant={toneStyle.variant}>
+    <Alert className={toneStyle.className}>
       <Icon className="size-4" />
       <AlertTitle>{title}</AlertTitle>
       <AlertDescription>{message}</AlertDescription>

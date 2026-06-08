@@ -95,6 +95,9 @@ import {
   type WorkableRealtimeEventCriteria,
   type WorkerState,
 } from "@/lib/workable";
+import {
+  semanticTextToneClass,
+} from "@/lib/ui/state-tones";
 
 export {
   formatFailedWorkerDuration,
@@ -700,7 +703,7 @@ export function OverviewView({
                   label="Oldest queued"
                   loading={overview.loading}
                   onClick={() => onViewWorkersByState(["Queued"])}
-                  tone={oldestQueuedAge.isWarning ? "text-amber-300" : undefined}
+                  tone={oldestQueuedAge.isWarning ? semanticTextToneClass("warning", "strong") : undefined}
                   value={oldestQueuedAge.text}
                 />
                 <MetricCard
@@ -719,7 +722,7 @@ export function OverviewView({
                   label="Failed workers"
                   loading={overview.loading}
                   onClick={() => onViewWorkersByState(failedWorkerStates)}
-                  tone="text-red-300"
+                  tone={semanticTextToneClass("danger", "strong")}
                   value={failedWorkerCount}
                 />
               </div>
@@ -892,7 +895,7 @@ function CompactWorkerStrip({
         label="Oldest queued"
         onClick={onOpenQueued}
         value={oldestQueuedText}
-        valueClassName={oldestQueuedWarning ? "text-amber-300" : undefined}
+        valueClassName={oldestQueuedWarning ? semanticTextToneClass("warning", "strong") : undefined}
       />
       <CompactWorkerStripItem
         label="Active workers"
@@ -903,7 +906,7 @@ function CompactWorkerStrip({
         label="Failed workers"
         onClick={onOpenFailed}
         value={failedWorkerCount}
-        valueClassName="text-red-300"
+        valueClassName={semanticTextToneClass("danger", "strong")}
       />
     </div>
   );

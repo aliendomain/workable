@@ -58,5 +58,8 @@ test("diagnostics summary primitives render collapsed, expanded, loading, empty,
   assertMarkupIncludes(expanded, "bg-muted/20");
   assertMarkupIncludes(expanded, "bg-muted/10");
   assertMarkupIncludes(expanded, "border-border");
-  assertMarkupIncludes(expanded, "border-amber-500/30 bg-amber-500/10");
+  assertMarkupIncludes(
+    expanded,
+    "border-[var(--status-warning-border)] bg-[var(--status-warning-soft)]"
+  );
 });

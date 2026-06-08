@@ -79,6 +79,7 @@ import {
 import { normalizeCategoryFilter } from "@/components/workable/console/catalog-browser-data";
 import { QueueDialog } from "@/components/workable/console/detail-screens";
 import { ErrorBanner } from "@/components/workable/console/feedback-panel";
+import { semanticDotToneClass, semanticToneForStateName } from "@/lib/ui/state-tones";
 import {
   type WorkDefinition,
   type WorkableConnection,
@@ -980,17 +981,6 @@ export function getSystemLifecycleActionLabel(
 }
 
 export function systemStateDotClass(state?: string | null) {
-  switch (state) {
-    case "Started":
-      return "bg-emerald-400";
-    case "Starting":
-    case "Stopping":
-      return "bg-amber-300";
-    case "Stopped":
-    case "Created":
-      return "bg-zinc-500";
-    default:
-      return "bg-muted-foreground/45";
-  }
+  return semanticDotToneClass(semanticToneForStateName(state));
 }
 

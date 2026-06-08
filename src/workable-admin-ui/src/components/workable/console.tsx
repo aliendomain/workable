@@ -186,6 +186,13 @@ import {
   type WorkerState,
 } from "@/lib/workable";
 import {
+  semanticBadgeToneClass,
+  semanticIndicatorToneClass,
+  semanticTextToneClass,
+  semanticToneForEventType,
+  semanticToneForNotificationTone,
+} from "@/lib/ui/state-tones";
+import {
   STORAGE_KEY,
   cloneOverviewScope,
   createDiagnosticsAlertTargetId,
@@ -2800,7 +2807,7 @@ function RealtimeEventsTabPanel({
           </Button>
         </RealtimeToolbar>
         {error && (
-          <div className="rounded-md border border-red-500/30 bg-red-500/10 px-2 py-1.5 text-red-200 text-xs">
+          <div className={`rounded-md border px-2 py-1.5 text-xs ${semanticBadgeToneClass("danger")}`}>
             {error}
           </div>
         )}
@@ -2987,7 +2994,7 @@ function RealtimeEventsTabPanel({
                     </label>
                   )}
                   renderError={(catalogError) => (
-                    <div className="rounded-md border border-red-500/30 bg-red-500/10 px-2 py-1.5 text-red-200 text-xs">
+                    <div className={`rounded-md border px-2 py-1.5 text-xs ${semanticBadgeToneClass("danger")}`}>
                       {catalogError}
                     </div>
                   )}
@@ -3216,23 +3223,7 @@ export function normalizeEventViewerMaxMessages(value: string) {
 }
 
 export function eventTypeTone(eventType: string) {
-  if (eventType.includes("failed") || eventType === "worker.log") {
-    return "border border-red-500/30 bg-red-500/10 text-red-200";
-  }
-
-  if (eventType.includes("completed")) {
-    return "border border-emerald-500/30 bg-emerald-500/10 text-emerald-200";
-  }
-
-  if (eventType.includes("waiting") || eventType.includes("retrying")) {
-    return "border border-amber-500/30 bg-amber-500/10 text-amber-100";
-  }
-
-  if (eventType.includes("purge") || eventType.includes("cancel")) {
-    return "border border-sky-500/30 bg-sky-500/10 text-sky-200";
-  }
-
-  return "border border-border bg-muted/40 text-muted-foreground";
+  return semanticBadgeToneClass(semanticToneForEventType(eventType));
 }
 
 type SystemNotification = {
@@ -3429,7 +3420,13 @@ function SystemNotificationTray({
           <PopoverTrigger asChild>
             <Button
               aria-label="System notifications"
-              className={`relative ${hasCriticalNotifications ? "text-red-400 hover:text-red-300" : hasNotifications ? "text-amber-400 hover:text-amber-300" : "text-muted-foreground hover:text-foreground"} hover:bg-transparent dark:hover:bg-transparent`}
+              className={`relative ${
+                hasCriticalNotifications
+                  ? `${semanticTextToneClass("danger")} hover:text-[var(--status-danger-strong)]`
+                  : hasNotifications
+                    ? `${semanticTextToneClass("warning")} hover:text-[var(--status-warning-strong)]`
+                    : "text-muted-foreground hover:text-foreground"
+              } hover:bg-transparent dark:hover:bg-transparent`}
               size="icon-sm"
               variant="ghost"
             >
@@ -3439,7 +3436,11 @@ function SystemNotificationTray({
                 <Bell className="size-4" />
               )}
               {hasNotifications && (
-                <span className={`absolute right-0.5 top-0.5 flex min-w-3 translate-x-1/4 -translate-y-1/4 items-center justify-center rounded-full border border-background px-0.5 text-[9px] font-semibold leading-3 ${hasCriticalNotifications ? "bg-red-500 text-white" : "bg-amber-400 text-black"}`}>
+                <span className={`absolute right-0.5 top-0.5 flex min-w-3 translate-x-1/4 -translate-y-1/4 items-center justify-center rounded-full border border-background px-0.5 text-[9px] font-semibold leading-3 ${
+                  hasCriticalNotifications
+                    ? semanticIndicatorToneClass("danger")
+                    : semanticIndicatorToneClass("warning")
+                }`}>
                   {notifications.length}
                 </span>
               )}
@@ -3468,7 +3469,9 @@ function SystemNotificationTray({
             ) : notifications.length > 0 ? (
               notifications.map((notification) => (
                 <div
-                  className={`rounded-md border px-3 py-2 ${notification.tone === "critical" ? "border-red-500/30 bg-red-500/10 text-red-200" : "border-amber-500/30 bg-amber-500/10 text-amber-100"}`}
+                  className={`rounded-md border px-3 py-2 ${semanticBadgeToneClass(
+                    semanticToneForNotificationTone(notification.tone)
+                  )}`}
                   key={notification.id}
                 >
                   <div className="flex items-start gap-2">
@@ -3478,7 +3481,7 @@ function SystemNotificationTray({
                       <div className="text-xs opacity-85">{notification.description}</div>
                       {notification.sourceId && notification.rejectedWorkCount !== undefined ? (
                         <Button
-                          className="mt-2 border-red-500/30 bg-red-500/10 text-red-100 hover:bg-red-500/20 hover:text-red-50"
+                          className={`mt-2 ${semanticBadgeToneClass("danger")} hover:bg-[var(--status-danger-soft)] hover:text-[var(--status-danger-strong)]`}
                           onClick={() => {
                             if (notification.sourceId && notification.rejectedWorkCount !== undefined) {
                               onAcknowledgeQueueRejections(notification.sourceId, notification.rejectedWorkCount);
@@ -4031,7 +4034,7 @@ function DiagnosticsMetric({
   value: string;
 }) {
   return (
-    <div className={`rounded-md border px-3 py-2 ${tone === "warning" ? "border-amber-500/30 bg-amber-500/10" : "border-border"}`}>
+    <div className={`rounded-md border px-3 py-2 ${tone === "warning" ? semanticBadgeToneClass("warning") : "border-border"}`}>
       <div className="text-muted-foreground">
         <TooltipLabel description={description} label={label} />
       </div>

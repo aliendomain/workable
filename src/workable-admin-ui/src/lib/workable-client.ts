@@ -1,4 +1,8 @@
 import type { WorkableConnection } from "./workable";
+import {
+  semanticBadgeToneClass,
+  semanticToneForStateName,
+} from "@/lib/ui/state-tones";
 
 export class WorkableApiError extends Error {
   constructor(
@@ -34,24 +38,7 @@ export function formatDateTime(value?: string | null) {
 }
 
 export function stateTone(state: string) {
-  switch (state) {
-    case "Running":
-    case "Waiting":
-      return "bg-emerald-500/15 text-emerald-300 border-emerald-500/30";
-    case "Queued":
-    case "Retrying":
-    case "Paused":
-    case "Interrupting":
-    case "Interrupted":
-      return "bg-sky-500/15 text-sky-300 border-sky-500/30";
-    case "Failed":
-    case "Canceled":
-      return "bg-red-500/15 text-red-300 border-red-500/30";
-    case "Completed":
-      return "bg-teal-500/15 text-teal-300 border-teal-500/30";
-    default:
-      return "bg-muted text-muted-foreground";
-  }
+  return semanticBadgeToneClass(semanticToneForStateName(state));
 }
 
 export function safeJsonParse(value: string) {
