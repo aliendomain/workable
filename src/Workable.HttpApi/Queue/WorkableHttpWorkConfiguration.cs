@@ -15,7 +15,7 @@ public sealed record WorkableHttpWorkConfiguration(
     WorkCoordinationConfiguration Coordination,
     WorkRecurrenceConfiguration Recurrence,
     WorkTransientRetryConfiguration TransientRetry,
-    WorkFailedWorkerConfiguration FailedWorker,
+    WorkFailedWorkerConfiguration? FailedWorker,
     WorkLoggingConfiguration Logging,
     WorkRetentionConfiguration Retention)
 {
@@ -49,7 +49,7 @@ public sealed record WorkableHttpWorkConfiguration(
             Coordination,
             Recurrence,
             TransientRetry,
-            FailedWorker,
+            FailedWorker ?? WorkFailedWorkerConfiguration.Default,
             Logging,
             Retention,
             WorkInvocationConfiguration.Default);

@@ -190,6 +190,40 @@ public sealed class WorkableHttpApiTests
     }
 
     [Fact]
+    public async Task MappedHttpQueueAcceptsLegacyConfigurationPayloadWithoutFailedWorker()
+    {
+        using var host = await CreateHttpHost();
+        var client = host.GetTestClient();
+        var system = host.Services.GetRequiredService<IWorkSystemRegistry>().Default;
+
+        var configuration = JsonSerializer.SerializeToNode(WorkableHttpWorkConfiguration.Default)
+            ?.AsObject()
+            ?? throw new InvalidOperationException("Expected HTTP work configuration JSON object.");
+        configuration.Remove("failedWorker");
+
+        var response = await client.PostAsJsonAsync(
+            "/workable/work/http.route.case",
+            new
+            {
+                completion = "returnAfterAccepted",
+                options = new
+                {
+                    configuration,
+                },
+            });
+
+        response.EnsureSuccessStatusCode();
+        var json = JsonNode.Parse(await response.Content.ReadAsStringAsync())
+            ?? throw new InvalidOperationException("Expected JSON response.");
+        var workerId = Guid.Parse(json["workerId"]?["value"]?.GetValue<string>()
+            ?? throw new InvalidOperationException("Expected worker id."));
+        var worker = await Direct(system).Query.Worker(new WorkerId(workerId));
+
+        Assert.NotNull(worker);
+        Assert.Equal(WorkFailedWorkerConfiguration.Default, worker.Configuration.FailedWorker);
+    }
+
+    [Fact]
     public async Task HttpApiCanReturnAfterAccepted()
     {
         var definition = WorkDefinition.Create(
