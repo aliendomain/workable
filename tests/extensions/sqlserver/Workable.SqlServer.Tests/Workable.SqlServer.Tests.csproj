@@ -23,9 +23,9 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\..\src\Workable.SqlServer\Workable.SqlServer.csproj" />
-    <ProjectReference Include="..\..\tools\Workable.SqlServer.Cli\Workable.SqlServer.Cli.csproj" />
-    <ProjectReference Include="..\..\..\..\src\Workable\Workable.csproj" />
+    <ProjectReference Include="..\..\..\..\packages\extensions\sqlserver\Workable.SqlServer\Workable.SqlServer.csproj" />
+    <ProjectReference Include="..\..\..\..\apps\tools\Workable.SqlServer.Cli\Workable.SqlServer.Cli.csproj" />
+    <ProjectReference Include="..\..\..\..\packages\core\Workable\Workable.csproj" />
   </ItemGroup>
 
 </Project>

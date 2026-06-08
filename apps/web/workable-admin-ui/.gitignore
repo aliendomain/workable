@@ -33,6 +33,10 @@ yarn-error.log*
 # env files (can opt-in for committing if needed)
 .env*
 
+# local admin config files can contain credentials or session secrets
+/workable-admin.config.local.json
+/workable-admin.config.json
+
 # vercel
 .vercel
 

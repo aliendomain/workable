@@ -11,5 +11,26 @@ artifacts/
 *.nupkg
 *.snupkg
 *.log
+
+# environment files and other local secret-bearing config
+.env
+.env.*
+**/.env
+**/.env.*
+!**/.env.example
+!**/.env.sample
+
+# admin UI local config can contain credentials, client secrets, and session secrets
+apps/web/workable-admin-ui/workable-admin.config.local.json
+apps/web/workable-admin-ui/workable-admin.config.json
 src/workable-admin-ui/workable-admin.config.local.json
 src/workable-admin-ui/workable-admin.config.json
+
+# local .NET host overrides
+appsettings.Local.json
+appsettings.local.json
+appsettings.*.local.json
+**/appsettings.Local.json
+**/appsettings.local.json
+**/appsettings.*.local.json
+**/Properties/launchSettings.local.json

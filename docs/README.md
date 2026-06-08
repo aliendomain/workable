@@ -59,7 +59,7 @@ Start with [Getting Started](guides/getting-started.md) if you are evaluating wh
 
 ## Package Docs
 
-- [SQL Server Integration](../integrations/sqlserver/README.md): runtime setup and schema deployment for `Workable.SqlServer`.
-- [Sample Host](../samples/Workable.SampleHost/README.md): runnable host that exposes HTTP, MCP, and SignalR adapters.
-- [Admin UI](../src/workable-admin-ui/README.md): local setup and security model for the Next.js admin UI.
-- [Performance Harness](../src/Workable.PerformanceHarness/README.md): benchmark and load-harness usage for runtime and adapter performance work.
+- [SQL Server Integration](../packages/extensions/sqlserver/README.md): runtime setup and schema deployment for `Workable.SqlServer`.
+- [Sample Host](../apps/samples/Workable.SampleHost/README.md): runnable host that exposes HTTP, MCP, and SignalR adapters.
+- [Admin UI](../apps/web/workable-admin-ui/README.md): local setup and security model for the Next.js admin UI.
+- [Performance Harness](../apps/tools/Workable.PerformanceHarness/README.md): benchmark and load-harness usage for runtime and adapter performance work.

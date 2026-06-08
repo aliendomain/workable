@@ -4,18 +4,18 @@ Date: 2026-06-01
 
 ## Benchmark Utility
 
-Location: `src/Workable.PerformanceHarness`
+Location: `apps/tools/Workable.PerformanceHarness`
 
 Primary scenario command used for this audit:
 
 ```powershell
-dotnet run --project src\Workable.PerformanceHarness --configuration Release --no-build -- --scenario all --workers 2000 --parallelism 32 --work-delay-ms 0 --view-subscriptions 8 --view-iterations 1 --warmup-workers 0 --warmup-views 0 --serialize-payloads false
+dotnet run --project apps\tools\Workable.PerformanceHarness --configuration Release --no-build -- --scenario all --workers 2000 --parallelism 32 --work-delay-ms 0 --view-subscriptions 8 --view-iterations 1 --warmup-workers 0 --warmup-views 0 --serialize-payloads false
 ```
 
 Build command used before runs:
 
 ```powershell
-dotnet build src\Workable.PerformanceHarness\Workable.PerformanceHarness.csproj --configuration Release --no-restore
+dotnet build apps\tools\Workable.PerformanceHarness\Workable.PerformanceHarness.csproj --configuration Release --no-restore
 ```
 
 The scenario harness now supports:
@@ -39,13 +39,13 @@ The scenario harness now supports:
 Event fanout matrix command used for the subscriber follow-up pass:
 
 ```powershell
-dotnet run --project src\Workable.PerformanceHarness --configuration Release --no-build -- --scenario event-fanout-matrix --workers 2000 --parallelism 32 --work-delay-ms 0 --view-subscriptions 8 --view-iterations 1 --warmup-workers 0 --warmup-views 0 --serialize-payloads false
+dotnet run --project apps\tools\Workable.PerformanceHarness --configuration Release --no-build -- --scenario event-fanout-matrix --workers 2000 --parallelism 32 --work-delay-ms 0 --view-subscriptions 8 --view-iterations 1 --warmup-workers 0 --warmup-views 0 --serialize-payloads false
 ```
 
 Start-to-completion follow-up command used for lifecycle stage timing:
 
 ```powershell
-dotnet run --project src\Workable.PerformanceHarness --configuration Release --no-build -- --scenario start-to-completion --workers 2000 --parallelism 32 --work-delay-ms 0 --view-subscriptions 8 --view-iterations 1 --warmup-workers 0 --warmup-views 0 --serialize-payloads false
+dotnet run --project apps\tools\Workable.PerformanceHarness --configuration Release --no-build -- --scenario start-to-completion --workers 2000 --parallelism 32 --work-delay-ms 0 --view-subscriptions 8 --view-iterations 1 --warmup-workers 0 --warmup-views 0 --serialize-payloads false
 ```
 
 ## Architecture
@@ -263,14 +263,14 @@ The start-to-completion follow-up added no retained cache or index. It only redu
 Commands run:
 
 ```powershell
-dotnet build src\Workable.PerformanceHarness\Workable.PerformanceHarness.csproj --configuration Release --no-restore
-dotnet run --project src\Workable.PerformanceHarness --configuration Release --no-build -- --scenario queue-only --workers 100 --parallelism 8 --work-delay-ms 0 --view-subscriptions 2 --view-iterations 1 --warmup-workers 0 --warmup-views 0 --serialize-payloads false
-dotnet run --project src\Workable.PerformanceHarness --configuration Release --no-build -- --scenario all --workers 2000 --parallelism 32 --work-delay-ms 0 --view-subscriptions 8 --view-iterations 1 --warmup-workers 0 --warmup-views 0 --serialize-payloads false
-dotnet run --project src\Workable.PerformanceHarness --configuration Release --no-build -- --scenario event-fanout-matrix --workers 2000 --parallelism 32 --work-delay-ms 0 --view-subscriptions 8 --view-iterations 1 --warmup-workers 0 --warmup-views 0 --serialize-payloads false
-dotnet run --project src\Workable.PerformanceHarness --configuration Release --no-build -- --scenario start-to-completion --workers 2000 --parallelism 32 --work-delay-ms 0 --view-subscriptions 8 --view-iterations 1 --warmup-workers 0 --warmup-views 0 --serialize-payloads false
-dotnet run --project src\Workable.PerformanceHarness --configuration Release --no-build -- --scenario completion-only --workers 2000 --parallelism 32 --work-delay-ms 0 --view-subscriptions 8 --view-iterations 1 --warmup-workers 0 --warmup-views 0 --serialize-payloads false
-dotnet run --project src\Workable.PerformanceHarness --configuration Release --no-build -- --scenario mixed-queue-complete --workers 2000 --parallelism 32 --work-delay-ms 0 --view-subscriptions 8 --view-iterations 1 --warmup-workers 0 --warmup-views 0 --serialize-payloads false
-dotnet run --project src\Workable.PerformanceHarness --configuration Release --no-build -- --scenario mixed-10-90 --workers 2000 --parallelism 32 --work-delay-ms 0 --view-subscriptions 8 --view-iterations 1 --warmup-workers 0 --warmup-views 0 --serialize-payloads false
+dotnet build apps\tools\Workable.PerformanceHarness\Workable.PerformanceHarness.csproj --configuration Release --no-restore
+dotnet run --project apps\tools\Workable.PerformanceHarness --configuration Release --no-build -- --scenario queue-only --workers 100 --parallelism 8 --work-delay-ms 0 --view-subscriptions 2 --view-iterations 1 --warmup-workers 0 --warmup-views 0 --serialize-payloads false
+dotnet run --project apps\tools\Workable.PerformanceHarness --configuration Release --no-build -- --scenario all --workers 2000 --parallelism 32 --work-delay-ms 0 --view-subscriptions 8 --view-iterations 1 --warmup-workers 0 --warmup-views 0 --serialize-payloads false
+dotnet run --project apps\tools\Workable.PerformanceHarness --configuration Release --no-build -- --scenario event-fanout-matrix --workers 2000 --parallelism 32 --work-delay-ms 0 --view-subscriptions 8 --view-iterations 1 --warmup-workers 0 --warmup-views 0 --serialize-payloads false
+dotnet run --project apps\tools\Workable.PerformanceHarness --configuration Release --no-build -- --scenario start-to-completion --workers 2000 --parallelism 32 --work-delay-ms 0 --view-subscriptions 8 --view-iterations 1 --warmup-workers 0 --warmup-views 0 --serialize-payloads false
+dotnet run --project apps\tools\Workable.PerformanceHarness --configuration Release --no-build -- --scenario completion-only --workers 2000 --parallelism 32 --work-delay-ms 0 --view-subscriptions 8 --view-iterations 1 --warmup-workers 0 --warmup-views 0 --serialize-payloads false
+dotnet run --project apps\tools\Workable.PerformanceHarness --configuration Release --no-build -- --scenario mixed-queue-complete --workers 2000 --parallelism 32 --work-delay-ms 0 --view-subscriptions 8 --view-iterations 1 --warmup-workers 0 --warmup-views 0 --serialize-payloads false
+dotnet run --project apps\tools\Workable.PerformanceHarness --configuration Release --no-build -- --scenario mixed-10-90 --workers 2000 --parallelism 32 --work-delay-ms 0 --view-subscriptions 8 --view-iterations 1 --warmup-workers 0 --warmup-views 0 --serialize-payloads false
 dotnet test tests\Workable.Tests\Workable.Tests.csproj --no-restore --logger "console;verbosity=minimal" --blame-hang-timeout 2m --filter "Category=EventStream|Category=Events"
 dotnet test tests\Workable.Tests\Workable.Tests.csproj --no-restore --logger "console;verbosity=minimal" --blame-hang-timeout 2m --filter "Category=Query|Category=WorkerLifecycle|Category=Events"
 dotnet test tests\Workable.Tests\Workable.Tests.csproj --no-restore --logger "console;verbosity=minimal" --blame-hang-timeout 2m --filter "Category=Execution|Category=WorkerLifecycle|Category=Events|Category=EventStream"

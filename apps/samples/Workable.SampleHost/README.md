@@ -16,7 +16,7 @@ The sample uses fake path-based authentication so local authorization scenarios 
 Run it from the repository root:
 
 ```powershell
-dotnet run --project .\samples\Workable.SampleHost\Workable.SampleHost.csproj
+dotnet run --project .\apps\samples\Workable.SampleHost\Workable.SampleHost.csproj
 ```
 
 The sample registers operation, fulfillment, and demo work definitions. Open the sample host root page in a browser to start or stop a continuous demo workload:
@@ -53,7 +53,7 @@ Invoke-RestMethod http://localhost:61932/sample-workload/interval -Method Post -
 Invoke-RestMethod http://localhost:61932/sample-workload/failures -Method Post -ContentType application/json -Body '{"percentage":8}'
 ```
 
-If you want a concrete example of the recommended "queue work from my own HTTP endpoint" path, see the `/sample-workload/force-cancel` endpoint in `samples/Workable.SampleHost/Program.cs`. It uses `IHttpContextWorkCommandDispatcher` instead of building a session by hand, which is the intended pattern for custom ASP.NET Core endpoints that just need to dispatch Workable work.
+If you want a concrete example of the recommended "queue work from my own HTTP endpoint" path, see the `/sample-workload/force-cancel` endpoint in `apps/samples/Workable.SampleHost/Program.cs`. It uses `IHttpContextWorkCommandDispatcher` instead of building a session by hand, which is the intended pattern for custom ASP.NET Core endpoints that just need to dispatch Workable work.
 
 MCP exposes default-system work definitions with protocol-safe names such as:
 
@@ -78,7 +78,7 @@ The HTTP API exposes the standard Workable routes. For example:
 Start the sample host:
 
 ```powershell
-dotnet run --project .\samples\Workable.SampleHost\Workable.SampleHost.csproj
+dotnet run --project .\apps\samples\Workable.SampleHost\Workable.SampleHost.csproj
 ```
 
 The launch profile exposes:
@@ -89,7 +89,7 @@ The launch profile exposes:
 
 ## Testing The Admin UI Locally
 
-The admin UI is secure by default and will not proxy requests until you configure admin authentication. The hosted sample Workable API remains responsible for deciding which authenticated profile may read, operate, configure, run lifecycle actions, or inspect diagnostics. For local sample testing, copy `src/workable-admin-ui/workable-admin.basic.config.example.json` to `src/workable-admin-ui/workable-admin.config.local.json`, keep it uncommitted, and use this sample-oriented configuration:
+The admin UI is secure by default and will not proxy requests until you configure admin authentication. The hosted sample Workable API remains responsible for deciding which authenticated profile may read, operate, configure, run lifecycle actions, or inspect diagnostics. For local sample testing, copy `apps/web/workable-admin-ui/workable-admin.basic.config.example.json` to `apps/web/workable-admin-ui/workable-admin.config.local.json`, keep it uncommitted, and use this sample-oriented configuration:
 
 ```json
 {
@@ -107,8 +107,8 @@ The admin UI is secure by default and will not proxy requests until you configur
 Then start the admin UI:
 
 ```powershell
-npm --prefix .\src\workable-admin-ui install
-npm --prefix .\src\workable-admin-ui run dev
+npm --prefix .\apps\web\workable-admin-ui install
+npm --prefix .\apps\web\workable-admin-ui run dev
 ```
 
 Open the admin UI and sign in with the configured username and password. Use the sample host root page to copy a fake-auth Workable URL for a lower-privilege profile when you want to verify the hosted Workable system still rejects restricted operations.

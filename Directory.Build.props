@@ -13,6 +13,6 @@
 
   <ItemGroup Condition="'$(IsPackable)' != 'false'">
     <None Include="$(MSBuildThisFileDirectory)README.md" Pack="true" PackagePath="\" Visible="false" />
-    <None Include="$(MSBuildThisFileDirectory)src\workable-admin-ui\public\workable-favicon.png" Pack="true" PackagePath="\" Visible="false" />
+    <None Include="$(MSBuildThisFileDirectory)apps\web\workable-admin-ui\public\workable-favicon.png" Pack="true" PackagePath="\" Visible="false" />
   </ItemGroup>
 </Project>

@@ -121,7 +121,7 @@ Polling remains as the cross-process and caller-transaction fallback. If another
 
 Durable queueing does not imply idempotency. `QueueDurably()` persists the queue entry and gives at-least-once acceptance; execution remains recoverable with lease-based replay if a process stops before final cleanup. It also selects persistent coordination storage, so any enabled idempotency or concurrency feature in the same configuration is persistence-backed.
 
-The database provider is configured separately from work configuration. SQL Server is provided by [`Workable.SqlServer`](../../../integrations/sqlserver/README.md):
+The database provider is configured separately from work configuration. SQL Server is provided by [`Workable.SqlServer`](../../../packages/extensions/sqlserver/README.md):
 
 ```csharp
 services.AddWorkableSqlServerDurableQueue(

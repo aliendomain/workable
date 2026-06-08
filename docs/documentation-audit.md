@@ -10,13 +10,13 @@ This audit verifies the 39 Markdown documentation files under `Docs` against the
 | --- | --- |
 | `Docs/README.md` | Solution docs list, adapter summaries, linked source docs |
 | `Docs/documentation-audit.md` | This source-to-doc audit record, validation notes, and remaining documentation debt |
-| `Docs/adapters/http-api.md` | `src/Workable.HttpApi`, ASP.NET Core authorization mapping, queue/result models, query routes, worker routes, debug route guards |
-| `Docs/adapters/mcp.md` | `src/Workable.Mcp`, MCP tool router, invocation options, query/action tool names |
-| `Docs/adapters/realtime.md` | `src/Workable.SignalR`, SignalR hub methods, client method names, realtime options, debug route behavior |
-| `Docs/backend-performance-audit.md` | `src/Workable.PerformanceHarness`, scenario names, benchmark commands, read-model/event performance notes |
+| `Docs/adapters/http-api.md` | `packages/core/Workable.HttpApi`, ASP.NET Core authorization mapping, queue/result models, query routes, worker routes, debug route guards |
+| `Docs/adapters/mcp.md` | `packages/core/Workable.Mcp`, MCP tool router, invocation options, query/action tool names |
+| `Docs/adapters/realtime.md` | `packages/core/Workable.SignalR`, SignalR hub methods, client method names, realtime options, debug route behavior |
+| `Docs/backend-performance-audit.md` | `apps/tools/Workable.PerformanceHarness`, scenario names, benchmark commands, read-model/event performance notes |
 | `Docs/concepts/abstractions-extension-points.md` | `Workable.Abstractions`, persistence/metrics/realtime extension points, SQL Server integration link |
 | `Docs/concepts/abstractions-surface.md` | `Workable.Abstractions` public interfaces and session contracts |
-| `Docs/concepts/aspnetcore-integration.md` | `src/Workable.AspNetCore`, request context and authorization group mapping |
+| `Docs/concepts/aspnetcore-integration.md` | `packages/core/Workable.AspNetCore`, request context and authorization group mapping |
 | `Docs/concepts/authorization.md` | authorization builders, system permissions, group requirements, adapter authorization behavior |
 | `Docs/concepts/core-api-surface.md` | core system, queue, worker, query, event, lifecycle public contracts |
 | `Docs/concepts/diagnostics.md` | diagnostics snapshots, warnings, realtime diagnostics view sample |
@@ -50,13 +50,13 @@ This audit verifies the 39 Markdown documentation files under `Docs` against the
 
 ## Source Areas Verified
 
-- HTTP API route map in `src/Workable.HttpApi`: catalog, queue, query, worker operations, diagnostics, lifecycle, host capabilities, and local debug routes.
-- MCP adapter in `src/Workable.Mcp`: work tool naming, query tools, action tools, invocation options, tool catalog options, and authorization flow.
-- SignalR adapter in `src/Workable.SignalR`: hub methods, client method names, realtime options/defaults, event subscriptions, view subscriptions, and worker-overview subscriptions.
-- Core runtime in `src/Workable` and `src/Workable.Abstractions`: queue/start/complete/fail/pause/resume/cancel/purge paths, read-model update flow, event stream, profiling, diagnostics, worker snapshots, action history, and status enums.
-- Configuration models in `src/Workable.Sdk` and `src/Workable.Abstractions`: start, recurrence, transient retry, logging, retention, coordination, idempotency, concurrency, queue durability, invocation, system capacity, and system retention.
-- Authorization in `src/Workable`, `src/Workable.AspNetCore`, `src/Workable.Entra`, `src/Workable.HttpApi`, `src/Workable.Mcp`, and `src/Workable.SignalR`.
-- Performance harness in `src/Workable.PerformanceHarness`: scenario names, command shape, BenchmarkDotNet groups, and current benchmark audit references.
+- HTTP API route map in `packages/core/Workable.HttpApi`: catalog, queue, query, worker operations, diagnostics, lifecycle, host capabilities, and local debug routes.
+- MCP adapter in `packages/core/Workable.Mcp`: work tool naming, query tools, action tools, invocation options, tool catalog options, and authorization flow.
+- SignalR adapter in `packages/core/Workable.SignalR`: hub methods, client method names, realtime options/defaults, event subscriptions, view subscriptions, and worker-overview subscriptions.
+- Core runtime in `packages/core/Workable` and `packages/core/Workable.Abstractions`: queue/start/complete/fail/pause/resume/cancel/purge paths, read-model update flow, event stream, profiling, diagnostics, worker snapshots, action history, and status enums.
+- Configuration models in `packages/core/Workable.Sdk` and `packages/core/Workable.Abstractions`: start, recurrence, transient retry, logging, retention, coordination, idempotency, concurrency, queue durability, invocation, system capacity, and system retention.
+- Authorization in `packages/core/Workable`, `packages/core/Workable.AspNetCore`, `packages/core/Workable.Entra`, `packages/core/Workable.HttpApi`, `packages/core/Workable.Mcp`, and `packages/core/Workable.SignalR`.
+- Performance harness in `apps/tools/Workable.PerformanceHarness`: scenario names, command shape, BenchmarkDotNet groups, and current benchmark audit references.
 
 ## Stale Or Inaccurate Docs Fixed
 
@@ -122,9 +122,9 @@ This audit verifies the 39 Markdown documentation files under `Docs` against the
 
 ## Performance And Benchmark Coverage
 
-- Verified `Docs/backend-performance-audit.md` points to `src/Workable.PerformanceHarness` and lists the current named scenarios.
+- Verified `Docs/backend-performance-audit.md` points to `apps/tools/Workable.PerformanceHarness` and lists the current named scenarios.
 - Verified the harness supports scenario output for queue-only, completion-only, mixed queue/complete, completion-heavy and queue-heavy variants, mixed ratios, read-model latency, visibility latency, index update cost, memory growth, event fanout, event fanout matrix, and start-to-completion.
-- Verified BenchmarkDotNet groups in `src/Workable.PerformanceHarness/README.md` remain current.
+- Verified BenchmarkDotNet groups in `apps/tools/Workable.PerformanceHarness/README.md` remain current.
 - No performance doc changes were needed in this pass.
 
 ## Internal Contradictions
@@ -153,11 +153,11 @@ Recommended future work:
 
 ```powershell
 Get-ChildItem -Path Docs -Recurse -File -Filter *.md
-Select-String -Path src\Workable.HttpApi\**\*.cs -Pattern 'MapGet\("','MapPost\("'
-Select-String -Path src\Workable.Mcp\WorkableMcpToolRouter.cs -Pattern 'workable_'
-Select-String -Path src\Workable.SignalR\*.cs -Pattern 'Watch|workable\.|HubPath|PublishInterval|EventSubscriptionCapacity|EventOverflowBehavior'
-Select-String -Path src\Workable.HttpApi\Queue\*.cs -Pattern 'record WorkableHttp|enum WorkableHttp'
-rg -n "WorkViewWorkerGridOptions|WorkViewIterationGridOptions|workerDetail|workerCurrentIteration|NormalizeViewComponentRequests" src\Workable.Views Docs\concepts\views.md
+Select-String -Path packages\core\Workable.HttpApi\**\*.cs -Pattern 'MapGet\("','MapPost\("'
+Select-String -Path packages\core\Workable.Mcp\WorkableMcpToolRouter.cs -Pattern 'workable_'
+Select-String -Path packages\core\Workable.SignalR\*.cs -Pattern 'Watch|workable\.|HubPath|PublishInterval|EventSubscriptionCapacity|EventOverflowBehavior'
+Select-String -Path packages\core\Workable.HttpApi\Queue\*.cs -Pattern 'record WorkableHttp|enum WorkableHttp'
+rg -n "WorkViewWorkerGridOptions|WorkViewIterationGridOptions|workerDetail|workerCurrentIteration|NormalizeViewComponentRequests" packages\core\Workable.Views Docs\concepts\views.md
 rg -n 'TODO|TBD|coming soon|not implemented|workable_reconfigure_worker|WaitForAccepted|WaitUntilAccepted|StartedAndReturned|/ui/views|ui-views-and-components|WorkDefinitionId\? DefinitionId|"count": 0' Docs -g '!documentation-audit.md'
 rg -n --glob package.json --glob *.yml --glob *.yaml --glob *.csproj --glob *.slnx "markdownlint|lychee|remark|docfx|markdown-link|docs" .
 ```
