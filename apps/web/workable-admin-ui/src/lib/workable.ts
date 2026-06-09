@@ -26,6 +26,7 @@ export type WorkableRealtimeOriginActor = {
 
 export type WorkableRealtimeOrigin = {
   channel: string;
+  surface?: string | null;
   actor?: WorkableRealtimeOriginActor | null;
   description?: string | null;
   url?: string | null;
@@ -508,6 +509,7 @@ export type WorkWorkerOverviewSortDirection = "Asc" | "Desc";
 
 export type WorkWorkerOverviewOrigin = {
   channel: string;
+  surface?: string | null;
   actorId?: string | null;
   actorName?: string | null;
   actorEmail?: string | null;

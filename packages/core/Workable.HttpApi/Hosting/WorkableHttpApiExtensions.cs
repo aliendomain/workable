@@ -34,30 +34,53 @@ public static class WorkableHttpApiExtensions
         if (ShouldMapDebugRoutes(endpoints.ServiceProvider))
         {
             var debugGroup = endpoints.MapGroup(prefix);
+            RequireOuterGate(debugGroup, endpoints.ServiceProvider);
             WorkableHttpDebugRoutes.Map(debugGroup);
             var namedDebugGroup = endpoints.MapGroup($"{prefix}/systems/{{systemName}}");
+            RequireOuterGate(namedDebugGroup, endpoints.ServiceProvider);
             WorkableHttpDebugRoutes.Map(namedDebugGroup);
         }
 
-        var group = endpoints.MapGroup(prefix);
-        ApplyTransportAuthorization(group, endpoints.ServiceProvider);
-        RequireAuthenticated(group);
-        HandleAuthorizationDenied(group);
-        group.MapGet("/host", (
-            HttpContext httpContext,
+        var hostGroup = CreateProtectedGroup(
+            endpoints,
+            prefix,
+            requireBuiltInSurfaceAccess: false);
+        hostGroup.MapGet("/host", (
             WorkableHttpTopologyResolver topology,
-            IWorkRequestContextFactory requestContexts)
-            => Results.Ok(topology.DescribeHost(WorkableHttpRequestContext.Create(
-                httpContext,
-                requestContexts))));
+            WorkableHttpRequestAccessContext requestAccess)
+            => Results.Ok(topology.DescribeBuiltInSurfaceHost(requestAccess)));
 
+        var group = CreateProtectedGroup(
+            endpoints,
+            prefix,
+            requireBuiltInSurfaceAccess: true);
         MapWorkableApiRoutes(group);
-        var namedGroup = group.MapGroup("/systems/{systemName}");
-        ApplyTransportAuthorization(namedGroup, endpoints.ServiceProvider);
-        RequireAuthenticated(namedGroup);
+
+        var namedGroup = CreateProtectedGroup(
+            endpoints,
+            $"{prefix}/systems/{{systemName}}",
+            requireBuiltInSurfaceAccess: true);
         MapWorkableApiRoutes(namedGroup);
 
         return endpoints;
+    }
+
+    private static RouteGroupBuilder CreateProtectedGroup(
+        IEndpointRouteBuilder endpoints,
+        string prefix,
+        bool requireBuiltInSurfaceAccess)
+    {
+        var group = endpoints.MapGroup(prefix);
+        ApplyTransportAuthorization(group, endpoints.ServiceProvider);
+        if (requireBuiltInSurfaceAccess)
+        {
+            RequireBuiltInSurfaceAccess(group);
+        }
+
+        RequireOuterGate(group, endpoints.ServiceProvider);
+        RequireAuthenticated(group);
+        HandleAuthorizationDenied(group);
+        return group;
     }
 
     private static void MapWorkableApiRoutes(RouteGroupBuilder group)
@@ -119,6 +142,97 @@ public static class WorkableHttpApiExtensions
                 await next(httpContext);
             };
         });
+    }
+
+    private static void RequireOuterGate(RouteGroupBuilder group, IServiceProvider services)
+    {
+        var requiredGroups = services
+            .GetService<IOptions<WorkableHttpApiOptions>>()
+            ?.Value
+            ?.SurfaceAccessGroups
+            ?.Where(group => !string.IsNullOrWhiteSpace(group))
+            .Select(group => group.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        if (requiredGroups is not { Count: > 0 })
+        {
+            return;
+        }
+
+        ((IEndpointConventionBuilder)group).Add(endpointBuilder =>
+        {
+            var next = endpointBuilder.RequestDelegate
+                ?? throw new InvalidOperationException("Workable HTTP API endpoint did not provide a request delegate.");
+            endpointBuilder.RequestDelegate = async httpContext =>
+            {
+                if (HttpMethods.IsOptions(httpContext.Request.Method))
+                {
+                    await next(httpContext);
+                    return;
+                }
+
+                var principal = await WorkableAspNetCoreAuthentication.GetAuthenticatedPrincipalAsync(httpContext);
+                if (principal?.Identity?.IsAuthenticated != true)
+                {
+                    await WorkableHttpRouteResults.AuthenticationRequired().ExecuteAsync(httpContext);
+                    return;
+                }
+
+                var requestAccess = httpContext.RequestServices.GetRequiredService<WorkableHttpRequestAccessContext>();
+                if (!requestAccess.HasAnyRequiredSurfaceGroup(requiredGroups))
+                {
+                    await WorkableHttpRouteResults.SurfaceAccessDenied().ExecuteAsync(httpContext);
+                    return;
+                }
+
+                await next(httpContext);
+            };
+        });
+    }
+
+    private static void RequireBuiltInSurfaceAccess(RouteGroupBuilder group)
+    {
+        ((IEndpointConventionBuilder)group).Add(endpointBuilder =>
+        {
+            var next = endpointBuilder.RequestDelegate
+                ?? throw new InvalidOperationException("Workable HTTP API endpoint did not provide a request delegate.");
+            endpointBuilder.RequestDelegate = async httpContext =>
+            {
+                if (HttpMethods.IsOptions(httpContext.Request.Method))
+                {
+                    await next(httpContext);
+                    return;
+                }
+
+                if (!TryResolveBuiltInSurfaceSystem(httpContext, out var system))
+                {
+                    await next(httpContext);
+                    return;
+                }
+
+                var requestAccess = httpContext.RequestServices.GetRequiredService<WorkableHttpRequestAccessContext>();
+                if (!requestAccess.IsBuiltInSurfaceAllowed(system))
+                {
+                    await WorkableHttpRouteResults.SystemSurfaceAccessDenied(system.Name).ExecuteAsync(httpContext);
+                    return;
+                }
+
+                await next(httpContext);
+            };
+        });
+    }
+
+    private static bool TryResolveBuiltInSurfaceSystem(
+        HttpContext httpContext,
+        [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out IWorkSystem? system)
+    {
+        ArgumentNullException.ThrowIfNull(httpContext);
+
+        var topology = httpContext.RequestServices.GetRequiredService<WorkableHttpTopologyResolver>();
+        var systemName = httpContext.Request.RouteValues.TryGetValue("systemName", out var routeValue)
+            ? Convert.ToString(routeValue)
+            : null;
+        return topology.TryResolveSystem(systemName, out system);
     }
 
     private static void EnsureAllSystemsRequireAuthorization(IWorkSystemRegistry registry)

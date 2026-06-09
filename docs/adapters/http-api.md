@@ -4,6 +4,8 @@ Workable can expose queueing, worker operations, system operations, and query AP
 
 The HTTP API adapter uses the same Workable catalog and queueing system as direct in-process code. A work definition can be queued through HTTP only when its invocation configuration allows `WorkInvocationChannel.HttpApi`.
 
+The built-in HTTP adapter also stamps queued work and worker actions with `WorkOriginSurface.WorkableAdapter`. That keeps built-in `/workable` route usage visibly distinct from host-defined endpoints that use Workable through `IHttpContextWorkCommandDispatcher` or `IWorkRequestContextFactory`, which still use the `HttpApi` channel but default to `WorkOriginSurface.HostApplication`.
+
 Invocation-channel rules matter for work invocation, not for general system/query/worker discovery routes. Definition listing, diagnostics, worker reads, lifecycle routes, and other read/control surfaces are governed by authorization and route shape, not by definition invocation-channel settings.
 
 HTTP queueing, worker actions, and worker reconfiguration record a `WorkRequestContext` from the request. Its nested `Origin` carries the durable actor/channel provenance, and the request context also captures the HTTP path as `RequestContext.Url`. Built-in queue, action, bulk-action, and reconfiguration request bodies can also supply an optional `description` value, which Workable stores on `RequestContext.Description`.
@@ -12,7 +14,9 @@ HTTP queueing, worker actions, and worker reconfiguration record a `WorkRequestC
 
 Each request creates a `WorkRequestContext` and an `IWorkSystemSession` for the selected system. Work-definition read access filters catalog, query, event, and view results. Work-definition operate access controls queueing, worker actions, and reconfiguration.
 
-If your host also exposes custom controllers or minimal APIs that need to queue work, prefer `IHttpContextWorkCommandDispatcher` from `Workable.AspNetCore` instead of recreating that orchestration yourself. The built-in HTTP adapter now follows the same dispatcher-first pattern internally for queue requests.
+Inside the built-in adapter, HTTP authorization is orchestrated through a request-scoped cache. The adapter resolves the caller once for the request, caches host-level group checks and per-system access summaries, and reuses that data across outer-gate checks, built-in surface checks, host discovery, and session creation.
+
+If your host also exposes custom controllers or minimal APIs that need to queue work, prefer `IHttpContextWorkCommandDispatcher` from `Workable.AspNetCore` instead of recreating that orchestration yourself. The built-in HTTP adapter follows the same dispatcher-first pattern internally for queue requests.
 
 ## Map Endpoints
 
@@ -27,6 +31,34 @@ app.MapWorkableApi();
 The default prefix is `/workable`.
 
 `MapWorkableApi` always requires authenticated callers. When `WorkableAspNetCoreAuthorizationOptions.TransportAuthenticationScheme` is also set, `MapWorkableApi` adds matching authorization metadata to the mapped endpoints so ASP.NET Core evaluates that specific scheme.
+
+Beyond authentication, the built-in `/workable` routes are system-scoped admin surfaces. A caller must be recognized as either a `SystemAdministrator` or `WorkAdministrator` for the target system before those built-in routes run for that system. That applies to both the default-system routes under `/workable/...` and the named-system routes under `/workable/systems/{systemName}/...`.
+
+The built-in adapter has two authorization gates after transport authentication:
+
+- outer gate: optional host-wide `SurfaceAccessGroups` that control whether the caller may enter the built-in `/workable` surface at all
+- inner gate: required system-scoped built-in surface access, granted by `SystemAdministrator`, `WorkAdministrator`, or any groups configured with `AllowBuiltInHttpApiToGroups(...)` for the target system
+
+If the entire built-in `/workable` path should also require one more top-level group before any system-specific surface access is considered, configure `SurfaceAccessGroups` as an outer gate:
+
+```csharp
+builder.Services.AddWorkableHttpApi(options =>
+{
+    options.SurfaceAccessGroups = ["workable.surface"];
+});
+```
+
+Those groups are evaluated only for routes mapped by `MapWorkableApi(...)`. Host-defined endpoints that use Workable directly are unaffected.
+Once `SurfaceAccessGroups` contains at least one group, every caller to every built-in `/workable` route must match at least one configured outer-gate group before any per-system surface decision is considered.
+
+The gate order is:
+
+1. transport authentication
+2. optional outer gate via `SurfaceAccessGroups`
+3. inner gate for built-in surface access on the target system
+4. normal Workable system and work-definition authorization inside the created session
+
+That means the built-in `/workable` routes are intentionally stricter than host-defined HTTP endpoints that dispatch into Workable. A host-defined endpoint can still choose its own authorization model and then call `IHttpContextWorkCommandDispatcher`, `IWorkRequestContextFactory`, or `IWorkSystem.CreateSession(...)` directly.
 
 That transport scheme is not automatic. `AddWorkableHttpApi()` by itself does not choose one. It is commonly set by [Workable.Entra](../guides/entra-authentication.md), or by host code that wants Workable HTTP requests to authenticate with one specific ASP.NET Core scheme instead of inheriting the ambient default.
 
@@ -141,8 +173,25 @@ The host-level `capabilities` object lets clients discover optional transport fe
 The per-system `capabilities` object is reserved for system-specific runtime behavior. `persistentCoordinationAvailable` tells clients whether that system currently has persistent coordination available through a registered persistence store. In practice, that means persistent coordination settings such as `storage: "Persistent"` can be honored for features like durable queueing, persistence-backed idempotency, and persistence-backed coordination.
 
 The systems list is filtered to systems where the caller has actual access. Read access, operate access, diagnostics access, control access, or administrator roles are all enough to make a system visible.
+For the built-in HTTP API specifically, `/workable/host` lists only systems where the caller has both:
+
+- built-in surface access for that system (`SystemAdministrator`, `WorkAdministrator`, or a group granted through `AllowBuiltInHttpApiToGroups(...)`)
+- some real Workable access inside that system
+
+For named built-in routes such as `/workable/systems/{systemName}/...`, Workable also requires both:
+
+- inner built-in surface access for that system
+- some real Workable access in that system
+
+When the caller lacks real system access on a named built-in route, Workable returns the normal system-level authorization failure. When the caller lacks built-in surface access, Workable returns the built-in surface denial.
 
 When realtime is not registered, `enabled` is `false`.
+
+## Request Concurrency
+
+The built-in HTTP adapter caches authorization state in a scoped per-request service. That is what lets the adapter avoid repeating group-provider and `DescribeAccess(...)` work across multiple authorization checks in one request.
+
+That cache currently assumes the built-in adapter performs authorization work in the normal sequential request pipeline. It is not designed for concurrent mutation from multiple parallel authorization tasks inside the same request. If built-in HTTP authorization ever starts evaluating systems in parallel within one request, that cache will need synchronization or a concurrent structure.
 
 ## Diagnostics
 
@@ -545,7 +594,7 @@ The iteration-messages route accepts:
 - `sort`: `Asc` or `Desc`
 - `severities`: comma-separated `WorkMessageSeverity` values such as `Information,Warning`
 
-Retained `WorkMessage` payloads now include `occurredAt` in addition to `code`, `severity`, `text`, optional `target`, and optional `metadata`.
+Retained `WorkMessage` payloads include `occurredAt` in addition to `code`, `severity`, `text`, optional `target`, and optional `metadata`.
 
 ## Local Realtime Debug
 

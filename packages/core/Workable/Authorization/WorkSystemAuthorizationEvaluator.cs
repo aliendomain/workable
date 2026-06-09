@@ -10,6 +10,11 @@ internal sealed class WorkSystemAuthorizationEvaluator(
     public bool CanControlSystem()
         => this.IsSystemAdministrator() || this.IsSatisfied(configuration.ControlSystemGroups);
 
+    public bool CanUseBuiltInHttpApiSurface()
+        => this.IsSystemAdministrator()
+            || this.IsWorkAdministrator()
+            || this.IsSatisfied(configuration.BuiltInHttpApiSurfaceGroups);
+
     public bool HasReadAllWorkAccess()
         => this.IsSystemAdministrator()
             || this.IsWorkAdministrator()

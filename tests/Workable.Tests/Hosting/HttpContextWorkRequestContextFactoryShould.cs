@@ -22,6 +22,7 @@ public sealed class HttpContextWorkRequestContextFactoryShould
         Assert.Equal(WorkActor.Unknown, context.Actor);
         Assert.False(context.IsAuthenticated);
         Assert.Equal(WorkInvocationChannel.HttpApi, context.Channel);
+        Assert.Equal(WorkOriginSurface.HostApplication, context.Surface);
         Assert.Equal("Missing HTTP context.", context.Description);
         Assert.Null(context.Url);
     }
@@ -43,6 +44,7 @@ public sealed class HttpContextWorkRequestContextFactoryShould
         Assert.Equal(actor, context.Actor);
         Assert.False(context.IsAuthenticated);
         Assert.Equal(WorkInvocationChannel.HttpApi, context.Channel);
+        Assert.Equal(WorkOriginSurface.HostApplication, context.Surface);
         Assert.Null(context.Description);
         Assert.Equal("/custom/queue", context.Url);
     }
@@ -71,6 +73,7 @@ public sealed class HttpContextWorkRequestContextFactoryShould
         Assert.Equal(actor, context.Origin.Actor);
         Assert.True(context.IsAuthenticated);
         Assert.Equal(WorkInvocationChannel.HttpApi, context.Channel);
+        Assert.Equal(WorkOriginSurface.HostApplication, context.Surface);
         Assert.Equal("Queue through HTTP.", context.Description);
         Assert.Equal("/workable/custom/queue?definition=demo", context.Url);
     }

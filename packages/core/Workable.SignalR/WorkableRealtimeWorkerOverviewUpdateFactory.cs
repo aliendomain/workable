@@ -934,6 +934,7 @@ internal static class WorkableRealtimeWorkerOverviewUpdateFactory
 
     private sealed record WorkerOverviewRealtimeEventOrigin(
         string Channel,
+        string? Surface = null,
         WorkerOverviewRealtimeEventActor? Actor = null);
 
     private sealed record WorkerOverviewRealtimeEventActor(
@@ -950,6 +951,9 @@ internal static class WorkableRealtimeWorkerOverviewUpdateFactory
             Enum.TryParse<WorkInvocationChannel>(origin.Channel, ignoreCase: true, out var channel)
                 ? channel
                 : WorkInvocationChannel.InProcess,
+            Enum.TryParse<WorkOriginSurface>(origin.Surface, ignoreCase: true, out var surface)
+                ? surface
+                : WorkOriginSurface.HostApplication,
             origin.Actor?.Id,
             origin.Actor?.Name,
             origin.Actor?.Email);

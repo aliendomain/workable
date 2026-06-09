@@ -29,6 +29,7 @@ public sealed class AspNetCoreOriginTests
             ?? throw new InvalidOperationException("Expected worker.");
 
         Assert.Equal(WorkInvocationChannel.HttpApi, worker.Origin.Channel);
+        Assert.Equal(WorkOriginSurface.HostApplication, worker.Origin.Surface);
         Assert.Equal("user-123", worker.Origin.Actor.Id);
         Assert.Equal("greya@example.test", worker.Origin.Actor.Email);
         Assert.Equal("Queue work 'direct.http' through custom HTTP endpoint.", worker.RequestContext.Description);

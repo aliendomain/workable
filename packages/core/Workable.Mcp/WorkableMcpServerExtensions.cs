@@ -173,7 +173,8 @@ public static class WorkableMcpServerExtensions
         }
 
         return services.GetRequiredService<IWorkRequestContextFactory>()
-            .Create(httpContext, WorkInvocationChannel.Mcp);
+            .Create(httpContext, WorkInvocationChannel.Mcp)
+            .WithSurface(WorkOriginSurface.WorkableAdapter);
     }
 
     private static void EnsureSystemRequiresAuthorization(

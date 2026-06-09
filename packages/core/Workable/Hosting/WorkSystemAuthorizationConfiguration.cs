@@ -35,6 +35,11 @@ public sealed record WorkSystemAuthorizationConfiguration
     public IReadOnlySet<string> ControlSystemGroups { get; init; } = EmptySet();
 
     /// <summary>
+    /// Gets the groups that can use Workable's built-in HTTP API surface for the system.
+    /// </summary>
+    public IReadOnlySet<string> BuiltInHttpApiSurfaceGroups { get; init; } = EmptySet();
+
+    /// <summary>
     /// Gets the groups that can read every work definition in the system.
     /// </summary>
     public IReadOnlySet<string> ReadAllWorkGroups { get; init; } = EmptySet();

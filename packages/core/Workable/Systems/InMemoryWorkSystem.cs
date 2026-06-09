@@ -8,6 +8,7 @@ using Microsoft.Extensions.Hosting;
 namespace Workable;
 internal sealed class InMemoryWorkSystem :
     IWorkSystem,
+    IWorkSystemBuiltInHttpSurfaceAccess,
     IWorkSystemReadModelClock,
     IWorkSystemShutdownMetadata,
     IWorkSystemCoordinationCapabilities
@@ -198,6 +199,19 @@ internal sealed class InMemoryWorkSystem :
         ArgumentNullException.ThrowIfNull(requestContext);
 
         return this.sessions.CreateSession(requestContext, this.RequiresAuthorization);
+    }
+
+    bool IWorkSystemBuiltInHttpSurfaceAccess.IsBuiltInHttpSurfaceAllowed(WorkRequestContext requestContext)
+    {
+        ArgumentNullException.ThrowIfNull(requestContext);
+
+        if (!this.RequiresAuthorization)
+        {
+            return true;
+        }
+
+        var authorization = this.ResolveAuthorization(requestContext);
+        return authorization.CanUseBuiltInHttpApiSurface();
     }
 
     public Task Start(

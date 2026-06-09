@@ -42,6 +42,8 @@ It wraps the common HTTP orchestration path:
 - resolve the current actor, URL, and authenticated-caller signal
 - dispatch the request through Workable using a standardized `WorkDispatchResult<T>`
 
+When used from a host-defined endpoint, this path records `WorkInvocationChannel.HttpApi` with `WorkOriginSurface.HostApplication`. Built-in Workable adapter endpoints such as `MapWorkableApi(...)` still use the same `HttpApi` channel, but stamp `WorkOriginSurface.WorkableAdapter` so the origin stays distinguishable in worker history and query payloads.
+
 ```csharp
 app.MapPost("/welcome/{userId}", async (
     string userId,
@@ -101,6 +103,7 @@ The created context includes:
 
 - a `WorkActor` derived from the current authenticated user
 - a `WorkOrigin` that records the invocation channel and request URL
+- a `WorkOriginSurface` value that defaults to `HostApplication` for host-defined endpoints
 - `IsAuthenticated`, derived from the current ASP.NET Core principal
 - any authorization group resolution performed by Workable later through the registered group provider
 

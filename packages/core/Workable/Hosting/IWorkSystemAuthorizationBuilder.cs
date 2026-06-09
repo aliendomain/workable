@@ -39,6 +39,16 @@ public interface IWorkSystemAuthorizationBuilder
     IWorkSystemAuthorizationBuilder AllowControlSystemToGroups(params string[] groups);
 
     /// <summary>
+    /// Grants permission to use Workable's built-in HTTP API surface for the configured system.
+    /// </summary>
+    /// <param name="groups">
+    /// Groups that may use the built-in <c>MapWorkableApi(...)</c> routes for this system without being
+    /// system administrators or work administrators.
+    /// </param>
+    /// <returns>The same builder so additional authorization rules can be chained.</returns>
+    IWorkSystemAuthorizationBuilder AllowBuiltInHttpApiToGroups(params string[] groups);
+
+    /// <summary>
     /// Grants read access to every work definition in the configured system.
     /// </summary>
     /// <param name="groups">Groups that should be able to read all work without per-definition read grants.</param>

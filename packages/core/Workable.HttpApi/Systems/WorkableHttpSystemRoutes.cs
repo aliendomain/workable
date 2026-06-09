@@ -38,6 +38,7 @@ internal static class WorkableHttpSystemRoutes
 
             var requestContext = WorkableHttpRequestContext.Create(
                 httpContext,
+                system,
                 requestContexts);
             var result = await WorkableHttpTopologyResolver.Start(system, requestContext, cancellationToken);
             return Results.Ok(result);
@@ -56,6 +57,7 @@ internal static class WorkableHttpSystemRoutes
 
             var requestContext = WorkableHttpRequestContext.Create(
                 httpContext,
+                system,
                 requestContexts);
             var result = await WorkableHttpTopologyResolver.Stop(system, requestContext, cancellationToken);
             return Results.Ok(result);

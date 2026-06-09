@@ -1112,7 +1112,8 @@ internal sealed class WorkableRealtimeBroadcaster(
         return system.CreateSession(new WorkRequestContext(
             Origin: WorkOrigin.Create(
                 WorkInvocationChannel.SignalR,
-                authorization.Actor),
+                authorization.Actor,
+                WorkOriginSurface.WorkableAdapter),
             Authorization: authorization));
     }
 

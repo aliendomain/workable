@@ -32,6 +32,7 @@ public sealed class HttpContextWorkCommandDispatcherShould
         var response = Assert.IsType<HttpDispatchOutput>(result.Response);
         Assert.Equal("alpha", response.Input);
         Assert.Equal(WorkInvocationChannel.HttpApi, response.Channel);
+        Assert.Equal(WorkOriginSurface.HostApplication, response.Surface);
         Assert.Equal("http-user", response.ActorId);
         Assert.Equal("Http User", response.ActorName);
         Assert.Equal("http-user@example.test", response.ActorEmail);
@@ -88,6 +89,7 @@ public sealed class HttpContextWorkCommandDispatcherShould
     private sealed record HttpDispatchOutput(
         string Input,
         WorkInvocationChannel Channel,
+        WorkOriginSurface Surface,
         string? ActorId,
         string? ActorName,
         string? ActorEmail,
@@ -104,6 +106,7 @@ public sealed class HttpContextWorkCommandDispatcherShould
             => Task.FromResult(WorkExecutionResult<HttpDispatchOutput>.Success(new HttpDispatchOutput(
                 input.Value,
                 context.RequestContext.Channel,
+                context.RequestContext.Surface,
                 context.RequestContext.Actor.Id,
                 context.RequestContext.Actor.Name,
                 context.RequestContext.Actor.Email,
