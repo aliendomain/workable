@@ -42,7 +42,8 @@ builder.Services.AddCors(options =>
         policy
             .WithOrigins("http://localhost:3000")
             .WithMethods("GET", "POST")
-            .AllowAnyHeader();
+            .AllowAnyHeader()
+            .AllowCredentials();
     });
 });
 
@@ -51,6 +52,8 @@ app.MapWorkableSignalR()
 ```
 
 `GET` and `POST` are the methods used by the SignalR connect and negotiate flow. `AllowAnyHeader()` is usually the pragmatic choice because browser SignalR clients commonly send `Authorization` on negotiate requests and may include transport-specific headers over time. For tightly controlled environments, you can replace it with an explicit header list once you have confirmed the exact requests your client emits.
+
+When the browser client connects with credentials enabled, such as the Workable admin UI SignalR client, the CORS policy must also call `AllowCredentials()`. In that case, the allowed origins must stay explicit; ASP.NET Core will not allow combining credentials with wildcard origins.
 
 ```csharp
 builder.Services.AddWorkableSignalR(options =>
