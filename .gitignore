@@ -11,6 +11,7 @@ artifacts/
 *.nupkg
 *.snupkg
 *.log
+.DS_Store
 
 # environment files and other local secret-bearing config
 .env
