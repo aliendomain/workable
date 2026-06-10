@@ -52,8 +52,8 @@ internal sealed class WorkSystemSessionFactory(
                 ? sessionDiagnostics
                 : new UnauthorizedWorkSystemDiagnostics(systemId, systemName),
             new AuthorizedWorkCatalog(sessionCatalog, authorization),
-            new AuthorizedWorkQueueService(sessionCatalog, sessionQueue, authorization),
-            new AuthorizedWorkerOperations(sessionCatalog, sessionWorkers, sessionQuery, authorization),
+            new AuthorizedWorkQueueService(catalog, sessionQueue, authorization, requestContext),
+            new AuthorizedWorkerOperations(catalog, sessionWorkers, sessionQuery, authorization, requestContext),
             new AuthorizedWorkQueryService(sessionCatalog, sessionQuery, authorization),
             new AuthorizedWorkEventStream(sessionEvents, authorization));
     }

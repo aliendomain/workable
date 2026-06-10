@@ -41,7 +41,8 @@ internal sealed class RuntimeWorkDefinitionBuilder(WorkSystemCatalog catalog) : 
             _ => new DelegateWorkExecutor(execute),
             registration.ExceptionClassifiers,
             registration.AutomaticStarts,
-            registration.Initializers));
+            registration.Initializers,
+            registration.OperateAuthorization));
         return this;
     }
 
@@ -72,7 +73,8 @@ internal sealed class RuntimeWorkDefinitionBuilder(WorkSystemCatalog catalog) : 
             _ => new TypedDelegateWorkExecutor<TInput>(execute),
             registration.ExceptionClassifiers,
             registration.AutomaticStarts,
-            registration.Initializers));
+            registration.Initializers,
+            registration.OperateAuthorization));
         return this;
     }
 
@@ -103,7 +105,8 @@ internal sealed class RuntimeWorkDefinitionBuilder(WorkSystemCatalog catalog) : 
             _ => new TypedDelegateWorkExecutor<TInput, TOutput>(execute),
             registration.ExceptionClassifiers,
             registration.AutomaticStarts,
-            registration.Initializers));
+            registration.Initializers,
+            registration.OperateAuthorization));
         return this;
     }
 
@@ -139,7 +142,8 @@ internal sealed class RuntimeWorkDefinitionBuilder(WorkSystemCatalog catalog) : 
             serviceProvider => WorkExecutorAdapterFactory.Create(serviceProvider.GetRequiredService<TExecutor>()),
             registration.ExceptionClassifiers,
             registration.AutomaticStarts,
-            registration.Initializers));
+            registration.Initializers,
+            registration.OperateAuthorization));
         return this;
     }
 

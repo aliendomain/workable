@@ -8,14 +8,16 @@ public sealed class AuthorizedWorkerOperationsShould
     [Fact]
     public async Task ReturnUnauthorizedWithoutCallingInnerForWorkersOutsideOperateScope()
     {
+        var visible = CreateRegisteredWork("visible.work", authorize => authorize.AllowOperateToGroups("visible.operate"));
+        var hidden = CreateRegisteredWork("hidden.work", authorize => authorize.AllowOperateToGroups("hidden.operate"));
         var operations = CreateOperations(
             groups: ["visible.operate"],
+            works: [visible, hidden],
             out _,
-            out var hidden,
             out var query,
             out var inner);
         var workerId = WorkerId.New();
-        query.WorkerToReturn = CreateWorkerSnapshot(workerId, hidden);
+        query.WorkersById[workerId] = CreateWorkerSnapshot(workerId, hidden.Definition);
 
         var outcome = await operations.Execute(new WorkerVersion(workerId, Revision: 7), WorkAction.Cancel);
 
@@ -29,9 +31,10 @@ public sealed class AuthorizedWorkerOperationsShould
     [Fact]
     public async Task ReturnEmptyBulkOutcomeWithoutQueryingWhenNoDefinitionsAreOperable()
     {
+        var visible = CreateRegisteredWork("visible.work", authorize => authorize.AllowOperateToGroups("visible.operate"));
         var operations = CreateOperations(
             groups: [],
-            out _,
+            works: [visible],
             out _,
             out var query,
             out var inner);
@@ -50,18 +53,22 @@ public sealed class AuthorizedWorkerOperationsShould
     [Fact]
     public async Task ScopeBulkActionsToOperableDefinitionsAndForwardWorkerVersions()
     {
+        var visible = CreateRegisteredWork("visible.work", authorize => authorize.AllowOperateToGroups("visible.operate"));
+        var hidden = CreateRegisteredWork("hidden.work", authorize => authorize.AllowOperateToGroups("hidden.operate"));
         var operations = CreateOperations(
             groups: ["visible.operate"],
-            out var visible,
+            works: [visible, hidden],
             out _,
             out var query,
             out var inner);
         var first = WorkerId.New();
         var second = WorkerId.New();
         query.WorkerPages.Enqueue([
-            CreateWorkerOverview(first, visible, revision: 3),
-            CreateWorkerOverview(second, visible, revision: 5),
+            CreateWorkerOverview(first, visible.Definition, revision: 3),
+            CreateWorkerOverview(second, visible.Definition, revision: 5),
         ]);
+        query.WorkersById[first] = CreateWorkerSnapshot(first, visible.Definition, revision: 3);
+        query.WorkersById[second] = CreateWorkerSnapshot(second, visible.Definition, revision: 5);
         var filter = new WorkerBulkActionFilter("Operations", IncludeSubcategories: false);
 
         var outcome = await operations.ExecuteAll(WorkAction.Cancel, filter);
@@ -76,48 +83,279 @@ public sealed class AuthorizedWorkerOperationsShould
         Assert.Equal(WorkerCriteria.MaximumTake, criteria.Take);
         var definitionNames = criteria.DefinitionNames
             ?? throw new InvalidOperationException("Expected scoped definition names.");
-        Assert.Equal(visible.Name, Assert.Single(definitionNames));
+        Assert.Equal(visible.Definition.Name, Assert.Single(definitionNames));
         Assert.Equal([
             new RecordedAction(new WorkerVersion(first, Revision: 3), WorkAction.Cancel),
             new RecordedAction(new WorkerVersion(second, Revision: 5), WorkAction.Cancel),
         ], inner.Executed);
     }
 
+    [Theory]
+    [InlineData(WorkAction.Start, true)]
+    [InlineData(WorkAction.Start, false)]
+    [InlineData(WorkAction.Pause, true)]
+    [InlineData(WorkAction.Pause, false)]
+    [InlineData(WorkAction.Cancel, true)]
+    [InlineData(WorkAction.Cancel, false)]
+    [InlineData(WorkAction.Push, true)]
+    [InlineData(WorkAction.Push, false)]
+    [InlineData(WorkAction.Purge, true)]
+    [InlineData(WorkAction.Purge, false)]
+    public async Task ApplyCommonOperateRequirementsToEveryWorkerAction(WorkAction action, bool allow)
+    {
+        var visible = CreateRegisteredWork(
+            "visible.work",
+            authorize => authorize.AllowOperateToGroups(
+                ["visible.operate"],
+                operate => operate.WhenOperatingRequire<QueueInput>(context => context.Input?.Value == "allowed")));
+        var operations = CreateOperations(
+            groups: ["visible.operate"],
+            works: [visible],
+            out _,
+            out var query,
+            out var inner);
+        var workerId = WorkerId.New();
+        query.WorkersById[workerId] = CreateWorkerSnapshot(
+            workerId,
+            visible.Definition,
+            input: WorkInput.FromValue(new QueueInput(allow ? "allowed" : "denied"), WorkData.DefaultJsonOptions));
+
+        var outcome = await operations.Execute(new WorkerVersion(workerId, Revision: 7), action);
+
+        Assert.Equal(action, outcome.Action);
+        if (allow)
+        {
+            Assert.Single(inner.Executed);
+            Assert.Equal(new WorkerVersion(workerId, Revision: 7), inner.Executed[0].Worker);
+            Assert.Equal(action, inner.Executed[0].Action);
+        }
+        else
+        {
+            Assert.Equal(WorkActionStatus.Unauthorized, outcome.Status);
+            Assert.Empty(inner.Executed);
+        }
+    }
+
+    [Fact]
+    public async Task DoNotApplyQueueOnlyRequirementsToWorkerActions()
+    {
+        var visible = CreateRegisteredWork(
+            "visible.work",
+            authorize => authorize.AllowOperateToGroups(
+                ["visible.operate"],
+                operate => operate.WhenQueueingRequire<QueueInput>(_ => false)));
+        var operations = CreateOperations(
+            groups: ["visible.operate"],
+            works: [visible],
+            out _,
+            out var query,
+            out var inner);
+        var workerId = WorkerId.New();
+        query.WorkersById[workerId] = CreateWorkerSnapshot(
+            workerId,
+            visible.Definition,
+            input: WorkInput.FromValue(new QueueInput("denied"), WorkData.DefaultJsonOptions));
+
+        await operations.Execute(new WorkerVersion(workerId, Revision: 7), WorkAction.Cancel);
+
+        Assert.Single(inner.Executed);
+    }
+
+    [Fact]
+    public async Task UsePersistedOriginalInputForWorkerActionRequirements()
+    {
+        var visible = CreateRegisteredWork(
+            "visible.work",
+            authorize => authorize.AllowOperateToGroups(
+                ["visible.operate"],
+                operate => operate.WhenWorkerActionsRequire<QueueInput>(context => context.Input?.Value == "allowed")));
+        var operations = CreateOperations(
+            groups: ["visible.operate"],
+            works: [visible],
+            out _,
+            out var query,
+            out var inner);
+        var workerId = WorkerId.New();
+        query.WorkersById[workerId] = CreateWorkerSnapshot(
+            workerId,
+            visible.Definition,
+            input: WorkInput.FromValue(new QueueInput("allowed"), WorkData.DefaultJsonOptions));
+
+        await operations.Execute(new WorkerVersion(workerId, Revision: 7), WorkAction.Cancel);
+
+        Assert.Single(inner.Executed);
+    }
+
+    [Fact]
+    public async Task ReturnInvalidWhenTypedWorkerActionRequirementCannotDeserializeInput()
+    {
+        var visible = CreateRegisteredWork(
+            "visible.work",
+            authorize => authorize.AllowOperateToGroups(
+                ["visible.operate"],
+                operate => operate.WhenWorkerActionsRequire<QueueInput>(context => context.Input?.Value == "allowed")));
+        var operations = CreateOperations(
+            groups: ["visible.operate"],
+            works: [visible],
+            out _,
+            out var query,
+            out var inner);
+        var workerId = WorkerId.New();
+        query.WorkersById[workerId] = CreateWorkerSnapshot(
+            workerId,
+            visible.Definition,
+            input: WorkInput.FromJson("\"not-an-object\""));
+
+        var outcome = await operations.Execute(new WorkerVersion(workerId, Revision: 7), WorkAction.Cancel);
+
+        Assert.Equal(WorkActionStatus.Invalid, outcome.Status);
+        Assert.Contains(outcome.Messages, message => message.Code == "workable.authorization.operate_requirement_input_invalid");
+        Assert.Empty(inner.Executed);
+    }
+
+    [Fact]
+    public async Task ReturnUnauthorizedBulkOutcomesForConstrainedWorkers()
+    {
+        var visible = CreateRegisteredWork(
+            "visible.work",
+            authorize => authorize.AllowOperateToGroups(
+                ["visible.operate"],
+                operate => operate.WhenWorkerActionsRequire<QueueInput>(context => context.Input?.Value == "allowed")));
+        var operations = CreateOperations(
+            groups: ["visible.operate"],
+            works: [visible],
+            out _,
+            out var query,
+            out var inner);
+        var workerId = WorkerId.New();
+        query.WorkerPages.Enqueue([
+            CreateWorkerOverview(workerId, visible.Definition, revision: 3),
+        ]);
+        query.WorkersById[workerId] = CreateWorkerSnapshot(
+            workerId,
+            visible.Definition,
+            revision: 3,
+            input: WorkInput.FromValue(new QueueInput("denied"), WorkData.DefaultJsonOptions));
+
+        var outcome = await operations.ExecuteAll(WorkAction.Cancel);
+
+        Assert.Equal(1, outcome.MatchedWorkerCount);
+        Assert.Single(outcome.Outcomes);
+        Assert.Equal(WorkActionStatus.Unauthorized, outcome.Outcomes[0].Status);
+        Assert.Empty(inner.Executed);
+    }
+
+    [Fact]
+    public async Task BypassConstrainedWorkerActionRequirementsForWorkAdministrators()
+    {
+        var visible = CreateRegisteredWork(
+            "visible.work",
+            authorize => authorize.AllowOperateToGroups(
+                ["visible.operate"],
+                operate => operate.WhenWorkerActionsRequire<QueueInput>(_ => false)));
+        var operations = CreateOperations(
+            groups: ["work.admin"],
+            works: [visible],
+            out _,
+            out var query,
+            out var inner,
+            systemAuthorizationConfiguration: WorkSystemAuthorizationConfiguration.Default with
+            {
+                WorkAdministratorGroups = Groups(["work.admin"]),
+            });
+        var workerId = WorkerId.New();
+        query.WorkersById[workerId] = CreateWorkerSnapshot(
+            workerId,
+            visible.Definition,
+            input: WorkInput.FromValue(new QueueInput("denied"), WorkData.DefaultJsonOptions));
+
+        await operations.Execute(new WorkerVersion(workerId, Revision: 7), WorkAction.Cancel);
+
+        Assert.Single(inner.Executed);
+    }
+
+    [Fact]
+    public async Task DoNotApplyConstrainedOperateRequirementsToReconfigure()
+    {
+        var visible = CreateRegisteredWork(
+            "visible.work",
+            authorize => authorize.AllowOperateToGroups(
+                ["visible.operate"],
+                operate => operate.WhenWorkerActionsRequire<QueueInput>(_ => false)));
+        var operations = CreateOperations(
+            groups: ["visible.operate"],
+            works: [visible],
+            out _,
+            out var query,
+            out var inner);
+        var workerId = WorkerId.New();
+        query.WorkersById[workerId] = CreateWorkerSnapshot(
+            workerId,
+            visible.Definition,
+            input: WorkInput.FromValue(new QueueInput("denied"), WorkData.DefaultJsonOptions));
+
+        await operations.Reconfigure(
+            new WorkerVersion(workerId, Revision: 7),
+            new WorkerReconfiguration(ProfilingEnabled: true));
+
+        Assert.Single(inner.Reconfigured);
+    }
+
     private static AuthorizedWorkerOperations CreateOperations(
         IReadOnlyList<string> groups,
-        out WorkDefinition visible,
-        out WorkDefinition hidden,
+        IReadOnlyList<RegisteredWork> works,
+        out WorkSystemCatalog catalog,
         out RecordingWorkQueryService query,
-        out RecordingWorkerOperations inner)
+        out RecordingWorkerOperations inner,
+        bool isKnownAuthenticatedUser = false,
+        WorkSystemAuthorizationConfiguration? systemAuthorizationConfiguration = null)
     {
-        visible = CreateDefinition("visible.work", "visible.operate");
-        hidden = CreateDefinition("hidden.work", "hidden.operate");
-        var catalog = new WorkSystemCatalog(
-            [
-                CreateRegisteredWork(visible),
-                CreateRegisteredWork(hidden),
-            ],
-            persistenceStoreAvailable: false);
+        catalog = new WorkSystemCatalog(works, persistenceStoreAvailable: false);
         query = new RecordingWorkQueryService();
         inner = new RecordingWorkerOperations();
+        var requestContext = CreateRequestContext(isKnownAuthenticatedUser);
+        var normalizedGroups = Groups(groups);
         return new AuthorizedWorkerOperations(
             catalog,
             inner,
             query,
-            new WorkAuthorizationEvaluator(catalog, Groups(groups), false));
+            new WorkAuthorizationEvaluator(
+                catalog,
+                normalizedGroups,
+                isKnownAuthenticatedUser,
+                systemAuthorizationConfiguration is null
+                    ? null
+                    : new WorkSystemAuthorizationEvaluator(systemAuthorizationConfiguration, normalizedGroups)),
+            requestContext);
     }
 
-    private static WorkDefinition CreateDefinition(string name, string operateGroup)
-        => WorkDefinition.Create(
-            name,
-            authorization: WorkDefinitionAuthorization.Create(
-                readGroups: [operateGroup],
-                operateGroups: [operateGroup]));
+    private static RegisteredWork CreateRegisteredWork(
+        string name,
+        Action<IWorkAuthorizationBuilder> authorize)
+    {
+        var builder = new WorkAuthorizationBuilder();
+        authorize(builder);
+        return CreateRegisteredWork(name, builder.BuildRegistration());
+    }
 
-    private static RegisteredWork CreateRegisteredWork(WorkDefinition definition)
-        => new(definition, _ => new NoopExecutor(), []);
+    private static RegisteredWork CreateRegisteredWork(
+        string name,
+        WorkAuthorizationRegistration registration)
+        => new(
+            WorkDefinition.Create(
+                name,
+                authorization: registration.DefinitionAuthorization),
+            _ => new NoopExecutor(),
+            [],
+            [],
+            [],
+            registration.OperateAuthorization);
 
-    private static WorkerSnapshot CreateWorkerSnapshot(WorkerId workerId, WorkDefinition definition, long revision = 1)
+    private static WorkerSnapshot CreateWorkerSnapshot(
+        WorkerId workerId,
+        WorkDefinition definition,
+        long revision = 1,
+        WorkInput? input = null)
     {
         var now = DateTimeOffset.UtcNow;
         return new WorkerSnapshot(
@@ -131,7 +369,7 @@ public sealed class AuthorizedWorkerOperationsShould
             new HashSet<WorkIdentifier>(),
             WorkRequestContext.Create(WorkInvocationChannel.InProcess),
             WorkerState.Queued,
-            null,
+            input,
             null,
             WorkerOptions.Default,
             definition.Configuration,
@@ -163,14 +401,26 @@ public sealed class AuthorizedWorkerOperationsShould
             now);
     }
 
+    private static WorkRequestContext CreateRequestContext(bool isKnownAuthenticatedUser)
+        => WorkRequestContext.Create(
+            WorkInvocationChannel.InProcess,
+            actor: isKnownAuthenticatedUser ? new WorkActor(Id: "known-user", Name: "Known User") : null,
+            isAuthenticated: isKnownAuthenticatedUser);
+
     private static IReadOnlySet<string> Groups(IEnumerable<string> groups)
         => groups.ToHashSet(StringComparer.OrdinalIgnoreCase);
 
+    private sealed record QueueInput(string Value);
+
     private sealed record RecordedAction(WorkerVersion Worker, WorkAction Action);
+
+    private sealed record RecordedReconfigure(WorkerVersion Worker, WorkerReconfiguration Changes);
 
     private sealed class RecordingWorkerOperations : IWorkerOperations
     {
         public List<RecordedAction> Executed { get; } = [];
+
+        public List<RecordedReconfigure> Reconfigured { get; } = [];
 
         public Task<WorkActionOutcome> Execute(
             WorkerVersion worker,
@@ -191,12 +441,15 @@ public sealed class AuthorizedWorkerOperationsShould
             WorkerVersion worker,
             WorkerReconfiguration changes,
             CancellationToken cancellationToken = default)
-            => throw new NotSupportedException();
+        {
+            this.Reconfigured.Add(new RecordedReconfigure(worker, changes));
+            return Task.FromResult(WorkActionOutcome.NotFound(WorkAction.Start, worker.WorkerId));
+        }
     }
 
     private sealed class RecordingWorkQueryService : IWorkQueryService
     {
-        public WorkerSnapshot? WorkerToReturn { get; set; }
+        public Dictionary<WorkerId, WorkerSnapshot> WorkersById { get; } = [];
 
         public Queue<IReadOnlyList<WorkerOverviewItem>> WorkerPages { get; } = [];
 
@@ -211,7 +464,7 @@ public sealed class AuthorizedWorkerOperationsShould
             CancellationToken cancellationToken = default)
         {
             this.WorkerCallCount++;
-            return Task.FromResult(this.WorkerToReturn);
+            return Task.FromResult(this.WorkersById.TryGetValue(workerId, out var worker) ? worker : null);
         }
 
         public Task<WorkerQueryResult> Workers(

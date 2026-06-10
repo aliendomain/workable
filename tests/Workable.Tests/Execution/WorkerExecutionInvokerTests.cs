@@ -100,7 +100,8 @@ public sealed class WorkerExecutionInvokerTests
             executorFactory ?? (_ => new ShouldNotExecuteWork()),
             ExceptionClassifiers: [],
             AutomaticStarts: [],
-            Initializers: initializers);
+            Initializers: initializers,
+            OperateAuthorization: WorkOperateAuthorizationConfiguration.None);
 
         return new WorkerRecord(
             WorkerId.New(),

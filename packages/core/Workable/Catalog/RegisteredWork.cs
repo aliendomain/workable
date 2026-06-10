@@ -7,7 +7,8 @@ internal sealed record RegisteredWork(
     Func<IServiceProvider, IWorkExecutor> ExecutorFactory,
     IReadOnlyList<WorkExceptionClassifier> ExceptionClassifiers,
     IReadOnlyList<WorkAutomaticStartRegistration> AutomaticStarts,
-    IReadOnlyList<WorkInitializationRegistration> Initializers)
+    IReadOnlyList<WorkInitializationRegistration> Initializers,
+    WorkOperateAuthorizationConfiguration OperateAuthorization)
 {
     private readonly ConcurrentDictionary<WorkInitializationId, LazyInitializationState> lazyInitializationStates = [];
 
@@ -20,7 +21,29 @@ internal sealed record RegisteredWork(
         WorkDefinition definition,
         Func<IServiceProvider, IWorkExecutor> executorFactory,
         IReadOnlyList<WorkExceptionClassifier> exceptionClassifiers)
-        : this(definition, executorFactory, exceptionClassifiers, [], [])
+        : this(
+            definition,
+            executorFactory,
+            exceptionClassifiers,
+            [],
+            [],
+            WorkOperateAuthorizationConfiguration.FromDefinition(definition.Authorization))
+    {
+    }
+
+    public RegisteredWork(
+        WorkDefinition definition,
+        Func<IServiceProvider, IWorkExecutor> executorFactory,
+        IReadOnlyList<WorkExceptionClassifier> exceptionClassifiers,
+        IReadOnlyList<WorkAutomaticStartRegistration> automaticStarts,
+        IReadOnlyList<WorkInitializationRegistration> initializers)
+        : this(
+            definition,
+            executorFactory,
+            exceptionClassifiers,
+            automaticStarts,
+            initializers,
+            WorkOperateAuthorizationConfiguration.FromDefinition(definition.Authorization))
     {
     }
 
@@ -30,7 +53,8 @@ internal sealed record RegisteredWork(
             this.ExecutorFactory,
             this.ExceptionClassifiers,
             this.AutomaticStarts,
-            this.Initializers);
+            this.Initializers,
+            this.OperateAuthorization);
 
     public async Task<WorkExecutionResult> RunLazyInitialization(
         WorkInitializationRegistration initializer,

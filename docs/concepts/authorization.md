@@ -102,6 +102,25 @@ builder.AddWork<SyncInvoicesWork>(
     authorize: auth => auth.AllowOperateToKnownAuthenticatedUsers());
 ```
 
+You can also add synchronous, input-aware operate requirements to one work-level operate grant. These extra checks apply only after the caller already satisfies the underlying work-level operate audience:
+
+```csharp
+builder.AddWork<AdminSurveyWork>(
+    authorize: auth => auth.AllowOperateToGroups(
+        ["survey.admin"],
+        operate => operate.WhenOperatingRequire<AdminSurveyArgs>(context =>
+            context.Input?.AreaKey == "north")));
+```
+
+The same extra constraint shape is available for known authenticated users:
+
+```csharp
+builder.AddWork<AdminSurveyWork>(
+    authorize: auth => auth.AllowOperateToKnownAuthenticatedUsers(
+        operate => operate.WhenOperatingRequire<AdminSurveyArgs>(context =>
+            context.Input?.AreaKey == "north")));
+```
+
 When several registrations inside one system share the same work-level authorization, group them with `WithWorkDefaults(...)`:
 
 ```csharp
@@ -148,6 +167,73 @@ Operate permission affects:
 - worker reconfiguration
 
 `AllowOperateToKnownAuthenticatedUsers()` participates in the same operate surface. It is an alternative operate grant, not a separate permission kind.
+
+### Constrained Operate Grants
+
+Constrained operate grants add an optional second-level authorization check on top of the normal work-level operate audience.
+
+This is useful when the work itself is intentionally generic, but the caller's authority depends on request input.
+
+Typical examples are:
+
+- one survey-administration work definition that can operate on many surveys, where a broad `survey.admin` group can operate everything
+- a smaller ownership group that should only operate surveys for one area such as `north`
+- one server-definition editor work that can edit many server definitions, where some groups should only edit a subset identified by input
+
+Without constrained operate grants, the usual alternative is to create duplicate work definitions for each secured audience or area. That works technically, but it pushes security partitioning into your work catalog:
+
+- the executor logic is duplicated or artificially split
+- schemas, docs, and tooling projections drift across near-identical definitions
+- metrics, history, and operational views become fragmented across several names for the same logical operation
+
+Constrained operate grants let you keep one definition for one logical operation, then discriminate queueing and worker actions by input such as `AreaKey`, `ServerKey`, or another business identifier.
+
+- `WhenOperatingRequire(...)`
+  - applies to both queueing and worker actions
+- `WhenQueueingRequire(...)`
+  - applies only to queueing
+- `WhenWorkerActionsRequire(...)`
+  - applies only to worker actions
+
+Important details:
+
+- requirement delegates are synchronous and return `bool`
+- multiple requirements on one grant are OR'ed and stop after the first `true`
+- typed queue requirements deserialize from the incoming queued input
+- typed worker-action requirements deserialize from the worker's persisted original input
+- deserialize failures fail closed and return an invalid outcome
+- this extra layer does not change read visibility
+- this extra layer does not apply to worker reconfiguration
+
+For example, a host can keep one survey editor definition and layer broad and narrow operate grants together:
+
+```csharp
+builder.AddWork<AdminSurveyWork>(
+    authorize: auth => auth
+        .AllowOperateToGroups("survey.admin")
+        .AllowOperateToGroups(
+            ["survey.north.owner"],
+            operate => operate.WhenOperatingRequire<AdminSurveyArgs>(context =>
+                context.Input?.AreaKey == "north")));
+```
+
+In that shape:
+
+- `survey.admin` can queue and control the work for any survey area
+- `survey.north.owner` can use the same work definition, but only when the input targets `north`
+- the system does not need separate definitions such as `admin-survey-north`, `admin-survey-south`, and so on
+
+Validation rules:
+
+- one work-level operate group may appear only once across the definition's operate grant blocks
+- one work definition may configure only one `AllowOperateToKnownAuthenticatedUsers(...)` operate grant block
+
+System-wide broad operate grants remain unconditional:
+
+- `AllowOperateAllWorkToGroups(...)`
+- `WorkAdministrators(...)`
+
+If a constrained work-level operate group is also covered by either broad system-level grant, Workable logs a warning because that work-level constraint can never restrict callers in that group.
 
 With authorization enabled:
 

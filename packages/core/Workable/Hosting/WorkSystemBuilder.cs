@@ -62,7 +62,8 @@ internal sealed class WorkSystemBuilder(IServiceCollection services, string? nam
             _ => new DelegateWorkExecutor(execute),
             registration.ExceptionClassifiers,
             registration.AutomaticStarts,
-            registration.Initializers));
+            registration.Initializers,
+            registration.OperateAuthorization));
         return this;
     }
 
@@ -94,7 +95,8 @@ internal sealed class WorkSystemBuilder(IServiceCollection services, string? nam
             _ => new TypedDelegateWorkExecutor<TInput>(execute),
             registration.ExceptionClassifiers,
             registration.AutomaticStarts,
-            registration.Initializers));
+            registration.Initializers,
+            registration.OperateAuthorization));
         return this;
     }
 
@@ -126,7 +128,8 @@ internal sealed class WorkSystemBuilder(IServiceCollection services, string? nam
             _ => new TypedDelegateWorkExecutor<TInput, TOutput>(execute),
             registration.ExceptionClassifiers,
             registration.AutomaticStarts,
-            registration.Initializers));
+            registration.Initializers,
+            registration.OperateAuthorization));
         return this;
     }
 
@@ -164,7 +167,8 @@ internal sealed class WorkSystemBuilder(IServiceCollection services, string? nam
             serviceProvider => WorkExecutorAdapterFactory.Create(serviceProvider.GetRequiredService<TExecutor>()),
             registration.ExceptionClassifiers,
             registration.AutomaticStarts,
-            registration.Initializers));
+            registration.Initializers,
+            registration.OperateAuthorization));
         return this;
     }
 

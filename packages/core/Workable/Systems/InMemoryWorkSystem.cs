@@ -4,6 +4,7 @@ using System.Runtime.CompilerServices;
 using System.Threading.Channels;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 
 namespace Workable;
 internal sealed class InMemoryWorkSystem :
@@ -51,7 +52,12 @@ internal sealed class InMemoryWorkSystem :
         this.ShutdownGracePeriod = shutdownGracePeriod;
         var persistenceStore = rootServices.GetService<IWorkPersistenceStore>();
         this.PersistentCoordinationAvailable = persistenceStore is not null;
-        this.catalog = new WorkSystemCatalog(work, this.PersistentCoordinationAvailable);
+        var authorizationLogger = rootServices.GetService<ILoggerFactory>()?.CreateLogger("Workable.Authorization");
+        this.catalog = new WorkSystemCatalog(
+            work,
+            this.PersistentCoordinationAvailable,
+            this.authorization,
+            authorizationLogger);
         this.readModel = new WorkSystemReadModel(this.catalog, () => this.State, this.Name, this.metrics);
         this.workers = new WorkerOperations(
             this.catalog,
