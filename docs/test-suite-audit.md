@@ -68,7 +68,7 @@ Test projects:
 | Project | Current role |
 | --- | --- |
 | `tests/Workable.Tests/Workable.Tests.csproj` | Main unit/integration-style test project. |
-| `tests/extensions/sqlserver/Workable.SqlServer.Tests/Workable.SqlServer.Tests.csproj` | LocalDB-backed SQL Server integration tests plus SQL Server CLI/tooling tests. |
+| `tests/extensions/sqlserver/Workable.SqlServer.Tests/Workable.SqlServer.Tests.csproj` | Cross-platform SQL Server integration tests plus SQL Server CLI/tooling tests. |
 
 ## Test Inventory
 
@@ -564,7 +564,7 @@ Prior test-suite repair before this audit document:
 
 ## Risks, Assumptions, And Unresolved Questions
 
-- LocalDB availability affects SQL Server integration tests. Current machine has LocalDB available and the tests pass.
+- SQL Server integration tests now require either `WORKABLE_SQLSERVER_TEST_CONNECTION_STRING` or a Docker-compatible runtime such as Docker or Podman. The suite is designed to run the same way on Windows, macOS, Linux, and CI agents with container access.
 - Some internal services are best tested through public runtime behavior. Direct unit tests for every internal coordinator could make the suite brittle; this audit should document when behavior-level coverage is intentionally preferred.
 - No remaining direct test `Task.Delay` hits are currently classified as fixed sleeps for observation. Remaining timing-sensitive review areas are timeout guards around async completion/event reads, explicit fast recurrence/retry fixture intervals, and shared `TestEventually` bounded eventual-state helpers. SignalR negative waits have been replaced with direct subscription diagnostics/debug assertions or direct broadcaster-rule coverage, and positive interval transport coverage now uses manual timer ticks. Shutdown-grace tests assert resolved stop metadata instead of elapsed time. SQL Server transaction visibility tests use deterministic `READPAST` checks; SQL Server and durable queue polling mechanics use shared bounded eventual-state helpers.
 - The requested naming convention (`Should`) differs from the current repository convention (`Tests`). The migration should be incremental unless the user wants a large rename-only pass.
