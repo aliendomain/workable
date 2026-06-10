@@ -1445,6 +1445,7 @@ public class WorkableViewQueryAdapter
     private static WorkWorkerOverviewOrigin CreateWorkerOverviewOrigin(WorkOrigin origin)
         => new(
             origin.Channel,
+            origin.Surface,
             NormalizeWorkerOverviewText(origin.Actor.Id),
             NormalizeWorkerOverviewText(origin.Actor.Name),
             NormalizeWorkerOverviewText(origin.Actor.Email));
@@ -2211,4 +2212,3 @@ public class WorkableViewQueryAdapter
     private sealed record WorkComponentDescriptor(
         bool RequiresIntervalPublish = false);
 }
-

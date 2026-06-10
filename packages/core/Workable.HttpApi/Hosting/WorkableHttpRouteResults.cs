@@ -14,6 +14,32 @@ internal static class WorkableHttpRouteResults
             },
         }, statusCode: StatusCodes.Status401Unauthorized);
 
+    internal static IResult SurfaceAccessDenied()
+        => Results.Json(new
+        {
+            Messages = new[]
+            {
+                WorkMessage.Error(
+                    "workable.http.surface.access_denied",
+                    "Access to the built-in Workable HTTP API requires a configured top-level surface-access group.",
+                    "user"),
+            },
+        }, statusCode: StatusCodes.Status403Forbidden);
+
+    internal static IResult SystemSurfaceAccessDenied(string? systemName)
+        => Results.Json(new
+        {
+            Messages = new[]
+            {
+                WorkMessage.Error(
+                    "workable.http.surface.system_access_denied",
+                    string.IsNullOrWhiteSpace(systemName)
+                        ? "Access to the built-in Workable HTTP API for the default system requires system-administrator or work-administrator access."
+                        : $"Access to the built-in Workable HTTP API for system '{systemName}' requires system-administrator or work-administrator access.",
+                    "system"),
+            },
+        }, statusCode: StatusCodes.Status403Forbidden);
+
     internal static IResult AuthorizationDenied(WorkSystemAccessDeniedException exception)
     {
         ArgumentNullException.ThrowIfNull(exception);
@@ -51,11 +77,8 @@ internal static class WorkableHttpRouteResults
         {
             if (!string.IsNullOrWhiteSpace(systemName))
             {
-                var requestContexts = httpContext.RequestServices.GetRequiredService<IWorkRequestContextFactory>();
-                var requestContext = WorkableHttpRequestContext.Create(
-                    httpContext,
-                    requestContexts);
-                if (!resolved.DescribeAccess(requestContext).HasAnyAccess())
+                var requestAccess = httpContext.RequestServices.GetRequiredService<WorkableHttpRequestAccessContext>();
+                if (!requestAccess.HasAnySystemAccess(resolved))
                 {
                     system = null!;
                     notFound = AuthorizationDenied(new WorkSystemAccessDeniedException(

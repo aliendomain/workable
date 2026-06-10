@@ -164,6 +164,7 @@ services.AddWorkableSystem(builder =>
     builder.ConfigureAuthorization(auth => auth
         .SystemAdministrators("workable.sysadmin")
         .WorkAdministrators("workable.workadmin")
+        .AllowBuiltInHttpApiToGroups("workable.surface-user")
         .AllowDiagnosticsToGroups("workable.diagnostics")
         .AllowControlSystemToGroups("workable.control")
         .AllowReadAllWorkToGroups("support.readall")
@@ -181,12 +182,44 @@ Built-in role semantics are:
   - grants `ReadAllWork`
   - grants `OperateAllWork`
 
+When the host maps the built-in `Workable.HttpApi` routes through `MapWorkableApi(...)`, both roles also grant entry to that built-in `/workable` surface for the same system. Host-defined endpoints that call Workable directly are unaffected.
+
+### Built-In HTTP API Gates
+
+`MapWorkableApi(...)` applies authorization in layers:
+
+1. transport authentication
+2. optional outer gate through `WorkableHttpApiOptions.SurfaceAccessGroups`
+3. required inner built-in surface gate for the target system
+4. normal session-level system and work-definition authorization
+
+The outer gate is host-wide for the built-in `/workable` surface. It does not ask which system the caller is targeting. It simply answers "may this caller enter the built-in Workable HTTP surface at all?"
+
+The inner gate is system-scoped. It allows callers who are `SystemAdministrator`, `WorkAdministrator`, or members of groups configured through `AllowBuiltInHttpApiToGroups(...)` for that specific system.
+
+That distinction is deliberate:
+
+- outer gate is for locking down the existence of the built-in `/workable` surface
+- inner gate is for deciding which systems may be used through that built-in surface
+- host-defined endpoints that call Workable directly do not pass through either gate unless the host intentionally reuses the same policy
+
+Once `WorkableHttpApiOptions.SurfaceAccessGroups` contains at least one group, every caller to every built-in `/workable` route must satisfy that outer gate. Configuring one outer-gate group does not "turn surface access on for everyone"; it turns the host-wide outer check on for everyone.
+
+`/workable/host` also uses the inner gate. It returns only systems where the caller has both:
+
+- built-in surface access for that system
+- some actual Workable access inside that system
+
+Named built-in routes such as `/workable/systems/{systemName}/...` also require both built-in surface access and actual system access. The built-in surface gate is checked first, then the normal system access rules apply inside the selected system.
+
 Granular system permissions are:
 
 - `AllowDiagnosticsToGroups(...)`
   - controls `IWorkSystemSession.Diagnostics` and transport diagnostics routes/views
 - `AllowControlSystemToGroups(...)`
   - controls start and stop
+- `AllowBuiltInHttpApiToGroups(...)`
+  - grants access to the built-in `MapWorkableApi(...)` HTTP surface for that system without also granting administrator semantics
 - `AllowReadAllWorkToGroups(...)`
   - grants read access to every work definition without stamping each definition individually
 - `AllowOperateAllWorkToGroups(...)`
@@ -255,6 +288,10 @@ Authorization data comes from either:
 
 - `WorkRequestContext.Authorization`, when the caller already has a trusted authorization snapshot
 - `IWorkAuthorizationGroupProvider`, when groups should be resolved for the current request
+
+For the built-in `Workable.HttpApi` adapter, those group and access resolutions are coordinated through a request-scoped cache instead of each step resolving independently. The adapter reuses that cached state across the outer gate, inner gate, host discovery, named-system selection, and request-context creation for the selected system.
+
+That cache is intentionally request-scoped and assumes normal sequential pipeline use. It should not be treated as safe for parallel mutation by multiple concurrent authorization tasks inside one HTTP request without adding synchronization.
 
 The request context can also carry `IsAuthenticated`. Workable uses that together with the resolved actor to evaluate `AllowOperateToKnownAuthenticatedUsers()`.
 

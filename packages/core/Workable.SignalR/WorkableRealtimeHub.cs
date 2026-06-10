@@ -287,7 +287,8 @@ public sealed class WorkableRealtimeHub(
     private WorkRequestContext CreateRequestContext()
         => requestContexts.Create(
             this.Context.GetHttpContext(),
-            WorkInvocationChannel.SignalR);
+            WorkInvocationChannel.SignalR)
+            .WithSurface(WorkOriginSurface.WorkableAdapter);
 
     private static void EnsureCanAccessNamedSystem(
         IWorkSystem system,

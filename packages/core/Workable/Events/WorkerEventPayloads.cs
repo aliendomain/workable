@@ -204,6 +204,7 @@ internal static class WorkerEventPayloads
 
     private sealed record WorkerEventOriginPayload(
         string Channel,
+        string Surface,
         WorkerEventOriginActorPayload? Actor,
         string? Description = null,
         string? Url = null)
@@ -211,6 +212,7 @@ internal static class WorkerEventPayloads
         public static WorkerEventOriginPayload From(WorkRequestContext requestContext)
             => new(
                 requestContext.Channel.ToString(),
+                requestContext.Surface.ToString(),
                 WorkerEventOriginActorPayload.From(requestContext.Actor),
                 requestContext.Description,
                 requestContext.Url);

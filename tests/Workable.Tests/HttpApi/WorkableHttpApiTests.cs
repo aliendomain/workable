@@ -4,6 +4,7 @@ using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Security.Claims;
+using System.Collections.Concurrent;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
@@ -1326,6 +1327,7 @@ public sealed class WorkableHttpApiTests
         await using var actionReader = actionSubscription.Read().GetAsyncEnumerator();
 
         Assert.Equal(WorkInvocationChannel.HttpApi, worker.Origin.Channel);
+        Assert.Equal(WorkOriginSurface.WorkableAdapter, worker.Origin.Surface);
         Assert.Equal("user-123", worker.Origin.Actor.Id);
         Assert.Equal("greya@example.test", worker.Origin.Actor.Email);
         Assert.Contains("/WORKABLE/WORK/http.route.case", worker.RequestContext.Url, StringComparison.OrdinalIgnoreCase);
@@ -1352,11 +1354,13 @@ public sealed class WorkableHttpApiTests
         Assert.Equal(worker.DefinitionName, actionEvent.WorkDefinitionName);
         Assert.Equal(1, summaryJson["total"]?.GetValue<int>());
         Assert.Equal("HttpApi", queuedOrigin.GetProperty("channel").GetString());
+        Assert.Equal("WorkableAdapter", queuedOrigin.GetProperty("surface").GetString());
         Assert.Equal("user-123", queuedOrigin.GetProperty("actor").GetProperty("id").GetString());
         Assert.Equal("greya@example.test", queuedOrigin.GetProperty("actor").GetProperty("email").GetString());
         Assert.Equal("Queue this worker from the HTTP API test.", queuedOrigin.GetProperty("description").GetString());
         Assert.Contains("/WORKABLE/WORK/http.route.case", queuedOrigin.GetProperty("url").GetString(), StringComparison.OrdinalIgnoreCase);
         Assert.Equal("HttpApi", actionOrigin.GetProperty("channel").GetString());
+        Assert.Equal("WorkableAdapter", actionOrigin.GetProperty("surface").GetString());
         Assert.Equal("user-123", actionOrigin.GetProperty("actor").GetProperty("id").GetString());
         Assert.Equal("greya@example.test", actionOrigin.GetProperty("actor").GetProperty("email").GetString());
         Assert.Equal("Cancel this worker from the HTTP API test.", actionOrigin.GetProperty("description").GetString());
@@ -1748,6 +1752,7 @@ public sealed class WorkableHttpApiTests
 
         Assert.Equal(worker.DefinitionName, reconfigureEvent.WorkDefinitionName);
         Assert.Equal("HttpApi", origin.GetProperty("channel").GetString());
+        Assert.Equal("WorkableAdapter", origin.GetProperty("surface").GetString());
         Assert.Equal("user-123", origin.GetProperty("actor").GetProperty("id").GetString());
         Assert.Equal("greya@example.test", origin.GetProperty("actor").GetProperty("email").GetString());
         Assert.Equal("Reconfigure this worker from the HTTP API test.", origin.GetProperty("description").GetString());
@@ -1786,7 +1791,102 @@ public sealed class WorkableHttpApiTests
 
         Assert.Equal("http.named", worker.DefinitionName);
         Assert.Equal(WorkInvocationChannel.HttpApi, worker.Origin.Channel);
+        Assert.Equal(WorkOriginSurface.WorkableAdapter, worker.Origin.Surface);
         Assert.Contains("/workable/systems/background/work/http.named", worker.RequestContext.Url, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task MappedHttpRouteCanRequireSurfaceAccessOuterGate()
+    {
+        using var host = await CreateHttpHost(
+            groups: TransportAuthorizationTestSupport.SystemAdministratorGroups,
+            surfaceAccessGroups: ["workable.surface"]);
+        var client = host.GetTestClient();
+
+        var response = await client.GetAsync("/workable/host");
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+        var json = JsonNode.Parse(await response.Content.ReadAsStringAsync())
+            ?? throw new InvalidOperationException("Expected JSON response.");
+        var message = Assert.Single(json["messages"]?.AsArray()
+            ?? throw new InvalidOperationException("Expected messages."));
+        Assert.Equal("workable.http.surface.access_denied", message?["code"]?.GetValue<string>());
+    }
+
+    [Fact]
+    public async Task MappedHttpRouteAllowsConfiguredSurfaceAccessOuterGate()
+    {
+        using var host = await CreateHttpHost(
+            groups: TransportAuthorizationTestSupport.SystemAdministratorGroups.Concat(["workable.surface"]),
+            surfaceAccessGroups: ["workable.surface"]);
+        var client = host.GetTestClient();
+
+        var response = await client.GetAsync("/workable/host");
+
+        response.EnsureSuccessStatusCode();
+    }
+
+    [Fact]
+    public async Task MappedHttpRouteAllowsConfiguredBuiltInSurfaceGroupWithoutAdministratorRoles()
+    {
+        var groups = TransportAuthorizationTestSupport.BuiltInHttpApiSurfaceGroups
+            .Concat(TransportAuthorizationTestSupport.ReadAllWorkGroups)
+            .ToArray();
+        using var host = await CreateHttpHost(
+            builder =>
+            {
+                builder.ConfigureAuthorization(authorization => authorization
+                    .AllowBuiltInHttpApiToGroups(TransportAuthorizationTestSupport.BuiltInHttpApiSurfaceGroups.ToArray())
+                    .AllowReadAllWorkToGroups(TransportAuthorizationTestSupport.ReadAllWorkGroups.ToArray()));
+                builder.AddAuthorizedTransportWork(
+                    WorkDefinition.Create(
+                        "http.surface.case",
+                        configuration: WorkConfiguration.Default with
+                        {
+                            Start = WorkStartConfiguration.DoNotStart,
+                        }),
+                    SuccessfulWork);
+            },
+            groups: groups);
+        var client = host.GetTestClient();
+
+        var definitionsResponse = await client.GetAsync("/workable/definitions");
+        var hostResponse = await client.GetAsync("/workable/host");
+
+        definitionsResponse.EnsureSuccessStatusCode();
+        hostResponse.EnsureSuccessStatusCode();
+        var definitions = JsonNode.Parse(await definitionsResponse.Content.ReadAsStringAsync())?.AsArray()
+            ?? throw new InvalidOperationException("Expected definitions array.");
+        var hostJson = JsonNode.Parse(await hostResponse.Content.ReadAsStringAsync())
+            ?? throw new InvalidOperationException("Expected JSON response.");
+        var system = Assert.Single(hostJson["systems"]?.AsArray()
+            ?? throw new InvalidOperationException("Expected systems array."));
+
+        Assert.Single(definitions);
+        Assert.False(system?["access"]?["isSystemAdministrator"]?.GetValue<bool>() ?? true);
+        Assert.False(system?["access"]?["isWorkAdministrator"]?.GetValue<bool>() ?? true);
+        Assert.True(system?["access"]?["canReadAllWork"]?.GetValue<bool>() ?? false);
+    }
+
+    [Fact]
+    public async Task MappedHttpNamedSystemRouteAllowsConfiguredBuiltInSurfaceGroupWithoutAdministratorRoles()
+    {
+        var groups = TransportAuthorizationTestSupport.BuiltInHttpApiSurfaceGroups
+            .Concat(TransportAuthorizationTestSupport.ReadAllWorkGroups)
+            .ToArray();
+        using var host = await CreateMultiSystemHttpHost(
+            groups: groups,
+            configureSystems: builder => builder.ConfigureAuthorization(authorization => authorization
+                .AllowBuiltInHttpApiToGroups(TransportAuthorizationTestSupport.BuiltInHttpApiSurfaceGroups.ToArray())
+                .AllowReadAllWorkToGroups(TransportAuthorizationTestSupport.ReadAllWorkGroups.ToArray())));
+        var client = host.GetTestClient();
+
+        var response = await client.GetAsync("/workable/systems/background/definitions");
+
+        response.EnsureSuccessStatusCode();
+        var definitions = JsonNode.Parse(await response.Content.ReadAsStringAsync())?.AsArray()
+            ?? throw new InvalidOperationException("Expected definitions array.");
+        Assert.Single(definitions);
     }
 
     [Fact]
@@ -1855,7 +1955,7 @@ public sealed class WorkableHttpApiTests
     }
 
     [Fact]
-    public async Task MappedHttpNamedSystemRoutesRequireAnySystemAccess()
+    public async Task MappedHttpNamedSystemRoutesRequireBuiltInSurfaceAccess()
     {
         using var host = await CreateMultiSystemHttpHost(Array.Empty<string>());
         var client = host.GetTestClient();
@@ -1871,13 +1971,38 @@ public sealed class WorkableHttpApiTests
         var queueJson = await queueResponse.Content.ReadAsStringAsync();
 
         Assert.Equal(HttpStatusCode.Forbidden, definitionsResponse.StatusCode);
-        Assert.Contains("workable.http.system.access_denied", definitionsJson);
+        Assert.Contains("workable.http.surface.system_access_denied", definitionsJson);
         Assert.Equal(HttpStatusCode.Forbidden, queueResponse.StatusCode);
-        Assert.Contains("workable.http.system.access_denied", queueJson);
+        Assert.Contains("workable.http.surface.system_access_denied", queueJson);
     }
 
     [Fact]
-    public async Task MappedHttpRouteIncludesReadOnlyAccessSummary()
+    public async Task MappedHttpNamedSystemRoutesResolveAuthorizationGroupsOncePerSurface()
+    {
+        var groups = TransportAuthorizationTestSupport.SystemAdministratorGroups
+            .Concat(TransportAuthorizationTestSupport.ReadAllWorkGroups)
+            .Concat(["workable.surface"])
+            .ToArray();
+        var provider = new CountingWorkAuthorizationGroupProvider(groups);
+        using var host = await CreateMultiSystemHttpHost(
+            groups,
+            services =>
+            {
+                services.AddSingleton(provider);
+                services.AddSingleton<IWorkAuthorizationGroupProvider>(provider);
+            },
+            surfaceAccessGroups: ["workable.surface"]);
+        var client = host.GetTestClient();
+
+        var response = await client.GetAsync("/workable/systems/background/definitions");
+
+        response.EnsureSuccessStatusCode();
+        Assert.Equal(1, provider.GetCallCount(systemName: null));
+        Assert.Equal(1, provider.GetCallCount("background"));
+    }
+
+    [Fact]
+    public async Task MappedHttpRouteFiltersSystemsWithoutBuiltInSurfaceAccess()
     {
         using var host = await CreateMultiSystemHttpHost(TransportAuthorizationTestSupport.ReadGroups);
         var client = host.GetTestClient();
@@ -1889,22 +2014,7 @@ public sealed class WorkableHttpApiTests
         var systems = json["systems"]?.AsArray()
             ?? throw new InvalidOperationException("Expected systems array.");
 
-        Assert.Equal(2, systems.Count);
-        Assert.All(systems, system =>
-        {
-            var access = system?["access"]?.AsObject()
-                ?? throw new InvalidOperationException("Expected access object.");
-
-            Assert.False(access["isSystemAdministrator"]?.GetValue<bool>());
-            Assert.False(access["isWorkAdministrator"]?.GetValue<bool>());
-            Assert.False(access["canViewDiagnostics"]?.GetValue<bool>());
-            Assert.False(access["canControlSystem"]?.GetValue<bool>());
-            Assert.False(access["canReadAllWork"]?.GetValue<bool>());
-            Assert.False(access["canOperateAllWork"]?.GetValue<bool>());
-            Assert.Equal(1, access["totalDefinitionCount"]?.GetValue<int>());
-            Assert.Equal(1, access["readableDefinitionCount"]?.GetValue<int>());
-            Assert.Equal(0, access["operableDefinitionCount"]?.GetValue<int>());
-        });
+        Assert.Empty(systems);
     }
 
     [Fact]
@@ -1969,7 +2079,7 @@ public sealed class WorkableHttpApiTests
     [Fact]
     public async Task MappedHttpDiagnosticsRouteRequiresDiagnosticsPermission()
     {
-        using var host = await CreateHttpHost(groups: TransportAuthorizationTestSupport.ReadGroups);
+        using var host = await CreateHttpHost(groups: TransportAuthorizationTestSupport.WorkAdministratorGroups);
         var client = host.GetTestClient();
 
         var response = await client.GetAsync("/workable/diagnostics");
@@ -1981,7 +2091,7 @@ public sealed class WorkableHttpApiTests
     [Fact]
     public async Task MappedHttpDiagnosticsViewRouteRequiresDiagnosticsPermission()
     {
-        using var host = await CreateHttpHost(groups: TransportAuthorizationTestSupport.ReadGroups);
+        using var host = await CreateHttpHost(groups: TransportAuthorizationTestSupport.WorkAdministratorGroups);
         var client = host.GetTestClient();
 
         var response = await client.PostAsJsonAsync("/workable/views/diagnostics", new { });
@@ -1993,7 +2103,7 @@ public sealed class WorkableHttpApiTests
     [Fact]
     public async Task MappedHttpDiagnosticsComponentRouteRequiresDiagnosticsPermission()
     {
-        using var host = await CreateHttpHost(groups: TransportAuthorizationTestSupport.ReadGroups);
+        using var host = await CreateHttpHost(groups: TransportAuthorizationTestSupport.WorkAdministratorGroups);
         var client = host.GetTestClient();
 
         var response = await client.PostAsJsonAsync("/workable/components/readModelDiagnostics", new { });
@@ -2029,7 +2139,7 @@ public sealed class WorkableHttpApiTests
     [Fact]
     public async Task MappedHttpLifecycleRoutesRequireControlSystemPermission()
     {
-        using var host = await CreateManualHttpHost(TransportAuthorizationTestSupport.ReadGroups);
+        using var host = await CreateManualHttpHost(TransportAuthorizationTestSupport.WorkAdministratorGroups);
         var client = host.GetTestClient();
 
         var startResponse = await client.PostAsync("/workable/lifecycle/start", content: null);
@@ -2192,18 +2302,14 @@ public sealed class WorkableHttpApiTests
     }
 
     [Fact]
-    public async Task MappedHttpRouteUsesRequestContextAuthorizationForDefinitionsAndQueue()
+    public async Task MappedHttpRouteRequiresBuiltInSurfaceAccessBeforeDefinitionAuthorization()
     {
         using var host = await CreateAuthorizedHttpHost();
         var client = host.GetTestClient();
         Assert.True(host.Services.GetRequiredService<IWorkSystemRegistry>().Default.RequiresAuthorization);
 
         var definitionsResponse = await client.GetAsync("/workable/definitions");
-        definitionsResponse.EnsureSuccessStatusCode();
         var definitionsJson = await definitionsResponse.Content.ReadAsStringAsync();
-
-        Assert.Contains("allowed.authorization", definitionsJson);
-        Assert.DoesNotContain("hidden.authorization", definitionsJson);
 
         var allowedResponse = await client.PostAsJsonAsync(
             "/workable/work/allowed.authorization",
@@ -2211,18 +2317,12 @@ public sealed class WorkableHttpApiTests
             {
                 completion = "returnAfterAccepted",
             });
-        allowedResponse.EnsureSuccessStatusCode();
+        var allowedJson = await allowedResponse.Content.ReadAsStringAsync();
 
-        var hiddenResponse = await client.PostAsJsonAsync(
-            "/workable/work/hidden.authorization",
-            new
-            {
-                completion = "returnAfterAccepted",
-            });
-
-        Assert.Equal(HttpStatusCode.Forbidden, hiddenResponse.StatusCode);
-        var hiddenJson = await hiddenResponse.Content.ReadAsStringAsync();
-        Assert.Contains("Unauthorized", hiddenJson, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(HttpStatusCode.Forbidden, definitionsResponse.StatusCode);
+        Assert.Contains("workable.http.surface.system_access_denied", definitionsJson);
+        Assert.Equal(HttpStatusCode.Forbidden, allowedResponse.StatusCode);
+        Assert.Contains("workable.http.surface.system_access_denied", allowedJson);
     }
 
     private static (IWorkSystem System, HttpAdapterServices Http) CreateHost(
@@ -2258,7 +2358,8 @@ public sealed class WorkableHttpApiTests
         bool authenticated = true,
         IEnumerable<string>? groups = null,
         bool development = false,
-        string? configuredUrls = null)
+        string? configuredUrls = null,
+        IEnumerable<string>? surfaceAccessGroups = null)
         => CreateHttpHost(
             builder =>
             {
@@ -2274,14 +2375,16 @@ public sealed class WorkableHttpApiTests
             authenticated,
             groups,
             development,
-            configuredUrls);
+            configuredUrls,
+            surfaceAccessGroups);
 
     private static async Task<IHost> CreateHttpHost(
         Action<IWorkSystemBuilder> configure,
         bool authenticated = true,
         IEnumerable<string>? groups = null,
         bool development = false,
-        string? configuredUrls = null)
+        string? configuredUrls = null,
+        IEnumerable<string>? surfaceAccessGroups = null)
     {
         var host = new HostBuilder()
             .ConfigureWebHost(web =>
@@ -2308,7 +2411,13 @@ public sealed class WorkableHttpApiTests
                         builder.ConfigureTransportSystemAuthorization();
                         configure(builder);
                     });
-                    services.AddWorkableHttpApi();
+                    services.AddWorkableHttpApi(options =>
+                    {
+                        if (surfaceAccessGroups is not null)
+                        {
+                            options.SurfaceAccessGroups = surfaceAccessGroups.ToArray();
+                        }
+                    });
                 });
                 web.Configure(app =>
                 {
@@ -2336,7 +2445,11 @@ public sealed class WorkableHttpApiTests
         return host;
     }
 
-    private static async Task<IHost> CreateMultiSystemHttpHost(IEnumerable<string>? groups = null)
+    private static async Task<IHost> CreateMultiSystemHttpHost(
+        IEnumerable<string>? groups = null,
+        Action<IServiceCollection>? configureServices = null,
+        Action<IWorkSystemBuilder>? configureSystems = null,
+        IEnumerable<string>? surfaceAccessGroups = null)
     {
         var host = new HostBuilder()
             .ConfigureWebHost(web =>
@@ -2351,6 +2464,7 @@ public sealed class WorkableHttpApiTests
                         builder.StartWithHost();
                         builder.RequireAuthorization();
                         builder.ConfigureTransportSystemAuthorization();
+                        configureSystems?.Invoke(builder);
                         builder.AddAuthorizedTransportWork(
                             WorkDefinition.Create(
                                 "http.default",
@@ -2365,6 +2479,7 @@ public sealed class WorkableHttpApiTests
                         builder.StartWithHost();
                         builder.RequireAuthorization();
                         builder.ConfigureTransportSystemAuthorization();
+                        configureSystems?.Invoke(builder);
                         builder.AddAuthorizedTransportWork(
                             WorkDefinition.Create(
                                 "http.named",
@@ -2374,7 +2489,14 @@ public sealed class WorkableHttpApiTests
                                 }),
                             SuccessfulWork);
                     });
-                    services.AddWorkableHttpApi();
+                    configureServices?.Invoke(services);
+                    services.AddWorkableHttpApi(options =>
+                    {
+                        if (surfaceAccessGroups is not null)
+                        {
+                            options.SurfaceAccessGroups = surfaceAccessGroups.ToArray();
+                        }
+                    });
                 });
                 web.Configure(app =>
                 {
@@ -2509,6 +2631,7 @@ public sealed class WorkableHttpApiTests
                     {
                         builder.StartWithHost();
                         builder.RequireAuthorization();
+                        builder.ConfigureTransportSystemAuthorization();
                         builder.AddAuthorizedTransportWork(
                             WorkDefinition.Create(
                                 "http.discovery.allowed",
@@ -2560,6 +2683,7 @@ public sealed class WorkableHttpApiTests
                     {
                         builder.StartWithHost();
                         builder.RequireAuthorization();
+                        builder.ConfigureTransportSystemAuthorization();
                         builder.AddAuthorizedTransportWork(WorkDefinition.Create("billing.invoice.generate", category: "Billing:Invoices"), SuccessfulWork);
                         builder.AddAuthorizedTransportWork(WorkDefinition.Create("billing.payment.capture", category: "Billing:Payments"), SuccessfulWork);
                         builder.AddAuthorizedTransportWork(WorkDefinition.Create("operations.cleanup", category: "Operations"), SuccessfulWork);
@@ -2601,6 +2725,7 @@ public sealed class WorkableHttpApiTests
                     {
                         builder.StartWithHost();
                         builder.RequireAuthorization();
+                        builder.ConfigureTransportSystemAuthorization();
                         builder.AddAuthorizedTransportWork(WorkDefinition.Create("http.overview.complete", category: "Http"), SuccessfulWork);
                         builder.AddAuthorizedTransportWork(
                             WorkDefinition.Create("http.overview.failed", category: "Http"),
@@ -2772,6 +2897,7 @@ public sealed class WorkableHttpApiTests
                     {
                         builder.StartWithHost();
                         builder.RequireAuthorization();
+                        builder.ConfigureTransportSystemAuthorization();
                         builder.AddAuthorizedTransportWork(
                             WorkDefinition.Create(
                                 "http.bulk.billing",
@@ -2950,7 +3076,25 @@ public sealed class WorkableHttpApiTests
             ]));
         }
     }
+
+    private sealed class CountingWorkAuthorizationGroupProvider(IEnumerable<string> groups) : IWorkAuthorizationGroupProvider
+    {
+        private const string DefaultSystemCacheKey = "<default>";
+        private readonly IReadOnlySet<string> groups = new HashSet<string>(groups, StringComparer.OrdinalIgnoreCase);
+        private readonly ConcurrentDictionary<string, int> callCounts = new(StringComparer.OrdinalIgnoreCase);
+
+        public IReadOnlySet<string> GetGroups(WorkActor actor, string? systemName)
+        {
+            this.callCounts.AddOrUpdate(GetCacheKey(systemName), 1, static (_, count) => count + 1);
+            return actor == WorkActor.Unknown
+                ? new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+                : this.groups;
+        }
+
+        public int GetCallCount(string? systemName)
+            => this.callCounts.TryGetValue(GetCacheKey(systemName), out var count) ? count : 0;
+
+        private static string GetCacheKey(string? systemName)
+            => string.IsNullOrWhiteSpace(systemName) ? DefaultSystemCacheKey : systemName;
+    }
 }
-
-
-

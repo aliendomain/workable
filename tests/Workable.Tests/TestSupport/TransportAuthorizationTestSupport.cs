@@ -14,6 +14,8 @@ internal static class TransportAuthorizationTestSupport
 
     public static IReadOnlyList<string> ControlSystemGroups { get; } = ["transport.control"];
 
+    public static IReadOnlyList<string> BuiltInHttpApiSurfaceGroups { get; } = ["transport.surface"];
+
     public static IReadOnlyList<string> ReadAllWorkGroups { get; } = ["transport.read-all"];
 
     public static IReadOnlyList<string> OperateAllWorkGroups { get; } = ["transport.operate-all"];

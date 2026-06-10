@@ -7,6 +7,7 @@ internal sealed class WorkSystemAuthorizationBuilder(
     private IReadOnlySet<string> workAdministratorGroups = configuration.WorkAdministratorGroups;
     private IReadOnlySet<string> diagnosticsGroups = configuration.DiagnosticsGroups;
     private IReadOnlySet<string> controlSystemGroups = configuration.ControlSystemGroups;
+    private IReadOnlySet<string> builtInHttpApiSurfaceGroups = configuration.BuiltInHttpApiSurfaceGroups;
     private IReadOnlySet<string> readAllWorkGroups = configuration.ReadAllWorkGroups;
     private IReadOnlySet<string> operateAllWorkGroups = configuration.OperateAllWorkGroups;
 
@@ -34,6 +35,12 @@ internal sealed class WorkSystemAuthorizationBuilder(
         return this;
     }
 
+    public IWorkSystemAuthorizationBuilder AllowBuiltInHttpApiToGroups(params string[] groups)
+    {
+        this.builtInHttpApiSurfaceGroups = ToSet(groups);
+        return this;
+    }
+
     public IWorkSystemAuthorizationBuilder AllowReadAllWorkToGroups(params string[] groups)
     {
         this.readAllWorkGroups = ToSet(groups);
@@ -53,6 +60,7 @@ internal sealed class WorkSystemAuthorizationBuilder(
             WorkAdministratorGroups = this.workAdministratorGroups,
             DiagnosticsGroups = this.diagnosticsGroups,
             ControlSystemGroups = this.controlSystemGroups,
+            BuiltInHttpApiSurfaceGroups = this.builtInHttpApiSurfaceGroups,
             ReadAllWorkGroups = this.readAllWorkGroups,
             OperateAllWorkGroups = this.operateAllWorkGroups,
         };

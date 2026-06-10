@@ -6366,7 +6366,7 @@ function formatActionTimelineActorLabel(origin?: WorkableRealtimeOrigin | null) 
   const actor = origin?.actor;
   const name = actor?.name?.trim();
   const id = actor?.id?.trim();
-  const channel = formatActionTimelineSourceLabel(origin?.channel);
+  const channel = formatActionTimelineSourceLabel(origin);
 
   if (name) {
     return `${name} via ${channel}`;
@@ -6379,18 +6379,28 @@ function formatActionTimelineActorLabel(origin?: WorkableRealtimeOrigin | null) 
   return undefined;
 }
 
-function formatActionTimelineSourceLabel(channel?: string | null) {
-  switch ((channel ?? "").trim()) {
+function formatActionTimelineSourceLabel(origin?: WorkableRealtimeOrigin | null) {
+  const normalizedChannel = (origin?.channel ?? "").trim();
+  const normalizedSurface = (origin?.surface ?? "").trim();
+  switch (normalizedChannel) {
     case "InProcess":
       return "In-process";
     case "HttpApi":
+      if (normalizedSurface === "WorkableAdapter") {
+        return "Workable HTTP";
+      }
+
+      if (normalizedSurface === "HostApplication") {
+        return "Host HTTP";
+      }
+
       return "HTTP";
     case "Mcp":
       return "MCP";
     case "SignalR":
       return "SignalR";
     default:
-      return channel?.trim() || "System";
+      return normalizedChannel || "System";
   }
 }
 
@@ -7213,6 +7223,7 @@ function createWorkerSnapshotFromLanding(landing: WorkWorkerOverviewComponent): 
 function createRealtimeOriginFromLandingOrigin(origin: WorkWorkerOverviewOrigin): WorkableRealtimeOrigin {
   return {
     channel: origin.channel,
+    surface: origin.surface,
     actor: origin.actorId || origin.actorName || origin.actorEmail
       ? {
         email: origin.actorEmail ?? undefined,
@@ -7329,7 +7340,7 @@ function createWorkerTimelineItemFromLandingTimelineItem(
   const origin = item.origin ? createRealtimeOriginFromLandingOrigin(item.origin) : undefined;
   const actorLabel = formatActionTimelineActorLabel(origin);
   const hasActor = Boolean(actorLabel);
-  const sourceLabel = hasActor ? undefined : formatActionTimelineSourceLabel(origin?.channel);
+  const sourceLabel = hasActor ? undefined : formatActionTimelineSourceLabel(origin);
 
   return {
     attemptCount: item.attemptCount ?? undefined,
@@ -7359,7 +7370,7 @@ function createWorkerQueuedTimelineItem(worker: WorkerSnapshot): WorkerTimelineI
   const origin = worker.origin;
   const actorLabel = formatActionTimelineActorLabel(origin);
   const hasActor = Boolean(actorLabel);
-  const sourceLabel = hasActor ? undefined : formatActionTimelineSourceLabel(origin?.channel);
+  const sourceLabel = hasActor ? undefined : formatActionTimelineSourceLabel(origin);
 
   return {
     actorLabel: actorLabel ?? undefined,
@@ -8058,7 +8069,7 @@ function isNearWorkerLogScrollBottom(element: HTMLElement) {
 
 function getWorkerCreatedByLabel(worker: WorkerSnapshot) {
   return formatActionTimelineActorLabel(worker.origin) ??
-    formatActionTimelineSourceLabel(worker.origin?.channel);
+    formatActionTimelineSourceLabel(worker.origin);
 }
 
 export function splitCategoryPath(category?: string | null) {
@@ -8179,4 +8190,3 @@ function useWorkableResource<T>(
 
   return state;
 }
-

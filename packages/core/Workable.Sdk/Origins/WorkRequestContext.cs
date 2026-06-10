@@ -35,6 +35,11 @@ public sealed record WorkRequestContext(
     public DateTimeOffset CreatedAt => this.Origin.CreatedAt;
 
     /// <summary>
+    /// Gets the surface that presented Workable to the caller.
+    /// </summary>
+    public WorkOriginSurface Surface => this.Origin.Surface;
+
+    /// <summary>
     /// Creates a request context from an existing origin record.
     /// </summary>
     /// <param name="origin">The origin metadata to carry into Workable.</param>
@@ -54,17 +59,21 @@ public sealed record WorkRequestContext(
     /// Whether the caller should count as authenticated for rules such as
     /// <c>AllowOperateToKnownAuthenticatedUsers()</c>.
     /// </param>
+    /// <param name="surface">
+    /// The surface that presented Workable to the caller, distinguishing built-in Workable adapters from host-defined entry points.
+    /// </param>
     /// <returns>A new request context with a generated origin record.</returns>
     public static WorkRequestContext Create(
         WorkInvocationChannel channel,
         WorkActor? actor = null,
         string? description = null,
         string? url = null,
-        bool isAuthenticated = false)
+        bool isAuthenticated = false,
+        WorkOriginSurface surface = WorkOriginSurface.HostApplication)
     {
         var resolvedActor = actor ?? WorkActor.Unknown;
         return new WorkRequestContext(
-            WorkOrigin.Create(channel, resolvedActor),
+            WorkOrigin.Create(channel, resolvedActor, surface),
             description,
             url,
             null,
@@ -79,4 +88,14 @@ public sealed record WorkRequestContext(
         => this.Authorization is null
             ? this
             : this with { Authorization = null };
+
+    /// <summary>
+    /// Returns a copy of the request context with a different origin-surface classification.
+    /// </summary>
+    /// <param name="surface">The updated surface classification.</param>
+    /// <returns>The original request context when the surface is unchanged; otherwise a copy with the new surface.</returns>
+    public WorkRequestContext WithSurface(WorkOriginSurface surface)
+        => this.Surface == surface
+            ? this
+            : this with { Origin = this.Origin.WithSurface(surface) };
 }

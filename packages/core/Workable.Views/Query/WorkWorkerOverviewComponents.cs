@@ -89,6 +89,7 @@ public sealed record WorkWorkerOverviewWorker(
 /// </summary>
 public sealed record WorkWorkerOverviewOrigin(
     WorkInvocationChannel Channel,
+    WorkOriginSurface Surface = WorkOriginSurface.HostApplication,
     string? ActorId = null,
     string? ActorName = null,
     string? ActorEmail = null);
@@ -296,4 +297,3 @@ public sealed record WorkWorkerOverviewPage<T>(
     IReadOnlyList<T> Items,
     bool HasMore,
     string? Cursor);
-

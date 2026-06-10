@@ -30,13 +30,26 @@ public sealed class WorkableHttpTopologyResolver(
     /// <param name="requestContext">The caller context used to determine system visibility and access summaries.</param>
     /// <returns>The host discovery payload for the caller.</returns>
     public WorkableHttpHostDescriptor DescribeHost(WorkRequestContext requestContext)
+        => this.DescribeHost(
+            system => system.DescribeAccess(requestContext),
+            static (_, access) => access.HasAnyAccess());
+
+    internal WorkableHttpHostDescriptor DescribeBuiltInSurfaceHost(WorkableHttpRequestAccessContext requestAccess)
+        => this.DescribeHost(
+            requestAccess.DescribeAccess,
+            (system, access) => requestAccess.IsBuiltInSurfaceAllowed(system) && access.HasAnyAccess());
+
+    private WorkableHttpHostDescriptor DescribeHost(
+        Func<IWorkSystem, WorkSystemAccessSummary> describeAccess,
+        Func<IWorkSystem, WorkSystemAccessSummary, bool> includeSystem)
     {
-        ArgumentNullException.ThrowIfNull(requestContext);
+        ArgumentNullException.ThrowIfNull(describeAccess);
+        ArgumentNullException.ThrowIfNull(includeSystem);
 
         var defaultSystem = registry.Default;
         var systems = registry.Systems
-            .Select(system => (System: system, Access: system.DescribeAccess(requestContext)))
-            .Where(result => result.Access.HasAnyAccess())
+            .Select(system => (System: system, Access: describeAccess(system)))
+            .Where(result => includeSystem(result.System, result.Access))
             .OrderBy(result => result.System.Name is null ? 0 : 1)
             .ThenBy(result => result.System.Name, StringComparer.OrdinalIgnoreCase)
             .Select(result => new WorkableHttpSystemDescriptor(

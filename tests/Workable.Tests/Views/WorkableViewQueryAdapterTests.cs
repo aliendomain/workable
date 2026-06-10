@@ -85,6 +85,7 @@ public sealed class WorkableViewQueryAdapterTests
         Assert.NotNull(landing);
         Assert.Equal(WorkWorkerOverviewActivity.Logs, landing.Activity);
         Assert.Equal(WorkInvocationChannel.HttpApi, landing.Worker.CreatedOrigin.Channel);
+        Assert.Equal(WorkOriginSurface.HostApplication, landing.Worker.CreatedOrigin.Surface);
         Assert.Equal("view-user", landing.Worker.CreatedOrigin.ActorId);
         Assert.Equal("View Tester", landing.Worker.CreatedOrigin.ActorName);
         Assert.Equal(1, landing.Worker.ConfigDifferenceCount);
@@ -833,4 +834,3 @@ public sealed class WorkableViewQueryAdapterTests
         }
     }
 }
-
