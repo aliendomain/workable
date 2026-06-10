@@ -1,4 +1,5 @@
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using Workable;
 
 namespace Workable.Tests;
@@ -466,6 +467,33 @@ public sealed class WorkSystemAuthorizationConfigurationTests
     }
 
     [Fact]
+    public void WarnWhenConstrainedOperateGroupsAreShadowedBySystemWideOperateAccess()
+    {
+        var loggerProvider = new CapturingLoggerProvider();
+        var provider = new ServiceCollection()
+            .AddLogging(logging => logging.AddProvider(loggerProvider))
+            .AddDefaultWorkableSystemForAuthorizationTests(builder => builder
+                .ConfigureAuthorization(authorization => authorization
+                    .AllowOperateAllWorkToGroups("operate.all")
+                    .WorkAdministrators("work.admin"))
+                .AddWork(
+                    PausedDefinition("shadowed.operate.definition"),
+                    SuccessfulWork,
+                    configure: null,
+                    authorize: authorize => authorize.AllowOperateToGroups(
+                        ["operate.all", "work.admin"],
+                        operate => operate.WhenOperatingRequire(_ => false))))
+            .BuildServiceProvider();
+
+        _ = provider.GetRequiredService<IWorkSystem>();
+
+        var warning = Assert.Single(loggerProvider.Entries, entry => entry.Level == LogLevel.Warning);
+        Assert.Contains("shadowed.operate.definition", warning.Message, StringComparison.Ordinal);
+        Assert.Contains("AllowOperateAllWorkToGroups(...)", warning.Message, StringComparison.Ordinal);
+        Assert.Contains("WorkAdministrators(...)", warning.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task SystemAdministratorCanReadAllWorkWithoutOperateAllWork()
     {
         var definition = PausedDefinition("system.admin.definition");
@@ -704,3 +732,46 @@ internal static class WorkSystemAuthorizationConfigurationTestExtensions
         => global::Workable.WorkableServiceCollectionExtensions.AddWorkableSystem(services, name, configure);
 }
 
+internal sealed class CapturingLoggerProvider : ILoggerProvider
+{
+    private readonly List<LogEntry> entries = [];
+
+    public IReadOnlyList<LogEntry> Entries => this.entries;
+
+    public ILogger CreateLogger(string categoryName)
+        => new CapturingLogger(categoryName, this.entries);
+
+    public void Dispose()
+    {
+    }
+
+    internal sealed record LogEntry(string Category, LogLevel Level, string Message, Exception? Exception);
+
+    private sealed class CapturingLogger(string category, List<LogEntry> entries) : ILogger
+    {
+        public IDisposable BeginScope<TState>(TState state)
+            where TState : notnull
+            => NullScope.Instance;
+
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(
+            LogLevel logLevel,
+            EventId eventId,
+            TState state,
+            Exception? exception,
+            Func<TState, Exception?, string> formatter)
+        {
+            entries.Add(new LogEntry(category, logLevel, formatter(state, exception), exception));
+        }
+    }
+
+    private sealed class NullScope : IDisposable
+    {
+        public static NullScope Instance { get; } = new();
+
+        public void Dispose()
+        {
+        }
+    }
+}

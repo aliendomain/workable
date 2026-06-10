@@ -58,6 +58,69 @@ internal sealed class WorkAuthorizationEvaluator(
     public IReadOnlyList<WorkDefinition> OperableDefinitions()
         => [.. catalog.Definitions.Where(this.CanOperate)];
 
+    public WorkOperateAuthorizationDecision AuthorizeQueue(
+        RegisteredWork registeredWork,
+        WorkInput? input,
+        WorkerOptions? options,
+        WorkRequestContext requestContext)
+    {
+        ArgumentNullException.ThrowIfNull(registeredWork);
+        ArgumentNullException.ThrowIfNull(requestContext);
+
+        if (systemAuthorization?.HasOperateAllWorkAccess() == true)
+        {
+            return WorkOperateAuthorizationDecision.Allow();
+        }
+
+        return registeredWork.Definition.Authorization.CanOperate(groups, isKnownAuthenticatedUser)
+            ? registeredWork.OperateAuthorization.EvaluateQueue(
+                groups,
+                isKnownAuthenticatedUser,
+                registeredWork.Definition,
+                input,
+                options,
+                requestContext)
+            : WorkOperateAuthorizationDecision.Deny();
+    }
+
+    public WorkOperateAuthorizationDecision AuthorizeWorkerAction(
+        RegisteredWork registeredWork,
+        WorkerSnapshot worker,
+        WorkAction action,
+        WorkRequestContext requestContext)
+    {
+        ArgumentNullException.ThrowIfNull(registeredWork);
+        ArgumentNullException.ThrowIfNull(worker);
+        ArgumentNullException.ThrowIfNull(requestContext);
+
+        if (systemAuthorization?.HasOperateAllWorkAccess() == true)
+        {
+            return WorkOperateAuthorizationDecision.Allow();
+        }
+
+        return registeredWork.Definition.Authorization.CanOperate(groups, isKnownAuthenticatedUser)
+            ? registeredWork.OperateAuthorization.EvaluateWorkerAction(
+                groups,
+                isKnownAuthenticatedUser,
+                registeredWork.Definition,
+                worker.Id.ToString(),
+                worker.Input,
+                ToOperateAction(action),
+                requestContext)
+            : WorkOperateAuthorizationDecision.Deny();
+    }
+
+    private static WorkOperateAction ToOperateAction(WorkAction action)
+        => action switch
+        {
+            WorkAction.Start => WorkOperateAction.Start,
+            WorkAction.Pause => WorkOperateAction.Pause,
+            WorkAction.Cancel => WorkOperateAction.Cancel,
+            WorkAction.Push => WorkOperateAction.Push,
+            WorkAction.Purge => WorkOperateAction.Purge,
+            _ => throw new InvalidOperationException($"Unsupported worker action '{action}'."),
+        };
+
     private bool TryGet(WorkDefinitionId definitionId, [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out WorkDefinition? definition)
     {
         definition = catalog.Definitions.SingleOrDefault(candidate => candidate.Id == definitionId);

@@ -10,9 +10,13 @@ public sealed class AuthorizedWorkQueueServiceShould
     {
         var queue = CreateQueueService(
             groups: ["visible.operate"],
-            out _,
+            works:
+            [
+                CreateRegisteredWork("visible.work", authorize => authorize.AllowOperateToGroups("visible.operate")),
+            ],
             out _,
             out var inner);
+
         var byName = await queue.Enqueue("missing.work");
 
         Assert.Equal(WorkQueueStatus.NotFound, byName.QueueOutcome.Status);
@@ -22,13 +26,15 @@ public sealed class AuthorizedWorkQueueServiceShould
     [Fact]
     public async Task ReturnUnauthorizedWithoutCallingInnerForInoperableDefinitions()
     {
+        var visible = CreateRegisteredWork("visible.work", authorize => authorize.AllowOperateToGroups("visible.operate"));
+        var hidden = CreateRegisteredWork("hidden.work", authorize => authorize.AllowOperateToGroups("hidden.operate"));
         var queue = CreateQueueService(
             groups: ["visible.operate"],
+            works: [visible, hidden],
             out _,
-            out var hidden,
             out var inner);
 
-        var byName = await queue.Enqueue(hidden.Name);
+        var byName = await queue.Enqueue(hidden.Definition.Name);
 
         Assert.Equal(WorkQueueStatus.Unauthorized, byName.QueueOutcome.Status);
         Assert.Empty(inner.Calls);
@@ -37,9 +43,10 @@ public sealed class AuthorizedWorkQueueServiceShould
     [Fact]
     public async Task DelegateEveryEnqueueOverloadForOperableDefinitions()
     {
+        var visible = CreateRegisteredWork("visible.work", authorize => authorize.AllowOperateToGroups("visible.operate"));
         var queue = CreateQueueService(
             groups: ["visible.operate"],
-            out var visible,
+            works: [visible],
             out _,
             out var inner);
         var input = WorkInput.FromValue(new QueueInput("direct"), WorkData.DefaultJsonOptions);
@@ -47,47 +54,180 @@ public sealed class AuthorizedWorkQueueServiceShould
         var options = WorkerOptions.Default with { ProfilingEnabled = true };
         using var cancellation = new CancellationTokenSource();
 
-        await queue.Enqueue(visible.Name, input, options, cancellation.Token);
-        await queue.Enqueue(visible.Name, typedByName, options, cancellation.Token);
+        await queue.Enqueue(visible.Definition.Name, input, options, cancellation.Token);
+        await queue.Enqueue(visible.Definition.Name, typedByName, options, cancellation.Token);
 
         Assert.Equal(
             [
-                new RecordedQueueCall("name", null, visible.Name, input, options, cancellation.Token),
-                new RecordedQueueCall("name-typed", null, visible.Name, typedByName, options, cancellation.Token),
+                new RecordedQueueCall("name", null, visible.Definition.Name, input, options, cancellation.Token),
+                new RecordedQueueCall("name", null, visible.Definition.Name, WorkInput.FromValue(typedByName, WorkData.DefaultJsonOptions), options, cancellation.Token),
             ],
             inner.Calls);
     }
 
+    [Fact]
+    public async Task ApplyCommonOperateRequirementsToQueueing()
+    {
+        var visible = CreateRegisteredWork(
+            "visible.work",
+            authorize => authorize.AllowOperateToGroups(
+                ["visible.operate"],
+                operate => operate.WhenOperatingRequire<QueueInput>(context => context.Input?.Value == "allowed")));
+        var queue = CreateQueueService(
+            groups: ["visible.operate"],
+            works: [visible],
+            out _,
+            out var inner);
+
+        var accepted = await queue.Enqueue(visible.Definition.Name, new QueueInput("allowed"));
+        var rejected = await queue.Enqueue(visible.Definition.Name, new QueueInput("denied"));
+
+        Assert.True(accepted.QueueOutcome.IsAccepted);
+        Assert.Equal(WorkQueueStatus.Unauthorized, rejected.QueueOutcome.Status);
+        Assert.Single(inner.Calls);
+    }
+
+    [Fact]
+    public async Task AllowKnownAuthenticatedQueueingAndShortCircuitAfterFirstTrue()
+    {
+        var falseCalls = 0;
+        var trueCalls = 0;
+        var skippedCalls = 0;
+        var builder = new WorkAuthorizationBuilder();
+        builder.AllowOperateToKnownAuthenticatedUsers(
+            operate => operate
+                .WhenQueueingRequire<QueueInput>(_ =>
+                {
+                    falseCalls++;
+                    return false;
+                })
+                .WhenQueueingRequire<QueueInput>(context =>
+                {
+                    trueCalls++;
+                    return context.Input?.Value == "allowed";
+                })
+                .WhenQueueingRequire<QueueInput>(_ =>
+                {
+                    skippedCalls++;
+                    return true;
+                }));
+        var registration = builder.BuildRegistration();
+        var visible = CreateRegisteredWork("known.work", registration);
+        var queue = CreateQueueService(
+            groups: [],
+            works: [visible],
+            out _,
+            out var inner,
+            isKnownAuthenticatedUser: true);
+
+        var accepted = await queue.Enqueue(visible.Definition.Name, new QueueInput("allowed"));
+
+        Assert.True(accepted.QueueOutcome.IsAccepted);
+        Assert.Equal(1, falseCalls);
+        Assert.Equal(1, trueCalls);
+        Assert.Equal(0, skippedCalls);
+        Assert.Single(inner.Calls);
+    }
+
+    [Fact]
+    public async Task ReturnInvalidWhenTypedQueueRequirementCannotDeserializeInput()
+    {
+        var visible = CreateRegisteredWork(
+            "invalid.work",
+            authorize => authorize.AllowOperateToGroups(
+                ["visible.operate"],
+                operate => operate.WhenQueueingRequire<QueueInput>(context => context.Input?.Value == "allowed")));
+        var queue = CreateQueueService(
+            groups: ["visible.operate"],
+            works: [visible],
+            out _,
+            out var inner);
+
+        var outcome = await queue.Enqueue(
+            visible.Definition.Name,
+            WorkInput.FromJson("\"not-an-object\""));
+
+        Assert.Equal(WorkQueueStatus.Invalid, outcome.QueueOutcome.Status);
+        Assert.Contains(outcome.QueueOutcome.Messages, message => message.Code == "workable.authorization.operate_requirement_input_invalid");
+        Assert.Empty(inner.Calls);
+    }
+
+    [Fact]
+    public async Task BypassConstrainedQueueRequirementsForSystemOperateAllAccess()
+    {
+        var visible = CreateRegisteredWork(
+            "visible.work",
+            authorize => authorize.AllowOperateToGroups(
+                ["visible.operate"],
+                operate => operate.WhenQueueingRequire<QueueInput>(_ => false)));
+        var queue = CreateQueueService(
+            groups: ["ops.operateall"],
+            works: [visible],
+            out _,
+            out var inner,
+            systemAuthorizationConfiguration: WorkSystemAuthorizationConfiguration.Default with
+            {
+                OperateAllWorkGroups = Groups(["ops.operateall"]),
+            });
+
+        var outcome = await queue.Enqueue(visible.Definition.Name, new QueueInput("denied"));
+
+        Assert.True(outcome.QueueOutcome.IsAccepted);
+        Assert.Single(inner.Calls);
+    }
+
     private static AuthorizedWorkQueueService CreateQueueService(
         IReadOnlyList<string> groups,
-        out WorkDefinition visible,
-        out WorkDefinition hidden,
-        out RecordingWorkQueueService inner)
+        IReadOnlyList<RegisteredWork> works,
+        out WorkSystemCatalog catalog,
+        out RecordingWorkQueueService inner,
+        bool isKnownAuthenticatedUser = false,
+        WorkSystemAuthorizationConfiguration? systemAuthorizationConfiguration = null)
     {
-        visible = CreateDefinition("visible.work", "visible.operate");
-        hidden = CreateDefinition("hidden.work", "hidden.operate");
-        var catalog = new WorkSystemCatalog(
-            [
-                CreateRegisteredWork(visible),
-                CreateRegisteredWork(hidden),
-            ],
-            persistenceStoreAvailable: false);
+        catalog = new WorkSystemCatalog(works, persistenceStoreAvailable: false);
         inner = new RecordingWorkQueueService();
+        var requestContext = CreateRequestContext(isKnownAuthenticatedUser);
+        var normalizedGroups = Groups(groups);
         return new AuthorizedWorkQueueService(
             catalog,
             inner,
-            new WorkAuthorizationEvaluator(catalog, Groups(groups), false));
+            new WorkAuthorizationEvaluator(
+                catalog,
+                normalizedGroups,
+                isKnownAuthenticatedUser,
+                systemAuthorizationConfiguration is null
+                    ? null
+                    : new WorkSystemAuthorizationEvaluator(systemAuthorizationConfiguration, normalizedGroups)),
+            requestContext);
     }
 
-    private static WorkDefinition CreateDefinition(string name, string operateGroup)
-        => WorkDefinition.Create(
-            name,
-            authorization: WorkDefinitionAuthorization.Create(
-                readGroups: [operateGroup],
-                operateGroups: [operateGroup]));
+    private static RegisteredWork CreateRegisteredWork(
+        string name,
+        Action<IWorkAuthorizationBuilder> authorize)
+    {
+        var builder = new WorkAuthorizationBuilder();
+        authorize(builder);
+        return CreateRegisteredWork(name, builder.BuildRegistration());
+    }
 
-    private static RegisteredWork CreateRegisteredWork(WorkDefinition definition)
-        => new(definition, _ => new NoopExecutor(), []);
+    private static RegisteredWork CreateRegisteredWork(
+        string name,
+        WorkAuthorizationRegistration registration)
+        => new(
+            WorkDefinition.Create(
+                name,
+                authorization: registration.DefinitionAuthorization),
+            _ => new NoopExecutor(),
+            [],
+            [],
+            [],
+            registration.OperateAuthorization);
+
+    private static WorkRequestContext CreateRequestContext(bool isKnownAuthenticatedUser)
+        => WorkRequestContext.Create(
+            WorkInvocationChannel.InProcess,
+            actor: isKnownAuthenticatedUser ? new WorkActor(Id: "known-user", Name: "Known User") : null,
+            isAuthenticated: isKnownAuthenticatedUser);
 
     private static IReadOnlySet<string> Groups(IEnumerable<string> groups)
         => groups.ToHashSet(StringComparer.OrdinalIgnoreCase);

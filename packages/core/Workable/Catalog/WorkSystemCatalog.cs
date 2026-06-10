@@ -4,6 +4,7 @@ using System.Runtime.CompilerServices;
 using System.Threading.Channels;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 
 namespace Workable;
 internal sealed class WorkSystemCatalog : IWorkCatalog
@@ -15,12 +16,23 @@ internal sealed class WorkSystemCatalog : IWorkCatalog
     private IReadOnlyDictionary<string, IReadOnlyList<WorkDefinition>> definitionsByCategory = new Dictionary<string, IReadOnlyList<WorkDefinition>>(StringComparer.OrdinalIgnoreCase);
     private IReadOnlyDictionary<string, IReadOnlyList<WorkDefinition>> definitionsByCategoryPath = new Dictionary<string, IReadOnlyList<WorkDefinition>>(StringComparer.OrdinalIgnoreCase);
     private readonly bool persistenceStoreAvailable;
+    private readonly WorkSystemAuthorizationConfiguration authorizationConfiguration;
+    private readonly ILogger? authorizationLogger;
 
     public WorkSystemCatalog(
         IReadOnlyList<RegisteredWork> work,
-        bool persistenceStoreAvailable)
+        bool persistenceStoreAvailable,
+        WorkSystemAuthorizationConfiguration? authorizationConfiguration = null,
+        ILogger? authorizationLogger = null)
     {
         this.persistenceStoreAvailable = persistenceStoreAvailable;
+        this.authorizationConfiguration = authorizationConfiguration ?? WorkSystemAuthorizationConfiguration.Default;
+        this.authorizationLogger = authorizationLogger;
+        foreach (var registeredWork in work)
+        {
+            this.ValidateAuthorization(registeredWork);
+        }
+
         this.work.AddRange(work);
         this.RebuildIndexes();
     }
@@ -78,6 +90,7 @@ internal sealed class WorkSystemCatalog : IWorkCatalog
                 throw new InvalidOperationException("Work definitions cannot be added after the catalog is frozen.");
             }
 
+            this.ValidateAuthorization(registeredWork);
             this.work.Add(registeredWork);
             this.RebuildIndexes();
         }
@@ -181,6 +194,54 @@ internal sealed class WorkSystemCatalog : IWorkCatalog
         this.Definitions = [.. this.work.Select(registeredWork => registeredWork.Definition)];
         this.definitionsByCategory = BuildCategoryIndex(this.Definitions, includeSubcategories: false);
         this.definitionsByCategoryPath = BuildCategoryIndex(this.Definitions, includeSubcategories: true);
+    }
+
+    private void ValidateAuthorization(RegisteredWork registeredWork)
+    {
+        WorkOperateAuthorizationConfigurationValidator.ValidateOrThrow(
+            registeredWork.OperateAuthorization.Grants,
+            registeredWork.Definition.Name);
+        this.LogShadowedOperateConstraints(registeredWork);
+    }
+
+    private void LogShadowedOperateConstraints(RegisteredWork registeredWork)
+    {
+        var shadowedGroups = registeredWork.OperateAuthorization.Grants
+            .Where(grant => grant.HasConstraints && grant.Groups.Count > 0)
+            .SelectMany(grant => grant.Groups)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Select(group => new
+            {
+                Group = group,
+                ShadowedByOperateAll = this.authorizationConfiguration.OperateAllWorkGroups.Contains(group),
+                ShadowedByWorkAdministrators = this.authorizationConfiguration.WorkAdministratorGroups.Contains(group),
+            })
+            .Where(entry => entry.ShadowedByOperateAll || entry.ShadowedByWorkAdministrators)
+            .ToList();
+        if (shadowedGroups.Count == 0)
+        {
+            return;
+        }
+
+        var descriptions = shadowedGroups.Select(entry =>
+        {
+            var grants = new List<string>(2);
+            if (entry.ShadowedByOperateAll)
+            {
+                grants.Add("AllowOperateAllWorkToGroups(...)");
+            }
+
+            if (entry.ShadowedByWorkAdministrators)
+            {
+                grants.Add("WorkAdministrators(...)");
+            }
+
+            return $"{entry.Group} ({string.Join(", ", grants)})";
+        });
+        this.authorizationLogger?.LogWarning(
+            "Work '{WorkName}' configures constrained operate requirements for groups that already receive unconditional system-level operate access: {ShadowedGroups}. Those work-level constraints will never restrict callers in those groups.",
+            registeredWork.Definition.Name,
+            string.Join(", ", descriptions));
     }
 
     private static Dictionary<string, IReadOnlyList<WorkDefinition>> BuildCategoryIndex(

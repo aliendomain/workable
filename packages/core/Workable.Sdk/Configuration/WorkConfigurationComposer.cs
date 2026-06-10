@@ -32,7 +32,7 @@ internal static class WorkConfigurationComposer
         Action<IWorkAuthorizationBuilder>? authorize)
     {
         definition = ApplyMetadata(definition, executorType);
-        definition = ApplyAuthorization(definition, executorType, authorize);
+        definition = ApplyAuthorization(definition, executorType, authorize, out var operateAuthorization);
         definition = WorkExecutorAdapterFactory.ApplyTypedSchemas(definition, executorType);
         var configuration = definition.Configuration;
         IReadOnlyList<WorkExceptionClassifier> exceptionClassifiers = [];
@@ -156,6 +156,7 @@ internal static class WorkConfigurationComposer
             {
                 Configuration = WorkConfigurationValidator.ThrowIfInvalid(configuration),
             },
+            operateAuthorization,
             exceptionClassifiers,
             automaticStarts,
             initializers);
@@ -180,23 +181,28 @@ internal static class WorkConfigurationComposer
     private static WorkDefinition ApplyAuthorization(
         WorkDefinition definition,
         Type? executorType,
-        Action<IWorkAuthorizationBuilder>? authorize)
+        Action<IWorkAuthorizationBuilder>? authorize,
+        out WorkOperateAuthorizationConfiguration operateAuthorization)
     {
         var attribute = executorType?.GetCustomAttribute<WorkAuthorizationAttribute>(inherit: true);
         var authorization = definition.Authorization;
+        operateAuthorization = WorkOperateAuthorizationConfiguration.FromDefinition(authorization);
         if (attribute is not null)
         {
             authorization = WorkDefinitionAuthorization.Create(
                 attribute.ReadGroups,
                 attribute.OperateGroups,
                 WorkAuthorizationRegistrationSource.Attribute);
+            operateAuthorization = WorkOperateAuthorizationConfiguration.FromDefinition(authorization);
         }
 
         if (authorize is not null)
         {
             var builder = new WorkAuthorizationBuilder();
             authorize(builder);
-            authorization = builder.Build();
+            var registration = builder.BuildRegistration();
+            authorization = registration.DefinitionAuthorization;
+            operateAuthorization = registration.OperateAuthorization;
         }
 
         return definition with

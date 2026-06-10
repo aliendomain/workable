@@ -1,25 +1,34 @@
 namespace Workable;
 
 internal sealed class AuthorizedWorkerOperations(
-    IWorkCatalog catalog,
+    WorkSystemCatalog catalog,
     IWorkerOperations inner,
     IWorkQueryService query,
-    WorkAuthorizationEvaluator authorization) : IWorkerOperations
+    WorkAuthorizationEvaluator authorization,
+    WorkRequestContext requestContext) : IWorkerOperations
 {
     public async Task<WorkActionOutcome> Execute(
         WorkerVersion worker,
         WorkAction action,
         CancellationToken cancellationToken = default)
     {
-        var authorizationResult = await this.AuthorizeWorker(worker.WorkerId, cancellationToken);
-        if (authorizationResult is WorkerAuthorizationResult.NotFound)
+        var authorizationResult = await this.AuthorizeAction(worker.WorkerId, action, cancellationToken);
+        if (authorizationResult.Status is WorkerActionAuthorizationStatus.NotFound)
         {
             return WorkActionOutcome.NotFound(action, worker.WorkerId);
         }
 
-        if (authorizationResult is WorkerAuthorizationResult.Unauthorized)
+        if (authorizationResult.Status is WorkerActionAuthorizationStatus.Unauthorized)
         {
             return WorkActionOutcome.Unauthorized(action, worker.WorkerId);
+        }
+
+        if (authorizationResult.Status is WorkerActionAuthorizationStatus.Invalid)
+        {
+            return WorkActionOutcome.Invalid(
+                action,
+                authorizationResult.Worker,
+                authorizationResult.Messages);
         }
 
         return await inner.Execute(worker, action, cancellationToken);
@@ -42,6 +51,7 @@ internal sealed class AuthorizedWorkerOperations(
         }
 
         var outcomes = new List<WorkActionOutcome>();
+        var matchedWorkerCount = 0;
         var skip = 0;
 
         while (true)
@@ -60,7 +70,21 @@ internal sealed class AuthorizedWorkerOperations(
 
             foreach (var worker in result.Workers)
             {
-                outcomes.Add(await inner.Execute(new WorkerVersion(worker.Id, worker.Revision), action, cancellationToken));
+                matchedWorkerCount++;
+                var authorizationResult = await this.AuthorizeAction(worker.Id, action, cancellationToken);
+                outcomes.Add(authorizationResult.Status switch
+                {
+                    WorkerActionAuthorizationStatus.Authorized => await inner.Execute(
+                        new WorkerVersion(worker.Id, worker.Revision),
+                        action,
+                        cancellationToken),
+                    WorkerActionAuthorizationStatus.Invalid => WorkActionOutcome.Invalid(
+                        action,
+                        authorizationResult.Worker,
+                        authorizationResult.Messages),
+                    WorkerActionAuthorizationStatus.NotFound => WorkActionOutcome.NotFound(action, worker.Id),
+                    _ => WorkActionOutcome.Unauthorized(action, worker.Id),
+                });
             }
 
             if (result.Workers.Count < WorkerCriteria.MaximumTake)
@@ -71,7 +95,7 @@ internal sealed class AuthorizedWorkerOperations(
             skip += result.Workers.Count;
         }
 
-        return new WorkerBulkActionOutcome(action, filter, outcomes.Count, outcomes);
+        return new WorkerBulkActionOutcome(action, filter, matchedWorkerCount, outcomes);
     }
 
     public async Task<WorkActionOutcome> Reconfigure(
@@ -101,10 +125,41 @@ internal sealed class AuthorizedWorkerOperations(
             return WorkerAuthorizationResult.NotFound;
         }
 
-        return catalog.TryGet(worker.DefinitionName, out var definition) &&
-            authorization.CanOperate(definition)
+        return catalog.TryGetWork(worker.DefinitionName, out var registeredWork) &&
+            authorization.CanOperate(registeredWork.Definition)
             ? WorkerAuthorizationResult.Authorized
             : WorkerAuthorizationResult.Unauthorized;
+    }
+
+    private async Task<WorkerActionAuthorizationResult> AuthorizeAction(
+        WorkerId workerId,
+        WorkAction action,
+        CancellationToken cancellationToken)
+    {
+        var worker = await query.Worker(workerId, cancellationToken);
+        if (worker is null)
+        {
+            return WorkerActionAuthorizationResult.NotFound();
+        }
+
+        if (!catalog.TryGetWork(worker.DefinitionName, out var registeredWork))
+        {
+            return WorkerActionAuthorizationResult.Unauthorized(worker);
+        }
+
+        var decision = authorization.AuthorizeWorkerAction(
+            registeredWork,
+            worker,
+            action,
+            requestContext);
+        if (decision.IsAllowed)
+        {
+            return WorkerActionAuthorizationResult.Authorized(worker);
+        }
+
+        return decision.IsInvalid
+            ? WorkerActionAuthorizationResult.Invalid(worker, decision.Messages)
+            : WorkerActionAuthorizationResult.Unauthorized(worker);
     }
 
     private enum WorkerAuthorizationResult
@@ -112,5 +167,33 @@ internal sealed class AuthorizedWorkerOperations(
         Authorized,
         Unauthorized,
         NotFound,
+    }
+
+    private enum WorkerActionAuthorizationStatus
+    {
+        Authorized,
+        Unauthorized,
+        Invalid,
+        NotFound,
+    }
+
+    private sealed record WorkerActionAuthorizationResult(
+        WorkerActionAuthorizationStatus Status,
+        WorkerSnapshot? Worker,
+        IReadOnlyList<WorkMessage> Messages)
+    {
+        public static WorkerActionAuthorizationResult Authorized(WorkerSnapshot worker)
+            => new(WorkerActionAuthorizationStatus.Authorized, worker, []);
+
+        public static WorkerActionAuthorizationResult Unauthorized(WorkerSnapshot worker)
+            => new(WorkerActionAuthorizationStatus.Unauthorized, worker, []);
+
+        public static WorkerActionAuthorizationResult Invalid(
+            WorkerSnapshot worker,
+            IReadOnlyList<WorkMessage> messages)
+            => new(WorkerActionAuthorizationStatus.Invalid, worker, messages);
+
+        public static WorkerActionAuthorizationResult NotFound()
+            => new(WorkerActionAuthorizationStatus.NotFound, null, []);
     }
 }

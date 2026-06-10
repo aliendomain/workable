@@ -202,6 +202,27 @@ services.AddWorkableSystem("backstage", builder =>
 
 The defaults run before each individual registration. If one work supplies its own `configure` or `authorize` callback, that callback runs after the group defaults and can override them.
 
+Work-level operate grants can also add synchronous queue and worker-action requirements when a shared audience still needs per-request input checks.
+
+The main reason to use this feature is to avoid cloning otherwise identical work definitions just to express narrower authorization slices. If `AdminSurveyWork` is one logical operation, it is usually better to keep one definition and discriminate by input such as `AreaKey` than to register separate definitions for every area-specific owner group.
+
+```csharp
+services.AddWorkableSystem("backstage", builder =>
+{
+    builder.RequireAuthorization();
+
+    builder.AddWork<AdminSurveyWork>(
+        authorize: auth => auth
+            .AllowOperateToGroups("survey.admin")
+            .AllowOperateToGroups(
+                ["survey.north.owner"],
+                operate => operate.WhenOperatingRequire<AdminSurveyArgs>(context =>
+                    context.Input?.AreaKey == "north")));
+});
+```
+
+In that example, the broad admin group keeps full access, while the narrower owner group can use the same work only for one area. Use `WhenOperatingRequire(...)` for both queueing and worker actions, `WhenQueueingRequire(...)` for queueing only, and `WhenWorkerActionsRequire(...)` for worker actions only. These extra checks do not affect read visibility or worker reconfiguration.
+
 ## Work Definition Sources
 
 Use a work definition source when a feature needs to create work definitions from configuration or runtime discovery before the Workable catalog is frozen.

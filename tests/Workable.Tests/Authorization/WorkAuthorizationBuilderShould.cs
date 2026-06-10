@@ -76,4 +76,60 @@ public sealed class WorkAuthorizationBuilderShould
         Assert.True(authorization.Operate.AllowsKnownAuthenticatedUsers);
         Assert.Equal(["operate.final"], authorization.Operate.Groups);
     }
+
+    [Fact]
+    public void BuildRegistrationAggregatesConstrainedOperateGrants()
+    {
+        var builder = new WorkAuthorizationBuilder();
+
+        builder.AllowOperateToGroups(
+            ["operate.first"],
+            operate => operate.WhenOperatingRequire<QueueInput>(context => context.Input?.Value == "first"));
+        builder.AllowOperateToGroups(
+            ["operate.second"],
+            operate => operate.WhenQueueingRequire(context => context.RawInput is not null));
+        builder.AllowOperateToKnownAuthenticatedUsers(
+            operate => operate.WhenWorkerActionsRequire(context => context.Action == WorkOperateAction.Cancel));
+
+        var registration = builder.BuildRegistration();
+
+        Assert.Equal(
+            ["operate.first", "operate.second"],
+            registration.DefinitionAuthorization.Operate.Groups.OrderBy(group => group, StringComparer.OrdinalIgnoreCase));
+        Assert.True(registration.DefinitionAuthorization.Operate.AllowsKnownAuthenticatedUsers);
+        Assert.Equal(3, registration.OperateAuthorization.Grants.Count);
+    }
+
+    [Fact]
+    public void RejectDuplicateOperateGroupsAcrossGrantBlocks()
+    {
+        var builder = new WorkAuthorizationBuilder();
+
+        builder.AllowOperateToGroups(
+            ["operate.duplicate"],
+            operate => operate.WhenQueueingRequire(context => context.RawInput is not null));
+        builder.AllowOperateToGroups(
+            ["operate.duplicate"],
+            operate => operate.WhenWorkerActionsRequire(context => context.Action == WorkOperateAction.Cancel));
+
+        var exception = Assert.Throws<InvalidOperationException>(() => builder.BuildRegistration());
+
+        Assert.Contains("Duplicate groups: operate.duplicate", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void RejectDuplicateKnownAuthenticatedOperateGrantBlocks()
+    {
+        var builder = new WorkAuthorizationBuilder();
+
+        builder.AllowOperateToKnownAuthenticatedUsers();
+        builder.AllowOperateToKnownAuthenticatedUsers(
+            operate => operate.WhenOperatingRequire(context => context.RawInput is not null));
+
+        var exception = Assert.Throws<InvalidOperationException>(() => builder.BuildRegistration());
+
+        Assert.Contains("only one known-authenticated operate grant", exception.Message, StringComparison.Ordinal);
+    }
+
+    private sealed record QueueInput(string Value);
 }
