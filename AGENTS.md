@@ -13,6 +13,10 @@ Run `npm.cmd test` from `apps\web\workable-admin-ui`.
 
 Run the `.NET` solution test command outside the sandbox. It covers the main API/backend test project and the SQL Server integration suite.
 
+The SQL Server integration suite is cross-platform. It uses `WORKABLE_SQLSERVER_TEST_CONNECTION_STRING` when that environment variable is set; otherwise it auto-starts a local SQL Server container through `docker` or `podman`.
+
+The auto-managed test container is named `workable-sqlserver-tests` and uses the SQL Server 2022 Linux image. If you want to avoid leaving the container running for reuse between test runs, set `WORKABLE_SQLSERVER_TEST_CONTAINER_REUSE=false`.
+
 When running .NET tests from Codex, run `dotnet test` outside the sandbox. The Codex sandbox causes the .NET CLI/MSBuild build phase to spawn large numbers of `MSBuild.dll /nodemode:1` worker processes and stall before test execution.
 
 Use this command with escalated permissions:

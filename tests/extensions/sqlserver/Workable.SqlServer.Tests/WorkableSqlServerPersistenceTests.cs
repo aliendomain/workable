@@ -9,6 +9,7 @@ using Xunit.Abstractions;
 
 namespace Workable.Tests;
 
+[Collection(nameof(SqlServerTestHostCollection))]
 [Trait("Category", "SqlServerIntegration")]
 [Trait("Category", "PersistenceIntegration")]
 public sealed class WorkableSqlServerPersistenceTests : IAsyncLifetime
@@ -20,39 +21,32 @@ public sealed class WorkableSqlServerPersistenceTests : IAsyncLifetime
     };
 
     private readonly ITestOutputHelper output;
+    private readonly SqlServerTestHost sqlServer;
     private readonly string databaseName = "WorkableTests_" + Guid.NewGuid().ToString("N");
-    private string? skipReason;
 
-    public WorkableSqlServerPersistenceTests(ITestOutputHelper output)
+    public WorkableSqlServerPersistenceTests(
+        SqlServerTestHost sqlServer,
+        ITestOutputHelper output)
     {
+        this.sqlServer = sqlServer;
         this.output = output;
-        this.ConnectionString = BuildConnectionString(this.databaseName);
+        this.ConnectionString = sqlServer.BuildConnectionString(this.databaseName);
     }
 
     private string ConnectionString { get; }
 
     public async Task InitializeAsync()
     {
-        try
-        {
-            await using var connection = new SqlConnection(BuildConnectionString("master"));
-            await connection.OpenAsync();
-            await Execute(connection, $"CREATE DATABASE {Quote(this.databaseName)};");
-        }
-        catch (Exception exception) when (exception is SqlException or InvalidOperationException)
-        {
-            this.skipReason = $"LocalDB is not available: {exception.Message}";
-        }
+        this.output.WriteLine($"SQL Server test host: {this.sqlServer.Description}");
+
+        await using var connection = new SqlConnection(this.sqlServer.MasterConnectionString);
+        await connection.OpenAsync();
+        await Execute(connection, $"CREATE DATABASE {Quote(this.databaseName)};");
     }
 
     public async Task DisposeAsync()
     {
-        if (this.skipReason is not null)
-        {
-            return;
-        }
-
-        await using var connection = new SqlConnection(BuildConnectionString("master"));
+        await using var connection = new SqlConnection(this.sqlServer.MasterConnectionString);
         await connection.OpenAsync();
         await Execute(connection, $"""
 IF DB_ID(N'{Escape(this.databaseName)}') IS NOT NULL
@@ -1852,15 +1846,7 @@ FROM workable.WorkEntries
     }
 
     private bool SkipIfUnavailable()
-    {
-        if (this.skipReason is null)
-        {
-            return false;
-        }
-
-        this.output.WriteLine(this.skipReason);
-        return true;
-    }
+        => false;
 
     private async Task<SqlConnection> OpenConnection()
     {
@@ -2180,17 +2166,6 @@ WHERE SubjectValue = N'{Escape(subjectValue)}'
   AND LeaseId IS NULL
   AND LeaseExpiresAt IS NULL;
 """);
-
-    private static string BuildConnectionString(string database)
-        => new SqlConnectionStringBuilder
-        {
-            DataSource = @"(localdb)\MSSQLLocalDB",
-            InitialCatalog = database,
-            IntegratedSecurity = true,
-            TrustServerCertificate = true,
-            ConnectTimeout = 5,
-            Pooling = false,
-        }.ConnectionString;
 
     private static string Quote(string identifier)
         => $"[{identifier.Replace("]", "]]", StringComparison.Ordinal)}]";

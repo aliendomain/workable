@@ -147,7 +147,7 @@ This project exists to measure runtime characteristics; it is not a host/runtime
 
 `tests/Workable.Tests` contains the contract, configuration, lifecycle, queueing, event stream, and in-memory runtime tests.
 
-`tests/extensions/sqlserver/Workable.SqlServer.Tests` contains SQL Server integration tests.
+`tests/extensions/sqlserver/Workable.SqlServer.Tests` contains cross-platform SQL Server integration tests. The suite uses a provided SQL connection string when available and otherwise provisions a local SQL Server container through a Docker-compatible runtime.
 
 `apps/samples/Workable.SampleHost` contains the sample ASP.NET Core host used to demonstrate Workable systems, adapters, auth stubs, and sample work definitions.
 

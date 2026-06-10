@@ -41,6 +41,17 @@ services.AddWorkableSqlServerDurableQueue(new WorkableSqlServerQueueDurabilityOp
 });
 ```
 
+## Integration Tests
+
+The SQL Server integration test project at `tests/extensions/sqlserver/Workable.SqlServer.Tests` is cross-platform.
+
+- Set `WORKABLE_SQLSERVER_TEST_CONNECTION_STRING` to point at an existing SQL Server instance when you want to manage the database host yourself.
+- Otherwise the test fixture auto-starts a local SQL Server 2022 container through `docker` or `podman` and reuses it across runs.
+- The managed container is named `workable-sqlserver-tests`.
+- Set `WORKABLE_SQLSERVER_TEST_CONTAINER_REUSE=false` when you want the fixture to stop containers it creates for the current run instead of keeping them warm for reuse.
+
+That means the same SQL persistence suite can run on Windows, macOS, Linux, and CI runners that have a Docker-compatible runtime available.
+
 ## Durable Queue Runtime Behavior
 
 The SQL Server durable queue writes accepted durable workers to the configured schema before returning from enqueue. Without a caller transaction, the integration commits its own insert before returning. With `WorkerOptions.WithSqlServerQueueDurabilityTransaction(connection, transaction)`, the insert participates in the caller's transaction and the queue reader cannot claim the work until that transaction commits. This caller-owned enqueue transaction path requires `QueueDurably()`; persistence-backed idempotency without durable queueing rejects queue requests that supply the queue durability transaction option.
