@@ -14,6 +14,16 @@ public enum WorkOperateRequirementSurface
     /// The caller is applying an action to an existing worker.
     /// </summary>
     WorkerAction,
+
+    /// <summary>
+    /// The caller is reconfiguring an existing worker.
+    /// </summary>
+    WorkerReconfiguration,
+
+    /// <summary>
+    /// The caller is reconfiguring a work definition for future workers.
+    /// </summary>
+    DefinitionReconfiguration,
 }
 
 /// <summary>
@@ -48,7 +58,7 @@ public enum WorkOperateAction
 }
 
 /// <summary>
-/// Provides common context for operate requirements that can apply to both queueing and worker actions.
+/// Provides common context for operate requirements that can apply to queueing, worker actions, and reconfiguration.
 /// </summary>
 public record WorkOperateRequirementContext(
     WorkDefinition Definition,
@@ -56,10 +66,12 @@ public record WorkOperateRequirementContext(
     WorkOperateRequirementSurface Surface,
     WorkInput? RawInput,
     WorkOperateAction? Action = null,
-    string? WorkerId = null);
+    string? WorkerId = null,
+    WorkWorkerReconfigurationChanges? WorkerChanges = null,
+    WorkDefinitionReconfigurationChanges? DefinitionChanges = null);
 
 /// <summary>
-/// Provides common typed context for operate requirements that can apply to both queueing and worker actions.
+/// Provides common typed context for operate requirements that can apply to queueing, worker actions, and reconfiguration.
 /// </summary>
 /// <typeparam name="TInput">The typed input value deserialized for the requirement.</typeparam>
 public sealed record WorkOperateRequirementContext<TInput>(
@@ -69,10 +81,14 @@ public sealed record WorkOperateRequirementContext<TInput>(
     WorkInput? RawInput,
     TInput? Input,
     WorkOperateAction? Action = null,
-    string? WorkerId = null) : WorkOperateRequirementContext(
+    string? WorkerId = null,
+    WorkWorkerReconfigurationChanges? WorkerChanges = null,
+    WorkDefinitionReconfigurationChanges? DefinitionChanges = null) : WorkOperateRequirementContext(
         Definition,
         RequestContext,
         Surface,
         RawInput,
         Action,
-        WorkerId);
+        WorkerId,
+        WorkerChanges,
+        DefinitionChanges);

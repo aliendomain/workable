@@ -202,7 +202,7 @@ services.AddWorkableSystem("backstage", builder =>
 
 The defaults run before each individual registration. If one work supplies its own `configure` or `authorize` callback, that callback runs after the group defaults and can override them.
 
-Work-level operate grants can also add synchronous queue and worker-action requirements when a shared audience still needs per-request input checks.
+Work-level operate grants can also add synchronous queue, worker-action, and reconfiguration requirements when a shared audience still needs per-request input checks.
 
 The main reason to use this feature is to avoid cloning otherwise identical work definitions just to express narrower authorization slices. If `AdminSurveyWork` is one logical operation, it is usually better to keep one definition and discriminate by input such as `AreaKey` than to register separate definitions for every area-specific owner group.
 
@@ -221,7 +221,37 @@ services.AddWorkableSystem("backstage", builder =>
 });
 ```
 
-In that example, the broad admin group keeps full access, while the narrower owner group can use the same work only for one area. Use `WhenOperatingRequire(...)` for both queueing and worker actions, `WhenQueueingRequire(...)` for queueing only, and `WhenWorkerActionsRequire(...)` for worker actions only. These extra checks do not affect read visibility or worker reconfiguration.
+In that example, the broad admin group keeps full access, while the narrower owner group can use the same work only for one area. These extra checks do not affect read visibility, but they can now target queueing, worker actions, worker reconfiguration, or definition reconfiguration depending on which requirement helper you choose.
+
+If one definition needs separate audiences for queueing, worker actions, or reconfiguration, use the finer-grained helpers instead of cloning the definition:
+
+```csharp
+services.AddWorkableSystem("backstage", builder =>
+{
+    builder.RequireAuthorization();
+
+    builder.AddWork<AdminSurveyWork>(
+        authorize: auth => auth
+            .AllowQueueToGroups("survey.queue")
+            .AllowWorkerActionsToGroups("survey.ops")
+            .AllowOperationsToGroups(
+                ["survey.admin"],
+                WorkOperationPermissions.Reconfigure));
+});
+```
+
+In that shape, `AllowOperateToGroups(...)` remains the ergonomic full-access grant, while `AllowQueueToGroups(...)`, `AllowWorkerActionsToGroups(...)`, and `AllowOperationsToGroups(...)` let one definition express narrower operation rights without duplicating executor registrations.
+
+For constrained grants:
+
+- `WhenOperatingRequire(...)` applies to queueing, worker actions, and both reconfiguration surfaces
+- `WhenQueueingRequire(...)` applies only to queueing
+- `WhenWorkerActionsRequire(...)` applies only to worker actions
+- `WhenReconfiguringRequire(...)` applies to worker and definition reconfiguration
+- `WhenWorkerReconfiguringRequire(...)` applies only to worker reconfiguration
+- `WhenDefinitionReconfiguringRequire(...)` applies only to definition reconfiguration
+
+Typed worker-action and worker-reconfiguration requirements deserialize the worker's retained original input. Definition reconfiguration requirements inspect the reconfiguration change shape directly because definition reconfiguration does not carry work input.
 
 ## Work Definition Sources
 

@@ -109,7 +109,7 @@ The created context includes:
 
 The `description` argument is optional. Supply it only when the endpoint has useful human-readable context worth preserving on the Workable origin.
 
-That authenticated-caller signal is what lets work definitions use `AllowOperateToKnownAuthenticatedUsers()` without inventing a synthetic authorization group.
+That authenticated-caller signal is what lets work definitions use `AllowOperateToKnownAuthenticatedUsers()`, `AllowQueueToKnownAuthenticatedUsers()`, or `AllowOperationsToKnownAuthenticatedUsers(...)` without inventing a synthetic authorization group.
 
 ## Actor Resolution
 
@@ -122,7 +122,7 @@ By default:
 - actor email comes from the configured `ActorEmailClaimTypes`
 - anonymous users become `WorkActor.Unknown`
 
-This is usually enough for custom endpoints that already have authenticated users and just need Workable to preserve that identity in queue origins, action history, and authorization evaluation. It also means a caller only qualifies for `AllowOperateToKnownAuthenticatedUsers()` when ASP.NET Core authentication succeeds and Workable can resolve a known actor.
+This is usually enough for custom endpoints that already have authenticated users and just need Workable to preserve that identity in queue origins, action history, and authorization evaluation. It also means a caller only qualifies for known-authenticated-user work grants when ASP.NET Core authentication succeeds and Workable can resolve a known actor.
 
 ## Authorization Group Resolution
 

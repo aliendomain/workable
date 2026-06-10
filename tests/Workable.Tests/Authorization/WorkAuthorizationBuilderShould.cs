@@ -82,53 +82,57 @@ public sealed class WorkAuthorizationBuilderShould
     {
         var builder = new WorkAuthorizationBuilder();
 
-        builder.AllowOperateToGroups(
-            ["operate.first"],
-            operate => operate.WhenOperatingRequire<QueueInput>(context => context.Input?.Value == "first"));
-        builder.AllowOperateToGroups(
+        builder.AllowQueueToGroups(
+            "operate.first");
+        builder.AllowWorkerActionsToGroups(
             ["operate.second"],
-            operate => operate.WhenQueueingRequire(context => context.RawInput is not null));
-        builder.AllowOperateToKnownAuthenticatedUsers(
             operate => operate.WhenWorkerActionsRequire(context => context.Action == WorkOperateAction.Cancel));
+        builder.AllowOperationsToGroups(
+            ["operate.third"],
+            WorkOperationPermissions.Reconfigure,
+            operate => operate.WhenDefinitionReconfiguringRequire(context => context.Changes.Configuration is not null));
+        builder.AllowQueueToKnownAuthenticatedUsers();
 
         var registration = builder.BuildRegistration();
 
         Assert.Equal(
-            ["operate.first", "operate.second"],
+            ["operate.first", "operate.second", "operate.third"],
             registration.DefinitionAuthorization.Operate.Groups.OrderBy(group => group, StringComparer.OrdinalIgnoreCase));
         Assert.True(registration.DefinitionAuthorization.Operate.AllowsKnownAuthenticatedUsers);
-        Assert.Equal(3, registration.OperateAuthorization.Grants.Count);
+        Assert.Equal(4, registration.OperateAuthorization.Grants.Count);
     }
 
     [Fact]
-    public void RejectDuplicateOperateGroupsAcrossGrantBlocks()
+    public void AllowMultipleGrantBlocksForTheSameAudience()
     {
         var builder = new WorkAuthorizationBuilder();
 
-        builder.AllowOperateToGroups(
+        builder.AllowQueueToGroups(
             ["operate.duplicate"],
             operate => operate.WhenQueueingRequire(context => context.RawInput is not null));
-        builder.AllowOperateToGroups(
+        builder.AllowWorkerActionsToGroups(
             ["operate.duplicate"],
             operate => operate.WhenWorkerActionsRequire(context => context.Action == WorkOperateAction.Cancel));
+        builder.AllowQueueToKnownAuthenticatedUsers();
+        builder.AllowWorkerActionsToKnownAuthenticatedUsers(
+            operate => operate.WhenWorkerActionsRequire(context => context.Action == WorkOperateAction.Start));
 
-        var exception = Assert.Throws<InvalidOperationException>(() => builder.BuildRegistration());
+        var registration = builder.BuildRegistration();
 
-        Assert.Contains("Duplicate groups: operate.duplicate", exception.Message, StringComparison.Ordinal);
+        Assert.Equal(4, registration.OperateAuthorization.Grants.Count);
+        Assert.Equal(["operate.duplicate"], registration.DefinitionAuthorization.Operate.Groups.OrderBy(group => group).ToArray());
+        Assert.True(registration.DefinitionAuthorization.Operate.AllowsKnownAuthenticatedUsers);
     }
 
     [Fact]
-    public void RejectDuplicateKnownAuthenticatedOperateGrantBlocks()
+    public void RejectEmptyCustomOperationMask()
     {
         var builder = new WorkAuthorizationBuilder();
 
-        builder.AllowOperateToKnownAuthenticatedUsers();
-        builder.AllowOperateToKnownAuthenticatedUsers(
-            operate => operate.WhenOperatingRequire(context => context.RawInput is not null));
+        var exception = Assert.Throws<ArgumentOutOfRangeException>(() =>
+            builder.AllowOperationsToGroups(["operate.none"], WorkOperationPermissions.None));
 
-        var exception = Assert.Throws<InvalidOperationException>(() => builder.BuildRegistration());
-
-        Assert.Contains("only one known-authenticated operate grant", exception.Message, StringComparison.Ordinal);
+        Assert.Contains("At least one work operation permission must be supplied", exception.Message, StringComparison.Ordinal);
     }
 
     private sealed record QueueInput(string Value);

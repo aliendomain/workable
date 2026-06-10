@@ -2,7 +2,11 @@ using System.Diagnostics.CodeAnalysis;
 
 namespace Workable;
 
-internal sealed class AuthorizedWorkCatalog(IWorkCatalog inner, WorkAuthorizationEvaluator authorization) : IWorkCatalog
+internal sealed class AuthorizedWorkCatalog(
+    WorkSystemCatalog catalog,
+    IWorkCatalog inner,
+    WorkAuthorizationEvaluator authorization,
+    WorkRequestContext requestContext) : IWorkCatalog
 {
     public bool IsFrozen => inner.IsFrozen;
 
@@ -30,20 +34,22 @@ internal sealed class AuthorizedWorkCatalog(IWorkCatalog inner, WorkAuthorizatio
         WorkDefinitionReconfiguration changes,
         CancellationToken cancellationToken = default)
     {
-        if (TryGetDefinition(definition.DefinitionId, out var target) &&
-            authorization.CanOperate(target))
+        if (!catalog.TryGetWork(definition.DefinitionId, out var registeredWork))
+        {
+            return Task.FromResult(WorkDefinitionReconfigurationOutcome.Unauthorized(definition.DefinitionId.ToString()));
+        }
+
+        var decision = authorization.AuthorizeDefinitionReconfiguration(
+            registeredWork,
+            changes,
+            requestContext);
+        if (decision.IsAllowed)
         {
             return inner.Reconfigure(definition, changes, cancellationToken);
         }
 
-        return TryGetDefinition(definition.DefinitionId, out target)
-            ? Task.FromResult(WorkDefinitionReconfigurationOutcome.Unauthorized(target.Name))
-            : Task.FromResult(WorkDefinitionReconfigurationOutcome.Unauthorized(definition.DefinitionId.ToString()));
-    }
-
-    private bool TryGetDefinition(WorkDefinitionId id, [NotNullWhen(true)] out WorkDefinition? definition)
-    {
-        definition = inner.Definitions.SingleOrDefault(candidate => candidate.Id == id);
-        return definition is not null;
+        return decision.IsInvalid
+            ? Task.FromResult(WorkDefinitionReconfigurationOutcome.Invalid(registeredWork.Definition, decision.Messages))
+            : Task.FromResult(WorkDefinitionReconfigurationOutcome.Unauthorized(registeredWork.Definition.Name));
     }
 }

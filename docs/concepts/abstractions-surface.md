@@ -72,7 +72,7 @@ WorkerQueryResult workers = await session.Query.Workers(cancellationToken: cance
 
 That session-bound model is the most important mental model in this package: the same catalog, queue, worker, query, event, and diagnostics contracts still exist, but they can now be filtered or rejected according to the bound caller.
 
-For trusted in-process callers, `WorkRequestContext.IsAuthenticated` is also part of that bound caller state. Workable uses it together with a known actor to evaluate rules such as `AllowOperateToKnownAuthenticatedUsers()`.
+For trusted in-process callers, `WorkRequestContext.IsAuthenticated` is also part of that bound caller state. Workable uses it together with a known actor to evaluate rules such as `AllowOperateToKnownAuthenticatedUsers()`, `AllowQueueToKnownAuthenticatedUsers()`, and `AllowOperationsToKnownAuthenticatedUsers(...)`.
 
 ## Access Introspection
 
@@ -86,6 +86,7 @@ For trusted in-process callers, `WorkRequestContext.IsAuthenticated` is also par
 - `IsWorkAdministrator`
 - `CanViewDiagnostics`
 - `CanControlSystem`
+  - whether the caller can start or stop the system lifecycle
 - `CanReadAllWork`
 - `CanOperateAllWork`
 - `TotalDefinitionCount`

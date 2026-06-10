@@ -51,6 +51,26 @@ public sealed class AuthorizedWorkerOperationsShould
     }
 
     [Fact]
+    public async Task ReturnEmptyBulkOutcomeWithoutQueryingWhenCallerOnlyHasDifferentOperationAcrossAllDefinitions()
+    {
+        var visible = CreateRegisteredWork("visible.work", authorize => authorize.AllowQueueToGroups("visible.queue"));
+        var operations = CreateOperations(
+            groups: ["visible.queue"],
+            works: [visible],
+            out _,
+            out var query,
+            out var inner);
+
+        var outcome = await operations.ExecuteAll(WorkAction.Pause);
+
+        Assert.Equal(WorkAction.Pause, outcome.Action);
+        Assert.Equal(0, outcome.MatchedWorkerCount);
+        Assert.Empty(outcome.Outcomes);
+        Assert.Equal(0, query.WorkersCallCount);
+        Assert.Empty(inner.Executed);
+    }
+
+    [Fact]
     public async Task ScopeBulkActionsToOperableDefinitionsAndForwardWorkerVersions()
     {
         var visible = CreateRegisteredWork("visible.work", authorize => authorize.AllowOperateToGroups("visible.operate"));
@@ -159,6 +179,61 @@ public sealed class AuthorizedWorkerOperationsShould
         await operations.Execute(new WorkerVersion(workerId, Revision: 7), WorkAction.Cancel);
 
         Assert.Single(inner.Executed);
+    }
+
+    [Fact]
+    public async Task DoNotTreatQueueOnlyGrantsAsWorkerActionPermission()
+    {
+        var visible = CreateRegisteredWork(
+            "visible.work",
+            authorize => authorize.AllowQueueToGroups("visible.queue"));
+        var operations = CreateOperations(
+            groups: ["visible.queue"],
+            works: [visible],
+            out _,
+            out var query,
+            out var inner);
+        var workerId = WorkerId.New();
+        query.WorkersById[workerId] = CreateWorkerSnapshot(workerId, visible.Definition);
+
+        var outcome = await operations.Execute(new WorkerVersion(workerId, Revision: 7), WorkAction.Cancel);
+
+        Assert.Equal(WorkActionStatus.Unauthorized, outcome.Status);
+        Assert.Empty(inner.Executed);
+    }
+
+    [Theory]
+    [InlineData(WorkAction.Start, true)]
+    [InlineData(WorkAction.Cancel, false)]
+    public async Task HonorSpecificWorkerActionMasks(WorkAction action, bool shouldAllow)
+    {
+        var visible = CreateRegisteredWork(
+            "visible.work",
+            authorize => authorize.AllowOperationsToGroups(
+                ["visible.operate"],
+                WorkOperationPermissions.Start));
+        var operations = CreateOperations(
+            groups: ["visible.operate"],
+            works: [visible],
+            out _,
+            out var query,
+            out var inner);
+        var workerId = WorkerId.New();
+        query.WorkersById[workerId] = CreateWorkerSnapshot(workerId, visible.Definition);
+
+        var outcome = await operations.Execute(new WorkerVersion(workerId, Revision: 7), action);
+
+        Assert.Equal(action, outcome.Action);
+        if (shouldAllow)
+        {
+            Assert.Single(inner.Executed);
+            Assert.Equal(action, inner.Executed[0].Action);
+        }
+        else
+        {
+            Assert.Equal(WorkActionStatus.Unauthorized, outcome.Status);
+            Assert.Empty(inner.Executed);
+        }
     }
 
     [Fact]
@@ -275,12 +350,52 @@ public sealed class AuthorizedWorkerOperationsShould
     }
 
     [Fact]
-    public async Task DoNotApplyConstrainedOperateRequirementsToReconfigure()
+    public async Task ApplyWorkerReconfigurationRequirementsToReconfigure()
     {
         var visible = CreateRegisteredWork(
             "visible.work",
-            authorize => authorize.AllowOperateToGroups(
+            authorize => authorize.AllowOperationsToGroups(
                 ["visible.operate"],
+                WorkOperationPermissions.ReconfigureWorker,
+                operate => operate.WhenWorkerReconfiguringRequire<QueueInput>(context => context.Input?.Value == "allowed")));
+        var operations = CreateOperations(
+            groups: ["visible.operate"],
+            works: [visible],
+            out _,
+            out var query,
+            out var inner);
+        var allowedWorkerId = WorkerId.New();
+        query.WorkersById[allowedWorkerId] = CreateWorkerSnapshot(
+            allowedWorkerId,
+            visible.Definition,
+            input: WorkInput.FromValue(new QueueInput("allowed"), WorkData.DefaultJsonOptions));
+        var deniedWorkerId = WorkerId.New();
+        query.WorkersById[deniedWorkerId] = CreateWorkerSnapshot(
+            deniedWorkerId,
+            visible.Definition,
+            input: WorkInput.FromValue(new QueueInput("denied"), WorkData.DefaultJsonOptions));
+
+        var accepted = await operations.Reconfigure(
+            new WorkerVersion(allowedWorkerId, Revision: 7),
+            new WorkerReconfiguration(ProfilingEnabled: true));
+        var rejected = await operations.Reconfigure(
+            new WorkerVersion(deniedWorkerId, Revision: 8),
+            new WorkerReconfiguration(ProfilingEnabled: true));
+
+        Assert.Equal(WorkActionStatus.Unauthorized, rejected.Status);
+        Assert.Single(inner.Reconfigured);
+        Assert.Equal(allowedWorkerId, inner.Reconfigured[0].Worker.WorkerId);
+        Assert.Equal(WorkAction.Start, accepted.Action);
+    }
+
+    [Fact]
+    public async Task DoNotApplyWorkerActionRequirementsToReconfigure()
+    {
+        var visible = CreateRegisteredWork(
+            "visible.work",
+            authorize => authorize.AllowOperationsToGroups(
+                ["visible.operate"],
+                WorkOperationPermissions.ReconfigureWorker,
                 operate => operate.WhenWorkerActionsRequire<QueueInput>(_ => false)));
         var operations = CreateOperations(
             groups: ["visible.operate"],
@@ -299,6 +414,36 @@ public sealed class AuthorizedWorkerOperationsShould
             new WorkerReconfiguration(ProfilingEnabled: true));
 
         Assert.Single(inner.Reconfigured);
+    }
+
+    [Fact]
+    public async Task ReturnInvalidWhenTypedWorkerReconfigurationRequirementCannotDeserializeInput()
+    {
+        var visible = CreateRegisteredWork(
+            "visible.work",
+            authorize => authorize.AllowOperationsToGroups(
+                ["visible.operate"],
+                WorkOperationPermissions.ReconfigureWorker,
+                operate => operate.WhenWorkerReconfiguringRequire<QueueInput>(context => context.Input?.Value == "allowed")));
+        var operations = CreateOperations(
+            groups: ["visible.operate"],
+            works: [visible],
+            out _,
+            out var query,
+            out var inner);
+        var workerId = WorkerId.New();
+        query.WorkersById[workerId] = CreateWorkerSnapshot(
+            workerId,
+            visible.Definition,
+            input: WorkInput.FromJson("\"not-an-object\""));
+
+        var outcome = await operations.Reconfigure(
+            new WorkerVersion(workerId, Revision: 7),
+            new WorkerReconfiguration(ProfilingEnabled: true));
+
+        Assert.Equal(WorkActionStatus.Invalid, outcome.Status);
+        Assert.Contains(outcome.Messages, message => message.Code == "workable.authorization.operate_requirement_input_invalid");
+        Assert.Empty(inner.Reconfigured);
     }
 
     private static AuthorizedWorkerOperations CreateOperations(

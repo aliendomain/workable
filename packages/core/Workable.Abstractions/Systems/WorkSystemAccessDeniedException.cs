@@ -33,7 +33,7 @@ public sealed class WorkSystemAccessDeniedException(
         {
             WorkSystemPermission.AccessSystem => $"Access to Workable system '{name}' requires some system-level access.",
             WorkSystemPermission.ViewDiagnostics => $"Viewing diagnostics for Workable system '{name}' requires diagnostics permission.",
-            WorkSystemPermission.ControlSystem => $"Controlling Workable system '{name}' requires control-system permission.",
+            WorkSystemPermission.ControlSystem => $"Starting or stopping Workable system '{name}' requires control-system permission.",
             _ => $"Access to Workable system '{name}' was denied.",
         };
     }

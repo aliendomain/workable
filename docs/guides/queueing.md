@@ -186,7 +186,7 @@ IWorkerHandle handle = await session.Queue.Enqueue(
 
 The `description` argument is optional. Use it when the caller wants to preserve additional human-readable context on the worker origin.
 
-Trusted direct in-process callers can also set `isAuthenticated: true` when the request should count as an authenticated caller for authorization rules such as `AllowOperateToKnownAuthenticatedUsers()`.
+Trusted direct in-process callers can also set `isAuthenticated: true` when the request should count as an authenticated caller for authorization rules such as `AllowOperateToKnownAuthenticatedUsers()`, `AllowQueueToKnownAuthenticatedUsers()`, or `AllowOperationsToKnownAuthenticatedUsers(...)`.
 
 ```csharp
 var requestContext = WorkRequestContext.Create(
