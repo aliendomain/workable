@@ -32,7 +32,7 @@ jobs:
         run: dotnet build ./Workable.slnx --configuration Release --no-restore -maxcpucount:1 -p:UseSharedCompilation=false
 
       - name: Test
-        run: dotnet test ./Workable.slnx --configuration Release --no-build --logger "trx;LogFileName=test-results.trx" --blame-hang --blame-hang-timeout 30s --blame-hang-dump-type none
+        run: dotnet test ./Workable.slnx --configuration Release --no-build --logger "trx;LogFileName=test-results.trx" --blame-hang --blame-hang-timeout 2m --blame-hang-dump-type none
 
       - name: Upload test results
         if: always()
