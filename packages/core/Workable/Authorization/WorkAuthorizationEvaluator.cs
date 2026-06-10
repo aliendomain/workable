@@ -42,6 +42,9 @@ internal sealed class WorkAuthorizationEvaluator(
         => systemAuthorization?.HasOperateAllWorkAccess() == true ||
             this.OperableDefinitionIds().Count == catalog.Definitions.Count;
 
+    public bool HasSystemOperateAllWorkAccess()
+        => systemAuthorization?.HasOperateAllWorkAccess() == true;
+
     public IReadOnlySet<WorkDefinitionId> ReadableDefinitionIds()
         => this.ReadableDefinitions()
             .Select(definition => definition.Id)

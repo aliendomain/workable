@@ -51,6 +51,26 @@ public sealed class AuthorizedWorkerOperationsShould
     }
 
     [Fact]
+    public async Task ReturnEmptyBulkOutcomeWithoutQueryingWhenCallerOnlyHasDifferentOperationAcrossAllDefinitions()
+    {
+        var visible = CreateRegisteredWork("visible.work", authorize => authorize.AllowQueueToGroups("visible.queue"));
+        var operations = CreateOperations(
+            groups: ["visible.queue"],
+            works: [visible],
+            out _,
+            out var query,
+            out var inner);
+
+        var outcome = await operations.ExecuteAll(WorkAction.Pause);
+
+        Assert.Equal(WorkAction.Pause, outcome.Action);
+        Assert.Equal(0, outcome.MatchedWorkerCount);
+        Assert.Empty(outcome.Outcomes);
+        Assert.Equal(0, query.WorkersCallCount);
+        Assert.Empty(inner.Executed);
+    }
+
+    [Fact]
     public async Task ScopeBulkActionsToOperableDefinitionsAndForwardWorkerVersions()
     {
         var visible = CreateRegisteredWork("visible.work", authorize => authorize.AllowOperateToGroups("visible.operate"));

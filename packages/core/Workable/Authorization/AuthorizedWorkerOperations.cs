@@ -40,7 +40,7 @@ internal sealed class AuthorizedWorkerOperations(
         CancellationToken cancellationToken = default)
     {
         filter ??= WorkerBulkActionFilter.All;
-        var definitionNames = authorization.HasOperateAllWorkAccess()
+        var definitionNames = authorization.HasSystemOperateAllWorkAccess()
             ? null
             : authorization.OperableDefinitionNamesFor(action);
         if (definitionNames is { Count: 0 })
