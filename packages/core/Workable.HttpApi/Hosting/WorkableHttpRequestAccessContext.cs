@@ -47,13 +47,11 @@ internal sealed class WorkableHttpRequestAccessContext(
             return allowed;
         }
 
-        if (this.accessBySystem.TryGetValue(cacheKey, out var access))
+        if (this.accessBySystem.TryGetValue(cacheKey, out var access) &&
+            WorkableHttpBuiltInSurfaceAccess.IsAllowed(access))
         {
-            if (WorkableHttpBuiltInSurfaceAccess.IsAllowed(access))
-            {
-                this.builtInSurfaceAccessBySystem[cacheKey] = true;
-                return true;
-            }
+            this.builtInSurfaceAccessBySystem[cacheKey] = true;
+            return true;
         }
 
         var requestContext = this.Create(system.Name);

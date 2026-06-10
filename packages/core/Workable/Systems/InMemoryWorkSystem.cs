@@ -210,8 +210,8 @@ internal sealed class InMemoryWorkSystem :
             return true;
         }
 
-        var authorization = this.ResolveAuthorization(requestContext);
-        return authorization.CanUseBuiltInHttpApiSurface();
+        var resolvedAuthorization = this.ResolveAuthorization(requestContext);
+        return resolvedAuthorization.CanUseBuiltInHttpApiSurface();
     }
 
     public Task Start(
