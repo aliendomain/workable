@@ -16,7 +16,7 @@ public enum WorkSystemPermission
     ViewDiagnostics,
 
     /// <summary>
-    /// Allows the caller to control system and worker operations.
+    /// Allows the caller to start and stop the system lifecycle.
     /// </summary>
     ControlSystem,
 }

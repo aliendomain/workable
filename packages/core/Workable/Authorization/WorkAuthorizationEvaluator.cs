@@ -1,7 +1,7 @@
 namespace Workable;
 
 internal sealed class WorkAuthorizationEvaluator(
-    IWorkCatalog catalog,
+    WorkSystemCatalog catalog,
     IReadOnlySet<string> groups,
     bool isKnownAuthenticatedUser,
     WorkSystemAuthorizationEvaluator? systemAuthorization = null)
@@ -58,6 +58,14 @@ internal sealed class WorkAuthorizationEvaluator(
     public IReadOnlyList<WorkDefinition> OperableDefinitions()
         => [.. catalog.Definitions.Where(this.CanOperate)];
 
+    public IReadOnlySet<string> OperableDefinitionNamesFor(WorkAction action)
+        => systemAuthorization?.HasOperateAllWorkAccess() == true
+            ? new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+            : catalog.RegisteredWork
+                .Where(registeredWork => this.CanAttempt(registeredWork, ToPermission(action)))
+                .Select(registeredWork => registeredWork.Definition.Name)
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
     public WorkOperateAuthorizationDecision AuthorizeQueue(
         RegisteredWork registeredWork,
         WorkInput? input,
@@ -110,6 +118,58 @@ internal sealed class WorkAuthorizationEvaluator(
             : WorkOperateAuthorizationDecision.Deny();
     }
 
+    public WorkOperateAuthorizationDecision AuthorizeWorkerReconfiguration(
+        RegisteredWork registeredWork,
+        WorkerSnapshot worker,
+        WorkerReconfiguration changes,
+        WorkRequestContext requestContext)
+    {
+        ArgumentNullException.ThrowIfNull(registeredWork);
+        ArgumentNullException.ThrowIfNull(worker);
+        ArgumentNullException.ThrowIfNull(changes);
+        ArgumentNullException.ThrowIfNull(requestContext);
+
+        if (systemAuthorization?.HasOperateAllWorkAccess() == true)
+        {
+            return WorkOperateAuthorizationDecision.Allow();
+        }
+
+        return registeredWork.Definition.Authorization.CanOperate(groups, isKnownAuthenticatedUser)
+            ? registeredWork.OperateAuthorization.EvaluateWorkerReconfiguration(
+                groups,
+                isKnownAuthenticatedUser,
+                registeredWork.Definition,
+                worker.Id.ToString(),
+                worker.Input,
+                ToWorkerChanges(changes),
+                requestContext)
+            : WorkOperateAuthorizationDecision.Deny();
+    }
+
+    public WorkOperateAuthorizationDecision AuthorizeDefinitionReconfiguration(
+        RegisteredWork registeredWork,
+        WorkDefinitionReconfiguration changes,
+        WorkRequestContext requestContext)
+    {
+        ArgumentNullException.ThrowIfNull(registeredWork);
+        ArgumentNullException.ThrowIfNull(changes);
+        ArgumentNullException.ThrowIfNull(requestContext);
+
+        if (systemAuthorization?.HasOperateAllWorkAccess() == true)
+        {
+            return WorkOperateAuthorizationDecision.Allow();
+        }
+
+        return registeredWork.Definition.Authorization.CanOperate(groups, isKnownAuthenticatedUser)
+            ? registeredWork.OperateAuthorization.EvaluateDefinitionReconfiguration(
+                groups,
+                isKnownAuthenticatedUser,
+                registeredWork.Definition,
+                ToDefinitionChanges(changes),
+                requestContext)
+            : WorkOperateAuthorizationDecision.Deny();
+    }
+
     private static WorkOperateAction ToOperateAction(WorkAction action)
         => action switch
         {
@@ -120,6 +180,37 @@ internal sealed class WorkAuthorizationEvaluator(
             WorkAction.Purge => WorkOperateAction.Purge,
             _ => throw new InvalidOperationException($"Unsupported worker action '{action}'."),
         };
+
+    private static WorkOperationPermissions ToPermission(WorkAction action)
+        => action switch
+        {
+            WorkAction.Start => WorkOperationPermissions.Start,
+            WorkAction.Pause => WorkOperationPermissions.Pause,
+            WorkAction.Cancel => WorkOperationPermissions.Cancel,
+            WorkAction.Push => WorkOperationPermissions.Push,
+            WorkAction.Purge => WorkOperationPermissions.Purge,
+            _ => throw new InvalidOperationException($"Unsupported worker action '{action}'."),
+        };
+
+    private static WorkWorkerReconfigurationChanges ToWorkerChanges(WorkerReconfiguration changes)
+        => new(
+            changes.ProfilingEnabled,
+            changes.Start,
+            changes.Coordination,
+            changes.Recurrence,
+            changes.TransientRetry,
+            changes.FailedWorker,
+            changes.Logging,
+            changes.Retention);
+
+    private static WorkDefinitionReconfigurationChanges ToDefinitionChanges(WorkDefinitionReconfiguration changes)
+        => new(
+            changes.DefaultOptions,
+            changes.Configuration);
+
+    private bool CanAttempt(RegisteredWork registeredWork, WorkOperationPermissions permission)
+        => registeredWork.Definition.Authorization.CanOperate(groups, isKnownAuthenticatedUser) &&
+            registeredWork.OperateAuthorization.CanAttempt(groups, isKnownAuthenticatedUser, permission);
 
     private bool TryGet(WorkDefinitionId definitionId, [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out WorkDefinition? definition)
     {

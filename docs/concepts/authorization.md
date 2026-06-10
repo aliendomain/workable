@@ -94,15 +94,30 @@ builder.AddWork<SyncInvoicesWork>(
         .AllowOperateToGroups("billing.ops", "billing.admin"));
 ```
 
-Or allow queueing and worker operations for callers that are both authenticated and resolved to a known `WorkActor`:
+`AllowOperateToGroups(...)` remains the convenience grant for the full work-operation surface: queueing, worker actions, worker reconfiguration, and definition reconfiguration.
+
+When a definition needs finer control, split those concerns explicitly:
 
 ```csharp
 builder.AddWork<SyncInvoicesWork>(
     configure: null,
-    authorize: auth => auth.AllowOperateToKnownAuthenticatedUsers());
+    authorize: auth => auth
+        .AllowQueueToGroups("billing.queue")
+        .AllowWorkerActionsToGroups("billing.ops")
+        .AllowOperationsToGroups(
+            ["billing.admin"],
+            WorkOperationPermissions.Reconfigure));
 ```
 
-You can also add synchronous, input-aware operate requirements to one work-level operate grant. These extra checks apply only after the caller already satisfies the underlying work-level operate audience:
+Or allow the same surfaces for callers that are both authenticated and resolved to a known `WorkActor`:
+
+```csharp
+builder.AddWork<SyncInvoicesWork>(
+    configure: null,
+    authorize: auth => auth.AllowQueueToKnownAuthenticatedUsers());
+```
+
+You can also add synchronous, input-aware operate requirements to any work-level grant. These extra checks apply only after the caller already satisfies the underlying work-level audience:
 
 ```csharp
 builder.AddWork<AdminSurveyWork>(
@@ -116,7 +131,7 @@ The same extra constraint shape is available for known authenticated users:
 
 ```csharp
 builder.AddWork<AdminSurveyWork>(
-    authorize: auth => auth.AllowOperateToKnownAuthenticatedUsers(
+    authorize: auth => auth.AllowWorkerActionsToKnownAuthenticatedUsers(
         operate => operate.WhenOperatingRequire<AdminSurveyArgs>(context =>
             context.Input?.AreaKey == "north")));
 ```
@@ -165,8 +180,15 @@ Operate permission affects:
 - queueing work
 - worker actions
 - worker reconfiguration
+- definition reconfiguration
 
-`AllowOperateToKnownAuthenticatedUsers()` participates in the same operate surface. It is an alternative operate grant, not a separate permission kind.
+`AllowOperateToGroups(...)` and `AllowOperateToKnownAuthenticatedUsers()` are the easy full-surface grants. The finer-grained helpers participate in that same overall operate surface:
+
+- `AllowQueueToGroups(...)` and `AllowQueueToKnownAuthenticatedUsers()`
+- `AllowWorkerActionsToGroups(...)` and `AllowWorkerActionsToKnownAuthenticatedUsers()`
+- `AllowOperationsToGroups(...)` and `AllowOperationsToKnownAuthenticatedUsers(...)`
+
+Those finer-grained grants still aggregate into the definition's coarse operate metadata. That means the catalog and access-summary surfaces continue to answer the broad question "can this caller operate this definition at all," while the runtime queue/action/reconfiguration paths enforce the specific operation being attempted.
 
 ### Constrained Operate Grants
 
@@ -186,24 +208,31 @@ Without constrained operate grants, the usual alternative is to create duplicate
 - schemas, docs, and tooling projections drift across near-identical definitions
 - metrics, history, and operational views become fragmented across several names for the same logical operation
 
-Constrained operate grants let you keep one definition for one logical operation, then discriminate queueing and worker actions by input such as `AreaKey`, `ServerKey`, or another business identifier.
+Constrained operate grants let you keep one definition for one logical operation, then discriminate queueing, worker actions, or reconfiguration by input such as `AreaKey`, `ServerKey`, or another business identifier.
 
 - `WhenOperatingRequire(...)`
-  - applies to both queueing and worker actions
+  - applies to queueing, worker actions, worker reconfiguration, and definition reconfiguration
 - `WhenQueueingRequire(...)`
   - applies only to queueing
 - `WhenWorkerActionsRequire(...)`
   - applies only to worker actions
+- `WhenReconfiguringRequire(...)`
+  - applies to both worker and definition reconfiguration
+- `WhenWorkerReconfiguringRequire(...)`
+  - applies only to worker reconfiguration
+- `WhenDefinitionReconfiguringRequire(...)`
+  - applies only to definition reconfiguration
 
 Important details:
 
 - requirement delegates are synchronous and return `bool`
 - multiple requirements on one grant are OR'ed and stop after the first `true`
+- multiple grant blocks for the same audience are also additive; if any matching grant allows the current operation, the operation is authorized
 - typed queue requirements deserialize from the incoming queued input
-- typed worker-action requirements deserialize from the worker's persisted original input
+- typed worker-action and worker-reconfiguration requirements deserialize from the worker's persisted original input
+- definition reconfiguration has no work input of its own, so definition-reconfiguration-specific requirements inspect the reconfiguration change shape instead
 - deserialize failures fail closed and return an invalid outcome
 - this extra layer does not change read visibility
-- this extra layer does not apply to worker reconfiguration
 
 For example, a host can keep one survey editor definition and layer broad and narrow operate grants together:
 
@@ -222,11 +251,6 @@ In that shape:
 - `survey.admin` can queue and control the work for any survey area
 - `survey.north.owner` can use the same work definition, but only when the input targets `north`
 - the system does not need separate definitions such as `admin-survey-north`, `admin-survey-south`, and so on
-
-Validation rules:
-
-- one work-level operate group may appear only once across the definition's operate grant blocks
-- one work definition may configure only one `AllowOperateToKnownAuthenticatedUsers(...)` operate grant block
 
 System-wide broad operate grants remain unconditional:
 
@@ -323,6 +347,7 @@ Hosts can inspect system access explicitly through `IWorkSystem`.
 - `IsWorkAdministrator`
 - `CanViewDiagnostics`
 - `CanControlSystem`
+  - whether the caller can start or stop the system lifecycle
 - `CanReadAllWork`
 - `CanOperateAllWork`
 - total, readable, and operable definition counts

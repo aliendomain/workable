@@ -4,7 +4,7 @@ namespace Workable;
 /// Represents the read and operate authorization attached to a work definition.
 /// </summary>
 /// <param name="Read">The requirement that controls read surfaces.</param>
-/// <param name="Operate">The requirement that controls queue and worker-operation surfaces.</param>
+/// <param name="Operate">The requirement that controls queueing, worker-action, and reconfiguration surfaces.</param>
 public sealed record WorkDefinitionAuthorization(
     WorkAuthorizationRequirement Read,
     WorkAuthorizationRequirement Operate)
@@ -19,7 +19,7 @@ public sealed record WorkDefinitionAuthorization(
     /// Creates definition authorization from raw read and operate groups.
     /// </summary>
     /// <param name="readGroups">The groups allowed to read the definition.</param>
-    /// <param name="operateGroups">The groups allowed to queue and operate the definition.</param>
+    /// <param name="operateGroups">The groups allowed to queue, operate, or reconfigure the definition.</param>
     /// <param name="source">The source from which the authorization was configured.</param>
     /// <param name="readKnownAuthenticatedUsers">Whether a known authenticated actor satisfies the read requirement.</param>
     /// <param name="operateKnownAuthenticatedUsers">Whether a known authenticated actor satisfies the operate requirement.</param>

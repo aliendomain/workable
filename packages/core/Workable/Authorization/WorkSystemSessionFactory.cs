@@ -51,7 +51,7 @@ internal sealed class WorkSystemSessionFactory(
             systemAuthorization.CanViewDiagnostics()
                 ? sessionDiagnostics
                 : new UnauthorizedWorkSystemDiagnostics(systemId, systemName),
-            new AuthorizedWorkCatalog(sessionCatalog, authorization),
+            new AuthorizedWorkCatalog(catalog, sessionCatalog, authorization, requestContext),
             new AuthorizedWorkQueueService(catalog, sessionQueue, authorization, requestContext),
             new AuthorizedWorkerOperations(catalog, sessionWorkers, sessionQuery, authorization, requestContext),
             new AuthorizedWorkQueryService(sessionCatalog, sessionQuery, authorization),

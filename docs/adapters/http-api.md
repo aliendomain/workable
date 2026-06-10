@@ -12,7 +12,7 @@ HTTP queueing, worker actions, and worker reconfiguration record a `WorkRequestC
 
 `Workable.HttpApi` is an authenticated transport. Anonymous callers are rejected before Workable routes run or request bodies are bound, and mapped systems must be authorization-enabled.
 
-Each request creates a `WorkRequestContext` and an `IWorkSystemSession` for the selected system. Work-definition read access filters catalog, query, event, and view results. Work-definition operate access controls queueing, worker actions, and reconfiguration.
+Each request creates a `WorkRequestContext` and an `IWorkSystemSession` for the selected system. Work-definition read access filters catalog, query, event, and view results. Work-definition operate access answers the broad "can this caller operate this definition at all" question, and the runtime then enforces the specific queue, action, or reconfiguration permission required by the current HTTP request.
 
 Inside the built-in adapter, HTTP authorization is orchestrated through a request-scoped cache. The adapter resolves the caller once for the request, caches host-level group checks and per-system access summaries, and reuses that data across outer-gate checks, built-in surface checks, host discovery, and session creation.
 

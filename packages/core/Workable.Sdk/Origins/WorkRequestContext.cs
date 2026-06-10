@@ -57,7 +57,9 @@ public sealed record WorkRequestContext(
     /// <param name="url">Optional URL that points back to the caller's originating page or resource.</param>
     /// <param name="isAuthenticated">
     /// Whether the caller should count as authenticated for rules such as
-    /// <c>AllowOperateToKnownAuthenticatedUsers()</c>.
+    /// <c>AllowOperateToKnownAuthenticatedUsers()</c>,
+    /// <c>AllowQueueToKnownAuthenticatedUsers()</c>, or
+    /// <c>AllowOperationsToKnownAuthenticatedUsers(...)</c>.
     /// </param>
     /// <param name="surface">
     /// The surface that presented Workable to the caller, distinguishing built-in Workable adapters from host-defined entry points.

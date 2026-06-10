@@ -6,7 +6,7 @@ namespace Workable;
 /// <param name="IsSystemAdministrator">Whether the caller is recognized as a system administrator.</param>
 /// <param name="IsWorkAdministrator">Whether the caller is recognized as a work administrator.</param>
 /// <param name="CanViewDiagnostics">Whether the caller can view system diagnostics.</param>
-/// <param name="CanControlSystem">Whether the caller can control system lifecycle and worker operations.</param>
+/// <param name="CanControlSystem">Whether the caller can start and stop the system lifecycle.</param>
 /// <param name="CanReadAllWork">Whether the caller can read every definition in the system.</param>
 /// <param name="CanOperateAllWork">Whether the caller can operate every definition in the system.</param>
 /// <param name="TotalDefinitionCount">The total number of registered definitions in the system.</param>

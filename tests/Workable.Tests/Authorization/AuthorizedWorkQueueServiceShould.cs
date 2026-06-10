@@ -153,6 +153,42 @@ public sealed class AuthorizedWorkQueueServiceShould
     }
 
     [Fact]
+    public async Task AllowQueueOnlyGrantsWithoutWorkerActionPermission()
+    {
+        var visible = CreateRegisteredWork(
+            "queue.only.work",
+            authorize => authorize.AllowQueueToGroups("visible.queue"));
+        var queue = CreateQueueService(
+            groups: ["visible.queue"],
+            works: [visible],
+            out _,
+            out var inner);
+
+        var outcome = await queue.Enqueue(visible.Definition.Name, new QueueInput("queued"));
+
+        Assert.True(outcome.QueueOutcome.IsAccepted);
+        Assert.Single(inner.Calls);
+    }
+
+    [Fact]
+    public async Task DoNotTreatWorkerActionOnlyGrantsAsQueuePermission()
+    {
+        var visible = CreateRegisteredWork(
+            "actions.only.work",
+            authorize => authorize.AllowWorkerActionsToGroups("visible.actions"));
+        var queue = CreateQueueService(
+            groups: ["visible.actions"],
+            works: [visible],
+            out _,
+            out var inner);
+
+        var outcome = await queue.Enqueue(visible.Definition.Name, new QueueInput("denied"));
+
+        Assert.Equal(WorkQueueStatus.Unauthorized, outcome.QueueOutcome.Status);
+        Assert.Empty(inner.Calls);
+    }
+
+    [Fact]
     public async Task BypassConstrainedQueueRequirementsForSystemOperateAllAccess()
     {
         var visible = CreateRegisteredWork(

@@ -23,6 +23,7 @@ internal sealed record WorkOperateAuthorizationConfiguration(
             grants.Add(new WorkOperateAuthorizationGrant(
                 authorization.Operate.Groups,
                 false,
+                WorkOperationPermissions.Operate,
                 []));
         }
 
@@ -31,11 +32,21 @@ internal sealed record WorkOperateAuthorizationConfiguration(
             grants.Add(new WorkOperateAuthorizationGrant(
                 new HashSet<string>(StringComparer.OrdinalIgnoreCase),
                 true,
+                WorkOperationPermissions.Operate,
                 []));
         }
 
         return new WorkOperateAuthorizationConfiguration(grants);
     }
+
+    public bool CanAttempt(
+        IReadOnlySet<string> groups,
+        bool isKnownAuthenticatedUser,
+        WorkOperationPermissions permission)
+        => permission != WorkOperationPermissions.None &&
+            this.Grants.Any(grant =>
+                grant.Matches(groups, isKnownAuthenticatedUser) &&
+                grant.Allows(permission));
 
     public WorkOperateAuthorizationDecision EvaluateQueue(
         IReadOnlySet<string> groups,
@@ -51,8 +62,11 @@ internal sealed record WorkOperateAuthorizationConfiguration(
                 definition,
                 requestContext,
                 WorkOperateRequirementSurface.Queueing,
+                WorkOperationPermissions.Queue,
                 input,
                 options,
+                null,
+                null,
                 null,
                 null));
 
@@ -71,10 +85,65 @@ internal sealed record WorkOperateAuthorizationConfiguration(
                 definition,
                 requestContext,
                 WorkOperateRequirementSurface.WorkerAction,
+                ToPermission(action),
                 input,
                 null,
                 workerId,
-                action));
+                action,
+                null,
+                null));
+
+    public WorkOperateAuthorizationDecision EvaluateWorkerReconfiguration(
+        IReadOnlySet<string> groups,
+        bool isKnownAuthenticatedUser,
+        WorkDefinition definition,
+        string workerId,
+        WorkInput? input,
+        WorkWorkerReconfigurationChanges changes,
+        WorkRequestContext requestContext)
+    {
+        ArgumentNullException.ThrowIfNull(changes);
+
+        return this.Evaluate(
+            groups,
+            isKnownAuthenticatedUser,
+            new WorkOperateAuthorizationEvaluationContext(
+                definition,
+                requestContext,
+                WorkOperateRequirementSurface.WorkerReconfiguration,
+                WorkOperationPermissions.ReconfigureWorker,
+                input,
+                null,
+                workerId,
+                null,
+                changes,
+                null));
+    }
+
+    public WorkOperateAuthorizationDecision EvaluateDefinitionReconfiguration(
+        IReadOnlySet<string> groups,
+        bool isKnownAuthenticatedUser,
+        WorkDefinition definition,
+        WorkDefinitionReconfigurationChanges changes,
+        WorkRequestContext requestContext)
+    {
+        ArgumentNullException.ThrowIfNull(changes);
+
+        return this.Evaluate(
+            groups,
+            isKnownAuthenticatedUser,
+            new WorkOperateAuthorizationEvaluationContext(
+                definition,
+                requestContext,
+                WorkOperateRequirementSurface.DefinitionReconfiguration,
+                WorkOperationPermissions.ReconfigureDefinition,
+                null,
+                null,
+                null,
+                null,
+                null,
+                changes));
+    }
 
     private WorkOperateAuthorizationDecision Evaluate(
         IReadOnlySet<string> groups,
@@ -89,7 +158,7 @@ internal sealed record WorkOperateAuthorizationConfiguration(
         IReadOnlyList<WorkMessage>? invalidMessages = null;
         foreach (var grant in this.Grants)
         {
-            if (!grant.Matches(groups, isKnownAuthenticatedUser))
+            if (!grant.Matches(groups, isKnownAuthenticatedUser) || !grant.Allows(context.Permission))
             {
                 continue;
             }
@@ -110,11 +179,23 @@ internal sealed record WorkOperateAuthorizationConfiguration(
             ? WorkOperateAuthorizationDecision.Deny()
             : WorkOperateAuthorizationDecision.Invalid(invalidMessages);
     }
+
+    private static WorkOperationPermissions ToPermission(WorkOperateAction action)
+        => action switch
+        {
+            WorkOperateAction.Start => WorkOperationPermissions.Start,
+            WorkOperateAction.Pause => WorkOperationPermissions.Pause,
+            WorkOperateAction.Cancel => WorkOperationPermissions.Cancel,
+            WorkOperateAction.Push => WorkOperationPermissions.Push,
+            WorkOperateAction.Purge => WorkOperationPermissions.Purge,
+            _ => throw new InvalidOperationException($"Unsupported worker action '{action}'."),
+        };
 }
 
 internal sealed record WorkOperateAuthorizationGrant(
     IReadOnlySet<string> Groups,
     bool AllowsKnownAuthenticatedUsers,
+    WorkOperationPermissions Permissions,
     IReadOnlyList<WorkOperateRequirementRegistration> Requirements)
 {
     public bool HasConstraints => this.Requirements.Count > 0;
@@ -122,6 +203,10 @@ internal sealed record WorkOperateAuthorizationGrant(
     public bool Matches(IReadOnlySet<string> groups, bool isKnownAuthenticatedUser)
         => (this.Groups.Count > 0 && groups.Any(this.Groups.Contains)) ||
             (this.AllowsKnownAuthenticatedUsers && isKnownAuthenticatedUser);
+
+    public bool Allows(WorkOperationPermissions permission)
+        => permission != WorkOperationPermissions.None &&
+            (this.Permissions & permission) == permission;
 
     public WorkOperateAuthorizationDecision Evaluate(WorkOperateAuthorizationEvaluationContext context)
     {
@@ -177,17 +262,23 @@ internal enum WorkOperateRequirementTargets
     None = 0,
     Queueing = 1,
     WorkerAction = 2,
-    Operating = Queueing | WorkerAction,
+    WorkerReconfiguration = 4,
+    DefinitionReconfiguration = 8,
+    Reconfiguring = WorkerReconfiguration | DefinitionReconfiguration,
+    Operating = Queueing | WorkerAction | Reconfiguring,
 }
 
 internal readonly record struct WorkOperateAuthorizationEvaluationContext(
     WorkDefinition Definition,
     WorkRequestContext RequestContext,
     WorkOperateRequirementSurface Surface,
+    WorkOperationPermissions Permission,
     WorkInput? RawInput,
     WorkerOptions? QueueOptions,
     string? WorkerId,
-    WorkOperateAction? Action);
+    WorkOperateAction? Action,
+    WorkWorkerReconfigurationChanges? WorkerChanges,
+    WorkDefinitionReconfigurationChanges? DefinitionChanges);
 
 internal readonly record struct WorkOperateAuthorizationDecision(
     bool IsAllowed,
@@ -212,26 +303,21 @@ internal static class WorkOperateAuthorizationConfigurationValidator
     {
         ArgumentNullException.ThrowIfNull(grants);
 
-        var duplicateGroups = grants
-            .SelectMany(grant => grant.Groups)
-            .GroupBy(group => group, StringComparer.OrdinalIgnoreCase)
-            .Where(group => group.Count() > 1)
-            .Select(group => group.Key)
-            .OrderBy(group => group, StringComparer.OrdinalIgnoreCase)
+        var invalidGrants = grants
+            .Where(grant => !IsSupported(grant.Permissions))
+            .Select(grant => grant.Permissions.ToString())
+            .Distinct(StringComparer.Ordinal)
             .ToList();
-        if (duplicateGroups.Count > 0)
+        if (invalidGrants.Count > 0)
         {
             throw new InvalidOperationException(
-                $"{DescribeDefinition(definitionName)} cannot configure multiple work-level operate grants for the same groups. Duplicate groups: {string.Join(", ", duplicateGroups)}.");
-        }
-
-        var knownAuthenticatedGrantCount = grants.Count(grant => grant.AllowsKnownAuthenticatedUsers);
-        if (knownAuthenticatedGrantCount > 1)
-        {
-            throw new InvalidOperationException(
-                $"{DescribeDefinition(definitionName)} can configure only one known-authenticated operate grant.");
+                $"{DescribeDefinition(definitionName)} configured unsupported work-operation permissions: {string.Join(", ", invalidGrants)}.");
         }
     }
+
+    private static bool IsSupported(WorkOperationPermissions permissions)
+        => permissions != WorkOperationPermissions.None &&
+            (permissions & ~WorkOperationPermissions.Operate) == 0;
 
     private static string DescribeDefinition(string? definitionName)
         => string.IsNullOrWhiteSpace(definitionName)
@@ -245,7 +331,10 @@ internal static class WorkOperateRequirementTargetsExtensions
         => surface switch
         {
             WorkOperateRequirementSurface.Queueing => WorkOperateRequirementTargets.Queueing,
-            _ => WorkOperateRequirementTargets.WorkerAction,
+            WorkOperateRequirementSurface.WorkerAction => WorkOperateRequirementTargets.WorkerAction,
+            WorkOperateRequirementSurface.WorkerReconfiguration => WorkOperateRequirementTargets.WorkerReconfiguration,
+            WorkOperateRequirementSurface.DefinitionReconfiguration => WorkOperateRequirementTargets.DefinitionReconfiguration,
+            _ => throw new InvalidOperationException($"Unsupported operate requirement surface '{surface}'."),
         };
 }
 
@@ -260,13 +349,15 @@ internal sealed class WorkOperateRequirementBuilder : IWorkOperateRequirementBui
 
         this.requirements.Add(new WorkOperateRequirementRegistration(
             WorkOperateRequirementTargets.Operating,
-                context => requirement(new WorkOperateRequirementContext(
-                    context.Definition,
-                    context.RequestContext,
-                    context.Surface,
-                    context.RawInput,
-                    context.Action,
-                    context.WorkerId))
+            context => requirement(new WorkOperateRequirementContext(
+                context.Definition,
+                context.RequestContext,
+                context.Surface,
+                context.RawInput,
+                context.Action,
+                context.WorkerId,
+                context.WorkerChanges,
+                context.DefinitionChanges))
                 ? WorkOperateAuthorizationDecision.Allow()
                 : WorkOperateAuthorizationDecision.Deny()));
         return this;
@@ -289,7 +380,9 @@ internal sealed class WorkOperateRequirementBuilder : IWorkOperateRequirementBui
                     context.RawInput,
                     typedInput,
                     context.Action,
-                    context.WorkerId)))));
+                    context.WorkerId,
+                    context.WorkerChanges,
+                    context.DefinitionChanges)))));
         return this;
     }
 
@@ -336,18 +429,18 @@ internal sealed class WorkOperateRequirementBuilder : IWorkOperateRequirementBui
 
         this.requirements.Add(new WorkOperateRequirementRegistration(
             WorkOperateRequirementTargets.WorkerAction,
-                context =>
-                {
-                    var action = context.Action
-                        ?? throw new InvalidOperationException("Worker-action requirements require an action.");
-                    var workerId = context.WorkerId
-                        ?? throw new InvalidOperationException("Worker-action requirements require a worker id.");
-                    return requirement(new WorkWorkerActionRequirementContext(
-                        context.Definition,
-                        context.RequestContext,
-                        workerId,
-                        context.RawInput,
-                        action))
+            context =>
+            {
+                var action = context.Action
+                    ?? throw new InvalidOperationException("Worker-action requirements require an action.");
+                var workerId = context.WorkerId
+                    ?? throw new InvalidOperationException("Worker-action requirements require a worker id.");
+                return requirement(new WorkWorkerActionRequirementContext(
+                    context.Definition,
+                    context.RequestContext,
+                    workerId,
+                    context.RawInput,
+                    action))
                     ? WorkOperateAuthorizationDecision.Allow()
                     : WorkOperateAuthorizationDecision.Deny();
             }));
@@ -381,6 +474,121 @@ internal sealed class WorkOperateRequirementBuilder : IWorkOperateRequirementBui
         return this;
     }
 
+    public IWorkOperateRequirementBuilder WhenReconfiguringRequire(
+        Func<WorkReconfigurationRequirementContext, bool> requirement)
+    {
+        ArgumentNullException.ThrowIfNull(requirement);
+
+        this.requirements.Add(new WorkOperateRequirementRegistration(
+            WorkOperateRequirementTargets.Reconfiguring,
+            context => requirement(new WorkReconfigurationRequirementContext(
+                context.Definition,
+                context.RequestContext,
+                ToReconfigurationSurface(context.Surface),
+                context.RawInput,
+                context.WorkerId,
+                context.WorkerChanges,
+                context.DefinitionChanges))
+                ? WorkOperateAuthorizationDecision.Allow()
+                : WorkOperateAuthorizationDecision.Deny()));
+        return this;
+    }
+
+    public IWorkOperateRequirementBuilder WhenReconfiguringRequire<TInput>(
+        Func<WorkReconfigurationRequirementContext<TInput>, bool> requirement)
+    {
+        ArgumentNullException.ThrowIfNull(requirement);
+
+        this.requirements.Add(new WorkOperateRequirementRegistration(
+            WorkOperateRequirementTargets.Reconfiguring,
+            context => EvaluateTyped<TInput>(
+                context,
+                typeof(TInput),
+                typedInput => requirement(new WorkReconfigurationRequirementContext<TInput>(
+                    context.Definition,
+                    context.RequestContext,
+                    ToReconfigurationSurface(context.Surface),
+                    context.RawInput,
+                    typedInput,
+                    context.WorkerId,
+                    context.WorkerChanges,
+                    context.DefinitionChanges)))));
+        return this;
+    }
+
+    public IWorkOperateRequirementBuilder WhenWorkerReconfiguringRequire(
+        Func<WorkWorkerReconfigurationRequirementContext, bool> requirement)
+    {
+        ArgumentNullException.ThrowIfNull(requirement);
+
+        this.requirements.Add(new WorkOperateRequirementRegistration(
+            WorkOperateRequirementTargets.WorkerReconfiguration,
+            context =>
+            {
+                var workerId = context.WorkerId
+                    ?? throw new InvalidOperationException("Worker-reconfiguration requirements require a worker id.");
+                var changes = context.WorkerChanges
+                    ?? throw new InvalidOperationException("Worker-reconfiguration requirements require reconfiguration changes.");
+                return requirement(new WorkWorkerReconfigurationRequirementContext(
+                    context.Definition,
+                    context.RequestContext,
+                    workerId,
+                    context.RawInput,
+                    changes))
+                    ? WorkOperateAuthorizationDecision.Allow()
+                    : WorkOperateAuthorizationDecision.Deny();
+            }));
+        return this;
+    }
+
+    public IWorkOperateRequirementBuilder WhenWorkerReconfiguringRequire<TInput>(
+        Func<WorkWorkerReconfigurationRequirementContext<TInput>, bool> requirement)
+    {
+        ArgumentNullException.ThrowIfNull(requirement);
+
+        this.requirements.Add(new WorkOperateRequirementRegistration(
+            WorkOperateRequirementTargets.WorkerReconfiguration,
+            context => EvaluateTyped<TInput>(
+                context,
+                typeof(TInput),
+                typedInput =>
+                {
+                    var workerId = context.WorkerId
+                        ?? throw new InvalidOperationException("Worker-reconfiguration requirements require a worker id.");
+                    var changes = context.WorkerChanges
+                        ?? throw new InvalidOperationException("Worker-reconfiguration requirements require reconfiguration changes.");
+                    return requirement(new WorkWorkerReconfigurationRequirementContext<TInput>(
+                        context.Definition,
+                        context.RequestContext,
+                        workerId,
+                        context.RawInput,
+                        changes,
+                        typedInput));
+                })));
+        return this;
+    }
+
+    public IWorkOperateRequirementBuilder WhenDefinitionReconfiguringRequire(
+        Func<WorkDefinitionReconfigurationRequirementContext, bool> requirement)
+    {
+        ArgumentNullException.ThrowIfNull(requirement);
+
+        this.requirements.Add(new WorkOperateRequirementRegistration(
+            WorkOperateRequirementTargets.DefinitionReconfiguration,
+            context =>
+            {
+                var changes = context.DefinitionChanges
+                    ?? throw new InvalidOperationException("Definition-reconfiguration requirements require reconfiguration changes.");
+                return requirement(new WorkDefinitionReconfigurationRequirementContext(
+                    context.Definition,
+                    context.RequestContext,
+                    changes))
+                    ? WorkOperateAuthorizationDecision.Allow()
+                    : WorkOperateAuthorizationDecision.Deny();
+            }));
+        return this;
+    }
+
     internal IReadOnlyList<WorkOperateRequirementRegistration> Build()
         => [.. this.requirements];
 
@@ -400,11 +608,17 @@ internal sealed class WorkOperateRequirementBuilder : IWorkOperateRequirementBui
         }
         catch (Exception exception) when (exception is JsonException or NotSupportedException)
         {
-            var messages = context.Surface == WorkOperateRequirementSurface.Queueing
-                ? InvalidQueueMessages(context.Definition, inputType)
-                : InvalidWorkerActionMessages(
+            var messages = context.Surface switch
+            {
+                WorkOperateRequirementSurface.Queueing => InvalidQueueMessages(context.Definition, inputType),
+                WorkOperateRequirementSurface.WorkerAction => InvalidWorkerActionMessages(
                     context.WorkerId ?? throw new InvalidOperationException("Worker-action requirements require a worker id."),
-                    inputType);
+                    inputType),
+                WorkOperateRequirementSurface.WorkerReconfiguration => InvalidWorkerReconfigurationMessages(
+                    context.WorkerId ?? throw new InvalidOperationException("Worker-reconfiguration requirements require a worker id."),
+                    inputType),
+                _ => throw new InvalidOperationException($"Operate requirement surface '{context.Surface}' does not support typed input deserialization failures."),
+            };
             return WorkOperateAuthorizationDecision.Invalid(messages);
         }
     }
@@ -430,6 +644,25 @@ internal sealed class WorkOperateRequirementBuilder : IWorkOperateRequirementBui
                 $"Worker '{workerId}' could not evaluate its operate requirement because the retained input could not be deserialized as '{DescribeType(inputType)}'.",
                 "worker.input"),
         ];
+
+    private static IReadOnlyList<WorkMessage> InvalidWorkerReconfigurationMessages(
+        string workerId,
+        Type inputType)
+        =>
+        [
+            WorkMessage.Error(
+                "workable.authorization.operate_requirement_input_invalid",
+                $"Worker '{workerId}' could not evaluate its reconfiguration requirement because the retained input could not be deserialized as '{DescribeType(inputType)}'.",
+                "worker.input"),
+        ];
+
+    private static WorkReconfigurationRequirementSurface ToReconfigurationSurface(WorkOperateRequirementSurface surface)
+        => surface switch
+        {
+            WorkOperateRequirementSurface.WorkerReconfiguration => WorkReconfigurationRequirementSurface.Worker,
+            WorkOperateRequirementSurface.DefinitionReconfiguration => WorkReconfigurationRequirementSurface.Definition,
+            _ => throw new InvalidOperationException($"Operate requirement surface '{surface}' is not a reconfiguration surface."),
+        };
 
     private static string DescribeType(Type type)
         => type.FullName ?? type.Name;

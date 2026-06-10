@@ -4,8 +4,7 @@ internal sealed class WorkAuthorizationBuilder : IWorkAuthorizationBuilder
 {
     private IEnumerable<string>? readGroups;
     private readonly List<WorkOperateAuthorizationGrant> groupOperateGrants = [];
-    private WorkOperateAuthorizationGrant? knownAuthenticatedOperateGrant;
-    private int knownAuthenticatedOperateGrantCount;
+    private readonly List<WorkOperateAuthorizationGrant> knownAuthenticatedOperateGrants = [];
 
     /// <summary>
     /// Replaces both read and operate group requirements.
@@ -19,9 +18,18 @@ internal sealed class WorkAuthorizationBuilder : IWorkAuthorizationBuilder
     {
         this.readGroups = readGroups;
         this.groupOperateGrants.Clear();
-        this.groupOperateGrants.Add(new WorkOperateAuthorizationGrant(ToSet(operateGroups), false, []));
-        this.knownAuthenticatedOperateGrant = null;
-        this.knownAuthenticatedOperateGrantCount = 0;
+        this.knownAuthenticatedOperateGrants.Clear();
+
+        var normalizedGroups = ToSet(operateGroups);
+        if (normalizedGroups.Count > 0)
+        {
+            this.groupOperateGrants.Add(new WorkOperateAuthorizationGrant(
+                normalizedGroups,
+                false,
+                WorkOperationPermissions.Operate,
+                []));
+        }
+
         return this;
     }
 
@@ -37,29 +45,84 @@ internal sealed class WorkAuthorizationBuilder : IWorkAuthorizationBuilder
     }
 
     /// <summary>
-    /// Replaces the operate groups for the definition.
+    /// Replaces the broad group-based operate grant for the definition.
     /// </summary>
-    /// <param name="groups">The groups allowed to queue and operate the definition.</param>
+    /// <param name="groups">The groups allowed to queue, operate, and reconfigure the definition.</param>
     /// <returns>The same builder for chaining.</returns>
     public IWorkAuthorizationBuilder AllowOperateToGroups(params string[] groups)
     {
         this.groupOperateGrants.Clear();
-        this.groupOperateGrants.Add(new WorkOperateAuthorizationGrant(ToSet(groups), false, []));
+
+        var normalizedGroups = ToSet(groups);
+        if (normalizedGroups.Count > 0)
+        {
+            this.groupOperateGrants.Add(new WorkOperateAuthorizationGrant(
+                normalizedGroups,
+                false,
+                WorkOperationPermissions.Operate,
+                []));
+        }
+
         return this;
     }
 
     public IWorkAuthorizationBuilder AllowOperateToGroups(
         IEnumerable<string> groups,
         Action<IWorkOperateRequirementBuilder> configure)
+        => this.AllowOperationsToGroups(groups, WorkOperationPermissions.Operate, configure);
+
+    public IWorkAuthorizationBuilder AllowQueueToGroups(params string[] groups)
+        => this.AllowOperationsToGroups(groups, WorkOperationPermissions.Queue);
+
+    public IWorkAuthorizationBuilder AllowQueueToGroups(
+        IEnumerable<string> groups,
+        Action<IWorkOperateRequirementBuilder> configure)
+        => this.AllowOperationsToGroups(groups, WorkOperationPermissions.Queue, configure);
+
+    public IWorkAuthorizationBuilder AllowWorkerActionsToGroups(params string[] groups)
+        => this.AllowOperationsToGroups(groups, WorkOperationPermissions.WorkerActions);
+
+    public IWorkAuthorizationBuilder AllowWorkerActionsToGroups(
+        IEnumerable<string> groups,
+        Action<IWorkOperateRequirementBuilder> configure)
+        => this.AllowOperationsToGroups(groups, WorkOperationPermissions.WorkerActions, configure);
+
+    public IWorkAuthorizationBuilder AllowOperationsToGroups(
+        IEnumerable<string> groups,
+        WorkOperationPermissions permissions)
+    {
+        var normalizedGroups = ToSet(groups);
+        if (normalizedGroups.Count == 0)
+        {
+            return this;
+        }
+
+        this.groupOperateGrants.Add(new WorkOperateAuthorizationGrant(
+            normalizedGroups,
+            false,
+            NormalizePermissions(permissions),
+            []));
+        return this;
+    }
+
+    public IWorkAuthorizationBuilder AllowOperationsToGroups(
+        IEnumerable<string> groups,
+        WorkOperationPermissions permissions,
+        Action<IWorkOperateRequirementBuilder> configure)
     {
         ArgumentNullException.ThrowIfNull(configure);
 
-        var requirements = new WorkOperateRequirementBuilder();
-        configure(requirements);
+        var normalizedGroups = ToSet(groups);
+        if (normalizedGroups.Count == 0)
+        {
+            return this;
+        }
+
         this.groupOperateGrants.Add(new WorkOperateAuthorizationGrant(
-            ToSet(groups),
+            normalizedGroups,
             false,
-            requirements.Build()));
+            NormalizePermissions(permissions),
+            BuildRequirements(configure)));
         return this;
     }
 
@@ -68,21 +131,48 @@ internal sealed class WorkAuthorizationBuilder : IWorkAuthorizationBuilder
     /// </summary>
     /// <returns>The same builder for chaining.</returns>
     public IWorkAuthorizationBuilder AllowOperateToKnownAuthenticatedUsers()
+        => this.AllowOperationsToKnownAuthenticatedUsers(WorkOperationPermissions.Operate);
+
+    public IWorkAuthorizationBuilder AllowOperateToKnownAuthenticatedUsers(
+        Action<IWorkOperateRequirementBuilder> configure)
+        => this.AllowOperationsToKnownAuthenticatedUsers(WorkOperationPermissions.Operate, configure);
+
+    public IWorkAuthorizationBuilder AllowQueueToKnownAuthenticatedUsers()
+        => this.AllowOperationsToKnownAuthenticatedUsers(WorkOperationPermissions.Queue);
+
+    public IWorkAuthorizationBuilder AllowQueueToKnownAuthenticatedUsers(
+        Action<IWorkOperateRequirementBuilder> configure)
+        => this.AllowOperationsToKnownAuthenticatedUsers(WorkOperationPermissions.Queue, configure);
+
+    public IWorkAuthorizationBuilder AllowWorkerActionsToKnownAuthenticatedUsers()
+        => this.AllowOperationsToKnownAuthenticatedUsers(WorkOperationPermissions.WorkerActions);
+
+    public IWorkAuthorizationBuilder AllowWorkerActionsToKnownAuthenticatedUsers(
+        Action<IWorkOperateRequirementBuilder> configure)
+        => this.AllowOperationsToKnownAuthenticatedUsers(WorkOperationPermissions.WorkerActions, configure);
+
+    public IWorkAuthorizationBuilder AllowOperationsToKnownAuthenticatedUsers(
+        WorkOperationPermissions permissions)
     {
-        this.knownAuthenticatedOperateGrant = new WorkOperateAuthorizationGrant(ToSet([]), true, []);
-        this.knownAuthenticatedOperateGrantCount++;
+        this.knownAuthenticatedOperateGrants.Add(new WorkOperateAuthorizationGrant(
+            ToSet([]),
+            true,
+            NormalizePermissions(permissions),
+            []));
         return this;
     }
 
-    public IWorkAuthorizationBuilder AllowOperateToKnownAuthenticatedUsers(
+    public IWorkAuthorizationBuilder AllowOperationsToKnownAuthenticatedUsers(
+        WorkOperationPermissions permissions,
         Action<IWorkOperateRequirementBuilder> configure)
     {
         ArgumentNullException.ThrowIfNull(configure);
 
-        var requirements = new WorkOperateRequirementBuilder();
-        configure(requirements);
-        this.knownAuthenticatedOperateGrant = new WorkOperateAuthorizationGrant(ToSet([]), true, requirements.Build());
-        this.knownAuthenticatedOperateGrantCount++;
+        this.knownAuthenticatedOperateGrants.Add(new WorkOperateAuthorizationGrant(
+            ToSet([]),
+            true,
+            NormalizePermissions(permissions),
+            BuildRequirements(configure)));
         return this;
     }
 
@@ -103,27 +193,45 @@ internal sealed class WorkAuthorizationBuilder : IWorkAuthorizationBuilder
 
     private WorkOperateAuthorizationConfiguration BuildOperateAuthorization()
     {
-        var grants = new List<WorkOperateAuthorizationGrant>(this.groupOperateGrants.Count + 1);
+        var grants = new List<WorkOperateAuthorizationGrant>(
+            this.groupOperateGrants.Count + this.knownAuthenticatedOperateGrants.Count);
         grants.AddRange(this.groupOperateGrants);
-        if (this.knownAuthenticatedOperateGrant is not null)
-        {
-            grants.Add(this.knownAuthenticatedOperateGrant);
-        }
-
-        if (this.knownAuthenticatedOperateGrantCount > 1)
-        {
-            grants.Add(new WorkOperateAuthorizationGrant(ToSet([]), true, []));
-        }
+        grants.AddRange(this.knownAuthenticatedOperateGrants);
 
         WorkOperateAuthorizationConfigurationValidator.ValidateOrThrow(grants);
-        if (this.knownAuthenticatedOperateGrantCount > 1)
-        {
-            grants.RemoveAt(grants.Count - 1);
-        }
 
         return grants.Count == 0
             ? WorkOperateAuthorizationConfiguration.None
             : new WorkOperateAuthorizationConfiguration(grants);
+    }
+
+    private static IReadOnlyList<WorkOperateRequirementRegistration> BuildRequirements(
+        Action<IWorkOperateRequirementBuilder> configure)
+    {
+        var requirements = new WorkOperateRequirementBuilder();
+        configure(requirements);
+        return requirements.Build();
+    }
+
+    private static WorkOperationPermissions NormalizePermissions(WorkOperationPermissions permissions)
+    {
+        if (permissions == WorkOperationPermissions.None)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(permissions),
+                permissions,
+                "At least one work operation permission must be supplied.");
+        }
+
+        if ((permissions & ~WorkOperationPermissions.Operate) != 0)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(permissions),
+                permissions,
+                "Only supported work operation permission flags may be supplied.");
+        }
+
+        return permissions;
     }
 
     private static IReadOnlySet<string> ToSet(IEnumerable<string>? groups)

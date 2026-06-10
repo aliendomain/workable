@@ -42,9 +42,7 @@ internal sealed class AuthorizedWorkerOperations(
         filter ??= WorkerBulkActionFilter.All;
         var definitionNames = authorization.HasOperateAllWorkAccess()
             ? null
-            : authorization.OperableDefinitions()
-                .Select(definition => definition.Name)
-                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            : authorization.OperableDefinitionNamesFor(action);
         if (definitionNames is { Count: 0 })
         {
             return new WorkerBulkActionOutcome(action, filter, 0, []);
@@ -103,32 +101,26 @@ internal sealed class AuthorizedWorkerOperations(
         WorkerReconfiguration changes,
         CancellationToken cancellationToken = default)
     {
-        var authorizationResult = await this.AuthorizeWorker(worker.WorkerId, cancellationToken);
-        if (authorizationResult is WorkerAuthorizationResult.NotFound)
+        var authorizationResult = await this.AuthorizeReconfiguration(worker.WorkerId, changes, cancellationToken);
+        if (authorizationResult.Status is WorkerActionAuthorizationStatus.NotFound)
         {
             return WorkActionOutcome.NotFound(WorkAction.Start, worker.WorkerId);
         }
 
-        if (authorizationResult is WorkerAuthorizationResult.Unauthorized)
+        if (authorizationResult.Status is WorkerActionAuthorizationStatus.Unauthorized)
         {
             return WorkActionOutcome.Unauthorized(WorkAction.Start, worker.WorkerId);
         }
 
-        return await inner.Reconfigure(worker, changes, cancellationToken);
-    }
-
-    private async Task<WorkerAuthorizationResult> AuthorizeWorker(WorkerId workerId, CancellationToken cancellationToken)
-    {
-        var worker = await query.Worker(workerId, cancellationToken);
-        if (worker is null)
+        if (authorizationResult.Status is WorkerActionAuthorizationStatus.Invalid)
         {
-            return WorkerAuthorizationResult.NotFound;
+            return WorkActionOutcome.Invalid(
+                WorkAction.Start,
+                authorizationResult.Worker,
+                authorizationResult.Messages);
         }
 
-        return catalog.TryGetWork(worker.DefinitionName, out var registeredWork) &&
-            authorization.CanOperate(registeredWork.Definition)
-            ? WorkerAuthorizationResult.Authorized
-            : WorkerAuthorizationResult.Unauthorized;
+        return await inner.Reconfigure(worker, changes, cancellationToken);
     }
 
     private async Task<WorkerActionAuthorizationResult> AuthorizeAction(
@@ -162,11 +154,35 @@ internal sealed class AuthorizedWorkerOperations(
             : WorkerActionAuthorizationResult.Unauthorized(worker);
     }
 
-    private enum WorkerAuthorizationResult
+    private async Task<WorkerActionAuthorizationResult> AuthorizeReconfiguration(
+        WorkerId workerId,
+        WorkerReconfiguration changes,
+        CancellationToken cancellationToken)
     {
-        Authorized,
-        Unauthorized,
-        NotFound,
+        var worker = await query.Worker(workerId, cancellationToken);
+        if (worker is null)
+        {
+            return WorkerActionAuthorizationResult.NotFound();
+        }
+
+        if (!catalog.TryGetWork(worker.DefinitionName, out var registeredWork))
+        {
+            return WorkerActionAuthorizationResult.Unauthorized(worker);
+        }
+
+        var decision = authorization.AuthorizeWorkerReconfiguration(
+            registeredWork,
+            worker,
+            changes,
+            requestContext);
+        if (decision.IsAllowed)
+        {
+            return WorkerActionAuthorizationResult.Authorized(worker);
+        }
+
+        return decision.IsInvalid
+            ? WorkerActionAuthorizationResult.Invalid(worker, decision.Messages)
+            : WorkerActionAuthorizationResult.Unauthorized(worker);
     }
 
     private enum WorkerActionAuthorizationStatus
