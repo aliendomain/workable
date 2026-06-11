@@ -77,9 +77,7 @@ type WorkProfileMethodScopeEntry = WorkProfileMethodScopeOption & {
 };
 
 type WorkProfileMethodScopeSelection = {
-  node: WorkProfileSnapshotNode;
-  nodeId: string;
-  option: WorkProfileMethodScopeEntry;
+  nodeIds: readonly string[];
 };
 
 type WorkProfileHotspotMatch = {
@@ -943,8 +941,8 @@ function filterWorkProfile(
 ): WorkProfileSearchResult | null {
   const normalizedQuery = normalizeWorkProfileSearchQuery(query);
   const searchActive = normalizedQuery.length > 0;
-  const methodScopeRootNodeId = options.methodScopeSelection?.nodeId ?? null;
-  const methodScopeActive = Boolean(methodScopeRootNodeId);
+  const methodScopeRootNodeIds = options.methodScopeSelection?.nodeIds ?? [];
+  const methodScopeActive = methodScopeRootNodeIds.length > 0;
   const scopeOnlyFilter = methodScopeActive && !searchActive && !options.hotspotActive;
   if (!profile || (!searchActive && !options.hotspotActive && !methodScopeActive)) {
     return null;
@@ -957,13 +955,14 @@ function filterWorkProfile(
   const visit = (node: WorkProfileSnapshotNode, nodeId: string): boolean => {
     const searchMatched = searchActive && createWorkProfileNodeSearchText(node).includes(normalizedQuery);
     const hotspotMatched = options.hotspotActive && options.hotspotNodeIds?.has(nodeId) === true;
-    const inSelectedSubtree = methodScopeRootNodeId === null
-      || nodeId === methodScopeRootNodeId
-      || nodeId.startsWith(`${methodScopeRootNodeId}.`);
-    const onSelectedPath = methodScopeRootNodeId !== null
-      && (nodeId === methodScopeRootNodeId || methodScopeRootNodeId.startsWith(`${nodeId}.`));
+    const inSelectedSubtree = !methodScopeActive || methodScopeRootNodeIds.some((selectedNodeId) =>
+      isWorkProfileNodeWithinSelectedScope(nodeId, selectedNodeId)
+    );
+    const onSelectedPath = methodScopeActive && methodScopeRootNodeIds.some((selectedNodeId) =>
+      isWorkProfileNodeOnSelectedScopePath(nodeId, selectedNodeId)
+    );
     const matchedSelf = scopeOnlyFilter
-      ? nodeId === methodScopeRootNodeId
+      ? inSelectedSubtree
       : inSelectedSubtree && (!searchActive || searchMatched) && (!options.hotspotActive || hotspotMatched);
     let hasVisibleDescendant = false;
 
@@ -1060,22 +1059,13 @@ function findWorkProfileMethodScopeSelection(
     return null;
   }
 
-  let selection: WorkProfileMethodScopeSelection | null = null;
+  const nodeIds: string[] = [];
 
   const visit = (node: WorkProfileSnapshotNode, nodeId: string) => {
-    if (selection) {
-      return;
-    }
-
     if (nodeId !== "root") {
       const methodScope = getWorkProfileMethodScope(node);
       if (methodScope?.value === identity) {
-        selection = {
-          node,
-          nodeId,
-          option: methodScope,
-        };
-        return;
+        nodeIds.push(nodeId);
       }
     }
 
@@ -1085,7 +1075,21 @@ function findWorkProfileMethodScopeSelection(
   };
 
   visit(profile.root, "root");
-  return selection;
+  if (nodeIds.length === 0) {
+    return null;
+  }
+
+  return {
+    nodeIds,
+  };
+}
+
+function isWorkProfileNodeWithinSelectedScope(nodeId: string, selectedNodeId: string): boolean {
+  return nodeId === selectedNodeId || nodeId.startsWith(`${selectedNodeId}.`);
+}
+
+function isWorkProfileNodeOnSelectedScopePath(nodeId: string, selectedNodeId: string): boolean {
+  return nodeId === selectedNodeId || selectedNodeId.startsWith(`${nodeId}.`);
 }
 
 function createWorkProfileSearchTerms(value: string): string[] {

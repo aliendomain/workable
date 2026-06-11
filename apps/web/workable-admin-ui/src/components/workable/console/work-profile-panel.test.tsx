@@ -68,6 +68,58 @@ function profileSnapshot(): WorkProfileSnapshot {
   };
 }
 
+function duplicateMethodScopeProfileSnapshot(): WorkProfileSnapshot {
+  return {
+    capturedAt: "2026-06-10T18:05:00.000Z",
+    root: {
+      children: [
+        {
+          children: [
+            {
+              children: [],
+              label: "Render header",
+              metricType: "Timing",
+              nodeMilliseconds: 7,
+              treeMilliseconds: 7,
+            },
+          ],
+          label: "Executing DemoProfilingSectionWorker.RunAsync",
+          metricType: "MethodScope",
+          nodeMilliseconds: 7,
+          treeMilliseconds: 7,
+        },
+        {
+          children: [
+            {
+              children: [],
+              label: "Render footer",
+              metricType: "Timing",
+              nodeMilliseconds: 9,
+              treeMilliseconds: 9,
+            },
+          ],
+          label: "Executing DemoProfilingSectionWorker.RunAsync",
+          metricType: "MethodScope",
+          nodeMilliseconds: 9,
+          treeMilliseconds: 9,
+        },
+        {
+          children: [],
+          label: "Capture summary",
+          metricType: "Metric",
+          nodeMilliseconds: 0,
+          treeMilliseconds: 0,
+        },
+      ],
+      label: "Executing ImportOrders.Execute",
+      metricType: "MethodScope",
+      nodeMilliseconds: 16,
+      treeMilliseconds: 16,
+    },
+    startedAt: "2026-06-10T18:04:58.000Z",
+  };
+}
+
 test("work profile helpers summarize the tree and identify expandable nodes", () => {
   const profile = profileSnapshot();
   const querySearch = searchWorkProfile(profile, "query");
@@ -175,6 +227,38 @@ test("work profile panel auto-expands the tree in detailed view", async () => {
 
     await result.waitFor(() => result.getByText("Query database"));
     await result.waitFor(() => result.getByText('"cacheKey"'));
+  } finally {
+    await result.restore();
+  }
+});
+
+test("work profile panel method scope filter keeps one option per method identity and shows every matching subtree", async () => {
+  const result = await renderDom(
+    <WorkProfilePanel
+      onClose={() => undefined}
+      onViewStateChange={() => undefined}
+      profile={duplicateMethodScopeProfileSnapshot()}
+      viewState="standard"
+    />
+  );
+
+  try {
+    await result.click(result.getByRole("combobox", { name: "Profile method scope" }));
+    await result.waitFor(() => result.getByRole("option", { name: "DemoProfilingSectionWorker.RunAsync" }));
+
+    const duplicateOptions = [...result.dom.window.document.querySelectorAll("[role='option']")]
+      .filter((element) => element.textContent?.trim() === "DemoProfilingSectionWorker.RunAsync");
+    assert.equal(duplicateOptions.length, 1);
+
+    const methodScopeOption = duplicateOptions[0];
+    assert.ok(methodScopeOption instanceof result.dom.window.HTMLElement);
+    await result.click(methodScopeOption);
+
+    await result.waitFor(() => result.getByText("Render header"));
+    await result.waitFor(() => result.getByText("Render footer"));
+    await result.waitFor(() => {
+      assert.equal(result.queryByText("Capture summary"), null);
+    });
   } finally {
     await result.restore();
   }
