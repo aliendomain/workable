@@ -291,10 +291,20 @@ internal static class WorkableHttpQueryRoutes
             return iteration is null ? Results.NotFound() : Results.Ok(iteration);
         });
 
-        group.MapGet("/workers/{workerId:guid}/iterations/{sequence:long}/detail", async (
+        group.MapGet("/workers/{workerId:guid}/iterations/{sequence:long}/overview", async (
             HttpContext httpContext,
             Guid workerId,
             long sequence,
+            WorkWorkerIterationOverviewActivity? activity,
+            int? activityTake,
+            string? activityCursor,
+            bool? includeInput,
+            bool? includeOutput,
+            bool? includeProfile,
+            WorkWorkerOverviewSortDirection? messageSort,
+            string? severities,
+            WorkWorkerOverviewSortDirection? logSort,
+            string? logLevels,
             WorkableHttpTopologyResolver topology,
             WorkableHttpQueryAdapter queries,
             IWorkRequestContextFactory requestContexts,
@@ -306,11 +316,26 @@ internal static class WorkableHttpQueryRoutes
             }
 
             var session = WorkableHttpRequestContext.CreateSession(httpContext, system, requestContexts);
-            var detail = await queries.WorkerIterationDetail(session, new WorkerId(workerId), sequence, cancellationToken: cancellationToken);
-            return detail is null ? Results.NotFound() : Results.Ok(detail);
+            var overview = await queries.WorkerIterationOverview(
+                session,
+                new WorkerId(workerId),
+                sequence,
+                new WorkWorkerIterationOverviewCriteria(
+                    activity ?? WorkWorkerIterationOverviewActivity.Auto,
+                    activityTake ?? 50,
+                    activityCursor,
+                    includeInput ?? true,
+                    includeOutput ?? true,
+                    includeProfile ?? true,
+                    messageSort ?? WorkWorkerOverviewSortDirection.Desc,
+                    ParseMessageSeverities(severities),
+                    logSort ?? WorkWorkerOverviewSortDirection.Desc,
+                    ParseLogLevels(logLevels)),
+                cancellationToken: cancellationToken);
+            return overview is null ? Results.NotFound() : Results.Ok(overview);
         });
 
-        group.MapGet("/workers/{workerId:guid}/iterations/{sequence:long}/messages", async (
+        group.MapGet("/workers/{workerId:guid}/iterations/{sequence:long}/overview/messages", async (
             HttpContext httpContext,
             Guid workerId,
             long sequence,
@@ -341,7 +366,7 @@ internal static class WorkableHttpQueryRoutes
             return messages is null ? Results.NotFound() : Results.Ok(messages);
         });
 
-        group.MapGet("/workers/{workerId:guid}/iterations/{sequence:long}/logs", async (
+        group.MapGet("/workers/{workerId:guid}/iterations/{sequence:long}/overview/logs", async (
             HttpContext httpContext,
             Guid workerId,
             long sequence,
@@ -571,4 +596,3 @@ internal static class WorkableHttpQueryRoutes
         return parsed;
     }
 }
-

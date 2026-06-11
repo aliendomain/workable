@@ -537,6 +537,8 @@ The worker-overview route accepts:
 - `logSort`, `logLevels`, and `logIterationSequence`
 - `timelineSort` and `timelineCategories`
 
+When `activity=Auto`, the server chooses `Timeline` for final or recurring workers and `Logs` otherwise.
+
 Get the narrow logs and timeline payloads used when the detail screen expands those panels or paginates them. These routes return only the relevant section contract instead of the full worker overview payload, so callers do not need to re-fetch worker metadata, input, or iteration data just to page logs or timeline items.
 
 ```http
@@ -556,18 +558,32 @@ Get one completed worker iteration by worker id and iteration sequence.
 GET /workable/workers/22222222-2222-2222-2222-222222222222/iterations/1
 ```
 
-Get the iteration-detail landing payload used by the iteration screen. This route staples the iteration snapshot together with the worker context needed by that screen: definition link data, keys, worker input, compact message counts, and the first page of retained logs.
+Get the iteration-overview landing payload used by the iteration screen. This returns the typed `WorkWorkerIterationOverviewComponent` contract and can be trimmed to the panels the UI is actually showing.
 
 ```http
-GET /workable/workers/22222222-2222-2222-2222-222222222222/iterations/1/detail
+GET /workable/workers/22222222-2222-2222-2222-222222222222/iterations/1/overview
+GET /workable/workers/22222222-2222-2222-2222-222222222222/iterations/1/overview?activity=None&includeProfile=false&includeInput=false&includeOutput=false
+GET /workable/workers/22222222-2222-2222-2222-222222222222/iterations/1/overview?activity=Logs&activityTake=100&logSort=Asc&logLevels=Error,Warning
 ```
 
-Get paged retained logs for one worker iteration. This route returns a compact severity summary plus a paged log list so expanded iteration log panels can page more history without re-fetching the whole iteration landing payload.
+The iteration-overview route accepts:
+
+- `activity`: `Auto`, `None`, `Messages`, or `Logs`
+- `activityTake` and `activityCursor`
+- `includeInput`, `includeOutput`, and `includeProfile`
+- `messageSort` and `severities`
+- `logSort` and `logLevels`
+
+When `activity=Auto`, the server prefers `Logs`, then `Messages`, then `None` based on the retained activity present on that iteration.
+
+The legacy iteration `/detail`, `/messages`, and `/logs` routes are not exposed. Use `/overview`, `/overview/messages`, and `/overview/logs`.
+
+Get paged retained logs for one worker iteration. This route returns only the retained-log section contract so expanded iteration log panels can page more history without re-fetching worker context, iteration timing, output, or profile data.
 
 ```http
-GET /workable/workers/22222222-2222-2222-2222-222222222222/iterations/1/logs?take=50&sort=Desc
-GET /workable/workers/22222222-2222-2222-2222-222222222222/iterations/1/logs?take=50&sort=Asc&logLevels=Error,Warning
-GET /workable/workers/22222222-2222-2222-2222-222222222222/iterations/1/logs?take=50&cursor=eyJvY2N1cnJlZEF0IjoiMjAyNi0wNS0yOVQxMTowMDowMloiLCJpZCI6IjEyMyJ9
+GET /workable/workers/22222222-2222-2222-2222-222222222222/iterations/1/overview/logs?take=50&sort=Desc
+GET /workable/workers/22222222-2222-2222-2222-222222222222/iterations/1/overview/logs?take=50&sort=Asc&logLevels=Error,Warning
+GET /workable/workers/22222222-2222-2222-2222-222222222222/iterations/1/overview/logs?take=50&cursor=eyJvY2N1cnJlZEF0IjoiMjAyNi0wNS0yOVQxMTowMDowMloiLCJpZCI6IjEyMyJ9
 ```
 
 The iteration-logs route accepts:
@@ -579,12 +595,12 @@ The iteration-logs route accepts:
 
 Iteration-log rows use the same retained log-entry shape as worker-overview log pages, including `occurredAt`, stable entry ids, iteration `sequence`, and per-iteration `ordinal`.
 
-Get paged retained messages for one worker iteration. This route returns a summary count block plus a paged message list so message panels can keep compact severity totals while loading large retained message sets incrementally.
+Get paged retained messages for one worker iteration. This route returns only the retained-message section contract so compact severity totals and expanded message pages can be loaded independently from the rest of the iteration landing payload.
 
 ```http
-GET /workable/workers/22222222-2222-2222-2222-222222222222/iterations/1/messages?take=50&sort=Desc
-GET /workable/workers/22222222-2222-2222-2222-222222222222/iterations/1/messages?take=50&sort=Asc&severities=Information,Warning
-GET /workable/workers/22222222-2222-2222-2222-222222222222/iterations/1/messages?take=50&cursor=50
+GET /workable/workers/22222222-2222-2222-2222-222222222222/iterations/1/overview/messages?take=50&sort=Desc
+GET /workable/workers/22222222-2222-2222-2222-222222222222/iterations/1/overview/messages?take=50&sort=Asc&severities=Information,Warning
+GET /workable/workers/22222222-2222-2222-2222-222222222222/iterations/1/overview/messages?take=50&cursor=50
 ```
 
 The iteration-messages route accepts:

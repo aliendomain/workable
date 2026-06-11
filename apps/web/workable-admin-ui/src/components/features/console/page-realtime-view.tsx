@@ -18,6 +18,7 @@ export type ConsolePageRealtimeViewDescriptor = {
   body: unknown;
   captureEnabled: boolean;
   connection: WorkableConnection | null;
+  connectionInstanceKey?: string;
   enabled: boolean;
   maxMessages: number;
   subscription?: string;
@@ -88,6 +89,7 @@ export function ConsolePageRealtimeViewProvider({ children }: { children: ReactN
     body: resolvedDescriptor?.body ?? null,
     captureEnabled: resolvedDescriptor?.captureEnabled ?? false,
     connection: resolvedDescriptor?.connection ?? null,
+    connectionInstanceKey: resolvedDescriptor?.connectionInstanceKey,
     createMessage: (result, nextMessageId) => {
       const viewName = resolvedDescriptor?.viewName ?? "page";
       const subscription = resolvedDescriptor?.subscription ?? viewName;

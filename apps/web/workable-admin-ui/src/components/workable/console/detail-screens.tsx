@@ -124,6 +124,7 @@ import {
   FeedbackBanner,
   type FeedbackTone,
 } from "@/components/workable/console/feedback-panel";
+import { WorkProfilePanel } from "@/components/workable/console/work-profile-panel";
 import {
   formatRelativeTime,
   useLiveRelativeTimeNow,
@@ -147,10 +148,11 @@ import {
   type WorkableRealtimeOrigin,
   type WorkableConnection,
   type WorkableHttpWorkerConfiguration,
-  type WorkableHttpWorkerIterationDetail,
-  type WorkableHttpWorkerIterationSnapshot,
+  type WorkWorkerIterationOverviewComponent,
+  type WorkWorkerIterationOverviewIteration,
   type WorkWorkerOverviewComponent,
   type WorkWorkerOverviewFailure,
+  type WorkWorkerIterationOverviewActivity,
   type WorkWorkerOverviewActivity,
   type WorkWorkerOverviewLatestIteration,
   type WorkWorkerOverviewLogEntry,
@@ -229,10 +231,11 @@ export {
 
 type IterationDetailPanelId =
   | "iterationSummary"
+  | "iterationProfile"
   | "iterationMessages"
   | "iterationOutput"
   | "iterationLogs";
-type IterationFocusedPanelId = "iterationMessages";
+type IterationFocusedPanelId = "iterationMessages" | "iterationProfile";
 type WorkerFailureDetails = {
   code?: string;
   declaredByWork?: boolean;
@@ -333,6 +336,11 @@ const iterationPanelOptions: PanelVisibilityOption<IterationDetailPanelId>[] = [
     id: "iterationSummary",
     label: "Iteration summary",
     description: "Status, timing, worker context, and quick links for the selected iteration.",
+  },
+  {
+    id: "iterationProfile",
+    label: "Profile",
+    description: "Captured execution profile tree with timings, scopes, and retained context.",
   },
   {
     id: "iterationMessages",
@@ -2415,15 +2423,10 @@ export function IterationConsoleView({
   sequence: number;
   workerId: string;
 }) {
-  const iterationDetail = useWorkableResource<WorkableHttpWorkerIterationDetail>(
-    connection,
-    `workers/${workerId}/iterations/${sequence}/detail`,
-    refreshToken
-  );
-  const relativeNow = useLiveRelativeTimeNow();
   const [hiddenPanelIds, setHiddenPanelIds] = useState<ReadonlySet<IterationDetailPanelId>>(() => new Set());
   const [focusedIterationPanel, setFocusedIterationPanel] = useState<IterationFocusedPanelId | null>(null);
   const [summaryViewState, setSummaryViewState] = useState<WorkComponentShape>("compact");
+  const [profileViewState, setProfileViewState] = useState<WorkComponentShape>("standard");
   const [messagesViewState, setMessagesViewState] = useState<WorkComponentShape>("compact");
   const [outputViewState, setOutputViewState] = useState<WorkComponentShape>("standard");
   const [logsViewState, setLogsViewState] = useState<WorkComponentShape>("detailed");
@@ -2435,22 +2438,41 @@ export function IterationConsoleView({
     loadingMore: false,
   });
   const focusedIterationHiddenSnapshotRef = useRef<ReadonlySet<IterationDetailPanelId> | null>(null);
-  const detail = iterationDetail.data;
-  const activeIteration = detail?.iteration;
+  const relativeNow = useLiveRelativeTimeNow();
+  const isOutputPanelVisible = !hiddenPanelIds.has("iterationOutput");
+  const isProfilePanelVisible = !hiddenPanelIds.has("iterationProfile");
+  const isLogsPanelVisible = !hiddenPanelIds.has("iterationLogs");
   const normalizedSelectedIterationLogLevels = useMemo(
     () => iterationSelectedLogLevels ?? workerLogFilterLevels,
     [iterationSelectedLogLevels]
   );
-  const usingIterationLandingLogPage = iterationLogSortDirection === "desc" && iterationSelectedLogLevels === null;
+  const usingIterationLandingLogPage = isLogsPanelVisible &&
+    iterationLogSortDirection === "desc" &&
+    iterationSelectedLogLevels === null;
+  const iterationOverviewActivity: Exclude<WorkWorkerIterationOverviewActivity, "Auto"> = usingIterationLandingLogPage
+    ? "Logs"
+    : "None";
+  const iterationOverview = useWorkableResource<WorkWorkerIterationOverviewComponent>(
+    connection,
+    createIterationOverviewPath(workerId, sequence, {
+      activity: iterationOverviewActivity,
+      includeInput: isOutputPanelVisible,
+      includeOutput: isOutputPanelVisible,
+      includeProfile: isProfilePanelVisible,
+    }),
+    refreshToken
+  );
+  const landing = iterationOverview.data;
+  const activeIteration = landing?.iteration;
   const iterationLogQueryKey = useMemo(
     () => `${iterationLogSortDirection}|${normalizedSelectedIterationLogLevels.join(",")}`,
     [iterationLogSortDirection, normalizedSelectedIterationLogLevels]
   );
   const iterationLogsSnapshot = useWorkableResource<WorkIterationLogSection>(
     connection,
-    usingIterationLandingLogPage
+    !isLogsPanelVisible || usingIterationLandingLogPage
       ? null
-      : createIterationLogsPath(workerId, sequence, {
+      : createIterationOverviewLogsPath(workerId, sequence, {
           logLevels: normalizedSelectedIterationLogLevels,
           sortDirection: iterationLogSortDirection,
           take: workerLogActivityPageSize,
@@ -2460,7 +2482,16 @@ export function IterationConsoleView({
       resetKey: `${workerId}:${sequence}:${iterationLogQueryKey}`,
     }
   );
-  const iterationLogBaseSection = usingIterationLandingLogPage ? detail?.logs : iterationLogsSnapshot.data;
+  const iterationLogBaseSection = useMemo(() => {
+    if (usingIterationLandingLogPage && landing?.logs.page) {
+      return {
+        summary: landing.logs.summary,
+        page: landing.logs.page,
+      } satisfies WorkIterationLogSection;
+    }
+
+    return iterationLogsSnapshot.data;
+  }, [iterationLogsSnapshot.data, landing?.logs.page, landing?.logs.summary, usingIterationLandingLogPage]);
   const iterationLogBasePage = iterationLogBaseSection?.page;
   const iterationLogSummary = iterationLogBaseSection?.summary;
   const iterationLogEntries = useMemo(
@@ -2482,15 +2513,14 @@ export function IterationConsoleView({
 
   const enterIterationPanelFocus = useCallback((panelId: IterationFocusedPanelId) => {
     setHiddenPanelIds((current) => {
-      if (focusedIterationPanel === panelId) {
-        return current;
+      if (focusedIterationHiddenSnapshotRef.current === null) {
+        focusedIterationHiddenSnapshotRef.current = new Set(current);
       }
 
-      focusedIterationHiddenSnapshotRef.current = new Set(current);
-      setFocusedIterationPanel(panelId);
       return createIterationFocusedHiddenPanels(panelId);
     });
-  }, [focusedIterationPanel]);
+    setFocusedIterationPanel(panelId);
+  }, []);
 
   const setIterationPanelVisible = useCallback((panelId: IterationDetailPanelId, visible: boolean) => {
     if (!visible && panelId === focusedIterationPanel) {
@@ -2505,10 +2535,20 @@ export function IterationConsoleView({
     focusedIterationHiddenSnapshotRef.current = null;
     setFocusedIterationPanel(null);
     setSummaryViewState("compact");
+    setProfileViewState("standard");
     setMessagesViewState("compact");
     setOutputViewState("standard");
     setLogsViewState("detailed");
   }, []);
+
+  const setIterationProfilePanelViewState = useCallback((shape: WorkComponentShape) => {
+    setProfileViewState(shape);
+    if (shape === "detailed") {
+      enterIterationPanelFocus("iterationProfile");
+    } else if (focusedIterationPanel === "iterationProfile") {
+      exitIterationPanelFocus();
+    }
+  }, [enterIterationPanelFocus, exitIterationPanelFocus, focusedIterationPanel]);
 
   const setIterationMessagesPanelViewState = useCallback((shape: WorkComponentShape) => {
     setMessagesViewState(shape);
@@ -2559,7 +2599,7 @@ export function IterationConsoleView({
     try {
       const logs = await workableFetch<WorkIterationLogSection>(
         connection,
-        createIterationLogsPath(workerId, sequence, {
+        createIterationOverviewLogsPath(workerId, sequence, {
           cursor: iterationLogPageLoadState.nextCursor,
           logLevels: normalizedSelectedIterationLogLevels,
           sortDirection: iterationLogSortDirection,
@@ -2594,7 +2634,7 @@ export function IterationConsoleView({
 
   return (
     <ConsolePageLayout fill={isIterationPanelFocused} scrollMode={isIterationPanelFocused ? "panel" : "browser"}>
-      <ErrorPanel errors={[iterationDetail.error]} />
+      <ErrorPanel errors={[iterationOverview.error]} />
       <PanelAggregateFrame
         fill={isIterationPanelFocused}
         hiddenPanelIds={[...hiddenPanelIds]}
@@ -2607,13 +2647,13 @@ export function IterationConsoleView({
         settingsDescription="Checked panels are shown on the iteration page."
         settingsTitle="Iteration panels"
       >
-        {iterationDetail.loading && !activeIteration ? <StackedSkeleton count={6} /> : null}
-        {!iterationDetail.loading && !activeIteration ? (
+        {iterationOverview.loading && !activeIteration ? <StackedSkeleton count={6} /> : null}
+        {!iterationOverview.loading && !activeIteration ? (
           <ConsoleEmptyState padding="spacious">
             Iteration not found.
           </ConsoleEmptyState>
         ) : null}
-        {activeIteration ? (
+        {landing && activeIteration ? (
           <div className="flex min-h-0 flex-1 flex-col gap-6">
             {!hiddenPanelIds.has("iterationSummary") ? (
               <PanelShell
@@ -2639,21 +2679,21 @@ export function IterationConsoleView({
                         <button
                           className="cursor-pointer text-left text-sky-700 underline underline-offset-4 transition-colors hover:text-sky-600 dark:text-sky-300 dark:hover:text-sky-200"
                           onClick={() => onOpenDefinition(
-                            detail.definitionName,
-                            detail.definitionName
+                            landing.worker.definitionName,
+                            landing.worker.definitionName
                           )}
                           type="button"
                         >
-                          {detail.definitionName}
+                          {landing.worker.definitionName}
                         </button>
                       );
                     })()}
                   />
                 </div>
                 <IterationContextCard
-                  concurrencyKey={detail.concurrencyKey}
-                  identifiers={detail.identifiers}
-                  subjectId={detail.subjectId}
+                  concurrencyKey={landing.worker.concurrencyKey}
+                  identifiers={landing.worker.identifiers}
+                  subjectId={landing.worker.subjectId}
                 />
               </PanelShell>
             ) : null}
@@ -2667,15 +2707,23 @@ export function IterationConsoleView({
                 viewState={outputViewState}
               >
                 <div className="grid gap-4 xl:grid-cols-2">
-                  <WorkDataCard data={detail.input} label="Worker input" />
+                  <WorkDataCard data={landing.input} label="Worker input" />
                   <WorkDataCard data={activeIteration.output} label="Iteration output" />
                 </div>
               </PanelShell>
             ) : null}
+            {!hiddenPanelIds.has("iterationProfile") ? (
+              <WorkProfilePanel
+                onClose={() => setIterationPanelVisible("iterationProfile", false)}
+                onViewStateChange={setIterationProfilePanelViewState}
+                profile={activeIteration.profile}
+                viewState={profileViewState}
+              />
+            ) : null}
             {!hiddenPanelIds.has("iterationMessages") ? (
               <IterationMessagePanel
                 connection={connection}
-                initialSummary={detail.messageSummary}
+                initialSummary={landing.messages.summary}
                 onClose={() => setIterationPanelVisible("iterationMessages", false)}
                 refreshToken={refreshToken}
                 sequence={sequence}
@@ -2690,7 +2738,12 @@ export function IterationConsoleView({
                 entries={iterationLogEntries}
                 hasMore={iterationLogPageLoadState.hasMore}
                 hasActiveIteration={activeIteration.status === "Executing"}
-                isLoading={iterationDetail.loading || iterationLogsSnapshot.loading}
+                isLoading={
+                  iterationOverview.loading ||
+                  iterationOverview.refreshing === true ||
+                  iterationLogsSnapshot.loading ||
+                  iterationLogsSnapshot.refreshing === true
+                }
                 isLoadingMore={iterationLogPageLoadState.loadingMore}
                 onClearFilters={() => setIterationSelectedLogLevels(null)}
                 onClose={() => setIterationPanelVisible("iterationLogs", false)}
@@ -3856,7 +3909,7 @@ function WorkDataCard({ data, label }: { data?: WorkData | null; label: string }
 function IterationStatusBadge({
   iteration,
 }: {
-  iteration: Pick<WorkerIterationSnapshot, "sequence" | "status"> | Pick<WorkableHttpWorkerIterationSnapshot, "sequence" | "status">;
+  iteration: Pick<WorkerIterationSnapshot, "sequence" | "status"> | Pick<WorkWorkerIterationOverviewIteration, "sequence" | "status">;
 }) {
   return (
     <div className="flex flex-wrap items-center gap-2">
@@ -3947,7 +4000,7 @@ function IterationMessagePanel({
     [visibleSeverities]
   );
   const requestPath = useMemo(
-    () => createIterationMessagesPath(workerId, sequence, {
+    () => createIterationOverviewMessagesPath(workerId, sequence, {
       severities: severityQueryValue,
       sortDirection,
       take: iterationMessagePanelPageSize,
@@ -4136,7 +4189,7 @@ function IterationMessagePanel({
 
     workableFetch<WorkIterationMessageSection>(
       connection,
-      createIterationMessagesPath(workerId, sequence, {
+      createIterationOverviewMessagesPath(workerId, sequence, {
         cursor: messagesState.nextCursor,
         severities: severityQueryValue,
         sortDirection,
@@ -6487,7 +6540,78 @@ function getOrderedMessageSeverities(summary: WorkIterationMessageSummary) {
   ];
 }
 
-function createIterationMessagesPath(
+export function createIterationOverviewPath(
+  workerId: string,
+  sequence: number,
+  options?: {
+    activity?: Exclude<WorkWorkerIterationOverviewActivity, "Auto">;
+    activityCursor?: string | null;
+    activityTake?: number;
+    includeInput?: boolean;
+    includeOutput?: boolean;
+    includeProfile?: boolean;
+    messageSortDirection?: WorkerSortDirection;
+    severities?: string | null;
+    logLevels?: readonly WorkerLogFilterLevel[] | null;
+    logSortDirection?: WorkerSortDirection;
+  }
+) {
+  const query = createIterationOverviewActivityQuery(options);
+  return query.length > 0
+    ? `workers/${workerId}/iterations/${sequence}/overview?${query}`
+    : `workers/${workerId}/iterations/${sequence}/overview`;
+}
+
+export function createIterationOverviewActivityQuery(
+  options?: {
+    activity?: Exclude<WorkWorkerIterationOverviewActivity, "Auto">;
+    activityCursor?: string | null;
+    activityTake?: number;
+    includeInput?: boolean;
+    includeOutput?: boolean;
+    includeProfile?: boolean;
+    messageSortDirection?: WorkerSortDirection;
+    severities?: string | null;
+    logLevels?: readonly WorkerLogFilterLevel[] | null;
+    logSortDirection?: WorkerSortDirection;
+  }
+) {
+  const searchParams = new URLSearchParams();
+  if (options?.activity) {
+    searchParams.set("activity", options.activity);
+  }
+  if (options?.activityTake) {
+    searchParams.set("activityTake", String(options.activityTake));
+  }
+  if (options?.activityCursor) {
+    searchParams.set("activityCursor", options.activityCursor);
+  }
+  if (options?.includeInput === false) {
+    searchParams.set("includeInput", "false");
+  }
+  if (options?.includeOutput === false) {
+    searchParams.set("includeOutput", "false");
+  }
+  if (options?.includeProfile === false) {
+    searchParams.set("includeProfile", "false");
+  }
+  if (options?.messageSortDirection) {
+    searchParams.set("messageSort", options.messageSortDirection === "asc" ? "Asc" : "Desc");
+  }
+  if (options?.severities) {
+    searchParams.set("severities", options.severities);
+  }
+  if (options?.logSortDirection) {
+    searchParams.set("logSort", options.logSortDirection === "asc" ? "Asc" : "Desc");
+  }
+  if (options?.logLevels && options.logLevels.length > 0 && options.logLevels.length !== workerLogFilterLevels.length) {
+    searchParams.set("logLevels", options.logLevels.join(","));
+  }
+
+  return searchParams.toString();
+}
+
+function createIterationOverviewMessagesPath(
   workerId: string,
   sequence: number,
   options: {
@@ -6508,10 +6632,10 @@ function createIterationMessagesPath(
     searchParams.set("severities", options.severities);
   }
 
-  return `workers/${workerId}/iterations/${sequence}/messages?${searchParams.toString()}`;
+  return `workers/${workerId}/iterations/${sequence}/overview/messages?${searchParams.toString()}`;
 }
 
-function createIterationLogsPath(
+function createIterationOverviewLogsPath(
   workerId: string,
   sequence: number,
   options: {
@@ -6532,7 +6656,7 @@ function createIterationLogsPath(
     searchParams.set("logLevels", options.logLevels.join(","));
   }
 
-  return `workers/${workerId}/iterations/${sequence}/logs?${searchParams.toString()}`;
+  return `workers/${workerId}/iterations/${sequence}/overview/logs?${searchParams.toString()}`;
 }
 
 function createHiddenMessageSeveritiesForFocus(
@@ -7740,7 +7864,7 @@ export function createWorkerFocusedHiddenPanels(focusedPanelId: WorkerFocusedPan
 
 export function createIterationFocusedHiddenPanels(focusedPanelId: IterationFocusedPanelId) {
   return new Set<IterationDetailPanelId>(
-    ["iterationSummary", "iterationMessages", "iterationOutput", "iterationLogs"]
+    ["iterationSummary", "iterationProfile", "iterationMessages", "iterationOutput", "iterationLogs"]
       .filter((panelId): panelId is IterationDetailPanelId => panelId !== focusedPanelId)
   );
 }

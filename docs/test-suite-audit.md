@@ -1,6 +1,6 @@
 # Test Suite Audit
 
-Last updated: 2026-06-01
+Last updated: 2026-06-11
 
 ## Scope
 
@@ -37,6 +37,8 @@ Overall: 1055 passed, 0 failed
 ```
 
 The SQL Server integration tests previously failed because their test systems used the production default authorization requirement while the tests used direct system access. That was repaired by adding the SQL Server test-only `AddWorkableSystem` wrapper that opts those test registrations out of authorization, matching the main test project convention.
+
+On 2026-06-11, a focused HTTP verification run for `WorkableHttpApiTests` and `WorkableHttpQueryAdapterShould` passed 75 tests after the iteration-overview route and adapter changes.
 
 ## Projects
 
@@ -110,7 +112,7 @@ Largest coverage areas:
 | `tests/Workable.Tests/HttpApi/WorkableHttpApiTests.cs` | HTTP API adapter and transport behavior. |
 | `tests/Workable.Tests/HttpApi/WorkableHttpCatalogAdapterShould.cs` | Focused HTTP catalog adapter sorting and catalog-level mapping behavior. |
 | `tests/Workable.Tests/HttpApi/WorkableHttpQueueAdapterShould.cs` | Focused HTTP queue adapter input/options, rejection, completion-status, and null-guard mapping behavior. |
-| `tests/Workable.Tests/HttpApi/WorkableHttpQueryAdapterShould.cs` | Focused HTTP query adapter definition-info, worker-configuration, iteration-detail, and missing-result mapping behavior. |
+| `tests/Workable.Tests/HttpApi/WorkableHttpQueryAdapterShould.cs` | Focused HTTP query adapter definition-info, worker-configuration, iteration-overview activity/include-flag behavior, and missing-result mapping behavior. |
 | `tests/Workable.Tests/HttpApi/WorkableHttpWorkerAdapterShould.cs` | Focused HTTP worker adapter action, bulk-filter, reconfiguration, and null-guard mapping behavior. |
 | `tests/Workable.Tests/Query/WorkQueryServiceTests.cs` | Query/read-model behavior through system APIs. |
 | `tests/Workable.Tests/Queue/DurableQueueTests.cs` | Durable queue and persistence coordination behavior. |
@@ -162,7 +164,7 @@ Classification:
 | `WorkableEntraServiceCollectionExtensions` | `packages/core/Workable.Entra/WorkableEntraServiceCollectionExtensions.cs` | Registers JWT authentication/authorization, configures SignalR query-string token handling, maps Entra claims into Workable actor/group options, and adds middleware. | `WorkableEntraAuthorizationTests`, AspNetCore authorization tests. | Keep | Focused tests cover invalid options, preserving authentication defaults, SignalR query-token acceptance, and header precedence. |
 | `WorkableSqlServerServiceCollectionExtensions` | `packages/extensions/sqlserver/Workable.SqlServer/WorkableSqlServerServiceCollectionExtensions.cs` | Registers SQL Server durable queue options/store and exposes it as `IWorkPersistenceStore`; validates connection/schema inputs. | `WorkableSqlServerPersistenceTests`, `WorkableSqlServerSchemaDiscoveryShould`. | Keep | Integration tests construct durable systems through the extension; schema discovery tests cover source-level feature/target detection. Add isolated null/blank guard tests only if descriptor-level behavior becomes a supported contract. |
 | `WorkableHttpCatalogAdapter` | `packages/core/Workable.HttpApi/Catalog/WorkableHttpCatalogAdapter.cs` | Definition listing, definition details, catalog levels, reconfigure. | `WorkableHttpApiTests`, `WorkableHttpCatalogAdapterShould`. | Keep | Endpoint tests cover transport JSON behavior; focused tests now cover direct null guard, case-insensitive definition sorting, root/default category level mapping, and nested category matching. |
-| `WorkableHttpQueryAdapter` | `packages/core/Workable.HttpApi/Query/WorkableHttpQueryAdapter.cs` | HTTP query DTO mapping for definitions, worker config, iteration detail. | `WorkableHttpApiTests`, `WorkableHttpQueryAdapterShould`. | Keep | Endpoint tests cover route JSON behavior; focused tests now cover queue descriptor inclusion, worker input/definition metadata mapping, iteration output/message/log aggregation, and null results for missing workers/iterations. |
+| `WorkableHttpQueryAdapter` | `packages/core/Workable.HttpApi/Query/WorkableHttpQueryAdapter.cs` | HTTP query DTO mapping for definitions, worker config, and typed worker/iteration overview landing payloads. | `WorkableHttpApiTests`, `WorkableHttpQueryAdapterShould`. | Keep | Endpoint tests cover route JSON behavior; focused tests now cover queue descriptor inclusion, worker input/definition metadata mapping, iteration overview activity/summary aggregation, include-flag handling, and null results for missing workers/iterations. |
 | `WorkableHttpQueueAdapter` | `packages/core/Workable.HttpApi/Queue/WorkableHttpQueueAdapter.cs` | HTTP enqueue mapping/validation. | `WorkableHttpApiTests`, `WorkableHttpQueueAdapterShould`. | Keep | Endpoint tests cover transport behavior; focused tests now cover JSON input metadata/options mapping, definition-id enqueue defaults, rejected-handle behavior without waiting, completion-status mapping, and null/blank guards. |
 | `WorkableHttpWorkerAdapter` | `packages/core/Workable.HttpApi/Workers/WorkableHttpWorkerAdapter.cs` | Execute/reconfigure/bulk actions. | `WorkableHttpApiTests`, `WorkableHttpWorkerAdapterShould`. | Keep | Endpoint tests cover route behavior; focused tests now cover revision forwarding, bulk category filter mapping, missing-filter behavior, reconfiguration forwarding, and null guards. |
 | `DelegateWorkExecutor` / `TypedDelegateWorkExecutor` | `packages/core/Workable.Sdk/Execution/DelegateWorkExecutor.cs`; `packages/core/Workable.Sdk/Execution/TypedDelegateWorkExecutor.cs` | Adapts delegate-based work registrations to `IWorkExecutor`, binds typed JSON input, returns structured missing/invalid-input failures, and converts typed output to untyped results. | `TypedWorkExecutorTests`, `HostingTests`, `WorkExceptionClassificationTests`, configuration tests. | Keep | Delegate and typed delegate paths are exercised through public `AddWorkableWork`/`AddWorkableSystem` registrations; focused typed executor tests cover missing input, invalid input, valid input, output schemas, and unsupported executor shapes. |
@@ -338,7 +340,7 @@ Runtime-library gaps remaining after this pass:
 - Strengthened `WorkableViewQueryAdapterTests.WorkerOverviewRealtimeStateRespectsCompactAndExpandedPanelModes` and the expanded-payload cap test to assert concrete realtime-state payload content instead of only non-null sections.
 - Added `WorkableHttpCatalogAdapterShould` with focused tests for catalog null guards, case-insensitive sorting, root/default category navigation, and nested category lookups.
 - Added `WorkableHttpQueueAdapterShould` with focused tests for input metadata/options mapping, definition-id enqueue defaults, rejected-handle behavior, completion-status mapping, and null/blank guards.
-- Added `WorkableHttpQueryAdapterShould` with focused tests for definition-info queue descriptors, worker configuration input/definition mapping, iteration detail output/message/log aggregation, and missing worker/iteration null results.
+- Added `WorkableHttpQueryAdapterShould` with focused tests for definition-info queue descriptors, worker configuration input/definition mapping, iteration overview activity/summary aggregation, include-flag handling, and missing worker/iteration null results.
 - Added `WorkableHttpWorkerAdapterShould` with focused tests for action revision forwarding, bulk category filter mapping, missing bulk-filter behavior, reconfiguration forwarding, and null guards.
 - Replaced the queue-cancellation executor delay in `QueueAndResultTests.AcceptedWorkDoesNotUseQueueCancellationTokenForExecution` with explicit execution-start and release gates plus an execution-token cancellation assertion.
 - Added `WorkableSignalRFiltersShould` with focused tests for SignalR authentication filter connection/method rejection and pass-through behavior plus authorization filter access-denial translation and unrelated exception preservation.

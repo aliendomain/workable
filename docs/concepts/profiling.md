@@ -106,7 +106,11 @@ Services can contribute in three common ways:
 - `StartTiming(...)` to measure a leaf operation.
 - `CreateScope(...)` or `CreateMethodScope(...)` to group nested work and optionally attach input or result context.
 
+Only logical scopes created by `CreateScope(...)` and `CreateMethodScope(...)` retain `SetResult(...)` payloads. The handle returned by `StartTiming(...)` still exposes `SetResult(...)` through the shared scope interface, but timing scopes currently ignore that call.
+
 When the context object is not a string, `WorkProfileSnapshot.ToAsciiTree()` renders it as JSON beneath that profile node.
+
+In the ASCII output, `Tree` is the node's inclusive time. `Node` is the node's retained node time. For scope nodes, that retained node time is the inclusive scope time minus nested scope time. Timings listed directly under the scope are still shown as child rows, but they do not reduce the parent scope's `Node` value.
 
 ## Built-In Scope
 

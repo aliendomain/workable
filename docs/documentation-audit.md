@@ -92,7 +92,7 @@ This audit verifies the 39 Markdown documentation files under `Docs` against the
 
 ## Routes, Tools, And Messages
 
-- Verified HTTP routes include definitions, host, diagnostics, lifecycle, queueing by name/id, queue schema, work info, views/components, worker status summary, worker/detail/log/message endpoints, key queries, bulk actions, worker actions, and worker reconfiguration.
+- Verified HTTP routes include definitions, host, diagnostics, lifecycle, queueing by name/id, queue schema, work info, views/components, worker status summary, worker snapshots, worker-overview routes, iteration-overview routes, narrow retained log/message endpoints, key queries, bulk actions, worker actions, and worker reconfiguration.
 - Verified named system routes mirror the default routes under `/systems/{systemName}`.
 - Verified MCP tools: `workable_query_workers`, `workable_get_worker`, `workable_get_worker_iteration`, `workable_query_worker_iterations`, `workable_get_work_info`, `workable_query_work_definitions`, `workable_query_worker_keys`, `workable_query_worker_key_types`, `workable_query_work_iteration_keys`, `workable_query_work_iteration_key_types`, `workable_get_worker_status_summary`, `workable_start_worker`, `workable_pause_worker`, `workable_cancel_worker`, `workable_push_worker`, `workable_purge_worker`, and `workable_reconfigure_work_definition`.
 - Verified MCP work tools use `workable_work_` plus MCP-safe work names.

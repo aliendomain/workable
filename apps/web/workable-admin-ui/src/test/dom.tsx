@@ -100,6 +100,7 @@ export type DomRenderResult = {
   click: (element: Element) => Promise<void>;
   container: HTMLElement;
   dom: JSDOM;
+  focus: (element: Element) => Promise<void>;
   getByText: (text: string) => HTMLElement;
   getByLabelText: (text: string | RegExp) => HTMLElement;
   getByRole: (role: string, options?: { name?: string | RegExp }) => HTMLElement;
@@ -166,6 +167,20 @@ export async function renderDom(
     },
     container,
     dom,
+    focus: async (target) => {
+      await act(async () => {
+        if (target instanceof dom.window.HTMLElement) {
+          target.focus();
+          return;
+        }
+
+        target.dispatchEvent(new dom.window.Event("focus", {
+          bubbles: false,
+          cancelable: false,
+        }));
+      });
+      await flushDomEffects();
+    },
     getByText: (text) => {
       const match = findElementByText(dom.window.document.body, text);
       if (!match) {
