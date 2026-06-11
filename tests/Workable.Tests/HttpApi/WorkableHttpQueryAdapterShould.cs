@@ -61,7 +61,7 @@ public sealed class WorkableHttpQueryAdapterShould
     }
 
     [Fact]
-    public async Task ReturnWorkerIterationDetailWithMessagesAndLogs()
+    public async Task ReturnWorkerIterationOverviewWithActivitySummaryAndLogs()
     {
         var definition = WorkDefinition.Create("http.query.adapter.iteration");
         var services = new ServiceCollection();
@@ -72,24 +72,89 @@ public sealed class WorkableHttpQueryAdapterShould
         await using var system = services.BuildServiceProvider().GetRequiredService<IWorkSystemRegistry>().Default;
         await system.Start();
         var session = Session(system);
-        var handle = await session.Queue.Enqueue(definition.Name);
+        var handle = await session.Queue.Enqueue(
+            definition.Name,
+            options: new WorkerOptions(ProfilingEnabled: true));
         var completion = await handle.WaitForCompletion();
         Assert.True(completion.IsCompletedSuccessfully);
         await TestEventually.ReadModelDrained(system);
         var adapter = new WorkableHttpQueryAdapter();
 
-        var detail = await adapter.WorkerIterationDetail(session, RequiredWorkerId(handle), sequence: 1);
+        var overview = await adapter.WorkerIterationOverview(session, RequiredWorkerId(handle), sequence: 1);
+        var summaryOnlyOverview = await adapter.WorkerIterationOverview(
+            session,
+            RequiredWorkerId(handle),
+            sequence: 1,
+            new WorkWorkerIterationOverviewCriteria(
+                WorkWorkerIterationOverviewActivity.None,
+                IncludeInput: false,
+                IncludeOutput: false,
+                IncludeProfile: false));
 
-        Assert.NotNull(detail);
-        Assert.Equal(RequiredWorkerId(handle), detail.WorkerId);
-        Assert.Equal(definition.Name, detail.DefinitionName);
-        Assert.Equal(1, detail.Iteration.Sequence);
-        Assert.Equal(WorkCompletionStatus.Completed, detail.Iteration.Status);
-        Assert.Equal("""{"ok":true}""", detail.Iteration.Output?.Json);
-        Assert.Equal(1, detail.MessageSummary.Total);
-        Assert.Equal(1, detail.MessageSummary.Warning);
-        Assert.Equal(1, detail.Logs.Summary.Total);
-        Assert.Equal(1, detail.Logs.Summary.Information);
+        Assert.NotNull(overview);
+        Assert.Equal(WorkWorkerIterationOverviewActivity.Logs, overview.Activity);
+        Assert.Equal(RequiredWorkerId(handle), overview.Worker.WorkerId);
+        Assert.Equal(definition.Name, overview.Worker.DefinitionName);
+        Assert.Equal(1, overview.Iteration.Sequence);
+        Assert.Equal(WorkCompletionStatus.Completed, overview.Iteration.Status);
+        Assert.Equal("""{"ok":true}""", overview.Iteration.Output?.Json);
+        Assert.NotNull(overview.Iteration.Profile);
+        Assert.Equal(1, overview.Messages.Summary.Total);
+        Assert.Equal(1, overview.Messages.Summary.Warning);
+        Assert.Null(overview.Messages.Page);
+        Assert.Equal(1, overview.Logs.Summary.Total);
+        Assert.Equal(1, overview.Logs.Summary.Information);
+        Assert.Single(overview.Logs.Page?.Items ?? []);
+
+        Assert.NotNull(summaryOnlyOverview);
+        Assert.Equal(WorkWorkerIterationOverviewActivity.None, summaryOnlyOverview.Activity);
+        Assert.Null(summaryOnlyOverview.Input);
+        Assert.Null(summaryOnlyOverview.Iteration.Output);
+        Assert.Null(summaryOnlyOverview.Iteration.Profile);
+        Assert.Null(summaryOnlyOverview.Messages.Page);
+        Assert.Null(summaryOnlyOverview.Logs.Page);
+    }
+
+    [Fact]
+    public async Task ReturnWorkerIterationOverviewAutoActivityForMessagesAndNone()
+    {
+        var messageOnlyDefinition = WorkDefinition.Create("http.query.adapter.iteration.messages");
+        var quietDefinition = WorkDefinition.Create("http.query.adapter.iteration.none");
+        var services = new ServiceCollection();
+        services.AddWorkableSystem(builder =>
+        {
+            builder.AddWork(messageOnlyDefinition, (context, input, cancellationToken) =>
+                Task.FromResult(WorkExecutionResult.Success(messages:
+                [
+                    WorkMessage.Information(
+                        "http.query.adapter.message",
+                        "Only a message was captured.")
+                ])));
+            builder.AddWork(quietDefinition, SuccessfulWork);
+        });
+        await using var system = services.BuildServiceProvider().GetRequiredService<IWorkSystemRegistry>().Default;
+        await system.Start();
+        var session = Session(system);
+        var messageOnlyHandle = await session.Queue.Enqueue(messageOnlyDefinition.Name);
+        var quietHandle = await session.Queue.Enqueue(quietDefinition.Name);
+        Assert.True((await messageOnlyHandle.WaitForCompletion()).IsCompletedSuccessfully);
+        Assert.True((await quietHandle.WaitForCompletion()).IsCompletedSuccessfully);
+        await TestEventually.ReadModelDrained(system);
+        var adapter = new WorkableHttpQueryAdapter();
+
+        var messageOnlyOverview = await adapter.WorkerIterationOverview(session, RequiredWorkerId(messageOnlyHandle), sequence: 1);
+        var quietOverview = await adapter.WorkerIterationOverview(session, RequiredWorkerId(quietHandle), sequence: 1);
+
+        Assert.NotNull(messageOnlyOverview);
+        Assert.Equal(WorkWorkerIterationOverviewActivity.Messages, messageOnlyOverview.Activity);
+        Assert.NotNull(messageOnlyOverview.Messages.Page);
+        Assert.Single(messageOnlyOverview.Messages.Page?.Items ?? []);
+        Assert.Null(messageOnlyOverview.Logs.Page);
+
+        Assert.NotNull(quietOverview);
+        Assert.Equal(WorkWorkerIterationOverviewActivity.None, quietOverview.Activity);
+        Assert.Null(quietOverview.Messages.Page);
+        Assert.Null(quietOverview.Logs.Page);
     }
 
     [Fact]
@@ -110,8 +175,8 @@ public sealed class WorkableHttpQueryAdapterShould
         var handle = await session.Queue.Enqueue(definition.Name);
 
         Assert.Null(await adapter.WorkerConfiguration(session, system, WorkerId.New()));
-        Assert.Null(await adapter.WorkerIterationDetail(session, WorkerId.New(), sequence: 1));
-        Assert.Null(await adapter.WorkerIterationDetail(session, RequiredWorkerId(handle), sequence: 99));
+        Assert.Null(await adapter.WorkerIterationOverview(session, WorkerId.New(), sequence: 1));
+        Assert.Null(await adapter.WorkerIterationOverview(session, RequiredWorkerId(handle), sequence: 99));
     }
 
     private static IWorkSystemSession Session(IWorkSystem system)

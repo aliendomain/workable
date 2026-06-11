@@ -26,9 +26,12 @@ import {
   isThroughputSeriesId,
   isZeroOnlySeries,
   measureJsonBytes,
+  overviewResumeRefreshThresholdMs,
   parseChartTimestamp,
   pluralize,
+  resolveOverviewData,
   shouldRefreshFailedWorkersAfterAction,
+  shouldRefreshOverviewAfterPageResume,
   toFailedWorkerActionTarget,
 } from "@/components/workable/console/overview-screen";
 import type { OverviewPanelShapeMap } from "@/components/features/console/overview-panels";
@@ -125,6 +128,19 @@ test("overview action refresh helper trusts connected realtime and refreshes fal
     connectionState: "disabled",
     enabled: false,
   }), true);
+});
+
+test("overview resume refresh helper only recovers after the hidden threshold", () => {
+  assert.equal(shouldRefreshOverviewAfterPageResume(overviewResumeRefreshThresholdMs - 1), false);
+  assert.equal(shouldRefreshOverviewAfterPageResume(overviewResumeRefreshThresholdMs), true);
+  assert.equal(shouldRefreshOverviewAfterPageResume(overviewResumeRefreshThresholdMs + 1), true);
+});
+
+test("overview data resolution prefers the recovery snapshot until fresh realtime arrives", () => {
+  assert.equal(resolveOverviewData("snapshot", "realtime", false), "realtime");
+  assert.equal(resolveOverviewData("snapshot", undefined, false), "snapshot");
+  assert.equal(resolveOverviewData("snapshot", "stale-realtime", true), "snapshot");
+  assert.equal(resolveOverviewData(undefined, "realtime", true), "realtime");
 });
 
 test("throughput bucket and chart helpers normalize missing data and format series", () => {

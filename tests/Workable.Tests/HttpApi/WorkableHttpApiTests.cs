@@ -929,12 +929,12 @@ public sealed class WorkableHttpApiTests
 
         var firstPage = await GetJson(
             client,
-            $"/workable/workers/{workerId:D}/iterations/1/messages?take=1&sort=Asc&severities=Information,Warning");
+            $"/workable/workers/{workerId:D}/iterations/1/overview/messages?take=1&sort=Asc&severities=Information,Warning");
         var firstCursor = firstPage["page"]?["cursor"]?.GetValue<string>()
             ?? throw new InvalidOperationException("Expected message page cursor.");
         var secondPage = await GetJson(
             client,
-            $"/workable/workers/{workerId:D}/iterations/1/messages?take=1&sort=Asc&severities=Information,Warning&cursor={Uri.EscapeDataString(firstCursor)}");
+            $"/workable/workers/{workerId:D}/iterations/1/overview/messages?take=1&sort=Asc&severities=Information,Warning&cursor={Uri.EscapeDataString(firstCursor)}");
 
         Assert.Equal(3, firstPage["summary"]?["total"]?.GetValue<int>());
         Assert.Equal(1, firstPage["summary"]?["warning"]?.GetValue<int>());
@@ -951,12 +951,12 @@ public sealed class WorkableHttpApiTests
     }
 
     [Fact]
-    public async Task MappedHttpRouteCanReadIterationDetailSnapshot()
+    public async Task MappedHttpRouteCanReadIterationOverviewSnapshot()
     {
         using var host = await CreateHttpHost(builder =>
         {
             builder.AddWork<HttpIterationDetailExecutor>(
-                WorkDefinition.Create("http.route.iteration.detail"),
+                WorkDefinition.Create("http.route.iteration.overview"),
                 configuration => configuration.ConfigureLogging(level: LogLevel.Information),
                 authorize => authorize.RequireGroups(
                     TransportAuthorizationTestSupport.ReadGroups,
@@ -967,11 +967,12 @@ public sealed class WorkableHttpApiTests
         var session = TransportAuthorizationTestSupport.CreateTransportSession(system, WorkInvocationChannel.HttpApi);
 
         var handle = await session.Queue.Enqueue(
-            "http.route.iteration.detail",
+            "http.route.iteration.overview",
             WorkInput.FromValue(new { attempt = 7 })
                 .WithSubject(new WorkSubjectId("claim", "CLM-123"))
                 .WithConcurrencyKey(new WorkConcurrencyKey("tenant", "west"))
-                .WithIdentifier(new WorkIdentifier("invoice", "INV-456")));
+                .WithIdentifier(new WorkIdentifier("invoice", "INV-456")),
+            options: new WorkerOptions(ProfilingEnabled: true));
         await handle.WaitForCompletion().WaitAsync(TimeSpan.FromSeconds(5));
         await WaitForReadModel(system);
         var workerId = handle.WorkerId?.Value
@@ -981,27 +982,72 @@ public sealed class WorkableHttpApiTests
 
         Assert.Equal(2, snapshot.Messages.Count);
         Assert.Equal(3, snapshot.Logs.Count);
-        var json = await GetJson(client, $"/workable/workers/{workerId:D}/iterations/1/detail");
+        var json = await GetJson(client, $"/workable/workers/{workerId:D}/iterations/1/overview");
 
-        Assert.Equal(workerId.ToString("D"), json["workerId"]?["value"]?.GetValue<string>());
-        Assert.Equal("http.route.iteration.detail", json["definitionName"]?.GetValue<string>());
-        Assert.Equal("claim", json["subjectId"]?["type"]?.GetValue<string>());
-        Assert.Equal("CLM-123", json["subjectId"]?["value"]?.GetValue<string>());
-        Assert.Equal("tenant", json["concurrencyKey"]?["type"]?.GetValue<string>());
-        Assert.Equal("west", json["concurrencyKey"]?["value"]?.GetValue<string>());
-        Assert.Contains(json["identifiers"]?.AsArray() ?? [], identifier => identifier?["value"]?.GetValue<string>() == "INV-456");
+        Assert.Equal("Logs", json["activity"]?.GetValue<string>());
+        Assert.Equal(workerId.ToString("D"), json["worker"]?["workerId"]?["value"]?.GetValue<string>());
+        Assert.Equal("http.route.iteration.overview", json["worker"]?["definitionName"]?.GetValue<string>());
+        Assert.Equal("claim", json["worker"]?["subjectId"]?["type"]?.GetValue<string>());
+        Assert.Equal("CLM-123", json["worker"]?["subjectId"]?["value"]?.GetValue<string>());
+        Assert.Equal("tenant", json["worker"]?["concurrencyKey"]?["type"]?.GetValue<string>());
+        Assert.Equal("west", json["worker"]?["concurrencyKey"]?["value"]?.GetValue<string>());
+        Assert.Contains(json["worker"]?["identifiers"]?.AsArray() ?? [], identifier => identifier?["value"]?.GetValue<string>() == "INV-456");
         Assert.Contains("\"attempt\":7", json["input"]?["json"]?.GetValue<string>() ?? string.Empty, StringComparison.Ordinal);
         Assert.Equal(1, json["iteration"]?["sequence"]?.GetValue<int>());
         Assert.Equal(1, json["iteration"]?["attemptCount"]?.GetValue<int>());
         Assert.Equal("Completed", json["iteration"]?["status"]?.GetValue<string>());
-        Assert.Equal(2, json["messageSummary"]?["total"]?.GetValue<int>());
-        Assert.Equal(1, json["messageSummary"]?["warning"]?.GetValue<int>());
-        Assert.Equal(1, json["messageSummary"]?["information"]?.GetValue<int>());
+        Assert.NotNull(json["iteration"]?["profile"]?["root"]?["label"]?.GetValue<string>());
+        Assert.Equal(2, json["messages"]?["summary"]?["total"]?.GetValue<int>());
+        Assert.Equal(1, json["messages"]?["summary"]?["warning"]?.GetValue<int>());
+        Assert.Equal(1, json["messages"]?["summary"]?["information"]?.GetValue<int>());
+        Assert.Null(json["messages"]?["page"]);
         Assert.Equal(3, json["logs"]?["summary"]?["total"]?.GetValue<int>());
         Assert.Equal(1, json["logs"]?["summary"]?["information"]?.GetValue<int>());
         Assert.Equal(1, json["logs"]?["summary"]?["warning"]?.GetValue<int>());
         Assert.Equal(1, json["logs"]?["summary"]?["error"]?.GetValue<int>());
         Assert.Equal("HTTP iteration error log.", json["logs"]?["page"]?["items"]?[0]?["message"]?.GetValue<string>());
+    }
+
+    [Fact]
+    public async Task MappedHttpRouteCanReadFilteredIterationOverviewMessagesWithoutInputOutputOrProfile()
+    {
+        using var host = await CreateHttpHost(builder =>
+        {
+            builder.AddWork<HttpIterationDetailExecutor>(
+                WorkDefinition.Create("http.route.iteration.overview.messages"),
+                configuration => configuration.ConfigureLogging(level: LogLevel.Information),
+                authorize => authorize.RequireGroups(
+                    TransportAuthorizationTestSupport.ReadGroups,
+                    TransportAuthorizationTestSupport.OperateGroups));
+        });
+        var client = host.GetTestClient();
+        var system = host.Services.GetRequiredService<IWorkSystemRegistry>().Default;
+        var session = TransportAuthorizationTestSupport.CreateTransportSession(system, WorkInvocationChannel.HttpApi);
+
+        var handle = await session.Queue.Enqueue(
+            "http.route.iteration.overview.messages",
+            WorkInput.FromValue(new { attempt = 3 }),
+            options: new WorkerOptions(ProfilingEnabled: true));
+        await handle.WaitForCompletion().WaitAsync(TimeSpan.FromSeconds(5));
+        await WaitForReadModel(system);
+        var workerId = handle.WorkerId?.Value
+            ?? throw new InvalidOperationException("Expected worker id.");
+
+        var json = await GetJson(
+            client,
+            $"/workable/workers/{workerId:D}/iterations/1/overview?activity=Messages&activityTake=1&messageSort=Asc&severities=Information,Warning&includeInput=false&includeOutput=false&includeProfile=false");
+
+        Assert.Equal("Messages", json["activity"]?.GetValue<string>());
+        Assert.Null(json["input"]);
+        Assert.Null(json["iteration"]?["output"]);
+        Assert.Null(json["iteration"]?["profile"]);
+        Assert.Equal(2, json["messages"]?["summary"]?["total"]?.GetValue<int>());
+        Assert.Equal(1, json["messages"]?["summary"]?["warning"]?.GetValue<int>());
+        Assert.Equal(1, json["messages"]?["summary"]?["information"]?.GetValue<int>());
+        Assert.Equal("http.iteration.information", json["messages"]?["page"]?["items"]?[0]?["code"]?.GetValue<string>());
+        Assert.True(json["messages"]?["page"]?["hasMore"]?.GetValue<bool>());
+        Assert.Equal(3, json["logs"]?["summary"]?["total"]?.GetValue<int>());
+        Assert.Null(json["logs"]?["page"]);
     }
 
     [Fact]
@@ -1032,12 +1078,12 @@ public sealed class WorkableHttpApiTests
 
         var firstPage = await GetJson(
             client,
-            $"/workable/workers/{workerId:D}/iterations/1/logs?take=1&sort=Asc&logLevels=Warning,Error");
+            $"/workable/workers/{workerId:D}/iterations/1/overview/logs?take=1&sort=Asc&logLevels=Warning,Error");
         var firstCursor = firstPage["page"]?["cursor"]?.GetValue<string>()
             ?? throw new InvalidOperationException("Expected log page cursor.");
         var secondPage = await GetJson(
             client,
-            $"/workable/workers/{workerId:D}/iterations/1/logs?take=1&sort=Asc&logLevels=Warning,Error&cursor={Uri.EscapeDataString(firstCursor)}");
+            $"/workable/workers/{workerId:D}/iterations/1/overview/logs?take=1&sort=Asc&logLevels=Warning,Error&cursor={Uri.EscapeDataString(firstCursor)}");
 
         Assert.Equal(3, firstPage["summary"]?["total"]?.GetValue<int>());
         Assert.Equal(1, firstPage["summary"]?["warning"]?.GetValue<int>());

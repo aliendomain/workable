@@ -2,7 +2,7 @@
 
 `Workable.Views` is mostly a transitive package.
 
-Most applications use it indirectly through `Workable.HttpApi` or `Workable.SignalR`, because those adapters already expose the shared view/component contract and the typed worker-overview contract. Reference `Workable.Views` directly only when you are building your own UI or your own transport on top of Workable's read model.
+Most applications use it indirectly through `Workable.HttpApi` or `Workable.SignalR`. `Workable.HttpApi` already exposes the shared view/component contract plus the typed worker-overview and iteration-overview contracts. `Workable.SignalR` reuses the shared view/component and worker-overview contracts for live subscriptions. Reference `Workable.Views` directly only when you are building your own UI or your own transport on top of Workable's read model.
 
 That direct-use story is powerful, but it is also stringly typed. Views, components, and shapes are identified by canonical names rather than a strongly typed page model. This document collects those names in one place so custom UI authors do not have to reverse-engineer them from the adapter code.
 
@@ -90,6 +90,8 @@ The HTTP landing criteria is `WorkWorkerOverviewCriteria`:
 - `LogSortDirection`, optional `LogLevels`, and optional `LogIterationSequence`
 - `TimelineSortDirection` and optional `TimelineCategories`
 
+When `Activity` is `Auto`, the adapter chooses `Timeline` for final or recurring workers and `Logs` otherwise.
+
 The landing result is `WorkWorkerOverviewComponent`, which contains:
 
 - `Worker`: worker identity, state, timing, retry, origin, and configuration-difference summary
@@ -119,10 +121,46 @@ This worker-overview contract exists because the detail screen has needs that do
 - log and timeline paging cursors
 - partial realtime deltas instead of full component replacement
 
-In other words, `Workable.Views` now contains two related but distinct UI contracts:
+At this point, `Workable.Views` contained two related but distinct UI contracts:
 
 - generic named views and component maps for dashboards
 - the typed worker-overview contract for one worker detail screen
+
+## Iteration Overview Contract
+
+Iteration detail pages also use a dedicated typed contract instead of the generic named-view component map.
+
+The main adapter entry points are:
+
+- `WorkerIterationOverview(...)`: builds the landing payload for one retained iteration
+- `WorkerIterationMessages(...)`: builds the paged retained-message section for one iteration
+- `WorkerIterationLogs(...)`: builds the paged retained-log section for one iteration
+
+The landing criteria is `WorkWorkerIterationOverviewCriteria`:
+
+- `Activity`: `Auto`, `None`, `Messages`, or `Logs`
+- `ActivityTake` and `ActivityCursor` for paging the active message or log stream
+- `IncludeInput`, `IncludeOutput`, and `IncludeProfile`
+- `MessageSortDirection` and optional `MessageSeverities`
+- `LogSortDirection` and optional `LogLevels`
+
+When `Activity` is `Auto`, the adapter prefers `Logs`, then `Messages`, then `None` based on the retained activity present on that iteration.
+
+The landing result is `WorkWorkerIterationOverviewComponent`, which contains:
+
+- `Worker`: worker identity plus definition/key context for the iteration screen
+- `Input`: retained worker input when requested
+- `Iteration`: retained iteration timing, status, failure, optional output, and optional profile
+- `Messages`: aggregate message summary plus an optional paged message slice
+- `Logs`: aggregate log summary plus an optional paged log slice
+
+This iteration-overview contract exists for the same reason as worker overview: the detail screen needs a stable typed shape, panel-aware landing data, and narrow routes for heavy retained activity, but it does not fit the generic dashboard component map.
+
+In other words, `Workable.Views` now contains three related UI contracts:
+
+- generic named views and component maps for dashboards
+- the typed worker-overview contract for one worker detail screen
+- the typed iteration-overview contract for one retained iteration detail screen
 
 ## Consistency Note
 

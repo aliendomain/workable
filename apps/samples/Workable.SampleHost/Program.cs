@@ -10,7 +10,6 @@ using Workable.SqlServer;
 var builder = WebApplication.CreateBuilder(args);
 const string sampleCorsPolicy = "WorkableSampleUi";
 const int sampleHttpPort = 61932;
-const string samplePersistenceConnectionString = "Server=(localdb)\\MSSQLLocalDB;Database=WorkableSampleHost;Integrated Security=true;TrustServerCertificate=true";
 
 builder.Logging.ClearProviders();
 builder.Logging.AddConsole(options => options.FormatterName = WorkableSampleConsoleFormatter.FormatterName);
@@ -19,6 +18,8 @@ builder.Logging.AddFilter("Microsoft", LogLevel.Warning);
 builder.Logging.AddFilter("Microsoft.AspNetCore", LogLevel.Warning);
 builder.Logging.AddFilter("System", LogLevel.Warning);
 builder.Logging.AddFilter("Workable", LogLevel.Information);
+
+await using var samplePersistence = await SampleSqlServerPersistenceTarget.Resolve();
 
 builder.Services.AddCors(options =>
 {
@@ -40,8 +41,13 @@ builder.Services.AddCors(options =>
     });
 });
 
-builder.Services.AddWorkableSqlServerDurableQueue(samplePersistenceConnectionString);
+builder.Services.AddWorkableSqlServerDurableQueue(samplePersistence.ConnectionString);
 builder.Services.AddSingleton<DemoRecurringIterationPlanStore>();
+builder.Services.AddScoped<DemoProfilingActivationMarker>();
+builder.Services.AddScoped<DemoProfilingPlanner>();
+builder.Services.AddScoped<DemoProfilingPipeline>();
+builder.Services.AddScoped<DemoProfilingSectionWorker>();
+builder.Services.AddScoped<DemoProfilingOutputComposer>();
 
 builder.Services.AddWorkableSystem(workable =>
 {
@@ -69,10 +75,15 @@ builder.Services.AddWorkableSystem(workable =>
             "sample.demo.message-panel",
             "Samples:Demo",
             "One-shot sample that returns a large retained message set across non-error severities."));
+    workable.AddWork<DemoProfilingLabWork>(
+        DemoProfileDefinition(
+            "sample.demo.profiling-lab",
+            "Samples:Demo",
+            "One-shot profiling showcase with nested scopes, timings, and injected-service contributions."));
     workable.AddWork<DemoForceCancelWork>(DemoDefinition("sample.demo.force-cancel", "Samples:Demo", "Ignores cancellation so shutdown must force-cancel it."));
     workable.AddWork<DemoTimedWork>(DemoDefinition("sample.demo.throttled", "Samples:Demo", "Longer sample work without an artificial concurrency bottleneck."));
     workable.AddWork<DemoTimedWork>(
-        DemoDefinition("sample.demo.durable", "Samples:Demo", "Durable sample work persisted through SQL Server LocalDB."),
+        DemoDefinition("sample.demo.durable", "Samples:Demo", "Durable sample work persisted through the sample host SQL Server durability store."),
         configuration => configuration.QueueDurably());
     workable.AddWork<DemoTimedWork>(
         DemoDefinition("sample.demo.idempotent", "Samples:Demo", "Idempotent sample work that rejects duplicate subjects to demonstrate diagnostics."),
@@ -153,7 +164,7 @@ builder.Services.AddSingleton<DemoTightLoopController>();
 builder.Services.AddSingleton<DemoDurabilityWarningController>(services => new DemoDurabilityWarningController(
     services.GetRequiredService<IWorkSystemRegistry>(),
     services.GetRequiredService<DemoSampleSystemSelection>(),
-    samplePersistenceConnectionString,
+    samplePersistence.ConnectionString,
     services.GetRequiredService<ILogger<DemoDurabilityWarningController>>()));
 builder.Services.AddWorkableHttpApi();
 builder.Services.AddWorkableMcpServer();
@@ -167,6 +178,8 @@ builder.Services.AddWorkableSignalR(options =>
 });
 
 var app = builder.Build();
+
+app.Logger.LogInformation("Sample durable SQL persistence target: {PersistenceTarget}", samplePersistence.Description);
 
 var lifetime = app.Services.GetRequiredService<IHostApplicationLifetime>();
 app.Use(async (context, next) =>
@@ -280,6 +293,7 @@ app.MapGet("/", (HttpContext context) =>
         <body>
             <h1>Workable Sample Host</h1>
             <p>Use the fake auth selector below, then add the generated Workable URL in the admin UI.</p>
+            <p>Durable SQL persistence target: <code>{{samplePersistence.Description}}</code>.</p>
             <section class="auth-frame" aria-label="Workable authentication">
                 <h2>Fake Authentication</h2>
                 <p>Switch between sample users to exercise Workable authorization from the admin UI without standing up a real identity provider.</p>
@@ -371,7 +385,7 @@ app.MapGet("/", (HttpContext context) =>
                     <tr>
                         <td>
                             <div class="action-name">Durable burst</div>
-                            <div class="action-description">Persist demo workers through SQL Server LocalDB before they start.</div>
+                            <div class="action-description">Persist demo workers through the configured SQL Server durability store before they start.</div>
                         </td>
                         <td>
                             <div class="action-controls durable-burst-controls">
@@ -966,6 +980,13 @@ static Action<IWorkAuthorizationBuilder>? CreateSampleWorkAuthorization(
 
 static WorkDefinition DemoDefinition(string name, string category, string description)
     => WorkDefinition.Create(name, description, category);
+
+static WorkDefinition DemoProfileDefinition(string name, string category, string description)
+    => WorkDefinition.Create(
+        name,
+        description,
+        category,
+        defaultOptions: new WorkerOptions(ProfilingEnabled: true));
 
 static WorkDefinition DemoRecurringDefinition(string name, string category, string description)
     => WorkDefinition.Create(

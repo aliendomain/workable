@@ -170,6 +170,7 @@ const failedWorkerStates: WorkerState[] = ["Failed"];
 const finalWorkerStates: WorkerState[] = ["Canceled", "Completed"];
 const clickableTileClass = "transition-colors hover:border-primary/70 hover:bg-accent/50";
 const subtleClickableTileClass = "transition-colors hover:border-primary/60 hover:bg-accent/40";
+export const overviewResumeRefreshThresholdMs = 30_000;
 
 export function getOverviewPanelShape(
   shapes: OverviewPanelShapeMap,
@@ -186,6 +187,22 @@ export function shouldRefreshFailedWorkersAfterAction(realtime: {
   enabled: boolean;
 }) {
   return !realtime.enabled || realtime.connectionState !== "connected";
+}
+
+export function shouldRefreshOverviewAfterPageResume(hiddenDurationMs: number) {
+  return hiddenDurationMs >= overviewResumeRefreshThresholdMs;
+}
+
+export function resolveOverviewData<T>(
+  snapshotData: T | undefined,
+  realtimeData: T | undefined,
+  preferSnapshotAfterRecovery: boolean
+) {
+  if (preferSnapshotAfterRecovery && snapshotData !== undefined) {
+    return snapshotData;
+  }
+
+  return realtimeData ?? snapshotData;
 }
 
 export function OverviewView({
@@ -256,6 +273,12 @@ export function OverviewView({
   } | null>(null);
   const [throughputMode, setThroughputMode] = useState<ThroughputMode>("completion");
   const [throughputWindowSeconds, setThroughputWindowSeconds] = useState(60);
+  const [overviewRecoveryVersion, setOverviewRecoveryVersion] = useState(0);
+  const [realtimeRecoveryVersion, setRealtimeRecoveryVersion] = useState(0);
+  const [preferSnapshotAfterRecovery, setPreferSnapshotAfterRecovery] = useState(false);
+  const hiddenStartedAtRef = useRef<number | null>(null);
+  const recoveryRealtimeBaselineRef = useRef<WorkComponentQueryResult | undefined>(undefined);
+  const realtimeOverviewDataRef = useRef<WorkComponentQueryResult | undefined>(undefined);
   const payloadOpen = realtimePayloadOpen ?? false;
   const payloadCaptureEnabled = realtimePayloadCaptureEnabled ?? true;
   const payloadMaxMessages = realtimePayloadMaxMessages ?? 100;
@@ -367,12 +390,13 @@ export function OverviewView({
     }),
     [failedWorkersShape, overviewScope, workersShape]
   );
-  const failedWorkersKey = `${connection.apiUrl}:${connection.systemName ?? ""}:${JSON.stringify(failedWorkersRefreshRequest)}:${refreshToken}`;
+  const effectiveRefreshToken = `${refreshToken}:${overviewRecoveryVersion}`;
+  const failedWorkersKey = `${connection.apiUrl}:${connection.systemName ?? ""}:${JSON.stringify(failedWorkersRefreshRequest)}:${effectiveRefreshToken}`;
   const overview = useWorkablePostResource<WorkComponentQueryResult>(
     connection,
     isVisible ? "views/overview" : null,
     effectiveOverviewRequest,
-    refreshToken,
+    effectiveRefreshToken,
     {
       resetKey: `${connection.apiUrl}\n${connection.systemName ?? ""}`,
       retainDataOnRequestChange: true,
@@ -383,6 +407,7 @@ export function OverviewView({
       body: effectiveOverviewRequest,
       captureEnabled: payloadCaptureEnabled && payloadOpen,
       connection,
+      connectionInstanceKey: `overview-recovery:${realtimeRecoveryVersion}`,
       enabled: isVisible && canUseRealtimeOverview && Boolean(connection.realtimeHubPath),
       maxMessages: payloadMaxMessages,
       subscription: "overview",
@@ -396,6 +421,7 @@ export function OverviewView({
       payloadCaptureEnabled,
       payloadMaxMessages,
       payloadOpen,
+      realtimeRecoveryVersion,
     ]
   );
   useRegisterConsolePageRealtimeView({
@@ -404,8 +430,87 @@ export function OverviewView({
     id: "overview",
   });
   const realtimeOverview = useConsolePageRealtimeView<WorkComponentQueryResult>("overview");
+  useEffect(() => {
+    realtimeOverviewDataRef.current = realtimeOverview.data;
+  }, [realtimeOverview.data]);
+  const recoverOverviewAfterResume = useCallback(() => {
+    if (!isVisible) {
+      return;
+    }
+
+    recoveryRealtimeBaselineRef.current = realtimeOverviewDataRef.current;
+    setPreferSnapshotAfterRecovery(true);
+    setOverviewRecoveryVersion((current) => current + 1);
+    setRealtimeRecoveryVersion((current) => current + 1);
+  }, [isVisible]);
+
+  useEffect(() => {
+    if (!preferSnapshotAfterRecovery) {
+      return;
+    }
+
+    if (!realtimeOverview.enabled) {
+      setPreferSnapshotAfterRecovery(false);
+      recoveryRealtimeBaselineRef.current = realtimeOverview.data;
+      return;
+    }
+
+    if (realtimeOverview.data !== recoveryRealtimeBaselineRef.current) {
+      setPreferSnapshotAfterRecovery(false);
+      recoveryRealtimeBaselineRef.current = realtimeOverview.data;
+    }
+  }, [preferSnapshotAfterRecovery, realtimeOverview.data, realtimeOverview.enabled]);
+
+  useEffect(() => {
+    if (!isVisible || typeof document === "undefined" || typeof window === "undefined") {
+      hiddenStartedAtRef.current = null;
+      return;
+    }
+
+    const now = () => Date.now();
+    if (document.visibilityState === "hidden") {
+      hiddenStartedAtRef.current = now();
+    } else {
+      hiddenStartedAtRef.current = null;
+    }
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "hidden") {
+        hiddenStartedAtRef.current = now();
+        return;
+      }
+
+      const hiddenStartedAt = hiddenStartedAtRef.current;
+      hiddenStartedAtRef.current = null;
+      if (hiddenStartedAt === null) {
+        return;
+      }
+
+      if (shouldRefreshOverviewAfterPageResume(now() - hiddenStartedAt)) {
+        recoverOverviewAfterResume();
+      }
+    };
+
+    const handleOnline = () => {
+      if (document.visibilityState === "visible") {
+        recoverOverviewAfterResume();
+      }
+    };
+
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    window.addEventListener("online", handleOnline);
+    return () => {
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+      window.removeEventListener("online", handleOnline);
+    };
+  }, [isVisible, recoverOverviewAfterResume]);
+
   const shouldUseFailedWorkersActionRefresh = shouldRefreshFailedWorkersAfterAction(realtimeOverview);
-  const overviewData = realtimeOverview.data ?? overview.data;
+  const overviewData = resolveOverviewData(
+    overview.data,
+    realtimeOverview.data,
+    preferSnapshotAfterRecovery
+  );
   const togglePayloadOpen = useCallback(() => {
     setPayloadOpen(!payloadOpen);
   }, [payloadOpen, setPayloadOpen]);
@@ -1231,7 +1336,7 @@ function useWorkablePostResource<T>(
   connection: WorkableConnection,
   path: string | null,
   body: unknown,
-  refreshToken: number,
+  refreshToken: number | string,
   options?: {
     resetKey?: string | number | null;
     retainDataOnRequestChange?: boolean;

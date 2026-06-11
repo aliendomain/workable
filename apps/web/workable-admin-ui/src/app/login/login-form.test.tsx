@@ -12,7 +12,7 @@ import {
   resetNextNavigationMock,
 } from "@/test/next-navigation";
 
-test("basic login form renders credential fields, submit action, and unauthorized error state", () => {
+test("basic login form defers credential inputs until hydration and preserves unauthorized error state", () => {
   const markup = renderMarkup(
     <LoginForm
       authProvider="basic"
@@ -22,13 +22,12 @@ test("basic login form renders credential fields, submit action, and unauthorize
     />
   );
 
-  assertMarkupIncludes(markup, "Username");
-  assertMarkupIncludes(markup, "Password");
-  assertMarkupIncludes(markup, "autoComplete=\"username\"");
-  assertMarkupIncludes(markup, "autoComplete=\"current-password\"");
+  assertMarkupIncludes(markup, "Preparing secure sign-in...");
   assertMarkupIncludes(markup, "Unauthorized");
   assertMarkupIncludes(markup, "Unauthorized user.");
   assertMarkupIncludes(markup, "Sign in");
+  assertMarkupExcludes(markup, "autoComplete=\"username\"");
+  assertMarkupExcludes(markup, "autoComplete=\"current-password\"");
   assertMarkupExcludes(markup, "Sign in with Microsoft");
 });
 

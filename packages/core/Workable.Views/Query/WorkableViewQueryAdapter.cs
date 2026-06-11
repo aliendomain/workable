@@ -5,7 +5,7 @@ using Microsoft.Extensions.Logging;
 namespace Workable;
 
 /// <summary>
-/// Projects Workable query data into the shared view/component and worker-overview contracts.
+/// Projects Workable query data into the shared view/component, worker-overview, and iteration-overview contracts.
 /// </summary>
 public class WorkableViewQueryAdapter
 {
@@ -101,6 +101,74 @@ public class WorkableViewQueryAdapter
         WorkerIterationReference iteration,
         CancellationToken cancellationToken = default)
         => await session.Query.WorkerIteration(iteration, cancellationToken: cancellationToken);
+
+    /// <summary>
+    /// Builds the landing payload for one worker-iteration detail screen.
+    /// </summary>
+    public async Task<WorkWorkerIterationOverviewComponent?> WorkerIterationOverview(
+        IWorkSystemSession session,
+        WorkerId workerId,
+        long sequence,
+        WorkWorkerIterationOverviewCriteria? criteria = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(session);
+
+        var worker = await session.Query.Worker(workerId, cancellationToken: cancellationToken);
+        if (worker is null)
+        {
+            return null;
+        }
+
+        var snapshot = await session.Query.WorkerIteration(
+            new WorkerIterationReference(workerId, sequence),
+            cancellationToken: cancellationToken);
+        if (snapshot is null)
+        {
+            return null;
+        }
+
+        var query = NormalizeWorkerIterationOverviewCriteria(criteria);
+        var activity = ResolveWorkerIterationOverviewActivity(snapshot, query.Activity);
+        var filteredMessages = SortIterationMessages(
+            FilterIterationMessages(snapshot.Messages, query.MessageSeverities),
+            query.MessageSortDirection);
+        var filteredLogs = SortIterationLogs(
+            FilterIterationLogs(snapshot.Logs, query.LogLevels),
+            query.LogSortDirection);
+
+        return new WorkWorkerIterationOverviewComponent(
+            activity,
+            new WorkWorkerIterationOverviewWorker(
+                worker.Id,
+                worker.DefinitionName,
+                worker.SubjectId,
+                worker.ConcurrencyKey,
+                worker.Identifiers),
+            query.IncludeInput ? worker.Input : null,
+            new WorkWorkerIterationOverviewIteration(
+                snapshot.Sequence,
+                snapshot.StartedAt,
+                snapshot.CompletedAt,
+                snapshot.ExecutionDuration,
+                snapshot.OccurredAt,
+                snapshot.Status,
+                snapshot.AttemptCount,
+                snapshot.IsFinal,
+                query.IncludeOutput ? snapshot.Output : null,
+                snapshot.Failure,
+                query.IncludeProfile ? snapshot.Profile : null),
+            new WorkWorkerIterationOverviewMessageSection(
+                CreateIterationMessageSummary(snapshot.Messages),
+                activity == WorkWorkerIterationOverviewActivity.Messages
+                    ? CreateIterationMessagePage(filteredMessages, query.ActivityCursor, query.ActivityTake)
+                    : null),
+            new WorkWorkerIterationOverviewLogSection(
+                CreateIterationLogSummary(snapshot.Logs),
+                activity == WorkWorkerIterationOverviewActivity.Logs
+                    ? CreateIterationLogPage(filteredLogs, query.ActivityCursor, query.ActivityTake)
+                    : null));
+    }
 
     /// <summary>
     /// Builds the paged structured-message section for one worker iteration.
@@ -1301,6 +1369,40 @@ public class WorkableViewQueryAdapter
         {
             Take = Math.Clamp(query.Take, 1, 200),
         };
+    }
+
+    private static WorkWorkerIterationOverviewCriteria NormalizeWorkerIterationOverviewCriteria(
+        WorkWorkerIterationOverviewCriteria? criteria)
+    {
+        var query = criteria ?? new WorkWorkerIterationOverviewCriteria();
+        return query with
+        {
+            ActivityTake = Math.Clamp(query.ActivityTake, 1, 200),
+            MessageSeverities = NormalizeWorkerOverviewEnumFilters(query.MessageSeverities),
+            LogLevels = NormalizeWorkerOverviewEnumFilters(query.LogLevels),
+        };
+    }
+
+    private static WorkWorkerIterationOverviewActivity ResolveWorkerIterationOverviewActivity(
+        WorkerIterationSnapshot snapshot,
+        WorkWorkerIterationOverviewActivity requested)
+    {
+        if (requested != WorkWorkerIterationOverviewActivity.Auto)
+        {
+            return requested;
+        }
+
+        if (snapshot.Logs.Count > 0)
+        {
+            return WorkWorkerIterationOverviewActivity.Logs;
+        }
+
+        if (snapshot.Messages.Count > 0)
+        {
+            return WorkWorkerIterationOverviewActivity.Messages;
+        }
+
+        return WorkWorkerIterationOverviewActivity.None;
     }
 
     private static IReadOnlyList<WorkMessage> FilterIterationMessages(

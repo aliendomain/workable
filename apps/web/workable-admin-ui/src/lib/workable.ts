@@ -321,7 +321,7 @@ export type WorkerSnapshot = WorkerSummary & {
   currentIterationSequence?: number | null;
   lastIteration?: WorkerIterationSnapshot | null;
   lastIterationSequence?: number | null;
-  profile?: unknown;
+  profile?: WorkProfileSnapshot | null;
 };
 
 export type WorkerVersion = {
@@ -459,6 +459,23 @@ export type WorkerActionHistoryEntry = {
   reconfiguration?: Record<string, unknown> | null;
 };
 
+export type WorkProfileMetricType = "MethodScope" | "Scope" | "Timing" | "Metric";
+
+export type WorkProfileSnapshotNode = {
+  metricType: WorkProfileMetricType;
+  treeMilliseconds: number;
+  nodeMilliseconds: number;
+  label: string;
+  context?: unknown;
+  children: WorkProfileSnapshotNode[];
+};
+
+export type WorkProfileSnapshot = {
+  root: WorkProfileSnapshotNode;
+  startedAt: string;
+  capturedAt: string;
+};
+
 export type WorkerIterationSnapshot = {
   sequence: number;
   startedAt?: string;
@@ -471,6 +488,7 @@ export type WorkerIterationSnapshot = {
   output?: WorkData | null;
   messages?: WorkMessage[];
   logs?: WorkerLogEntry[];
+  profile?: WorkProfileSnapshot | null;
 };
 
 export type WorkIterationLogSection = {
@@ -478,7 +496,17 @@ export type WorkIterationLogSection = {
   page: WorkWorkerOverviewPage<WorkerLogEntry>;
 };
 
-export type WorkableHttpWorkerIterationSnapshot = {
+export type WorkWorkerIterationOverviewActivity = "Auto" | "None" | "Messages" | "Logs";
+
+export type WorkWorkerIterationOverviewWorker = {
+  workerId: { value: string };
+  definitionName: string;
+  subjectId?: WorkTypedValue | null;
+  concurrencyKey?: WorkTypedValue | null;
+  identifiers: WorkTypedValue[];
+};
+
+export type WorkWorkerIterationOverviewIteration = {
   sequence: number;
   startedAt: string;
   completedAt: string;
@@ -489,19 +517,26 @@ export type WorkableHttpWorkerIterationSnapshot = {
   isFinal: boolean;
   output?: WorkData | null;
   failure?: WorkerIterationFailure | null;
-  profile?: unknown;
+  profile?: WorkProfileSnapshot | null;
 };
 
-export type WorkableHttpWorkerIterationDetail = {
-  workerId: { value: string };
-  definitionName: string;
-  subjectId?: WorkTypedValue | null;
-  concurrencyKey?: WorkTypedValue | null;
-  identifiers: WorkTypedValue[];
+export type WorkWorkerIterationOverviewMessageSection = {
+  summary: WorkIterationMessageSummary;
+  page?: WorkIterationMessagePage | null;
+};
+
+export type WorkWorkerIterationOverviewLogSection = {
+  summary: WorkWorkerOverviewLogSummary;
+  page?: WorkWorkerOverviewPage<WorkerLogEntry> | null;
+};
+
+export type WorkWorkerIterationOverviewComponent = {
+  activity: WorkWorkerIterationOverviewActivity;
+  worker: WorkWorkerIterationOverviewWorker;
   input?: WorkData | null;
-  iteration: WorkableHttpWorkerIterationSnapshot;
-  messageSummary: WorkIterationMessageSummary;
-  logs: WorkIterationLogSection;
+  iteration: WorkWorkerIterationOverviewIteration;
+  messages: WorkWorkerIterationOverviewMessageSection;
+  logs: WorkWorkerIterationOverviewLogSection;
 };
 
 export type WorkWorkerOverviewActivity = "Auto" | "Logs" | "Timeline";

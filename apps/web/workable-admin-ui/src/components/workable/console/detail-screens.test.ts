@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { createElement } from "react";
 import {
   applyQueueConfigurationRules,
   capWorkerLogEntries,
@@ -22,6 +23,8 @@ import {
   createEffectiveConfigurationOptions,
   createIterationDurationGraphScale,
   createIterationFocusedHiddenPanels,
+  createIterationOverviewActivityQuery,
+  createIterationOverviewPath,
   createQueueDialogRequest,
   createSelectedLogLevelsForFocus,
   createSelectedTimelineFiltersForFocus,
@@ -34,6 +37,7 @@ import {
   createWorkerOverviewLogsPath,
   createWorkerOverviewPath,
   createWorkerOverviewTimelinePath,
+  IterationConsoleView,
   createWorkerReconfiguration,
   defaultWorkConfiguration,
   definitionMatchesCatalogScope,
@@ -105,6 +109,7 @@ import {
   workerActionToneClassName,
   workerStatusTextTone,
 } from "@/components/workable/console/detail-screens";
+import { renderDom } from "@/test/dom";
 import {
   semanticBadgeToneClass,
   semanticTextToneClass,
@@ -114,12 +119,20 @@ import type {
   QueueWorkRequest,
   WorkConfiguration,
   WorkDefinition,
+  WorkProfileSnapshot,
+  WorkWorkerIterationOverviewComponent,
   WorkWorkerOverviewLogEntry,
   WorkWorkerOverviewRecentIteration,
   WorkWorkerOverviewTimelineItem,
+  WorkableConnection,
   WorkerIterationSnapshot,
   WorkerLogEntry,
 } from "@/lib/workable";
+
+const connection: WorkableConnection = {
+  apiUrl: "https://console.example.com/workable",
+  systemName: "Ops",
+};
 
 function descriptor(): QueueRequestSchemaDescriptor {
   return {
@@ -438,6 +451,66 @@ test("worker overview path and filter helpers serialize log and timeline options
   assert.equal(mapTimelineFilterKindToServerCategory("system"), "SystemEvent");
 });
 
+test("iteration overview path helpers serialize panel-aware options", () => {
+  assert.equal(createIterationOverviewPath("worker-1", 7), "workers/worker-1/iterations/7/overview");
+  assert.equal(
+    createIterationOverviewActivityQuery({
+      activity: "None",
+      includeInput: false,
+      includeOutput: false,
+      includeProfile: false,
+    }),
+    "activity=None&includeInput=false&includeOutput=false&includeProfile=false"
+  );
+  assert.equal(
+    createIterationOverviewPath("worker-1", 7, {
+      activity: "Logs",
+      activityTake: 25,
+      logLevels: ["Error", "Warning"],
+      logSortDirection: "asc",
+    }),
+    "workers/worker-1/iterations/7/overview?activity=Logs&activityTake=25&logSort=Asc&logLevels=Error%2CWarning"
+  );
+});
+
+test("iteration console view loads the overview landing response and renders the profile panel from it", async () => {
+  const fetchMock = installIterationOverviewFetch((call) => {
+    if (call.input === "/api/workable/systems/Ops/workers/worker-1/iterations/7/overview?activity=Logs") {
+      return Response.json(iterationOverviewComponent());
+    }
+
+    return Response.json({ error: `Unhandled request: ${call.input}` }, { status: 500 });
+  });
+  const result = await renderDom(
+    createElement(IterationConsoleView, {
+      connection,
+      onNavigateBack: () => undefined,
+      onOpenDefinition: () => undefined,
+      refreshToken: 0,
+      sequence: 7,
+      workerId: "worker-1",
+    })
+  );
+
+  try {
+    await result.waitFor(() => result.getByText("Worker input"));
+    await result.waitFor(() => result.getByText("Iteration output"));
+    await result.waitFor(() => result.getByText("Profile"));
+    await result.waitFor(() => result.getByText("Executing DemoProfilingSectionWorker.RunAsync"));
+    await result.waitFor(() => result.getByText('"orderId"'));
+    await result.waitFor(() => result.getByText('"processed"'));
+    result.getByRole("textbox", { name: "Search profile nodes" });
+
+    assert.deepEqual(
+      fetchMock.calls.map((call) => call.input),
+      ["/api/workable/systems/Ops/workers/worker-1/iterations/7/overview?activity=Logs"]
+    );
+  } finally {
+    fetchMock.restore();
+    await result.restore();
+  }
+});
+
 test("queue json and configuration helpers parse, clone, sanitize, and enforce persistent concurrency rules", () => {
   assert.equal(parseSchemaJsonValue(""), null);
   assert.deepEqual(parseSchemaJsonValue("{\"type\":\"object\"}"), { type: "object" });
@@ -642,7 +715,14 @@ test("timeline, duration, hidden panel, and catalog helpers cover ordering and b
   assert.deepEqual([...createDefaultWorkerHiddenPanels()].sort(), ["workerConfiguration"]);
   assert.deepEqual([...createDefaultWorkerHiddenPanels(true)], []);
   assert.deepEqual([...createWorkerFocusedHiddenPanels("workerLogs")].sort(), ["workerConfiguration", "workerDuration", "workerTimeline"]);
-  assert.deepEqual([...createIterationFocusedHiddenPanels("iterationMessages")].sort(), ["iterationLogs", "iterationOutput", "iterationSummary"]);
+  assert.deepEqual(
+    [...createIterationFocusedHiddenPanels("iterationMessages")].sort(),
+    ["iterationLogs", "iterationOutput", "iterationProfile", "iterationSummary"]
+  );
+  assert.deepEqual(
+    [...createIterationFocusedHiddenPanels("iterationProfile")].sort(),
+    ["iterationLogs", "iterationMessages", "iterationOutput", "iterationSummary"]
+  );
   assert.equal(shouldForgetPagedWorkerTimelineItems(0, 12), true);
   assert.equal(shouldForgetPagedWorkerTimelineItems(160, 12), true);
   assert.equal(shouldForgetPagedWorkerTimelineItems(161, 12), false);
@@ -800,3 +880,118 @@ test("live timeline visibility helpers keep waiting tiles only when no executing
   assert.deepEqual(normalizeVisibleWorkerTimelineItems([waiting, completed] as never, "Waiting"), [waiting, completed]);
   assert.deepEqual(normalizeVisibleWorkerTimelineItems([waiting, executing] as never, "Waiting"), [executing]);
 });
+
+type FetchCall = {
+  input: string;
+  init?: RequestInit;
+};
+
+function installIterationOverviewFetch(
+  handler: (call: FetchCall) => Response | Promise<Response>
+) {
+  const previousFetch = globalThis.fetch;
+  const calls: FetchCall[] = [];
+  globalThis.fetch = (async (input, init) => {
+    const call = { input: String(input), init };
+    calls.push(call);
+    return handler(call);
+  }) as typeof fetch;
+
+  return {
+    calls,
+    restore() {
+      globalThis.fetch = previousFetch;
+    },
+  };
+}
+
+function iterationProfileSnapshot(): WorkProfileSnapshot {
+  return {
+    capturedAt: "2026-06-11T16:33:11.000Z",
+    root: {
+      children: [
+        {
+          children: [
+            {
+              children: [],
+              label: "Write demo message",
+              metricType: "Timing",
+              nodeMilliseconds: 47,
+              treeMilliseconds: 47,
+            },
+          ],
+          label: "Executing DemoProfilingSectionWorker.RunAsync",
+          metricType: "MethodScope",
+          nodeMilliseconds: 26,
+          treeMilliseconds: 73,
+        },
+      ],
+      label: "Executing DemoProfilingLabWork.RunAsync",
+      metricType: "MethodScope",
+      nodeMilliseconds: 18,
+      treeMilliseconds: 91,
+    },
+    startedAt: "2026-06-11T16:33:10.000Z",
+  };
+}
+
+function iterationOverviewComponent(): WorkWorkerIterationOverviewComponent {
+  return {
+    activity: "Logs",
+    input: {
+      json: "{\"orderId\":42,\"mode\":\"demo\"}",
+    },
+    iteration: {
+      attemptCount: 1,
+      completedAt: "2026-06-11T16:33:11.500Z",
+      executionDuration: "00:00:00.0910000",
+      isFinal: true,
+      occurredAt: "2026-06-11T16:33:11.500Z",
+      output: {
+        json: "{\"processed\":true,\"sections\":3}",
+      },
+      profile: iterationProfileSnapshot(),
+      sequence: 7,
+      startedAt: "2026-06-11T16:33:10.000Z",
+      status: "Completed",
+    },
+    logs: {
+      page: {
+        cursor: null,
+        hasMore: false,
+        items: [],
+      },
+      summary: {
+        critical: 0,
+        debug: 0,
+        error: 0,
+        errors: 0,
+        information: 1,
+        total: 1,
+        trace: 0,
+        warning: 0,
+        warnings: 0,
+      },
+    },
+    messages: {
+      summary: {
+        critical: 0,
+        debug: 0,
+        error: 0,
+        errors: 0,
+        information: 1,
+        total: 1,
+        trace: 0,
+        warning: 0,
+        warnings: 0,
+      },
+    },
+    worker: {
+      concurrencyKey: { type: "Tenant", value: "northwind" },
+      definitionName: "DemoProfilingLabWork",
+      identifiers: [{ type: "SectionBatch", value: "3" }],
+      subjectId: { type: "Order", value: "42" },
+      workerId: { value: "worker-1" },
+    },
+  };
+}

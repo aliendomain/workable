@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { FormEvent } from "react";
 import { useRouter } from "next/navigation";
 import { AuthShell } from "@/components/layout/auth-shell";
@@ -18,6 +18,7 @@ import {
   CardHeader,
 } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { Skeleton } from "@/components/ui/skeleton";
 import type { AdminAuthProvider } from "@/lib/admin-security";
 
 type LoginFormProps = {
@@ -34,11 +35,16 @@ export function LoginForm({
   nextPath,
 }: LoginFormProps) {
   const router = useRouter();
+  const [hasHydrated, setHasHydrated] = useState(false);
   const [userName, setUserName] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(initialError);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const errorTitle = getErrorTitle(error, initialReason);
+
+  useEffect(() => {
+    setHasHydrated(true);
+  }, []);
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -92,6 +98,9 @@ export function LoginForm({
                 </a>
               </Button>
             </div>
+          ) : !hasHydrated ? (
+            // Password managers can mutate server-rendered inputs before React hydrates.
+            <BasicLoginHydrationPlaceholder error={error} errorTitle={errorTitle} />
           ) : (
             <form className="space-y-4" onSubmit={submit}>
               <FormField htmlFor="userName" label="Username" maxWidth="none">
@@ -132,6 +141,41 @@ export function LoginForm({
         </CardContent>
       </Card>
     </AuthShell>
+  );
+}
+
+function BasicLoginHydrationPlaceholder({
+  error,
+  errorTitle,
+}: {
+  error: string | null;
+  errorTitle: string;
+}) {
+  return (
+    <div aria-busy="true" className="space-y-4">
+      <p className="text-sm text-muted-foreground">Preparing secure sign-in...</p>
+      <div className="space-y-3">
+        <div className="grid gap-2">
+          <Skeleton className="h-4 w-20" />
+          <Skeleton className="h-8 w-full rounded-lg" />
+        </div>
+        <div className="grid gap-2">
+          <Skeleton className="h-4 w-20" />
+          <Skeleton className="h-8 w-full rounded-lg" />
+        </div>
+      </div>
+
+      {error && (
+        <Alert variant="destructive">
+          <AlertTitle>{errorTitle}</AlertTitle>
+          <AlertDescription>{error}</AlertDescription>
+        </Alert>
+      )}
+
+      <Button className="w-full" disabled size="lg" type="button">
+        Sign in
+      </Button>
+    </div>
   );
 }
 

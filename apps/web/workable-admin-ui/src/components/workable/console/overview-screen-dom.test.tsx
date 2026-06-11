@@ -1,12 +1,16 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { act } from "react";
 import { ConsoleHeaderCapabilitiesProvider } from "@/components/features/console/header-capabilities";
 import { ConsolePageRealtimeViewProvider } from "@/components/features/console/page-realtime-view";
 import type {
   OverviewPanelId,
   OverviewPanelShapeMap,
 } from "@/components/features/console/overview-panels";
-import { OverviewView } from "@/components/workable/console/overview-screen";
+import {
+  OverviewView,
+  overviewResumeRefreshThresholdMs,
+} from "@/components/workable/console/overview-screen";
 import { renderDom } from "@/test/dom";
 import type {
   WorkComponentQueryResult,
@@ -277,6 +281,72 @@ test("overview iteration panels open status, key type, and recent worker flows",
     await result.click(row);
     assert.deepEqual(callbacks.openedWorkers, ["iteration-worker"]);
   } finally {
+    fetchMock.restore();
+    await result.restore();
+  }
+});
+
+test("overview view refreshes the overview snapshot after a long page resume", async () => {
+  const callbacks = createOverviewCallbacks();
+  let overviewRequestCount = 0;
+  const fetchMock = installOverviewFetch((call) => {
+    if (call.input === "/api/workable/systems/Ops/views/overview") {
+      overviewRequestCount += 1;
+      return Response.json(overviewResult({
+        workerCounts: overviewRequestCount === 1
+          ? {
+              activeWorkerCount: 2,
+              failedWorkerCount: 1,
+              finalWorkerCount: 3,
+            }
+          : {
+              activeWorkerCount: 11,
+              failedWorkerCount: 1,
+              finalWorkerCount: 3,
+            },
+      }));
+    }
+
+    return Response.json({ error: `Unhandled request: ${call.input}` }, { status: 500 });
+  });
+  const result = await renderDom(overviewElement(callbacks, {
+    hiddenPanelIds: ["failedWorkers", "throughput", "failedIterations", "completedIterations"],
+  }));
+  const originalDateNow = Date.now;
+  let now = 0;
+
+  try {
+    Date.now = () => now;
+    await result.waitFor(() => result.getByText("Active workers"));
+    await result.waitFor(() => result.getByText("2"));
+    assert.equal(overviewRequestCount, 1);
+
+    let visibilityState: "visible" | "hidden" = "visible";
+    Object.defineProperty(result.dom.window.document, "visibilityState", {
+      configurable: true,
+      get() {
+        return visibilityState;
+      },
+    });
+
+    visibilityState = "hidden";
+    now = 1_000;
+    await act(async () => {
+      result.dom.window.document.dispatchEvent(new result.dom.window.Event("visibilitychange"));
+    });
+
+    visibilityState = "visible";
+    now = 1_000 + overviewResumeRefreshThresholdMs;
+    await act(async () => {
+      result.dom.window.document.dispatchEvent(new result.dom.window.Event("visibilitychange"));
+    });
+
+    await result.waitFor(() => {
+      assert.equal(overviewRequestCount, 2);
+    });
+    await result.waitFor(() => result.getByText("11"));
+  } finally {
+    Date.now = originalDateNow;
     fetchMock.restore();
     await result.restore();
   }

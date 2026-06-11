@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { HubConnectionBuilder, HubConnectionState, type HubConnection } from "@microsoft/signalr";
 import { useMemo } from "react";
 import {
   ConsolePageRealtimeViewProvider,
@@ -8,6 +9,7 @@ import {
   useRegisterConsolePageRealtimeView,
   useResolvedConsolePageRealtimeViewDescriptorId,
 } from "@/components/features/console/page-realtime-view";
+import { useConsoleRealtimeStats } from "@/components/features/console/realtime";
 import { renderDom } from "@/test/dom";
 
 test("disabled page realtime view exposes the inert loadable shape used for inactive views", () => {
@@ -108,3 +110,138 @@ test("page realtime provider resolves active registrations by recency and disabl
     await render.restore();
   }
 });
+
+test("page realtime provider forwards connection instance keys into the resolved realtime connection key", async () => {
+  const originalWithUrl = HubConnectionBuilder.prototype.withUrl;
+  const originalWithAutomaticReconnect = HubConnectionBuilder.prototype.withAutomaticReconnect;
+  const originalConfigureLogging = HubConnectionBuilder.prototype.configureLogging;
+  const originalBuild = HubConnectionBuilder.prototype.build;
+
+  HubConnectionBuilder.prototype.withUrl = function withUrl() {
+    return this;
+  } as typeof HubConnectionBuilder.prototype.withUrl;
+  HubConnectionBuilder.prototype.withAutomaticReconnect = function withAutomaticReconnect() {
+    return this;
+  } as typeof HubConnectionBuilder.prototype.withAutomaticReconnect;
+  HubConnectionBuilder.prototype.configureLogging = function configureLogging() {
+    return this;
+  } as typeof HubConnectionBuilder.prototype.configureLogging;
+  HubConnectionBuilder.prototype.build = function build() {
+    return createFakeHubConnection();
+  } as typeof HubConnectionBuilder.prototype.build;
+
+  function Registration({ instanceKey }: { instanceKey: string }) {
+    const descriptor = useMemo(
+      () => ({
+        body: null,
+        captureEnabled: false,
+        connection: {
+          apiUrl: "https://console.example.com/workable",
+          realtimeHubPath: "/realtime",
+          systemName: "Ops",
+        },
+        connectionInstanceKey: instanceKey,
+        enabled: true,
+        maxMessages: 25,
+        viewName: "Overview",
+      }),
+      [instanceKey]
+    );
+
+    useRegisterConsolePageRealtimeView({
+      descriptor,
+      id: "overview",
+    });
+    return null;
+  }
+
+  function StatsProbe() {
+    const stats = useConsoleRealtimeStats();
+    return (
+      <output data-testid="stats">
+        {stats.connections.map((connection) => connection.connectionKey).join(",") || "none"}
+      </output>
+    );
+  }
+
+  const render = await renderDom(
+    <ConsolePageRealtimeViewProvider>
+      <Registration instanceKey="recovery:1" />
+      <StatsProbe />
+    </ConsolePageRealtimeViewProvider>
+  );
+
+  try {
+    const readStats = () =>
+      render.container.querySelector("[data-testid='stats']")?.textContent ?? "";
+
+    await render.waitFor(() => {
+      assert.equal(
+        readStats(),
+        "https://console.example.com/workable::Ops::https://console.example.com/realtime::recovery:1"
+      );
+    });
+
+    await render.rerender(
+      <ConsolePageRealtimeViewProvider>
+        <Registration instanceKey="recovery:2" />
+        <StatsProbe />
+      </ConsolePageRealtimeViewProvider>
+    );
+
+    await render.waitFor(() => {
+      assert.equal(
+        readStats(),
+        "https://console.example.com/workable::Ops::https://console.example.com/realtime::recovery:2"
+      );
+    });
+  } finally {
+    HubConnectionBuilder.prototype.withUrl = originalWithUrl;
+    HubConnectionBuilder.prototype.withAutomaticReconnect = originalWithAutomaticReconnect;
+    HubConnectionBuilder.prototype.configureLogging = originalConfigureLogging;
+    HubConnectionBuilder.prototype.build = originalBuild;
+    await render.restore();
+  }
+});
+
+function createFakeHubConnection(): HubConnection {
+  const methodHandlers = new Map<string, (payload: unknown) => void>();
+  let reconnectingHandler: ((error?: Error) => void) | undefined;
+  let reconnectedHandler: ((connectionId?: string) => void) | undefined;
+  let closeHandler: ((error?: Error) => void) | undefined;
+
+  const connection = {
+    connectionId: "fake-connection",
+    state: HubConnectionState.Disconnected,
+    invoke: async () => undefined,
+    off(method: string, handler?: (...args: unknown[]) => void) {
+      const current = methodHandlers.get(method);
+      if (!handler || current === handler) {
+        methodHandlers.delete(method);
+      }
+    },
+    on(method: string, handler: (...args: unknown[]) => void) {
+      methodHandlers.set(method, handler as (payload: unknown) => void);
+    },
+    onclose(handler: (error?: Error) => void) {
+      closeHandler = handler;
+    },
+    onreconnected(handler: (connectionId?: string) => void) {
+      reconnectedHandler = handler;
+    },
+    onreconnecting(handler: (error?: Error) => void) {
+      reconnectingHandler = handler;
+    },
+    start: async () => {
+      void reconnectingHandler;
+      connection.state = HubConnectionState.Connected;
+      reconnectedHandler?.(connection.connectionId);
+    },
+    stop: async () => {
+      connection.state = HubConnectionState.Disconnected;
+      closeHandler?.();
+    },
+  };
+
+  return connection as unknown as HubConnection;
+}

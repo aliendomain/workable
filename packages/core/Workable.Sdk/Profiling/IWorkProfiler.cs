@@ -19,7 +19,7 @@ public interface IWorkProfiler
     /// </summary>
     /// <param name="name">The profile node label.</param>
     /// <param name="context">Optional structured context captured under the profile node.</param>
-    /// <returns>A scope that records elapsed time until disposed.</returns>
+    /// <returns>A scope that records elapsed time until disposed. Timing scopes do not retain result payloads from <see cref="IWorkProfileScope.SetResult(object?)"/>.</returns>
     IWorkProfileScope StartTiming(string name, object? context = null);
 
     /// <summary>
@@ -27,7 +27,7 @@ public interface IWorkProfiler
     /// </summary>
     /// <param name="name">The profile node label.</param>
     /// <param name="context">Optional structured context captured under the profile node.</param>
-    /// <returns>A scope that can later capture a result and ends when disposed.</returns>
+    /// <returns>A scope that can later capture a result payload and ends when disposed.</returns>
     IWorkProfileScope CreateScope(string name, object? context = null);
 
     /// <summary>
@@ -37,7 +37,7 @@ public interface IWorkProfiler
     /// <param name="methodName">The method name to show in the profile tree.</param>
     /// <param name="context">Optional structured input context captured under the profile node.</param>
     /// <param name="label">The label used for the captured input context.</param>
-    /// <returns>A scope that can later capture a result and ends when disposed.</returns>
+    /// <returns>A scope that can later capture a result payload and ends when disposed.</returns>
     IWorkProfileScope CreateMethodScope(
         Type type,
         string methodName,
@@ -51,7 +51,7 @@ public interface IWorkProfiler
     /// <param name="context">Optional structured input context captured under the profile node.</param>
     /// <param name="label">The label used for the captured input context.</param>
     /// <param name="methodName">The caller member name used as the method name.</param>
-    /// <returns>A scope that can later capture a result and ends when disposed.</returns>
+    /// <returns>A scope that can later capture a result payload and ends when disposed.</returns>
     IWorkProfileScope CreateMethodScope<T>(
         object? context = null,
         string label = "Input",
