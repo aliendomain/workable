@@ -337,7 +337,20 @@ public sealed class WorkableSignalRTests
         var completion = await handle.WaitForCompletion();
         Assert.True(completion.IsCompletedSuccessfully);
 
-        var updated = await ReadUntil(views.Reader, view => view.GeneratedAt > initial.GeneratedAt);
+        var updated = await ReadUntil(
+            views.Reader,
+            view =>
+            {
+                if (view.GeneratedAt <= initial.GeneratedAt ||
+                    !view.Components.TryGetValue("workers", out var component) ||
+                    component.Data is not JsonElement workerData)
+                {
+                    return false;
+                }
+
+                return workerData.GetProperty("activeWorkerCount").GetInt32() == 0 &&
+                    workerData.GetProperty("failedWorkerCount").GetInt32() == 0;
+            });
         var workers = Assert.IsType<JsonElement>(updated.Components["workers"].Data);
 
         Assert.Equal(["system", "workers"], initial.Components.Keys.Order().ToArray());
