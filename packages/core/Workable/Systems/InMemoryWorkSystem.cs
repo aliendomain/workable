@@ -512,7 +512,7 @@ internal sealed class InMemoryWorkSystem :
             {
                 await observer.SystemStopped(this, CancellationToken.None);
             }
-            catch (Exception exception)
+            catch (Exception exception) when (IsNonCriticalException(exception))
             {
                 this.logger?.LogWarning(
                     exception,
@@ -537,4 +537,14 @@ internal sealed class InMemoryWorkSystem :
             ? namedWork
             : throw new InvalidOperationException($"Startup work definition '{name}' was not found.");
     }
+
+    private static bool IsNonCriticalException(Exception exception)
+        => exception is not OutOfMemoryException and
+            not StackOverflowException and
+            not AccessViolationException and
+            not AppDomainUnloadedException and
+            not BadImageFormatException and
+            not CannotUnloadAppDomainException and
+            not InvalidProgramException and
+            not global::System.Threading.ThreadAbortException;
 }
