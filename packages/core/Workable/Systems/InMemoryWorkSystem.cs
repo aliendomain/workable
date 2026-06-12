@@ -15,6 +15,7 @@ internal sealed class InMemoryWorkSystem :
     IWorkSystemCapabilitySource
 {
     private readonly IServiceProvider rootServices;
+    private readonly ILogger<InMemoryWorkSystem>? logger;
     private readonly IWorkAuthorizationGroupProvider groupProvider;
     private readonly WorkSystemAuthorizationConfiguration authorization;
     private readonly IReadOnlyList<Func<IServiceProvider, IWorkDefinitionSource>> workDefinitionSourceFactories;
@@ -48,6 +49,7 @@ internal sealed class InMemoryWorkSystem :
         this.RequiresAuthorization = registration.RequiresAuthorization;
         this.authorization = registration.Authorization;
         this.rootServices = rootServices;
+        this.logger = rootServices.GetService<ILogger<InMemoryWorkSystem>>();
         this.workDefinitionSourceFactories = workDefinitionSourceFactories;
         this.startupWorkSourceFactories = startupWorkSourceFactories;
         this.ShutdownGracePeriod = shutdownGracePeriod;
@@ -510,9 +512,13 @@ internal sealed class InMemoryWorkSystem :
             {
                 await observer.SystemStopped(this, CancellationToken.None);
             }
-            catch
+            catch (Exception exception)
             {
-                // Lifecycle observers are best-effort and must not prevent shutdown completion.
+                this.logger?.LogWarning(
+                    exception,
+                    "Lifecycle observer {ObserverType} threw during SystemStopped for work system {WorkSystem}.",
+                    observer.GetType().FullName ?? observer.GetType().Name,
+                    this.Name ?? this.Id.ToString());
             }
         }
     }

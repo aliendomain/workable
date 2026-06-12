@@ -94,12 +94,19 @@ public sealed record WorkerOptions
     /// <param name="overrides">The overriding options to apply, or <see langword="null"/> to leave the current options unchanged.</param>
     /// <returns>A merged options instance that prefers explicit override values.</returns>
     public WorkerOptions Merge(WorkerOptions? overrides)
-        => overrides is null
-            ? this
-            : this with
-            {
-                ProfilingEnabled = overrides.HasExplicitProfilingEnabled ? overrides.ProfilingEnabled : this.ProfilingEnabled,
-                Configuration = this.Configuration?.MergeRuntimeOptions(overrides.Configuration) ?? overrides.Configuration,
-                QueueDurabilityTransaction = overrides.QueueDurabilityTransaction,
-            };
+    {
+        if (overrides is null)
+        {
+            return this;
+        }
+
+        var merged = new WorkerOptions(
+            this.Configuration?.MergeRuntimeOptions(overrides.Configuration) ?? overrides.Configuration,
+            overrides.QueueDurabilityTransaction);
+        merged.profilingEnabled = overrides.HasExplicitProfilingEnabled
+            ? overrides.ProfilingEnabled
+            : this.profilingEnabled;
+        merged.hasExplicitProfilingEnabled = overrides.HasExplicitProfilingEnabled || this.hasExplicitProfilingEnabled;
+        return merged;
+    }
 }

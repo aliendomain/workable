@@ -101,6 +101,7 @@ public sealed class DemoProfilingPressureController(
             }
             catch (OperationCanceledException) when (source?.IsCancellationRequested == true)
             {
+                logger.LogDebug("Profiling-pressure stop observed the expected background run-loop cancellation.");
             }
         }
 
@@ -150,8 +151,9 @@ public sealed class DemoProfilingPressureController(
             {
                 await task;
             }
-            catch (OperationCanceledException)
+            catch (OperationCanceledException) when (source?.IsCancellationRequested == true)
             {
+                logger.LogDebug("Profiling-pressure disposal observed the expected background run-loop cancellation.");
             }
         }
 
@@ -267,7 +269,7 @@ public sealed class DemoProfilingPressureController(
         {
             throw;
         }
-        catch (Exception exception)
+        catch (Exception exception) when (!IsCriticalException(exception))
         {
             logger.LogWarning(exception, "Failed to queue profiling-pressure sample workload item {SequenceNumber}.", current);
             return DemoProfilingPressureQueueOutcome.Failed;
@@ -368,6 +370,15 @@ public sealed class DemoProfilingPressureController(
             return false;
         }
     }
+
+    private static bool IsCriticalException(Exception exception)
+        => exception is OutOfMemoryException or
+            StackOverflowException or
+            AccessViolationException or
+            AppDomainUnloadedException or
+            BadImageFormatException or
+            CannotUnloadAppDomainException or
+            InvalidProgramException;
 }
 
 public sealed record DemoProfilingPressureRequest(

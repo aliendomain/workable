@@ -72,9 +72,11 @@ public sealed class WorkableHttpQueueAdapterShould
                 }));
 
         Assert.Equal(WorkableHttpWorkStatus.Accepted, result.Status);
-        Assert.NotNull(commands.Options?.WorkerOptions);
-        Assert.False(commands.Options.WorkerOptions.HasExplicitProfilingEnabled);
-        Assert.Equal(WorkStartPolicy.DoNotStart, commands.Options.WorkerOptions.Configuration?.Start.Policy);
+        Assert.NotNull(commands.Options);
+        Assert.NotNull(commands.Options.WorkerOptions);
+        var workerOptions = commands.Options.WorkerOptions!;
+        Assert.False(workerOptions.HasExplicitProfilingEnabled);
+        Assert.Equal(WorkStartPolicy.DoNotStart, workerOptions.Configuration?.Start.Policy);
     }
 
     [Fact]

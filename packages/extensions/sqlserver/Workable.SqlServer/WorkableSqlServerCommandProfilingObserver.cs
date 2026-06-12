@@ -123,7 +123,7 @@ internal sealed class WorkableSqlServerCommandProfilingObserver :
                 return;
             }
         }
-        catch
+        catch (Exception exception) when (IsReflectionAccessException(exception))
         {
             // Best effort only. The live AllListeners subscription still captures future listeners.
         }
@@ -148,7 +148,7 @@ internal sealed class WorkableSqlServerCommandProfilingObserver :
                 SubscribeToExistingListeners(ReadListeners(listenersField?.GetValue(null)));
             }
         }
-        catch
+        catch (Exception exception) when (IsReflectionAccessException(exception))
         {
             // Best effort only. The live AllListeners subscription still captures future listeners.
         }
@@ -162,6 +162,16 @@ internal sealed class WorkableSqlServerCommandProfilingObserver :
             IEnumerable untyped => [.. untyped.OfType<DiagnosticListener>()],
             _ => [],
         };
+
+    private static bool IsReflectionAccessException(Exception exception)
+        => exception is AmbiguousMatchException or
+            TargetException or
+            TargetInvocationException or
+            TargetParameterCountException or
+            MemberAccessException or
+            NotSupportedException or
+            TypeLoadException or
+            InvalidOperationException;
 
     private void SubscribeToExistingListeners(IEnumerable<DiagnosticListener> listeners)
     {
