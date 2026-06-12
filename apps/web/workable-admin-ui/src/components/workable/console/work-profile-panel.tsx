@@ -1,6 +1,6 @@
 "use client";
 
-import { ChevronRight, ChevronsUpDown, Maximize2, Minimize2 } from "lucide-react";
+import { Check, ChevronRight, ChevronsUpDown, Copy, DatabaseSearch, DatabaseZap, GitBranchMinus, GitBranchPlus, Info, Maximize2, Minimize2, SquareTerminal } from "lucide-react";
 import { Fragment, type ReactNode, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import { PanelScrollViewport, PanelShell } from "@/components/features/console/panel-shell";
 import { ToolbarIconButton } from "@/components/features/console/toolbar-icon-button";
@@ -16,6 +16,14 @@ import {
   CommandItem,
   CommandList,
 } from "@/components/ui/command";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import {
   Popover,
@@ -67,6 +75,20 @@ export type WorkProfileHotspotResult = {
   matchesByNodeId: ReadonlyMap<string, WorkProfileHotspotMatch>;
 };
 
+export type WorkProfileSqlBatch = {
+  originalExecutionBatch: string;
+  parameterCount: number;
+  replayableBatch: string;
+  redactedParameterCount: number;
+  statementCount: number;
+};
+
+type WorkProfileSqlBatchMode = "replayable" | "original";
+
+const sqlBatchUnavailableMessage = "SQL batch is unavailable for this profile because it does not contain captured SQL commands.";
+const sqlBatchOpenTooltip = "Open the SQL batch viewer for any captured SQL commands in this profile.";
+const sqlProfilingUnavailableTooltip = "SQL profiling is not available for this system. Enable it by calling AddWorkableSqlServerProfiling() in the host's Workable SQL Server configuration.";
+
 type WorkProfileMethodScopeOption = {
   label: string;
   value: string;
@@ -105,6 +127,122 @@ const hotspotThresholds = [
   { id: "ms50", label: ">= 50ms" },
   { id: "top5", label: "Top 5" },
 ] as const satisfies readonly { id: WorkProfileHotspotThreshold; label: string }[];
+
+type WorkProfileSqlTokenKind =
+  | "comment"
+  | "function"
+  | "identifier"
+  | "keyword"
+  | "number"
+  | "parameter"
+  | "plain"
+  | "string"
+  | "string-delimiter"
+  | "type";
+
+type WorkProfileSqlToken = {
+  kind: WorkProfileSqlTokenKind;
+  text: string;
+};
+
+const workProfileSqlHighlightMaxCharacters = 24_000;
+const workProfileSqlHighlightMaxLines = 400;
+
+const workProfileSqlKeywords = new Set([
+  "ADD",
+  "ALL",
+  "ALTER",
+  "AND",
+  "AS",
+  "ASC",
+  "BEGIN",
+  "BETWEEN",
+  "BY",
+  "CASE",
+  "CAST",
+  "COMMIT",
+  "CONVERT",
+  "COUNT",
+  "CREATE",
+  "CROSS",
+  "DECLARE",
+  "DELETE",
+  "DESC",
+  "DISTINCT",
+  "DROP",
+  "ELSE",
+  "END",
+  "EXEC",
+  "EXECUTE",
+  "EXISTS",
+  "FROM",
+  "FULL",
+  "GO",
+  "GROUP",
+  "HAVING",
+  "IN",
+  "INNER",
+  "INSERT",
+  "INTO",
+  "IS",
+  "JOIN",
+  "LEFT",
+  "LIKE",
+  "MERGE",
+  "NOT",
+  "NULL",
+  "ON",
+  "OR",
+  "ORDER",
+  "OUTER",
+  "OUTPUT",
+  "RIGHT",
+  "ROLLBACK",
+  "SELECT",
+  "SET",
+  "SP_EXECUTESQL",
+  "THEN",
+  "TOP",
+  "TRAN",
+  "TRANSACTION",
+  "UNION",
+  "UPDATE",
+  "VALUES",
+  "WHEN",
+  "WHERE",
+]);
+
+const workProfileSqlTypes = new Set([
+  "BIGINT",
+  "BINARY",
+  "BIT",
+  "CHAR",
+  "DATE",
+  "DATETIME",
+  "DATETIME2",
+  "DATETIMEOFFSET",
+  "DECIMAL",
+  "FLOAT",
+  "IMAGE",
+  "INT",
+  "MONEY",
+  "NCHAR",
+  "NTEXT",
+  "NUMERIC",
+  "NVARCHAR",
+  "REAL",
+  "SMALLDATETIME",
+  "SMALLINT",
+  "SMALLMONEY",
+  "TEXT",
+  "TIME",
+  "TIMESTAMP",
+  "TINYINT",
+  "UNIQUEIDENTIFIER",
+  "VARBINARY",
+  "VARCHAR",
+  "XML",
+]);
 
 export function summarizeWorkProfile(profile?: WorkProfileSnapshot | null): WorkProfileSummary | null {
   if (!profile) {
@@ -171,6 +309,7 @@ export function searchWorkProfile(
   return filterWorkProfile(profile, query, {
     hotspotActive: false,
     keepAncestors: options?.keepAncestors ?? false,
+    sqlOnly: false,
   });
 }
 
@@ -240,11 +379,13 @@ export function WorkProfilePanel({
   onClose,
   onViewStateChange,
   profile,
+  sqlProfilingAvailable = true,
   viewState,
 }: {
   onClose: () => void;
   onViewStateChange: (shape: WorkComponentShape) => void;
   profile?: WorkProfileSnapshot | null;
+  sqlProfilingAvailable?: boolean;
   viewState: WorkComponentShape;
 }) {
   const summary = useMemo(() => summarizeWorkProfile(profile), [profile]);
@@ -259,6 +400,8 @@ export function WorkProfilePanel({
   const [hotspotMode, setHotspotMode] = useState<WorkProfileHotspotMode>("off");
   const [hotspotThreshold, setHotspotThreshold] = useState<WorkProfileHotspotThreshold>("pct10");
   const [selectedMethodScopeIdentity, setSelectedMethodScopeIdentity] = useState("");
+  const [sqlOnly, setSqlOnly] = useState(false);
+  const [sqlBatchOpen, setSqlBatchOpen] = useState(false);
   const [keepAncestors, setKeepAncestors] = useState(false);
   const [searchText, setSearchText] = useState("");
   const deferredSearchText = useDeferredValue(searchText);
@@ -271,14 +414,19 @@ export function WorkProfilePanel({
     () => findWorkProfileHotspots(profile, hotspotMode, hotspotThreshold),
     [hotspotMode, hotspotThreshold, profile]
   );
+  const sqlBatch = useMemo(
+    () => sqlBatchOpen ? createWorkProfileSqlBatch(profile) : null,
+    [profile, sqlBatchOpen]
+  );
   const filterResult = useMemo(
     () => filterWorkProfile(profile, deferredSearchText, {
       hotspotActive: hotspotMode !== "off",
       hotspotNodeIds: hotspotResult?.matchedNodeIds,
       keepAncestors,
       methodScopeSelection: selectedMethodScope,
+      sqlOnly,
     }),
-    [deferredSearchText, hotspotMode, hotspotResult, keepAncestors, profile, selectedMethodScope]
+    [deferredSearchText, hotspotMode, hotspotResult, keepAncestors, profile, selectedMethodScope, sqlOnly]
   );
   const profileKey = `${profile?.startedAt ?? "none"}:${profile?.capturedAt ?? "none"}:${profile?.root.label ?? "none"}`;
   const lastProfileKeyRef = useRef(profileKey);
@@ -289,15 +437,30 @@ export function WorkProfilePanel({
     () => new Set(createDefaultExpandedWorkProfileNodeIds(profile))
   );
   const expandedNodeIdsRef = useRef(expandedNodeIds);
+  const sqlActionsDisabled = !sqlProfilingAvailable;
   const hotspotActive = hotspotMode !== "off";
   const methodScopeActive = selectedMethodScopeIdentity.length > 0;
   const selectedMethodScopeLabel = methodScopeOptions.find((option) => option.value === selectedMethodScopeIdentity)?.label ?? null;
-  const keepAncestorsLabel = keepAncestors ? "Ancestors shown" : "Ancestors hidden";
-  const filterCountLabel = hotspotActive && activeSearchText.length === 0 && !methodScopeActive
+  const filterCountLabel = sqlOnly && activeSearchText.length === 0 && !hotspotActive && !methodScopeActive
+    ? "SQL nodes"
+    : hotspotActive && activeSearchText.length === 0 && !methodScopeActive && !sqlOnly
     ? "Hotspots"
-    : methodScopeActive && activeSearchText.length === 0 && !hotspotActive
+    : methodScopeActive && activeSearchText.length === 0 && !hotspotActive && !sqlOnly
       ? "Method scopes"
       : "Matches";
+  const sqlOnlyTooltip = sqlActionsDisabled
+    ? sqlProfilingUnavailableTooltip
+    : sqlOnly
+      ? "SQL-only filter is enabled. The profile tree is currently limited to captured Microsoft.Data.SqlClient command nodes."
+      : "Filter the profile tree down to captured Microsoft.Data.SqlClient command nodes.";
+  const sqlOnlyTitle = sqlActionsDisabled
+    ? sqlProfilingUnavailableTooltip
+    : sqlOnly
+      ? "SQL-only filter is on. The profile tree is limited to captured SQL command nodes."
+      : "SQL-only filter is off. Show only captured SQL command nodes.";
+  const sqlBatchTooltip = sqlActionsDisabled
+    ? sqlProfilingUnavailableTooltip
+    : sqlBatchOpenTooltip;
 
   useEffect(() => {
     expandedNodeIdsRef.current = expandedNodeIds;
@@ -367,6 +530,13 @@ export function WorkProfilePanel({
     });
   }, [expandableNodeIds, filterResult, viewState]);
 
+  useEffect(() => {
+    if (!sqlProfilingAvailable) {
+      setSqlOnly(false);
+      setSqlBatchOpen(false);
+    }
+  }, [sqlProfilingAvailable]);
+
   const expandAll = useCallback(() => {
     setExpandedNodeIds(new Set(filterResult?.expandableNodeIds ?? expandableNodeIds));
   }, [expandableNodeIds, filterResult]);
@@ -389,161 +559,253 @@ export function WorkProfilePanel({
   }, []);
 
   return (
-    <PanelShell
-      className="flex min-h-0 flex-1 flex-col overflow-hidden"
-      contentClassName={viewState === "compact"
-        ? "hidden"
-        : "mt-4 flex min-h-0 flex-1 flex-col overflow-hidden"}
-      description="Per-iteration profile tree with timings, scopes, and captured context."
-      actions={viewState !== "compact" && profile ? (
-        <WorkProfilePanelActions
-          onCollapseAll={collapseAll}
-          onExpandAll={expandAll}
-        />
-      ) : null}
-      onClose={onClose}
-      onViewStateChange={onViewStateChange}
-      supportedViewStates={["compact", "standard", "detailed"]}
-      title={<WorkProfilePanelTitle profile={profile} summary={summary} viewState={viewState} />}
-      viewState={viewState}
-    >
-      <section
-        className={cn(
-          "flex min-h-0 flex-1 flex-col rounded-xl border bg-muted/10 p-4",
-          viewState === "standard" && "min-h-[24rem] max-h-[70vh]",
-          viewState === "detailed" && "max-h-[calc(100svh-11rem)]"
-        )}
+    <>
+      <PanelShell
+        className="flex min-h-0 flex-1 flex-col overflow-hidden"
+        contentClassName={viewState === "compact"
+          ? "hidden"
+          : "mt-4 flex min-h-0 flex-1 flex-col overflow-hidden"}
+        description={undefined}
+        actions={viewState !== "compact" && profile ? (
+          <WorkProfilePanelActions
+            onCollapseAll={collapseAll}
+            onExpandAll={expandAll}
+          />
+        ) : null}
+        onClose={onClose}
+        onViewStateChange={onViewStateChange}
+        supportedViewStates={["compact", "standard", "detailed"]}
+        title={<WorkProfilePanelTitle profile={profile} summary={summary} viewState={viewState} />}
+        viewState={viewState}
       >
-        {!profile ? (
-          <ConsoleEmptyState className="flex min-h-0 flex-1 items-center justify-center" fill padding="spacious">
-            Profiling was not enabled for this iteration, so no profile tree was captured.
-          </ConsoleEmptyState>
-        ) : (
-          <PanelScrollViewport
-            className="rounded-xl border bg-background/60 p-4"
-            hasMore={false}
-            loadedCount={summary?.nodeCount ?? 0}
-            loading={false}
-            loadingMore={false}
-            noun="profile node"
-            onLoadMore={() => undefined}
-            showLoadedCount={false}
-          >
-            <div className="space-y-3">
-              <div className="flex flex-col gap-3">
-                <div className="flex min-h-8 flex-wrap items-center gap-2 text-muted-foreground text-xs">
-                  <ProfileSummaryPill label="Started" value={formatProfileTimestamp(profile.startedAt)} />
-                  <ProfileSummaryPill label="Captured" value={formatProfileTimestamp(profile.capturedAt)} />
-                  <ProfileSummaryPill label="Tree" value={formatProfileMilliseconds(profile.root.treeMilliseconds)} />
-                  <ProfileSummaryPill label="Nodes" value={(summary?.nodeCount ?? 0).toLocaleString()} />
-                  {filterResult ? (
-                    <ProfileSummaryPill
-                      label={filterCountLabel}
-                      value={filterResult.matchedNodeCount.toLocaleString()}
-                    />
-                  ) : null}
-                </div>
-                <div className="flex flex-col gap-3 rounded-xl border bg-muted/10 p-3 lg:flex-row lg:flex-wrap lg:items-center">
-                  <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center">
-                    <ButtonGroup className="flex-wrap">
-                      {hotspotModes.map((mode) => (
-                        <Tooltip key={mode.id}>
-                          <TooltipTrigger asChild>
-                            <Button
-                              aria-pressed={hotspotMode === mode.id}
-                              onClick={() => setHotspotMode(mode.id)}
-                              size="default"
-                              title={describeWorkProfileHotspotMode(mode.id)}
-                              type="button"
-                              variant={hotspotMode === mode.id ? "secondary" : "outline"}
-                            >
-                              {mode.label}
-                            </Button>
-                          </TooltipTrigger>
-                          <TooltipContent sideOffset={6}>
-                            {describeWorkProfileHotspotMode(mode.id)}
-                          </TooltipContent>
-                        </Tooltip>
-                      ))}
-                    </ButtonGroup>
-                    <Select
-                      disabled={!hotspotActive}
-                      onValueChange={(value) => setHotspotThreshold(value as WorkProfileHotspotThreshold)}
-                      value={hotspotThreshold}
-                    >
-                      <SelectTrigger
-                        aria-label="Hotspot threshold"
-                        className="min-w-36"
-                        size="default"
-                        title={describeWorkProfileHotspotThreshold(hotspotMode, hotspotThreshold)}
-                      >
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {hotspotThresholds.map((threshold) => (
-                          <SelectItem key={threshold.id} value={threshold.id}>
-                            {threshold.label}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                    {methodScopeOptions.length > 0 ? (
-                      <WorkProfileMethodScopePicker
-                        onValueChange={setSelectedMethodScopeIdentity}
-                        options={methodScopeOptions}
-                        value={selectedMethodScopeIdentity}
+        <section
+          className={cn(
+            "flex min-h-0 flex-1 flex-col rounded-xl border bg-muted/10 p-4",
+            viewState === "standard" && "min-h-[24rem] max-h-[70vh]",
+            viewState === "detailed" && "max-h-[calc(100svh-11rem)]"
+          )}
+        >
+          {!profile ? (
+            <ConsoleEmptyState className="flex min-h-0 flex-1 items-center justify-center" fill padding="spacious">
+              Profiling was not enabled for this iteration, so no profile tree was captured.
+            </ConsoleEmptyState>
+          ) : (
+            <PanelScrollViewport
+              className="rounded-xl border bg-background/60 p-4"
+              hasMore={false}
+              loadedCount={summary?.nodeCount ?? 0}
+              loading={false}
+              loadingMore={false}
+              noun="profile node"
+              onLoadMore={() => undefined}
+              showLoadedCount={false}
+            >
+              <div className="space-y-3">
+                <div className="flex flex-col gap-3">
+                  <div className="flex min-h-8 flex-wrap items-center gap-2 text-muted-foreground text-xs">
+                    <ProfileSummaryPill label="Started" value={formatProfileTimestamp(profile.startedAt)} />
+                    <ProfileSummaryPill label="Captured" value={formatProfileTimestamp(profile.capturedAt)} />
+                    <ProfileSummaryPill label="Tree" value={formatProfileMilliseconds(profile.root.treeMilliseconds)} />
+                    <ProfileSummaryPill label="Nodes" value={(summary?.nodeCount ?? 0).toLocaleString()} />
+                    {filterResult ? (
+                      <ProfileSummaryPill
+                        label={filterCountLabel}
+                        value={filterResult.matchedNodeCount.toLocaleString()}
                       />
                     ) : null}
                   </div>
-                  <div className="flex w-full flex-col gap-2 sm:flex-row lg:ml-auto lg:w-auto lg:min-w-[24rem] lg:max-w-[34rem] lg:flex-1 lg:justify-end">
-                    <div className="w-full lg:max-w-sm lg:flex-1 lg:min-w-[16rem]">
-                      <Input
-                        aria-label="Search profile nodes"
-                        onChange={(event) => setSearchText(event.target.value)}
-                        placeholder="Filter profile nodes"
-                        type="search"
-                        value={searchText}
-                      />
+                  <div className="flex flex-wrap items-center gap-2 rounded-xl border bg-muted/10 p-3">
+                    <div className="flex min-w-0 flex-wrap items-center gap-2">
+                      <ButtonGroup className="flex-wrap">
+                        {hotspotModes.map((mode) => (
+                          <Tooltip key={mode.id}>
+                            <TooltipTrigger asChild>
+                              <Button
+                                aria-pressed={hotspotMode === mode.id}
+                                onClick={() => setHotspotMode(mode.id)}
+                                size="default"
+                                title={describeWorkProfileHotspotMode(mode.id)}
+                                type="button"
+                                variant={hotspotMode === mode.id ? "secondary" : "outline"}
+                              >
+                                {mode.label}
+                              </Button>
+                            </TooltipTrigger>
+                            <TooltipContent sideOffset={6}>
+                              {describeWorkProfileHotspotMode(mode.id)}
+                            </TooltipContent>
+                          </Tooltip>
+                        ))}
+                      </ButtonGroup>
+                      <Select
+                        disabled={!hotspotActive}
+                        onValueChange={(value) => setHotspotThreshold(value as WorkProfileHotspotThreshold)}
+                        value={hotspotThreshold}
+                      >
+                        <SelectTrigger
+                          aria-label="Hotspot threshold"
+                          className="min-w-36"
+                          size="default"
+                          title={describeWorkProfileHotspotThreshold(hotspotMode, hotspotThreshold)}
+                        >
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {hotspotThresholds.map((threshold) => (
+                            <SelectItem key={threshold.id} value={threshold.id}>
+                              {threshold.label}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                      {methodScopeOptions.length > 0 ? (
+                        <WorkProfileMethodScopePicker
+                          onValueChange={setSelectedMethodScopeIdentity}
+                          options={methodScopeOptions}
+                          value={selectedMethodScopeIdentity}
+                        />
+                      ) : null}
                     </div>
-                    <Button
-                      aria-pressed={keepAncestors}
-                      className="whitespace-nowrap sm:self-start lg:ml-auto"
-                      onClick={() => setKeepAncestors((current) => !current)}
-                      size="default"
-                      title={keepAncestors
-                        ? "Ancestor nodes are currently visible while filtering so matches stay in context."
-                        : "Ancestor nodes are currently hidden so the filtered view only shows direct matches in the active scope."}
-                      type="button"
-                      variant={keepAncestors ? "secondary" : "outline"}
-                    >
-                      {keepAncestorsLabel}
-                    </Button>
+                    <div className="ml-auto flex min-w-0 flex-1 flex-wrap items-center justify-end gap-2">
+                      <div className="min-w-56 flex-1 max-w-sm">
+                        <Input
+                          aria-label="Search profile nodes"
+                          onChange={(event) => setSearchText(event.target.value)}
+                          placeholder="Filter profile nodes"
+                          type="search"
+                          value={searchText}
+                        />
+                      </div>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            {sqlActionsDisabled ? (
+                              <span className="inline-flex" tabIndex={0}>
+                                <Button
+                                  aria-label="SQL nodes only"
+                                  aria-pressed={false}
+                                  disabled
+                                  size="icon-sm"
+                                  title={sqlOnlyTitle}
+                                  type="button"
+                                  variant="outline"
+                                >
+                                  <DatabaseSearch className="size-3.5" />
+                                </Button>
+                              </span>
+                            ) : (
+                              <Button
+                                aria-label="SQL nodes only"
+                                aria-pressed={sqlOnly}
+                                onClick={() => setSqlOnly((current) => !current)}
+                                size="icon-sm"
+                                title={sqlOnlyTitle}
+                                type="button"
+                                variant={sqlOnly ? "secondary" : "outline"}
+                              >
+                                {sqlOnly ? (
+                                  <DatabaseZap className="size-3.5" />
+                                ) : (
+                                  <DatabaseSearch className="size-3.5" />
+                                )}
+                              </Button>
+                            )}
+                          </TooltipTrigger>
+                          <TooltipContent sideOffset={6}>
+                            {sqlOnlyTooltip}
+                          </TooltipContent>
+                        </Tooltip>
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            {sqlActionsDisabled ? (
+                              <span className="inline-flex" tabIndex={0}>
+                                <Button
+                                  aria-label="Open SQL batch"
+                                  className="whitespace-nowrap"
+                                  disabled
+                                  size="icon-sm"
+                                  title={sqlBatchTooltip}
+                                  type="button"
+                                  variant="outline"
+                                >
+                                  <SquareTerminal className="size-3.5" />
+                                </Button>
+                              </span>
+                            ) : (
+                              <Button
+                                aria-label="Open SQL batch"
+                                className="whitespace-nowrap"
+                                onClick={() => setSqlBatchOpen(true)}
+                                size="icon-sm"
+                                title={sqlBatchTooltip}
+                                type="button"
+                                variant="outline"
+                              >
+                                <SquareTerminal className="size-3.5" />
+                              </Button>
+                            )}
+                          </TooltipTrigger>
+                          <TooltipContent sideOffset={6}>
+                            {sqlBatchTooltip}
+                          </TooltipContent>
+                        </Tooltip>
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <Button
+                              aria-label="Ancestor context"
+                              aria-pressed={keepAncestors}
+                              className="whitespace-nowrap"
+                              onClick={() => setKeepAncestors((current) => !current)}
+                              size="icon-sm"
+                              type="button"
+                              variant={keepAncestors ? "secondary" : "outline"}
+                            >
+                              {keepAncestors ? (
+                                <GitBranchPlus className="size-3.5" />
+                              ) : (
+                                <GitBranchMinus className="size-3.5" />
+                              )}
+                            </Button>
+                          </TooltipTrigger>
+                          <TooltipContent sideOffset={6}>
+                            {keepAncestors
+                              ? "Ancestor nodes are currently visible while filtering so matches stay in context."
+                              : "Ancestor nodes are currently hidden so the filtered view only shows direct matches in the active scope."}
+                          </TooltipContent>
+                        </Tooltip>
+                      </div>
+                    </div>
                   </div>
                 </div>
+                {filterResult && filterResult.matchedNodeCount === 0 ? (
+                  <ConsoleEmptyState className="rounded-xl border bg-muted/10" fill padding="spacious">
+                    {createWorkProfileEmptyStateMessage(activeSearchText, hotspotActive, selectedMethodScopeLabel, sqlOnly)}
+                  </ConsoleEmptyState>
+                ) : profile?.root ? (
+                  <WorkProfileTreeNode
+                    depth={0}
+                    expandedNodeIds={expandedNodeIds}
+                    forceExpandContext={activeSearchText.length > 0}
+                    hotspotMatchesByNodeId={hotspotResult?.matchesByNodeId}
+                    matchedNodeIds={filterResult?.matchedNodeIds}
+                    node={profile.root}
+                    nodeId="root"
+                    onToggle={toggleNode}
+                    searchQuery={activeSearchText}
+                    visibleNodeIds={filterResult?.visibleNodeIds}
+                  />
+                ) : null}
               </div>
-              {filterResult && filterResult.matchedNodeCount === 0 ? (
-                <ConsoleEmptyState className="rounded-xl border bg-muted/10" fill padding="spacious">
-                  {createWorkProfileEmptyStateMessage(activeSearchText, hotspotActive, selectedMethodScopeLabel)}
-                </ConsoleEmptyState>
-              ) : profile?.root ? (
-                <WorkProfileTreeNode
-                  depth={0}
-                  expandedNodeIds={expandedNodeIds}
-                  forceExpandContext={activeSearchText.length > 0}
-                  hotspotMatchesByNodeId={hotspotResult?.matchesByNodeId}
-                  matchedNodeIds={filterResult?.matchedNodeIds}
-                  node={profile.root}
-                  nodeId="root"
-                  onToggle={toggleNode}
-                  searchQuery={activeSearchText}
-                  visibleNodeIds={filterResult?.visibleNodeIds}
-                />
-              ) : null}
-            </div>
-          </PanelScrollViewport>
-        )}
-      </section>
-    </PanelShell>
+            </PanelScrollViewport>
+          )}
+        </section>
+      </PanelShell>
+      <WorkProfileSqlBatchDialog
+        batch={sqlBatch}
+        onOpenChange={setSqlBatchOpen}
+        open={sqlBatchOpen}
+      />
+    </>
   );
 }
 
@@ -559,6 +821,22 @@ function WorkProfilePanelTitle({
   return (
     <>
       <span>Profile</span>
+      {viewState !== "compact" ? (
+        <Tooltip delayDuration={500} disableHoverableContent>
+          <TooltipTrigger asChild>
+            <button
+              aria-label="Profile: Per-iteration profile tree with timings, scopes, and captured context."
+              className="group inline-flex size-5 items-center justify-center rounded-sm text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+              type="button"
+            >
+              <Info className="size-3.5 shrink-0" />
+            </button>
+          </TooltipTrigger>
+          <TooltipContent className="max-w-64 whitespace-normal text-left" side="top" sideOffset={6}>
+            Per-iteration profile tree with timings, scopes, and captured context.
+          </TooltipContent>
+        </Tooltip>
+      ) : null}
       {viewState === "compact" ? (
         profile && summary ? (
           <>
@@ -601,6 +879,464 @@ function WorkProfilePanelActions({
       </ToolbarIconButton>
     </>
   );
+}
+
+function WorkProfileSqlBatchDialog({
+  batch,
+  onOpenChange,
+  open,
+}: {
+  batch: WorkProfileSqlBatch | null;
+  onOpenChange: (open: boolean) => void;
+  open: boolean;
+}) {
+  const [copied, setCopied] = useState(false);
+  const [mode, setMode] = useState<WorkProfileSqlBatchMode>("replayable");
+
+  const activeBatch = batch
+    ? mode === "replayable"
+      ? batch.replayableBatch
+      : batch.originalExecutionBatch
+    : "";
+
+  useEffect(() => {
+    if (!open) {
+      setCopied(false);
+      setMode("replayable");
+      return;
+    }
+
+    if (!copied) {
+      return;
+    }
+
+    const timeoutId = window.setTimeout(() => setCopied(false), 2000);
+    return () => window.clearTimeout(timeoutId);
+  }, [copied, open]);
+
+  const handleCopy = useCallback(async () => {
+    if (!batch) {
+      return;
+    }
+
+    const writeText = navigator.clipboard?.writeText?.bind(navigator.clipboard);
+    if (!writeText) {
+      setCopied(false);
+      return;
+    }
+
+    try {
+      await writeText(activeBatch);
+      setCopied(true);
+    } catch {
+      setCopied(false);
+    }
+  }, [activeBatch, batch]);
+
+  return (
+    <Dialog onOpenChange={onOpenChange} open={open}>
+      <DialogContent className="flex max-h-[calc(100vh-2rem)] flex-col overflow-hidden sm:max-h-[min(85vh,56rem)] sm:max-w-4xl">
+        <DialogHeader className="shrink-0">
+          <DialogTitle>SQL batch</DialogTitle>
+          <DialogDescription>
+            {batch
+              ? "Choose a replayable script or a parameterized view that keeps the captured execution shape. Redacted values may need to be replaced before replaying either view."
+              : "This profile does not contain captured SQL commands, so there is no SQL batch to display."}
+          </DialogDescription>
+          {batch ? (
+            <div className="flex flex-wrap items-center gap-2 pt-1 text-muted-foreground text-xs">
+              <ProfileSummaryPill label="Statements" value={batch.statementCount.toLocaleString()} />
+              <ProfileSummaryPill label="Parameters" value={batch.parameterCount.toLocaleString()} />
+              <ProfileSummaryPill label="Redacted" value={batch.redactedParameterCount.toLocaleString()} />
+            </div>
+          ) : null}
+        </DialogHeader>
+        <div className="flex min-h-0 flex-1 flex-col">
+          {batch ? (
+            <>
+              <div
+                aria-label="SQL batch mode"
+                className="mb-3 inline-flex w-full rounded-lg bg-muted p-[3px] sm:w-[26rem]"
+                role="tablist"
+              >
+                <button
+                  aria-selected={mode === "replayable"}
+                  className={cn(
+                    "inline-flex h-8 flex-1 items-center justify-center rounded-md px-3 text-sm font-medium transition-colors",
+                    mode === "replayable"
+                      ? "bg-background text-foreground shadow-sm"
+                      : "text-foreground/60 hover:text-foreground"
+                  )}
+                  onClick={() => setMode("replayable")}
+                  role="tab"
+                  type="button"
+                >
+                  Replayable
+                </button>
+                <button
+                  aria-selected={mode === "original"}
+                  className={cn(
+                    "inline-flex h-8 flex-1 items-center justify-center rounded-md px-3 text-sm font-medium transition-colors",
+                    mode === "original"
+                      ? "bg-background text-foreground shadow-sm"
+                      : "text-foreground/60 hover:text-foreground"
+                  )}
+                  onClick={() => setMode("original")}
+                  role="tab"
+                  type="button"
+                >
+                  Parameterized view
+                </button>
+              </div>
+              <WorkProfileSqlBatchViewer
+                batch={activeBatch}
+                label={mode === "replayable" ? "Replayable SQL batch" : "Parameterized SQL batch"}
+              />
+            </>
+          ) : (
+            <ConsoleEmptyState className="flex min-h-[14rem] flex-1 items-center justify-center rounded-lg border bg-muted/10" fill padding="spacious">
+              {sqlBatchUnavailableMessage}
+            </ConsoleEmptyState>
+          )}
+        </div>
+        <DialogFooter className="shrink-0" showCloseButton>
+          {batch ? (
+            <Button
+              onClick={() => void handleCopy()}
+              title="Copy the active SQL batch view."
+              type="button"
+              variant={copied ? "secondary" : "outline"}
+            >
+              {copied ? (
+                <Check className="size-4" />
+              ) : (
+                <Copy className="size-4" />
+              )}
+              {copied ? "Copied" : "Copy SQL"}
+            </Button>
+          ) : null}
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function WorkProfileSqlBatchViewer({
+  batch,
+  label,
+}: {
+  batch: string;
+  label: string;
+}) {
+  const highlightFallbackReason = useMemo(
+    () => getWorkProfileSqlHighlightFallbackReason(batch),
+    [batch]
+  );
+  const tokens = useMemo(
+    () => highlightFallbackReason ? [] : tokenizeWorkProfileSql(batch),
+    [batch, highlightFallbackReason]
+  );
+
+  return (
+    <div
+      aria-label={label}
+      className="min-h-[14rem] flex-1 overflow-auto rounded-lg border bg-slate-950/90 shadow-inner"
+      role="region"
+      tabIndex={0}
+    >
+      {highlightFallbackReason ? (
+        <div className="border-slate-800/80 border-b px-3 py-2 text-[11px] text-slate-400">
+          {highlightFallbackReason}
+        </div>
+      ) : null}
+      <pre className="min-w-max p-3 font-mono text-xs leading-5 text-slate-100">
+        {highlightFallbackReason
+          ? batch
+          : tokens.map((token, index) => (
+            <span
+              className={workProfileSqlTokenClassName(token.kind)}
+              key={`${index}:${token.kind}:${token.text.length}`}
+            >
+              {token.text}
+            </span>
+          ))}
+      </pre>
+    </div>
+  );
+}
+
+function tokenizeWorkProfileSql(value: string): WorkProfileSqlToken[] {
+  return tokenizeWorkProfileSqlSegment(value);
+}
+
+function tokenizeWorkProfileSqlSegment(
+  value: string,
+  options?: {
+    embeddedStringMode?: "parameter-definition" | "statement" | null;
+  }
+): WorkProfileSqlToken[] {
+  const tokens: WorkProfileSqlToken[] = [];
+  let index = 0;
+  let embeddedStringMode = options?.embeddedStringMode ?? null;
+
+  while (index < value.length) {
+    const character = value[index];
+
+    if (character === "-" && value[index + 1] === "-") {
+      let commentEnd = index + 2;
+      while (commentEnd < value.length && value[commentEnd] !== "\n") {
+        commentEnd += 1;
+      }
+
+      pushWorkProfileSqlToken(tokens, "comment", value.slice(index, commentEnd));
+      index = commentEnd;
+      continue;
+    }
+
+    if ((character === "N" || character === "n") && value[index + 1] === "'") {
+      const prefixEnd = index + 2;
+      const stringEnd = findWorkProfileSqlStringEnd(value, prefixEnd);
+      pushWorkProfileSqlStringTokens(
+        tokens,
+        value.slice(index, prefixEnd),
+        value.slice(prefixEnd, stringEnd - 1),
+        "'",
+        embeddedStringMode
+      );
+      embeddedStringMode = embeddedStringMode === "statement" ? "parameter-definition" : null;
+      index = stringEnd;
+      continue;
+    }
+
+    if (character === "'") {
+      const prefixEnd = index + 1;
+      const stringEnd = findWorkProfileSqlStringEnd(value, prefixEnd);
+      pushWorkProfileSqlStringTokens(
+        tokens,
+        "'",
+        value.slice(prefixEnd, stringEnd - 1),
+        "'",
+        embeddedStringMode
+      );
+      embeddedStringMode = null;
+      index = stringEnd;
+      continue;
+    }
+
+    if (character === "@") {
+      let parameterEnd = index + 1;
+      while (parameterEnd < value.length && /[@A-Za-z0-9_#$]/.test(value[parameterEnd])) {
+        parameterEnd += 1;
+      }
+
+      pushWorkProfileSqlToken(tokens, "parameter", value.slice(index, parameterEnd));
+      index = parameterEnd;
+      continue;
+    }
+
+    if (character === "0" && (value[index + 1] === "x" || value[index + 1] === "X")) {
+      let hexEnd = index + 2;
+      while (hexEnd < value.length && /[0-9A-Fa-f]/.test(value[hexEnd])) {
+        hexEnd += 1;
+      }
+
+      pushWorkProfileSqlToken(tokens, "number", value.slice(index, hexEnd));
+      index = hexEnd;
+      continue;
+    }
+
+    if (/[0-9]/.test(character)) {
+      let numberEnd = index + 1;
+      while (numberEnd < value.length && /[0-9._]/.test(value[numberEnd])) {
+        numberEnd += 1;
+      }
+
+      pushWorkProfileSqlToken(tokens, "number", value.slice(index, numberEnd));
+      index = numberEnd;
+      continue;
+    }
+
+    if (character === "[") {
+      let identifierEnd = index + 1;
+      while (identifierEnd < value.length) {
+        if (value[identifierEnd] === "]") {
+          if (value[identifierEnd + 1] === "]") {
+            identifierEnd += 2;
+            continue;
+          }
+
+          identifierEnd += 1;
+          break;
+        }
+
+        identifierEnd += 1;
+      }
+
+      pushWorkProfileSqlToken(tokens, "identifier", value.slice(index, identifierEnd));
+      index = identifierEnd;
+      continue;
+    }
+
+    if (/[A-Za-z_]/.test(character)) {
+      let wordEnd = index + 1;
+      while (wordEnd < value.length && /[A-Za-z0-9_.$#]/.test(value[wordEnd])) {
+        wordEnd += 1;
+      }
+
+      const text = value.slice(index, wordEnd);
+      const upperText = text.toUpperCase();
+      const nextSignificantCharacter = findNextNonWhitespaceCharacter(value, wordEnd);
+      const kind = workProfileSqlTypes.has(upperText)
+        ? "type"
+        : isWorkProfileSqlFunctionToken(upperText, nextSignificantCharacter)
+        ? "function"
+        : workProfileSqlKeywords.has(upperText)
+        ? "keyword"
+        : "plain";
+      pushWorkProfileSqlToken(tokens, kind, text);
+      if (upperText === "SP_EXECUTESQL") {
+        embeddedStringMode = "statement";
+      }
+      index = wordEnd;
+      continue;
+    }
+
+    if (character === ";" && embeddedStringMode === "parameter-definition") {
+      embeddedStringMode = null;
+    }
+
+    pushWorkProfileSqlToken(tokens, "plain", character);
+    index += 1;
+  }
+
+  return tokens;
+}
+
+function findWorkProfileSqlStringEnd(value: string, index: number): number {
+  let current = index;
+
+  while (current < value.length) {
+    if (value[current] !== "'") {
+      current += 1;
+      continue;
+    }
+
+    if (value[current + 1] === "'") {
+      current += 2;
+      continue;
+    }
+
+    return current + 1;
+  }
+
+  return current;
+}
+
+function pushWorkProfileSqlStringTokens(
+  tokens: WorkProfileSqlToken[],
+  prefix: string,
+  rawBody: string,
+  suffix: string,
+  embeddedStringMode: "parameter-definition" | "statement" | null
+) {
+  if (!embeddedStringMode) {
+    pushWorkProfileSqlToken(tokens, "string", `${prefix}${rawBody}${suffix}`);
+    return;
+  }
+
+  pushWorkProfileSqlToken(tokens, "string-delimiter", prefix);
+  appendWorkProfileSqlTokens(
+    tokens,
+    tokenizeWorkProfileSqlSegment(
+      decodeWorkProfileSqlEmbeddedString(rawBody),
+      { embeddedStringMode: null }
+    )
+  );
+  pushWorkProfileSqlToken(tokens, "string-delimiter", suffix);
+}
+
+function decodeWorkProfileSqlEmbeddedString(value: string): string {
+  return value.replaceAll("''", "'");
+}
+
+function findNextNonWhitespaceCharacter(value: string, index: number): string | null {
+  let current = index;
+  while (current < value.length) {
+    if (!/\s/.test(value[current])) {
+      return value[current];
+    }
+
+    current += 1;
+  }
+
+  return null;
+}
+
+function isWorkProfileSqlFunctionToken(text: string, nextSignificantCharacter: string | null): boolean {
+  return nextSignificantCharacter === "(" &&
+    !workProfileSqlKeywords.has(text) &&
+    !workProfileSqlTypes.has(text);
+}
+
+function getWorkProfileSqlHighlightFallbackReason(value: string): string | null {
+  const lineCount = value.length === 0 ? 0 : value.split("\n").length;
+  if (value.length > workProfileSqlHighlightMaxCharacters || lineCount > workProfileSqlHighlightMaxLines) {
+    return "Syntax highlighting is disabled for large SQL batches so the viewer stays responsive.";
+  }
+
+  return null;
+}
+
+function appendWorkProfileSqlTokens(
+  tokens: WorkProfileSqlToken[],
+  values: readonly WorkProfileSqlToken[]
+) {
+  values.forEach((value) => {
+    pushWorkProfileSqlToken(tokens, value.kind, value.text);
+  });
+}
+
+function pushWorkProfileSqlToken(
+  tokens: WorkProfileSqlToken[],
+  kind: WorkProfileSqlTokenKind,
+  text: string
+) {
+  if (text.length === 0) {
+    return;
+  }
+
+  const previous = tokens[tokens.length - 1];
+  if (previous && previous.kind === kind) {
+    previous.text += text;
+    return;
+  }
+
+  tokens.push({ kind, text });
+}
+
+function workProfileSqlTokenClassName(kind: WorkProfileSqlTokenKind): string {
+  switch (kind) {
+    case "comment":
+      return "italic text-slate-500";
+    case "function":
+      return "text-rose-300";
+    case "identifier":
+      return "text-cyan-200";
+    case "keyword":
+      return "font-semibold text-violet-300";
+    case "number":
+      return "text-amber-300";
+    case "parameter":
+      return "text-sky-300";
+    case "string-delimiter":
+      return "text-emerald-500";
+    case "string":
+      return "text-emerald-300";
+    case "type":
+      return "text-cyan-300";
+    case "plain":
+      return "text-slate-100";
+  }
 }
 
 function WorkProfileTreeNode({
@@ -751,8 +1487,12 @@ function WorkProfileContextBlock({
   searchQuery?: string;
 }) {
   const [expanded, setExpanded] = useState(true);
-  const normalizedContext = useMemo(() => normalizeProfileJsonValue(context), [context]);
-  const formattedContext = useMemo(() => formatProfileContext(context), [context]);
+  const displayContext = useMemo(() => createWorkProfileContextDisplayValue(context), [context]);
+  const normalizedContext = useMemo(
+    () => normalizeProfileJsonValue(displayContext),
+    [displayContext]
+  );
+  const formattedContext = useMemo(() => formatProfileContext(displayContext), [displayContext]);
   const expandedRef = useRef(expanded);
   const previousForceExpandedRef = useRef(forceExpanded);
   const searchRestoreExpandedRef = useRef<boolean | null>(null);
@@ -797,7 +1537,7 @@ function WorkProfileContextBlock({
           Context JSON
         </div>
         <div className="flex items-center gap-2 text-muted-foreground text-xs">
-          <span>{summarizeWorkProfileContext(context) ?? "context"}</span>
+          <span>{summarizeWorkProfileContext(displayContext) ?? "context"}</span>
           <ChevronRight className={cn("size-4 transition-transform", expanded && "rotate-90")} />
         </div>
       </button>
@@ -909,20 +1649,21 @@ function isWorkProfileNodeExpandable(node: WorkProfileSnapshotNode): boolean {
 }
 
 function summarizeWorkProfileContext(context: unknown): string | null {
-  if (!shouldRenderWorkProfileContext(context)) {
+  const displayContext = createWorkProfileContextDisplayValue(context);
+  if (!shouldRenderWorkProfileContext(displayContext)) {
     return null;
   }
 
-  if (Array.isArray(context)) {
-    return `context: ${context.length} item${context.length === 1 ? "" : "s"}`;
+  if (Array.isArray(displayContext)) {
+    return `context: ${displayContext.length} item${displayContext.length === 1 ? "" : "s"}`;
   }
 
-  if (typeof context === "object") {
-    const keys = Object.keys(context as Record<string, unknown>);
+  if (typeof displayContext === "object") {
+    const keys = Object.keys(displayContext as Record<string, unknown>);
     return `context: ${keys.length} key${keys.length === 1 ? "" : "s"}`;
   }
 
-  return `context: ${String(context)}`;
+  return `context: ${String(displayContext)}`;
 }
 
 function normalizeWorkProfileSearchQuery(value: string): string {
@@ -937,14 +1678,15 @@ function filterWorkProfile(
     hotspotNodeIds?: ReadonlySet<string>;
     keepAncestors: boolean;
     methodScopeSelection?: WorkProfileMethodScopeSelection | null;
+    sqlOnly: boolean;
   }
 ): WorkProfileSearchResult | null {
   const normalizedQuery = normalizeWorkProfileSearchQuery(query);
   const searchActive = normalizedQuery.length > 0;
   const methodScopeRootNodeIds = options.methodScopeSelection?.nodeIds ?? [];
   const methodScopeActive = methodScopeRootNodeIds.length > 0;
-  const scopeOnlyFilter = methodScopeActive && !searchActive && !options.hotspotActive;
-  if (!profile || (!searchActive && !options.hotspotActive && !methodScopeActive)) {
+  const scopeOnlyFilter = methodScopeActive && !searchActive && !options.hotspotActive && !options.sqlOnly;
+  if (!profile || (!searchActive && !options.hotspotActive && !methodScopeActive && !options.sqlOnly)) {
     return null;
   }
 
@@ -955,6 +1697,7 @@ function filterWorkProfile(
   const visit = (node: WorkProfileSnapshotNode, nodeId: string): boolean => {
     const searchMatched = searchActive && createWorkProfileNodeSearchText(node).includes(normalizedQuery);
     const hotspotMatched = options.hotspotActive && options.hotspotNodeIds?.has(nodeId) === true;
+    const sqlMatched = !options.sqlOnly || isWorkProfileSqlNode(node);
     const inSelectedSubtree = !methodScopeActive || methodScopeRootNodeIds.some((selectedNodeId) =>
       isWorkProfileNodeWithinSelectedScope(nodeId, selectedNodeId)
     );
@@ -963,7 +1706,10 @@ function filterWorkProfile(
     );
     const matchedSelf = scopeOnlyFilter
       ? inSelectedSubtree
-      : inSelectedSubtree && (!searchActive || searchMatched) && (!options.hotspotActive || hotspotMatched);
+      : inSelectedSubtree
+        && (!searchActive || searchMatched)
+        && (!options.hotspotActive || hotspotMatched)
+        && sqlMatched;
     let hasVisibleDescendant = false;
 
     node.children.forEach((child, index) => {
@@ -1128,6 +1874,636 @@ function createWorkProfileNodeSearchText(node: WorkProfileSnapshotNode): string 
   return parts.join("\n").toLowerCase();
 }
 
+type WorkProfileSqlCommandContext = {
+  CommandType?: unknown;
+  Database?: unknown;
+  HasTransaction?: unknown;
+  Operation?: unknown;
+  ParameterCount?: unknown;
+  Parameters?: unknown;
+  Provider?: unknown;
+  Statement?: unknown;
+  StatementKind?: unknown;
+};
+
+type WorkProfileSqlParameterContext = {
+  Direction?: unknown;
+  IsRedacted?: unknown;
+  Name?: unknown;
+  Type?: unknown;
+  Value?: unknown;
+};
+
+type NormalizedWorkProfileSqlCommand = {
+  database: string | null;
+  hasTransaction: boolean;
+  label: string;
+  nodeMilliseconds: number;
+  operation: string;
+  parameters: NormalizedWorkProfileSqlParameter[];
+  statement: string;
+  statementKind: string;
+  treeMilliseconds: number;
+};
+
+type NormalizedWorkProfileSqlParameter = {
+  direction: string;
+  isRedacted: boolean;
+  name: string;
+  type: string;
+  value: unknown;
+};
+
+export function createWorkProfileSqlBatch(
+  profile: WorkProfileSnapshot | null | undefined
+): WorkProfileSqlBatch | null {
+  if (!profile) {
+    return null;
+  }
+
+  const commands = collectWorkProfileSqlCommands(profile.root);
+  if (commands.length === 0) {
+    return null;
+  }
+
+  const parameterCount = commands.reduce((count, command) => count + command.parameters.length, 0);
+  const redactedParameterCount = commands.reduce(
+    (count, command) => count + command.parameters.filter((parameter) => parameter.isRedacted).length,
+    0
+  );
+  const replayableLines = [
+    "-- Generated from Workable SQL profile nodes.",
+    "-- Replace redacted values before replaying this batch if exact fidelity matters.",
+    "-- Statements are separated with GO so captured parameter names can be declared directly.",
+    "SET NOCOUNT ON;",
+  ];
+  const originalExecutionLines = [
+    "-- Generated from Workable SQL profile nodes.",
+    "-- This view preserves the captured parameterized execution shape for each command.",
+    "SET NOCOUNT ON;",
+  ];
+
+  commands.forEach((command, commandIndex) => {
+    replayableLines.push("");
+    replayableLines.push(...createWorkProfileReplayableSqlBatchSection(command, commandIndex));
+    originalExecutionLines.push("");
+    originalExecutionLines.push(...createWorkProfileOriginalSqlBatchSection(command, commandIndex));
+  });
+
+  return {
+    originalExecutionBatch: originalExecutionLines.join("\n"),
+    parameterCount,
+    replayableBatch: replayableLines.join("\n"),
+    redactedParameterCount,
+    statementCount: commands.length,
+  };
+}
+
+function collectWorkProfileSqlCommands(node: WorkProfileSnapshotNode): NormalizedWorkProfileSqlCommand[] {
+  const commands: NormalizedWorkProfileSqlCommand[] = [];
+
+  const visit = (current: WorkProfileSnapshotNode) => {
+    const command = normalizeWorkProfileSqlCommand(current);
+    if (command) {
+      commands.push(command);
+    }
+
+    current.children.forEach(visit);
+  };
+
+  visit(node);
+  return commands;
+}
+
+function normalizeWorkProfileSqlCommand(
+  node: WorkProfileSnapshotNode
+): NormalizedWorkProfileSqlCommand | null {
+  const context = findWorkProfileSqlCommandContext(node.context);
+  if (!context) {
+    return null;
+  }
+
+  const operation = getWorkProfileObjectString(context, "Operation");
+  const statement = getWorkProfileObjectString(context, "Statement");
+  const statementKind = getWorkProfileObjectString(context, "StatementKind");
+
+  return {
+    database: getWorkProfileObjectString(context, "Database"),
+    hasTransaction: getWorkProfileObjectBoolean(context, "HasTransaction"),
+    label: node.label,
+    nodeMilliseconds: node.nodeMilliseconds,
+    operation: operation ?? "Command",
+    parameters: normalizeWorkProfileSqlParameters(getWorkProfileObjectValue(context, "Parameters")),
+    statement: statement ?? "<empty>",
+    statementKind: statementKind ?? "UNKNOWN",
+    treeMilliseconds: node.treeMilliseconds,
+  };
+}
+
+function findWorkProfileSqlCommandContext(
+  value: unknown
+): WorkProfileSqlCommandContext | null {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const match = findWorkProfileSqlCommandContext(item);
+      if (match) {
+        return match;
+      }
+    }
+
+    return null;
+  }
+
+  const context = value as WorkProfileSqlCommandContext & Record<string, unknown>;
+  const provider = getWorkProfileObjectString(context, "Provider");
+  const statement = getWorkProfileObjectString(context, "Statement");
+  if (provider === "Microsoft.Data.SqlClient" && statement !== null) {
+    return context;
+  }
+
+  for (const nestedValue of Object.values(context)) {
+    const match = findWorkProfileSqlCommandContext(nestedValue);
+    if (match) {
+      return match;
+    }
+  }
+
+  return null;
+}
+
+function normalizeWorkProfileSqlParameters(value: unknown): NormalizedWorkProfileSqlParameter[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value
+    .map((parameter, index) => normalizeWorkProfileSqlParameter(parameter, index))
+    .filter((parameter): parameter is NormalizedWorkProfileSqlParameter => parameter !== null);
+}
+
+function normalizeWorkProfileSqlParameter(
+  value: unknown,
+  index: number
+): NormalizedWorkProfileSqlParameter | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+
+  const parameter = value as WorkProfileSqlParameterContext;
+  const direction = getWorkProfileObjectString(parameter, "Direction");
+  const type = getWorkProfileObjectString(parameter, "Type");
+  const parameterValue = getWorkProfileObjectValue(parameter, "Value");
+  return {
+    direction: direction ?? "Input",
+    isRedacted: getWorkProfileObjectBoolean(parameter, "IsRedacted"),
+    name: normalizeWorkProfileSqlParameterName(getWorkProfileObjectValue(parameter, "Name"), index),
+    type: type ?? inferWorkProfileSqlParameterType(parameterValue),
+    value: parameterValue,
+  };
+}
+
+function normalizeWorkProfileSqlParameterName(value: unknown, index: number): string {
+  if (typeof value !== "string" || value.trim().length === 0) {
+    return `@Parameter${index + 1}`;
+  }
+
+  return value.trim().startsWith("@")
+    ? value.trim()
+    : `@${value.trim()}`;
+}
+
+function createWorkProfileContextDisplayValue(context: unknown): unknown {
+  if (!context || typeof context !== "object") {
+    return context;
+  }
+
+  if (Array.isArray(context)) {
+    return context.map((item) => createWorkProfileContextDisplayValue(item));
+  }
+
+  const record = context as Record<string, unknown>;
+  if (isDirectWorkProfileSqlCommandContext(record)) {
+    return createWorkProfileSqlDisplayContext(record);
+  }
+
+  return Object.fromEntries(
+    Object.entries(record).map(([key, value]) => [key, createWorkProfileContextDisplayValue(value)])
+  );
+}
+
+function isDirectWorkProfileSqlCommandContext(value: Record<string, unknown>): boolean {
+  return getWorkProfileObjectString(value, "Provider") === "Microsoft.Data.SqlClient" &&
+    getWorkProfileObjectString(value, "Statement") !== null;
+}
+
+function createWorkProfileSqlDisplayContext(
+  context: Record<string, unknown>
+): Record<string, unknown> {
+  const statement = getWorkProfileObjectString(context, "Statement") ?? "<empty>";
+  const commandType = getWorkProfileObjectString(context, "CommandType") ?? "Text";
+  const parameters = normalizeWorkProfileSqlParameters(getWorkProfileObjectValue(context, "Parameters"));
+  const displayStatement = createWorkProfileSqlDisplayStatement(statement, commandType, parameters);
+
+  return Object.fromEntries(
+    Object.entries(context)
+      .filter(([key]) => !isWorkProfileObjectKey(key, "Parameters"))
+      .map(([key, value]) => [
+        key,
+        isWorkProfileObjectKey(key, "Statement")
+          ? displayStatement
+          : createWorkProfileContextDisplayValue(value),
+      ])
+  );
+}
+
+function createWorkProfileSqlDisplayStatement(
+  statement: string,
+  commandType: string,
+  parameters: readonly NormalizedWorkProfileSqlParameter[]
+): string {
+  const trimmedStatement = statement.trimEnd();
+  const baseStatement = trimmedStatement.length > 0 ? trimmedStatement : "<empty>";
+
+  if (commandType.toLowerCase() === "text") {
+    return inlineWorkProfileSqlStatementParameters(baseStatement, parameters);
+  }
+
+  return createWorkProfileExecutableSqlDisplayStatement(baseStatement, parameters);
+}
+
+function inlineWorkProfileSqlStatementParameters(
+  statement: string,
+  parameters: readonly NormalizedWorkProfileSqlParameter[]
+): string {
+  const inlinedParameters = [...parameters]
+    .filter((parameter) => !isWorkProfileSqlOutputParameter(parameter))
+    .sort((left, right) => right.name.length - left.name.length);
+
+  let result = statement;
+  inlinedParameters.forEach((parameter) => {
+    result = replaceWorkProfileSqlParameterReferences(
+      result,
+      parameter.name,
+      formatWorkProfileSqlLiteral(parameter)
+    );
+  });
+
+  return appendWorkProfileSqlOutputComments(result, parameters);
+}
+
+function replaceWorkProfileSqlParameterReferences(
+  statement: string,
+  parameterName: string,
+  replacement: string
+): string {
+  const pattern = new RegExp(
+    `(^|[^@A-Za-z0-9_#$])(${escapeRegularExpression(parameterName)})(?![A-Za-z0-9_#$])(?!\\s*(?:=|OUTPUT\\b|OUT\\b))`,
+    "gi"
+  );
+
+  return statement.replace(pattern, (_match, prefix: string) => `${prefix}${replacement}`);
+}
+
+function createWorkProfileExecutableSqlDisplayStatement(
+  statement: string,
+  parameters: readonly NormalizedWorkProfileSqlParameter[]
+): string {
+  if (parameters.length === 0) {
+    return ensureWorkProfileSqlStatementTerminated(`EXEC ${statement}`);
+  }
+
+  const lines = [`EXEC ${statement}`];
+  parameters.forEach((parameter, index) => {
+    const suffix = index < parameters.length - 1 ? "," : ";";
+    const outputComment = isWorkProfileSqlOutputParameter(parameter)
+      ? ` /* ${parameter.direction} parameter */`
+      : "";
+    lines.push(
+      `  ${parameter.name} = ${formatWorkProfileSqlLiteral(parameter)}${outputComment}${suffix}`
+    );
+  });
+
+  return lines.join("\n");
+}
+
+function appendWorkProfileSqlOutputComments(
+  statement: string,
+  parameters: readonly NormalizedWorkProfileSqlParameter[]
+): string {
+  const outputComments = parameters
+    .filter((parameter) => isWorkProfileSqlOutputParameter(parameter))
+    .map((parameter) => createWorkProfileSqlOutputParameterComment(parameter));
+
+  if (outputComments.length === 0) {
+    return statement;
+  }
+
+  return `${statement}${statement.endsWith("\n") ? "" : "\n"}${outputComments.join("\n")}`;
+}
+
+function createWorkProfileSqlOutputParameterComment(
+  parameter: NormalizedWorkProfileSqlParameter
+): string {
+  return `-- ${parameter.name} is an ${parameter.direction} parameter and remains parameterized in this preview.`;
+}
+
+function isWorkProfileObjectKey(actualKey: string, key: string): boolean {
+  return actualKey === key || actualKey === toWorkProfileCamelCaseKey(key);
+}
+
+function toWorkProfileCamelCaseKey(key: string): string {
+  return key.length > 0
+    ? `${key.charAt(0).toLowerCase()}${key.slice(1)}`
+    : key;
+}
+
+function inferWorkProfileSqlParameterType(value: unknown): string {
+  if (typeof value === "number") {
+    return Number.isInteger(value) ? "Int" : "Decimal";
+  }
+
+  if (typeof value === "boolean") {
+    return "Bit";
+  }
+
+  return "NVarChar";
+}
+
+function createWorkProfileReplayableSqlBatchSection(
+  command: NormalizedWorkProfileSqlCommand,
+  commandIndex: number
+): string[] {
+  const lines = [
+    `-- ${command.label} #${commandIndex + 1} | ${command.statementKind} | ${formatProfileMilliseconds(command.treeMilliseconds)} tree | ${formatProfileMilliseconds(command.nodeMilliseconds)} node${command.database ? ` | ${command.database}` : ""}${command.hasTransaction ? " | transaction" : ""}`,
+  ];
+
+  if (command.parameters.length > 0) {
+    command.parameters.forEach((parameter) => {
+      lines.push(createWorkProfileReplayableSqlVariableDeclaration(parameter));
+    });
+    lines.push("");
+  }
+
+  lines.push(ensureWorkProfileSqlStatementTerminated(command.statement));
+  lines.push("GO");
+
+  return lines;
+}
+
+function createWorkProfileReplayableSqlVariableDeclaration(
+  parameter: NormalizedWorkProfileSqlParameter
+): string {
+  const sqlType = mapWorkProfileSqlTypeToDeclaration(parameter.type);
+  return `DECLARE ${parameter.name} ${sqlType} = ${formatWorkProfileSqlLiteral(parameter)};`;
+}
+
+function ensureWorkProfileSqlStatementTerminated(statement: string): string {
+  const trimmed = statement.trimEnd();
+  if (trimmed.length === 0) {
+    return "<empty>";
+  }
+
+  return trimmed.endsWith(";")
+    ? trimmed
+    : `${trimmed};`;
+}
+
+function createWorkProfileOriginalSqlBatchSection(
+  command: NormalizedWorkProfileSqlCommand,
+  commandIndex: number
+): string[] {
+  const lines = [
+    `-- ${command.label} #${commandIndex + 1} | ${command.statementKind} | ${formatProfileMilliseconds(command.treeMilliseconds)} tree | ${formatProfileMilliseconds(command.nodeMilliseconds)} node${command.database ? ` | ${command.database}` : ""}${command.hasTransaction ? " | transaction" : ""}`,
+  ];
+
+  if (command.parameters.length > 0) {
+    command.parameters.forEach((parameter, parameterIndex) => {
+      lines.push(createWorkProfileOriginalSqlVariableDeclaration(parameter, commandIndex, parameterIndex));
+    });
+    lines.push("");
+  }
+
+  lines.push("EXEC sp_executesql");
+  if (command.parameters.length === 0) {
+    lines.push(`    ${formatSqlUnicodeStringLiteral(ensureWorkProfileSqlStatementTerminated(command.statement))};`);
+    return lines;
+  }
+
+  lines.push(`    ${formatSqlUnicodeStringLiteral(ensureWorkProfileSqlStatementTerminated(command.statement))},`);
+  lines.push(`    ${formatSqlUnicodeStringLiteral(createWorkProfileSqlParameterDefinitionList(command.parameters))},`);
+
+  const assignments = command.parameters.map((parameter, parameterIndex) =>
+    `    ${parameter.name} = ${createWorkProfileOriginalSqlVariableName(commandIndex, parameter, parameterIndex)}${isWorkProfileSqlOutputParameter(parameter) ? " OUTPUT" : ""}`
+  );
+
+  assignments.forEach((assignment, assignmentIndex) => {
+    lines.push(`${assignment}${assignmentIndex < assignments.length - 1 ? "," : ";"}`);
+  });
+
+  return lines;
+}
+
+function createWorkProfileOriginalSqlVariableDeclaration(
+  parameter: NormalizedWorkProfileSqlParameter,
+  commandIndex: number,
+  parameterIndex: number
+): string {
+  const sqlType = mapWorkProfileSqlTypeToDeclaration(parameter.type);
+  return `DECLARE ${createWorkProfileOriginalSqlVariableName(commandIndex, parameter, parameterIndex)} ${sqlType} = ${formatWorkProfileSqlLiteral(parameter)};`;
+}
+
+function createWorkProfileOriginalSqlVariableName(
+  commandIndex: number,
+  parameter: NormalizedWorkProfileSqlParameter,
+  parameterIndex: number
+): string {
+  const rawName = parameter.name.startsWith("@") ? parameter.name.slice(1) : parameter.name;
+  const sanitized = rawName.replace(/[^A-Za-z0-9_]/g, "");
+  const suffix = sanitized.length > 0
+    ? (/^[0-9]/.test(sanitized) ? `p${sanitized}` : sanitized)
+    : `Parameter${parameterIndex + 1}`;
+  return `@cmd${commandIndex + 1}_${suffix}`;
+}
+
+function createWorkProfileSqlParameterDefinitionList(
+  parameters: readonly NormalizedWorkProfileSqlParameter[]
+): string {
+  return parameters
+    .map((parameter) =>
+      `${parameter.name} ${mapWorkProfileSqlTypeToDeclaration(parameter.type)}${isWorkProfileSqlOutputParameter(parameter) ? " OUTPUT" : ""}`)
+    .join(", ");
+}
+
+function isWorkProfileSqlOutputParameter(parameter: NormalizedWorkProfileSqlParameter): boolean {
+  return parameter.direction === "Output" ||
+    parameter.direction === "InputOutput" ||
+    parameter.direction === "ReturnValue";
+}
+
+function mapWorkProfileSqlTypeToDeclaration(type: string): string {
+  switch (type) {
+    case "BigInt":
+      return "bigint";
+    case "Binary":
+    case "Image":
+    case "Timestamp":
+    case "VarBinary":
+      return "varbinary(max)";
+    case "Bit":
+      return "bit";
+    case "Date":
+      return "date";
+    case "DateTime":
+      return "datetime";
+    case "DateTime2":
+      return "datetime2(7)";
+    case "DateTimeOffset":
+      return "datetimeoffset(7)";
+    case "Decimal":
+    case "Money":
+    case "SmallMoney":
+      return "decimal(38, 10)";
+    case "Float":
+      return "float";
+    case "Int":
+      return "int";
+    case "NChar":
+    case "NText":
+    case "NVarChar":
+    case "Xml":
+      return "nvarchar(max)";
+    case "Real":
+      return "real";
+    case "SmallDateTime":
+      return "smalldatetime";
+    case "SmallInt":
+      return "smallint";
+    case "Text":
+    case "VarChar":
+      return "varchar(max)";
+    case "Time":
+      return "time(7)";
+    case "TinyInt":
+      return "tinyint";
+    case "UniqueIdentifier":
+      return "uniqueidentifier";
+    default:
+      return "nvarchar(max)";
+  }
+}
+
+function formatWorkProfileSqlLiteral(parameter: NormalizedWorkProfileSqlParameter): string {
+  if (parameter.isRedacted) {
+    return isWorkProfileSqlTextualType(parameter.type)
+      ? "N'<redacted>' /* redacted in profile */"
+      : "NULL /* redacted in profile */";
+  }
+
+  if (parameter.value === null || parameter.value === undefined) {
+    return "NULL";
+  }
+
+  if (typeof parameter.value === "number") {
+    return Number.isFinite(parameter.value) ? parameter.value.toString() : "NULL";
+  }
+
+  if (typeof parameter.value === "boolean") {
+    return parameter.value ? "1" : "0";
+  }
+
+  if (typeof parameter.value === "string") {
+    if (isWorkProfileSqlBinaryType(parameter.type)) {
+      if (/^0x[0-9A-F]+$/i.test(parameter.value)) {
+        return parameter.value;
+      }
+
+      return `NULL /* binary parameter value could not be reconstructed from profile: ${parameter.value.replace(/\*\//g, "* /")} */`;
+    }
+
+    if (isWorkProfileSqlQuotedValueType(parameter.type)) {
+      return `'${escapeWorkProfileSqlLiteral(parameter.value)}'`;
+    }
+
+    return formatSqlUnicodeStringLiteral(parameter.value);
+  }
+
+  return formatSqlUnicodeStringLiteral(String(parameter.value));
+}
+
+function isWorkProfileSqlTextualType(type: string): boolean {
+  return type === "Char" ||
+    type === "NChar" ||
+    type === "NText" ||
+    type === "NVarChar" ||
+    type === "Text" ||
+    type === "VarChar" ||
+    type === "Xml";
+}
+
+function isWorkProfileSqlQuotedValueType(type: string): boolean {
+  return type === "Date" ||
+    type === "DateTime" ||
+    type === "DateTime2" ||
+    type === "DateTimeOffset" ||
+    type === "SmallDateTime" ||
+    type === "Time" ||
+    type === "UniqueIdentifier";
+}
+
+function isWorkProfileSqlBinaryType(type: string): boolean {
+  return type === "Binary" ||
+    type === "Image" ||
+    type === "Timestamp" ||
+    type === "VarBinary";
+}
+
+function formatSqlUnicodeStringLiteral(value: string): string {
+  return `N'${escapeWorkProfileSqlLiteral(value)}'`;
+}
+
+function escapeWorkProfileSqlLiteral(value: string): string {
+  return value.replace(/'/g, "''");
+}
+
+function isWorkProfileSqlNode(node: WorkProfileSnapshotNode): boolean {
+  return findWorkProfileSqlCommandContext(node.context) !== null;
+}
+
+function getWorkProfileObjectValue<TRecord extends Record<string, unknown>>(
+  record: TRecord,
+  key: string
+): unknown {
+  if (key in record) {
+    return record[key];
+  }
+
+  const camelKey = toWorkProfileCamelCaseKey(key);
+  return camelKey in record
+    ? record[camelKey]
+    : undefined;
+}
+
+function getWorkProfileObjectString<TRecord extends Record<string, unknown>>(
+  record: TRecord,
+  key: string
+): string | null {
+  const value = getWorkProfileObjectValue(record, key);
+  return typeof value === "string" && value.length > 0
+    ? value
+    : null;
+}
+
+function getWorkProfileObjectBoolean<TRecord extends Record<string, unknown>>(
+  record: TRecord,
+  key: string
+): boolean {
+  return getWorkProfileObjectValue(record, key) === true;
+}
+
 function getWorkProfileMethodScope(node: WorkProfileSnapshotNode): WorkProfileMethodScopeEntry | null {
   if (node.metricType !== "MethodScope") {
     return null;
@@ -1153,26 +2529,60 @@ function getWorkProfileMethodScope(node: WorkProfileSnapshotNode): WorkProfileMe
 }
 
 function formatProfileContext(context: unknown): string {
-  if (typeof context === "string") {
-    return context;
+  const displayContext = createWorkProfileContextDisplayValue(context);
+  if (typeof displayContext === "string") {
+    return displayContext;
   }
 
-  if (typeof context === "number" || typeof context === "boolean") {
-    return String(context);
+  if (typeof displayContext === "number" || typeof displayContext === "boolean") {
+    return String(displayContext);
   }
 
   try {
-    return JSON.stringify(context, null, 2) ?? "null";
+    return JSON.stringify(displayContext, null, 2) ?? "null";
   } catch {
-    return String(context);
+    return String(displayContext);
   }
 }
 
 function createWorkProfileEmptyStateMessage(
   searchQuery: string,
   hotspotActive: boolean,
-  selectedMethodScopeLabel: string | null
+  selectedMethodScopeLabel: string | null,
+  sqlOnly: boolean
 ): string {
+  if (searchQuery.length > 0 && hotspotActive && selectedMethodScopeLabel && sqlOnly) {
+    return `No SQL profile nodes matched "${searchQuery}" within the selected hotspots for ${selectedMethodScopeLabel}.`;
+  }
+
+  if (searchQuery.length > 0 && hotspotActive && sqlOnly) {
+    return `No SQL profile nodes matched "${searchQuery}" within the selected hotspots.`;
+  }
+
+  if (searchQuery.length > 0 && selectedMethodScopeLabel && sqlOnly) {
+    return `No SQL profile nodes matched "${searchQuery}" within ${selectedMethodScopeLabel}.`;
+  }
+
+  if (searchQuery.length > 0 && sqlOnly) {
+    return `No SQL profile nodes matched "${searchQuery}".`;
+  }
+
+  if (hotspotActive && selectedMethodScopeLabel && sqlOnly) {
+    return `No SQL profile nodes matched the selected hotspots within ${selectedMethodScopeLabel}.`;
+  }
+
+  if (hotspotActive && sqlOnly) {
+    return "No SQL profile nodes matched the selected hotspots.";
+  }
+
+  if (selectedMethodScopeLabel && sqlOnly) {
+    return `No SQL profile nodes matched within ${selectedMethodScopeLabel}.`;
+  }
+
+  if (sqlOnly) {
+    return "No SQL profile nodes matched the active filters.";
+  }
+
   if (searchQuery.length > 0 && hotspotActive && selectedMethodScopeLabel) {
     return `No profile nodes matched "${searchQuery}" within the selected hotspots for ${selectedMethodScopeLabel}.`;
   }

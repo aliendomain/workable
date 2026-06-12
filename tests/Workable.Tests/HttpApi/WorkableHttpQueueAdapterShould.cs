@@ -53,6 +53,31 @@ public sealed class WorkableHttpQueueAdapterShould
     }
 
     [Fact]
+    public async Task ConfigurationOnlyOptionsDoNotExplicitlyDisableProfiling()
+    {
+        var commands = new RecordingCommandDispatcher();
+        var adapter = new WorkableHttpQueueAdapter(commands);
+
+        var result = await adapter.Enqueue(
+            systemName: null,
+            "http.queue",
+            WorkRequestContext.Create(WorkInvocationChannel.HttpApi),
+            new WorkableHttpWorkRequest(
+                Options: new WorkableHttpWorkerOptions
+                {
+                    Configuration = WorkableHttpWorkConfiguration.From(WorkConfiguration.Default with
+                    {
+                        Start = WorkStartConfiguration.DoNotStart,
+                    }),
+                }));
+
+        Assert.Equal(WorkableHttpWorkStatus.Accepted, result.Status);
+        Assert.NotNull(commands.Options?.WorkerOptions);
+        Assert.False(commands.Options.WorkerOptions.HasExplicitProfilingEnabled);
+        Assert.Equal(WorkStartPolicy.DoNotStart, commands.Options.WorkerOptions.Configuration?.Start.Policy);
+    }
+
+    [Fact]
     public async Task ReturnRejectedResultWithoutWaitingForCompletion()
     {
         var message = WorkMessage.Error("queue.invalid", "Nope.");

@@ -385,7 +385,10 @@ function storedHost(access: WorkSystemAccessSummary): WorkableHostConnection {
         hostId: "host-1",
         id: "system-ops",
         name: "Ops",
-        persistentCoordinationAvailable: true,
+        capabilities: {
+          persistentCoordinationAvailable: true,
+          sqlProfilingAvailable: false,
+        },
         state: "Started",
         systemName: "Ops",
       },
@@ -407,6 +410,7 @@ function hostDescriptor(access: WorkSystemAccessSummary): WorkableHttpHostDescri
         access,
         capabilities: {
           persistentCoordinationAvailable: true,
+          sqlProfilingAvailable: false,
         },
         id: { value: "server-ops" },
         isDefault: false,

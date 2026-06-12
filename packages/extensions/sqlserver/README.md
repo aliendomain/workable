@@ -41,6 +41,14 @@ services.AddWorkableSqlServerDurableQueue(new WorkableSqlServerQueueDurabilityOp
 });
 ```
 
+When worker profiling is enabled, the SQL Server integration can also capture `Microsoft.Data.SqlClient` command execution as profile timing nodes:
+
+```csharp
+services.AddWorkableSqlServerProfiling();
+```
+
+This registration is separate from `AddWorkableSqlServerDurableQueue(...)`. Configuring SQL profiling only makes SQL capture available; Workable still emits SQL nodes only for workers whose profiling is enabled. The profiling hook listens at the provider layer, so it covers direct `SqlConnection` / `SqlCommand` usage and any higher-level data access code that ultimately executes through `Microsoft.Data.SqlClient`. Captured SQL metadata includes the operation kind, full SQL statement text, command shape, and parameter names and values. Obvious secret-like parameter names such as `password` or `accessToken` are redacted automatically. Binary parameter values are emitted as full hex string literals.
+
 ## Integration Tests
 
 The SQL Server integration test project at `tests/extensions/sqlserver/Workable.SqlServer.Tests` is cross-platform.

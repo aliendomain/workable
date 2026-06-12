@@ -12,7 +12,7 @@ internal sealed class InMemoryWorkSystem :
     IWorkSystemBuiltInHttpSurfaceAccess,
     IWorkSystemReadModelClock,
     IWorkSystemShutdownMetadata,
-    IWorkSystemCoordinationCapabilities
+    IWorkSystemCapabilitySource
 {
     private readonly IServiceProvider rootServices;
     private readonly IWorkAuthorizationGroupProvider groupProvider;
@@ -40,6 +40,7 @@ internal sealed class InMemoryWorkSystem :
         IReadOnlyList<Func<IServiceProvider, IStartupWorkSource>> startupWorkSourceFactories,
         IServiceProvider rootServices,
         TimeSpan shutdownGracePeriod,
+        WorkerOptions? implicitDefaultWorkerOptions,
         IReadOnlyList<WorkExceptionClassifier> globalExceptionClassifiers)
     {
         this.Id = registration.Id;
@@ -51,11 +52,21 @@ internal sealed class InMemoryWorkSystem :
         this.startupWorkSourceFactories = startupWorkSourceFactories;
         this.ShutdownGracePeriod = shutdownGracePeriod;
         var persistenceStore = rootServices.GetService<IWorkPersistenceStore>();
-        this.PersistentCoordinationAvailable = persistenceStore is not null;
+        var capabilities = new WorkSystemCapabilitiesBuilder
+        {
+            PersistentCoordinationAvailable = persistenceStore is not null,
+        };
+        foreach (var contributor in rootServices.GetServices<IWorkSystemCapabilityContributor>())
+        {
+            contributor.ConfigureCapabilities(capabilities);
+        }
+
+        this.Capabilities = capabilities.Build();
         var authorizationLogger = rootServices.GetService<ILoggerFactory>()?.CreateLogger("Workable.Authorization");
         this.catalog = new WorkSystemCatalog(
             work,
-            this.PersistentCoordinationAvailable,
+            this.Capabilities.PersistentCoordinationAvailable,
+            implicitDefaultWorkerOptions,
             this.authorization,
             authorizationLogger);
         this.readModel = new WorkSystemReadModel(this.catalog, () => this.State, this.Name, this.metrics);
@@ -105,7 +116,7 @@ internal sealed class InMemoryWorkSystem :
 
     public TimeSpan ShutdownGracePeriod { get; }
 
-    public bool PersistentCoordinationAvailable { get; }
+    public WorkSystemCapabilities Capabilities { get; }
 
     long IWorkSystemReadModelClock.AppliedSequence => this.readModel.AppliedSequence;
 
@@ -263,6 +274,7 @@ internal sealed class InMemoryWorkSystem :
     {
         await this.lifecycleLock.WaitAsync(cancellationToken);
         var dispatchingStarted = false;
+        var lifecycleStarted = false;
         try
         {
             if (this.State == WorkSystemState.Started)
@@ -281,6 +293,8 @@ internal sealed class InMemoryWorkSystem :
             await this.workers.StartDispatching(cancellationToken);
             dispatchingStarted = true;
             this.State = WorkSystemState.Started;
+            lifecycleStarted = true;
+            await this.NotifyStarted(cancellationToken);
             await this.QueueAutomaticallyStartedWork(cancellationToken);
             await this.QueueStartupWork(cancellationToken);
         }
@@ -291,6 +305,12 @@ internal sealed class InMemoryWorkSystem :
                 await this.workers.StopDispatching(CancellationToken.None);
             }
 
+            if (lifecycleStarted)
+            {
+                await this.NotifyStopped();
+            }
+
+            this.metrics.Clear();
             this.State = WorkSystemState.Stopped;
             throw;
         }
@@ -326,6 +346,7 @@ internal sealed class InMemoryWorkSystem :
             this.State = WorkSystemState.Stopping;
             await this.NotifyStopping(requestContext.Origin);
             var result = await this.workers.StopDispatching(requestContext, cancellationToken);
+            await this.NotifyStopped();
             this.metrics.Clear();
             this.State = WorkSystemState.Stopped;
             return result;
@@ -348,6 +369,14 @@ internal sealed class InMemoryWorkSystem :
             {
                 // Lifecycle observers are best-effort and must not prevent shutdown.
             }
+        }
+    }
+
+    private async Task NotifyStarted(CancellationToken cancellationToken)
+    {
+        foreach (var observer in this.rootServices.GetServices<IWorkSystemLifecycleObserver>())
+        {
+            await observer.SystemStarted(this, cancellationToken);
         }
     }
 
@@ -469,6 +498,21 @@ internal sealed class InMemoryWorkSystem :
             {
                 var messages = string.Join("; ", handle.QueueOutcome.Messages.Select(message => message.Text));
                 throw new InvalidOperationException($"Automatically started work '{registeredWork.Definition.Name}' could not be queued. {messages}");
+            }
+        }
+    }
+
+    private async Task NotifyStopped()
+    {
+        foreach (var observer in this.rootServices.GetServices<IWorkSystemLifecycleObserver>())
+        {
+            try
+            {
+                await observer.SystemStopped(this, CancellationToken.None);
+            }
+            catch
+            {
+                // Lifecycle observers are best-effort and must not prevent shutdown completion.
             }
         }
     }

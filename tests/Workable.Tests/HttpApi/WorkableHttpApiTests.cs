@@ -1957,6 +1957,8 @@ public sealed class WorkableHttpApiTests
             isDefault.GetValue<bool>() &&
             candidate["capabilities"]?["persistentCoordinationAvailable"] is JsonValue persistentCoordinationAvailable &&
             !persistentCoordinationAvailable.GetValue<bool>() &&
+            candidate["capabilities"]?["sqlProfilingAvailable"] is JsonValue sqlProfilingAvailable &&
+            !sqlProfilingAvailable.GetValue<bool>() &&
             candidate["access"]?["isSystemAdministrator"] is JsonValue isSystemAdministrator &&
             isSystemAdministrator.GetValue<bool>() &&
             candidate["access"]?["isWorkAdministrator"] is JsonValue isWorkAdministrator &&
@@ -1981,7 +1983,31 @@ public sealed class WorkableHttpApiTests
             candidate["isDefault"] is JsonValue isDefault &&
             !isDefault.GetValue<bool>() &&
             candidate["capabilities"]?["persistentCoordinationAvailable"] is JsonValue persistentCoordinationAvailable &&
-            !persistentCoordinationAvailable.GetValue<bool>());
+            !persistentCoordinationAvailable.GetValue<bool>() &&
+            candidate["capabilities"]?["sqlProfilingAvailable"] is JsonValue sqlProfilingAvailable &&
+            !sqlProfilingAvailable.GetValue<bool>());
+    }
+
+    [Fact]
+    public async Task MappedHttpRouteListsSqlProfilingCapabilityWhenRegistered()
+    {
+        using var host = await CreateHttpHost(
+            configureServices: services => services.AddSingleton<IWorkSystemCapabilityContributor, TestSqlProfilingCapabilityContributor>());
+        var client = host.GetTestClient();
+
+        var response = await client.GetAsync("/workable/host");
+        response.EnsureSuccessStatusCode();
+        var json = JsonNode.Parse(await response.Content.ReadAsStringAsync())
+            ?? throw new InvalidOperationException("Expected JSON response.");
+        var systems = json["systems"]?.AsArray()
+            ?? throw new InvalidOperationException("Expected systems array.");
+
+        Assert.Contains(systems, system =>
+            system is JsonObject candidate &&
+            candidate["isDefault"] is JsonValue isDefault &&
+            isDefault.GetValue<bool>() &&
+            candidate["capabilities"]?["sqlProfilingAvailable"] is JsonValue sqlProfilingAvailable &&
+            sqlProfilingAvailable.GetValue<bool>());
     }
 
     [Fact]
@@ -2405,7 +2431,8 @@ public sealed class WorkableHttpApiTests
         IEnumerable<string>? groups = null,
         bool development = false,
         string? configuredUrls = null,
-        IEnumerable<string>? surfaceAccessGroups = null)
+        IEnumerable<string>? surfaceAccessGroups = null,
+        Action<IServiceCollection>? configureServices = null)
         => CreateHttpHost(
             builder =>
             {
@@ -2422,7 +2449,8 @@ public sealed class WorkableHttpApiTests
             groups,
             development,
             configuredUrls,
-            surfaceAccessGroups);
+            surfaceAccessGroups,
+            configureServices);
 
     private static async Task<IHost> CreateHttpHost(
         Action<IWorkSystemBuilder> configure,
@@ -2430,7 +2458,8 @@ public sealed class WorkableHttpApiTests
         IEnumerable<string>? groups = null,
         bool development = false,
         string? configuredUrls = null,
-        IEnumerable<string>? surfaceAccessGroups = null)
+        IEnumerable<string>? surfaceAccessGroups = null,
+        Action<IServiceCollection>? configureServices = null)
     {
         var host = new HostBuilder()
             .ConfigureWebHost(web =>
@@ -2450,6 +2479,7 @@ public sealed class WorkableHttpApiTests
                 {
                     services.AddRouting();
                     services.AddTransportTestAuthorization(groups);
+                    configureServices?.Invoke(services);
                     services.AddWorkableSystem(builder =>
                     {
                         builder.StartWithHost();
@@ -2489,6 +2519,15 @@ public sealed class WorkableHttpApiTests
 
         await host.StartAsync();
         return host;
+    }
+
+    private sealed class TestSqlProfilingCapabilityContributor : IWorkSystemCapabilityContributor
+    {
+        public void ConfigureCapabilities(WorkSystemCapabilitiesBuilder capabilities)
+        {
+            ArgumentNullException.ThrowIfNull(capabilities);
+            capabilities.SqlProfilingAvailable = true;
+        }
     }
 
     private static async Task<IHost> CreateMultiSystemHttpHost(

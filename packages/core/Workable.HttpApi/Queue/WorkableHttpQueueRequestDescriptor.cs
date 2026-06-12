@@ -20,7 +20,7 @@ public sealed record WorkableHttpQueueRequestDescriptor(
         => new(
             WorkSchema.FromType<WorkableHttpWorkRequest>(),
             QueueRequestTabs,
-            new WorkableHttpQueueRequestCapabilities(PersistentCoordinationAvailable(system)));
+            new WorkableHttpQueueRequestCapabilities(SystemCapabilities(system).PersistentCoordinationAvailable));
 
     private static readonly IReadOnlyList<WorkableHttpQueueRequestTab> QueueRequestTabs =
     [
@@ -113,9 +113,10 @@ public sealed record WorkableHttpQueueRequestDescriptor(
     private static WorkableHttpQueueRequestField Field(string path, string label, string description)
         => new(path, label, description);
 
-    private static bool PersistentCoordinationAvailable(IWorkSystem? system)
-        => system is IWorkSystemCoordinationCapabilities capabilities &&
-            capabilities.PersistentCoordinationAvailable;
+    private static WorkSystemCapabilities SystemCapabilities(IWorkSystem? system)
+        => system is IWorkSystemCapabilitySource capabilities
+            ? capabilities.Capabilities
+            : WorkSystemCapabilities.None;
 }
 
 /// <summary>

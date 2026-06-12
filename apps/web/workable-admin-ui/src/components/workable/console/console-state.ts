@@ -15,6 +15,8 @@ import { normalizeOverviewScope, overviewScopesEqual } from "@/components/workab
 import type { WorkerConsoleViewUiStateSnapshot } from "@/components/workable/console/detail-screens";
 import {
   DEFAULT_WORKABLE_API_URL,
+  createDefaultWorkableHttpSystemCapabilities,
+  normalizeWorkableHttpSystemCapabilities,
   type WorkCompletionStatus,
   type WorkComponentShape,
   type WorkKeyKind,
@@ -273,13 +275,23 @@ export function normalizeStoredSystem(
   hostId: string,
   system: WorkableSystemConnection
 ): WorkableSystemConnection {
+  const legacySystem = system as WorkableSystemConnection & {
+    persistentCoordinationAvailable?: boolean;
+    sqlProfilingAvailable?: boolean;
+  };
+
   return {
     id: system.id || createServerId(),
     hostId,
     name: system.name || "Default",
     systemName: normalizeOptional(system.systemName),
     access: system.access ?? (hostId === "local-sample-host" ? createFullAccessSummary() : undefined),
-    persistentCoordinationAvailable: Boolean(system.persistentCoordinationAvailable),
+    capabilities: normalizeWorkableHttpSystemCapabilities(
+      legacySystem.capabilities ?? {
+        persistentCoordinationAvailable: legacySystem.persistentCoordinationAvailable,
+        sqlProfilingAvailable: legacySystem.sqlProfilingAvailable,
+      }
+    ),
     state: system.state ?? null,
   };
 }
@@ -374,7 +386,7 @@ export function createDefaultSystem(hostId: string): WorkableSystemConnection {
     hostId,
     name: "Default",
     access: createFullAccessSummary(),
-    persistentCoordinationAvailable: false,
+    capabilities: createDefaultWorkableHttpSystemCapabilities(),
     state: null,
   };
 }

@@ -17,10 +17,17 @@ internal sealed class WorkSystemRegistry : IWorkSystemRegistry
         IEnumerable<WorkContribution> contributions,
         IEnumerable<WorkDefinitionSourceContribution> workDefinitionSourceContributions,
         IEnumerable<StartupWorkSourceContribution> startupWorkSourceContributions,
-        IEnumerable<WorkableRegistrationOptions> options)
+        IEnumerable<IWorkableBootstrapper>? bootstrappers,
+        IEnumerable<WorkableRegistrationOptions>? options = null)
     {
+        foreach (var bootstrapper in bootstrappers ?? [])
+        {
+            bootstrapper.Initialize();
+        }
+
         var hostShutdownTimeout = TryResolveHostShutdownTimeout(services);
-        var globalExceptionClassifiers = options
+        var implicitDefaultWorkerOptions = ResolveImplicitDefaultWorkerOptions(services);
+        var globalExceptionClassifiers = (options ?? [])
             .SelectMany(option => option.ExceptionClassifiers)
             .ToList();
         var systems = registrations
@@ -31,6 +38,7 @@ internal sealed class WorkSystemRegistry : IWorkSystemRegistry
                 ComposeStartupWorkSourceFactories(registration, startupWorkSourceContributions),
                 services,
                 registration.ShutdownGracePeriod.Resolve(hostShutdownTimeout),
+                implicitDefaultWorkerOptions,
                 globalExceptionClassifiers))
             .Cast<IWorkSystem>()
             .ToList();
@@ -149,5 +157,13 @@ internal sealed class WorkSystemRegistry : IWorkSystemRegistry
 
         var shutdownTimeout = hostOptionsType.GetProperty("ShutdownTimeout")?.GetValue(value);
         return shutdownTimeout is TimeSpan timeout ? timeout : null;
+    }
+
+    private static WorkerOptions? ResolveImplicitDefaultWorkerOptions(IServiceProvider services)
+    {
+        var environment = services.GetService<IHostEnvironment>();
+        return environment is not null && !environment.IsProduction()
+            ? new WorkerOptions(ProfilingEnabled: true)
+            : null;
     }
 }

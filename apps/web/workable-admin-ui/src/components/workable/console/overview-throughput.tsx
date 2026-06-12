@@ -308,7 +308,7 @@ function ThroughputAreaChart({
       </div>
       {showChart && (
         <div>
-          <div className="relative grid h-56 grid-cols-[3.25rem_1fr] overflow-hidden rounded-lg border bg-background/40">
+          <div className="relative grid h-56 grid-cols-[4.25rem_1fr] overflow-hidden rounded-lg border bg-background/40">
             <div className="relative border-r border-border/70 px-2 text-right font-mono text-[10px] text-muted-foreground">
               {yTicks.map((tick, index) => (
                 <span
@@ -937,7 +937,7 @@ export function formatThroughputAxisValue(mode: ThroughputMode, value: number) {
     return formatMilliseconds(value);
   }
 
-  return `${formatRate(value)}/s`;
+  return `${formatCompactRate(value)}/s`;
 }
 
 export function createTimeAxisTicks(
@@ -997,6 +997,41 @@ export function formatRate(value: number) {
     return value.toFixed(2);
   }
   return value.toFixed(2);
+}
+
+export function formatCompactRate(value: number) {
+  const sign = value < 0 ? "-" : "";
+  const absoluteValue = Math.abs(value);
+  if (absoluteValue < 1000) {
+    return `${sign}${formatRate(absoluteValue)}`;
+  }
+
+  const units = [
+    { suffix: "B", value: 1_000_000_000 },
+    { suffix: "M", value: 1_000_000 },
+    { suffix: "k", value: 1_000 },
+  ] as const;
+
+  for (let index = 0; index < units.length; index += 1) {
+    const unit = units[index];
+    if (absoluteValue < unit.value) {
+      continue;
+    }
+
+    const scaled = absoluteValue / unit.value;
+    const digits = scaled >= 100 ? 0 : scaled >= 10 ? 1 : 2;
+    const rounded = Number(scaled.toFixed(digits));
+    if (rounded >= 1000 && index > 0) {
+      const nextUnit = units[index - 1];
+      const nextScaled = absoluteValue / nextUnit.value;
+      const nextDigits = nextScaled >= 100 ? 0 : nextScaled >= 10 ? 1 : 2;
+      return `${sign}${nextScaled.toFixed(nextDigits).replace(/(?:\.0+|(\.\d*[1-9])0+)$/, "$1")}${nextUnit.suffix}`;
+    }
+
+    return `${sign}${rounded.toFixed(digits).replace(/(?:\.0+|(\.\d*[1-9])0+)$/, "$1")}${unit.suffix}`;
+  }
+
+  return `${sign}${formatRate(absoluteValue)}`;
 }
 
 export function formatMilliseconds(value: number) {

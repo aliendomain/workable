@@ -47,6 +47,35 @@ public sealed class WorkMergeTests
     }
 
     [Fact]
+    public void WorkerOptionsMergePreservesProfilingWhenOverridesDoNotExplicitlySetIt()
+    {
+        var original = new WorkerOptions(
+            ProfilingEnabled: true,
+            Configuration: WorkConfiguration.Default with
+            {
+                Logging = new WorkLoggingConfiguration
+                {
+                    Level = LogLevel.Warning,
+                },
+            });
+        var overrides = new WorkerOptions(
+            Configuration: WorkConfiguration.Default with
+            {
+                Logging = new WorkLoggingConfiguration
+                {
+                    IsEnabled = false,
+                    Level = LogLevel.Error,
+                },
+            });
+
+        var merged = original.Merge(overrides);
+
+        Assert.True(merged.ProfilingEnabled);
+        Assert.False(merged.Configuration?.Logging.IsEnabled);
+        Assert.Equal(LogLevel.Error, merged.Configuration?.Logging.Level);
+    }
+
+    [Fact]
     public void WorkConfigurationMergeWithNullOverridesReturnsSameConfiguration()
     {
         var configuration = WorkConfiguration.Default;

@@ -1,3 +1,4 @@
+using Microsoft.Data.SqlClient;
 using Workable;
 
 namespace SampleHost.Demo;
@@ -36,6 +37,13 @@ internal sealed record DemoProfilingSectionResult(
     string Label,
     int StepCount,
     int TotalDelayMilliseconds);
+
+internal sealed record DemoProfilingSqlConnection(string ConnectionString);
+
+internal sealed record DemoProfilingSqlSnapshot(
+    string DatabaseName,
+    int SessionId,
+    int MatchingDurableEntries);
 
 internal sealed class DemoProfilingLabWork(
     DemoProfilingActivationMarker activationMarker,
@@ -223,6 +231,7 @@ internal sealed class DemoProfilingPipeline(
 }
 
 internal sealed class DemoProfilingSectionWorker(
+    DemoProfilingSqlProbe sqlProbe,
     IWorkProfiler profiler,
     ILogger<DemoProfilingSectionWorker> logger)
 {
@@ -261,6 +270,17 @@ internal sealed class DemoProfilingSectionWorker(
                 Normalized = true,
                 section.Steps.Count,
             });
+        }
+
+        using (var sqlScope = profiler.CreateScope("Capture SQL sample", new
+        {
+            section.Ordinal,
+            section.Label,
+            Purpose = "show SQL nodes in the profiling tree",
+        }))
+        {
+            var sqlSnapshot = await sqlProbe.CaptureAsync(section, cancellationToken);
+            sqlScope.SetResult(sqlSnapshot);
         }
 
         var totalDelayMilliseconds = 0;
@@ -327,6 +347,72 @@ internal sealed class DemoProfilingSectionWorker(
             section.Label,
             section.Steps.Count,
             totalDelayMilliseconds);
+    }
+}
+
+internal sealed class DemoProfilingSqlProbe(
+    DemoProfilingSqlConnection connection,
+    IWorkProfiler profiler)
+{
+    internal async Task<DemoProfilingSqlSnapshot> CaptureAsync(
+        DemoProfilingSectionPlan section,
+        CancellationToken cancellationToken)
+    {
+        using var scope = profiler.CreateMethodScope<DemoProfilingSqlProbe>(new
+        {
+            section.Ordinal,
+            section.Label,
+            section.Phase,
+            ConnectionTarget = "sample persistence SQL Server",
+        });
+
+        await using var sqlConnection = new SqlConnection(connection.ConnectionString);
+        await sqlConnection.OpenAsync(cancellationToken);
+
+        string databaseName;
+        int sessionId;
+        await using (var metadataCommand = sqlConnection.CreateCommand())
+        {
+            metadataCommand.CommandText = """
+SELECT
+    CAST(DB_NAME() AS nvarchar(128)) AS DatabaseName,
+    CAST(@@SPID AS int) AS SessionId,
+    @SectionOrdinal AS SectionOrdinal,
+    @SectionLabel AS SectionLabel,
+    @Phase AS Phase;
+""";
+            metadataCommand.Parameters.AddWithValue("@SectionOrdinal", section.Ordinal);
+            metadataCommand.Parameters.AddWithValue("@SectionLabel", section.Label);
+            metadataCommand.Parameters.AddWithValue("@Phase", section.Phase);
+
+            await using var reader = await metadataCommand.ExecuteReaderAsync(cancellationToken);
+            if (!await reader.ReadAsync(cancellationToken))
+            {
+                throw new InvalidOperationException("Expected sample profiling SQL metadata query to return one row.");
+            }
+
+            databaseName = reader.GetString(0);
+            sessionId = reader.GetInt32(1);
+        }
+
+        await using var countCommand = sqlConnection.CreateCommand();
+        countCommand.CommandText = """
+SELECT COUNT(*)
+FROM workable.WorkEntries
+WHERE WorkSystemName = @WorkSystemName
+  AND DefinitionName LIKE @DefinitionPattern;
+""";
+        countCommand.Parameters.AddWithValue("@WorkSystemName", "default");
+        countCommand.Parameters.AddWithValue("@DefinitionPattern", "sample.demo.%");
+
+        var matchingDurableEntries = Convert.ToInt32(await countCommand.ExecuteScalarAsync(cancellationToken));
+        var snapshot = new DemoProfilingSqlSnapshot(
+            databaseName,
+            sessionId,
+            matchingDurableEntries);
+
+        scope.SetResult(snapshot);
+        return snapshot;
     }
 }
 

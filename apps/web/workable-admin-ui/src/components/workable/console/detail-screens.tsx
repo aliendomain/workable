@@ -2414,6 +2414,7 @@ export function IterationConsoleView({
   onOpenDefinition,
   refreshToken,
   sequence,
+  sqlProfilingAvailable = true,
   workerId,
 }: {
   connection: WorkableConnection;
@@ -2421,6 +2422,7 @@ export function IterationConsoleView({
   onOpenDefinition: (definitionName: string, definitionLabel?: string | null) => void;
   refreshToken: number;
   sequence: number;
+  sqlProfilingAvailable?: boolean;
   workerId: string;
 }) {
   const [hiddenPanelIds, setHiddenPanelIds] = useState<ReadonlySet<IterationDetailPanelId>>(() => new Set());
@@ -2717,6 +2719,7 @@ export function IterationConsoleView({
                 onClose={() => setIterationPanelVisible("iterationProfile", false)}
                 onViewStateChange={setIterationProfilePanelViewState}
                 profile={activeIteration.profile}
+                sqlProfilingAvailable={sqlProfilingAvailable}
                 viewState={profileViewState}
               />
             ) : null}
