@@ -7,10 +7,6 @@ on:
         description: NuGet package version to publish.
         required: true
         type: string
-      release_notes:
-        description: Release notes to embed in the published NuGet packages. Markdown bullets are supported.
-        required: true
-        type: string
 
 permissions:
   contents: read
@@ -42,8 +38,13 @@ jobs:
       - name: Pack
         env:
           PACKAGE_VERSION: ${{ inputs.version }}
-          PACKAGE_RELEASE_NOTES: ${{ inputs.release_notes }}
         run: |
+          PACKAGE_RELEASE_NOTES_FILE="./releases/${PACKAGE_VERSION}.md"
+          if [ ! -f "$PACKAGE_RELEASE_NOTES_FILE" ]; then
+            echo "Expected release notes file '$PACKAGE_RELEASE_NOTES_FILE' was not found."
+            exit 1
+          fi
+          PACKAGE_RELEASE_NOTES="$(cat "$PACKAGE_RELEASE_NOTES_FILE")"
           dotnet pack ./packages/core/Workable.Sdk/Workable.Sdk.csproj --configuration Release --no-build --output ./artifacts/packages -p:PackageVersion="$PACKAGE_VERSION" -p:PackageReleaseNotes="$PACKAGE_RELEASE_NOTES" -p:BuildInParallel=false
           dotnet pack ./packages/core/Workable.Abstractions/Workable.Abstractions.csproj --configuration Release --no-build --output ./artifacts/packages -p:PackageVersion="$PACKAGE_VERSION" -p:PackageReleaseNotes="$PACKAGE_RELEASE_NOTES" -p:BuildInParallel=false
           dotnet pack ./packages/core/Workable/Workable.csproj --configuration Release --no-build --output ./artifacts/packages -p:PackageVersion="$PACKAGE_VERSION" -p:PackageReleaseNotes="$PACKAGE_RELEASE_NOTES" -p:BuildInParallel=false
