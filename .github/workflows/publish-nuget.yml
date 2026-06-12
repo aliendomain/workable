@@ -45,17 +45,16 @@ jobs:
             exit 1
           fi
           PACKAGE_RELEASE_NOTES_FILE="$(realpath "$PACKAGE_RELEASE_NOTES_FILE")"
-          PACKAGE_RELEASE_NOTES_PROPERTY="\$([System.IO.File]::ReadAllText('$PACKAGE_RELEASE_NOTES_FILE'))"
-          dotnet pack ./packages/core/Workable.Sdk/Workable.Sdk.csproj --configuration Release --no-build --output ./artifacts/packages -p:PackageVersion="$PACKAGE_VERSION" "-p:PackageReleaseNotes=$PACKAGE_RELEASE_NOTES_PROPERTY" -p:BuildInParallel=false
-          dotnet pack ./packages/core/Workable.Abstractions/Workable.Abstractions.csproj --configuration Release --no-build --output ./artifacts/packages -p:PackageVersion="$PACKAGE_VERSION" "-p:PackageReleaseNotes=$PACKAGE_RELEASE_NOTES_PROPERTY" -p:BuildInParallel=false
-          dotnet pack ./packages/core/Workable/Workable.csproj --configuration Release --no-build --output ./artifacts/packages -p:PackageVersion="$PACKAGE_VERSION" "-p:PackageReleaseNotes=$PACKAGE_RELEASE_NOTES_PROPERTY" -p:BuildInParallel=false
-          dotnet pack ./packages/core/Workable.AspNetCore/Workable.AspNetCore.csproj --configuration Release --no-build --output ./artifacts/packages -p:PackageVersion="$PACKAGE_VERSION" "-p:PackageReleaseNotes=$PACKAGE_RELEASE_NOTES_PROPERTY" -p:BuildInParallel=false
-          dotnet pack ./packages/core/Workable.Entra/Workable.Entra.csproj --configuration Release --no-build --output ./artifacts/packages -p:PackageVersion="$PACKAGE_VERSION" "-p:PackageReleaseNotes=$PACKAGE_RELEASE_NOTES_PROPERTY" -p:BuildInParallel=false
-          dotnet pack ./packages/core/Workable.Views/Workable.Views.csproj --configuration Release --no-build --output ./artifacts/packages -p:PackageVersion="$PACKAGE_VERSION" "-p:PackageReleaseNotes=$PACKAGE_RELEASE_NOTES_PROPERTY" -p:BuildInParallel=false
-          dotnet pack ./packages/core/Workable.HttpApi/Workable.HttpApi.csproj --configuration Release --no-build --output ./artifacts/packages -p:PackageVersion="$PACKAGE_VERSION" "-p:PackageReleaseNotes=$PACKAGE_RELEASE_NOTES_PROPERTY" -p:BuildInParallel=false
-          dotnet pack ./packages/core/Workable.Mcp/Workable.Mcp.csproj --configuration Release --no-build --output ./artifacts/packages -p:PackageVersion="$PACKAGE_VERSION" "-p:PackageReleaseNotes=$PACKAGE_RELEASE_NOTES_PROPERTY" -p:BuildInParallel=false
-          dotnet pack ./packages/core/Workable.SignalR/Workable.SignalR.csproj --configuration Release --no-build --output ./artifacts/packages -p:PackageVersion="$PACKAGE_VERSION" "-p:PackageReleaseNotes=$PACKAGE_RELEASE_NOTES_PROPERTY" -p:BuildInParallel=false
-          dotnet pack ./packages/extensions/sqlserver/Workable.SqlServer/Workable.SqlServer.csproj --configuration Release --no-build --output ./artifacts/packages -p:PackageVersion="$PACKAGE_VERSION" "-p:PackageReleaseNotes=$PACKAGE_RELEASE_NOTES_PROPERTY" -p:BuildInParallel=false
+          dotnet pack ./packages/core/Workable.Sdk/Workable.Sdk.csproj --configuration Release --no-build --output ./artifacts/packages -p:PackageVersion="$PACKAGE_VERSION" "-p:PackageReleaseNotesFile=$PACKAGE_RELEASE_NOTES_FILE" -p:BuildInParallel=false
+          dotnet pack ./packages/core/Workable.Abstractions/Workable.Abstractions.csproj --configuration Release --no-build --output ./artifacts/packages -p:PackageVersion="$PACKAGE_VERSION" "-p:PackageReleaseNotesFile=$PACKAGE_RELEASE_NOTES_FILE" -p:BuildInParallel=false
+          dotnet pack ./packages/core/Workable/Workable.csproj --configuration Release --no-build --output ./artifacts/packages -p:PackageVersion="$PACKAGE_VERSION" "-p:PackageReleaseNotesFile=$PACKAGE_RELEASE_NOTES_FILE" -p:BuildInParallel=false
+          dotnet pack ./packages/core/Workable.AspNetCore/Workable.AspNetCore.csproj --configuration Release --no-build --output ./artifacts/packages -p:PackageVersion="$PACKAGE_VERSION" "-p:PackageReleaseNotesFile=$PACKAGE_RELEASE_NOTES_FILE" -p:BuildInParallel=false
+          dotnet pack ./packages/core/Workable.Entra/Workable.Entra.csproj --configuration Release --no-build --output ./artifacts/packages -p:PackageVersion="$PACKAGE_VERSION" "-p:PackageReleaseNotesFile=$PACKAGE_RELEASE_NOTES_FILE" -p:BuildInParallel=false
+          dotnet pack ./packages/core/Workable.Views/Workable.Views.csproj --configuration Release --no-build --output ./artifacts/packages -p:PackageVersion="$PACKAGE_VERSION" "-p:PackageReleaseNotesFile=$PACKAGE_RELEASE_NOTES_FILE" -p:BuildInParallel=false
+          dotnet pack ./packages/core/Workable.HttpApi/Workable.HttpApi.csproj --configuration Release --no-build --output ./artifacts/packages -p:PackageVersion="$PACKAGE_VERSION" "-p:PackageReleaseNotesFile=$PACKAGE_RELEASE_NOTES_FILE" -p:BuildInParallel=false
+          dotnet pack ./packages/core/Workable.Mcp/Workable.Mcp.csproj --configuration Release --no-build --output ./artifacts/packages -p:PackageVersion="$PACKAGE_VERSION" "-p:PackageReleaseNotesFile=$PACKAGE_RELEASE_NOTES_FILE" -p:BuildInParallel=false
+          dotnet pack ./packages/core/Workable.SignalR/Workable.SignalR.csproj --configuration Release --no-build --output ./artifacts/packages -p:PackageVersion="$PACKAGE_VERSION" "-p:PackageReleaseNotesFile=$PACKAGE_RELEASE_NOTES_FILE" -p:BuildInParallel=false
+          dotnet pack ./packages/extensions/sqlserver/Workable.SqlServer/Workable.SqlServer.csproj --configuration Release --no-build --output ./artifacts/packages -p:PackageVersion="$PACKAGE_VERSION" "-p:PackageReleaseNotesFile=$PACKAGE_RELEASE_NOTES_FILE" -p:BuildInParallel=false
 
       - name: Upload packages
         uses: actions/upload-artifact@v4
