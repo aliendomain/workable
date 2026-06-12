@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Linq;
 using System.Text.Json;
 using Microsoft.Data.SqlClient;
 
@@ -218,7 +219,7 @@ public sealed class SqlServerTestHost : IAsyncLifetime
             var current = new DirectoryInfo(AppContext.BaseDirectory);
             while (current is not null)
             {
-                var candidate = Path.Combine(current.FullName, LocalSettingsFileName);
+                var candidate = Path.Join(current.FullName, LocalSettingsFileName);
                 if (File.Exists(candidate))
                 {
                     return candidate;
@@ -255,13 +256,12 @@ public sealed class SqlServerTestHost : IAsyncLifetime
 
         private static bool TryGetPropertyIgnoreCase(JsonElement element, string propertyName, out JsonElement property)
         {
-            foreach (var candidate in element.EnumerateObject())
+            var candidate = element.EnumerateObject()
+                .FirstOrDefault(candidate => string.Equals(candidate.Name, propertyName, StringComparison.OrdinalIgnoreCase));
+            if (!candidate.Equals(default(JsonProperty)))
             {
-                if (string.Equals(candidate.Name, propertyName, StringComparison.OrdinalIgnoreCase))
-                {
-                    property = candidate.Value;
-                    return true;
-                }
+                property = candidate.Value;
+                return true;
             }
 
             property = default;
