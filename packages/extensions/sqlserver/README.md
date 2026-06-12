@@ -54,11 +54,20 @@ This registration is separate from `AddWorkableSqlServerDurableQueue(...)`. Conf
 The SQL Server integration test project at `tests/extensions/sqlserver/Workable.SqlServer.Tests` is cross-platform.
 
 - Set `WORKABLE_SQLSERVER_TEST_CONNECTION_STRING` to point at an existing SQL Server instance when you want to manage the database host yourself.
+- Or create `tests/extensions/sqlserver/Workable.SqlServer.Tests/appsettings.local.json` with a `Workable:SqlServerTests:ConnectionString` value when you want a local file instead of an environment variable.
 - Otherwise the test fixture auto-starts a local SQL Server 2022 container through `docker` or `podman` and reuses it across runs.
 - The managed container is named `workable-sqlserver-tests`.
 - Set `WORKABLE_SQLSERVER_TEST_CONTAINER_REUSE=false` when you want the fixture to stop containers it creates for the current run instead of keeping them warm for reuse.
 
 That means the same SQL persistence suite can run on Windows, macOS, Linux, and CI runners that have a Docker-compatible runtime available.
+
+The test project includes `appsettings.local.example.json` with a LocalDB-shaped connection string. On Windows, a convenient local setup is:
+
+1. Copy `tests/extensions/sqlserver/Workable.SqlServer.Tests/appsettings.local.example.json` to `tests/extensions/sqlserver/Workable.SqlServer.Tests/appsettings.local.json`.
+2. Start LocalDB with `sqllocaldb start MSSQLLocalDB`.
+3. Run the SQL integration tests outside the Codex sandbox.
+
+The SQL integration tests create and drop temporary databases on the target instance, so the configured login must be able to connect to `master` and execute `CREATE DATABASE` / `DROP DATABASE`.
 
 ## Durable Queue Runtime Behavior
 
