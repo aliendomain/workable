@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Text.Json;
 using Microsoft.Data.SqlClient;
 
 namespace Workable.Tests;
@@ -10,6 +11,7 @@ public sealed class SqlServerTestHostCollection : ICollectionFixture<SqlServerTe
 
 public sealed class SqlServerTestHost : IAsyncLifetime
 {
+    private const string LocalSettingsFileName = "appsettings.local.json";
     private const string ConnectionStringEnvironmentVariable = "WORKABLE_SQLSERVER_TEST_CONNECTION_STRING";
     private const string ContainerRuntimeEnvironmentVariable = "WORKABLE_SQLSERVER_TEST_CONTAINER_RUNTIME";
     private const string ContainerImageEnvironmentVariable = "WORKABLE_SQLSERVER_TEST_CONTAINER_IMAGE";
@@ -52,19 +54,29 @@ public sealed class SqlServerTestHost : IAsyncLifetime
 
     public async Task InitializeAsync()
     {
-        var explicitConnectionString = Environment.GetEnvironmentVariable(ConnectionStringEnvironmentVariable);
+        var localSettings = TestSettings.Load();
+        var explicitConnectionString = GetConfiguredValue(
+            ConnectionStringEnvironmentVariable,
+            localSettings.ConnectionString);
         if (!string.IsNullOrWhiteSpace(explicitConnectionString))
         {
             this.BaseConnectionString = explicitConnectionString;
-            this.Description = $"SQL Server from ${ConnectionStringEnvironmentVariable}";
+            this.Description = localSettings.ConnectionString is not null
+                ? $"SQL Server from {LocalSettingsFileName}"
+                : $"SQL Server from ${ConnectionStringEnvironmentVariable}";
             await WaitForSqlServerAvailability(this.MasterConnectionString);
             return;
         }
 
-        this.runtime = await ContainerRuntime.Resolve();
+        this.runtime = await ContainerRuntime.Resolve(localSettings.ContainerRuntime);
 
-        var reuseContainer = ReadBooleanEnvironmentVariable(ContainerReuseEnvironmentVariable, defaultValue: true);
-        var imageName = Environment.GetEnvironmentVariable(ContainerImageEnvironmentVariable);
+        var reuseContainer = GetConfiguredBooleanValue(
+            ContainerReuseEnvironmentVariable,
+            localSettings.ContainerReuse,
+            defaultValue: true);
+        var imageName = GetConfiguredValue(
+            ContainerImageEnvironmentVariable,
+            localSettings.ContainerImage);
         if (string.IsNullOrWhiteSpace(imageName))
         {
             imageName = DefaultContainerImage;
@@ -118,6 +130,29 @@ public sealed class SqlServerTestHost : IAsyncLifetime
             $"Environment variable '{variableName}' must be 'true' or 'false' when it is set.");
     }
 
+    private static string? GetConfiguredValue(string environmentVariableName, string? fileValue)
+    {
+        var value = Environment.GetEnvironmentVariable(environmentVariableName);
+        return string.IsNullOrWhiteSpace(value) ? fileValue : value;
+    }
+
+    private static bool GetConfiguredBooleanValue(string environmentVariableName, bool? fileValue, bool defaultValue)
+    {
+        var value = Environment.GetEnvironmentVariable(environmentVariableName);
+        if (!string.IsNullOrWhiteSpace(value))
+        {
+            if (bool.TryParse(value, out var parsed))
+            {
+                return parsed;
+            }
+
+            throw new InvalidOperationException(
+                $"Environment variable '{environmentVariableName}' must be 'true' or 'false' when it is set.");
+        }
+
+        return fileValue ?? defaultValue;
+    }
+
     private static async Task WaitForSqlServerAvailability(string connectionString)
     {
         var startedAt = Stopwatch.GetTimestamp();
@@ -149,13 +184,98 @@ public sealed class SqlServerTestHost : IAsyncLifetime
 
     private sealed record ContainerStatus(string Host, int Port, bool WasCreated);
 
+    private sealed record TestSettings(
+        string? ConnectionString,
+        string? ContainerRuntime,
+        string? ContainerImage,
+        bool? ContainerReuse)
+    {
+        public static TestSettings Load()
+        {
+            var settingsPath = ResolvePath();
+            if (settingsPath is null)
+            {
+                return new TestSettings(null, null, null, null);
+            }
+
+            using var stream = File.OpenRead(settingsPath);
+            using var document = JsonDocument.Parse(stream);
+
+            if (!TryGetSettingsObject(document.RootElement, out var settingsElement))
+            {
+                return new TestSettings(null, null, null, null);
+            }
+
+            return new TestSettings(
+                ReadString(settingsElement, "ConnectionString"),
+                ReadString(settingsElement, "ContainerRuntime"),
+                ReadString(settingsElement, "ContainerImage"),
+                ReadBoolean(settingsElement, "ContainerReuse"));
+        }
+
+        private static string? ResolvePath()
+        {
+            var current = new DirectoryInfo(AppContext.BaseDirectory);
+            while (current is not null)
+            {
+                var candidate = Path.Combine(current.FullName, LocalSettingsFileName);
+                if (File.Exists(candidate))
+                {
+                    return candidate;
+                }
+
+                current = current.Parent;
+            }
+
+            return null;
+        }
+
+        private static bool TryGetSettingsObject(JsonElement root, out JsonElement settingsElement)
+        {
+            settingsElement = default;
+            if (!TryGetPropertyIgnoreCase(root, "Workable", out var workableElement) ||
+                workableElement.ValueKind != JsonValueKind.Object)
+            {
+                return false;
+            }
+
+            return TryGetPropertyIgnoreCase(workableElement, "SqlServerTests", out settingsElement) &&
+                settingsElement.ValueKind == JsonValueKind.Object;
+        }
+
+        private static string? ReadString(JsonElement element, string propertyName)
+            => TryGetPropertyIgnoreCase(element, propertyName, out var property) && property.ValueKind == JsonValueKind.String
+                ? property.GetString()
+                : null;
+
+        private static bool? ReadBoolean(JsonElement element, string propertyName)
+            => TryGetPropertyIgnoreCase(element, propertyName, out var property) && property.ValueKind is JsonValueKind.True or JsonValueKind.False
+                ? property.GetBoolean()
+                : null;
+
+        private static bool TryGetPropertyIgnoreCase(JsonElement element, string propertyName, out JsonElement property)
+        {
+            foreach (var candidate in element.EnumerateObject())
+            {
+                if (string.Equals(candidate.Name, propertyName, StringComparison.OrdinalIgnoreCase))
+                {
+                    property = candidate.Value;
+                    return true;
+                }
+            }
+
+            property = default;
+            return false;
+        }
+    }
+
     private sealed class ContainerRuntime(string commandName)
     {
         public string CommandName { get; } = commandName;
 
-        public static async Task<ContainerRuntime> Resolve()
+        public static async Task<ContainerRuntime> Resolve(string? configuredRuntime)
         {
-            var explicitRuntime = Environment.GetEnvironmentVariable(ContainerRuntimeEnvironmentVariable);
+            var explicitRuntime = GetConfiguredValue(ContainerRuntimeEnvironmentVariable, configuredRuntime);
             if (!string.IsNullOrWhiteSpace(explicitRuntime))
             {
                 var runtime = new ContainerRuntime(explicitRuntime);

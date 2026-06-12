@@ -19,6 +19,10 @@
   </ItemGroup>
 
   <ItemGroup>
+    <None Include="appsettings.local.json" CopyToOutputDirectory="PreserveNewest" Condition="Exists('appsettings.local.json')" />
+  </ItemGroup>
+
+  <ItemGroup>
     <Compile Include="..\..\..\..\tests\Workable.Tests\TestSupport\TestEventually.cs" Link="TestSupport\TestEventually.cs" />
   </ItemGroup>
 
