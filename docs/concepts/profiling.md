@@ -2,6 +2,8 @@
 
 Work profiling captures a per-worker execution tree for diagnostic timing and context. Profiling is controlled by `WorkerOptions.ProfilingEnabled`.
 
+When Workable is hosted in a non-production `IHostEnvironment`, work definitions that do not explicitly set `defaultOptions` inherit profiling enabled by default. Set `defaultOptions: new WorkerOptions(ProfilingEnabled: false)` when a specific work definition should opt out of that non-production default.
+
 When profiling is disabled, the profile API is still available and behaves as a no-op. Work code can add profile information without checking whether profiling is active.
 
 ## Enable Profiling

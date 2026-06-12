@@ -58,7 +58,10 @@ function system(overrides: Partial<WorkableSystemConnection> = {}): WorkableSyst
     hostId: "host-1",
     id: "system-1",
     name: "Default",
-    persistentCoordinationAvailable: false,
+    capabilities: {
+      persistentCoordinationAvailable: false,
+      sqlProfilingAvailable: false,
+    },
     state: "Started",
     ...overrides,
   };
@@ -217,12 +220,16 @@ test("stored host and system helpers normalize legacy realtime metadata, access,
     hostId: "old",
     id: "system-2",
     name: "",
-    persistentCoordinationAvailable: true,
+    capabilities: {
+      persistentCoordinationAvailable: true,
+      sqlProfilingAvailable: false,
+    },
     state: undefined,
   });
   assert.equal(normalizedSystem.hostId, "host-2");
   assert.equal(normalizedSystem.name, "Default");
   assert.equal(normalizedSystem.state, null);
+  assert.equal(normalizedSystem.capabilities.persistentCoordinationAvailable, true);
   assert.equal(createDefaultSystem("host-3").hostId, "host-3");
   assert.equal(createFullAccessSummary().canOperateAllWork, true);
   assert.equal(normalizeOptional("  Ops "), "Ops");

@@ -4,20 +4,37 @@ namespace Workable;
 
 internal sealed class WorkProfilerContext : IDisposable
 {
-    private static readonly AsyncLocal<IWorkProfiler?> CurrentProfiler = new();
-    private readonly IWorkProfiler? previous;
+    private static readonly AsyncLocal<ProfilerExecutionContext?> CurrentProfiler = new();
+    private readonly ProfilerExecutionContext? previous;
     private bool disposed;
 
-    private WorkProfilerContext(IWorkProfiler? profiler)
+    private WorkProfilerContext(WorkSystemId? systemId, IWorkProfiler? profiler)
     {
         this.previous = CurrentProfiler.Value;
-        CurrentProfiler.Value = profiler;
+        CurrentProfiler.Value = profiler is null
+            ? null
+            : new ProfilerExecutionContext(systemId, profiler);
     }
 
-    public static IWorkProfiler? Current => CurrentProfiler.Value;
+    public static IWorkProfiler? Current => CurrentProfiler.Value?.Profiler;
 
     public static IDisposable Begin(IWorkProfiler? profiler)
-        => new WorkProfilerContext(profiler);
+        => new WorkProfilerContext(systemId: null, profiler);
+
+    public static IDisposable Begin(WorkSystemId systemId, IWorkProfiler? profiler)
+        => new WorkProfilerContext(systemId, profiler);
+
+    public static bool TryGetCurrent(out WorkProfilingContext context)
+    {
+        if (CurrentProfiler.Value is not { SystemId: { } systemId, Profiler: { } profiler })
+        {
+            context = default;
+            return false;
+        }
+
+        context = new WorkProfilingContext(systemId, profiler);
+        return true;
+    }
 
     public void Dispose()
     {
@@ -29,4 +46,6 @@ internal sealed class WorkProfilerContext : IDisposable
         this.disposed = true;
         CurrentProfiler.Value = this.previous;
     }
+
+    private sealed record ProfilerExecutionContext(WorkSystemId? SystemId, IWorkProfiler Profiler);
 }

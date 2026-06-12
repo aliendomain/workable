@@ -2364,6 +2364,7 @@ export function WorkableConsole() {
                               }
                               refreshToken={refreshTokens.iteration}
                               sequence={selectedIterationSequence}
+                              sqlProfilingAvailable={activeSystem?.capabilities.sqlProfilingAvailable ?? false}
                               workerId={selectedIterationWorkerId}
                             />
                           </ConsoleViewMount>

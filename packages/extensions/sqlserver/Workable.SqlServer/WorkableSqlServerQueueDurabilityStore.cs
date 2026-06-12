@@ -359,7 +359,7 @@ ORDER BY CreatedAt, WorkerId;
                             new WorkQueueDurabilityLease(workerId, request.OwnerId, leaseId),
                             reader.GetString(1),
                             Deserialize<WorkInput>(reader, 2),
-                            Deserialize<WorkerOptions>(reader, 3) ?? WorkerOptions.Default,
+                            DeserializeWorkerOptions(reader, 3) ?? WorkerOptions.Default,
                             Deserialize<WorkConfiguration>(reader, 4) ?? WorkConfiguration.Default,
                             requestContext,
                             reader.GetFieldValue<DateTimeOffset>(6)));
@@ -673,7 +673,7 @@ VALUES
         Add(command, "@ConcurrencyType", request.Input?.ConcurrencyKey?.Type);
         Add(command, "@ConcurrencyValue", request.Input?.ConcurrencyKey?.Value);
         Add(command, "@InputJson", Serialize(request.Input));
-        Add(command, "@OptionsJson", Serialize(request.Options with { QueueDurabilityTransaction = null }));
+        Add(command, "@OptionsJson", SerializeWorkerOptions(request.Options with { QueueDurabilityTransaction = null }));
         Add(command, "@ConfigurationJson", Serialize(request.Configuration));
         Add(command, "@OriginJson", Serialize(request.RequestContext));
         Add(command, "@CreatedAt", request.CreatedAt);
@@ -830,6 +830,13 @@ VALUES
     private static string? Serialize<T>(T value)
         => value is null ? null : JsonSerializer.Serialize(value, JsonOptions);
 
+    private static string? SerializeWorkerOptions(WorkerOptions? options)
+        => options is null
+            ? null
+            : Serialize(new PersistedWorkerOptions(
+                options.HasExplicitProfilingEnabled ? options.ProfilingEnabled : null,
+                options.Configuration));
+
     private static string SerializeRenewalLeases(IReadOnlyList<WorkQueueDurabilityLease> leases)
         => JsonSerializer.Serialize(
             leases.Select(lease => new RenewalLeasePayload(
@@ -881,6 +888,9 @@ VALUES
             ? default
             : JsonSerializer.Deserialize<T>(reader.GetString(ordinal), JsonOptions);
 
+    private static WorkerOptions? DeserializeWorkerOptions(DbDataReader reader, int ordinal)
+        => Deserialize<PersistedWorkerOptions>(reader, ordinal)?.ToWorkerOptions();
+
     private static WorkRequestContext DeserializeRequestContext(DbDataReader reader, int ordinal)
     {
         if (reader.IsDBNull(ordinal))
@@ -923,6 +933,16 @@ VALUES
         string? Url,
         WorkAuthorizationSnapshot? Authorization,
         bool IsAuthenticated);
+
+    private sealed record PersistedWorkerOptions(
+        bool? ProfilingEnabled,
+        WorkConfiguration? Configuration)
+    {
+        public WorkerOptions ToWorkerOptions()
+            => this.ProfilingEnabled is { } profilingEnabled
+                ? new WorkerOptions(profilingEnabled, this.Configuration)
+                : new WorkerOptions(this.Configuration);
+    }
 
     private sealed class IReadOnlySetJsonConverterFactory : JsonConverterFactory
     {

@@ -125,12 +125,9 @@ public sealed class WorkableHttpTopologyResolver(
         return new WorkableHttpHostCapabilities(realtime);
     }
 
-    private static WorkableHttpSystemCapabilities CreateSystemCapabilities(
+    private static WorkSystemCapabilities CreateSystemCapabilities(
         IWorkSystem system)
-    {
-        var persistentCoordinationAvailable = system is IWorkSystemCoordinationCapabilities capabilities &&
-            capabilities.PersistentCoordinationAvailable;
-
-        return new WorkableHttpSystemCapabilities(persistentCoordinationAvailable);
-    }
+        => system is IWorkSystemCapabilitySource capabilities
+            ? capabilities.Capabilities
+            : WorkSystemCapabilities.None;
 }

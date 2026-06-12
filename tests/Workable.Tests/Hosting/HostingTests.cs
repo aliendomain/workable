@@ -1,4 +1,6 @@
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.FileProviders;
+using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Workable;
 
@@ -76,6 +78,81 @@ public sealed class HostingTests
 
         Assert.True(completion.IsCompletedSuccessfully);
         await tracker.Disposed.Task.WaitAsync(TimeSpan.FromSeconds(5));
+    }
+
+    [Fact]
+    public async Task NonProductionHostEnvironmentEnablesProfilingByDefaultWhenWorkDoesNotSetIt()
+    {
+        var services = new ServiceCollection();
+        services.AddSingleton<IHostEnvironment>(new TestHostEnvironment(Environments.Development));
+        services.AddWorkableSystem(builder => builder.AddWork(
+            WorkDefinition.Create("profile.default.dev", "Uses implicit non-production profiling."),
+            SuccessfulWork));
+
+        await using var provider = services.BuildServiceProvider();
+        await using var system = provider.GetRequiredService<IWorkSystemRegistry>().Default;
+        await system.Start();
+
+        var completion = await (await system.Queue.Enqueue("profile.default.dev")).WaitForCompletion();
+
+        Assert.True(completion.IsCompletedSuccessfully);
+        var worker = completion.Worker ?? throw new InvalidOperationException("Expected worker snapshot.");
+        Assert.True(worker.Options.ProfilingEnabled);
+        Assert.NotNull(worker.Profile);
+    }
+
+    [Fact]
+    public async Task ExplicitProfilingDisableOverridesNonProductionDefault()
+    {
+        var services = new ServiceCollection();
+        services.AddSingleton<IHostEnvironment>(new TestHostEnvironment(Environments.Development));
+        services.AddWorkableSystem(builder => builder.AddWork(
+            WorkDefinition.Create(
+                "profile.default.dev.off",
+                "Explicitly disables profiling.",
+                defaultOptions: new WorkerOptions(ProfilingEnabled: false)),
+            SuccessfulWork));
+
+        await using var provider = services.BuildServiceProvider();
+        await using var system = provider.GetRequiredService<IWorkSystemRegistry>().Default;
+        await system.Start();
+
+        var completion = await (await system.Queue.Enqueue("profile.default.dev.off")).WaitForCompletion();
+
+        Assert.True(completion.IsCompletedSuccessfully);
+        var worker = completion.Worker ?? throw new InvalidOperationException("Expected worker snapshot.");
+        Assert.False(worker.Options.ProfilingEnabled);
+        Assert.Null(worker.Profile);
+    }
+
+    [Fact]
+    public async Task ConfigurationOnlyDefaultOptionsStillInheritNonProductionProfilingDefault()
+    {
+        var services = new ServiceCollection();
+        services.AddSingleton<IHostEnvironment>(new TestHostEnvironment(Environments.Development));
+        services.AddWorkableSystem(builder => builder.AddWork(
+            WorkDefinition.Create(
+                "profile.default.dev.configuration-only",
+                "Uses configuration-only worker defaults.",
+                defaultOptions: new WorkerOptions(
+                    Configuration: WorkConfiguration.Default with
+                    {
+                        Start = WorkStartConfiguration.DoNotStart,
+                    })),
+            SuccessfulWork));
+
+        await using var provider = services.BuildServiceProvider();
+        await using var system = provider.GetRequiredService<IWorkSystemRegistry>().Default;
+        await system.Start();
+
+        var completion = await (await system.Queue.Enqueue(
+            "profile.default.dev.configuration-only",
+            options: new WorkerOptions(Configuration: WorkConfiguration.Default))).WaitForCompletion();
+
+        Assert.True(completion.IsCompletedSuccessfully);
+        var worker = completion.Worker ?? throw new InvalidOperationException("Expected worker snapshot.");
+        Assert.True(worker.Options.ProfilingEnabled);
+        Assert.NotNull(worker.Profile);
     }
 
     [Fact]
@@ -274,6 +351,17 @@ public sealed class HostingTests
             _ = marker;
             return Task.FromResult(WorkExecutionResult.Success());
         }
+    }
+
+    private sealed class TestHostEnvironment(string environmentName) : IHostEnvironment
+    {
+        public string EnvironmentName { get; set; } = environmentName;
+
+        public string ApplicationName { get; set; } = "Workable.Tests";
+
+        public string ContentRootPath { get; set; } = AppContext.BaseDirectory;
+
+        public IFileProvider ContentRootFileProvider { get; set; } = new NullFileProvider();
     }
 
 }

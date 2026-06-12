@@ -12,6 +12,7 @@ import {
   createThroughputSeries,
   createTimeAxisTicks,
   createYAxisTicks,
+  formatCompactRate,
   formatFailedWorkerDuration,
   formatIterationCount,
   formatMilliseconds,
@@ -244,6 +245,10 @@ test("throughput metrics and axis helpers cover empty, completion, execution, an
   assert.deepEqual(createYAxisTicks(9), [9, 6, 3, 0]);
   assert.equal(formatThroughputAxisValue("execution", 1500), "1.5s");
   assert.equal(formatThroughputAxisValue("completion", 0.25), "0.25/s");
+  assert.equal(formatCompactRate(33333), "33.3k");
+  assert.equal(formatCompactRate(100000), "100k");
+  assert.equal(formatCompactRate(999500), "1M");
+  assert.equal(formatThroughputAxisValue("completion", 100000), "100k/s");
   assert.equal(parseChartTimestamp(undefined), null);
   assert.equal(parseChartTimestamp("not-a-date"), null);
   assert.equal(parseChartTimestamp("2026-05-30T10:00:00.000Z"), Date.parse("2026-05-30T10:00:00.000Z"));

@@ -61,7 +61,24 @@ export type WorkableHttpHostCapabilities = {
 
 export type WorkableHttpSystemCapabilities = {
   persistentCoordinationAvailable: boolean;
+  sqlProfilingAvailable: boolean;
 };
+
+export function createDefaultWorkableHttpSystemCapabilities(): WorkableHttpSystemCapabilities {
+  return {
+    persistentCoordinationAvailable: false,
+    sqlProfilingAvailable: false,
+  };
+}
+
+export function normalizeWorkableHttpSystemCapabilities(
+  value?: Partial<WorkableHttpSystemCapabilities> | null
+): WorkableHttpSystemCapabilities {
+  return {
+    persistentCoordinationAvailable: Boolean(value?.persistentCoordinationAvailable),
+    sqlProfilingAvailable: Boolean(value?.sqlProfilingAvailable),
+  };
+}
 
 export type WorkSystemAccessSummary = {
   isSystemAdministrator: boolean;

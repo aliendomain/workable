@@ -14,6 +14,7 @@ import { StackedSkeleton } from "@/components/features/console/stacked-skeleton"
 import { ErrorBanner } from "@/components/workable/console/feedback-panel";
 import {
   WorkableApiError,
+  normalizeWorkableHttpSystemCapabilities,
   workableFetch,
   type WorkSystemAccessSummary,
   type WorkableHttpHostDescriptor,
@@ -288,7 +289,7 @@ function createStoredSystem(
     name: getSystemDisplayName(system),
     systemName: normalizeOptional(system.name),
     access: system.access,
-    persistentCoordinationAvailable: system.capabilities.persistentCoordinationAvailable,
+    capabilities: normalizeWorkableHttpSystemCapabilities(system.capabilities),
     state: system.state,
   };
 }
@@ -525,9 +526,7 @@ function createDiscoveredSystemFromStored(
     name: system.systemName ?? null,
     state: system.state ?? "Unknown",
     isDefault: !system.systemName,
-    capabilities: {
-      persistentCoordinationAvailable: system.persistentCoordinationAvailable,
-    },
+    capabilities: normalizeWorkableHttpSystemCapabilities(system.capabilities),
     access: system.access ?? createUnknownAccessSummary(),
   };
 }

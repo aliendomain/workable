@@ -1,4 +1,7 @@
-import type { WorkSystemAccessSummary } from "@/lib/workable";
+import type {
+  WorkSystemAccessSummary,
+  WorkableHttpSystemCapabilities,
+} from "@/lib/workable";
 
 export type View =
   | "overview"
@@ -33,7 +36,7 @@ export type WorkableSystemConnection = {
   name: string;
   systemName?: string;
   access?: WorkSystemAccessSummary;
-  persistentCoordinationAvailable: boolean;
+  capabilities: WorkableHttpSystemCapabilities;
   state?: string | null;
 };
 

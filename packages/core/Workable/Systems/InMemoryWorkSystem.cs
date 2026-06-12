@@ -12,9 +12,10 @@ internal sealed class InMemoryWorkSystem :
     IWorkSystemBuiltInHttpSurfaceAccess,
     IWorkSystemReadModelClock,
     IWorkSystemShutdownMetadata,
-    IWorkSystemCoordinationCapabilities
+    IWorkSystemCapabilitySource
 {
     private readonly IServiceProvider rootServices;
+    private readonly ILogger<InMemoryWorkSystem>? logger;
     private readonly IWorkAuthorizationGroupProvider groupProvider;
     private readonly WorkSystemAuthorizationConfiguration authorization;
     private readonly IReadOnlyList<Func<IServiceProvider, IWorkDefinitionSource>> workDefinitionSourceFactories;
@@ -40,6 +41,7 @@ internal sealed class InMemoryWorkSystem :
         IReadOnlyList<Func<IServiceProvider, IStartupWorkSource>> startupWorkSourceFactories,
         IServiceProvider rootServices,
         TimeSpan shutdownGracePeriod,
+        WorkerOptions? implicitDefaultWorkerOptions,
         IReadOnlyList<WorkExceptionClassifier> globalExceptionClassifiers)
     {
         this.Id = registration.Id;
@@ -47,15 +49,26 @@ internal sealed class InMemoryWorkSystem :
         this.RequiresAuthorization = registration.RequiresAuthorization;
         this.authorization = registration.Authorization;
         this.rootServices = rootServices;
+        this.logger = rootServices.GetService<ILogger<InMemoryWorkSystem>>();
         this.workDefinitionSourceFactories = workDefinitionSourceFactories;
         this.startupWorkSourceFactories = startupWorkSourceFactories;
         this.ShutdownGracePeriod = shutdownGracePeriod;
         var persistenceStore = rootServices.GetService<IWorkPersistenceStore>();
-        this.PersistentCoordinationAvailable = persistenceStore is not null;
+        var capabilities = new WorkSystemCapabilitiesBuilder
+        {
+            PersistentCoordinationAvailable = persistenceStore is not null,
+        };
+        foreach (var contributor in rootServices.GetServices<IWorkSystemCapabilityContributor>())
+        {
+            contributor.ConfigureCapabilities(capabilities);
+        }
+
+        this.Capabilities = capabilities.Build();
         var authorizationLogger = rootServices.GetService<ILoggerFactory>()?.CreateLogger("Workable.Authorization");
         this.catalog = new WorkSystemCatalog(
             work,
-            this.PersistentCoordinationAvailable,
+            this.Capabilities.PersistentCoordinationAvailable,
+            implicitDefaultWorkerOptions,
             this.authorization,
             authorizationLogger);
         this.readModel = new WorkSystemReadModel(this.catalog, () => this.State, this.Name, this.metrics);
@@ -105,7 +118,7 @@ internal sealed class InMemoryWorkSystem :
 
     public TimeSpan ShutdownGracePeriod { get; }
 
-    public bool PersistentCoordinationAvailable { get; }
+    public WorkSystemCapabilities Capabilities { get; }
 
     long IWorkSystemReadModelClock.AppliedSequence => this.readModel.AppliedSequence;
 
@@ -263,6 +276,7 @@ internal sealed class InMemoryWorkSystem :
     {
         await this.lifecycleLock.WaitAsync(cancellationToken);
         var dispatchingStarted = false;
+        var lifecycleStarted = false;
         try
         {
             if (this.State == WorkSystemState.Started)
@@ -281,6 +295,8 @@ internal sealed class InMemoryWorkSystem :
             await this.workers.StartDispatching(cancellationToken);
             dispatchingStarted = true;
             this.State = WorkSystemState.Started;
+            lifecycleStarted = true;
+            await this.NotifyStarted(cancellationToken);
             await this.QueueAutomaticallyStartedWork(cancellationToken);
             await this.QueueStartupWork(cancellationToken);
         }
@@ -291,6 +307,12 @@ internal sealed class InMemoryWorkSystem :
                 await this.workers.StopDispatching(CancellationToken.None);
             }
 
+            if (lifecycleStarted)
+            {
+                await this.NotifyStopped();
+            }
+
+            this.metrics.Clear();
             this.State = WorkSystemState.Stopped;
             throw;
         }
@@ -326,6 +348,7 @@ internal sealed class InMemoryWorkSystem :
             this.State = WorkSystemState.Stopping;
             await this.NotifyStopping(requestContext.Origin);
             var result = await this.workers.StopDispatching(requestContext, cancellationToken);
+            await this.NotifyStopped();
             this.metrics.Clear();
             this.State = WorkSystemState.Stopped;
             return result;
@@ -348,6 +371,14 @@ internal sealed class InMemoryWorkSystem :
             {
                 // Lifecycle observers are best-effort and must not prevent shutdown.
             }
+        }
+    }
+
+    private async Task NotifyStarted(CancellationToken cancellationToken)
+    {
+        foreach (var observer in this.rootServices.GetServices<IWorkSystemLifecycleObserver>())
+        {
+            await observer.SystemStarted(this, cancellationToken);
         }
     }
 
@@ -473,6 +504,25 @@ internal sealed class InMemoryWorkSystem :
         }
     }
 
+    private async Task NotifyStopped()
+    {
+        foreach (var observer in this.rootServices.GetServices<IWorkSystemLifecycleObserver>())
+        {
+            try
+            {
+                await observer.SystemStopped(this, CancellationToken.None);
+            }
+            catch (Exception exception) when (IsNonCriticalException(exception))
+            {
+                this.logger?.LogWarning(
+                    exception,
+                    "Lifecycle observer {ObserverType} threw during SystemStopped for work system {WorkSystem}.",
+                    observer.GetType().FullName ?? observer.GetType().Name,
+                    this.Name ?? this.Id.ToString());
+            }
+        }
+    }
+
     private RegisteredWork GetStartupRegisteredWork(StartupWorkRequest request)
     {
         if (request.DefinitionId is { } definitionId)
@@ -487,4 +537,14 @@ internal sealed class InMemoryWorkSystem :
             ? namedWork
             : throw new InvalidOperationException($"Startup work definition '{name}' was not found.");
     }
+
+    private static bool IsNonCriticalException(Exception exception)
+        => exception is not OutOfMemoryException and
+            not StackOverflowException and
+            not AccessViolationException and
+            not AppDomainUnloadedException and
+            not BadImageFormatException and
+            not CannotUnloadAppDomainException and
+            not InvalidProgramException and
+            not global::System.Threading.ThreadAbortException;
 }

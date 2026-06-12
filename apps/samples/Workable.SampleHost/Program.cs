@@ -42,10 +42,13 @@ builder.Services.AddCors(options =>
 });
 
 builder.Services.AddWorkableSqlServerDurableQueue(samplePersistence.ConnectionString);
+builder.Services.AddWorkableSqlServerProfiling();
 builder.Services.AddSingleton<DemoRecurringIterationPlanStore>();
+builder.Services.AddSingleton(new DemoProfilingSqlConnection(samplePersistence.ConnectionString));
 builder.Services.AddScoped<DemoProfilingActivationMarker>();
 builder.Services.AddScoped<DemoProfilingPlanner>();
 builder.Services.AddScoped<DemoProfilingPipeline>();
+builder.Services.AddScoped<DemoProfilingSqlProbe>();
 builder.Services.AddScoped<DemoProfilingSectionWorker>();
 builder.Services.AddScoped<DemoProfilingOutputComposer>();
 
@@ -79,7 +82,7 @@ builder.Services.AddWorkableSystem(workable =>
         DemoProfileDefinition(
             "sample.demo.profiling-lab",
             "Samples:Demo",
-            "One-shot profiling showcase with nested scopes, timings, and injected-service contributions."));
+            "One-shot profiling showcase with nested scopes, timings, injected-service contributions, and SQL command capture."));
     workable.AddWork<DemoForceCancelWork>(DemoDefinition("sample.demo.force-cancel", "Samples:Demo", "Ignores cancellation so shutdown must force-cancel it."));
     workable.AddWork<DemoTimedWork>(DemoDefinition("sample.demo.throttled", "Samples:Demo", "Longer sample work without an artificial concurrency bottleneck."));
     workable.AddWork<DemoTimedWork>(
@@ -160,6 +163,7 @@ builder.Services.AddSingleton<DemoWorkloadController>();
 builder.Services.AddHostedService(static services => services.GetRequiredService<DemoWorkloadController>());
 builder.Services.AddSingleton<DemoSampleSystemSelection>();
 builder.Services.AddSingleton<DemoQueuePressureController>();
+builder.Services.AddSingleton<DemoProfilingPressureController>();
 builder.Services.AddSingleton<DemoTightLoopController>();
 builder.Services.AddSingleton<DemoDurabilityWarningController>(services => new DemoDurabilityWarningController(
     services.GetRequiredService<IWorkSystemRegistry>(),
@@ -455,6 +459,41 @@ app.MapGet("/", (HttpContext context) =>
                     </tr>
                     <tr>
                         <td>
+                            <div class="action-name">Profiling pressure</div>
+                            <div class="action-description">Continuously queue the profiling lab in bursts so you can watch profiler memory, SQL capture, and UI pressure over time.</div>
+                        </td>
+                        <td>
+                            <div class="action-controls profiling-pressure-controls">
+                                <label class="number-control">
+                                    Burst
+                                    <input id="profiling-pressure-burst" type="number" min="1" max="128" step="1" value="4">
+                                </label>
+                                <label class="interval-control">
+                                    Every
+                                    <input id="profiling-pressure-interval" type="number" min="25" max="30000" step="25" value="250">
+                                    ms
+                                </label>
+                                <label class="number-control">
+                                    Sections
+                                    <input id="profiling-pressure-sections" type="number" min="1" max="6" step="1" value="4">
+                                </label>
+                                <label class="number-control">
+                                    Steps
+                                    <input id="profiling-pressure-steps" type="number" min="1" max="5" step="1" value="3">
+                                </label>
+                                <label class="interval-control">
+                                    Delay
+                                    <input id="profiling-pressure-delay" type="number" min="5" max="150" step="5" value="35">
+                                    ms
+                                </label>
+                                <button id="profiling-pressure-start" type="button">Start profiling pressure</button>
+                                <button id="profiling-pressure-stop" class="running" type="button">Stop profiling pressure</button>
+                            </div>
+                        </td>
+                        <td><p class="status" id="profiling-pressure-status">Loading profiling pressure status...</p></td>
+                    </tr>
+                    <tr>
+                        <td>
                             <div class="action-name">Force-cancel worker</div>
                             <div class="action-description">Queue work that ignores cooperative shutdown.</div>
                         </td>
@@ -537,6 +576,13 @@ app.MapGet("/", (HttpContext context) =>
                 const idempotencyWarning = document.getElementById('idempotency-warning');
                 const pressureStart = document.getElementById('pressure-start');
                 const pressureStop = document.getElementById('pressure-stop');
+                const profilingPressureBurst = document.getElementById('profiling-pressure-burst');
+                const profilingPressureInterval = document.getElementById('profiling-pressure-interval');
+                const profilingPressureSections = document.getElementById('profiling-pressure-sections');
+                const profilingPressureSteps = document.getElementById('profiling-pressure-steps');
+                const profilingPressureDelay = document.getElementById('profiling-pressure-delay');
+                const profilingPressureStart = document.getElementById('profiling-pressure-start');
+                const profilingPressureStop = document.getElementById('profiling-pressure-stop');
                 const tightLoopStart = document.getElementById('tight-loop-start');
                 const tightLoopStop = document.getElementById('tight-loop-stop');
                 const tightLoopYield = document.getElementById('tight-loop-yield');
@@ -551,6 +597,7 @@ app.MapGet("/", (HttpContext context) =>
                 const durabilityWarningStatus = document.getElementById('durability-warning-status');
                 const idempotencyWarningStatus = document.getElementById('idempotency-warning-status');
                 const pressureStatus = document.getElementById('pressure-status');
+                const profilingPressureStatus = document.getElementById('profiling-pressure-status');
                 const tightLoopStatus = document.getElementById('tight-loop-status');
                 const forceCancelStatus = document.getElementById('force-cancel-status');
                 let intervalDirty = false;
@@ -559,6 +606,7 @@ app.MapGet("/", (HttpContext context) =>
                 let selectedFulfillment = true;
                 let sampleWorkloadRunning = false;
                 let pressureRunning = false;
+                let profilingPressureRunning = false;
                 let durabilityWarningRunning = false;
                 let tightLoopRunning = false;
 
@@ -578,6 +626,8 @@ app.MapGet("/", (HttpContext context) =>
                     durabilityWarningStop.disabled = !durabilityWarningRunning;
                     idempotencyWarning.disabled = !selectedOperations;
                     pressureStart.disabled = pressureRunning || !selectedOperations;
+                    profilingPressureStart.disabled = profilingPressureRunning || !selectedOperations;
+                    profilingPressureStop.disabled = !profilingPressureRunning;
                     forceCancel.disabled = !selectedOperations;
                     tightLoopStart.disabled = tightLoopRunning || !anySelected;
                 }
@@ -609,6 +659,25 @@ app.MapGet("/", (HttpContext context) =>
                     pressureStart.disabled = pressureRunning || !selectedOperations;
                     pressureStop.disabled = !data.isRunning;
                     pressureStatus.textContent = `${data.isRunning ? 'Running' : 'Stopped'} - queued ${data.queuedCount} - tracking ${data.trackedWorkerCount} - ${data.workerDelayMilliseconds}ms work every ${data.queueIntervalMilliseconds}ms`;
+                }
+
+                async function refreshProfilingPressure() {
+                    const response = await fetch('/sample-workload/profiling-pressure');
+                    const data = await response.json();
+                    profilingPressureRunning = data.isRunning;
+                    profilingPressureStart.disabled = data.isRunning || !selectedOperations;
+                    profilingPressureStop.disabled = !data.isRunning;
+                    profilingPressureBurst.disabled = data.isRunning;
+                    profilingPressureInterval.disabled = data.isRunning;
+                    profilingPressureSections.disabled = data.isRunning;
+                    profilingPressureSteps.disabled = data.isRunning;
+                    profilingPressureDelay.disabled = data.isRunning;
+
+                    const startedAt = data.startedAt
+                        ? ` - started ${new Date(data.startedAt).toLocaleTimeString()}`
+                        : '';
+                    profilingPressureStatus.textContent =
+                        `${data.isRunning ? 'Running' : 'Stopped'} - burst ${data.workersPerBurst} every ${data.queueIntervalMilliseconds}ms - ${data.sectionCount} sections x ${data.stepsPerSection} steps at ${data.delayMilliseconds}ms - submitted ${data.submittedCount}, accepted ${data.acceptedCount}, rejected ${data.rejectedCount}, failed ${data.failedCount}, tracking ${data.trackedWorkerCount}${startedAt}`;
                 }
 
                 async function refreshDurabilityWarning() {
@@ -778,6 +847,38 @@ app.MapGet("/", (HttpContext context) =>
                     }
                 });
 
+                profilingPressureStart.addEventListener('click', async () => {
+                    profilingPressureStart.disabled = true;
+                    profilingPressureStatus.textContent = 'Starting profiling pressure...';
+                    try {
+                        await fetch('/sample-workload/profiling-pressure/start', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                queueIntervalMilliseconds: Number(profilingPressureInterval.value),
+                                workersPerBurst: Number(profilingPressureBurst.value),
+                                sectionCount: Number(profilingPressureSections.value),
+                                stepsPerSection: Number(profilingPressureSteps.value),
+                                delayMilliseconds: Number(profilingPressureDelay.value)
+                            })
+                        });
+                    } finally {
+                        await refreshProfilingPressure();
+                        await refresh();
+                    }
+                });
+
+                profilingPressureStop.addEventListener('click', async () => {
+                    profilingPressureStop.disabled = true;
+                    profilingPressureStatus.textContent = 'Stopping profiling pressure and canceling tracked workers...';
+                    try {
+                        await fetch('/sample-workload/profiling-pressure/stop', { method: 'POST' });
+                    } finally {
+                        await refreshProfilingPressure();
+                        await refresh();
+                    }
+                });
+
                 interval.addEventListener('input', () => {
                     intervalDirty = true;
                 });
@@ -797,6 +898,7 @@ app.MapGet("/", (HttpContext context) =>
                     });
                     await refresh();
                     await refreshPressure();
+                    await refreshProfilingPressure();
                     await refreshDurabilityWarning();
                     await refreshTightLoops();
                 }
@@ -866,11 +968,13 @@ app.MapGet("/", (HttpContext context) =>
 
                 refresh();
                 refreshPressure();
+                refreshProfilingPressure();
                 refreshDurabilityWarning();
                 refreshTightLoops();
                 setInterval(() => {
                     refresh();
                     refreshPressure();
+                    refreshProfilingPressure();
                     refreshDurabilityWarning();
                     refreshTightLoops();
                 }, 2000);
@@ -910,6 +1014,12 @@ sampleWorkload.MapGet("/queue-pressure", (DemoQueuePressureController controller
 sampleWorkload.MapPost("/queue-pressure/start", (DemoQueuePressureController controller)
     => Results.Ok(controller.Start()));
 sampleWorkload.MapPost("/queue-pressure/stop", async (DemoQueuePressureController controller, CancellationToken cancellationToken)
+    => Results.Ok(await controller.Stop(cancellationToken)));
+sampleWorkload.MapGet("/profiling-pressure", (DemoProfilingPressureController controller)
+    => Results.Ok(controller.Status()));
+sampleWorkload.MapPost("/profiling-pressure/start", (DemoProfilingPressureController controller, DemoProfilingPressureRequest request)
+    => Results.Ok(controller.Start(request)));
+sampleWorkload.MapPost("/profiling-pressure/stop", async (DemoProfilingPressureController controller, CancellationToken cancellationToken)
     => Results.Ok(await controller.Stop(cancellationToken)));
 sampleWorkload.MapGet("/tight-loops", (DemoTightLoopController controller)
     => Results.Ok(controller.Status()));

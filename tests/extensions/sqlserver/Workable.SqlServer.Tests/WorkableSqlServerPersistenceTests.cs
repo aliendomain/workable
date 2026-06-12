@@ -1,6 +1,9 @@
+using System.Data;
 using System.Data.Common;
 using Microsoft.Data.SqlClient;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.FileProviders;
+using Microsoft.Extensions.Hosting;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Workable;
@@ -214,6 +217,392 @@ CREATE TABLE workable.WorkEntries
         Assert.Contains("could not deploy schema", exception.Message);
         var validation = Assert.IsType<InvalidOperationException>(exception.InnerException);
         Assert.Contains("IsDurableQueued", validation.Message);
+    }
+
+    [Fact]
+    public async Task DirectSqlClientExecutionDoesNotAppearInWorkerProfileWhenSqlServerProfilingIsNotConfigured()
+    {
+        if (this.SkipIfUnavailable())
+        {
+            return;
+        }
+
+        const string workName = "sql-profiled-direct-command";
+        using var provider = new ServiceCollection()
+            .AddWorkableSqlServerDurableQueue(
+                this.ConnectionString,
+                SchemaName)
+            .AddWorkableSystem(builder => builder.AddWork(
+                WorkDefinition.Create(
+                    workName,
+                    "Profiles Microsoft.Data.SqlClient command execution.",
+                    defaultOptions: new WorkerOptions(ProfilingEnabled: true)),
+                async (context, input, cancellationToken) =>
+                {
+                    await using var connection = new SqlConnection(this.ConnectionString);
+                    await connection.OpenAsync(cancellationToken);
+                    await using var command = connection.CreateCommand();
+                    command.CommandText = "SELECT @Value;";
+                    command.Parameters.AddWithValue("@Value", 42);
+
+                    var value = Convert.ToInt32(await command.ExecuteScalarAsync(cancellationToken));
+                    return value == 42
+                        ? WorkExecutionResult.Success()
+                        : WorkExecutionResult.Failure([WorkMessage.Error("sql.value.unexpected", $"Expected 42 but received {value}.")]);
+                }))
+            .BuildServiceProvider();
+        await using var system = provider.GetRequiredService<IWorkSystemRegistry>().Default;
+        await system.Start();
+
+        var completion = await WaitForCompletion(await system.Queue.Enqueue(workName));
+
+        Assert.True(completion.IsCompletedSuccessfully);
+        var worker = completion.Worker ?? throw new InvalidOperationException("Expected worker snapshot.");
+        var profile = worker.Profile ?? throw new InvalidOperationException("Expected worker profile.");
+        Assert.DoesNotContain(
+            Flatten(profile.Root),
+            node => node.MetricType == WorkProfileMetricType.Timing &&
+                node.Label.StartsWith("SQL ", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task DirectSqlClientExecutionAppearsInWorkerProfileWhenSqlServerProfilingIsConfigured()
+    {
+        if (this.SkipIfUnavailable())
+        {
+            return;
+        }
+
+        const string workName = "sql-profiled-direct-command";
+        using var provider = new ServiceCollection()
+            .AddWorkableSqlServerProfiling()
+            .AddWorkableSqlServerDurableQueue(
+                this.ConnectionString,
+                SchemaName)
+            .AddWorkableSystem(builder => builder.AddWork(
+                WorkDefinition.Create(
+                    workName,
+                    "Profiles Microsoft.Data.SqlClient command execution.",
+                    defaultOptions: new WorkerOptions(ProfilingEnabled: true)),
+                async (context, input, cancellationToken) =>
+                {
+                    await using var connection = new SqlConnection(this.ConnectionString);
+                    await connection.OpenAsync(cancellationToken);
+                    await using var command = connection.CreateCommand();
+                    command.CommandText = "SELECT @Value;";
+                    command.Parameters.AddWithValue("@Value", 42);
+
+                    var value = Convert.ToInt32(await command.ExecuteScalarAsync(cancellationToken));
+                    return value == 42
+                        ? WorkExecutionResult.Success()
+                        : WorkExecutionResult.Failure([WorkMessage.Error("sql.value.unexpected", $"Expected 42 but received {value}.")]);
+                }))
+            .BuildServiceProvider();
+        await using var system = provider.GetRequiredService<IWorkSystemRegistry>().Default;
+        await system.Start();
+
+        var completion = await WaitForCompletion(await system.Queue.Enqueue(workName));
+
+        Assert.True(completion.IsCompletedSuccessfully);
+        var worker = completion.Worker ?? throw new InvalidOperationException("Expected worker snapshot.");
+        var profile = worker.Profile ?? throw new InvalidOperationException("Expected worker profile.");
+        var sqlNode = Assert.Single(
+            Flatten(profile.Root),
+            node => node.MetricType == WorkProfileMetricType.Timing &&
+                node.Label.StartsWith("SQL ", StringComparison.Ordinal));
+        var contextJson = JsonSerializer.Serialize(sqlNode.Context);
+
+        Assert.Contains("Microsoft.Data.SqlClient", contextJson, StringComparison.Ordinal);
+        Assert.Contains("ExecuteScalar", contextJson, StringComparison.Ordinal);
+        Assert.Contains("\"Statement\":\"SELECT @Value;\"", contextJson, StringComparison.Ordinal);
+        Assert.Contains("\"ParameterCount\":1", contextJson, StringComparison.Ordinal);
+        Assert.Contains("\"Name\":\"@Value\"", contextJson, StringComparison.Ordinal);
+        Assert.Contains("\"Value\":42", contextJson, StringComparison.Ordinal);
+        Assert.Contains("\"IsRedacted\":false", contextJson, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task SqlProfilingRetainsFullStatementsAndParameterValuesInWorkerProfile()
+    {
+        if (this.SkipIfUnavailable())
+        {
+            return;
+        }
+
+        const string workName = "sql-profiled-full-values";
+        var description = new string('x', 320);
+        var payload = Enumerable.Range(0, 64)
+            .Select(static index => (byte)index)
+            .ToArray();
+        var statement = """
+            SELECT
+                @Description AS Description,
+                DATALENGTH(@Payload) AS PayloadLength;
+            """;
+
+        using var provider = new ServiceCollection()
+            .AddWorkableSqlServerProfiling()
+            .AddWorkableSqlServerDurableQueue(
+                this.ConnectionString,
+                SchemaName)
+            .AddWorkableSystem(builder => builder.AddWork(
+                WorkDefinition.Create(
+                    workName,
+                    "Profiles Microsoft.Data.SqlClient command execution with full statement and parameter capture.",
+                    defaultOptions: new WorkerOptions(ProfilingEnabled: true)),
+                async (context, input, cancellationToken) =>
+                {
+                    await using var connection = new SqlConnection(this.ConnectionString);
+                    await connection.OpenAsync(cancellationToken);
+                    await using var command = connection.CreateCommand();
+                    command.CommandText = statement;
+                    command.Parameters.AddWithValue("@Description", description);
+                    command.Parameters.Add("@Payload", SqlDbType.VarBinary, payload.Length).Value = payload;
+
+                    await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+                    await reader.ReadAsync(cancellationToken);
+                    var payloadLength = reader.GetInt32(reader.GetOrdinal("PayloadLength"));
+
+                    return payloadLength == payload.Length
+                        ? WorkExecutionResult.Success()
+                        : WorkExecutionResult.Failure([WorkMessage.Error("sql.payload.unexpected", $"Expected {payload.Length} but received {payloadLength}.")]);
+                }))
+            .BuildServiceProvider();
+        await using var system = provider.GetRequiredService<IWorkSystemRegistry>().Default;
+        await system.Start();
+
+        var completion = await WaitForCompletion(await system.Queue.Enqueue(workName));
+
+        Assert.True(completion.IsCompletedSuccessfully);
+        var worker = completion.Worker ?? throw new InvalidOperationException("Expected worker snapshot.");
+        var profile = worker.Profile ?? throw new InvalidOperationException("Expected worker profile.");
+        var sqlNode = Assert.Single(
+            Flatten(profile.Root),
+            node => node.MetricType == WorkProfileMetricType.Timing &&
+                node.Label.StartsWith("SQL ", StringComparison.Ordinal));
+        var contextJson = JsonSerializer.Serialize(sqlNode.Context);
+
+        Assert.Contains($"\"Statement\":{JsonSerializer.Serialize(statement)}", contextJson, StringComparison.Ordinal);
+        Assert.Contains($"\"Value\":{JsonSerializer.Serialize(description)}", contextJson, StringComparison.Ordinal);
+        Assert.Contains($"\"Value\":{JsonSerializer.Serialize($"0x{Convert.ToHexString(payload)}")}", contextJson, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task ObviousSecretSqlParametersAreRedactedInWorkerProfile()
+    {
+        if (this.SkipIfUnavailable())
+        {
+            return;
+        }
+
+        const string workName = "sql-profiled-secret-parameter";
+        const string secretValue = "super-secret-value";
+        using var provider = new ServiceCollection()
+            .AddWorkableSqlServerProfiling()
+            .AddWorkableSqlServerDurableQueue(
+                this.ConnectionString,
+                SchemaName)
+            .AddWorkableSystem(builder => builder.AddWork(
+                WorkDefinition.Create(
+                    workName,
+                    "Profiles Microsoft.Data.SqlClient command execution with secret-like parameters redacted.",
+                    defaultOptions: new WorkerOptions(ProfilingEnabled: true)),
+                async (context, input, cancellationToken) =>
+                {
+                    await using var connection = new SqlConnection(this.ConnectionString);
+                    await connection.OpenAsync(cancellationToken);
+                    await using var command = connection.CreateCommand();
+                    command.CommandText = "SELECT LEN(@Password);";
+                    command.Parameters.AddWithValue("@Password", secretValue);
+
+                    var length = Convert.ToInt32(await command.ExecuteScalarAsync(cancellationToken));
+                    return length == secretValue.Length
+                        ? WorkExecutionResult.Success()
+                        : WorkExecutionResult.Failure([WorkMessage.Error("sql.value.unexpected", $"Expected {secretValue.Length} but received {length}.")]);
+                }))
+            .BuildServiceProvider();
+        await using var system = provider.GetRequiredService<IWorkSystemRegistry>().Default;
+        await system.Start();
+
+        var completion = await WaitForCompletion(await system.Queue.Enqueue(workName));
+
+        Assert.True(completion.IsCompletedSuccessfully);
+        var worker = completion.Worker ?? throw new InvalidOperationException("Expected worker snapshot.");
+        var profile = worker.Profile ?? throw new InvalidOperationException("Expected worker profile.");
+        var sqlNode = Assert.Single(
+            Flatten(profile.Root),
+            node => node.MetricType == WorkProfileMetricType.Timing &&
+                node.Label.StartsWith("SQL ", StringComparison.Ordinal));
+        var contextJson = JsonSerializer.Serialize(sqlNode.Context);
+
+        Assert.Contains("\"Name\":\"@Password\"", contextJson, StringComparison.Ordinal);
+        Assert.Contains("\\u003Credacted\\u003E", contextJson, StringComparison.Ordinal);
+        Assert.Contains("\"IsRedacted\":true", contextJson, StringComparison.Ordinal);
+        Assert.DoesNotContain(secretValue, contextJson, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task DirectSqlClientExecutionAppearsInWorkerProfileWhenSqlServerProfilingStartsAfterSqlClientHasInitialized()
+    {
+        if (this.SkipIfUnavailable())
+        {
+            return;
+        }
+
+        await using (var connection = await this.OpenConnection())
+        {
+            Assert.Equal(1, await Scalar<int>(connection, "SELECT 1;"));
+        }
+
+        const string workName = "sql-profiled-direct-command-existing-listener";
+        using var provider = new ServiceCollection()
+            .AddWorkableSqlServerProfiling()
+            .AddWorkableSqlServerDurableQueue(
+                this.ConnectionString,
+                SchemaName)
+            .AddWorkableSystem(builder => builder.AddWork(
+                WorkDefinition.Create(
+                    workName,
+                    "Profiles Microsoft.Data.SqlClient command execution after SqlClient already initialized.",
+                    defaultOptions: new WorkerOptions(ProfilingEnabled: true)),
+                async (context, input, cancellationToken) =>
+                {
+                    await using var connection = new SqlConnection(this.ConnectionString);
+                    await connection.OpenAsync(cancellationToken);
+                    await using var command = connection.CreateCommand();
+                    command.CommandText = "SELECT @Value;";
+                    command.Parameters.AddWithValue("@Value", 42);
+
+                    var value = Convert.ToInt32(await command.ExecuteScalarAsync(cancellationToken));
+                    return value == 42
+                        ? WorkExecutionResult.Success()
+                        : WorkExecutionResult.Failure([WorkMessage.Error("sql.value.unexpected", $"Expected 42 but received {value}.")]);
+                }))
+            .BuildServiceProvider();
+        await using var system = provider.GetRequiredService<IWorkSystemRegistry>().Default;
+        await system.Start();
+
+        var completion = await WaitForCompletion(await system.Queue.Enqueue(workName));
+
+        Assert.True(completion.IsCompletedSuccessfully);
+        var worker = completion.Worker ?? throw new InvalidOperationException("Expected worker snapshot.");
+        var profile = worker.Profile ?? throw new InvalidOperationException("Expected worker profile.");
+        Assert.Contains(
+            Flatten(profile.Root),
+            node => node.MetricType == WorkProfileMetricType.Timing &&
+                node.Label.StartsWith("SQL ", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task SqlProfilingTracksOnlyTheOwningSystemWhenMultipleSystemsAreStarted()
+    {
+        if (this.SkipIfUnavailable())
+        {
+            return;
+        }
+
+        const string workName = "sql-profiled-direct-command-multi-system";
+        using var provider = new ServiceCollection()
+            .AddWorkableSqlServerProfiling()
+            .AddWorkableSystem("alpha", builder => builder.AddWork(
+                WorkDefinition.Create(
+                    workName,
+                    "Profiles Microsoft.Data.SqlClient command execution for the owning system only.",
+                    defaultOptions: new WorkerOptions(ProfilingEnabled: true)),
+                async (context, input, cancellationToken) =>
+                {
+                    await using var connection = new SqlConnection(this.ConnectionString);
+                    await connection.OpenAsync(cancellationToken);
+                    await using var command = connection.CreateCommand();
+                    command.CommandText = "SELECT @Value;";
+                    command.Parameters.AddWithValue("@Value", 42);
+
+                    var value = Convert.ToInt32(await command.ExecuteScalarAsync(cancellationToken));
+                    return value == 42
+                        ? WorkExecutionResult.Success()
+                        : WorkExecutionResult.Failure([WorkMessage.Error("sql.value.unexpected", $"Expected 42 but received {value}.")]);
+                }))
+            .AddWorkableSystem("beta", builder => builder.AddWork(
+                WorkDefinition.Create(
+                    workName,
+                    "Profiles Microsoft.Data.SqlClient command execution for the owning system only.",
+                    defaultOptions: new WorkerOptions(ProfilingEnabled: true)),
+                async (context, input, cancellationToken) =>
+                {
+                    await using var connection = new SqlConnection(this.ConnectionString);
+                    await connection.OpenAsync(cancellationToken);
+                    await using var command = connection.CreateCommand();
+                    command.CommandText = "SELECT @Value;";
+                    command.Parameters.AddWithValue("@Value", 7);
+
+                    var value = Convert.ToInt32(await command.ExecuteScalarAsync(cancellationToken));
+                    return value == 7
+                        ? WorkExecutionResult.Success()
+                        : WorkExecutionResult.Failure([WorkMessage.Error("sql.value.unexpected", $"Expected 7 but received {value}.")]);
+                }))
+            .BuildServiceProvider();
+
+        var registry = provider.GetRequiredService<IWorkSystemRegistry>();
+        var systems = registry.Systems.ToDictionary(system => system.Name ?? string.Empty, StringComparer.OrdinalIgnoreCase);
+        await using var alpha = systems["alpha"];
+        await using var beta = systems["beta"];
+
+        await alpha.Start();
+        await beta.Start();
+
+        var alphaCompletion = await WaitForCompletion(await alpha.Queue.Enqueue(workName));
+        var betaCompletion = await WaitForCompletion(await beta.Queue.Enqueue(workName));
+
+        Assert.True(alphaCompletion.IsCompletedSuccessfully);
+        Assert.True(betaCompletion.IsCompletedSuccessfully);
+
+        var alphaProfile = alphaCompletion.Worker?.Profile ?? throw new InvalidOperationException("Expected alpha worker profile.");
+        var betaProfile = betaCompletion.Worker?.Profile ?? throw new InvalidOperationException("Expected beta worker profile.");
+
+        Assert.Single(
+            Flatten(alphaProfile.Root),
+            node => node.MetricType == WorkProfileMetricType.Timing &&
+                node.Label.StartsWith("SQL ", StringComparison.Ordinal));
+        Assert.Single(
+            Flatten(betaProfile.Root),
+            node => node.MetricType == WorkProfileMetricType.Timing &&
+                node.Label.StartsWith("SQL ", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task DurableQueueRetainsImplicitNonProductionProfilingWhenQueueOptionsOnlyOverrideConfiguration()
+    {
+        if (this.SkipIfUnavailable())
+        {
+            return;
+        }
+
+        const string workName = "sql-durable-dev-default-profiling";
+        using var provider = new ServiceCollection()
+            .AddSingleton<IHostEnvironment>(new TestHostEnvironment(Environments.Development))
+            .AddWorkableSqlServerDurableQueue(
+                this.ConnectionString,
+                SchemaName)
+            .AddWorkableSystem(builder => builder.AddWork(
+                WorkDefinition.Create(
+                    workName,
+                    "Uses durable queueing with inherited non-production profiling."),
+                (_, _, _) => Task.FromResult(WorkExecutionResult.Success()),
+                configuration => configuration.QueueDurably()))
+            .BuildServiceProvider();
+        await using var system = provider.GetRequiredService<IWorkSystemRegistry>().Default;
+        await system.Start();
+
+        Assert.True(system.Catalog.TryGet(workName, out var definition));
+
+        var completion = await WaitForCompletion(await system.Queue.Enqueue(
+            workName,
+            options: new WorkerOptions(definition.Configuration)));
+
+        Assert.True(completion.IsCompletedSuccessfully);
+        var worker = completion.Worker ?? throw new InvalidOperationException("Expected worker snapshot.");
+        Assert.True(worker.Options.ProfilingEnabled);
+        Assert.NotNull(worker.Profile);
     }
 
     [Fact]
@@ -2138,6 +2527,18 @@ WHERE WorkerId = @WorkerId;
             async () => await CountFailedRetainedRowsForSubject(connection, subjectValue) == 1,
             $"Expected failed SQL Server work entry for subject '{subjectValue}' to be retained.");
 
+    private static IEnumerable<WorkProfileSnapshotNode> Flatten(WorkProfileSnapshotNode node)
+    {
+        yield return node;
+        foreach (var child in node.Children)
+        {
+            foreach (var descendant in Flatten(child))
+            {
+                yield return descendant;
+            }
+        }
+    }
+
     private static async Task ExpireLease(SqlConnection connection, string subjectValue)
     {
         await using var command = connection.CreateCommand();
@@ -2172,4 +2573,15 @@ WHERE SubjectValue = N'{Escape(subjectValue)}'
 
     private static string Escape(string value)
         => value.Replace("'", "''", StringComparison.Ordinal);
+
+    private sealed class TestHostEnvironment(string environmentName) : IHostEnvironment
+    {
+        public string EnvironmentName { get; set; } = environmentName;
+
+        public string ApplicationName { get; set; } = "Workable.SqlServer.Tests";
+
+        public string ContentRootPath { get; set; } = AppContext.BaseDirectory;
+
+        public IFileProvider ContentRootFileProvider { get; set; } = new NullFileProvider();
+    }
 }

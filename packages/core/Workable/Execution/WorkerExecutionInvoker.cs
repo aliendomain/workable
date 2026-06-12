@@ -18,7 +18,7 @@ internal sealed class WorkerExecutionInvoker(
         var activeProfile = worker.Options.ProfilingEnabled
             ? new WorkProfile($"Worker {worker.Id.Value} {worker.Work.Definition.Name}")
             : null;
-        using var profileContext = WorkProfilerContext.Begin(activeProfile);
+        using var profileContext = WorkProfilerContext.Begin(workSystemId, activeProfile);
         using var logCapture = WorkableLogCaptureContext.Begin(worker, workerEvents);
         try
         {

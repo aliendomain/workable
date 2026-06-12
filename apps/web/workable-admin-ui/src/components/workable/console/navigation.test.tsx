@@ -65,7 +65,10 @@ function system(overrides: Partial<WorkableSystemConnection>): WorkableSystemCon
     hostId: "host-1",
     id: "system-1",
     name: "Default",
-    persistentCoordinationAvailable: false,
+    capabilities: {
+      persistentCoordinationAvailable: false,
+      sqlProfilingAvailable: false,
+    },
     state: "Started",
     ...overrides,
   };
@@ -96,7 +99,7 @@ test("reconcile stored host updates realtime metadata, preserves matched ids, an
     systems: [
       {
         access,
-        capabilities: { persistentCoordinationAvailable: true },
+        capabilities: { persistentCoordinationAvailable: true, sqlProfilingAvailable: false },
         id: { value: "server-default" },
         isDefault: true,
         name: null,
@@ -104,7 +107,7 @@ test("reconcile stored host updates realtime metadata, preserves matched ids, an
       },
       {
         access,
-        capabilities: { persistentCoordinationAvailable: false },
+        capabilities: { persistentCoordinationAvailable: false, sqlProfilingAvailable: false },
         id: { value: "server-ops" },
         isDefault: false,
         name: "Ops",
@@ -122,7 +125,7 @@ test("reconcile stored host updates realtime metadata, preserves matched ids, an
     reconciled.systems.map((entry) => ({
       id: entry.id,
       name: entry.name,
-      persistentCoordinationAvailable: entry.persistentCoordinationAvailable,
+      capabilities: entry.capabilities,
       state: entry.state,
       systemName: entry.systemName,
     })),
@@ -130,14 +133,20 @@ test("reconcile stored host updates realtime metadata, preserves matched ids, an
       {
         id: "default-existing",
         name: "Default",
-        persistentCoordinationAvailable: true,
+        capabilities: {
+          persistentCoordinationAvailable: true,
+          sqlProfilingAvailable: false,
+        },
         state: "Started",
         systemName: undefined,
       },
       {
         id: "ops-existing",
         name: "Ops",
-        persistentCoordinationAvailable: false,
+        capabilities: {
+          persistentCoordinationAvailable: false,
+          sqlProfilingAvailable: false,
+        },
         state: "Stopped",
         systemName: "Ops",
       },
@@ -455,7 +464,10 @@ test("server dialog edit mode refreshes discovery, preserves matched systems, an
         hostId: "host-existing",
         id: "ops-existing",
         name: "Ops",
-        persistentCoordinationAvailable: false,
+        capabilities: {
+          persistentCoordinationAvailable: false,
+          sqlProfilingAvailable: false,
+        },
         state: "Started",
         systemName: "Ops",
       }),
@@ -463,7 +475,10 @@ test("server dialog edit mode refreshes discovery, preserves matched systems, an
         hostId: "host-existing",
         id: "missing-existing",
         name: "Missing",
-        persistentCoordinationAvailable: false,
+        capabilities: {
+          persistentCoordinationAvailable: false,
+          sqlProfilingAvailable: false,
+        },
         state: "Started",
         systemName: "Missing",
       }),
@@ -633,7 +648,7 @@ test("navigation system helpers cover access badges, names, lifecycle, and state
 
   const defaultSystem: WorkableHttpSystemDescriptor = {
     access,
-    capabilities: { persistentCoordinationAvailable: true },
+    capabilities: { persistentCoordinationAvailable: true, sqlProfilingAvailable: false },
     id: { value: "server-default" },
     isDefault: true,
     name: null,
@@ -701,7 +716,7 @@ function discoveredHost(options?: {
     systems: options?.systems ?? [
       {
         access,
-        capabilities: { persistentCoordinationAvailable: true },
+        capabilities: { persistentCoordinationAvailable: true, sqlProfilingAvailable: false },
         id: { value: "default-server-id" },
         isDefault: true,
         name: null,
@@ -709,7 +724,7 @@ function discoveredHost(options?: {
       },
       {
         access,
-        capabilities: { persistentCoordinationAvailable: false },
+        capabilities: { persistentCoordinationAvailable: false, sqlProfilingAvailable: false },
         id: { value: "ops-server-id" },
         isDefault: false,
         name: "Ops",
@@ -725,7 +740,7 @@ function discoveredSystem(
   const name = overrides.name ?? "Ops";
   return {
     access,
-    capabilities: { persistentCoordinationAvailable: false },
+    capabilities: { persistentCoordinationAvailable: false, sqlProfilingAvailable: false },
     id: { value: `${name ?? "default"}-server-id` },
     isDefault: name === null,
     name,

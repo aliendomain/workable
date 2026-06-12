@@ -158,6 +158,11 @@ export async function renderDom(
   const result: DomRenderResult = {
     click: async (target) => {
       await act(async () => {
+        if (target instanceof dom.window.HTMLElement) {
+          target.click();
+          return;
+        }
+
         target.dispatchEvent(new dom.window.MouseEvent("click", {
           bubbles: true,
           cancelable: true,

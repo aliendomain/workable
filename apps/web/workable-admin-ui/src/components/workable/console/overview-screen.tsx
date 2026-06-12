@@ -122,6 +122,7 @@ export {
   createTimeAxisTicks,
   createYAxisTicks,
   formatChartTimeAxisLabel,
+  formatCompactRate,
   formatMilliseconds,
   formatRate,
   formatThroughputAxisValue,

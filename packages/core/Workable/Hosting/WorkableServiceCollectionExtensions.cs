@@ -82,5 +82,7 @@ public static class WorkableServiceCollectionExtensions
         services.AddSingleton(typeof(ILogger<>), typeof(WorkableLogger<>));
         services.RemoveAll<IWorkProfiler>();
         services.AddSingleton<IWorkProfiler, WorkProfilerFacade>();
+        services.RemoveAll<IWorkProfilingContextAccessor>();
+        services.AddSingleton<IWorkProfilingContextAccessor, WorkProfilingContextAccessor>();
     }
 }

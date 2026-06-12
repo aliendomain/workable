@@ -16,24 +16,27 @@ internal sealed class WorkSystemCatalog : IWorkCatalog
     private IReadOnlyDictionary<string, IReadOnlyList<WorkDefinition>> definitionsByCategory = new Dictionary<string, IReadOnlyList<WorkDefinition>>(StringComparer.OrdinalIgnoreCase);
     private IReadOnlyDictionary<string, IReadOnlyList<WorkDefinition>> definitionsByCategoryPath = new Dictionary<string, IReadOnlyList<WorkDefinition>>(StringComparer.OrdinalIgnoreCase);
     private readonly bool persistenceStoreAvailable;
+    private readonly WorkerOptions? implicitDefaultWorkerOptions;
     private readonly WorkSystemAuthorizationConfiguration authorizationConfiguration;
     private readonly ILogger? authorizationLogger;
 
     public WorkSystemCatalog(
         IReadOnlyList<RegisteredWork> work,
         bool persistenceStoreAvailable,
+        WorkerOptions? implicitDefaultWorkerOptions = null,
         WorkSystemAuthorizationConfiguration? authorizationConfiguration = null,
         ILogger? authorizationLogger = null)
     {
         this.persistenceStoreAvailable = persistenceStoreAvailable;
+        this.implicitDefaultWorkerOptions = implicitDefaultWorkerOptions;
         this.authorizationConfiguration = authorizationConfiguration ?? WorkSystemAuthorizationConfiguration.Default;
         this.authorizationLogger = authorizationLogger;
         foreach (var registeredWork in work)
         {
-            this.ValidateAuthorization(registeredWork);
+            var effectiveWork = this.ApplyImplicitDefaultOptions(registeredWork);
+            this.ValidateAuthorization(effectiveWork);
+            this.work.Add(effectiveWork);
         }
-
-        this.work.AddRange(work);
         this.RebuildIndexes();
     }
 
@@ -90,8 +93,9 @@ internal sealed class WorkSystemCatalog : IWorkCatalog
                 throw new InvalidOperationException("Work definitions cannot be added after the catalog is frozen.");
             }
 
-            this.ValidateAuthorization(registeredWork);
-            this.work.Add(registeredWork);
+            var effectiveWork = this.ApplyImplicitDefaultOptions(registeredWork);
+            this.ValidateAuthorization(effectiveWork);
+            this.work.Add(effectiveWork);
             this.RebuildIndexes();
         }
     }
@@ -202,6 +206,19 @@ internal sealed class WorkSystemCatalog : IWorkCatalog
             registeredWork.OperateAuthorization.Grants,
             registeredWork.Definition.Name);
         this.LogShadowedOperateConstraints(registeredWork);
+    }
+
+    private RegisteredWork ApplyImplicitDefaultOptions(RegisteredWork registeredWork)
+    {
+        if (this.implicitDefaultWorkerOptions is null || registeredWork.Definition.DefaultOptions.HasExplicitProfilingEnabled)
+        {
+            return registeredWork;
+        }
+
+        return registeredWork.WithDefinition(registeredWork.Definition with
+        {
+            DefaultOptions = registeredWork.Definition.DefaultOptions.Merge(this.implicitDefaultWorkerOptions),
+        });
     }
 
     private void LogShadowedOperateConstraints(RegisteredWork registeredWork)
