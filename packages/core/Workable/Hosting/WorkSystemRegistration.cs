@@ -10,6 +10,7 @@ internal sealed record WorkSystemRegistration(
     WorkSystemId Id,
     string? Name,
     IReadOnlyList<RegisteredWork> Work,
+    IReadOnlyList<RegisteredWorkflow> Workflows,
     IReadOnlyList<Func<IServiceProvider, IWorkDefinitionSource>> WorkDefinitionSourceFactories,
     IReadOnlyList<Func<IServiceProvider, IStartupWorkSource>> StartupWorkSourceFactories,
     IReadOnlyList<WorkExceptionClassifier> ExceptionClassifiers,

@@ -21,6 +21,8 @@ internal sealed class InMemoryWorkSystem :
     private readonly IReadOnlyList<Func<IServiceProvider, IWorkDefinitionSource>> workDefinitionSourceFactories;
     private readonly IReadOnlyList<Func<IServiceProvider, IStartupWorkSource>> startupWorkSourceFactories;
     private readonly WorkSystemCatalog catalog;
+    private readonly WorkflowCatalog workflows;
+    private readonly InMemoryWorkflowRuntime workflowRuntime;
     private readonly WorkQueueService queue;
     private readonly WorkerOperations workers;
     private readonly WorkSystemReadModel readModel;
@@ -71,6 +73,7 @@ internal sealed class InMemoryWorkSystem :
             implicitDefaultWorkerOptions,
             this.authorization,
             authorizationLogger);
+        this.workflows = new WorkflowCatalog(registration.Workflows);
         this.readModel = new WorkSystemReadModel(this.catalog, () => this.State, this.Name, this.metrics);
         this.workers = new WorkerOperations(
             this.catalog,
@@ -106,6 +109,13 @@ internal sealed class InMemoryWorkSystem :
             this.events,
             this.authorization,
             this.groupProvider);
+        this.workflowRuntime = new InMemoryWorkflowRuntime(
+            this.Name,
+            this.RequiresAuthorization,
+            this.workflows,
+            this.CreateSession,
+            this.authorization,
+            this.groupProvider);
     }
 
     public WorkSystemId Id { get; }
@@ -119,6 +129,10 @@ internal sealed class InMemoryWorkSystem :
     public TimeSpan ShutdownGracePeriod { get; }
 
     public WorkSystemCapabilities Capabilities { get; }
+
+    internal WorkflowCatalog Workflows => this.workflows;
+
+    internal InMemoryWorkflowRuntime WorkflowRuntime => this.workflowRuntime;
 
     long IWorkSystemReadModelClock.AppliedSequence => this.readModel.AppliedSequence;
 
