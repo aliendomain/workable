@@ -151,4 +151,73 @@ public sealed class WorkflowRuntimeShould
         var run = completion.Run!;
         Assert.Equal(WorkflowStepRunStatus.Failed, run.Steps.Single(step => step.Name == "join").Status);
     }
+
+    [Fact]
+    public async Task RejectNonDurableWorkflowThatDispatchesDurableWork()
+    {
+        var services = new ServiceCollection();
+
+        services.AddWorkableSystem(builder =>
+        {
+            builder.RequireAuthorization(false);
+            builder.AddWork(
+                WorkDefinition.Create("sample.durable"),
+                (_, _, _) => Task.FromResult(WorkExecutionResult.Success()),
+                configuration => configuration
+                    .CoordinatePersistently()
+                    .QueueDurably());
+            builder.AddWorkflow(
+                WorkflowDefinition.Create("workflow.invalid.durable-child"),
+                workflow => workflow.DispatchWork("dispatch", "sample.durable"));
+        });
+
+        using var provider = services.BuildServiceProvider();
+        var system = (InMemoryWorkSystem)provider.GetRequiredService<IWorkSystemRegistry>().Default;
+        await system.Start();
+
+        var handle = system.WorkflowRuntime.Start(
+            "workflow.invalid.durable-child",
+            WorkRequestContext.Create(WorkInvocationChannel.InProcess));
+        var completion = await handle.WaitForCompletion();
+
+        Assert.False(handle.StartOutcome.IsAccepted);
+        Assert.Equal(WorkflowRunStatus.Invalid, completion.Status);
+        Assert.Contains(
+            handle.StartOutcome.Messages,
+            message => message.Code == "workable.workflow.child_durability_requires_durable_workflow");
+    }
+
+    [Fact]
+    public async Task RejectDurableWorkflowUntilDurableRuntimeExists()
+    {
+        var services = new ServiceCollection();
+
+        services.AddWorkableSystem(builder =>
+        {
+            builder.RequireAuthorization(false);
+            builder.AddWork(
+                WorkDefinition.Create("sample.dispatch"),
+                (_, _, _) => Task.FromResult(WorkExecutionResult.Success()));
+            builder.AddWorkflow(
+                WorkflowDefinition.Create(
+                    "workflow.durable",
+                    coordination: WorkflowCoordinationConfiguration.Durable),
+                workflow => workflow.DispatchWork("dispatch", "sample.dispatch"));
+        });
+
+        using var provider = services.BuildServiceProvider();
+        var system = (InMemoryWorkSystem)provider.GetRequiredService<IWorkSystemRegistry>().Default;
+        await system.Start();
+
+        var handle = system.WorkflowRuntime.Start(
+            "workflow.durable",
+            WorkRequestContext.Create(WorkInvocationChannel.InProcess));
+        var completion = await handle.WaitForCompletion();
+
+        Assert.False(handle.StartOutcome.IsAccepted);
+        Assert.Equal(WorkflowRunStatus.Invalid, completion.Status);
+        Assert.Contains(
+            handle.StartOutcome.Messages,
+            message => message.Code == "workable.workflow.durability.not_supported");
+    }
 }

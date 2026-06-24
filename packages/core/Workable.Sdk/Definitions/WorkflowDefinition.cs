@@ -12,6 +12,7 @@ public sealed record WorkflowDefinition
         string? description,
         WorkSchema inputSchema,
         WorkSchema outputSchema,
+        WorkflowCoordinationConfiguration coordination,
         WorkDefinitionMetadata? metadata = null,
         WorkDefinitionAuthorization? authorization = null,
         long revision = 0)
@@ -22,6 +23,7 @@ public sealed record WorkflowDefinition
         this.Description = description;
         this.InputSchema = inputSchema;
         this.OutputSchema = outputSchema;
+        this.Coordination = coordination;
         this.Metadata = metadata;
         this.Authorization = authorization ?? WorkDefinitionAuthorization.None;
         this.Revision = revision;
@@ -63,6 +65,11 @@ public sealed record WorkflowDefinition
     public WorkDefinitionMetadata? Metadata { get; init; }
 
     /// <summary>
+    /// Gets the workflow coordination settings for the definition.
+    /// </summary>
+    public WorkflowCoordinationConfiguration Coordination { get; init; } = WorkflowCoordinationConfiguration.Default;
+
+    /// <summary>
     /// Gets the workflow-level authorization metadata for the definition.
     /// </summary>
     public WorkDefinitionAuthorization Authorization { get; init; }
@@ -86,6 +93,7 @@ public sealed record WorkflowDefinition
     /// <param name="id">An optional explicit definition id. When omitted, Workable generates one.</param>
     /// <param name="inputSchema">An optional input schema. When omitted, Workable uses <see cref="WorkSchema.None"/>.</param>
     /// <param name="outputSchema">An optional output schema. When omitted, Workable uses <see cref="WorkSchema.None"/>.</param>
+    /// <param name="coordination">Optional workflow coordination metadata.</param>
     /// <param name="metadata">Optional descriptive metadata for catalog and tool-oriented experiences.</param>
     /// <param name="authorization">Optional workflow-level authorization metadata.</param>
     /// <returns>A validated workflow definition instance.</returns>
@@ -96,6 +104,7 @@ public sealed record WorkflowDefinition
         WorkflowDefinitionId? id = null,
         WorkSchema? inputSchema = null,
         WorkSchema? outputSchema = null,
+        WorkflowCoordinationConfiguration? coordination = null,
         WorkDefinitionMetadata? metadata = null,
         WorkDefinitionAuthorization? authorization = null)
     {
@@ -108,6 +117,7 @@ public sealed record WorkflowDefinition
             description,
             inputSchema ?? WorkSchema.None,
             outputSchema ?? WorkSchema.None,
+            coordination ?? WorkflowCoordinationConfiguration.Default,
             metadata,
             authorization);
     }

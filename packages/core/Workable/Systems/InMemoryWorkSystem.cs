@@ -113,6 +113,7 @@ internal sealed class InMemoryWorkSystem :
             this.Name,
             this.RequiresAuthorization,
             this.workflows,
+            workDefinitionName => this.catalog.TryGetWork(workDefinitionName, out var registeredWork) ? registeredWork : null,
             this.CreateSession,
             this.authorization,
             this.groupProvider);

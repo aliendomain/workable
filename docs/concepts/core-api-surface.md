@@ -55,6 +55,7 @@ Execution context also exposes the worker's `WorkRequestContext` (including `Ori
 - The workflow step graph supports `DispatchWork`, `Parallel`, and `Join`.
 - Workflow steps dispatch existing work definitions; they do not introduce a separate executor implementation model.
 - Workflows start by name, keep run state in memory, forward the original `WorkRequestContext` to child work, and add `workflow-run`, `workflow-definition`, and `workflow-step` identifiers to child work input.
+- Non-durable workflows cannot dispatch child work whose effective queue configuration enables durable queueing.
 
 ## Work Identity And Grouping
 

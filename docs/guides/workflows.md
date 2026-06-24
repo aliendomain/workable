@@ -161,4 +161,4 @@ Stopping the process clears:
 - active workflow run state
 - historical workflow run snapshots
 
-Child work can still use its own durability, idempotency, and concurrency configuration.
+Non-durable workflows cannot dispatch child work whose effective queue configuration enables durable queueing.

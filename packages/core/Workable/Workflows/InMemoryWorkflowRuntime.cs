@@ -6,6 +6,7 @@ internal sealed class InMemoryWorkflowRuntime(
     string? systemName,
     bool requiresAuthorization,
     WorkflowCatalog catalog,
+    Func<string, RegisteredWork?> getRegisteredWork,
     Func<WorkRequestContext, IWorkSystemSession> createSession,
     WorkSystemAuthorizationConfiguration systemAuthorizationConfiguration,
     IWorkAuthorizationGroupProvider groupProvider)
@@ -28,6 +29,21 @@ internal sealed class InMemoryWorkflowRuntime(
         if (!this.CanOperate(workflow.Definition, requestContext))
         {
             return WorkflowRunHandle.Rejected(WorkflowStartOutcome.Unauthorized(workflow.Definition.Name));
+        }
+
+        if (workflow.Definition.Coordination.IsDurable)
+        {
+            return WorkflowRunHandle.Rejected(WorkflowStartOutcome.Invalid(
+                [WorkMessage.Error(
+                    "workable.workflow.durability.not_supported",
+                    $"Workflow '{workflow.Definition.Name}' is marked durable, but durable workflow execution is not available yet.",
+                    "workflow.coordination")]));
+        }
+
+        var validationMessages = this.ValidateDispatchDurability(workflow);
+        if (validationMessages.Count > 0)
+        {
+            return WorkflowRunHandle.Rejected(WorkflowStartOutcome.Invalid(validationMessages));
         }
 
         var run = WorkflowRunState.Create(workflow);
@@ -54,6 +70,45 @@ internal sealed class InMemoryWorkflowRuntime(
         var systemAuthorization = new WorkSystemAuthorizationEvaluator(systemAuthorizationConfiguration, groups);
         return systemAuthorization.HasOperateAllWorkAccess() ||
             definition.Authorization.CanOperate(groups, requestContext.IsAuthenticated && requestContext.Actor.IsKnown);
+    }
+
+    private IReadOnlyList<WorkMessage> ValidateDispatchDurability(RegisteredWorkflow workflow)
+    {
+        if (workflow.Definition.Coordination.IsDurable)
+        {
+            return [];
+        }
+
+        var messages = new List<WorkMessage>();
+        this.ValidateDispatchDurability(workflow.Definition, workflow.Steps, messages);
+        return messages;
+    }
+
+    private void ValidateDispatchDurability(
+        WorkflowDefinition workflow,
+        IReadOnlyList<WorkflowStepDefinition> steps,
+        List<WorkMessage> messages)
+    {
+        foreach (var step in steps)
+        {
+            switch (step)
+            {
+                case DispatchWorkflowStepDefinition dispatch:
+                    if (getRegisteredWork(dispatch.WorkDefinitionName) is { } registeredWork &&
+                        registeredWork.DefaultRuntimePlan.Configuration.Coordination.IsDurabilityEnabled)
+                    {
+                        messages.Add(WorkMessage.Error(
+                            "workable.workflow.child_durability_requires_durable_workflow",
+                            $"Workflow '{workflow.Name}' cannot dispatch durably queued work '{dispatch.WorkDefinitionName}' from step '{dispatch.Name}' unless the workflow itself is durable.",
+                            "workflow.coordination"));
+                    }
+
+                    break;
+                case ParallelWorkflowStepDefinition parallel:
+                    this.ValidateDispatchDurability(workflow, parallel.Steps, messages);
+                    break;
+            }
+        }
     }
 
     private async Task<WorkflowRunCompletion> Execute(

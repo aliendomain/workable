@@ -12,7 +12,10 @@ public sealed class WorkflowRegistrationShould
         var services = new ServiceCollection();
 
         services.AddWorkableSystem(builder => builder.AddWorkflow(
-            WorkflowDefinition.Create("workflow.demo.dispatch", category: "Workflow:Demo"),
+            WorkflowDefinition.Create(
+                "workflow.demo.dispatch",
+                category: "Workflow:Demo",
+                coordination: WorkflowCoordinationConfiguration.Durable),
             workflow => workflow.DispatchWork("prepare", "sample.prepare")));
 
         using var provider = services.BuildServiceProvider();
@@ -21,6 +24,7 @@ public sealed class WorkflowRegistrationShould
 
         Assert.Equal("workflow.demo.dispatch", workflow.Definition.Name);
         Assert.Equal("Workflow:Demo", workflow.Definition.Category);
+        Assert.True(workflow.Definition.Coordination.IsDurable);
         var dispatch = Assert.Single(workflow.Steps);
         var step = Assert.IsType<DispatchWorkflowStepDefinition>(dispatch);
         Assert.Equal("prepare", step.Name);
