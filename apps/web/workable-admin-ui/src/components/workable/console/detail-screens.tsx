@@ -2168,12 +2168,13 @@ export function WorkerConsoleView({
                     <WorkerActionButton
                       action="Pause"
                       disabled={pendingAction !== null || workerActionRefreshInProgress || !availableActions.Pause}
+                      executionMayStop={worker.state === "Running"}
                       icon={Pause}
                       onAction={executeAction}
                     />
                     <WorkerActionButton
                       action="Cancel"
-                      cancellationMayStopExecution={worker.state !== "Paused" && worker.state !== "Failed"}
+                      executionMayStop={worker.state === "Running"}
                       disabled={pendingAction !== null || workerActionRefreshInProgress || !availableActions.Cancel}
                       icon={Ban}
                       onAction={executeAction}
@@ -3570,14 +3571,14 @@ function ScopeTrail({
 
 function WorkerActionButton({
   action,
-  cancellationMayStopExecution,
+  executionMayStop,
   disabled,
   icon: Icon,
   onAction,
   tooltip,
 }: {
   action: WorkAction;
-  cancellationMayStopExecution?: boolean;
+  executionMayStop?: boolean;
   disabled?: boolean;
   icon: typeof Play;
   onAction: (action: WorkAction) => Promise<void>;
@@ -3609,13 +3610,15 @@ function WorkerActionButton({
                 ? (
                   <>
                     This will request cancellation for the current worker.
-                    {cancellationMayStopExecution
+                    {executionMayStop
                       ? " Any in-flight execution may stop as soon as the work observes the cancellation."
                       : ""}
                     {" "}Cancellation is final and cannot be undone.
                   </>
                 )
-                : "This will request that the current worker pause. Any in-flight execution may stop when the work observes the pause request, and it can be resumed later."}
+                : executionMayStop
+                    ? "This will request that the current worker pause. Any in-flight execution may stop when the work observes the pause request, and it can be resumed later."
+                    : "This will move the current worker into the paused state, and it can be resumed later."}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
@@ -6788,7 +6791,7 @@ export function getAvailableWorkerActions(state: WorkerState): Record<WorkAction
 
   return {
     Start: state === "Queued" || state === "Paused" || state === "Failed",
-    Pause: state === "Running" || state === "Waiting" || state === "Retrying",
+    Pause: state === "Queued" || state === "Running" || state === "Waiting" || state === "Retrying",
     Cancel: state !== "Canceled" && state !== "Completed",
     Push: state === "Waiting" || state === "Retrying",
     Purge: state === "Canceled" || state === "Completed",

@@ -257,6 +257,80 @@ public sealed class DurableQueueTests
     }
 
     [Fact]
+    public async Task PausedDurableWorkerReplayMaterializesQueuedState()
+    {
+        var running = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var attempts = 0;
+        var store = new InMemoryDurableQueueStore();
+        var definition = WorkDefinition.Create(
+            "durable-paused-replay",
+            "Replays a paused durable worker as queued after restart.",
+            configuration: WorkConfiguration.Default with
+            {
+                Start = WorkStartConfiguration.DoNotStart,
+            });
+        var system = new ServiceCollection()
+            .AddSingleton<IWorkPersistenceStore>(store)
+            .AddWorkableSystem(builder => builder.AddWork(
+                definition,
+                async (context, input, cancellationToken) =>
+                {
+                    if (Interlocked.Increment(ref attempts) == 1)
+                    {
+                        running.TrySetResult();
+                        await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+                    }
+
+                    return WorkExecutionResult.Success();
+                },
+                configuration => configuration
+                    .CoordinatePersistently().RejectDuplicateSubjects()
+                    .QueueDurably()))
+            .BuildServiceProvider()
+            .GetRequiredService<IWorkSystemRegistry>()
+            .Default;
+
+        await system.Start();
+
+        var handle = await system.Queue.Enqueue(
+            "durable-paused-replay",
+            WorkInput.Empty.WithSubject(new WorkSubjectId("order", "paused-replay")));
+        var workerId = RequiredWorkerId(handle);
+        await system.WaitForWorkerState(workerId, WorkerState.Queued);
+        var queuedWorker = RequiredWorker(await system.Query.Worker(workerId));
+
+        var firstStart = await system.Workers.Execute(queuedWorker.Version, WorkAction.Start);
+        await running.Task.WaitAsync(TimeSpan.FromSeconds(2));
+
+        var runningWorker = RequiredWorker(await system.Query.Worker(workerId));
+        var pause = await system.Workers.Execute(runningWorker.Version, WorkAction.Pause);
+        var paused = await WaitForCompletion(handle, TimeSpan.FromSeconds(2));
+
+        Assert.True(firstStart.IsAccepted);
+        Assert.True(pause.IsAccepted);
+        Assert.Equal(WorkerState.Pausing, pause.Worker?.State);
+        Assert.Equal(WorkCompletionStatus.Paused, paused.Status);
+        Assert.Equal(WorkerState.Paused, paused.Worker?.State);
+        Assert.Equal(1, Volatile.Read(ref attempts));
+        Assert.DoesNotContain(workerId, store.DeletedFinalWorkers);
+
+        await system.Stop();
+        store.Requeue(workerId);
+        await system.Start();
+        await system.WaitForWorkerState(workerId, WorkerState.Queued);
+
+        var replayedWorker = RequiredWorker(await system.Query.Worker(workerId));
+        var replayStart = await system.Workers.Execute(replayedWorker.Version, WorkAction.Start);
+        var completed = await WaitForCompletion(handle, TimeSpan.FromSeconds(2));
+        await store.WaitForDeletedFinalWorker(workerId, TimeSpan.FromSeconds(2));
+
+        Assert.Equal(WorkerState.Queued, replayedWorker.State);
+        Assert.True(replayStart.IsAccepted);
+        Assert.True(completed.IsCompletedSuccessfully);
+        Assert.Equal(2, Volatile.Read(ref attempts));
+    }
+
+    [Fact]
     public async Task DurableQueueFlushesFinalCleanupDuringStop()
     {
         var store = new InMemoryDurableQueueStore
@@ -994,6 +1068,9 @@ public sealed class DurableQueueTests
     private static WorkerId RequiredWorkerId(IWorkerHandle handle)
         => handle.WorkerId ?? throw new InvalidOperationException("Expected worker id.");
 
+    private static WorkerSnapshot RequiredWorker(WorkerSnapshot? worker)
+        => worker ?? throw new InvalidOperationException("Expected worker.");
+
     private static WorkCoordinationConfiguration PersistentIdempotencyCoordination()
         => WorkCoordinationConfiguration.Default with
         {
@@ -1119,6 +1196,16 @@ public sealed class DurableQueueTests
             lock (this.sync)
             {
                 this.ClaimReadyAttempts = 0;
+            }
+        }
+
+        public void Requeue(WorkerId workerId)
+        {
+            lock (this.sync)
+            {
+                var request = this.Enqueued.LastOrDefault(entry => entry.WorkerId == workerId)
+                    ?? throw new InvalidOperationException($"Expected durable row for worker '{workerId.Value:D}'.");
+                this.pending.Enqueue(request);
             }
         }
 

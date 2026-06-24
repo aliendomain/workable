@@ -48,6 +48,47 @@ public sealed class WorkerStateTests
     }
 
     [Fact]
+    public async Task PauseQueuedWorkerMovesImmediatelyToPausedAndCanBeStartedAgain()
+    {
+        var attempts = 0;
+        var definition = WorkDefinition.Create(
+            "queued-pausable",
+            "Can pause while queued.",
+            configuration: WorkConfiguration.Default with
+            {
+                Start = WorkStartConfiguration.DoNotStart,
+            });
+        var system = CreateSystem(definition, (context, input, cancellationToken) =>
+        {
+            Interlocked.Increment(ref attempts);
+            return Task.FromResult(WorkExecutionResult.Success());
+        });
+
+        await system.Start();
+
+        var handle = await system.Queue.Enqueue("queued-pausable");
+        var workerId = RequiredWorkerId(handle);
+        var queuedWorker = RequiredWorker(await system.Query.Worker(workerId));
+
+        var pause = await system.Workers.Execute(queuedWorker.Version, WorkAction.Pause);
+        var pausedWorker = RequiredOutcomeWorker(pause);
+        var storedPausedWorker = RequiredWorker(await system.Query.Worker(workerId));
+
+        Assert.True(pause.IsAccepted);
+        Assert.Equal(WorkerState.Paused, pausedWorker.State);
+        Assert.Equal(WorkerState.Paused, storedPausedWorker.State);
+        Assert.Equal(0, Volatile.Read(ref attempts));
+
+        var start = await system.Workers.Execute(pausedWorker.Version, WorkAction.Start);
+        var completed = await handle.WaitForCompletion();
+
+        Assert.True(start.IsAccepted);
+        Assert.Equal(WorkerState.Running, start.Worker?.State);
+        Assert.True(completed.IsCompletedSuccessfully);
+        Assert.Equal(1, Volatile.Read(ref attempts));
+    }
+
+    [Fact]
     public async Task CancelMovesThroughCancelingAndCannotBeStartedAgain()
     {
         var running = CreateSignal();

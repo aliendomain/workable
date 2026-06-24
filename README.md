@@ -13,6 +13,7 @@ Workable also gives applications a path to expose the same authored work through
 ## Why Use Workable?
 
 - Define work once and invoke it through .NET, HTTP, or MCP when those channels are enabled.
+- Register workflow definitions that coordinate existing work through dispatch, parallel, and join steps inside the host runtime.
 - Keep feature libraries independent from the host runtime while still letting them contribute work.
 - Queue fire-and-forget work without losing the ability to query, observe, cancel, pause, retry, or purge it.
 - Give operators a real admin surface for work: live system and worker visibility, executable definitions, diagnostics, and control actions instead of one-off job screens and custom tooling.
@@ -53,6 +54,7 @@ Recommended entry points:
 
 - [Getting Started](https://github.com/aliendomain/workable/blob/main/docs/guides/getting-started.md) if you are evaluating or integrating Workable.
 - [Registration](https://github.com/aliendomain/workable/blob/main/docs/guides/registration.md) if you are authoring work in feature assemblies.
+- [Workflows](https://github.com/aliendomain/workable/blob/main/docs/guides/workflows.md) if you want to author multi-step orchestrations from existing work definitions.
 - [Implementation](https://github.com/aliendomain/workable/blob/main/docs/guides/implementing-work.md) if you want to implement work classes and understand what executor code can do at runtime.
 - [Queueing](https://github.com/aliendomain/workable/blob/main/docs/guides/queueing.md) if you already have work definitions and want to invoke them.
 - [Configuration](https://github.com/aliendomain/workable/blob/main/docs/guides/configuration/README.md) if you are tuning start behavior, retry, recurrence, concurrency, durability, logging, retention, or invocation rules.

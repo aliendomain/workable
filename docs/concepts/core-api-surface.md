@@ -48,6 +48,14 @@ Execution context also exposes the worker's `WorkRequestContext` (including `Ori
 - Work definition names must be unique within one system catalog.
 - A work definition can share input schema or CLR argument shape with other definitions.
 
+## Workflow Foundations
+
+- Workflows are registered through `IWorkSystemBuilder.AddWorkflow(...)`.
+- `WorkflowDefinition` mirrors work-definition metadata with name, category, description, schemas, authorization, revision, and version.
+- The workflow step graph supports `DispatchWork`, `Parallel`, and `Join`.
+- Workflow steps dispatch existing work definitions; they do not introduce a separate executor implementation model.
+- Workflows start by name, keep run state in memory, forward the original `WorkRequestContext` to child work, and add `workflow-run`, `workflow-definition`, and `workflow-step` identifiers to child work input.
+
 ## Work Identity And Grouping
 
 - `WorkDefinition.Name` is the caller-facing identity used to queue and query one definition.
@@ -123,7 +131,7 @@ Execution context also exposes the worker's `WorkRequestContext` (including `Ori
   - `Running -> Canceling -> Canceled`
   - `Running -> Interrupting -> Interrupted`
 - Additional control transitions can change that flow:
-  - `Waiting -> Paused` and `Retrying -> Paused`
+  - `Queued -> Paused`, `Waiting -> Paused`, and `Retrying -> Paused`
   - `Waiting -> Queued` and `Retrying -> Queued` through `Push`
   - `Failed -> Running` through `Start`
   - Non-final workers can move to `Canceled` when cancellation is applied
@@ -136,7 +144,7 @@ Execution context also exposes the worker's `WorkRequestContext` (including `Ori
 ## Worker Action Rules
 
 - `Start` applies to `Queued`, `Paused`, and `Failed` workers.
-- `Pause` applies to `Running`, `Waiting`, and `Retrying` workers.
+- `Pause` applies to `Queued`, `Running`, `Waiting`, and `Retrying` workers.
 - `Cancel` applies to non-final workers.
 - `Push` applies to `Waiting` and `Retrying` workers.
 - `Purge` applies to final workers.

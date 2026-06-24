@@ -422,6 +422,7 @@ const workerActionIcons = {
 export function getWorkerActions(state: WorkerState): WorkAction[] {
   switch (state) {
     case "Queued":
+      return ["Start", "Pause", "Cancel"];
     case "Paused":
     case "Failed":
       return ["Start", "Cancel"];

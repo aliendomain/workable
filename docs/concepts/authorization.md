@@ -164,6 +164,25 @@ Fluent authorization overrides attribute authorization.
 
 Within `WithWorkDefaults(...)`, the group-level `authorize` callback runs before any per-work `authorize` callback. That means a specific work can refine or replace the grouped authorization without repeating the shared policy for every sibling registration.
 
+## Workflow Authorization
+
+Workflow definitions use the same `WorkDefinitionAuthorization` metadata shape and the same `IWorkAuthorizationBuilder` fluent model as work definitions.
+
+```csharp
+builder.AddWorkflow(
+    WorkflowDefinition.Create("workflow.demo"),
+    workflow => workflow.DispatchWork("dispatch", "sample.child"),
+    authorize: auth => auth
+        .AllowReadToGroups("workflow.read")
+        .AllowOperateToGroups("workflow.ops"));
+```
+
+Starting a workflow checks workflow operate permission.
+
+Child work dispatches reuse the original `WorkRequestContext`.
+
+Child work is correlated back to the workflow through added identifiers.
+
 ### Read And Operate Rules
 
 Read permission affects:

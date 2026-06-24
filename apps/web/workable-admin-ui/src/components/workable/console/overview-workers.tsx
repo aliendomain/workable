@@ -462,12 +462,20 @@ function DurationValue({
 }
 
 export function getWorkerRowActions(worker: WorkerActionTarget): WorkAction[] {
-  if (worker.state === "Failed" || worker.state === "Paused" || worker.state === "Queued") {
+  if (worker.state === "Queued") {
+    return ["Start", "Pause", "Cancel"];
+  }
+
+  if (worker.state === "Failed" || worker.state === "Paused") {
     return ["Start", "Cancel"];
   }
 
-  if (worker.state === "Running" || worker.state === "Waiting" || worker.state === "Retrying") {
-    return ["Cancel"];
+  if (worker.state === "Running") {
+    return ["Pause", "Cancel"];
+  }
+
+  if (worker.state === "Waiting" || worker.state === "Retrying") {
+    return ["Pause", "Push", "Cancel"];
   }
 
   return [];

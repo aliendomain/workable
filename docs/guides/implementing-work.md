@@ -281,7 +281,7 @@ If a running worker is paused:
 
 If executor code cooperates and returns promptly, the worker becomes `Paused`.
 
-If the worker was `Waiting` or `Retrying`, pause happens immediately and no executor code is running at that moment.
+If the worker was `Queued`, `Waiting`, or `Retrying`, pause happens immediately and no executor code is running at that moment.
 
 Important nuance:
 

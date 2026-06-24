@@ -422,7 +422,7 @@ public sealed class WorkableMcpToolRouter(IWorkSystemRegistry registry)
                 WorkableMcpServerToolKind.Action),
             new(
                 PauseWorkerTool,
-                "Request a cooperative pause for a running worker or a recurring worker waiting for its next iteration. Requires the current worker id and revision.",
+                "Pause a queued, running, waiting, or retrying worker. Requires the current worker id and revision.",
                 WorkerActionSchema,
                 null,
                 WorkableMcpServerToolKind.Action),

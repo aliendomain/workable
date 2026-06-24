@@ -180,6 +180,28 @@ Work added through `IWorkSystemBuilder.AddWork(...)` is bound to that system by 
 
 This shape means the host is choosing and registering that work directly. That can be a good fit when the host wants explicit control over which system owns the work. It is a different shape from feature-style `AddWorkableWork(...)` registration, where a feature package contributes work without hosting the system itself.
 
+## Registering Workflows
+
+Hosts can also register workflow definitions directly on `IWorkSystemBuilder`.
+
+```csharp
+services.AddWorkableSystem(builder =>
+{
+    builder.AddWorkflow(
+        WorkflowDefinition.Create("orders.fulfillment", category: "Orders"),
+        workflow => workflow
+            .DispatchWork("prepare", "orders.prepare")
+            .RunParallel("notify", parallel => parallel
+                .DispatchWork("email", "orders.email")
+                .DispatchWork("invoice", "orders.invoice"))
+            .Join("settle"));
+});
+```
+
+Workflows are not executor classes. They are named orchestration definitions that dispatch existing work definitions through built-in step shapes.
+
+Workflow authorization uses the same `IWorkAuthorizationBuilder` model as work registration. See [Workflows](workflows.md) for the current runtime scope, execution semantics, and in-memory-only limitations.
+
 When several registrations share the same fluent work configuration or authorization, group them with `WithWorkDefaults(...)`.
 
 ```csharp
