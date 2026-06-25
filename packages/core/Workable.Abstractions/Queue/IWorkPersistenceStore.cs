@@ -71,6 +71,89 @@ public interface IWorkPersistenceStore
         IReadOnlyList<WorkQueueDurabilityCleanupRequest> workers,
         IWorkQueueDurabilityTransaction transaction,
         CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Initializes workflow persistence support for a system and its registered workflow definitions.
+    /// </summary>
+    /// <param name="context">The system and workflow definition context to initialize.</param>
+    /// <param name="cancellationToken">A token that cancels the initialization operation.</param>
+    Task InitializeWorkflows(
+        WorkflowPersistenceInitializationContext context,
+        CancellationToken cancellationToken = default)
+        => Task.CompletedTask;
+
+    /// <summary>
+    /// Begins a workflow persistence transaction for one system.
+    /// </summary>
+    /// <param name="request">The transaction request describing the target system.</param>
+    /// <param name="cancellationToken">A token that cancels the begin operation.</param>
+    /// <returns>The workflow persistence transaction.</returns>
+    Task<IWorkflowPersistenceTransaction> BeginWorkflowTransaction(
+        WorkflowPersistenceTransactionRequest request,
+        CancellationToken cancellationToken = default)
+        => Task.FromException<IWorkflowPersistenceTransaction>(
+            new InvalidOperationException("This persistence store does not support workflow persistence transactions."));
+
+    /// <summary>
+    /// Lists durable workflow runs that were not final when the system last stopped.
+    /// </summary>
+    /// <param name="request">The read request describing the target system.</param>
+    /// <param name="cancellationToken">A token that cancels the read operation.</param>
+    /// <returns>The durable workflow runs that should be resumed.</returns>
+    IAsyncEnumerable<WorkflowRunPersistenceRecord> ListIncompleteWorkflowRuns(
+        WorkflowPersistenceReadRequest request,
+        CancellationToken cancellationToken = default)
+        => EmptyWorkflowRuns();
+
+    /// <summary>
+    /// Persists the latest snapshot for one workflow run.
+    /// </summary>
+    /// <param name="run">The workflow run snapshot to persist.</param>
+    /// <param name="cancellationToken">A token that cancels the write operation.</param>
+    Task UpsertWorkflowRun(
+        WorkflowRunPersistenceRecord run,
+        CancellationToken cancellationToken = default)
+        => Task.CompletedTask;
+
+    /// <summary>
+    /// Persists the latest snapshot for one workflow run inside an existing workflow persistence transaction.
+    /// </summary>
+    /// <param name="run">The workflow run snapshot to persist.</param>
+    /// <param name="transaction">The workflow persistence transaction to participate in.</param>
+    /// <param name="cancellationToken">A token that cancels the write operation.</param>
+    Task UpsertWorkflowRun(
+        WorkflowRunPersistenceRecord run,
+        IWorkflowPersistenceTransaction transaction,
+        CancellationToken cancellationToken = default)
+        => this.UpsertWorkflowRun(run, cancellationToken);
+
+    /// <summary>
+    /// Deletes a durable workflow run after it has reached a final state.
+    /// </summary>
+    /// <param name="request">The delete request for the run.</param>
+    /// <param name="cancellationToken">A token that cancels the delete operation.</param>
+    Task DeleteWorkflowRun(
+        WorkflowPersistenceDeleteRequest request,
+        CancellationToken cancellationToken = default)
+        => Task.CompletedTask;
+
+    /// <summary>
+    /// Deletes a durable workflow run inside an existing workflow persistence transaction.
+    /// </summary>
+    /// <param name="request">The delete request for the run.</param>
+    /// <param name="transaction">The workflow persistence transaction to participate in.</param>
+    /// <param name="cancellationToken">A token that cancels the delete operation.</param>
+    Task DeleteWorkflowRun(
+        WorkflowPersistenceDeleteRequest request,
+        IWorkflowPersistenceTransaction transaction,
+        CancellationToken cancellationToken = default)
+        => this.DeleteWorkflowRun(request, cancellationToken);
+
+    private static async IAsyncEnumerable<WorkflowRunPersistenceRecord> EmptyWorkflowRuns()
+    {
+        await Task.CompletedTask;
+        yield break;
+    }
 }
 
 /// <summary>
@@ -83,6 +166,26 @@ public sealed record WorkQueueDurabilityInitializationContext(
     WorkSystemId WorkSystemId,
     string? WorkSystemName,
     IReadOnlyList<WorkDefinition> Definitions);
+
+/// <summary>
+/// Provides system and workflow-definition context for workflow-persistence initialization.
+/// </summary>
+/// <param name="WorkSystemId">The identifier of the system being initialized.</param>
+/// <param name="WorkSystemName">The configured system name, when one exists.</param>
+/// <param name="Definitions">The registered workflow definitions known at initialization time.</param>
+public sealed record WorkflowPersistenceInitializationContext(
+    WorkSystemId WorkSystemId,
+    string? WorkSystemName,
+    IReadOnlyList<WorkflowDefinition> Definitions);
+
+/// <summary>
+/// Represents a request to begin a workflow persistence transaction for one system.
+/// </summary>
+/// <param name="WorkSystemId">The identifier of the target system.</param>
+/// <param name="WorkSystemName">The configured system name, when one exists.</param>
+public sealed record WorkflowPersistenceTransactionRequest(
+    WorkSystemId WorkSystemId,
+    string? WorkSystemName);
 
 /// <summary>
 /// Represents one durable enqueue request.
@@ -208,6 +311,76 @@ public sealed record WorkQueueDurabilityLease(
 public sealed record WorkQueueDurabilityCleanupRequest(
     WorkerId WorkerId,
     WorkQueueDurabilityLease? Lease);
+
+/// <summary>
+/// Represents one durable workflow-run snapshot.
+/// </summary>
+/// <param name="WorkSystemId">The identifier of the target system.</param>
+/// <param name="WorkSystemName">The configured system name, when one exists.</param>
+/// <param name="RunId">The workflow run identifier.</param>
+/// <param name="DefinitionVersion">The workflow definition version used for the run.</param>
+/// <param name="DefinitionName">The workflow definition name.</param>
+/// <param name="RequestContext">The caller context recorded for the workflow run.</param>
+/// <param name="Status">The current workflow run status.</param>
+/// <param name="Steps">The persisted workflow step snapshots.</param>
+/// <param name="CreatedAt">The time the workflow run was created.</param>
+/// <param name="StartedAt">The time the workflow run started executing, when one exists.</param>
+/// <param name="CompletedAt">The time the workflow run reached a final state, when one exists.</param>
+/// <param name="Messages">The current workflow run messages.</param>
+public sealed record WorkflowRunPersistenceRecord(
+    WorkSystemId WorkSystemId,
+    string? WorkSystemName,
+    WorkflowRunId RunId,
+    WorkflowDefinitionVersion DefinitionVersion,
+    string DefinitionName,
+    WorkRequestContext RequestContext,
+    WorkflowRunStatus Status,
+    IReadOnlyList<WorkflowStepPersistenceRecord> Steps,
+    DateTimeOffset CreatedAt,
+    DateTimeOffset? StartedAt,
+    DateTimeOffset? CompletedAt,
+    IReadOnlyList<WorkMessage> Messages)
+{
+    /// <summary>
+    /// Gets the origin metadata extracted from <see cref="RequestContext"/>.
+    /// </summary>
+    public WorkOrigin Origin => this.RequestContext.Origin;
+}
+
+/// <summary>
+/// Represents one persisted workflow-step snapshot.
+/// </summary>
+/// <param name="Name">The stable workflow-local step name.</param>
+/// <param name="Kind">The workflow step kind.</param>
+/// <param name="Status">The current workflow-step status.</param>
+/// <param name="WorkerIds">The child worker ids associated with the step.</param>
+/// <param name="StartedAt">The time the step started, when one exists.</param>
+/// <param name="CompletedAt">The time the step completed, when one exists.</param>
+/// <param name="Messages">The current step messages.</param>
+public sealed record WorkflowStepPersistenceRecord(
+    string Name,
+    WorkflowStepKind Kind,
+    WorkflowStepRunStatus Status,
+    IReadOnlyList<WorkerId> WorkerIds,
+    DateTimeOffset? StartedAt,
+    DateTimeOffset? CompletedAt,
+    IReadOnlyList<WorkMessage> Messages);
+
+/// <summary>
+/// Represents a request to read incomplete durable workflow runs for one system.
+/// </summary>
+/// <param name="WorkSystemId">The identifier of the target system.</param>
+/// <param name="WorkSystemName">The configured system name, when one exists.</param>
+public sealed record WorkflowPersistenceReadRequest(
+    WorkSystemId WorkSystemId,
+    string? WorkSystemName);
+
+/// <summary>
+/// Identifies one durable workflow run that should be deleted.
+/// </summary>
+/// <param name="RunId">The identifier of the workflow run to delete.</param>
+public sealed record WorkflowPersistenceDeleteRequest(
+    WorkflowRunId RunId);
 
 /// <summary>
 /// Thrown when the underlying persistence store cannot be reached or used.

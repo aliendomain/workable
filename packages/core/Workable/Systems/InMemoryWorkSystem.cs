@@ -23,6 +23,7 @@ internal sealed class InMemoryWorkSystem :
     private readonly WorkSystemCatalog catalog;
     private readonly WorkflowCatalog workflows;
     private readonly InMemoryWorkflowRuntime workflowRuntime;
+    private readonly WorkflowPersistenceCoordinator workflowPersistence;
     private readonly WorkQueueService queue;
     private readonly WorkerOperations workers;
     private readonly WorkSystemReadModel readModel;
@@ -74,6 +75,10 @@ internal sealed class InMemoryWorkSystem :
             this.authorization,
             authorizationLogger);
         this.workflows = new WorkflowCatalog(registration.Workflows);
+        this.workflowPersistence = new WorkflowPersistenceCoordinator(
+            persistenceStore,
+            this.Id,
+            this.Name);
         this.readModel = new WorkSystemReadModel(this.catalog, () => this.State, this.Name, this.metrics);
         this.workers = new WorkerOperations(
             this.catalog,
@@ -307,6 +312,7 @@ internal sealed class InMemoryWorkSystem :
             }
 
             this.catalog.Freeze();
+            await this.workflowPersistence.Initialize(this.workflows.Definitions, cancellationToken);
             await this.workers.StartDispatching(cancellationToken);
             dispatchingStarted = true;
             this.State = WorkSystemState.Started;
