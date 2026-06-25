@@ -107,4 +107,43 @@ configuration => configuration.QueueDurably();
         Assert.Equal("testschema", target.SchemaName);
     }
 
+    [Fact]
+    public async Task DiscoverDurableWorkflowConfigurationAsRequiringSqlSchema()
+    {
+        using var workspace = SqlServerCliTestWorkspace.Create();
+        var projectPath = workspace.WriteProject("src/App/App.csproj");
+        workspace.WriteFile("src/App/Program.cs", """
+using Microsoft.Extensions.DependencyInjection;
+using Workable;
+using Workable.SqlServer;
+
+var services = new ServiceCollection();
+services.AddWorkableSqlServerDurableQueue(
+    "Server=(localdb)\\MSSQLLocalDB;Database=Workable;Integrated Security=true",
+    schemaName: "ops");
+services.AddWorkableSystem("workflow-tests", builder =>
+{
+    builder.AddWork(
+        WorkDefinition.Create("sample.dispatch"),
+        (_, _, _) => Task.FromResult(WorkExecutionResult.Success()));
+    builder.AddWorkflow(
+        WorkflowDefinition.Create(
+            "workflow.durable",
+            coordination: WorkflowCoordinationConfiguration.Durable),
+        workflow => workflow.DispatchWork("dispatch", "sample.dispatch"));
+});
+""");
+
+        var result = await WorkableSqlServerSchemaDiscovery.Discover(new WorkableSqlServerSchemaDiscoveryRequest(
+            SolutionPaths: [],
+            ProjectPaths: [projectPath],
+            IncludeTests: false));
+
+        Assert.True(result.RequiresSchema);
+        Assert.Contains(result.Features, feature => feature.Feature == WorkableSqlServerSchemaFeature.DurableWorkflow);
+        var target = Assert.Single(result.Targets);
+        Assert.Equal(@"Server=(localdb)\MSSQLLocalDB;Database=Workable;Integrated Security=true", target.ConnectionString);
+        Assert.Equal("ops", target.SchemaName);
+    }
+
 }

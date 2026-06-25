@@ -412,6 +412,11 @@ internal sealed class WorkerOperations :
             : null);
     }
 
+    internal IWorkerHandle CreateHandle(WorkerId workerId)
+        => this.persistence.CreateHandle(
+            WorkQueueOutcome.Accepted(workerId),
+            this.GetTrackedWorker);
+
     internal Task<WorkerIterationSnapshot?> GetIterationAuthoritative(
         WorkerIterationReference iteration,
         CancellationToken cancellationToken = default)

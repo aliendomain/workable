@@ -104,6 +104,11 @@ internal sealed class WorkerPersistenceCoordinator : IWorkerPersistenceCoordinat
     public Task StopBackgroundTasks(CancellationToken cancellationToken)
         => this.durability.StopBackgroundTasks(cancellationToken);
 
+    public IWorkerHandle CreateHandle(
+        WorkQueueOutcome outcome,
+        Func<WorkerId, WorkerRecord?> getExisting)
+        => this.durability.CreateHandle(outcome, getExisting);
+
     internal WorkSystemDurabilityDiagnostics DurabilityDiagnostics => this.durability.Diagnostics;
 
     internal long DurableReaderSignals => this.durability.ReaderSignals;

@@ -179,9 +179,17 @@ builder.AddWorkflow(
 
 Starting a workflow checks workflow operate permission.
 
-Child work dispatches reuse the original `WorkRequestContext`.
+Workflow runs store actor, origin, and authentication state from the start request context.
+
+Stored workflow-run request contexts do not retain precomputed authorization snapshots.
 
 Child work is correlated back to the workflow through added identifiers.
+
+Workflow-started child work stores actor, origin, and authentication state from the workflow run request context.
+
+Stored child-worker request contexts do not retain precomputed authorization snapshots.
+
+If code later creates a new `IWorkSystemSession` from a stored workflow-run or worker `WorkRequestContext`, Workable resolves groups for the retained actor through the configured group provider when no authorization snapshot is present.
 
 ### Read And Operate Rules
 

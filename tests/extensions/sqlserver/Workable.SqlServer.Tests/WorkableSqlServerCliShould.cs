@@ -69,6 +69,29 @@ configuration => configuration.QueueDurably();
         }
     }
 
+    [Fact]
+    public async Task GenerateSchemaWhenDiscoveryFindsDurableWorkflowUsageOnly()
+    {
+        using var workspace = SqlServerCliTestWorkspace.Create();
+        var projectPath = workspace.WriteProject("src/App/App.csproj");
+        workspace.WriteFile("src/App/Program.cs", """
+using Workable;
+
+builder.AddWorkflow(
+    WorkflowDefinition.Create(
+        "workflow.durable",
+        coordination: WorkflowCoordinationConfiguration.Durable),
+    workflow => workflow.DispatchWork("dispatch", "sample.dispatch"));
+""");
+
+        var result = await RunCli("schema", "generate", "--project", projectPath, "--schema", "custom");
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Contains("CREATE SCHEMA [custom]", result.Output);
+        Assert.Contains("[custom].[WorkflowRuns]", result.Output);
+        Assert.Contains("Detected SQL Server persistence features: DurableWorkflow", result.Error);
+    }
+
     private static async Task<CliResult> RunCli(params string[] args)
     {
         await ConsoleLock.WaitAsync();

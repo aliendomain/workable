@@ -119,6 +119,14 @@ internal static partial class WorkableSqlServerSchemaDiscovery
                 projectPath,
                 sourcePath));
         }
+
+        if (ContainsDurableWorkflowConfiguration(code))
+        {
+            features.Add(new WorkableSqlServerSchemaFeatureDiscovery(
+                WorkableSqlServerSchemaFeature.DurableWorkflow,
+                projectPath,
+                sourcePath));
+        }
     }
 
     private static bool ContainsDurableQueueConfiguration(string source)
@@ -154,6 +162,14 @@ internal static partial class WorkableSqlServerSchemaDiscovery
                 source,
                 "new WorkCoordinationConfiguration",
                 "Storage = WorkCoordinationStorage.Persistent",
+                maximumWindowLength: 800);
+
+    private static bool ContainsDurableWorkflowConfiguration(string source)
+        => source.Contains("WorkflowCoordinationConfiguration.Durable", StringComparison.Ordinal)
+            || ContainsInWindow(
+                source,
+                "WorkflowDefinition.Create(",
+                "coordination: WorkflowCoordinationConfiguration.Durable",
                 maximumWindowLength: 800);
 
     private static bool ContainsInWindow(
@@ -518,4 +534,5 @@ internal enum WorkableSqlServerSchemaFeature
     DurableQueue,
     PersistenceBackedIdempotency,
     PersistenceBackedConcurrency,
+    DurableWorkflow,
 }

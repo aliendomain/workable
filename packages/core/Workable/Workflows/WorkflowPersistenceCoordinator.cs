@@ -9,16 +9,25 @@ internal sealed class WorkflowPersistenceCoordinator(
     private readonly WorkSystemId workSystemId = workSystemId;
     private readonly string? workSystemName = workSystemName;
 
+    public bool IsAvailable => this.store is not null;
+
     public Task Initialize(
         IReadOnlyList<WorkflowDefinition> definitions,
         CancellationToken cancellationToken)
-        => this.store?.InitializeWorkflows(
+    {
+        if (definitions.Count == 0)
+        {
+            return Task.CompletedTask;
+        }
+
+        return this.store?.InitializeWorkflows(
             new WorkflowPersistenceInitializationContext(
                 this.workSystemId,
                 this.workSystemName,
                 definitions),
             cancellationToken)
-        ?? Task.CompletedTask;
+            ?? Task.CompletedTask;
+    }
 
     public IAsyncEnumerable<WorkflowRunPersistenceRecord> ListIncompleteRuns(CancellationToken cancellationToken)
         => this.store?.ListIncompleteWorkflowRuns(
@@ -32,54 +41,32 @@ internal sealed class WorkflowPersistenceCoordinator(
         => this.store?.UpsertWorkflowRun(run, cancellationToken)
         ?? Task.CompletedTask;
 
+    public Task UpsertRun(
+        WorkflowRunPersistenceRecord run,
+        IWorkflowPersistenceTransaction? transaction,
+        CancellationToken cancellationToken)
+        => this.UpsertRunCore(run, transaction, cancellationToken);
+
     public Task DeleteRun(WorkflowRunId runId, CancellationToken cancellationToken)
         => this.store?.DeleteWorkflowRun(new WorkflowPersistenceDeleteRequest(runId), cancellationToken)
         ?? Task.CompletedTask;
 
-    public async Task PersistRunAndDispatch(
-        WorkflowRunPersistenceRecord run,
-        Func<WorkerOptions, CancellationToken, Task> dispatch,
+    public Task DeleteRun(
+        WorkflowRunId runId,
+        IWorkflowPersistenceTransaction? transaction,
         CancellationToken cancellationToken)
-    {
-        ArgumentNullException.ThrowIfNull(dispatch);
-        await this.ExecuteInTransaction(
-            async (transaction, transactionOptions, transactionCancellationToken) =>
-            {
-                await this.UpsertRun(run, transaction, transactionCancellationToken);
-                await dispatch(transactionOptions, transactionCancellationToken);
-            },
-            cancellationToken);
-    }
+        => this.DeleteRunCore(runId, transaction, cancellationToken);
 
-    public async Task AdvanceRunAndDispatch(
-        WorkflowRunPersistenceRecord run,
-        Func<WorkerOptions, CancellationToken, Task> dispatch,
+    public Task<bool> DurableWorkerExists(WorkerId workerId, CancellationToken cancellationToken)
+        => this.store?.DurableWorkerExists(workerId, cancellationToken)
+        ?? Task.FromResult(false);
+
+    public Task ExecuteTransaction(
+        Func<IWorkflowPersistenceTransaction?, WorkerOptions, CancellationToken, Task> action,
         CancellationToken cancellationToken)
-    {
-        ArgumentNullException.ThrowIfNull(dispatch);
-        await this.ExecuteInTransaction(
-            async (transaction, transactionOptions, transactionCancellationToken) =>
-            {
-                await this.UpsertRun(run, transaction, transactionCancellationToken);
-                await dispatch(transactionOptions, transactionCancellationToken);
-            },
-            cancellationToken);
-    }
+        => this.ExecuteInTransaction(action, cancellationToken);
 
-    public async Task CompleteAndDeleteRun(
-        WorkflowRunPersistenceRecord run,
-        CancellationToken cancellationToken)
-    {
-        await this.ExecuteInTransaction(
-            async (transaction, _, transactionCancellationToken) =>
-            {
-                await this.UpsertRun(run, transaction, transactionCancellationToken);
-                await this.DeleteRun(run.RunId, transaction, transactionCancellationToken);
-            },
-            cancellationToken);
-    }
-
-    private async Task UpsertRun(
+    private async Task UpsertRunCore(
         WorkflowRunPersistenceRecord run,
         IWorkflowPersistenceTransaction? transaction,
         CancellationToken cancellationToken)
@@ -93,7 +80,7 @@ internal sealed class WorkflowPersistenceCoordinator(
         await this.store!.UpsertWorkflowRun(run, transaction, cancellationToken);
     }
 
-    private async Task DeleteRun(
+    private async Task DeleteRunCore(
         WorkflowRunId runId,
         IWorkflowPersistenceTransaction? transaction,
         CancellationToken cancellationToken)

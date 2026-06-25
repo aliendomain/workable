@@ -31,6 +31,7 @@ SET NUMERIC_ROUNDABORT OFF;
     };
 
     private readonly string entriesTable = $"{WorkableSqlServerSchema.QuoteIdentifier(options.SchemaName)}.[WorkEntries]";
+    private readonly string workflowRunsTable = $"{WorkableSqlServerSchema.QuoteIdentifier(options.SchemaName)}.[WorkflowRuns]";
 
     public async Task Initialize(WorkQueueDurabilityInitializationContext context, CancellationToken cancellationToken = default)
     {
@@ -61,16 +62,208 @@ SET NUMERIC_ROUNDABORT OFF;
         }
     }
 
+    public async Task InitializeWorkflows(
+        WorkflowPersistenceInitializationContext context,
+        CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            if (options.AutoDeploySchema)
+            {
+                await WorkableSqlServerSchema.Apply(options.ConnectionString, options.SchemaName, cancellationToken);
+                await WorkableSqlServerSchema.ValidateWorkflowPersistenceInstalled(options.ConnectionString, options.SchemaName, cancellationToken);
+                return;
+            }
+
+            await WorkableSqlServerSchema.ValidateWorkflowPersistenceInstalled(options.ConnectionString, options.SchemaName, cancellationToken);
+        }
+        catch (SqlException exception) when (IsStoreUnavailable(exception))
+        {
+            var action = options.AutoDeploySchema ? "deploying or validating" : "validating";
+            throw new WorkPersistenceStoreUnavailableException(
+                $"Workable.SqlServer could not reach SQL Server while {action} workflow schema '{options.SchemaName}'.",
+                exception);
+        }
+        catch (Exception exception) when (exception is SqlException or InvalidOperationException)
+        {
+            var action = options.AutoDeploySchema ? "deploy" : "validate";
+            throw new WorkableSqlServerSchemaDeploymentException(
+                $"Workable.SqlServer could not {action} workflow schema '{options.SchemaName}'.",
+                exception);
+        }
+    }
+
+    public async Task<IWorkflowPersistenceTransaction> BeginWorkflowTransaction(
+        WorkflowPersistenceTransactionRequest request,
+        CancellationToken cancellationToken = default)
+        => await ExecuteWithStoreUnavailableHandling(
+            "beginning a workflow persistence transaction",
+            async () =>
+            {
+                var connection = new SqlConnection(options.ConnectionString);
+                try
+                {
+                    await connection.OpenAsync(cancellationToken);
+                    var transaction = await connection.BeginTransactionAsync(cancellationToken);
+                    try
+                    {
+                        await ApplyRequiredDmlSetOptions(connection, transaction, cancellationToken);
+                        return (IWorkflowPersistenceTransaction)new WorkableSqlServerWorkflowPersistenceTransaction(connection, transaction);
+                    }
+                    catch
+                    {
+                        await transaction.DisposeAsync();
+                        await connection.DisposeAsync();
+                        throw;
+                    }
+                }
+                catch
+                {
+                    await connection.DisposeAsync();
+                    throw;
+                }
+            });
+
+    public async IAsyncEnumerable<WorkflowRunPersistenceRecord> ListIncompleteWorkflowRuns(
+        WorkflowPersistenceReadRequest request,
+        [EnumeratorCancellation] CancellationToken cancellationToken = default)
+    {
+        var runs = await ExecuteWithStoreUnavailableHandling(
+            "reading durable workflow runs",
+            async () =>
+            {
+                await using var connection = new SqlConnection(options.ConnectionString);
+                await connection.OpenAsync(cancellationToken);
+                await using var command = connection.CreateCommand();
+                command.CommandText = RequiredDmlSetOptions + $"""
+SELECT WorkSystemId,
+       WorkSystemName,
+       RunId,
+       DefinitionId,
+       DefinitionRevision,
+       DefinitionName,
+       DefinitionFingerprint,
+       RequestContextJson,
+       Status,
+       StepsJson,
+       CreatedAt,
+       StartedAt,
+       CompletedAt,
+       MessagesJson
+FROM {this.workflowRunsTable}
+WHERE PersistenceScope = @PersistenceScope
+  AND Status = @RunningStatus
+ORDER BY CreatedAt, RunId;
+""";
+                Add(command, "@PersistenceScope", request.PersistenceScope);
+                Add(command, "@RunningStatus", WorkflowRunStatus.Running.ToString());
+
+                var runs = new List<WorkflowRunPersistenceRecord>();
+                await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+                while (await reader.ReadAsync(cancellationToken))
+                {
+                    runs.Add(new WorkflowRunPersistenceRecord(
+                        new WorkSystemId(reader.GetGuid(0)),
+                        reader.IsDBNull(1) ? null : reader.GetString(1),
+                        new WorkflowRunId(reader.GetGuid(2)),
+                        new WorkflowDefinitionVersion(
+                            new WorkflowDefinitionId(reader.GetGuid(3)),
+                            reader.GetInt64(4)),
+                        reader.GetString(5),
+                        DeserializeRequestContext(reader, 7),
+                        Enum.Parse<WorkflowRunStatus>(reader.GetString(8), ignoreCase: false),
+                        Deserialize<WorkflowStepPersistenceRecord[]>(reader, 9) ?? [],
+                        reader.GetFieldValue<DateTimeOffset>(10),
+                        reader.IsDBNull(11) ? null : reader.GetFieldValue<DateTimeOffset>(11),
+                        reader.IsDBNull(12) ? null : reader.GetFieldValue<DateTimeOffset>(12),
+                        Deserialize<WorkMessage[]>(reader, 13) ?? [],
+                        reader.GetString(6)));
+                }
+
+                return runs;
+            });
+
+        foreach (var run in runs)
+        {
+            yield return run;
+        }
+    }
+
+    public Task UpsertWorkflowRun(
+        WorkflowRunPersistenceRecord run,
+        CancellationToken cancellationToken = default)
+        => this.ExecuteOwnedTransaction(
+            "persisting a workflow run",
+            (connection, transaction, token) => this.UpsertWorkflowRunCore(run, connection, transaction, token),
+            cancellationToken);
+
+    public async Task UpsertWorkflowRun(
+        WorkflowRunPersistenceRecord run,
+        IWorkflowPersistenceTransaction transaction,
+        CancellationToken cancellationToken = default)
+    {
+        var (connection, sqlTransaction) = GetSqlServerTransaction(transaction);
+        await ExecuteWithStoreUnavailableHandling(
+            "persisting a workflow run",
+            async () =>
+            {
+                await ApplyRequiredDmlSetOptions(connection, sqlTransaction, cancellationToken);
+                await this.UpsertWorkflowRunCore(run, connection, sqlTransaction, cancellationToken);
+            });
+    }
+
+    public Task DeleteWorkflowRun(
+        WorkflowPersistenceDeleteRequest request,
+        CancellationToken cancellationToken = default)
+        => this.ExecuteOwnedTransaction(
+            "deleting a workflow run",
+            (connection, transaction, token) => this.DeleteWorkflowRunCore(request, connection, transaction, token),
+            cancellationToken);
+
+    public async Task DeleteWorkflowRun(
+        WorkflowPersistenceDeleteRequest request,
+        IWorkflowPersistenceTransaction transaction,
+        CancellationToken cancellationToken = default)
+    {
+        var (connection, sqlTransaction) = GetSqlServerTransaction(transaction);
+        await ExecuteWithStoreUnavailableHandling(
+            "deleting a workflow run",
+            async () =>
+            {
+                await ApplyRequiredDmlSetOptions(connection, sqlTransaction, cancellationToken);
+                await this.DeleteWorkflowRunCore(request, connection, sqlTransaction, cancellationToken);
+            });
+    }
+
+    public Task<bool> DurableWorkerExists(
+        WorkerId workerId,
+        CancellationToken cancellationToken = default)
+        => ExecuteWithStoreUnavailableHandling(
+            "checking durable worker existence",
+            async () =>
+            {
+                await using var connection = new SqlConnection(options.ConnectionString);
+                await connection.OpenAsync(cancellationToken);
+                await using var command = connection.CreateCommand();
+                command.CommandText = RequiredDmlSetOptions + $"""
+SELECT COUNT(*)
+FROM {this.entriesTable}
+WHERE WorkerId = @WorkerId;
+""";
+                Add(command, "@WorkerId", workerId.Value);
+                return Convert.ToInt32(await command.ExecuteScalarAsync(cancellationToken)) > 0;
+            });
+
     public async Task Enqueue(WorkQueueDurabilityEnqueueRequest request, CancellationToken cancellationToken = default)
     {
-        if (request.Transaction is WorkableSqlServerQueueDurabilityTransaction existing)
+        if (TryGetSqlServerTransaction(request.Transaction, out var existingConnection, out var existingTransaction))
         {
             await ExecuteWithStoreUnavailableHandling(
                 "enqueueing durable work",
                 async () =>
                 {
-                    await ApplyRequiredDmlSetOptions(existing.Connection, existing.Transaction, cancellationToken);
-                    await Insert(request, existing.Connection, existing.Transaction, cancellationToken);
+                    await ApplyRequiredDmlSetOptions(existingConnection!, existingTransaction!, cancellationToken);
+                    await Insert(request, existingConnection!, existingTransaction!, cancellationToken);
                 });
             return;
         }
@@ -97,14 +290,14 @@ SET NUMERIC_ROUNDABORT OFF;
 
     public async Task ReserveIdempotency(WorkIdempotencyPersistenceRequest request, CancellationToken cancellationToken = default)
     {
-        if (request.Transaction is WorkableSqlServerQueueDurabilityTransaction existing)
+        if (TryGetSqlServerTransaction(request.Transaction, out var existingConnection, out var existingTransaction))
         {
             await ExecuteWithStoreUnavailableHandling(
                 "reserving persistence-backed idempotency",
                 async () =>
                 {
-                    await ApplyRequiredDmlSetOptions(existing.Connection, existing.Transaction, cancellationToken);
-                    await InsertIdempotencyReservation(request, existing.Connection, existing.Transaction, cancellationToken);
+                    await ApplyRequiredDmlSetOptions(existingConnection!, existingTransaction!, cancellationToken);
+                    await InsertIdempotencyReservation(request, existingConnection!, existingTransaction!, cancellationToken);
                 });
             return;
         }
@@ -565,18 +758,18 @@ WHERE submitted.LeaseId IS NOT NULL
             return;
         }
 
-        if (transaction is not WorkableSqlServerQueueDurabilityTransaction sqlServerTransaction)
+        if (!TryGetSqlServerTransaction(transaction, out var connection, out var sqlTransaction))
         {
             throw new InvalidOperationException(
-                $"Workable.SqlServer durable completion requires a {nameof(WorkableSqlServerQueueDurabilityTransaction)}.");
+                "Workable.SqlServer durable completion requires a SQL Server durability transaction.");
         }
 
         await ExecuteWithStoreUnavailableHandling(
             "completing durable work",
             async () =>
             {
-                await using var command = sqlServerTransaction.Connection.CreateCommand();
-                command.Transaction = sqlServerTransaction.Transaction;
+                await using var command = connection!.CreateCommand();
+                command.Transaction = sqlTransaction!;
                 command.CommandText = RequiredDmlSetOptions + $"""
 DECLARE @CleanupWorkers TABLE
 (
@@ -616,6 +809,129 @@ WHERE submitted.LeaseId IS NOT NULL
 """;
                 await ExecuteCleanup(command, workers, cancellationToken);
             });
+    }
+
+    private async Task UpsertWorkflowRunCore(
+        WorkflowRunPersistenceRecord run,
+        DbConnection connection,
+        DbTransaction transaction,
+        CancellationToken cancellationToken)
+    {
+        await using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = RequiredDmlSetOptions + $"""
+MERGE {this.workflowRunsTable} WITH (HOLDLOCK) AS target
+USING
+(
+    SELECT
+        @RunId AS RunId,
+        @PersistenceScope AS PersistenceScope,
+        @WorkSystemId AS WorkSystemId,
+        @WorkSystemName AS WorkSystemName,
+        @DefinitionId AS DefinitionId,
+        @DefinitionRevision AS DefinitionRevision,
+        @DefinitionName AS DefinitionName,
+        @DefinitionFingerprint AS DefinitionFingerprint,
+        @RequestContextJson AS RequestContextJson,
+        @Status AS Status,
+        @StepsJson AS StepsJson,
+        @MessagesJson AS MessagesJson,
+        @CreatedAt AS CreatedAt,
+        @StartedAt AS StartedAt,
+        @CompletedAt AS CompletedAt,
+        @UpdatedAt AS UpdatedAt
+) AS source
+ON target.RunId = source.RunId
+WHEN MATCHED THEN
+    UPDATE SET
+        PersistenceScope = source.PersistenceScope,
+        WorkSystemId = source.WorkSystemId,
+        WorkSystemName = source.WorkSystemName,
+        DefinitionId = source.DefinitionId,
+        DefinitionRevision = source.DefinitionRevision,
+        DefinitionName = source.DefinitionName,
+        DefinitionFingerprint = source.DefinitionFingerprint,
+        RequestContextJson = source.RequestContextJson,
+        Status = source.Status,
+        StepsJson = source.StepsJson,
+        MessagesJson = source.MessagesJson,
+        CreatedAt = source.CreatedAt,
+        StartedAt = source.StartedAt,
+        CompletedAt = source.CompletedAt,
+        UpdatedAt = source.UpdatedAt
+WHEN NOT MATCHED THEN
+    INSERT
+    (
+        RunId,
+        PersistenceScope,
+        WorkSystemId,
+        WorkSystemName,
+        DefinitionId,
+        DefinitionRevision,
+        DefinitionName,
+        DefinitionFingerprint,
+        RequestContextJson,
+        Status,
+        StepsJson,
+        MessagesJson,
+        CreatedAt,
+        StartedAt,
+        CompletedAt,
+        UpdatedAt
+    )
+    VALUES
+    (
+        source.RunId,
+        source.PersistenceScope,
+        source.WorkSystemId,
+        source.WorkSystemName,
+        source.DefinitionId,
+        source.DefinitionRevision,
+        source.DefinitionName,
+        source.DefinitionFingerprint,
+        source.RequestContextJson,
+        source.Status,
+        source.StepsJson,
+        source.MessagesJson,
+        source.CreatedAt,
+        source.StartedAt,
+        source.CompletedAt,
+        source.UpdatedAt
+    );
+""";
+        Add(command, "@RunId", run.RunId.Value);
+        Add(command, "@PersistenceScope", run.PersistenceScope);
+        Add(command, "@WorkSystemId", run.WorkSystemId.Value);
+        Add(command, "@WorkSystemName", run.WorkSystemName);
+        Add(command, "@DefinitionId", run.DefinitionVersion.DefinitionId.Value);
+        Add(command, "@DefinitionRevision", run.DefinitionVersion.Revision);
+        Add(command, "@DefinitionName", run.DefinitionName);
+        Add(command, "@DefinitionFingerprint", run.DefinitionFingerprint);
+        Add(command, "@RequestContextJson", Serialize(run.RequestContext));
+        Add(command, "@Status", run.Status.ToString());
+        Add(command, "@StepsJson", Serialize(run.Steps));
+        Add(command, "@MessagesJson", Serialize(run.Messages));
+        Add(command, "@CreatedAt", run.CreatedAt);
+        Add(command, "@StartedAt", run.StartedAt);
+        Add(command, "@CompletedAt", run.CompletedAt);
+        Add(command, "@UpdatedAt", DateTimeOffset.UtcNow);
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    private async Task DeleteWorkflowRunCore(
+        WorkflowPersistenceDeleteRequest request,
+        DbConnection connection,
+        DbTransaction transaction,
+        CancellationToken cancellationToken)
+    {
+        await using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = RequiredDmlSetOptions + $"""
+DELETE FROM {this.workflowRunsTable}
+WHERE RunId = @RunId;
+""";
+        Add(command, "@RunId", request.RunId.Value);
+        await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
     private async Task Insert(
@@ -780,6 +1096,32 @@ VALUES
             });
     }
 
+    private async Task ExecuteOwnedTransaction(
+        string operation,
+        Func<DbConnection, DbTransaction, CancellationToken, Task> action,
+        CancellationToken cancellationToken)
+    {
+        await ExecuteWithStoreUnavailableHandling(
+            operation,
+            async () =>
+            {
+                await using var connection = new SqlConnection(options.ConnectionString);
+                await connection.OpenAsync(cancellationToken);
+                await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+                try
+                {
+                    await ApplyRequiredDmlSetOptions(connection, transaction, cancellationToken);
+                    await action(connection, transaction, cancellationToken);
+                    await transaction.CommitAsync(cancellationToken);
+                }
+                catch
+                {
+                    await transaction.RollbackAsync(CancellationToken.None);
+                    throw;
+                }
+            });
+    }
+
     private static async Task ExecuteWithStoreUnavailableHandling(
         string operation,
         Func<Task> action)
@@ -815,6 +1157,34 @@ VALUES
     private static bool IsStoreUnavailable(SqlException exception)
         => exception.Number is -2 or 2 or 53 or 64 or 233 or 4060 or 18456 ||
             exception.Class >= 20;
+
+    private static bool TryGetSqlServerTransaction(
+        IWorkQueueDurabilityTransaction? transaction,
+        out DbConnection? connection,
+        out DbTransaction? dbTransaction)
+    {
+        switch (transaction)
+        {
+            case WorkableSqlServerQueueDurabilityTransaction queueTransaction:
+                connection = queueTransaction.Connection;
+                dbTransaction = queueTransaction.Transaction;
+                return true;
+            case WorkableSqlServerWorkflowPersistenceTransaction workflowTransaction:
+                connection = workflowTransaction.Connection;
+                dbTransaction = workflowTransaction.Transaction;
+                return true;
+            default:
+                connection = null;
+                dbTransaction = null;
+                return false;
+        }
+    }
+
+    private static (DbConnection Connection, DbTransaction Transaction) GetSqlServerTransaction(
+        IWorkQueueDurabilityTransaction transaction)
+        => TryGetSqlServerTransaction(transaction, out var connection, out var dbTransaction)
+            ? (connection!, dbTransaction!)
+            : throw new InvalidOperationException("Workable.SqlServer requires a SQL Server durability transaction.");
 
     private static async Task ApplyRequiredDmlSetOptions(
         DbConnection connection,

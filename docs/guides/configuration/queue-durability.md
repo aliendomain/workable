@@ -210,7 +210,7 @@ Calling `WorkAction.Cancel` is an explicit final decision. A canceled worker rea
 
 Stopping a Workable system interrupts active work instead. Queued, running, waiting, and retrying workers move through `Interrupting` or `Interrupted`, record `WorkCompletionStatus.Interrupted`, and publish `worker.interrupted`. `Interrupted` is not final, so durable rows are not deleted. If the process stops before the work later completes or is explicitly canceled, another runtime can replay the row after its lease expires.
 
-Pausing a durable worker changes only the in-memory worker state. The durable row remains replayable, so a later replay materializes the worker in the queued state instead of restoring the paused state.
+Pausing a durable worker, including pausing while queued, changes only the in-memory worker state. The durable row remains replayable, so a later replay materializes the worker in the queued state instead of restoring the paused state.
 
 Executor code receives the normal `CancellationToken` for cooperative shutdown, and can distinguish interruption from API cancellation through `IWorkExecutionContext.IsInterrupted` and `IWorkExecutionContext.InterruptionReason`:
 

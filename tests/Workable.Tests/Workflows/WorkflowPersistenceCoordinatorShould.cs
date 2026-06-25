@@ -78,7 +78,97 @@ public sealed class WorkflowPersistenceCoordinatorShould
     }
 
     [Fact]
-    public async Task PersistRunAndDispatchUsesOneTransactionForRunAndWorkerEnqueue()
+    public async Task ListIncompleteRunsWithoutStoreReturnsAnEmptySequence()
+    {
+        var coordinator = new WorkflowPersistenceCoordinator(
+            store: null,
+            WorkSystemId.New(),
+            "workflow-persistence-tests");
+        var runs = new List<WorkflowRunPersistenceRecord>();
+
+        await foreach (var run in coordinator.ListIncompleteRuns(CancellationToken.None))
+        {
+            runs.Add(run);
+        }
+
+        Assert.Empty(runs);
+    }
+
+    [Fact]
+    public async Task UpsertAndDeleteWithoutStoreAreNoOpsAndDurableWorkerChecksReturnFalse()
+    {
+        var coordinator = new WorkflowPersistenceCoordinator(
+            store: null,
+            WorkSystemId.New(),
+            "workflow-persistence-tests");
+        var run = CreateRun(WorkSystemId.New(), "workflow-persistence-tests", "workflow.one");
+
+        await coordinator.UpsertRun(run, CancellationToken.None);
+        await coordinator.DeleteRun(run.RunId, CancellationToken.None);
+        var exists = await coordinator.DurableWorkerExists(WorkerId.New(), CancellationToken.None);
+
+        Assert.False(exists);
+    }
+
+    [Fact]
+    public async Task ExecuteTransactionWithoutStoreUsesDefaultOptionsAndNullTransaction()
+    {
+        var coordinator = new WorkflowPersistenceCoordinator(
+            store: null,
+            WorkSystemId.New(),
+            "workflow-persistence-tests");
+        IWorkflowPersistenceTransaction? observedTransaction = null;
+        WorkerOptions? observedOptions = null;
+
+        await coordinator.ExecuteTransaction(
+            (transaction, options, _) =>
+            {
+                observedTransaction = transaction;
+                observedOptions = options;
+                return Task.CompletedTask;
+            },
+            CancellationToken.None);
+
+        Assert.Null(observedTransaction);
+        Assert.Equal(WorkerOptions.Default, observedOptions);
+    }
+
+    [Fact]
+    public async Task UpsertRunWithNullTransactionFallsBackToTheNonTransactionalStoreMethod()
+    {
+        var systemId = WorkSystemId.New();
+        var store = new RecordingWorkflowPersistenceStore();
+        var coordinator = new WorkflowPersistenceCoordinator(
+            store,
+            systemId,
+            "workflow-persistence-tests");
+        var run = CreateRun(systemId, "workflow-persistence-tests", "workflow.one");
+
+        await coordinator.UpsertRun(run, transaction: null, CancellationToken.None);
+
+        Assert.Equal(run, Assert.Single(store.UpsertedRuns));
+        Assert.Empty(store.TransactionalUpserts);
+    }
+
+    [Fact]
+    public async Task DeleteRunWithNullTransactionFallsBackToTheNonTransactionalStoreMethod()
+    {
+        var systemId = WorkSystemId.New();
+        var store = new RecordingWorkflowPersistenceStore();
+        var coordinator = new WorkflowPersistenceCoordinator(
+            store,
+            systemId,
+            "workflow-persistence-tests");
+        var run = CreateRun(systemId, "workflow-persistence-tests", "workflow.one");
+
+        await coordinator.DeleteRun(run.RunId, transaction: null, CancellationToken.None);
+
+        Assert.Equal(run.RunId, Assert.Single(store.DeletedRuns).RunId);
+        Assert.Empty(store.TransactionalDeletes);
+    }
+
+    [Fact]
+    public async Task ExecuteTransactionUsesOneTransactionForRunUpsertAndWorkerEnqueue()
     {
         var systemId = WorkSystemId.New();
         var store = new RecordingWorkflowPersistenceStore();
@@ -89,13 +179,13 @@ public sealed class WorkflowPersistenceCoordinatorShould
         var run = CreateRun(systemId, "workflow-persistence-tests", "workflow.one");
         WorkerOptions? dispatchOptions = null;
 
-        await coordinator.PersistRunAndDispatch(
-            run,
-            (options, _) =>
+        await coordinator.ExecuteTransaction(
+            async (transaction, options, transactionCancellationToken) =>
             {
+                await coordinator.UpsertRun(run, transaction, transactionCancellationToken);
                 dispatchOptions = options;
                 store.RecordDispatch(options);
-                return Task.CompletedTask;
+                await Task.CompletedTask;
             },
             CancellationToken.None);
 
@@ -107,7 +197,25 @@ public sealed class WorkflowPersistenceCoordinatorShould
     }
 
     [Fact]
-    public async Task AdvanceRunAndDispatchUsesOneTransactionForCursorAdvanceAndNextDispatch()
+    public async Task ExecuteTransactionDoesNotCommitWhenActionThrows()
+    {
+        var store = new RecordingWorkflowPersistenceStore();
+        var coordinator = new WorkflowPersistenceCoordinator(
+            store,
+            WorkSystemId.New(),
+            "workflow-persistence-tests");
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            coordinator.ExecuteTransaction(
+                (_, _, _) => throw new InvalidOperationException("transaction failed"),
+                CancellationToken.None));
+
+        var transaction = Assert.Single(store.Transactions);
+        Assert.False(transaction.Committed);
+    }
+
+    [Fact]
+    public async Task DeleteRunWithinTransactionUsesOneTransactionForCleanup()
     {
         var systemId = WorkSystemId.New();
         var store = new RecordingWorkflowPersistenceStore();
@@ -115,56 +223,15 @@ public sealed class WorkflowPersistenceCoordinatorShould
             store,
             systemId,
             "workflow-persistence-tests");
-        var run = CreateRun(systemId, "workflow-persistence-tests", "workflow.one") with
-        {
-            Steps =
-            [
-                new WorkflowStepPersistenceRecord(
-                    "join",
-                    WorkflowStepKind.Join,
-                    WorkflowStepRunStatus.Completed,
-                    [],
-                    DateTimeOffset.UtcNow,
-                    DateTimeOffset.UtcNow,
-                    []),
-            ],
-        };
+        var run = CreateRun(systemId, "workflow-persistence-tests", "workflow.one");
 
-        await coordinator.AdvanceRunAndDispatch(
-            run,
-            (options, _) =>
-            {
-                store.RecordDispatch(options);
-                return Task.CompletedTask;
-            },
+        await coordinator.ExecuteTransaction(
+            (transaction, _, transactionCancellationToken) =>
+                coordinator.DeleteRun(run.RunId, transaction, transactionCancellationToken),
             CancellationToken.None);
 
         var transaction = Assert.Single(store.Transactions);
         Assert.True(transaction.Committed);
-        Assert.Equal(transaction.Id, Assert.Single(store.TransactionalUpserts).TransactionId);
-        Assert.Equal(transaction.Id, Assert.Single(store.Dispatches).TransactionId);
-    }
-
-    [Fact]
-    public async Task CompleteAndDeleteRunUsesOneTransactionForFinalizationAndCleanup()
-    {
-        var systemId = WorkSystemId.New();
-        var store = new RecordingWorkflowPersistenceStore();
-        var coordinator = new WorkflowPersistenceCoordinator(
-            store,
-            systemId,
-            "workflow-persistence-tests");
-        var run = CreateRun(systemId, "workflow-persistence-tests", "workflow.one") with
-        {
-            Status = WorkflowRunStatus.Completed,
-            CompletedAt = DateTimeOffset.UtcNow,
-        };
-
-        await coordinator.CompleteAndDeleteRun(run, CancellationToken.None);
-
-        var transaction = Assert.Single(store.Transactions);
-        Assert.True(transaction.Committed);
-        Assert.Equal(transaction.Id, Assert.Single(store.TransactionalUpserts).TransactionId);
         Assert.Equal(transaction.Id, Assert.Single(store.TransactionalDeletes).TransactionId);
     }
 

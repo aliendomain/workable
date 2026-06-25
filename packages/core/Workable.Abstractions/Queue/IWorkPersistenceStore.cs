@@ -73,6 +73,17 @@ public interface IWorkPersistenceStore
         CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Determines whether a durable worker entry still exists in the persistence store.
+    /// </summary>
+    /// <param name="workerId">The worker identifier to check.</param>
+    /// <param name="cancellationToken">A token that cancels the existence check.</param>
+    /// <returns>A task that returns <see langword="true"/> when the durable worker entry still exists.</returns>
+    Task<bool> DurableWorkerExists(
+        WorkerId workerId,
+        CancellationToken cancellationToken = default)
+        => Task.FromResult(false);
+
+    /// <summary>
     /// Initializes workflow persistence support for a system and its registered workflow definitions.
     /// </summary>
     /// <param name="context">The system and workflow definition context to initialize.</param>
@@ -176,7 +187,13 @@ public sealed record WorkQueueDurabilityInitializationContext(
 public sealed record WorkflowPersistenceInitializationContext(
     WorkSystemId WorkSystemId,
     string? WorkSystemName,
-    IReadOnlyList<WorkflowDefinition> Definitions);
+    IReadOnlyList<WorkflowDefinition> Definitions)
+{
+    /// <summary>
+    /// Gets the workflow persistence scope for this system.
+    /// </summary>
+    public string PersistenceScope => this.WorkSystemName ?? this.WorkSystemId.ToString();
+}
 
 /// <summary>
 /// Represents a request to begin a workflow persistence transaction for one system.
@@ -185,7 +202,13 @@ public sealed record WorkflowPersistenceInitializationContext(
 /// <param name="WorkSystemName">The configured system name, when one exists.</param>
 public sealed record WorkflowPersistenceTransactionRequest(
     WorkSystemId WorkSystemId,
-    string? WorkSystemName);
+    string? WorkSystemName)
+{
+    /// <summary>
+    /// Gets the workflow persistence scope for this system.
+    /// </summary>
+    public string PersistenceScope => this.WorkSystemName ?? this.WorkSystemId.ToString();
+}
 
 /// <summary>
 /// Represents one durable enqueue request.
@@ -339,12 +362,18 @@ public sealed record WorkflowRunPersistenceRecord(
     DateTimeOffset CreatedAt,
     DateTimeOffset? StartedAt,
     DateTimeOffset? CompletedAt,
-    IReadOnlyList<WorkMessage> Messages)
+    IReadOnlyList<WorkMessage> Messages,
+    string DefinitionFingerprint = "")
 {
     /// <summary>
     /// Gets the origin metadata extracted from <see cref="RequestContext"/>.
     /// </summary>
     public WorkOrigin Origin => this.RequestContext.Origin;
+
+    /// <summary>
+    /// Gets the workflow persistence scope for this system.
+    /// </summary>
+    public string PersistenceScope => this.WorkSystemName ?? this.WorkSystemId.ToString();
 }
 
 /// <summary>
@@ -373,7 +402,13 @@ public sealed record WorkflowStepPersistenceRecord(
 /// <param name="WorkSystemName">The configured system name, when one exists.</param>
 public sealed record WorkflowPersistenceReadRequest(
     WorkSystemId WorkSystemId,
-    string? WorkSystemName);
+    string? WorkSystemName)
+{
+    /// <summary>
+    /// Gets the workflow persistence scope for this system.
+    /// </summary>
+    public string PersistenceScope => this.WorkSystemName ?? this.WorkSystemId.ToString();
+}
 
 /// <summary>
 /// Identifies one durable workflow run that should be deleted.

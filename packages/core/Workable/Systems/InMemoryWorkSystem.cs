@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Diagnostics.CodeAnalysis;
+using System.Runtime.ExceptionServices;
 using System.Runtime.CompilerServices;
 using System.Threading.Channels;
 using Microsoft.Extensions.DependencyInjection;
@@ -22,7 +23,7 @@ internal sealed class InMemoryWorkSystem :
     private readonly IReadOnlyList<Func<IServiceProvider, IStartupWorkSource>> startupWorkSourceFactories;
     private readonly WorkSystemCatalog catalog;
     private readonly WorkflowCatalog workflows;
-    private readonly InMemoryWorkflowRuntime workflowRuntime;
+    private readonly WorkflowRuntime workflowRuntime;
     private readonly WorkflowPersistenceCoordinator workflowPersistence;
     private readonly WorkQueueService queue;
     private readonly WorkerOperations workers;
@@ -114,12 +115,15 @@ internal sealed class InMemoryWorkSystem :
             this.events,
             this.authorization,
             this.groupProvider);
-        this.workflowRuntime = new InMemoryWorkflowRuntime(
+        this.workflowRuntime = new WorkflowRuntime(
+            this.Id,
             this.Name,
             this.RequiresAuthorization,
             this.workflows,
             workDefinitionName => this.catalog.TryGetWork(workDefinitionName, out var registeredWork) ? registeredWork : null,
             this.CreateSession,
+            this.workers.CreateHandle,
+            this.workflowPersistence,
             this.authorization,
             this.groupProvider);
     }
@@ -138,7 +142,7 @@ internal sealed class InMemoryWorkSystem :
 
     internal WorkflowCatalog Workflows => this.workflows;
 
-    internal InMemoryWorkflowRuntime WorkflowRuntime => this.workflowRuntime;
+    internal WorkflowRuntime WorkflowRuntime => this.workflowRuntime;
 
     long IWorkSystemReadModelClock.AppliedSequence => this.readModel.AppliedSequence;
 
@@ -313,28 +317,49 @@ internal sealed class InMemoryWorkSystem :
 
             this.catalog.Freeze();
             await this.workflowPersistence.Initialize(this.workflows.Definitions, cancellationToken);
+            this.workflowRuntime.StartExecutionLifetime();
             await this.workers.StartDispatching(cancellationToken);
             dispatchingStarted = true;
             this.State = WorkSystemState.Started;
             lifecycleStarted = true;
+            await this.workflowRuntime.RecoverDurableRuns(cancellationToken);
             await this.NotifyStarted(cancellationToken);
             await this.QueueAutomaticallyStartedWork(cancellationToken);
             await this.QueueStartupWork(cancellationToken);
         }
-        catch
+        catch (Exception exception)
         {
+            var cleanupExceptions = new List<Exception>();
+            TryCleanup(() => this.workflowRuntime.CancelExecutionLifetime(), cleanupExceptions);
             if (dispatchingStarted)
             {
-                await this.workers.StopDispatching(CancellationToken.None);
+                await TryCleanupAsync(
+                    () => this.workers.StopDispatching(CancellationToken.None),
+                    cleanupExceptions);
             }
+
+            await TryCleanupAsync(
+                () => this.workflowRuntime.WaitForExecutions(CancellationToken.None),
+                cleanupExceptions);
+            TryCleanup(() => this.workflowRuntime.ClearRuns(), cleanupExceptions);
 
             if (lifecycleStarted)
             {
-                await this.NotifyStopped();
+                await TryCleanupAsync(
+                    () => this.NotifyStopped(),
+                    cleanupExceptions);
             }
 
             this.metrics.Clear();
             this.State = WorkSystemState.Stopped;
+            if (cleanupExceptions.Count > 0)
+            {
+                throw new AggregateException(
+                    "Workable failed to start and one or more cleanup operations also failed.",
+                    [exception, .. cleanupExceptions]);
+            }
+
+            ExceptionDispatchInfo.Capture(exception).Throw();
             throw;
         }
         finally
@@ -367,16 +392,57 @@ internal sealed class InMemoryWorkSystem :
             }
 
             this.State = WorkSystemState.Stopping;
-            await this.NotifyStopping(requestContext.Origin);
-            var result = await this.workers.StopDispatching(requestContext, cancellationToken);
-            await this.NotifyStopped();
+            var cleanupExceptions = new List<Exception>();
+            await TryCleanupAsync(() => this.NotifyStopping(requestContext.Origin), cleanupExceptions);
+            TryCleanup(() => this.workflowRuntime.CancelExecutionLifetime(), cleanupExceptions);
+
+            WorkSystemStopResult? result = null;
+            await TryCleanupAsync(
+                async () => result = await this.workers.StopDispatching(requestContext, cancellationToken),
+                cleanupExceptions);
+            await TryCleanupAsync(
+                () => this.workflowRuntime.WaitForExecutions(cancellationToken),
+                cleanupExceptions);
+            TryCleanup(() => this.workflowRuntime.ClearRuns(), cleanupExceptions);
+            await TryCleanupAsync(() => this.NotifyStopped(), cleanupExceptions);
             this.metrics.Clear();
             this.State = WorkSystemState.Stopped;
-            return result;
+            if (cleanupExceptions.Count > 0)
+            {
+                throw new AggregateException(
+                    "Workable failed while stopping and one or more cleanup operations also failed.",
+                    cleanupExceptions);
+            }
+
+            return result ?? new WorkSystemStopResult([]);
         }
         finally
         {
             this.lifecycleLock.Release();
+        }
+    }
+
+    private static void TryCleanup(Action cleanup, List<Exception> exceptions)
+    {
+        try
+        {
+            cleanup();
+        }
+        catch (Exception exception)
+        {
+            exceptions.Add(exception);
+        }
+    }
+
+    private static async Task TryCleanupAsync(Func<Task> cleanup, List<Exception> exceptions)
+    {
+        try
+        {
+            await cleanup();
+        }
+        catch (Exception exception)
+        {
+            exceptions.Add(exception);
         }
     }
 

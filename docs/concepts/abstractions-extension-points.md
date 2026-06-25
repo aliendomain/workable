@@ -65,7 +65,7 @@ At a practical level, a provider is responsible for:
 
 `WorkQueueDurabilityInitializationContext` is worth noticing because Workable hands the provider the system id, optional name, and current definitions. That is the provider's chance to prepare tables, validate schema, or align definition metadata before queue traffic begins.
 
-`WorkflowPersistenceInitializationContext` is the workflow-side equivalent. It gives the provider the system id, optional name, and registered workflow definitions before durable workflow state is read or written.
+`WorkflowPersistenceInitializationContext` is the workflow-side equivalent. It gives the provider the system id, optional name, registered workflow definitions, and a `PersistenceScope` helper before durable workflow state is read or written.
 
 ### Important Durable Types
 
@@ -87,9 +87,11 @@ The durability-related record types all describe one coherent protocol:
 
 `WorkQueueDurabilityEntry` is the payload that comes back from `ClaimReady(...)`. It carries the lease plus the definition name, input, options, configuration, origin, and creation time needed to materialize work back into memory.
 
-`WorkflowRunPersistenceRecord` is the workflow-side snapshot payload. It carries the run id, workflow definition version and name, request context, workflow status, persisted step snapshots, timestamps, and workflow messages.
+`WorkflowRunPersistenceRecord` is the workflow-side snapshot payload. It carries the run id, workflow definition version and name, request context, workflow status, persisted step snapshots, timestamps, workflow messages, and the workflow persistence scope for the run.
 
 `IWorkflowPersistenceTransaction` extends `IWorkQueueDurabilityTransaction`, which lets one store-defined transaction span workflow-run persistence and durable child-worker enqueue.
+
+Workable uses that transaction boundary when a durable workflow advances from one dispatch boundary to the next. The same provider transaction can hold the updated workflow-run snapshot and the child workers that were queued from that step.
 
 ### Error Semantics
 

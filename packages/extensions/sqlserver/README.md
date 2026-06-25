@@ -1,6 +1,6 @@
 # Workable SQL Server Integration
 
-`Workable.SqlServer` provides SQL Server persistence for durable queueing, persistence-backed idempotency, and persistence-backed concurrency.
+`Workable.SqlServer` provides SQL Server persistence for durable queueing, persistence-backed idempotency, persistence-backed concurrency, and durable workflow-run persistence.
 
 See also:
 
@@ -73,6 +73,8 @@ The SQL integration tests create and drop temporary databases on the target inst
 
 The SQL Server durable queue writes accepted durable workers to the configured schema before returning from enqueue. Without a caller transaction, the integration commits its own insert before returning. With `WorkerOptions.WithSqlServerQueueDurabilityTransaction(connection, transaction)`, the insert participates in the caller's transaction and the queue reader cannot claim the work until that transaction commits. This caller-owned enqueue transaction path requires `QueueDurably()`; persistence-backed idempotency without durable queueing rejects queue requests that supply the queue durability transaction option.
 
+Durable workflows use the same SQL Server store for workflow-run snapshots. Workable persists durable workflow runs in `workable.WorkflowRuns`, resumes incomplete runs for the same persistence scope during system startup, and uses one SQL transaction to advance the workflow-run snapshot and enqueue durable child workers at each durable dispatch boundary.
+
 Persistence-backed concurrency is enforced during durable queue claiming. Configure persistent coordination with `CoordinatePersistently()`, enable durable queueing, and use `WhileExecuting` blocking with `DeferStart` limit behavior when multiple runtimes share the same SQL Server queue.
 
 The queue reader is signal-first. Durable enqueues that Workable commits itself wake the local reader, which coalesces bursts briefly and drains ready rows in batches of 100 until the queue is empty. A fallback poll remains for rows committed by another process or by a caller-owned transaction. Configure that fallback per durable work definition:
@@ -114,6 +116,8 @@ Completion cleanup is intentional:
 - `Failed` workers keep their row for inspection and later retry or explicit cancellation.
 - Shutdown-interrupted workers keep their row. Workable records `WorkerState.Interrupted`, publishes `worker.interrupted`, and allows another runtime to replay the row after its lease expires.
 
+Durable workflow-run cleanup is separate from durable worker-row cleanup. Completed and failed durable workflow runs delete their persisted run snapshot. Incomplete durable workflow snapshots remain available for startup recovery.
+
 Executor code can tell interruption from explicit cancellation by checking `IWorkExecutionContext.IsInterrupted` when the execution `CancellationToken` is canceled. `IWorkExecutionContext.InterruptionReason` distinguishes shutdown interruption from a lost durable queue lease.
 
 SQL Server treats `LeaseId` as a fencing token. Lease renewal, failed-row retention, and final cleanup all require the current lease id for queue-backed work. If renewal or cleanup affects no rows, the integration reports a lost lease and Workable interrupts the local worker with `WorkInterruptionReason.LeaseLost` instead of letting stale execution finalize a row claimed by another runtime.
@@ -154,7 +158,7 @@ dotnet run --project apps\tools\Workable.SqlServer.Cli -- schema apply --project
 
 `--project` can be repeated, and `--solution` scans all non-test projects in the solution. Pass `--include-tests` when a test project is intentionally part of the scan. `schema apply` also accepts repeated `--connection-string` values so the same detected schema requirements can be deployed to multiple databases.
 
-The scanner looks for durable queue configuration, persistence-backed idempotency configuration, and persistence-backed concurrency configuration. If connection strings or schema names are supplied dynamically through application configuration, pass them to the CLI explicitly; literal `AddWorkableSqlServerDurableQueue("...", schemaName: "...")` values can be discovered automatically.
+The scanner looks for durable queue configuration, persistence-backed idempotency configuration, persistence-backed concurrency configuration, and durable workflow configuration. If connection strings or schema names are supplied dynamically through application configuration, pass them to the CLI explicitly; literal `AddWorkableSqlServerDurableQueue("...", schemaName: "...")` values can be discovered automatically.
 
 You can also provide the connection string with `WORKABLE_SQLSERVER_CONNECTION_STRING`:
 

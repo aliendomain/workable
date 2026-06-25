@@ -20,7 +20,7 @@ Workflow definitions also carry:
 - input and output schemas
 - revision and version metadata
 
-Workflow runs are started by workflow name. Child steps use the `WorkInput` values configured on the workflow definition. Workflow run snapshots are in-memory process state.
+Workflow runs are started by workflow name. Child steps use the `WorkInput` values configured on the workflow definition. Non-durable workflow run snapshots are in-memory process state. Durable workflows persist run snapshots through the registered `IWorkPersistenceStore`.
 
 ## Registering A Workflow
 
@@ -59,6 +59,31 @@ services.AddWorkableSystem(builder =>
 ```
 
 Workflow names must be unique within one system and are matched case-insensitively.
+
+## Durable Workflows
+
+Durable workflows opt in through `WorkflowCoordinationConfiguration.Durable`.
+
+```csharp
+builder.AddWorkflow(
+    WorkflowDefinition.Create(
+        "orders.fulfillment.durable",
+        coordination: WorkflowCoordinationConfiguration.Durable),
+    workflow => workflow
+        .DispatchWork("prepare", "orders.prepare")
+        .RunParallel("notify", parallel => parallel
+            .DispatchWork("email", "orders.email")
+            .DispatchWork("invoice", "orders.invoice"))
+        .Join("settle"));
+```
+
+Durable workflows:
+
+- require a named Workable system so recovery can scope runs consistently across restarts
+- persist the latest workflow-run snapshot through `IWorkPersistenceStore`
+- upgrade child dispatches to durable queueing so replay can reconnect child workers to the workflow run
+- persist workflow-run step transitions and durable child-worker enqueue in one store-defined transaction at each durable dispatch boundary
+- scan for incomplete runs for that named system when the system starts and resume them from the persisted step state
 
 ## Definition Model
 
@@ -104,6 +129,7 @@ Top-level workflow steps are processed in registration order.
 - a `DispatchWork(...)` step queues child work and records the accepted child worker id on the workflow step snapshot when one exists
 - a `RunParallel(...)` step queues each child dispatch and records their accepted worker ids on the parallel step snapshot
 - a `Join(...)` step waits for all outstanding previously dispatched child work to complete before later workflow steps continue
+- a durable workflow persists each dispatch or join transition before later recovery depends on it
 
 Workflow completion waits for accepted child work. `Join(...)` is the synchronization point inside the step graph.
 
@@ -142,23 +168,27 @@ builder.AddWorkflow(
 
 Starting a workflow checks workflow operate permission.
 
-Child work dispatches reuse the same `WorkRequestContext`.
-
 ## Child Work Provenance
 
-Workflow-started child work keeps the caller's `WorkRequestContext` and adds workflow correlation identifiers to the queued `WorkInput`:
+Workflow-started child work stores the caller's actor, origin, and authentication state in `WorkRequestContext` and adds workflow correlation identifiers to the queued `WorkInput`:
 
 - `workflow-run`
 - `workflow-definition`
 - `workflow-step`
 
-## In-Memory Runtime
+Stored authorization snapshots are not retained.
 
-Workflow run snapshots and step status are in-memory process state.
+## Runtime Storage
+
+Non-durable workflow run snapshots and step status are in-memory process state.
 
 Stopping the process clears:
 
-- active workflow run state
-- historical workflow run snapshots
+- active non-durable workflow run state
+- historical non-durable workflow run snapshots
+
+Durable workflows persist run state through `IWorkPersistenceStore`. On startup, Workable lists incomplete durable workflow runs for the same named system, rehydrates them into memory, and resumes waiting joins or trailing child-work completion from the persisted step snapshots.
+
+If the persisted workflow definition fingerprint does not match the currently registered workflow definition, Workable marks the recovered run failed and deletes its persisted run snapshot instead of resuming it.
 
 Non-durable workflows cannot dispatch child work whose effective queue configuration enables durable queueing.
