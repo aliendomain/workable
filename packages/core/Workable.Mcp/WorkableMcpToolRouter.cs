@@ -270,7 +270,7 @@ public sealed class WorkableMcpToolRouter(IWorkSystemRegistry registry)
                         var runId = new WorkflowRunId(ReadRequiredGuid(arguments, "runId"));
                         var runtime = ResolveWorkflowRuntime(system);
                         var actionRequestContext = WithDescription(requestContext, ReadString(arguments, "description"));
-                        var outcome = runtime.Execute(
+                        var outcome = await runtime.Execute(
                             runId,
                             toolName == StopWorkflowTool ? WorkflowAction.Stop : WorkflowAction.Cancel,
                             actionRequestContext);

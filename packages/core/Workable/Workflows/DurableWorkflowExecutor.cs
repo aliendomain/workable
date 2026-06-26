@@ -1,7 +1,6 @@
 namespace Workable;
 
 internal sealed class DurableWorkflowExecutor(
-    WorkSystemId workSystemId,
     string workSystemKey,
     Func<string, RegisteredWork?> getRegisteredWork,
     Func<WorkRequestContext, IWorkSystemSession> createSession,
@@ -230,9 +229,7 @@ internal sealed class DurableWorkflowExecutor(
     }
 
     private WorkflowRunPersistenceRecord CreatePersistenceRecord(WorkflowRunState run)
-        => run.ToPersistenceRecord(
-            workSystemId,
-            workSystemKey);
+        => run.ToPersistenceRecord(workSystemKey);
 
     private async Task<WorkflowRunCompletion> WaitForJoinOutstanding(
         WorkflowRunState run,

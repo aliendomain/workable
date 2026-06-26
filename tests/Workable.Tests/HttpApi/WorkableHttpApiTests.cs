@@ -1351,12 +1351,19 @@ public sealed class WorkableHttpApiTests
             "Expected the canceled workflow to complete as canceled.");
 
         var childWorkerId = completed!.Steps.Single(step => step.Name == "dispatch").WorkerIds.Single();
-        var child = await Direct(system).Query.Worker(childWorkerId)
-            ?? throw new InvalidOperationException("Expected canceled child worker.");
+        WorkerSnapshot? child = null;
+        await TestEventually.Until(
+            async () =>
+            {
+                child = await Direct(system).Query.Worker(childWorkerId);
+                return child?.State == WorkerState.Canceled;
+            },
+            "Expected the canceled workflow child to settle into the final canceled state.",
+            timeout: TimeSpan.FromSeconds(10));
 
         Assert.True(canceled.IsAccepted);
         Assert.Equal(WorkflowRunStatus.Canceled, completed.Status);
-        Assert.Equal(WorkerState.Canceled, child.State);
+        Assert.Equal(WorkerState.Canceled, child!.State);
     }
 
     [Fact]
@@ -2540,12 +2547,19 @@ public sealed class WorkableHttpApiTests
             "Expected the HTTP-canceled workflow to settle as canceled.");
 
         var childWorkerId = completed!.Steps.Single(step => step.Name == "dispatch").WorkerIds.Single();
-        var child = await Direct(system).Query.Worker(childWorkerId)
-            ?? throw new InvalidOperationException("Expected canceled child worker.");
+        WorkerSnapshot? child = null;
+        await TestEventually.Until(
+            async () =>
+            {
+                child = await Direct(system).Query.Worker(childWorkerId);
+                return child?.State == WorkerState.Canceled;
+            },
+            "Expected the HTTP-canceled workflow child to settle into the final canceled state.",
+            timeout: TimeSpan.FromSeconds(10));
 
         Assert.Equal("Accepted", cancelJson["status"]?.GetValue<string>());
         Assert.Equal("Cancel", cancelJson["action"]?.GetValue<string>());
-        Assert.Equal(WorkerState.Canceled, child.State);
+        Assert.Equal(WorkerState.Canceled, child!.State);
     }
 
     [Fact]

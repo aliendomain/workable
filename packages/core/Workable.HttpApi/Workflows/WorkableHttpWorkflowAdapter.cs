@@ -51,7 +51,7 @@ internal sealed class WorkableHttpWorkflowAdapter
     /// <summary>
     /// Executes one workflow action using the HTTP request contract.
     /// </summary>
-    public Task<WorkableHttpWorkflowActionResult> Execute(
+    public async Task<WorkableHttpWorkflowActionResult> Execute(
         IWorkSystem system,
         WorkflowRunId runId,
         WorkflowAction action,
@@ -62,13 +62,13 @@ internal sealed class WorkableHttpWorkflowAdapter
         ArgumentNullException.ThrowIfNull(requestContext);
         cancellationToken.ThrowIfCancellationRequested();
 
-        var outcome = ResolveRuntime(system).WorkflowRuntime.Execute(runId, action, requestContext);
-        return Task.FromResult(new WorkableHttpWorkflowActionResult(
+        var outcome = await ResolveRuntime(system).WorkflowRuntime.Execute(runId, action, requestContext);
+        return new WorkableHttpWorkflowActionResult(
             MapActionStatus(outcome.Status),
             MapActionKind(action),
             outcome.RunId.Value,
             WorkableHttpWorkflowRun.From(outcome.Run),
-            outcome.Messages));
+            outcome.Messages);
     }
 
     private static InMemoryWorkSystem ResolveRuntime(IWorkSystem system)

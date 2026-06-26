@@ -2,11 +2,9 @@ namespace Workable;
 
 internal sealed class WorkflowPersistenceCoordinator(
     IWorkPersistenceStore? store,
-    WorkSystemId workSystemId,
     string? workSystemName)
 {
     private readonly IWorkPersistenceStore? store = store;
-    private readonly WorkSystemId workSystemId = workSystemId;
     private readonly string? workSystemName = workSystemName;
 
     public bool IsAvailable => this.store is not null;
@@ -15,27 +13,33 @@ internal sealed class WorkflowPersistenceCoordinator(
         IReadOnlyList<WorkflowDefinition> definitions,
         CancellationToken cancellationToken)
     {
-        if (definitions.Count == 0)
+        if (definitions.Count == 0 || string.IsNullOrWhiteSpace(this.workSystemName))
+        {
+            return Task.CompletedTask;
+        }
+
+        var durableDefinitions = definitions
+            .Where(definition => definition.Coordination.IsDurable)
+            .ToArray();
+        if (durableDefinitions.Length == 0)
         {
             return Task.CompletedTask;
         }
 
         return this.store?.InitializeWorkflows(
             new WorkflowPersistenceInitializationContext(
-                this.workSystemId,
                 this.workSystemName,
-                definitions),
+                durableDefinitions),
             cancellationToken)
             ?? Task.CompletedTask;
     }
 
     public IAsyncEnumerable<WorkflowRunPersistenceRecord> ListIncompleteRuns(CancellationToken cancellationToken)
-        => this.store?.ListIncompleteWorkflowRuns(
-            new WorkflowPersistenceReadRequest(
-                this.workSystemId,
-                this.workSystemName),
-            cancellationToken)
-        ?? Empty();
+        => this.store is not null && !string.IsNullOrWhiteSpace(this.workSystemName)
+            ? this.store.ListIncompleteWorkflowRuns(
+                new WorkflowPersistenceReadRequest(this.workSystemName),
+                cancellationToken)
+            : Empty();
 
     public Task UpsertRun(WorkflowRunPersistenceRecord run, CancellationToken cancellationToken)
         => this.store?.UpsertWorkflowRun(run, cancellationToken)
@@ -100,16 +104,14 @@ internal sealed class WorkflowPersistenceCoordinator(
     {
         ArgumentNullException.ThrowIfNull(action);
 
-        if (this.store is null)
+        if (this.store is null || string.IsNullOrWhiteSpace(this.workSystemName))
         {
             await action(null, WorkerOptions.Default, cancellationToken);
             return;
         }
 
         await using var transaction = await this.store.BeginWorkflowTransaction(
-            new WorkflowPersistenceTransactionRequest(
-                this.workSystemId,
-                this.workSystemName),
+            new WorkflowPersistenceTransactionRequest(this.workSystemName),
             cancellationToken);
         await action(
             transaction,

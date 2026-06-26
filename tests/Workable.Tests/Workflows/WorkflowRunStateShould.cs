@@ -48,7 +48,6 @@ public sealed class WorkflowRunStateShould
         var runId = WorkflowRunId.New();
         var workerId = WorkerId.New();
         var record = new WorkflowRunPersistenceRecord(
-            WorkSystemId.New(),
             "workflow-tests",
             runId,
             definition.Version,
@@ -88,7 +87,7 @@ public sealed class WorkflowRunStateShould
 
         var run = WorkflowRunState.Rehydrate(workflow, record);
         var snapshot = run.ToSnapshot();
-        var persisted = run.ToPersistenceRecord(WorkSystemId.New(), "workflow-tests");
+        var persisted = run.ToPersistenceRecord("workflow-tests");
 
         Assert.Equal(runId, snapshot.Id);
         Assert.Equal(["prepare", "join", "archive"], snapshot.Steps.Select(step => step.Name).ToArray());
@@ -108,7 +107,6 @@ public sealed class WorkflowRunStateShould
             new DispatchWorkflowStepDefinition("prepare", "sample.prepare"),
             new JoinWorkflowStepDefinition("join"));
         var record = new WorkflowRunPersistenceRecord(
-            WorkSystemId.New(),
             "workflow-tests",
             WorkflowRunId.New(),
             definition.Version,
@@ -152,6 +150,25 @@ public sealed class WorkflowRunStateShould
         Assert.NotNull(step.StartedAt);
         Assert.NotNull(step.CompletedAt);
         Assert.Contains(step.Messages, message => message.Code == "workflow.dispatch.failed");
+    }
+
+    [Fact]
+    public void PersistAndRehydratePendingControlAction()
+    {
+        var definition = WorkflowDefinition.Create(
+            "workflow.pending-control",
+            coordination: WorkflowCoordinationConfiguration.Durable);
+        var workflow = CreateWorkflow(
+            definition,
+            new DispatchWorkflowStepDefinition("dispatch", "sample.dispatch"));
+        var run = WorkflowRunState.Create(workflow, WorkRequestContext.Create(WorkInvocationChannel.InProcess));
+
+        Assert.True(run.TryRecordAcceptedControlAction(WorkflowAction.Stop, out _));
+        var persisted = run.ToPersistenceRecord("workflow-tests");
+        var rehydrated = WorkflowRunState.Rehydrate(workflow, persisted);
+
+        Assert.Equal(WorkflowAction.Stop.ToString(), persisted.PendingControlAction);
+        Assert.Equal(WorkflowAction.Stop, rehydrated.GetPendingControlAction());
     }
 
     private static RegisteredWorkflow CreateWorkflow(

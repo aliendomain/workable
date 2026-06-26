@@ -78,7 +78,6 @@ internal sealed class InMemoryWorkSystem :
         this.workflows = new WorkflowCatalog(registration.Workflows);
         this.workflowPersistence = new WorkflowPersistenceCoordinator(
             persistenceStore,
-            this.Id,
             this.Name);
         this.readModel = new WorkSystemReadModel(this.catalog, () => this.State, this.Name, this.metrics);
         this.workers = new WorkerOperations(
@@ -116,7 +115,6 @@ internal sealed class InMemoryWorkSystem :
             this.authorization,
             this.groupProvider);
         this.workflowRuntime = new WorkflowRuntime(
-            this.Id,
             this.Name,
             this.RequiresAuthorization,
             this.workflows,

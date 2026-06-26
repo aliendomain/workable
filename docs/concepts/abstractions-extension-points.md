@@ -65,7 +65,7 @@ At a practical level, a provider is responsible for:
 
 `WorkQueueDurabilityInitializationContext` is worth noticing because Workable hands the provider the system id, optional name, and current definitions. That is the provider's chance to prepare tables, validate schema, or align definition metadata before queue traffic begins.
 
-`WorkflowPersistenceInitializationContext` is the workflow-side equivalent. It gives the provider the system id, optional name, registered workflow definitions, and a `PersistenceScope` helper before durable workflow state is read or written.
+`WorkflowPersistenceInitializationContext` is the workflow-side equivalent. It gives the provider the configured system name, the registered durable workflow definitions for that system, and a `PersistenceScope` helper before durable workflow state is read or written.
 
 ### Important Durable Types
 

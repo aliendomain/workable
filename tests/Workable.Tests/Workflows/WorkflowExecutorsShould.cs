@@ -269,12 +269,11 @@ public sealed class WorkflowExecutorsShould
     public async Task PersistJoinTransitionsAndDeleteCompletedDurableRun()
     {
         var store = new RecordingWorkflowStore();
-        var persistence = new WorkflowPersistenceCoordinator(store, WorkSystemId.New(), "workflow-tests");
+        var persistence = new WorkflowPersistenceCoordinator(store, "workflow-tests");
         var alphaId = WorkerId.New();
         var betaId = WorkerId.New();
         var queueCalls = 0;
         var executor = new DurableWorkflowExecutor(
-            WorkSystemId.New(),
             "workflow-tests",
             name => CreateRegisteredWork(name),
             _ => new TestWorkSystemSession(new DelegateQueueService((_, _, _, _) =>
@@ -309,13 +308,12 @@ public sealed class WorkflowExecutorsShould
     public async Task PersistRemainingJoinWorkersAsChildrenComplete()
     {
         var store = new RecordingWorkflowStore();
-        var persistence = new WorkflowPersistenceCoordinator(store, WorkSystemId.New(), "workflow-tests");
+        var persistence = new WorkflowPersistenceCoordinator(store, "workflow-tests");
         var alphaId = WorkerId.New();
         var betaId = WorkerId.New();
         var queueCalls = 0;
         var betaCompletion = new TaskCompletionSource<WorkCompletion>(TaskCreationOptions.RunContinuationsAsynchronously);
         var executor = new DurableWorkflowExecutor(
-            WorkSystemId.New(),
             "workflow-tests",
             name => CreateRegisteredWork(name),
             _ => new TestWorkSystemSession(new DelegateQueueService((_, _, _, _) =>
@@ -368,9 +366,8 @@ public sealed class WorkflowExecutorsShould
     public async Task DeleteDurableRunForUnsupportedStepKind()
     {
         var store = new RecordingWorkflowStore();
-        var persistence = new WorkflowPersistenceCoordinator(store, WorkSystemId.New(), "workflow-tests");
+        var persistence = new WorkflowPersistenceCoordinator(store, "workflow-tests");
         var executor = new DurableWorkflowExecutor(
-            WorkSystemId.New(),
             "workflow-tests",
             name => CreateRegisteredWork(name),
             _ => new TestWorkSystemSession(new DelegateQueueService((_, _, _, _) => throw new NotSupportedException())),
@@ -394,9 +391,8 @@ public sealed class WorkflowExecutorsShould
     public async Task DeleteDurableRunWhenSingleDispatchIsRejected()
     {
         var store = new RecordingWorkflowStore();
-        var persistence = new WorkflowPersistenceCoordinator(store, WorkSystemId.New(), "workflow-tests");
+        var persistence = new WorkflowPersistenceCoordinator(store, "workflow-tests");
         var executor = new DurableWorkflowExecutor(
-            WorkSystemId.New(),
             "workflow-tests",
             name => CreateRegisteredWork(name),
             _ => new TestWorkSystemSession(new DelegateQueueService((name, _, _, _) =>
@@ -423,10 +419,9 @@ public sealed class WorkflowExecutorsShould
     public async Task DeleteDurableRunWhenParallelDispatchIsRejected()
     {
         var store = new RecordingWorkflowStore();
-        var persistence = new WorkflowPersistenceCoordinator(store, WorkSystemId.New(), "workflow-tests");
+        var persistence = new WorkflowPersistenceCoordinator(store, "workflow-tests");
         var queueCalls = 0;
         var executor = new DurableWorkflowExecutor(
-            WorkSystemId.New(),
             "workflow-tests",
             name => CreateRegisteredWork(name),
             _ => new TestWorkSystemSession(new DelegateQueueService((name, _, _, _) =>
@@ -463,10 +458,9 @@ public sealed class WorkflowExecutorsShould
     public async Task DeleteDurableRunWhenJoinObservesFailedChildCompletion()
     {
         var store = new RecordingWorkflowStore();
-        var persistence = new WorkflowPersistenceCoordinator(store, WorkSystemId.New(), "workflow-tests");
+        var persistence = new WorkflowPersistenceCoordinator(store, "workflow-tests");
         var workerId = WorkerId.New();
         var executor = new DurableWorkflowExecutor(
-            WorkSystemId.New(),
             "workflow-tests",
             name => CreateRegisteredWork(name),
             _ => new TestWorkSystemSession(new DelegateQueueService((_, _, _, _) =>
@@ -501,11 +495,10 @@ public sealed class WorkflowExecutorsShould
     {
         var workerId = WorkerId.New();
         var store = new RecordingWorkflowStore();
-        var persistence = new WorkflowPersistenceCoordinator(store, WorkSystemId.New(), "workflow-tests");
+        var persistence = new WorkflowPersistenceCoordinator(store, "workflow-tests");
         var handleWaits = 0;
         var finalSnapshot = CreateSnapshot(workerId, WorkerState.Completed);
         var executor = new DurableWorkflowExecutor(
-            WorkSystemId.New(),
             "workflow-tests",
             name => CreateRegisteredWork(name),
             _ => new TestWorkSystemSession(
@@ -529,7 +522,6 @@ public sealed class WorkflowExecutorsShould
         var run = WorkflowRunState.Rehydrate(
             workflow,
             new WorkflowRunPersistenceRecord(
-                WorkSystemId.New(),
                 "workflow-tests",
                 WorkflowRunId.New(),
                 workflow.Definition.Version,
@@ -572,9 +564,8 @@ public sealed class WorkflowExecutorsShould
         var workerId = WorkerId.New();
         var store = new RecordingWorkflowStore();
         store.MissingWorkerIds.Add(workerId);
-        var persistence = new WorkflowPersistenceCoordinator(store, WorkSystemId.New(), "workflow-tests");
+        var persistence = new WorkflowPersistenceCoordinator(store, "workflow-tests");
         var executor = new DurableWorkflowExecutor(
-            WorkSystemId.New(),
             "workflow-tests",
             name => CreateRegisteredWork(name),
             _ => new TestWorkSystemSession(
@@ -594,7 +585,6 @@ public sealed class WorkflowExecutorsShould
         var run = WorkflowRunState.Rehydrate(
             workflow,
             new WorkflowRunPersistenceRecord(
-                WorkSystemId.New(),
                 "workflow-tests",
                 WorkflowRunId.New(),
                 workflow.Definition.Version,
@@ -635,7 +625,7 @@ public sealed class WorkflowExecutorsShould
     public async Task CancelOutstandingSiblingWorkersWhenJoinFails()
     {
         var store = new RecordingWorkflowStore();
-        var persistence = new WorkflowPersistenceCoordinator(store, WorkSystemId.New(), "workflow-tests");
+        var persistence = new WorkflowPersistenceCoordinator(store, "workflow-tests");
         var alphaId = WorkerId.New();
         var betaId = WorkerId.New();
         var queueCalls = 0;
@@ -646,7 +636,6 @@ public sealed class WorkflowExecutorsShould
             [betaId] = CreateSnapshot(betaId, WorkerState.Running),
         };
         var executor = new DurableWorkflowExecutor(
-            WorkSystemId.New(),
             "workflow-tests",
             name => CreateRegisteredWork(name),
             _ => new TestWorkSystemSession(
@@ -694,9 +683,8 @@ public sealed class WorkflowExecutorsShould
     public async Task CancelDurableExecutionWhenCancellationIsRequested()
     {
         var store = new RecordingWorkflowStore();
-        var persistence = new WorkflowPersistenceCoordinator(store, WorkSystemId.New(), "workflow-tests");
+        var persistence = new WorkflowPersistenceCoordinator(store, "workflow-tests");
         var executor = new DurableWorkflowExecutor(
-            WorkSystemId.New(),
             "workflow-tests",
             name => CreateRegisteredWork(name),
             _ => new TestWorkSystemSession(new DelegateQueueService((_, _, _, _) => Task.FromResult<IWorkerHandle>(AcceptedHandle(WorkerId.New())))),

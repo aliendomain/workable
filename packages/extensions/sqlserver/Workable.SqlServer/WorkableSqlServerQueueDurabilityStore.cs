@@ -136,8 +136,7 @@ SET NUMERIC_ROUNDABORT OFF;
                 await connection.OpenAsync(cancellationToken);
                 await using var command = connection.CreateCommand();
                 command.CommandText = RequiredDmlSetOptions + $"""
-SELECT WorkSystemId,
-       WorkSystemName,
+SELECT WorkSystemName,
        RunId,
        DefinitionId,
        DefinitionRevision,
@@ -146,6 +145,7 @@ SELECT WorkSystemId,
        RequestContextJson,
        Status,
        StepsJson,
+       PendingControlAction,
        CreatedAt,
        StartedAt,
        CompletedAt,
@@ -163,21 +163,21 @@ ORDER BY CreatedAt, RunId;
                 while (await reader.ReadAsync(cancellationToken))
                 {
                     runs.Add(new WorkflowRunPersistenceRecord(
-                        new WorkSystemId(reader.GetGuid(0)),
-                        reader.IsDBNull(1) ? null : reader.GetString(1),
-                        new WorkflowRunId(reader.GetGuid(2)),
+                        reader.IsDBNull(0) ? null : reader.GetString(0),
+                        new WorkflowRunId(reader.GetGuid(1)),
                         new WorkflowDefinitionVersion(
-                            new WorkflowDefinitionId(reader.GetGuid(3)),
-                            reader.GetInt64(4)),
-                        reader.GetString(5),
-                        DeserializeRequestContext(reader, 7),
-                        Enum.Parse<WorkflowRunStatus>(reader.GetString(8), ignoreCase: false),
-                        Deserialize<WorkflowStepPersistenceRecord[]>(reader, 9) ?? [],
+                            new WorkflowDefinitionId(reader.GetGuid(2)),
+                            reader.GetInt64(3)),
+                        reader.GetString(4),
+                        DeserializeRequestContext(reader, 6),
+                        Enum.Parse<WorkflowRunStatus>(reader.GetString(7), ignoreCase: false),
+                        Deserialize<WorkflowStepPersistenceRecord[]>(reader, 8) ?? [],
                         reader.GetFieldValue<DateTimeOffset>(10),
                         reader.IsDBNull(11) ? null : reader.GetFieldValue<DateTimeOffset>(11),
                         reader.IsDBNull(12) ? null : reader.GetFieldValue<DateTimeOffset>(12),
                         Deserialize<WorkMessage[]>(reader, 13) ?? [],
-                        reader.GetString(6)));
+                        reader.GetString(5),
+                        reader.IsDBNull(9) ? null : reader.GetString(9)));
                 }
 
                 return runs;
@@ -826,7 +826,6 @@ USING
     SELECT
         @RunId AS RunId,
         @PersistenceScope AS PersistenceScope,
-        @WorkSystemId AS WorkSystemId,
         @WorkSystemName AS WorkSystemName,
         @DefinitionId AS DefinitionId,
         @DefinitionRevision AS DefinitionRevision,
@@ -836,6 +835,7 @@ USING
         @Status AS Status,
         @StepsJson AS StepsJson,
         @MessagesJson AS MessagesJson,
+        @PendingControlAction AS PendingControlAction,
         @CreatedAt AS CreatedAt,
         @StartedAt AS StartedAt,
         @CompletedAt AS CompletedAt,
@@ -845,7 +845,6 @@ ON target.RunId = source.RunId
 WHEN MATCHED THEN
     UPDATE SET
         PersistenceScope = source.PersistenceScope,
-        WorkSystemId = source.WorkSystemId,
         WorkSystemName = source.WorkSystemName,
         DefinitionId = source.DefinitionId,
         DefinitionRevision = source.DefinitionRevision,
@@ -855,6 +854,7 @@ WHEN MATCHED THEN
         Status = source.Status,
         StepsJson = source.StepsJson,
         MessagesJson = source.MessagesJson,
+        PendingControlAction = source.PendingControlAction,
         CreatedAt = source.CreatedAt,
         StartedAt = source.StartedAt,
         CompletedAt = source.CompletedAt,
@@ -864,7 +864,6 @@ WHEN NOT MATCHED THEN
     (
         RunId,
         PersistenceScope,
-        WorkSystemId,
         WorkSystemName,
         DefinitionId,
         DefinitionRevision,
@@ -874,6 +873,7 @@ WHEN NOT MATCHED THEN
         Status,
         StepsJson,
         MessagesJson,
+        PendingControlAction,
         CreatedAt,
         StartedAt,
         CompletedAt,
@@ -883,7 +883,6 @@ WHEN NOT MATCHED THEN
     (
         source.RunId,
         source.PersistenceScope,
-        source.WorkSystemId,
         source.WorkSystemName,
         source.DefinitionId,
         source.DefinitionRevision,
@@ -893,6 +892,7 @@ WHEN NOT MATCHED THEN
         source.Status,
         source.StepsJson,
         source.MessagesJson,
+        source.PendingControlAction,
         source.CreatedAt,
         source.StartedAt,
         source.CompletedAt,
@@ -901,7 +901,6 @@ WHEN NOT MATCHED THEN
 """;
         Add(command, "@RunId", run.RunId.Value);
         Add(command, "@PersistenceScope", run.PersistenceScope);
-        Add(command, "@WorkSystemId", run.WorkSystemId.Value);
         Add(command, "@WorkSystemName", run.WorkSystemName);
         Add(command, "@DefinitionId", run.DefinitionVersion.DefinitionId.Value);
         Add(command, "@DefinitionRevision", run.DefinitionVersion.Revision);
@@ -911,6 +910,7 @@ WHEN NOT MATCHED THEN
         Add(command, "@Status", run.Status.ToString());
         Add(command, "@StepsJson", Serialize(run.Steps));
         Add(command, "@MessagesJson", Serialize(run.Messages));
+        Add(command, "@PendingControlAction", run.PendingControlAction);
         Add(command, "@CreatedAt", run.CreatedAt);
         Add(command, "@StartedAt", run.StartedAt);
         Add(command, "@CompletedAt", run.CompletedAt);

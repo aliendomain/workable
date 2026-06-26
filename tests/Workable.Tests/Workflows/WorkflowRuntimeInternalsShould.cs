@@ -19,13 +19,11 @@ public sealed class WorkflowRuntimeInternalsShould
             new DispatchWorkflowStepDefinition("dispatch", "sample.dispatch"),
             new JoinWorkflowStepDefinition("join"));
         var mismatchedRun = CreatePersistedRun(
-            WorkSystemId.New(),
             "different-system",
             WorkflowRunId.New(),
             definition,
             workerId);
         var recoveredRun = CreatePersistedRun(
-            WorkSystemId.New(),
             "workflow-tests",
             WorkflowRunId.New(),
             definition,
@@ -71,7 +69,6 @@ public sealed class WorkflowRuntimeInternalsShould
             new DispatchWorkflowStepDefinition("dispatch", "sample.dispatch"),
             new JoinWorkflowStepDefinition("join"));
         var missingRun = CreatePersistedRun(
-            WorkSystemId.New(),
             "workflow-tests",
             WorkflowRunId.New(),
             WorkflowDefinition.Create(
@@ -79,13 +76,11 @@ public sealed class WorkflowRuntimeInternalsShould
                 coordination: WorkflowCoordinationConfiguration.Durable),
             missingWorkerId);
         var nonDurableRun = CreatePersistedRun(
-            WorkSystemId.New(),
             "workflow-tests",
             WorkflowRunId.New(),
             nonDurableDefinition,
             nonDurableWorkerId);
         var durableRun = CreatePersistedRun(
-            WorkSystemId.New(),
             "workflow-tests",
             WorkflowRunId.New(),
             durableDefinition,
@@ -128,7 +123,6 @@ public sealed class WorkflowRuntimeInternalsShould
             new DispatchWorkflowStepDefinition("archive", "sample.archive"),
             new JoinWorkflowStepDefinition("join"));
         var persistedRun = CreatePersistedRun(
-            WorkSystemId.New(),
             "workflow-tests",
             WorkflowRunId.New(),
             persistedDefinition,
@@ -165,7 +159,6 @@ public sealed class WorkflowRuntimeInternalsShould
             new DispatchWorkflowStepDefinition("dispatch", "sample.dispatch"),
             new JoinWorkflowStepDefinition("join"));
         var persistedRun = CreatePersistedRun(
-            WorkSystemId.New(),
             "workflow-tests",
             WorkflowRunId.New(),
             definition,
@@ -189,6 +182,124 @@ public sealed class WorkflowRuntimeInternalsShould
     }
 
     [Fact]
+    public async Task RecoverDurableRunsHonorsPersistedCancelRequestAndCancelsOutstandingChildren()
+    {
+        var workerId = WorkerId.New();
+        var definition = WorkflowDefinition.Create(
+            "workflow.durable.recover.cancel",
+            coordination: WorkflowCoordinationConfiguration.Durable);
+        var workflow = CreateWorkflow(
+            definition,
+            new DispatchWorkflowStepDefinition("dispatch", "sample.dispatch"),
+            new JoinWorkflowStepDefinition("join"));
+        var persistedRun = CreatePersistedRun(
+            "workflow-tests",
+            WorkflowRunId.New(),
+            definition,
+            workerId,
+            WorkflowAction.Cancel.ToString());
+        var workerOperations = new RecordingWorkerOperations();
+        var store = new RawWorkflowPersistenceStore([persistedRun]);
+        var runtime = CreateRuntime(
+            catalog: new WorkflowCatalog([workflow]),
+            persistenceStore: store,
+            systemName: "workflow-tests",
+            createSession: _ => new TestWorkSystemSession(
+                new DelegateQueueService((_, _, _, _) => throw new NotSupportedException()),
+                workers: workerOperations,
+                query: new DelegateQueryService(id => Task.FromResult(id == workerId ? CreateSnapshot(workerId, WorkerState.Running) : null))),
+            createWorkerHandle: id => new PendingWorkerHandle(id));
+
+        await runtime.RecoverDurableRuns(CancellationToken.None);
+
+        await TestEventually.Until(
+            () => runtime.Get(persistedRun.RunId)?.Status == WorkflowRunStatus.Canceled,
+            "Expected the recovered durable workflow run to honor the persisted cancel request.",
+            timeout: TimeSpan.FromSeconds(10));
+
+        Assert.Contains(workerOperations.Executions, execution =>
+            execution.WorkerId == workerId && execution.Action == WorkAction.Cancel);
+        Assert.Equal([persistedRun.RunId], store.DeletedRuns);
+    }
+
+    [Fact]
+    public async Task RecoverDurableRunsHonorsPersistedStopRequestAndSkipsDownstreamDispatch()
+    {
+        var workerId = WorkerId.New();
+        var dispatchedAfterJoin = 0;
+        var definition = WorkflowDefinition.Create(
+            "workflow.durable.recover.stop",
+            coordination: WorkflowCoordinationConfiguration.Durable);
+        var workflow = CreateWorkflow(
+            definition,
+            new DispatchWorkflowStepDefinition("dispatch", "sample.dispatch"),
+            new JoinWorkflowStepDefinition("join"),
+            new DispatchWorkflowStepDefinition("archive", "sample.archive"));
+        var persistedRun = new WorkflowRunPersistenceRecord(
+            "workflow-tests",
+            WorkflowRunId.New(),
+            definition.Version,
+            definition.Name,
+            WorkRequestContext.Create(WorkInvocationChannel.InProcess),
+            WorkflowRunStatus.Running,
+            [
+                new WorkflowStepPersistenceRecord(
+                    "dispatch",
+                    WorkflowStepKind.DispatchWork,
+                    WorkflowStepRunStatus.Completed,
+                    [workerId],
+                    DateTimeOffset.UtcNow,
+                    DateTimeOffset.UtcNow,
+                    []),
+                new WorkflowStepPersistenceRecord(
+                    "join",
+                    WorkflowStepKind.Join,
+                    WorkflowStepRunStatus.Pending,
+                    [],
+                    null,
+                    null,
+                    []),
+                new WorkflowStepPersistenceRecord(
+                    "archive",
+                    WorkflowStepKind.DispatchWork,
+                    WorkflowStepRunStatus.Pending,
+                    [],
+                    null,
+                    null,
+                    []),
+            ],
+            DateTimeOffset.UtcNow,
+            DateTimeOffset.UtcNow,
+            null,
+            [],
+            WorkflowDefinitionFingerprint.Create(workflow),
+            WorkflowAction.Stop.ToString());
+        var store = new RawWorkflowPersistenceStore([persistedRun]);
+        var runtime = CreateRuntime(
+            catalog: new WorkflowCatalog([workflow]),
+            persistenceStore: store,
+            systemName: "workflow-tests",
+            createSession: _ => new TestWorkSystemSession(
+                new DelegateQueueService((_, _, _, _) =>
+                {
+                    Interlocked.Increment(ref dispatchedAfterJoin);
+                    throw new InvalidOperationException("Recovered stop request should skip downstream dispatch.");
+                }),
+                query: new DelegateQueryService(id => Task.FromResult(id == workerId ? CreateSnapshot(workerId, WorkerState.Completed) : null))),
+            createWorkerHandle: _ => throw new InvalidOperationException("Expected authoritative recovery to avoid worker-handle waits."));
+
+        await runtime.RecoverDurableRuns(CancellationToken.None);
+
+        await TestEventually.Until(
+            () => runtime.Get(persistedRun.RunId)?.Status == WorkflowRunStatus.Canceled,
+            "Expected the recovered durable workflow run to honor the persisted stop request.",
+            timeout: TimeSpan.FromSeconds(10));
+
+        Assert.Equal(0, Volatile.Read(ref dispatchedAfterJoin));
+        Assert.Equal([persistedRun.RunId], store.DeletedRuns);
+    }
+
+    [Fact]
     public async Task RecoverDurableRunsStartsMultipleMatchingRunsForTheSameSystem()
     {
         var definition = WorkflowDefinition.Create(
@@ -199,13 +310,11 @@ public sealed class WorkflowRuntimeInternalsShould
             new DispatchWorkflowStepDefinition("dispatch", "sample.dispatch"),
             new JoinWorkflowStepDefinition("join"));
         var firstRun = CreatePersistedRun(
-            WorkSystemId.New(),
             "workflow-tests",
             WorkflowRunId.New(),
             definition,
             WorkerId.New());
         var secondRun = CreatePersistedRun(
-            WorkSystemId.New(),
             "workflow-tests",
             WorkflowRunId.New(),
             definition,
@@ -401,14 +510,13 @@ public sealed class WorkflowRuntimeInternalsShould
         Func<WorkRequestContext, IWorkSystemSession> createSession,
         Func<WorkerId, IWorkerHandle> createWorkerHandle)
         => new(
-            WorkSystemId.New(),
             systemName,
             requiresAuthorization: false,
             catalog,
             _ => null,
             createSession,
             createWorkerHandle,
-            new WorkflowPersistenceCoordinator(persistenceStore, WorkSystemId.New(), systemName),
+            new WorkflowPersistenceCoordinator(persistenceStore, systemName),
             WorkSystemAuthorizationConfiguration.Default,
             new EmptyGroupProvider());
 
@@ -421,18 +529,17 @@ public sealed class WorkflowRuntimeInternalsShould
             WorkOperateAuthorizationConfiguration.None);
 
     private static WorkflowRunPersistenceRecord CreatePersistedRun(
-        WorkSystemId systemId,
         string systemName,
         WorkflowRunId runId,
         WorkflowDefinition definition,
-        WorkerId workerId)
+        WorkerId workerId,
+        string? pendingControlAction = null)
     {
         var workflow = CreateWorkflow(
             definition,
             new DispatchWorkflowStepDefinition("dispatch", "sample.dispatch"),
             new JoinWorkflowStepDefinition("join"));
         return new WorkflowRunPersistenceRecord(
-            systemId,
             systemName,
             runId,
             definition.Version,
@@ -461,7 +568,8 @@ public sealed class WorkflowRuntimeInternalsShould
             DateTimeOffset.UtcNow,
             null,
             [],
-            WorkflowDefinitionFingerprint.Create(workflow));
+            WorkflowDefinitionFingerprint.Create(workflow),
+            pendingControlAction);
     }
 
     private static WorkerSnapshot CreateSnapshot(WorkerId workerId, WorkerState state)
@@ -600,8 +708,13 @@ public sealed class WorkflowRuntimeInternalsShould
 
     private sealed class RecordingWorkerOperations : IWorkerOperations
     {
+        public List<(WorkerId WorkerId, WorkAction Action)> Executions { get; } = [];
+
         public Task<WorkActionOutcome> Execute(WorkerVersion worker, WorkAction action, CancellationToken cancellationToken = default)
-            => Task.FromResult(WorkActionOutcome.Accepted(action, CreateSnapshot(worker.WorkerId, WorkerState.Canceled), []));
+        {
+            this.Executions.Add((worker.WorkerId, action));
+            return Task.FromResult(WorkActionOutcome.Accepted(action, CreateSnapshot(worker.WorkerId, WorkerState.Canceled), []));
+        }
 
         public Task<WorkerBulkActionOutcome> ExecuteAll(WorkAction action, WorkerBulkActionFilter? filter = null, CancellationToken cancellationToken = default)
             => throw new NotSupportedException();

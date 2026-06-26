@@ -670,15 +670,39 @@ public sealed class WorkflowRuntimeShould
         Assert.All(store.Enqueued, request => Assert.True(request.Configuration.Coordination.IsDurabilityEnabled));
         Assert.Contains(handle.RunId!.Value, store.DeletedWorkflowRuns);
         Assert.Equal(2, store.WorkflowInitializations.Count);
-        Assert.Equal(
-            2,
+        Assert.Single(
             store.WorkflowInitializations
-                .Select(initialization => initialization.WorkSystemId)
-                .Distinct()
-                .Count());
+                .Select(initialization => initialization.WorkSystemName)
+                .Distinct());
         Assert.All(
             store.WorkflowInitializations,
             initialization => Assert.Equal("workflow-tests", initialization.WorkSystemName));
+    }
+
+    [Fact]
+    public async Task StartDoesNotInitializeWorkflowPersistenceWhenOnlyNonDurableWorkflowsExist()
+    {
+        var store = new TestWorkflowPersistenceStore();
+        var services = new ServiceCollection();
+
+        services.AddSingleton<IWorkPersistenceStore>(store);
+        services.AddWorkableSystem("workflow-tests", builder =>
+        {
+            builder.RequireAuthorization(false);
+            builder.AddWork(
+                WorkDefinition.Create("sample.dispatch"),
+                (_, _, _) => Task.FromResult(WorkExecutionResult.Success()));
+            builder.AddWorkflow(
+                WorkflowDefinition.Create("workflow.non-durable"),
+                workflow => workflow.DispatchWork("dispatch", "sample.dispatch"));
+        });
+
+        using var provider = services.BuildServiceProvider();
+        var system = GetNamedSystem(provider, "workflow-tests");
+
+        await system.Start();
+
+        Assert.Empty(store.WorkflowInitializations);
     }
 
     [Fact]
@@ -956,10 +980,14 @@ public sealed class WorkflowRuntimeShould
             WorkRequestContext.Create(WorkInvocationChannel.InProcess));
         await slowStarted.Task.WaitAsync(CancellationToken.None);
 
-        var stop = system.WorkflowRuntime.Execute(
+        var stop = await system.WorkflowRuntime.Execute(
             handle.RunId!.Value,
             WorkflowAction.Stop,
             WorkRequestContext.Create(WorkInvocationChannel.InProcess));
+        await TestEventually.Until(
+            () => string.Equals(store.GetWorkflowRun(handle.RunId!.Value)?.PendingControlAction, WorkflowAction.Stop.ToString(), StringComparison.Ordinal),
+            "Expected the durable workflow stop request to be persisted before the outstanding child completed.",
+            timeout: TimeSpan.FromSeconds(10));
         slowRelease.TrySetResult();
         var completion = await handle.WaitForCompletion();
 
@@ -1004,18 +1032,25 @@ public sealed class WorkflowRuntimeShould
             WorkRequestContext.Create(WorkInvocationChannel.InProcess));
         await childStarted.Task.WaitAsync(CancellationToken.None);
 
-        var cancel = system.WorkflowRuntime.Execute(
+        var cancel = await system.WorkflowRuntime.Execute(
             handle.RunId!.Value,
             WorkflowAction.Cancel,
             WorkRequestContext.Create(WorkInvocationChannel.InProcess));
         var completion = await handle.WaitForCompletion();
         var childWorkerId = completion.Run!.Steps.Single(step => step.Name == "dispatch").WorkerIds.Single();
-        var child = await system.Query.Worker(childWorkerId)
-            ?? throw new InvalidOperationException("Expected canceled durable child worker.");
+        WorkerSnapshot? child = null;
+        await TestEventually.Until(
+            async () =>
+            {
+                child = await system.Query.Worker(childWorkerId);
+                return child?.State == WorkerState.Canceled;
+            },
+            "Expected the canceled durable child worker to settle into the final canceled state.",
+            timeout: TimeSpan.FromSeconds(10));
 
         Assert.True(cancel.IsAccepted);
         Assert.Equal(WorkflowRunStatus.Canceled, completion.Status);
-        Assert.Equal(WorkerState.Canceled, child.State);
+        Assert.Equal(WorkerState.Canceled, child!.State);
         Assert.Contains(handle.RunId.Value, store.DeletedWorkflowRuns);
     }
 
@@ -1125,6 +1160,14 @@ public sealed class WorkflowRuntimeShould
         public List<WorkerId> DeletedFinalWorkers { get; } = [];
 
         public List<WorkflowRunId> DeletedWorkflowRuns { get; } = [];
+
+        public WorkflowRunPersistenceRecord? GetWorkflowRun(WorkflowRunId runId)
+        {
+            lock (this.sync)
+            {
+                return this.workflowRuns.TryGetValue(runId, out var run) ? run : null;
+            }
+        }
 
         public Task Initialize(WorkQueueDurabilityInitializationContext context, CancellationToken cancellationToken = default)
             => Task.CompletedTask;

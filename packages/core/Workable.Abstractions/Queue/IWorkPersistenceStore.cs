@@ -181,33 +181,29 @@ public sealed record WorkQueueDurabilityInitializationContext(
 /// <summary>
 /// Provides system and workflow-definition context for workflow-persistence initialization.
 /// </summary>
-/// <param name="WorkSystemId">The identifier of the system being initialized.</param>
-/// <param name="WorkSystemName">The configured system name, when one exists.</param>
+/// <param name="WorkSystemName">The configured system name.</param>
 /// <param name="Definitions">The registered workflow definitions known at initialization time.</param>
 public sealed record WorkflowPersistenceInitializationContext(
-    WorkSystemId WorkSystemId,
-    string? WorkSystemName,
+    string WorkSystemName,
     IReadOnlyList<WorkflowDefinition> Definitions)
 {
     /// <summary>
     /// Gets the workflow persistence scope for this system.
     /// </summary>
-    public string PersistenceScope => this.WorkSystemName ?? this.WorkSystemId.ToString();
+    public string PersistenceScope => this.WorkSystemName;
 }
 
 /// <summary>
 /// Represents a request to begin a workflow persistence transaction for one system.
 /// </summary>
-/// <param name="WorkSystemId">The identifier of the target system.</param>
-/// <param name="WorkSystemName">The configured system name, when one exists.</param>
+/// <param name="WorkSystemName">The configured system name.</param>
 public sealed record WorkflowPersistenceTransactionRequest(
-    WorkSystemId WorkSystemId,
-    string? WorkSystemName)
+    string WorkSystemName)
 {
     /// <summary>
     /// Gets the workflow persistence scope for this system.
     /// </summary>
-    public string PersistenceScope => this.WorkSystemName ?? this.WorkSystemId.ToString();
+    public string PersistenceScope => this.WorkSystemName;
 }
 
 /// <summary>
@@ -338,7 +334,6 @@ public sealed record WorkQueueDurabilityCleanupRequest(
 /// <summary>
 /// Represents one durable workflow-run snapshot.
 /// </summary>
-/// <param name="WorkSystemId">The identifier of the target system.</param>
 /// <param name="WorkSystemName">The configured system name, when one exists.</param>
 /// <param name="RunId">The workflow run identifier.</param>
 /// <param name="DefinitionVersion">The workflow definition version used for the run.</param>
@@ -351,7 +346,6 @@ public sealed record WorkQueueDurabilityCleanupRequest(
 /// <param name="CompletedAt">The time the workflow run reached a final state, when one exists.</param>
 /// <param name="Messages">The current workflow run messages.</param>
 public sealed record WorkflowRunPersistenceRecord(
-    WorkSystemId WorkSystemId,
     string? WorkSystemName,
     WorkflowRunId RunId,
     WorkflowDefinitionVersion DefinitionVersion,
@@ -363,7 +357,8 @@ public sealed record WorkflowRunPersistenceRecord(
     DateTimeOffset? StartedAt,
     DateTimeOffset? CompletedAt,
     IReadOnlyList<WorkMessage> Messages,
-    string DefinitionFingerprint = "")
+    string DefinitionFingerprint = "",
+    string? PendingControlAction = null)
 {
     /// <summary>
     /// Gets the origin metadata extracted from <see cref="RequestContext"/>.
@@ -373,7 +368,8 @@ public sealed record WorkflowRunPersistenceRecord(
     /// <summary>
     /// Gets the workflow persistence scope for this system.
     /// </summary>
-    public string PersistenceScope => this.WorkSystemName ?? this.WorkSystemId.ToString();
+    public string PersistenceScope => this.WorkSystemName
+        ?? throw new InvalidOperationException("Durable workflow persistence requires a named Workable system.");
 }
 
 /// <summary>
@@ -398,16 +394,14 @@ public sealed record WorkflowStepPersistenceRecord(
 /// <summary>
 /// Represents a request to read incomplete durable workflow runs for one system.
 /// </summary>
-/// <param name="WorkSystemId">The identifier of the target system.</param>
-/// <param name="WorkSystemName">The configured system name, when one exists.</param>
+/// <param name="WorkSystemName">The configured system name.</param>
 public sealed record WorkflowPersistenceReadRequest(
-    WorkSystemId WorkSystemId,
-    string? WorkSystemName)
+    string WorkSystemName)
 {
     /// <summary>
     /// Gets the workflow persistence scope for this system.
     /// </summary>
-    public string PersistenceScope => this.WorkSystemName ?? this.WorkSystemId.ToString();
+    public string PersistenceScope => this.WorkSystemName;
 }
 
 /// <summary>

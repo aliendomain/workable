@@ -83,6 +83,7 @@ Durable workflows:
 - persist the latest workflow-run snapshot through `IWorkPersistenceStore`
 - upgrade child dispatches to durable queueing so replay can reconnect child workers to the workflow run
 - persist workflow-run step transitions and durable child-worker enqueue in one store-defined transaction at each durable dispatch boundary
+- persist accepted workflow stop and cancel requests on the workflow-run snapshot before acknowledging them
 - scan for incomplete runs for that named system when the system starts and resume them from the persisted step state
 
 ## Definition Model
@@ -188,6 +189,8 @@ Stopping the process clears:
 - historical non-durable workflow run snapshots
 
 Durable workflows persist run state through `IWorkPersistenceStore`. On startup, Workable lists incomplete durable workflow runs for the same named system, rehydrates them into memory, and resumes waiting joins or trailing child-work completion from the persisted step snapshots.
+
+Accepted stop and cancel requests on durable workflows are stored on the persisted run snapshot. If a process recycles after the action is accepted but before the execution loop observes it, recovery reapplies the stored control request before workflow execution resumes.
 
 If the persisted workflow definition fingerprint does not match the currently registered workflow definition, Workable marks the recovered run failed and deletes its persisted run snapshot instead of resuming it.
 

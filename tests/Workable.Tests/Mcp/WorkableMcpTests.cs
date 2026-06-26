@@ -933,16 +933,23 @@ public sealed class WorkableMcpTests
 
         await WaitForReadModel(system);
         var childWorkerId = completed!.Steps.Single(step => step.Name == "dispatch").WorkerIds.Single();
-        var child = await system.CreateSession(CreateMcpRequestContext("Inspect canceled MCP HTTP workflow child."))
-            .Query.Worker(childWorkerId)
-            ?? throw new InvalidOperationException("Expected canceled workflow child.");
+        WorkerSnapshot? child = null;
+        await TestEventually.Until(
+            async () =>
+            {
+                child = await system.CreateSession(CreateMcpRequestContext("Inspect canceled MCP HTTP workflow child."))
+                    .Query.Worker(childWorkerId);
+                return child?.State == WorkerState.Canceled;
+            },
+            "Expected the canceled MCP HTTP workflow child to settle into the final canceled state.",
+            timeout: TimeSpan.FromSeconds(10));
 
         Assert.False(started.IsError);
         Assert.False(result.IsError);
         Assert.Contains("Accepted", json);
         Assert.Contains("Cancel", json);
         Assert.Equal(WorkflowRunStatus.Canceled, completed.Status);
-        Assert.Equal(WorkerState.Canceled, child.State);
+        Assert.Equal(WorkerState.Canceled, child!.State);
     }
 
     [Fact]
@@ -1399,14 +1406,21 @@ public sealed class WorkableMcpTests
             "Expected the MCP-canceled workflow to complete as canceled.");
 
         var childWorkerId = completed!.Steps.Single(step => step.Name == "dispatch").WorkerIds.Single();
-        var child = await system.CreateSession(CreateMcpRequestContext("Inspect canceled MCP workflow child."))
-            .Query.Worker(childWorkerId)
-            ?? throw new InvalidOperationException("Expected canceled workflow child.");
+        WorkerSnapshot? child = null;
+        await TestEventually.Until(
+            async () =>
+            {
+                child = await system.CreateSession(CreateMcpRequestContext("Inspect canceled MCP workflow child."))
+                    .Query.Worker(childWorkerId);
+                return child?.State == WorkerState.Canceled;
+            },
+            "Expected the canceled MCP workflow child to settle into the final canceled state.",
+            timeout: TimeSpan.FromSeconds(10));
 
         Assert.False(started.IsError);
         Assert.False(canceled.IsError);
         Assert.Equal(WorkflowRunStatus.Canceled, completed.Status);
-        Assert.Equal(WorkerState.Canceled, child.State);
+        Assert.Equal(WorkerState.Canceled, child!.State);
     }
 
     [Fact]

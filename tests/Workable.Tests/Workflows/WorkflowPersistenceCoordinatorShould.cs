@@ -8,42 +8,58 @@ namespace Workable.Tests;
 public sealed class WorkflowPersistenceCoordinatorShould
 {
     [Fact]
-    public async Task InitializeForwardsWorkflowDefinitionsToTheStore()
+    public async Task InitializeForwardsOnlyDurableWorkflowDefinitionsToTheStore()
     {
         var store = new RecordingWorkflowPersistenceStore();
         var coordinator = new WorkflowPersistenceCoordinator(
             store,
-            WorkSystemId.New(),
             "workflow-persistence-tests");
         var definitions = new[]
         {
             WorkflowDefinition.Create("workflow.one"),
-            WorkflowDefinition.Create("workflow.two"),
+            WorkflowDefinition.Create(
+                "workflow.two",
+                coordination: WorkflowCoordinationConfiguration.Durable),
         };
 
         await coordinator.Initialize(definitions, CancellationToken.None);
 
         var initialization = Assert.Single(store.WorkflowInitializations);
         Assert.Equal("workflow-persistence-tests", initialization.WorkSystemName);
-        Assert.Equal(2, initialization.Definitions.Count);
-        Assert.Equal("workflow.one", initialization.Definitions[0].Name);
-        Assert.Equal("workflow.two", initialization.Definitions[1].Name);
+        Assert.Single(initialization.Definitions);
+        Assert.Equal("workflow.two", initialization.Definitions[0].Name);
+    }
+
+    [Fact]
+    public async Task InitializeDoesNothingWhenNoDurableWorkflowDefinitionsExist()
+    {
+        var store = new RecordingWorkflowPersistenceStore();
+        var coordinator = new WorkflowPersistenceCoordinator(
+            store,
+            "workflow-persistence-tests");
+
+        await coordinator.Initialize(
+            [
+                WorkflowDefinition.Create("workflow.one"),
+                WorkflowDefinition.Create("workflow.two"),
+            ],
+            CancellationToken.None);
+
+        Assert.Empty(store.WorkflowInitializations);
     }
 
     [Fact]
     public async Task ListIncompleteRunsForwardsTheSystemIdentity()
     {
-        var systemId = WorkSystemId.New();
         var store = new RecordingWorkflowPersistenceStore
         {
             IncompleteRuns =
             [
-                CreateRun(systemId, "workflow-persistence-tests", "workflow.one"),
+                CreateRun("workflow-persistence-tests", "workflow.one"),
             ],
         };
         var coordinator = new WorkflowPersistenceCoordinator(
             store,
-            systemId,
             "workflow-persistence-tests");
 
         var runs = new List<WorkflowRunPersistenceRecord>();
@@ -53,7 +69,6 @@ public sealed class WorkflowPersistenceCoordinatorShould
         }
 
         var request = Assert.Single(store.WorkflowReadRequests);
-        Assert.Equal(systemId, request.WorkSystemId);
         Assert.Equal("workflow-persistence-tests", request.WorkSystemName);
         Assert.Single(runs);
         Assert.Equal("workflow.one", runs[0].DefinitionName);
@@ -62,13 +77,11 @@ public sealed class WorkflowPersistenceCoordinatorShould
     [Fact]
     public async Task UpsertAndDeleteForwardToTheStore()
     {
-        var systemId = WorkSystemId.New();
         var store = new RecordingWorkflowPersistenceStore();
         var coordinator = new WorkflowPersistenceCoordinator(
             store,
-            systemId,
             "workflow-persistence-tests");
-        var run = CreateRun(systemId, "workflow-persistence-tests", "workflow.one");
+        var run = CreateRun("workflow-persistence-tests", "workflow.one");
 
         await coordinator.UpsertRun(run, CancellationToken.None);
         await coordinator.DeleteRun(run.RunId, CancellationToken.None);
@@ -82,7 +95,6 @@ public sealed class WorkflowPersistenceCoordinatorShould
     {
         var coordinator = new WorkflowPersistenceCoordinator(
             store: null,
-            WorkSystemId.New(),
             "workflow-persistence-tests");
         var runs = new List<WorkflowRunPersistenceRecord>();
 
@@ -99,9 +111,8 @@ public sealed class WorkflowPersistenceCoordinatorShould
     {
         var coordinator = new WorkflowPersistenceCoordinator(
             store: null,
-            WorkSystemId.New(),
             "workflow-persistence-tests");
-        var run = CreateRun(WorkSystemId.New(), "workflow-persistence-tests", "workflow.one");
+        var run = CreateRun("workflow-persistence-tests", "workflow.one");
 
         await coordinator.UpsertRun(run, CancellationToken.None);
         await coordinator.DeleteRun(run.RunId, CancellationToken.None);
@@ -115,7 +126,6 @@ public sealed class WorkflowPersistenceCoordinatorShould
     {
         var coordinator = new WorkflowPersistenceCoordinator(
             store: null,
-            WorkSystemId.New(),
             "workflow-persistence-tests");
         IWorkflowPersistenceTransaction? observedTransaction = null;
         WorkerOptions? observedOptions = null;
@@ -136,13 +146,11 @@ public sealed class WorkflowPersistenceCoordinatorShould
     [Fact]
     public async Task UpsertRunWithNullTransactionFallsBackToTheNonTransactionalStoreMethod()
     {
-        var systemId = WorkSystemId.New();
         var store = new RecordingWorkflowPersistenceStore();
         var coordinator = new WorkflowPersistenceCoordinator(
             store,
-            systemId,
             "workflow-persistence-tests");
-        var run = CreateRun(systemId, "workflow-persistence-tests", "workflow.one");
+        var run = CreateRun("workflow-persistence-tests", "workflow.one");
 
         await coordinator.UpsertRun(run, transaction: null, CancellationToken.None);
 
@@ -153,13 +161,11 @@ public sealed class WorkflowPersistenceCoordinatorShould
     [Fact]
     public async Task DeleteRunWithNullTransactionFallsBackToTheNonTransactionalStoreMethod()
     {
-        var systemId = WorkSystemId.New();
         var store = new RecordingWorkflowPersistenceStore();
         var coordinator = new WorkflowPersistenceCoordinator(
             store,
-            systemId,
             "workflow-persistence-tests");
-        var run = CreateRun(systemId, "workflow-persistence-tests", "workflow.one");
+        var run = CreateRun("workflow-persistence-tests", "workflow.one");
 
         await coordinator.DeleteRun(run.RunId, transaction: null, CancellationToken.None);
 
@@ -170,13 +176,11 @@ public sealed class WorkflowPersistenceCoordinatorShould
     [Fact]
     public async Task ExecuteTransactionUsesOneTransactionForRunUpsertAndWorkerEnqueue()
     {
-        var systemId = WorkSystemId.New();
         var store = new RecordingWorkflowPersistenceStore();
         var coordinator = new WorkflowPersistenceCoordinator(
             store,
-            systemId,
             "workflow-persistence-tests");
-        var run = CreateRun(systemId, "workflow-persistence-tests", "workflow.one");
+        var run = CreateRun("workflow-persistence-tests", "workflow.one");
         WorkerOptions? dispatchOptions = null;
 
         await coordinator.ExecuteTransaction(
@@ -202,7 +206,6 @@ public sealed class WorkflowPersistenceCoordinatorShould
         var store = new RecordingWorkflowPersistenceStore();
         var coordinator = new WorkflowPersistenceCoordinator(
             store,
-            WorkSystemId.New(),
             "workflow-persistence-tests");
 
         await Assert.ThrowsAsync<InvalidOperationException>(() =>
@@ -217,13 +220,11 @@ public sealed class WorkflowPersistenceCoordinatorShould
     [Fact]
     public async Task DeleteRunWithinTransactionUsesOneTransactionForCleanup()
     {
-        var systemId = WorkSystemId.New();
         var store = new RecordingWorkflowPersistenceStore();
         var coordinator = new WorkflowPersistenceCoordinator(
             store,
-            systemId,
             "workflow-persistence-tests");
-        var run = CreateRun(systemId, "workflow-persistence-tests", "workflow.one");
+        var run = CreateRun("workflow-persistence-tests", "workflow.one");
 
         await coordinator.ExecuteTransaction(
             (transaction, _, transactionCancellationToken) =>
@@ -236,11 +237,9 @@ public sealed class WorkflowPersistenceCoordinatorShould
     }
 
     private static WorkflowRunPersistenceRecord CreateRun(
-        WorkSystemId systemId,
         string? systemName,
         string definitionName)
         => new(
-            systemId,
             systemName,
             WorkflowRunId.New(),
             WorkflowDefinition.Create(definitionName).Version,

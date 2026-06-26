@@ -6,7 +6,7 @@ namespace Workable.SqlServer;
 public static class WorkableSqlServerSchema
 {
     private const int SchemaVersion = 1;
-    private const int WorkflowSchemaVersion = 2;
+    private const int WorkflowSchemaVersion = 3;
     private const string RequiredSetOptions = """
 SET ANSI_NULLS ON;
 SET QUOTED_IDENTIFIER ON;
@@ -81,7 +81,6 @@ BEGIN
     (
         RunId uniqueidentifier NOT NULL CONSTRAINT PK_WorkableWorkflowRuns PRIMARY KEY,
         PersistenceScope nvarchar(450) NOT NULL,
-        WorkSystemId uniqueidentifier NOT NULL,
         WorkSystemName nvarchar(256) NULL,
         DefinitionId uniqueidentifier NOT NULL,
         DefinitionRevision bigint NOT NULL,
@@ -91,6 +90,7 @@ BEGIN
         Status nvarchar(64) NOT NULL,
         StepsJson nvarchar(max) NOT NULL,
         MessagesJson nvarchar(max) NOT NULL,
+        PendingControlAction nvarchar(32) NULL,
         CreatedAt datetimeoffset NOT NULL,
         StartedAt datetimeoffset NULL,
         CompletedAt datetimeoffset NULL,
@@ -105,6 +105,14 @@ BEGIN
     ALTER TABLE {workflowRunsTable}
         ADD DefinitionFingerprint nvarchar(64) NOT NULL
             CONSTRAINT DF_WorkableWorkflowRuns_DefinitionFingerprint DEFAULT (N'');
+END
+""",
+            $"""
+IF OBJECT_ID(N'{escapedSchemaName}.WorkflowRuns', N'U') IS NOT NULL
+   AND COL_LENGTH(N'{escapedSchemaName}.WorkflowRuns', N'PendingControlAction') IS NULL
+BEGIN
+    ALTER TABLE {workflowRunsTable}
+        ADD PendingControlAction nvarchar(32) NULL;
 END
 """,
             $"""
@@ -325,7 +333,6 @@ WHERE schemas.name = @SchemaName
         {
             "RunId",
             "PersistenceScope",
-            "WorkSystemId",
             "WorkSystemName",
             "DefinitionId",
             "DefinitionRevision",
@@ -335,6 +342,7 @@ WHERE schemas.name = @SchemaName
             "Status",
             "StepsJson",
             "MessagesJson",
+            "PendingControlAction",
             "CreatedAt",
             "StartedAt",
             "CompletedAt",

@@ -8,6 +8,7 @@ internal sealed class WorkflowRunState
         new(TaskCreationOptions.RunContinuationsAsynchronously);
     private IReadOnlyList<WorkMessage> messages = [];
     private WorkflowRunStatus status;
+    private WorkflowAction? pendingControlAction;
     private DateTimeOffset? startedAt;
     private DateTimeOffset? completedAt;
 
@@ -72,6 +73,7 @@ internal sealed class WorkflowRunState
                     persistedSteps.TryGetValue(step.Name, out var persisted) ? persisted : null))
                 .ToList());
         run.status = record.Status;
+        run.pendingControlAction = ParsePendingControlAction(record.PendingControlAction);
         run.startedAt = record.StartedAt;
         run.completedAt = record.CompletedAt;
         run.messages = record.Messages;
@@ -91,6 +93,7 @@ internal sealed class WorkflowRunState
             record.CreatedAt,
             record.Steps.Select(WorkflowStepRunState.FromPersistenceRecord).ToList());
         run.status = record.Status;
+        run.pendingControlAction = ParsePendingControlAction(record.PendingControlAction);
         run.startedAt = record.StartedAt;
         run.completedAt = record.CompletedAt;
         run.messages = record.Messages;
@@ -109,6 +112,32 @@ internal sealed class WorkflowRunState
         {
             this.startedAt ??= DateTimeOffset.UtcNow;
             this.status = WorkflowRunStatus.Running;
+        }
+    }
+
+    public WorkflowAction? GetPendingControlAction()
+    {
+        lock (this.sync)
+        {
+            return this.pendingControlAction;
+        }
+    }
+
+    public bool TryRecordAcceptedControlAction(
+        WorkflowAction action,
+        out WorkflowRunSnapshot snapshot)
+    {
+        lock (this.sync)
+        {
+            if (this.status is WorkflowRunStatus.Completed or WorkflowRunStatus.Failed or WorkflowRunStatus.Canceled)
+            {
+                snapshot = this.ToSnapshotLocked();
+                return false;
+            }
+
+            this.pendingControlAction = action;
+            snapshot = this.ToSnapshotLocked();
+            return true;
         }
     }
 
@@ -196,6 +225,7 @@ internal sealed class WorkflowRunState
         lock (this.sync)
         {
             this.status = WorkflowRunStatus.Completed;
+            this.pendingControlAction = null;
             this.completedAt = DateTimeOffset.UtcNow;
             return new WorkflowRunCompletion(this.status, this.ToSnapshotLocked(), this.messages);
         }
@@ -206,6 +236,7 @@ internal sealed class WorkflowRunState
         lock (this.sync)
         {
             this.status = WorkflowRunStatus.Canceled;
+            this.pendingControlAction = null;
             this.completedAt = DateTimeOffset.UtcNow;
             return new WorkflowRunCompletion(this.status, this.ToSnapshotLocked(), this.messages);
         }
@@ -216,6 +247,7 @@ internal sealed class WorkflowRunState
         lock (this.sync)
         {
             this.status = WorkflowRunStatus.Failed;
+            this.pendingControlAction = null;
             this.messages = failureMessages;
             this.completedAt = DateTimeOffset.UtcNow;
             return new WorkflowRunCompletion(this.status, this.ToSnapshotLocked(), this.messages);
@@ -230,14 +262,11 @@ internal sealed class WorkflowRunState
         }
     }
 
-    public WorkflowRunPersistenceRecord ToPersistenceRecord(
-        WorkSystemId workSystemId,
-        string? workSystemName)
+    public WorkflowRunPersistenceRecord ToPersistenceRecord(string? workSystemName)
     {
         lock (this.sync)
         {
             return new WorkflowRunPersistenceRecord(
-                workSystemId,
                 workSystemName,
                 this.Id,
                 this.DefinitionVersion,
@@ -249,9 +278,15 @@ internal sealed class WorkflowRunState
                 this.startedAt,
                 this.completedAt,
                 this.messages,
-                this.DefinitionFingerprint);
+                this.DefinitionFingerprint,
+                this.pendingControlAction?.ToString());
         }
     }
+
+    private static WorkflowAction? ParsePendingControlAction(string? value)
+        => Enum.TryParse<WorkflowAction>(value, ignoreCase: false, out var action)
+            ? action
+            : null;
 
     private WorkflowRunSnapshot ToSnapshotLocked()
         => new(
