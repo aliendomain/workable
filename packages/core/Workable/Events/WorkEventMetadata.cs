@@ -33,6 +33,6 @@ internal sealed class WorkEventMetadata(
     public bool ContainsAnyKey(IReadOnlySet<WorkEventKeyFilter>? keys)
         => WorkEventFilter.KeysMatch(keys, this.SubjectId, this.ConcurrencyKey, this.Identifiers);
 
-    private IReadOnlySet<WorkIdentifier> Identifiers
+    internal IReadOnlySet<WorkIdentifier> Identifiers
         => this.identifiers ??= getIdentifiers?.Invoke() ?? EmptyIdentifiers;
 }

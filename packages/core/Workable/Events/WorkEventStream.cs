@@ -8,11 +8,11 @@ internal sealed class WorkEventStream : IWorkEventStream, IAsyncDisposable
 {
     private static readonly WorkEventSubscriptionOptions DefaultOptions = new();
     private readonly Lock sync = new();
-    private WorkEventSubscription[] subscriptions = [];
+    private SubscriptionIndex index = SubscriptionIndex.Empty;
     private bool isDisposed;
 
     internal int ActiveSubscriptionCount
-        => Volatile.Read(ref this.subscriptions).Length;
+        => Volatile.Read(ref this.index).ActiveCount;
 
     public IWorkEventSubscription Subscribe(
         WorkEventFilter? filter = null,
@@ -28,7 +28,7 @@ internal sealed class WorkEventStream : IWorkEventStream, IAsyncDisposable
         lock (this.sync)
         {
             ObjectDisposedException.ThrowIf(this.isDisposed, this);
-            this.subscriptions = [.. this.subscriptions, subscription];
+            this.index = SubscriptionIndex.Create([.. this.index.All, subscription]);
         }
 
         return subscription;
@@ -38,24 +38,24 @@ internal sealed class WorkEventStream : IWorkEventStream, IAsyncDisposable
     {
         ArgumentNullException.ThrowIfNull(workEvent);
 
-        if (!this.TryGetActiveSubscribers(out var subscribers))
+        if (!this.TryGetActiveIndex(out var index))
         {
             return;
         }
 
-        PublishToSubscribers(subscribers, workEvent);
+        PublishToSubscribers(index, workEvent);
     }
 
     internal void Publish<TState>(TState state, Func<TState, WorkEvent> createEvent)
     {
         ArgumentNullException.ThrowIfNull(createEvent);
 
-        if (!this.TryGetActiveSubscribers(out var subscribers))
+        if (!this.TryGetActiveIndex(out var index))
         {
             return;
         }
 
-        PublishToSubscribers(subscribers, createEvent(state));
+        PublishToSubscribers(index, createEvent(state));
     }
 
     internal void Publish<TState>(
@@ -66,12 +66,12 @@ internal sealed class WorkEventStream : IWorkEventStream, IAsyncDisposable
         ArgumentNullException.ThrowIfNull(createMetadata);
         ArgumentNullException.ThrowIfNull(createEvent);
 
-        if (!this.TryGetActiveSubscribers(out var subscribers))
+        if (!this.TryGetActiveIndex(out var index))
         {
             return;
         }
 
-        PublishToSubscribers(subscribers, state, createMetadata, createEvent);
+        PublishToSubscribers(index, state, createMetadata, createEvent);
     }
 
     internal void Publish<TState>(
@@ -82,22 +82,19 @@ internal sealed class WorkEventStream : IWorkEventStream, IAsyncDisposable
         ArgumentNullException.ThrowIfNull(metadata);
         ArgumentNullException.ThrowIfNull(createEvent);
 
-        if (!this.TryGetActiveSubscribers(out var subscribers))
+        if (!this.TryGetActiveIndex(out var index))
         {
             return;
         }
 
         WorkEvent? workEvent = null;
-        foreach (var subscription in subscribers)
+        PublishToUnfilteredSubscribers(index.Unfiltered, ref workEvent, state, createEvent);
+        if (!index.HasFilteredSubscriptions)
         {
-            if (!subscription.ShouldPublish(metadata))
-            {
-                continue;
-            }
-
-            workEvent ??= createEvent(state);
-            subscription.PublishMatched(workEvent);
+            return;
         }
+
+        PublishToFilteredSubscribers(index, metadata, ref workEvent, state, createEvent);
     }
 
     public ValueTask DisposeAsync()
@@ -111,8 +108,8 @@ internal sealed class WorkEventStream : IWorkEventStream, IAsyncDisposable
             }
 
             this.isDisposed = true;
-            subscribers = this.subscriptions;
-            this.subscriptions = [];
+            subscribers = this.index.All;
+            this.index = SubscriptionIndex.Empty;
         }
 
         foreach (var subscription in subscribers)
@@ -127,43 +124,51 @@ internal sealed class WorkEventStream : IWorkEventStream, IAsyncDisposable
     {
         lock (this.sync)
         {
-            var index = Array.IndexOf(this.subscriptions, subscription);
+            var subscriptions = this.index.All;
+            var index = Array.IndexOf(subscriptions, subscription);
             if (index < 0)
             {
                 return;
             }
 
-            if (this.subscriptions.Length == 1)
+            if (subscriptions.Length == 1)
             {
-                this.subscriptions = [];
+                this.index = SubscriptionIndex.Empty;
                 return;
             }
 
-            var remaining = new WorkEventSubscription[this.subscriptions.Length - 1];
+            var remaining = new WorkEventSubscription[subscriptions.Length - 1];
             if (index > 0)
             {
-                Array.Copy(this.subscriptions, 0, remaining, 0, index);
+                Array.Copy(subscriptions, 0, remaining, 0, index);
             }
 
-            if (index < this.subscriptions.Length - 1)
+            if (index < subscriptions.Length - 1)
             {
-                Array.Copy(this.subscriptions, index + 1, remaining, index, this.subscriptions.Length - index - 1);
+                Array.Copy(subscriptions, index + 1, remaining, index, subscriptions.Length - index - 1);
             }
 
-            this.subscriptions = remaining;
+            this.index = SubscriptionIndex.Create(remaining);
         }
     }
 
-    private bool TryGetActiveSubscribers([NotNullWhen(true)] out WorkEventSubscription[]? subscribers)
+    private bool TryGetActiveIndex([NotNullWhen(true)] out SubscriptionIndex? index)
     {
         if (Volatile.Read(ref this.isDisposed))
         {
-            subscribers = null;
+            index = null;
             return false;
         }
 
-        subscribers = Volatile.Read(ref this.subscriptions);
-        return subscribers.Length > 0;
+        index = Volatile.Read(ref this.index);
+        return index.ActiveCount > 0;
+    }
+
+    private static void PublishToSubscribers(SubscriptionIndex index, WorkEvent workEvent)
+    {
+        PublishToSubscribers(index.Unfiltered, workEvent);
+        PublishToIdentifierSubscribers(index.IdentifierSubscriptions, workEvent.Identifiers, workEvent);
+        PublishToSubscribers(index.ScannedFiltered, workEvent);
     }
 
     private static void PublishToSubscribers(WorkEventSubscription[] subscribers, WorkEvent workEvent)
@@ -175,46 +180,172 @@ internal sealed class WorkEventStream : IWorkEventStream, IAsyncDisposable
     }
 
     private static void PublishToSubscribers<TState>(
-        WorkEventSubscription[] subscribers,
+        SubscriptionIndex index,
         TState state,
         Func<TState, WorkEventMetadata> createMetadata,
         Func<TState, WorkEvent> createEvent)
     {
-        var hasFilteredSubscribers = false;
-        foreach (var subscription in subscribers)
-        {
-            if (subscription.HasFilter)
-            {
-                hasFilteredSubscribers = true;
-                break;
-            }
-        }
-
-        WorkEvent? workEvent = null;
+        var hasFilteredSubscribers = index.HasFilteredSubscriptions;
         WorkEventMetadata? metadata = hasFilteredSubscribers
             ? createMetadata(state)
             : null;
-        foreach (var subscription in subscribers)
-        {
-            if (!subscription.HasFilter)
-            {
-                if (!subscription.ShouldPublishUnfiltered())
-                {
-                    continue;
-                }
+        WorkEvent? workEvent = null;
 
-                workEvent ??= createEvent(state);
-                subscription.PublishMatched(workEvent);
+        PublishToUnfilteredSubscribers(index.Unfiltered, ref workEvent, state, createEvent);
+        if (!hasFilteredSubscribers)
+        {
+            return;
+        }
+
+        PublishToFilteredSubscribers(index, metadata!, ref workEvent, state, createEvent);
+    }
+
+    private static void PublishToIdentifierSubscribers(
+        IReadOnlyDictionary<WorkIdentifier, WorkEventSubscription[]> subscriptionsByIdentifier,
+        IReadOnlySet<WorkIdentifier> identifiers,
+        WorkEvent workEvent)
+    {
+        if (subscriptionsByIdentifier.Count == 0 || identifiers.Count == 0)
+        {
+            return;
+        }
+
+        foreach (var identifier in identifiers)
+        {
+            if (!subscriptionsByIdentifier.TryGetValue(identifier, out var subscribers))
+            {
                 continue;
             }
 
-            if (!subscription.ShouldPublish(metadata!))
+            PublishToSubscribers(subscribers, workEvent);
+        }
+    }
+
+    private static void PublishToUnfilteredSubscribers<TState>(
+        WorkEventSubscription[] subscribers,
+        ref WorkEvent? workEvent,
+        TState state,
+        Func<TState, WorkEvent> createEvent)
+    {
+        foreach (var subscription in subscribers)
+        {
+            if (!subscription.ShouldPublishUnfiltered())
             {
                 continue;
             }
 
             workEvent ??= createEvent(state);
             subscription.PublishMatched(workEvent);
+        }
+    }
+
+    private static void PublishToFilteredSubscribers<TState>(
+        SubscriptionIndex index,
+        WorkEventMetadata metadata,
+        ref WorkEvent? workEvent,
+        TState state,
+        Func<TState, WorkEvent> createEvent)
+    {
+        if (index.IdentifierSubscriptions.Count > 0)
+        {
+            foreach (var identifier in metadata.Identifiers)
+            {
+                if (!index.IdentifierSubscriptions.TryGetValue(identifier, out var subscribers))
+                {
+                    continue;
+                }
+
+                foreach (var subscription in subscribers)
+                {
+                    if (!subscription.ShouldPublish(metadata))
+                    {
+                        continue;
+                    }
+
+                    workEvent ??= createEvent(state);
+                    subscription.PublishMatched(workEvent);
+                }
+            }
+        }
+
+        foreach (var subscription in index.ScannedFiltered)
+        {
+            if (!subscription.ShouldPublish(metadata))
+            {
+                continue;
+            }
+
+            workEvent ??= createEvent(state);
+            subscription.PublishMatched(workEvent);
+        }
+    }
+
+    private sealed class SubscriptionIndex(
+        WorkEventSubscription[] all,
+        WorkEventSubscription[] unfiltered,
+        WorkEventSubscription[] scannedFiltered,
+        IReadOnlyDictionary<WorkIdentifier, WorkEventSubscription[]> identifierSubscriptions)
+    {
+        public static SubscriptionIndex Empty { get; } = new(
+            [],
+            [],
+            [],
+            new Dictionary<WorkIdentifier, WorkEventSubscription[]>());
+
+        public WorkEventSubscription[] All { get; } = all;
+
+        public WorkEventSubscription[] Unfiltered { get; } = unfiltered;
+
+        public WorkEventSubscription[] ScannedFiltered { get; } = scannedFiltered;
+
+        public IReadOnlyDictionary<WorkIdentifier, WorkEventSubscription[]> IdentifierSubscriptions { get; } = identifierSubscriptions;
+
+        public int ActiveCount => this.All.Length;
+
+        public bool HasFilteredSubscriptions
+            => this.ScannedFiltered.Length > 0 || this.IdentifierSubscriptions.Count > 0;
+
+        public static SubscriptionIndex Create(WorkEventSubscription[] subscriptions)
+        {
+            if (subscriptions.Length == 0)
+            {
+                return Empty;
+            }
+
+            var unfiltered = new List<WorkEventSubscription>();
+            var scannedFiltered = new List<WorkEventSubscription>();
+            var byIdentifier = new Dictionary<WorkIdentifier, List<WorkEventSubscription>>();
+
+            foreach (var subscription in subscriptions)
+            {
+                if (!subscription.HasFilter)
+                {
+                    unfiltered.Add(subscription);
+                    continue;
+                }
+
+                if (subscription.IdentifierFilter is { } identifier)
+                {
+                    if (!byIdentifier.TryGetValue(identifier, out var indexed))
+                    {
+                        indexed = [];
+                        byIdentifier[identifier] = indexed;
+                    }
+
+                    indexed.Add(subscription);
+                    continue;
+                }
+
+                scannedFiltered.Add(subscription);
+            }
+
+            return new SubscriptionIndex(
+                subscriptions,
+                [.. unfiltered],
+                [.. scannedFiltered],
+                byIdentifier.ToDictionary(
+                    pair => pair.Key,
+                    pair => pair.Value.ToArray()));
         }
     }
 
@@ -240,6 +371,8 @@ internal sealed class WorkEventStream : IWorkEventStream, IAsyncDisposable
         private long droppedEventCount;
 
         internal bool HasFilter => filter is not null;
+
+        internal WorkIdentifier? IdentifierFilter => filter?.Identifier;
 
         public IAsyncEnumerable<WorkEvent> Read(CancellationToken cancellationToken = default)
             => new WorkEventSubscriptionEnumerable(this, cancellationToken);

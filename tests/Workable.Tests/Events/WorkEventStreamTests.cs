@@ -423,6 +423,102 @@ public sealed class WorkEventStreamTests
     }
 
     [Fact]
+    public async Task LazyPublishWithMetadataFiltersByIdentifierBeforeCreatingEvent()
+    {
+        var stream = new WorkEventStream();
+        var identifier = new WorkIdentifier("invoice", "inv-100");
+        var loadedIdentifiers = false;
+        var created = false;
+        await using var subscription = stream.Subscribe(new WorkEventFilter(Identifier: identifier));
+        await using var reader = subscription.Read().GetAsyncEnumerator();
+        var metadata = new WorkEventMetadata(
+            WorkSystemId.New(),
+            WorkerId.New(),
+            WorkDefinitionId.New(),
+            null,
+            null,
+            null,
+            "worker.started",
+            () =>
+            {
+                loadedIdentifiers = true;
+                return new HashSet<WorkIdentifier> { identifier };
+            });
+
+        stream.Publish(
+            metadata,
+            CreateEvent(eventType: "worker.started", identifiers: new HashSet<WorkIdentifier> { identifier }),
+            state =>
+            {
+                created = true;
+                return state;
+            });
+
+        var workEvent = await ReadNext(reader);
+
+        Assert.True(loadedIdentifiers);
+        Assert.True(created);
+        Assert.Equal(identifier, Assert.Single(workEvent.Identifiers));
+    }
+
+    [Fact]
+    public async Task LazyPublishWithMetadataDoesNotCreateEventWhenIdentifierFilterDoesNotMatch()
+    {
+        var stream = new WorkEventStream();
+        var loadedIdentifiers = false;
+        var created = false;
+        await using var subscription = stream.Subscribe(new WorkEventFilter(Identifier: new WorkIdentifier("invoice", "inv-100")));
+        var metadata = new WorkEventMetadata(
+            WorkSystemId.New(),
+            WorkerId.New(),
+            WorkDefinitionId.New(),
+            null,
+            null,
+            null,
+            "worker.started",
+            () =>
+            {
+                loadedIdentifiers = true;
+                return new HashSet<WorkIdentifier> { new("invoice", "inv-200") };
+            });
+
+        stream.Publish(
+            metadata,
+            CreateEvent(eventType: "worker.started"),
+            state =>
+            {
+                created = true;
+                return state;
+            });
+
+        Assert.True(loadedIdentifiers);
+        Assert.False(created);
+        AssertNoQueuedEvents(subscription);
+    }
+
+    [Fact]
+    public async Task IdentifierFilterCanBeCombinedWithOtherFilterValues()
+    {
+        var stream = new WorkEventStream();
+        var identifier = new WorkIdentifier("invoice", "inv-100");
+        await using var subscription = stream.Subscribe(new WorkEventFilter(
+            Identifier: identifier,
+            EventType: "worker.completed"));
+        await using var reader = subscription.Read().GetAsyncEnumerator();
+        var ignored = CreateEvent(
+            eventType: "worker.started",
+            identifiers: new HashSet<WorkIdentifier> { identifier });
+        var accepted = CreateEvent(
+            eventType: "worker.completed",
+            identifiers: new HashSet<WorkIdentifier> { identifier });
+
+        stream.Publish(ignored);
+        stream.Publish(accepted);
+
+        Assert.Equal(accepted, await ReadNext(reader));
+    }
+
+    [Fact]
     public async Task LazyPublishWithMetadataFiltersByKeyBeforeCreatingEvent()
     {
         var stream = new WorkEventStream();
@@ -514,6 +610,22 @@ public sealed class WorkEventStreamTests
 
         await subscription.DisposeAsync();
         stream.Publish(CreateEvent(eventType: "worker.queued"));
+
+        Assert.Equal(0, stream.ActiveSubscriptionCount);
+        await AssertReadAlreadyCompleted(subscription);
+    }
+
+    [Fact]
+    public async Task DisposedIdentifierSubscriptionStopsReceivingEventsAndIsRemoved()
+    {
+        var stream = new WorkEventStream();
+        var identifier = new WorkIdentifier("invoice", "inv-100");
+        var subscription = stream.Subscribe(new WorkEventFilter(Identifier: identifier));
+
+        Assert.Equal(1, stream.ActiveSubscriptionCount);
+
+        await subscription.DisposeAsync();
+        stream.Publish(CreateEvent(eventType: "worker.queued", identifiers: new HashSet<WorkIdentifier> { identifier }));
 
         Assert.Equal(0, stream.ActiveSubscriptionCount);
         await AssertReadAlreadyCompleted(subscription);
