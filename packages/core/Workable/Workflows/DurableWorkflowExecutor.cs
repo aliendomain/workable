@@ -8,12 +8,22 @@ internal sealed class DurableWorkflowExecutor(
     Func<WorkerId, IWorkerHandle> createWorkerHandle,
     WorkflowPersistenceCoordinator persistence)
 {
-    public async Task<WorkflowRunCompletion> Execute(
+    public Task<WorkflowRunCompletion> Execute(
         WorkflowRunState run,
         RegisteredWorkflow workflow,
         CancellationToken cancellationToken)
+        => this.Execute(run, workflow, null, null, cancellationToken);
+
+    public async Task<WorkflowRunCompletion> Execute(
+        WorkflowRunState run,
+        RegisteredWorkflow workflow,
+        Func<WorkflowStepDefinition, bool>? shouldStopBeforeStep = null,
+        Func<bool>? shouldStopAfterOutstanding = null,
+        CancellationToken cancellationToken = default)
     {
         IWorkSystemSession? session = null;
+        shouldStopBeforeStep ??= static _ => false;
+        shouldStopAfterOutstanding ??= static () => false;
         try
         {
             run.MarkRunning();
@@ -22,6 +32,10 @@ internal sealed class DurableWorkflowExecutor(
             foreach (var step in workflow.Steps)
             {
                 cancellationToken.ThrowIfCancellationRequested();
+                if (shouldStopBeforeStep(step))
+                {
+                    break;
+                }
 
                 var status = run.GetStepStatus(step.Name);
                 if (status == WorkflowStepRunStatus.Completed)
@@ -64,7 +78,7 @@ internal sealed class DurableWorkflowExecutor(
                             var completion = await this.WaitForJoinOutstanding(run, session, join.Name, cancellationToken);
                             if (!completion.IsCompletedSuccessfully)
                             {
-                                await this.CancelOutstandingChildren(run, session, cancellationToken);
+                                await WorkflowExecutionSupport.CancelOutstandingChildren(run, session, cancellationToken);
                                 run.FailStep(join.Name, completion.Messages);
                                 return await this.DeleteFailedRun(run, completion.Messages, cancellationToken);
                             }
@@ -90,8 +104,13 @@ internal sealed class DurableWorkflowExecutor(
                 cancellationToken);
             if (!trailingCompletion.IsCompletedSuccessfully)
             {
-                await this.CancelOutstandingChildren(run, session, cancellationToken);
+                await WorkflowExecutionSupport.CancelOutstandingChildren(run, session, cancellationToken);
                 return await this.DeleteFailedRun(run, trailingCompletion.Messages, cancellationToken);
+            }
+
+            if (shouldStopAfterOutstanding())
+            {
+                return run.Cancel();
             }
 
             var success = run.Complete();
@@ -304,23 +323,6 @@ internal sealed class DurableWorkflowExecutor(
                 "workable.workflow.child.not_found",
                 $"Workflow child worker '{workerId.Value:D}' could not be recovered because its durable state no longer exists.",
                 "workflow.execution")]);
-    }
-
-    private async Task CancelOutstandingChildren(
-        WorkflowRunState run,
-        IWorkSystemSession session,
-        CancellationToken cancellationToken)
-    {
-        foreach (var workerId in run.GetOutstandingWorkerIds().Distinct())
-        {
-            var snapshot = await session.Query.Worker(workerId, cancellationToken);
-            if (snapshot is null || snapshot.IsFinal || snapshot.State == WorkerState.Failed)
-            {
-                continue;
-            }
-
-            await session.Workers.Execute(snapshot.Version, WorkAction.Cancel, cancellationToken);
-        }
     }
 
     private async Task<WorkflowRunCompletion> DeleteFailedRun(

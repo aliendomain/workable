@@ -8,6 +8,7 @@ internal sealed class WorkflowRuntime
     private readonly bool requiresAuthorization;
     private readonly WorkflowCatalog catalog;
     private readonly Func<string, RegisteredWork?> getRegisteredWork;
+    private readonly Func<WorkRequestContext, IWorkSystemSession> createSession;
     private readonly WorkflowPersistenceCoordinator persistence;
     private readonly WorkSystemAuthorizationConfiguration systemAuthorizationConfiguration;
     private readonly IWorkAuthorizationGroupProvider groupProvider;
@@ -15,6 +16,7 @@ internal sealed class WorkflowRuntime
     private readonly DurableWorkflowExecutor? durable;
     private readonly ConcurrentDictionary<WorkflowRunId, WorkflowRunState> runs = new();
     private readonly ConcurrentDictionary<WorkflowRunId, Task<WorkflowRunCompletion>> executions = new();
+    private readonly ConcurrentDictionary<WorkflowRunId, WorkflowExecutionControl> controls = new();
     private readonly Lock lifecycleSync = new();
     private CancellationTokenSource executionLifetime = new();
 
@@ -34,6 +36,7 @@ internal sealed class WorkflowRuntime
         this.requiresAuthorization = requiresAuthorization;
         this.catalog = catalog;
         this.getRegisteredWork = getRegisteredWork;
+        this.createSession = createSession;
         this.persistence = persistence;
         this.systemAuthorizationConfiguration = systemAuthorizationConfiguration;
         this.groupProvider = groupProvider;
@@ -75,16 +78,24 @@ internal sealed class WorkflowRuntime
     public void ClearRuns()
     {
         List<WorkflowRunState> activeRuns;
+        List<WorkflowExecutionControl> activeControls;
         lock (this.lifecycleSync)
         {
             activeRuns = [.. this.runs.Values];
+            activeControls = [.. this.controls.Values];
             this.runs.Clear();
             this.executions.Clear();
+            this.controls.Clear();
         }
 
         foreach (var run in activeRuns)
         {
             run.TrySetCompletion(new WorkflowRunCompletion(WorkflowRunStatus.Canceled, null, []));
+        }
+
+        foreach (var control in activeControls)
+        {
+            control.Dispose();
         }
     }
 
@@ -197,13 +208,95 @@ internal sealed class WorkflowRuntime
             ? run.ToSnapshot()
             : null;
 
+    public WorkflowActionOutcome Execute(
+        WorkflowRunId runId,
+        WorkflowAction action,
+        WorkRequestContext requestContext)
+    {
+        ArgumentNullException.ThrowIfNull(requestContext);
+
+        if (!this.runs.TryGetValue(runId, out var run))
+        {
+            return WorkflowActionOutcome.NotFound(action, runId);
+        }
+
+        var snapshot = run.ToSnapshot();
+        if (snapshot.Status is WorkflowRunStatus.Completed or WorkflowRunStatus.Failed or WorkflowRunStatus.Canceled)
+        {
+            return WorkflowActionOutcome.Invalid(
+                action,
+                runId,
+                snapshot,
+                [WorkMessage.Error(
+                    "workable.workflow.run.final",
+                    $"Workflow run '{runId.Value:D}' is already final and cannot accept '{action}'.",
+                    "workflow.run")]);
+        }
+
+        if (!this.catalog.TryGet(snapshot.DefinitionName, out var workflow))
+        {
+            return WorkflowActionOutcome.Invalid(
+                action,
+                runId,
+                snapshot,
+                [WorkMessage.Error(
+                    "workable.workflow.definition.not_found",
+                    $"Workflow definition '{snapshot.DefinitionName}' is no longer registered.",
+                    "workflow.definition")]);
+        }
+
+        if (!this.CanOperate(workflow.Definition, requestContext))
+        {
+            return WorkflowActionOutcome.Unauthorized(action, runId);
+        }
+
+        if (!this.controls.TryGetValue(runId, out var control))
+        {
+            return WorkflowActionOutcome.Invalid(
+                action,
+                runId,
+                snapshot,
+                [WorkMessage.Error(
+                    "workable.workflow.run.not_executing",
+                    $"Workflow run '{runId.Value:D}' is not currently executing.",
+                    "workflow.run")]);
+        }
+
+        if (action == WorkflowAction.Cancel)
+        {
+            control.RequestCancel();
+        }
+        else
+        {
+            control.RequestStop();
+        }
+
+        return WorkflowActionOutcome.Accepted(action, run.ToSnapshot());
+    }
+
     private void StartExecution(WorkflowRunState run, RegisteredWorkflow workflow)
     {
+        if (this.executions.ContainsKey(run.Id))
+        {
+            throw new InvalidOperationException(
+                $"Workflow run '{run.Id.Value:D}' is already executing.");
+        }
+
+        var control = new WorkflowExecutionControl(this.GetExecutionLifetimeToken());
+        if (!this.controls.TryAdd(run.Id, control))
+        {
+            control.Dispose();
+            throw new InvalidOperationException(
+                $"Workflow run '{run.Id.Value:D}' is already executing.");
+        }
+
         var executionTask = Task.Run(
-            () => this.RunExecution(run, workflow, this.GetExecutionLifetimeToken()),
+            () => this.RunExecution(run, workflow, control),
             CancellationToken.None);
         if (!this.executions.TryAdd(run.Id, executionTask))
         {
+            this.controls.TryRemove(run.Id, out var removedControl);
+            removedControl?.Dispose();
             throw new InvalidOperationException(
                 $"Workflow run '{run.Id.Value:D}' is already executing.");
         }
@@ -225,16 +318,47 @@ internal sealed class WorkflowRuntime
     private async Task<WorkflowRunCompletion> RunExecution(
         WorkflowRunState run,
         RegisteredWorkflow workflow,
-        CancellationToken cancellationToken)
+        WorkflowExecutionControl control)
     {
         try
         {
-            var completion = await this.Execute(run, workflow, cancellationToken);
+            var completion = await this.Execute(run, workflow, control);
+            if (control.CancelRequested && completion.Status == WorkflowRunStatus.Canceled)
+            {
+                await WorkflowExecutionSupport.CancelOutstandingChildren(
+                    run,
+                    this.createSession(run.RequestContext),
+                    CancellationToken.None);
+                if (workflow.Definition.Coordination.IsDurable)
+                {
+                    await this.persistence.DeleteRun(run.Id, CancellationToken.None);
+                }
+            }
+
+            if (control.StopRequested &&
+                completion.Status == WorkflowRunStatus.Canceled &&
+                workflow.Definition.Coordination.IsDurable)
+            {
+                await this.persistence.DeleteRun(run.Id, CancellationToken.None);
+            }
+
             run.TrySetCompletion(completion);
             return completion;
         }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        catch (OperationCanceledException) when (control.Token.IsCancellationRequested)
         {
+            if (control.CancelRequested)
+            {
+                await WorkflowExecutionSupport.CancelOutstandingChildren(
+                    run,
+                    this.createSession(run.RequestContext),
+                    CancellationToken.None);
+                if (workflow.Definition.Coordination.IsDurable)
+                {
+                    await this.persistence.DeleteRun(run.Id, CancellationToken.None);
+                }
+            }
+
             var completion = run.Cancel();
             run.TrySetCompletion(completion);
             return completion;
@@ -252,16 +376,46 @@ internal sealed class WorkflowRuntime
         finally
         {
             this.executions.TryRemove(run.Id, out _);
+            if (this.controls.TryRemove(run.Id, out var controlToDispose))
+            {
+                controlToDispose.Dispose();
+            }
         }
+    }
+
+    private Task<WorkflowRunCompletion> RunExecution(
+        WorkflowRunState run,
+        RegisteredWorkflow workflow,
+        CancellationToken cancellationToken)
+        => RunExecutionWithEphemeralControl(this, run, workflow, cancellationToken);
+
+    static async Task<WorkflowRunCompletion> RunExecutionWithEphemeralControl(
+        WorkflowRuntime runtime,
+        WorkflowRunState run,
+        RegisteredWorkflow workflow,
+        CancellationToken cancellationToken)
+    {
+        using var control = new WorkflowExecutionControl(cancellationToken);
+        return await runtime.RunExecution(run, workflow, control);
     }
 
     private Task<WorkflowRunCompletion> Execute(
         WorkflowRunState run,
         RegisteredWorkflow workflow,
-        CancellationToken cancellationToken)
+        WorkflowExecutionControl control)
         => workflow.Definition.Coordination.IsDurable
-            ? this.durable!.Execute(run, workflow, cancellationToken)
-            : this.nonDurable.Execute(run, workflow, cancellationToken);
+            ? this.durable!.Execute(
+                run,
+                workflow,
+                control.ShouldStopBeforeStep,
+                () => control.StopRequested,
+                control.Token)
+            : this.nonDurable.Execute(
+                run,
+                workflow,
+                control.ShouldStopBeforeStep,
+                () => control.StopRequested,
+                control.Token);
 
     private CancellationToken GetExecutionLifetimeToken()
     {
@@ -322,6 +476,44 @@ internal sealed class WorkflowRuntime
                     this.ValidateDispatchDurability(workflow, parallel.Steps, messages);
                     break;
             }
+        }
+    }
+
+    private sealed class WorkflowExecutionControl : IDisposable
+    {
+        private readonly CancellationTokenSource cancellation;
+        private int stopRequested;
+        private int cancelRequested;
+
+        public WorkflowExecutionControl(CancellationToken lifetimeToken)
+        {
+            this.cancellation = CancellationTokenSource.CreateLinkedTokenSource(lifetimeToken);
+        }
+
+        public CancellationToken Token => this.cancellation.Token;
+
+        public bool StopRequested => Volatile.Read(ref this.stopRequested) == 1;
+
+        public bool CancelRequested => Volatile.Read(ref this.cancelRequested) == 1;
+
+        public void RequestStop()
+        {
+            Interlocked.Exchange(ref this.stopRequested, 1);
+        }
+
+        public void RequestCancel()
+        {
+            Interlocked.Exchange(ref this.cancelRequested, 1);
+            this.cancellation.Cancel();
+        }
+
+        public bool ShouldStopBeforeStep(WorkflowStepDefinition step)
+            => this.StopRequested &&
+                step is not JoinWorkflowStepDefinition;
+
+        public void Dispose()
+        {
+            this.cancellation.Dispose();
         }
     }
 }

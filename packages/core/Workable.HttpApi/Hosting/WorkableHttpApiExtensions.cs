@@ -89,6 +89,7 @@ public static class WorkableHttpApiExtensions
         WorkableHttpCatalogRoutes.Map(group);
         WorkableHttpQueueRoutes.Map(group);
         WorkableHttpQueryRoutes.Map(group);
+        WorkableHttpWorkflowRoutes.Map(group);
         WorkableHttpWorkerRoutes.Map(group);
     }
 

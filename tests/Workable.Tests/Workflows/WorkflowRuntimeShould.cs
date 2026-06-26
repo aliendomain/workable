@@ -909,6 +909,116 @@ public sealed class WorkflowRuntimeShould
         Assert.True(observer.StoppedCalled);
     }
 
+    [Fact]
+    public async Task StopDurableWorkflowWaitsForOutstandingChildrenAndDeletesPersistedRun()
+    {
+        var store = new TestWorkflowPersistenceStore();
+        var slowStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var slowRelease = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var fastRuns = 0;
+        var services = new ServiceCollection();
+
+        services.AddSingleton<IWorkPersistenceStore>(store);
+        services.AddWorkableSystem("workflow-tests", builder =>
+        {
+            builder.RequireAuthorization(false);
+            builder.AddWork(
+                WorkDefinition.Create("sample.stop.slow"),
+                async (_, _, cancellationToken) =>
+                {
+                    slowStarted.TrySetResult();
+                    await slowRelease.Task.WaitAsync(cancellationToken);
+                    return WorkExecutionResult.Success();
+                });
+            builder.AddWork(
+                WorkDefinition.Create("sample.stop.fast"),
+                (_, _, _) =>
+                {
+                    Interlocked.Increment(ref fastRuns);
+                    return Task.FromResult(WorkExecutionResult.Success());
+                });
+            builder.AddWorkflow(
+                WorkflowDefinition.Create(
+                    "workflow.durable.stop",
+                    coordination: WorkflowCoordinationConfiguration.Durable),
+                workflow => workflow
+                    .DispatchWork("slow", "sample.stop.slow")
+                    .Join("join")
+                    .DispatchWork("fast", "sample.stop.fast"));
+        });
+
+        using var provider = services.BuildServiceProvider();
+        var system = GetNamedSystem(provider, "workflow-tests");
+        await system.Start();
+
+        var handle = system.WorkflowRuntime.Start(
+            "workflow.durable.stop",
+            WorkRequestContext.Create(WorkInvocationChannel.InProcess));
+        await slowStarted.Task.WaitAsync(CancellationToken.None);
+
+        var stop = system.WorkflowRuntime.Execute(
+            handle.RunId!.Value,
+            WorkflowAction.Stop,
+            WorkRequestContext.Create(WorkInvocationChannel.InProcess));
+        slowRelease.TrySetResult();
+        var completion = await handle.WaitForCompletion();
+
+        Assert.True(stop.IsAccepted);
+        Assert.Equal(WorkflowRunStatus.Canceled, completion.Status);
+        Assert.Equal(0, Volatile.Read(ref fastRuns));
+        Assert.Contains(handle.RunId.Value, store.DeletedWorkflowRuns);
+    }
+
+    [Fact]
+    public async Task CancelDurableWorkflowCancelsOutstandingChildrenAndDeletesPersistedRun()
+    {
+        var store = new TestWorkflowPersistenceStore();
+        var childStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var services = new ServiceCollection();
+
+        services.AddSingleton<IWorkPersistenceStore>(store);
+        services.AddWorkableSystem("workflow-tests", builder =>
+        {
+            builder.RequireAuthorization(false);
+            builder.AddWork(
+                WorkDefinition.Create("sample.cancel.child"),
+                async (_, _, cancellationToken) =>
+                {
+                    childStarted.TrySetResult();
+                    await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+                    return WorkExecutionResult.Success();
+                });
+            builder.AddWorkflow(
+                WorkflowDefinition.Create(
+                    "workflow.durable.cancel.requested",
+                    coordination: WorkflowCoordinationConfiguration.Durable),
+                workflow => workflow.DispatchWork("dispatch", "sample.cancel.child"));
+        });
+
+        using var provider = services.BuildServiceProvider();
+        var system = GetNamedSystem(provider, "workflow-tests");
+        await system.Start();
+
+        var handle = system.WorkflowRuntime.Start(
+            "workflow.durable.cancel.requested",
+            WorkRequestContext.Create(WorkInvocationChannel.InProcess));
+        await childStarted.Task.WaitAsync(CancellationToken.None);
+
+        var cancel = system.WorkflowRuntime.Execute(
+            handle.RunId!.Value,
+            WorkflowAction.Cancel,
+            WorkRequestContext.Create(WorkInvocationChannel.InProcess));
+        var completion = await handle.WaitForCompletion();
+        var childWorkerId = completion.Run!.Steps.Single(step => step.Name == "dispatch").WorkerIds.Single();
+        var child = await system.Query.Worker(childWorkerId)
+            ?? throw new InvalidOperationException("Expected canceled durable child worker.");
+
+        Assert.True(cancel.IsAccepted);
+        Assert.Equal(WorkflowRunStatus.Canceled, completion.Status);
+        Assert.Equal(WorkerState.Canceled, child.State);
+        Assert.Contains(handle.RunId.Value, store.DeletedWorkflowRuns);
+    }
+
     private static async Task StopWithTimeout(IWorkSystem system, TimeSpan timeoutAfter)
     {
         using var timeout = new CancellationTokenSource(timeoutAfter);

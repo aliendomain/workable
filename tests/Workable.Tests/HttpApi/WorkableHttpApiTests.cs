@@ -1233,6 +1233,133 @@ public sealed class WorkableHttpApiTests
     }
 
     [Fact]
+    public async Task HttpApiCanStartWorkflowAndWaitForCompletion()
+    {
+        var (system, http) = CreateHost(builder =>
+        {
+            builder.AddWork(WorkDefinition.Create("http.workflow.child"), SuccessfulWork);
+            builder.AddWorkflow(
+                WorkflowDefinition.Create("http.workflow.start"),
+                workflow => workflow.DispatchWork("dispatch", "http.workflow.child"));
+        });
+        await system.Start();
+
+        var result = await http.Workflows.Start(
+            system,
+            "http.workflow.start",
+            DirectRequestContext(),
+            new WorkableHttpWorkflowStartRequest(Completion: WorkableHttpCompletion.WaitForCompletion));
+
+        Assert.True(result.IsAccepted);
+        Assert.NotNull(result.RunId);
+        Assert.NotNull(result.Run);
+        Assert.Equal(WorkflowRunStatus.Completed, result.Run!.Status);
+    }
+
+    [Fact]
+    public async Task HttpApiCanStopWorkflowGracefully()
+    {
+        var slowStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var slowRelease = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var fastRuns = 0;
+        var (system, http) = CreateHost(builder =>
+        {
+            builder.AddWork(
+                WorkDefinition.Create("http.workflow.slow"),
+                async (_, _, cancellationToken) =>
+                {
+                    slowStarted.TrySetResult();
+                    await slowRelease.Task.WaitAsync(cancellationToken);
+                    return WorkExecutionResult.Success();
+                });
+            builder.AddWork(
+                WorkDefinition.Create("http.workflow.fast"),
+                (_, _, _) =>
+                {
+                    Interlocked.Increment(ref fastRuns);
+                    return Task.FromResult(WorkExecutionResult.Success());
+                });
+            builder.AddWorkflow(
+                WorkflowDefinition.Create("http.workflow.stop"),
+                workflow => workflow
+                    .DispatchWork("slow", "http.workflow.slow")
+                    .Join("join")
+                    .DispatchWork("fast", "http.workflow.fast"));
+        });
+        await system.Start();
+
+        var started = await http.Workflows.Start(system, "http.workflow.stop", DirectRequestContext(), null);
+        await slowStarted.Task.WaitAsync(CancellationToken.None);
+
+        var stopped = await http.Workflows.Execute(
+            system,
+            new WorkflowRunId(started.RunId!.Value),
+            WorkflowAction.Stop,
+            DirectRequestContext("Stop workflow gracefully."));
+        slowRelease.TrySetResult();
+
+        WorkflowRunSnapshot? completed = null;
+        await TestEventually.Until(
+            () =>
+            {
+                completed = ((InMemoryWorkSystem)system).WorkflowRuntime.Get(new WorkflowRunId(started.RunId!.Value));
+                return completed?.Status == WorkflowRunStatus.Canceled;
+            },
+            "Expected the gracefully stopped workflow to settle and cancel before dispatching later steps.");
+
+        Assert.True(stopped.IsAccepted);
+        Assert.Equal(0, Volatile.Read(ref fastRuns));
+        Assert.Equal(WorkflowRunStatus.Canceled, completed!.Status);
+    }
+
+    [Fact]
+    public async Task HttpApiCanCancelWorkflowAndOutstandingChildren()
+    {
+        var childStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var (system, http) = CreateHost(builder =>
+        {
+            builder.AddWork(
+                WorkDefinition.Create("http.workflow.cancel.child"),
+                async (_, _, cancellationToken) =>
+                {
+                    childStarted.TrySetResult();
+                    await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+                    return WorkExecutionResult.Success();
+                });
+            builder.AddWorkflow(
+                WorkflowDefinition.Create("http.workflow.cancel"),
+                workflow => workflow.DispatchWork("dispatch", "http.workflow.cancel.child"));
+        });
+        await system.Start();
+
+        var started = await http.Workflows.Start(system, "http.workflow.cancel", DirectRequestContext(), null);
+        await childStarted.Task.WaitAsync(CancellationToken.None);
+
+        var canceled = await http.Workflows.Execute(
+            system,
+            new WorkflowRunId(started.RunId!.Value),
+            WorkflowAction.Cancel,
+            DirectRequestContext("Cancel workflow immediately."));
+
+        WorkflowRunSnapshot? completed = null;
+        await TestEventually.Until(
+            () =>
+            {
+                completed = ((InMemoryWorkSystem)system).WorkflowRuntime.Get(new WorkflowRunId(started.RunId!.Value));
+                return completed?.Status == WorkflowRunStatus.Canceled;
+            },
+            "Expected the canceled workflow to complete as canceled.");
+
+        var childWorkerId = completed!.Steps.Single(step => step.Name == "dispatch").WorkerIds.Single();
+        var child = await Direct(system).Query.Worker(childWorkerId)
+            ?? throw new InvalidOperationException("Expected canceled child worker.");
+
+        Assert.True(canceled.IsAccepted);
+        Assert.Equal(WorkflowRunStatus.Canceled, completed.Status);
+        Assert.Equal(WorkerState.Canceled, child.State);
+    }
+
+    [Fact]
     public async Task HttpApiCanReconfigureWorker()
     {
         var definition = WorkDefinition.Create(
@@ -2255,6 +2382,250 @@ public sealed class WorkableHttpApiTests
     }
 
     [Fact]
+    public async Task MappedHttpWorkflowStartRouteCanWaitForCompletion()
+    {
+        using var host = await CreateHttpHost(builder =>
+        {
+            builder.AddAuthorizedTransportWork(WorkDefinition.Create("http.workflow.child"), SuccessfulWork);
+            builder.AddWorkflow(
+                WorkflowDefinition.Create("http.workflow.start"),
+                workflow => workflow.DispatchWork("dispatch", "http.workflow.child"),
+                authorize => authorize.AllowOperateToGroups(TransportAuthorizationTestSupport.OperateGroups.ToArray()));
+        });
+        var client = host.GetTestClient();
+
+        var response = await client.PostAsJsonAsync(
+            "/workable/workflows/http.workflow.start",
+            new
+            {
+                completion = "waitForCompletion",
+                description = "Run workflow to completion from the HTTP API test.",
+            });
+        response.EnsureSuccessStatusCode();
+        var json = JsonNode.Parse(await response.Content.ReadAsStringAsync())
+            ?? throw new InvalidOperationException("Expected JSON response.");
+
+        Assert.Equal("Accepted", json["status"]?.GetValue<string>());
+        Assert.NotNull(json["runId"]);
+        Assert.Equal("Completed", json["run"]?["status"]?.GetValue<string>());
+        Assert.Equal("http.workflow.start", json["run"]?["definitionName"]?.GetValue<string>());
+    }
+
+    [Fact]
+    public async Task MappedHttpWorkflowStopRouteGracefullyStopsBeforeLaterSteps()
+    {
+        var slowStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var slowRelease = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var fastRuns = 0;
+        using var host = await CreateHttpHost(builder =>
+        {
+            builder.AddAuthorizedTransportWork(
+                WorkDefinition.Create("http.workflow.stop.slow"),
+                async (_, _, cancellationToken) =>
+                {
+                    slowStarted.TrySetResult();
+                    await slowRelease.Task.WaitAsync(cancellationToken);
+                    return WorkExecutionResult.Success();
+                });
+            builder.AddAuthorizedTransportWork(
+                WorkDefinition.Create("http.workflow.stop.fast"),
+                (_, _, _) =>
+                {
+                    Interlocked.Increment(ref fastRuns);
+                    return Task.FromResult(WorkExecutionResult.Success());
+                });
+            builder.AddWorkflow(
+                WorkflowDefinition.Create("http.workflow.stop"),
+                workflow => workflow
+                    .DispatchWork("slow", "http.workflow.stop.slow")
+                    .Join("join")
+                    .DispatchWork("fast", "http.workflow.stop.fast"),
+                authorize => authorize.AllowOperateToGroups(TransportAuthorizationTestSupport.OperateGroups.ToArray()));
+        });
+        var client = host.GetTestClient();
+        var system = Assert.IsType<InMemoryWorkSystem>(host.Services.GetRequiredService<IWorkSystemRegistry>().Default);
+
+        var startResponse = await client.PostAsJsonAsync(
+            "/workable/workflows/http.workflow.stop",
+            new
+            {
+                completion = "returnAfterAccepted",
+            });
+        startResponse.EnsureSuccessStatusCode();
+        var startJson = JsonNode.Parse(await startResponse.Content.ReadAsStringAsync())
+            ?? throw new InvalidOperationException("Expected JSON response.");
+        var runId = Guid.Parse(startJson["runId"]?.GetValue<string>()
+            ?? throw new InvalidOperationException("Expected workflow run id."));
+        await slowStarted.Task.WaitAsync(CancellationToken.None);
+
+        var stopResponse = await client.PostAsJsonAsync(
+            $"/workable/workflow-runs/{runId:D}/actions/stop",
+            new
+            {
+                description = "Stop workflow gracefully from the HTTP API test.",
+            });
+        stopResponse.EnsureSuccessStatusCode();
+        var stopJson = JsonNode.Parse(await stopResponse.Content.ReadAsStringAsync())
+            ?? throw new InvalidOperationException("Expected JSON response.");
+
+        slowRelease.TrySetResult();
+
+        WorkflowRunSnapshot? completed = null;
+        await TestEventually.Until(
+            () =>
+            {
+                completed = system.WorkflowRuntime.Get(new WorkflowRunId(runId));
+                return completed?.Status == WorkflowRunStatus.Canceled;
+            },
+            "Expected the HTTP-stopped workflow to settle as canceled.");
+
+        Assert.Equal("Accepted", stopJson["status"]?.GetValue<string>());
+        Assert.Equal("Stop", stopJson["action"]?.GetValue<string>());
+        Assert.Equal(0, Volatile.Read(ref fastRuns));
+        Assert.Equal(WorkflowRunStatus.Canceled, completed?.Status);
+    }
+
+    [Fact]
+    public async Task MappedHttpWorkflowCancelRouteCancelsOutstandingChildren()
+    {
+        var childStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var host = await CreateHttpHost(builder =>
+        {
+            builder.AddAuthorizedTransportWork(
+                WorkDefinition.Create("http.workflow.cancel.child"),
+                async (_, _, cancellationToken) =>
+                {
+                    childStarted.TrySetResult();
+                    await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+                    return WorkExecutionResult.Success();
+                });
+            builder.AddWorkflow(
+                WorkflowDefinition.Create("http.workflow.cancel"),
+                workflow => workflow.DispatchWork("dispatch", "http.workflow.cancel.child"),
+                authorize => authorize.AllowOperateToGroups(TransportAuthorizationTestSupport.OperateGroups.ToArray()));
+        });
+        var client = host.GetTestClient();
+        var system = Assert.IsType<InMemoryWorkSystem>(host.Services.GetRequiredService<IWorkSystemRegistry>().Default);
+
+        var startResponse = await client.PostAsJsonAsync(
+            "/workable/workflows/http.workflow.cancel",
+            new
+            {
+                completion = "returnAfterAccepted",
+            });
+        startResponse.EnsureSuccessStatusCode();
+        var startJson = JsonNode.Parse(await startResponse.Content.ReadAsStringAsync())
+            ?? throw new InvalidOperationException("Expected JSON response.");
+        var runId = Guid.Parse(startJson["runId"]?.GetValue<string>()
+            ?? throw new InvalidOperationException("Expected workflow run id."));
+        await childStarted.Task.WaitAsync(CancellationToken.None);
+
+        var cancelResponse = await client.PostAsJsonAsync(
+            $"/workable/workflow-runs/{runId:D}/actions/cancel",
+            new
+            {
+                description = "Cancel workflow immediately from the HTTP API test.",
+            });
+        cancelResponse.EnsureSuccessStatusCode();
+        var cancelJson = JsonNode.Parse(await cancelResponse.Content.ReadAsStringAsync())
+            ?? throw new InvalidOperationException("Expected JSON response.");
+
+        WorkflowRunSnapshot? completed = null;
+        await TestEventually.Until(
+            () =>
+            {
+                completed = system.WorkflowRuntime.Get(new WorkflowRunId(runId));
+                return completed?.Status == WorkflowRunStatus.Canceled;
+            },
+            "Expected the HTTP-canceled workflow to settle as canceled.");
+
+        var childWorkerId = completed!.Steps.Single(step => step.Name == "dispatch").WorkerIds.Single();
+        var child = await Direct(system).Query.Worker(childWorkerId)
+            ?? throw new InvalidOperationException("Expected canceled child worker.");
+
+        Assert.Equal("Accepted", cancelJson["status"]?.GetValue<string>());
+        Assert.Equal("Cancel", cancelJson["action"]?.GetValue<string>());
+        Assert.Equal(WorkerState.Canceled, child.State);
+    }
+
+    [Fact]
+    public async Task MappedHttpWorkflowStartRouteReturnsNotFoundForUnknownWorkflow()
+    {
+        using var host = await CreateHttpHost();
+        var client = host.GetTestClient();
+
+        var response = await client.PostAsJsonAsync(
+            "/workable/workflows/http.workflow.missing",
+            new
+            {
+                completion = "returnAfterAccepted",
+            });
+
+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+        Assert.Contains("workable.workflow.definition.not_found", await response.Content.ReadAsStringAsync(), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task MappedHttpWorkflowActionRouteReturnsNotFoundForUnknownRun()
+    {
+        using var host = await CreateHttpHost();
+        var client = host.GetTestClient();
+
+        var response = await client.PostAsJsonAsync(
+            $"/workable/workflow-runs/{Guid.NewGuid():D}/actions/cancel",
+            new
+            {
+                description = "Cancel a missing workflow run from the HTTP API test.",
+            });
+
+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+        Assert.Contains("workable.workflow.run.not_found", await response.Content.ReadAsStringAsync(), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task MappedHttpWorkflowActionRouteRejectsUnsupportedActions()
+    {
+        using var host = await CreateHttpHost();
+        var client = host.GetTestClient();
+
+        var response = await client.PostAsJsonAsync(
+            $"/workable/workflow-runs/{Guid.NewGuid():D}/actions/pause",
+            new
+            {
+                description = "Attempt unsupported workflow action from the HTTP API test.",
+            });
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Contains("workable.http.workflow.action.invalid", await response.Content.ReadAsStringAsync(), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task MappedHttpWorkflowStartRouteRequiresWorkflowOperatePermission()
+    {
+        using var host = await CreateHttpHost(
+            builder =>
+            {
+                builder.AddAuthorizedTransportWork(WorkDefinition.Create("http.workflow.secured.child"), SuccessfulWork);
+                builder.AddWorkflow(
+                    WorkflowDefinition.Create("http.workflow.secured"),
+                    workflow => workflow.DispatchWork("dispatch", "http.workflow.secured.child"),
+                    authorize => authorize.AllowOperateToGroups("workflow.ops"));
+            },
+            groups: TransportAuthorizationTestSupport.SystemAdministratorGroups);
+        var client = host.GetTestClient();
+
+        var response = await client.PostAsJsonAsync(
+            "/workable/workflows/http.workflow.secured",
+            new
+            {
+                completion = "returnAfterAccepted",
+            });
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+        Assert.Contains("workable.workflow.definition.unauthorized", await response.Content.ReadAsStringAsync(), StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task MappedHttpBulkActionRouteCanTargetCategory()
     {
         using var host = await CreateBulkActionHttpHost();
@@ -2416,6 +2787,7 @@ public sealed class WorkableHttpApiTests
             provider.GetRequiredService<WorkableHttpCatalogAdapter>(),
             provider.GetRequiredService<WorkableHttpQueueAdapter>(),
             provider.GetRequiredService<WorkableHttpQueryAdapter>(),
+            provider.GetRequiredService<WorkableHttpWorkflowAdapter>(),
             provider.GetRequiredService<WorkableHttpWorkerAdapter>()));
     }
 
@@ -2424,6 +2796,7 @@ public sealed class WorkableHttpApiTests
         WorkableHttpCatalogAdapter Catalog,
         WorkableHttpQueueAdapter Queue,
         WorkableHttpQueryAdapter Query,
+        WorkableHttpWorkflowAdapter Workflows,
         WorkableHttpWorkerAdapter Workers);
 
     private static Task<IHost> CreateHttpHost(

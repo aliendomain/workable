@@ -56,4 +56,24 @@ internal static class WorkflowExecutionSupport
             .WithIdentifier(new WorkIdentifier("workflow-run", runId.ToString()))
             .WithIdentifier(new WorkIdentifier("workflow-definition", workflowDefinitionName))
             .WithIdentifier(new WorkIdentifier("workflow-step", stepName));
+
+    public static async Task CancelOutstandingChildren(
+        WorkflowRunState run,
+        IWorkSystemSession session,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(run);
+        ArgumentNullException.ThrowIfNull(session);
+
+        foreach (var workerId in run.GetOutstandingWorkerIds().Distinct())
+        {
+            var snapshot = await session.Query.Worker(workerId, cancellationToken);
+            if (snapshot is null || snapshot.IsFinal || snapshot.State == WorkerState.Failed)
+            {
+                continue;
+            }
+
+            await session.Workers.Execute(snapshot.Version, WorkAction.Cancel, cancellationToken);
+        }
+    }
 }

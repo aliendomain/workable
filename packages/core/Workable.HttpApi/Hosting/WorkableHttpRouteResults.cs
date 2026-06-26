@@ -125,6 +125,24 @@ internal static class WorkableHttpRouteResults
             _ => Results.BadRequest(result),
         };
 
+    internal static IResult ToWorkflowStartHttpResult(WorkableHttpWorkflowStartResult result)
+        => result.Status switch
+        {
+            WorkableHttpWorkflowStartStatus.Accepted => Results.Ok(result),
+            WorkableHttpWorkflowStartStatus.NotFound => Results.NotFound(result),
+            WorkableHttpWorkflowStartStatus.Unauthorized => Results.Json(result, statusCode: StatusCodes.Status403Forbidden),
+            _ => Results.BadRequest(result),
+        };
+
+    internal static IResult ToWorkflowActionHttpResult(WorkableHttpWorkflowActionResult result)
+        => result.Status switch
+        {
+            WorkableHttpWorkflowActionStatus.Accepted => Results.Ok(result),
+            WorkableHttpWorkflowActionStatus.NotFound => Results.NotFound(result),
+            WorkableHttpWorkflowActionStatus.Unauthorized => Results.Json(result, statusCode: StatusCodes.Status403Forbidden),
+            _ => Results.BadRequest(result),
+        };
+
     internal static IResult ToDefinitionReconfigurationHttpResult(WorkDefinitionReconfigurationOutcome result)
         => result.Status switch
         {

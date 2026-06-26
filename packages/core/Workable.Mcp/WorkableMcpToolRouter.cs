@@ -32,6 +32,9 @@ public sealed class WorkableMcpToolRouter(IWorkSystemRegistry registry)
     private const string QueryWorkIterationKeysTool = "workable_query_work_iteration_keys";
     private const string QueryWorkIterationKeyTypesTool = "workable_query_work_iteration_key_types";
     private const string GetWorkerStatusSummaryTool = "workable_get_worker_status_summary";
+    private const string StartWorkflowTool = "workable_start_workflow";
+    private const string StopWorkflowTool = "workable_stop_workflow";
+    private const string CancelWorkflowTool = "workable_cancel_workflow";
     private const string StartWorkerTool = "workable_start_worker";
     private const string PauseWorkerTool = "workable_pause_worker";
     private const string CancelWorkerTool = "workable_cancel_worker";
@@ -129,6 +132,44 @@ public sealed class WorkableMcpToolRouter(IWorkSystemRegistry registry)
             {
                 switch (toolName)
                 {
+                    case StartWorkflowTool:
+                    {
+                        var workflowName = ReadRequiredString(arguments, "name");
+                        var workflowRequestContext = WithDescription(requestContext, ReadString(arguments, "description"));
+                        var runtime = ResolveWorkflowRuntime(system);
+                        var handle = runtime.Start(workflowName, workflowRequestContext, cancellationToken);
+                        if (!handle.StartOutcome.IsAccepted)
+                        {
+                            return ToToolResult(new
+                            {
+                                status = handle.StartOutcome.Status,
+                                runId = (string?)null,
+                                run = (WorkflowRunSnapshot?)null,
+                                messages = handle.StartOutcome.Messages,
+                            }, isError: true);
+                        }
+
+                        var waitForCompletion = ReadBool(arguments, "waitForCompletion") ?? false;
+                        if (waitForCompletion)
+                        {
+                            var completion = await handle.WaitForCompletion(cancellationToken);
+                            return ToToolResult(new
+                            {
+                                status = handle.StartOutcome.Status,
+                                runId = handle.RunId?.Value.ToString("D"),
+                                run = completion.Run ?? runtime.Get(handle.RunId!.Value),
+                                messages = completion.Messages,
+                            });
+                        }
+
+                        return ToToolResult(new
+                        {
+                            status = handle.StartOutcome.Status,
+                            runId = handle.RunId?.Value.ToString("D"),
+                            run = handle.RunId is { } runId ? runtime.Get(runId) : null,
+                            messages = handle.StartOutcome.Messages,
+                        });
+                    }
                     case QueryWorkersTool:
                         return ToToolResult(await session.Query.Workers(ToWorkerCriteria(arguments), cancellationToken: cancellationToken));
                     case GetWorkerTool:
@@ -223,6 +264,18 @@ public sealed class WorkableMcpToolRouter(IWorkSystemRegistry registry)
             {
                 switch (toolName)
                 {
+                    case StopWorkflowTool:
+                    case CancelWorkflowTool:
+                    {
+                        var runId = new WorkflowRunId(ReadRequiredGuid(arguments, "runId"));
+                        var runtime = ResolveWorkflowRuntime(system);
+                        var actionRequestContext = WithDescription(requestContext, ReadString(arguments, "description"));
+                        var outcome = runtime.Execute(
+                            runId,
+                            toolName == StopWorkflowTool ? WorkflowAction.Stop : WorkflowAction.Cancel,
+                            actionRequestContext);
+                        return ToToolResult(outcome);
+                    }
                     case StartWorkerTool:
                     case PauseWorkerTool:
                     case CancelWorkerTool:
@@ -415,6 +468,24 @@ public sealed class WorkableMcpToolRouter(IWorkSystemRegistry registry)
         =>
         [
             new(
+                StartWorkflowTool,
+                "Start a registered workflow by name. By default this returns the accepted run id and current snapshot immediately, and can optionally wait for workflow completion.",
+                WorkflowStartSchema,
+                null,
+                WorkableMcpServerToolKind.Action),
+            new(
+                StopWorkflowTool,
+                "Gracefully stop a running workflow after already-dispatched child work settles. No new child work is dispatched after the stop request is accepted.",
+                WorkflowActionSchema,
+                null,
+                WorkableMcpServerToolKind.Action),
+            new(
+                CancelWorkflowTool,
+                "Immediately cancel a running workflow and request cancellation for any outstanding child workers that can still be canceled.",
+                WorkflowActionSchema,
+                null,
+                WorkableMcpServerToolKind.Action),
+            new(
                 StartWorkerTool,
                 "Start or retry a worker that is queued, paused, or failed. Requires the current worker id and revision from get/query worker to avoid conflicting with another caller.",
                 WorkerActionSchema,
@@ -595,6 +666,11 @@ public sealed class WorkableMcpToolRouter(IWorkSystemRegistry registry)
             system.Name);
     }
 
+    private static WorkflowRuntime ResolveWorkflowRuntime(IWorkSystem system)
+        => system is InMemoryWorkSystem inMemory
+            ? inMemory.WorkflowRuntime
+            : throw new InvalidOperationException("Workflow MCP tools require the built-in Workable system implementation.");
+
     private static WorkableMcpToolResult ToToolResult(object value, bool isError = false)
     {
         var json = JsonSerializer.Serialize(value, JsonOptions);
@@ -602,6 +678,9 @@ public sealed class WorkableMcpToolRouter(IWorkSystemRegistry registry)
     }
 
     private static WorkableMcpToolResult ToToolResult(WorkActionOutcome outcome)
+        => ToToolResult((object)outcome, isError: !outcome.IsAccepted);
+
+    private static WorkableMcpToolResult ToToolResult(WorkflowActionOutcome outcome)
         => ToToolResult((object)outcome, isError: !outcome.IsAccepted);
 
     private static WorkableMcpToolResult ToToolResult(WorkDefinitionReconfigurationOutcome outcome)
@@ -790,9 +869,20 @@ public sealed class WorkableMcpToolRouter(IWorkSystemRegistry registry)
             : throw new ArgumentException($"Required MCP argument '{propertyName}' is missing or invalid.");
 
     private static bool? ReadBool(JsonElement? arguments, string propertyName)
-        => TryGetProperty(arguments, propertyName, out var property) && property.ValueKind is JsonValueKind.True or JsonValueKind.False
-            ? property.GetBoolean()
-            : null;
+    {
+        if (!TryGetProperty(arguments, propertyName, out var property))
+        {
+            return null;
+        }
+
+        return property.ValueKind switch
+        {
+            JsonValueKind.True => true,
+            JsonValueKind.False => false,
+            JsonValueKind.String when bool.TryParse(property.GetString(), out var value) => value,
+            _ => null,
+        };
+    }
 
     private static T? ReadObject<T>(JsonElement? arguments, string propertyName)
         => TryGetProperty(arguments, propertyName, out var property) && property.ValueKind == JsonValueKind.Object
@@ -1060,6 +1150,46 @@ public sealed class WorkableMcpToolRouter(IWorkSystemRegistry registry)
             }
           },
           "required": ["workerId", "revision"],
+          "additionalProperties": false
+        }
+        """;
+
+    private const string WorkflowStartSchema = """
+        {
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string",
+              "description": "Workflow definition name."
+            },
+            "waitForCompletion": {
+              "type": "boolean",
+              "description": "When true, waits for the workflow run to complete before returning."
+            },
+            "description": {
+              "type": "string",
+              "description": "Optional request context stored on the workflow origin so callers can attach human-readable intent or audit notes."
+            }
+          },
+          "required": ["name"],
+          "additionalProperties": false
+        }
+        """;
+
+    private const string WorkflowActionSchema = """
+        {
+          "type": "object",
+          "properties": {
+            "runId": {
+              "type": "string",
+              "description": "Workflow run id returned from workable_start_workflow."
+            },
+            "description": {
+              "type": "string",
+              "description": "Optional request context stored on the workflow action origin so callers can attach human-readable intent or audit notes."
+            }
+          },
+          "required": ["runId"],
           "additionalProperties": false
         }
         """;

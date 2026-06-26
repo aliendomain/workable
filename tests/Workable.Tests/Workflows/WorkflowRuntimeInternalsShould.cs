@@ -280,7 +280,10 @@ public sealed class WorkflowRuntimeInternalsShould
         var run = WorkflowRunState.Create(workflow, WorkRequestContext.Create(WorkInvocationChannel.InProcess));
         var runExecution = typeof(WorkflowRuntime).GetMethod(
             "RunExecution",
-            BindingFlags.Instance | BindingFlags.NonPublic)
+            BindingFlags.Instance | BindingFlags.NonPublic,
+            binder: null,
+            types: [typeof(WorkflowRunState), typeof(RegisteredWorkflow), typeof(CancellationToken)],
+            modifiers: null)
             ?? throw new InvalidOperationException("Expected RunExecution method.");
 
         var task = Assert.IsType<Task<WorkflowRunCompletion>>(
@@ -308,7 +311,10 @@ public sealed class WorkflowRuntimeInternalsShould
         var run = WorkflowRunState.Create(workflow, WorkRequestContext.Create(WorkInvocationChannel.InProcess));
         var runExecution = typeof(WorkflowRuntime).GetMethod(
             "RunExecution",
-            BindingFlags.Instance | BindingFlags.NonPublic)
+            BindingFlags.Instance | BindingFlags.NonPublic,
+            binder: null,
+            types: [typeof(WorkflowRunState), typeof(RegisteredWorkflow), typeof(CancellationToken)],
+            modifiers: null)
             ?? throw new InvalidOperationException("Expected RunExecution method.");
         using var cancellation = new CancellationTokenSource();
         cancellation.Cancel();

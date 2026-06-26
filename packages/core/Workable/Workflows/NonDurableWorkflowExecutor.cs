@@ -3,12 +3,22 @@ namespace Workable;
 internal sealed class NonDurableWorkflowExecutor(
     Func<WorkRequestContext, IWorkSystemSession> createSession)
 {
-    public async Task<WorkflowRunCompletion> Execute(
+    public Task<WorkflowRunCompletion> Execute(
         WorkflowRunState run,
         RegisteredWorkflow workflow,
         CancellationToken cancellationToken)
+        => this.Execute(run, workflow, null, null, cancellationToken);
+
+    public async Task<WorkflowRunCompletion> Execute(
+        WorkflowRunState run,
+        RegisteredWorkflow workflow,
+        Func<WorkflowStepDefinition, bool>? shouldStopBeforeStep = null,
+        Func<bool>? shouldStopAfterOutstanding = null,
+        CancellationToken cancellationToken = default)
     {
         var outstanding = new List<(string StepName, IWorkerHandle Handle)>();
+        shouldStopBeforeStep ??= static _ => false;
+        shouldStopAfterOutstanding ??= static () => false;
 
         try
         {
@@ -18,6 +28,10 @@ internal sealed class NonDurableWorkflowExecutor(
             foreach (var step in workflow.Steps)
             {
                 cancellationToken.ThrowIfCancellationRequested();
+                if (shouldStopBeforeStep(step))
+                {
+                    break;
+                }
 
                 switch (step)
                 {
@@ -96,7 +110,9 @@ internal sealed class NonDurableWorkflowExecutor(
                 }
             }
 
-            return run.Complete();
+            return shouldStopAfterOutstanding()
+                ? run.Cancel()
+                : run.Complete();
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {

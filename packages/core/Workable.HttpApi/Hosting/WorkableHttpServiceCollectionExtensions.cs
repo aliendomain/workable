@@ -37,6 +37,7 @@ public static class WorkableHttpServiceCollectionExtensions
         services.TryAddSingleton<WorkableHttpCatalogAdapter>();
         services.TryAddSingleton<WorkableHttpQueueAdapter>();
         services.TryAddSingleton<WorkableHttpQueryAdapter>();
+        services.TryAddSingleton<WorkableHttpWorkflowAdapter>();
         services.TryAddSingleton<WorkableHttpWorkerAdapter>();
         return services;
     }
