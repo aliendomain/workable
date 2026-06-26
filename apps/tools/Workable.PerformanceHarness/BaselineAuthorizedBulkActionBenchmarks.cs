@@ -8,7 +8,7 @@ namespace Workable.PerformanceHarness;
 /// <summary>
 /// Benchmarks authorized bulk worker actions against queued workers.
 /// </summary>
-public sealed class BaselineAuthorizedBulkActionBenchmarks
+public class BaselineAuthorizedBulkActionBenchmarks
 {
     private WorkableBenchmarkSystem fixture = null!;
 

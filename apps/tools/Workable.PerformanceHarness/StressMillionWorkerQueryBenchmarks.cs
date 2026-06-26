@@ -8,7 +8,7 @@ namespace Workable.PerformanceHarness;
 /// <summary>
 /// Benchmarks worker-query behavior against very large datasets.
 /// </summary>
-public sealed class StressMillionWorkerQueryBenchmarks
+public class StressMillionWorkerQueryBenchmarks
 {
     private WorkableBenchmarkSystem fixture = null!;
     private WorkerCriteria broadFirstPage = null!;
