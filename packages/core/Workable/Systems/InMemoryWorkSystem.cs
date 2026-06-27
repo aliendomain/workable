@@ -142,6 +142,8 @@ internal sealed class InMemoryWorkSystem :
 
     internal WorkflowRuntime WorkflowRuntime => this.workflowRuntime;
 
+    internal WorkerOperations WorkerOperations => this.workers;
+
     long IWorkSystemReadModelClock.AppliedSequence => this.readModel.AppliedSequence;
 
     public IWorkCatalog Catalog

@@ -195,3 +195,50 @@ Accepted stop and cancel requests on durable workflows are stored on the persist
 If the persisted workflow definition fingerprint does not match the currently registered workflow definition, Workable marks the recovered run failed and deletes its persisted run snapshot instead of resuming it.
 
 Non-durable workflows cannot dispatch child work whose effective queue configuration enables durable queueing.
+
+## Workflow Run Status Surfaces
+
+Workable exposes operator-oriented workflow run views that summarize the live state of a workflow and the child workers it launched.
+
+The workflow run list view includes:
+
+- run id and workflow definition name
+- workflow run status
+- start origin and timestamps
+- current top-level step
+- outstanding child-worker summary by worker state
+
+The workflow run detail view includes:
+
+- the workflow run summary fields
+- the top-level workflow step graph
+- nested parallel child step nodes
+- child-worker summaries and compact child-worker samples per node
+
+Parallel child step nodes are reconstructed from the workflow definition and the child workers' `workflow-step` identifiers. That keeps the detail view aligned with the authored workflow shape while still using the authoritative child worker state at read time.
+
+`currentStepName` and `currentStepStatus` identify the first active top-level workflow node in registration order. A parallel node can remain active while a later join node is also waiting on the same child workers.
+
+### HTTP
+
+The HTTP API exposes workflow run status with:
+
+- `GET /workable/workflow-runs`
+- `GET /workable/workflow-runs/{runId}`
+
+`GET /workable/workflow-runs` accepts:
+
+- `includeFinal`
+- `definitionName`
+- `childSampleSize`
+
+`GET /workable/workflow-runs/{runId}` accepts:
+
+- `childSampleSize`
+
+### MCP
+
+The MCP adapter exposes matching workflow run queries with:
+
+- `workable_query_workflow_runs`
+- `workable_get_workflow_run`

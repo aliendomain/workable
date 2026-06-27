@@ -651,6 +651,126 @@ WHERE WorkerId = '{remainingWorkerId.Value:D}';
     }
 
     [Fact]
+    public async Task WorkflowRunViewShowsRecoveredSqlDurableWorkflowState()
+    {
+        if (this.SkipIfUnavailable())
+        {
+            return;
+        }
+
+        const string workflowName = "workflow.durable.parallel.status-recover";
+        await using var firstProvider = new ServiceCollection()
+            .AddWorkableSqlServerDurableQueue(this.ConnectionString, SchemaName)
+            .AddWorkableSystem("workflow-tests", builder =>
+            {
+                builder.RequireAuthorization(false);
+                builder.AddWork(
+                    WorkDefinition.Create("sample.alpha"),
+                    (_, _, _) => Task.FromResult(WorkExecutionResult.Success()),
+                    configuration => configuration.QueueDurably(fallbackPollingInterval: TimeSpan.FromSeconds(1)));
+                builder.AddWork(
+                    WorkDefinition.Create("sample.beta"),
+                    async (_, _, cancellationToken) =>
+                    {
+                        await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+                        return WorkExecutionResult.Success();
+                    },
+                    configuration => configuration.QueueDurably(fallbackPollingInterval: TimeSpan.FromSeconds(1)));
+                builder.AddWorkflow(
+                    WorkflowDefinition.Create(
+                        workflowName,
+                        coordination: WorkflowCoordinationConfiguration.Durable),
+                    workflow => workflow
+                        .RunParallel("dispatch", parallel => parallel
+                            .DispatchWork("alpha", "sample.alpha")
+                            .DispatchWork("beta", "sample.beta"))
+                        .Join("join"));
+            })
+            .BuildServiceProvider();
+        var firstRegistry = firstProvider.GetRequiredService<IWorkSystemRegistry>();
+        Assert.True(firstRegistry.TryGet("workflow-tests", out var firstNamedSystem));
+        var firstSystem = firstNamedSystem!;
+        await firstSystem.Start();
+
+        var handle = StartWorkflow(firstSystem, workflowName);
+        var runId = RequiredWorkflowRunId(handle);
+        await TestEventually.Until(
+            () => WorkflowStepWorkerIds(firstSystem, runId, "join").Count == 1,
+            "Expected the durable join step to retain only the unfinished child before shutdown.",
+            timeout: TimeSpan.FromSeconds(15));
+
+        var remainingWorkerId = WorkflowStepWorkerIds(firstSystem, runId, "join").Single();
+        await StopWithTimeout(firstSystem);
+        await WaitForWorkflowCompletion(handle);
+
+        await using (var expired = await this.OpenConnection())
+        {
+            await Execute(expired, $"""
+UPDATE workable.WorkEntries
+SET LeaseExpiresAt = DATEADD(second, -1, SYSDATETIMEOFFSET())
+WHERE WorkerId = '{remainingWorkerId.Value:D}';
+""");
+        }
+
+        var resumedBetaStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var resumedBetaRelease = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        await using var secondProvider = new ServiceCollection()
+            .AddWorkableSqlServerDurableQueue(this.ConnectionString, SchemaName)
+            .AddWorkableSystem("workflow-tests", builder =>
+            {
+                builder.RequireAuthorization(false);
+                builder.AddWork(
+                    WorkDefinition.Create("sample.alpha"),
+                    (_, _, _) => Task.FromResult(WorkExecutionResult.Success()),
+                    configuration => configuration.QueueDurably(fallbackPollingInterval: TimeSpan.FromSeconds(1)));
+                builder.AddWork(
+                    WorkDefinition.Create("sample.beta"),
+                    async (_, _, cancellationToken) =>
+                    {
+                        resumedBetaStarted.TrySetResult();
+                        await resumedBetaRelease.Task.WaitAsync(cancellationToken);
+                        return WorkExecutionResult.Success();
+                    },
+                    configuration => configuration.QueueDurably(fallbackPollingInterval: TimeSpan.FromSeconds(1)));
+                builder.AddWorkflow(
+                    WorkflowDefinition.Create(
+                        workflowName,
+                        coordination: WorkflowCoordinationConfiguration.Durable),
+                    workflow => workflow
+                        .RunParallel("dispatch", parallel => parallel
+                            .DispatchWork("alpha", "sample.alpha")
+                            .DispatchWork("beta", "sample.beta"))
+                        .Join("join"));
+            })
+            .BuildServiceProvider();
+        var secondRegistry = secondProvider.GetRequiredService<IWorkSystemRegistry>();
+        Assert.True(secondRegistry.TryGet("workflow-tests", out var secondNamedSystem));
+        var secondSystem = secondNamedSystem!;
+        await secondSystem.Start();
+        await resumedBetaStarted.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+        var detail = await new WorkflowRunViewAdapter().Run(
+            secondSystem,
+            WorkRequestContext.Create(WorkInvocationChannel.InProcess),
+            runId);
+
+        resumedBetaRelease.TrySetResult();
+        await TestEventually.Until(
+            () => WorkflowStatus(secondSystem, runId) == WorkflowRunStatus.Completed.ToString(),
+            "Expected the recovered durable workflow to complete after inspection.",
+            timeout: TimeSpan.FromSeconds(15));
+
+        await StopWithTimeout(secondSystem);
+
+        Assert.NotNull(detail);
+        Assert.Equal("dispatch", detail!.CurrentStepName);
+        Assert.Equal(1, detail.OutstandingChildren.Active);
+        Assert.Equal(1, detail.OutstandingChildren.Unavailable);
+        Assert.Equal(2, Assert.Single(detail.Steps, step => step.Name == "dispatch").Children.Total);
+        Assert.Equal(1, Assert.Single(detail.Steps, step => step.Name == "join").Children.Total);
+    }
+
+    [Fact]
     public async Task WorkflowRunsRoundTripThroughTheSqlPersistenceStore()
     {
         if (this.SkipIfUnavailable())

@@ -2419,6 +2419,229 @@ public sealed class WorkableHttpApiTests
     }
 
     [Fact]
+    public async Task MappedHttpWorkflowQueryRoutesReturnRunningWorkflowSummariesAndDetail()
+    {
+        var emailStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var invoiceStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var host = await CreateHttpHost(builder =>
+        {
+            builder.AddAuthorizedTransportWork(
+                WorkDefinition.Create("http.workflow.observe.email"),
+                async (_, _, cancellationToken) =>
+                {
+                    emailStarted.TrySetResult();
+                    await release.Task.WaitAsync(cancellationToken);
+                    return WorkExecutionResult.Success();
+                });
+            builder.AddAuthorizedTransportWork(
+                WorkDefinition.Create("http.workflow.observe.invoice"),
+                async (_, _, cancellationToken) =>
+                {
+                    invoiceStarted.TrySetResult();
+                    await release.Task.WaitAsync(cancellationToken);
+                    return WorkExecutionResult.Success();
+                });
+            builder.AddWorkflow(
+                WorkflowDefinition.Create("http.workflow.observe"),
+                workflow => workflow
+                    .RunParallel("notify", parallel => parallel
+                        .DispatchWork("email", "http.workflow.observe.email")
+                        .DispatchWork("invoice", "http.workflow.observe.invoice"))
+                    .Join("settle"),
+                authorize => authorize
+                    .AllowReadToGroups(TransportAuthorizationTestSupport.ReadGroups.ToArray())
+                    .AllowOperateToGroups(TransportAuthorizationTestSupport.OperateGroups.ToArray()));
+        });
+        var client = host.GetTestClient();
+
+        var startResponse = await client.PostAsJsonAsync(
+            "/workable/workflows/http.workflow.observe",
+            new
+            {
+                completion = "returnAfterAccepted",
+            });
+        startResponse.EnsureSuccessStatusCode();
+        var startJson = JsonNode.Parse(await startResponse.Content.ReadAsStringAsync())
+            ?? throw new InvalidOperationException("Expected JSON response.");
+        var runId = Guid.Parse(startJson["runId"]?.GetValue<string>()
+            ?? throw new InvalidOperationException("Expected workflow run id."));
+        await Task.WhenAll(emailStarted.Task, invoiceStarted.Task).WaitAsync(TimeSpan.FromSeconds(5));
+
+        var listResponse = await client.GetAsync("/workable/workflow-runs");
+        listResponse.EnsureSuccessStatusCode();
+        var listJson = JsonNode.Parse(await listResponse.Content.ReadAsStringAsync())?.AsObject()
+            ?? throw new InvalidOperationException("Expected workflow list response.");
+
+        var detailResponse = await client.GetAsync($"/workable/workflow-runs/{runId:D}");
+        detailResponse.EnsureSuccessStatusCode();
+        var detailJson = JsonNode.Parse(await detailResponse.Content.ReadAsStringAsync())?.AsObject()
+            ?? throw new InvalidOperationException("Expected workflow detail response.");
+
+        release.TrySetResult();
+
+        var runs = listJson["runs"]?.AsArray()
+            ?? throw new InvalidOperationException("Expected workflow runs array.");
+        var run = Assert.Single(runs, item => string.Equals(item?["runId"]?.GetValue<string>(), runId.ToString("D"), StringComparison.OrdinalIgnoreCase))!;
+        Assert.Equal("http.workflow.observe", run["definitionName"]?.GetValue<string>());
+        Assert.Equal("notify", run["currentStepName"]?.GetValue<string>());
+        Assert.Equal("WaitingOnChildren", run["currentStepStatus"]?.GetValue<string>());
+        Assert.Equal(2, run["outstandingChildren"]?["total"]?.GetValue<int>());
+        Assert.Equal(2, run["outstandingChildren"]?["byState"]?["Running"]?.GetValue<int>());
+
+        Assert.Equal("http.workflow.observe", detailJson["definitionName"]?.GetValue<string>());
+        Assert.Equal("notify", detailJson["currentStepName"]?.GetValue<string>());
+        Assert.Equal(2, detailJson["outstandingChildren"]?["total"]?.GetValue<int>());
+        var steps = detailJson["steps"]?.AsArray()
+            ?? throw new InvalidOperationException("Expected workflow steps.");
+        var notify = steps.Single(step => string.Equals(step?["name"]?.GetValue<string>(), "notify", StringComparison.Ordinal));
+        Assert.Equal("WaitingOnChildren", notify?["status"]?.GetValue<string>());
+        Assert.Equal(2, notify?["children"]?["total"]?.GetValue<int>());
+        var notifyChildren = notify?["steps"]?.AsArray()
+            .Select(step => step?["name"]?.GetValue<string>() ?? string.Empty)
+            .ToArray()
+            ?? throw new InvalidOperationException("Expected notify child steps.");
+        Assert.Equal(["email", "invoice"], notifyChildren);
+    }
+
+    [Fact]
+    public async Task MappedHttpWorkflowQueryRoutesSupportFiltersAndChildSampleSize()
+    {
+        var emailStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var invoiceStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var host = await CreateHttpHost(builder =>
+        {
+            builder.AddAuthorizedTransportWork(
+                WorkDefinition.Create("http.workflow.filter.email"),
+                async (_, _, cancellationToken) =>
+                {
+                    emailStarted.TrySetResult();
+                    await release.Task.WaitAsync(cancellationToken);
+                    return WorkExecutionResult.Success();
+                });
+            builder.AddAuthorizedTransportWork(
+                WorkDefinition.Create("http.workflow.filter.invoice"),
+                async (_, _, cancellationToken) =>
+                {
+                    invoiceStarted.TrySetResult();
+                    await release.Task.WaitAsync(cancellationToken);
+                    return WorkExecutionResult.Success();
+                });
+            builder.AddAuthorizedTransportWork(
+                WorkDefinition.Create("http.workflow.filter.done.child"),
+                SuccessfulWork);
+            builder.AddWorkflow(
+                WorkflowDefinition.Create("http.workflow.filter.running"),
+                workflow => workflow
+                    .RunParallel("notify", parallel => parallel
+                        .DispatchWork("email", "http.workflow.filter.email")
+                        .DispatchWork("invoice", "http.workflow.filter.invoice"))
+                    .Join("settle"),
+                authorize => authorize
+                    .AllowReadToGroups(TransportAuthorizationTestSupport.ReadGroups.ToArray())
+                    .AllowOperateToGroups(TransportAuthorizationTestSupport.OperateGroups.ToArray()));
+            builder.AddWorkflow(
+                WorkflowDefinition.Create("http.workflow.filter.completed"),
+                workflow => workflow.DispatchWork("dispatch", "http.workflow.filter.done.child"),
+                authorize => authorize
+                    .AllowReadToGroups(TransportAuthorizationTestSupport.ReadGroups.ToArray())
+                    .AllowOperateToGroups(TransportAuthorizationTestSupport.OperateGroups.ToArray()));
+        });
+        var client = host.GetTestClient();
+
+        var runningStart = await client.PostAsJsonAsync("/workable/workflows/http.workflow.filter.running", new { completion = "returnAfterAccepted" });
+        runningStart.EnsureSuccessStatusCode();
+        var runningJson = JsonNode.Parse(await runningStart.Content.ReadAsStringAsync()) ?? throw new InvalidOperationException("Expected JSON.");
+        var runId = Guid.Parse(runningJson["runId"]?.GetValue<string>() ?? throw new InvalidOperationException("Expected workflow run id."));
+        var completedStart = await client.PostAsJsonAsync("/workable/workflows/http.workflow.filter.completed", new { completion = "waitForCompletion" });
+        completedStart.EnsureSuccessStatusCode();
+        await Task.WhenAll(emailStarted.Task, invoiceStarted.Task).WaitAsync(TimeSpan.FromSeconds(5));
+
+        var activeOnly = await client.GetAsync("/workable/workflow-runs?definitionName=http.workflow.filter.running");
+        activeOnly.EnsureSuccessStatusCode();
+        var activeOnlyJson = JsonNode.Parse(await activeOnly.Content.ReadAsStringAsync())?.AsObject()
+            ?? throw new InvalidOperationException("Expected workflow list response.");
+        Assert.Single(activeOnlyJson["runs"]?.AsArray() ?? throw new InvalidOperationException("Expected workflow runs."));
+
+        var includeFinal = await client.GetAsync("/workable/workflow-runs?includeFinal=true");
+        includeFinal.EnsureSuccessStatusCode();
+        var includeFinalJson = JsonNode.Parse(await includeFinal.Content.ReadAsStringAsync())?.AsObject()
+            ?? throw new InvalidOperationException("Expected workflow list response.");
+        Assert.Equal(2, includeFinalJson["runs"]?.AsArray()?.Count);
+
+        var detailResponse = await client.GetAsync($"/workable/workflow-runs/{runId:D}?childSampleSize=1");
+        detailResponse.EnsureSuccessStatusCode();
+        var detailJson = JsonNode.Parse(await detailResponse.Content.ReadAsStringAsync())?.AsObject()
+            ?? throw new InvalidOperationException("Expected workflow detail response.");
+
+        release.TrySetResult();
+
+        var notify = detailJson["steps"]?.AsArray()
+            ?.Single(step => string.Equals(step?["name"]?.GetValue<string>(), "notify", StringComparison.Ordinal))
+            ?? throw new InvalidOperationException("Expected notify step.");
+        Assert.Equal(1, notify["childSample"]?.AsArray()?.Count);
+        Assert.Equal(1, notify["additionalChildCount"]?.GetValue<int>());
+    }
+
+    [Fact]
+    public async Task MappedHttpWorkflowQueryDetailRouteReturnsNotFoundForUnknownRun()
+    {
+        using var host = await CreateHttpHost();
+        var client = host.GetTestClient();
+
+        var response = await client.GetAsync($"/workable/workflow-runs/{Guid.NewGuid():D}");
+
+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task MappedHttpWorkflowQueryRoutesHideUnreadableWorkflowRuns()
+    {
+        using var host = await CreateHttpHost(
+            builder =>
+            {
+                builder.ConfigureAuthorization(authorization => authorization
+                    .AllowBuiltInHttpApiToGroups(TransportAuthorizationTestSupport.BuiltInHttpApiSurfaceGroups.ToArray()));
+                builder.AddAuthorizedTransportWork(WorkDefinition.Create("http.workflow.read.secured.child"), SuccessfulWork);
+                builder.AddWorkflow(
+                    WorkflowDefinition.Create("http.workflow.read.secured"),
+                    workflow => workflow.DispatchWork("dispatch", "http.workflow.read.secured.child"),
+                    authorize => authorize
+                        .AllowReadToGroups("workflow.read")
+                        .AllowOperateToGroups("workflow.ops"));
+            },
+            groups: TransportAuthorizationTestSupport.BuiltInHttpApiSurfaceGroups);
+        var client = host.GetTestClient();
+        var system = Assert.IsType<InMemoryWorkSystem>(host.Services.GetRequiredService<IWorkSystemRegistry>().Default);
+
+        var actor = new WorkActor("workflow-seed-user", "Workflow Seed User");
+        var handle = system.WorkflowRuntime.Start(
+            "http.workflow.read.secured",
+            WorkRequestContext.Create(
+                WorkInvocationChannel.InProcess,
+                actor,
+                isAuthenticated: true) with
+            {
+                Authorization = WorkAuthorizationSnapshot.Create(
+                    actor,
+                    ["workflow.read", "workflow.ops"],
+                    readableDefinitionIds: null),
+            });
+        await handle.WaitForCompletion();
+        var runId = handle.RunId?.Value ?? throw new InvalidOperationException("Expected workflow run id.");
+
+        var listResponse = await client.GetAsync("/workable/workflow-runs?includeFinal=true");
+        listResponse.EnsureSuccessStatusCode();
+        var listJson = JsonNode.Parse(await listResponse.Content.ReadAsStringAsync())?.AsObject()
+            ?? throw new InvalidOperationException("Expected workflow list response.");
+        var detailResponse = await client.GetAsync($"/workable/workflow-runs/{runId:D}");
+
+        Assert.Empty(listJson["runs"]?.AsArray() ?? throw new InvalidOperationException("Expected workflow runs."));
+        Assert.Equal(HttpStatusCode.NotFound, detailResponse.StatusCode);
+    }
+
+    [Fact]
     public async Task MappedHttpWorkflowStopRouteGracefullyStopsBeforeLaterSteps()
     {
         var slowStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);

@@ -1424,6 +1424,263 @@ public sealed class WorkableMcpTests
     }
 
     [Fact]
+    public async Task McpServerCanQueryWorkflowRunsAndGetWorkflowRunDetail()
+    {
+        var emailStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var invoiceStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        await using var provider = new ServiceCollection()
+            .AddTransportTestAuthorization()
+            .AddWorkableSystem(builder =>
+            {
+                builder.RequireAuthorization();
+                builder.AddAuthorizedTransportWork(
+                    WorkDefinition.Create("mcp.workflow.observe.email", configuration: AllowMcp()),
+                    async (_, _, cancellationToken) =>
+                    {
+                        emailStarted.TrySetResult();
+                        await release.Task.WaitAsync(cancellationToken);
+                        return WorkExecutionResult.Success();
+                    });
+                builder.AddAuthorizedTransportWork(
+                    WorkDefinition.Create("mcp.workflow.observe.invoice", configuration: AllowMcp()),
+                    async (_, _, cancellationToken) =>
+                    {
+                        invoiceStarted.TrySetResult();
+                        await release.Task.WaitAsync(cancellationToken);
+                        return WorkExecutionResult.Success();
+                    });
+                builder.AddWorkflow(
+                    WorkflowDefinition.Create("mcp.workflow.observe"),
+                    workflow => workflow
+                        .RunParallel("notify", parallel => parallel
+                            .DispatchWork("email", "mcp.workflow.observe.email")
+                            .DispatchWork("invoice", "mcp.workflow.observe.invoice"))
+                        .Join("settle"),
+                    authorize: authorize => authorize
+                        .AllowReadToGroups(TransportAuthorizationTestSupport.ReadGroups.ToArray())
+                        .AllowOperateToGroups(TransportAuthorizationTestSupport.OperateGroups.ToArray()));
+            })
+            .AddWorkableMcpServer()
+            .BuildServiceProvider();
+        var system = provider.GetRequiredService<IWorkSystemRegistry>().Default;
+        var router = provider.GetRequiredService<WorkableMcpToolRouter>();
+        await system.Start();
+
+        using var startArguments = JsonDocument.Parse("""{"name":"mcp.workflow.observe"}""");
+        var started = await router.CallTool(
+            "workable_start_workflow",
+            startArguments.RootElement,
+            options: null,
+            systemName: null,
+            requestContext: CreateMcpRequestContext("Start observable MCP workflow."));
+        var startedJson = JsonNode.Parse(started.Json)?.AsObject()
+            ?? throw new InvalidOperationException("Expected workflow start response.");
+        var runId = startedJson["runId"]?.GetValue<string>()
+            ?? throw new InvalidOperationException("Expected workflow run id.");
+        await Task.WhenAll(emailStarted.Task, invoiceStarted.Task).WaitAsync(TimeSpan.FromSeconds(5));
+
+        using var queryArguments = JsonDocument.Parse("""{"childSampleSize":3}""");
+        var queried = await router.CallTool(
+            "workable_query_workflow_runs",
+            queryArguments.RootElement,
+            options: null,
+            systemName: null,
+            requestContext: CreateMcpRequestContext("Query workflow runs."));
+        var queriedJson = JsonNode.Parse(queried.Json)?.AsObject()
+            ?? throw new InvalidOperationException("Expected workflow query response.");
+
+        using var detailArguments = JsonDocument.Parse($$"""{"runId":"{{runId}}","childSampleSize":3}""");
+        var detailed = await router.CallTool(
+            "workable_get_workflow_run",
+            detailArguments.RootElement,
+            options: null,
+            systemName: null,
+            requestContext: CreateMcpRequestContext("Get workflow run detail."));
+        var detailJson = JsonNode.Parse(detailed.Json)?.AsObject()
+            ?? throw new InvalidOperationException("Expected workflow detail response.");
+
+        release.TrySetResult();
+
+        Assert.False(started.IsError);
+        Assert.False(queried.IsError);
+        Assert.False(detailed.IsError);
+        var runs = queriedJson["runs"]?.AsArray()
+            ?? throw new InvalidOperationException("Expected workflow runs array.");
+        var run = Assert.Single(runs, item => string.Equals(item?["runId"]?.GetValue<string>(), runId, StringComparison.OrdinalIgnoreCase))!;
+        Assert.Equal("mcp.workflow.observe", run["definitionName"]?.GetValue<string>());
+        Assert.Equal("notify", run["currentStepName"]?.GetValue<string>());
+        Assert.Equal(2, run["outstandingChildren"]?["total"]?.GetValue<int>());
+
+        Assert.True(detailJson["found"]?.GetValue<bool>() ?? false);
+        Assert.Equal("mcp.workflow.observe", detailJson["run"]?["definitionName"]?.GetValue<string>());
+        var notify = detailJson["run"]?["steps"]?.AsArray()
+            ?.Single(step => string.Equals(step?["name"]?.GetValue<string>(), "notify", StringComparison.Ordinal));
+        var notifyChildren = notify?["steps"]?.AsArray()
+            .Select(step => step?["name"]?.GetValue<string>() ?? string.Empty)
+            .ToArray()
+            ?? throw new InvalidOperationException("Expected notify child steps.");
+        Assert.Equal(["email", "invoice"], notifyChildren);
+    }
+
+    [Fact]
+    public async Task McpServerWorkflowQueriesSupportFiltersAndNotFound()
+    {
+        var emailStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var invoiceStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        await using var provider = new ServiceCollection()
+            .AddTransportTestAuthorization()
+            .AddWorkableSystem(builder =>
+            {
+                builder.RequireAuthorization();
+                builder.AddAuthorizedTransportWork(
+                    WorkDefinition.Create("mcp.workflow.filter.email", configuration: AllowMcp()),
+                    async (_, _, cancellationToken) =>
+                    {
+                        emailStarted.TrySetResult();
+                        await release.Task.WaitAsync(cancellationToken);
+                        return WorkExecutionResult.Success();
+                    });
+                builder.AddAuthorizedTransportWork(
+                    WorkDefinition.Create("mcp.workflow.filter.invoice", configuration: AllowMcp()),
+                    async (_, _, cancellationToken) =>
+                    {
+                        invoiceStarted.TrySetResult();
+                        await release.Task.WaitAsync(cancellationToken);
+                        return WorkExecutionResult.Success();
+                    });
+                builder.AddAuthorizedTransportWork(
+                    WorkDefinition.Create("mcp.workflow.filter.done.child", configuration: AllowMcp()),
+                    SuccessfulWork);
+                builder.AddWorkflow(
+                    WorkflowDefinition.Create("mcp.workflow.filter.running"),
+                    workflow => workflow
+                        .RunParallel("notify", parallel => parallel
+                            .DispatchWork("email", "mcp.workflow.filter.email")
+                            .DispatchWork("invoice", "mcp.workflow.filter.invoice"))
+                        .Join("settle"),
+                    authorize: authorize => authorize
+                        .AllowReadToGroups(TransportAuthorizationTestSupport.ReadGroups.ToArray())
+                        .AllowOperateToGroups(TransportAuthorizationTestSupport.OperateGroups.ToArray()));
+                builder.AddWorkflow(
+                    WorkflowDefinition.Create("mcp.workflow.filter.completed"),
+                    workflow => workflow.DispatchWork("dispatch", "mcp.workflow.filter.done.child"),
+                    authorize: authorize => authorize
+                        .AllowReadToGroups(TransportAuthorizationTestSupport.ReadGroups.ToArray())
+                        .AllowOperateToGroups(TransportAuthorizationTestSupport.OperateGroups.ToArray()));
+            })
+            .AddWorkableMcpServer()
+            .BuildServiceProvider();
+        var system = provider.GetRequiredService<IWorkSystemRegistry>().Default;
+        var router = provider.GetRequiredService<WorkableMcpToolRouter>();
+        await system.Start();
+
+        using var runningStartArguments = JsonDocument.Parse("""{"name":"mcp.workflow.filter.running"}""");
+        var runningStarted = await router.CallTool("workable_start_workflow", runningStartArguments.RootElement, null, null, CreateMcpRequestContext("Start running workflow."));
+        var runId = JsonNode.Parse(runningStarted.Json)?["runId"]?.GetValue<string>()
+            ?? throw new InvalidOperationException("Expected workflow run id.");
+        using var completedStartArguments = JsonDocument.Parse("""{"name":"mcp.workflow.filter.completed","waitForCompletion":true}""");
+        await router.CallTool("workable_start_workflow", completedStartArguments.RootElement, null, null, CreateMcpRequestContext("Start completed workflow."));
+        await Task.WhenAll(emailStarted.Task, invoiceStarted.Task).WaitAsync(TimeSpan.FromSeconds(5));
+
+        using var filteredArguments = JsonDocument.Parse("""{"definitionName":"mcp.workflow.filter.running"}""");
+        var filtered = await router.CallTool("workable_query_workflow_runs", filteredArguments.RootElement, null, null, CreateMcpRequestContext("Filter workflow runs."));
+        var filteredJson = JsonNode.Parse(filtered.Json)?.AsObject() ?? throw new InvalidOperationException("Expected workflow query response.");
+        Assert.Single(filteredJson["runs"]?.AsArray() ?? throw new InvalidOperationException("Expected workflow runs."));
+
+        using var detailArguments = JsonDocument.Parse($$"""{"runId":"{{runId}}","childSampleSize":1}""");
+        var detail = await router.CallTool("workable_get_workflow_run", detailArguments.RootElement, null, null, CreateMcpRequestContext("Get workflow detail."));
+        var detailJson = JsonNode.Parse(detail.Json)?.AsObject() ?? throw new InvalidOperationException("Expected workflow detail response.");
+        var notify = detailJson["run"]?["steps"]?.AsArray()
+            ?.Single(step => string.Equals(step?["name"]?.GetValue<string>(), "notify", StringComparison.Ordinal))
+            ?? throw new InvalidOperationException("Expected notify step.");
+        Assert.Equal(1, notify["childSample"]?.AsArray()?.Count);
+        Assert.Equal(1, notify["additionalChildCount"]?.GetValue<int>());
+
+        using var missingArguments = JsonDocument.Parse($$"""{"runId":"{{Guid.NewGuid():D}}"}""");
+        var missing = await router.CallTool("workable_get_workflow_run", missingArguments.RootElement, null, null, CreateMcpRequestContext("Get missing workflow detail."));
+        var missingJson = JsonNode.Parse(missing.Json)?.AsObject() ?? throw new InvalidOperationException("Expected workflow detail response.");
+
+        release.TrySetResult();
+
+        Assert.False(missing.IsError);
+        Assert.False(missingJson["found"]?.GetValue<bool>() ?? true);
+    }
+
+    [Fact]
+    public async Task McpServerWorkflowQueriesHideUnreadableWorkflowRuns()
+    {
+        await using var provider = new ServiceCollection()
+            .AddTransportTestAuthorization()
+            .AddWorkableSystem(builder =>
+            {
+                builder.RequireAuthorization();
+                builder.AddAuthorizedTransportWork(
+                    WorkDefinition.Create("mcp.workflow.read.secured.child", configuration: AllowMcp()),
+                    SuccessfulWork);
+                builder.AddWorkflow(
+                    WorkflowDefinition.Create("mcp.workflow.read.secured"),
+                    workflow => workflow.DispatchWork("dispatch", "mcp.workflow.read.secured.child"),
+                    authorize: authorize => authorize
+                        .AllowReadToGroups("workflow.read")
+                        .AllowOperateToGroups("workflow.ops"));
+            })
+            .AddWorkableMcpServer()
+            .BuildServiceProvider();
+        var system = provider.GetRequiredService<IWorkSystemRegistry>().Default;
+        var router = provider.GetRequiredService<WorkableMcpToolRouter>();
+        await system.Start();
+
+        using var startArguments = JsonDocument.Parse("""{"name":"mcp.workflow.read.secured","waitForCompletion":true}""");
+        var actor = TransportAuthorizationTestSupport.CreateActor(
+            id: "mcp-seed-user-1",
+            name: "MCP Seed User",
+            email: "mcp.seed@example.test");
+        var seedContext = WorkRequestContext.Create(
+            WorkInvocationChannel.Mcp,
+            actor,
+            "Seed readable workflow.") with
+        {
+            Authorization = WorkAuthorizationSnapshot.Create(
+                actor,
+                ["workflow.read", "workflow.ops"],
+                readableDefinitionIds: null),
+        };
+        var started = await router.CallTool(
+            "workable_start_workflow",
+            startArguments.RootElement,
+            options: null,
+            systemName: null,
+            requestContext: seedContext);
+        var runId = JsonNode.Parse(started.Json)?["runId"]?.GetValue<string>()
+            ?? throw new InvalidOperationException("Expected workflow run id.");
+
+        using var queryArguments = JsonDocument.Parse("""{}""");
+        var hiddenList = await router.CallTool(
+            "workable_query_workflow_runs",
+            queryArguments.RootElement,
+            options: null,
+            systemName: null,
+            requestContext: CreateMcpRequestContext("Query workflow runs without workflow read."));
+        var hiddenListJson = JsonNode.Parse(hiddenList.Json)?.AsObject()
+            ?? throw new InvalidOperationException("Expected workflow query response.");
+
+        using var detailArguments = JsonDocument.Parse($$"""{"runId":"{{runId}}"}""");
+        var hiddenDetail = await router.CallTool(
+            "workable_get_workflow_run",
+            detailArguments.RootElement,
+            options: null,
+            systemName: null,
+            requestContext: CreateMcpRequestContext("Get workflow detail without workflow read."));
+        var hiddenDetailJson = JsonNode.Parse(hiddenDetail.Json)?.AsObject()
+            ?? throw new InvalidOperationException("Expected workflow detail response.");
+
+        Assert.Empty(hiddenListJson["runs"]?.AsArray() ?? throw new InvalidOperationException("Expected workflow runs."));
+        Assert.False(hiddenDetailJson["found"]?.GetValue<bool>() ?? true);
+    }
+
+    [Fact]
     public async Task McpServerReturnsToolErrorForUnknownTool()
     {
         await using var provider = CreateProvider(WorkDefinition.Create("known", configuration: AllowMcp()), SuccessfulWork);

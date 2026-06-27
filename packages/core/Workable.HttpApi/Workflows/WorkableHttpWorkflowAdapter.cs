@@ -5,6 +5,8 @@ namespace Workable;
 /// </summary>
 internal sealed class WorkableHttpWorkflowAdapter
 {
+    private static readonly WorkflowRunViewAdapter Views = new();
+
     /// <summary>
     /// Starts one workflow using the HTTP request contract.
     /// </summary>
@@ -70,6 +72,29 @@ internal sealed class WorkableHttpWorkflowAdapter
             WorkableHttpWorkflowRun.From(outcome.Run),
             outcome.Messages);
     }
+
+    /// <summary>
+    /// Reads one workflow-run operator detail payload using the HTTP query contract.
+    /// </summary>
+    public Task<WorkflowRunDetailView?> Run(
+        IWorkSystem system,
+        WorkflowRunId runId,
+        WorkRequestContext requestContext,
+        int childSampleSize = 3,
+        CancellationToken cancellationToken = default)
+        => Views.Run(system, requestContext, runId, childSampleSize, cancellationToken);
+
+    /// <summary>
+    /// Reads visible workflow runs using the HTTP query contract.
+    /// </summary>
+    public Task<WorkflowRunListView> Runs(
+        IWorkSystem system,
+        WorkRequestContext requestContext,
+        bool includeFinal = false,
+        string? definitionName = null,
+        int childSampleSize = 3,
+        CancellationToken cancellationToken = default)
+        => Views.Runs(system, requestContext, includeFinal, definitionName, childSampleSize, cancellationToken);
 
     private static InMemoryWorkSystem ResolveRuntime(IWorkSystem system)
         => system as InMemoryWorkSystem

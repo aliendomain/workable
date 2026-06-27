@@ -772,6 +772,83 @@ public sealed class WorkflowRuntimeShould
     }
 
     [Fact]
+    public async Task WorkflowRunViewShowsRecoveredDurableParallelStateAfterRestart()
+    {
+        var store = new TestWorkflowPersistenceStore();
+        using var firstProvider = CreateDurableParallelWorkflowProvider(
+            store,
+            _ => Task.CompletedTask,
+            cancellationToken => Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken));
+        var firstSystem = GetNamedSystem(firstProvider, "workflow-tests");
+        await firstSystem.Start();
+
+        var handle = firstSystem.WorkflowRuntime.Start(
+            "workflow.durable.parallel",
+            WorkRequestContext.Create(WorkInvocationChannel.InProcess));
+
+        WorkflowRunSnapshot? interruptedRun = null;
+        await TestEventually.Until(
+            () =>
+            {
+                interruptedRun = firstSystem.WorkflowRuntime.Get(handle.RunId!.Value);
+                return interruptedRun is not null &&
+                    interruptedRun.Steps.Single(step => step.Name == "join").Status == WorkflowStepRunStatus.Running &&
+                    interruptedRun.Steps.Single(step => step.Name == "join").WorkerIds.Count == 1;
+            },
+            "Expected the durable workflow join step to retain only the unfinished child worker before shutdown.",
+            timeout: TimeSpan.FromSeconds(15));
+
+        var remainingWorkerId = interruptedRun!.Steps.Single(step => step.Name == "join").WorkerIds.Single();
+        await StopWithTimeout(firstSystem, TimeSpan.FromSeconds(2));
+        await handle.WaitForCompletion();
+        store.Requeue(remainingWorkerId);
+
+        var resumedBetaStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var resumedBetaRelease = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var secondProvider = CreateDurableParallelWorkflowProvider(
+            store,
+            _ => Task.CompletedTask,
+            async cancellationToken =>
+            {
+                resumedBetaStarted.TrySetResult();
+                await resumedBetaRelease.Task.WaitAsync(cancellationToken);
+            });
+        var secondSystem = GetNamedSystem(secondProvider, "workflow-tests");
+        await secondSystem.Start();
+        await resumedBetaStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        var detail = await new WorkflowRunViewAdapter().Run(
+            secondSystem,
+            WorkRequestContext.Create(WorkInvocationChannel.InProcess),
+            handle.RunId!.Value);
+
+        resumedBetaRelease.TrySetResult();
+        await TestEventually.Until(
+            () =>
+            {
+                var recovered = secondSystem.WorkflowRuntime.Get(handle.RunId!.Value);
+                return recovered is not null && recovered.Status == WorkflowRunStatus.Completed;
+            },
+            "Expected the recovered durable workflow to complete after inspection.",
+            timeout: TimeSpan.FromSeconds(15));
+
+        Assert.NotNull(detail);
+        Assert.Equal("workflow.durable.parallel", detail!.DefinitionName);
+        Assert.Equal("dispatch", detail.CurrentStepName);
+        Assert.Equal(1, detail.OutstandingChildren.Active);
+        Assert.Equal(1, detail.OutstandingChildren.Unavailable);
+
+        var dispatch = Assert.Single(detail.Steps, step => step.Name == "dispatch");
+        Assert.Equal(WorkflowOperatorNodeStatus.WaitingOnChildren, dispatch.Status);
+        Assert.Equal(2, dispatch.Children.Total);
+        Assert.Equal(1, dispatch.Children.Unavailable);
+
+        var join = Assert.Single(detail.Steps, step => step.Name == "join");
+        Assert.Equal(WorkflowOperatorNodeStatus.WaitingOnChildren, join.Status);
+        Assert.Equal(1, join.Children.Total);
+    }
+
+    [Fact]
     public async Task RecoverDurableWorkflowRunAndFailWhenAReplayedChildFailsAfterRestart()
     {
         var store = new TestWorkflowPersistenceStore();

@@ -206,6 +206,58 @@ internal sealed class WorkflowRuntime
             ? run.ToSnapshot()
             : null;
 
+    internal WorkflowRunState? GetVisibleState(
+        WorkflowRunId runId,
+        WorkRequestContext requestContext)
+    {
+        ArgumentNullException.ThrowIfNull(requestContext);
+
+        if (!this.runs.TryGetValue(runId, out var run))
+        {
+            return null;
+        }
+
+        if (!this.catalog.TryGet(run.DefinitionName, out var workflow) ||
+            !this.CanRead(workflow.Definition, requestContext))
+        {
+            return null;
+        }
+
+        return run;
+    }
+
+    internal WorkflowRunSnapshot? GetVisible(
+        WorkflowRunId runId,
+        WorkRequestContext requestContext)
+    {
+        return this.GetVisibleState(runId, requestContext)?.ToSnapshot();
+    }
+
+    internal IReadOnlyList<WorkflowRunState> ListVisibleStates(
+        WorkRequestContext requestContext,
+        bool includeFinal = false,
+        string? definitionName = null)
+    {
+        ArgumentNullException.ThrowIfNull(requestContext);
+
+        return [.. this.runs.Values
+            .Where(run =>
+                (includeFinal || run.ToSnapshot().Status == WorkflowRunStatus.Running) &&
+                (string.IsNullOrWhiteSpace(definitionName) || string.Equals(run.DefinitionName, definitionName, StringComparison.OrdinalIgnoreCase)) &&
+                this.catalog.TryGet(run.DefinitionName, out var workflow) &&
+                this.CanRead(workflow.Definition, requestContext))
+            .OrderByDescending(run => run.CreatedAt)];
+    }
+
+    internal IReadOnlyList<WorkflowRunSnapshot> ListVisible(
+        WorkRequestContext requestContext,
+        bool includeFinal = false,
+        string? definitionName = null)
+    {
+        return [.. this.ListVisibleStates(requestContext, includeFinal, definitionName)
+            .Select(run => run.ToSnapshot())];
+    }
+
     public async Task<WorkflowActionOutcome> Execute(
         WorkflowRunId runId,
         WorkflowAction action,
@@ -462,6 +514,21 @@ internal sealed class WorkflowRuntime
         var systemAuthorization = new WorkSystemAuthorizationEvaluator(this.systemAuthorizationConfiguration, groups);
         return systemAuthorization.HasOperateAllWorkAccess() ||
             definition.Authorization.CanOperate(groups, requestContext.IsAuthenticated && requestContext.Actor.IsKnown);
+    }
+
+    private bool CanRead(WorkflowDefinition definition, WorkRequestContext requestContext)
+    {
+        if (!this.requiresAuthorization)
+        {
+            return true;
+        }
+
+        var groups = requestContext.Authorization?.Groups
+            ?? this.groupProvider.GetGroups(requestContext.Actor, this.systemName)
+            ?? new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var systemAuthorization = new WorkSystemAuthorizationEvaluator(this.systemAuthorizationConfiguration, groups);
+        return systemAuthorization.HasReadAllWorkAccess() ||
+            definition.Authorization.CanRead(groups, requestContext.IsAuthenticated && requestContext.Actor.IsKnown);
     }
 
     private IReadOnlyList<WorkMessage> ValidateDispatchDurability(RegisteredWorkflow workflow)
