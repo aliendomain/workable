@@ -5,7 +5,8 @@ internal sealed class DurableWorkflowExecutor(
     Func<string, RegisteredWork?> getRegisteredWork,
     Func<WorkRequestContext, IWorkSystemSession> createSession,
     Func<WorkerId, IWorkerHandle> createWorkerHandle,
-    WorkflowPersistenceCoordinator persistence)
+    WorkflowPersistenceCoordinator persistence,
+    WorkflowEventPublisher? workflowEvents = null)
 {
     public Task<WorkflowRunCompletion> Execute(
         WorkflowRunState run,
@@ -23,6 +24,7 @@ internal sealed class DurableWorkflowExecutor(
         IWorkSystemSession? session = null;
         shouldStopBeforeStep ??= static _ => false;
         shouldStopAfterOutstanding ??= static () => false;
+        var publisher = workflowEvents ?? new WorkflowEventPublisher(default, null, new WorkEventStream());
         try
         {
             run.MarkRunning();
@@ -50,6 +52,7 @@ internal sealed class DurableWorkflowExecutor(
                             if (messages.Count > 0)
                             {
                                 run.FailStep(dispatch.Name, messages);
+                                publisher.StepUpdated(run.ToSnapshot(), dispatch.Name);
                                 return await this.DeleteFailedRun(run, messages, cancellationToken);
                             }
 
@@ -61,6 +64,7 @@ internal sealed class DurableWorkflowExecutor(
                             if (messages.Count > 0)
                             {
                                 run.FailStep(parallel.Name, messages);
+                                publisher.StepUpdated(run.ToSnapshot(), parallel.Name);
                                 return await this.DeleteFailedRun(run, messages, cancellationToken);
                             }
 
@@ -72,6 +76,7 @@ internal sealed class DurableWorkflowExecutor(
                             {
                                 run.MarkStepRunning(join.Name, run.GetOutstandingWorkerIds());
                                 await persistence.UpsertRun(this.CreatePersistenceRecord(run), CancellationToken.None);
+                                publisher.StepUpdated(run.ToSnapshot(), join.Name);
                             }
 
                             var completion = await this.WaitForJoinOutstanding(run, session, join.Name, cancellationToken);
@@ -79,11 +84,13 @@ internal sealed class DurableWorkflowExecutor(
                             {
                                 await WorkflowExecutionSupport.CancelOutstandingChildren(run, session, cancellationToken);
                                 run.FailStep(join.Name, completion.Messages);
+                                publisher.StepUpdated(run.ToSnapshot(), join.Name);
                                 return await this.DeleteFailedRun(run, completion.Messages, cancellationToken);
                             }
 
                             run.MarkStepCompleted(join.Name);
                             await persistence.UpsertRun(this.CreatePersistenceRecord(run), CancellationToken.None);
+                            publisher.StepUpdated(run.ToSnapshot(), join.Name);
                             break;
                         }
                     default:
@@ -141,6 +148,8 @@ internal sealed class DurableWorkflowExecutor(
         var registeredWork = getRegisteredWork(step.WorkDefinitionName)
             ?? throw new InvalidOperationException($"Workflow step '{step.Name}' targets unknown work '{step.WorkDefinitionName}'.");
         run.MarkStepRunning(step.Name);
+        var publisher = workflowEvents ?? new WorkflowEventPublisher(default, null, new WorkEventStream());
+        publisher.StepUpdated(run.ToSnapshot(), step.Name);
 
         try
         {
@@ -169,6 +178,7 @@ internal sealed class DurableWorkflowExecutor(
                 },
                 cancellationToken);
 
+            publisher.StepUpdated(run.ToSnapshot(), step.Name);
             return [];
         }
         catch (WorkflowDispatchRejectedException rejection)
@@ -184,6 +194,8 @@ internal sealed class DurableWorkflowExecutor(
         CancellationToken cancellationToken)
     {
         run.MarkStepRunning(step.Name);
+        var publisher = workflowEvents ?? new WorkflowEventPublisher(default, null, new WorkEventStream());
+        publisher.StepUpdated(run.ToSnapshot(), step.Name);
 
         try
         {
@@ -220,6 +232,7 @@ internal sealed class DurableWorkflowExecutor(
                 },
                 cancellationToken);
 
+            publisher.StepUpdated(run.ToSnapshot(), step.Name);
             return [];
         }
         catch (WorkflowDispatchRejectedException rejection)
@@ -267,6 +280,8 @@ internal sealed class DurableWorkflowExecutor(
             outstanding.RemoveAt(0);
             run.RemoveStepWorkerId(joinStepName, workerId);
             await persistence.UpsertRun(this.CreatePersistenceRecord(run), CancellationToken.None);
+            var publisher = workflowEvents ?? new WorkflowEventPublisher(default, null, new WorkEventStream());
+            publisher.StepUpdated(run.ToSnapshot(), joinStepName);
         }
 
         return new WorkflowRunCompletion(WorkflowRunStatus.Completed, null, []);

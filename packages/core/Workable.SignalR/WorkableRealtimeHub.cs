@@ -224,11 +224,18 @@ public sealed class WorkableRealtimeHub(
         IWorkSystemSession session,
         IClientProxy client)
     {
-        var result = await views.View(
-            session,
-            subscription.ViewName,
-            subscription.Criteria,
-            cancellationToken: this.Context.ConnectionAborted);
+        var result = WorkableRealtimeWorkflowViews.IsWorkflowView(subscription.ViewName)
+            ? await WorkableRealtimeWorkflowViews.Query(
+                ResolveSystem(session.SystemName),
+                subscription.Authorization,
+                subscription.ViewName,
+                subscription.Criteria,
+                this.Context.ConnectionAborted)
+            : await views.View(
+                session,
+                subscription.ViewName,
+                subscription.Criteria,
+                cancellationToken: this.Context.ConnectionAborted);
         await client.SendAsync(
             WorkableRealtimeClientMethods.ViewUpdated,
             new WorkableRealtimeViewEnvelope<WorkComponentQueryResult>(

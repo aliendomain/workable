@@ -233,7 +233,7 @@ The sample host follows normal ASP.NET Core application structure rather than th
 
 `Workable.Mcp` references `Workable` and `Workable.AspNetCore`.
 
-`Workable.SignalR` references `Workable.Abstractions`, `Workable.AspNetCore`, and `Workable.Views`.
+`Workable.SignalR` references `Workable.Abstractions`, `Workable.AspNetCore`, `Workable.Views`, and `Workable`.
 
 `Workable.SqlServer` references `Workable.Abstractions`.
 

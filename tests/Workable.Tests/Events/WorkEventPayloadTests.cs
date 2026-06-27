@@ -132,6 +132,77 @@ public sealed class WorkEventPayloadTests
     }
 
     [Fact]
+    public async Task WorkflowEventsCarryRunStepPayloadsAndWorkflowKeys()
+    {
+        var childStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseChild = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        await using var system = CreateWorkflowSystem(builder =>
+        {
+            builder.AddWork(
+                WorkDefinition.Create("events.workflow.child"),
+                async (_, _, cancellationToken) =>
+                {
+                    childStarted.TrySetResult();
+                    await releaseChild.Task.WaitAsync(cancellationToken);
+                    return WorkExecutionResult.Success();
+                });
+            builder.AddWorkflow(
+                WorkflowDefinition.Create("events.workflow"),
+                workflow => workflow.DispatchWork("dispatch", "events.workflow.child"));
+        });
+        await system.Start();
+
+        await using var startedSubscription = system.Events.Subscribe(new WorkEventFilter(DefinitionName: "events.workflow", EventType: "workflow.started"));
+        await using var stepSubscription = system.Events.Subscribe(new WorkEventFilter(DefinitionName: "events.workflow", EventType: "workflow.step.updated"));
+        await using var completedSubscription = system.Events.Subscribe(new WorkEventFilter(DefinitionName: "events.workflow", EventType: "workflow.completed"));
+        await using var startedReader = startedSubscription.Read().GetAsyncEnumerator();
+        await using var stepReader = stepSubscription.Read().GetAsyncEnumerator();
+        await using var completedReader = completedSubscription.Read().GetAsyncEnumerator();
+
+        var runtime = Assert.IsType<InMemoryWorkSystem>(system).WorkflowRuntime;
+        var handle = runtime.Start(
+            "events.workflow",
+            WorkRequestContext.Create(
+                WorkInvocationChannel.InProcess,
+                new WorkActor("workflow-events-user", "Workflow Events User", "workflow.events@example.test"),
+                "Run workflow event payload test."));
+        await childStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        var started = await ReadNext(startedReader);
+        var startedData = RequiredData(started);
+        var stepUpdated = await ReadUntil(
+            stepReader,
+            workEvent =>
+            {
+                var data = RequiredData(workEvent);
+                return data.GetProperty("step").GetProperty("name").GetString() == "dispatch" &&
+                    data.GetProperty("step").GetProperty("status").GetString() == "Completed";
+            });
+        var stepData = RequiredData(stepUpdated);
+
+        releaseChild.TrySetResult();
+        await handle.WaitForCompletion();
+        var completed = await ReadNext(completedReader);
+        var completedData = RequiredData(completed);
+
+        Assert.Equal("events.workflow", started.WorkDefinitionName);
+        Assert.Contains(started.Identifiers, identifier => identifier.Type == "workflow-run");
+        Assert.Contains(started.Identifiers, identifier => identifier.Type == "workflow-definition" && identifier.Value == "events.workflow");
+        Assert.Equal("events.workflow", startedData.GetProperty("run").GetProperty("definitionName").GetString());
+        Assert.Equal("Running", startedData.GetProperty("run").GetProperty("status").GetString());
+        Assert.Equal("Run workflow event payload test.", startedData.GetProperty("origin").GetProperty("description").GetString());
+        Assert.Equal("workflow-events-user", startedData.GetProperty("origin").GetProperty("actor").GetProperty("id").GetString());
+
+        Assert.Equal("dispatch", stepData.GetProperty("step").GetProperty("name").GetString());
+        Assert.Equal("Completed", stepData.GetProperty("step").GetProperty("status").GetString());
+        Assert.Equal(1, stepData.GetProperty("step").GetProperty("workerCount").GetInt32());
+        Assert.Equal(1, stepData.GetProperty("run").GetProperty("outstandingChildWorkerCount").GetInt32());
+
+        Assert.Equal("Completed", completedData.GetProperty("run").GetProperty("status").GetString());
+        Assert.Equal("dispatch", completedData.GetProperty("run").GetProperty("currentStepName").GetString());
+    }
+
+    [Fact]
     public async Task RetentionPurgeEventsCanCarryMultiplePurgedWorkerIds()
     {
         var definition = WorkDefinition.Create(
@@ -550,6 +621,13 @@ public sealed class WorkEventPayloadTests
             .GetRequiredService<IWorkSystemRegistry>()
             .Default;
 
+    private static IWorkSystem CreateWorkflowSystem(Action<IWorkSystemBuilder> configure)
+        => new ServiceCollection()
+            .AddWorkableSystem(configure)
+            .BuildServiceProvider()
+            .GetRequiredService<IWorkSystemRegistry>()
+            .Default;
+
     private static Task<WorkExecutionResult> SuccessfulWork(
         IWorkExecutionContext context,
         WorkInput? input,
@@ -762,8 +840,6 @@ public sealed class WorkEventPayloadTests
             => Task.FromResult(WorkExecutionResult.Success());
     }
 }
-
-
 
 
 

@@ -722,7 +722,7 @@ internal sealed class WorkableRealtimeBroadcaster(
         IWorkSystem system,
         CancellationToken cancellationToken)
     {
-        var lastPublishedSequencesByGroup = new Dictionary<string, long>(StringComparer.Ordinal);
+        var lastPublishedVersionsByGroup = new Dictionary<string, WorkableRealtimeViewVersion>(StringComparer.Ordinal);
         using var timer = timerFactory.Create(options.Value.PublishInterval);
         while (await timer.WaitForNextTickAsync(cancellationToken))
         {
@@ -733,11 +733,11 @@ internal sealed class WorkableRealtimeBroadcaster(
             var activeGroups = subscriptions
                 .Select(subscription => subscription.GroupName)
                 .ToHashSet(StringComparer.Ordinal);
-            foreach (var groupName in lastPublishedSequencesByGroup.Keys
+            foreach (var groupName in lastPublishedVersionsByGroup.Keys
                 .Where(groupName => !activeGroups.Contains(groupName))
                 .ToArray())
             {
-                lastPublishedSequencesByGroup.Remove(groupName);
+                lastPublishedVersionsByGroup.Remove(groupName);
             }
 
             if (subscriptions.Length == 0)
@@ -745,7 +745,14 @@ internal sealed class WorkableRealtimeBroadcaster(
                 continue;
             }
 
-            if (system is not IWorkSystemReadModelClock readModelClock)
+            var readModelSequence = system is IWorkSystemReadModelClock readModelClock
+                ? readModelClock.AppliedSequence
+                : 0;
+            var workflowSequence = system is IWorkSystemWorkflowClock workflowClock
+                ? workflowClock.WorkflowSequence
+                : 0;
+
+            if (system is not IWorkSystemReadModelClock && system is not IWorkSystemWorkflowClock)
             {
                 foreach (var subscription in subscriptions)
                 {
@@ -771,29 +778,34 @@ internal sealed class WorkableRealtimeBroadcaster(
                 continue;
             }
 
-            var appliedSequence = readModelClock.AppliedSequence;
-
             foreach (var subscription in subscriptions)
             {
                 var requiresIntervalPublish = views.RequiresIntervalPublish(
                     subscription.ViewName,
                     subscription.Criteria);
-                var lastPublishedSequence = lastPublishedSequencesByGroup.TryGetValue(subscription.GroupName, out var sequence)
-                    ? sequence
-                    : subscription.InitialReadModelSequence;
+                var currentVersion = new WorkableRealtimeViewVersion(
+                    readModelSequence,
+                    WorkableRealtimeWorkflowViews.IsWorkflowView(subscription.ViewName)
+                        ? workflowSequence
+                        : 0);
+                var lastPublishedVersion = lastPublishedVersionsByGroup.TryGetValue(subscription.GroupName, out var version)
+                    ? version
+                    : new WorkableRealtimeViewVersion(
+                        subscription.InitialReadModelSequence,
+                        subscription.InitialWorkflowSequence);
                 if (!WorkableRealtimeBroadcastRules.ShouldPublishView(
                     requiresIntervalPublish,
-                    lastPublishedSequence,
-                    appliedSequence))
+                    lastPublishedVersion,
+                    currentVersion))
                 {
-                    lastPublishedSequencesByGroup[subscription.GroupName] = appliedSequence;
+                    lastPublishedVersionsByGroup[subscription.GroupName] = currentVersion;
                     continue;
                 }
 
                 try
                 {
                     await this.BroadcastView(system, subscription, cancellationToken);
-                    lastPublishedSequencesByGroup[subscription.GroupName] = appliedSequence;
+                    lastPublishedVersionsByGroup[subscription.GroupName] = currentVersion;
                 }
                 catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
                 {
@@ -901,11 +913,18 @@ internal sealed class WorkableRealtimeBroadcaster(
         var session = CreateAuthorizedSession(
             system,
             subscription.Authorization);
-        var view = await views.View(
-            session,
-            subscription.ViewName,
-            subscription.Criteria,
-            cancellationToken: cancellationToken);
+        var view = WorkableRealtimeWorkflowViews.IsWorkflowView(subscription.ViewName)
+            ? await WorkableRealtimeWorkflowViews.Query(
+                system,
+                subscription.Authorization,
+                subscription.ViewName,
+                subscription.Criteria,
+                cancellationToken)
+            : await views.View(
+                session,
+                subscription.ViewName,
+                subscription.Criteria,
+                cancellationToken: cancellationToken);
         await this.SendViewUpdateToGroup(
             subscription.GroupName,
             subscription.ViewName,

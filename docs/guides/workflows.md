@@ -242,3 +242,43 @@ The MCP adapter exposes matching workflow run queries with:
 
 - `workable_query_workflow_runs`
 - `workable_get_workflow_run`
+
+### SignalR
+
+The SignalR adapter exposes matching live workflow operator views through `WatchView`:
+
+- `workflow-runs`
+- `workflow-run`
+
+`workflow-runs` uses one `workflowRuns` component and accepts:
+
+- `includeFinal`
+- `definitionName`
+- `childSampleSize`
+
+`workflow-run` uses one `workflowRun` component and accepts:
+
+- `runId`
+- `childSampleSize`
+
+These live views refresh when the workflow runtime changes and when child-worker state changes, so operator screens can show the authored workflow graph while still reflecting authoritative child-worker progress.
+
+## Workflow Events
+
+Workflow runs publish raw events through the normal Workable event stream:
+
+- `workflow.started`
+- `workflow.stop`
+- `workflow.cancel`
+- `workflow.step.updated`
+- `workflow.completed`
+- `workflow.failed`
+- `workflow.canceled`
+
+The event envelope uses the workflow definition name as `WorkDefinitionName` and includes these identifiers when they apply:
+
+- `workflow-run`
+- `workflow-definition`
+- `workflow-step`
+
+`workflow.step.updated` is useful for graph refresh triggers, and the final events are useful for list refresh, notifications, or audit-style monitoring.

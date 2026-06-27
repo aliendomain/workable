@@ -240,6 +240,71 @@ public sealed class WorkableSignalRTests
     }
 
     [Fact]
+    public async Task EventWatcherCanReceiveWorkflowEventsFilteredByDefinitionAndRunKey()
+    {
+        var childStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseChild = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var host = await CreateHost(
+            addSignalR: true,
+            configureWorkable: builder =>
+            {
+                builder.AddAuthorizedTransportWork(
+                    WorkDefinition.Create("signalr.workflow.child"),
+                    async (_, _, cancellationToken) =>
+                    {
+                        childStarted.TrySetResult();
+                        await releaseChild.Task.WaitAsync(cancellationToken);
+                        return WorkExecutionResult.Success();
+                    });
+                builder.AddWorkflow(
+                    WorkflowDefinition.Create("signalr.workflow"),
+                    workflow => workflow.DispatchWork("dispatch", "signalr.workflow.child"),
+                    authorize => authorize
+                        .AllowReadToGroups(TransportAuthorizationTestSupport.ReadGroups.ToArray())
+                        .AllowOperateToGroups(TransportAuthorizationTestSupport.OperateGroups.ToArray()));
+            });
+        var system = host.Services.GetRequiredService<IWorkSystemRegistry>().Default;
+        await using var connection = CreateConnection(host);
+        var events = Channel.CreateUnbounded<WorkableRealtimeEvent>();
+        CaptureRealtimeEvents(connection, events);
+
+        var workflowHandle = Assert.IsType<InMemoryWorkSystem>(system).WorkflowRuntime.Start(
+            "signalr.workflow",
+            TransportAuthorizationTestSupport.CreateTransportRequestContext(
+                WorkInvocationChannel.InProcess,
+                description: "Start workflow for SignalR workflow event test."));
+        var runId = workflowHandle.RunId?.Value.ToString("D")
+            ?? throw new InvalidOperationException("Expected workflow run id.");
+        await childStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        await connection.StartAsync();
+        await connection.InvokeAsync(
+            "WatchEvents",
+            new WorkableRealtimeEventCriteria(
+                EventTypes: ["workflow.completed"],
+                DefinitionNames: ["signalr.workflow"],
+                Keys:
+                [
+                    new WorkableRealtimeEventKeyCriteria(
+                        WorkKeyKind.Identifier,
+                        "workflow-run",
+                        runId),
+                ]),
+            null);
+
+        releaseChild.TrySetResult();
+        var completed = await ReadUntil(
+            events.Reader,
+            workEvent => workEvent.EventType == "workflow.completed");
+        var data = completed.Data ?? throw new InvalidOperationException("Expected workflow event payload.");
+
+        Assert.Equal("signalr.workflow", completed.WorkDefinitionName);
+        Assert.Contains(completed.Identifiers, identifier => identifier.Type == "workflow-run" && identifier.Value == runId);
+        Assert.Equal("signalr.workflow", data.GetProperty("run").GetProperty("definitionName").GetString());
+        Assert.Equal("Completed", data.GetProperty("run").GetProperty("status").GetString());
+    }
+
+    [Fact]
     public async Task EventWatcherReceivesBurstsAsBatches()
     {
         using var host = await CreateHost(addSignalR: true, configureSignalR: options =>
@@ -405,6 +470,219 @@ public sealed class WorkableSignalRTests
                 view.Components.ContainsKey("throughput"));
 
         Assert.Equal(["throughput"], updated.Components.Keys.ToArray());
+    }
+
+    [Fact]
+    public async Task ViewWatcherReceivesWorkflowRunListUpdatesWhenWorkflowFailsWithoutReadModelChanges()
+    {
+        var timers = new ManualRealtimeTimerFactory();
+        using var host = await CreateHost(
+            addSignalR: true,
+            configureServices: services => services.AddSingleton<IWorkableRealtimeTimerFactory>(timers),
+            configureSignalR: options =>
+            {
+                options.PublishInterval = ManualViewPublishInterval;
+                options.DiagnosticsPublishInterval = ManualDiagnosticsPublishInterval;
+            },
+            configureWorkable: builder =>
+            {
+                builder.UseCapacity(new WorkSystemCapacityConfiguration
+                {
+                    MaximumWorkers = 1,
+                });
+                builder.AddAuthorizedTransportWork(
+                    WorkDefinition.Create("signalr.workflow.capacity-child"),
+                    SuccessfulWork);
+                builder.AddWorkflow(
+                    WorkflowDefinition.Create("signalr.workflow.capacity"),
+                    workflow => workflow.DispatchWork("dispatch", "signalr.workflow.capacity-child"));
+            });
+        var system = host.Services.GetRequiredService<IWorkSystemRegistry>().Default;
+        var gate = host.Services.GetRequiredService<SignalRWorkGate>();
+        await using var connection = CreateConnection(host);
+        const string subscriptionId = "workflow-runs";
+        var views = Channel.CreateUnbounded<WorkComponentQueryResult>();
+        CaptureRealtimeViews(connection, subscriptionId, views);
+        await connection.StartAsync();
+        await connection.InvokeAsync(
+            "WatchView",
+            subscriptionId,
+            "workflow-runs",
+            new WorkViewCriteria(Components:
+            [
+                new WorkComponentRequest(
+                    "workflowRuns",
+                    "workflowRuns",
+                    JsonSerializer.SerializeToElement(new
+                    {
+                        includeFinal = true,
+                    }),
+                    WorkComponentShapes.Detailed),
+            ]),
+            null);
+
+        var initial = await ReadUntil(
+            views.Reader,
+            view => view.Components.ContainsKey("workflowRuns"));
+        var initialRuns = Assert.IsType<JsonElement>(initial.Components["workflowRuns"].Data);
+        Assert.Equal(0, initialRuns.GetProperty("runs").GetArrayLength());
+
+        var blocker = await Session(system).Queue.Enqueue("signalr.view");
+        await gate.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        var handle = Assert.IsType<InMemoryWorkSystem>(system).WorkflowRuntime.Start(
+            "signalr.workflow.capacity",
+            TransportAuthorizationTestSupport.CreateTransportRequestContext(
+                WorkInvocationChannel.InProcess,
+                description: "Start workflow that will fail before any worker is created."));
+        await handle.WaitForCompletion();
+
+        await TestEventually.ClockAfter(initial.GeneratedAt);
+        await timers.TickWhenReady(ManualViewPublishInterval);
+        var updated = await ReadUntil(
+            views.Reader,
+            view =>
+            {
+                if (view.GeneratedAt <= initial.GeneratedAt ||
+                    !view.Components.TryGetValue("workflowRuns", out var component) ||
+                    component.Data is not JsonElement data)
+                {
+                    return false;
+                }
+
+                var runs = data.GetProperty("runs");
+                return runs.GetArrayLength() == 1 &&
+                    string.Equals(
+                        runs[0].GetProperty("status").GetString(),
+                        nameof(WorkflowRunStatus.Failed),
+                        StringComparison.Ordinal);
+            });
+        var updatedRuns = Assert.IsType<JsonElement>(updated.Components["workflowRuns"].Data);
+        var failed = updatedRuns.GetProperty("runs")[0];
+
+        Assert.Equal("signalr.workflow.capacity", failed.GetProperty("definitionName").GetString());
+        Assert.Equal(nameof(WorkflowRunStatus.Failed), failed.GetProperty("status").GetString());
+
+        gate.Release.TrySetResult();
+        await blocker.WaitForCompletion();
+    }
+
+    [Fact]
+    public async Task ViewWatcherReceivesWorkflowRunDetailUpdatesFromChildWorkerReadModelChanges()
+    {
+        var timers = new ManualRealtimeTimerFactory();
+        var childStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseChild = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var host = await CreateHost(
+            addSignalR: true,
+            configureServices: services => services.AddSingleton<IWorkableRealtimeTimerFactory>(timers),
+            configureSignalR: options =>
+            {
+                options.PublishInterval = ManualViewPublishInterval;
+                options.DiagnosticsPublishInterval = ManualDiagnosticsPublishInterval;
+            },
+            configureWorkable: builder =>
+            {
+                builder.AddAuthorizedTransportWork(
+                    WorkDefinition.Create(
+                        "signalr.workflow.manual-child",
+                        configuration: WorkConfiguration.Default with
+                        {
+                            Start = WorkStartConfiguration.DoNotStart,
+                        }),
+                    async (_, _, cancellationToken) =>
+                    {
+                        childStarted.TrySetResult();
+                        await releaseChild.Task.WaitAsync(cancellationToken);
+                        return WorkExecutionResult.Success();
+                    });
+                builder.AddWorkflow(
+                    WorkflowDefinition.Create("signalr.workflow.manual"),
+                    workflow => workflow.DispatchWork("dispatch", "signalr.workflow.manual-child"));
+            });
+        var system = Assert.IsType<InMemoryWorkSystem>(host.Services.GetRequiredService<IWorkSystemRegistry>().Default);
+        var startContext = TransportAuthorizationTestSupport.CreateTransportRequestContext(
+            WorkInvocationChannel.InProcess,
+            description: "Start workflow for workflow detail realtime view test.");
+        var handle = system.WorkflowRuntime.Start("signalr.workflow.manual", startContext);
+        var runId = handle.RunId ?? throw new InvalidOperationException("Expected workflow run id.");
+        await TestEventually.Until(() =>
+        {
+            var snapshot = system.WorkflowRuntime.Get(runId);
+            return snapshot?.Steps.Single(step => step.Name == "dispatch").WorkerIds.Count == 1;
+        });
+        var childWorkerId = system.WorkflowRuntime.Get(runId)!
+            .Steps
+            .Single(step => step.Name == "dispatch")
+            .WorkerIds
+            .Single();
+
+        await using var connection = CreateConnection(host);
+        const string subscriptionId = "workflow-run";
+        var views = Channel.CreateUnbounded<WorkComponentQueryResult>();
+        CaptureRealtimeViews(connection, subscriptionId, views);
+        await connection.StartAsync();
+        await connection.InvokeAsync(
+            "WatchView",
+            subscriptionId,
+            "workflow-run",
+            new WorkViewCriteria(Components:
+            [
+                new WorkComponentRequest(
+                    "workflowRun",
+                    "workflowRun",
+                    JsonSerializer.SerializeToElement(new
+                    {
+                        runId = runId.Value.ToString("D"),
+                    }),
+                    WorkComponentShapes.Detailed),
+            ]),
+            null);
+
+        var initial = await ReadUntil(
+            views.Reader,
+            view =>
+            {
+                if (!view.Components.TryGetValue("workflowRun", out var component) ||
+                    component.Data is not JsonElement data)
+                {
+                    return false;
+                }
+
+                return data.GetProperty("outstandingChildren").GetProperty("byState").TryGetProperty("Queued", out _);
+            });
+        var initialDetail = Assert.IsType<JsonElement>(initial.Components["workflowRun"].Data);
+        Assert.Equal(nameof(WorkflowRunStatus.Running), initialDetail.GetProperty("status").GetString());
+
+        var worker = await Session(system).Query.Worker(childWorkerId)
+            ?? throw new InvalidOperationException("Expected child worker.");
+        var start = await Session(system).Workers.Execute(worker.Version, WorkAction.Start);
+        Assert.True(start.IsAccepted);
+        await childStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        await TestEventually.ClockAfter(initial.GeneratedAt);
+        await timers.TickWhenReady(ManualViewPublishInterval);
+        var started = await ReadUntil(
+            views.Reader,
+            view =>
+            {
+                if (view.GeneratedAt <= initial.GeneratedAt ||
+                    !view.Components.TryGetValue("workflowRun", out var component) ||
+                    component.Data is not JsonElement data)
+                {
+                    return false;
+                }
+
+                var byState = data.GetProperty("outstandingChildren").GetProperty("byState");
+                return byState.TryGetProperty("Running", out var running) && running.GetInt32() == 1;
+            });
+        var startedDetail = Assert.IsType<JsonElement>(started.Components["workflowRun"].Data);
+
+        Assert.Equal(nameof(WorkflowRunStatus.Running), startedDetail.GetProperty("status").GetString());
+        Assert.Equal(1, startedDetail.GetProperty("outstandingChildren").GetProperty("byState").GetProperty("Running").GetInt32());
+
+        releaseChild.TrySetResult();
+        await handle.WaitForCompletion();
     }
 
     [Fact]

@@ -10,6 +10,7 @@ internal sealed class WorkflowRuntime
     private readonly Func<string, RegisteredWork?> getRegisteredWork;
     private readonly Func<WorkRequestContext, IWorkSystemSession> createSession;
     private readonly WorkflowPersistenceCoordinator persistence;
+    private readonly WorkflowEventPublisher workflowEvents;
     private readonly WorkSystemAuthorizationConfiguration systemAuthorizationConfiguration;
     private readonly IWorkAuthorizationGroupProvider groupProvider;
     private readonly NonDurableWorkflowExecutor nonDurable;
@@ -19,6 +20,7 @@ internal sealed class WorkflowRuntime
     private readonly ConcurrentDictionary<WorkflowRunId, WorkflowExecutionControl> controls = new();
     private readonly Lock lifecycleSync = new();
     private CancellationTokenSource executionLifetime = new();
+    private long version;
 
     public WorkflowRuntime(
         string? systemName,
@@ -29,7 +31,8 @@ internal sealed class WorkflowRuntime
         Func<WorkerId, IWorkerHandle> createWorkerHandle,
         WorkflowPersistenceCoordinator persistence,
         WorkSystemAuthorizationConfiguration systemAuthorizationConfiguration,
-        IWorkAuthorizationGroupProvider groupProvider)
+        IWorkAuthorizationGroupProvider groupProvider,
+        WorkflowEventPublisher? workflowEvents = null)
     {
         this.systemName = systemName;
         this.requiresAuthorization = requiresAuthorization;
@@ -37,9 +40,10 @@ internal sealed class WorkflowRuntime
         this.getRegisteredWork = getRegisteredWork;
         this.createSession = createSession;
         this.persistence = persistence;
+        this.workflowEvents = workflowEvents ?? new WorkflowEventPublisher(default, null, new WorkEventStream());
         this.systemAuthorizationConfiguration = systemAuthorizationConfiguration;
         this.groupProvider = groupProvider;
-        this.nonDurable = new NonDurableWorkflowExecutor(createSession);
+        this.nonDurable = new NonDurableWorkflowExecutor(createSession, this.workflowEvents);
         if (!string.IsNullOrWhiteSpace(systemName))
         {
             this.durable = new DurableWorkflowExecutor(
@@ -47,7 +51,8 @@ internal sealed class WorkflowRuntime
                 getRegisteredWork,
                 createSession,
                 createWorkerHandle,
-                persistence);
+                persistence,
+                this.workflowEvents);
         }
     }
 
@@ -64,6 +69,8 @@ internal sealed class WorkflowRuntime
             this.executionLifetime = new CancellationTokenSource();
         }
     }
+
+    public long Version => Interlocked.Read(ref this.version);
 
     public void CancelExecutionLifetime()
     {
@@ -138,12 +145,13 @@ internal sealed class WorkflowRuntime
                 continue;
             }
 
-            var run = WorkflowRunState.Rehydrate(workflow, record);
+            var run = WorkflowRunState.Rehydrate(workflow, record, this.AdvanceVersion);
             if (!this.runs.TryAdd(run.Id, run))
             {
                 continue;
             }
 
+            this.AdvanceVersion();
             this.StartExecution(run, workflow);
         }
     }
@@ -195,8 +203,10 @@ internal sealed class WorkflowRuntime
         }
 
         // Workable stores origin and actor durably, but not precomputed authorization snapshots.
-        var run = WorkflowRunState.Create(workflow, requestContext.WithoutAuthorization());
+        var run = WorkflowRunState.Create(workflow, requestContext.WithoutAuthorization(), this.AdvanceVersion);
         this.runs[run.Id] = run;
+        this.AdvanceVersion();
+        this.workflowEvents.Started(run.ToSnapshot(), requestContext);
         this.StartExecution(run, workflow);
         return WorkflowRunHandle.Accepted(WorkflowStartOutcome.Accepted(run.Id), run.WaitForCompletion());
     }
@@ -339,6 +349,7 @@ internal sealed class WorkflowRuntime
             control.RequestStop();
         }
 
+        this.workflowEvents.ActionAccepted(outcomeSnapshot, action, requestContext);
         return WorkflowActionOutcome.Accepted(action, outcomeSnapshot);
     }
 
@@ -377,14 +388,16 @@ internal sealed class WorkflowRuntime
 
     private async Task FailRecoveredRunForDefinitionMismatch(WorkflowRunPersistenceRecord record)
     {
-        var run = WorkflowRunState.FromPersistenceRecord(record);
+        var run = WorkflowRunState.FromPersistenceRecord(record, this.AdvanceVersion);
         var completion = run.Fail(
             [WorkMessage.Error(
                 "workable.workflow.definition_mismatch",
                 $"Workflow '{record.DefinitionName}' run '{record.RunId.Value:D}' could not be recovered because the persisted workflow definition fingerprint does not match the current registered workflow.",
                 "workflow.definition")]);
         run.TrySetCompletion(completion);
+        this.workflowEvents.Completion(completion);
         this.runs.TryAdd(run.Id, run);
+        this.AdvanceVersion();
         await this.persistence.DeleteRun(record.RunId, CancellationToken.None);
     }
 
@@ -416,6 +429,7 @@ internal sealed class WorkflowRuntime
             }
 
             run.TrySetCompletion(completion);
+            this.workflowEvents.Completion(completion);
             return completion;
         }
         catch (OperationCanceledException) when (control.Token.IsCancellationRequested)
@@ -434,6 +448,7 @@ internal sealed class WorkflowRuntime
             }
 
             run.TrySetCompletion(completion);
+            this.workflowEvents.Completion(completion);
             return completion;
         }
         catch (Exception exception)
@@ -444,6 +459,7 @@ internal sealed class WorkflowRuntime
                     exception.Message,
                     "workflow.execution")]);
             run.TrySetCompletion(completion);
+            this.workflowEvents.Completion(completion);
             return completion;
         }
         finally
@@ -500,6 +516,9 @@ internal sealed class WorkflowRuntime
             return this.executionLifetime.Token;
         }
     }
+
+    private void AdvanceVersion()
+        => Interlocked.Increment(ref this.version);
 
     private bool CanOperate(WorkflowDefinition definition, WorkRequestContext requestContext)
     {

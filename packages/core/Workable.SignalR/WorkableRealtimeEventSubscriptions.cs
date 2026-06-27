@@ -313,7 +313,6 @@ public sealed class WorkableRealtimeEventSubscriptions
         var definitionNames = criteria?.DefinitionNames?
             .Select(definitionName => definitionName.Trim())
             .Where(definitionName => definitionName.Length > 0)
-            .Where(definitionName => catalog.TryGet(definitionName, out _))
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .Order(StringComparer.OrdinalIgnoreCase)
             .ToArray();

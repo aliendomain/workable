@@ -91,6 +91,18 @@ The current worker event types are:
 
 Action events such as `worker.cancel`, `worker.pause`, and `worker.push` describe the immediate action outcome. Completion events such as `worker.completed`, `worker.failed`, `worker.paused`, `worker.interrupted`, and `worker.canceled` describe the lifecycle result. Shutdown interruption publishes `worker.interrupted`; explicit API cancellation publishes the cancel action event and then the canceled completion event.
 
+Workflow runs also publish event types through the same event stream:
+
+- `workflow.started`
+- `workflow.stop`
+- `workflow.cancel`
+- `workflow.step.updated`
+- `workflow.completed`
+- `workflow.failed`
+- `workflow.canceled`
+
+Workflow events keep `WorkDefinitionName` equal to the workflow definition name and use identifiers such as `workflow-run`, `workflow-definition`, and `workflow-step` so event consumers can filter one workflow run or one workflow node without introducing a separate transport.
+
 ## Payloads
 
 `Data` uses camel-case JSON property names. Enum values are strings. Null properties are omitted.

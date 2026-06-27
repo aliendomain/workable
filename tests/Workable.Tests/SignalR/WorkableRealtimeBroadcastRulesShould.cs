@@ -8,8 +8,8 @@ public sealed class WorkableRealtimeBroadcastRulesShould
     {
         var shouldPublish = WorkableRealtimeBroadcastRules.ShouldPublishView(
             requiresIntervalPublish: false,
-            lastPublishedSequence: 42,
-            appliedSequence: 42);
+            lastPublishedVersion: new WorkableRealtimeViewVersion(42, 0),
+            currentVersion: new WorkableRealtimeViewVersion(42, 0));
 
         Assert.False(shouldPublish);
     }
@@ -19,19 +19,30 @@ public sealed class WorkableRealtimeBroadcastRulesShould
     {
         var shouldPublish = WorkableRealtimeBroadcastRules.ShouldPublishView(
             requiresIntervalPublish: false,
-            lastPublishedSequence: 42,
-            appliedSequence: 43);
+            lastPublishedVersion: new WorkableRealtimeViewVersion(42, 0),
+            currentVersion: new WorkableRealtimeViewVersion(43, 0));
 
         Assert.True(shouldPublish);
     }
 
     [Fact]
-    public void PublishIntervalViewWhenReadModelSequenceIsUnchanged()
+    public void PublishStateBasedViewWhenWorkflowSequenceChanges()
+    {
+        var shouldPublish = WorkableRealtimeBroadcastRules.ShouldPublishView(
+            requiresIntervalPublish: false,
+            lastPublishedVersion: new WorkableRealtimeViewVersion(42, 7),
+            currentVersion: new WorkableRealtimeViewVersion(42, 8));
+
+        Assert.True(shouldPublish);
+    }
+
+    [Fact]
+    public void PublishIntervalViewWhenVersionsAreUnchanged()
     {
         var shouldPublish = WorkableRealtimeBroadcastRules.ShouldPublishView(
             requiresIntervalPublish: true,
-            lastPublishedSequence: 42,
-            appliedSequence: 42);
+            lastPublishedVersion: new WorkableRealtimeViewVersion(42, 7),
+            currentVersion: new WorkableRealtimeViewVersion(42, 7));
 
         Assert.True(shouldPublish);
     }

@@ -267,6 +267,18 @@ public sealed record WorkableRealtimeEventBatch(
 
 The event data follows the payloads documented in [Work Observability](../concepts/observability.md).
 
+Workflow lifecycle events use the same transport envelope and can be filtered by workflow definition name and workflow identifiers:
+
+- `workflow.started`
+- `workflow.stop`
+- `workflow.cancel`
+- `workflow.step.updated`
+- `workflow.completed`
+- `workflow.failed`
+- `workflow.canceled`
+
+The event envelope keeps `WorkDefinitionName` equal to the workflow definition name and includes identifiers such as `workflow-run`, `workflow-definition`, and, when relevant, `workflow-step`.
+
 ### Event Filters
 
 Use `WatchEvents` to subscribe to filtered event streams for a system.
@@ -288,6 +300,24 @@ await connection.InvokeAsync(
 ```
 
 The server applies definition, key, and event-type filters before constructing lazy event payloads when possible. This keeps filtered event viewers cheap during bursts.
+
+Workflow event filters use the same shape:
+
+```csharp
+await connection.InvokeAsync(
+    "WatchEvents",
+    new WorkableRealtimeEventCriteria(
+        EventTypes: ["workflow.completed"],
+        DefinitionNames: ["orders.fulfillment"],
+        Keys:
+        [
+            new WorkableRealtimeEventKeyCriteria(
+                WorkKeyKind.Identifier,
+                "workflow-run",
+                runId.ToString("D"))
+        ]),
+    (string?)null);
+```
 
 Stop watching with the same criteria:
 
@@ -389,6 +419,66 @@ SignalR view payloads use the same component efficiency contract as HTTP:
 - unknown views return an error component rather than failing the hub connection
 
 Most view groups publish only after the read-model sequence advances. View groups that include `throughput` publish on the normal view interval even when the read model is caught up, because zero-activity buckets are still meaningful chart data and need to advance the visible time window.
+
+Workflow operator views also use `WatchView`. These views refresh when either the workflow runtime changes or the child-worker read model changes, so list and detail screens stay current while a workflow is dispatching, waiting, stopping, failing, or watching child workers settle.
+
+```csharp
+const string WorkflowRunsSubscriptionId = "workflow-runs-main";
+
+await connection.InvokeAsync(
+    "WatchView",
+    WorkflowRunsSubscriptionId,
+    "workflow-runs",
+    new WorkViewCriteria(
+        Components:
+        [
+            new(
+                "workflowRuns",
+                "workflowRuns",
+                Options: JsonSerializer.SerializeToElement(new
+                {
+                    includeFinal = true,
+                    definitionName = "orders.fulfillment",
+                    childSampleSize = 5
+                }),
+                Shape: WorkComponentShapes.Detailed)
+        ]),
+    (string?)null);
+```
+
+```csharp
+const string WorkflowRunSubscriptionId = "workflow-run-detail";
+
+await connection.InvokeAsync(
+    "WatchView",
+    WorkflowRunSubscriptionId,
+    "workflow-run",
+    new WorkViewCriteria(
+        Components:
+        [
+            new(
+                "workflowRun",
+                "workflowRun",
+                Options: JsonSerializer.SerializeToElement(new
+                {
+                    runId = runId.ToString("D"),
+                    childSampleSize = 5
+                }),
+                Shape: WorkComponentShapes.Detailed)
+        ]),
+    (string?)null);
+```
+
+`workflow-runs` uses one `workflowRuns` component with these options:
+
+- `includeFinal`
+- `definitionName`
+- `childSampleSize`
+
+`workflow-run` uses one `workflowRun` component with these options:
+
+- `runId`
+- `childSampleSize`
 
 Stop watching a view when the page no longer needs live updates.
 

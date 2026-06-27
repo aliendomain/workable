@@ -4,6 +4,7 @@ internal sealed class WorkflowRunState
 {
     private readonly Lock sync = new();
     private readonly List<WorkflowStepRunState> steps;
+    private readonly Action? onChanged;
     private readonly TaskCompletionSource<WorkflowRunCompletion> completion =
         new(TaskCreationOptions.RunContinuationsAsynchronously);
     private IReadOnlyList<WorkMessage> messages = [];
@@ -19,7 +20,8 @@ internal sealed class WorkflowRunState
         string definitionFingerprint,
         WorkRequestContext requestContext,
         DateTimeOffset createdAt,
-        List<WorkflowStepRunState> steps)
+        List<WorkflowStepRunState> steps,
+        Action? onChanged = null)
     {
         this.Id = id;
         this.DefinitionVersion = definitionVersion;
@@ -28,6 +30,7 @@ internal sealed class WorkflowRunState
         this.RequestContext = requestContext;
         this.CreatedAt = createdAt;
         this.steps = steps;
+        this.onChanged = onChanged;
         this.status = WorkflowRunStatus.Running;
     }
 
@@ -43,7 +46,10 @@ internal sealed class WorkflowRunState
 
     public DateTimeOffset CreatedAt { get; }
 
-    public static WorkflowRunState Create(RegisteredWorkflow workflow, WorkRequestContext requestContext)
+    public static WorkflowRunState Create(
+        RegisteredWorkflow workflow,
+        WorkRequestContext requestContext,
+        Action? onChanged = null)
         => new(
             WorkflowRunId.New(),
             workflow.Definition.Version,
@@ -51,11 +57,13 @@ internal sealed class WorkflowRunState
             WorkflowDefinitionFingerprint.Create(workflow),
             requestContext,
             DateTimeOffset.UtcNow,
-            workflow.Steps.Select(WorkflowStepRunState.FromDefinition).ToList());
+            workflow.Steps.Select(WorkflowStepRunState.FromDefinition).ToList(),
+            onChanged);
 
     public static WorkflowRunState Rehydrate(
         RegisteredWorkflow workflow,
-        WorkflowRunPersistenceRecord record)
+        WorkflowRunPersistenceRecord record,
+        Action? onChanged = null)
     {
         var persistedSteps = record.Steps.ToDictionary(step => step.Name, StringComparer.Ordinal);
         var run = new WorkflowRunState(
@@ -71,7 +79,8 @@ internal sealed class WorkflowRunState
                 .Select(step => WorkflowStepRunState.FromDefinition(
                     step,
                     persistedSteps.TryGetValue(step.Name, out var persisted) ? persisted : null))
-                .ToList());
+                .ToList(),
+            onChanged);
         run.status = record.Status;
         run.pendingControlAction = ParsePendingControlAction(record.PendingControlAction);
         run.startedAt = record.StartedAt;
@@ -80,7 +89,9 @@ internal sealed class WorkflowRunState
         return run;
     }
 
-    public static WorkflowRunState FromPersistenceRecord(WorkflowRunPersistenceRecord record)
+    public static WorkflowRunState FromPersistenceRecord(
+        WorkflowRunPersistenceRecord record,
+        Action? onChanged = null)
     {
         ArgumentNullException.ThrowIfNull(record);
 
@@ -91,7 +102,8 @@ internal sealed class WorkflowRunState
             record.DefinitionFingerprint,
             record.RequestContext,
             record.CreatedAt,
-            record.Steps.Select(WorkflowStepRunState.FromPersistenceRecord).ToList());
+            record.Steps.Select(WorkflowStepRunState.FromPersistenceRecord).ToList(),
+            onChanged);
         run.status = record.Status;
         run.pendingControlAction = ParsePendingControlAction(record.PendingControlAction);
         run.startedAt = record.StartedAt;
@@ -112,6 +124,7 @@ internal sealed class WorkflowRunState
         {
             this.startedAt ??= DateTimeOffset.UtcNow;
             this.status = WorkflowRunStatus.Running;
+            this.onChanged?.Invoke();
         }
     }
 
@@ -137,6 +150,7 @@ internal sealed class WorkflowRunState
 
             this.pendingControlAction = action;
             snapshot = this.ToSnapshotLocked();
+            this.onChanged?.Invoke();
             return true;
         }
     }
@@ -185,6 +199,7 @@ internal sealed class WorkflowRunState
         lock (this.sync)
         {
             this.steps.Single(step => step.Name == name).MarkRunning(workerIds);
+            this.onChanged?.Invoke();
         }
     }
 
@@ -193,6 +208,7 @@ internal sealed class WorkflowRunState
         lock (this.sync)
         {
             this.steps.Single(step => step.Name == name).MarkCompleted(workerIds);
+            this.onChanged?.Invoke();
         }
     }
 
@@ -209,6 +225,7 @@ internal sealed class WorkflowRunState
         lock (this.sync)
         {
             this.steps.Single(step => step.Name == name).Fail(stepMessages);
+            this.onChanged?.Invoke();
         }
     }
 
@@ -217,6 +234,7 @@ internal sealed class WorkflowRunState
         lock (this.sync)
         {
             this.steps.Single(step => step.Name == name).RemoveWorkerId(workerId);
+            this.onChanged?.Invoke();
         }
     }
 
@@ -227,6 +245,7 @@ internal sealed class WorkflowRunState
             this.status = WorkflowRunStatus.Completed;
             this.pendingControlAction = null;
             this.completedAt = DateTimeOffset.UtcNow;
+            this.onChanged?.Invoke();
             return new WorkflowRunCompletion(this.status, this.ToSnapshotLocked(), this.messages);
         }
     }
@@ -238,6 +257,7 @@ internal sealed class WorkflowRunState
             this.status = WorkflowRunStatus.Canceled;
             this.pendingControlAction = null;
             this.completedAt = DateTimeOffset.UtcNow;
+            this.onChanged?.Invoke();
             return new WorkflowRunCompletion(this.status, this.ToSnapshotLocked(), this.messages);
         }
     }
@@ -250,6 +270,7 @@ internal sealed class WorkflowRunState
             this.pendingControlAction = null;
             this.messages = failureMessages;
             this.completedAt = DateTimeOffset.UtcNow;
+            this.onChanged?.Invoke();
             return new WorkflowRunCompletion(this.status, this.ToSnapshotLocked(), this.messages);
         }
     }

@@ -1893,6 +1893,20 @@ public class WorkableViewQueryAdapter
                 ];
         }
 
+        if (string.Equals(name, "workflow-runs", StringComparison.OrdinalIgnoreCase))
+        {
+            return requests is { Count: > 0 }
+                ? requests
+                : [new("workflowRuns", "workflowRuns", Shape: WorkComponentShapes.Detailed)];
+        }
+
+        if (string.Equals(name, "workflow-run", StringComparison.OrdinalIgnoreCase))
+        {
+            return requests is { Count: > 0 }
+                ? requests
+                : [new("workflowRun", "workflowRun", Shape: WorkComponentShapes.Detailed)];
+        }
+
         return null;
     }
 

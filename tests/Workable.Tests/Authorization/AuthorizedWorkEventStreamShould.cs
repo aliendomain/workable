@@ -93,13 +93,13 @@ public sealed class AuthorizedWorkEventStreamShould
         out RecordingWorkEventStream inner,
         params WorkDefinition[] definitions)
     {
-        var catalog = new WorkSystemCatalog(
-            definitions.Select(definition => new RegisteredWork(definition, _ => new NoopExecutor(), [])).ToArray(),
-            persistenceStoreAvailable: false);
         inner = new RecordingWorkEventStream();
         return new AuthorizedWorkEventStream(
             inner,
-            new WorkAuthorizationEvaluator(catalog, groups, false));
+            definitions
+                .Where(definition => definition.Authorization.CanRead(groups, false))
+                .Select(definition => definition.Name)
+                .ToHashSet(StringComparer.OrdinalIgnoreCase));
     }
 
     private static WorkDefinition CreateDefinition(string name, params string[] readGroups)
@@ -142,14 +142,5 @@ public sealed class AuthorizedWorkEventStreamShould
             await Task.CompletedTask;
             yield break;
         }
-    }
-
-    private sealed class NoopExecutor : IWorkExecutor
-    {
-        public Task<WorkExecutionResult> Execute(
-            IWorkExecutionContext context,
-            WorkInput? input,
-            CancellationToken cancellationToken)
-            => Task.FromResult(WorkExecutionResult.Success());
     }
 }

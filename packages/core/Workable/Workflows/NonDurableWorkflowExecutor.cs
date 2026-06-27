@@ -1,7 +1,8 @@
 namespace Workable;
 
 internal sealed class NonDurableWorkflowExecutor(
-    Func<WorkRequestContext, IWorkSystemSession> createSession)
+    Func<WorkRequestContext, IWorkSystemSession> createSession,
+    WorkflowEventPublisher? workflowEvents = null)
 {
     public Task<WorkflowRunCompletion> Execute(
         WorkflowRunState run,
@@ -19,6 +20,7 @@ internal sealed class NonDurableWorkflowExecutor(
         var outstanding = new List<(string StepName, IWorkerHandle Handle)>();
         shouldStopBeforeStep ??= static _ => false;
         shouldStopAfterOutstanding ??= static () => false;
+        var publisher = workflowEvents ?? new WorkflowEventPublisher(default, null, new WorkEventStream());
 
         try
         {
@@ -49,6 +51,7 @@ internal sealed class NonDurableWorkflowExecutor(
                     case ParallelWorkflowStepDefinition parallel:
                         {
                             run.MarkStepRunning(parallel.Name);
+                            publisher.StepUpdated(run.ToSnapshot(), parallel.Name);
                             var workerIds = new List<WorkerId>();
                             foreach (var child in parallel.Steps.OfType<DispatchWorkflowStepDefinition>())
                             {
@@ -64,6 +67,7 @@ internal sealed class NonDurableWorkflowExecutor(
                                 if (!handle.QueueOutcome.IsAccepted)
                                 {
                                     run.FailStep(parallel.Name, handle.QueueOutcome.Messages);
+                                    publisher.StepUpdated(run.ToSnapshot(), parallel.Name);
                                     return run.Fail(handle.QueueOutcome.Messages);
                                 }
 
@@ -76,20 +80,24 @@ internal sealed class NonDurableWorkflowExecutor(
                             }
 
                             run.MarkStepCompleted(parallel.Name, workerIds);
+                            publisher.StepUpdated(run.ToSnapshot(), parallel.Name);
                             break;
                         }
                     case JoinWorkflowStepDefinition join:
                         {
                             run.MarkStepRunning(join.Name);
+                            publisher.StepUpdated(run.ToSnapshot(), join.Name);
                             var completion = await WorkflowExecutionSupport.WaitForOutstanding(outstanding, cancellationToken);
                             if (!completion.IsCompletedSuccessfully)
                             {
                                 run.FailStep(join.Name, completion.Messages);
+                                publisher.StepUpdated(run.ToSnapshot(), join.Name);
                                 return run.Fail(completion.Messages);
                             }
 
                             outstanding.Clear();
                             run.MarkStepCompleted(join.Name);
+                            publisher.StepUpdated(run.ToSnapshot(), join.Name);
                             break;
                         }
                     default:
@@ -135,6 +143,8 @@ internal sealed class NonDurableWorkflowExecutor(
         CancellationToken cancellationToken)
     {
         run.MarkStepRunning(step.Name);
+        var publisher = workflowEvents ?? new WorkflowEventPublisher(default, null, new WorkEventStream());
+        publisher.StepUpdated(run.ToSnapshot(), step.Name);
         var input = WorkflowExecutionSupport.AddWorkflowIdentifiers(
             step.Input,
             run.Id,
@@ -144,10 +154,12 @@ internal sealed class NonDurableWorkflowExecutor(
         if (!handle.QueueOutcome.IsAccepted)
         {
             run.FailStep(step.Name, handle.QueueOutcome.Messages);
+            publisher.StepUpdated(run.ToSnapshot(), step.Name);
             return new DispatchResult(false, null, handle.QueueOutcome.Messages);
         }
 
         run.MarkStepCompleted(step.Name, handle.WorkerId is { } workerId ? [workerId] : []);
+        publisher.StepUpdated(run.ToSnapshot(), step.Name);
         return new DispatchResult(true, handle, []);
     }
 

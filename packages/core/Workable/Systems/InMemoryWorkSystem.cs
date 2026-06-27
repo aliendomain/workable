@@ -12,6 +12,7 @@ internal sealed class InMemoryWorkSystem :
     IWorkSystem,
     IWorkSystemBuiltInHttpSurfaceAccess,
     IWorkSystemReadModelClock,
+    IWorkSystemWorkflowClock,
     IWorkSystemShutdownMetadata,
     IWorkSystemCapabilitySource
 {
@@ -108,12 +109,14 @@ internal sealed class InMemoryWorkSystem :
             () => this.State,
             this.diagnostics,
             this.catalog,
+            this.workflows,
             this.queue,
             this.workers,
             this.query,
             this.events,
             this.authorization,
             this.groupProvider);
+        var workflowEvents = new WorkflowEventPublisher(this.Id, this.Name, this.events);
         this.workflowRuntime = new WorkflowRuntime(
             this.Name,
             this.RequiresAuthorization,
@@ -123,7 +126,8 @@ internal sealed class InMemoryWorkSystem :
             this.workers.CreateHandle,
             this.workflowPersistence,
             this.authorization,
-            this.groupProvider);
+            this.groupProvider,
+            workflowEvents);
     }
 
     public WorkSystemId Id { get; }
@@ -145,6 +149,8 @@ internal sealed class InMemoryWorkSystem :
     internal WorkerOperations WorkerOperations => this.workers;
 
     long IWorkSystemReadModelClock.AppliedSequence => this.readModel.AppliedSequence;
+
+    long IWorkSystemWorkflowClock.WorkflowSequence => this.workflowRuntime.Version;
 
     public IWorkCatalog Catalog
     {

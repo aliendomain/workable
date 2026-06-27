@@ -6,6 +6,7 @@ internal sealed class WorkSystemSessionFactory(
     Func<WorkSystemState> getSystemState,
     WorkSystemDiagnostics diagnostics,
     WorkSystemCatalog catalog,
+    WorkflowCatalog workflows,
     WorkQueueService queue,
     WorkerOperations workers,
     WorkSystemReadModelQueryService query,
@@ -45,6 +46,18 @@ internal sealed class WorkSystemSessionFactory(
             groups,
             requestContext.IsAuthenticated && requestContext.Actor.IsKnown,
             systemAuthorization);
+        var readableDefinitionNames = authorization.ReadableDefinitions()
+            .Select(definition => definition.Name)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        foreach (var workflow in workflows.Definitions)
+        {
+            if (systemAuthorization.HasReadAllWorkAccess() ||
+                workflow.Authorization.CanRead(groups, requestContext.IsAuthenticated && requestContext.Actor.IsKnown))
+            {
+                readableDefinitionNames.Add(workflow.Name);
+            }
+        }
+
         return new WorkSystemSession(
             systemName,
             getSystemState,
@@ -55,6 +68,6 @@ internal sealed class WorkSystemSessionFactory(
             new AuthorizedWorkQueueService(catalog, sessionQueue, authorization, requestContext),
             new AuthorizedWorkerOperations(catalog, sessionWorkers, sessionQuery, authorization, requestContext),
             new AuthorizedWorkQueryService(sessionCatalog, sessionQuery, authorization),
-            new AuthorizedWorkEventStream(sessionEvents, authorization));
+            new AuthorizedWorkEventStream(sessionEvents, readableDefinitionNames));
     }
 }

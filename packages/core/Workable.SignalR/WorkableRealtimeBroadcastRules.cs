@@ -4,9 +4,9 @@ internal static class WorkableRealtimeBroadcastRules
 {
     public static bool ShouldPublishView(
         bool requiresIntervalPublish,
-        long lastPublishedSequence,
-        long appliedSequence)
-        => requiresIntervalPublish || lastPublishedSequence != appliedSequence;
+        WorkableRealtimeViewVersion lastPublishedVersion,
+        WorkableRealtimeViewVersion currentVersion)
+        => requiresIntervalPublish || lastPublishedVersion != currentVersion;
 
     public static bool ShouldPublishDiagnosticsAlertChange(
         WorkableRealtimeDiagnosticsAlertState? previous,
@@ -22,3 +22,7 @@ internal static class WorkableRealtimeBroadcastRules
         return previous is not null || current.IsAlerting;
     }
 }
+
+internal readonly record struct WorkableRealtimeViewVersion(
+    long ReadModelSequence,
+    long WorkflowSequence);
