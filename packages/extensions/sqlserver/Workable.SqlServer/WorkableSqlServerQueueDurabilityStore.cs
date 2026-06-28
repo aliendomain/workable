@@ -31,7 +31,13 @@ SET NUMERIC_ROUNDABORT OFF;
     };
 
     private readonly string entriesTable = $"{WorkableSqlServerSchema.QuoteIdentifier(options.SchemaName)}.[WorkEntries]";
+    private readonly string queueTable = $"{WorkableSqlServerSchema.QuoteIdentifier(options.SchemaName)}.[WorkQueueEntries]";
     private readonly string workflowRunsTable = $"{WorkableSqlServerSchema.QuoteIdentifier(options.SchemaName)}.[WorkflowRuns]";
+    private readonly object enqueueBatchSync = new();
+    private readonly List<PendingEnqueue> pendingEnqueues = [];
+    private readonly int enqueueBatchSize = options.EnqueueBatchSize;
+    private readonly TimeSpan enqueueBatchWindow = options.EnqueueBatchWindow;
+    private int scheduledEnqueueBatchFlushes;
 
     public async Task Initialize(WorkQueueDurabilityInitializationContext context, CancellationToken cancellationToken = default)
     {
@@ -268,24 +274,180 @@ WHERE WorkerId = @WorkerId;
             return;
         }
 
+        await this.EnqueueBatched(request, cancellationToken);
+    }
+
+    private async Task EnqueueBatched(
+        WorkQueueDurabilityEnqueueRequest request,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+
+        var pending = new PendingEnqueue(request);
+        var shouldScheduleDelayedFlush = false;
+        var shouldFlushNow = false;
+
+        lock (this.enqueueBatchSync)
+        {
+            this.pendingEnqueues.Add(pending);
+            if (this.scheduledEnqueueBatchFlushes == 0)
+            {
+                this.scheduledEnqueueBatchFlushes++;
+                shouldScheduleDelayedFlush = true;
+            }
+
+            if (this.pendingEnqueues.Count >= this.enqueueBatchSize &&
+                this.scheduledEnqueueBatchFlushes < 2)
+            {
+                this.scheduledEnqueueBatchFlushes++;
+                shouldFlushNow = true;
+            }
+        }
+
+        if (shouldFlushNow)
+        {
+            this.StartScheduledEnqueueBatchFlush(TimeSpan.Zero);
+        }
+        else if (shouldScheduleDelayedFlush)
+        {
+            this.StartScheduledEnqueueBatchFlush(this.enqueueBatchWindow);
+        }
+
+        using var registration = cancellationToken.UnsafeRegister(
+            static state =>
+            {
+                var (enqueue, token) = ((PendingEnqueue Pending, CancellationToken Token))state!;
+                enqueue.TrySetCanceled(token);
+            },
+            (pending, cancellationToken));
+        await pending.Completion.Task;
+    }
+
+    private void StartScheduledEnqueueBatchFlush(TimeSpan delay)
+        => _ = Task.Run(async () =>
+        {
+            if (delay > TimeSpan.Zero)
+            {
+                await Task.Delay(delay);
+            }
+
+            await this.FlushEnqueueBatch();
+        });
+
+    private async Task FlushEnqueueBatch()
+    {
+        var batch = this.TakePendingEnqueueBatch();
+        if (batch.Count == 0)
+        {
+            return;
+        }
+
+        try
+        {
+            await this.ExecutePendingEnqueueBatch(batch);
+        }
+        catch (Exception exception)
+        {
+            foreach (var pending in batch)
+            {
+                pending.TrySetException(exception);
+            }
+        }
+    }
+
+    private List<PendingEnqueue> TakePendingEnqueueBatch()
+    {
+        var shouldScheduleNextFlush = false;
+        List<PendingEnqueue> batch;
+        lock (this.enqueueBatchSync)
+        {
+            if (this.scheduledEnqueueBatchFlushes > 0)
+            {
+                this.scheduledEnqueueBatchFlushes--;
+            }
+
+            if (this.pendingEnqueues.Count == 0)
+            {
+                return [];
+            }
+
+            var count = Math.Min(this.enqueueBatchSize, this.pendingEnqueues.Count);
+            batch = this.pendingEnqueues.GetRange(0, count);
+            this.pendingEnqueues.RemoveRange(0, count);
+            if (this.pendingEnqueues.Count > 0)
+            {
+                this.scheduledEnqueueBatchFlushes++;
+                shouldScheduleNextFlush = true;
+            }
+        }
+
+        if (shouldScheduleNextFlush)
+        {
+            this.StartScheduledEnqueueBatchFlush(TimeSpan.Zero);
+        }
+
+        return batch;
+    }
+
+    private async Task ExecutePendingEnqueueBatch(IReadOnlyList<PendingEnqueue> batch)
+    {
+        var active = batch.Where(static pending => !pending.Completion.Task.IsCompleted).ToArray();
+        if (active.Length == 0)
+        {
+            return;
+        }
+
         await ExecuteWithStoreUnavailableHandling(
             "enqueueing durable work",
             async () =>
             {
                 await using var connection = new SqlConnection(options.ConnectionString);
-                await connection.OpenAsync(cancellationToken);
-                await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+                await connection.OpenAsync(CancellationToken.None);
+
+                if (active.Length == 1)
+                {
+                    await Insert(active[0].Request, connection, transaction: null, CancellationToken.None);
+                    active[0].TrySetResult();
+                    return;
+                }
+
                 try
                 {
-                    await Insert(request, connection, transaction, cancellationToken);
-                    await transaction.CommitAsync(cancellationToken);
+                    await this.InsertBatch(active, connection, CancellationToken.None);
+                    foreach (var pending in active)
+                    {
+                        pending.TrySetResult();
+                    }
                 }
-                catch
+                catch (SqlException exception) when (exception.Number is 2601 or 2627)
                 {
-                    await transaction.RollbackAsync(CancellationToken.None);
-                    throw;
+                    await this.InsertBatchIndividually(active, connection, CancellationToken.None);
                 }
             });
+    }
+
+    private async Task InsertBatchIndividually(
+        IReadOnlyList<PendingEnqueue> batch,
+        DbConnection connection,
+        CancellationToken cancellationToken)
+    {
+        foreach (var pending in batch)
+        {
+            if (pending.Completion.Task.IsCompleted)
+            {
+                continue;
+            }
+
+            try
+            {
+                await Insert(pending.Request, connection, transaction: null, cancellationToken);
+                pending.TrySetResult();
+            }
+            catch (WorkQueueDurabilityDuplicateException exception)
+            {
+                pending.TrySetException(exception);
+            }
+        }
     }
 
     public async Task ReserveIdempotency(WorkIdempotencyPersistenceRequest request, CancellationToken cancellationToken = default)
@@ -338,66 +500,53 @@ WHERE WorkerId = @WorkerId;
                 command.CommandText = RequiredDmlSetOptions + $"""
 DECLARE @Claimed TABLE
 (
-    WorkerId uniqueidentifier NOT NULL,
-    DefinitionName nvarchar(450) NOT NULL,
-    InputJson nvarchar(max) NULL,
-    OptionsJson nvarchar(max) NULL,
-    ConfigurationJson nvarchar(max) NULL,
-    OriginJson nvarchar(max) NOT NULL,
-    CreatedAt datetimeoffset NOT NULL
+    WorkerId uniqueidentifier NOT NULL PRIMARY KEY
 );
 
 DECLARE @LockResult int;
 DECLARE @Now datetimeoffset = SYSDATETIMEOFFSET();
 DECLARE @RequiresClaimLock bit = 0;
 
-BEGIN TRY
-    BEGIN TRANSACTION;
+SELECT @RequiresClaimLock = CASE
+	    WHEN EXISTS
+	    (
+	        SELECT 1
+	        FROM {this.queueTable} queue WITH (READPAST)
+	        WHERE queue.WorkSystemName = @WorkSystemName
+	          AND queue.HasPersistentConcurrency = 1
+	          AND (queue.LeaseExpiresAt IS NULL OR queue.LeaseExpiresAt <= @Now)
+	    )
+	    THEN 1
+	    ELSE 0
+	END;
 
-    SELECT @RequiresClaimLock = CASE
-        WHEN EXISTS
-        (
-            SELECT 1
-            FROM {this.entriesTable} entries WITH (READPAST)
-            WHERE entries.WorkSystemName = @WorkSystemName
-              AND entries.IsDurableQueued = 1
-              AND (entries.LeaseExpiresAt IS NULL OR entries.LeaseExpiresAt <= @Now)
-              AND JSON_VALUE(entries.ConfigurationJson, '$.coordination.concurrency.isEnabled') = 'true'
-              AND JSON_VALUE(entries.ConfigurationJson, '$.coordination.storage') = 'Persistent'
-        )
-        THEN 1
-        ELSE 0
-    END;
+IF @RequiresClaimLock = 0
+	BEGIN
+	    ;WITH ready AS
+	        (
+	            SELECT TOP (@BatchSize) queue.WorkerId
+	            FROM {this.queueTable} queue WITH (UPDLOCK, READPAST, ROWLOCK)
+	            WHERE queue.WorkSystemName = @WorkSystemName
+	              AND queue.HasPersistentConcurrency = 0
+	              AND (queue.LeaseExpiresAt IS NULL OR queue.LeaseExpiresAt <= @Now)
+	            ORDER BY queue.DefinitionName, queue.CreatedAt, queue.WorkerId
+	        )
+	    UPDATE queue
+	    SET ClaimedBy = @OwnerId,
+	        ClaimedAt = @Now,
+	        LeaseId = @LeaseId,
+	        LeaseExpiresAt = @LeaseExpiresAt
+	    OUTPUT inserted.WorkerId
+	    INTO @Claimed
+	    FROM {this.queueTable} queue
+	    INNER JOIN ready
+	        ON ready.WorkerId = queue.WorkerId;
+	END
+	ELSE
+	BEGIN
+    BEGIN TRY
+        BEGIN TRANSACTION;
 
-    IF @RequiresClaimLock = 0
-    BEGIN
-        ;WITH ready AS
-            (
-                SELECT TOP (@BatchSize) *
-                FROM {this.entriesTable} WITH (UPDLOCK, READPAST, ROWLOCK)
-                WHERE WorkSystemName = @WorkSystemName
-                  AND IsDurableQueued = 1
-                  AND (LeaseExpiresAt IS NULL OR LeaseExpiresAt <= @Now)
-                ORDER BY CreatedAt, WorkerId
-            )
-        UPDATE ready
-        SET ClaimedBy = @OwnerId,
-            ClaimedAt = @Now,
-            LeaseId = @LeaseId,
-            LeaseExpiresAt = @LeaseExpiresAt
-        OUTPUT inserted.WorkerId,
-               inserted.DefinitionName,
-               inserted.InputJson,
-               inserted.OptionsJson,
-               inserted.ConfigurationJson,
-               inserted.OriginJson,
-               inserted.CreatedAt
-        INTO @Claimed;
-
-        COMMIT TRANSACTION;
-    END;
-    ELSE
-    BEGIN
         EXEC @LockResult = sp_getapplock
             @Resource = @ClaimLockResource,
             @LockMode = 'Exclusive',
@@ -409,34 +558,15 @@ BEGIN TRY
             THROW 51000, 'Workable.SqlServer could not acquire the durable queue claim lock.', 1;
         END;
 
-;WITH candidates AS
-    (
-        SELECT entries.*,
-            CASE
-                WHEN JSON_VALUE(entries.ConfigurationJson, '$.coordination.concurrency.isEnabled') = 'true'
-                 AND JSON_VALUE(entries.ConfigurationJson, '$.coordination.storage') = 'Persistent'
-                THEN 1
-                ELSE 0
-            END AS HasPersistenceConcurrency,
-            TRY_CONVERT(int, JSON_VALUE(entries.ConfigurationJson, '$.coordination.concurrency.maximumCapacity')) AS ConcurrencyMaximumCapacity,
-            JSON_VALUE(entries.ConfigurationJson, '$.coordination.concurrency.scope') AS ConcurrencyScope
-        FROM {this.entriesTable} entries WITH (UPDLOCK, READPAST, ROWLOCK)
-        WHERE entries.WorkSystemName = @WorkSystemName
-          AND entries.IsDurableQueued = 1
-          AND (entries.LeaseExpiresAt IS NULL OR entries.LeaseExpiresAt <= @Now)
-          AND
-          (
-              @RequiresClaimLock = 1
-              OR CASE
-                  WHEN JSON_VALUE(entries.ConfigurationJson, '$.coordination.concurrency.isEnabled') = 'true'
-                   AND JSON_VALUE(entries.ConfigurationJson, '$.coordination.storage') = 'Persistent'
-                  THEN 1
-                  ELSE 0
-              END = 0
-          )
-    ),
-ranked AS
-    (
+	;WITH candidates AS
+	    (
+	        SELECT queue.*
+	        FROM {this.queueTable} queue WITH (UPDLOCK, READPAST, ROWLOCK)
+	        WHERE queue.WorkSystemName = @WorkSystemName
+	          AND (queue.LeaseExpiresAt IS NULL OR queue.LeaseExpiresAt <= @Now)
+	    ),
+	ranked AS
+	    (
         SELECT candidates.*,
             ROW_NUMBER() OVER
             (
@@ -450,12 +580,12 @@ ranked AS
                     CASE WHEN candidates.ConcurrencyScope = 'PerConcurrencyKey' THEN candidates.ConcurrencyValue ELSE NULL END
                 ORDER BY candidates.CreatedAt, candidates.WorkerId
             ) AS ConcurrencyRank,
-            (
-                SELECT COUNT(*)
-                FROM {this.entriesTable} active WITH (UPDLOCK, HOLDLOCK)
-                WHERE active.WorkSystemName = candidates.WorkSystemName
-                  AND active.DefinitionName = candidates.DefinitionName
-                  AND active.ConcurrencyBucket = N'Executing'
+	            (
+	                SELECT COUNT(*)
+	                FROM {this.queueTable} active WITH (UPDLOCK, HOLDLOCK)
+	                WHERE active.WorkSystemName = candidates.WorkSystemName
+	                  AND active.DefinitionName = candidates.DefinitionName
+	                  AND active.ConcurrencyBucket = N'Executing'
                   AND active.LeaseExpiresAt > @Now
                   AND
                   (
@@ -478,60 +608,57 @@ ranked AS
     ),
 ready AS
     (
-        SELECT TOP (@BatchSize)
-            ranked.WorkerId,
-            ranked.HasPersistenceConcurrency
-        FROM ranked
-        WHERE ranked.HasPersistenceConcurrency = 0
-           OR
-           (
-               ranked.ConcurrencyMaximumCapacity > 0
-               AND ranked.ActiveConcurrencyCount + ranked.ConcurrencyRank <= ranked.ConcurrencyMaximumCapacity
-           )
-        ORDER BY ranked.CreatedAt, ranked.WorkerId
-)
-UPDATE entries
-SET ClaimedBy = @OwnerId,
-    ClaimedAt = @Now,
-    LeaseId = @LeaseId,
-    LeaseExpiresAt = @LeaseExpiresAt,
-    ConcurrencyBucket = CASE
-        WHEN ready.HasPersistenceConcurrency = 1 THEN N'Executing'
-        ELSE ConcurrencyBucket
-    END
-OUTPUT inserted.WorkerId,
-       inserted.DefinitionName,
-       inserted.InputJson,
-       inserted.OptionsJson,
-       inserted.ConfigurationJson,
-       inserted.OriginJson,
-       inserted.CreatedAt
-INTO @Claimed
-FROM {this.entriesTable} entries
-INNER JOIN ready
-    ON ready.WorkerId = entries.WorkerId;
+	        SELECT TOP (@BatchSize)
+	            ranked.WorkerId,
+	            ranked.HasPersistentConcurrency
+	        FROM ranked
+	        WHERE ranked.HasPersistentConcurrency = 0
+	           OR
+	           (
+	               ranked.ConcurrencyMaximumCapacity > 0
+	               AND ranked.ActiveConcurrencyCount + ranked.ConcurrencyRank <= ranked.ConcurrencyMaximumCapacity
+	           )
+	        ORDER BY ranked.DefinitionName, ranked.CreatedAt, ranked.WorkerId
+	)
+	UPDATE queue
+	SET ClaimedBy = @OwnerId,
+	    ClaimedAt = @Now,
+	    LeaseId = @LeaseId,
+	    LeaseExpiresAt = @LeaseExpiresAt,
+	    ConcurrencyBucket = CASE
+	        WHEN ready.HasPersistentConcurrency = 1 THEN N'Executing'
+	        ELSE ConcurrencyBucket
+	    END
+	OUTPUT inserted.WorkerId
+	INTO @Claimed
+	FROM {this.queueTable} queue
+	INNER JOIN ready
+	    ON ready.WorkerId = queue.WorkerId;
 
         COMMIT TRANSACTION;
-    END;
-END TRY
-BEGIN CATCH
-    IF @@TRANCOUNT > 0
-    BEGIN
-        ROLLBACK TRANSACTION;
-    END;
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0
+        BEGIN
+            ROLLBACK TRANSACTION;
+        END;
 
-    THROW;
-END CATCH;
+        THROW;
+    END CATCH;
+END;
 
-SELECT WorkerId,
-       DefinitionName,
-       InputJson,
-       OptionsJson,
-       ConfigurationJson,
-       OriginJson,
-       CreatedAt
-FROM @Claimed
-ORDER BY CreatedAt, WorkerId;
+	SELECT queue.WorkerId,
+	       queue.DefinitionName,
+	       entries.InputJson,
+	       entries.OptionsJson,
+	       entries.ConfigurationJson,
+	       entries.OriginJson,
+	       queue.CreatedAt
+	FROM @Claimed claimed
+	INNER JOIN {this.queueTable} queue
+	    ON queue.WorkerId = claimed.WorkerId
+	INNER JOIN {this.entriesTable} entries
+	    ON entries.WorkerId = claimed.WorkerId;
 """;
                 Add(command, "@BatchSize", request.BatchSize);
                 Add(command, "@WorkSystemName", NormalizeWorkSystemName(request.WorkSystemName));
@@ -543,8 +670,14 @@ ORDER BY CreatedAt, WorkerId;
                 var entries = new List<WorkQueueDurabilityEntry>();
                 await using (var reader = await command.ExecuteReaderAsync(cancellationToken))
                 {
-                    while (await reader.ReadAsync(cancellationToken))
+                    while (true)
                     {
+                        var hasRow = await reader.ReadAsync(cancellationToken);
+                        if (!hasRow)
+                        {
+                            break;
+                        }
+
                         var workerId = new WorkerId(reader.GetGuid(0));
                         var requestContext = DeserializeRequestContext(reader, 5);
 
@@ -557,6 +690,23 @@ ORDER BY CreatedAt, WorkerId;
                             requestContext,
                             reader.GetFieldValue<DateTimeOffset>(6)));
                     }
+
+                    entries.Sort(static (left, right) =>
+                    {
+                        var definitionComparison = string.Compare(
+                            left.DefinitionName,
+                            right.DefinitionName,
+                            StringComparison.Ordinal);
+                        if (definitionComparison != 0)
+                        {
+                            return definitionComparison;
+                        }
+
+                        var createdAtComparison = left.CreatedAt.CompareTo(right.CreatedAt);
+                        return createdAtComparison != 0
+                            ? createdAtComparison
+                            : left.Lease.WorkerId.Value.CompareTo(right.Lease.WorkerId.Value);
+                    });
                 }
 
                 return entries;
@@ -600,13 +750,13 @@ DECLARE @RenewedLeases TABLE
     LeaseId nvarchar(64) NOT NULL
 );
 
-UPDATE entries
-SET LeaseExpiresAt = @LeaseExpiresAt
-OUTPUT inserted.WorkerId, inserted.LeaseId INTO @RenewedLeases
-FROM {this.entriesTable} entries
-INNER JOIN @SubmittedLeases leases
-    ON leases.WorkerId = entries.WorkerId
-   AND leases.LeaseId = entries.LeaseId;
+	UPDATE queue
+	SET LeaseExpiresAt = @LeaseExpiresAt
+	OUTPUT inserted.WorkerId, inserted.LeaseId INTO @RenewedLeases
+	FROM {this.queueTable} queue
+	INNER JOIN @SubmittedLeases leases
+	    ON leases.WorkerId = queue.WorkerId
+	   AND leases.LeaseId = queue.LeaseId;
 
 SELECT submitted.WorkerId, submitted.LeaseId
 FROM @SubmittedLeases submitted
@@ -671,18 +821,12 @@ DECLARE @RetainedWorkers TABLE
     LeaseId nvarchar(64) NULL
 );
 
-UPDATE entries
-SET IsDurableQueued = 0,
-    ClaimedBy = NULL,
-    ClaimedAt = NULL,
-    LeaseId = NULL,
-    LeaseExpiresAt = NULL,
-    ConcurrencyBucket = NULL
-OUTPUT inserted.WorkerId, deleted.LeaseId INTO @RetainedWorkers
-FROM {this.entriesTable} entries
-INNER JOIN @CleanupWorkers workers
-    ON workers.WorkerId = entries.WorkerId
-   AND (workers.LeaseId IS NULL OR workers.LeaseId = entries.LeaseId);
+	DELETE queue
+	OUTPUT deleted.WorkerId, deleted.LeaseId INTO @RetainedWorkers
+	FROM {this.queueTable} queue
+	INNER JOIN @CleanupWorkers workers
+	    ON workers.WorkerId = queue.WorkerId
+	   AND (workers.LeaseId IS NULL OR workers.LeaseId = queue.LeaseId);
 
 SELECT submitted.WorkerId, submitted.LeaseId
 FROM @CleanupWorkers submitted
@@ -722,30 +866,54 @@ WITH
     LeaseId nvarchar(64) '$.leaseId'
 );
 
-DECLARE @DeletedWorkers TABLE
-(
-    WorkerId uniqueidentifier NOT NULL,
-    LeaseId nvarchar(64) NULL
-);
+	DECLARE @DeletedQueueWorkers TABLE
+	(
+	    WorkerId uniqueidentifier NOT NULL,
+	    LeaseId nvarchar(64) NULL
+	);
 
-DELETE entries
-OUTPUT deleted.WorkerId, deleted.LeaseId INTO @DeletedWorkers
-FROM {this.entriesTable} entries
-INNER JOIN @CleanupWorkers workers
-    ON workers.WorkerId = entries.WorkerId
-   AND (workers.LeaseId IS NULL OR workers.LeaseId = entries.LeaseId);
+	BEGIN TRY
+	    BEGIN TRANSACTION;
 
-SELECT submitted.WorkerId, submitted.LeaseId
-FROM @CleanupWorkers submitted
-LEFT JOIN @DeletedWorkers deleted
-    ON deleted.WorkerId = submitted.WorkerId
-   AND (submitted.LeaseId IS NULL OR deleted.LeaseId = submitted.LeaseId)
-WHERE submitted.LeaseId IS NOT NULL
-  AND deleted.WorkerId IS NULL;
+	    DELETE queue
+	    OUTPUT deleted.WorkerId, deleted.LeaseId INTO @DeletedQueueWorkers
+	    FROM {this.queueTable} queue
+	    INNER JOIN @CleanupWorkers workers
+	        ON workers.WorkerId = queue.WorkerId
+	       AND (workers.LeaseId IS NULL OR workers.LeaseId = queue.LeaseId);
+
+	    DELETE entries
+	    FROM {this.entriesTable} entries
+	    INNER JOIN @CleanupWorkers workers
+	        ON workers.WorkerId = entries.WorkerId
+	    LEFT JOIN @DeletedQueueWorkers deletedQueue
+	        ON deletedQueue.WorkerId = workers.WorkerId
+	       AND (workers.LeaseId IS NULL OR deletedQueue.LeaseId = workers.LeaseId)
+	    WHERE workers.LeaseId IS NULL
+	       OR deletedQueue.WorkerId IS NOT NULL;
+
+	    COMMIT TRANSACTION;
+	END TRY
+	BEGIN CATCH
+	    IF @@TRANCOUNT > 0
+	    BEGIN
+	        ROLLBACK TRANSACTION;
+	    END;
+
+	    THROW;
+	END CATCH;
+
+	SELECT submitted.WorkerId, submitted.LeaseId
+	FROM @CleanupWorkers submitted
+	LEFT JOIN @DeletedQueueWorkers deletedQueue
+	    ON deletedQueue.WorkerId = submitted.WorkerId
+	   AND deletedQueue.LeaseId = submitted.LeaseId
+	WHERE submitted.LeaseId IS NOT NULL
+	  AND deletedQueue.WorkerId IS NULL;
 """, async command =>
-        {
-            await ExecuteCleanup(command, workers, cancellationToken);
-        }, cancellationToken);
+            {
+                await ExecuteCleanup(command, workers, cancellationToken);
+            }, cancellationToken);
     }
 
     public async Task DeleteFinal(
@@ -771,41 +939,51 @@ WHERE submitted.LeaseId IS NOT NULL
                 await using var command = connection!.CreateCommand();
                 command.Transaction = sqlTransaction!;
                 command.CommandText = RequiredDmlSetOptions + $"""
-DECLARE @CleanupWorkers TABLE
-(
-    WorkerId uniqueidentifier NOT NULL,
-    LeaseId nvarchar(64) NULL
-);
+	DECLARE @CleanupWorkers TABLE
+	(
+	    WorkerId uniqueidentifier NOT NULL,
+	    LeaseId nvarchar(64) NULL
+	);
 
-INSERT INTO @CleanupWorkers (WorkerId, LeaseId)
-SELECT WorkerId, LeaseId
-FROM OPENJSON(@WorkersJson)
-WITH
-(
-    WorkerId uniqueidentifier '$.workerId',
-    LeaseId nvarchar(64) '$.leaseId'
-);
+	INSERT INTO @CleanupWorkers (WorkerId, LeaseId)
+	SELECT WorkerId, LeaseId
+	FROM OPENJSON(@WorkersJson)
+	WITH
+	(
+	    WorkerId uniqueidentifier '$.workerId',
+	    LeaseId nvarchar(64) '$.leaseId'
+	);
 
-DECLARE @DeletedWorkers TABLE
-(
-    WorkerId uniqueidentifier NOT NULL,
-    LeaseId nvarchar(64) NULL
-);
+	DECLARE @DeletedQueueWorkers TABLE
+	(
+	    WorkerId uniqueidentifier NOT NULL,
+	    LeaseId nvarchar(64) NULL
+	);
 
-DELETE entries
-OUTPUT deleted.WorkerId, deleted.LeaseId INTO @DeletedWorkers
-FROM {this.entriesTable} entries
-INNER JOIN @CleanupWorkers workers
-    ON workers.WorkerId = entries.WorkerId
-   AND (workers.LeaseId IS NULL OR workers.LeaseId = entries.LeaseId);
+	DELETE queue
+	OUTPUT deleted.WorkerId, deleted.LeaseId INTO @DeletedQueueWorkers
+	FROM {this.queueTable} queue
+	INNER JOIN @CleanupWorkers workers
+	    ON workers.WorkerId = queue.WorkerId
+	   AND (workers.LeaseId IS NULL OR workers.LeaseId = queue.LeaseId);
 
-SELECT submitted.WorkerId, submitted.LeaseId
-FROM @CleanupWorkers submitted
-LEFT JOIN @DeletedWorkers deleted
-    ON deleted.WorkerId = submitted.WorkerId
-   AND (submitted.LeaseId IS NULL OR deleted.LeaseId = submitted.LeaseId)
-WHERE submitted.LeaseId IS NOT NULL
-  AND deleted.WorkerId IS NULL;
+	DELETE entries
+	FROM {this.entriesTable} entries
+	INNER JOIN @CleanupWorkers workers
+	    ON workers.WorkerId = entries.WorkerId
+	LEFT JOIN @DeletedQueueWorkers deletedQueue
+	    ON deletedQueue.WorkerId = workers.WorkerId
+	   AND (workers.LeaseId IS NULL OR deletedQueue.LeaseId = workers.LeaseId)
+	WHERE workers.LeaseId IS NULL
+	   OR deletedQueue.WorkerId IS NOT NULL;
+
+	SELECT submitted.WorkerId, submitted.LeaseId
+	FROM @CleanupWorkers submitted
+	LEFT JOIN @DeletedQueueWorkers deletedQueue
+	    ON deletedQueue.WorkerId = submitted.WorkerId
+	   AND deletedQueue.LeaseId = submitted.LeaseId
+		WHERE submitted.LeaseId IS NOT NULL
+		  AND deletedQueue.WorkerId IS NULL;
 """;
                 await ExecuteCleanup(command, workers, cancellationToken);
             });
@@ -937,19 +1115,37 @@ WHERE RunId = @RunId;
     private async Task Insert(
         WorkQueueDurabilityEnqueueRequest request,
         DbConnection connection,
-        DbTransaction transaction,
+        DbTransaction? transaction,
         CancellationToken cancellationToken)
     {
+        if (transaction is null)
+        {
+            await using var ownedTransaction = await connection.BeginTransactionAsync(cancellationToken);
+            try
+            {
+                await this.Insert(request, connection, ownedTransaction, cancellationToken);
+                await ownedTransaction.CommitAsync(cancellationToken);
+            }
+            catch
+            {
+                await ownedTransaction.RollbackAsync(CancellationToken.None);
+                throw;
+            }
+
+            return;
+        }
+
         await using var command = connection.CreateCommand();
         command.Transaction = transaction;
         command.CommandText = RequiredDmlSetOptions + $"""
-INSERT INTO {this.entriesTable}
+	INSERT INTO {this.entriesTable}
 (
     WorkerId,
     WorkSystemName,
     DefinitionName,
     IsDurableQueued,
     HasIdempotencyReservation,
+    HasPersistentConcurrency,
     SubjectType,
     SubjectValue,
     ConcurrencyType,
@@ -957,16 +1153,17 @@ INSERT INTO {this.entriesTable}
     InputJson,
     OptionsJson,
     ConfigurationJson,
-    OriginJson,
-    CreatedAt
-)
-VALUES
+	    OriginJson,
+	    CreatedAt
+	)
+	VALUES
 (
     @WorkerId,
     @WorkSystemName,
     @DefinitionName,
     @IsDurableQueued,
     @HasIdempotencyReservation,
+    @HasPersistentConcurrency,
     @SubjectType,
     @SubjectValue,
     @ConcurrencyType,
@@ -974,15 +1171,48 @@ VALUES
     @InputJson,
     @OptionsJson,
     @ConfigurationJson,
-    @OriginJson,
-    @CreatedAt
-);
+	    @OriginJson,
+	    @CreatedAt
+	);
+
+	INSERT INTO {this.queueTable}
+	(
+	    WorkerId,
+	    WorkSystemName,
+	    DefinitionName,
+	    HasPersistentConcurrency,
+	    ConcurrencyScope,
+	    ConcurrencyMaximumCapacity,
+	    SubjectType,
+	    SubjectValue,
+	    ConcurrencyType,
+	    ConcurrencyValue,
+	    CreatedAt
+	)
+	VALUES
+	(
+	    @WorkerId,
+	    @WorkSystemName,
+	    @DefinitionName,
+	    @HasPersistentConcurrency,
+	    @ConcurrencyScope,
+	    @ConcurrencyMaximumCapacity,
+	    @SubjectType,
+	    @SubjectValue,
+	    @ConcurrencyType,
+	    @ConcurrencyValue,
+	    @CreatedAt
+	);
 """;
+        var hasPersistentConcurrency = request.Configuration.Coordination.IsPersistentConcurrencyEnabled;
         Add(command, "@WorkerId", request.WorkerId.Value);
         Add(command, "@WorkSystemName", NormalizeWorkSystemName(request.WorkSystemName));
         Add(command, "@DefinitionName", request.Definition.Name);
-        Add(command, "@IsDurableQueued", true);
+        Add(command, "@IsDurableQueued", false);
         Add(command, "@HasIdempotencyReservation", request.Idempotency is not null);
+        Add(command, "@HasPersistentConcurrency", hasPersistentConcurrency);
+        Add(command, "@ConcurrencyScope", GetPersistentConcurrencyScope(request, hasPersistentConcurrency));
+        Add(command, "@ConcurrencyMaximumCapacity", GetPersistentConcurrencyMaximumCapacity(request, hasPersistentConcurrency));
         var subjectId = request.Idempotency?.SubjectId ?? request.Input?.SubjectId;
         Add(command, "@SubjectType", subjectId?.Type);
         Add(command, "@SubjectValue", subjectId?.Value);
@@ -1003,6 +1233,169 @@ VALUES
             var duplicateSubject = subjectId?.ToString() ?? "<none>";
             throw new WorkQueueDurabilityDuplicateException(
                 $"A durable worker for subject '{duplicateSubject}' already exists.");
+        }
+    }
+
+    private async Task InsertBatch(
+        IReadOnlyList<PendingEnqueue> batch,
+        DbConnection connection,
+        CancellationToken cancellationToken)
+    {
+        await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = RequiredDmlSetOptions + $"""
+	DECLARE @Entries TABLE
+	(
+	    WorkerId uniqueidentifier NOT NULL,
+	    WorkSystemName nvarchar(256) NOT NULL,
+	    DefinitionName nvarchar(450) NOT NULL,
+	    HasIdempotencyReservation bit NOT NULL,
+	    HasPersistentConcurrency bit NOT NULL,
+	    ConcurrencyScope nvarchar(64) NULL,
+	    ConcurrencyMaximumCapacity int NULL,
+	    SubjectType nvarchar(256) NULL,
+	    SubjectValue nvarchar(450) NULL,
+	    ConcurrencyType nvarchar(256) NULL,
+	    ConcurrencyValue nvarchar(450) NULL,
+	    InputJson nvarchar(max) NULL,
+	    OptionsJson nvarchar(max) NULL,
+	    ConfigurationJson nvarchar(max) NULL,
+	    OriginJson nvarchar(max) NOT NULL,
+	    CreatedAt datetimeoffset NOT NULL
+	);
+
+	INSERT INTO @Entries
+	(
+	    WorkerId,
+	    WorkSystemName,
+	    DefinitionName,
+	    HasIdempotencyReservation,
+	    HasPersistentConcurrency,
+	    ConcurrencyScope,
+	    ConcurrencyMaximumCapacity,
+	    SubjectType,
+	    SubjectValue,
+	    ConcurrencyType,
+	    ConcurrencyValue,
+	    InputJson,
+	    OptionsJson,
+	    ConfigurationJson,
+	    OriginJson,
+	    CreatedAt
+	)
+	SELECT
+	    WorkerId,
+	    WorkSystemName,
+	    DefinitionName,
+	    HasIdempotencyReservation,
+	    HasPersistentConcurrency,
+	    ConcurrencyScope,
+	    ConcurrencyMaximumCapacity,
+	    SubjectType,
+	    SubjectValue,
+	    ConcurrencyType,
+	    ConcurrencyValue,
+	    InputJson,
+	    OptionsJson,
+	    ConfigurationJson,
+	    OriginJson,
+	    CreatedAt
+	FROM OPENJSON(@EntriesJson)
+	WITH
+	(
+	    WorkerId uniqueidentifier '$.workerId',
+	    WorkSystemName nvarchar(256) '$.workSystemName',
+	    DefinitionName nvarchar(450) '$.definitionName',
+	    HasIdempotencyReservation bit '$.hasIdempotencyReservation',
+	    HasPersistentConcurrency bit '$.hasPersistentConcurrency',
+	    ConcurrencyScope nvarchar(64) '$.concurrencyScope',
+	    ConcurrencyMaximumCapacity int '$.concurrencyMaximumCapacity',
+	    SubjectType nvarchar(256) '$.subjectType',
+	    SubjectValue nvarchar(450) '$.subjectValue',
+	    ConcurrencyType nvarchar(256) '$.concurrencyType',
+	    ConcurrencyValue nvarchar(450) '$.concurrencyValue',
+	    InputJson nvarchar(max) '$.inputJson',
+	    OptionsJson nvarchar(max) '$.optionsJson',
+	    ConfigurationJson nvarchar(max) '$.configurationJson',
+	    OriginJson nvarchar(max) '$.originJson',
+	    CreatedAt datetimeoffset '$.createdAt'
+	);
+
+	INSERT INTO {this.entriesTable}
+	(
+	    WorkerId,
+    WorkSystemName,
+    DefinitionName,
+    IsDurableQueued,
+    HasIdempotencyReservation,
+    HasPersistentConcurrency,
+    SubjectType,
+    SubjectValue,
+    ConcurrencyType,
+    ConcurrencyValue,
+    InputJson,
+    OptionsJson,
+    ConfigurationJson,
+    OriginJson,
+    CreatedAt
+)
+	SELECT
+	    WorkerId,
+	    WorkSystemName,
+	    DefinitionName,
+	    CAST(0 AS bit),
+	    HasIdempotencyReservation,
+	    HasPersistentConcurrency,
+	    SubjectType,
+    SubjectValue,
+    ConcurrencyType,
+    ConcurrencyValue,
+    InputJson,
+    OptionsJson,
+    ConfigurationJson,
+	    OriginJson,
+	    CreatedAt
+	FROM @Entries;
+
+	INSERT INTO {this.queueTable}
+	(
+	    WorkerId,
+	    WorkSystemName,
+	    DefinitionName,
+	    HasPersistentConcurrency,
+	    ConcurrencyScope,
+	    ConcurrencyMaximumCapacity,
+	    SubjectType,
+	    SubjectValue,
+	    ConcurrencyType,
+	    ConcurrencyValue,
+	    CreatedAt
+	)
+	SELECT
+	    WorkerId,
+	    WorkSystemName,
+	    DefinitionName,
+	    HasPersistentConcurrency,
+	    ConcurrencyScope,
+	    ConcurrencyMaximumCapacity,
+	    SubjectType,
+	    SubjectValue,
+	    ConcurrencyType,
+	    ConcurrencyValue,
+	    CreatedAt
+	FROM @Entries;
+""";
+        Add(command, "@EntriesJson", SerializeEnqueueRequests(batch));
+        try
+        {
+            await command.ExecuteNonQueryAsync(cancellationToken);
+            await transaction.CommitAsync(cancellationToken);
+        }
+        catch
+        {
+            await transaction.RollbackAsync(CancellationToken.None);
+            throw;
         }
     }
 
@@ -1207,6 +1600,48 @@ VALUES
                 options.HasExplicitProfilingEnabled ? options.ProfilingEnabled : null,
                 options.Configuration));
 
+    private static string SerializeEnqueueRequests(IReadOnlyList<PendingEnqueue> batch)
+        => JsonSerializer.Serialize(
+            batch.Select(static pending => CreateEnqueuePayload(pending.Request)),
+            JsonOptions);
+
+    private static EnqueuePayload CreateEnqueuePayload(WorkQueueDurabilityEnqueueRequest request)
+    {
+        var subjectId = request.Idempotency?.SubjectId ?? request.Input?.SubjectId;
+        var hasPersistentConcurrency = request.Configuration.Coordination.IsPersistentConcurrencyEnabled;
+        return new EnqueuePayload(
+            request.WorkerId.Value,
+            NormalizeWorkSystemName(request.WorkSystemName),
+            request.Definition.Name,
+            request.Idempotency is not null,
+            hasPersistentConcurrency,
+            GetPersistentConcurrencyScope(request, hasPersistentConcurrency),
+            GetPersistentConcurrencyMaximumCapacity(request, hasPersistentConcurrency),
+            subjectId?.Type,
+            subjectId?.Value,
+            request.Input?.ConcurrencyKey?.Type,
+            request.Input?.ConcurrencyKey?.Value,
+            Serialize(request.Input),
+            SerializeWorkerOptions(request.Options with { QueueDurabilityTransaction = null }),
+            Serialize(request.Configuration),
+            Serialize(request.RequestContext) ?? throw new InvalidOperationException("Durable enqueue origin payload cannot be null."),
+            request.CreatedAt);
+    }
+
+    private static string? GetPersistentConcurrencyScope(
+        WorkQueueDurabilityEnqueueRequest request,
+        bool hasPersistentConcurrency)
+        => hasPersistentConcurrency
+            ? request.Configuration.Coordination.Concurrency.Scope.ToString()
+            : null;
+
+    private static int? GetPersistentConcurrencyMaximumCapacity(
+        WorkQueueDurabilityEnqueueRequest request,
+        bool hasPersistentConcurrency)
+        => hasPersistentConcurrency
+            ? request.Configuration.Coordination.Concurrency.MaximumCapacity
+            : null;
+
     private static string SerializeRenewalLeases(IReadOnlyList<WorkQueueDurabilityLease> leases)
         => JsonSerializer.Serialize(
             leases.Select(lease => new RenewalLeasePayload(
@@ -1296,6 +1731,40 @@ VALUES
     private sealed record RenewalLeasePayload(Guid WorkerId, string LeaseId);
 
     private sealed record CleanupWorkerPayload(Guid WorkerId, string? LeaseId);
+
+    private sealed record EnqueuePayload(
+        Guid WorkerId,
+        string WorkSystemName,
+        string DefinitionName,
+        bool HasIdempotencyReservation,
+        bool HasPersistentConcurrency,
+        string? ConcurrencyScope,
+        int? ConcurrencyMaximumCapacity,
+        string? SubjectType,
+        string? SubjectValue,
+        string? ConcurrencyType,
+        string? ConcurrencyValue,
+        string? InputJson,
+        string? OptionsJson,
+        string? ConfigurationJson,
+        string OriginJson,
+        DateTimeOffset CreatedAt);
+
+    private sealed class PendingEnqueue(WorkQueueDurabilityEnqueueRequest request)
+    {
+        public WorkQueueDurabilityEnqueueRequest Request { get; } = request;
+
+        public TaskCompletionSource Completion { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public void TrySetResult()
+            => this.Completion.TrySetResult();
+
+        public void TrySetException(Exception exception)
+            => this.Completion.TrySetException(exception);
+
+        public void TrySetCanceled(CancellationToken cancellationToken)
+            => this.Completion.TrySetCanceled(cancellationToken);
+    }
 
     private sealed record WorkRequestContextPayload(
         WorkOrigin? Origin,

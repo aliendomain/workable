@@ -38,6 +38,7 @@ services.AddWorkableSqlServerDurableQueue(new WorkableSqlServerQueueDurabilityOp
     ConnectionString = connectionString,
     SchemaName = "workable",
     AutoDeploySchema = true,
+    ClaimBatchSize = WorkableSqlServerQueueDurabilityOptions.DefaultClaimBatchSize,
 });
 ```
 
@@ -77,7 +78,7 @@ Durable workflows use the same SQL Server store for workflow-run snapshots. Work
 
 Persistence-backed concurrency is enforced during durable queue claiming. Configure persistent coordination with `CoordinatePersistently()`, enable durable queueing, and use `WhileExecuting` blocking with `DeferStart` limit behavior when multiple runtimes share the same SQL Server queue.
 
-The queue reader is signal-first. Durable enqueues that Workable commits itself wake the local reader, which coalesces bursts briefly and drains ready rows in batches of 100 until the queue is empty. A fallback poll remains for rows committed by another process or by a caller-owned transaction. Configure that fallback per durable work definition:
+The queue reader is signal-first. Durable enqueues that Workable commits itself wake the local reader, which coalesces bursts briefly and drains ready rows in configurable batches of 7,500 by default until the queue is empty. A fallback poll remains for rows committed by another process or by a caller-owned transaction. Configure that fallback per durable work definition:
 
 ```csharp
 configuration.QueueDurably(fallbackPollingInterval: TimeSpan.FromSeconds(5));

@@ -84,14 +84,38 @@ FROM sys.tables tables
 INNER JOIN sys.schemas schemas ON schemas.schema_id = tables.schema_id
 WHERE schemas.name = N'workable' AND tables.name = N'WorkEntries';
 """));
-        Assert.Equal(4, await Scalar<int>(connection, """
+        Assert.Equal(5, await Scalar<int>(connection, """
 SELECT COUNT(*)
 FROM sys.columns columns
 INNER JOIN sys.tables tables ON tables.object_id = columns.object_id
 INNER JOIN sys.schemas schemas ON schemas.schema_id = tables.schema_id
 WHERE schemas.name = N'workable'
   AND tables.name = N'WorkEntries'
-  AND columns.name IN (N'IsDurableQueued', N'HasIdempotencyReservation', N'ClaimedAt', N'ConcurrencyBucket');
+  AND columns.name IN (N'IsDurableQueued', N'HasIdempotencyReservation', N'HasPersistentConcurrency', N'ClaimedAt', N'ConcurrencyBucket');
+"""));
+        Assert.Equal(1, await Scalar<int>(connection, """
+SELECT COUNT(*)
+FROM sys.tables tables
+INNER JOIN sys.schemas schemas ON schemas.schema_id = tables.schema_id
+WHERE schemas.name = N'workable' AND tables.name = N'WorkQueueEntries';
+"""));
+        Assert.Equal(6, await Scalar<int>(connection, """
+SELECT COUNT(*)
+FROM sys.columns columns
+INNER JOIN sys.tables tables ON tables.object_id = columns.object_id
+INNER JOIN sys.schemas schemas ON schemas.schema_id = tables.schema_id
+WHERE schemas.name = N'workable'
+  AND tables.name = N'WorkQueueEntries'
+  AND columns.name IN (N'WorkerId', N'HasPersistentConcurrency', N'ConcurrencyScope', N'ConcurrencyMaximumCapacity', N'LeaseExpiresAt', N'ConcurrencyBucket');
+"""));
+        Assert.Equal(1, await Scalar<int>(connection, """
+SELECT COUNT(*)
+FROM sys.indexes indexes
+INNER JOIN sys.tables tables ON tables.object_id = indexes.object_id
+INNER JOIN sys.schemas schemas ON schemas.schema_id = tables.schema_id
+WHERE schemas.name = N'workable'
+  AND tables.name = N'WorkEntries'
+  AND indexes.name = N'IX_WorkableWorkEntries_PersistentConcurrencyReady';
 """));
         Assert.Equal(1, await Scalar<int>(connection, """
 SELECT COUNT(*)
@@ -101,6 +125,33 @@ INNER JOIN sys.schemas schemas ON schemas.schema_id = tables.schema_id
 WHERE schemas.name = N'workable'
   AND tables.name = N'WorkEntries'
   AND indexes.name = N'IX_WorkableWorkEntries_Concurrency';
+"""));
+        Assert.Equal(1, await Scalar<int>(connection, """
+SELECT COUNT(*)
+FROM sys.indexes indexes
+INNER JOIN sys.tables tables ON tables.object_id = indexes.object_id
+INNER JOIN sys.schemas schemas ON schemas.schema_id = tables.schema_id
+WHERE schemas.name = N'workable'
+  AND tables.name = N'WorkQueueEntries'
+  AND indexes.name = N'IX_WorkableWorkQueueEntries_Ready';
+"""));
+        Assert.Equal(1, await Scalar<int>(connection, """
+SELECT COUNT(*)
+FROM sys.indexes indexes
+INNER JOIN sys.tables tables ON tables.object_id = indexes.object_id
+INNER JOIN sys.schemas schemas ON schemas.schema_id = tables.schema_id
+WHERE schemas.name = N'workable'
+  AND tables.name = N'WorkQueueEntries'
+  AND indexes.name = N'IX_WorkableWorkQueueEntries_PersistentConcurrencyReady';
+"""));
+        Assert.Equal(1, await Scalar<int>(connection, """
+SELECT COUNT(*)
+FROM sys.indexes indexes
+INNER JOIN sys.tables tables ON tables.object_id = indexes.object_id
+INNER JOIN sys.schemas schemas ON schemas.schema_id = tables.schema_id
+WHERE schemas.name = N'workable'
+  AND tables.name = N'WorkQueueEntries'
+  AND indexes.name = N'IX_WorkableWorkQueueEntries_Concurrency';
 """));
         Assert.Equal(1, await Scalar<int>(connection, """
 SELECT COUNT(*)
@@ -383,7 +434,7 @@ WHERE WorkSystemName = N'workflow-tests'
         await using (var expired = await this.OpenConnection())
         {
             await Execute(expired, """
-UPDATE workable.WorkEntries
+UPDATE workable.WorkQueueEntries
 SET LeaseExpiresAt = DATEADD(second, -1, SYSDATETIMEOFFSET())
 WHERE WorkSystemName = N'workflow-tests'
   AND DefinitionName IN (N'sample.alpha', N'sample.beta');
@@ -594,7 +645,7 @@ WHERE RunId = @RunId;
         await using (var expired = await this.OpenConnection())
         {
             await Execute(expired, $"""
-UPDATE workable.WorkEntries
+UPDATE workable.WorkQueueEntries
 SET LeaseExpiresAt = DATEADD(second, -1, SYSDATETIMEOFFSET())
 WHERE WorkerId = '{remainingWorkerId.Value:D}';
 """);
@@ -1289,11 +1340,13 @@ WHERE RunId = '{runId.Value:D}';
         await using var connection = await this.OpenConnection();
         var combinedRows = await Scalar<int>(connection, """
 SELECT COUNT(*)
-FROM workable.WorkEntries
-WHERE SubjectType = N'order'
-  AND SubjectValue = N'combined'
-  AND IsDurableQueued = 1
-  AND HasIdempotencyReservation = 1;
+FROM workable.WorkEntries entries
+INNER JOIN workable.WorkQueueEntries queue
+    ON queue.WorkerId = entries.WorkerId
+WHERE entries.SubjectType = N'order'
+  AND entries.SubjectValue = N'combined'
+  AND entries.IsDurableQueued = 0
+  AND entries.HasIdempotencyReservation = 1;
 """);
 
         await system.Stop();
@@ -1324,17 +1377,152 @@ WHERE SubjectType = N'order'
         await using var connection = await this.OpenConnection();
         var durableOnlyRows = await Scalar<int>(connection, """
 SELECT COUNT(*)
-FROM workable.WorkEntries
-WHERE SubjectType = N'order'
-  AND SubjectValue = N'durable-no-idempotency'
-  AND IsDurableQueued = 1
-  AND HasIdempotencyReservation = 0;
+FROM workable.WorkEntries entries
+INNER JOIN workable.WorkQueueEntries queue
+    ON queue.WorkerId = entries.WorkerId
+WHERE entries.SubjectType = N'order'
+  AND entries.SubjectValue = N'durable-no-idempotency'
+  AND entries.IsDurableQueued = 0
+  AND entries.HasIdempotencyReservation = 0
+  AND queue.HasPersistentConcurrency = 0;
 """);
 
         await system.Stop();
 
         Assert.True(handle.QueueOutcome.IsAccepted);
         Assert.Equal(1, durableOnlyRows);
+    }
+
+    [Fact]
+    public async Task DurableQueueWithPersistentConcurrencyWritesClaimMetadata()
+    {
+        if (this.SkipIfUnavailable())
+        {
+            return;
+        }
+
+        var system = this.CreateSystem(
+            "sql-durable-persistent-concurrency-metadata",
+            (_, _, _) => Task.FromResult(WorkExecutionResult.Success()),
+            configuration => configuration
+                .QueueDurably()
+                .LimitConcurrency(
+                    maximumCapacity: 1,
+                    blockingMode: WorkConcurrencyBlockingMode.WhileExecuting,
+                    limitReachedBehavior: WorkConcurrencyLimitReachedBehavior.DeferStart)
+                .DoNotStart());
+        await system.Start();
+
+        var handle = await system.Queue.Enqueue("sql-durable-persistent-concurrency-metadata");
+
+        await using var connection = await this.OpenConnection();
+        var durableConcurrencyRows = await Scalar<int>(connection, """
+SELECT COUNT(*)
+FROM workable.WorkQueueEntries
+WHERE DefinitionName = N'sql-durable-persistent-concurrency-metadata'
+  AND HasPersistentConcurrency = 1
+  AND ConcurrencyScope = N'PerDefinition'
+  AND ConcurrencyMaximumCapacity = 1;
+""");
+
+        await system.Stop();
+
+        Assert.True(handle.QueueOutcome.IsAccepted);
+        Assert.Equal(1, durableConcurrencyRows);
+    }
+
+    [Fact]
+    public async Task ConcurrentNonTransactionalStoreEnqueuesPersistDurableRows()
+    {
+        if (this.SkipIfUnavailable())
+        {
+            return;
+        }
+
+        const int rowCount = 96;
+        const string systemName = "sql-store-batched-enqueue-system";
+        const string definitionName = "sql-store-batched-enqueue";
+        await WorkableSqlServerSchema.Apply(this.ConnectionString, SchemaName);
+        await using var provider = new ServiceCollection()
+            .AddWorkableSqlServerDurableQueue(this.ConnectionString, SchemaName)
+            .BuildServiceProvider();
+        var store = provider.GetRequiredService<IWorkPersistenceStore>();
+        var systemId = WorkSystemId.New();
+        var requests = Enumerable.Range(0, rowCount)
+            .Select(index => CreateDurableEnqueueRequest(
+                systemId,
+                systemName,
+                WorkerId.New(),
+                definitionName,
+                $"batched-store-{index}",
+                transaction: null,
+                enableIdempotency: false))
+            .ToArray();
+
+        await Task.WhenAll(requests.Select(request => store.Enqueue(request)));
+
+        await using var connection = await this.OpenConnection();
+        var persistedRows = await Scalar<int>(connection, """
+SELECT COUNT(*)
+FROM workable.WorkEntries entries
+INNER JOIN workable.WorkQueueEntries queue
+    ON queue.WorkerId = entries.WorkerId
+WHERE entries.WorkSystemName = N'sql-store-batched-enqueue-system'
+  AND entries.DefinitionName = N'sql-store-batched-enqueue'
+  AND entries.IsDurableQueued = 0
+  AND entries.HasIdempotencyReservation = 0;
+""");
+
+        Assert.Equal(rowCount, persistedRows);
+    }
+
+    [Fact]
+    public async Task ConcurrentBatchedStoreEnqueuePreservesDuplicateSubjectRejection()
+    {
+        if (this.SkipIfUnavailable())
+        {
+            return;
+        }
+
+        const string systemName = "sql-store-batched-duplicate-system";
+        const string definitionName = "sql-store-batched-duplicate";
+        const string subjectValue = "batched-store-duplicate";
+        await WorkableSqlServerSchema.Apply(this.ConnectionString, SchemaName);
+        await using var provider = new ServiceCollection()
+            .AddWorkableSqlServerDurableQueue(this.ConnectionString, SchemaName)
+            .BuildServiceProvider();
+        var store = provider.GetRequiredService<IWorkPersistenceStore>();
+        var systemId = WorkSystemId.New();
+        var requests = Enumerable.Range(0, 2)
+            .Select(_ => CreateDurableEnqueueRequest(
+                systemId,
+                systemName,
+                WorkerId.New(),
+                definitionName,
+                subjectValue,
+                transaction: null,
+                enableIdempotency: true))
+            .ToArray();
+
+        var results = await Task.WhenAll(requests.Select(async request =>
+        {
+            try
+            {
+                await store.Enqueue(request);
+                return (Exception?)null;
+            }
+            catch (Exception exception)
+            {
+                return exception;
+            }
+        }));
+
+        await using var connection = await this.OpenConnection();
+        var persistedRows = await CountRowsForSubject(connection, subjectValue);
+
+        Assert.Equal(1, results.Count(static exception => exception is null));
+        Assert.Single(results.OfType<WorkQueueDurabilityDuplicateException>());
+        Assert.Equal(1, persistedRows);
     }
 
     [Fact]
@@ -2122,17 +2310,17 @@ WHERE WorkSystemName = N'background'
         await using var verification = await this.OpenConnection();
         var claimedRows = await Scalar<int>(verification, """
 SELECT COUNT(*)
-FROM workable.WorkEntries
+FROM workable.WorkQueueEntries
 WHERE ClaimedBy IN (N'consumer-one', N'consumer-two');
 """);
         var firstRows = await Scalar<int>(verification, """
 SELECT COUNT(*)
-FROM workable.WorkEntries
+FROM workable.WorkQueueEntries
 WHERE ClaimedBy = N'consumer-one';
 """);
         var secondRows = await Scalar<int>(verification, """
 SELECT COUNT(*)
-FROM workable.WorkEntries
+FROM workable.WorkQueueEntries
 WHERE ClaimedBy = N'consumer-two';
 """);
 
@@ -2189,7 +2377,7 @@ WHERE ClaimedBy = N'consumer-two';
         await using var verification = await this.OpenConnection();
         var executingBuckets = await Scalar<int>(verification, """
 SELECT COUNT(*)
-FROM workable.WorkEntries
+FROM workable.WorkQueueEntries
 WHERE ConcurrencyBucket = N'Executing';
 """);
 
@@ -2506,10 +2694,12 @@ WHERE ConcurrencyBucket = N'Executing';
         await using var verification = await this.OpenConnection();
         var retainedRows = await Scalar<int>(verification, $"""
 SELECT COUNT(*)
-FROM workable.WorkEntries
-WHERE WorkerId = '{firstWorkerId.Value}'
-  AND IsDurableQueued = 0
-  AND ConcurrencyBucket IS NULL;
+FROM workable.WorkEntries entries
+LEFT JOIN workable.WorkQueueEntries queue
+    ON queue.WorkerId = entries.WorkerId
+WHERE entries.WorkerId = '{firstWorkerId.Value}'
+  AND entries.IsDurableQueued = 0
+  AND queue.WorkerId IS NULL;
 """);
 
         Assert.Equal(firstWorkerId, firstClaim.Single().Lease.WorkerId);
@@ -2934,6 +3124,13 @@ FROM workable.WorkEntries
 UPDATE workable.WorkEntries
 SET CreatedAt = @CreatedAt
 WHERE SubjectValue = @SubjectValue;
+
+UPDATE queue
+SET CreatedAt = @CreatedAt
+FROM workable.WorkQueueEntries queue
+INNER JOIN workable.WorkEntries entries
+    ON entries.WorkerId = queue.WorkerId
+WHERE entries.SubjectValue = @SubjectValue;
 """;
         AddParameter(command, "@CreatedAt", createdAt);
         AddParameter(command, "@SubjectValue", subjectValue);
@@ -3008,6 +3205,7 @@ INSERT INTO workable.WorkEntries
     DefinitionName,
     IsDurableQueued,
     HasIdempotencyReservation,
+    HasPersistentConcurrency,
     SubjectType,
     SubjectValue,
     ConcurrencyType,
@@ -3026,8 +3224,9 @@ VALUES
     @WorkerId,
     @WorkSystemName,
     @DefinitionName,
-    @IsDurableQueued,
+    CAST(0 AS bit),
     @HasIdempotencyReservation,
+    @HasPersistentConcurrency,
     @SubjectType,
     @SubjectValue,
     @ConcurrencyType,
@@ -3037,18 +3236,70 @@ VALUES
     @ConfigurationJson,
     @OriginJson,
     @CreatedAt,
-    @ClaimedBy,
-    @LeaseId,
-    @LeaseExpiresAt
+    NULL,
+    NULL,
+    NULL
 );
+
+IF @IsDurableQueued = 1
+BEGIN
+    INSERT INTO workable.WorkQueueEntries
+    (
+        WorkerId,
+        WorkSystemName,
+        DefinitionName,
+        HasPersistentConcurrency,
+        ConcurrencyScope,
+        ConcurrencyMaximumCapacity,
+        SubjectType,
+        SubjectValue,
+        ConcurrencyType,
+        ConcurrencyValue,
+        CreatedAt,
+        ClaimedBy,
+        LeaseId,
+        LeaseExpiresAt,
+        ConcurrencyBucket
+    )
+    VALUES
+    (
+        @WorkerId,
+        @WorkSystemName,
+        @DefinitionName,
+        @HasPersistentConcurrency,
+        @ConcurrencyScope,
+        @ConcurrencyMaximumCapacity,
+        @SubjectType,
+        @SubjectValue,
+        @ConcurrencyType,
+        @ConcurrencyValue,
+        @CreatedAt,
+        @ClaimedBy,
+        @LeaseId,
+        @LeaseExpiresAt,
+        CASE
+            WHEN @HasPersistentConcurrency = 1 AND @LeaseId IS NOT NULL THEN N'Executing'
+            ELSE NULL
+        END
+    );
+END;
 """;
+        var hasPersistentConcurrency = rowConfiguration.Coordination.IsPersistentConcurrencyEnabled;
+        var subjectId = rowInput.SubjectId;
         command.Parameters.AddWithValue("@WorkerId", workerId.Value);
         command.Parameters.AddWithValue("@WorkSystemName", "default");
         command.Parameters.AddWithValue("@DefinitionName", definitionName);
         command.Parameters.AddWithValue("@IsDurableQueued", isDurableQueued);
         command.Parameters.AddWithValue("@HasIdempotencyReservation", hasIdempotencyReservation);
-        command.Parameters.AddWithValue("@SubjectType", "order");
-        command.Parameters.AddWithValue("@SubjectValue", subjectValue);
+        command.Parameters.AddWithValue("@HasPersistentConcurrency", hasPersistentConcurrency);
+        command.Parameters.AddWithValue(
+            "@ConcurrencyScope",
+            hasPersistentConcurrency ? rowConfiguration.Coordination.Concurrency.Scope.ToString() : DBNull.Value);
+        command.Parameters.AddWithValue(
+            "@ConcurrencyMaximumCapacity",
+            hasPersistentConcurrency ? rowConfiguration.Coordination.Concurrency.MaximumCapacity : DBNull.Value);
+        command.Parameters.AddWithValue("@SubjectType", (object?)subjectId?.Type ?? DBNull.Value);
+        command.Parameters.AddWithValue("@SubjectValue", (object?)subjectId?.Value ?? subjectValue);
         var concurrencyKey = rowInput.ConcurrencyKey;
         command.Parameters.AddWithValue("@ConcurrencyType", concurrencyKey is null ? DBNull.Value : concurrencyKey.Value.Type);
         command.Parameters.AddWithValue("@ConcurrencyValue", concurrencyKey is null ? DBNull.Value : concurrencyKey.Value.Value);
@@ -3201,7 +3452,7 @@ WHERE SubjectValue = N'{Escape(subjectValue)}';
         await using var command = connection.CreateCommand();
         command.CommandText = """
 SELECT LeaseExpiresAt
-FROM workable.WorkEntries
+FROM workable.WorkQueueEntries
 WHERE WorkerId = @WorkerId;
 """;
         command.Parameters.AddWithValue("@WorkerId", workerId.Value);
@@ -3367,7 +3618,8 @@ WHERE WorkerId = @WorkerId;
         WorkerId workerId,
         string definitionName,
         string subjectValue,
-        IWorkQueueDurabilityTransaction transaction)
+        IWorkQueueDurabilityTransaction? transaction,
+        bool enableIdempotency = true)
         => new(
             systemId,
             systemName,
@@ -3375,10 +3627,10 @@ WHERE WorkerId = @WorkerId;
             WorkDefinition.Create(definitionName),
             WorkInput.Empty.WithSubject(new WorkSubjectId("order", subjectValue)),
             WorkerOptions.Default,
-            DurablePersistenceConcurrencyConfiguration(enableIdempotency: true),
+            DurablePersistenceConcurrencyConfiguration(enableIdempotency: enableIdempotency),
             WorkRequestContext.Create(WorkInvocationChannel.InProcess),
             DateTimeOffset.UtcNow,
-            new WorkQueueDurabilityIdempotency(new WorkSubjectId("order", subjectValue)),
+            enableIdempotency ? new WorkQueueDurabilityIdempotency(new WorkSubjectId("order", subjectValue)) : null,
             transaction);
 
     private static async Task WaitForFailedEntryRetained(SqlConnection connection, string subjectValue)
@@ -3402,9 +3654,12 @@ WHERE WorkerId = @WorkerId;
     {
         await using var command = connection.CreateCommand();
         command.CommandText = $"""
-UPDATE workable.WorkEntries
+UPDATE queue
 SET LeaseExpiresAt = DATEADD(second, -1, SYSDATETIMEOFFSET())
-WHERE SubjectValue = N'{Escape(subjectValue)}';
+FROM workable.WorkQueueEntries queue
+INNER JOIN workable.WorkEntries entries
+    ON entries.WorkerId = queue.WorkerId
+WHERE entries.SubjectValue = N'{Escape(subjectValue)}';
 """;
         await command.ExecuteNonQueryAsync();
     }
@@ -3420,11 +3675,14 @@ WHERE SubjectValue = N'{Escape(subjectValue)}';
     private static Task<int> CountFailedRetainedRowsForSubject(SqlConnection connection, string subjectValue)
         => Scalar<int>(connection, $"""
 SELECT COUNT(*)
-FROM workable.WorkEntries
-WHERE SubjectValue = N'{Escape(subjectValue)}'
-  AND IsDurableQueued = 0
-  AND LeaseId IS NULL
-  AND LeaseExpiresAt IS NULL;
+FROM workable.WorkEntries entries
+LEFT JOIN workable.WorkQueueEntries queue
+    ON queue.WorkerId = entries.WorkerId
+WHERE entries.SubjectValue = N'{Escape(subjectValue)}'
+  AND entries.IsDurableQueued = 0
+  AND entries.LeaseId IS NULL
+  AND entries.LeaseExpiresAt IS NULL
+  AND queue.WorkerId IS NULL;
 """);
 
     private static string Quote(string identifier)

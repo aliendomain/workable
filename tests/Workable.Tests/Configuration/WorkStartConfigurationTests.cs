@@ -198,7 +198,11 @@ public sealed class WorkStartConfigurationTests
 
         await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => await queueTask);
 
-        var worker = Assert.Single((await system.Query.Workers(new WorkerCriteria(Take: 10))).Workers);
+        var worker = await TestEventually.UntilNotNull(async () =>
+        {
+            var workers = (await system.Query.Workers(new WorkerCriteria(Take: 10))).Workers;
+            return workers.Count == 1 ? workers[0] : null;
+        });
 
         release.SetResult();
         await TestEventually.Until(async () =>

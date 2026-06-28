@@ -63,8 +63,11 @@ internal sealed class WorkerPersistenceCoordinator : IWorkerPersistenceCoordinat
         Func<WorkerId, WorkerRecord?> getTrackedWorker,
         Func<WorkerPersistenceMaterializedWorker, CancellationToken, Task> persistedWorkerMaterialized,
         Action<WorkerRecord, WorkInterruptionReason> interruptWorker,
-        ILogger? logger)
+        ILogger? logger,
+        WorkQueueDurabilityRuntimeOptions durabilityOptions)
     {
+        ArgumentNullException.ThrowIfNull(durabilityOptions);
+
         this.catalog = catalog;
         this.workers = workers;
         this.idempotencyDiagnostics = idempotencyDiagnostics;
@@ -88,7 +91,9 @@ internal sealed class WorkerPersistenceCoordinator : IWorkerPersistenceCoordinat
                     interruptWorker(worker, WorkInterruptionReason.LeaseLost);
                 }
             },
-            logger);
+            logger,
+            batchSize: durabilityOptions.ClaimBatchSize,
+            recentClaimSampleCapacity: durabilityOptions.RecentClaimSampleCapacity);
         this.queueAcceptance = new WorkQueueAcceptanceCoordinator(
             this.idempotency,
             concurrency,

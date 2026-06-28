@@ -77,7 +77,7 @@ When idempotency is enabled, a recurring worker blocks another worker with the s
 
 Durable queueing persists accepted work before returning from enqueue. It does not imply duplicate-subject protection. Idempotency is controlled only by idempotency configuration.
 
-When durable queueing and persistence-backed idempotency are both enabled, the persistence provider owns the duplicate check. SQL Server stores durable queue data and the idempotency reservation in the same `workable.WorkEntries` row, protected by a filtered unique index on work system, definition, and subject.
+When durable queueing and persistence-backed idempotency are both enabled, the persistence provider owns the duplicate check. SQL Server stores the durable queue row in `workable.WorkQueueEntries` and the payload/idempotency reservation in `workable.WorkEntries`, protected by a filtered unique index on work system, definition, and subject.
 
 SQL Server persistence-backed idempotency is implemented and usable with or without durable queueing. Without durable queueing, it writes an idempotency-only row. With durable queueing, the durable queue insert also creates the idempotency reservation in the same database write. Completed and explicitly canceled workers delete the row; failed workers keep the row for inspection and duplicate protection until they are completed or canceled.
 

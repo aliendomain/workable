@@ -127,9 +127,15 @@ static ServiceProvider CreateProvider(HarnessOptions options, string durabilityC
     var services = new ServiceCollection();
     if (options.QueueMode.IsDurable())
     {
-        services.AddWorkableSqlServerDurableQueue(
-            durabilityConnectionString,
-            options.DurabilitySchemaName);
+        services.AddWorkableSqlServerDurableQueue(new WorkableSqlServerQueueDurabilityOptions
+        {
+            ConnectionString = durabilityConnectionString,
+            SchemaName = options.DurabilitySchemaName,
+            EnqueueBatchSize = options.DurableEnqueueBatchSize,
+            EnqueueBatchWindow = TimeSpan.FromMilliseconds(options.DurableEnqueueBatchWindowMs),
+            ClaimBatchSize = options.DurableClaimBatchSize,
+            RecentClaimSampleCapacity = options.DurableClaimSampleCapacity,
+        });
     }
 
     return services
@@ -174,6 +180,7 @@ static async Task PrepareDurabilityStore(
     command.CommandText =
         $"""
 DELETE FROM {QuoteIdentifier(schemaName)}.[WorkflowRuns];
+DELETE FROM {QuoteIdentifier(schemaName)}.[WorkQueueEntries];
 DELETE FROM {QuoteIdentifier(schemaName)}.[WorkEntries];
 """;
     await command.ExecuteNonQueryAsync();
@@ -480,6 +487,10 @@ static void PrintOptions(HarnessOptions options, string? durabilityDescription)
     {
         Console.WriteLine($"  SQL schema:         {options.DurabilitySchemaName}");
         Console.WriteLine($"  Reset durable rows: {options.DurabilityResetStore}");
+        Console.WriteLine($"  SQL batch size:     {options.DurableEnqueueBatchSize:N0}");
+        Console.WriteLine($"  SQL batch window:   {options.DurableEnqueueBatchWindowMs:N0} ms");
+        Console.WriteLine($"  SQL claim batch:    {options.DurableClaimBatchSize:N0}");
+        Console.WriteLine($"  SQL claim samples:  {options.DurableClaimSampleCapacity:N0}");
         Console.WriteLine($"  SQL host:           {durabilityDescription ?? "explicit connection string"}");
     }
 }
@@ -746,6 +757,10 @@ internal sealed record HarnessOptions(
     string DurabilityConnectionString,
     string DurabilitySchemaName,
     bool DurabilityResetStore,
+    int DurableEnqueueBatchSize,
+    int DurableEnqueueBatchWindowMs,
+    int DurableClaimBatchSize,
+    int DurableClaimSampleCapacity,
     string? CsvOutputPath,
     bool ShowHelp)
 {
@@ -767,6 +782,10 @@ internal sealed record HarnessOptions(
             DurabilityConnectionString: string.Empty,
             DurabilitySchemaName: "workable_perf",
             DurabilityResetStore: true,
+            DurableEnqueueBatchSize: WorkableSqlServerQueueDurabilityOptions.DefaultEnqueueBatchSize,
+            DurableEnqueueBatchWindowMs: (int)WorkableSqlServerQueueDurabilityOptions.DefaultEnqueueBatchWindow.TotalMilliseconds,
+            DurableClaimBatchSize: WorkableSqlServerQueueDurabilityOptions.DefaultClaimBatchSize,
+            DurableClaimSampleCapacity: 0,
             CsvOutputPath: null,
             ShowHelp: false);
 
@@ -799,6 +818,10 @@ internal sealed record HarnessOptions(
                 "--durability-connection-string" => options with { DurabilityConnectionString = Required(name, value) },
                 "--durability-schema" => options with { DurabilitySchemaName = Required(name, value) },
                 "--durability-reset-store" => options with { DurabilityResetStore = Bool(name, value) },
+                "--durable-enqueue-batch-size" => options with { DurableEnqueueBatchSize = PositiveInt(name, value) },
+                "--durable-enqueue-batch-window-ms" => options with { DurableEnqueueBatchWindowMs = NonNegativeInt(name, value) },
+                "--durable-claim-batch-size" => options with { DurableClaimBatchSize = PositiveInt(name, value) },
+                "--durable-claim-sample-capacity" => options with { DurableClaimSampleCapacity = NonNegativeInt(name, value) },
                 "--csv-output" => options with { CsvOutputPath = Required(name, value) },
                 _ => throw new ArgumentException($"Unknown option '{name}'. Use --help for supported options."),
             };
@@ -816,7 +839,7 @@ internal sealed record HarnessOptions(
         Console.WriteLine("  dotnet run --project src/Workable.PerformanceHarness -c Release -- --benchmarks [BenchmarkDotNet options]");
         Console.WriteLine();
         Console.WriteLine("Options:");
-        Console.WriteLine("  --scenario <name>                  Scenario: lifecycle-fanout, all, queue-only, dequeue-only, start-to-completion, completion-only, mixed-queue-complete, completion-while-queue-heavy, queue-while-completion-heavy, mixed-90-10, mixed-50-50, mixed-10-90, read-model-latency, visibility-latency, index-update-cost, memory-growth, memory-release-after-purge, durable-memory-release-after-purge, durable-workflow-memory-recovery, event-fanout, event-delivery, event-fanout-matrix, subscription-churn, subscription-memory-release, publish-under-churn, signalr-fanout-matrix. Default: lifecycle-fanout");
+        Console.WriteLine("  --scenario <name>                  Scenario: lifecycle-fanout, all, queue-only, dequeue-only, start-to-completion, completion-only, mixed-queue-complete, completion-while-queue-heavy, queue-while-completion-heavy, mixed-90-10, mixed-50-50, mixed-10-90, read-model-latency, visibility-latency, index-update-cost, memory-growth, memory-release-after-purge, durable-worker-claim-isolation, durable-worker-lifecycle-breakdown, durable-memory-release-after-purge, durable-workflow-memory-recovery, event-fanout, event-delivery, event-fanout-matrix, subscription-churn, subscription-memory-release, publish-under-churn, signalr-fanout-matrix. Default: lifecycle-fanout");
         Console.WriteLine("  --queue-mode <mode>               Queue mode: in-memory, durable-idempotent, durable-non-idempotent. Default: in-memory");
         Console.WriteLine("  --workers <n>                     Workers to queue. Default: 1000");
         Console.WriteLine("  --parallelism <n>                 Concurrent queue/wait operations. Default: processor count");
@@ -831,6 +854,10 @@ internal sealed record HarnessOptions(
         Console.WriteLine("  --durability-connection-string <s> SQL Server connection string for durable modes. Default: auto (WORKABLE_SQLSERVER_TEST_CONNECTION_STRING, docker, or podman)");
         Console.WriteLine("  --durability-schema <s>           SQL schema for durable modes. Default: workable_perf");
         Console.WriteLine("  --durability-reset-store <true|false> Delete durable rows before measurement. Default: true");
+        Console.WriteLine("  --durable-enqueue-batch-size <n>  SQL durable enqueue microbatch size. Default: 64");
+        Console.WriteLine("  --durable-enqueue-batch-window-ms <n> SQL durable enqueue microbatch window in milliseconds. Default: 1");
+        Console.WriteLine("  --durable-claim-batch-size <n>    SQL durable claim batch size. Default: 7500");
+        Console.WriteLine("  --durable-claim-sample-capacity <n> Keep the last n detailed durable claim samples. Default: 0");
         Console.WriteLine("  --csv-output <path>               Write scenario metrics to CSV.");
         Console.WriteLine("  --benchmarks                      Run BenchmarkDotNet baselines. Default filter: *Baseline*");
         Console.WriteLine("  -h|--help                         Show help.");

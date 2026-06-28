@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.Linq;
 using System.Threading.Channels;
 using Microsoft.Extensions.Logging;
@@ -18,15 +19,15 @@ internal sealed class WorkQueueDurabilityCoordinator(
     TimeSpan? readerPollInterval = null,
     TimeSpan? leaseRenewalInterval = null,
     TimeSpan? retryDelay = null,
-    TimeSpan? readerSignalDebounce = null,
     TimeSpan? leaseDuration = null,
-    int batchSize = 100)
+    int batchSize = 100,
+    int recentClaimSampleCapacity = 0)
 {
     private readonly ConcurrentDictionary<WorkerId, WorkQueueDurabilityLease> leases = [];
     private readonly ConcurrentDictionary<WorkerId, byte> idempotencyReservations = [];
     private readonly ConcurrentDictionary<WorkerId, byte> retainedFailures = [];
     private readonly ConcurrentDictionary<WorkerId, AcceptedWorkerWaiter> acceptedWorkerWaiters = [];
-    private readonly WorkSystemDurabilityDiagnosticsTracker diagnostics = new();
+    private readonly WorkSystemDurabilityDiagnosticsTracker diagnostics = new(recentClaimSampleCapacity);
     private readonly Channel<WorkQueueDurabilityCleanupItem> cleanup = Channel.CreateUnbounded<WorkQueueDurabilityCleanupItem>(
         new UnboundedChannelOptions
         {
@@ -37,11 +38,12 @@ internal sealed class WorkQueueDurabilityCoordinator(
     private readonly TimeSpan defaultReaderPollInterval = readerPollInterval ?? WorkQueueDurabilityConfiguration.DefaultFallbackPollingInterval;
     private readonly TimeSpan leaseRenewalInterval = leaseRenewalInterval ?? TimeSpan.FromSeconds(10);
     private readonly TimeSpan retryDelay = retryDelay ?? TimeSpan.FromSeconds(1);
-    private readonly TimeSpan readerSignalDebounce = readerSignalDebounce ?? TimeSpan.FromMilliseconds(50);
+    private readonly TimeSpan localAcceptedWaiterPollInterval = TimeSpan.FromMilliseconds(50);
     private readonly TimeSpan cleanupDebounce = TimeSpan.FromMilliseconds(50);
     private readonly TimeSpan leaseDuration = leaseDuration ?? TimeSpan.FromMinutes(1);
     private readonly string ownerId = $"{Environment.MachineName}:{Guid.NewGuid():N}";
     private readonly int claimBatchSize = batchSize;
+    private readonly bool recordClaimSamples = recentClaimSampleCapacity > 0;
     private readonly IWorkPersistenceStore? activeStore = store;
     private long readerPollIntervalTicks = (readerPollInterval ?? WorkQueueDurabilityConfiguration.DefaultFallbackPollingInterval).Ticks;
     private long readerSignals;
@@ -312,6 +314,7 @@ internal sealed class WorkQueueDurabilityCoordinator(
             _ => new AcceptedWorkerWaiter(
                 DateTimeOffset.UtcNow,
                 new TaskCompletionSource<WorkerRecord>(TaskCreationOptions.RunContinuationsAsynchronously)));
+        this.SignalReader();
 
         if (getExisting(workerId) is { } materialized)
         {
@@ -417,7 +420,6 @@ internal sealed class WorkQueueDurabilityCoordinator(
                 var signaled = await this.WaitForReaderSignalOrFallback(cancellationToken);
                 if (signaled)
                 {
-                    await Task.Delay(this.readerSignalDebounce, cancellationToken);
                     Interlocked.Exchange(ref this.readerSignalPending, 0);
                 }
 
@@ -440,7 +442,7 @@ internal sealed class WorkQueueDurabilityCoordinator(
     }
 
     private Task<bool> WaitForReaderSignalOrFallback(CancellationToken cancellationToken)
-        => this.readerSignal.WaitAsync(this.ReaderPollInterval, cancellationToken);
+        => this.readerSignal.WaitAsync(this.ReaderWaitInterval, cancellationToken);
 
     private void QueueCleanup(WorkerId workerId, WorkQueueDurabilityCleanupKind kind)
     {
@@ -735,15 +737,37 @@ internal sealed class WorkQueueDurabilityCoordinator(
             BatchSize: this.claimBatchSize,
             LeaseDuration: this.leaseDuration);
 
-        var count = 0;
+        var entries = new List<WorkQueueDurabilityEntry>();
+        var claimStartedAt = this.recordClaimSamples ? DateTimeOffset.UtcNow : default;
+        var claimStopwatch = Stopwatch.StartNew();
         await foreach (var entry in this.activeStore.ClaimReady(request, cancellationToken))
         {
             cancellationToken.ThrowIfCancellationRequested();
-            await acceptPersistedEntry(entry, cancellationToken);
-            count++;
+            entries.Add(entry);
         }
 
-        return count;
+        claimStopwatch.Stop();
+
+        var acceptanceStopwatch = Stopwatch.StartNew();
+        try
+        {
+            foreach (var entry in entries)
+            {
+                await acceptPersistedEntry(entry, cancellationToken);
+            }
+        }
+        finally
+        {
+            acceptanceStopwatch.Stop();
+            this.diagnostics.RecordClaim(
+                entries.Count,
+                claimStopwatch.Elapsed,
+                acceptanceStopwatch.Elapsed,
+                this.recordClaimSamples ? claimStartedAt : null,
+                this.recordClaimSamples ? DateTimeOffset.UtcNow : null);
+        }
+
+        return entries.Count;
     }
 
     private void ConfigureFallbackPolling(IReadOnlyList<WorkDefinition> definitions)
@@ -759,6 +783,17 @@ internal sealed class WorkQueueDurabilityCoordinator(
 
     private TimeSpan ReaderPollInterval
         => TimeSpan.FromTicks(Interlocked.Read(ref this.readerPollIntervalTicks));
+
+    private TimeSpan ReaderWaitInterval
+    {
+        get
+        {
+            var configured = this.ReaderPollInterval;
+            return this.acceptedWorkerWaiters.IsEmpty || configured <= this.localAcceptedWaiterPollInterval
+                ? configured
+                : this.localAcceptedWaiterPollInterval;
+        }
+    }
 
     private void HandleLostLeases(IReadOnlyList<WorkQueueDurabilityLease> lostLeases)
     {

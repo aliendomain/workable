@@ -1,5 +1,7 @@
 using System.Diagnostics;
+using System.Data;
 using System.Globalization;
+using System.Text.Json;
 using Microsoft.AspNetCore.SignalR.Client;
 using Microsoft.Data.SqlClient;
 using Microsoft.Extensions.DependencyInjection;
@@ -10,6 +12,9 @@ internal static class ScenarioBenchmarkSuite
 {
     private const string EvenWorkName = "perf.lifecycle.even";
     private const string OddWorkName = "perf.lifecycle.odd";
+    private const string DurableBenchmarkSystemName = "durable-benchmarks";
+    private const string DurableFastWorkName = "perf.durable.fast";
+    private const int DurablePrefillBatchSize = 1_000;
     private static readonly WorkerOptions DoNotStartOptions = new(
         Configuration: WorkConfiguration.Default with
         {
@@ -40,6 +45,8 @@ internal static class ScenarioBenchmarkSuite
     ];
     private static readonly string[] DurableOnlyScenarios =
     [
+        "durable-worker-claim-isolation",
+        "durable-worker-lifecycle-breakdown",
         "durable-memory-release-after-purge",
         "durable-workflow-memory-recovery",
     ];
@@ -110,6 +117,8 @@ internal static class ScenarioBenchmarkSuite
             "index-update-cost" => await RunIndexUpdateCost(scenario, options, cancellationToken),
             "memory-growth" => await RunMemoryGrowth(scenario, options, cancellationToken),
             "memory-release-after-purge" => await RunMemoryReleaseAfterPurge(scenario, options, cancellationToken),
+            "durable-worker-claim-isolation" => await RunDurableWorkerClaimIsolation(scenario, options, cancellationToken),
+            "durable-worker-lifecycle-breakdown" => await RunDurableWorkerLifecycleBreakdown(scenario, options, cancellationToken),
             "durable-memory-release-after-purge" => await RunDurableMemoryReleaseAfterPurge(scenario, options, cancellationToken),
             "durable-workflow-memory-recovery" => await RunDurableWorkflowMemoryRecovery(scenario, options, cancellationToken),
             "event-fanout" or "event-fanout-matrix" => await RunEventFanout(scenario, options, cancellationToken),
@@ -634,7 +643,11 @@ internal static class ScenarioBenchmarkSuite
             durability.ConnectionString,
             options.DurabilitySchemaName,
             resetStore: true,
-            cancellationToken))
+            cancellationToken,
+            enqueueBatchSize: options.DurableEnqueueBatchSize,
+            enqueueBatchWindow: TimeSpan.FromMilliseconds(options.DurableEnqueueBatchWindowMs),
+            claimBatchSize: options.DurableClaimBatchSize,
+            recentClaimSampleCapacity: options.DurableClaimSampleCapacity))
         {
             queued = await QueueNamedWorkers(
                 harness.System,
@@ -686,7 +699,11 @@ internal static class ScenarioBenchmarkSuite
             durability.ConnectionString,
             options.DurabilitySchemaName,
             resetStore: false,
-            cancellationToken))
+            cancellationToken,
+            enqueueBatchSize: options.DurableEnqueueBatchSize,
+            enqueueBatchWindow: TimeSpan.FromMilliseconds(options.DurableEnqueueBatchWindowMs),
+            claimBatchSize: options.DurableClaimBatchSize,
+            recentClaimSampleCapacity: options.DurableClaimSampleCapacity))
         {
             restartDurability = await WaitForDurabilityIdle(restarted.System, cancellationToken);
             countsAfterRestart = await ReadDurableStateCounts(
@@ -719,6 +736,162 @@ internal static class ScenarioBenchmarkSuite
         metrics.Add("private_memory_retained_after_purge_bytes", afterPurge.PrivateBytes - before.PrivateBytes, "bytes");
         metrics.Add("private_memory_released_by_purge_bytes", afterCompletion.PrivateBytes - afterPurge.PrivateBytes, "bytes");
         metrics.Add("private_memory_retained_after_restart_bytes", afterRestart.PrivateBytes - before.PrivateBytes, "bytes");
+        return metrics;
+    }
+
+    private static async Task<ScenarioMetrics> RunDurableWorkerClaimIsolation(
+        string scenario,
+        HarnessOptions options,
+        CancellationToken cancellationToken)
+    {
+        var metrics = new ScenarioMetrics(scenario);
+        var durability = await ResolveDurability(options);
+
+        await BenchmarkSqlServerEnvironment.PrepareSchema(
+            durability.ConnectionString,
+            options.DurabilitySchemaName,
+            resetStore: true,
+            cancellationToken);
+
+        var prefillStopwatch = Stopwatch.StartNew();
+        await PrefillDurableWorkEntries(
+            durability.ConnectionString,
+            options.DurabilitySchemaName,
+            scenario,
+            options.Workers,
+            cancellationToken);
+        prefillStopwatch.Stop();
+
+        var countsAfterPrefill = await ReadDurableStateCounts(
+            durability.ConnectionString,
+            options.DurabilitySchemaName,
+            cancellationToken);
+
+        WorkSystemDurabilityDiagnostics durabilityAfterStartupClaim;
+        DurableStateCounts countsAfterStartupClaim;
+        ReadModelCatchupResult startupReadModelCatchup;
+        var startupStopwatch = Stopwatch.StartNew();
+        await using (var harness = await DurableWorkBenchmarkSystem.Create(
+            durability.ConnectionString,
+            options.DurabilitySchemaName,
+            resetStore: false,
+            cancellationToken,
+            enqueueBatchSize: options.DurableEnqueueBatchSize,
+            enqueueBatchWindow: TimeSpan.FromMilliseconds(options.DurableEnqueueBatchWindowMs),
+            claimBatchSize: options.DurableClaimBatchSize,
+            recentClaimSampleCapacity: options.DurableClaimSampleCapacity))
+        {
+            startupStopwatch.Stop();
+            durabilityAfterStartupClaim = harness.System.Diagnostics.Durability;
+            startupReadModelCatchup = await WaitForReadModel(harness.System, cancellationToken);
+            countsAfterStartupClaim = await ReadDurableStateCounts(
+                harness.ConnectionString,
+                harness.DurabilitySchemaName,
+                cancellationToken);
+        }
+
+        metrics.Add("workers", options.Workers, "workers");
+        metrics.Add("durable_claim_batch_size", options.DurableClaimBatchSize, "workers");
+        metrics.Add("prefill_elapsed_ms", prefillStopwatch.Elapsed.TotalMilliseconds, "ms");
+        metrics.Add("startup_elapsed_ms", startupStopwatch.Elapsed.TotalMilliseconds, "ms");
+        AddDurableStateMetrics(metrics, "durable_state_after_prefill", countsAfterPrefill);
+        AddReadModelMetrics(metrics, startupReadModelCatchup, "post_startup_claim");
+        AddDurabilityMetrics(metrics, "durability_after_startup_claim", durabilityAfterStartupClaim);
+        AddDurableStateMetrics(metrics, "durable_state_after_startup_claim", countsAfterStartupClaim);
+        return metrics;
+    }
+
+    private static async Task<ScenarioMetrics> RunDurableWorkerLifecycleBreakdown(
+        string scenario,
+        HarnessOptions options,
+        CancellationToken cancellationToken)
+    {
+        var metrics = new ScenarioMetrics(scenario);
+        var durability = await ResolveDurability(options);
+        var stages = new LifecycleStageRecorder(options.Workers);
+
+        QueueOperationResult queued;
+        CompletionOperationResult completed;
+        ReadModelCatchupResult queueCatchup;
+        ReadModelCatchupResult completionCatchup;
+        WorkSystemDurabilityDiagnostics durabilityAfterCompletion;
+        DurableStateCounts countsAfterQueue;
+        DurableStateCounts countsAfterCompletion;
+        TimeSpan totalElapsed;
+        long allocatedBytes;
+        var completionObservers = new Task<CompletionObservation>[options.Workers];
+        DateTimeOffset admissionStartedAt;
+        DateTimeOffset admissionCompletedAt;
+
+        await using (var harness = await DurableWorkBenchmarkSystem.Create(
+            durability.ConnectionString,
+            options.DurabilitySchemaName,
+            resetStore: true,
+            cancellationToken,
+            enqueueBatchSize: options.DurableEnqueueBatchSize,
+            enqueueBatchWindow: TimeSpan.FromMilliseconds(options.DurableEnqueueBatchWindowMs),
+            claimBatchSize: options.DurableClaimBatchSize,
+            recentClaimSampleCapacity: options.DurableClaimSampleCapacity,
+            executor: CreateInstrumentedWorkExecutor(options.WorkDelay, stages)))
+        {
+            var allocatedBefore = GC.GetTotalAllocatedBytes(precise: false);
+            var totalStopwatch = Stopwatch.StartNew();
+            admissionStartedAt = DateTimeOffset.UtcNow;
+            queued = await QueueInstrumentedNamedWorkers(
+                harness.System,
+                harness.DurableFastWorkName,
+                options.Workers,
+                options,
+                scenario,
+                startIndex: 0,
+                stages,
+                completionObservers,
+                cancellationToken);
+            admissionCompletedAt = DateTimeOffset.UtcNow;
+            queueCatchup = await WaitForReadModel(harness.System, cancellationToken);
+            countsAfterQueue = await ReadDurableStateCounts(
+                harness.ConnectionString,
+                harness.DurabilitySchemaName,
+                cancellationToken);
+
+            completed = await WaitForInstrumentedCompletionObservers(completionObservers, cancellationToken);
+            completionCatchup = await WaitForReadModel(harness.System, cancellationToken);
+            durabilityAfterCompletion = await WaitForDurabilityIdle(harness.System, cancellationToken);
+            countsAfterCompletion = await ReadDurableStateCounts(
+                harness.ConnectionString,
+                harness.DurabilitySchemaName,
+                cancellationToken);
+            totalStopwatch.Stop();
+            totalElapsed = totalStopwatch.Elapsed;
+            allocatedBytes = GC.GetTotalAllocatedBytes(precise: false) - allocatedBefore;
+        }
+
+        metrics.Add("workers", options.Workers, "workers");
+        metrics.Add("durable_enqueue_batch_size", options.DurableEnqueueBatchSize, "workers");
+        metrics.Add("durable_enqueue_batch_window_ms", options.DurableEnqueueBatchWindowMs, "ms");
+        metrics.Add("durable_claim_batch_size", options.DurableClaimBatchSize, "workers");
+        metrics.Add("total_elapsed_ms", totalElapsed.TotalMilliseconds, "ms");
+        metrics.Add("allocated_bytes", allocatedBytes, "bytes");
+        metrics.Add("allocated_bytes_per_worker", PerWorker(allocatedBytes, completed.CompletedWorkers), "bytes/worker");
+        AddQueueMetrics(metrics, queued, "admission_");
+        metrics.Add("completed_workers", completed.CompletedWorkers, "workers");
+        metrics.Add("completion_observer_drain_elapsed_ms", completed.Elapsed.TotalMilliseconds, "ms");
+        metrics.Add("completed_per_sec", Rate(completed.CompletedWorkers, completed.Elapsed), "workers/sec");
+        AddDurationMetrics(metrics, "completion_wait_latency", completed.CompletionWaitLatency);
+        AddDurationMetrics(metrics, "queue_start_to_executor_start", stages.SnapshotQueueStartToExecutorStart());
+        AddDurationMetrics(metrics, "executor_duration", stages.SnapshotExecutorDuration());
+        AddDurationMetrics(metrics, "executor_end_to_completion_observed", stages.SnapshotExecutorEndToCompletionObserved());
+        AddDurationMetrics(metrics, "queue_start_to_completion_observed", stages.SnapshotStartToCompletion());
+        AddReadModelMetrics(metrics, queueCatchup, "post_admission");
+        AddReadModelMetrics(metrics, completionCatchup, "post_completion");
+        AddDurabilityMetrics(
+            metrics,
+            "durability_after_completion",
+            durabilityAfterCompletion,
+            admissionStartedAt,
+            admissionCompletedAt);
+        AddDurableStateMetrics(metrics, "durable_state_after_admission_observation", countsAfterQueue);
+        AddDurableStateMetrics(metrics, "durable_state_after_completion", countsAfterCompletion);
         return metrics;
     }
 
@@ -1840,6 +2013,87 @@ internal static class ScenarioBenchmarkSuite
             durations.Snapshot());
     }
 
+    private static async Task<QueueOperationResult> QueueInstrumentedNamedWorkers(
+        IWorkSystem system,
+        string workName,
+        int count,
+        HarnessOptions options,
+        string scenario,
+        int startIndex,
+        LifecycleStageRecorder stages,
+        Task<CompletionObservation>[]? completionObservers,
+        CancellationToken cancellationToken)
+    {
+        if (count <= 0)
+        {
+            return QueueOperationResult.Empty;
+        }
+
+        var handles = new IWorkerHandle[count];
+        var durations = new DurationRecorder();
+        var accepted = 0;
+        var rejected = 0;
+        var stopwatch = Stopwatch.StartNew();
+        await RunParallel(
+            count,
+            options.Parallelism,
+            async index =>
+            {
+                var workerIndex = startIndex + index;
+                stages.MarkQueueStarted(index);
+                var duration = Stopwatch.StartNew();
+                var handle = await system.Queue.Enqueue(
+                    workName,
+                    CreateInstrumentedInput(scenario, workerIndex),
+                    options: null,
+                    cancellationToken);
+                duration.Stop();
+                stages.MarkQueueCompleted(index);
+                durations.Record(duration.Elapsed);
+                handles[index] = handle;
+                if (handle.QueueOutcome.IsAccepted)
+                {
+                    Interlocked.Increment(ref accepted);
+                    if (completionObservers is not null)
+                    {
+                        completionObservers[index] = ObserveInstrumentedCompletion(
+                            handle,
+                            index,
+                            stages,
+                            cancellationToken);
+                    }
+                }
+                else
+                {
+                    Interlocked.Increment(ref rejected);
+                }
+            },
+            cancellationToken);
+        stopwatch.Stop();
+
+        return new QueueOperationResult(
+            [.. handles.Where(handle => handle.QueueOutcome.IsAccepted)],
+            accepted,
+            rejected,
+            stopwatch.Elapsed,
+            durations.Snapshot());
+    }
+
+    private static async Task<CompletionObservation> ObserveInstrumentedCompletion(
+        IWorkerHandle handle,
+        int index,
+        LifecycleStageRecorder stages,
+        CancellationToken cancellationToken)
+    {
+        var completionStopwatch = Stopwatch.StartNew();
+        var completion = await handle.WaitForCompletion(cancellationToken);
+        completionStopwatch.Stop();
+        stages.MarkCompletionObserved(index);
+        return new CompletionObservation(
+            completion.IsCompletedSuccessfully,
+            completionStopwatch.Elapsed);
+    }
+
     private static async Task<StartToCompletionOperationResult> QueueAndWaitStartToCompletion(
         IWorkSystem system,
         int count,
@@ -1995,6 +2249,43 @@ internal static class ScenarioBenchmarkSuite
             completionDurations.Snapshot());
     }
 
+    private static async Task<CompletionOperationResult> WaitForInstrumentedCompletionObservers(
+        IReadOnlyList<Task<CompletionObservation>?> completionObservers,
+        CancellationToken cancellationToken)
+    {
+        var observers = completionObservers
+            .Where(observer => observer is not null)
+            .Cast<Task<CompletionObservation>>()
+            .ToArray();
+        if (observers.Length == 0)
+        {
+            return CompletionOperationResult.Empty;
+        }
+
+        var stopwatch = Stopwatch.StartNew();
+        var observations = await Task.WhenAll(observers).WaitAsync(cancellationToken);
+        stopwatch.Stop();
+
+        var completionDurations = new DurationRecorder();
+        var completed = 0;
+        foreach (var observation in observations)
+        {
+            completionDurations.Record(observation.WaitLatency);
+            if (observation.Completed)
+            {
+                completed++;
+            }
+        }
+
+        return new CompletionOperationResult(
+            observers.Length,
+            observers.Length,
+            completed,
+            stopwatch.Elapsed,
+            new DurationSnapshot(0, 0, 0, 0, 0, 0),
+            completionDurations.Snapshot());
+    }
+
     private static async Task<ActionOperationResult> ExecuteWorkerAction(
         IWorkSystem system,
         IReadOnlyList<IWorkerHandle> handles,
@@ -2126,6 +2417,222 @@ internal static class ScenarioBenchmarkSuite
             $"Timed out waiting for durable queue activity to settle. AcceptedWaiters={timeoutDiagnostics.AcceptedWaiterCount}, PendingCleanup={timeoutDiagnostics.PendingCleanupCount}.");
     }
 
+    private static async Task PrefillDurableWorkEntries(
+        string connectionString,
+        string schemaName,
+        string scenario,
+        int count,
+        CancellationToken cancellationToken)
+    {
+        var entriesTable = $"{QuoteIdentifier(schemaName)}.[WorkEntries]";
+        var queueTable = $"{QuoteIdentifier(schemaName)}.[WorkQueueEntries]";
+        var configurationJson = JsonSerializer.Serialize(CreateDurablePrefillConfiguration(), HarnessJson.Options);
+        var originJson = JsonSerializer.Serialize(WorkOrigin.Create(WorkInvocationChannel.InProcess), HarnessJson.Options);
+        var createdAt = DateTimeOffset.UtcNow;
+
+        await using var connection = new SqlConnection(connectionString);
+        await connection.OpenAsync(cancellationToken);
+
+        for (var offset = 0; offset < count; offset += DurablePrefillBatchSize)
+        {
+            var batchCount = Math.Min(DurablePrefillBatchSize, count - offset);
+            var payload = Enumerable.Range(offset, batchCount)
+                .Select(index => CreateDurablePrefillPayload(
+                    scenario,
+                    index,
+                    configurationJson,
+                    originJson,
+                    createdAt.AddTicks(index)))
+                .ToArray();
+
+            await using var command = connection.CreateCommand();
+            command.CommandText = $"""
+SET ANSI_NULLS ON;
+SET QUOTED_IDENTIFIER ON;
+SET ANSI_PADDING ON;
+SET ANSI_WARNINGS ON;
+SET ARITHABORT ON;
+	SET CONCAT_NULL_YIELDS_NULL ON;
+	SET NUMERIC_ROUNDABORT OFF;
+
+	DECLARE @Entries TABLE
+	(
+	    WorkerId uniqueidentifier NOT NULL,
+	    WorkSystemName nvarchar(256) NOT NULL,
+	    DefinitionName nvarchar(450) NOT NULL,
+	    HasIdempotencyReservation bit NOT NULL,
+	    HasPersistentConcurrency bit NOT NULL,
+	    SubjectType nvarchar(256) NULL,
+	    SubjectValue nvarchar(450) NULL,
+	    ConcurrencyType nvarchar(256) NULL,
+	    ConcurrencyValue nvarchar(450) NULL,
+	    InputJson nvarchar(max) NULL,
+	    OptionsJson nvarchar(max) NULL,
+	    ConfigurationJson nvarchar(max) NULL,
+	    OriginJson nvarchar(max) NOT NULL,
+	    CreatedAt datetimeoffset NOT NULL
+	);
+
+	INSERT INTO @Entries
+	(
+	    WorkerId,
+	    WorkSystemName,
+	    DefinitionName,
+	    HasIdempotencyReservation,
+	    HasPersistentConcurrency,
+	    SubjectType,
+	    SubjectValue,
+	    ConcurrencyType,
+	    ConcurrencyValue,
+	    InputJson,
+	    OptionsJson,
+	    ConfigurationJson,
+	    OriginJson,
+	    CreatedAt
+	)
+	SELECT
+	    WorkerId,
+	    WorkSystemName,
+	    DefinitionName,
+	    HasIdempotencyReservation,
+	    HasPersistentConcurrency,
+	    SubjectType,
+	    SubjectValue,
+	    ConcurrencyType,
+	    ConcurrencyValue,
+	    InputJson,
+	    OptionsJson,
+	    ConfigurationJson,
+	    OriginJson,
+	    CreatedAt
+	FROM OPENJSON(@EntriesJson)
+	WITH
+	(
+	    WorkerId uniqueidentifier '$.workerId',
+	    WorkSystemName nvarchar(256) '$.workSystemName',
+	    DefinitionName nvarchar(450) '$.definitionName',
+	    HasIdempotencyReservation bit '$.hasIdempotencyReservation',
+	    HasPersistentConcurrency bit '$.hasPersistentConcurrency',
+	    SubjectType nvarchar(256) '$.subjectType',
+	    SubjectValue nvarchar(450) '$.subjectValue',
+	    ConcurrencyType nvarchar(256) '$.concurrencyType',
+	    ConcurrencyValue nvarchar(450) '$.concurrencyValue',
+	    InputJson nvarchar(max) '$.inputJson',
+	    OptionsJson nvarchar(max) '$.optionsJson',
+	    ConfigurationJson nvarchar(max) '$.configurationJson',
+	    OriginJson nvarchar(max) '$.originJson',
+	    CreatedAt datetimeoffset '$.createdAt'
+	);
+
+	INSERT INTO {entriesTable}
+	(
+	    WorkerId,
+    WorkSystemName,
+    DefinitionName,
+    IsDurableQueued,
+    HasIdempotencyReservation,
+    HasPersistentConcurrency,
+    SubjectType,
+    SubjectValue,
+    ConcurrencyType,
+    ConcurrencyValue,
+    InputJson,
+    OptionsJson,
+    ConfigurationJson,
+    OriginJson,
+    CreatedAt
+)
+SELECT
+	    WorkerId,
+	    WorkSystemName,
+	    DefinitionName,
+	    CAST(0 AS bit),
+	    HasIdempotencyReservation,
+	    HasPersistentConcurrency,
+	    SubjectType,
+    SubjectValue,
+    ConcurrencyType,
+    ConcurrencyValue,
+    InputJson,
+    OptionsJson,
+	    ConfigurationJson,
+	    OriginJson,
+	    CreatedAt
+	FROM @Entries;
+
+	INSERT INTO {queueTable}
+	(
+	    WorkerId,
+	    WorkSystemName,
+	    DefinitionName,
+	    HasPersistentConcurrency,
+	    SubjectType,
+	    SubjectValue,
+	    ConcurrencyType,
+	    ConcurrencyValue,
+	    CreatedAt
+	)
+	SELECT
+	    WorkerId,
+	    WorkSystemName,
+	    DefinitionName,
+	    HasPersistentConcurrency,
+	    SubjectType,
+	    SubjectValue,
+	    ConcurrencyType,
+	    ConcurrencyValue,
+	    CreatedAt
+	FROM @Entries;
+""";
+            var entriesJson = command.Parameters.Add("@EntriesJson", SqlDbType.NVarChar, -1);
+            entriesJson.Value = JsonSerializer.Serialize(payload, HarnessJson.Options);
+            await command.ExecuteNonQueryAsync(cancellationToken);
+        }
+    }
+
+    private static WorkConfiguration CreateDurablePrefillConfiguration()
+        => WorkConfiguration.Default with
+        {
+            Start = WorkStartConfiguration.DoNotStart,
+            Coordination = WorkConfiguration.Default.Coordination with
+            {
+                IsEnabled = true,
+                Storage = WorkCoordinationStorage.Persistent,
+                Durability = new WorkQueueDurabilityConfiguration
+                {
+                    IsEnabled = true,
+                    CompleteDurably = WorkConfiguration.Default.Coordination.Durability.CompleteDurably,
+                    FallbackPollingInterval = WorkQueueDurabilityConfiguration.DefaultFallbackPollingInterval,
+                },
+            },
+        };
+
+    private static DurablePrefillPayload CreateDurablePrefillPayload(
+        string scenario,
+        int index,
+        string configurationJson,
+        string originJson,
+        DateTimeOffset createdAt)
+    {
+        var input = CreateInstrumentedInput(scenario, index);
+        var subjectId = input.SubjectId;
+        return new DurablePrefillPayload(
+            Guid.NewGuid(),
+            DurableBenchmarkSystemName,
+            DurableFastWorkName,
+            HasIdempotencyReservation: false,
+            HasPersistentConcurrency: false,
+            subjectId?.Type,
+            subjectId?.Value,
+            input.ConcurrencyKey?.Type,
+            input.ConcurrencyKey?.Value,
+            JsonSerializer.Serialize(input, HarnessJson.Options),
+            OptionsJson: null,
+            configurationJson,
+            originJson,
+            createdAt);
+    }
+
     private static async Task<DurableStateCounts> ReadDurableStateCounts(
         string connectionString,
         string schemaName,
@@ -2248,7 +2755,8 @@ SELECT
             return AllScenarios;
         }
 
-        if (normalized is "event-fanout-matrix" or "signalr-fanout-matrix" or "durable-memory-release-after-purge" or "durable-workflow-memory-recovery")
+        if (normalized is "event-fanout-matrix" or "signalr-fanout-matrix" ||
+            DurableOnlyScenarios.Contains(normalized, StringComparer.Ordinal))
         {
             return [normalized];
         }
@@ -2561,13 +3069,59 @@ SELECT
     private static void AddDurabilityMetrics(
         ScenarioMetrics metrics,
         string prefix,
-        WorkSystemDurabilityDiagnostics diagnostics)
+        WorkSystemDurabilityDiagnostics diagnostics,
+        DateTimeOffset? admissionStartedAt = null,
+        DateTimeOffset? admissionCompletedAt = null)
     {
         metrics.Add($"{prefix}_accepted_waiter_count", diagnostics.AcceptedWaiterCount, "requests");
         metrics.Add($"{prefix}_pending_cleanup_count", diagnostics.PendingCleanupCount, "workers");
+        metrics.Add($"{prefix}_claim_attempt_count", diagnostics.ClaimAttemptCount, "claims");
+        metrics.Add($"{prefix}_claim_empty_count", diagnostics.EmptyClaimCount, "claims");
+        metrics.Add($"{prefix}_claim_entry_count", diagnostics.ClaimedEntryCount, "entries");
+        metrics.Add($"{prefix}_claim_entries_per_sec", diagnostics.ClaimedEntriesPerSecond, "entries/sec");
+        metrics.Add($"{prefix}_claim_average_entries", diagnostics.AverageClaimedEntries, "entries/claim");
+        metrics.Add($"{prefix}_claim_last_entries", diagnostics.LastClaimedEntryCount, "entries");
+        metrics.Add($"{prefix}_claim_total_elapsed_ms", diagnostics.TotalClaimElapsed.TotalMilliseconds, "ms");
+        metrics.Add($"{prefix}_claim_average_elapsed_ms", diagnostics.AverageClaimElapsed.TotalMilliseconds, "ms");
+        metrics.Add($"{prefix}_claim_last_elapsed_ms", diagnostics.LastClaimElapsed.TotalMilliseconds, "ms");
+        metrics.Add($"{prefix}_claim_max_elapsed_ms", diagnostics.MaxClaimElapsed.TotalMilliseconds, "ms");
+        metrics.Add($"{prefix}_claim_acceptance_total_elapsed_ms", diagnostics.TotalClaimAcceptanceElapsed.TotalMilliseconds, "ms");
+        metrics.Add($"{prefix}_claim_acceptance_average_elapsed_ms", diagnostics.AverageClaimAcceptanceElapsed.TotalMilliseconds, "ms");
+        metrics.Add($"{prefix}_claim_acceptance_last_elapsed_ms", diagnostics.LastClaimAcceptanceElapsed.TotalMilliseconds, "ms");
+        metrics.Add($"{prefix}_claim_acceptance_max_elapsed_ms", diagnostics.MaxClaimAcceptanceElapsed.TotalMilliseconds, "ms");
+        metrics.Add($"{prefix}_claim_acceptance_entries_per_sec", diagnostics.ClaimAcceptanceEntriesPerSecond, "entries/sec");
+        AddClaimSampleMetrics(metrics, prefix, diagnostics.RecentClaimSamples, admissionStartedAt, admissionCompletedAt);
         metrics.Add($"{prefix}_reader_failure", diagnostics.HasReaderFailure.ToString(CultureInfo.InvariantCulture), "bool");
         metrics.Add($"{prefix}_lease_renewal_failure", diagnostics.HasLeaseRenewalFailure.ToString(CultureInfo.InvariantCulture), "bool");
         metrics.Add($"{prefix}_cleanup_failure", diagnostics.HasCleanupFailure.ToString(CultureInfo.InvariantCulture), "bool");
+    }
+
+    private static void AddClaimSampleMetrics(
+        ScenarioMetrics metrics,
+        string prefix,
+        IReadOnlyList<WorkQueueDurabilityClaimSample> samples,
+        DateTimeOffset? admissionStartedAt,
+        DateTimeOffset? admissionCompletedAt)
+    {
+        metrics.Add($"{prefix}_claim_sample_count", samples.Count, "samples");
+        for (var index = 0; index < samples.Count; index++)
+        {
+            var sample = samples[index];
+            var samplePrefix = $"{prefix}_claim_sample_{index + 1:D2}";
+            metrics.Add($"{samplePrefix}_sequence", sample.Sequence, "claims");
+            metrics.Add($"{samplePrefix}_entries", sample.ClaimedEntryCount, "entries");
+            metrics.Add($"{samplePrefix}_entries_per_sec", sample.ClaimedEntriesPerSecond, "entries/sec");
+            metrics.Add($"{samplePrefix}_claim_elapsed_ms", sample.ClaimElapsed.TotalMilliseconds, "ms");
+            metrics.Add($"{samplePrefix}_acceptance_elapsed_ms", sample.AcceptanceElapsed.TotalMilliseconds, "ms");
+
+            if (admissionStartedAt is { } startedAt && admissionCompletedAt is { } completedAt)
+            {
+                var overlapsAdmission = sample.StartedAt < completedAt && sample.CompletedAt > startedAt;
+                metrics.Add($"{samplePrefix}_overlaps_admission", overlapsAdmission.ToString(CultureInfo.InvariantCulture), "bool");
+                metrics.Add($"{samplePrefix}_started_after_admission_start_ms", (sample.StartedAt - startedAt).TotalMilliseconds, "ms");
+                metrics.Add($"{samplePrefix}_completed_after_admission_start_ms", (sample.CompletedAt - startedAt).TotalMilliseconds, "ms");
+            }
+        }
     }
 
     private static void AddDurableStateMetrics(
@@ -2750,6 +3304,26 @@ SELECT
     private readonly record struct DurableStateCounts(
         long WorkEntries,
         long WorkflowRuns);
+
+    private sealed record DurablePrefillPayload(
+        Guid WorkerId,
+        string WorkSystemName,
+        string DefinitionName,
+        bool HasIdempotencyReservation,
+        bool HasPersistentConcurrency,
+        string? SubjectType,
+        string? SubjectValue,
+        string? ConcurrencyType,
+        string? ConcurrencyValue,
+        string? InputJson,
+        string? OptionsJson,
+        string ConfigurationJson,
+        string OriginJson,
+        DateTimeOffset CreatedAt);
+
+    private sealed record CompletionObservation(
+        bool Completed,
+        TimeSpan WaitLatency);
 
     private sealed record ReadModelCatchupResult(
         WorkSystemReadModelDiagnostics Start,

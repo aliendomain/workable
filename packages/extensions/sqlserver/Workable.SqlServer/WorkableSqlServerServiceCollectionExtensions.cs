@@ -53,8 +53,44 @@ public static class WorkableSqlServerServiceCollectionExtensions
         ArgumentNullException.ThrowIfNull(options);
         ArgumentException.ThrowIfNullOrWhiteSpace(options.ConnectionString);
         ArgumentException.ThrowIfNullOrWhiteSpace(options.SchemaName);
+        if (options.EnqueueBatchSize <= 0)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(options),
+                options.EnqueueBatchSize,
+                "SQL Server durable queue enqueue batch size must be greater than zero.");
+        }
+
+        if (options.EnqueueBatchWindow < TimeSpan.Zero)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(options),
+                options.EnqueueBatchWindow,
+                "SQL Server durable queue enqueue batch window must not be negative.");
+        }
+
+        if (options.ClaimBatchSize <= 0)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(options),
+                options.ClaimBatchSize,
+                "SQL Server durable queue claim batch size must be greater than zero.");
+        }
+
+        if (options.RecentClaimSampleCapacity < 0)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(options),
+                options.RecentClaimSampleCapacity,
+                "SQL Server durable queue recent claim sample capacity must not be negative.");
+        }
 
         services.AddSingleton(options);
+        services.AddSingleton(new global::Workable.WorkQueueDurabilityRuntimeOptions
+        {
+            ClaimBatchSize = options.ClaimBatchSize,
+            RecentClaimSampleCapacity = options.RecentClaimSampleCapacity,
+        });
         services.AddSingleton<WorkableSqlServerQueueDurabilityStore>();
         services.AddSingleton<IWorkPersistenceStore>(services => services.GetRequiredService<WorkableSqlServerQueueDurabilityStore>());
         return services;
