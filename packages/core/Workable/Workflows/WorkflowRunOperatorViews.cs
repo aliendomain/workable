@@ -1,3 +1,5 @@
+using System.Text.Json.Serialization;
+
 namespace Workable;
 
 /// <summary>
@@ -28,19 +30,19 @@ public sealed record WorkflowRunListItemView(
 /// Represents one operator-facing workflow-run detail response.
 /// </summary>
 public sealed record WorkflowRunDetailView(
-    Guid RunId,
-    string DefinitionName,
+    [property: JsonIgnore] Guid RunId,
+    [property: JsonIgnore] string DefinitionName,
     WorkflowRunStatus Status,
-    WorkOrigin StartedOrigin,
+    [property: JsonIgnore] WorkOrigin StartedOrigin,
     DateTimeOffset CreatedAt,
     DateTimeOffset? StartedAt,
     DateTimeOffset? CompletedAt,
     string? CurrentStepName,
-    WorkflowStepKind? CurrentStepKind,
+    [property: JsonIgnore] WorkflowStepKind? CurrentStepKind,
     WorkflowOperatorNodeStatus? CurrentStepStatus,
     WorkflowChildWorkerSummary OutstandingChildren,
     IReadOnlyList<WorkflowStepOperatorView> Steps,
-    IReadOnlyList<WorkMessage> Messages);
+    [property: JsonIgnore] IReadOnlyList<WorkMessage> Messages);
 
 /// <summary>
 /// Represents one workflow step in the operator-facing graph model.
@@ -49,14 +51,14 @@ public sealed record WorkflowStepOperatorView(
     string Name,
     WorkflowStepKind Kind,
     WorkflowOperatorNodeStatus Status,
-    DateTimeOffset? StartedAt,
-    DateTimeOffset? CompletedAt,
+    [property: JsonIgnore] DateTimeOffset? StartedAt,
+    [property: JsonIgnore] DateTimeOffset? CompletedAt,
     WorkflowChildWorkerSummary Children,
-    IReadOnlyList<Guid> ChildWorkerIds,
+    [property: JsonIgnore] IReadOnlyList<Guid> ChildWorkerIds,
     IReadOnlyList<WorkflowChildWorkerView> ChildSample,
-    int AdditionalChildCount,
+    [property: JsonIgnore] int AdditionalChildCount,
     IReadOnlyList<WorkflowStepOperatorView> Steps,
-    IReadOnlyList<WorkMessage> Messages);
+    [property: JsonIgnore] IReadOnlyList<WorkMessage> Messages);
 
 /// <summary>
 /// Describes the operator-facing state of a workflow node.
@@ -78,8 +80,8 @@ public sealed record WorkflowChildWorkerSummary(
     int Total,
     int Active,
     int Final,
-    int Unavailable,
-    IReadOnlyDictionary<WorkerState, int> ByState);
+    [property: JsonIgnore] int Unavailable,
+    [property: JsonIgnore] IReadOnlyDictionary<WorkerState, int> ByState);
 
 /// <summary>
 /// Describes one compact child-worker sample for operator drilldown surfaces.
@@ -88,5 +90,5 @@ public sealed record WorkflowChildWorkerView(
     Guid WorkerId,
     string DefinitionName,
     WorkerState State,
-    DateTimeOffset CreatedAt,
-    DateTimeOffset UpdatedAt);
+    [property: JsonIgnore] DateTimeOffset CreatedAt,
+    [property: JsonIgnore] DateTimeOffset UpdatedAt);

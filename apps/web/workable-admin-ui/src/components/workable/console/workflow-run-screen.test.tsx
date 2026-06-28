@@ -1,0 +1,621 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import { ConsoleHeaderCapabilitiesProvider } from "@/components/features/console/header-capabilities";
+import { WorkflowRunConsoleView, createWorkflowRunDetailPath } from "@/components/workable/console/workflow-run-screen";
+import { renderDom } from "@/test/dom";
+import type { WorkableConnection, WorkflowRunDetailView } from "@/lib/workable";
+
+const connection: WorkableConnection = {
+  apiUrl: "https://console.example.com/workable",
+  systemName: "Ops",
+};
+
+test("workflow run detail path includes the requested child sample size", () => {
+  assert.equal(
+    createWorkflowRunDetailPath("run-123", { childSampleSize: 4 }),
+    "workflow-runs/run-123?childSampleSize=4"
+  );
+});
+
+test("workflow run screen renders structure nodes and drills into workers from the selected node", async () => {
+  const openedWorkers: string[] = [];
+  const scrolledNodeSnapshots: string[] = [];
+  const fetchMock = installWorkflowFetch((call) => {
+    if (call.input === "/api/workable/systems/Ops/workflow-runs/run-123?childSampleSize=4") {
+      return Response.json(parallelWorkflowRun());
+    }
+
+    return Response.json({ error: `Unhandled request: ${call.input}` }, { status: 500 });
+  });
+  const result = await renderDom(
+    <ConsoleHeaderCapabilitiesProvider>
+      <WorkflowRunConsoleView
+        connection={connection}
+        onActiveRealtimeConnectionCountChange={() => undefined}
+        onOpenWorker={(workerId) => openedWorkers.push(workerId)}
+        onRealtimePayloadOpenChange={() => undefined}
+        realtimePayloadCaptureEnabled={false}
+        realtimePayloadMaxMessages={20}
+        realtimePayloadOpen={false}
+        refreshToken={0}
+        workflowRunId="run-123"
+      />
+    </ConsoleHeaderCapabilitiesProvider>
+    , {
+      setupWindow(window) {
+        window.HTMLElement.prototype.scrollIntoView = function scrollIntoView() {
+          scrolledNodeSnapshots.push(this.textContent ?? "");
+        };
+      },
+    }
+  );
+
+  try {
+    await result.waitFor(() => result.getByText("Workflow Graph"));
+    result.getByLabelText(/Workflow worker progress/i);
+    result.getByText("Current node details");
+    result.getByText("fan-out");
+    assert.equal(result.container.querySelectorAll('[aria-label="Executing"]').length >= 1, true);
+    result.getByText("Completed");
+    assert.equal(result.queryByText(/^Messages \(/), null);
+    await result.waitFor(() => {
+      assert.equal(
+        scrolledNodeSnapshots.some((snapshot) => snapshot.includes("fan-out")),
+        true
+      );
+    });
+    result.getByRole("button", { name: /ImportInvoice/i });
+    result.getByRole("button", { name: /ExportLedger/i });
+    await result.click(result.getByRole("button", { name: /ImportInvoice/i }));
+    assert.deepEqual(openedWorkers, ["worker-child-1"]);
+  } finally {
+    fetchMock.restore();
+    await result.restore();
+  }
+});
+
+test("workflow run screen switches the worker list when a workflow node is clicked", async () => {
+  const fetchMock = installWorkflowFetch((call) => {
+    if (call.input === "/api/workable/systems/Ops/workflow-runs/run-123?childSampleSize=4") {
+      return Response.json(parallelWorkflowRun());
+    }
+
+    return Response.json({ error: `Unhandled request: ${call.input}` }, { status: 500 });
+  });
+  const result = await renderDom(
+    <ConsoleHeaderCapabilitiesProvider>
+      <WorkflowRunConsoleView
+        connection={connection}
+        onActiveRealtimeConnectionCountChange={() => undefined}
+        onOpenWorker={() => undefined}
+        onRealtimePayloadOpenChange={() => undefined}
+        realtimePayloadCaptureEnabled={false}
+        realtimePayloadMaxMessages={20}
+        realtimePayloadOpen={false}
+        refreshToken={0}
+        workflowRunId="run-123"
+      />
+    </ConsoleHeaderCapabilitiesProvider>
+  );
+
+  try {
+    await result.waitFor(() => result.getByRole("button", { name: /ImportInvoice/i }));
+    result.getByRole("button", { name: /ExportLedger/i });
+
+    await result.click(result.getByRole("button", { name: /prepare/i }));
+
+    await result.waitFor(() => result.getByRole("button", { name: /PrepareInvoices/i }));
+    assert.equal(result.queryByText("ImportInvoice"), null);
+    assert.equal(result.queryByText("ExportLedger"), null);
+  } finally {
+    fetchMock.restore();
+    await result.restore();
+  }
+});
+
+test("workflow run screen restores the selected node from saved ui state", async () => {
+  const fetchMock = installWorkflowFetch((call) => {
+    if (call.input === "/api/workable/systems/Ops/workflow-runs/run-123?childSampleSize=4") {
+      return Response.json(parallelWorkflowRun());
+    }
+
+    return Response.json({ error: `Unhandled request: ${call.input}` }, { status: 500 });
+  });
+  const result = await renderDom(
+    <ConsoleHeaderCapabilitiesProvider>
+      <WorkflowRunConsoleView
+        connection={connection}
+        initialUiState={{ runId: "run-123", selectedStepName: "prepare" }}
+        onActiveRealtimeConnectionCountChange={() => undefined}
+        onOpenWorker={() => undefined}
+        onRealtimePayloadOpenChange={() => undefined}
+        realtimePayloadCaptureEnabled={false}
+        realtimePayloadMaxMessages={20}
+        realtimePayloadOpen={false}
+        refreshToken={0}
+        workflowRunId="run-123"
+      />
+    </ConsoleHeaderCapabilitiesProvider>
+  );
+
+  try {
+    await result.waitFor(() => result.getByRole("button", { name: /PrepareInvoices/i }));
+    result.getByText("prepare");
+    assert.equal(result.queryByText("ImportInvoice"), null);
+    assert.equal(result.queryByText("ExportLedger"), null);
+  } finally {
+    fetchMock.restore();
+    await result.restore();
+  }
+});
+
+test("workflow run screen shows settled parallel branch counts as a single summary node", async () => {
+  const fetchMock = installWorkflowFetch((call) => {
+    if (call.input === "/api/workable/systems/Ops/workflow-runs/run-123?childSampleSize=4") {
+      return Response.json(completedParallelWorkflowRun());
+    }
+
+    return Response.json({ error: `Unhandled request: ${call.input}` }, { status: 500 });
+  });
+  const result = await renderDom(
+    <ConsoleHeaderCapabilitiesProvider>
+      <WorkflowRunConsoleView
+        connection={connection}
+        onActiveRealtimeConnectionCountChange={() => undefined}
+        onOpenWorker={() => undefined}
+        onRealtimePayloadOpenChange={() => undefined}
+        realtimePayloadCaptureEnabled={false}
+        realtimePayloadMaxMessages={20}
+        realtimePayloadOpen={false}
+        refreshToken={0}
+        workflowRunId="run-123"
+      />
+    </ConsoleHeaderCapabilitiesProvider>
+  );
+
+  try {
+    await result.waitFor(() => result.getByText("fan-out"));
+    assert.equal(result.queryByText("Branch 1"), null);
+    assert.equal(result.queryByText("parallel branches collapsed"), null);
+    assert.equal(result.queryByText("fan-out-complete"), null);
+    result.getByText("2");
+  } finally {
+    fetchMock.restore();
+    await result.restore();
+  }
+});
+
+test("workflow run screen does not highlight a current node after the workflow is completed", async () => {
+  const fetchMock = installWorkflowFetch((call) => {
+    if (call.input === "/api/workable/systems/Ops/workflow-runs/run-123?childSampleSize=4") {
+      return Response.json(completedWorkflowRun());
+    }
+
+    return Response.json({ error: `Unhandled request: ${call.input}` }, { status: 500 });
+  });
+  const result = await renderDom(
+    <ConsoleHeaderCapabilitiesProvider>
+      <WorkflowRunConsoleView
+        connection={connection}
+        onActiveRealtimeConnectionCountChange={() => undefined}
+        onOpenWorker={() => undefined}
+        onRealtimePayloadOpenChange={() => undefined}
+        realtimePayloadCaptureEnabled={false}
+        realtimePayloadMaxMessages={20}
+        realtimePayloadOpen={false}
+        refreshToken={0}
+        workflowRunId="run-123"
+      />
+    </ConsoleHeaderCapabilitiesProvider>
+  );
+
+  try {
+    await result.waitFor(() => result.getByText("profile-summary"));
+    assert.equal(result.container.querySelector('[aria-current="step"]'), null);
+  } finally {
+    fetchMock.restore();
+    await result.restore();
+  }
+});
+
+test("workflow run screen follows the active node and switches the sampled workers as execution advances", async () => {
+  let currentRun = parallelWorkflowRun();
+  const fetchMock = installWorkflowFetch((call) => {
+    if (call.input === "/api/workable/systems/Ops/workflow-runs/run-123?childSampleSize=4") {
+      return Response.json(currentRun);
+    }
+
+    return Response.json({ error: `Unhandled request: ${call.input}` }, { status: 500 });
+  });
+  const result = await renderDom(
+    <ConsoleHeaderCapabilitiesProvider>
+      <WorkflowRunConsoleView
+        connection={connection}
+        onActiveRealtimeConnectionCountChange={() => undefined}
+        onOpenWorker={() => undefined}
+        onRealtimePayloadOpenChange={() => undefined}
+        realtimePayloadCaptureEnabled={false}
+        realtimePayloadMaxMessages={20}
+        realtimePayloadOpen={false}
+        refreshToken={0}
+        workflowRunId="run-123"
+      />
+    </ConsoleHeaderCapabilitiesProvider>
+  );
+
+  try {
+    await result.waitFor(() => result.getByRole("button", { name: /ImportInvoice/i }));
+    result.getByRole("button", { name: /ExportLedger/i });
+    result.getByText("fan-out");
+
+    currentRun = completedParallelWorkflowRun();
+    await result.rerender(
+      <ConsoleHeaderCapabilitiesProvider>
+        <WorkflowRunConsoleView
+          connection={connection}
+          onActiveRealtimeConnectionCountChange={() => undefined}
+          onOpenWorker={() => undefined}
+          onRealtimePayloadOpenChange={() => undefined}
+          realtimePayloadCaptureEnabled={false}
+          realtimePayloadMaxMessages={20}
+          realtimePayloadOpen={false}
+          refreshToken={1}
+          workflowRunId="run-123"
+        />
+      </ConsoleHeaderCapabilitiesProvider>
+    );
+
+    await result.waitFor(() => result.getByRole("button", { name: /ProfileSummary/i }));
+    result.getByText("profile-summary");
+    assert.equal(result.queryByText("ImportInvoice"), null);
+    assert.equal(result.queryByText("ExportLedger"), null);
+  } finally {
+    fetchMock.restore();
+    await result.restore();
+  }
+});
+
+test("workflow run screen posts stop actions to the workflow action route", async () => {
+  const fetchMock = installWorkflowFetch((call) => {
+    if (call.input === "/api/workable/systems/Ops/workflow-runs/run-123?childSampleSize=4") {
+      return Response.json(workflowRun());
+    }
+
+    if (call.input === "/api/workable/systems/Ops/workflow-runs/run-123/actions/stop") {
+      return Response.json({
+        action: "Stop",
+        messages: [{ code: "workflow.stop.accepted", occurredAt: "2026-06-27T12:06:00.000Z", severity: "Information", text: "Stop accepted." }],
+        run: workflowRun(),
+        status: "Accepted",
+      });
+    }
+
+    return Response.json({ error: `Unhandled request: ${call.input}` }, { status: 500 });
+  });
+  const result = await renderDom(
+    <ConsoleHeaderCapabilitiesProvider>
+      <WorkflowRunConsoleView
+        connection={connection}
+        onActiveRealtimeConnectionCountChange={() => undefined}
+        onOpenWorker={() => undefined}
+        onRealtimePayloadOpenChange={() => undefined}
+        realtimePayloadCaptureEnabled={false}
+        realtimePayloadMaxMessages={20}
+        realtimePayloadOpen={false}
+        refreshToken={0}
+        workflowRunId="run-123"
+      />
+    </ConsoleHeaderCapabilitiesProvider>
+  );
+
+  try {
+    await result.waitFor(() => result.getByRole("button", { name: "Stop" }));
+    await result.click(result.getByRole("button", { name: "Stop" }));
+    await result.waitFor(() => {
+      assert.equal(fetchMock.calls.some((call) =>
+        call.input === "/api/workable/systems/Ops/workflow-runs/run-123/actions/stop" &&
+        call.init?.method === "POST"
+      ), true);
+    });
+    result.getByText("Stop accepted.");
+  } finally {
+    fetchMock.restore();
+    await result.restore();
+  }
+});
+
+type FetchCall = {
+  input: string;
+  init?: RequestInit;
+};
+
+function installWorkflowFetch(handler: (call: FetchCall) => Response | Promise<Response>) {
+  const previousFetch = globalThis.fetch;
+  const calls: FetchCall[] = [];
+  globalThis.fetch = (async (input, init) => {
+    const call = { input: String(input), init };
+    calls.push(call);
+    return handler(call);
+  }) as typeof fetch;
+
+  return {
+    calls,
+    restore() {
+      globalThis.fetch = previousFetch;
+    },
+  };
+}
+
+function workflowRun(overrides: Partial<WorkflowRunDetailView> = {}): WorkflowRunDetailView {
+  return {
+    createdAt: "2026-06-27T12:00:00.000Z",
+    currentStepName: "Dispatch invoices",
+    currentStepStatus: "Running",
+    outstandingChildren: {
+      active: 1,
+      final: 0,
+      total: 1,
+    },
+    status: "Running",
+    steps: [
+      {
+        childSample: [
+          {
+            definitionName: "ImportInvoice",
+            state: "Running",
+            workerId: "worker-child-1",
+          },
+        ],
+        children: {
+          active: 1,
+          final: 0,
+          total: 1,
+        },
+        kind: "DispatchWork",
+        name: "Dispatch invoices",
+        status: "Running",
+        steps: [],
+      },
+    ],
+    ...overrides,
+  };
+}
+
+function parallelWorkflowRun(): WorkflowRunDetailView {
+  return workflowRun({
+    currentStepName: "fan-out",
+    currentStepStatus: "WaitingOnChildren",
+    outstandingChildren: {
+      active: 2,
+      final: 0,
+      total: 2,
+    },
+    steps: [
+      {
+        childSample: [
+          {
+            definitionName: "PrepareInvoices",
+            state: "Completed",
+            workerId: "worker-prepare-1",
+          },
+        ],
+        children: {
+          active: 0,
+          final: 1,
+          total: 1,
+        },
+        kind: "DispatchWork",
+        name: "prepare",
+        status: "Completed",
+        steps: [],
+      },
+      {
+        childSample: [],
+        children: {
+          active: 2,
+          final: 0,
+          total: 2,
+        },
+        kind: "Parallel",
+        name: "fan-out",
+        status: "WaitingOnChildren",
+        steps: [
+          {
+            childSample: [
+              {
+                definitionName: "ImportInvoice",
+                state: "Running",
+                workerId: "worker-child-1",
+              },
+            ],
+            children: {
+              active: 1,
+              final: 0,
+              total: 1,
+            },
+            kind: "DispatchWork",
+            name: "branch-a",
+            status: "Running",
+            steps: [],
+          },
+          {
+            childSample: [
+              {
+                definitionName: "ExportLedger",
+                state: "Running",
+                workerId: "worker-child-2",
+              },
+            ],
+            children: {
+              active: 1,
+              final: 0,
+              total: 1,
+            },
+            kind: "DispatchWork",
+            name: "branch-b",
+            status: "Running",
+            steps: [],
+          },
+        ],
+      },
+      {
+        childSample: [],
+        children: {
+          active: 2,
+          final: 0,
+          total: 2,
+        },
+        kind: "Join",
+        name: "join",
+        status: "WaitingOnChildren",
+        steps: [],
+      },
+    ],
+  });
+}
+
+function completedParallelWorkflowRun(): WorkflowRunDetailView {
+  return workflowRun({
+    currentStepName: "profile-summary",
+    currentStepStatus: "Running",
+    outstandingChildren: {
+      active: 1,
+      final: 0,
+      total: 1,
+    },
+    steps: [
+      {
+        childSample: [
+          {
+            definitionName: "PrepareInvoices",
+            state: "Completed",
+            workerId: "worker-prepare-1",
+          },
+        ],
+        children: {
+          active: 0,
+          final: 1,
+          total: 1,
+        },
+        kind: "DispatchWork",
+        name: "prepare",
+        status: "Completed",
+        steps: [],
+      },
+      {
+        childSample: [],
+        children: {
+          active: 0,
+          final: 2,
+          total: 2,
+        },
+        kind: "Parallel",
+        name: "fan-out",
+        status: "Completed",
+        steps: [
+          {
+            childSample: [
+              {
+                definitionName: "ImportInvoice",
+                state: "Completed",
+                workerId: "worker-child-1",
+              },
+            ],
+            children: {
+              active: 0,
+              final: 1,
+              total: 1,
+            },
+            kind: "DispatchWork",
+            name: "branch-a",
+            status: "Completed",
+            steps: [],
+          },
+          {
+            childSample: [
+              {
+                definitionName: "ExportLedger",
+                state: "Completed",
+                workerId: "worker-child-2",
+              },
+            ],
+            children: {
+              active: 0,
+              final: 1,
+              total: 1,
+            },
+            kind: "DispatchWork",
+            name: "branch-b",
+            status: "Completed",
+            steps: [],
+          },
+        ],
+      },
+      {
+        childSample: [],
+        children: {
+          active: 0,
+          final: 0,
+          total: 0,
+        },
+        kind: "Join",
+        name: "fan-out-complete",
+        status: "Completed",
+        steps: [],
+      },
+      {
+        childSample: [
+          {
+            definitionName: "ProfileSummary",
+            state: "Running",
+            workerId: "worker-profile-1",
+          },
+        ],
+        children: {
+          active: 1,
+          final: 0,
+          total: 1,
+        },
+        kind: "DispatchWork",
+        name: "profile-summary",
+        status: "Running",
+        steps: [],
+      },
+    ],
+  });
+}
+
+function completedWorkflowRun(): WorkflowRunDetailView {
+  return {
+    ...completedParallelWorkflowRun(),
+    currentStepName: null,
+    currentStepStatus: null,
+    outstandingChildren: {
+      active: 0,
+      final: 3,
+      total: 3,
+    },
+    status: "Completed",
+    steps: [
+      ...completedParallelWorkflowRun().steps.slice(0, 3),
+      {
+        childSample: [
+          {
+            definitionName: "ProfileSummary",
+            state: "Completed",
+            workerId: "worker-profile-1",
+          },
+        ],
+        children: {
+          active: 0,
+          final: 1,
+          total: 1,
+        },
+        kind: "DispatchWork",
+        name: "profile-summary",
+        status: "Completed",
+        steps: [],
+      },
+    ],
+  };
+}

@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { QueueDialog } from "@/components/workable/console/detail-screens";
+import { ConsoleHeaderCapabilitiesProvider } from "@/components/features/console/header-capabilities";
+import { QueueDialog, WorkerConsoleView } from "@/components/workable/console/detail-screens";
 import { renderDom } from "@/test/dom";
 import type {
   QueueWorkRequest,
   WorkDefinition,
+  WorkWorkerOverviewComponent,
   WorkableConnection,
 } from "@/lib/workable";
 
@@ -221,6 +223,65 @@ test("queue dialog tolerates boolean property schemas from the API", async () =>
   }
 });
 
+test("worker console exposes a view workflow action when the overview carries a workflow run identifier", async () => {
+  const openedWorkflowRuns: string[] = [];
+  const fetchMock = installQueueFetch((call) => {
+    if (call.input.includes("/workers/worker-1/overview")) {
+      return Response.json(workerOverview({
+        worker: {
+          configDifferenceCount: 0,
+          createdAt: "2026-06-27T12:00:00.000Z",
+          createdOrigin: { channel: "HttpApi" },
+          definitionCategory: "Ops",
+          definitionName: "ImportOrders",
+          identifiers: [{ type: "workflow-run", value: "run-123" }],
+          isFinal: false,
+          nextRunAt: null,
+          retryAttempt: null,
+          revision: 3,
+          state: "Running",
+          stateChangedAt: "2026-06-27T12:01:00.000Z",
+          stateSequence: 4,
+          updatedAt: "2026-06-27T12:01:00.000Z",
+          workerId: { value: "worker-1" },
+        },
+      }));
+    }
+
+    return Response.json({ error: `Unhandled request: ${call.input}` }, { status: 500 });
+  });
+  const result = await renderDom(
+    <ConsoleHeaderCapabilitiesProvider>
+      <WorkerConsoleView
+        clearSystemNotification={() => undefined}
+        connection={connection}
+        onActiveRealtimeConnectionCountChange={() => undefined}
+        onNavigateBack={() => undefined}
+        onOpenDefinitionCatalog={() => undefined}
+        onOpenIteration={() => undefined}
+        onOpenWorker={() => undefined}
+        onOpenWorkflowRun={(workflowRunId) => openedWorkflowRuns.push(workflowRunId)}
+        onRealtimePayloadOpenChange={() => undefined}
+        refreshToken={0}
+        realtimePayloadCaptureEnabled={false}
+        realtimePayloadMaxMessages={20}
+        realtimePayloadOpen={false}
+        reportSystemNotification={() => undefined}
+        workerId="worker-1"
+      />
+    </ConsoleHeaderCapabilitiesProvider>
+  );
+
+  try {
+    await result.waitFor(() => result.getByRole("button", { name: "View Workflow" }));
+    await result.click(result.getByRole("button", { name: "View Workflow" }));
+    assert.deepEqual(openedWorkflowRuns, ["run-123"]);
+  } finally {
+    fetchMock.restore();
+    await result.restore();
+  }
+});
+
 type FetchCall = {
   input: string;
   init?: RequestInit;
@@ -249,6 +310,58 @@ function queueRequest(call: FetchCall): QueueWorkRequest {
     assert.fail("Expected queue request body to be a string.");
   }
   return JSON.parse(body) as QueueWorkRequest;
+}
+
+function workerOverview(
+  overrides: Partial<WorkWorkerOverviewComponent> = {}
+): WorkWorkerOverviewComponent {
+  return {
+    activity: "Logs",
+    input: null,
+    latestIteration: null,
+    logs: {
+      page: { hasMore: false, items: [] },
+      summary: {
+        critical: 0,
+        debug: 0,
+        error: 0,
+        errors: 0,
+        information: 0,
+        total: 0,
+        trace: 0,
+        warning: 0,
+        warnings: 0,
+      },
+    },
+    recentIterations: [],
+    timeline: {
+      page: { hasMore: false, items: [] },
+      summary: {
+        failureCount: 0,
+        systemEventCount: 0,
+        total: 0,
+        userActionCount: 0,
+      },
+    },
+    worker: {
+      configDifferenceCount: 0,
+      createdAt: "2026-06-27T12:00:00.000Z",
+      createdOrigin: { channel: "HttpApi" },
+      definitionCategory: "Ops",
+      definitionName: "ImportOrders",
+      identifiers: [],
+      isFinal: false,
+      nextRunAt: null,
+      retryAttempt: null,
+      revision: 1,
+      state: "Queued",
+      stateChangedAt: "2026-06-27T12:00:00.000Z",
+      stateSequence: 1,
+      updatedAt: "2026-06-27T12:00:00.000Z",
+      workerId: { value: "worker-1" },
+    },
+    ...overrides,
+  };
 }
 
 function definition(): WorkDefinition {

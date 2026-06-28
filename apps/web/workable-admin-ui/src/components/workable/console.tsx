@@ -108,6 +108,10 @@ import {
   type WorkerConsoleViewUiStateSnapshot,
 } from "@/components/workable/console/detail-screens";
 import {
+  WorkflowRunConsoleView,
+  type WorkflowRunConsoleViewUiStateSnapshot,
+} from "@/components/workable/console/workflow-run-screen";
+import {
   OverviewCatalogFilter,
   QueryFilterPanelContent,
   getQueryFilterActiveCount,
@@ -280,6 +284,7 @@ const initialRefreshTokens: Record<View, number> = {
   iterations: 0,
   worker: 0,
   iteration: 0,
+  workflowRun: 0,
 };
 const readModelLagWarningThreshold = 100;
 const concurrencyLagWarningSeconds = 30;
@@ -351,6 +356,7 @@ export function WorkableConsole() {
   const [selectedDefinitionId, setSelectedDefinitionId] = useState<string | null>(null);
   const [selectedDefinitionName, setSelectedDefinitionName] = useState<string | null>(null);
   const [selectedWorkerId, setSelectedWorkerId] = useState<string | null>(null);
+  const [selectedWorkflowRunId, setSelectedWorkflowRunId] = useState<string | null>(null);
   const [selectedIterationWorkerId, setSelectedIterationWorkerId] = useState<string | null>(null);
   const [selectedIterationSequence, setSelectedIterationSequence] = useState<number | null>(null);
   const [workerCategoryFilter, setWorkerCategoryFilter] = useState("");
@@ -377,8 +383,15 @@ export function WorkableConsole() {
   const [navigationHistory, setNavigationHistory] = useState<NavigationEntry[]>([]);
   const [forwardNavigation, setForwardNavigation] = useState<NavigationEntry[]>([]);
   const [restoredWorkerUiState, setRestoredWorkerUiState] = useState<WorkerConsoleViewUiStateSnapshot | null>(null);
+  const [restoredWorkflowRunUiState, setRestoredWorkflowRunUiState] = useState<WorkflowRunConsoleViewUiStateSnapshot | null>(null);
   const [workerUiSnapshotsByWorkerId, setWorkerUiSnapshotsByWorkerId] = useState<
     Record<string, WorkerConsoleViewUiStateSnapshot | undefined>
+  >({});
+  const [workflowRunUiSnapshotsByRunId, setWorkflowRunUiSnapshotsByRunId] = useState<
+    Record<string, WorkflowRunConsoleViewUiStateSnapshot | undefined>
+  >({});
+  const workflowRunUiSnapshotsByRunIdRef = useRef<
+    Record<string, WorkflowRunConsoleViewUiStateSnapshot | undefined>
   >({});
   const handleWorkerUiStateChange = useCallback((snapshot: WorkerConsoleViewUiStateSnapshot) => {
     setWorkerUiSnapshotsByWorkerId((current) => {
@@ -390,6 +403,26 @@ export function WorkableConsole() {
       return {
         ...current,
         [snapshot.workerId]: snapshot,
+      };
+    });
+  }, []);
+  const handleWorkflowRunUiStateChange = useCallback((snapshot: WorkflowRunConsoleViewUiStateSnapshot) => {
+    workflowRunUiSnapshotsByRunIdRef.current = {
+      ...workflowRunUiSnapshotsByRunIdRef.current,
+      [snapshot.runId]: snapshot,
+    };
+    setWorkflowRunUiSnapshotsByRunId((current) => {
+      const previous = current[snapshot.runId];
+      if (
+        previous?.runId === snapshot.runId &&
+        previous.selectedStepName === snapshot.selectedStepName
+      ) {
+        return current;
+      }
+
+      return {
+        ...current,
+        [snapshot.runId]: snapshot,
       };
     });
   }, []);
@@ -1037,6 +1070,7 @@ export function WorkableConsole() {
         setSelectedDefinitionId(null);
         setSelectedDefinitionName(null);
         setSelectedWorkerId(null);
+        setSelectedWorkflowRunId(null);
         setNavigationHistory([]);
         setView("overview");
         setVisibleView("overview");
@@ -1086,8 +1120,12 @@ export function WorkableConsole() {
       workerCategoryFilter,
       workerDefinitionFilter,
       workerId: selectedWorkerId,
+      workflowRunId: selectedWorkflowRunId,
       workerUiState: selectedWorkerId
         ? workerUiSnapshotsByWorkerId[selectedWorkerId] ?? null
+        : null,
+      workflowRunUiState: selectedWorkflowRunId
+        ? workflowRunUiSnapshotsByRunIdRef.current[selectedWorkflowRunId] ?? null
         : null,
       workerStateFilter,
     }),
@@ -1109,6 +1147,7 @@ export function WorkableConsole() {
       selectedIterationSequence,
       selectedIterationWorkerId,
       selectedWorkerId,
+      selectedWorkflowRunId,
       workerUiSnapshotsByWorkerId,
       workerCategoryFilter,
       view,
@@ -1308,7 +1347,7 @@ export function WorkableConsole() {
   }, []);
 
   const rememberCurrentViewScroll = useCallback(() => {
-    if (visibleView !== "worker" && visibleView !== "iteration") {
+    if (visibleView !== "worker" && visibleView !== "iteration" && visibleView !== "workflowRun") {
       viewScrollPositions.current[visibleView] = getWindowScrollTop();
     }
   }, [visibleView]);
@@ -1319,10 +1358,12 @@ export function WorkableConsole() {
       pushCurrentNavigation();
     }
     setRestoredWorkerUiState(null);
+    setRestoredWorkflowRunUiState(null);
     setSelectedDefinitionId(null);
     setSelectedDefinitionName(null);
     setSelectedIterationWorkerId(null);
     setSelectedIterationSequence(null);
+    setSelectedWorkflowRunId(null);
     setSelectedWorkerId(workerId);
     setVisibleView("worker");
     setPendingView(null);
@@ -1336,9 +1377,11 @@ export function WorkableConsole() {
       pushCurrentNavigation();
     }
     setRestoredWorkerUiState(null);
+    setRestoredWorkflowRunUiState(null);
     setSelectedDefinitionId(null);
     setSelectedDefinitionName(null);
     setSelectedWorkerId(null);
+    setSelectedWorkflowRunId(null);
     setSelectedIterationWorkerId(workerId);
     setSelectedIterationSequence(sequence);
     setVisibleView("iteration");
@@ -1358,7 +1401,9 @@ export function WorkableConsole() {
     rememberCurrentViewScroll();
     pushCurrentNavigation();
     setRestoredWorkerUiState(null);
+    setRestoredWorkflowRunUiState(null);
     setSelectedWorkerId(null);
+    setSelectedWorkflowRunId(null);
     setSelectedIterationWorkerId(null);
     setSelectedIterationSequence(null);
     setSelectedDefinitionId(definitionName);
@@ -1378,6 +1423,25 @@ export function WorkableConsole() {
     refreshView("definition");
   };
 
+  const openWorkflowRun = useCallback((workflowRunId: string, trackHistory = true) => {
+    rememberCurrentViewScroll();
+    if (trackHistory) {
+      pushCurrentNavigation();
+    }
+    setRestoredWorkerUiState(null);
+    setRestoredWorkflowRunUiState(workflowRunUiSnapshotsByRunIdRef.current[workflowRunId] ?? null);
+    setSelectedDefinitionId(null);
+    setSelectedDefinitionName(null);
+    setSelectedWorkerId(null);
+    setSelectedIterationWorkerId(null);
+    setSelectedIterationSequence(null);
+    setSelectedWorkflowRunId(workflowRunId);
+    setVisibleView("workflowRun");
+    setPendingView(null);
+    setView("workflowRun");
+    refreshView("workflowRun");
+  }, [pushCurrentNavigation, refreshView, rememberCurrentViewScroll]);
+
   const openView = (
     nextView: View,
     systemId = activeSystem?.id ?? "",
@@ -1394,6 +1458,7 @@ export function WorkableConsole() {
         iterationSequence: null,
         iterationWorkerId: null,
         workerId: null,
+        workflowRunId: null,
         catalogScope: cloneOverviewScope(catalogScopeBySystemId[systemId] ?? null),
         iterationCategoryFilter,
         iterationDefinitionFilter,
@@ -1406,6 +1471,7 @@ export function WorkableConsole() {
         keyValueFilter,
         overviewScope: cloneOverviewScope(overviewScopeBySystemId[systemId] ?? null),
         workerUiState: null,
+        workflowRunUiState: null,
         workerCategoryFilter,
         workerDefinitionFilter,
         workerStateFilter,
@@ -1415,11 +1481,13 @@ export function WorkableConsole() {
     }
 
     setRestoredWorkerUiState(null);
+    setRestoredWorkflowRunUiState(null);
 
-    if (nextView !== "worker" && nextView !== "iteration") {
+    if (nextView !== "worker" && nextView !== "iteration" && nextView !== "workflowRun") {
       setSelectedWorkerId(null);
       setSelectedIterationWorkerId(null);
       setSelectedIterationSequence(null);
+      setSelectedWorkflowRunId(null);
       if (nextView !== "definition") {
         setSelectedDefinitionId(null);
         setSelectedDefinitionName(null);
@@ -1575,6 +1643,7 @@ export function WorkableConsole() {
 
   const restoreNavigation = useCallback((entry: NavigationEntry) => {
     setRestoredWorkerUiState(entry.view === "worker" ? entry.workerUiState : null);
+    setRestoredWorkflowRunUiState(entry.view === "workflowRun" ? entry.workflowRunUiState : null);
     setCatalogScopeBySystemId((current) => ({
       ...current,
       [entry.systemId]: cloneOverviewScope(entry.catalogScope) ?? undefined,
@@ -1597,6 +1666,7 @@ export function WorkableConsole() {
     setSelectedDefinitionId(entry.definitionId);
     setSelectedDefinitionName(entry.definitionName);
     setSelectedWorkerId(entry.workerId);
+    setSelectedWorkflowRunId(entry.workflowRunId);
     setWorkerCategoryFilter(entry.workerCategoryFilter);
     setWorkerDefinitionFilter(entry.workerDefinitionFilter);
     setWorkerStateFilter(entry.workerStateFilter);
@@ -1605,7 +1675,7 @@ export function WorkableConsole() {
       activeSystemId: entry.systemId,
       view: isServerView(entry.view) ? entry.view : current.view,
     }));
-    if (entry.view !== "worker" && entry.view !== "iteration") {
+    if (entry.view !== "worker" && entry.view !== "iteration" && entry.view !== "workflowRun") {
       setMountedViews((current) => new Set([...current, entry.view]));
     }
     setVisibleView(entry.view);
@@ -1621,7 +1691,12 @@ export function WorkableConsole() {
 
     const currentEntry = currentNavigation();
     restoreNavigation(previous);
-    if (previous.view === "workers" || previous.view === "iterations" || previous.view === "worker") {
+    if (
+      previous.view === "workers" ||
+      previous.view === "iterations" ||
+      previous.view === "worker" ||
+      previous.view === "workflowRun"
+    ) {
       refreshView(previous.view);
     }
     setForwardNavigation((current) =>
@@ -1639,7 +1714,12 @@ export function WorkableConsole() {
 
     const currentEntry = currentNavigation();
     restoreNavigation(next);
-    if (next.view === "workers" || next.view === "iterations" || next.view === "worker") {
+    if (
+      next.view === "workers" ||
+      next.view === "iterations" ||
+      next.view === "worker" ||
+      next.view === "workflowRun"
+    ) {
       refreshView(next.view);
     }
     setNavigationHistory((current) =>
@@ -1665,7 +1745,8 @@ export function WorkableConsole() {
           entry.view === "definitions" ||
           entry.view === "definition" ||
           entry.view === "workers" ||
-          entry.view === "iterations"
+          entry.view === "iterations" ||
+          entry.view === "workflowRun"
         );
 
       if (workerParent?.view === "definitions") {
@@ -1685,6 +1766,37 @@ export function WorkableConsole() {
       if (workerParent?.view === "workers" || workerParent?.view === "iterations") {
         return {
           label: navTitle(workerParent.view),
+          onSelect: navigateBack,
+        };
+      }
+
+      if (workerParent?.view === "workflowRun") {
+        return {
+          label: workerParent.workflowRunId ?? navTitle("workflowRun"),
+          onSelect: navigateBack,
+        };
+      }
+    }
+
+    if (view === "workflowRun") {
+      const workflowParent = [...navigationHistory]
+        .reverse()
+        .find((entry) =>
+          entry.view === "worker" ||
+          entry.view === "workers" ||
+          entry.view === "iterations"
+        );
+
+      if (workflowParent?.view === "worker" && workflowParent.workerId) {
+        return {
+          label: workflowParent.workerId,
+          onSelect: navigateBack,
+        };
+      }
+
+      if (workflowParent?.view === "workers" || workflowParent?.view === "iterations") {
+        return {
+          label: navTitle(workflowParent.view),
           onSelect: navigateBack,
         };
       }
@@ -1740,7 +1852,7 @@ export function WorkableConsole() {
   const markIterationsReady = useCallback(() => markViewReady("iterations"), [markViewReady]);
 
   useEffect(() => {
-    if (visibleView === "worker" || visibleView === "iteration") {
+    if (visibleView === "worker" || visibleView === "iteration" || visibleView === "workflowRun") {
       return;
     }
 
@@ -1755,7 +1867,7 @@ export function WorkableConsole() {
   }, [visibleView]);
 
   useEffect(() => {
-    if (visibleView === "worker" || visibleView === "iteration") {
+    if (visibleView === "worker" || visibleView === "iteration" || visibleView === "workflowRun") {
       return;
     }
 
@@ -1850,6 +1962,7 @@ export function WorkableConsole() {
     if (firstSystem) {
       setSelectedDefinitionId(null);
       setSelectedWorkerId(null);
+      setSelectedWorkflowRunId(null);
       setNavigationHistory([]);
       setView("overview");
       setVisibleView("overview");
@@ -1879,6 +1992,7 @@ export function WorkableConsole() {
     });
     setSelectedDefinitionId(null);
     setSelectedWorkerId(null);
+    setSelectedWorkflowRunId(null);
     setNavigationHistory([]);
     setView("overview");
     setVisibleView("overview");
@@ -1921,6 +2035,7 @@ export function WorkableConsole() {
     });
     setSelectedDefinitionId(null);
     setSelectedWorkerId(null);
+    setSelectedWorkflowRunId(null);
     setNavigationHistory([]);
     setView("overview");
     setVisibleView("overview");
@@ -2099,6 +2214,7 @@ export function WorkableConsole() {
                           )}
                           view={view}
                           workerId={selectedWorkerId}
+                          workflowRunId={selectedWorkflowRunId}
                         />
                       )}
                       <ConsoleViewportContent scrollMode={usesPanelOwnedScroll ? "panel" : "browser"}>
@@ -2318,7 +2434,7 @@ export function WorkableConsole() {
                           </ConsoleViewMount>
                         )}
                         <DelayedLoadingOverlay
-                          active={!!pendingView && view !== "worker" && view !== "iteration"}
+                          active={!!pendingView && view !== "worker" && view !== "iteration" && view !== "workflowRun"}
                           label={`Loading ${pendingView ? navTitle(pendingView) : "view"}`}
                         />
                         {view === "worker" && selectedWorkerId && (
@@ -2338,6 +2454,7 @@ export function WorkableConsole() {
                               )}
                               onNavigateBack={navigateBack}
                               onOpenIteration={openIteration}
+                              onOpenWorkflowRun={openWorkflowRun}
                               onOpenWorker={openWorker}
                               onRealtimePayloadOpenChange={setRealtimePayloadOpen}
                               onUiStateChange={handleWorkerUiStateChange}
@@ -2347,6 +2464,24 @@ export function WorkableConsole() {
                               realtimePayloadOpen={realtimePayloadOpen}
                               reportSystemNotification={upsertSystemIssueNotification}
                               workerId={selectedWorkerId}
+                            />
+                          </ConsoleViewMount>
+                        )}
+                        {view === "workflowRun" && selectedWorkflowRunId && (
+                          <ConsoleViewMount active={true}>
+                            <WorkflowRunConsoleView
+                              connection={hydratedConnection}
+                              initialUiState={restoredWorkflowRunUiState}
+                              key={selectedWorkflowRunId}
+                              onActiveRealtimeConnectionCountChange={ignoreRealtimeConnectionCountChange}
+                              onOpenWorker={openWorker}
+                              onRealtimePayloadOpenChange={setRealtimePayloadOpen}
+                              onUiStateChange={handleWorkflowRunUiStateChange}
+                              realtimePayloadCaptureEnabled={realtimePayloadCaptureEnabled}
+                              realtimePayloadMaxMessages={realtimePayloadMaxMessages}
+                              realtimePayloadOpen={realtimePayloadOpen}
+                              refreshToken={refreshTokens.workflowRun}
+                              workflowRunId={selectedWorkflowRunId}
                             />
                           </ConsoleViewMount>
                         )}

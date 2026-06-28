@@ -2487,9 +2487,9 @@ public sealed class WorkableHttpApiTests
         Assert.Equal("notify", run["currentStepName"]?.GetValue<string>());
         Assert.Equal("WaitingOnChildren", run["currentStepStatus"]?.GetValue<string>());
         Assert.Equal(2, run["outstandingChildren"]?["total"]?.GetValue<int>());
-        Assert.Equal(2, run["outstandingChildren"]?["byState"]?["Running"]?.GetValue<int>());
+        Assert.Null(run["outstandingChildren"]?["byState"]);
 
-        Assert.Equal("http.workflow.observe", detailJson["definitionName"]?.GetValue<string>());
+        Assert.Null(detailJson["definitionName"]);
         Assert.Equal("notify", detailJson["currentStepName"]?.GetValue<string>());
         Assert.Equal(2, detailJson["outstandingChildren"]?["total"]?.GetValue<int>());
         var steps = detailJson["steps"]?.AsArray()
@@ -2581,7 +2581,7 @@ public sealed class WorkableHttpApiTests
             ?.Single(step => string.Equals(step?["name"]?.GetValue<string>(), "notify", StringComparison.Ordinal))
             ?? throw new InvalidOperationException("Expected notify step.");
         Assert.Equal(1, notify["childSample"]?.AsArray()?.Count);
-        Assert.Equal(1, notify["additionalChildCount"]?.GetValue<int>());
+        Assert.Null(notify["additionalChildCount"]);
     }
 
     [Fact]

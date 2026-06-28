@@ -1513,7 +1513,7 @@ public sealed class WorkableMcpTests
         Assert.Equal(2, run["outstandingChildren"]?["total"]?.GetValue<int>());
 
         Assert.True(detailJson["found"]?.GetValue<bool>() ?? false);
-        Assert.Equal("mcp.workflow.observe", detailJson["run"]?["definitionName"]?.GetValue<string>());
+        Assert.Null(detailJson["run"]?["definitionName"]);
         var notify = detailJson["run"]?["steps"]?.AsArray()
             ?.Single(step => string.Equals(step?["name"]?.GetValue<string>(), "notify", StringComparison.Ordinal));
         var notifyChildren = notify?["steps"]?.AsArray()
@@ -1596,7 +1596,7 @@ public sealed class WorkableMcpTests
             ?.Single(step => string.Equals(step?["name"]?.GetValue<string>(), "notify", StringComparison.Ordinal))
             ?? throw new InvalidOperationException("Expected notify step.");
         Assert.Equal(1, notify["childSample"]?.AsArray()?.Count);
-        Assert.Equal(1, notify["additionalChildCount"]?.GetValue<int>());
+        Assert.Null(notify["additionalChildCount"]);
 
         using var missingArguments = JsonDocument.Parse($$"""{"runId":"{{Guid.NewGuid():D}}"}""");
         var missing = await router.CallTool("workable_get_workflow_run", missingArguments.RootElement, null, null, CreateMcpRequestContext("Get missing workflow detail."));

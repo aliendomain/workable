@@ -10,6 +10,7 @@ using Workable.SqlServer;
 var builder = WebApplication.CreateBuilder(args);
 const string sampleCorsPolicy = "WorkableSampleUi";
 const int sampleHttpPort = 61932;
+const string sampleOperatorWorkflowName = "sample.demo.workflow.operator-lab";
 
 builder.Logging.ClearProviders();
 builder.Logging.AddConsole(options => options.FormatterName = WorkableSampleConsoleFormatter.FormatterName);
@@ -135,6 +136,69 @@ builder.Services.AddWorkableSystem(workable =>
             .ConfigureLogging(
                 level: LogLevel.Trace,
                 maximumBufferedEntries: 400));
+    workable.AddWorkflow(
+        DemoWorkflowDefinition(
+            sampleOperatorWorkflowName,
+            "Samples:Workflow",
+            "Long-running sample workflow with sequential dispatch, parallel fan-out, joins, profiling, and retained-message child work for operator UI testing."),
+        workflow => workflow
+            .DispatchWork(
+                "prepare",
+                "sample.demo.quick",
+                DemoWorkflowTimedInput(
+                    "Prepare operator workflow inputs",
+                    4_500,
+                    "prepare"))
+            .RunParallel("fan-out", parallel => parallel
+                .DispatchWork(
+                    "intake-audit",
+                    "sample.demo.long",
+                    DemoWorkflowTimedInput(
+                        "Audit inbound workload",
+                        9_000,
+                        "intake-audit"))
+                .DispatchWork(
+                    "fulfillment-sync",
+                    "sample.demo.throttled",
+                    DemoWorkflowTimedInput(
+                        "Sync fulfillment checkpoints",
+                        8_000,
+                        "fulfillment-sync"))
+                .DispatchWork(
+                    "operator-messages",
+                    "sample.demo.message-panel",
+                    DemoWorkflowMessagePanelInput("operator-messages")))
+            .Join("fan-out-complete")
+            .DispatchWork(
+                "profile-summary",
+                "sample.demo.profiling-lab",
+                DemoWorkflowProfilingInput())
+            .RunParallel("finalize", parallel => parallel
+                .DispatchWork(
+                    "publish-summary",
+                    "sample.demo.quick",
+                    DemoWorkflowTimedInput(
+                        "Publish operator summary",
+                        3_500,
+                        "publish-summary"))
+                .DispatchWork(
+                    "archive-results",
+                    "sample.demo.long",
+                    DemoWorkflowTimedInput(
+                        "Archive workflow artifacts",
+                        6_000,
+                        "archive-results")))
+            .Join("workflow-complete")
+            .DispatchWork(
+                "closeout",
+                "sample.demo.quick",
+                DemoWorkflowTimedInput(
+                    "Close operator workflow",
+                    2_000,
+                    "closeout")),
+        authorize: CreateSampleWorkAuthorization(
+            SampleFakeAuth.OperationsCustomReadGroup,
+            SampleFakeAuth.OperationsCustomOperateGroup));
 });
 
 builder.Services.AddWorkableSystem("fulfillment", workable =>
@@ -404,6 +468,18 @@ app.MapGet("/", (HttpContext context) =>
                     </tr>
                     <tr>
                         <td>
+                            <div class="action-name">Workflow operator lab</div>
+                            <div class="action-description">Start a longer workflow that uses sequential dispatch, parallel branches, joins, profiling, and retained messages so the workflow graph has something meaningful to watch.</div>
+                        </td>
+                        <td>
+                            <div class="action-controls">
+                                <button id="workflow-start" type="button">Start operator workflow</button>
+                            </div>
+                        </td>
+                        <td><p class="status" id="workflow-status">Ready.</p></td>
+                    </tr>
+                    <tr>
+                        <td>
                             <div class="action-name">Durability warning</div>
                             <div class="action-description">Hold durable enqueues inside an uncommitted SQL transaction so accepted waiters age into the durability warning state.</div>
                         </td>
@@ -517,6 +593,7 @@ app.MapGet("/", (HttpContext context) =>
                 const authGroups = document.getElementById('fake-auth-groups');
                 const workableApiUrl = document.getElementById('workable-api-url');
                 const copyWorkableApiUrl = document.getElementById('copy-workable-api-url');
+                const sampleWorkflowName = {{JsonSerializer.Serialize(sampleOperatorWorkflowName)}};
 
                 for (const profile of authProfiles) {
                     const option = document.createElement('option');
@@ -547,6 +624,7 @@ app.MapGet("/", (HttpContext context) =>
 
                 authProfileSelect.addEventListener('change', () => {
                     updateAuthProfile(authProfileSelect.value);
+                    refreshWorkflow();
                 });
 
                 copyWorkableApiUrl.addEventListener('click', async () => {
@@ -566,6 +644,7 @@ app.MapGet("/", (HttpContext context) =>
                 updateAuthProfile(defaultAuthProfileId, false);
 
                 const button = document.getElementById('toggle');
+                const workflowStart = document.getElementById('workflow-start');
                 const forceCancel = document.getElementById('force-cancel');
                 const burstCount = document.getElementById('burst-count');
                 const burstQueue = document.getElementById('burst-queue');
@@ -592,6 +671,7 @@ app.MapGet("/", (HttpContext context) =>
                 const systemOperations = document.getElementById('system-operations');
                 const systemFulfillment = document.getElementById('system-fulfillment');
                 const status = document.getElementById('status');
+                const workflowStatus = document.getElementById('workflow-status');
                 const burstStatus = document.getElementById('burst-status');
                 const durableBurstStatus = document.getElementById('durable-burst-status');
                 const durabilityWarningStatus = document.getElementById('durability-warning-status');
@@ -609,6 +689,35 @@ app.MapGet("/", (HttpContext context) =>
                 let profilingPressureRunning = false;
                 let durabilityWarningRunning = false;
                 let tightLoopRunning = false;
+
+                function workableApiPath(path) {
+                    const base = workableApiUrl.value.replace(/\/$/, '');
+                    return `${base}${path}`;
+                }
+
+                function firstMessageText(payload) {
+                    if (!payload || !Array.isArray(payload.messages)) {
+                        return null;
+                    }
+
+                    const messages = payload.messages
+                        .map(message => message?.text)
+                        .filter(Boolean);
+                    return messages.length > 0 ? messages.join(' ') : null;
+                }
+
+                function describeWorkflowRun(run) {
+                    const currentStep = run.currentStepName
+                        ? ` - step ${run.currentStepName}`
+                        : '';
+                    const waitingChildren = run.outstandingChildren?.total > 0
+                        ? ` - waiting on ${run.outstandingChildren.total} child ${run.outstandingChildren.total === 1 ? 'worker' : 'workers'}`
+                        : '';
+                    const completed = run.completedAt
+                        ? ` - completed ${new Date(run.completedAt).toLocaleTimeString()}`
+                        : '';
+                    return `Run ${run.runId} - ${run.status}${currentStep}${waitingChildren}${completed}`;
+                }
 
                 function selectedSystemLabel() {
                     return [
@@ -630,6 +739,28 @@ app.MapGet("/", (HttpContext context) =>
                     profilingPressureStop.disabled = !profilingPressureRunning;
                     forceCancel.disabled = !selectedOperations;
                     tightLoopStart.disabled = tightLoopRunning || !anySelected;
+                }
+
+                async function refreshWorkflow() {
+                    try {
+                        const response = await fetch(workableApiPath(`/workflow-runs?definitionName=${encodeURIComponent(sampleWorkflowName)}&includeFinal=true`));
+                        const data = await response.json();
+                        if (!response.ok) {
+                            workflowStatus.textContent = firstMessageText(data) ?? `Workflow query failed with ${response.status}.`;
+                            return;
+                        }
+
+                        const runs = Array.isArray(data.runs) ? data.runs : [];
+                        if (runs.length === 0) {
+                            workflowStatus.textContent = 'Ready. No visible sample workflow runs yet for this user.';
+                            return;
+                        }
+
+                        const activeRun = runs.find(run => run.status === 'Running');
+                        workflowStatus.textContent = describeWorkflowRun(activeRun ?? runs[0]);
+                    } catch (error) {
+                        workflowStatus.textContent = 'Unable to query sample workflow runs.';
+                    }
                 }
 
                 async function refresh() {
@@ -716,6 +847,34 @@ app.MapGet("/", (HttpContext context) =>
                     } finally {
                         button.disabled = false;
                         updateFeatureAvailability();
+                    }
+                });
+
+                workflowStart.addEventListener('click', async () => {
+                    workflowStart.disabled = true;
+                    workflowStatus.textContent = 'Starting sample workflow...';
+                    try {
+                        const response = await fetch(workableApiPath(`/workflows/${encodeURIComponent(sampleWorkflowName)}`), {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                description: 'Start the sample operator workflow from the sample host.'
+                            })
+                        });
+                        const data = await response.json();
+                        if (!response.ok) {
+                            workflowStatus.textContent = firstMessageText(data) ?? `Workflow start failed with ${response.status}.`;
+                            return;
+                        }
+
+                        workflowStatus.textContent = data.runId
+                            ? `Accepted run ${data.runId}.`
+                            : 'Accepted sample workflow.';
+                        await refreshWorkflow();
+                    } catch (error) {
+                        workflowStatus.textContent = 'Unable to start sample workflow.';
+                    } finally {
+                        workflowStart.disabled = false;
                     }
                 });
 
@@ -967,12 +1126,14 @@ app.MapGet("/", (HttpContext context) =>
                 });
 
                 refresh();
+                refreshWorkflow();
                 refreshPressure();
                 refreshProfilingPressure();
                 refreshDurabilityWarning();
                 refreshTightLoops();
                 setInterval(() => {
                     refresh();
+                    refreshWorkflow();
                     refreshPressure();
                     refreshProfilingPressure();
                     refreshDurabilityWarning();
@@ -1110,3 +1271,40 @@ static WorkDefinition DemoRecurringDefinition(string name, string category, stri
                 RetainedIterations = 1_000,
             },
         });
+
+static WorkflowDefinition DemoWorkflowDefinition(string name, string category, string description)
+    => WorkflowDefinition.Create(name, description, category);
+
+static WorkInput DemoWorkflowTimedInput(
+    string scenario,
+    int delayMilliseconds,
+    string stepIdentifier)
+    => WorkInput.FromValue(
+        new DemoTimedInput(
+            scenario,
+            delayMilliseconds,
+            DiscoveredIdentifierType: "sample-workflow-step",
+            DiscoveredIdentifierValue: stepIdentifier),
+        identifiers: DemoWorkflowIdentifiers(stepIdentifier));
+
+static WorkInput DemoWorkflowMessagePanelInput(string stepIdentifier)
+    => WorkInput.FromValue(
+        new DemoMessagePanelInput(),
+        identifiers: DemoWorkflowIdentifiers(stepIdentifier));
+
+static WorkInput DemoWorkflowProfilingInput()
+    => WorkInput.FromValue(
+        new DemoProfilingLabInput(
+            Scenario: "operator-lab-profile",
+            SectionCount: 5,
+            StepsPerSection: 4,
+            DelayMilliseconds: 65,
+            AddDiscoveredIdentifier: true),
+        identifiers: DemoWorkflowIdentifiers("profile-summary"));
+
+static IReadOnlyList<WorkIdentifier> DemoWorkflowIdentifiers(string stepIdentifier)
+    =>
+    [
+        new WorkIdentifier("sample-workflow", "operator-lab"),
+        new WorkIdentifier("sample-workflow-step", stepIdentifier),
+    ];

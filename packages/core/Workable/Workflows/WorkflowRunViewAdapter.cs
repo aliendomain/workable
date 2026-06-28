@@ -254,7 +254,14 @@ public sealed class WorkflowRunViewAdapter
         int childSampleSize)
     {
         snapshotsByName.TryGetValue(join.Name, out var snapshot);
-        var workerIds = GetOutstandingWorkerIdsBeforeJoin(run, join.Name);
+        var candidateWorkerIds = GetOutstandingWorkerIdsBeforeJoin(run, join.Name);
+        var workerIds = candidateWorkerIds
+            .Where(workerId =>
+                !workers.TryGetValue(workerId, out var worker) ||
+                worker is null ||
+                !worker.IsFinal)
+            .Distinct()
+            .ToArray();
         var childWorkers = workerIds
             .Select(workerId => workers.TryGetValue(workerId, out var worker) ? worker : null)
             .ToArray();

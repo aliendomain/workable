@@ -649,7 +649,11 @@ public sealed class WorkableSignalRTests
                     return false;
                 }
 
-                return data.GetProperty("outstandingChildren").GetProperty("byState").TryGetProperty("Queued", out _);
+                return data
+                    .GetProperty("steps")[0]
+                    .GetProperty("childSample")[0]
+                    .GetProperty("state")
+                    .GetString() == nameof(WorkerState.Queued);
             });
         var initialDetail = Assert.IsType<JsonElement>(initial.Components["workflowRun"].Data);
         Assert.Equal(nameof(WorkflowRunStatus.Running), initialDetail.GetProperty("status").GetString());
@@ -673,13 +677,18 @@ public sealed class WorkableSignalRTests
                     return false;
                 }
 
-                var byState = data.GetProperty("outstandingChildren").GetProperty("byState");
-                return byState.TryGetProperty("Running", out var running) && running.GetInt32() == 1;
+                return data
+                    .GetProperty("steps")[0]
+                    .GetProperty("childSample")[0]
+                    .GetProperty("state")
+                    .GetString() == nameof(WorkerState.Running);
             });
         var startedDetail = Assert.IsType<JsonElement>(started.Components["workflowRun"].Data);
 
         Assert.Equal(nameof(WorkflowRunStatus.Running), startedDetail.GetProperty("status").GetString());
-        Assert.Equal(1, startedDetail.GetProperty("outstandingChildren").GetProperty("byState").GetProperty("Running").GetInt32());
+        Assert.Equal(
+            nameof(WorkerState.Running),
+            startedDetail.GetProperty("steps")[0].GetProperty("childSample")[0].GetProperty("state").GetString());
 
         releaseChild.TrySetResult();
         await handle.WaitForCompletion();

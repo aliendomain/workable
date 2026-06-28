@@ -13,6 +13,7 @@ import type {
 } from "@/components/features/console/types";
 import { normalizeOverviewScope, overviewScopesEqual } from "@/components/workable/console/catalog-path";
 import type { WorkerConsoleViewUiStateSnapshot } from "@/components/workable/console/detail-screens";
+import type { WorkflowRunConsoleViewUiStateSnapshot } from "@/components/workable/console/workflow-run-screen";
 import {
   DEFAULT_WORKABLE_API_URL,
   createDefaultWorkableHttpSystemCapabilities,
@@ -62,7 +63,9 @@ export type NavigationEntry = {
   definitionId: string | null;
   iterationWorkerId: string | null;
   workerId: string | null;
+  workflowRunId: string | null;
   workerUiState: WorkerConsoleViewUiStateSnapshot | null;
+  workflowRunUiState: WorkflowRunConsoleViewUiStateSnapshot | null;
   workerStateFilter: WorkerState[];
 };
 
@@ -420,6 +423,8 @@ export function normalizeOptional(value?: string | null) {
 
 export function navTitle(view: View) {
   switch (view) {
+    case "workflowRun":
+      return "Workflow Run";
     case "worker":
       return "Worker Console";
     case "iteration":
@@ -439,6 +444,8 @@ export function navTitle(view: View) {
 
 export function headerRefreshTitle(view: View) {
   switch (view) {
+    case "workflowRun":
+      return "Refresh workflow run";
     case "definitions":
       return "Refresh catalog";
     case "definition":
@@ -496,6 +503,9 @@ export function navigationEntriesEqual(left: NavigationEntry | undefined, right:
     left.workerCategoryFilter === right.workerCategoryFilter &&
     left.workerDefinitionFilter === right.workerDefinitionFilter &&
     left.workerId === right.workerId &&
+    left.workflowRunId === right.workflowRunId &&
+    left.workflowRunUiState?.runId === right.workflowRunUiState?.runId &&
+    left.workflowRunUiState?.selectedStepName === right.workflowRunUiState?.selectedStepName &&
     left.workerStateFilter.length === right.workerStateFilter.length &&
     left.workerStateFilter.every((state, index) => state === right.workerStateFilter[index])
   );

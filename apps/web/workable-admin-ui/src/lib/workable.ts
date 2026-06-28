@@ -625,7 +625,59 @@ export type WorkWorkerOverviewWorker = {
   createdOrigin: WorkWorkerOverviewOrigin;
   definitionName: string;
   definitionCategory: string;
+  identifiers?: WorkTypedValue[];
   configDifferenceCount: number;
+};
+
+export type WorkflowRunStatus =
+  | "Running"
+  | "Completed"
+  | "Failed"
+  | "Canceled"
+  | "Invalid"
+  | "NotFound"
+  | "Unauthorized";
+
+export type WorkflowStepKind = "DispatchWork" | "Parallel" | "Join";
+
+export type WorkflowOperatorNodeStatus =
+  | "Pending"
+  | "Running"
+  | "WaitingOnChildren"
+  | "Completed"
+  | "Failed"
+  | "Canceled";
+
+export type WorkflowChildWorkerSummary = {
+  total: number;
+  active: number;
+  final: number;
+};
+
+export type WorkflowChildWorkerView = {
+  workerId: string;
+  definitionName: string;
+  state: WorkerState;
+};
+
+export type WorkflowStepOperatorView = {
+  name: string;
+  kind: WorkflowStepKind;
+  status: WorkflowOperatorNodeStatus;
+  children: WorkflowChildWorkerSummary;
+  childSample: WorkflowChildWorkerView[];
+  steps: WorkflowStepOperatorView[];
+};
+
+export type WorkflowRunDetailView = {
+  status: WorkflowRunStatus;
+  createdAt: string;
+  startedAt?: string | null;
+  completedAt?: string | null;
+  currentStepName?: string | null;
+  currentStepStatus?: WorkflowOperatorNodeStatus | null;
+  outstandingChildren: WorkflowChildWorkerSummary;
+  steps: WorkflowStepOperatorView[];
 };
 
 export type WorkWorkerOverviewLogSummary = {

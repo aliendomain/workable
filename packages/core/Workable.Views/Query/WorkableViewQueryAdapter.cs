@@ -316,6 +316,7 @@ public class WorkableViewQueryAdapter
                 CreateWorkerOverviewOrigin(worker.Origin),
                 worker.DefinitionName,
                 worker.DefinitionCategory,
+                worker.Identifiers.ToArray(),
                 CountWorkerOverviewConfigurationDifferences(worker, definition)),
             worker.Input,
             latestIteration is null
@@ -466,6 +467,7 @@ public class WorkableViewQueryAdapter
                 CreateWorkerOverviewOrigin(worker.Origin),
                 worker.DefinitionName,
                 worker.DefinitionCategory,
+                worker.Identifiers.ToArray(),
                 CountWorkerOverviewConfigurationDifferences(worker, definition)),
             latestIteration is null
                 ? null

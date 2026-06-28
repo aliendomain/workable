@@ -20,21 +20,12 @@ import {
   Search,
   Send,
   Trash2,
+  Workflow,
   X,
 } from "lucide-react";
 import type { Dispatch, ReactNode, SetStateAction } from "react";
 import { Fragment, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Badge } from "@/components/ui/badge";
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from "@/components/ui/alert-dialog";
 import {
   Breadcrumb,
   BreadcrumbItem,
@@ -77,6 +68,11 @@ import {
   type ConsoleHeaderCapabilities,
 } from "@/components/features/console/header-capabilities";
 import { PanelScrollViewport, PanelShell } from "@/components/features/console/panel-shell";
+import {
+  ConsoleActionButton,
+  ExecutionStatusBadge,
+  consoleActionToneClassName,
+} from "@/components/workable/console/execution-status-controls";
 import type { PanelVisibilityOption } from "@/components/features/console/panel-visibility-settings";
 import { StackedSkeleton } from "@/components/features/console/stacked-skeleton";
 import { ToolbarIconButton } from "@/components/features/console/toolbar-icon-button";
@@ -783,6 +779,7 @@ export function WorkerConsoleView({
   onOpenDefinitionCatalog,
   onOpenIteration,
   onNavigateBack,
+  onOpenWorkflowRun,
   onOpenWorker,
   onUiStateChange,
   reportSystemNotification,
@@ -799,6 +796,7 @@ export function WorkerConsoleView({
   onOpenDefinitionCatalog: (definitionName: string, category?: string | null) => void;
   onOpenIteration: (workerId: string, sequence: number) => void;
   onNavigateBack: () => void;
+  onOpenWorkflowRun: (workflowRunId: string) => void;
   onOpenWorker: (workerId: string) => void;
   onRealtimePayloadOpenChange: (open: boolean) => void;
   onUiStateChange?: (state: WorkerConsoleViewUiStateSnapshot) => void;
@@ -1056,6 +1054,10 @@ export function WorkerConsoleView({
   const worker = useMemo(
     () => landing ? createWorkerSnapshotFromLanding(landing) : null,
     [landing]
+  );
+  const workflowRunId = useMemo(
+    () => findWorkflowRunIdentifier(landing?.worker.identifiers),
+    [landing?.worker.identifiers]
   );
   const latestIteration = useMemo(
     () => landing?.latestIteration
@@ -2121,6 +2123,25 @@ export function WorkerConsoleView({
               <PanelShell
                 actions={(
                   <>
+                    {workflowRunId ? (
+                      <Tooltip delayDuration={250}>
+                        <TooltipTrigger asChild>
+                          <Button
+                            disabled={!worker}
+                            onClick={() => onOpenWorkflowRun(workflowRunId)}
+                            size="sm"
+                            type="button"
+                            variant="outline"
+                          >
+                            <Workflow className="size-4" />
+                            View Workflow
+                          </Button>
+                        </TooltipTrigger>
+                        <TooltipContent side="top" sideOffset={6}>
+                          Open the workflow run orchestrating this worker.
+                        </TooltipContent>
+                      </Tooltip>
+                    ) : null}
                     <Tooltip delayDuration={250}>
                       <TooltipTrigger asChild>
                         <Button
@@ -3584,89 +3605,42 @@ function WorkerActionButton({
   onAction: (action: WorkAction) => Promise<void>;
   tooltip?: string;
 }) {
-  const [confirmOpen, setConfirmOpen] = useState(false);
   const toneClassName = workerActionToneClassName(action, disabled === true);
-
-  if (action === "Cancel" || action === "Pause") {
-    const isCancel = action === "Cancel";
-
-    return (
-      <AlertDialog onOpenChange={setConfirmOpen} open={confirmOpen}>
-        <Button
-          className={toneClassName}
-          disabled={disabled}
-          onClick={() => setConfirmOpen(true)}
-          size="sm"
-          variant="outline"
-        >
-          <Icon className="size-4" />
-          {action}
-        </Button>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>{isCancel ? "Cancel worker?" : "Pause worker?"}</AlertDialogTitle>
-            <AlertDialogDescription>
-              {isCancel
-                ? (
-                  <>
-                    This will request cancellation for the current worker.
-                    {executionMayStop
-                      ? " Any in-flight execution may stop as soon as the work observes the cancellation."
-                      : ""}
-                    {" "}Cancellation is final and cannot be undone.
-                  </>
-                )
-                : executionMayStop
-                    ? "This will request that the current worker pause. Any in-flight execution may stop when the work observes the pause request, and it can be resumed later."
-                    : "This will move the current worker into the paused state, and it can be resumed later."}
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>{isCancel ? "Keep running" : "Keep executing"}</AlertDialogCancel>
-            <AlertDialogAction
-              variant="default"
-              className={isCancel
-                ? "bg-[var(--status-danger-solid)] text-[var(--status-danger-contrast)] hover:bg-[var(--status-danger-text)] focus-visible:ring-[var(--status-danger-border)]"
-                : "!bg-[var(--status-warning-solid)] !text-[var(--status-warning-contrast)] hover:!bg-[var(--status-warning-text)] focus-visible:ring-[var(--status-warning-border)]"}
-              onClick={() => {
-                setConfirmOpen(false);
-                void onAction(action);
-              }}
-            >
-              {isCancel ? "Cancel worker" : "Pause worker"}
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
-    );
-  }
-
-  const button = (
-    <Button
-      className={toneClassName}
-      disabled={disabled}
-      onClick={() => void onAction(action)}
-      size="sm"
-      variant="outline"
-    >
-      <Icon className="size-4" />
-      {action}
-    </Button>
-  );
-
-  if (!tooltip) {
-    return button;
-  }
+  const isConfirmAction = action === "Cancel" || action === "Pause";
+  const isCancel = action === "Cancel";
 
   return (
-    <Tooltip delayDuration={250}>
-      <TooltipTrigger asChild>
-        {button}
-      </TooltipTrigger>
-      <TooltipContent side="top" sideOffset={6}>
-        {tooltip}
-      </TooltipContent>
-    </Tooltip>
+    <ConsoleActionButton
+      cancelLabel={isConfirmAction ? (isCancel ? "Keep running" : "Keep executing") : undefined}
+      className={toneClassName}
+      confirmClassName={isConfirmAction
+        ? (isCancel
+            ? "bg-[var(--status-danger-solid)] text-[var(--status-danger-contrast)] hover:bg-[var(--status-danger-text)] focus-visible:ring-[var(--status-danger-border)]"
+            : "!bg-[var(--status-warning-solid)] !text-[var(--status-warning-contrast)] hover:!bg-[var(--status-warning-text)] focus-visible:ring-[var(--status-warning-border)]")
+        : undefined}
+      confirmDescription={isConfirmAction
+        ? (isCancel
+            ? (
+              <>
+                This will request cancellation for the current worker.
+                {executionMayStop
+                  ? " Any in-flight execution may stop as soon as the work observes the cancellation."
+                  : ""}
+                {" "}Cancellation is final and cannot be undone.
+              </>
+            )
+            : executionMayStop
+                ? "This will request that the current worker pause. Any in-flight execution may stop when the work observes the pause request, and it can be resumed later."
+                : "This will move the current worker into the paused state, and it can be resumed later.")
+        : undefined}
+      confirmLabel={isConfirmAction ? (isCancel ? "Cancel worker" : "Pause worker") : undefined}
+      confirmTitle={isConfirmAction ? (isCancel ? "Cancel worker?" : "Pause worker?") : undefined}
+      disabled={disabled}
+      icon={Icon}
+      label={action}
+      onAction={() => onAction(action)}
+      tooltip={tooltip}
+    />
   );
 }
 
@@ -3678,16 +3652,13 @@ function WorkerStatusBadge({
   worker: WorkerSnapshot;
 }) {
   const timing = formatWorkerStatusTiming(worker, now);
-  const tone = workerStatusTextTone(worker.state);
-  const showTiming = Boolean(timing);
 
   return (
-    <div className={`inline-flex min-w-[6rem] flex-col items-center justify-center gap-0.5 text-[11px] leading-none ${tone}`}>
-      <span className="inline-flex items-center justify-center font-medium leading-none">{worker.state}</span>
-      {showTiming ? (
-        <span className="inline-flex items-center justify-center tabular-nums leading-none">{timing}</span>
-      ) : null}
-    </div>
+    <ExecutionStatusBadge
+      label={worker.state}
+      timing={timing ?? undefined}
+      toneClassName={workerStatusTextTone(worker.state)}
+    />
   );
 }
 
@@ -3738,11 +3709,7 @@ export function messageSeverityFilterTone(severity: string) {
 }
 
 export function workerActionToneClassName(_action: WorkAction, disabled: boolean) {
-  if (disabled) {
-    return "";
-  }
-
-  return "border-border bg-muted/20 text-foreground hover:bg-muted/35";
+  return consoleActionToneClassName(disabled);
 }
 
 function SnapshotBlock({ label, value }: { label: string; value: unknown }) {
@@ -7109,6 +7076,12 @@ function MetadataItem({ label, value }: { label: string; value: ReactNode }) {
       <div className="mt-1 break-words font-mono text-sm">{value}</div>
     </div>
   );
+}
+
+export function findWorkflowRunIdentifier(identifiers?: WorkTypedValue[] | null) {
+  return identifiers?.find((identifier) =>
+    identifier.type.localeCompare("workflow-run", undefined, { sensitivity: "accent" }) === 0
+  )?.value ?? null;
 }
 
 export function createWorkerOverviewPath(

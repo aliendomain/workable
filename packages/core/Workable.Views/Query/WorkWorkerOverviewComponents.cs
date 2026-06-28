@@ -82,6 +82,7 @@ public sealed record WorkWorkerOverviewWorker(
     WorkWorkerOverviewOrigin CreatedOrigin,
     string DefinitionName,
     string DefinitionCategory,
+    IReadOnlyList<WorkIdentifier> Identifiers,
     int ConfigDifferenceCount);
 
 /// <summary>

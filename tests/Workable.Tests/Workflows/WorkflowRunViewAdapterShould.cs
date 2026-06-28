@@ -79,6 +79,68 @@ public sealed class WorkflowRunViewAdapterShould
     }
 
     [Fact]
+    public async Task ShowOnlyUnresolvedWorkersOnJoinNodes()
+    {
+        var slowStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseSlow = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var services = new ServiceCollection();
+        services.AddWorkableSystem(builder =>
+        {
+            builder.RequireAuthorization(false);
+            builder.AddWork(
+                WorkDefinition.Create("workflow.operator.fast"),
+                (_, _, _) => Task.FromResult(WorkExecutionResult.Success()));
+            builder.AddWork(
+                WorkDefinition.Create("workflow.operator.slow"),
+                async (_, _, cancellationToken) =>
+                {
+                    slowStarted.TrySetResult();
+                    await releaseSlow.Task.WaitAsync(cancellationToken);
+                    return WorkExecutionResult.Success();
+                });
+            builder.AddWorkflow(
+                WorkflowDefinition.Create("workflow.operator.join.waiting"),
+                workflow => workflow
+                    .RunParallel("fan-out", parallel => parallel
+                        .DispatchWork("fast", "workflow.operator.fast")
+                        .DispatchWork("slow", "workflow.operator.slow"))
+                    .Join("settle"));
+        });
+
+        await using var provider = services.BuildServiceProvider();
+        var system = Assert.IsType<InMemoryWorkSystem>(provider.GetRequiredService<IWorkSystemRegistry>().Default);
+        await system.Start();
+
+        var handle = system.WorkflowRuntime.Start(
+            "workflow.operator.join.waiting",
+            WorkRequestContext.Create(WorkInvocationChannel.InProcess));
+        await slowStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        WorkflowRunDetailView? detail = null;
+        await TestEventually.Until(
+            async () =>
+            {
+                detail = await new WorkflowRunViewAdapter().Run(
+                    system,
+                    WorkRequestContext.Create(WorkInvocationChannel.InProcess),
+                    handle.RunId!.Value);
+                return detail?.Steps.Single(step => step.Name == "settle").Children.Total == 1;
+            },
+            "Expected join node to show only the unresolved slow worker.");
+
+        releaseSlow.TrySetResult();
+        await handle.WaitForCompletion();
+
+        Assert.NotNull(detail);
+        var settle = Assert.Single(detail!.Steps, step => step.Name == "settle");
+        Assert.Equal(WorkflowOperatorNodeStatus.WaitingOnChildren, settle.Status);
+        Assert.Equal(1, settle.Children.Total);
+        var child = Assert.Single(settle.ChildSample);
+        Assert.Equal("workflow.operator.slow", child.DefinitionName);
+        Assert.Equal(WorkerState.Running, child.State);
+    }
+
+    [Fact]
     public async Task HideUnreadableWorkflowRuns()
     {
         var services = new ServiceCollection();

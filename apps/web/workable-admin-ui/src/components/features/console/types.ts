@@ -10,9 +10,10 @@ export type View =
   | "workers"
   | "iterations"
   | "worker"
-  | "iteration";
+  | "iteration"
+  | "workflowRun";
 
-export type ServerView = Exclude<View, "worker" | "iteration">;
+export type ServerView = Exclude<View, "worker" | "iteration" | "workflowRun">;
 
 export type OverviewScope = {
   category?: string;

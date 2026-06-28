@@ -101,6 +101,7 @@ function navigationEntry(overrides: Partial<NavigationEntry> = {}): NavigationEn
     workerCategoryFilter: "",
     workerDefinitionFilter: "",
     workerId: null,
+    workflowRunId: null,
     workerStateFilter: [],
     workerUiState: null,
     ...overrides,
@@ -249,7 +250,9 @@ test("stored host and system helpers normalize legacy realtime metadata, access,
   assert.equal(isServerView("workers"), true);
   assert.equal(isServerView("worker"), false);
   assert.equal(navTitle("worker"), "Worker Console");
+  assert.equal(navTitle("workflowRun"), "Workflow Run");
   assert.equal(headerRefreshTitle("definition"), "Refresh definition");
+  assert.equal(headerRefreshTitle("workflowRun"), "Refresh workflow run");
   assert.deepEqual(cloneOverviewScope({ category: " Ops ", includeSubcategories: true }), {
     category: "Ops",
     definitionName: undefined,
@@ -448,5 +451,6 @@ test("navigation entries compare every persisted selection field", () => {
   assert.equal(navigationEntriesEqual(left, right), true);
   assert.equal(navigationEntriesEqual(undefined, left), false);
   assert.equal(navigationEntriesEqual(left, { ...right, workerId: "worker-1" }), false);
+  assert.equal(navigationEntriesEqual(left, { ...right, workflowRunId: "run-1" }), false);
   assert.equal(navigationEntriesEqual(left, { ...right, iterationStatusFilter: ["Failed"] }), false);
 });
