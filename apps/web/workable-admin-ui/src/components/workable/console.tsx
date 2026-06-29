@@ -415,6 +415,7 @@ export function WorkableConsole() {
       const previous = current[snapshot.runId];
       if (
         previous?.runId === snapshot.runId &&
+        previous.autoFollowCurrentStep === snapshot.autoFollowCurrentStep &&
         previous.selectedStepName === snapshot.selectedStepName
       ) {
         return current;

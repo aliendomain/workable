@@ -281,7 +281,7 @@ public sealed class WorkflowRuntimeShould
     }
 
     [Fact]
-    public async Task FailWorkflowWhenJoinObservesFailedChild()
+    public async Task BlockWorkflowWhenJoinObservesFailedChild()
     {
         var services = new ServiceCollection();
 
@@ -310,13 +310,19 @@ public sealed class WorkflowRuntimeShould
         var handle = system.WorkflowRuntime.Start(
             "workflow.parallel.failure",
             WorkRequestContext.Create(WorkInvocationChannel.InProcess));
-        var completion = await handle.WaitForCompletion();
+        WorkflowRunSnapshot? run = null;
+        await TestEventually.Until(
+            () =>
+            {
+                run = system.WorkflowRuntime.Get(handle.RunId!.Value);
+                return run?.Status == WorkflowRunStatus.Blocked;
+            },
+            "Expected the workflow to block when a joined child failed.");
 
-        Assert.False(completion.IsCompletedSuccessfully);
-        Assert.Equal(WorkflowRunStatus.Failed, completion.Status);
-        Assert.NotNull(completion.Run);
-        var run = completion.Run!;
-        Assert.Equal(WorkflowStepRunStatus.Failed, run.Steps.Single(step => step.Name == "join").Status);
+        Assert.NotNull(run);
+        Assert.Equal(WorkflowRunStatus.Blocked, run!.Status);
+        Assert.Equal(WorkflowStepRunStatus.Running, run.Steps.Single(step => step.Name == "join").Status);
+        Assert.Contains(run.Messages, message => message.Code == "sample.child.failed");
     }
 
     [Fact]
@@ -352,7 +358,7 @@ public sealed class WorkflowRuntimeShould
     }
 
     [Fact]
-    public async Task FailWorkflowWhenTrailingChildCompletesUnsuccessfullyWithoutJoin()
+    public async Task BlockWorkflowWhenTrailingChildCompletesUnsuccessfullyWithoutJoin()
     {
         var services = new ServiceCollection();
 
@@ -374,14 +380,20 @@ public sealed class WorkflowRuntimeShould
         var handle = system.WorkflowRuntime.Start(
             "workflow.trailing.failure",
             WorkRequestContext.Create(WorkInvocationChannel.InProcess));
-        var completion = await handle.WaitForCompletion();
+        WorkflowRunSnapshot? run = null;
+        await TestEventually.Until(
+            () =>
+            {
+                run = system.WorkflowRuntime.Get(handle.RunId!.Value);
+                return run?.Status == WorkflowRunStatus.Blocked;
+            },
+            "Expected the workflow to block when a trailing child failed.");
 
-        Assert.False(completion.IsCompletedSuccessfully);
-        Assert.NotNull(completion.Run);
-        Assert.Equal(WorkflowRunStatus.Failed, completion.Run!.Status);
-        Assert.Equal(WorkflowStepRunStatus.Completed, completion.Run.Steps.Single(step => step.Name == "dispatch").Status);
+        Assert.NotNull(run);
+        Assert.Equal(WorkflowRunStatus.Blocked, run!.Status);
+        Assert.Equal(WorkflowStepRunStatus.Completed, run.Steps.Single(step => step.Name == "dispatch").Status);
         Assert.Contains(
-            completion.Messages,
+            run.Messages,
             message => message.Code == "sample.fail");
     }
 
@@ -497,7 +509,7 @@ public sealed class WorkflowRuntimeShould
     }
 
     [Fact]
-    public async Task DeleteDurableRunWhenTrailingChildCompletesUnsuccessfullyWithoutJoin()
+    public async Task KeepDurableRunWhenTrailingChildCompletesUnsuccessfullyWithoutJoin()
     {
         var store = new TestWorkflowPersistenceStore();
         var services = new ServiceCollection();
@@ -508,7 +520,8 @@ public sealed class WorkflowRuntimeShould
             builder.RequireAuthorization(false);
             builder.AddWork(
                 WorkDefinition.Create("sample.fail"),
-                (_, _, _) => Task.FromResult(WorkExecutionResult.Failure([WorkMessage.Error("sample.fail", "Child failed.")])));
+                (_, _, _) => Task.FromResult(WorkExecutionResult.Failure([WorkMessage.Error("sample.fail", "Child failed.")])),
+                configuration => configuration.QueueDurably(fallbackPollingInterval: TimeSpan.FromSeconds(1)));
             builder.AddWorkflow(
                 WorkflowDefinition.Create(
                     "workflow.durable.trailing.failure",
@@ -523,11 +536,19 @@ public sealed class WorkflowRuntimeShould
         var handle = system.WorkflowRuntime.Start(
             "workflow.durable.trailing.failure",
             WorkRequestContext.Create(WorkInvocationChannel.InProcess));
-        var completion = await handle.WaitForCompletion();
+        WorkflowRunSnapshot? run = null;
+        await TestEventually.Until(
+            () =>
+            {
+                run = system.WorkflowRuntime.Get(handle.RunId!.Value);
+                return run?.Status == WorkflowRunStatus.Blocked;
+            },
+            "Expected the durable workflow to block when a trailing child failed.",
+            timeout: TimeSpan.FromSeconds(15));
 
-        Assert.False(completion.IsCompletedSuccessfully);
-        Assert.Equal(WorkflowRunStatus.Failed, completion.Status);
-        Assert.Contains(handle.RunId!.Value, store.DeletedWorkflowRuns);
+        Assert.Equal(WorkflowRunStatus.Blocked, run!.Status);
+        Assert.Contains(run.Messages, message => message.Code == "sample.fail");
+        Assert.DoesNotContain(handle.RunId!.Value, store.DeletedWorkflowRuns);
     }
 
     [Fact]
@@ -894,9 +915,9 @@ public sealed class WorkflowRuntimeShould
             () =>
             {
                 var recovered = secondSystem.WorkflowRuntime.Get(handle.RunId!.Value);
-                return recovered is not null && recovered.Status == WorkflowRunStatus.Failed;
+                return recovered is not null && recovered.Status == WorkflowRunStatus.Blocked;
             },
-            "Expected the recovered durable workflow to fail when the remaining replayed child fails.",
+            "Expected the recovered durable workflow to block when the remaining replayed child fails.",
             timeout: TimeSpan.FromSeconds(15));
 
         var completion = secondSystem.WorkflowRuntime.Get(handle.RunId!.Value)
@@ -1011,10 +1032,11 @@ public sealed class WorkflowRuntimeShould
     }
 
     [Fact]
-    public async Task StopDurableWorkflowWaitsForOutstandingChildrenAndDeletesPersistedRun()
+    public async Task PauseDurableWorkflowPersistsControlIntentBeforeOutstandingChildrenSettle()
     {
         var store = new TestWorkflowPersistenceStore();
         var slowStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var slowCanceled = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var slowRelease = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var fastRuns = 0;
         var services = new ServiceCollection();
@@ -1028,8 +1050,17 @@ public sealed class WorkflowRuntimeShould
                 async (_, _, cancellationToken) =>
                 {
                     slowStarted.TrySetResult();
-                    await slowRelease.Task.WaitAsync(cancellationToken);
-                    return WorkExecutionResult.Success();
+                    try
+                    {
+                        await slowRelease.Task.WaitAsync(cancellationToken);
+                        return WorkExecutionResult.Success();
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        slowCanceled.TrySetResult();
+                        await slowRelease.Task.WaitAsync(CancellationToken.None);
+                        throw;
+                    }
                 });
             builder.AddWork(
                 WorkDefinition.Create("sample.stop.fast"),
@@ -1059,18 +1090,586 @@ public sealed class WorkflowRuntimeShould
 
         var stop = await system.WorkflowRuntime.Execute(
             handle.RunId!.Value,
-            WorkflowAction.Stop,
+            WorkflowAction.Pause,
             WorkRequestContext.Create(WorkInvocationChannel.InProcess));
         await TestEventually.Until(
-            () => string.Equals(store.GetWorkflowRun(handle.RunId!.Value)?.PendingControlAction, WorkflowAction.Stop.ToString(), StringComparison.Ordinal),
-            "Expected the durable workflow stop request to be persisted before the outstanding child completed.",
+            () => store.WorkflowUpserts.Any(run =>
+                run.RunId == handle.RunId!.Value &&
+                string.Equals(run.PendingControlAction, WorkflowAction.Pause.ToString(), StringComparison.Ordinal)),
+            "Expected the durable workflow pause request to be persisted before the outstanding child completed.",
             timeout: TimeSpan.FromSeconds(10));
+        await slowCanceled.Task.WaitAsync(CancellationToken.None);
         slowRelease.TrySetResult();
-        var completion = await handle.WaitForCompletion();
+        WorkflowRunSnapshot? paused = null;
+        await TestEventually.Until(
+            () =>
+            {
+                paused = system.WorkflowRuntime.Get(handle.RunId.Value);
+                return paused?.Status == WorkflowRunStatus.Paused;
+            },
+            "Expected the durable workflow to settle as paused after the pause request was observed.",
+            timeout: TimeSpan.FromSeconds(10));
 
         Assert.True(stop.IsAccepted);
-        Assert.Equal(WorkflowRunStatus.Canceled, completion.Status);
         Assert.Equal(0, Volatile.Read(ref fastRuns));
+        Assert.Equal(WorkflowRunStatus.Paused, paused!.Status);
+        Assert.DoesNotContain(handle.RunId.Value, store.DeletedWorkflowRuns);
+    }
+
+    [Fact]
+    public async Task AutoResumeBlockedWorkflowWhenFailedChildCompletesAfterManualRestart()
+    {
+        var flakyRuns = 0;
+        var finalRuns = 0;
+        var services = new ServiceCollection();
+
+        services.AddWorkableSystem(builder =>
+        {
+            builder.RequireAuthorization(false);
+            builder.AddWork(
+                WorkDefinition.Create("sample.auto.flaky"),
+                (_, _, _) => Task.FromResult(
+                    Interlocked.Increment(ref flakyRuns) == 1
+                        ? WorkExecutionResult.Failure([WorkMessage.Error("sample.auto.failed", "Child failed on the first attempt.")])
+                        : WorkExecutionResult.Success()));
+            builder.AddWork(
+                WorkDefinition.Create("sample.auto.final"),
+                (_, _, _) =>
+                {
+                    Interlocked.Increment(ref finalRuns);
+                    return Task.FromResult(WorkExecutionResult.Success());
+                });
+            builder.AddWorkflow(
+                WorkflowDefinition.Create("workflow.auto.resume"),
+                workflow => workflow
+                    .DispatchWork("process", "sample.auto.flaky")
+                    .Join("process-join")
+                    .DispatchWork("finalize", "sample.auto.final"));
+        });
+
+        using var provider = services.BuildServiceProvider();
+        var system = (InMemoryWorkSystem)provider.GetRequiredService<IWorkSystemRegistry>().Default;
+        await system.Start();
+
+        var handle = system.WorkflowRuntime.Start(
+            "workflow.auto.resume",
+            WorkRequestContext.Create(WorkInvocationChannel.InProcess));
+        WorkflowRunSnapshot? blocked = null;
+        await TestEventually.Until(
+            () =>
+            {
+                blocked = system.WorkflowRuntime.Get(handle.RunId!.Value);
+                return blocked?.Status == WorkflowRunStatus.Blocked;
+            },
+            "Expected the workflow to block when the child failed.",
+            timeout: TimeSpan.FromSeconds(10));
+
+        var failedWorkerId = blocked!.Steps.Single(step => step.Name == "process").WorkerIds.Single();
+        WorkerSnapshot? failedWorker = null;
+        await TestEventually.Until(
+            async () =>
+            {
+                failedWorker = await system.Query.Worker(failedWorkerId);
+                return failedWorker?.State == WorkerState.Failed;
+            },
+            "Expected the blocked child worker to be visible in the failed state.",
+            timeout: TimeSpan.FromSeconds(10));
+
+        var restartedChild = await system.Workers.Execute(failedWorker!.Version, WorkAction.Start);
+        Assert.True(restartedChild.IsAccepted);
+        await TestEventually.Until(
+            async () =>
+            {
+                failedWorker = await system.Query.Worker(failedWorkerId);
+                return failedWorker?.State == WorkerState.Completed;
+            },
+            "Expected the failed workflow child to complete successfully after being restarted.",
+            timeout: TimeSpan.FromSeconds(10));
+
+        WorkflowRunSnapshot? completed = null;
+        await TestEventually.Until(
+            () =>
+            {
+                completed = system.WorkflowRuntime.Get(handle.RunId!.Value);
+                return completed?.Status == WorkflowRunStatus.Completed;
+            },
+            "Expected the blocked workflow to resume automatically after the failed child completed successfully.",
+            timeout: TimeSpan.FromSeconds(10));
+        var completion = await handle.WaitForCompletion().WaitAsync(TimeSpan.FromSeconds(2));
+
+        Assert.True(completion.IsCompletedSuccessfully);
+        Assert.Equal(WorkflowRunStatus.Completed, completion.Status);
+        Assert.Equal(2, Volatile.Read(ref flakyRuns));
+        Assert.Equal(1, Volatile.Read(ref finalRuns));
+        Assert.Equal([failedWorkerId], completed!.Steps.Single(step => step.Name == "process").WorkerIds);
+    }
+
+    [Fact]
+    public async Task DoesNotAutoResumeBlockedWorkflowWhenAnUnrelatedWorkerCompletes()
+    {
+        var workflowFlakyRuns = 0;
+        var unrelatedRuns = 0;
+        var finalRuns = 0;
+        var services = new ServiceCollection();
+
+        services.AddWorkableSystem(builder =>
+        {
+            builder.RequireAuthorization(false);
+            builder.AddWork(
+                WorkDefinition.Create("sample.auto.related.flaky"),
+                (_, _, _) => Task.FromResult(
+                    Interlocked.Increment(ref workflowFlakyRuns) == 1
+                        ? WorkExecutionResult.Failure([WorkMessage.Error("sample.auto.related.failed", "Workflow child failed on the first attempt.")])
+                        : WorkExecutionResult.Success()));
+            builder.AddWork(
+                WorkDefinition.Create("sample.auto.unrelated.flaky"),
+                (_, _, _) => Task.FromResult(
+                    Interlocked.Increment(ref unrelatedRuns) == 1
+                        ? WorkExecutionResult.Failure([WorkMessage.Error("sample.auto.unrelated.failed", "Unrelated work failed on the first attempt.")])
+                        : WorkExecutionResult.Success()));
+            builder.AddWork(
+                WorkDefinition.Create("sample.auto.related.final"),
+                (_, _, _) =>
+                {
+                    Interlocked.Increment(ref finalRuns);
+                    return Task.FromResult(WorkExecutionResult.Success());
+                });
+            builder.AddWorkflow(
+                WorkflowDefinition.Create("workflow.auto.resume.filtered"),
+                workflow => workflow
+                    .DispatchWork("process", "sample.auto.related.flaky")
+                    .Join("process-join")
+                    .DispatchWork("finalize", "sample.auto.related.final"));
+        });
+
+        using var provider = services.BuildServiceProvider();
+        var system = (InMemoryWorkSystem)provider.GetRequiredService<IWorkSystemRegistry>().Default;
+        await system.Start();
+
+        var handle = system.WorkflowRuntime.Start(
+            "workflow.auto.resume.filtered",
+            WorkRequestContext.Create(WorkInvocationChannel.InProcess));
+        WorkflowRunSnapshot? blocked = null;
+        await TestEventually.Until(
+            () =>
+            {
+                blocked = system.WorkflowRuntime.Get(handle.RunId!.Value);
+                return blocked?.Status == WorkflowRunStatus.Blocked;
+            },
+            "Expected the workflow to block when the related child failed.",
+            timeout: TimeSpan.FromSeconds(10));
+
+        var unrelatedHandle = await system.Queue.Enqueue("sample.auto.unrelated.flaky");
+        var unrelatedFailure = await unrelatedHandle.WaitForCompletion();
+        Assert.Equal(WorkCompletionStatus.Failed, unrelatedFailure.Status);
+        var unrelatedWorker = await system.Query.Worker(unrelatedHandle.WorkerId!.Value);
+        var unrelatedRestart = await system.Workers.Execute(unrelatedWorker!.Version, WorkAction.Start);
+        Assert.True(unrelatedRestart.IsAccepted);
+        await TestEventually.Until(
+            async () =>
+            {
+                unrelatedWorker = await system.Query.Worker(unrelatedHandle.WorkerId.Value);
+                return unrelatedWorker?.State == WorkerState.Completed;
+            },
+            "Expected the unrelated worker to complete successfully after being restarted.",
+            timeout: TimeSpan.FromSeconds(10));
+
+        await Task.Delay(250);
+        var stillBlocked = system.WorkflowRuntime.Get(handle.RunId!.Value);
+        Assert.Equal(WorkflowRunStatus.Blocked, stillBlocked?.Status);
+        Assert.Equal(0, Volatile.Read(ref finalRuns));
+
+        var failedWorkerId = blocked!.Steps.Single(step => step.Name == "process").WorkerIds.Single();
+        var failedWorker = await system.Query.Worker(failedWorkerId);
+        var restartedChild = await system.Workers.Execute(failedWorker!.Version, WorkAction.Start);
+        Assert.True(restartedChild.IsAccepted);
+        await TestEventually.Until(
+            () =>
+            {
+                var completed = system.WorkflowRuntime.Get(handle.RunId!.Value);
+                return completed?.Status == WorkflowRunStatus.Completed;
+            },
+            "Expected the workflow to auto-resume only after its own failed child completed successfully.",
+            timeout: TimeSpan.FromSeconds(10));
+    }
+
+    [Fact]
+    public async Task ResumePausedThenBlockedWorkflowAndCompleteAfterRestartingFailedChild()
+    {
+        var firstStepStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var firstStepRuns = 0;
+        var flakyRuns = 0;
+        var services = new ServiceCollection();
+
+        services.AddWorkableSystem(builder =>
+        {
+            builder.RequireAuthorization(false);
+            builder.AddWork(
+                WorkDefinition.Create("sample.lifecycle.pauseable"),
+                async (_, _, cancellationToken) =>
+                {
+                    if (Interlocked.Increment(ref firstStepRuns) == 1)
+                    {
+                        firstStepStarted.TrySetResult();
+                        await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+                    }
+
+                    return WorkExecutionResult.Success();
+                });
+            builder.AddWork(
+                WorkDefinition.Create("sample.lifecycle.flaky"),
+                (_, _, _) => Task.FromResult(
+                    Interlocked.Increment(ref flakyRuns) == 1
+                        ? WorkExecutionResult.Failure([WorkMessage.Error("sample.lifecycle.failed", "Child failed on the first attempt.")])
+                        : WorkExecutionResult.Success()));
+            builder.AddWorkflow(
+                WorkflowDefinition.Create("workflow.lifecycle.in-memory"),
+                workflow => workflow
+                    .DispatchWork("prepare", "sample.lifecycle.pauseable")
+                    .Join("prepare-join")
+                    .DispatchWork("process", "sample.lifecycle.flaky"));
+        });
+
+        using var provider = services.BuildServiceProvider();
+        var system = (InMemoryWorkSystem)provider.GetRequiredService<IWorkSystemRegistry>().Default;
+        await system.Start();
+
+        var handle = system.WorkflowRuntime.Start(
+            "workflow.lifecycle.in-memory",
+            WorkRequestContext.Create(WorkInvocationChannel.InProcess));
+        await firstStepStarted.Task.WaitAsync(CancellationToken.None);
+
+        var pause = await system.WorkflowRuntime.Execute(
+            handle.RunId!.Value,
+            WorkflowAction.Pause,
+            WorkRequestContext.Create(WorkInvocationChannel.InProcess));
+        Assert.True(pause.IsAccepted);
+        WorkflowRunSnapshot? paused = null;
+        await TestEventually.Until(
+            () =>
+            {
+                paused = system.WorkflowRuntime.Get(handle.RunId.Value);
+                return paused?.Status == WorkflowRunStatus.Paused;
+            },
+            "Expected the workflow to pause while the first child was still running.",
+            timeout: TimeSpan.FromSeconds(10));
+
+        var resumeAfterPause = await system.WorkflowRuntime.Execute(
+            handle.RunId.Value,
+            WorkflowAction.Start,
+            WorkRequestContext.Create(WorkInvocationChannel.InProcess));
+        Assert.True(resumeAfterPause.IsAccepted);
+        WorkflowRunSnapshot? blocked = null;
+        await TestEventually.Until(
+            () =>
+            {
+                blocked = system.WorkflowRuntime.Get(handle.RunId.Value);
+                return blocked?.Status == WorkflowRunStatus.Blocked;
+            },
+            "Expected the resumed workflow to block when the second child failed.",
+            timeout: TimeSpan.FromSeconds(10));
+
+        var processStep = blocked!.Steps.SingleOrDefault(step => step.Name == "process");
+        if (processStep is null || processStep.WorkerIds.Count == 0)
+        {
+            var prepareWorkerId = blocked.Steps.Single(step => step.Name == "prepare").WorkerIds.Single();
+            var prepareWorker = await system.Query.Worker(prepareWorkerId);
+            throw new Xunit.Sdk.XunitException(
+                $"Expected the workflow to block after dispatching the process step. RunStatus={blocked.Status}, PrepareWorkerState={prepareWorker?.State}, FirstStepRuns={Volatile.Read(ref firstStepRuns)}, FlakyRuns={Volatile.Read(ref flakyRuns)}, Steps={string.Join(", ", blocked.Steps.Select(step => $"{step.Name}:{step.Status}[{string.Join("|", step.WorkerIds)}]"))}");
+        }
+
+        var failedWorkerId = processStep.WorkerIds.Single();
+        WorkerSnapshot? failedWorker = null;
+        await TestEventually.Until(
+            async () =>
+            {
+                failedWorker = await system.Query.Worker(failedWorkerId);
+                return failedWorker?.State == WorkerState.Failed;
+            },
+            "Expected the failed workflow child to be visible in the failed worker state.",
+            timeout: TimeSpan.FromSeconds(10));
+
+        var restartedChild = await system.Workers.Execute(failedWorker!.Version, WorkAction.Start);
+        Assert.True(restartedChild.IsAccepted);
+        await TestEventually.Until(
+            async () =>
+            {
+                failedWorker = await system.Query.Worker(failedWorkerId);
+                return failedWorker?.State == WorkerState.Completed;
+            },
+            "Expected the failed child worker to complete successfully after being restarted.",
+            timeout: TimeSpan.FromSeconds(10));
+
+        WorkflowRunSnapshot? completed = null;
+        try
+        {
+            await TestEventually.Until(
+                () =>
+                {
+                    completed = system.WorkflowRuntime.Get(handle.RunId.Value);
+                    return completed?.Status == WorkflowRunStatus.Completed;
+                },
+                "Expected the workflow to complete after the blocked child was restarted and completed successfully.",
+                timeout: TimeSpan.FromSeconds(10));
+        }
+        catch
+        {
+            completed = system.WorkflowRuntime.Get(handle.RunId.Value);
+            failedWorker = await system.Query.Worker(failedWorkerId);
+            var stepState = completed is null
+                ? "<missing>"
+                : string.Join(
+                    ", ",
+                    completed.Steps.Select(step => $"{step.Name}:{step.Status}[{string.Join("|", step.WorkerIds)}]"));
+            throw new Xunit.Sdk.XunitException(
+                $"Workflow did not complete after the blocked child was restarted. RunStatus={completed?.Status}, FailedWorkerState={failedWorker?.State}, FirstStepRuns={Volatile.Read(ref firstStepRuns)}, FlakyRuns={Volatile.Read(ref flakyRuns)}, Steps={stepState}");
+        }
+        var completion = await handle.WaitForCompletion().WaitAsync(TimeSpan.FromSeconds(2));
+
+        Assert.True(completion.IsCompletedSuccessfully);
+        Assert.Equal(WorkflowRunStatus.Completed, completion.Status);
+        Assert.Equal(2, Volatile.Read(ref firstStepRuns));
+        Assert.Equal(2, Volatile.Read(ref flakyRuns));
+    }
+
+    [Fact]
+    public async Task AutoResumeBlockedDurableWorkflowWhenFailedChildCompletesAfterManualRestart()
+    {
+        var store = new TestWorkflowPersistenceStore();
+        var flakyRuns = 0;
+        var finalRuns = 0;
+        var services = new ServiceCollection();
+
+        services.AddSingleton<IWorkPersistenceStore>(store);
+        services.AddWorkableSystem("workflow-tests", builder =>
+        {
+            builder.RequireAuthorization(false);
+            builder.AddWork(
+                WorkDefinition.Create("sample.auto.durable.flaky"),
+                (_, _, _) => Task.FromResult(
+                    Interlocked.Increment(ref flakyRuns) == 1
+                        ? WorkExecutionResult.Failure([WorkMessage.Error("sample.auto.durable.failed", "Child failed on the first attempt.")])
+                        : WorkExecutionResult.Success()),
+                configuration => configuration.QueueDurably(fallbackPollingInterval: TimeSpan.FromSeconds(1)));
+            builder.AddWork(
+                WorkDefinition.Create("sample.auto.durable.final"),
+                (_, _, _) =>
+                {
+                    Interlocked.Increment(ref finalRuns);
+                    return Task.FromResult(WorkExecutionResult.Success());
+                },
+                configuration => configuration.QueueDurably(fallbackPollingInterval: TimeSpan.FromSeconds(1)));
+            builder.AddWorkflow(
+                WorkflowDefinition.Create(
+                    "workflow.auto.resume.durable",
+                    coordination: WorkflowCoordinationConfiguration.Durable),
+                workflow => workflow
+                    .DispatchWork("process", "sample.auto.durable.flaky")
+                    .Join("process-join")
+                    .DispatchWork("finalize", "sample.auto.durable.final"));
+        });
+
+        using var provider = services.BuildServiceProvider();
+        var system = GetNamedSystem(provider, "workflow-tests");
+        await system.Start();
+
+        var handle = system.WorkflowRuntime.Start(
+            "workflow.auto.resume.durable",
+            WorkRequestContext.Create(WorkInvocationChannel.InProcess));
+        WorkflowRunSnapshot? blocked = null;
+        await TestEventually.Until(
+            () =>
+            {
+                blocked = system.WorkflowRuntime.Get(handle.RunId!.Value);
+                return blocked?.Status == WorkflowRunStatus.Blocked;
+            },
+            "Expected the durable workflow to block when the child failed.",
+            timeout: TimeSpan.FromSeconds(15));
+
+        var failedWorkerId = blocked!.Steps.Single(step => step.Name == "process").WorkerIds.Single();
+        WorkerSnapshot? failedWorker = null;
+        await TestEventually.Until(
+            async () =>
+            {
+                failedWorker = await system.Query.Worker(failedWorkerId);
+                return failedWorker?.State == WorkerState.Failed;
+            },
+            "Expected the blocked durable child worker to be visible in the failed state.",
+            timeout: TimeSpan.FromSeconds(15));
+
+        var restartedChild = await system.Workers.Execute(failedWorker!.Version, WorkAction.Start);
+        Assert.True(restartedChild.IsAccepted);
+        await TestEventually.Until(
+            async () =>
+            {
+                failedWorker = await system.Query.Worker(failedWorkerId);
+                return failedWorker?.State == WorkerState.Completed;
+            },
+            "Expected the failed durable workflow child to complete successfully after being restarted.",
+            timeout: TimeSpan.FromSeconds(15));
+
+        WorkflowRunSnapshot? completed = null;
+        await TestEventually.Until(
+            () =>
+            {
+                completed = system.WorkflowRuntime.Get(handle.RunId!.Value);
+                return completed?.Status == WorkflowRunStatus.Completed;
+            },
+            "Expected the blocked durable workflow to resume automatically after the failed child completed successfully.",
+            timeout: TimeSpan.FromSeconds(15));
+        var completion = await handle.WaitForCompletion().WaitAsync(TimeSpan.FromSeconds(2));
+
+        Assert.True(completion.IsCompletedSuccessfully);
+        Assert.Equal(WorkflowRunStatus.Completed, completion.Status);
+        Assert.Equal(2, Volatile.Read(ref flakyRuns));
+        Assert.Equal(1, Volatile.Read(ref finalRuns));
+        Assert.Equal([failedWorkerId], completed!.Steps.Single(step => step.Name == "process").WorkerIds);
+        Assert.Contains(handle.RunId!.Value, store.DeletedWorkflowRuns);
+    }
+
+    [Fact]
+    public async Task ResumePausedThenBlockedDurableWorkflowAndCompleteAfterRestartingFailedChild()
+    {
+        var store = new TestWorkflowPersistenceStore();
+        var firstStepStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var firstStepRuns = 0;
+        var flakyRuns = 0;
+        var services = new ServiceCollection();
+
+        services.AddSingleton<IWorkPersistenceStore>(store);
+        services.AddWorkableSystem("workflow-tests", builder =>
+        {
+            builder.RequireAuthorization(false);
+            builder.AddWork(
+                WorkDefinition.Create("sample.lifecycle.durable.pauseable"),
+                async (_, _, cancellationToken) =>
+                {
+                    if (Interlocked.Increment(ref firstStepRuns) == 1)
+                    {
+                        firstStepStarted.TrySetResult();
+                        await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+                    }
+
+                    return WorkExecutionResult.Success();
+                },
+                configuration => configuration.QueueDurably(fallbackPollingInterval: TimeSpan.FromSeconds(1)));
+            builder.AddWork(
+                WorkDefinition.Create("sample.lifecycle.durable.flaky"),
+                (_, _, _) => Task.FromResult(
+                    Interlocked.Increment(ref flakyRuns) == 1
+                        ? WorkExecutionResult.Failure([WorkMessage.Error("sample.lifecycle.failed", "Child failed on the first attempt.")])
+                        : WorkExecutionResult.Success()),
+                configuration => configuration.QueueDurably(fallbackPollingInterval: TimeSpan.FromSeconds(1)));
+            builder.AddWorkflow(
+                WorkflowDefinition.Create(
+                    "workflow.lifecycle.durable",
+                    coordination: WorkflowCoordinationConfiguration.Durable),
+                workflow => workflow
+                    .DispatchWork("prepare", "sample.lifecycle.durable.pauseable")
+                    .Join("prepare-join")
+                    .DispatchWork("process", "sample.lifecycle.durable.flaky"));
+        });
+
+        using var provider = services.BuildServiceProvider();
+        var system = GetNamedSystem(provider, "workflow-tests");
+        await system.Start();
+
+        var handle = system.WorkflowRuntime.Start(
+            "workflow.lifecycle.durable",
+            WorkRequestContext.Create(WorkInvocationChannel.InProcess));
+        await firstStepStarted.Task.WaitAsync(CancellationToken.None);
+
+        var pause = await system.WorkflowRuntime.Execute(
+            handle.RunId!.Value,
+            WorkflowAction.Pause,
+            WorkRequestContext.Create(WorkInvocationChannel.InProcess));
+        Assert.True(pause.IsAccepted);
+        WorkflowRunSnapshot? paused = null;
+        await TestEventually.Until(
+            () =>
+            {
+                paused = system.WorkflowRuntime.Get(handle.RunId.Value);
+                return paused?.Status == WorkflowRunStatus.Paused;
+            },
+            "Expected the durable workflow to pause while the first child was still running.",
+            timeout: TimeSpan.FromSeconds(15));
+
+        var resumeAfterPause = await system.WorkflowRuntime.Execute(
+            handle.RunId.Value,
+            WorkflowAction.Start,
+            WorkRequestContext.Create(WorkInvocationChannel.InProcess));
+        Assert.True(resumeAfterPause.IsAccepted);
+        WorkflowRunSnapshot? blocked = null;
+        await TestEventually.Until(
+            () =>
+            {
+                blocked = system.WorkflowRuntime.Get(handle.RunId.Value);
+                return blocked?.Status == WorkflowRunStatus.Blocked;
+            },
+            "Expected the durable workflow to block when the second child failed after resuming.",
+            timeout: TimeSpan.FromSeconds(15));
+
+        var processStep = blocked!.Steps.SingleOrDefault(step => step.Name == "process");
+        if (processStep is null || processStep.WorkerIds.Count == 0)
+        {
+            var prepareWorkerId = blocked.Steps.Single(step => step.Name == "prepare").WorkerIds.Single();
+            var prepareWorker = await system.Query.Worker(prepareWorkerId);
+            throw new Xunit.Sdk.XunitException(
+                $"Expected the durable workflow to block after dispatching the process step. RunStatus={blocked.Status}, PrepareWorkerState={prepareWorker?.State}, FirstStepRuns={Volatile.Read(ref firstStepRuns)}, FlakyRuns={Volatile.Read(ref flakyRuns)}, Steps={string.Join(", ", blocked.Steps.Select(step => $"{step.Name}:{step.Status}[{string.Join("|", step.WorkerIds)}]"))}");
+        }
+
+        var failedWorkerId = processStep.WorkerIds.Single();
+        WorkerSnapshot? failedWorker = null;
+        await TestEventually.Until(
+            async () =>
+            {
+                failedWorker = await system.Query.Worker(failedWorkerId);
+                return failedWorker?.State == WorkerState.Failed;
+            },
+            "Expected the durable failed child worker to be visible in the failed state.",
+            timeout: TimeSpan.FromSeconds(15));
+
+        var restartedChild = await system.Workers.Execute(failedWorker!.Version, WorkAction.Start);
+        Assert.True(restartedChild.IsAccepted);
+        await TestEventually.Until(
+            async () =>
+            {
+                failedWorker = await system.Query.Worker(failedWorkerId);
+                return failedWorker?.State == WorkerState.Completed;
+            },
+            "Expected the durable failed child to complete successfully after being restarted.",
+            timeout: TimeSpan.FromSeconds(15));
+
+        WorkflowRunSnapshot? completed = null;
+        try
+        {
+            await TestEventually.Until(
+                () =>
+                {
+                    completed = system.WorkflowRuntime.Get(handle.RunId.Value);
+                    return completed?.Status == WorkflowRunStatus.Completed;
+                },
+                "Expected the durable workflow to complete after the blocked child was restarted and completed successfully.",
+                timeout: TimeSpan.FromSeconds(15));
+        }
+        catch
+        {
+            completed = system.WorkflowRuntime.Get(handle.RunId.Value);
+            failedWorker = await system.Query.Worker(failedWorkerId);
+            var stepState = completed is null
+                ? "<missing>"
+                : string.Join(
+                    ", ",
+                    completed.Steps.Select(step => $"{step.Name}:{step.Status}[{string.Join("|", step.WorkerIds)}]"));
+            throw new Xunit.Sdk.XunitException(
+                $"Durable workflow did not complete after the blocked child was restarted. RunStatus={completed?.Status}, FailedWorkerState={failedWorker?.State}, FirstStepRuns={Volatile.Read(ref firstStepRuns)}, FlakyRuns={Volatile.Read(ref flakyRuns)}, Steps={stepState}");
+        }
+        var completion = await handle.WaitForCompletion().WaitAsync(TimeSpan.FromSeconds(2));
+
+        Assert.True(completion.IsCompletedSuccessfully);
+        Assert.Equal(WorkflowRunStatus.Completed, completion.Status);
+        Assert.Equal(2, Volatile.Read(ref firstStepRuns));
+        Assert.Equal(2, Volatile.Read(ref flakyRuns));
         Assert.Contains(handle.RunId.Value, store.DeletedWorkflowRuns);
     }
 
@@ -1232,6 +1831,8 @@ public sealed class WorkflowRuntimeShould
 
         public List<WorkflowPersistenceTransactionRequest> WorkflowTransactionRequests { get; } = [];
 
+        public List<WorkflowRunPersistenceRecord> WorkflowUpserts { get; } = [];
+
         public List<WorkQueueDurabilityEnqueueRequest> Enqueued { get; } = [];
 
         public List<WorkerId> DeletedFinalWorkers { get; } = [];
@@ -1390,6 +1991,7 @@ public sealed class WorkflowRuntimeShould
         {
             lock (this.sync)
             {
+                this.WorkflowUpserts.Add(run);
                 this.workflowRuns[run.RunId] = run;
             }
 
@@ -1401,6 +2003,7 @@ public sealed class WorkflowRuntimeShould
             IWorkflowPersistenceTransaction transaction,
             CancellationToken cancellationToken = default)
         {
+            ((TestWorkflowPersistenceTransaction)transaction).WorkflowUpsertHistory.Add(run);
             ((TestWorkflowPersistenceTransaction)transaction).WorkflowUpserts[run.RunId] = run;
             return Task.CompletedTask;
         }
@@ -1450,6 +2053,8 @@ public sealed class WorkflowRuntimeShould
 
             public Dictionary<WorkflowRunId, WorkflowRunPersistenceRecord> WorkflowUpserts { get; } = [];
 
+            public List<WorkflowRunPersistenceRecord> WorkflowUpsertHistory { get; } = [];
+
             public List<WorkflowRunId> WorkflowDeletes { get; } = [];
 
             public ValueTask DisposeAsync()
@@ -1464,6 +2069,7 @@ public sealed class WorkflowRuntimeShould
                         store.EnqueueLocked(request);
                     }
 
+                    store.WorkflowUpserts.AddRange(this.WorkflowUpsertHistory);
                     foreach (var upsert in this.WorkflowUpserts.Values)
                     {
                         store.workflowRuns[upsert.RunId] = upsert;

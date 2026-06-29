@@ -37,6 +37,8 @@ public sealed class WorkableMcpToolRouter(IWorkSystemRegistry registry)
     private const string QueryWorkflowRunsTool = "workable_query_workflow_runs";
     private const string GetWorkflowRunTool = "workable_get_workflow_run";
     private const string StartWorkflowTool = "workable_start_workflow";
+    private const string StartWorkflowRunTool = "workable_start_workflow_run";
+    private const string PauseWorkflowTool = "workable_pause_workflow_run";
     private const string StopWorkflowTool = "workable_stop_workflow";
     private const string CancelWorkflowTool = "workable_cancel_workflow";
     private const string StartWorkerTool = "workable_start_worker";
@@ -289,6 +291,8 @@ public sealed class WorkableMcpToolRouter(IWorkSystemRegistry registry)
             {
                 switch (toolName)
                 {
+                    case StartWorkflowRunTool:
+                    case PauseWorkflowTool:
                     case StopWorkflowTool:
                     case CancelWorkflowTool:
                     {
@@ -297,7 +301,12 @@ public sealed class WorkableMcpToolRouter(IWorkSystemRegistry registry)
                         var actionRequestContext = WithDescription(requestContext, ReadString(arguments, "description"));
                         var outcome = await runtime.Execute(
                             runId,
-                            toolName == StopWorkflowTool ? WorkflowAction.Stop : WorkflowAction.Cancel,
+                            toolName switch
+                            {
+                                StartWorkflowRunTool => WorkflowAction.Start,
+                                PauseWorkflowTool or StopWorkflowTool => WorkflowAction.Pause,
+                                _ => WorkflowAction.Cancel,
+                            },
                             actionRequestContext);
                         return ToToolResult(outcome);
                     }
@@ -511,8 +520,20 @@ public sealed class WorkableMcpToolRouter(IWorkSystemRegistry registry)
                 null,
                 WorkableMcpServerToolKind.Action),
             new(
+                StartWorkflowRunTool,
+                "Resume one paused or blocked workflow run by run id. This continues the existing run instead of creating a new one.",
+                WorkflowActionSchema,
+                null,
+                WorkableMcpServerToolKind.Action),
+            new(
+                PauseWorkflowTool,
+                "Pause a running workflow run and pause any outstanding child workers that can be paused. The run remains resumable.",
+                WorkflowActionSchema,
+                null,
+                WorkableMcpServerToolKind.Action),
+            new(
                 StopWorkflowTool,
-                "Gracefully stop a running workflow after already-dispatched child work settles. No new child work is dispatched after the stop request is accepted.",
+                "Pause a running workflow run. This tool name is retained for compatibility and behaves the same as workable_pause_workflow_run.",
                 WorkflowActionSchema,
                 null,
                 WorkableMcpServerToolKind.Action),

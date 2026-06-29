@@ -25,6 +25,59 @@ export function consoleActionToneClassName(disabled: boolean) {
   return "border-border bg-muted/20 text-foreground hover:bg-muted/35";
 }
 
+export type ExecutionControlSubject = "worker" | "workflow";
+
+type ExecutionControlConfirmProps = {
+  cancelLabel?: string;
+  confirmClassName?: string;
+  confirmDescription?: ReactNode;
+  confirmLabel?: string;
+  confirmTitle?: string;
+};
+
+export function createExecutionControlConfirmProps(
+  action: string,
+  subject: ExecutionControlSubject,
+  executionMayStop = false
+): ExecutionControlConfirmProps {
+  if (action !== "Pause" && action !== "Cancel") {
+    return {};
+  }
+
+  const targetLabel = subject === "worker" ? "worker" : "workflow";
+  const inFlightLabel = subject === "worker" ? "execution" : "child work";
+
+  if (action === "Cancel") {
+    return {
+      cancelLabel: "Keep running",
+      confirmClassName:
+        "bg-[var(--status-danger-solid)] text-[var(--status-danger-contrast)] hover:bg-[var(--status-danger-text)] focus-visible:ring-[var(--status-danger-border)]",
+      confirmDescription: (
+        <>
+          This will request cancellation for the current {targetLabel}.
+          {executionMayStop
+            ? ` Any in-flight ${inFlightLabel} may stop as soon as the ${subject} observes the cancellation.`
+            : ""}
+          {" "}Cancellation is final and cannot be undone.
+        </>
+      ),
+      confirmLabel: `Cancel ${targetLabel}`,
+      confirmTitle: `Cancel ${targetLabel}?`,
+    };
+  }
+
+  return {
+    cancelLabel: "Keep executing",
+    confirmClassName:
+      "!bg-[var(--status-warning-solid)] !text-[var(--status-warning-contrast)] hover:!bg-[var(--status-warning-text)] focus-visible:ring-[var(--status-warning-border)]",
+    confirmDescription: executionMayStop
+      ? `This will request that the current ${targetLabel} pause. Any in-flight ${inFlightLabel} may stop when the ${subject} observes the pause request, and the ${targetLabel} can be resumed later.`
+      : `This will move the current ${targetLabel} into the paused state, and it can be resumed later.`,
+    confirmLabel: `Pause ${targetLabel}`,
+    confirmTitle: `Pause ${targetLabel}?`,
+  };
+}
+
 export function ExecutionStatusBadge({
   label,
   timing,

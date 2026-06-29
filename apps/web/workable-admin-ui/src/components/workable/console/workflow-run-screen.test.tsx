@@ -125,7 +125,7 @@ test("workflow run screen restores the selected node from saved ui state", async
     <ConsoleHeaderCapabilitiesProvider>
       <WorkflowRunConsoleView
         connection={connection}
-        initialUiState={{ runId: "run-123", selectedStepName: "prepare" }}
+        initialUiState={{ autoFollowCurrentStep: false, runId: "run-123", selectedStepName: "prepare" }}
         onActiveRealtimeConnectionCountChange={() => undefined}
         onOpenWorker={() => undefined}
         onRealtimePayloadOpenChange={() => undefined}
@@ -143,6 +143,62 @@ test("workflow run screen restores the selected node from saved ui state", async
     result.getByText("prepare");
     assert.equal(result.queryByText("ImportInvoice"), null);
     assert.equal(result.queryByText("ExportLedger"), null);
+  } finally {
+    fetchMock.restore();
+    await result.restore();
+  }
+});
+
+test("workflow run screen stops auto-following after a manual node selection", async () => {
+  let currentRun = parallelWorkflowRun();
+  const fetchMock = installWorkflowFetch((call) => {
+    if (call.input === "/api/workable/systems/Ops/workflow-runs/run-123?childSampleSize=4") {
+      return Response.json(currentRun);
+    }
+
+    return Response.json({ error: `Unhandled request: ${call.input}` }, { status: 500 });
+  });
+  const result = await renderDom(
+    <ConsoleHeaderCapabilitiesProvider>
+      <WorkflowRunConsoleView
+        connection={connection}
+        onActiveRealtimeConnectionCountChange={() => undefined}
+        onOpenWorker={() => undefined}
+        onRealtimePayloadOpenChange={() => undefined}
+        realtimePayloadCaptureEnabled={false}
+        realtimePayloadMaxMessages={20}
+        realtimePayloadOpen={false}
+        refreshToken={0}
+        workflowRunId="run-123"
+      />
+    </ConsoleHeaderCapabilitiesProvider>
+  );
+
+  try {
+    await result.waitFor(() => result.getByRole("button", { name: /ImportInvoice/i }));
+    await result.click(result.getByRole("button", { name: /prepare/i }));
+    await result.waitFor(() => result.getByRole("button", { name: /PrepareInvoices/i }));
+
+    currentRun = completedParallelWorkflowRun();
+    await result.rerender(
+      <ConsoleHeaderCapabilitiesProvider>
+        <WorkflowRunConsoleView
+          connection={connection}
+          onActiveRealtimeConnectionCountChange={() => undefined}
+          onOpenWorker={() => undefined}
+          onRealtimePayloadOpenChange={() => undefined}
+          realtimePayloadCaptureEnabled={false}
+          realtimePayloadMaxMessages={20}
+          realtimePayloadOpen={false}
+          refreshToken={1}
+          workflowRunId="run-123"
+        />
+      </ConsoleHeaderCapabilitiesProvider>
+    );
+
+    await result.waitFor(() => result.getByRole("button", { name: /PrepareInvoices/i }));
+    assert.equal(result.queryByText("ProfileSummary"), null);
+    assert.equal(result.container.querySelector('[aria-current="step"]'), null);
   } finally {
     fetchMock.restore();
     await result.restore();
@@ -275,16 +331,16 @@ test("workflow run screen follows the active node and switches the sampled worke
   }
 });
 
-test("workflow run screen posts stop actions to the workflow action route", async () => {
+test("workflow run screen posts pause actions to the workflow action route", async () => {
   const fetchMock = installWorkflowFetch((call) => {
     if (call.input === "/api/workable/systems/Ops/workflow-runs/run-123?childSampleSize=4") {
       return Response.json(workflowRun());
     }
 
-    if (call.input === "/api/workable/systems/Ops/workflow-runs/run-123/actions/stop") {
+    if (call.input === "/api/workable/systems/Ops/workflow-runs/run-123/actions/pause") {
       return Response.json({
-        action: "Stop",
-        messages: [{ code: "workflow.stop.accepted", occurredAt: "2026-06-27T12:06:00.000Z", severity: "Information", text: "Stop accepted." }],
+        action: "Pause",
+        messages: [{ code: "workflow.pause.accepted", occurredAt: "2026-06-27T12:06:00.000Z", severity: "Information", text: "Pause accepted." }],
         run: workflowRun(),
         status: "Accepted",
       });
@@ -309,15 +365,117 @@ test("workflow run screen posts stop actions to the workflow action route", asyn
   );
 
   try {
-    await result.waitFor(() => result.getByRole("button", { name: "Stop" }));
-    await result.click(result.getByRole("button", { name: "Stop" }));
+    await result.waitFor(() => result.getByRole("button", { name: "Pause" }));
+    await result.click(result.getByRole("button", { name: "Pause" }));
+    await result.waitFor(() => result.getByText("Pause workflow?"));
+    await result.click(result.getByRole("button", { name: "Pause workflow" }));
     await result.waitFor(() => {
       assert.equal(fetchMock.calls.some((call) =>
-        call.input === "/api/workable/systems/Ops/workflow-runs/run-123/actions/stop" &&
+        call.input === "/api/workable/systems/Ops/workflow-runs/run-123/actions/pause" &&
         call.init?.method === "POST"
       ), true);
     });
-    result.getByText("Stop accepted.");
+    result.getByText("Pause accepted.");
+  } finally {
+    fetchMock.restore();
+    await result.restore();
+  }
+});
+
+test("workflow run screen updates the header to canceled after canceling a paused run", async () => {
+  let detailFetchCount = 0;
+  const fetchMock = installWorkflowFetch((call) => {
+    if (call.input === "/api/workable/systems/Ops/workflow-runs/run-123?childSampleSize=4") {
+      detailFetchCount += 1;
+      return Response.json(workflowRun({
+        availableActions: workflowAvailableActions("Paused"),
+        status: "Paused",
+      }));
+    }
+
+    if (call.input === "/api/workable/systems/Ops/workflow-runs/run-123/actions/cancel") {
+      return Response.json({
+        action: "Cancel",
+        messages: [{ code: "workflow.cancel.accepted", occurredAt: "2026-06-27T12:07:00.000Z", severity: "Information", text: "Cancel accepted." }],
+        run: {
+          availableActions: workflowAvailableActions("Canceled"),
+          status: "Canceled",
+        },
+        runId: "run-123",
+        status: "Accepted",
+      });
+    }
+
+    return Response.json({ error: `Unhandled request: ${call.input}` }, { status: 500 });
+  });
+  const result = await renderDom(
+    <ConsoleHeaderCapabilitiesProvider>
+      <WorkflowRunConsoleView
+        connection={connection}
+        onActiveRealtimeConnectionCountChange={() => undefined}
+        onOpenWorker={() => undefined}
+        onRealtimePayloadOpenChange={() => undefined}
+        realtimePayloadCaptureEnabled={false}
+        realtimePayloadMaxMessages={20}
+        realtimePayloadOpen={false}
+        refreshToken={0}
+        workflowRunId="run-123"
+      />
+    </ConsoleHeaderCapabilitiesProvider>
+  );
+
+  try {
+    await result.waitFor(() => result.getByText("Paused"));
+    await result.click(result.getByRole("button", { name: "Cancel" }));
+    await result.waitFor(() => result.getByText("Cancel workflow?"));
+    await result.click(result.getByRole("button", { name: "Cancel workflow" }));
+    await result.waitFor(() => result.getByText("Canceled"));
+    assert.equal(detailFetchCount >= 1, true);
+    assert.equal(result.getByRole("button", { name: "Start" }).hasAttribute("disabled"), true);
+    assert.equal(result.getByRole("button", { name: "Pause" }).hasAttribute("disabled"), true);
+    assert.equal(result.getByRole("button", { name: "Cancel" }).hasAttribute("disabled"), true);
+  } finally {
+    fetchMock.restore();
+    await result.restore();
+  }
+});
+
+test("workflow run screen uses server-provided workflow action availability", async () => {
+  const fetchMock = installWorkflowFetch((call) => {
+    if (call.input === "/api/workable/systems/Ops/workflow-runs/run-123?childSampleSize=4") {
+      return Response.json(workflowRun({
+        availableActions: {
+          cancel: false,
+          pause: false,
+          start: false,
+        },
+        status: "Paused",
+      }));
+    }
+
+    return Response.json({ error: `Unhandled request: ${call.input}` }, { status: 500 });
+  });
+  const result = await renderDom(
+    <ConsoleHeaderCapabilitiesProvider>
+      <WorkflowRunConsoleView
+        connection={connection}
+        onActiveRealtimeConnectionCountChange={() => undefined}
+        onOpenWorker={() => undefined}
+        onRealtimePayloadOpenChange={() => undefined}
+        realtimePayloadCaptureEnabled={false}
+        realtimePayloadMaxMessages={20}
+        realtimePayloadOpen={false}
+        refreshToken={0}
+        workflowRunId="run-123"
+      />
+    </ConsoleHeaderCapabilitiesProvider>
+  );
+
+  try {
+    await result.waitFor(() => result.getByText("Paused"));
+    assert.equal(result.getByRole("button", { name: "Start" }).hasAttribute("disabled"), true);
+    assert.equal(result.getByRole("button", { name: "Pause" }).hasAttribute("disabled"), true);
+    assert.equal(result.getByRole("button", { name: "Cancel" }).hasAttribute("disabled"), true);
   } finally {
     fetchMock.restore();
     await result.restore();
@@ -348,6 +506,7 @@ function installWorkflowFetch(handler: (call: FetchCall) => Response | Promise<R
 
 function workflowRun(overrides: Partial<WorkflowRunDetailView> = {}): WorkflowRunDetailView {
   return {
+    availableActions: workflowAvailableActions("Running"),
     createdAt: "2026-06-27T12:00:00.000Z",
     currentStepName: "Dispatch invoices",
     currentStepStatus: "Running",
@@ -379,6 +538,18 @@ function workflowRun(overrides: Partial<WorkflowRunDetailView> = {}): WorkflowRu
     ],
     ...overrides,
   };
+}
+
+function workflowAvailableActions(status: WorkflowRunDetailView["status"]) {
+  switch (status) {
+    case "Running":
+      return { cancel: true, pause: true, start: false };
+    case "Paused":
+    case "Blocked":
+      return { cancel: true, pause: false, start: true };
+    default:
+      return { cancel: false, pause: false, start: false };
+  }
 }
 
 function parallelWorkflowRun(): WorkflowRunDetailView {

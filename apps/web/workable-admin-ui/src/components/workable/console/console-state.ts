@@ -505,6 +505,7 @@ export function navigationEntriesEqual(left: NavigationEntry | undefined, right:
     left.workerId === right.workerId &&
     left.workflowRunId === right.workflowRunId &&
     left.workflowRunUiState?.runId === right.workflowRunUiState?.runId &&
+    left.workflowRunUiState?.autoFollowCurrentStep === right.workflowRunUiState?.autoFollowCurrentStep &&
     left.workflowRunUiState?.selectedStepName === right.workflowRunUiState?.selectedStepName &&
     left.workerStateFilter.length === right.workerStateFilter.length &&
     left.workerStateFilter.every((state, index) => state === right.workerStateFilter[index])

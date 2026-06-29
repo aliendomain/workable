@@ -270,9 +270,12 @@ The event data follows the payloads documented in [Work Observability](../concep
 Workflow lifecycle events use the same transport envelope and can be filtered by workflow definition name and workflow identifiers:
 
 - `workflow.started`
-- `workflow.stop`
+- `workflow.resume`
+- `workflow.pause`
 - `workflow.cancel`
 - `workflow.step.updated`
+- `workflow.paused`
+- `workflow.blocked`
 - `workflow.completed`
 - `workflow.failed`
 - `workflow.canceled`

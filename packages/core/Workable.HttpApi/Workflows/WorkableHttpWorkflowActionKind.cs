@@ -5,6 +5,7 @@ namespace Workable;
 /// </summary>
 public enum WorkableHttpWorkflowActionKind
 {
-    Stop,
+    Start,
+    Pause,
     Cancel,
 }

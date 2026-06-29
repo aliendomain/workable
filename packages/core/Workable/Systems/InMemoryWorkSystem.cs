@@ -124,10 +124,37 @@ internal sealed class InMemoryWorkSystem :
             workDefinitionName => this.catalog.TryGetWork(workDefinitionName, out var registeredWork) ? registeredWork : null,
             this.CreateSession,
             this.workers.CreateHandle,
+            this.workers.GetAuthoritative,
             this.workflowPersistence,
             this.authorization,
             this.groupProvider,
             workflowEvents);
+        this.workers.SetCompletionObserver((worker, status) =>
+        {
+            if (status != WorkCompletionStatus.Completed ||
+                !worker.Identifiers.Any(identifier => identifier.Type == "workflow-run"))
+            {
+                return;
+            }
+
+            _ = Task.Run(
+                async () =>
+                {
+                    try
+                    {
+                        await this.workflowRuntime.TryAutoResumeBlockedRunForCompletedWorker(worker.Id, CancellationToken.None);
+                    }
+                    catch (Exception exception) when (IsNonCriticalException(exception))
+                    {
+                        this.logger?.LogWarning(
+                            exception,
+                            "Workflow auto-resume processing failed for worker {WorkerId} in work system {WorkSystem}.",
+                            worker.Id.Value,
+                            this.Name ?? this.Id.ToString());
+                    }
+                },
+                CancellationToken.None);
+        });
     }
 
     public WorkSystemId Id { get; }

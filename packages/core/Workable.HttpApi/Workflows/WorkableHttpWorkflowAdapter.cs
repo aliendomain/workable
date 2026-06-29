@@ -121,7 +121,8 @@ internal sealed class WorkableHttpWorkflowAdapter
     private static WorkableHttpWorkflowActionKind MapActionKind(WorkflowAction action)
         => action switch
         {
-            WorkflowAction.Stop => WorkableHttpWorkflowActionKind.Stop,
+            WorkflowAction.Start => WorkableHttpWorkflowActionKind.Start,
+            WorkflowAction.Pause => WorkableHttpWorkflowActionKind.Pause,
             _ => WorkableHttpWorkflowActionKind.Cancel,
         };
 }

@@ -110,7 +110,7 @@ public sealed class WorkflowRunViewAdapter
         if (system.Workflows.TryGet(snapshot.DefinitionName, out var workflow))
         {
             var detail = CreateDetail(run, workflow, workers, childSampleSize);
-            current = detail.Steps.FirstOrDefault(step => step.Status is WorkflowOperatorNodeStatus.Running or WorkflowOperatorNodeStatus.WaitingOnChildren or WorkflowOperatorNodeStatus.Failed or WorkflowOperatorNodeStatus.Canceled);
+            current = detail.Steps.FirstOrDefault(IsCurrentStepStatus);
         }
 
         return new WorkflowRunListItemView(
@@ -160,6 +160,7 @@ public sealed class WorkflowRunViewAdapter
             snapshot.Id.Value,
             snapshot.DefinitionName,
             snapshot.Status,
+            WorkflowAvailableActions.For(snapshot.Status),
             run.RequestContext.Origin,
             snapshot.CreatedAt,
             snapshot.StartedAt,
@@ -369,14 +370,16 @@ public sealed class WorkflowRunViewAdapter
                 return WorkflowOperatorNodeStatus.Pending;
             }
 
-            if (childWorkers.Any(worker => worker.State is WorkerState.Failed or WorkerState.Interrupted))
-            {
-                return WorkflowOperatorNodeStatus.Failed;
-            }
-
             if (childWorkers.Any(worker => worker.State is WorkerState.Canceled or WorkerState.Canceling))
             {
                 return WorkflowOperatorNodeStatus.Canceled;
+            }
+
+            if (childWorkers.Any(worker => worker.State is WorkerState.Failed or WorkerState.Interrupted or WorkerState.Paused))
+            {
+                return runStatus == WorkflowRunStatus.Paused
+                    ? WorkflowOperatorNodeStatus.Paused
+                    : WorkflowOperatorNodeStatus.Blocked;
             }
 
             return childWorkers.Any(worker => !worker.IsFinal)
@@ -396,19 +399,31 @@ public sealed class WorkflowRunViewAdapter
 
         if (snapshot.Status == WorkflowStepRunStatus.Running)
         {
+            if (runStatus == WorkflowRunStatus.Paused)
+            {
+                return WorkflowOperatorNodeStatus.Paused;
+            }
+
+            if (runStatus == WorkflowRunStatus.Blocked)
+            {
+                return WorkflowOperatorNodeStatus.Blocked;
+            }
+
             return runStatus == WorkflowRunStatus.Canceled
                 ? WorkflowOperatorNodeStatus.Canceled
                 : WorkflowOperatorNodeStatus.Running;
         }
 
-        if (childWorkers.Any(worker => worker.State is WorkerState.Failed or WorkerState.Interrupted))
-        {
-            return WorkflowOperatorNodeStatus.Failed;
-        }
-
         if (childWorkers.Any(worker => worker.State is WorkerState.Canceled or WorkerState.Canceling))
         {
             return WorkflowOperatorNodeStatus.Canceled;
+        }
+
+        if (childWorkers.Any(worker => worker.State is WorkerState.Failed or WorkerState.Interrupted or WorkerState.Paused))
+        {
+            return runStatus == WorkflowRunStatus.Paused
+                ? WorkflowOperatorNodeStatus.Paused
+                : WorkflowOperatorNodeStatus.Blocked;
         }
 
         return childWorkers.Any(worker => !worker.IsFinal)
@@ -433,6 +448,16 @@ public sealed class WorkflowRunViewAdapter
 
         if (snapshot.Status == WorkflowStepRunStatus.Running)
         {
+            if (runStatus == WorkflowRunStatus.Paused)
+            {
+                return WorkflowOperatorNodeStatus.Paused;
+            }
+
+            if (runStatus == WorkflowRunStatus.Blocked)
+            {
+                return WorkflowOperatorNodeStatus.Blocked;
+            }
+
             return runStatus == WorkflowRunStatus.Canceled
                 ? WorkflowOperatorNodeStatus.Canceled
                 : WorkflowOperatorNodeStatus.Running;
@@ -446,6 +471,16 @@ public sealed class WorkflowRunViewAdapter
         if (childSteps.Any(step => step.Status == WorkflowOperatorNodeStatus.Canceled))
         {
             return WorkflowOperatorNodeStatus.Canceled;
+        }
+
+        if (childSteps.Any(step => step.Status == WorkflowOperatorNodeStatus.Paused))
+        {
+            return WorkflowOperatorNodeStatus.Paused;
+        }
+
+        if (childSteps.Any(step => step.Status == WorkflowOperatorNodeStatus.Blocked))
+        {
+            return WorkflowOperatorNodeStatus.Blocked;
         }
 
         return childSteps.Any(step => step.Status is WorkflowOperatorNodeStatus.Running or WorkflowOperatorNodeStatus.WaitingOnChildren)
@@ -471,6 +506,16 @@ public sealed class WorkflowRunViewAdapter
         if (snapshot.Status == WorkflowStepRunStatus.Completed)
         {
             return WorkflowOperatorNodeStatus.Completed;
+        }
+
+        if (runStatus == WorkflowRunStatus.Paused)
+        {
+            return WorkflowOperatorNodeStatus.Paused;
+        }
+
+        if (runStatus == WorkflowRunStatus.Blocked)
+        {
+            return WorkflowOperatorNodeStatus.Blocked;
         }
 
         if (runStatus == WorkflowRunStatus.Canceled)
@@ -556,7 +601,15 @@ public sealed class WorkflowRunViewAdapter
 
     private static WorkflowStepOperatorView? ResolveCurrentTopLevelStep(
         IReadOnlyList<WorkflowStepOperatorView> steps)
-        => steps.FirstOrDefault(step => step.Status is WorkflowOperatorNodeStatus.Running or WorkflowOperatorNodeStatus.WaitingOnChildren or WorkflowOperatorNodeStatus.Failed or WorkflowOperatorNodeStatus.Canceled);
+        => steps.FirstOrDefault(IsCurrentStepStatus);
+
+    private static bool IsCurrentStepStatus(WorkflowStepOperatorView step)
+        => step.Status is WorkflowOperatorNodeStatus.Running
+            or WorkflowOperatorNodeStatus.WaitingOnChildren
+            or WorkflowOperatorNodeStatus.Paused
+            or WorkflowOperatorNodeStatus.Blocked
+            or WorkflowOperatorNodeStatus.Failed
+            or WorkflowOperatorNodeStatus.Canceled;
 
     private static InMemoryWorkSystem ResolveSystem(IWorkSystem system)
         => system as InMemoryWorkSystem

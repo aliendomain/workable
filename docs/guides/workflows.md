@@ -83,7 +83,7 @@ Durable workflows:
 - persist the latest workflow-run snapshot through `IWorkPersistenceStore`
 - upgrade child dispatches to durable queueing so replay can reconnect child workers to the workflow run
 - persist workflow-run step transitions and durable child-worker enqueue in one store-defined transaction at each durable dispatch boundary
-- persist accepted workflow stop and cancel requests on the workflow-run snapshot before acknowledging them
+- persist accepted workflow pause and cancel requests on the workflow-run snapshot before acknowledging them
 - scan for incomplete runs for that named system when the system starts and resume them from the persisted step state
 
 ## Definition Model
@@ -121,7 +121,7 @@ A parallel section contains child `DispatchWork(...)` steps.
 
 `Join(stepName)` waits for earlier dispatched child work to settle.
 
-If any outstanding child worker completes unsuccessfully, the join step fails and the workflow fails.
+If any outstanding child worker completes unsuccessfully, the join step completes as blocked. When the blocked child was a failed worker and that worker is later restarted and completes successfully, Workable resumes the workflow automatically.
 
 ## Execution Semantics
 
@@ -152,7 +152,7 @@ In that workflow:
 - `j1` waits for `a`, `b`, and `c`
 - `j2` waits for `d`
 
-If a child worker completes as failed or canceled, the workflow run completes unsuccessfully. Interrupted child work completes the workflow as failed.
+If a child worker completes as failed, canceled, paused, or interrupted, the workflow run completes as `Blocked`. A blocked workflow run can always be started again manually. It also resumes automatically when its outstanding failed child workers are restarted and later complete successfully.
 
 ## Authorization
 
@@ -188,9 +188,28 @@ Stopping the process clears:
 - active non-durable workflow run state
 - historical non-durable workflow run snapshots
 
-Durable workflows persist run state through `IWorkPersistenceStore`. On startup, Workable lists incomplete durable workflow runs for the same named system, rehydrates them into memory, and resumes waiting joins or trailing child-work completion from the persisted step snapshots.
+Durable workflows persist run state through `IWorkPersistenceStore`. On startup, Workable lists incomplete durable workflow runs for the same named system, rehydrates them into memory, resumes waiting joins or trailing child-work completion from the persisted step snapshots, and auto-resumes recovered blocked runs when their outstanding failed child workers have already been corrected successfully.
 
-Accepted stop and cancel requests on durable workflows are stored on the persisted run snapshot. If a process recycles after the action is accepted but before the execution loop observes it, recovery reapplies the stored control request before workflow execution resumes.
+Accepted pause and cancel requests on durable workflows are stored on the persisted run snapshot. If a process recycles after the action is accepted but before the execution loop observes it, recovery reapplies the stored control request before workflow execution resumes.
+
+## Workflow Run Lifecycle
+
+Workflow runs use these public statuses:
+
+- `Running`
+- `Paused`
+- `Blocked`
+- `Completed`
+- `Failed`
+- `Canceled`
+
+`Paused` means the workflow accepted a pause request and stopped before dispatching later steps. `Blocked` means one or more child workers settled unsuccessfully and the workflow is waiting for those child workers to be corrected. Failed child workers that are restarted and later complete successfully cause the workflow to resume automatically.
+
+Workflow actions follow the workflow-run status:
+
+- `Pause` applies to `Running` runs
+- `Start` applies to `Paused` and `Blocked` runs
+- `Cancel` applies to `Running`, `Paused`, and `Blocked` runs
 
 If the persisted workflow definition fingerprint does not match the currently registered workflow definition, Workable marks the recovered run failed and deletes its persisted run snapshot instead of resuming it.
 
@@ -225,6 +244,11 @@ The HTTP API exposes workflow run status with:
 
 - `GET /workable/workflow-runs`
 - `GET /workable/workflow-runs/{runId}`
+- `POST /workable/workflow-runs/{runId}/actions/start`
+- `POST /workable/workflow-runs/{runId}/actions/pause`
+- `POST /workable/workflow-runs/{runId}/actions/cancel`
+
+`POST /workable/workflow-runs/{runId}/actions/stop` remains available as a compatibility alias for `pause`.
 
 `GET /workable/workflow-runs` accepts:
 
@@ -242,6 +266,11 @@ The MCP adapter exposes matching workflow run queries with:
 
 - `workable_query_workflow_runs`
 - `workable_get_workflow_run`
+- `workable_start_workflow_run`
+- `workable_pause_workflow_run`
+- `workable_cancel_workflow`
+
+`workable_stop_workflow` remains available as a compatibility alias for `workable_pause_workflow_run`.
 
 ### SignalR
 
@@ -268,9 +297,12 @@ These live views refresh when the workflow runtime changes and when child-worker
 Workflow runs publish raw events through the normal Workable event stream:
 
 - `workflow.started`
-- `workflow.stop`
+- `workflow.resume`
+- `workflow.pause`
 - `workflow.cancel`
 - `workflow.step.updated`
+- `workflow.paused`
+- `workflow.blocked`
 - `workflow.completed`
 - `workflow.failed`
 - `workflow.canceled`

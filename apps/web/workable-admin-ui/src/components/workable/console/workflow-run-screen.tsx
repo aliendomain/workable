@@ -5,6 +5,8 @@ import {
   Ban,
   GitBranch,
   Loader2,
+  Pause,
+  Play,
   Rows4,
   Square,
   Workflow,
@@ -32,6 +34,7 @@ import {
   ConsoleActionButton,
   ExecutionStatusBadge,
   consoleActionToneClassName,
+  createExecutionControlConfirmProps,
 } from "@/components/workable/console/execution-status-controls";
 import { ErrorBanner, ErrorPanel, FeedbackBanner, type FeedbackTone } from "@/components/workable/console/feedback-panel";
 import { useLiveRelativeTimeNow } from "@/components/workable/console/live-relative-time";
@@ -42,6 +45,7 @@ import {
   type WorkMessage,
   type WorkableConnection,
   type WorkflowChildWorkerSummary,
+  type WorkflowAvailableActions,
   type WorkflowOperatorNodeStatus,
   type WorkflowRunDetailView,
   type WorkflowRunStatus,
@@ -59,17 +63,38 @@ import { Button } from "@/components/ui/button";
 import { formatElapsedSince } from "@/components/workable/console/detail-screens";
 
 type WorkflowDetailPanelId = "workflowControls" | "workflowGraph";
-type WorkflowAction = "Stop" | "Cancel";
+type WorkflowAction = "Start" | "Pause" | "Cancel";
+type WorkflowRunStateOverlay = {
+  availableActions: WorkflowAvailableActions;
+  status: WorkflowRunStatus;
+};
 export type WorkflowRunConsoleViewUiStateSnapshot = {
+  autoFollowCurrentStep: boolean;
   runId: string;
   selectedStepName: string | null;
 };
 type WorkflowActionResult = {
   action: WorkflowAction;
   messages?: WorkMessage[];
-  run?: WorkflowRunDetailView | null;
+  run?: WorkflowRunStateOverlay | null;
   runId: string;
   status: string;
+};
+
+type WorkflowActionButtonProps = {
+  action: WorkflowAction;
+  disabled?: boolean;
+  executionMayStop?: boolean;
+  icon: typeof Play;
+  loading?: boolean;
+  onAction: (action: WorkflowAction) => Promise<void>;
+  tooltip?: string;
+};
+
+const emptyAvailableWorkflowActions: WorkflowAvailableActions = {
+  cancel: false,
+  pause: false,
+  start: false,
 };
 
 const workflowGraphChildSampleSize = 4;
@@ -132,6 +157,7 @@ export function WorkflowRunConsoleView({
     tone: FeedbackTone;
     title?: string;
   }>();
+  const [optimisticRunState, setOptimisticRunState] = useState<WorkflowRunStateOverlay | null>(null);
   const [manualRefreshToken, setManualRefreshToken] = useState(0);
   const [pendingAction, setPendingAction] = useState<WorkflowAction | null>(null);
   const {
@@ -201,7 +227,22 @@ export function WorkflowRunConsoleView({
     () => getWorkComponentErrors(workflowRealtime.data),
     [workflowRealtime.data]
   );
-  const run = realtimeRun ?? workflowDetail.data ?? null;
+  useEffect(() => {
+    setOptimisticRunState(null);
+  }, [workflowRunId]);
+  useEffect(() => {
+    if (!optimisticRunState) {
+      return;
+    }
+
+    if (realtimeRun?.status === optimisticRunState.status || workflowDetail.data?.status === optimisticRunState.status) {
+      setOptimisticRunState(null);
+    }
+  }, [optimisticRunState, realtimeRun?.status, workflowDetail.data?.status]);
+  const run = useMemo(
+    () => mergeWorkflowRunDetail(realtimeRun, workflowDetail.data ?? null, optimisticRunState),
+    [optimisticRunState, realtimeRun, workflowDetail.data]
+  );
   const refreshWorkflowRun = useCallback(() => {
     setManualRefreshToken((current) => current + 1);
   }, []);
@@ -299,6 +340,9 @@ export function WorkflowRunConsoleView({
         tone: result.status === "Accepted" ? "success" : "error",
         title: result.status === "Accepted" ? "Workflow action accepted" : "Workflow action failed",
       });
+      if (result.status === "Accepted" && result.run) {
+        setOptimisticRunState(result.run);
+      }
       refreshWorkflowRun();
     } catch (error) {
       setActionFeedback({
@@ -311,7 +355,8 @@ export function WorkflowRunConsoleView({
     }
   }, [connection, refreshWorkflowRun, workflowRunId]);
 
-  const controlsDisabled = pendingAction !== null || !run || isFinalWorkflowRunStatus(run.status);
+  const controlsDisabled = pendingAction !== null || !run;
+  const availableActions = run?.availableActions ?? emptyAvailableWorkflowActions;
   const hasError = Boolean(workflowDetail.error) && !run;
 
   return (
@@ -361,27 +406,30 @@ export function WorkflowRunConsoleView({
                 contentClassName="hidden"
                 leadingActions={(
                   <div className={`flex min-w-0 flex-wrap items-center ${consolePanelActionGapClassName}`}>
-                    <ConsoleActionButton
-                      className={consoleActionToneClassName(controlsDisabled)}
-                      disabled={controlsDisabled}
-                      icon={Square}
-                      label="Stop"
-                      loading={pendingAction === "Stop"}
-                      onAction={() => executeAction("Stop")}
-                      tooltip="Request an orderly stop for the running workflow."
+                    <WorkflowActionButton
+                      action="Start"
+                      disabled={controlsDisabled || !availableActions.start}
+                      icon={Play}
+                      loading={pendingAction === "Start"}
+                      onAction={executeAction}
+                      tooltip="Resume this paused or blocked workflow run."
                     />
-                    <ConsoleActionButton
-                      cancelLabel="Keep running"
-                      className={consoleActionToneClassName(controlsDisabled)}
-                      confirmClassName="bg-[var(--status-danger-solid)] text-[var(--status-danger-contrast)] hover:bg-[var(--status-danger-text)] focus-visible:ring-[var(--status-danger-border)]"
-                      confirmDescription="This will request cancellation for the current workflow. Any in-flight child work may stop as soon as the workflow observes the cancellation. Cancellation is final and cannot be undone."
-                      confirmLabel="Cancel workflow"
-                      confirmTitle="Cancel workflow?"
-                      disabled={controlsDisabled}
+                    <WorkflowActionButton
+                      action="Pause"
+                      disabled={controlsDisabled || !availableActions.pause}
+                      executionMayStop={run.status === "Running"}
+                      icon={Pause}
+                      loading={pendingAction === "Pause"}
+                      onAction={executeAction}
+                      tooltip="Pause this workflow run and pause outstanding child work where possible."
+                    />
+                    <WorkflowActionButton
+                      action="Cancel"
+                      disabled={controlsDisabled || !availableActions.cancel}
+                      executionMayStop={run.status === "Running"}
                       icon={Ban}
-                      label="Cancel"
                       loading={pendingAction === "Cancel"}
-                      onAction={() => executeAction("Cancel")}
+                      onAction={executeAction}
                       tooltip="Cancel the workflow and any active child work that can be canceled."
                     />
                   </div>
@@ -405,6 +453,9 @@ export function WorkflowRunConsoleView({
                       <WorkflowFlowChart
                         currentStepName={run.currentStepName}
                         currentStepStatus={run.currentStepStatus}
+                        initialAutoFollowCurrentStep={initialUiState?.runId === workflowRunId
+                          ? initialUiState.autoFollowCurrentStep
+                          : undefined}
                         initialSelectedStepName={initialUiState?.runId === workflowRunId
                           ? initialUiState.selectedStepName
                           : null}
@@ -443,9 +494,52 @@ function WorkflowRunStatusBadge({
   );
 }
 
+function mergeWorkflowRunDetail(
+  realtimeRun: WorkflowRunDetailView | null | undefined,
+  fetchedRun: WorkflowRunDetailView | null,
+  optimisticRunState: WorkflowRunStateOverlay | null
+) {
+  const preferredRun = choosePreferredWorkflowRun(realtimeRun, fetchedRun);
+  if (!preferredRun) {
+    return null;
+  }
+
+  if (!optimisticRunState) {
+    return preferredRun;
+  }
+
+  if (isFinalWorkflowRunStatus(optimisticRunState.status) && !isFinalWorkflowRunStatus(preferredRun.status)) {
+    return {
+      ...preferredRun,
+      availableActions: optimisticRunState.availableActions,
+      status: optimisticRunState.status,
+    } satisfies WorkflowRunDetailView;
+  }
+
+  return preferredRun;
+}
+
+function choosePreferredWorkflowRun(
+  realtimeRun: WorkflowRunDetailView | null | undefined,
+  fetchedRun: WorkflowRunDetailView | null
+) {
+  if (!realtimeRun) {
+    return fetchedRun;
+  }
+
+  if (!fetchedRun) {
+    return realtimeRun;
+  }
+
+  return isFinalWorkflowRunStatus(fetchedRun.status) && !isFinalWorkflowRunStatus(realtimeRun.status)
+    ? fetchedRun
+    : realtimeRun;
+}
+
 function WorkflowFlowChart({
   currentStepName,
   currentStepStatus,
+  initialAutoFollowCurrentStep,
   initialSelectedStepName,
   onOpenWorker,
   onUiStateChange,
@@ -456,6 +550,7 @@ function WorkflowFlowChart({
 }: {
   currentStepName?: string | null;
   currentStepStatus?: WorkflowOperatorNodeStatus | null;
+  initialAutoFollowCurrentStep?: boolean;
   initialSelectedStepName?: string | null;
   onOpenWorker: (workerId: string) => void;
   onUiStateChange?: (state: WorkflowRunConsoleViewUiStateSnapshot) => void;
@@ -494,6 +589,9 @@ function WorkflowFlowChart({
       currentActivity?.name ?? currentStepName ?? null
     )
   );
+  const [autoFollowCurrentStep, setAutoFollowCurrentStep] = useState(
+    () => initialAutoFollowCurrentStep ?? true
+  );
   const autoSelectedStepName = useMemo(
     () => resolveWorkflowSelectionStepName(steps, currentActivity?.name ?? currentStepName ?? null),
     [currentActivity?.name, currentStepName, steps]
@@ -510,21 +608,24 @@ function WorkflowFlowChart({
       : true;
     const activeNodeChanged = activeSelectionAnchor !== previousActiveSelectionAnchor;
 
-    if ((selectionMissing || activeNodeChanged) && autoSelectedStepName !== selectedStepName) {
+    if ((selectionMissing || (autoFollowCurrentStep && activeNodeChanged)) &&
+      autoSelectedStepName !== selectedStepName) {
       setSelectedStepName(autoSelectedStepName);
     }
-  }, [activeSelectionAnchor, autoSelectedStepName, selectedStepName, steps]);
+  }, [activeSelectionAnchor, autoFollowCurrentStep, autoSelectedStepName, selectedStepName, steps]);
   useEffect(() => {
     onUiStateChange?.({
+      autoFollowCurrentStep,
       runId: workflowRunId,
       selectedStepName,
     });
-  }, [onUiStateChange, selectedStepName, workflowRunId]);
+  }, [autoFollowCurrentStep, onUiStateChange, selectedStepName, workflowRunId]);
   const selectedStep = useMemo(
     () => selectedStepName ? findWorkflowStepByName(steps, selectedStepName) : null,
     [selectedStepName, steps]
   );
-  const shouldFollowCurrentActivity = runStatus === "Running" &&
+  const shouldFollowCurrentActivity = autoFollowCurrentStep &&
+    runStatus === "Running" &&
     isWorkflowStepExecuting(currentActivity?.status ?? currentStepStatus);
   const highlightedCurrentStepName = shouldFollowCurrentActivity
     ? currentActivity?.name ?? currentStepName ?? null
@@ -533,6 +634,11 @@ function WorkflowFlowChart({
     () => summarizeWorkflowWorkerProgress(steps, outstandingChildren),
     [outstandingChildren, steps]
   );
+
+  const handleSelectStep = useCallback((stepName: string) => {
+    setAutoFollowCurrentStep(false);
+    setSelectedStepName(stepName);
+  }, []);
 
   useEffect(() => {
     if (!shouldFollowCurrentActivity) {
@@ -580,7 +686,7 @@ function WorkflowFlowChart({
             <WorkflowStructureSequence
               currentStepName={highlightedCurrentStepName}
               onRegisterStepElement={registerStepElement}
-              onSelectStep={setSelectedStepName}
+              onSelectStep={handleSelectStep}
               selectedStepName={selectedStepName}
               steps={steps}
             />
@@ -1178,8 +1284,10 @@ function workflowNodeIconFrameClassName(
   switch (status) {
     case "Completed":
       return "border-emerald-500/30 bg-emerald-500/10 text-emerald-300";
+    case "Blocked":
     case "Failed":
       return "border-red-500/30 bg-red-500/10 text-red-300";
+    case "Paused":
     case "Canceled":
       return "border-amber-500/30 bg-amber-500/10 text-amber-300";
     case "Running":
@@ -1204,8 +1312,10 @@ function workflowNodeCardSurfaceClassName(
   }
 
   switch (status) {
+    case "Blocked":
     case "Failed":
       return "border-red-500/45 shadow-red-500/10";
+    case "Paused":
     case "Canceled":
       return "border-amber-500/45 shadow-amber-500/10";
     case "Running":
@@ -1236,11 +1346,13 @@ function workflowRunTone(status: WorkflowRunStatus) {
   switch (status) {
     case "Completed":
       return "success";
+    case "Blocked":
     case "Failed":
     case "Invalid":
     case "NotFound":
     case "Unauthorized":
       return "danger";
+    case "Paused":
     case "Canceled":
       return "warning";
     default:
@@ -1252,8 +1364,10 @@ function workflowNodeTone(status: WorkflowOperatorNodeStatus) {
   switch (status) {
     case "Completed":
       return "success";
+    case "Blocked":
     case "Failed":
       return "danger";
+    case "Paused":
     case "Canceled":
       return "warning";
     case "Running":
@@ -1296,6 +1410,32 @@ function isWorkflowWorkerExecuting(state: string) {
   }
 }
 
+function WorkflowActionButton({
+  action,
+  disabled,
+  executionMayStop,
+  icon: Icon,
+  loading,
+  onAction,
+  tooltip,
+}: WorkflowActionButtonProps) {
+  const toneClassName = consoleActionToneClassName(disabled === true);
+  const confirmProps = createExecutionControlConfirmProps(action, "workflow", executionMayStop);
+
+  return (
+    <ConsoleActionButton
+      className={toneClassName}
+      disabled={disabled}
+      icon={Icon}
+      label={action}
+      loading={loading}
+      onAction={() => onAction(action)}
+      tooltip={tooltip}
+      {...confirmProps}
+    />
+  );
+}
+
 function formatWorkflowStepKind(kind?: WorkflowStepKind | null) {
   switch (kind) {
     case "DispatchWork":
@@ -1312,6 +1452,8 @@ function formatWorkflowStepKind(kind?: WorkflowStepKind | null) {
 function formatWorkflowRunStatusTiming(run: WorkflowRunDetailView, now: number) {
   switch (run.status) {
     case "Running":
+    case "Paused":
+    case "Blocked":
       return formatElapsedSince(run.startedAt ?? run.createdAt, now);
     case "Failed":
       return formatElapsedSince(run.completedAt ?? run.startedAt ?? run.createdAt, now);

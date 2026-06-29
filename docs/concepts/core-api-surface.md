@@ -56,6 +56,7 @@ Execution context also exposes the worker's `WorkRequestContext` (including `Ori
 - Workflow steps dispatch existing work definitions; they do not introduce a separate executor implementation model.
 - Workflows start by name, forward the original actor, origin, and authentication state from `WorkRequestContext` to child work, and add `workflow-run`, `workflow-definition`, and `workflow-step` identifiers to child work input.
 - Persisted workflow runs and queued workers retain actor, origin, and authentication state from `WorkRequestContext`, but do not retain precomputed authorization snapshots.
+- Workflow actions are `Start`, `Pause`, and `Cancel`. `Paused` and `Blocked` workflow runs can be started again, and blocked runs also resume automatically when their outstanding failed child workers are restarted and later complete successfully.
 - Non-durable workflows keep run state in memory.
 - Durable workflows require a named system, persist run state through `IWorkPersistenceStore`, upgrade child dispatches to durable queueing, and resume incomplete runs for that named system during system startup.
 - Non-durable workflows cannot dispatch child work whose effective queue configuration enables durable queueing.

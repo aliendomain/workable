@@ -2,6 +2,7 @@ namespace Workable;
 
 internal enum WorkflowAction
 {
-    Stop,
+    Start,
+    Pause,
     Cancel,
 }

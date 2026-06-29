@@ -6,37 +6,41 @@ internal sealed class DurableWorkflowExecutor(
     Func<WorkRequestContext, IWorkSystemSession> createSession,
     Func<WorkerId, IWorkerHandle> createWorkerHandle,
     WorkflowPersistenceCoordinator persistence,
-    WorkflowEventPublisher? workflowEvents = null)
+    WorkflowEventPublisher? workflowEvents = null,
+    Func<WorkerId, CancellationToken, Task<WorkerSnapshot?>>? getAuthoritativeWorker = null)
 {
+    private static readonly TimeSpan WorkerObservationPollInterval = TimeSpan.FromMilliseconds(100);
+
     public Task<WorkflowRunCompletion> Execute(
         WorkflowRunState run,
         RegisteredWorkflow workflow,
         CancellationToken cancellationToken)
-        => this.Execute(run, workflow, null, null, cancellationToken);
+        => this.Execute(run, workflow, wasPaused: false, null, null, cancellationToken);
 
     public async Task<WorkflowRunCompletion> Execute(
         WorkflowRunState run,
         RegisteredWorkflow workflow,
-        Func<WorkflowStepDefinition, bool>? shouldStopBeforeStep = null,
-        Func<bool>? shouldStopAfterOutstanding = null,
+        bool wasPaused,
+        Func<bool>? isPauseRequested = null,
+        Func<bool>? isCancelRequested = null,
         CancellationToken cancellationToken = default)
     {
         IWorkSystemSession? session = null;
-        shouldStopBeforeStep ??= static _ => false;
-        shouldStopAfterOutstanding ??= static () => false;
+        isPauseRequested ??= static () => false;
+        isCancelRequested ??= static () => false;
         var publisher = workflowEvents ?? new WorkflowEventPublisher(default, null, new WorkEventStream());
         try
         {
             run.MarkRunning();
             session = createSession(run.RequestContext);
+            if (wasPaused)
+            {
+                await WorkflowExecutionSupport.ResumeOutstandingChildren(run, session, getAuthoritativeWorker, cancellationToken);
+            }
 
             foreach (var step in workflow.Steps)
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                if (shouldStopBeforeStep(step))
-                {
-                    break;
-                }
 
                 var status = run.GetStepStatus(step.Name);
                 if (status == WorkflowStepRunStatus.Completed)
@@ -82,10 +86,15 @@ internal sealed class DurableWorkflowExecutor(
                             var completion = await this.WaitForJoinOutstanding(run, session, join.Name, cancellationToken);
                             if (!completion.IsCompletedSuccessfully)
                             {
-                                await WorkflowExecutionSupport.CancelOutstandingChildren(run, session, cancellationToken);
-                                run.FailStep(join.Name, completion.Messages);
+                                if (completion.Status != WorkflowRunStatus.Blocked)
+                                {
+                                    run.FailStep(join.Name, completion.Messages);
+                                }
+
                                 publisher.StepUpdated(run.ToSnapshot(), join.Name);
-                                return await this.DeleteFailedRun(run, completion.Messages, cancellationToken);
+                                return completion.Status == WorkflowRunStatus.Blocked
+                                    ? await this.UpsertBlockedRun(run, completion.Messages, cancellationToken)
+                                    : await this.DeleteFailedRun(run, completion.Messages, cancellationToken);
                             }
 
                             run.MarkStepCompleted(join.Name);
@@ -110,13 +119,9 @@ internal sealed class DurableWorkflowExecutor(
                 cancellationToken);
             if (!trailingCompletion.IsCompletedSuccessfully)
             {
-                await WorkflowExecutionSupport.CancelOutstandingChildren(run, session, cancellationToken);
-                return await this.DeleteFailedRun(run, trailingCompletion.Messages, cancellationToken);
-            }
-
-            if (shouldStopAfterOutstanding())
-            {
-                return run.Cancel();
+                return trailingCompletion.Status == WorkflowRunStatus.Blocked
+                    ? await this.UpsertBlockedRun(run, trailingCompletion.Messages, cancellationToken)
+                    : await this.DeleteFailedRun(run, trailingCompletion.Messages, cancellationToken);
             }
 
             var success = run.Complete();
@@ -125,7 +130,19 @@ internal sealed class DurableWorkflowExecutor(
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
-            return run.Cancel();
+            if (isCancelRequested() || !isPauseRequested())
+            {
+                return run.Cancel();
+            }
+
+            if (session is not null)
+            {
+                await WorkflowExecutionSupport.PauseOutstandingChildren(run, session, getAuthoritativeWorker, CancellationToken.None);
+            }
+
+            var paused = run.Pause();
+            await persistence.UpsertRun(this.CreatePersistenceRecord(run), CancellationToken.None);
+            return paused;
         }
         catch (Exception exception)
         {
@@ -312,29 +329,74 @@ internal sealed class DurableWorkflowExecutor(
         WorkerId workerId,
         CancellationToken cancellationToken)
     {
-        if (await session.Query.Worker(workerId, cancellationToken) is { } snapshot && snapshot.IsFinal)
+        var snapshot = getAuthoritativeWorker is not null
+            ? await getAuthoritativeWorker(workerId, cancellationToken)
+            : await session.Query.Worker(workerId, cancellationToken);
+        if (snapshot is not null)
+        {
+            var status = WorkerStateMachine.CompletionStatusFor(snapshot.State);
+            if (status != WorkCompletionStatus.Invalid)
+            {
+                return new WorkCompletion(
+                    status,
+                    snapshot,
+                    snapshot.Output,
+                    snapshot.Messages);
+            }
+        }
+
+        if (!await persistence.DurableWorkerExists(workerId, cancellationToken))
         {
             return new WorkCompletion(
-                WorkerStateMachine.CompletionStatusFor(snapshot.State),
-                snapshot,
-                snapshot.Output,
-                snapshot.Messages);
+                WorkCompletionStatus.NotFound,
+                null,
+                null,
+                [WorkMessage.Error(
+                    "workable.workflow.child.not_found",
+                    $"Workflow child worker '{workerId.Value:D}' could not be recovered because its durable state no longer exists.",
+                    "workflow.execution")]);
         }
 
         var handle = createWorkerHandle(workerId);
-        if (await persistence.DurableWorkerExists(workerId, cancellationToken))
+        var handleCompletion = handle.WaitForCompletion(cancellationToken);
+        while (true)
         {
-            return await handle.WaitForCompletion(cancellationToken);
-        }
+            snapshot = getAuthoritativeWorker is not null
+                ? await getAuthoritativeWorker(workerId, cancellationToken)
+                : await session.Query.Worker(workerId, cancellationToken);
+            if (snapshot is not null)
+            {
+                var status = WorkerStateMachine.CompletionStatusFor(snapshot.State);
+                if (status != WorkCompletionStatus.Invalid)
+                {
+                    return new WorkCompletion(
+                        status,
+                        snapshot,
+                        snapshot.Output,
+                        snapshot.Messages);
+                }
+            }
 
-        return new WorkCompletion(
-            WorkCompletionStatus.NotFound,
-            null,
-            null,
-            [WorkMessage.Error(
-                "workable.workflow.child.not_found",
-                $"Workflow child worker '{workerId.Value:D}' could not be recovered because its durable state no longer exists.",
-                "workflow.execution")]);
+            if (!await persistence.DurableWorkerExists(workerId, cancellationToken))
+            {
+                return new WorkCompletion(
+                    WorkCompletionStatus.NotFound,
+                    null,
+                    null,
+                    [WorkMessage.Error(
+                        "workable.workflow.child.not_found",
+                        $"Workflow child worker '{workerId.Value:D}' could not be recovered because its durable state no longer exists.",
+                        "workflow.execution")]);
+            }
+
+            var completed = await Task.WhenAny(
+                handleCompletion,
+                Task.Delay(WorkerObservationPollInterval, cancellationToken));
+            if (completed == handleCompletion)
+            {
+                return await handleCompletion;
+            }
+        }
     }
 
     private async Task<WorkflowRunCompletion> DeleteFailedRun(
@@ -345,6 +407,16 @@ internal sealed class DurableWorkflowExecutor(
         var failure = run.Fail(messages);
         await persistence.DeleteRun(run.Id, CancellationToken.None);
         return failure;
+    }
+
+    private async Task<WorkflowRunCompletion> UpsertBlockedRun(
+        WorkflowRunState run,
+        IReadOnlyList<WorkMessage> messages,
+        CancellationToken cancellationToken)
+    {
+        var blocked = run.Block(messages);
+        await persistence.UpsertRun(this.CreatePersistenceRecord(run), cancellationToken);
+        return blocked;
     }
 
     private static WorkerOptions CreateDurableChildOptions(

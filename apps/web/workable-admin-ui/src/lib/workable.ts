@@ -631,6 +631,8 @@ export type WorkWorkerOverviewWorker = {
 
 export type WorkflowRunStatus =
   | "Running"
+  | "Paused"
+  | "Blocked"
   | "Completed"
   | "Failed"
   | "Canceled"
@@ -638,12 +640,20 @@ export type WorkflowRunStatus =
   | "NotFound"
   | "Unauthorized";
 
+export type WorkflowAvailableActions = {
+  start: boolean;
+  pause: boolean;
+  cancel: boolean;
+};
+
 export type WorkflowStepKind = "DispatchWork" | "Parallel" | "Join";
 
 export type WorkflowOperatorNodeStatus =
   | "Pending"
   | "Running"
   | "WaitingOnChildren"
+  | "Paused"
+  | "Blocked"
   | "Completed"
   | "Failed"
   | "Canceled";
@@ -671,6 +681,7 @@ export type WorkflowStepOperatorView = {
 
 export type WorkflowRunDetailView = {
   status: WorkflowRunStatus;
+  availableActions: WorkflowAvailableActions;
   createdAt: string;
   startedAt?: string | null;
   completedAt?: string | null;

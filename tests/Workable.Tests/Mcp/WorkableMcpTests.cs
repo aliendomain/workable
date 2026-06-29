@@ -196,7 +196,7 @@ public sealed class WorkableMcpTests
         Assert.Contains(tools, tool =>
             tool.Kind == WorkableMcpServerToolKind.Action &&
             tool.ToolName == "workable_stop_workflow" &&
-            tool.Description?.Contains("Gracefully stop", StringComparison.OrdinalIgnoreCase) == true);
+            tool.Description?.Contains("Pause a running workflow run", StringComparison.OrdinalIgnoreCase) == true);
         Assert.Contains(tools, tool =>
             tool.Kind == WorkableMcpServerToolKind.Action &&
             tool.ToolName == "workable_cancel_workflow" &&
@@ -787,7 +787,7 @@ public sealed class WorkableMcpTests
     }
 
     [Fact]
-    public async Task MappedHttpMcpServerCanStopWorkflowBeforeLaterSteps()
+    public async Task MappedHttpMcpServerCanPauseWorkflowBeforeLaterSteps()
     {
         var slowStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var slowRelease = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -857,16 +857,16 @@ public sealed class WorkableMcpTests
             () =>
             {
                 completed = system.WorkflowRuntime.Get(runId);
-                return completed?.Status == WorkflowRunStatus.Canceled;
+                return completed?.Status == WorkflowRunStatus.Paused;
             },
-            "Expected the MCP HTTP-stopped workflow to settle as canceled.");
+            "Expected the MCP HTTP-stopped workflow to settle as paused.");
 
         Assert.False(started.IsError);
         Assert.False(result.IsError);
         Assert.Contains("Accepted", json);
-        Assert.Contains("Stop", json);
+        Assert.Contains("Pause", json);
         Assert.Equal(0, Volatile.Read(ref fastRuns));
-        Assert.Equal(WorkflowRunStatus.Canceled, completed?.Status);
+        Assert.Equal(WorkflowRunStatus.Paused, completed?.Status);
     }
 
     [Fact]
@@ -1271,7 +1271,7 @@ public sealed class WorkableMcpTests
     }
 
     [Fact]
-    public async Task McpServerCanStartAndStopWorkflow()
+    public async Task McpServerCanStartAndPauseWorkflow()
     {
         var slowStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var slowRelease = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -1337,14 +1337,114 @@ public sealed class WorkableMcpTests
             () =>
             {
                 completed = ((InMemoryWorkSystem)system).WorkflowRuntime.Get(new WorkflowRunId(Guid.Parse(runId)));
-                return completed?.Status == WorkflowRunStatus.Canceled;
+                return completed?.Status == WorkflowRunStatus.Paused;
             },
-            "Expected the MCP-stopped workflow to settle as canceled.");
+            "Expected the MCP-stopped workflow to settle as paused.");
 
         Assert.False(started.IsError);
         Assert.False(stopped.IsError);
         Assert.Equal(0, Volatile.Read(ref fastRuns));
-        Assert.Equal(WorkflowRunStatus.Canceled, completed!.Status);
+        Assert.Equal(WorkflowRunStatus.Paused, completed!.Status);
+    }
+
+    [Fact]
+    public async Task McpServerCanPauseAndResumeWorkflowRunsThroughExplicitRunTools()
+    {
+        var slowStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var slowRelease = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var fastRuns = 0;
+        await using var provider = new ServiceCollection()
+            .AddTransportTestAuthorization()
+            .AddWorkableSystem(builder =>
+            {
+                builder.RequireAuthorization();
+                builder.AddAuthorizedTransportWork(
+                    WorkDefinition.Create("mcp.workflow.pause.slow", configuration: AllowMcp()),
+                    async (_, _, cancellationToken) =>
+                    {
+                        slowStarted.TrySetResult();
+                        await slowRelease.Task.WaitAsync(cancellationToken);
+                        return WorkExecutionResult.Success();
+                    });
+                builder.AddAuthorizedTransportWork(
+                    WorkDefinition.Create("mcp.workflow.pause.fast", configuration: AllowMcp()),
+                    (_, _, _) =>
+                    {
+                        Interlocked.Increment(ref fastRuns);
+                        return Task.FromResult(WorkExecutionResult.Success());
+                    });
+                builder.AddWorkflow(
+                    WorkflowDefinition.Create("mcp.workflow.pause"),
+                    workflow => workflow
+                        .DispatchWork("slow", "mcp.workflow.pause.slow")
+                        .Join("join")
+                        .DispatchWork("fast", "mcp.workflow.pause.fast"),
+                    authorize => authorize.AllowOperateToGroups(TransportAuthorizationTestSupport.OperateGroups.ToArray()));
+            })
+            .AddWorkableMcpServer()
+            .BuildServiceProvider();
+        var system = provider.GetRequiredService<IWorkSystemRegistry>().Default;
+        var router = provider.GetRequiredService<WorkableMcpToolRouter>();
+        await system.Start();
+
+        using var startArguments = JsonDocument.Parse("""{"name":"mcp.workflow.pause"}""");
+        var started = await router.CallTool(
+            "workable_start_workflow",
+            startArguments.RootElement,
+            options: null,
+            systemName: null,
+            requestContext: CreateMcpRequestContext("Start MCP workflow for explicit run-tool control."));
+        var startedJson = JsonNode.Parse(started.Json)?.AsObject()
+            ?? throw new InvalidOperationException("Expected workflow start response.");
+        var runId = startedJson["runId"]?.GetValue<string>()
+            ?? throw new InvalidOperationException("Expected workflow run id.");
+        await slowStarted.Task.WaitAsync(CancellationToken.None);
+
+        using var pauseArguments = JsonDocument.Parse($$"""{"runId":"{{runId}}"}""");
+        var paused = await router.CallTool(
+            "workable_pause_workflow_run",
+            pauseArguments.RootElement,
+            options: null,
+            systemName: null,
+            requestContext: CreateMcpRequestContext("Pause MCP workflow through the explicit run tool."));
+
+        slowRelease.TrySetResult();
+
+        WorkflowRunSnapshot? pausedRun = null;
+        await TestEventually.Until(
+            () =>
+            {
+                pausedRun = ((InMemoryWorkSystem)system).WorkflowRuntime.Get(new WorkflowRunId(Guid.Parse(runId)));
+                return pausedRun?.Status == WorkflowRunStatus.Paused;
+            },
+            "Expected the MCP-paused workflow to settle as paused.");
+
+        Assert.False(started.IsError);
+        Assert.False(paused.IsError);
+        Assert.Contains("Accepted", paused.Json);
+        Assert.Equal(0, Volatile.Read(ref fastRuns));
+
+        using var resumeArguments = JsonDocument.Parse($$"""{"runId":"{{runId}}"}""");
+        var resumed = await router.CallTool(
+            "workable_start_workflow_run",
+            resumeArguments.RootElement,
+            options: null,
+            systemName: null,
+            requestContext: CreateMcpRequestContext("Resume MCP workflow through the explicit run tool."));
+
+        WorkflowRunSnapshot? completed = null;
+        await TestEventually.Until(
+            () =>
+            {
+                completed = ((InMemoryWorkSystem)system).WorkflowRuntime.Get(new WorkflowRunId(Guid.Parse(runId)));
+                return completed?.Status == WorkflowRunStatus.Completed;
+            },
+            "Expected the MCP-started workflow run to resume and complete.");
+
+        Assert.False(resumed.IsError);
+        Assert.Contains("Accepted", resumed.Json);
+        Assert.Equal(1, Volatile.Read(ref fastRuns));
+        Assert.Equal(WorkflowRunStatus.Completed, completed!.Status);
     }
 
     [Fact]

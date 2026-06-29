@@ -119,8 +119,8 @@ public sealed class WorkflowExecutorsShould
         var completion = await executor.Execute(run, workflow, CancellationToken.None);
         var snapshot = run.ToSnapshot();
 
-        Assert.Equal(WorkflowRunStatus.Failed, completion.Status);
-        Assert.Equal(WorkflowStepRunStatus.Failed, snapshot.Steps.Single(step => step.Name == "join").Status);
+        Assert.Equal(WorkflowRunStatus.Blocked, completion.Status);
+        Assert.Equal(WorkflowStepRunStatus.Running, snapshot.Steps.Single(step => step.Name == "join").Status);
     }
 
     [Theory]
@@ -184,7 +184,7 @@ public sealed class WorkflowExecutorsShould
 
         var completion = await executor.Execute(run, workflow, CancellationToken.None);
 
-        Assert.Equal(WorkflowRunStatus.Failed, completion.Status);
+        Assert.Equal(WorkflowRunStatus.Blocked, completion.Status);
         Assert.Equal(WorkflowStepRunStatus.Completed, run.ToSnapshot().Steps.Single(step => step.Name == "dispatch").Status);
     }
 
@@ -209,7 +209,7 @@ public sealed class WorkflowExecutorsShould
 
         var completion = await executor.Execute(run, workflow, CancellationToken.None);
 
-        Assert.Equal(WorkflowRunStatus.Failed, completion.Status);
+        Assert.Equal(WorkflowRunStatus.Blocked, completion.Status);
         Assert.Contains(completion.Messages, message => message.Code == "workflow.trailing.failed");
     }
 
@@ -484,10 +484,10 @@ public sealed class WorkflowExecutorsShould
 
         var completion = await executor.Execute(run, workflow, CancellationToken.None);
 
-        Assert.Equal(WorkflowRunStatus.Failed, completion.Status);
+        Assert.Equal(WorkflowRunStatus.Blocked, completion.Status);
         Assert.Contains(completion.Messages, message => message.Code == "workflow.child.failed");
-        Assert.Equal(WorkflowStepRunStatus.Failed, run.ToSnapshot().Steps.Single(step => step.Name == "join").Status);
-        Assert.Equal([run.Id], store.DeletedRunIds);
+        Assert.Equal(WorkflowStepRunStatus.Running, run.ToSnapshot().Steps.Single(step => step.Name == "join").Status);
+        Assert.Empty(store.DeletedRunIds);
     }
 
     [Fact]
@@ -674,9 +674,9 @@ public sealed class WorkflowExecutorsShould
 
         var completion = await executor.Execute(run, workflow, CancellationToken.None);
 
-        Assert.Equal(WorkflowRunStatus.Failed, completion.Status);
-        Assert.Equal([betaId], canceledWorkers.Select(worker => worker.WorkerId));
-        Assert.Equal([run.Id], store.DeletedRunIds);
+        Assert.Equal(WorkflowRunStatus.Blocked, completion.Status);
+        Assert.Empty(canceledWorkers);
+        Assert.Empty(store.DeletedRunIds);
     }
 
     [Fact]

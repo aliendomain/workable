@@ -465,7 +465,7 @@ WHERE WorkSystemName = N'workflow-tests';
     }
 
     [Fact]
-    public async Task DurableWorkflowStopRequestPersistsWhileOutstandingChildRuns()
+    public async Task DurableWorkflowPauseRequestPersistsWhileOutstandingChildRuns()
     {
         if (this.SkipIfUnavailable())
         {
@@ -516,8 +516,8 @@ WHERE WorkSystemName = N'workflow-tests';
         var runId = RequiredWorkflowRunId(handle);
         await WaitWithTimeout(slowStarted.Task);
 
-        var stop = await ExecuteWorkflowAction(system, runId, "Stop");
-        Assert.True(WorkflowActionAccepted(stop));
+        var pause = await ExecuteWorkflowAction(system, runId, "Pause");
+        Assert.True(WorkflowActionAccepted(pause));
 
         await using (var connection = await this.OpenConnection())
         {
@@ -526,8 +526,8 @@ WHERE WorkSystemName = N'workflow-tests';
 SELECT TOP (1) PendingControlAction
 FROM workable.WorkflowRuns
 WHERE RunId = @RunId;
-""", new SqlParameter("@RunId", runId.Value)), "Stop", StringComparison.Ordinal),
-                "Expected the durable workflow stop request to be persisted while the outstanding child is still running.",
+""", new SqlParameter("@RunId", runId.Value)), "Pause", StringComparison.Ordinal),
+                "Expected the durable workflow pause request to be persisted while the outstanding child is still running.",
                 timeout: TimeSpan.FromSeconds(10));
         }
 

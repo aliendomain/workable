@@ -6,5 +6,13 @@ internal static class WorkableHttpRouteBinding
         => Enum.TryParse(value, ignoreCase: true, out action);
 
     public static bool TryParseWorkflowAction(string value, out WorkflowAction action)
-        => Enum.TryParse(value, ignoreCase: true, out action);
+    {
+        if (string.Equals(value, "stop", StringComparison.OrdinalIgnoreCase))
+        {
+            action = WorkflowAction.Pause;
+            return true;
+        }
+
+        return Enum.TryParse(value, ignoreCase: true, out action);
+    }
 }

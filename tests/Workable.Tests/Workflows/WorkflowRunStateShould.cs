@@ -163,12 +163,12 @@ public sealed class WorkflowRunStateShould
             new DispatchWorkflowStepDefinition("dispatch", "sample.dispatch"));
         var run = WorkflowRunState.Create(workflow, WorkRequestContext.Create(WorkInvocationChannel.InProcess));
 
-        Assert.True(run.TryRecordAcceptedControlAction(WorkflowAction.Stop, out _));
+        Assert.True(run.TryRecordAcceptedControlAction(WorkflowAction.Pause, out _));
         var persisted = run.ToPersistenceRecord("workflow-tests");
         var rehydrated = WorkflowRunState.Rehydrate(workflow, persisted);
 
-        Assert.Equal(WorkflowAction.Stop.ToString(), persisted.PendingControlAction);
-        Assert.Equal(WorkflowAction.Stop, rehydrated.GetPendingControlAction());
+        Assert.Equal(WorkflowAction.Pause.ToString(), persisted.PendingControlAction);
+        Assert.Equal(WorkflowAction.Pause, rehydrated.GetPendingControlAction());
     }
 
     private static RegisteredWorkflow CreateWorkflow(

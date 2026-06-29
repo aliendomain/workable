@@ -223,7 +223,7 @@ public sealed class WorkflowRuntimeInternalsShould
     }
 
     [Fact]
-    public async Task RecoverDurableRunsHonorsPersistedStopRequestAndSkipsDownstreamDispatch()
+    public async Task RecoverDurableRunsHonorsPersistedPauseRequestAndSkipsDownstreamDispatch()
     {
         var workerId = WorkerId.New();
         var dispatchedAfterJoin = 0;
@@ -273,7 +273,7 @@ public sealed class WorkflowRuntimeInternalsShould
             null,
             [],
             WorkflowDefinitionFingerprint.Create(workflow),
-            WorkflowAction.Stop.ToString());
+            WorkflowAction.Pause.ToString());
         var store = new RawWorkflowPersistenceStore([persistedRun]);
         var runtime = CreateRuntime(
             catalog: new WorkflowCatalog([workflow]),
@@ -283,7 +283,7 @@ public sealed class WorkflowRuntimeInternalsShould
                 new DelegateQueueService((_, _, _, _) =>
                 {
                     Interlocked.Increment(ref dispatchedAfterJoin);
-                    throw new InvalidOperationException("Recovered stop request should skip downstream dispatch.");
+                    throw new InvalidOperationException("Recovered pause request should skip downstream dispatch.");
                 }),
                 query: new DelegateQueryService(id => Task.FromResult(id == workerId ? CreateSnapshot(workerId, WorkerState.Completed) : null))),
             createWorkerHandle: _ => throw new InvalidOperationException("Expected authoritative recovery to avoid worker-handle waits."));
@@ -291,12 +291,12 @@ public sealed class WorkflowRuntimeInternalsShould
         await runtime.RecoverDurableRuns(CancellationToken.None);
 
         await TestEventually.Until(
-            () => runtime.Get(persistedRun.RunId)?.Status == WorkflowRunStatus.Canceled,
-            "Expected the recovered durable workflow run to honor the persisted stop request.",
+            () => runtime.Get(persistedRun.RunId)?.Status == WorkflowRunStatus.Paused,
+            "Expected the recovered durable workflow run to honor the persisted pause request.",
             timeout: TimeSpan.FromSeconds(10));
 
         Assert.Equal(0, Volatile.Read(ref dispatchedAfterJoin));
-        Assert.Equal([persistedRun.RunId], store.DeletedRuns);
+        Assert.Empty(store.DeletedRuns);
     }
 
     [Fact]
@@ -363,8 +363,8 @@ public sealed class WorkflowRuntimeInternalsShould
             BindingFlags.Instance | BindingFlags.NonPublic)
             ?? throw new InvalidOperationException("Expected StartExecution method.");
 
-        startExecution.Invoke(runtime, [run, workflow]);
-        var exception = Assert.Throws<TargetInvocationException>(() => startExecution.Invoke(runtime, [run, workflow]));
+        startExecution.Invoke(runtime, [run, workflow, false]);
+        var exception = Assert.Throws<TargetInvocationException>(() => startExecution.Invoke(runtime, [run, workflow, false]));
 
         Assert.IsType<InvalidOperationException>(exception.InnerException);
         Assert.Contains("already executing", exception.InnerException!.Message, StringComparison.Ordinal);
@@ -456,7 +456,7 @@ public sealed class WorkflowRuntimeInternalsShould
             BindingFlags.Instance | BindingFlags.NonPublic)
             ?? throw new InvalidOperationException("Expected StartExecution method.");
 
-        startExecution.Invoke(runtime, [run, workflow]);
+        startExecution.Invoke(runtime, [run, workflow, false]);
         runtime.CancelExecutionLifetime();
         await runtime.WaitForExecutions(CancellationToken.None);
         var completion = await run.WaitForCompletion();
@@ -492,7 +492,7 @@ public sealed class WorkflowRuntimeInternalsShould
             BindingFlags.Instance | BindingFlags.NonPublic)
             ?? throw new InvalidOperationException("Expected StartExecution method.");
 
-        startExecution.Invoke(runtime, [run, workflow]);
+        startExecution.Invoke(runtime, [run, workflow, false]);
         var waitTask = runtime.WaitForExecutions(CancellationToken.None);
         Assert.False(waitTask.IsCompleted);
 
@@ -516,6 +516,7 @@ public sealed class WorkflowRuntimeInternalsShould
             _ => null,
             createSession,
             createWorkerHandle,
+            null,
             new WorkflowPersistenceCoordinator(persistenceStore, systemName),
             WorkSystemAuthorizationConfiguration.Default,
             new EmptyGroupProvider());

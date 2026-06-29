@@ -89,6 +89,31 @@ public sealed class WorkerStateTests
     }
 
     [Fact]
+    public void DisposingOldExecutionResourcesDoesNotClearRestartedExecutionCancellation()
+    {
+        var worker = CreateWorkerRecord("pause-restart-dispose");
+
+        var firstStart = worker.Start(worker.Revision, advancesRevision: false, out var firstExecutionToken, CancellationToken.None);
+        Assert.True(firstStart.IsAccepted);
+
+        var firstPause = worker.RequestPause(worker.Revision);
+        Assert.True(firstPause.IsAccepted);
+        Assert.Equal(WorkCompletionStatus.Paused, worker.CompleteCancellation());
+        Assert.Equal(WorkerState.Paused, worker.State);
+
+        var secondStart = worker.Start(worker.Revision, advancesRevision: false, out var secondExecutionToken, CancellationToken.None);
+        Assert.True(secondStart.IsAccepted);
+        Assert.Equal(WorkerState.Running, worker.State);
+
+        worker.DisposeExecutionResources(firstExecutionToken);
+
+        var secondPause = worker.RequestPause(worker.Revision);
+
+        Assert.True(secondPause.IsAccepted);
+        Assert.True(secondExecutionToken.IsCancellationRequested);
+    }
+
+    [Fact]
     public async Task CancelMovesThroughCancelingAndCannotBeStartedAgain()
     {
         var running = CreateSignal();
@@ -860,6 +885,24 @@ public sealed class WorkerStateTests
     private static TaskCompletionSource CreateSignal()
         => new(TaskCreationOptions.RunContinuationsAsynchronously);
 
+    private static WorkerRecord CreateWorkerRecord(string definitionName)
+    {
+        var definition = WorkDefinition.Create(definitionName);
+        var now = DateTimeOffset.UtcNow;
+        return new WorkerRecord(
+            WorkerId.New(),
+            new RegisteredWork(definition, _ => new NoopExecutor(), []),
+            WorkInput.Empty,
+            WorkerOptions.Default,
+            WorkConfiguration.Default,
+            WorkRequestContext.Create(WorkInvocationChannel.InProcess),
+            WorkerState.Queued,
+            isStartDeferred: false,
+            messages: [],
+            createdAt: now,
+            updatedAt: now);
+    }
+
     private static WorkerId RequiredWorkerId(IWorkerHandle handle)
         => handle.WorkerId ?? throw new InvalidOperationException("Expected the queue to accept a worker.");
 
@@ -883,5 +926,14 @@ public sealed class WorkerStateTests
         var hasEvent = await reader.MoveNextAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(5));
         Assert.True(hasEvent);
         return reader.Current;
+    }
+
+    private sealed class NoopExecutor : IWorkExecutor
+    {
+        public Task<WorkExecutionResult> Execute(
+            IWorkExecutionContext context,
+            WorkInput? input,
+            CancellationToken cancellationToken)
+            => Task.FromResult(WorkExecutionResult.Success());
     }
 }

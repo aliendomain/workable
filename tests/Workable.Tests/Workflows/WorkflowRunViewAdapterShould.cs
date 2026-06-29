@@ -232,6 +232,77 @@ public sealed class WorkflowRunViewAdapterShould
         Assert.Empty(dispatch.ChildSample);
     }
 
+    [Fact]
+    public async Task ReportAvailableActionsFromWorkflowRunStatus()
+    {
+        var childStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var services = new ServiceCollection();
+        services.AddWorkableSystem(builder =>
+        {
+            builder.RequireAuthorization(false);
+            builder.AddWork(
+                WorkDefinition.Create("workflow.operator.actions.child"),
+                async (_, _, cancellationToken) =>
+                {
+                    childStarted.TrySetResult();
+                    await release.Task.WaitAsync(cancellationToken);
+                    return WorkExecutionResult.Success();
+                });
+            builder.AddWorkflow(
+                WorkflowDefinition.Create("workflow.operator.actions"),
+                workflow => workflow.DispatchWork("dispatch", "workflow.operator.actions.child"));
+        });
+
+        await using var provider = services.BuildServiceProvider();
+        var system = Assert.IsType<InMemoryWorkSystem>(provider.GetRequiredService<IWorkSystemRegistry>().Default);
+        await system.Start();
+
+        var runId = system.WorkflowRuntime.Start(
+            "workflow.operator.actions",
+            WorkRequestContext.Create(WorkInvocationChannel.InProcess)).RunId!.Value;
+        await childStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        var pausedOutcome = await system.WorkflowRuntime.Execute(
+            runId,
+            WorkflowAction.Pause,
+            WorkRequestContext.Create(WorkInvocationChannel.InProcess));
+        Assert.True(pausedOutcome.IsAccepted);
+
+        WorkflowRunDetailView? paused = null;
+        await TestEventually.Until(
+            async () =>
+            {
+                paused = await new WorkflowRunViewAdapter().Run(
+                    system,
+                    WorkRequestContext.Create(WorkInvocationChannel.InProcess),
+                    runId);
+                return paused?.Status == WorkflowRunStatus.Paused;
+            },
+            "Expected the workflow detail view to report the paused run state.");
+
+        var canceledOutcome = await system.WorkflowRuntime.Execute(
+            runId,
+            WorkflowAction.Cancel,
+            WorkRequestContext.Create(WorkInvocationChannel.InProcess));
+        Assert.True(canceledOutcome.IsAccepted);
+
+        var canceled = await new WorkflowRunViewAdapter().Run(
+            system,
+            WorkRequestContext.Create(WorkInvocationChannel.InProcess),
+            runId);
+
+        Assert.NotNull(paused);
+        Assert.True(paused!.AvailableActions.Start);
+        Assert.False(paused.AvailableActions.Pause);
+        Assert.True(paused.AvailableActions.Cancel);
+        Assert.NotNull(canceled);
+        Assert.Equal(WorkflowRunStatus.Canceled, canceled!.Status);
+        Assert.False(canceled.AvailableActions.Start);
+        Assert.False(canceled.AvailableActions.Pause);
+        Assert.False(canceled.AvailableActions.Cancel);
+    }
+
     private static WorkRequestContext CreateContext(WorkActor actor, params string[] groups)
         => WorkRequestContext.Create(
             WorkInvocationChannel.InProcess,

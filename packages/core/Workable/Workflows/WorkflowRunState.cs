@@ -124,7 +124,18 @@ internal sealed class WorkflowRunState
         {
             this.startedAt ??= DateTimeOffset.UtcNow;
             this.status = WorkflowRunStatus.Running;
+            this.completedAt = null;
+            this.pendingControlAction = null;
+            this.messages = [];
             this.onChanged?.Invoke();
+        }
+    }
+
+    public WorkflowRunStatus GetStatus()
+    {
+        lock (this.sync)
+        {
+            return this.status;
         }
     }
 
@@ -244,7 +255,34 @@ internal sealed class WorkflowRunState
         {
             this.status = WorkflowRunStatus.Completed;
             this.pendingControlAction = null;
+            this.messages = [];
             this.completedAt = DateTimeOffset.UtcNow;
+            this.onChanged?.Invoke();
+            return new WorkflowRunCompletion(this.status, this.ToSnapshotLocked(), this.messages);
+        }
+    }
+
+    public WorkflowRunCompletion Pause(IReadOnlyList<WorkMessage>? pauseMessages = null)
+    {
+        lock (this.sync)
+        {
+            this.status = WorkflowRunStatus.Paused;
+            this.pendingControlAction = null;
+            this.completedAt = null;
+            this.messages = pauseMessages ?? [];
+            this.onChanged?.Invoke();
+            return new WorkflowRunCompletion(this.status, this.ToSnapshotLocked(), this.messages);
+        }
+    }
+
+    public WorkflowRunCompletion Block(IReadOnlyList<WorkMessage> blockMessages)
+    {
+        lock (this.sync)
+        {
+            this.status = WorkflowRunStatus.Blocked;
+            this.pendingControlAction = null;
+            this.completedAt = null;
+            this.messages = blockMessages;
             this.onChanged?.Invoke();
             return new WorkflowRunCompletion(this.status, this.ToSnapshotLocked(), this.messages);
         }
@@ -256,6 +294,7 @@ internal sealed class WorkflowRunState
         {
             this.status = WorkflowRunStatus.Canceled;
             this.pendingControlAction = null;
+            this.messages = [];
             this.completedAt = DateTimeOffset.UtcNow;
             this.onChanged?.Invoke();
             return new WorkflowRunCompletion(this.status, this.ToSnapshotLocked(), this.messages);
@@ -305,9 +344,11 @@ internal sealed class WorkflowRunState
     }
 
     private static WorkflowAction? ParsePendingControlAction(string? value)
-        => Enum.TryParse<WorkflowAction>(value, ignoreCase: false, out var action)
-            ? action
-            : null;
+        => string.Equals(value, "Stop", StringComparison.Ordinal)
+            ? WorkflowAction.Pause
+            : Enum.TryParse<WorkflowAction>(value, ignoreCase: false, out var action)
+                ? action
+                : null;
 
     private WorkflowRunSnapshot ToSnapshotLocked()
         => new(

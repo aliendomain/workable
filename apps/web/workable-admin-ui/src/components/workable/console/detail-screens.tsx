@@ -72,6 +72,7 @@ import {
   ConsoleActionButton,
   ExecutionStatusBadge,
   consoleActionToneClassName,
+  createExecutionControlConfirmProps,
 } from "@/components/workable/console/execution-status-controls";
 import type { PanelVisibilityOption } from "@/components/features/console/panel-visibility-settings";
 import { StackedSkeleton } from "@/components/features/console/stacked-skeleton";
@@ -3606,40 +3607,17 @@ function WorkerActionButton({
   tooltip?: string;
 }) {
   const toneClassName = workerActionToneClassName(action, disabled === true);
-  const isConfirmAction = action === "Cancel" || action === "Pause";
-  const isCancel = action === "Cancel";
+  const confirmProps = createExecutionControlConfirmProps(action, "worker", executionMayStop);
 
   return (
     <ConsoleActionButton
-      cancelLabel={isConfirmAction ? (isCancel ? "Keep running" : "Keep executing") : undefined}
       className={toneClassName}
-      confirmClassName={isConfirmAction
-        ? (isCancel
-            ? "bg-[var(--status-danger-solid)] text-[var(--status-danger-contrast)] hover:bg-[var(--status-danger-text)] focus-visible:ring-[var(--status-danger-border)]"
-            : "!bg-[var(--status-warning-solid)] !text-[var(--status-warning-contrast)] hover:!bg-[var(--status-warning-text)] focus-visible:ring-[var(--status-warning-border)]")
-        : undefined}
-      confirmDescription={isConfirmAction
-        ? (isCancel
-            ? (
-              <>
-                This will request cancellation for the current worker.
-                {executionMayStop
-                  ? " Any in-flight execution may stop as soon as the work observes the cancellation."
-                  : ""}
-                {" "}Cancellation is final and cannot be undone.
-              </>
-            )
-            : executionMayStop
-                ? "This will request that the current worker pause. Any in-flight execution may stop when the work observes the pause request, and it can be resumed later."
-                : "This will move the current worker into the paused state, and it can be resumed later.")
-        : undefined}
-      confirmLabel={isConfirmAction ? (isCancel ? "Cancel worker" : "Pause worker") : undefined}
-      confirmTitle={isConfirmAction ? (isCancel ? "Cancel worker?" : "Pause worker?") : undefined}
       disabled={disabled}
       icon={Icon}
       label={action}
       onAction={() => onAction(action)}
       tooltip={tooltip}
+      {...confirmProps}
     />
   );
 }

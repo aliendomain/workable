@@ -6,6 +6,8 @@ namespace Workable;
 public enum WorkflowRunStatus
 {
     Running,
+    Paused,
+    Blocked,
     Completed,
     Failed,
     Canceled,

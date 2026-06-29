@@ -14,7 +14,12 @@ internal sealed class WorkflowEventPublisher(
         WorkRequestContext requestContext)
         => this.Publish(
             snapshot,
-            action == WorkflowAction.Cancel ? "workflow.cancel" : "workflow.stop",
+            action switch
+            {
+                WorkflowAction.Start => "workflow.resume",
+                WorkflowAction.Pause => "workflow.pause",
+                _ => "workflow.cancel",
+            },
             requestContext: requestContext,
             action: action,
             actionStatus: WorkflowActionStatus.Accepted);
@@ -32,6 +37,8 @@ internal sealed class WorkflowEventPublisher(
         var eventType = completion.Status switch
         {
             WorkflowRunStatus.Completed => "workflow.completed",
+            WorkflowRunStatus.Paused => "workflow.paused",
+            WorkflowRunStatus.Blocked => "workflow.blocked",
             WorkflowRunStatus.Failed => "workflow.failed",
             WorkflowRunStatus.Canceled => "workflow.canceled",
             _ => "workflow.updated",

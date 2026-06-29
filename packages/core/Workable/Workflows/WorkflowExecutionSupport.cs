@@ -2,6 +2,8 @@ namespace Workable;
 
 internal static class WorkflowExecutionSupport
 {
+    private static readonly TimeSpan WorkerControlPollInterval = TimeSpan.FromMilliseconds(25);
+
     public static async Task<WorkflowRunCompletion> WaitForOutstanding(
         IReadOnlyList<(string StepName, IWorkerHandle Handle)> outstanding,
         CancellationToken cancellationToken)
@@ -39,12 +41,13 @@ internal static class WorkflowExecutionSupport
         => status switch
         {
             WorkCompletionStatus.Completed => WorkflowRunStatus.Completed,
-            WorkCompletionStatus.Canceled => WorkflowRunStatus.Canceled,
-            WorkCompletionStatus.Failed => WorkflowRunStatus.Failed,
-            WorkCompletionStatus.Interrupted => WorkflowRunStatus.Failed,
-            WorkCompletionStatus.NotFound => WorkflowRunStatus.NotFound,
-            WorkCompletionStatus.Invalid => WorkflowRunStatus.Invalid,
-            _ => WorkflowRunStatus.Invalid,
+            WorkCompletionStatus.Failed => WorkflowRunStatus.Blocked,
+            WorkCompletionStatus.Paused => WorkflowRunStatus.Blocked,
+            WorkCompletionStatus.Canceled => WorkflowRunStatus.Blocked,
+            WorkCompletionStatus.Interrupted => WorkflowRunStatus.Blocked,
+            WorkCompletionStatus.NotFound => WorkflowRunStatus.Failed,
+            WorkCompletionStatus.Invalid => WorkflowRunStatus.Failed,
+            _ => WorkflowRunStatus.Failed,
         };
 
     public static WorkInput AddWorkflowIdentifiers(
@@ -60,6 +63,7 @@ internal static class WorkflowExecutionSupport
     public static async Task CancelOutstandingChildren(
         WorkflowRunState run,
         IWorkSystemSession session,
+        Func<WorkerId, CancellationToken, Task<WorkerSnapshot?>>? getAuthoritativeWorker,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(run);
@@ -67,13 +71,97 @@ internal static class WorkflowExecutionSupport
 
         foreach (var workerId in run.GetOutstandingWorkerIds().Distinct())
         {
-            var snapshot = await session.Query.Worker(workerId, cancellationToken);
-            if (snapshot is null || snapshot.IsFinal || snapshot.State == WorkerState.Failed)
+            var snapshot = await GetSettledWorkerSnapshot(workerId, session, getAuthoritativeWorker, cancellationToken);
+            if (snapshot is null || snapshot.IsFinal)
             {
                 continue;
             }
 
             await session.Workers.Execute(snapshot.Version, WorkAction.Cancel, cancellationToken);
+        }
+    }
+
+    public static async Task PauseOutstandingChildren(
+        WorkflowRunState run,
+        IWorkSystemSession session,
+        Func<WorkerId, CancellationToken, Task<WorkerSnapshot?>>? getAuthoritativeWorker,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(run);
+        ArgumentNullException.ThrowIfNull(session);
+
+        foreach (var workerId in run.GetOutstandingWorkerIds().Distinct())
+        {
+            var snapshot = await GetSettledWorkerSnapshot(workerId, session, getAuthoritativeWorker, cancellationToken);
+            if (snapshot is null || snapshot.IsFinal || snapshot.State == WorkerState.Paused)
+            {
+                continue;
+            }
+
+            if (snapshot.State is WorkerState.Queued or WorkerState.Running or WorkerState.Waiting or WorkerState.Retrying)
+            {
+                await session.Workers.Execute(snapshot.Version, WorkAction.Pause, cancellationToken);
+            }
+        }
+    }
+
+    public static async Task ResumeOutstandingChildren(
+        WorkflowRunState run,
+        IWorkSystemSession session,
+        Func<WorkerId, CancellationToken, Task<WorkerSnapshot?>>? getAuthoritativeWorker,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(run);
+        ArgumentNullException.ThrowIfNull(session);
+
+        foreach (var workerId in run.GetOutstandingWorkerIds().Distinct())
+        {
+            while (true)
+            {
+                var snapshot = await GetSettledWorkerSnapshot(workerId, session, getAuthoritativeWorker, cancellationToken);
+                if (snapshot is null || snapshot.IsFinal || snapshot.State is WorkerState.Running or WorkerState.Waiting or WorkerState.Retrying)
+                {
+                    break;
+                }
+
+                if (snapshot.State is not (WorkerState.Paused or WorkerState.Queued))
+                {
+                    break;
+                }
+
+                var outcome = await session.Workers.Execute(snapshot.Version, WorkAction.Start, cancellationToken);
+                if (outcome.IsAccepted || outcome.Worker?.State is WorkerState.Running or WorkerState.Waiting or WorkerState.Retrying or WorkerState.Completed)
+                {
+                    break;
+                }
+
+                if (outcome.Worker?.State is not (WorkerState.Paused or WorkerState.Queued))
+                {
+                    break;
+                }
+
+                await Task.Delay(WorkerControlPollInterval, cancellationToken);
+            }
+        }
+    }
+
+    private static async Task<WorkerSnapshot?> GetSettledWorkerSnapshot(
+        WorkerId workerId,
+        IWorkSystemSession session,
+        Func<WorkerId, CancellationToken, Task<WorkerSnapshot?>>? getAuthoritativeWorker,
+        CancellationToken cancellationToken)
+    {
+        while (true)
+        {
+            var snapshot = getAuthoritativeWorker is not null
+                ? await getAuthoritativeWorker(workerId, cancellationToken)
+                : await session.Query.Worker(workerId, cancellationToken);
+            if (snapshot is null || !WorkerStateMachine.IsTransitioning(snapshot.State))
+            {
+                return snapshot;
+            }
+
+            await Task.Delay(WorkerControlPollInterval, cancellationToken);
         }
     }
 }

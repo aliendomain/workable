@@ -94,12 +94,17 @@ Action events such as `worker.cancel`, `worker.pause`, and `worker.push` describ
 Workflow runs also publish event types through the same event stream:
 
 - `workflow.started`
-- `workflow.stop`
+- `workflow.resume`
+- `workflow.pause`
 - `workflow.cancel`
 - `workflow.step.updated`
+- `workflow.paused`
+- `workflow.blocked`
 - `workflow.completed`
 - `workflow.failed`
 - `workflow.canceled`
+
+`workflow.resume` is published both for explicit workflow-start requests against paused or blocked runs and for automatic resumes triggered after blocked failed child workers complete successfully.
 
 Workflow events keep `WorkDefinitionName` equal to the workflow definition name and use identifiers such as `workflow-run`, `workflow-definition`, and `workflow-step` so event consumers can filter one workflow run or one workflow node without introducing a separate transport.
 

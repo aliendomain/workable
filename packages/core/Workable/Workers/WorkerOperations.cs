@@ -126,6 +126,9 @@ internal sealed class WorkerOperations :
 
     internal WorkSystemIdempotencyDiagnostics IdempotencyDiagnostics => this.persistence.IdempotencyDiagnostics;
 
+    internal void SetCompletionObserver(Action<WorkerRecord, WorkCompletionStatus>? observer)
+        => this.workerEvents.CompletionObserved = observer;
+
     internal async Task<IWorkerHandle> CreateWorker(
         RegisteredWork registeredWork,
         WorkInput? input,
