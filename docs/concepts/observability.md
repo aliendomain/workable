@@ -32,7 +32,7 @@ await using var reader = subscription.Read(cancellationToken).GetAsyncEnumerator
 Important semantics:
 
 - the subscription starts receiving only future events
-- each subscription owns its own bounded buffer
+- each subscription has bounded delivery; broad `DropOldest` subscriptions may share a source-event cursor log
 - canceling the read loop ends event reads; disposing the reader or subscription removes the subscription
 - disposing the subscription removes the subscription
 - one slow subscriber does not block other subscribers
@@ -571,11 +571,15 @@ Filters can match:
 
 Key filters can target a specific key kind (`Subject`, `ConcurrencyKey`, or `Identifier`) or omit the kind to match any key with the same type and value.
 
-Filters are applied before events enter the subscription buffer. For lazy-published events, Workable checks cheap metadata before constructing the event body, so filtered-out events do not pay the JSON payload cost.
+For subscriptions with a selective routing anchor, such as a worker id, definition name, subject, concurrency key, identifier, or key filter, filters are applied before events enter the subscription buffer. For lazy-published events on those routed paths, Workable checks cheap metadata before constructing the event body, so filtered-out events do not pay the JSON payload cost.
+
+Unfiltered subscriptions and broad `DropOldest` filters, such as event-type-only filters, read from a shared source-event cursor log. Those subscriptions apply their filter while the reader advances through the log, so they avoid per-subscriber write fanout but still require the event envelope to be materialized once for the shared log.
 
 ## Buffering
 
-Each subscription has a bounded buffer. The default capacity is `256`, and the default overflow behavior is `DropOldest`.
+Each subscription has bounded delivery. The default overflow behavior is `DropOldest`. Selectively routed subscriptions default to a capacity of `256`; default unfiltered and broad `DropOldest` subscriptions use a larger source-event cursor capacity of `8192`. If you pass `WorkEventSubscriptionOptions` explicitly, the supplied capacity is respected.
+
+For selectively routed subscriptions, capacity is the per-subscription event buffer. For shared cursor-log subscriptions, capacity is the retained source-event window the reader can fall behind before older source events are skipped.
 
 ```csharp
 await using var subscription = workSystem.Events.Subscribe(

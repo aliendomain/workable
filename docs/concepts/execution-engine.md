@@ -71,7 +71,7 @@ During shutdown, `WorkerOperations` flips the system into a non-accepting state 
 
 `WorkerEventPublisher` owns canonical worker event names and publication. Queueing, worker actions, execution strategies, and retention all publish worker events through this component.
 
-`WorkEventStream` broadcasts events to matching active subscriptions. Each subscription owns its own bounded buffer and is removed when the subscription is disposed or its reader is canceled.
+`WorkEventStream` broadcasts events to matching active subscriptions. Selective subscriptions use bounded per-subscription buffers; unfiltered and broad `DropOldest` subscriptions can share a bounded source-event cursor log to avoid per-subscriber write fanout. Subscriptions are removed when they are disposed or their reader is canceled.
 
 `ConfiguredWorkerExecutionStrategy` chooses the execution path for each worker. Recurring workers use `RecurringWorkerExecutionStrategy`. Non-recurring workers with transient retry `Count` greater than zero use `TransientRetryWorkerExecutionStrategy`; workers with transient retry disabled use `RunOnceWorkerExecutionStrategy`.
 

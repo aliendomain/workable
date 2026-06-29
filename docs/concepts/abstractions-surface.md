@@ -178,8 +178,8 @@ See [Querying](querying.md) for the read-model, key-search, and aggregate-query 
 The public contract is:
 
 - subscriptions only observe future events
-- each subscription owns its own bounded buffer
-- filters apply before buffered delivery
+- each subscription has bounded delivery
+- selective filters apply before buffered delivery; broad `DropOldest` filters may be applied while reading a shared cursor log
 - disposing the subscription or canceling the read removes it
 
 This makes the event surface good for notification, correlation, and realtime refresh triggers. It is not a replay log.
