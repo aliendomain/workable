@@ -83,7 +83,7 @@ app.MapWorkableSignalR("/internal/work/realtime");
 `AddWorkableSignalR` accepts these options:
 
 - `HubPath`: the default path used by `MapWorkableSignalR()` when the map call does not supply one explicitly.
-- `PublishInterval`: how often non-diagnostics named view subscriptions are recomputed and pushed while they are active.
+- `PublishInterval`: how often interval-required named view components, such as throughput, are recomputed and pushed while they are active. State-based named views are pushed from Workable change notifications when the hosted system exposes them; systems without change notifications fall back to this interval.
 - `DiagnosticsPublishInterval`: how often diagnostics named view subscriptions are recomputed and pushed while they are active.
 - `BatchTimeWindow`: how long the broadcaster waits to accumulate more events after the first event in a raw event-stream burst before sending.
 - `LiveTimeWindow`: how long the broadcaster waits to accumulate more worker-overview changes before sending one coalesced delta update.
@@ -102,6 +102,8 @@ app.MapWorkableSignalR("/internal/work/realtime");
 - diagnostics view streaming
 
 Browser connections join SignalR groups and share server-side recomputation or event readers when their normalized subscription request and effective read access match. One browser does not get its own private Workable event-stream subscription unless its request shape differs from the other active subscribers.
+
+State-based named views are wake-on-change: the in-memory runtime publishes coalesced change notifications after its read model snapshot advances, and the SignalR broadcaster recomputes the latest view for each matching group. Views that depend on time passing still use `PublishInterval`.
 
 ## Capability Discovery
 

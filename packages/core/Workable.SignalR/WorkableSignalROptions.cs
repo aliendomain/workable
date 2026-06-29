@@ -11,7 +11,7 @@ public sealed class WorkableSignalROptions
     public string HubPath { get; set; } = "/workable/realtime";
 
     /// <summary>
-    /// Gets or sets how often non-diagnostics named view subscriptions are recomputed and published.
+    /// Gets or sets how often interval-required named views are recomputed and published.
     /// </summary>
     public TimeSpan PublishInterval { get; set; } = TimeSpan.FromSeconds(2);
 

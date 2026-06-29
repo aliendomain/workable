@@ -1,3 +1,4 @@
+using Microsoft.Extensions.DependencyInjection;
 using Workable;
 
 namespace Workable.Tests;
@@ -215,6 +216,43 @@ public sealed class WorkChangeStreamTests
         Assert.Throws<ArgumentOutOfRangeException>(() => stream.Subscribe(new WorkChangeSubscriptionOptions(Capacity: 0)));
     }
 
+    [Fact]
+    public async Task InMemoryWorkSystemExposesOwnedChangeStream()
+    {
+        await using var system = CreateInMemorySystem();
+        var stream = system.Changes;
+        await using var subscription = stream.Subscribe();
+        await using var reader = subscription.Read().GetAsyncEnumerator();
+        var key = WorkChangeKey.System();
+
+        stream.Publish(key);
+
+        var change = await ReadNext(reader);
+        Assert.Equal(key, change.Key);
+        Assert.Equal(1, stream.ActiveSubscriptionCount);
+    }
+
+    [Fact]
+    public async Task DisposingInMemoryWorkSystemDisposesOwnedChangeStream()
+    {
+        var system = CreateInMemorySystem();
+        var stream = system.Changes;
+        await using var subscription = stream.Subscribe();
+        await using var reader = subscription.Read().GetAsyncEnumerator();
+        var read = reader.MoveNextAsync().AsTask();
+
+        Assert.False(read.IsCompleted);
+
+        await system.DisposeAsync();
+
+        while (await ReadCompletion(read))
+        {
+            read = reader.MoveNextAsync().AsTask();
+        }
+
+        Assert.Equal(0, stream.ActiveSubscriptionCount);
+    }
+
     private static async Task<WorkChange> ReadNext(IAsyncEnumerator<WorkChange> reader)
     {
         using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(5));
@@ -244,4 +282,11 @@ public sealed class WorkChangeStreamTests
         => Assert
             .IsAssignableFrom<IWorkChangeSubscriptionDiagnostics>(subscription)
             .GetDiagnosticsSnapshot();
+
+    private static InMemoryWorkSystem CreateInMemorySystem()
+        => Assert.IsType<InMemoryWorkSystem>(new ServiceCollection()
+            .AddWorkableSystem(builder => { })
+            .BuildServiceProvider()
+            .GetRequiredService<IWorkSystemRegistry>()
+            .Default);
 }

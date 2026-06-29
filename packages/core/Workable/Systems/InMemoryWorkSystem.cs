@@ -13,7 +13,8 @@ internal sealed class InMemoryWorkSystem :
     IWorkSystemBuiltInHttpSurfaceAccess,
     IWorkSystemReadModelClock,
     IWorkSystemShutdownMetadata,
-    IWorkSystemCapabilitySource
+    IWorkSystemCapabilitySource,
+    IWorkSystemChangeStreamSource
 {
     private readonly IServiceProvider rootServices;
     private readonly ILogger<InMemoryWorkSystem>? logger;
@@ -33,6 +34,7 @@ internal sealed class InMemoryWorkSystem :
     private readonly WorkSystemSessionFactory sessions;
     private readonly InMemoryWorkMetricsSink metrics = new();
     private readonly WorkEventStream events = new();
+    private readonly WorkChangeStream changes = new();
     private readonly WorkSystemQueueDiagnosticsTracker queueDiagnostics = new();
     private readonly WorkSystemIdempotencyDiagnosticsTracker idempotencyDiagnostics = new();
     private readonly SemaphoreSlim lifecycleLock = new(1, 1);
@@ -74,12 +76,13 @@ internal sealed class InMemoryWorkSystem :
             this.Capabilities.PersistentCoordinationAvailable,
             implicitDefaultWorkerOptions,
             this.authorization,
-            authorizationLogger);
+            authorizationLogger,
+            this.changes);
         this.workflows = new WorkflowCatalog(registration.Workflows);
         this.workflowPersistence = new WorkflowPersistenceCoordinator(
             persistenceStore,
             this.Name);
-        this.readModel = new WorkSystemReadModel(this.catalog, () => this.State, this.Name, this.metrics);
+        this.readModel = new WorkSystemReadModel(this.catalog, () => this.State, this.Name, this.metrics, this.changes);
         this.workers = new WorkerOperations(
             this.catalog,
             () => this.State,
@@ -141,6 +144,10 @@ internal sealed class InMemoryWorkSystem :
     internal WorkflowCatalog Workflows => this.workflows;
 
     internal WorkflowRuntime WorkflowRuntime => this.workflowRuntime;
+
+    internal WorkChangeStream Changes => this.changes;
+
+    IWorkChangeStream IWorkSystemChangeStreamSource.Changes => this.changes;
 
     long IWorkSystemReadModelClock.AppliedSequence => this.readModel.AppliedSequence;
 
@@ -475,6 +482,7 @@ internal sealed class InMemoryWorkSystem :
         this.lifecycleLock.Dispose();
         await this.readModel.DisposeAsync();
         await this.events.DisposeAsync();
+        await this.changes.DisposeAsync();
     }
 
     private async Task DefineRuntimeWork(CancellationToken cancellationToken)

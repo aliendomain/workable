@@ -722,6 +722,142 @@ internal sealed class WorkableRealtimeBroadcaster(
         IWorkSystem system,
         CancellationToken cancellationToken)
     {
+        if (system is IWorkSystemChangeStreamSource changeSource)
+        {
+            await this.BroadcastViewsFromChanges(system, changeSource.Changes, cancellationToken);
+            return;
+        }
+
+        await this.BroadcastViewsOnInterval(system, includeStateBasedViews: true, cancellationToken);
+    }
+
+    private async Task BroadcastViewsFromChanges(
+        IWorkSystem system,
+        IWorkChangeStream changes,
+        CancellationToken cancellationToken)
+    {
+        await using var changeSubscription = changes.Subscribe(new WorkChangeSubscriptionOptions(
+            Math.Max(1, options.Value.EventSubscriptionCapacity)));
+        using var timer = timerFactory.Create(options.Value.PublishInterval);
+        IAsyncEnumerator<WorkChange>? reader = null;
+        Task<bool>? pendingChangeRead = null;
+        Task<bool>? pendingTimerRead = null;
+        try
+        {
+            reader = changeSubscription.Read(cancellationToken).GetAsyncEnumerator(cancellationToken);
+            while (!cancellationToken.IsCancellationRequested)
+            {
+                pendingChangeRead ??= reader.MoveNextAsync().AsTask();
+                pendingTimerRead ??= timer.WaitForNextTickAsync(cancellationToken).AsTask();
+                var completed = await Task.WhenAny(pendingChangeRead, pendingTimerRead);
+                if (completed == pendingChangeRead)
+                {
+                    if (!await pendingChangeRead)
+                    {
+                        break;
+                    }
+
+                    pendingChangeRead = await this.CollectChangeNotifications(
+                        reader,
+                        null,
+                        cancellationToken);
+                    await this.BroadcastViewSubscriptions(
+                        system,
+                        subscription => !this.RequiresIntervalPublish(subscription),
+                        cancellationToken);
+                    continue;
+                }
+
+                if (!await pendingTimerRead)
+                {
+                    break;
+                }
+
+                pendingTimerRead = null;
+                await this.BroadcastViewSubscriptions(
+                    system,
+                    this.RequiresIntervalPublish,
+                    cancellationToken);
+            }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            return;
+        }
+        catch (NotSupportedException) when (cancellationToken.IsCancellationRequested)
+        {
+            return;
+        }
+        finally
+        {
+            if (pendingChangeRead is not null && cancellationToken.IsCancellationRequested)
+            {
+                try
+                {
+                    await pendingChangeRead;
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    // Expected when the view pump is stopped while a change read is pending.
+                }
+                catch (NotSupportedException)
+                {
+                    // Expected when cancellation races async iterator disposal.
+                }
+            }
+
+            if (reader is not null && !cancellationToken.IsCancellationRequested)
+            {
+                await reader.DisposeAsync();
+            }
+        }
+    }
+
+    private async Task<Task<bool>?> CollectChangeNotifications(
+        IAsyncEnumerator<WorkChange> reader,
+        Task<bool>? pendingRead,
+        CancellationToken cancellationToken)
+    {
+        var batchWindow = NormalizeLiveTimeWindow(options.Value);
+        var maxBatchSize = Math.Max(1, options.Value.EventMaxBatchSize);
+        if (maxBatchSize == 1 || batchWindow <= TimeSpan.Zero)
+        {
+            return pendingRead;
+        }
+
+        var changeCount = 1;
+        var delay = Task.Delay(batchWindow, cancellationToken);
+        while (changeCount < maxBatchSize)
+        {
+            pendingRead ??= reader.MoveNextAsync().AsTask();
+            var completed = await Task.WhenAny(pendingRead, delay);
+            if (completed != pendingRead)
+            {
+                break;
+            }
+
+            if (!await pendingRead)
+            {
+                return null;
+            }
+
+            pendingRead = null;
+            changeCount++;
+        }
+
+        if (!delay.IsCompleted)
+        {
+            await delay;
+        }
+
+        return pendingRead;
+    }
+
+    private async Task BroadcastViewsOnInterval(
+        IWorkSystem system,
+        bool includeStateBasedViews,
+        CancellationToken cancellationToken)
+    {
         var lastPublishedSequencesByGroup = new Dictionary<string, long>(StringComparer.Ordinal);
         using var timer = timerFactory.Create(options.Value.PublishInterval);
         while (await timer.WaitForNextTickAsync(cancellationToken))
@@ -729,6 +865,7 @@ internal sealed class WorkableRealtimeBroadcaster(
             var subscriptions = viewSubscriptions
                 .GetActiveSubscriptions(system)
                 .Where(subscription => !IsDiagnosticsView(subscription))
+                .Where(subscription => includeStateBasedViews || this.RequiresIntervalPublish(subscription))
                 .ToArray();
             var activeGroups = subscriptions
                 .Select(subscription => subscription.GroupName)
@@ -775,9 +912,7 @@ internal sealed class WorkableRealtimeBroadcaster(
 
             foreach (var subscription in subscriptions)
             {
-                var requiresIntervalPublish = views.RequiresIntervalPublish(
-                    subscription.ViewName,
-                    subscription.Criteria);
+                var requiresIntervalPublish = this.RequiresIntervalPublish(subscription);
                 var lastPublishedSequence = lastPublishedSequencesByGroup.TryGetValue(subscription.GroupName, out var sequence)
                     ? sequence
                     : subscription.InitialReadModelSequence;
@@ -808,6 +943,38 @@ internal sealed class WorkableRealtimeBroadcaster(
                         system.Name,
                         subscription.GroupName);
                 }
+            }
+        }
+    }
+
+    private async Task BroadcastViewSubscriptions(
+        IWorkSystem system,
+        Func<WorkableRealtimeViewSubscription, bool> shouldBroadcast,
+        CancellationToken cancellationToken)
+    {
+        var subscriptions = viewSubscriptions
+            .GetActiveSubscriptions(system)
+            .Where(subscription => !IsDiagnosticsView(subscription))
+            .Where(shouldBroadcast)
+            .ToArray();
+        foreach (var subscription in subscriptions)
+        {
+            try
+            {
+                await this.BroadcastView(system, subscription, cancellationToken);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception exception)
+            {
+                logger.LogError(
+                    exception,
+                    "Failed to broadcast SignalR view '{ViewName}' for system '{SystemName}' and group '{GroupName}'.",
+                    subscription.ViewName,
+                    system.Name,
+                    subscription.GroupName);
             }
         }
     }
@@ -1098,6 +1265,11 @@ internal sealed class WorkableRealtimeBroadcaster(
                     cancellationToken);
         }
     }
+
+    private bool RequiresIntervalPublish(WorkableRealtimeViewSubscription subscription)
+        => views.RequiresIntervalPublish(
+            subscription.ViewName,
+            subscription.Criteria);
 
     private static bool IsDiagnosticsView(WorkableRealtimeViewSubscription subscription)
         => string.Equals(subscription.ViewName, "diagnostics", StringComparison.OrdinalIgnoreCase);

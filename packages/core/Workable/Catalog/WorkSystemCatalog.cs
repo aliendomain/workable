@@ -19,18 +19,21 @@ internal sealed class WorkSystemCatalog : IWorkCatalog
     private readonly WorkerOptions? implicitDefaultWorkerOptions;
     private readonly WorkSystemAuthorizationConfiguration authorizationConfiguration;
     private readonly ILogger? authorizationLogger;
+    private readonly WorkChangeStream? changes;
 
     public WorkSystemCatalog(
         IReadOnlyList<RegisteredWork> work,
         bool persistenceStoreAvailable,
         WorkerOptions? implicitDefaultWorkerOptions = null,
         WorkSystemAuthorizationConfiguration? authorizationConfiguration = null,
-        ILogger? authorizationLogger = null)
+        ILogger? authorizationLogger = null,
+        WorkChangeStream? changes = null)
     {
         this.persistenceStoreAvailable = persistenceStoreAvailable;
         this.implicitDefaultWorkerOptions = implicitDefaultWorkerOptions;
         this.authorizationConfiguration = authorizationConfiguration ?? WorkSystemAuthorizationConfiguration.Default;
         this.authorizationLogger = authorizationLogger;
+        this.changes = changes;
         foreach (var registeredWork in work)
         {
             var effectiveWork = this.ApplyImplicitDefaultOptions(registeredWork);
@@ -144,6 +147,8 @@ internal sealed class WorkSystemCatalog : IWorkCatalog
 
             this.work[index] = registeredWork.WithDefinition(updatedDefinition);
             this.RebuildIndexes();
+            this.changes?.Publish(WorkChangeKey.System());
+            this.changes?.Publish(WorkChangeKey.Definition(updatedDefinition.Name));
             return Task.FromResult(WorkDefinitionReconfigurationOutcome.Accepted(updatedDefinition));
         }
     }

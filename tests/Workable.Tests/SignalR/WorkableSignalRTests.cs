@@ -366,6 +366,64 @@ public sealed class WorkableSignalRTests
     }
 
     [Fact]
+    public async Task ViewWatcherReceivesStateChangesWithoutPublishIntervalTick()
+    {
+        var timers = new ManualRealtimeTimerFactory();
+        using var host = await CreateHost(
+            addSignalR: true,
+            configureServices: services => services.AddSingleton<IWorkableRealtimeTimerFactory>(timers),
+            configureSignalR: options =>
+            {
+                options.PublishInterval = ManualViewPublishInterval;
+                options.DiagnosticsPublishInterval = ManualDiagnosticsPublishInterval;
+            });
+        var system = host.Services.GetRequiredService<IWorkSystemRegistry>().Default;
+        var gate = host.Services.GetRequiredService<SignalRWorkGate>();
+        await using var connection = CreateConnection(host);
+        const string subscriptionId = "overview";
+        var views = Channel.CreateUnbounded<WorkComponentQueryResult>();
+        CaptureRealtimeViews(connection, subscriptionId, views);
+        await connection.StartAsync();
+        await connection.InvokeAsync(
+            "WatchView",
+            subscriptionId,
+            "overview",
+            new WorkViewCriteria(Components:
+            [
+                new WorkComponentRequest("workers", "workers", Shape: WorkComponentShapes.Compact),
+            ]),
+            null);
+
+        var initial = await ReadUntil(views.Reader, view => view.Components.ContainsKey("workers"));
+
+        var handle = await Session(system).Queue.Enqueue("signalr.view");
+        await gate.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        gate.Release.SetResult();
+        var completion = await handle.WaitForCompletion();
+        Assert.True(completion.IsCompletedSuccessfully);
+
+        var updated = await ReadUntil(
+            views.Reader,
+            view =>
+            {
+                if (view.GeneratedAt <= initial.GeneratedAt ||
+                    !view.Components.TryGetValue("workers", out var component) ||
+                    component.Data is not JsonElement workerData)
+                {
+                    return false;
+                }
+
+                return workerData.GetProperty("activeWorkerCount").GetInt32() == 0 &&
+                    workerData.GetProperty("failedWorkerCount").GetInt32() == 0;
+            });
+        var workers = Assert.IsType<JsonElement>(updated.Components["workers"].Data);
+
+        Assert.Equal(["workers"], updated.Components.Keys.ToArray());
+        Assert.Equal(0, workers.GetProperty("activeWorkerCount").GetInt32());
+        Assert.Equal(0, workers.GetProperty("failedWorkerCount").GetInt32());
+    }
+
+    [Fact]
     public async Task ViewWatcherContinuesPublishingOverviewThroughputWithoutReadModelChanges()
     {
         var timers = new ManualRealtimeTimerFactory();
