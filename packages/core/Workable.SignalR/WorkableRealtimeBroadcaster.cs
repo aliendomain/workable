@@ -757,13 +757,19 @@ internal sealed class WorkableRealtimeBroadcaster(
                         break;
                     }
 
+                    var changedKeys = new HashSet<WorkChangeKey>
+                    {
+                        reader.Current.Key,
+                    };
                     pendingChangeRead = await this.CollectChangeNotifications(
                         reader,
                         null,
+                        changedKeys,
                         cancellationToken);
                     await this.BroadcastViewSubscriptions(
                         system,
-                        subscription => !this.RequiresIntervalPublish(subscription),
+                        subscription => !this.RequiresIntervalPublish(subscription) &&
+                            views.ShouldPublishForChanges(subscription.ViewName, subscription.Criteria, changedKeys),
                         cancellationToken);
                     continue;
                 }
@@ -816,8 +822,11 @@ internal sealed class WorkableRealtimeBroadcaster(
     private async Task<Task<bool>?> CollectChangeNotifications(
         IAsyncEnumerator<WorkChange> reader,
         Task<bool>? pendingRead,
+        HashSet<WorkChangeKey> changedKeys,
         CancellationToken cancellationToken)
     {
+        ArgumentNullException.ThrowIfNull(changedKeys);
+
         var batchWindow = NormalizeLiveTimeWindow(options.Value);
         var maxBatchSize = Math.Max(1, options.Value.EventMaxBatchSize);
         if (maxBatchSize == 1 || batchWindow <= TimeSpan.Zero)
@@ -841,6 +850,7 @@ internal sealed class WorkableRealtimeBroadcaster(
                 return null;
             }
 
+            changedKeys.Add(reader.Current.Key);
             pendingRead = null;
             changeCount++;
         }

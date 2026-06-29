@@ -424,6 +424,61 @@ public sealed class WorkableSignalRTests
     }
 
     [Fact]
+    public async Task ViewWatcherDoesNotReceiveWorkerViewForUnrelatedWorkerChanges()
+    {
+        var timers = new ManualRealtimeTimerFactory();
+        using var host = await CreateHost(
+            addSignalR: true,
+            configureServices: services => services.AddSingleton<IWorkableRealtimeTimerFactory>(timers),
+            configureSignalR: options =>
+            {
+                options.PublishInterval = ManualViewPublishInterval;
+                options.DiagnosticsPublishInterval = ManualDiagnosticsPublishInterval;
+            });
+        var system = host.Services.GetRequiredService<IWorkSystemRegistry>().Default;
+        var gate = host.Services.GetRequiredService<SignalRWorkGate>();
+        var session = Session(system);
+        var target = await session.Queue.Enqueue("signalr.view");
+        await gate.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        gate.Release.SetResult();
+        var targetCompletion = await target.WaitForCompletion();
+        Assert.True(targetCompletion.IsCompletedSuccessfully);
+        await TestEventually.Until(() => session.Diagnostics.ReadModel.PendingUpdateCount == 0);
+        var targetWorkerId = target.WorkerId ?? throw new InvalidOperationException("Expected accepted worker.");
+
+        await using var connection = CreateConnection(host);
+        const string subscriptionId = "worker";
+        var views = Channel.CreateUnbounded<WorkComponentQueryResult>();
+        CaptureRealtimeViews(connection, subscriptionId, views);
+        await connection.StartAsync();
+        await connection.InvokeAsync(
+            "WatchView",
+            subscriptionId,
+            "worker",
+            new WorkViewCriteria(Components:
+            [
+                new WorkComponentRequest(
+                    "worker",
+                    "workerDetail",
+                    JsonSerializer.SerializeToElement(new
+                    {
+                        workerId = targetWorkerId.Value,
+                    })),
+            ]),
+            null);
+
+        _ = await ReadUntil(views.Reader, view => view.Components.ContainsKey("worker"));
+        await DrainUntilQuiet(views.Reader, TimeSpan.FromMilliseconds(250));
+
+        var unrelated = await session.Queue.Enqueue("signalr.view");
+        var unrelatedCompletion = await unrelated.WaitForCompletion();
+        Assert.True(unrelatedCompletion.IsCompletedSuccessfully);
+        await TestEventually.Until(() => session.Diagnostics.ReadModel.PendingUpdateCount == 0);
+
+        await AssertNoItem(views.Reader, TimeSpan.FromSeconds(1));
+    }
+
+    [Fact]
     public async Task ViewWatcherContinuesPublishingOverviewThroughputWithoutReadModelChanges()
     {
         var timers = new ManualRealtimeTimerFactory();
@@ -1284,6 +1339,45 @@ public sealed class WorkableSignalRTests
         }
 
         throw new InvalidOperationException("Expected item was not received.");
+    }
+
+    private static async Task DrainUntilQuiet<T>(
+        ChannelReader<T> reader,
+        TimeSpan quietPeriod)
+    {
+        while (true)
+        {
+            using var cancellation = new CancellationTokenSource(quietPeriod);
+            try
+            {
+                if (!await reader.WaitToReadAsync(cancellation.Token))
+                {
+                    return;
+                }
+            }
+            catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
+            {
+                return;
+            }
+
+            while (reader.TryRead(out _))
+            {
+            }
+        }
+    }
+
+    private static async Task AssertNoItem<T>(
+        ChannelReader<T> reader,
+        TimeSpan timeout)
+    {
+        using var cancellation = new CancellationTokenSource(timeout);
+        try
+        {
+            Assert.False(await reader.WaitToReadAsync(cancellation.Token), "Expected no item to be received.");
+        }
+        catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
+        {
+        }
     }
 
     private static IReadOnlySet<T> Required<T>(IReadOnlySet<T>? values)

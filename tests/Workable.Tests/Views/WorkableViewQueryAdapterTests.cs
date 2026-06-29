@@ -1,5 +1,6 @@
 using Microsoft.Extensions.DependencyInjection;
 using System.Collections.Concurrent;
+using System.Text.Json;
 using Microsoft.Extensions.Logging;
 using Workable;
 
@@ -51,6 +52,129 @@ public sealed class WorkableViewQueryAdapterTests
         Assert.Equal(["worker", "currentIteration"], components.Select(component => component.Id).ToArray());
         Assert.Equal(["workerDetail", "workerCurrentIteration"], components.Select(component => component.Type).ToArray());
         Assert.All(components, component => Assert.Equal(WorkComponentShapes.Detailed, component.Shape));
+    }
+
+    [Fact]
+    public void ShouldPublishForChangesMatchesWorkerDetailByWorkerId()
+    {
+        var adapter = new WorkableViewQueryAdapter();
+        var workerId = WorkerId.New();
+        var criteria = new WorkViewCriteria(Components:
+        [
+            new WorkComponentRequest(
+                "worker",
+                "workerDetail",
+                JsonSerializer.SerializeToElement(new
+                {
+                    workerId = workerId.Value,
+                })),
+        ]);
+
+        Assert.True(adapter.ShouldPublishForChanges(
+            "worker",
+            criteria,
+            [WorkChangeKey.Worker(workerId)]));
+        Assert.False(adapter.ShouldPublishForChanges(
+            "worker",
+            criteria,
+            [WorkChangeKey.Worker(WorkerId.New())]));
+    }
+
+    [Fact]
+    public void ShouldPublishForChangesMatchesWorkerGridByStructuredKey()
+    {
+        var adapter = new WorkableViewQueryAdapter();
+        var subject = new WorkSubjectId("invoice", "inv-100");
+        var criteria = new WorkViewCriteria(Components:
+        [
+            new WorkComponentRequest(
+                "workers",
+                "workerGrid",
+                JsonSerializer.SerializeToElement(new
+                {
+                    keyKind = WorkKeyKind.Subject,
+                    keyType = subject.Type,
+                    keyValue = subject.Value,
+                })),
+        ]);
+
+        Assert.True(adapter.ShouldPublishForChanges(
+            "workers",
+            criteria,
+            [WorkChangeKey.Subject(subject)]));
+        Assert.False(adapter.ShouldPublishForChanges(
+            "workers",
+            criteria,
+            [WorkChangeKey.Subject(new WorkSubjectId(subject.Type, "inv-200"))]));
+    }
+
+    [Fact]
+    public void ShouldPublishForChangesMatchesDefinitionScopedViewsByDefinition()
+    {
+        var adapter = new WorkableViewQueryAdapter();
+        var criteria = new WorkViewCriteria(
+            new WorkSystemCriteria(DefinitionName: "billing.close"),
+            [
+                new WorkComponentRequest("workers", "workers", Shape: WorkComponentShapes.Compact),
+            ]);
+
+        Assert.True(adapter.ShouldPublishForChanges(
+            "overview",
+            criteria,
+            [WorkChangeKey.Definition("billing.close")]));
+        Assert.False(adapter.ShouldPublishForChanges(
+            "overview",
+            criteria,
+            [WorkChangeKey.Definition("shipping.close")]));
+    }
+
+    [Fact]
+    public void ShouldPublishForChangesKeepsGlobalOverviewSubscribedToWorkerState()
+    {
+        var adapter = new WorkableViewQueryAdapter();
+        var criteria = new WorkViewCriteria(Components:
+        [
+            new WorkComponentRequest("workers", "workers", Shape: WorkComponentShapes.Compact),
+        ]);
+
+        Assert.True(adapter.ShouldPublishForChanges(
+            "overview",
+            criteria,
+            [WorkChangeKey.Worker(WorkerId.New())]));
+    }
+
+    [Fact]
+    public void ShouldPublishForChangesKeepsDiagnosticsComponentsConservativeInCustomViews()
+    {
+        var adapter = new WorkableViewQueryAdapter();
+        var criteria = new WorkViewCriteria(Components:
+        [
+            new WorkComponentRequest("queueDiagnostics", "queueDiagnostics", Shape: WorkComponentShapes.Compact),
+        ]);
+
+        Assert.True(adapter.ShouldPublishForChanges(
+            "overview",
+            criteria,
+            [WorkChangeKey.Worker(WorkerId.New())]));
+    }
+
+    [Fact]
+    public void ShouldPublishForChangesFallsBackToPublishForMalformedComponentOptions()
+    {
+        var adapter = new WorkableViewQueryAdapter();
+        using var document = JsonDocument.Parse("""{"keyKind": "not-a-kind"}""");
+        var criteria = new WorkViewCriteria(Components:
+        [
+            new WorkComponentRequest(
+                "workers",
+                "workerGrid",
+                document.RootElement.Clone()),
+        ]);
+
+        Assert.True(adapter.ShouldPublishForChanges(
+            "workers",
+            criteria,
+            [WorkChangeKey.Worker(WorkerId.New())]));
     }
 
     [Fact]

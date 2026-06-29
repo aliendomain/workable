@@ -366,8 +366,7 @@ internal sealed class WorkSystemReadModel : IWorkSystemReadModelStore, IAsyncDis
 
                 break;
             case ForgetIterationUpdate iteration:
-                keys.Add(WorkChangeKey.System());
-                keys.Add(WorkChangeKey.Worker(iteration.Iteration.WorkerId));
+                AddForgottenWorkerChangeKeys(iteration.Iteration.WorkerId, this.state, keys);
                 break;
             case ClearReadModelUpdate:
                 keys.Add(WorkChangeKey.System());
