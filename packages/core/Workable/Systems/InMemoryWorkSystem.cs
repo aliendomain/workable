@@ -13,8 +13,7 @@ internal sealed class InMemoryWorkSystem :
     IWorkSystemBuiltInHttpSurfaceAccess,
     IWorkSystemReadModelClock,
     IWorkSystemShutdownMetadata,
-    IWorkSystemCapabilitySource,
-    IWorkSystemChangeStreamSource
+    IWorkSystemCapabilitySource
 {
     private readonly IServiceProvider rootServices;
     private readonly ILogger<InMemoryWorkSystem>? logger;
@@ -115,6 +114,7 @@ internal sealed class InMemoryWorkSystem :
             this.workers,
             this.query,
             this.events,
+            this.changes,
             this.authorization,
             this.groupProvider);
         this.workflowRuntime = new WorkflowRuntime(
@@ -145,9 +145,7 @@ internal sealed class InMemoryWorkSystem :
 
     internal WorkflowRuntime WorkflowRuntime => this.workflowRuntime;
 
-    internal WorkChangeStream Changes => this.changes;
-
-    IWorkChangeStream IWorkSystemChangeStreamSource.Changes => this.changes;
+    internal WorkChangeStream ChangeStream => this.changes;
 
     long IWorkSystemReadModelClock.AppliedSequence => this.readModel.AppliedSequence;
 
@@ -193,6 +191,15 @@ internal sealed class InMemoryWorkSystem :
         {
             this.ThrowIfAuthorizationRequiredForDirectAccess();
             return this.events;
+        }
+    }
+
+    public IWorkChangeStream Changes
+    {
+        get
+        {
+            this.ThrowIfAuthorizationRequiredForDirectAccess();
+            return this.changes;
         }
     }
 

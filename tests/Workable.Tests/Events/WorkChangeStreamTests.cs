@@ -220,8 +220,8 @@ public sealed class WorkChangeStreamTests
     public async Task InMemoryWorkSystemExposesOwnedChangeStream()
     {
         await using var system = CreateInMemorySystem();
-        var stream = system.Changes;
-        await using var subscription = stream.Subscribe();
+        var stream = system.ChangeStream;
+        await using var subscription = system.Changes.Subscribe();
         await using var reader = subscription.Read().GetAsyncEnumerator();
         var key = WorkChangeKey.System();
 
@@ -236,8 +236,8 @@ public sealed class WorkChangeStreamTests
     public async Task DisposingInMemoryWorkSystemDisposesOwnedChangeStream()
     {
         var system = CreateInMemorySystem();
-        var stream = system.Changes;
-        await using var subscription = stream.Subscribe();
+        var stream = system.ChangeStream;
+        await using var subscription = system.Changes.Subscribe();
         await using var reader = subscription.Read().GetAsyncEnumerator();
         var read = reader.MoveNextAsync().AsTask();
 
@@ -251,6 +251,21 @@ public sealed class WorkChangeStreamTests
         }
 
         Assert.Equal(0, stream.ActiveSubscriptionCount);
+    }
+
+    [Fact]
+    public async Task InMemoryWorkSystemSessionExposesOwnedChangeStream()
+    {
+        await using var system = CreateInMemorySystem();
+        var session = system.CreateSession(WorkRequestContext.Create(WorkInvocationChannel.InProcess));
+        await using var subscription = session.Changes.Subscribe();
+        await using var reader = subscription.Read().GetAsyncEnumerator();
+        var key = WorkChangeKey.System();
+
+        system.ChangeStream.Publish(key);
+
+        var change = await ReadNext(reader);
+        Assert.Equal(key, change.Key);
     }
 
     private static async Task<WorkChange> ReadNext(IAsyncEnumerator<WorkChange> reader)

@@ -106,7 +106,7 @@ Applications reference `Workable.Mcp` when they want to expose Workable systems 
 - SignalR hub mapping for raw event, named view, and worker-overview subscriptions
 - shared subscription registries keyed by normalized request shape and read visibility
 - raw event broadcasting
-- worker-overview state caching, delta generation, and coalesced worker-overview broadcasting
+- worker-overview change handling and coalesced worker-overview broadcasting
 - coalesced named-view broadcasting using shared view subscriptions
 - HTTP realtime capability provider registration
 

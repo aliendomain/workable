@@ -188,27 +188,27 @@ public sealed class WorkableRealtimeWorkerOverviewSubscriptionsShould
             WorkerId.New(),
             Criteria(WorkComponentShapes.Standard));
         var occurredAt = DateTimeOffset.UtcNow;
-        var diagnostics = new WorkEventSubscriptionDiagnosticsSnapshot(
+        var diagnostics = new WorkChangeSubscriptionDiagnosticsSnapshot(
             Capacity: 16,
-            OverflowBehavior: WorkEventOverflowBehavior.DropNewest,
             QueuedCount: 3,
             PeakQueuedCount: 4,
-            AcceptedEventCount: 5,
-            DeliveredEventCount: 2,
-            DroppedEventCount: 1);
+            AcceptedChangeCount: 5,
+            DeliveredChangeCount: 2,
+            CoalescedChangeCount: 1,
+            DroppedChangeCount: 1);
         var observedVersion = subscriptions.Version;
         var changed = subscriptions.WaitForChange(observedVersion, CancellationToken.None);
 
         subscriptions.ReportActivity(subscription.GroupName, occurredAt);
         await changed.WaitAsync(TimeSpan.FromSeconds(1));
         subscriptions.ReportError(subscription.GroupName, "  stream stopped  ");
-        subscriptions.SetEventStreamDiagnosticsProvider(subscription.GroupName, () => diagnostics);
+        subscriptions.SetChangeStreamDiagnosticsProvider(subscription.GroupName, () => diagnostics);
 
         var snapshot = Assert.Single(subscriptions.GetDebugSubscriptions(system));
         Assert.Equal(occurredAt, snapshot.LastActivityAt);
         Assert.Equal("stream stopped", snapshot.LastError);
         Assert.NotNull(snapshot.StreamingStoppedAt);
-        Assert.Equal(diagnostics, snapshot.EventStreamDiagnostics);
+        Assert.Equal(diagnostics, snapshot.ChangeStreamDiagnostics);
     }
 
     [Fact]

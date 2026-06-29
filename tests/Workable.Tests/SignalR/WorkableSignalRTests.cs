@@ -606,6 +606,72 @@ public sealed class WorkableSignalRTests
     }
 
     [Fact]
+    public async Task WorkerOverviewWatcherUsesChangeStreamWithoutEventStreamSubscription()
+    {
+        using var host = await CreateHost(addSignalR: true);
+        var system = host.Services.GetRequiredService<IWorkSystemRegistry>().Default;
+        var eventStream = GetEventStream(system);
+        await using var connection = CreateConnection(host);
+        const string subscriptionId = "worker-overview";
+        var updates = Channel.CreateUnbounded<WorkWorkerOverviewRealtimeUpdate>();
+        CaptureWorkerOverviewUpdates(connection, subscriptionId, updates);
+        await connection.StartAsync();
+
+        var handle = await Session(system).Queue.Enqueue("signalr.worker");
+        var workerId = handle.WorkerId ?? throw new InvalidOperationException("Expected worker id.");
+
+        await connection.InvokeAsync(
+            "WatchWorkerOverview",
+            subscriptionId,
+            workerId.Value.ToString("D"),
+            new WorkWorkerOverviewRealtimeCriteria(
+                WorkerControls: WorkComponentShapes.Standard),
+            null);
+
+        var initial = await ReadUntil(
+            updates.Reader,
+            update => update.Worker?.WorkerId == workerId);
+
+        Assert.Equal(workerId, Require(initial.Worker).WorkerId);
+        Assert.Equal(0, eventStream.ActiveSubscriptionCount);
+    }
+
+    [Fact]
+    public async Task WorkerOverviewWatcherIgnoresUnrelatedWorkerChanges()
+    {
+        using var host = await CreateHost(addSignalR: true);
+        var system = host.Services.GetRequiredService<IWorkSystemRegistry>().Default;
+        var session = Session(system);
+        await using var connection = CreateConnection(host);
+        const string subscriptionId = "worker-overview";
+        var updates = Channel.CreateUnbounded<WorkWorkerOverviewRealtimeUpdate>();
+        CaptureWorkerOverviewUpdates(connection, subscriptionId, updates);
+        await connection.StartAsync();
+
+        var target = await session.Queue.Enqueue("signalr.worker");
+        var targetWorkerId = target.WorkerId ?? throw new InvalidOperationException("Expected worker id.");
+
+        await connection.InvokeAsync(
+            "WatchWorkerOverview",
+            subscriptionId,
+            targetWorkerId.Value.ToString("D"),
+            new WorkWorkerOverviewRealtimeCriteria(
+                WorkerControls: WorkComponentShapes.Standard),
+            null);
+
+        _ = await ReadUntil(
+            updates.Reader,
+            update => update.Worker?.WorkerId == targetWorkerId);
+        await DrainUntilQuiet(updates.Reader, TimeSpan.FromMilliseconds(250));
+
+        var unrelated = await session.Queue.Enqueue("signalr.worker");
+        Assert.NotEqual(targetWorkerId, unrelated.WorkerId);
+        await TestEventually.Until(() => session.Diagnostics.ReadModel.PendingUpdateCount == 0);
+
+        await AssertNoItem(updates.Reader, TimeSpan.FromSeconds(1));
+    }
+
+    [Fact]
     public async Task WorkerOverviewWatcherRejectsInvalidWorkerIds()
     {
         using var host = await CreateHost(addSignalR: true);
