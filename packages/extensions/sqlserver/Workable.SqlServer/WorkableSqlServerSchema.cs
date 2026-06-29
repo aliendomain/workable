@@ -6,7 +6,7 @@ namespace Workable.SqlServer;
 public static class WorkableSqlServerSchema
 {
     private const int SchemaVersion = 1;
-    private const int WorkflowSchemaVersion = 3;
+    private const int WorkflowSchemaVersion = 4;
     private const string RequiredSetOptions = """
 SET ANSI_NULLS ON;
 SET QUOTED_IDENTIFIER ON;
@@ -90,6 +90,7 @@ BEGIN
         Status nvarchar(64) NOT NULL,
         StepsJson nvarchar(max) NOT NULL,
         MessagesJson nvarchar(max) NOT NULL,
+        ChildReceiptsJson nvarchar(max) NOT NULL CONSTRAINT DF_WorkableWorkflowRuns_ChildReceiptsJson DEFAULT (N'[]'),
         PendingControlAction nvarchar(32) NULL,
         CreatedAt datetimeoffset NOT NULL,
         StartedAt datetimeoffset NULL,
@@ -113,6 +114,15 @@ IF OBJECT_ID(N'{escapedSchemaName}.WorkflowRuns', N'U') IS NOT NULL
 BEGIN
     ALTER TABLE {workflowRunsTable}
         ADD PendingControlAction nvarchar(32) NULL;
+END
+""",
+            $"""
+IF OBJECT_ID(N'{escapedSchemaName}.WorkflowRuns', N'U') IS NOT NULL
+   AND COL_LENGTH(N'{escapedSchemaName}.WorkflowRuns', N'ChildReceiptsJson') IS NULL
+BEGIN
+    ALTER TABLE {workflowRunsTable}
+        ADD ChildReceiptsJson nvarchar(max) NOT NULL
+            CONSTRAINT DF_WorkableWorkflowRuns_ChildReceiptsJson DEFAULT (N'[]');
 END
 """,
             $"""

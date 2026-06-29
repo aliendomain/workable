@@ -226,6 +226,24 @@ internal sealed class NonDurableWorkflowExecutor(
         while (outstanding.Count > 0)
         {
             var workerId = outstanding[0];
+            if (run.TryGetChildReceipt(workerId, out var receipt) &&
+                receipt is not null)
+            {
+                if (receipt.CompletionStatus != WorkCompletionStatus.Completed)
+                {
+                    return new WorkflowRunCompletion(
+                        WorkflowExecutionSupport.ToWorkflowStatus(receipt.CompletionStatus),
+                        null,
+                        receipt.Messages);
+                }
+
+                outstanding.RemoveAt(0);
+                run.RemoveStepWorkerId(joinStepName, workerId);
+                var receiptPublisher = workflowEvents ?? new WorkflowEventPublisher(default, null, new WorkEventStream());
+                receiptPublisher.StepUpdated(run.ToSnapshot(), joinStepName);
+                continue;
+            }
+
             var handle = activeHandles.TryGetValue(workerId, out var activeHandle)
                 ? activeHandle
                 : workerHandleFactory(workerId);

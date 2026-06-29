@@ -129,10 +129,12 @@ internal sealed class InMemoryWorkSystem :
             this.authorization,
             this.groupProvider,
             workflowEvents);
+        this.workers.SetWorkflowChildFinalizationObserver(this.workflowRuntime.ObserveFinalWorkflowChild);
+        this.workers.SetWorkflowChildRetentionGuard(this.workflowRuntime.ShouldKeepWorkflowChildWorker);
+        this.workers.SetWorkflowChildPurgedObserver(this.workflowRuntime.ObservePurgedWorkflowChild);
         this.workers.SetCompletionObserver((worker, status) =>
         {
-            if (status != WorkCompletionStatus.Completed ||
-                !worker.Identifiers.Any(identifier => identifier.Type == "workflow-run"))
+            if (!worker.Identifiers.Any(identifier => identifier.Type == "workflow-run"))
             {
                 return;
             }
@@ -142,7 +144,10 @@ internal sealed class InMemoryWorkSystem :
                 {
                     try
                     {
-                        await this.workflowRuntime.TryAutoResumeBlockedRunForCompletedWorker(worker.Id, CancellationToken.None);
+                        if (status == WorkCompletionStatus.Completed)
+                        {
+                            await this.workflowRuntime.TryAutoResumeBlockedRunForCompletedWorker(worker.Id, CancellationToken.None);
+                        }
                     }
                     catch (Exception exception) when (IsNonCriticalException(exception))
                     {
@@ -374,6 +379,9 @@ internal sealed class InMemoryWorkSystem :
             await TryCleanupAsync(
                 () => this.workflowRuntime.WaitForExecutions(CancellationToken.None),
                 cleanupExceptions);
+            await TryCleanupAsync(
+                () => this.workflowRuntime.StopBackgroundTasks(CancellationToken.None),
+                cleanupExceptions);
             TryCleanup(() => this.workflowRuntime.ClearRuns(), cleanupExceptions);
 
             if (lifecycleStarted)
@@ -435,6 +443,9 @@ internal sealed class InMemoryWorkSystem :
                 cleanupExceptions);
             await TryCleanupAsync(
                 () => this.workflowRuntime.WaitForExecutions(cancellationToken),
+                cleanupExceptions);
+            await TryCleanupAsync(
+                () => this.workflowRuntime.StopBackgroundTasks(cancellationToken),
                 cleanupExceptions);
             TryCleanup(() => this.workflowRuntime.ClearRuns(), cleanupExceptions);
             await TryCleanupAsync(() => this.NotifyStopped(), cleanupExceptions);

@@ -4,6 +4,7 @@ internal sealed class WorkflowRunState
 {
     private readonly Lock sync = new();
     private readonly List<WorkflowStepRunState> steps;
+    private readonly Dictionary<WorkerId, WorkflowChildReceipt> childReceipts = [];
     private readonly Action? onChanged;
     private readonly TaskCompletionSource<WorkflowRunCompletion> completion =
         new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -86,6 +87,10 @@ internal sealed class WorkflowRunState
         run.startedAt = record.StartedAt;
         run.completedAt = record.CompletedAt;
         run.messages = record.Messages;
+        foreach (var receipt in record.ChildReceipts)
+        {
+            run.childReceipts[receipt.WorkerId] = receipt;
+        }
         return run;
     }
 
@@ -109,6 +114,10 @@ internal sealed class WorkflowRunState
         run.startedAt = record.StartedAt;
         run.completedAt = record.CompletedAt;
         run.messages = record.Messages;
+        foreach (var receipt in record.ChildReceipts)
+        {
+            run.childReceipts[receipt.WorkerId] = receipt;
+        }
         return run;
     }
 
@@ -205,6 +214,14 @@ internal sealed class WorkflowRunState
         }
     }
 
+    public IReadOnlyList<WorkerId> GetAllWorkerIds()
+    {
+        lock (this.sync)
+        {
+            return [.. this.steps.SelectMany(step => step.WorkerIds).Distinct()];
+        }
+    }
+
     public void MarkStepRunning(string name, IReadOnlyList<WorkerId>? workerIds = null)
     {
         lock (this.sync)
@@ -228,6 +245,38 @@ internal sealed class WorkflowRunState
         lock (this.sync)
         {
             return [.. this.steps.Single(step => step.Name == name).WorkerIds];
+        }
+    }
+
+    public bool TryGetChildReceipt(WorkerId workerId, out WorkflowChildReceipt? receipt)
+    {
+        lock (this.sync)
+        {
+            return this.childReceipts.TryGetValue(workerId, out receipt);
+        }
+    }
+
+    public IReadOnlyList<WorkflowChildReceipt> GetChildReceipts()
+    {
+        lock (this.sync)
+        {
+            return [.. this.childReceipts.Values];
+        }
+    }
+
+    public bool RecordChildReceipt(WorkflowChildReceipt receipt)
+    {
+        lock (this.sync)
+        {
+            if (this.childReceipts.TryGetValue(receipt.WorkerId, out var existing) &&
+                existing == receipt)
+            {
+                return false;
+            }
+
+            this.childReceipts[receipt.WorkerId] = receipt;
+            this.onChanged?.Invoke();
+            return true;
         }
     }
 
@@ -338,6 +387,7 @@ internal sealed class WorkflowRunState
                 this.startedAt,
                 this.completedAt,
                 this.messages,
+                this.childReceipts.Values.ToArray(),
                 this.DefinitionFingerprint,
                 this.pendingControlAction?.ToString());
         }
@@ -359,7 +409,8 @@ internal sealed class WorkflowRunState
             this.CreatedAt,
             this.startedAt,
             this.completedAt,
-            this.messages);
+            this.messages,
+            this.childReceipts.Values.ToArray());
 
     private sealed class WorkflowStepRunState
     {

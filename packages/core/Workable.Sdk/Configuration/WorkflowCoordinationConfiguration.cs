@@ -22,4 +22,5 @@ public sealed record WorkflowCoordinationConfiguration
     /// Gets a value indicating whether the workflow should use durable orchestration state.
     /// </summary>
     public bool IsDurable { get; init; }
+
 }

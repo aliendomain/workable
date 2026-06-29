@@ -86,6 +86,9 @@ internal sealed class WorkflowRuntime
         }
     }
 
+    public Task StopBackgroundTasks(CancellationToken cancellationToken)
+        => Task.CompletedTask;
+
     public void ClearRuns()
     {
         List<WorkflowRunState> activeRuns;
@@ -134,7 +137,7 @@ internal sealed class WorkflowRuntime
         }
 
         var recoveredBlockedRunIds = new List<WorkflowRunId>();
-        await foreach (var record in this.persistence.ListIncompleteRuns(cancellationToken))
+        await foreach (var record in this.persistence.ListRuns(cancellationToken))
         {
             cancellationToken.ThrowIfCancellationRequested();
 
@@ -159,7 +162,11 @@ internal sealed class WorkflowRuntime
             }
 
             this.AdvanceVersion();
-            if (run.GetStatus() == WorkflowRunStatus.Running)
+            if (IsFinal(run.GetStatus()))
+            {
+                await this.TryPurgeFinalRunIfChildrenGone(run, cancellationToken);
+            }
+            else if (run.GetStatus() == WorkflowRunStatus.Running)
             {
                 this.StartExecution(run, workflow);
             }
@@ -388,12 +395,13 @@ internal sealed class WorkflowRuntime
             var canceled = run.Cancel();
             if (workflow.Definition.Coordination.IsDurable)
             {
-                await this.persistence.DeleteRun(run.Id, CancellationToken.None);
+                await this.persistence.UpsertRun(this.CreatePersistenceRecord(run), CancellationToken.None);
             }
 
             run.TrySetCompletion(canceled);
             this.workflowEvents.ActionAccepted(canceled.Run ?? snapshot, action, requestContext);
             this.workflowEvents.Completion(canceled);
+            await this.TryPurgeFinalRunIfChildrenGone(run, CancellationToken.None);
             return WorkflowActionOutcome.Accepted(action, canceled.Run ?? snapshot);
         }
 
@@ -488,7 +496,8 @@ internal sealed class WorkflowRuntime
         this.workflowEvents.Completion(completion);
         this.runs.TryAdd(run.Id, run);
         this.AdvanceVersion();
-        await this.persistence.DeleteRun(record.RunId, CancellationToken.None);
+        await this.persistence.UpsertRun(this.CreatePersistenceRecord(run), CancellationToken.None);
+        await this.TryPurgeFinalRunIfChildrenGone(run, CancellationToken.None);
     }
 
     private async Task<WorkflowRunCompletion> RunExecution(
@@ -507,18 +516,25 @@ internal sealed class WorkflowRuntime
                     this.createSession(run.RequestContext),
                     this.getAuthoritativeWorker,
                     CancellationToken.None);
-                if (workflow.Definition.Coordination.IsDurable)
-                {
-                    await this.persistence.DeleteRun(run.Id, CancellationToken.None);
-                }
             }
 
+            var shouldPersistFinalState = workflow.Definition.Coordination.IsDurable &&
+                ShouldPersistFinalState(completion, control);
             if (completion.IsFinal)
             {
                 run.TrySetCompletion(completion);
+                if (shouldPersistFinalState)
+                {
+                    await this.persistence.UpsertRun(this.CreatePersistenceRecord(run), CancellationToken.None);
+                }
             }
 
             this.workflowEvents.Completion(completion);
+            if (completion.IsFinal && shouldPersistFinalState)
+            {
+                await this.TryPurgeFinalRunIfChildrenGone(run, CancellationToken.None);
+            }
+
             return completion;
         }
         catch (OperationCanceledException) when (control.Token.IsCancellationRequested)
@@ -533,14 +549,21 @@ internal sealed class WorkflowRuntime
                         this.createSession(run.RequestContext),
                         this.getAuthoritativeWorker,
                         CancellationToken.None);
-                    if (workflow.Definition.Coordination.IsDurable)
-                    {
-                        await this.persistence.DeleteRun(run.Id, CancellationToken.None);
-                    }
                 }
 
                 run.TrySetCompletion(completion);
+                if (workflow.Definition.Coordination.IsDurable &&
+                    ShouldPersistFinalState(completion, control))
+                {
+                    await this.persistence.UpsertRun(this.CreatePersistenceRecord(run), CancellationToken.None);
+                }
+
                 this.workflowEvents.Completion(completion);
+                if (ShouldPersistFinalState(completion, control))
+                {
+                    await this.TryPurgeFinalRunIfChildrenGone(run, CancellationToken.None);
+                }
+
                 return completion;
             }
 
@@ -566,7 +589,13 @@ internal sealed class WorkflowRuntime
                     exception.Message,
                     "workflow.execution")]);
             run.TrySetCompletion(completion);
+            if (workflow.Definition.Coordination.IsDurable)
+            {
+                await this.persistence.UpsertRun(this.CreatePersistenceRecord(run), CancellationToken.None);
+            }
+
             this.workflowEvents.Completion(completion);
+            await this.TryPurgeFinalRunIfChildrenGone(run, CancellationToken.None);
             return completion;
         }
         finally
@@ -712,6 +741,82 @@ internal sealed class WorkflowRuntime
     private void AdvanceVersion()
         => Interlocked.Increment(ref this.version);
 
+    internal async Task ObserveFinalWorkflowChild(
+        WorkerSnapshot worker,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(worker);
+
+        if (!TryGetWorkflowIdentifiers(worker, out var runId, out var stepName) ||
+            !this.runs.TryGetValue(runId, out var run))
+        {
+            return;
+        }
+
+        var completionStatus = WorkerStateMachine.CompletionStatusFor(worker.State);
+        if (completionStatus == WorkCompletionStatus.Invalid)
+        {
+            return;
+        }
+
+        var receipt = new WorkflowChildReceipt(
+            worker.Id,
+            stepName,
+            worker.DefinitionName,
+            worker.State,
+            worker.StateChangedAt,
+            worker.Messages,
+            worker.Output);
+        if (!run.RecordChildReceipt(receipt))
+        {
+            return;
+        }
+
+        if (this.catalog.TryGet(run.DefinitionName, out var workflow) &&
+            workflow.Definition.Coordination.IsDurable)
+        {
+            await this.persistence.UpsertRun(this.CreatePersistenceRecord(run), cancellationToken);
+        }
+
+        this.workflowEvents.StepUpdated(run.ToSnapshot(), stepName);
+    }
+
+    internal bool ShouldKeepWorkflowChildWorker(WorkerSnapshot worker)
+    {
+        ArgumentNullException.ThrowIfNull(worker);
+
+        if (!TryGetWorkflowIdentifiers(worker, out var runId, out _) ||
+            !this.runs.TryGetValue(runId, out var run))
+        {
+            return false;
+        }
+
+        var status = run.GetStatus();
+        if (IsFinal(status))
+        {
+            return false;
+        }
+
+        return !run.TryGetChildReceipt(worker.Id, out var receipt) ||
+            receipt?.CompletionStatus != WorkCompletionStatus.Completed;
+    }
+
+    internal async Task ObservePurgedWorkflowChild(
+        WorkerSnapshot worker,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(worker);
+
+        if (!TryGetWorkflowIdentifiers(worker, out var runId, out _) ||
+            !this.runs.TryGetValue(runId, out var run) ||
+            !IsFinal(run.GetStatus()))
+        {
+            return;
+        }
+
+        await this.TryPurgeFinalRunIfChildrenGone(run, cancellationToken, worker.Id);
+    }
+
     private async Task<WorkerSnapshot?> GetCompletedWorkerSnapshot(
         WorkerId workerId,
         CancellationToken cancellationToken)
@@ -727,8 +832,91 @@ internal sealed class WorkflowRuntime
     private static bool IsFinal(WorkflowRunStatus status)
         => status is WorkflowRunStatus.Completed or WorkflowRunStatus.Failed or WorkflowRunStatus.Canceled;
 
+    private async Task TryPurgeFinalRunIfChildrenGone(
+        WorkflowRunState run,
+        CancellationToken cancellationToken,
+        WorkerId? justPurgedWorkerId = null)
+    {
+        if (!IsFinal(run.GetStatus()))
+        {
+            return;
+        }
+
+        var workerIds = run.GetAllWorkerIds();
+        IWorkSystemSession? session = null;
+        if (this.getAuthoritativeWorker is null)
+        {
+            try
+            {
+                session = this.createSession(WorkRequestContext.Create(WorkInvocationChannel.InProcess));
+            }
+            catch (NotSupportedException)
+            {
+                return;
+            }
+        }
+
+        foreach (var workerId in workerIds)
+        {
+            var snapshot = this.getAuthoritativeWorker is not null
+                ? await this.getAuthoritativeWorker(workerId, cancellationToken)
+                : await session!.Query.Worker(workerId, cancellationToken);
+            if (snapshot is not null)
+            {
+                return;
+            }
+
+            if (justPurgedWorkerId != workerId &&
+                await this.persistence.DurableWorkerExists(workerId, cancellationToken))
+            {
+                return;
+            }
+        }
+
+        if (this.runs.TryRemove(run.Id, out _))
+        {
+            this.AdvanceVersion();
+        }
+        if (this.catalog.TryGet(run.DefinitionName, out var workflow) &&
+            workflow.Definition.Coordination.IsDurable)
+        {
+            await this.persistence.DeleteRun(run.Id, cancellationToken);
+        }
+    }
+
     private static bool HasFailedIteration(WorkerSnapshot worker)
         => worker.Iterations.Any(iteration => iteration.Status == WorkCompletionStatus.Failed);
+
+    private static bool ShouldPersistFinalState(
+        WorkflowRunCompletion completion,
+        WorkflowExecutionControl control)
+        => completion.Status switch
+        {
+            WorkflowRunStatus.Canceled => control.CancelRequested,
+            WorkflowRunStatus.Completed => true,
+            WorkflowRunStatus.Failed => true,
+            _ => false,
+        };
+
+    private static bool TryGetWorkflowIdentifiers(
+        WorkerSnapshot worker,
+        out WorkflowRunId runId,
+        out string stepName)
+    {
+        var workflowRunIdentifier = worker.Identifiers.FirstOrDefault(identifier => identifier.Type == "workflow-run");
+        var workflowStepIdentifier = worker.Identifiers.FirstOrDefault(identifier => identifier.Type == "workflow-step");
+        if (!Guid.TryParse(workflowRunIdentifier.Value, out var parsedRunId) ||
+            string.IsNullOrWhiteSpace(workflowStepIdentifier.Value))
+        {
+            runId = default;
+            stepName = string.Empty;
+            return false;
+        }
+
+        runId = new WorkflowRunId(parsedRunId);
+        stepName = workflowStepIdentifier.Value;
+        return true;
+    }
 
     private bool CanOperate(WorkflowDefinition definition, WorkRequestContext requestContext)
     {

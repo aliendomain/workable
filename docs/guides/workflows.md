@@ -83,6 +83,7 @@ Durable workflows:
 - persist the latest workflow-run snapshot through `IWorkPersistenceStore`
 - upgrade child dispatches to durable queueing so replay can reconnect child workers to the workflow run
 - persist workflow-run step transitions and durable child-worker enqueue in one store-defined transaction at each durable dispatch boundary
+- persist retained child completion receipts on the workflow run so joins and operator views do not depend on completed child workers remaining queryable forever
 - persist accepted workflow pause and cancel requests on the workflow-run snapshot before acknowledging them
 - scan for incomplete runs for that named system when the system starts and resume them from the persisted step state
 
@@ -121,7 +122,7 @@ A parallel section contains child `DispatchWork(...)` steps.
 
 `Join(stepName)` waits for earlier dispatched child work to settle.
 
-If any outstanding child worker completes unsuccessfully, the join step completes as blocked. When the blocked child was a failed worker and that worker is later restarted and completes successfully, Workable resumes the workflow automatically.
+If any outstanding child worker completes unsuccessfully, the join step completes as blocked. When the blocked child was a failed worker and that worker is later restarted and completes successfully, Workable resumes the workflow automatically. When a completed child worker has already been purged, joins use the workflow's retained child completion receipt.
 
 ## Execution Semantics
 
@@ -153,6 +154,8 @@ In that workflow:
 - `j2` waits for `d`
 
 If a child worker completes as failed, canceled, paused, or interrupted, the workflow run completes as `Blocked`. A blocked workflow run can always be started again manually. It also resumes automatically when its outstanding failed child workers are restarted and later complete successfully.
+
+Completed child workers and completed workflow runs have separate retention lifetimes. Workable records the child completion receipt on the workflow run before later cleanup depends on it, so worker retention can stay aggressive without breaking joins or workflow status views.
 
 ## Authorization
 
@@ -188,9 +191,11 @@ Stopping the process clears:
 - active non-durable workflow run state
 - historical non-durable workflow run snapshots
 
-Durable workflows persist run state through `IWorkPersistenceStore`. On startup, Workable lists incomplete durable workflow runs for the same named system, rehydrates them into memory, resumes waiting joins or trailing child-work completion from the persisted step snapshots, and auto-resumes recovered blocked runs when their outstanding failed child workers have already been corrected successfully.
+Durable workflows persist run state and retained child completion receipts through `IWorkPersistenceStore`. On startup, Workable lists durable workflow runs for the same named system, rehydrates the runs that still have retained lifetime, resumes waiting joins or trailing child-work completion from the persisted step snapshots, and auto-resumes recovered blocked runs when their outstanding failed child workers have already been corrected successfully.
 
 Accepted pause and cancel requests on durable workflows are stored on the persisted run snapshot. If a process recycles after the action is accepted but before the execution loop observes it, recovery reapplies the stored control request before workflow execution resumes.
+
+Final workflow runs remain visible while their child workers are still retained. Once the last child worker for that final run is purged, Workable removes the workflow run too. Durable providers keep the persisted workflow row for that same lifetime and delete it when the final run no longer has any retained child workers.
 
 ## Workflow Run Lifecycle
 
@@ -235,6 +240,8 @@ The workflow run detail view includes:
 - child-worker summaries and compact child-worker samples per node
 
 Parallel child step nodes are reconstructed from the workflow definition and the child workers' `workflow-step` identifiers. That keeps the detail view aligned with the authored workflow shape while still using the authoritative child worker state at read time.
+
+When a completed child worker has already been purged, the workflow views continue to show its resolved state from the retained child completion receipt.
 
 `currentStepName` and `currentStepStatus` identify the first active top-level workflow node in registration order. A parallel node can remain active while a later join node is also waiting on the same child workers.
 

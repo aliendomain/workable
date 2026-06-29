@@ -60,6 +60,13 @@ internal static class WorkflowExecutionSupport
             .WithIdentifier(new WorkIdentifier("workflow-definition", workflowDefinitionName))
             .WithIdentifier(new WorkIdentifier("workflow-step", stepName));
 
+    public static WorkCompletion FromReceipt(WorkflowChildReceipt receipt)
+        => new(
+            receipt.CompletionStatus,
+            Worker: null,
+            receipt.Output,
+            receipt.Messages);
+
     public static async Task CancelOutstandingChildren(
         WorkflowRunState run,
         IWorkSystemSession session,

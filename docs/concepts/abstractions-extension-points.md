@@ -33,7 +33,7 @@ The same interface also carries the workflow-oriented persistence protocol:
 
 1. `InitializeWorkflows(...)`
 2. `BeginWorkflowTransaction(...)`
-3. `ListIncompleteWorkflowRuns(...)`
+3. `ListWorkflowRuns(...)`
 4. `UpsertWorkflowRun(...)`
 5. `DeleteWorkflowRun(...)`
 
@@ -59,9 +59,9 @@ At a practical level, a provider is responsible for:
 - deleting final durable entries, with or without a caller-owned durability transaction
 - initializing workflow persistence for one system
 - beginning workflow persistence transactions that can also be passed through worker queue durability options
-- listing incomplete durable workflow runs for resume
+- listing durable workflow runs that should be materialized during startup
 - storing the latest workflow-run snapshot
-- deleting persisted workflow runs after final completion
+- deleting persisted workflow runs after their retained final lifetime ends
 
 `WorkQueueDurabilityInitializationContext` is worth noticing because Workable hands the provider the system id, optional name, and current definitions. That is the provider's chance to prepare tables, validate schema, or align definition metadata before queue traffic begins.
 
@@ -87,7 +87,7 @@ The durability-related record types all describe one coherent protocol:
 
 `WorkQueueDurabilityEntry` is the payload that comes back from `ClaimReady(...)`. It carries the lease plus the definition name, input, options, configuration, origin, and creation time needed to materialize work back into memory.
 
-`WorkflowRunPersistenceRecord` is the workflow-side snapshot payload. It carries the run id, workflow definition version and name, request context, workflow status, persisted step snapshots, timestamps, workflow messages, and the workflow persistence scope for the run.
+`WorkflowRunPersistenceRecord` is the workflow-side snapshot payload. It carries the run id, workflow definition version and name, request context, workflow status, persisted step snapshots, timestamps, workflow messages, retained child completion receipts, and the workflow persistence scope for the run.
 
 `IWorkflowPersistenceTransaction` extends `IWorkQueueDurabilityTransaction`, which lets one store-defined transaction span workflow-run persistence and durable child-worker enqueue.
 

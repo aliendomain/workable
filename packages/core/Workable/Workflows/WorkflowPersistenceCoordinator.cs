@@ -34,9 +34,9 @@ internal sealed class WorkflowPersistenceCoordinator(
             ?? Task.CompletedTask;
     }
 
-    public IAsyncEnumerable<WorkflowRunPersistenceRecord> ListIncompleteRuns(CancellationToken cancellationToken)
+    public IAsyncEnumerable<WorkflowRunPersistenceRecord> ListRuns(CancellationToken cancellationToken)
         => this.store is not null && !string.IsNullOrWhiteSpace(this.workSystemName)
-            ? this.store.ListIncompleteWorkflowRuns(
+            ? this.store.ListWorkflowRuns(
                 new WorkflowPersistenceReadRequest(this.workSystemName),
                 cancellationToken)
             : Empty();

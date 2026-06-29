@@ -1,6 +1,6 @@
 # Retention Configuration
 
-Retention configuration controls how many final workers Workable keeps available after completion or cancellation, and how long those final workers may stay available.
+Retention configuration controls how many final workers Workable keeps available after completion or cancellation, and how long those worker records may stay available.
 
 For configuration source order, precedence, and override rules that apply to every configuration facet, see [Work Configuration](README.md).
 
@@ -84,4 +84,5 @@ var outcome = await system.Workers.Reconfigure(
 ## Related Interactions
 
 - [Retention And Failure](interactions.md#retention-and-failure): failed and interrupted workers are not final and are not automatically purged by final-worker retention.
+- Durable workflows retain child completion receipts on the workflow run, so completed child workers can be purged without breaking later joins or workflow status views.
 - [System Settings](system-settings.md): system-wide limits include admission capacity for non-final workers and a retained final-worker cap.

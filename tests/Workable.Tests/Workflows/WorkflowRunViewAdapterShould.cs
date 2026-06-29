@@ -144,12 +144,21 @@ public sealed class WorkflowRunViewAdapterShould
     public async Task HideUnreadableWorkflowRuns()
     {
         var services = new ServiceCollection();
+        services.AddSingleton<IWorkAuthorizationGroupProvider>(
+            new TestGroupProvider(new Dictionary<string, IReadOnlySet<string>>
+            {
+                ["workflow-user"] = Groups("workflow.read", "workflow.ops"),
+            }));
         services.AddWorkableSystem(builder =>
         {
             builder.RequireAuthorization(true);
+            builder.ConfigureAuthorization(auth => auth
+                .AllowReadAllWorkToGroups("workflow.read")
+                .AllowOperateAllWorkToGroups("workflow.ops"));
             builder.AddWork(
                 WorkDefinition.Create("workflow.operator.secured.child"),
-                (_, _, _) => Task.FromResult(WorkExecutionResult.Success()));
+                (_, _, _) => Task.FromResult(WorkExecutionResult.Success()),
+                configuration => configuration.DoNotStart());
             builder.AddWorkflow(
                 WorkflowDefinition.Create("workflow.operator.secured"),
                 workflow => workflow.DispatchWork("dispatch", "workflow.operator.secured.child"),
@@ -167,7 +176,10 @@ public sealed class WorkflowRunViewAdapterShould
         var readContext = CreateContext(actor, "workflow.read");
         var hiddenContext = CreateContext(actor);
         var handle = system.WorkflowRuntime.Start("workflow.operator.secured", startContext);
-        await handle.WaitForCompletion();
+        await TestEventually.Until(
+            () => system.WorkflowRuntime.Get(handle.RunId!.Value)?.Steps.Single(step => step.Name == "dispatch").WorkerIds.Count == 1,
+            "Expected the secured workflow to dispatch its child before querying visibility.",
+            timeout: TimeSpan.FromSeconds(5));
 
         var visibleRuns = await new WorkflowRunViewAdapter().Runs(
             system,
@@ -185,10 +197,14 @@ public sealed class WorkflowRunViewAdapterShould
         Assert.Single(visibleRuns.Runs);
         Assert.Empty(hiddenRuns.Runs);
         Assert.Null(hiddenDetail);
+
+        var cancel = await system.WorkflowRuntime.Execute(handle.RunId!.Value, WorkflowAction.Cancel, startContext);
+        Assert.True(cancel.IsAccepted);
+        await handle.WaitForCompletion();
     }
 
     [Fact]
-    public async Task ReportUnavailableChildrenWhenWorkersHaveBeenPurged()
+    public async Task RemoveFinalWorkflowRunWhenItsLastChildWorkerIsPurged()
     {
         var services = new ServiceCollection();
         services.AddWorkableSystem(builder =>
@@ -224,12 +240,7 @@ public sealed class WorkflowRunViewAdapterShould
             WorkRequestContext.Create(WorkInvocationChannel.InProcess),
             handle.RunId!.Value);
 
-        Assert.NotNull(detail);
-        var dispatch = Assert.Single(detail!.Steps, step => step.Name == "dispatch");
-        Assert.Equal(WorkflowOperatorNodeStatus.Completed, dispatch.Status);
-        Assert.Equal(1, dispatch.Children.Total);
-        Assert.Equal(1, dispatch.Children.Unavailable);
-        Assert.Empty(dispatch.ChildSample);
+        Assert.Null(detail);
     }
 
     [Fact]
@@ -317,4 +328,13 @@ public sealed class WorkflowRunViewAdapterShould
 
     private static IReadOnlySet<string> Groups(params string[] groups)
         => new HashSet<string>(groups, StringComparer.OrdinalIgnoreCase);
+
+    private sealed class TestGroupProvider(IReadOnlyDictionary<string, IReadOnlySet<string>> groupsByActor)
+        : IWorkAuthorizationGroupProvider
+    {
+        public IReadOnlySet<string> GetGroups(WorkActor actor, string? systemName)
+            => groupsByActor.TryGetValue(actor.Id ?? string.Empty, out var groups)
+                ? groups
+                : new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+    }
 }

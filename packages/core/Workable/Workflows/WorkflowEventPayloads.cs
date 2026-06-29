@@ -75,7 +75,10 @@ internal static class WorkflowEventPayloads
                     case WorkflowStepKind.Parallel:
                         if (step.Status == WorkflowStepRunStatus.Completed)
                         {
-                            outstanding += step.WorkerIds.Count;
+                            outstanding += step.WorkerIds.Count(workerId =>
+                                !run.ChildReceipts.Any(receipt =>
+                                    receipt.WorkerId == workerId &&
+                                    receipt.CompletionStatus == WorkCompletionStatus.Completed));
                         }
 
                         break;
@@ -86,7 +89,10 @@ internal static class WorkflowEventPayloads
                         }
                         else if (step.Status == WorkflowStepRunStatus.Running && step.WorkerIds.Count > 0)
                         {
-                            outstanding = step.WorkerIds.Count;
+                            outstanding = step.WorkerIds.Count(workerId =>
+                                !run.ChildReceipts.Any(receipt =>
+                                    receipt.WorkerId == workerId &&
+                                    receipt.CompletionStatus == WorkCompletionStatus.Completed));
                         }
 
                         break;

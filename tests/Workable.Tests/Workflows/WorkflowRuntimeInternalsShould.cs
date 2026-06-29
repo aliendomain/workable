@@ -144,7 +144,7 @@ public sealed class WorkflowRuntimeInternalsShould
             ?? throw new InvalidOperationException("Expected failed workflow snapshot.");
 
         Assert.Contains(snapshot.Messages, message => message.Code == "workable.workflow.definition_mismatch");
-        Assert.Equal([persistedRun.RunId], store.DeletedRuns);
+        Assert.Empty(store.DeletedRuns);
     }
 
     [Fact]
@@ -178,7 +178,7 @@ public sealed class WorkflowRuntimeInternalsShould
         await TestEventually.Until(
             () => runtime.Get(persistedRun.RunId)?.Status == WorkflowRunStatus.Completed,
             "Expected the recovered durable workflow run to resume and complete with a real session.");
-        Assert.Equal([persistedRun.RunId], store.DeletedRuns);
+        Assert.Empty(store.DeletedRuns);
     }
 
     [Fact]
@@ -219,7 +219,7 @@ public sealed class WorkflowRuntimeInternalsShould
 
         Assert.Contains(workerOperations.Executions, execution =>
             execution.WorkerId == workerId && execution.Action == WorkAction.Cancel);
-        Assert.Equal([persistedRun.RunId], store.DeletedRuns);
+        Assert.Empty(store.DeletedRuns);
     }
 
     [Fact]
@@ -271,6 +271,7 @@ public sealed class WorkflowRuntimeInternalsShould
             DateTimeOffset.UtcNow,
             DateTimeOffset.UtcNow,
             null,
+            [],
             [],
             WorkflowDefinitionFingerprint.Create(workflow),
             WorkflowAction.Pause.ToString());
@@ -569,6 +570,7 @@ public sealed class WorkflowRuntimeInternalsShould
             DateTimeOffset.UtcNow,
             null,
             [],
+            [],
             WorkflowDefinitionFingerprint.Create(workflow),
             pendingControlAction);
     }
@@ -806,7 +808,7 @@ public sealed class WorkflowRuntimeInternalsShould
             CancellationToken cancellationToken = default)
             => Task.FromResult<IWorkflowPersistenceTransaction>(new RawWorkflowTransaction());
 
-        public async IAsyncEnumerable<WorkflowRunPersistenceRecord> ListIncompleteWorkflowRuns(
+        public async IAsyncEnumerable<WorkflowRunPersistenceRecord> ListWorkflowRuns(
             WorkflowPersistenceReadRequest request,
             [EnumeratorCancellation] CancellationToken cancellationToken = default)
         {

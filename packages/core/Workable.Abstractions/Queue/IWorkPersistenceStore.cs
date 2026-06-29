@@ -106,12 +106,12 @@ public interface IWorkPersistenceStore
             new InvalidOperationException("This persistence store does not support workflow persistence transactions."));
 
     /// <summary>
-    /// Lists durable workflow runs that were not final when the system last stopped.
+    /// Lists durable workflow runs that should be materialized for one system during startup.
     /// </summary>
     /// <param name="request">The read request describing the target system.</param>
     /// <param name="cancellationToken">A token that cancels the read operation.</param>
-    /// <returns>The durable workflow runs that should be resumed.</returns>
-    IAsyncEnumerable<WorkflowRunPersistenceRecord> ListIncompleteWorkflowRuns(
+    /// <returns>The durable workflow runs that should be materialized.</returns>
+    IAsyncEnumerable<WorkflowRunPersistenceRecord> ListWorkflowRuns(
         WorkflowPersistenceReadRequest request,
         CancellationToken cancellationToken = default)
         => EmptyWorkflowRuns();
@@ -345,6 +345,7 @@ public sealed record WorkQueueDurabilityCleanupRequest(
 /// <param name="StartedAt">The time the workflow run started executing, when one exists.</param>
 /// <param name="CompletedAt">The time the workflow run reached a final state, when one exists.</param>
 /// <param name="Messages">The current workflow run messages.</param>
+/// <param name="ChildReceipts">The retained child completion receipts captured for the workflow run.</param>
 public sealed record WorkflowRunPersistenceRecord(
     string? WorkSystemName,
     WorkflowRunId RunId,
@@ -357,6 +358,7 @@ public sealed record WorkflowRunPersistenceRecord(
     DateTimeOffset? StartedAt,
     DateTimeOffset? CompletedAt,
     IReadOnlyList<WorkMessage> Messages,
+    IReadOnlyList<WorkflowChildReceipt> ChildReceipts,
     string DefinitionFingerprint = "",
     string? PendingControlAction = null)
 {
@@ -392,7 +394,7 @@ public sealed record WorkflowStepPersistenceRecord(
     IReadOnlyList<WorkMessage> Messages);
 
 /// <summary>
-/// Represents a request to read incomplete durable workflow runs for one system.
+/// Represents a request to read durable workflow runs for one system during startup materialization.
 /// </summary>
 /// <param name="WorkSystemName">The configured system name.</param>
 public sealed record WorkflowPersistenceReadRequest(

@@ -124,7 +124,7 @@ SET NUMERIC_ROUNDABORT OFF;
                 }
             });
 
-    public async IAsyncEnumerable<WorkflowRunPersistenceRecord> ListIncompleteWorkflowRuns(
+    public async IAsyncEnumerable<WorkflowRunPersistenceRecord> ListWorkflowRuns(
         WorkflowPersistenceReadRequest request,
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
@@ -145,6 +145,7 @@ SELECT WorkSystemName,
        RequestContextJson,
        Status,
        StepsJson,
+       ChildReceiptsJson,
        PendingControlAction,
        CreatedAt,
        StartedAt,
@@ -152,11 +153,9 @@ SELECT WorkSystemName,
        MessagesJson
 FROM {this.workflowRunsTable}
 WHERE PersistenceScope = @PersistenceScope
-  AND Status = @RunningStatus
 ORDER BY CreatedAt, RunId;
 """;
                 Add(command, "@PersistenceScope", request.PersistenceScope);
-                Add(command, "@RunningStatus", WorkflowRunStatus.Running.ToString());
 
                 var runs = new List<WorkflowRunPersistenceRecord>();
                 await using var reader = await command.ExecuteReaderAsync(cancellationToken);
@@ -172,12 +171,13 @@ ORDER BY CreatedAt, RunId;
                         DeserializeRequestContext(reader, 6),
                         Enum.Parse<WorkflowRunStatus>(reader.GetString(7), ignoreCase: false),
                         Deserialize<WorkflowStepPersistenceRecord[]>(reader, 8) ?? [],
-                        reader.GetFieldValue<DateTimeOffset>(10),
-                        reader.IsDBNull(11) ? null : reader.GetFieldValue<DateTimeOffset>(11),
+                        reader.GetFieldValue<DateTimeOffset>(11),
                         reader.IsDBNull(12) ? null : reader.GetFieldValue<DateTimeOffset>(12),
-                        Deserialize<WorkMessage[]>(reader, 13) ?? [],
+                        reader.IsDBNull(13) ? null : reader.GetFieldValue<DateTimeOffset>(13),
+                        Deserialize<WorkMessage[]>(reader, 14) ?? [],
+                        Deserialize<WorkflowChildReceipt[]>(reader, 9) ?? [],
                         reader.GetString(5),
-                        reader.IsDBNull(9) ? null : reader.GetString(9)));
+                        reader.IsDBNull(10) ? null : reader.GetString(10)));
                 }
 
                 return runs;
@@ -835,6 +835,7 @@ USING
         @Status AS Status,
         @StepsJson AS StepsJson,
         @MessagesJson AS MessagesJson,
+        @ChildReceiptsJson AS ChildReceiptsJson,
         @PendingControlAction AS PendingControlAction,
         @CreatedAt AS CreatedAt,
         @StartedAt AS StartedAt,
@@ -854,6 +855,7 @@ WHEN MATCHED THEN
         Status = source.Status,
         StepsJson = source.StepsJson,
         MessagesJson = source.MessagesJson,
+        ChildReceiptsJson = source.ChildReceiptsJson,
         PendingControlAction = source.PendingControlAction,
         CreatedAt = source.CreatedAt,
         StartedAt = source.StartedAt,
@@ -873,6 +875,7 @@ WHEN NOT MATCHED THEN
         Status,
         StepsJson,
         MessagesJson,
+        ChildReceiptsJson,
         PendingControlAction,
         CreatedAt,
         StartedAt,
@@ -892,6 +895,7 @@ WHEN NOT MATCHED THEN
         source.Status,
         source.StepsJson,
         source.MessagesJson,
+        source.ChildReceiptsJson,
         source.PendingControlAction,
         source.CreatedAt,
         source.StartedAt,
@@ -910,6 +914,7 @@ WHEN NOT MATCHED THEN
         Add(command, "@Status", run.Status.ToString());
         Add(command, "@StepsJson", Serialize(run.Steps));
         Add(command, "@MessagesJson", Serialize(run.Messages));
+        Add(command, "@ChildReceiptsJson", Serialize(run.ChildReceipts));
         Add(command, "@PendingControlAction", run.PendingControlAction);
         Add(command, "@CreatedAt", run.CreatedAt);
         Add(command, "@StartedAt", run.StartedAt);

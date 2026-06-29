@@ -114,6 +114,7 @@ internal sealed class DurableWorkflowExecutor(
             }
 
             var trailingCompletion = await this.WaitForOutstandingWorkers(
+                run,
                 session,
                 run.GetOutstandingWorkerIds(),
                 cancellationToken);
@@ -125,7 +126,6 @@ internal sealed class DurableWorkflowExecutor(
             }
 
             var success = run.Complete();
-            await persistence.DeleteRun(run.Id, CancellationToken.None);
             return success;
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -285,7 +285,7 @@ internal sealed class DurableWorkflowExecutor(
         while (outstanding.Count > 0)
         {
             var workerId = outstanding[0];
-            var completion = await this.WaitForWorkerCompletion(session, workerId, cancellationToken);
+            var completion = await this.WaitForWorkerCompletion(run, session, workerId, cancellationToken);
             if (!completion.IsCompletedSuccessfully)
             {
                 return new WorkflowRunCompletion(
@@ -305,13 +305,14 @@ internal sealed class DurableWorkflowExecutor(
     }
 
     private async Task<WorkflowRunCompletion> WaitForOutstandingWorkers(
+        WorkflowRunState run,
         IWorkSystemSession session,
         IReadOnlyList<WorkerId> workerIds,
         CancellationToken cancellationToken)
     {
         foreach (var workerId in workerIds.Distinct())
         {
-            var completion = await this.WaitForWorkerCompletion(session, workerId, cancellationToken);
+            var completion = await this.WaitForWorkerCompletion(run, session, workerId, cancellationToken);
             if (!completion.IsCompletedSuccessfully)
             {
                 return new WorkflowRunCompletion(
@@ -325,10 +326,17 @@ internal sealed class DurableWorkflowExecutor(
     }
 
     private async Task<WorkCompletion> WaitForWorkerCompletion(
+        WorkflowRunState run,
         IWorkSystemSession session,
         WorkerId workerId,
         CancellationToken cancellationToken)
     {
+        if (run.TryGetChildReceipt(workerId, out var receipt) &&
+            receipt is not null)
+        {
+            return WorkflowExecutionSupport.FromReceipt(receipt);
+        }
+
         var snapshot = getAuthoritativeWorker is not null
             ? await getAuthoritativeWorker(workerId, cancellationToken)
             : await session.Query.Worker(workerId, cancellationToken);
@@ -405,7 +413,7 @@ internal sealed class DurableWorkflowExecutor(
         CancellationToken cancellationToken)
     {
         var failure = run.Fail(messages);
-        await persistence.DeleteRun(run.Id, CancellationToken.None);
+        await persistence.UpsertRun(this.CreatePersistenceRecord(run), cancellationToken);
         return failure;
     }
 

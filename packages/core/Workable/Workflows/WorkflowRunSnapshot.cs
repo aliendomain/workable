@@ -8,7 +8,8 @@ internal sealed record WorkflowRunSnapshot(
     DateTimeOffset CreatedAt,
     DateTimeOffset? StartedAt,
     DateTimeOffset? CompletedAt,
-    IReadOnlyList<WorkMessage> Messages);
+    IReadOnlyList<WorkMessage> Messages,
+    IReadOnlyList<WorkflowChildReceipt> ChildReceipts);
 
 internal sealed record WorkflowStepRunSnapshot(
     string Name,

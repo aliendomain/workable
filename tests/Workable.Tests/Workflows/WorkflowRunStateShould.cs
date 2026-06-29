@@ -83,6 +83,7 @@ public sealed class WorkflowRunStateShould
             DateTimeOffset.UtcNow.AddMinutes(-3),
             DateTimeOffset.UtcNow.AddMinutes(-2),
             null,
+            [],
             []);
 
         var run = WorkflowRunState.Rehydrate(workflow, record);
@@ -126,6 +127,7 @@ public sealed class WorkflowRunStateShould
             DateTimeOffset.UtcNow.AddMinutes(-2),
             DateTimeOffset.UtcNow.AddMinutes(-1),
             null,
+            [],
             []);
 
         var run = WorkflowRunState.Rehydrate(workflow, record);
@@ -169,6 +171,39 @@ public sealed class WorkflowRunStateShould
 
         Assert.Equal(WorkflowAction.Pause.ToString(), persisted.PendingControlAction);
         Assert.Equal(WorkflowAction.Pause, rehydrated.GetPendingControlAction());
+    }
+
+    [Fact]
+    public void PersistAndRehydrateChildReceipts()
+    {
+        var definition = WorkflowDefinition.Create(
+            "workflow.child-receipts",
+            coordination: WorkflowCoordinationConfiguration.Durable);
+        var workflow = CreateWorkflow(
+            definition,
+            new DispatchWorkflowStepDefinition("dispatch", "sample.dispatch"),
+            new JoinWorkflowStepDefinition("join"));
+        var run = WorkflowRunState.Create(workflow, WorkRequestContext.Create(WorkInvocationChannel.InProcess));
+        var workerId = WorkerId.New();
+
+        run.MarkStepCompleted("dispatch", [workerId]);
+        Assert.True(run.RecordChildReceipt(new WorkflowChildReceipt(
+            workerId,
+            "dispatch",
+            "sample.dispatch",
+            WorkerState.Completed,
+            DateTimeOffset.UtcNow,
+            [WorkMessage.Info("workflow.child.completed", "Child completed.")],
+            WorkOutput.Empty)));
+
+        var persisted = run.ToPersistenceRecord("workflow-tests");
+        var rehydrated = WorkflowRunState.Rehydrate(workflow, persisted);
+
+        var receipt = Assert.Single(rehydrated.GetChildReceipts());
+        Assert.Equal(workerId, receipt.WorkerId);
+        Assert.Equal("dispatch", receipt.StepName);
+        Assert.Equal("sample.dispatch", receipt.DefinitionName);
+        Assert.Equal(WorkCompletionStatus.Completed, receipt.CompletionStatus);
     }
 
     private static RegisteredWorkflow CreateWorkflow(

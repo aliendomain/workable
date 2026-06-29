@@ -49,7 +49,7 @@ public sealed class WorkflowPersistenceCoordinatorShould
     }
 
     [Fact]
-    public async Task ListIncompleteRunsForwardsTheSystemIdentity()
+    public async Task ListRunsForwardsTheSystemIdentity()
     {
         var store = new RecordingWorkflowPersistenceStore
         {
@@ -63,7 +63,7 @@ public sealed class WorkflowPersistenceCoordinatorShould
             "workflow-persistence-tests");
 
         var runs = new List<WorkflowRunPersistenceRecord>();
-        await foreach (var run in coordinator.ListIncompleteRuns(CancellationToken.None))
+        await foreach (var run in coordinator.ListRuns(CancellationToken.None))
         {
             runs.Add(run);
         }
@@ -91,14 +91,14 @@ public sealed class WorkflowPersistenceCoordinatorShould
     }
 
     [Fact]
-    public async Task ListIncompleteRunsWithoutStoreReturnsAnEmptySequence()
+    public async Task ListRunsWithoutStoreReturnsAnEmptySequence()
     {
         var coordinator = new WorkflowPersistenceCoordinator(
             store: null,
             "workflow-persistence-tests");
         var runs = new List<WorkflowRunPersistenceRecord>();
 
-        await foreach (var run in coordinator.ListIncompleteRuns(CancellationToken.None))
+        await foreach (var run in coordinator.ListRuns(CancellationToken.None))
         {
             runs.Add(run);
         }
@@ -257,6 +257,7 @@ public sealed class WorkflowPersistenceCoordinatorShould
             DateTimeOffset.UtcNow,
             DateTimeOffset.UtcNow,
             null,
+            [],
             []);
 
     private sealed class RecordingWorkflowPersistenceStore : IWorkPersistenceStore
@@ -335,7 +336,7 @@ public sealed class WorkflowPersistenceCoordinatorShould
             return Task.FromResult<IWorkflowPersistenceTransaction>(transaction);
         }
 
-        public async IAsyncEnumerable<WorkflowRunPersistenceRecord> ListIncompleteWorkflowRuns(
+        public async IAsyncEnumerable<WorkflowRunPersistenceRecord> ListWorkflowRuns(
             WorkflowPersistenceReadRequest request,
             [EnumeratorCancellation] CancellationToken cancellationToken = default)
         {

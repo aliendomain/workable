@@ -290,7 +290,7 @@ CREATE TABLE workable.WorkEntries
         Assert.Equal(WorkflowRunStatus.Completed.ToString(), WorkflowCompletionStatus(completion));
 
         await using var connection = await this.OpenConnection();
-        Assert.Equal(0, await Scalar<int>(connection, """
+        Assert.Equal(1, await Scalar<int>(connection, """
 SELECT COUNT(*)
 FROM workable.WorkflowRuns;
 """));
@@ -449,8 +449,8 @@ WHERE WorkSystemName = N'workflow-tests'
                 async () => await Scalar<int>(verification, """
 SELECT COUNT(*)
 FROM workable.WorkflowRuns;
-""") == 0,
-                "Expected recovered durable workflow runs to be deleted after completion.");
+""") == 1,
+                "Expected the recovered durable workflow run to remain persisted while its final child workers are still retained.");
             await TestEventually.Until(
                 async () => await Scalar<int>(verification, """
 SELECT COUNT(*)
@@ -765,7 +765,7 @@ WHERE WorkerId = '{remainingWorkerId.Value:D}';
         Assert.NotNull(detail);
         Assert.Equal("dispatch", detail!.CurrentStepName);
         Assert.Equal(1, detail.OutstandingChildren.Active);
-        Assert.Equal(1, detail.OutstandingChildren.Unavailable);
+        Assert.Equal(0, detail.OutstandingChildren.Unavailable);
         Assert.Equal(2, Assert.Single(detail.Steps, step => step.Name == "dispatch").Children.Total);
         Assert.Equal(1, Assert.Single(detail.Steps, step => step.Name == "join").Children.Total);
     }
@@ -787,7 +787,7 @@ WHERE WorkerId = '{remainingWorkerId.Value:D}';
 
         await store.UpsertWorkflowRun(run);
         var loaded = new List<WorkflowRunPersistenceRecord>();
-        await foreach (var item in store.ListIncompleteWorkflowRuns(
+        await foreach (var item in store.ListWorkflowRuns(
             new WorkflowPersistenceReadRequest("workflow-tests")))
         {
             loaded.Add(item);
@@ -802,6 +802,10 @@ WHERE WorkerId = '{remainingWorkerId.Value:D}';
         Assert.Equal(run.PendingControlAction, loaded[0].PendingControlAction);
         Assert.Equal(run.RequestContext.Actor.Id, loaded[0].RequestContext.Actor.Id);
         Assert.Equal(run.Steps.Single().WorkerIds, loaded[0].Steps.Single().WorkerIds);
+        Assert.Equal(run.ChildReceipts.Single().WorkerId, loaded[0].ChildReceipts.Single().WorkerId);
+        Assert.Equal(run.ChildReceipts.Single().StepName, loaded[0].ChildReceipts.Single().StepName);
+        Assert.Equal(run.ChildReceipts.Single().DefinitionName, loaded[0].ChildReceipts.Single().DefinitionName);
+        Assert.Equal(run.ChildReceipts.Single().CompletionStatus, loaded[0].ChildReceipts.Single().CompletionStatus);
 
         await using var connection = await this.OpenConnection();
         Assert.Equal(0, await Scalar<int>(connection, """
@@ -992,11 +996,13 @@ WHERE RunId = '{runId.Value:D}';
                 StringComparison.Ordinal));
 
         await using var connection = await this.OpenConnection();
-        Assert.Equal(0, await Scalar<int>(connection, $"""
+        Assert.Equal(1, await Scalar<int>(connection, $"""
 SELECT COUNT(*)
 FROM workable.WorkflowRuns
 WHERE RunId = '{runId.Value:D}';
 """));
+
+        await StopWithTimeout(secondSystem);
     }
 
     [Fact]
@@ -3477,6 +3483,16 @@ WHERE WorkerId = @WorkerId;
             DateTimeOffset.UtcNow,
             null,
             [],
+            [
+                new WorkflowChildReceipt(
+                    workerId,
+                    "dispatch",
+                    definitionName,
+                    WorkerState.Completed,
+                    DateTimeOffset.UtcNow,
+                    [WorkMessage.Info("workflow.child.completed", "Child completed.")],
+                    WorkOutput.Empty),
+            ],
             "sql-test-workflow-fingerprint",
             "Stop");
     }
