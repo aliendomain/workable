@@ -740,7 +740,10 @@ public sealed class WorkflowRuntimeShould
         Assert.Contains(
             completion.Messages,
             message => message.Code == "workable.workflow.execution_exception");
-        Assert.Contains(handle.RunId!.Value, store.DeletedWorkflowRuns);
+        await TestEventually.Until(
+            () => store.DeletedWorkflowRuns.Contains(handle.RunId!.Value),
+            "Expected the failed durable workflow run to be deleted after completion was observed.",
+            timeout: TimeSpan.FromSeconds(10));
     }
 
     [Fact]
@@ -1759,6 +1762,131 @@ public sealed class WorkflowRuntimeShould
         Assert.Equal(2, Volatile.Read(ref flakyRuns));
         Assert.Equal(1, Volatile.Read(ref finalRuns));
         Assert.Equal([failedWorkerId], completed!.Steps.Single(step => step.Name == "process").WorkerIds);
+        Assert.NotNull(store.GetWorkflowRun(handle.RunId!.Value));
+        Assert.DoesNotContain(handle.RunId.Value, store.DeletedWorkflowRuns);
+    }
+
+    [Fact]
+    public async Task AutoResumeBlockedDurableWorkflowWhenCompletedSiblingWasReceiptedAndPurged()
+    {
+        var store = new TestWorkflowPersistenceStore();
+        var flakyRuns = 0;
+        var finalRuns = 0;
+        var services = new ServiceCollection();
+
+        services.AddSingleton<IWorkPersistenceStore>(store);
+        services.AddWorkableSystem("workflow-tests", builder =>
+        {
+            builder.RequireAuthorization(false);
+            builder.AddWork(
+                WorkDefinition.Create("sample.auto.durable.retained"),
+                (_, _, _) => Task.FromResult(WorkExecutionResult.Success()),
+                configuration => configuration
+                    .QueueDurably(fallbackPollingInterval: TimeSpan.FromSeconds(1))
+                    .ConfigureRetention(purgeInterval: TimeSpan.FromMilliseconds(20), maximumFinalWorkers: 10));
+            builder.AddWork(
+                WorkDefinition.Create("sample.auto.durable.retained.flaky"),
+                (_, _, _) => Task.FromResult(
+                    Interlocked.Increment(ref flakyRuns) == 1
+                        ? WorkExecutionResult.Failure([WorkMessage.Error("sample.auto.durable.failed", "Child failed on the first attempt.")])
+                        : WorkExecutionResult.Success()),
+                configuration => configuration.QueueDurably(fallbackPollingInterval: TimeSpan.FromSeconds(1)));
+            builder.AddWork(
+                WorkDefinition.Create("sample.auto.durable.retained.final"),
+                (_, _, _) =>
+                {
+                    Interlocked.Increment(ref finalRuns);
+                    return Task.FromResult(WorkExecutionResult.Success());
+                },
+                configuration => configuration.QueueDurably(fallbackPollingInterval: TimeSpan.FromSeconds(1)));
+            builder.AddWorkflow(
+                WorkflowDefinition.Create(
+                    "workflow.auto.resume.durable.retained",
+                    coordination: WorkflowCoordinationConfiguration.Durable),
+                workflow => workflow
+                    .RunParallel("dispatch", parallel => parallel
+                        .DispatchWork("retained", Work("sample.auto.durable.retained"))
+                        .DispatchWork("flaky", Work("sample.auto.durable.retained.flaky")))
+                    .Join("join")
+                    .DispatchWork("finalize", Work("sample.auto.durable.retained.final")));
+        });
+
+        using var provider = services.BuildServiceProvider();
+        var system = GetNamedSystem(provider, "workflow-tests");
+        await system.Start();
+
+        var handle = system.WorkflowRuntime.Start(
+            "workflow.auto.resume.durable.retained",
+            WorkRequestContext.Create(WorkInvocationChannel.InProcess));
+
+        WorkflowRunSnapshot? blocked = null;
+        await TestEventually.Until(
+            () =>
+            {
+                blocked = system.WorkflowRuntime.Get(handle.RunId!.Value);
+                return blocked?.Status == WorkflowRunStatus.Blocked;
+            },
+            "Expected the durable workflow to block when one joined child failed.",
+            timeout: TimeSpan.FromSeconds(15));
+
+        var parallelWorkerIds = blocked!.Steps.Single(step => step.Name == "dispatch").WorkerIds;
+        Assert.Equal(2, parallelWorkerIds.Count);
+        var parallelWorkers = await Task.WhenAll(parallelWorkerIds.Select(workerId => system.Query.Worker(workerId)));
+        var retainedWorkerId = parallelWorkers.Single(worker =>
+            string.Equals(worker?.DefinitionName, "sample.auto.durable.retained", StringComparison.Ordinal))!.Id;
+        var failedWorkerId = parallelWorkers.Single(worker =>
+            string.Equals(worker?.DefinitionName, "sample.auto.durable.retained.flaky", StringComparison.Ordinal))!.Id;
+        await TestEventually.Until(
+            () =>
+            {
+                var snapshot = system.WorkflowRuntime.Get(handle.RunId!.Value);
+                return snapshot?.ChildReceipts.Any(receipt =>
+                    receipt.WorkerId == retainedWorkerId &&
+                    receipt.CompletionStatus == WorkCompletionStatus.Completed) == true;
+            },
+            "Expected the durable workflow to retain a completion receipt for the completed sibling.",
+            timeout: TimeSpan.FromSeconds(15));
+        await TestEventually.Until(
+            async () => await system.Query.Worker(retainedWorkerId) is null,
+            "Expected retention to purge the completed sibling worker while the workflow was blocked.",
+            timeout: TimeSpan.FromSeconds(15));
+
+        WorkerSnapshot? failedWorker = null;
+        await TestEventually.Until(
+            async () =>
+            {
+                failedWorker = await system.Query.Worker(failedWorkerId);
+                return failedWorker?.State == WorkerState.Failed;
+            },
+            "Expected the failed durable child worker to still be queryable in the failed state.",
+            timeout: TimeSpan.FromSeconds(15));
+
+        var restartedChild = await system.Workers.Execute(failedWorker!.Version, WorkAction.Start);
+        Assert.True(restartedChild.IsAccepted);
+        await TestEventually.Until(
+            async () =>
+            {
+                failedWorker = await system.Query.Worker(failedWorkerId);
+                return failedWorker?.State == WorkerState.Completed;
+            },
+            "Expected the failed durable child worker to complete successfully after restart.",
+            timeout: TimeSpan.FromSeconds(15));
+
+        WorkflowRunSnapshot? completed = null;
+        await TestEventually.Until(
+            () =>
+            {
+                completed = system.WorkflowRuntime.Get(handle.RunId!.Value);
+                return completed?.Status == WorkflowRunStatus.Completed;
+            },
+            "Expected the blocked durable workflow to auto-resume even after a completed sibling had already been purged.",
+            timeout: TimeSpan.FromSeconds(15));
+
+        var completion = await handle.WaitForCompletion().WaitAsync(TimeSpan.FromSeconds(2));
+        Assert.True(completion.IsCompletedSuccessfully);
+        Assert.Equal(WorkflowRunStatus.Completed, completion.Status);
+        Assert.Equal(2, Volatile.Read(ref flakyRuns));
+        Assert.Equal(1, Volatile.Read(ref finalRuns));
         Assert.NotNull(store.GetWorkflowRun(handle.RunId!.Value));
         Assert.DoesNotContain(handle.RunId.Value, store.DeletedWorkflowRuns);
     }

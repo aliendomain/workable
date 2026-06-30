@@ -88,6 +88,7 @@ BEGIN
         Status nvarchar(64) NOT NULL,
         StepsJson nvarchar(max) NOT NULL,
         MessagesJson nvarchar(max) NOT NULL,
+        ChildReceiptsJson nvarchar(max) NOT NULL CONSTRAINT DF_WorkableWorkflowRuns_ChildReceiptsJson DEFAULT (N'[]'),
         PendingControlAction nvarchar(32) NULL,
         CreatedAt datetimeoffset NOT NULL,
         StartedAt datetimeoffset NULL,
@@ -103,6 +104,15 @@ BEGIN
     ALTER TABLE [workable].[WorkflowRuns]
         ADD DefinitionFingerprint nvarchar(64) NOT NULL
             CONSTRAINT DF_WorkableWorkflowRuns_DefinitionFingerprint DEFAULT (N'');
+END
+GO
+
+IF OBJECT_ID(N'workable.WorkflowRuns', N'U') IS NOT NULL
+   AND COL_LENGTH(N'workable.WorkflowRuns', N'ChildReceiptsJson') IS NULL
+BEGIN
+    ALTER TABLE [workable].[WorkflowRuns]
+        ADD ChildReceiptsJson nvarchar(max) NOT NULL
+            CONSTRAINT DF_WorkableWorkflowRuns_ChildReceiptsJson DEFAULT (N'[]');
 END
 GO
 

@@ -694,21 +694,19 @@ internal sealed class WorkflowRuntime
             return;
         }
 
-        var outstandingWorkers = new List<WorkerSnapshot>(outstandingWorkerIds.Length);
         foreach (var workerId in outstandingWorkerIds)
         {
+            if (run.TryGetChildReceipt(workerId, out var receipt) &&
+                receipt?.CompletionStatus == WorkCompletionStatus.Completed)
+            {
+                continue;
+            }
+
             var worker = await this.GetCompletedWorkerSnapshot(workerId, cancellationToken);
             if (worker is null)
             {
                 return;
             }
-
-            outstandingWorkers.Add(worker);
-        }
-
-        if (!outstandingWorkers.Any(HasFailedIteration))
-        {
-            return;
         }
 
         run.MarkRunning();
@@ -883,9 +881,6 @@ internal sealed class WorkflowRuntime
             await this.persistence.DeleteRun(run.Id, cancellationToken);
         }
     }
-
-    private static bool HasFailedIteration(WorkerSnapshot worker)
-        => worker.Iterations.Any(iteration => iteration.Status == WorkCompletionStatus.Failed);
 
     private static bool ShouldPersistFinalState(
         WorkflowRunCompletion completion,
