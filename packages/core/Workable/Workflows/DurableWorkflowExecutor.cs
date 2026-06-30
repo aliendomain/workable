@@ -62,6 +62,24 @@ internal sealed class DurableWorkflowExecutor(
 
                             break;
                         }
+                    case DispatchEachWorkflowStepDefinition dispatchEach:
+                        {
+                            var outcome = await this.DispatchEach(run, session, dispatchEach, cancellationToken);
+                            if (!outcome.IsAccepted)
+                            {
+                                if (outcome.FailureStatus == WorkflowRunStatus.Blocked)
+                                {
+                                    publisher.StepUpdated(run.ToSnapshot(), dispatchEach.Name);
+                                    return await this.UpsertBlockedRun(run, outcome.Messages, cancellationToken);
+                                }
+
+                                run.FailStep(dispatchEach.Name, outcome.Messages);
+                                publisher.StepUpdated(run.ToSnapshot(), dispatchEach.Name);
+                                return await this.DeleteFailedRun(run, outcome.Messages, cancellationToken);
+                            }
+
+                            break;
+                        }
                     case ParallelWorkflowStepDefinition parallel:
                         {
                             var messages = await this.DispatchParallel(run, session, parallel, cancellationToken);
@@ -162,8 +180,9 @@ internal sealed class DurableWorkflowExecutor(
         DispatchWorkflowStepDefinition step,
         CancellationToken cancellationToken)
     {
-        var registeredWork = getRegisteredWork(step.WorkDefinitionName)
-            ?? throw new InvalidOperationException($"Workflow step '{step.Name}' targets unknown work '{step.WorkDefinitionName}'.");
+        var workDefinitionName = step.WorkDefinition.Name;
+        var registeredWork = getRegisteredWork(workDefinitionName)
+            ?? throw new InvalidOperationException($"Workflow step '{step.Name}' targets unknown work '{workDefinitionName}'.");
         run.MarkStepRunning(step.Name);
         var publisher = workflowEvents ?? new WorkflowEventPublisher(default, null, new WorkEventStream());
         publisher.StepUpdated(run.ToSnapshot(), step.Name);
@@ -174,7 +193,7 @@ internal sealed class DurableWorkflowExecutor(
                 async (transaction, transactionOptions, transactionCancellationToken) =>
                 {
                     var handle = await session.Queue.Enqueue(
-                            step.WorkDefinitionName,
+                            workDefinitionName,
                             WorkflowExecutionSupport.AddWorkflowIdentifiers(
                                 step.Input,
                                 run.Id,
@@ -204,6 +223,94 @@ internal sealed class DurableWorkflowExecutor(
         }
     }
 
+    private async Task<DispatchEachOutcome> DispatchEach(
+        WorkflowRunState run,
+        IWorkSystemSession session,
+        DispatchEachWorkflowStepDefinition step,
+        CancellationToken cancellationToken)
+    {
+        var workDefinitionName = step.WorkDefinition.Name;
+        var registeredWork = getRegisteredWork(workDefinitionName)
+            ?? throw new InvalidOperationException($"Workflow step '{step.Name}' targets unknown work '{workDefinitionName}'.");
+        run.MarkStepRunning(step.Name);
+        var publisher = workflowEvents ?? new WorkflowEventPublisher(default, null, new WorkEventStream());
+        publisher.StepUpdated(run.ToSnapshot(), step.Name);
+
+        if (!run.TryGetStepWorkerIds(step.SourceStep.StepName, out var sourceWorkerIds) ||
+            sourceWorkerIds.Count == 0)
+        {
+            return new DispatchEachOutcome(
+                false,
+                WorkflowRunStatus.Failed,
+                [WorkMessage.Error(
+                    "workable.workflow.dispatch_each.source_step_not_ready",
+                    $"Workflow step '{step.Name}' could not expand source step '{step.SourceStep.StepName}' because it did not produce any child workers.",
+                    "workflow.dispatch_each")]);
+        }
+
+        var outputs = new List<WorkOutput?>();
+        foreach (var workerId in sourceWorkerIds.Distinct())
+        {
+            var completion = await this.WaitForWorkerCompletion(run, session, workerId, cancellationToken);
+            if (completion.Status != WorkCompletionStatus.Completed)
+            {
+                return new DispatchEachOutcome(
+                    false,
+                    WorkflowExecutionSupport.ToWorkflowStatus(completion.Status),
+                    completion.Messages);
+            }
+
+            outputs.Add(completion.Output);
+        }
+
+        var expansion = WorkflowExecutionSupport.CreateDispatchEachInputs(step, outputs);
+        if (expansion.Messages.Count > 0)
+        {
+            return new DispatchEachOutcome(false, WorkflowRunStatus.Failed, expansion.Messages);
+        }
+
+        try
+        {
+            await persistence.ExecuteTransaction(
+                async (transaction, transactionOptions, transactionCancellationToken) =>
+                {
+                    var workerIds = new List<WorkerId>();
+                    foreach (var itemInput in expansion.Inputs)
+                    {
+                        var handle = await session.Queue.Enqueue(
+                            workDefinitionName,
+                            WorkflowExecutionSupport.AddWorkflowIdentifiers(
+                                itemInput,
+                                run.Id,
+                                run.DefinitionName,
+                                step.Name),
+                            CreateDurableChildOptions(registeredWork, transactionOptions),
+                            transactionCancellationToken);
+                        if (!handle.QueueOutcome.IsAccepted || handle.WorkerId is not { } childWorkerId)
+                        {
+                            throw new WorkflowDispatchRejectedException(handle.QueueOutcome.Messages);
+                        }
+
+                        workerIds.Add(childWorkerId);
+                    }
+
+                    run.MarkStepCompleted(step.Name, workerIds);
+                    await persistence.UpsertRun(
+                        this.CreatePersistenceRecord(run),
+                        transaction,
+                        transactionCancellationToken);
+                },
+                cancellationToken);
+
+            publisher.StepUpdated(run.ToSnapshot(), step.Name);
+            return new DispatchEachOutcome(true, WorkflowRunStatus.Completed, []);
+        }
+        catch (WorkflowDispatchRejectedException rejection)
+        {
+            return new DispatchEachOutcome(false, WorkflowRunStatus.Failed, rejection.Messages);
+        }
+    }
+
     private async Task<IReadOnlyList<WorkMessage>> DispatchParallel(
         WorkflowRunState run,
         IWorkSystemSession session,
@@ -222,10 +329,11 @@ internal sealed class DurableWorkflowExecutor(
                     var workerIds = new List<WorkerId>();
                     foreach (var child in step.Steps.OfType<DispatchWorkflowStepDefinition>())
                     {
-                        var registeredWork = getRegisteredWork(child.WorkDefinitionName)
-                            ?? throw new InvalidOperationException($"Workflow step '{child.Name}' targets unknown work '{child.WorkDefinitionName}'.");
+                        var childWorkDefinitionName = child.WorkDefinition.Name;
+                        var registeredWork = getRegisteredWork(childWorkDefinitionName)
+                            ?? throw new InvalidOperationException($"Workflow step '{child.Name}' targets unknown work '{childWorkDefinitionName}'.");
                         var handle = await session.Queue.Enqueue(
-                            child.WorkDefinitionName,
+                            childWorkDefinitionName,
                             WorkflowExecutionSupport.AddWorkflowIdentifiers(
                                 child.Input,
                                 run.Id,
@@ -426,6 +534,11 @@ internal sealed class DurableWorkflowExecutor(
         await persistence.UpsertRun(this.CreatePersistenceRecord(run), cancellationToken);
         return blocked;
     }
+
+    private sealed record DispatchEachOutcome(
+        bool IsAccepted,
+        WorkflowRunStatus FailureStatus,
+        IReadOnlyList<WorkMessage> Messages);
 
     private static WorkerOptions CreateDurableChildOptions(
         RegisteredWork registeredWork,

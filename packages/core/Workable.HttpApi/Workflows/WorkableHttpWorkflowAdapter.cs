@@ -85,6 +85,19 @@ internal sealed class WorkableHttpWorkflowAdapter
         => Views.Run(system, requestContext, runId, childSampleSize, cancellationToken);
 
     /// <summary>
+    /// Reads one paged child-worker slice for a selected workflow step.
+    /// </summary>
+    public Task<WorkflowStepChildWorkerQueryResult?> StepChildren(
+        IWorkSystem system,
+        WorkflowRunId runId,
+        string stepName,
+        WorkRequestContext requestContext,
+        int skip = 0,
+        int take = 25,
+        CancellationToken cancellationToken = default)
+        => Views.StepChildren(system, requestContext, runId, stepName, skip, take, cancellationToken);
+
+    /// <summary>
     /// Reads visible workflow runs using the HTTP query contract.
     /// </summary>
     public Task<WorkflowRunListView> Runs(

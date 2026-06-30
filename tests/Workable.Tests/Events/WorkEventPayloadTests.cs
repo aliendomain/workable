@@ -148,7 +148,7 @@ public sealed class WorkEventPayloadTests
                 });
             builder.AddWorkflow(
                 WorkflowDefinition.Create("events.workflow"),
-                workflow => workflow.DispatchWork("dispatch", "events.workflow.child"));
+                workflow => workflow.DispatchWork("dispatch", WorkDefinition.Create("events.workflow.child")));
         });
         await system.Start();
 
@@ -840,7 +840,6 @@ public sealed class WorkEventPayloadTests
             => Task.FromResult(WorkExecutionResult.Success());
     }
 }
-
 
 
 

@@ -970,12 +970,12 @@ internal sealed class WorkflowRuntime
             switch (step)
             {
                 case DispatchWorkflowStepDefinition dispatch:
-                    if (this.getRegisteredWork(dispatch.WorkDefinitionName) is { } registeredWork &&
+                    if (this.getRegisteredWork(dispatch.WorkDefinition.Name) is { } registeredWork &&
                         registeredWork.DefaultRuntimePlan.Configuration.Coordination.IsDurabilityEnabled)
                     {
                         messages.Add(WorkMessage.Error(
                             "workable.workflow.child_durability_requires_durable_workflow",
-                            $"Workflow '{workflow.Name}' cannot dispatch durably queued work '{dispatch.WorkDefinitionName}' from step '{dispatch.Name}' unless the workflow itself is durable.",
+                            $"Workflow '{workflow.Name}' cannot dispatch durably queued work '{dispatch.WorkDefinition.Name}' from step '{dispatch.Name}' unless the workflow itself is durable.",
                             "workflow.coordination"));
                     }
 

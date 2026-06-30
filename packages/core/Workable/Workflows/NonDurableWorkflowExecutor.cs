@@ -62,6 +62,38 @@ internal sealed class NonDurableWorkflowExecutor(
                             }
                             break;
                         }
+                    case DispatchEachWorkflowStepDefinition dispatchEach:
+                        {
+                            var result = await this.DispatchEach(
+                                run,
+                                session,
+                                dispatchEach,
+                                activeHandles,
+                                workerHandleFactory,
+                                cancellationToken);
+                            if (!result.IsAccepted)
+                            {
+                                if (result.FailureStatus == WorkflowRunStatus.Blocked)
+                                {
+                                    publisher.StepUpdated(run.ToSnapshot(), dispatchEach.Name);
+                                    return run.Block(result.Messages);
+                                }
+
+                                run.FailStep(dispatchEach.Name, result.Messages);
+                                publisher.StepUpdated(run.ToSnapshot(), dispatchEach.Name);
+                                return run.Fail(result.Messages);
+                            }
+
+                            foreach (var handle in result.Handles)
+                            {
+                                if (handle.WorkerId is { } workerId)
+                                {
+                                    activeHandles[workerId] = handle;
+                                }
+                            }
+
+                            break;
+                        }
                     case ParallelWorkflowStepDefinition parallel:
                         {
                             if (status == WorkflowStepRunStatus.Completed)
@@ -80,7 +112,7 @@ internal sealed class NonDurableWorkflowExecutor(
                                     run.DefinitionName,
                                     child.Name);
                                 var handle = await session.Queue.Enqueue(
-                                    child.WorkDefinitionName,
+                                    child.WorkDefinition.Name,
                                     input,
                                     cancellationToken: cancellationToken);
                                 if (!handle.QueueOutcome.IsAccepted)
@@ -184,12 +216,13 @@ internal sealed class NonDurableWorkflowExecutor(
         run.MarkStepRunning(step.Name);
         var publisher = workflowEvents ?? new WorkflowEventPublisher(default, null, new WorkEventStream());
         publisher.StepUpdated(run.ToSnapshot(), step.Name);
+        var workDefinitionName = step.WorkDefinition.Name;
         var input = WorkflowExecutionSupport.AddWorkflowIdentifiers(
             step.Input,
             run.Id,
             run.DefinitionName,
             step.Name);
-        var handle = await session.Queue.Enqueue(step.WorkDefinitionName, input, cancellationToken: cancellationToken);
+        var handle = await session.Queue.Enqueue(workDefinitionName, input, cancellationToken: cancellationToken);
         if (!handle.QueueOutcome.IsAccepted)
         {
             run.FailStep(step.Name, handle.QueueOutcome.Messages);
@@ -200,6 +233,79 @@ internal sealed class NonDurableWorkflowExecutor(
         run.MarkStepCompleted(step.Name, handle.WorkerId is { } workerId ? [workerId] : []);
         publisher.StepUpdated(run.ToSnapshot(), step.Name);
         return new DispatchResult(true, handle, []);
+    }
+
+    private async Task<DispatchEachResult> DispatchEach(
+        WorkflowRunState run,
+        IWorkSystemSession session,
+        DispatchEachWorkflowStepDefinition step,
+        IReadOnlyDictionary<WorkerId, IWorkerHandle> activeHandles,
+        Func<WorkerId, IWorkerHandle> workerHandleFactory,
+        CancellationToken cancellationToken)
+    {
+        run.MarkStepRunning(step.Name);
+        var publisher = workflowEvents ?? new WorkflowEventPublisher(default, null, new WorkEventStream());
+        publisher.StepUpdated(run.ToSnapshot(), step.Name);
+        var workDefinitionName = step.WorkDefinition.Name;
+
+        if (!run.TryGetStepWorkerIds(step.SourceStep.StepName, out var sourceWorkerIds) ||
+            sourceWorkerIds.Count == 0)
+        {
+            return new DispatchEachResult(
+                false,
+                [],
+                WorkflowRunStatus.Failed,
+                [WorkMessage.Error(
+                    "workable.workflow.dispatch_each.source_step_not_ready",
+                    $"Workflow step '{step.Name}' could not expand source step '{step.SourceStep.StepName}' because it did not produce any child workers.",
+                    "workflow.dispatch_each")]);
+        }
+
+        var outputs = new List<WorkOutput?>();
+        foreach (var workerId in sourceWorkerIds.Distinct())
+        {
+            var completion = await this.WaitForWorkerCompletion(run, workerId, activeHandles, workerHandleFactory, cancellationToken);
+            if (completion.Status != WorkCompletionStatus.Completed)
+            {
+                return new DispatchEachResult(
+                    false,
+                    [],
+                    WorkflowExecutionSupport.ToWorkflowStatus(completion.Status),
+                    completion.Messages);
+            }
+
+            outputs.Add(completion.Output);
+        }
+
+        var expansion = WorkflowExecutionSupport.CreateDispatchEachInputs(step, outputs);
+        if (expansion.Messages.Count > 0)
+        {
+            return new DispatchEachResult(false, [], WorkflowRunStatus.Failed, expansion.Messages);
+        }
+
+        var dispatchedHandles = new List<IWorkerHandle>();
+        foreach (var itemInput in expansion.Inputs)
+        {
+            var input = WorkflowExecutionSupport.AddWorkflowIdentifiers(
+                itemInput,
+                run.Id,
+                run.DefinitionName,
+                step.Name);
+            var handle = await session.Queue.Enqueue(workDefinitionName, input, cancellationToken: cancellationToken);
+            if (!handle.QueueOutcome.IsAccepted)
+            {
+                return new DispatchEachResult(false, [], WorkflowRunStatus.Failed, handle.QueueOutcome.Messages);
+            }
+
+            dispatchedHandles.Add(handle);
+        }
+
+        run.MarkStepCompleted(step.Name, dispatchedHandles
+            .Where(handle => handle.WorkerId is not null)
+            .Select(handle => handle.WorkerId!.Value)
+            .ToArray());
+        publisher.StepUpdated(run.ToSnapshot(), step.Name);
+        return new DispatchEachResult(true, dispatchedHandles, WorkflowRunStatus.Completed, []);
     }
 
     private async Task<WorkflowRunCompletion> WaitForJoinOutstanding(
@@ -265,8 +371,33 @@ internal sealed class NonDurableWorkflowExecutor(
         return new WorkflowRunCompletion(WorkflowRunStatus.Completed, null, []);
     }
 
+    private async Task<WorkCompletion> WaitForWorkerCompletion(
+        WorkflowRunState run,
+        WorkerId workerId,
+        IReadOnlyDictionary<WorkerId, IWorkerHandle> activeHandles,
+        Func<WorkerId, IWorkerHandle> workerHandleFactory,
+        CancellationToken cancellationToken)
+    {
+        if (run.TryGetChildReceipt(workerId, out var receipt) &&
+            receipt is not null)
+        {
+            return WorkflowExecutionSupport.FromReceipt(receipt);
+        }
+
+        var handle = activeHandles.TryGetValue(workerId, out var activeHandle)
+            ? activeHandle
+            : workerHandleFactory(workerId);
+        return await handle.WaitForCompletion(cancellationToken);
+    }
+
     private sealed record DispatchResult(
         bool IsAccepted,
         IWorkerHandle? Handle,
+        IReadOnlyList<WorkMessage> Messages);
+
+    private sealed record DispatchEachResult(
+        bool IsAccepted,
+        IReadOnlyList<IWorkerHandle> Handles,
+        WorkflowRunStatus FailureStatus,
         IReadOnlyList<WorkMessage> Messages);
 }

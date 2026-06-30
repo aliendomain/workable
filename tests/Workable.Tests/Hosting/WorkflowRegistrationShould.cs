@@ -1,3 +1,4 @@
+using System.Text.Json.Serialization;
 using Microsoft.Extensions.DependencyInjection;
 using Workable;
 
@@ -10,13 +11,14 @@ public sealed class WorkflowRegistrationShould
     public void RegisterDispatchWorkStep()
     {
         var services = new ServiceCollection();
+        var prepareDefinition = WorkDefinition.Create("sample.prepare");
 
         services.AddWorkableSystem(builder => builder.AddWorkflow(
             WorkflowDefinition.Create(
                 "workflow.demo.dispatch",
                 category: "Workflow:Demo",
                 coordination: WorkflowCoordinationConfiguration.Durable),
-            workflow => workflow.DispatchWork("prepare", "sample.prepare")));
+            workflow => workflow.DispatchWork("prepare", prepareDefinition)));
 
         using var provider = services.BuildServiceProvider();
         var registration = provider.GetRequiredService<WorkSystemRegistration>();
@@ -28,19 +30,21 @@ public sealed class WorkflowRegistrationShould
         var dispatch = Assert.Single(workflow.Steps);
         var step = Assert.IsType<DispatchWorkflowStepDefinition>(dispatch);
         Assert.Equal("prepare", step.Name);
-        Assert.Equal("sample.prepare", step.WorkDefinitionName);
+        Assert.Equal("sample.prepare", step.WorkDefinition.Name);
     }
 
     [Fact]
     public void RegisterParallelStepWithChildDispatches()
     {
         var services = new ServiceCollection();
+        var emailDefinition = WorkDefinition.Create("sample.email");
+        var reportDefinition = WorkDefinition.Create("sample.report");
 
         services.AddWorkableSystem(builder => builder.AddWorkflow(
             WorkflowDefinition.Create("workflow.demo.parallel"),
             workflow => workflow.RunParallel("dispatch", parallel => parallel
-                .DispatchWork("send-email", "sample.email")
-                .DispatchWork("generate-report", "sample.report"))));
+                .DispatchWork("send-email", emailDefinition)
+                .DispatchWork("generate-report", reportDefinition))));
 
         using var provider = services.BuildServiceProvider();
         var registration = provider.GetRequiredService<WorkSystemRegistration>();
@@ -55,14 +59,134 @@ public sealed class WorkflowRegistrationShould
             {
                 var dispatch = Assert.IsType<DispatchWorkflowStepDefinition>(child);
                 Assert.Equal("send-email", dispatch.Name);
-                Assert.Equal("sample.email", dispatch.WorkDefinitionName);
+                Assert.Equal("sample.email", dispatch.WorkDefinition.Name);
             },
             child =>
             {
                 var dispatch = Assert.IsType<DispatchWorkflowStepDefinition>(child);
                 Assert.Equal("generate-report", dispatch.Name);
-                Assert.Equal("sample.report", dispatch.WorkDefinitionName);
+                Assert.Equal("sample.report", dispatch.WorkDefinition.Name);
             });
+    }
+
+    [Fact]
+    public void RegisterDispatchEachStep()
+    {
+        var services = new ServiceCollection();
+        var loadDefinition = WorkDefinition.Create("sample.load");
+        var processDefinition = WorkDefinition.Create("sample.process");
+
+        services.AddWorkableSystem(builder => builder.AddWorkflow(
+            WorkflowDefinition.Create("workflow.demo.dispatch-each"),
+            workflow =>
+            {
+                var load = workflow.DispatchWork<DispatchEachSourceOutput>("load", loadDefinition);
+                workflow.DispatchEach("fan-out", load, processDefinition, output => output.Items);
+            }));
+
+        using var provider = services.BuildServiceProvider();
+        var registration = provider.GetRequiredService<WorkSystemRegistration>();
+        var workflow = Assert.Single(registration.Workflows);
+
+        Assert.Collection(
+            workflow.Steps,
+            load =>
+            {
+                var dispatch = Assert.IsType<DispatchWorkflowStepDefinition>(load);
+                Assert.Equal("load", dispatch.Name);
+                Assert.Equal("sample.load", dispatch.WorkDefinition.Name);
+            },
+            fanOut =>
+            {
+                var dispatchEach = Assert.IsType<DispatchEachWorkflowStepDefinition>(fanOut);
+                Assert.Equal("fan-out", dispatchEach.Name);
+                Assert.Equal("load", dispatchEach.SourceStep.StepName);
+                Assert.Equal("sample.process", dispatchEach.WorkDefinition.Name);
+                Assert.Equal("/items", dispatchEach.SourceSelector.JsonPointer);
+            });
+    }
+
+    [Fact]
+    public void RegisterTypedDispatchEachStep()
+    {
+        var services = new ServiceCollection();
+        var loadDefinition = WorkDefinition.Create("sample.load");
+        var processDefinition = WorkDefinition.Create("sample.process");
+
+        services.AddWorkableSystem(builder => builder.AddWorkflow(
+            WorkflowDefinition.Create("workflow.demo.dispatch-each.typed"),
+            workflow =>
+            {
+                var load = workflow.DispatchWork<DispatchEachSourceOutput>("load", loadDefinition);
+                workflow.DispatchEach("fan-out", load, processDefinition, output => output.Items);
+            }));
+
+        using var provider = services.BuildServiceProvider();
+        var registration = provider.GetRequiredService<WorkSystemRegistration>();
+        var workflow = Assert.Single(registration.Workflows);
+
+        Assert.Collection(
+            workflow.Steps,
+            load =>
+            {
+                var dispatch = Assert.IsType<DispatchWorkflowStepDefinition>(load);
+                Assert.Equal("load", dispatch.Name);
+                Assert.Equal("sample.load", dispatch.WorkDefinition.Name);
+            },
+            fanOut =>
+            {
+                var dispatchEach = Assert.IsType<DispatchEachWorkflowStepDefinition>(fanOut);
+                Assert.Equal("fan-out", dispatchEach.Name);
+                Assert.Equal("load", dispatchEach.SourceStep.StepName);
+                Assert.Equal("sample.process", dispatchEach.WorkDefinition.Name);
+                Assert.Equal("/items", dispatchEach.SourceSelector.JsonPointer);
+            });
+    }
+
+    [Fact]
+    public void RegisterDispatchEachStepForRootArraySource()
+    {
+        var services = new ServiceCollection();
+        var loadDefinition = WorkDefinition.Create("sample.load.root-array");
+        var processDefinition = WorkDefinition.Create("sample.process.root-array");
+
+        services.AddWorkableSystem(builder => builder.AddWorkflow(
+            WorkflowDefinition.Create("workflow.demo.dispatch-each.root-array"),
+            workflow =>
+            {
+                var load = workflow.DispatchWork<IReadOnlyList<DispatchEachSourceItem>>("load", loadDefinition);
+                workflow.DispatchEach("fan-out", load, processDefinition, output => output);
+            }));
+
+        using var provider = services.BuildServiceProvider();
+        var registration = provider.GetRequiredService<WorkSystemRegistration>();
+        var workflow = Assert.Single(registration.Workflows);
+
+        var fanOut = Assert.IsType<DispatchEachWorkflowStepDefinition>(workflow.Steps[1]);
+        Assert.Null(fanOut.SourceSelector.JsonPointer);
+    }
+
+    [Fact]
+    public void RegisterDispatchEachStepUsingJsonPropertyNameSelector()
+    {
+        var services = new ServiceCollection();
+        var loadDefinition = WorkDefinition.Create("sample.load.json-name");
+        var processDefinition = WorkDefinition.Create("sample.process.json-name");
+
+        services.AddWorkableSystem(builder => builder.AddWorkflow(
+            WorkflowDefinition.Create("workflow.demo.dispatch-each.json-name"),
+            workflow =>
+            {
+                var load = workflow.DispatchWork<DispatchEachJsonNamedOutput>("load", loadDefinition);
+                workflow.DispatchEach("fan-out", load, processDefinition, output => output.Items);
+            }));
+
+        using var provider = services.BuildServiceProvider();
+        var registration = provider.GetRequiredService<WorkSystemRegistration>();
+        var workflow = Assert.Single(registration.Workflows);
+
+        var fanOut = Assert.IsType<DispatchEachWorkflowStepDefinition>(workflow.Steps[1]);
+        Assert.Equal("/items_list", fanOut.SourceSelector.JsonPointer);
     }
 
     [Fact]
@@ -87,6 +211,7 @@ public sealed class WorkflowRegistrationShould
     public void ApplyWorkflowAuthorizationUsingTheSameBuilderModelAsWork()
     {
         var services = new ServiceCollection();
+        var childDefinition = WorkDefinition.Create("sample.child");
 
         services.AddWorkableSystem(builder => builder.AddWorkflow(
             WorkflowDefinition.Create(
@@ -94,7 +219,7 @@ public sealed class WorkflowRegistrationShould
                 authorization: WorkDefinitionAuthorization.Create(
                     readGroups: ["base.read"],
                     operateGroups: ["base.ops"])),
-            workflow => workflow.DispatchWork("dispatch", "sample.child"),
+            workflow => workflow.DispatchWork("dispatch", childDefinition),
             authorize: auth => auth
                 .AllowReadToGroups("workflow.read")
                 .AllowOperateToGroups("workflow.ops")));
@@ -113,15 +238,17 @@ public sealed class WorkflowRegistrationShould
     public void RejectDuplicateWorkflowDefinitionNamesWhenCreatingTheInMemoryCatalog()
     {
         var services = new ServiceCollection();
+        var firstDefinition = WorkDefinition.Create("sample.first");
+        var secondDefinition = WorkDefinition.Create("sample.second");
 
         services.AddWorkableSystem(builder =>
         {
             builder.AddWorkflow(
                 WorkflowDefinition.Create("workflow.duplicate"),
-                workflow => workflow.DispatchWork("first", "sample.first"));
+                workflow => workflow.DispatchWork("first", firstDefinition));
             builder.AddWorkflow(
                 WorkflowDefinition.Create("WORKFLOW.DUPLICATE"),
-                workflow => workflow.DispatchWork("second", "sample.second"));
+                workflow => workflow.DispatchWork("second", secondDefinition));
         });
 
         using var provider = services.BuildServiceProvider();
@@ -132,4 +259,8 @@ public sealed class WorkflowRegistrationShould
 
     private static IReadOnlySet<string> Groups(params string[] groups)
         => new HashSet<string>(groups, StringComparer.OrdinalIgnoreCase);
+
+    private sealed record DispatchEachSourceOutput(IReadOnlyList<DispatchEachSourceItem> Items);
+    private sealed record DispatchEachSourceItem(string Id);
+    private sealed record DispatchEachJsonNamedOutput([property: JsonPropertyName("items_list")] IReadOnlyList<DispatchEachSourceItem> Items);
 }

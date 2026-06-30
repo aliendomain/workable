@@ -60,6 +60,35 @@ internal static class WorkableHttpWorkflowRoutes
             return result is null ? Results.NotFound() : Results.Ok(result);
         });
 
+        group.MapGet("/workflow-runs/{runId:guid}/steps/{stepName}/children", async (
+            HttpContext httpContext,
+            Guid runId,
+            string stepName,
+            int? skip,
+            int? take,
+            WorkableHttpTopologyResolver topology,
+            WorkableHttpWorkflowAdapter workflows,
+            IWorkRequestContextFactory requestContexts,
+            CancellationToken cancellationToken) =>
+        {
+            if (!WorkableHttpRouteResults.TryResolveSystem(httpContext, topology, out var system, out var notFound))
+            {
+                return notFound;
+            }
+
+            var requestContext = requestContexts.Create(httpContext, WorkInvocationChannel.HttpApi)
+                .WithSurface(WorkOriginSurface.WorkableAdapter);
+            var result = await workflows.StepChildren(
+                system,
+                new WorkflowRunId(runId),
+                stepName,
+                requestContext,
+                skip ?? 0,
+                take ?? 25,
+                cancellationToken);
+            return result is null ? Results.NotFound() : Results.Ok(result);
+        });
+
         group.MapPost("/workflows/{workflowName}", async (
             string workflowName,
             WorkableHttpWorkflowStartRequest? request,

@@ -241,7 +241,7 @@ public sealed class WorkflowExecutionSupportShould
     private static WorkflowRunState CreateRunWithOutstandingWorkers(params WorkerId[] workerIds)
     {
         var run = WorkflowRunState.Create(
-            CreateWorkflow(new DispatchWorkflowStepDefinition("dispatch", "sample.dispatch")),
+            CreateWorkflow(Dispatch("dispatch", "sample.dispatch")),
             WorkRequestContext.Create(WorkInvocationChannel.InProcess));
         run.MarkStepCompleted("dispatch", workerIds);
         return run;
@@ -362,4 +362,10 @@ public sealed class WorkflowExecutionSupportShould
             CancellationToken cancellationToken = default)
             => throw new NotSupportedException();
     }
+
+    private static DispatchWorkflowStepDefinition Dispatch(
+        string stepName,
+        string workDefinitionName,
+        WorkInput? input = null)
+        => new(stepName, WorkDefinition.Create(workDefinitionName), input);
 }

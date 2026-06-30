@@ -193,6 +193,7 @@ internal sealed class WorkflowRunState
                 switch (step.Kind)
                 {
                     case WorkflowStepKind.DispatchWork:
+                    case WorkflowStepKind.DispatchEach:
                     case WorkflowStepKind.Parallel:
                         if (step.Status == WorkflowStepRunStatus.Completed)
                         {
@@ -245,6 +246,22 @@ internal sealed class WorkflowRunState
         lock (this.sync)
         {
             return [.. this.steps.Single(step => step.Name == name).WorkerIds];
+        }
+    }
+
+    public bool TryGetStepWorkerIds(string name, out IReadOnlyList<WorkerId> workerIds)
+    {
+        lock (this.sync)
+        {
+            var step = this.steps.SingleOrDefault(step => string.Equals(step.Name, name, StringComparison.Ordinal));
+            if (step is null)
+            {
+                workerIds = [];
+                return false;
+            }
+
+            workerIds = [.. step.WorkerIds];
+            return true;
         }
     }
 

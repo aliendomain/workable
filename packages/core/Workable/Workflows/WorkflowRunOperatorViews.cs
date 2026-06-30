@@ -95,3 +95,12 @@ public sealed record WorkflowChildWorkerView(
     WorkerState State,
     [property: JsonIgnore] DateTimeOffset CreatedAt,
     [property: JsonIgnore] DateTimeOffset UpdatedAt);
+
+/// <summary>
+/// Represents one paged child-worker response for a selected workflow step.
+/// </summary>
+public sealed record WorkflowStepChildWorkerQueryResult(
+    IReadOnlyList<WorkflowChildWorkerView> Workers,
+    int TotalCount,
+    int Skip,
+    int Take);

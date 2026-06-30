@@ -275,7 +275,7 @@ CREATE TABLE workable.WorkEntries
                     WorkflowDefinition.Create(
                         "workflow.durable.dispatch",
                         coordination: WorkflowCoordinationConfiguration.Durable),
-                    workflow => workflow.DispatchWork("dispatch", "sample.dispatch"));
+                    workflow => workflow.DispatchWork("dispatch", WorkDefinition.Create("sample.dispatch")));
             })
             .BuildServiceProvider();
         var registry = provider.GetRequiredService<IWorkSystemRegistry>();
@@ -343,8 +343,8 @@ FROM workable.WorkEntries;
                         coordination: WorkflowCoordinationConfiguration.Durable),
                     workflow => workflow
                         .RunParallel("dispatch", parallel => parallel
-                            .DispatchWork("alpha", "sample.alpha")
-                            .DispatchWork("beta", "sample.beta"))
+                            .DispatchWork("alpha", WorkDefinition.Create("sample.alpha"))
+                            .DispatchWork("beta", WorkDefinition.Create("sample.beta")))
                         .Join("join"));
             })
             .BuildServiceProvider();
@@ -427,8 +427,8 @@ WHERE WorkSystemName = N'workflow-tests'
                         coordination: WorkflowCoordinationConfiguration.Durable),
                     workflow => workflow
                         .RunParallel("dispatch", parallel => parallel
-                            .DispatchWork("alpha", "sample.alpha")
-                            .DispatchWork("beta", "sample.beta"))
+                            .DispatchWork("alpha", WorkDefinition.Create("sample.alpha"))
+                            .DispatchWork("beta", WorkDefinition.Create("sample.beta")))
                         .Join("join"));
             })
             .BuildServiceProvider();
@@ -502,9 +502,9 @@ WHERE WorkSystemName = N'workflow-tests';
                         workflowName,
                         coordination: WorkflowCoordinationConfiguration.Durable),
                     workflow => workflow
-                        .DispatchWork("slow", "sample.stop.slow")
+                        .DispatchWork("slow", WorkDefinition.Create("sample.stop.slow"))
                         .Join("join")
-                        .DispatchWork("fast", "sample.stop.fast"));
+                        .DispatchWork("fast", WorkDefinition.Create("sample.stop.fast")));
             })
             .BuildServiceProvider();
         var registry = provider.GetRequiredService<IWorkSystemRegistry>();
@@ -569,8 +569,8 @@ WHERE RunId = @RunId;
                         coordination: WorkflowCoordinationConfiguration.Durable),
                     workflow => workflow
                         .RunParallel("dispatch", parallel => parallel
-                            .DispatchWork("alpha", "sample.alpha")
-                            .DispatchWork("beta", "sample.beta"))
+                            .DispatchWork("alpha", WorkDefinition.Create("sample.alpha"))
+                            .DispatchWork("beta", WorkDefinition.Create("sample.beta")))
                         .Join("join"));
             })
             .BuildServiceProvider();
@@ -629,8 +629,8 @@ WHERE WorkerId = '{remainingWorkerId.Value:D}';
                         coordination: WorkflowCoordinationConfiguration.Durable),
                     workflow => workflow
                         .RunParallel("dispatch", parallel => parallel
-                            .DispatchWork("alpha", "sample.alpha")
-                            .DispatchWork("beta", "sample.beta"))
+                            .DispatchWork("alpha", WorkDefinition.Create("sample.alpha"))
+                            .DispatchWork("beta", WorkDefinition.Create("sample.beta")))
                         .Join("join"));
             })
             .BuildServiceProvider();
@@ -682,8 +682,8 @@ WHERE WorkerId = '{remainingWorkerId.Value:D}';
                         coordination: WorkflowCoordinationConfiguration.Durable),
                     workflow => workflow
                         .RunParallel("dispatch", parallel => parallel
-                            .DispatchWork("alpha", "sample.alpha")
-                            .DispatchWork("beta", "sample.beta"))
+                            .DispatchWork("alpha", WorkDefinition.Create("sample.alpha"))
+                            .DispatchWork("beta", WorkDefinition.Create("sample.beta")))
                         .Join("join"));
             })
             .BuildServiceProvider();
@@ -738,8 +738,8 @@ WHERE WorkerId = '{remainingWorkerId.Value:D}';
                         coordination: WorkflowCoordinationConfiguration.Durable),
                     workflow => workflow
                         .RunParallel("dispatch", parallel => parallel
-                            .DispatchWork("alpha", "sample.alpha")
-                            .DispatchWork("beta", "sample.beta"))
+                            .DispatchWork("alpha", WorkDefinition.Create("sample.alpha"))
+                            .DispatchWork("beta", WorkDefinition.Create("sample.beta")))
                         .Join("join"));
             })
             .BuildServiceProvider();
@@ -919,7 +919,7 @@ FROM workable.WorkflowRuns;
                         id: workflowDefinitionId,
                         coordination: WorkflowCoordinationConfiguration.Durable),
                     workflow => workflow
-                        .DispatchWork("dispatch", "sample.alpha")
+                        .DispatchWork("dispatch", WorkDefinition.Create("sample.alpha"))
                         .Join("join"));
             })
             .BuildServiceProvider();
@@ -969,8 +969,8 @@ WHERE RunId = '{runId.Value:D}';
                         id: workflowDefinitionId,
                         coordination: WorkflowCoordinationConfiguration.Durable),
                     workflow => workflow
-                        .DispatchWork("dispatch", "sample.alpha")
-                        .DispatchWork("archive", "sample.beta")
+                        .DispatchWork("dispatch", WorkDefinition.Create("sample.alpha"))
+                        .DispatchWork("archive", WorkDefinition.Create("sample.beta"))
                         .Join("join"));
             })
             .BuildServiceProvider();

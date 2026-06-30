@@ -11,6 +11,8 @@ var builder = WebApplication.CreateBuilder(args);
 const string sampleCorsPolicy = "WorkableSampleUi";
 const int sampleHttpPort = 61932;
 const string sampleOperatorWorkflowName = "sample.demo.workflow.operator-lab";
+const string sampleDataflowWorkflowName = "sample.demo.workflow.dataflow-lab";
+const string sampleLargeDataflowWorkflowName = "sample.demo.workflow.large-dataflow-lab";
 
 builder.Logging.ClearProviders();
 builder.Logging.AddConsole(options => options.FormatterName = WorkableSampleConsoleFormatter.FormatterName);
@@ -57,6 +59,24 @@ builder.Services.AddWorkableSystem(workable =>
 {
     workable.StartWithHost();
     ConfigureSampleSystemAuthorization(workable, isFulfillment: false);
+    var sampleQuickDefinition = DemoDefinition("sample.demo.quick", "Samples:Demo", "Short sample work for UI state testing.");
+    var sampleLongDefinition = DemoDefinition("sample.demo.long", "Samples:Demo", "Longer sample work for UI state testing.");
+    var sampleMessagePanelDefinition = DemoDefinition(
+        "sample.demo.message-panel",
+        "Samples:Demo",
+        "One-shot sample that returns a large retained message set across non-error severities.");
+    var sampleProfilingLabDefinition = DemoProfileDefinition(
+        "sample.demo.profiling-lab",
+        "Samples:Demo",
+        "One-shot profiling showcase with nested scopes, timings, injected-service contributions, and SQL command capture.");
+    var sampleWorkflowSeedDefinition = DemoDefinition(
+        "sample.demo.workflow.seed",
+        "Samples:Workflow",
+        "Produces a dynamic list of child worker inputs so the sample workflow can demonstrate DispatchEach fan-out.");
+    var sampleThrottledDefinition = DemoDefinition(
+        "sample.demo.throttled",
+        "Samples:Demo",
+        "Longer sample work without an artificial concurrency bottleneck.");
     workable.AddWork<HealthSnapshotWork>();
     workable.AddWork<SampleEchoWork>(
         configure: null,
@@ -72,20 +92,13 @@ builder.Services.AddWorkableSystem(workable =>
     workable.AddWork<ReportExportWork>();
     workable.AddWork<DataImportWork>();
     workable.AddWork<FlakyValidationWork>();
-    workable.AddWork<DemoTimedWork>(DemoDefinition("sample.demo.quick", "Samples:Demo", "Short sample work for UI state testing."));
-    workable.AddWork<DemoTimedWork>(DemoDefinition("sample.demo.long", "Samples:Demo", "Longer sample work for UI state testing."));
-    workable.AddWork<DemoMessagePanelWork>(
-        DemoDefinition(
-            "sample.demo.message-panel",
-            "Samples:Demo",
-            "One-shot sample that returns a large retained message set across non-error severities."));
-    workable.AddWork<DemoProfilingLabWork>(
-        DemoProfileDefinition(
-            "sample.demo.profiling-lab",
-            "Samples:Demo",
-            "One-shot profiling showcase with nested scopes, timings, injected-service contributions, and SQL command capture."));
+    workable.AddWork<DemoTimedWork>(sampleQuickDefinition);
+    workable.AddWork<DemoTimedWork>(sampleLongDefinition);
+    workable.AddWork<DemoMessagePanelWork>(sampleMessagePanelDefinition);
+    workable.AddWork<DemoProfilingLabWork>(sampleProfilingLabDefinition);
     workable.AddWork<DemoForceCancelWork>(DemoDefinition("sample.demo.force-cancel", "Samples:Demo", "Ignores cancellation so shutdown must force-cancel it."));
-    workable.AddWork<DemoTimedWork>(DemoDefinition("sample.demo.throttled", "Samples:Demo", "Longer sample work without an artificial concurrency bottleneck."));
+    workable.AddWork<DemoWorkflowFanOutSeedWork>(sampleWorkflowSeedDefinition);
+    workable.AddWork<DemoTimedWork>(sampleThrottledDefinition);
     workable.AddWork<DemoTimedWork>(
         DemoDefinition("sample.demo.durable", "Samples:Demo", "Durable sample work persisted through the sample host SQL Server durability store."),
         configuration => configuration.QueueDurably());
@@ -144,7 +157,7 @@ builder.Services.AddWorkableSystem(workable =>
         workflow => workflow
             .DispatchWork(
                 "prepare",
-                "sample.demo.quick",
+                sampleQuickDefinition,
                 DemoWorkflowTimedInput(
                     "Prepare operator workflow inputs",
                     4_500,
@@ -152,38 +165,38 @@ builder.Services.AddWorkableSystem(workable =>
             .RunParallel("fan-out", parallel => parallel
                 .DispatchWork(
                     "intake-audit",
-                    "sample.demo.long",
+                    sampleLongDefinition,
                     DemoWorkflowTimedInput(
                         "Audit inbound workload",
                         9_000,
                         "intake-audit"))
                 .DispatchWork(
                     "fulfillment-sync",
-                    "sample.demo.throttled",
+                    sampleThrottledDefinition,
                     DemoWorkflowTimedInput(
                         "Sync fulfillment checkpoints",
                         8_000,
                         "fulfillment-sync"))
                 .DispatchWork(
                     "operator-messages",
-                    "sample.demo.message-panel",
+                    sampleMessagePanelDefinition,
                     DemoWorkflowMessagePanelInput("operator-messages")))
             .Join("fan-out-complete")
             .DispatchWork(
                 "profile-summary",
-                "sample.demo.profiling-lab",
+                sampleProfilingLabDefinition,
                 DemoWorkflowProfilingInput())
             .RunParallel("finalize", parallel => parallel
                 .DispatchWork(
                     "publish-summary",
-                    "sample.demo.quick",
+                    sampleQuickDefinition,
                     DemoWorkflowTimedInput(
                         "Publish operator summary",
                         3_500,
                         "publish-summary"))
                 .DispatchWork(
                     "archive-results",
-                    "sample.demo.long",
+                    sampleLongDefinition,
                     DemoWorkflowTimedInput(
                         "Archive workflow artifacts",
                         6_000,
@@ -191,11 +204,98 @@ builder.Services.AddWorkableSystem(workable =>
             .Join("workflow-complete")
             .DispatchWork(
                 "closeout",
-                "sample.demo.quick",
+                sampleQuickDefinition,
                 DemoWorkflowTimedInput(
                     "Close operator workflow",
                     2_000,
                     "closeout")),
+        authorize: CreateSampleWorkAuthorization(
+            SampleFakeAuth.OperationsCustomReadGroup,
+            SampleFakeAuth.OperationsCustomOperateGroup));
+    workable.AddWorkflow(
+        DemoWorkflowDefinition(
+            sampleDataflowWorkflowName,
+            "Samples:Workflow",
+            "Dataflow sample workflow that builds a dynamic batch, fans it out with DispatchEach, waits at a join, and then finishes with normal workflow steps."),
+        workflow =>
+        {
+            workflow.DispatchWork(
+                "prepare-batch",
+                sampleQuickDefinition,
+                DemoWorkflowTimedInput(
+                    "Prepare dataflow workflow inputs",
+                    3_500,
+                    "prepare-batch",
+                    "dataflow-lab"));
+            var buildBatch = workflow.DispatchWork<DemoWorkflowFanOutSeedOutput>(
+                "build-batch",
+                sampleWorkflowSeedDefinition,
+                WorkInput.FromValue(
+                    new DemoWorkflowFanOutSeedInput(
+                        "dynamic-import-batch",
+                        2_500,
+                        [
+                            new DemoWorkflowFanOutSeedItem("Normalize customer profile", 7_500, "normalize-customer-profile"),
+                            new DemoWorkflowFanOutSeedItem("Sync entitlement ledger", 9_000, "sync-entitlement-ledger"),
+                            new DemoWorkflowFanOutSeedItem("Render audit artifact", 6_000, "render-audit-artifact"),
+                            new DemoWorkflowFanOutSeedItem("Publish notification payload", 8_500, "publish-notification-payload"),
+                        ]),
+                    identifiers: DemoWorkflowIdentifiers("build-batch", "dataflow-lab")));
+            workflow
+                .DispatchEach("fan-out-batch", buildBatch, sampleLongDefinition, output => output.Items)
+                .Join("fan-out-complete")
+                .DispatchWork(
+                    "profile-results",
+                    sampleProfilingLabDefinition,
+                    DemoWorkflowProfilingInput("dataflow-lab", "profile-results"))
+                .DispatchWork(
+                    "closeout",
+                    sampleQuickDefinition,
+                    DemoWorkflowTimedInput(
+                        "Close dataflow workflow",
+                        2_500,
+                        "closeout",
+                        "dataflow-lab"));
+        },
+        authorize: CreateSampleWorkAuthorization(
+            SampleFakeAuth.OperationsCustomReadGroup,
+            SampleFakeAuth.OperationsCustomOperateGroup));
+    workable.AddWorkflow(
+        DemoWorkflowDefinition(
+            sampleLargeDataflowWorkflowName,
+            "Samples:Workflow",
+            "Large dataflow sample workflow that expands a much bigger dynamic batch so the operator UI can exercise workflow child paging."),
+        workflow =>
+        {
+            workflow.DispatchWork(
+                "prepare-batch",
+                sampleQuickDefinition,
+                DemoWorkflowTimedInput(
+                    "Prepare large dataflow workflow inputs",
+                    3_500,
+                    "prepare-batch",
+                    "large-dataflow-lab"));
+            var buildBatch = workflow.DispatchWork<DemoWorkflowFanOutSeedOutput>(
+                "build-batch",
+                sampleWorkflowSeedDefinition,
+                WorkInput.FromValue(
+                    new DemoWorkflowFanOutSeedInput(
+                        "large-dynamic-import-batch",
+                        2_500,
+                        CreateLargeDataflowSeedItems(48)),
+                    identifiers: DemoWorkflowIdentifiers("build-batch", "large-dataflow-lab")));
+            workflow
+                .DispatchEach("fan-out-batch", buildBatch, sampleLongDefinition, output => output.Items)
+                .Join("fan-out-complete")
+                .DispatchWork(
+                    "closeout",
+                    sampleQuickDefinition,
+                    DemoWorkflowTimedInput(
+                        "Close large dataflow workflow",
+                        2_500,
+                        "closeout",
+                        "large-dataflow-lab"));
+        },
         authorize: CreateSampleWorkAuthorization(
             SampleFakeAuth.OperationsCustomReadGroup,
             SampleFakeAuth.OperationsCustomOperateGroup));
@@ -480,6 +580,30 @@ app.MapGet("/", (HttpContext context) =>
                     </tr>
                     <tr>
                         <td>
+                            <div class="action-name">Workflow dataflow lab</div>
+                            <div class="action-description">Start a workflow that builds a dynamic list, expands it with DispatchEach, waits for the generated child workers, and then continues with normal workflow steps.</div>
+                        </td>
+                        <td>
+                            <div class="action-controls">
+                                <button id="workflow-dataflow-start" type="button">Start dataflow workflow</button>
+                            </div>
+                        </td>
+                        <td><p class="status" id="workflow-dataflow-status">Ready.</p></td>
+                    </tr>
+                    <tr>
+                        <td>
+                            <div class="action-name">Workflow large dataflow lab</div>
+                            <div class="action-description">Start a larger DispatchEach workflow that generates enough child workers to exercise paging in the workflow node inspector.</div>
+                        </td>
+                        <td>
+                            <div class="action-controls">
+                                <button id="workflow-large-dataflow-start" type="button">Start large dataflow workflow</button>
+                            </div>
+                        </td>
+                        <td><p class="status" id="workflow-large-dataflow-status">Ready.</p></td>
+                    </tr>
+                    <tr>
+                        <td>
                             <div class="action-name">Durability warning</div>
                             <div class="action-description">Hold durable enqueues inside an uncommitted SQL transaction so accepted waiters age into the durability warning state.</div>
                         </td>
@@ -594,6 +718,8 @@ app.MapGet("/", (HttpContext context) =>
                 const workableApiUrl = document.getElementById('workable-api-url');
                 const copyWorkableApiUrl = document.getElementById('copy-workable-api-url');
                 const sampleWorkflowName = {{JsonSerializer.Serialize(sampleOperatorWorkflowName)}};
+                const sampleDataflowWorkflowName = {{JsonSerializer.Serialize(sampleDataflowWorkflowName)}};
+                const sampleLargeDataflowWorkflowName = {{JsonSerializer.Serialize(sampleLargeDataflowWorkflowName)}};
 
                 for (const profile of authProfiles) {
                     const option = document.createElement('option');
@@ -624,7 +750,7 @@ app.MapGet("/", (HttpContext context) =>
 
                 authProfileSelect.addEventListener('change', () => {
                     updateAuthProfile(authProfileSelect.value);
-                    refreshWorkflow();
+                    refreshWorkflows();
                 });
 
                 copyWorkableApiUrl.addEventListener('click', async () => {
@@ -645,6 +771,8 @@ app.MapGet("/", (HttpContext context) =>
 
                 const button = document.getElementById('toggle');
                 const workflowStart = document.getElementById('workflow-start');
+                const workflowDataflowStart = document.getElementById('workflow-dataflow-start');
+                const workflowLargeDataflowStart = document.getElementById('workflow-large-dataflow-start');
                 const forceCancel = document.getElementById('force-cancel');
                 const burstCount = document.getElementById('burst-count');
                 const burstQueue = document.getElementById('burst-queue');
@@ -672,6 +800,8 @@ app.MapGet("/", (HttpContext context) =>
                 const systemFulfillment = document.getElementById('system-fulfillment');
                 const status = document.getElementById('status');
                 const workflowStatus = document.getElementById('workflow-status');
+                const workflowDataflowStatus = document.getElementById('workflow-dataflow-status');
+                const workflowLargeDataflowStatus = document.getElementById('workflow-large-dataflow-status');
                 const burstStatus = document.getElementById('burst-status');
                 const durableBurstStatus = document.getElementById('durable-burst-status');
                 const durabilityWarningStatus = document.getElementById('durability-warning-status');
@@ -741,26 +871,34 @@ app.MapGet("/", (HttpContext context) =>
                     tightLoopStart.disabled = tightLoopRunning || !anySelected;
                 }
 
-                async function refreshWorkflow() {
+                async function refreshWorkflow(definitionName, statusElement) {
                     try {
-                        const response = await fetch(workableApiPath(`/workflow-runs?definitionName=${encodeURIComponent(sampleWorkflowName)}&includeFinal=true`));
+                        const response = await fetch(workableApiPath(`/workflow-runs?definitionName=${encodeURIComponent(definitionName)}&includeFinal=true`));
                         const data = await response.json();
                         if (!response.ok) {
-                            workflowStatus.textContent = firstMessageText(data) ?? `Workflow query failed with ${response.status}.`;
+                            statusElement.textContent = firstMessageText(data) ?? `Workflow query failed with ${response.status}.`;
                             return;
                         }
 
                         const runs = Array.isArray(data.runs) ? data.runs : [];
                         if (runs.length === 0) {
-                            workflowStatus.textContent = 'Ready. No visible sample workflow runs yet for this user.';
+                            statusElement.textContent = 'Ready. No visible sample workflow runs yet for this user.';
                             return;
                         }
 
                         const activeRun = runs.find(run => run.status === 'Running');
-                        workflowStatus.textContent = describeWorkflowRun(activeRun ?? runs[0]);
+                        statusElement.textContent = describeWorkflowRun(activeRun ?? runs[0]);
                     } catch (error) {
-                        workflowStatus.textContent = 'Unable to query sample workflow runs.';
+                        statusElement.textContent = 'Unable to query sample workflow runs.';
                     }
+                }
+
+                async function refreshWorkflows() {
+                    await Promise.all([
+                        refreshWorkflow(sampleWorkflowName, workflowStatus),
+                        refreshWorkflow(sampleDataflowWorkflowName, workflowDataflowStatus),
+                        refreshWorkflow(sampleLargeDataflowWorkflowName, workflowLargeDataflowStatus)
+                    ]);
                 }
 
                 async function refresh() {
@@ -851,31 +989,27 @@ app.MapGet("/", (HttpContext context) =>
                 });
 
                 workflowStart.addEventListener('click', async () => {
-                    workflowStart.disabled = true;
-                    workflowStatus.textContent = 'Starting sample workflow...';
-                    try {
-                        const response = await fetch(workableApiPath(`/workflows/${encodeURIComponent(sampleWorkflowName)}`), {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({
-                                description: 'Start the sample operator workflow from the sample host.'
-                            })
-                        });
-                        const data = await response.json();
-                        if (!response.ok) {
-                            workflowStatus.textContent = firstMessageText(data) ?? `Workflow start failed with ${response.status}.`;
-                            return;
-                        }
+                    await startWorkflow(
+                        workflowStart,
+                        workflowStatus,
+                        sampleWorkflowName,
+                        'Start the sample operator workflow from the sample host.');
+                });
 
-                        workflowStatus.textContent = data.runId
-                            ? `Accepted run ${data.runId}.`
-                            : 'Accepted sample workflow.';
-                        await refreshWorkflow();
-                    } catch (error) {
-                        workflowStatus.textContent = 'Unable to start sample workflow.';
-                    } finally {
-                        workflowStart.disabled = false;
-                    }
+                workflowDataflowStart.addEventListener('click', async () => {
+                    await startWorkflow(
+                        workflowDataflowStart,
+                        workflowDataflowStatus,
+                        sampleDataflowWorkflowName,
+                        'Start the sample dataflow workflow from the sample host.');
+                });
+
+                workflowLargeDataflowStart.addEventListener('click', async () => {
+                    await startWorkflow(
+                        workflowLargeDataflowStart,
+                        workflowLargeDataflowStatus,
+                        sampleLargeDataflowWorkflowName,
+                        'Start the large sample dataflow workflow from the sample host.');
                 });
 
                 forceCancel.addEventListener('click', async () => {
@@ -1125,15 +1259,41 @@ app.MapGet("/", (HttpContext context) =>
                     }
                 });
 
+                async function startWorkflow(buttonElement, statusElement, definitionName, description) {
+                    buttonElement.disabled = true;
+                    statusElement.textContent = 'Starting sample workflow...';
+                    try {
+                        const response = await fetch(workableApiPath(`/workflows/${encodeURIComponent(definitionName)}`), {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ description })
+                        });
+                        const data = await response.json();
+                        if (!response.ok) {
+                            statusElement.textContent = firstMessageText(data) ?? `Workflow start failed with ${response.status}.`;
+                            return;
+                        }
+
+                        statusElement.textContent = data.runId
+                            ? `Accepted run ${data.runId}.`
+                            : 'Accepted sample workflow.';
+                        await refreshWorkflows();
+                    } catch (error) {
+                        statusElement.textContent = 'Unable to start sample workflow.';
+                    } finally {
+                        buttonElement.disabled = false;
+                    }
+                }
+
                 refresh();
-                refreshWorkflow();
+                refreshWorkflows();
                 refreshPressure();
                 refreshProfilingPressure();
                 refreshDurabilityWarning();
                 refreshTightLoops();
                 setInterval(() => {
                     refresh();
-                    refreshWorkflow();
+                    refreshWorkflows();
                     refreshPressure();
                     refreshProfilingPressure();
                     refreshDurabilityWarning();
@@ -1278,33 +1438,48 @@ static WorkflowDefinition DemoWorkflowDefinition(string name, string category, s
 static WorkInput DemoWorkflowTimedInput(
     string scenario,
     int delayMilliseconds,
-    string stepIdentifier)
+    string stepIdentifier,
+    string workflowKey = "operator-lab")
     => WorkInput.FromValue(
         new DemoTimedInput(
             scenario,
             delayMilliseconds,
             DiscoveredIdentifierType: "sample-workflow-step",
             DiscoveredIdentifierValue: stepIdentifier),
-        identifiers: DemoWorkflowIdentifiers(stepIdentifier));
+        identifiers: DemoWorkflowIdentifiers(stepIdentifier, workflowKey));
 
-static WorkInput DemoWorkflowMessagePanelInput(string stepIdentifier)
+static WorkInput DemoWorkflowMessagePanelInput(
+    string stepIdentifier,
+    string workflowKey = "operator-lab")
     => WorkInput.FromValue(
         new DemoMessagePanelInput(),
-        identifiers: DemoWorkflowIdentifiers(stepIdentifier));
+        identifiers: DemoWorkflowIdentifiers(stepIdentifier, workflowKey));
 
-static WorkInput DemoWorkflowProfilingInput()
+static WorkInput DemoWorkflowProfilingInput(
+    string workflowKey = "operator-lab",
+    string stepIdentifier = "profile-summary")
     => WorkInput.FromValue(
         new DemoProfilingLabInput(
-            Scenario: "operator-lab-profile",
+            Scenario: $"{workflowKey}-profile",
             SectionCount: 5,
             StepsPerSection: 4,
             DelayMilliseconds: 65,
             AddDiscoveredIdentifier: true),
-        identifiers: DemoWorkflowIdentifiers("profile-summary"));
+        identifiers: DemoWorkflowIdentifiers(stepIdentifier, workflowKey));
 
-static IReadOnlyList<WorkIdentifier> DemoWorkflowIdentifiers(string stepIdentifier)
+static IReadOnlyList<WorkIdentifier> DemoWorkflowIdentifiers(
+    string stepIdentifier,
+    string workflowKey = "operator-lab")
     =>
     [
-        new WorkIdentifier("sample-workflow", "operator-lab"),
+        new WorkIdentifier("sample-workflow", workflowKey),
         new WorkIdentifier("sample-workflow-step", stepIdentifier),
     ];
+
+static IReadOnlyList<DemoWorkflowFanOutSeedItem> CreateLargeDataflowSeedItems(int count)
+    => Enumerable.Range(1, Math.Max(1, count))
+        .Select(index => new DemoWorkflowFanOutSeedItem(
+            $"Process dataflow item {index:00}",
+            30_000 + ((index - 1) % 6) * 1_000,
+            $"dataflow-item-{index:00}"))
+        .ToArray();

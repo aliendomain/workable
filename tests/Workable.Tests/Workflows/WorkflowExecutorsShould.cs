@@ -12,7 +12,7 @@ public sealed class WorkflowExecutorsShould
             _ => new TestWorkSystemSession(new DelegateQueueService((_, _, _, _) => throw new NotSupportedException())));
         var workflow = CreateWorkflow(
             WorkflowDefinition.Create("workflow.non-durable.cancel"),
-            new DispatchWorkflowStepDefinition("dispatch", "sample.dispatch"));
+            Dispatch("dispatch", "sample.dispatch"));
         var run = WorkflowRunState.Create(workflow, WorkRequestContext.Create(WorkInvocationChannel.InProcess));
         using var cancellation = new CancellationTokenSource();
         cancellation.Cancel();
@@ -44,7 +44,7 @@ public sealed class WorkflowExecutorsShould
         var executor = new NonDurableWorkflowExecutor(_ => throw new InvalidOperationException("session failed"));
         var workflow = CreateWorkflow(
             WorkflowDefinition.Create("workflow.non-durable.exception"),
-            new DispatchWorkflowStepDefinition("dispatch", "sample.dispatch"));
+            Dispatch("dispatch", "sample.dispatch"));
         var run = WorkflowRunState.Create(workflow, WorkRequestContext.Create(WorkInvocationChannel.InProcess));
 
         var completion = await executor.Execute(run, workflow, CancellationToken.None);
@@ -74,8 +74,8 @@ public sealed class WorkflowExecutorsShould
             WorkflowDefinition.Create("workflow.non-durable.parallel.reject"),
             new ParallelWorkflowStepDefinition("dispatch",
             [
-                new DispatchWorkflowStepDefinition("alpha", "sample.alpha"),
-                new DispatchWorkflowStepDefinition("beta", "sample.beta"),
+                Dispatch("alpha", "sample.alpha"),
+                Dispatch("beta", "sample.beta"),
             ]));
         var run = WorkflowRunState.Create(workflow, WorkRequestContext.Create(WorkInvocationChannel.InProcess));
 
@@ -110,8 +110,8 @@ public sealed class WorkflowExecutorsShould
             WorkflowDefinition.Create("workflow.non-durable.join.canceled"),
             new ParallelWorkflowStepDefinition("dispatch",
             [
-                new DispatchWorkflowStepDefinition("alpha", "sample.alpha"),
-                new DispatchWorkflowStepDefinition("beta", "sample.beta"),
+                Dispatch("alpha", "sample.alpha"),
+                Dispatch("beta", "sample.beta"),
             ]),
             new JoinWorkflowStepDefinition("join"));
         var run = WorkflowRunState.Create(workflow, WorkRequestContext.Create(WorkInvocationChannel.InProcess));
@@ -153,8 +153,8 @@ public sealed class WorkflowExecutorsShould
             WorkflowDefinition.Create("workflow.non-durable.join.invalid"),
             new ParallelWorkflowStepDefinition("dispatch",
             [
-                new DispatchWorkflowStepDefinition("alpha", "sample.alpha"),
-                new DispatchWorkflowStepDefinition("beta", "sample.beta"),
+                Dispatch("alpha", "sample.alpha"),
+                Dispatch("beta", "sample.beta"),
             ]),
             new JoinWorkflowStepDefinition("join"));
         var run = WorkflowRunState.Create(workflow, WorkRequestContext.Create(WorkInvocationChannel.InProcess));
@@ -179,7 +179,7 @@ public sealed class WorkflowExecutorsShould
                     Task.FromResult(new WorkCompletion(WorkCompletionStatus.Canceled, null, null, [])))))));
         var workflow = CreateWorkflow(
             WorkflowDefinition.Create("workflow.non-durable.trailing.canceled"),
-            new DispatchWorkflowStepDefinition("dispatch", "sample.dispatch"));
+            Dispatch("dispatch", "sample.dispatch"));
         var run = WorkflowRunState.Create(workflow, WorkRequestContext.Create(WorkInvocationChannel.InProcess));
 
         var completion = await executor.Execute(run, workflow, CancellationToken.None);
@@ -204,7 +204,7 @@ public sealed class WorkflowExecutorsShould
                         [WorkMessage.Error("workflow.trailing.failed", "Trailing child failed.")])))))));
         var workflow = CreateWorkflow(
             WorkflowDefinition.Create("workflow.non-durable.trailing.failed"),
-            new DispatchWorkflowStepDefinition("dispatch", "sample.dispatch"));
+            Dispatch("dispatch", "sample.dispatch"));
         var run = WorkflowRunState.Create(workflow, WorkRequestContext.Create(WorkInvocationChannel.InProcess));
 
         var completion = await executor.Execute(run, workflow, CancellationToken.None);
@@ -224,7 +224,7 @@ public sealed class WorkflowExecutorsShould
                     Task.FromResult(new WorkCompletion(WorkCompletionStatus.Completed, null, null, [])))))));
         var workflow = CreateWorkflow(
             WorkflowDefinition.Create("workflow.non-durable.null-worker.single"),
-            new DispatchWorkflowStepDefinition("dispatch", "sample.dispatch"));
+            Dispatch("dispatch", "sample.dispatch"));
         var run = WorkflowRunState.Create(workflow, WorkRequestContext.Create(WorkInvocationChannel.InProcess));
 
         var completion = await executor.Execute(run, workflow, CancellationToken.None);
@@ -251,8 +251,8 @@ public sealed class WorkflowExecutorsShould
             WorkflowDefinition.Create("workflow.non-durable.null-worker.parallel"),
             new ParallelWorkflowStepDefinition("dispatch",
             [
-                new DispatchWorkflowStepDefinition("alpha", "sample.alpha"),
-                new DispatchWorkflowStepDefinition("beta", "sample.beta"),
+                Dispatch("alpha", "sample.alpha"),
+                Dispatch("beta", "sample.beta"),
             ]),
             new JoinWorkflowStepDefinition("join"));
         var run = WorkflowRunState.Create(workflow, WorkRequestContext.Create(WorkInvocationChannel.InProcess));
@@ -263,6 +263,36 @@ public sealed class WorkflowExecutorsShould
         Assert.True(completion.IsCompletedSuccessfully);
         Assert.Equal(2, queueCalls);
         Assert.Empty(dispatch.WorkerIds);
+    }
+
+    [Fact]
+    public async Task FailNonDurableExecutionWhenDispatchEachSourceOutputIsNotArray()
+    {
+        var loadWorkerId = WorkerId.New();
+        var executor = new NonDurableWorkflowExecutor(
+            _ => new TestWorkSystemSession(new DelegateQueueService((name, _, _, _) =>
+                Task.FromResult<IWorkerHandle>(
+                    string.Equals(name, "sample.load", StringComparison.Ordinal)
+                        ? new TestWorkerHandle(
+                            WorkQueueOutcome.Accepted(loadWorkerId),
+                            loadWorkerId,
+                            Task.FromResult(new WorkCompletion(
+                                WorkCompletionStatus.Completed,
+                                null,
+                                WorkOutput.FromJson("""{"items":{"id":"alpha"}}"""),
+                                [])))
+                        : AcceptedHandle(WorkerId.New())))));
+        var workflow = CreateWorkflow(
+            WorkflowDefinition.Create("workflow.non-durable.dispatch-each.invalid"),
+            Dispatch("load", "sample.load"),
+            DispatchEach("fan-out", "load", "sample.process", "/items"));
+        var run = WorkflowRunState.Create(workflow, WorkRequestContext.Create(WorkInvocationChannel.InProcess));
+
+        var completion = await executor.Execute(run, workflow, CancellationToken.None);
+
+        Assert.Equal(WorkflowRunStatus.Failed, completion.Status);
+        Assert.Contains(completion.Messages, message => message.Code == "workable.workflow.dispatch_each.source_output_not_array");
+        Assert.Equal(WorkflowStepRunStatus.Failed, run.ToSnapshot().Steps.Single(step => step.Name == "fan-out").Status);
     }
 
     [Fact]
@@ -289,8 +319,8 @@ public sealed class WorkflowExecutorsShould
                 coordination: WorkflowCoordinationConfiguration.Durable),
             new ParallelWorkflowStepDefinition("dispatch",
             [
-                new DispatchWorkflowStepDefinition("alpha", "sample.alpha"),
-                new DispatchWorkflowStepDefinition("beta", "sample.beta"),
+                Dispatch("alpha", "sample.alpha"),
+                Dispatch("beta", "sample.beta"),
             ]),
             new JoinWorkflowStepDefinition("join"));
         var run = WorkflowRunState.Create(workflow, WorkRequestContext.Create(WorkInvocationChannel.InProcess));
@@ -334,8 +364,8 @@ public sealed class WorkflowExecutorsShould
                 coordination: WorkflowCoordinationConfiguration.Durable),
             new ParallelWorkflowStepDefinition("dispatch",
             [
-                new DispatchWorkflowStepDefinition("alpha", "sample.alpha"),
-                new DispatchWorkflowStepDefinition("beta", "sample.beta"),
+                Dispatch("alpha", "sample.alpha"),
+                Dispatch("beta", "sample.beta"),
             ]),
             new JoinWorkflowStepDefinition("join"));
         var run = WorkflowRunState.Create(workflow, WorkRequestContext.Create(WorkInvocationChannel.InProcess));
@@ -405,7 +435,7 @@ public sealed class WorkflowExecutorsShould
             WorkflowDefinition.Create(
                 "workflow.durable.dispatch.reject",
                 coordination: WorkflowCoordinationConfiguration.Durable),
-            new DispatchWorkflowStepDefinition("dispatch", "sample.dispatch"));
+            Dispatch("dispatch", "sample.dispatch"));
         var run = WorkflowRunState.Create(workflow, WorkRequestContext.Create(WorkInvocationChannel.InProcess));
 
         var completion = await executor.Execute(run, workflow, CancellationToken.None);
@@ -444,8 +474,8 @@ public sealed class WorkflowExecutorsShould
                 coordination: WorkflowCoordinationConfiguration.Durable),
             new ParallelWorkflowStepDefinition("dispatch",
             [
-                new DispatchWorkflowStepDefinition("alpha", "sample.alpha"),
-                new DispatchWorkflowStepDefinition("beta", "sample.beta"),
+                Dispatch("alpha", "sample.alpha"),
+                Dispatch("beta", "sample.beta"),
             ]));
         var run = WorkflowRunState.Create(workflow, WorkRequestContext.Create(WorkInvocationChannel.InProcess));
 
@@ -481,7 +511,7 @@ public sealed class WorkflowExecutorsShould
             WorkflowDefinition.Create(
                 "workflow.durable.join.failure",
                 coordination: WorkflowCoordinationConfiguration.Durable),
-            new DispatchWorkflowStepDefinition("dispatch", "sample.dispatch"),
+            Dispatch("dispatch", "sample.dispatch"),
             new JoinWorkflowStepDefinition("join"));
         var run = WorkflowRunState.Create(workflow, WorkRequestContext.Create(WorkInvocationChannel.InProcess));
 
@@ -520,7 +550,7 @@ public sealed class WorkflowExecutorsShould
             WorkflowDefinition.Create(
                 "workflow.durable.recovered.authoritative-child",
                 coordination: WorkflowCoordinationConfiguration.Durable),
-            new DispatchWorkflowStepDefinition("dispatch", "sample.dispatch"),
+            Dispatch("dispatch", "sample.dispatch"),
             new JoinWorkflowStepDefinition("join"));
         var run = WorkflowRunState.Rehydrate(
             workflow,
@@ -584,7 +614,7 @@ public sealed class WorkflowExecutorsShould
             WorkflowDefinition.Create(
                 "workflow.durable.recovered.missing-child",
                 coordination: WorkflowCoordinationConfiguration.Durable),
-            new DispatchWorkflowStepDefinition("dispatch", "sample.dispatch"),
+            Dispatch("dispatch", "sample.dispatch"),
             new JoinWorkflowStepDefinition("join"));
         var run = WorkflowRunState.Rehydrate(
             workflow,
@@ -672,8 +702,8 @@ public sealed class WorkflowExecutorsShould
                 coordination: WorkflowCoordinationConfiguration.Durable),
             new ParallelWorkflowStepDefinition("dispatch",
             [
-                new DispatchWorkflowStepDefinition("alpha", "sample.alpha"),
-                new DispatchWorkflowStepDefinition("beta", "sample.beta"),
+                Dispatch("alpha", "sample.alpha"),
+                Dispatch("beta", "sample.beta"),
             ]),
             new JoinWorkflowStepDefinition("join"));
         var run = WorkflowRunState.Create(workflow, WorkRequestContext.Create(WorkInvocationChannel.InProcess));
@@ -703,7 +733,7 @@ public sealed class WorkflowExecutorsShould
             WorkflowDefinition.Create(
                 "workflow.durable.cancel",
                 coordination: WorkflowCoordinationConfiguration.Durable),
-            new DispatchWorkflowStepDefinition("dispatch", "sample.dispatch"),
+            Dispatch("dispatch", "sample.dispatch"),
             new JoinWorkflowStepDefinition("join"));
         var run = WorkflowRunState.Create(workflow, WorkRequestContext.Create(WorkInvocationChannel.InProcess));
         using var cancellation = new CancellationTokenSource();
@@ -721,6 +751,23 @@ public sealed class WorkflowExecutorsShould
             definition,
             steps,
             WorkOperateAuthorizationConfiguration.None);
+
+    private static DispatchWorkflowStepDefinition Dispatch(
+        string stepName,
+        string workDefinitionName,
+        WorkInput? input = null)
+        => new(stepName, WorkDefinition.Create(workDefinitionName), input);
+
+    private static DispatchEachWorkflowStepDefinition DispatchEach(
+        string stepName,
+        string sourceStepName,
+        string workDefinitionName,
+        string? sourceJsonPointer = null)
+        => new(
+            stepName,
+            new WorkflowStepReference<object?>(sourceStepName),
+            WorkDefinition.Create(workDefinitionName),
+            new WorkflowOutputSelector(sourceJsonPointer));
 
     private static RegisteredWork CreateRegisteredWork(string name)
         => new(

@@ -10,14 +10,14 @@ public sealed class WorkflowRunStateShould
     {
         var workflow = CreateWorkflow(
             WorkflowDefinition.Create("workflow.outstanding"),
-            new DispatchWorkflowStepDefinition("prepare", "sample.prepare"),
+            Dispatch("prepare", "sample.prepare"),
             new ParallelWorkflowStepDefinition("notify",
             [
-                new DispatchWorkflowStepDefinition("email", "sample.email"),
-                new DispatchWorkflowStepDefinition("invoice", "sample.invoice"),
+                Dispatch("email", "sample.email"),
+                Dispatch("invoice", "sample.invoice"),
             ]),
             new JoinWorkflowStepDefinition("join-1"),
-            new DispatchWorkflowStepDefinition("archive", "sample.archive"),
+            Dispatch("archive", "sample.archive"),
             new JoinWorkflowStepDefinition("join-2"));
         var run = WorkflowRunState.Create(workflow, WorkRequestContext.Create(WorkInvocationChannel.InProcess));
         var first = WorkerId.New();
@@ -42,9 +42,9 @@ public sealed class WorkflowRunStateShould
         var definition = WorkflowDefinition.Create("workflow.rehydrate");
         var workflow = CreateWorkflow(
             definition,
-            new DispatchWorkflowStepDefinition("prepare", "sample.prepare"),
+            Dispatch("prepare", "sample.prepare"),
             new JoinWorkflowStepDefinition("join"),
-            new DispatchWorkflowStepDefinition("archive", "sample.archive"));
+            Dispatch("archive", "sample.archive"));
         var runId = WorkflowRunId.New();
         var workerId = WorkerId.New();
         var record = new WorkflowRunPersistenceRecord(
@@ -105,7 +105,7 @@ public sealed class WorkflowRunStateShould
         var definition = WorkflowDefinition.Create("workflow.rehydrate.missing-step");
         var workflow = CreateWorkflow(
             definition,
-            new DispatchWorkflowStepDefinition("prepare", "sample.prepare"),
+            Dispatch("prepare", "sample.prepare"),
             new JoinWorkflowStepDefinition("join"));
         var record = new WorkflowRunPersistenceRecord(
             "workflow-tests",
@@ -142,7 +142,7 @@ public sealed class WorkflowRunStateShould
     {
         var workflow = CreateWorkflow(
             WorkflowDefinition.Create("workflow.fail-step"),
-            new DispatchWorkflowStepDefinition("dispatch", "sample.dispatch"));
+            Dispatch("dispatch", "sample.dispatch"));
         var run = WorkflowRunState.Create(workflow, WorkRequestContext.Create(WorkInvocationChannel.InProcess));
 
         run.FailStep("dispatch", [WorkMessage.Error("workflow.dispatch.failed", "Dispatch failed.")]);
@@ -162,7 +162,7 @@ public sealed class WorkflowRunStateShould
             coordination: WorkflowCoordinationConfiguration.Durable);
         var workflow = CreateWorkflow(
             definition,
-            new DispatchWorkflowStepDefinition("dispatch", "sample.dispatch"));
+            Dispatch("dispatch", "sample.dispatch"));
         var run = WorkflowRunState.Create(workflow, WorkRequestContext.Create(WorkInvocationChannel.InProcess));
 
         Assert.True(run.TryRecordAcceptedControlAction(WorkflowAction.Pause, out _));
@@ -181,7 +181,7 @@ public sealed class WorkflowRunStateShould
             coordination: WorkflowCoordinationConfiguration.Durable);
         var workflow = CreateWorkflow(
             definition,
-            new DispatchWorkflowStepDefinition("dispatch", "sample.dispatch"),
+            Dispatch("dispatch", "sample.dispatch"),
             new JoinWorkflowStepDefinition("join"));
         var run = WorkflowRunState.Create(workflow, WorkRequestContext.Create(WorkInvocationChannel.InProcess));
         var workerId = WorkerId.New();
@@ -213,4 +213,10 @@ public sealed class WorkflowRunStateShould
             definition,
             steps,
             WorkOperateAuthorizationConfiguration.None);
+
+    private static DispatchWorkflowStepDefinition Dispatch(
+        string stepName,
+        string workDefinitionName,
+        WorkInput? input = null)
+        => new(stepName, WorkDefinition.Create(workDefinitionName), input);
 }

@@ -16,7 +16,7 @@ public sealed class WorkflowRuntimeInternalsShould
             coordination: WorkflowCoordinationConfiguration.Durable);
         var workflow = CreateWorkflow(
             definition,
-            new DispatchWorkflowStepDefinition("dispatch", "sample.dispatch"),
+            Dispatch("dispatch", "sample.dispatch"),
             new JoinWorkflowStepDefinition("join"));
         var mismatchedRun = CreatePersistedRun(
             "different-system",
@@ -62,11 +62,11 @@ public sealed class WorkflowRuntimeInternalsShould
         var nonDurableDefinition = WorkflowDefinition.Create("workflow.durable.recover.non-durable");
         var durableWorkflow = CreateWorkflow(
             durableDefinition,
-            new DispatchWorkflowStepDefinition("dispatch", "sample.dispatch"),
+            Dispatch("dispatch", "sample.dispatch"),
             new JoinWorkflowStepDefinition("join"));
         var nonDurableWorkflow = CreateWorkflow(
             nonDurableDefinition,
-            new DispatchWorkflowStepDefinition("dispatch", "sample.dispatch"),
+            Dispatch("dispatch", "sample.dispatch"),
             new JoinWorkflowStepDefinition("join"));
         var missingRun = CreatePersistedRun(
             "workflow-tests",
@@ -119,8 +119,8 @@ public sealed class WorkflowRuntimeInternalsShould
             coordination: WorkflowCoordinationConfiguration.Durable);
         var currentWorkflow = CreateWorkflow(
             currentDefinition,
-            new DispatchWorkflowStepDefinition("dispatch", "sample.dispatch"),
-            new DispatchWorkflowStepDefinition("archive", "sample.archive"),
+            Dispatch("dispatch", "sample.dispatch"),
+            Dispatch("archive", "sample.archive"),
             new JoinWorkflowStepDefinition("join"));
         var persistedRun = CreatePersistedRun(
             "workflow-tests",
@@ -156,7 +156,7 @@ public sealed class WorkflowRuntimeInternalsShould
             coordination: WorkflowCoordinationConfiguration.Durable);
         var workflow = CreateWorkflow(
             definition,
-            new DispatchWorkflowStepDefinition("dispatch", "sample.dispatch"),
+            Dispatch("dispatch", "sample.dispatch"),
             new JoinWorkflowStepDefinition("join"));
         var persistedRun = CreatePersistedRun(
             "workflow-tests",
@@ -190,7 +190,7 @@ public sealed class WorkflowRuntimeInternalsShould
             coordination: WorkflowCoordinationConfiguration.Durable);
         var workflow = CreateWorkflow(
             definition,
-            new DispatchWorkflowStepDefinition("dispatch", "sample.dispatch"),
+            Dispatch("dispatch", "sample.dispatch"),
             new JoinWorkflowStepDefinition("join"));
         var persistedRun = CreatePersistedRun(
             "workflow-tests",
@@ -232,9 +232,9 @@ public sealed class WorkflowRuntimeInternalsShould
             coordination: WorkflowCoordinationConfiguration.Durable);
         var workflow = CreateWorkflow(
             definition,
-            new DispatchWorkflowStepDefinition("dispatch", "sample.dispatch"),
+            Dispatch("dispatch", "sample.dispatch"),
             new JoinWorkflowStepDefinition("join"),
-            new DispatchWorkflowStepDefinition("archive", "sample.archive"));
+            Dispatch("archive", "sample.archive"));
         var persistedRun = new WorkflowRunPersistenceRecord(
             "workflow-tests",
             WorkflowRunId.New(),
@@ -308,7 +308,7 @@ public sealed class WorkflowRuntimeInternalsShould
             coordination: WorkflowCoordinationConfiguration.Durable);
         var workflow = CreateWorkflow(
             definition,
-            new DispatchWorkflowStepDefinition("dispatch", "sample.dispatch"),
+            Dispatch("dispatch", "sample.dispatch"),
             new JoinWorkflowStepDefinition("join"));
         var firstRun = CreatePersistedRun(
             "workflow-tests",
@@ -350,7 +350,7 @@ public sealed class WorkflowRuntimeInternalsShould
         var workerId = WorkerId.New();
         var workflow = CreateWorkflow(
             WorkflowDefinition.Create("workflow.duplicate.execution"),
-            new DispatchWorkflowStepDefinition("dispatch", "sample.dispatch"));
+            Dispatch("dispatch", "sample.dispatch"));
         var runtime = CreateRuntime(
             catalog: new WorkflowCatalog([workflow]),
             persistenceStore: null,
@@ -380,7 +380,7 @@ public sealed class WorkflowRuntimeInternalsShould
             WorkflowDefinition.Create(
                 "workflow.runtime.exception",
                 coordination: WorkflowCoordinationConfiguration.Durable),
-            new DispatchWorkflowStepDefinition("dispatch", "sample.dispatch"));
+            Dispatch("dispatch", "sample.dispatch"));
         var runtime = CreateRuntime(
             catalog: new WorkflowCatalog([workflow]),
             persistenceStore: null,
@@ -410,7 +410,7 @@ public sealed class WorkflowRuntimeInternalsShould
         var workerId = WorkerId.New();
         var workflow = CreateWorkflow(
             WorkflowDefinition.Create("workflow.runtime.canceled"),
-            new DispatchWorkflowStepDefinition("dispatch", "sample.dispatch"));
+            Dispatch("dispatch", "sample.dispatch"));
         var runtime = CreateRuntime(
             catalog: new WorkflowCatalog([workflow]),
             persistenceStore: null,
@@ -443,7 +443,7 @@ public sealed class WorkflowRuntimeInternalsShould
         var workerId = WorkerId.New();
         var workflow = CreateWorkflow(
             WorkflowDefinition.Create("workflow.runtime.wait"),
-            new DispatchWorkflowStepDefinition("dispatch", "sample.dispatch"));
+            Dispatch("dispatch", "sample.dispatch"));
         var runtime = CreateRuntime(
             catalog: new WorkflowCatalog([workflow]),
             persistenceStore: null,
@@ -472,7 +472,7 @@ public sealed class WorkflowRuntimeInternalsShould
         var workerId = WorkerId.New();
         var workflow = CreateWorkflow(
             WorkflowDefinition.Create("workflow.runtime.wait.complete"),
-            new DispatchWorkflowStepDefinition("dispatch", "sample.dispatch"));
+            Dispatch("dispatch", "sample.dispatch"));
         var runtime = CreateRuntime(
             catalog: new WorkflowCatalog([workflow]),
             persistenceStore: null,
@@ -539,7 +539,7 @@ public sealed class WorkflowRuntimeInternalsShould
     {
         var workflow = CreateWorkflow(
             definition,
-            new DispatchWorkflowStepDefinition("dispatch", "sample.dispatch"),
+            Dispatch("dispatch", "sample.dispatch"),
             new JoinWorkflowStepDefinition("join"));
         return new WorkflowRunPersistenceRecord(
             systemName,
@@ -859,4 +859,10 @@ public sealed class WorkflowRuntimeInternalsShould
                 => Task.CompletedTask;
         }
     }
+
+    private static DispatchWorkflowStepDefinition Dispatch(
+        string stepName,
+        string workDefinitionName,
+        WorkInput? input = null)
+        => new(stepName, WorkDefinition.Create(workDefinitionName), input);
 }

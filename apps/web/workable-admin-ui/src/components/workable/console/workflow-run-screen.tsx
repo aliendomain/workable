@@ -45,6 +45,7 @@ import {
   type WorkMessage,
   type WorkableConnection,
   type WorkflowChildWorkerSummary,
+  type WorkflowStepChildWorkerQueryResult,
   type WorkflowAvailableActions,
   type WorkflowOperatorNodeStatus,
   type WorkflowRunDetailView,
@@ -97,7 +98,8 @@ const emptyAvailableWorkflowActions: WorkflowAvailableActions = {
   start: false,
 };
 
-const workflowGraphChildSampleSize = 4;
+const workflowNodeWorkerPageSize = 12;
+const workflowGraphChildSampleSize = workflowNodeWorkerPageSize;
 const workflowPanelOptions: PanelVisibilityOption<WorkflowDetailPanelId>[] = [
   {
     id: "workflowControls",
@@ -125,6 +127,24 @@ export function createWorkflowRunDetailPath(
 
 function createWorkflowRunActionPath(workflowRunId: string, action: WorkflowAction) {
   return `workflow-runs/${encodeURIComponent(workflowRunId)}/actions/${action.toLowerCase()}`;
+}
+
+function createWorkflowRunStepChildrenPath(
+  workflowRunId: string,
+  stepName: string,
+  options: {
+    skip: number;
+    take: number;
+  }
+) {
+  const params = new URLSearchParams({
+    skip: String(Math.max(0, options.skip)),
+    take: String(Math.max(1, options.take)),
+  });
+  return appendQueryString(
+    `workflow-runs/${encodeURIComponent(workflowRunId)}/steps/${encodeURIComponent(stepName)}/children`,
+    params
+  );
 }
 
 export function WorkflowRunConsoleView({
@@ -223,6 +243,7 @@ export function WorkflowRunConsoleView({
     workflowRealtime.data,
     "workflowRun"
   );
+  const [stepChildPageRefreshToken, setStepChildPageRefreshToken] = useState(0);
   const realtimeErrors = useMemo(
     () => getWorkComponentErrors(workflowRealtime.data),
     [workflowRealtime.data]
@@ -239,6 +260,13 @@ export function WorkflowRunConsoleView({
       setOptimisticRunState(null);
     }
   }, [optimisticRunState, realtimeRun?.status, workflowDetail.data?.status]);
+  useEffect(() => {
+    if (!realtimeRun && !workflowDetail.data) {
+      return;
+    }
+
+    setStepChildPageRefreshToken((current) => current + 1);
+  }, [realtimeRun, workflowDetail.data]);
   const run = useMemo(
     () => mergeWorkflowRunDetail(realtimeRun, workflowDetail.data ?? null, optimisticRunState),
     [optimisticRunState, realtimeRun, workflowDetail.data]
@@ -451,6 +479,7 @@ export function WorkflowRunConsoleView({
                       </ConsoleEmptyState>
                     ) : (
                       <WorkflowFlowChart
+                        connection={connection}
                         currentStepName={run.currentStepName}
                         currentStepStatus={run.currentStepStatus}
                         initialAutoFollowCurrentStep={initialUiState?.runId === workflowRunId
@@ -463,6 +492,7 @@ export function WorkflowRunConsoleView({
                         onUiStateChange={onUiStateChange}
                         outstandingChildren={run.outstandingChildren}
                         runStatus={run.status}
+                        stepChildPageRefreshToken={stepChildPageRefreshToken}
                         steps={run.steps}
                         workflowRunId={workflowRunId}
                       />
@@ -537,6 +567,7 @@ function choosePreferredWorkflowRun(
 }
 
 function WorkflowFlowChart({
+  connection,
   currentStepName,
   currentStepStatus,
   initialAutoFollowCurrentStep,
@@ -545,9 +576,11 @@ function WorkflowFlowChart({
   onUiStateChange,
   outstandingChildren,
   runStatus,
+  stepChildPageRefreshToken,
   steps,
   workflowRunId,
 }: {
+  connection: WorkableConnection;
   currentStepName?: string | null;
   currentStepStatus?: WorkflowOperatorNodeStatus | null;
   initialAutoFollowCurrentStep?: boolean;
@@ -556,6 +589,7 @@ function WorkflowFlowChart({
   onUiStateChange?: (state: WorkflowRunConsoleViewUiStateSnapshot) => void;
   outstandingChildren: WorkflowChildWorkerSummary;
   runStatus: WorkflowRunStatus;
+  stepChildPageRefreshToken: number;
   steps: WorkflowStepOperatorView[];
   workflowRunId: string;
 }) {
@@ -696,8 +730,11 @@ function WorkflowFlowChart({
       <div className="rounded-2xl border border-border/70 bg-card/90 p-4 shadow-sm">
         {selectedStep ? (
           <WorkflowSelectedNodeInspector
+            connection={connection}
             onOpenWorker={onOpenWorker}
+            refreshToken={stepChildPageRefreshToken}
             step={selectedStep}
+            workflowRunId={workflowRunId}
           />
         ) : (
           <ConsoleEmptyState padding="compact">
@@ -746,14 +783,54 @@ function WorkflowStructureSequence({
 }
 
 function WorkflowSelectedNodeInspector({
+  connection,
   onOpenWorker,
+  refreshToken,
   step,
+  workflowRunId,
 }: {
+  connection: WorkableConnection;
   onOpenWorker: (workerId: string) => void;
+  refreshToken: number;
   step: WorkflowStepOperatorView;
+  workflowRunId: string;
 }) {
-  const sampledWorkers = collectAssociatedWorkflowWorkers(step);
-  const remainingWorkerCount = Math.max(0, step.children.total - sampledWorkers.length);
+  const [pageIndex, setPageIndex] = useState(0);
+  const pageSkip = pageIndex * workflowNodeWorkerPageSize;
+  const initialPageSampleCount = Math.min(workflowNodeWorkerPageSize, step.children.total);
+  const shouldLoadPagedChildren = step.children.total > 0 && (
+    pageIndex > 0 ||
+    step.childSample.length < initialPageSampleCount
+  );
+  const childWorkersPage = useWorkableResource<WorkflowStepChildWorkerQueryResult>(
+    connection,
+    shouldLoadPagedChildren
+      ? createWorkflowRunStepChildrenPath(workflowRunId, step.name, {
+          skip: pageSkip,
+          take: workflowNodeWorkerPageSize,
+        })
+      : null,
+    refreshToken + pageIndex,
+    {
+      resetKey: `${workflowRunId}:${step.name}:${pageIndex}`,
+    }
+  );
+  const pagedWorkers = shouldLoadPagedChildren
+    ? (childWorkersPage.data?.workers ?? [])
+    : step.childSample.slice(0, workflowNodeWorkerPageSize);
+  const totalWorkers = shouldLoadPagedChildren
+    ? (childWorkersPage.data?.totalCount ?? step.children.total)
+    : step.children.total;
+  const pageStart = totalWorkers > 0 ? pageSkip + 1 : 0;
+  const pageEnd = totalWorkers > 0
+    ? Math.min(pageSkip + pagedWorkers.length, totalWorkers)
+    : 0;
+  const hasPreviousPage = pageIndex > 0;
+  const hasNextPage = pageSkip + pagedWorkers.length < totalWorkers;
+
+  useEffect(() => {
+    setPageIndex(0);
+  }, [step.name]);
 
   return (
     <div className="space-y-4">
@@ -771,9 +848,46 @@ function WorkflowSelectedNodeInspector({
           ) : null}
         </div>
       </div>
-      {sampledWorkers.length > 0 ? (
+      {totalWorkers > 0 ? (
         <div className="space-y-2">
-          {sampledWorkers.map((worker) => (
+          <div className="flex flex-wrap items-center justify-between gap-2 text-muted-foreground text-sm">
+            <span>
+              {pageStart}-{pageEnd} of {totalWorkers} worker{totalWorkers === 1 ? "" : "s"}
+            </span>
+            {totalWorkers > workflowNodeWorkerPageSize ? (
+              <div className="flex items-center gap-2">
+                <Button
+                  disabled={!hasPreviousPage}
+                  onClick={() => setPageIndex((current) => Math.max(0, current - 1))}
+                  size="sm"
+                  type="button"
+                  variant="outline"
+                >
+                  Previous
+                </Button>
+                <Button
+                  disabled={!hasNextPage}
+                  onClick={() => setPageIndex((current) => current + 1)}
+                  size="sm"
+                  type="button"
+                  variant="outline"
+                >
+                  Next
+                </Button>
+              </div>
+            ) : null}
+          </div>
+          {shouldLoadPagedChildren && childWorkersPage.error ? (
+            <p className="text-destructive text-sm">
+              {childWorkersPage.error}
+            </p>
+          ) : null}
+          {shouldLoadPagedChildren && childWorkersPage.loading && !childWorkersPage.data ? (
+            <p className="text-muted-foreground text-sm">
+              Loading associated workers...
+            </p>
+          ) : null}
+          {pagedWorkers.map((worker) => (
             <Button
               key={worker.workerId}
               className="h-auto min-h-12 w-full min-w-0 justify-between gap-3 overflow-hidden rounded-xl px-3 py-3 text-left"
@@ -796,15 +910,10 @@ function WorkflowSelectedNodeInspector({
               </span>
             </Button>
           ))}
-          {remainingWorkerCount > 0 ? (
-            <p className="text-muted-foreground text-sm">
-              +{remainingWorkerCount} more associated worker{remainingWorkerCount === 1 ? "" : "s"} not shown in this sample
-            </p>
-          ) : null}
         </div>
       ) : step.children.total > 0 ? (
         <p className="text-muted-foreground text-sm">
-          This node has associated workers, but none are included in the current sample.
+          This node has associated workers, but none are currently available to display.
         </p>
       ) : null}
       {step.children.total === 0 ? (
@@ -814,24 +923,6 @@ function WorkflowSelectedNodeInspector({
       ) : null}
     </div>
   );
-}
-
-function collectAssociatedWorkflowWorkers(step: WorkflowStepOperatorView) {
-  const workers = new Map<string, WorkflowStepOperatorView["childSample"][number]>();
-  const visit = (node: WorkflowStepOperatorView) => {
-    for (const worker of node.childSample) {
-      if (!workers.has(worker.workerId)) {
-        workers.set(worker.workerId, worker);
-      }
-    }
-
-    for (const childStep of node.steps) {
-      visit(childStep);
-    }
-  };
-
-  visit(step);
-  return [...workers.values()];
 }
 
 function filterRenderedWorkflowSteps(
@@ -851,7 +942,7 @@ function summarizeWorkflowWorkerProgress(
 
   const visit = (currentSteps: WorkflowStepOperatorView[]) => {
     for (const step of currentSteps) {
-      if (step.kind === "DispatchWork") {
+      if (step.kind === "DispatchWork" || step.kind === "DispatchEach") {
         total += step.children.total;
         active += step.children.active;
         final += step.children.final;
@@ -1264,6 +1355,7 @@ function WorkflowExecutingIndicator() {
 
 function renderWorkflowStepKindIcon(kind: WorkflowStepKind) {
   switch (kind) {
+    case "DispatchEach":
     case "Parallel":
       return <GitBranch className="size-4" />;
     case "Join":
@@ -1440,6 +1532,8 @@ function formatWorkflowStepKind(kind?: WorkflowStepKind | null) {
   switch (kind) {
     case "DispatchWork":
       return "Dispatch";
+    case "DispatchEach":
+      return "Dispatch Each";
     case "Parallel":
       return "Parallel";
     case "Join":

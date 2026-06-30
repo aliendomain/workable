@@ -258,7 +258,7 @@ public sealed class WorkableSignalRTests
                     });
                 builder.AddWorkflow(
                     WorkflowDefinition.Create("signalr.workflow"),
-                    workflow => workflow.DispatchWork("dispatch", "signalr.workflow.child"),
+                    workflow => workflow.DispatchWork("dispatch", WorkDefinition.Create("signalr.workflow.child")),
                     authorize => authorize
                         .AllowReadToGroups(TransportAuthorizationTestSupport.ReadGroups.ToArray())
                         .AllowOperateToGroups(TransportAuthorizationTestSupport.OperateGroups.ToArray()));
@@ -495,7 +495,7 @@ public sealed class WorkableSignalRTests
                     SuccessfulWork);
                 builder.AddWorkflow(
                     WorkflowDefinition.Create("signalr.workflow.capacity"),
-                    workflow => workflow.DispatchWork("dispatch", "signalr.workflow.capacity-child"));
+                    workflow => workflow.DispatchWork("dispatch", WorkDefinition.Create("signalr.workflow.capacity-child")));
             });
         var system = host.Services.GetRequiredService<IWorkSystemRegistry>().Default;
         var gate = host.Services.GetRequiredService<SignalRWorkGate>();
@@ -603,7 +603,7 @@ public sealed class WorkableSignalRTests
                     });
                 builder.AddWorkflow(
                     WorkflowDefinition.Create("signalr.workflow.manual"),
-                    workflow => workflow.DispatchWork("dispatch", "signalr.workflow.manual-child"));
+                    workflow => workflow.DispatchWork("dispatch", WorkDefinition.Create("signalr.workflow.manual-child")));
             });
         var system = Assert.IsType<InMemoryWorkSystem>(host.Services.GetRequiredService<IWorkSystemRegistry>().Default);
         var startContext = TransportAuthorizationTestSupport.CreateTransportRequestContext(

@@ -740,7 +740,7 @@ public sealed class WorkableMcpTests
                 SuccessfulWork);
             builder.AddWorkflow(
                 WorkflowDefinition.Create("mcp.http.workflow.start"),
-                workflow => workflow.DispatchWork("dispatch", "mcp.http.workflow.child"),
+                workflow => workflow.DispatchWork("dispatch", WorkDefinition.Create("mcp.http.workflow.child")),
                 authorize => authorize.AllowOperateToGroups(TransportAuthorizationTestSupport.OperateGroups.ToArray()));
         });
         var system = Assert.IsType<InMemoryWorkSystem>(host.Services.GetRequiredService<IWorkSystemRegistry>().Default);
@@ -812,9 +812,9 @@ public sealed class WorkableMcpTests
             builder.AddWorkflow(
                 WorkflowDefinition.Create("mcp.http.workflow.stop"),
                 workflow => workflow
-                    .DispatchWork("slow", "mcp.http.workflow.stop.slow")
+                    .DispatchWork("slow", WorkDefinition.Create("mcp.http.workflow.stop.slow"))
                     .Join("join")
-                    .DispatchWork("fast", "mcp.http.workflow.stop.fast"),
+                    .DispatchWork("fast", WorkDefinition.Create("mcp.http.workflow.stop.fast")),
                 authorize => authorize.AllowOperateToGroups(TransportAuthorizationTestSupport.OperateGroups.ToArray()));
         });
         var system = Assert.IsType<InMemoryWorkSystem>(host.Services.GetRequiredService<IWorkSystemRegistry>().Default);
@@ -885,7 +885,7 @@ public sealed class WorkableMcpTests
                 });
             builder.AddWorkflow(
                 WorkflowDefinition.Create("mcp.http.workflow.cancel"),
-                workflow => workflow.DispatchWork("dispatch", "mcp.http.workflow.cancel.child"),
+                workflow => workflow.DispatchWork("dispatch", WorkDefinition.Create("mcp.http.workflow.cancel.child")),
                 authorize => authorize.AllowOperateToGroups(TransportAuthorizationTestSupport.OperateGroups.ToArray()));
         });
         var system = Assert.IsType<InMemoryWorkSystem>(host.Services.GetRequiredService<IWorkSystemRegistry>().Default);
@@ -1018,7 +1018,7 @@ public sealed class WorkableMcpTests
                     SuccessfulWork);
                 builder.AddWorkflow(
                     WorkflowDefinition.Create("mcp.http.workflow.secured"),
-                    workflow => workflow.DispatchWork("dispatch", "mcp.http.workflow.secured.child"),
+                    workflow => workflow.DispatchWork("dispatch", WorkDefinition.Create("mcp.http.workflow.secured.child")),
                     authorize => authorize.AllowOperateToGroups("workflow.ops"));
             },
             groups: TransportAuthorizationTestSupport.SystemAdministratorGroups);
@@ -1299,9 +1299,9 @@ public sealed class WorkableMcpTests
                 builder.AddWorkflow(
                     WorkflowDefinition.Create("mcp.workflow.stop"),
                     workflow => workflow
-                        .DispatchWork("slow", "mcp.workflow.slow")
+                        .DispatchWork("slow", WorkDefinition.Create("mcp.workflow.slow"))
                         .Join("join")
-                        .DispatchWork("fast", "mcp.workflow.fast"),
+                        .DispatchWork("fast", WorkDefinition.Create("mcp.workflow.fast")),
                     authorize => authorize.AllowOperateToGroups(TransportAuthorizationTestSupport.OperateGroups.ToArray()));
             })
             .AddWorkableMcpServer()
@@ -1376,9 +1376,9 @@ public sealed class WorkableMcpTests
                 builder.AddWorkflow(
                     WorkflowDefinition.Create("mcp.workflow.pause"),
                     workflow => workflow
-                        .DispatchWork("slow", "mcp.workflow.pause.slow")
+                        .DispatchWork("slow", WorkDefinition.Create("mcp.workflow.pause.slow"))
                         .Join("join")
-                        .DispatchWork("fast", "mcp.workflow.pause.fast"),
+                        .DispatchWork("fast", WorkDefinition.Create("mcp.workflow.pause.fast")),
                     authorize => authorize.AllowOperateToGroups(TransportAuthorizationTestSupport.OperateGroups.ToArray()));
             })
             .AddWorkableMcpServer()
@@ -1466,7 +1466,7 @@ public sealed class WorkableMcpTests
                     });
                 builder.AddWorkflow(
                     WorkflowDefinition.Create("mcp.workflow.cancel"),
-                    workflow => workflow.DispatchWork("dispatch", "mcp.workflow.cancel.child"),
+                    workflow => workflow.DispatchWork("dispatch", WorkDefinition.Create("mcp.workflow.cancel.child")),
                     authorize => authorize.AllowOperateToGroups(TransportAuthorizationTestSupport.OperateGroups.ToArray()));
             })
             .AddWorkableMcpServer()
@@ -1554,8 +1554,8 @@ public sealed class WorkableMcpTests
                     WorkflowDefinition.Create("mcp.workflow.observe"),
                     workflow => workflow
                         .RunParallel("notify", parallel => parallel
-                            .DispatchWork("email", "mcp.workflow.observe.email")
-                            .DispatchWork("invoice", "mcp.workflow.observe.invoice"))
+                            .DispatchWork("email", WorkDefinition.Create("mcp.workflow.observe.email"))
+                            .DispatchWork("invoice", WorkDefinition.Create("mcp.workflow.observe.invoice")))
                         .Join("settle"),
                     authorize: authorize => authorize
                         .AllowReadToGroups(TransportAuthorizationTestSupport.ReadGroups.ToArray())
@@ -1657,15 +1657,15 @@ public sealed class WorkableMcpTests
                     WorkflowDefinition.Create("mcp.workflow.filter.running"),
                     workflow => workflow
                         .RunParallel("notify", parallel => parallel
-                            .DispatchWork("email", "mcp.workflow.filter.email")
-                            .DispatchWork("invoice", "mcp.workflow.filter.invoice"))
+                            .DispatchWork("email", WorkDefinition.Create("mcp.workflow.filter.email"))
+                            .DispatchWork("invoice", WorkDefinition.Create("mcp.workflow.filter.invoice")))
                         .Join("settle"),
                     authorize: authorize => authorize
                         .AllowReadToGroups(TransportAuthorizationTestSupport.ReadGroups.ToArray())
                         .AllowOperateToGroups(TransportAuthorizationTestSupport.OperateGroups.ToArray()));
                 builder.AddWorkflow(
                     WorkflowDefinition.Create("mcp.workflow.filter.completed"),
-                    workflow => workflow.DispatchWork("dispatch", "mcp.workflow.filter.done.child"),
+                    workflow => workflow.DispatchWork("dispatch", WorkDefinition.Create("mcp.workflow.filter.done.child")),
                     authorize: authorize => authorize
                         .AllowReadToGroups(TransportAuthorizationTestSupport.ReadGroups.ToArray())
                         .AllowOperateToGroups(TransportAuthorizationTestSupport.OperateGroups.ToArray()));
@@ -1721,7 +1721,7 @@ public sealed class WorkableMcpTests
                     SuccessfulWork);
                 builder.AddWorkflow(
                     WorkflowDefinition.Create("mcp.workflow.read.secured"),
-                    workflow => workflow.DispatchWork("dispatch", "mcp.workflow.read.secured.child"),
+                    workflow => workflow.DispatchWork("dispatch", WorkDefinition.Create("mcp.workflow.read.secured.child")),
                     authorize: authorize => authorize
                         .AllowReadToGroups("workflow.read")
                         .AllowOperateToGroups("workflow.ops"));

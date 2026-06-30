@@ -11,6 +11,11 @@ public enum WorkflowStepKind
     DispatchWork,
 
     /// <summary>
+    /// A step that expands an earlier output array into one child work item per element.
+    /// </summary>
+    DispatchEach,
+
+    /// <summary>
     /// A step that contains parallel child steps.
     /// </summary>
     Parallel,
@@ -34,13 +39,27 @@ public abstract record WorkflowStepDefinition(
 /// Represents a step that queues one existing Workable work definition.
 /// </summary>
 /// <param name="Name">The stable workflow-local step name.</param>
-/// <param name="WorkDefinitionName">The target Workable work definition name.</param>
+/// <param name="WorkDefinition">The target Workable work definition.</param>
 /// <param name="Input">Optional static input payload supplied when the step queues work.</param>
 public sealed record DispatchWorkflowStepDefinition(
     string Name,
-    string WorkDefinitionName,
+    WorkDefinition WorkDefinition,
     WorkInput? Input = null)
     : WorkflowStepDefinition(Name, WorkflowStepKind.DispatchWork);
+
+/// <summary>
+/// Represents a step that expands an earlier output array into multiple child work dispatches.
+/// </summary>
+/// <param name="Name">The stable workflow-local step name.</param>
+/// <param name="SourceStep">The earlier workflow step whose completed output should be expanded.</param>
+/// <param name="WorkDefinition">The target Workable work definition.</param>
+/// <param name="SourceSelector">The generated selector that chooses the array within the source output. When its JSON pointer is omitted, the root output value must be an array.</param>
+public sealed record DispatchEachWorkflowStepDefinition(
+    string Name,
+    WorkflowStepReference SourceStep,
+    WorkDefinition WorkDefinition,
+    WorkflowOutputSelector SourceSelector)
+    : WorkflowStepDefinition(Name, WorkflowStepKind.DispatchEach);
 
 /// <summary>
 /// Represents a step that contains parallel child steps.

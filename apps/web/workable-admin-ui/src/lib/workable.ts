@@ -646,7 +646,7 @@ export type WorkflowAvailableActions = {
   cancel: boolean;
 };
 
-export type WorkflowStepKind = "DispatchWork" | "Parallel" | "Join";
+export type WorkflowStepKind = "DispatchWork" | "DispatchEach" | "Parallel" | "Join";
 
 export type WorkflowOperatorNodeStatus =
   | "Pending"
@@ -668,6 +668,13 @@ export type WorkflowChildWorkerView = {
   workerId: string;
   definitionName: string;
   state: WorkerState;
+};
+
+export type WorkflowStepChildWorkerQueryResult = {
+  workers: WorkflowChildWorkerView[];
+  totalCount: number;
+  skip: number;
+  take: number;
 };
 
 export type WorkflowStepOperatorView = {

@@ -1,3 +1,5 @@
+using System.Linq.Expressions;
+
 namespace Workable;
 
 internal sealed class WorkflowBuilder : IWorkflowBuilder
@@ -6,11 +8,37 @@ internal sealed class WorkflowBuilder : IWorkflowBuilder
 
     public IWorkflowBuilder DispatchWork(
         string stepName,
-        string workDefinitionName,
+        WorkDefinition workDefinition,
         WorkInput? input = null)
     {
-        ValidateNames(stepName, workDefinitionName);
-        this.steps.Add(new DispatchWorkflowStepDefinition(stepName, workDefinitionName, input));
+        ValidateDispatch(stepName, workDefinition);
+        this.steps.Add(new DispatchWorkflowStepDefinition(stepName, workDefinition, input));
+        return this;
+    }
+
+    public WorkflowStepReference<TOutput> DispatchWork<TOutput>(
+        string stepName,
+        WorkDefinition workDefinition,
+        WorkInput? input = null)
+    {
+        this.DispatchWork(stepName, workDefinition, input);
+        return new WorkflowStepReference<TOutput>(stepName);
+    }
+
+    public IWorkflowBuilder DispatchEach<TSourceOutput, TChildInput>(
+        string stepName,
+        WorkflowStepReference<TSourceOutput> sourceStep,
+        WorkDefinition workDefinition,
+        Expression<Func<TSourceOutput, IEnumerable<TChildInput>?>> selector)
+    {
+        ValidateDispatch(stepName, workDefinition);
+        ArgumentNullException.ThrowIfNull(sourceStep);
+        ArgumentNullException.ThrowIfNull(selector);
+        this.steps.Add(new DispatchEachWorkflowStepDefinition(
+            stepName,
+            sourceStep,
+            workDefinition,
+            WorkflowOutputSelector.Create(selector)));
         return this;
     }
 
@@ -36,10 +64,10 @@ internal sealed class WorkflowBuilder : IWorkflowBuilder
 
     public IReadOnlyList<WorkflowStepDefinition> Build() => [.. this.steps];
 
-    private static void ValidateNames(string stepName, string workDefinitionName)
+    private static void ValidateDispatch(string stepName, WorkDefinition workDefinition)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(stepName);
-        ArgumentException.ThrowIfNullOrWhiteSpace(workDefinitionName);
+        ArgumentNullException.ThrowIfNull(workDefinition);
     }
 
     private sealed class WorkflowParallelBuilder : IWorkflowParallelBuilder
@@ -48,11 +76,11 @@ internal sealed class WorkflowBuilder : IWorkflowBuilder
 
         public IWorkflowParallelBuilder DispatchWork(
             string stepName,
-            string workDefinitionName,
+            WorkDefinition workDefinition,
             WorkInput? input = null)
         {
-            ValidateNames(stepName, workDefinitionName);
-            this.steps.Add(new DispatchWorkflowStepDefinition(stepName, workDefinitionName, input));
+            ValidateDispatch(stepName, workDefinition);
+            this.steps.Add(new DispatchWorkflowStepDefinition(stepName, workDefinition, input));
             return this;
         }
 

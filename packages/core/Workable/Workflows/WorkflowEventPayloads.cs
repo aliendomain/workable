@@ -72,6 +72,7 @@ internal static class WorkflowEventPayloads
                 switch (step.Kind)
                 {
                     case WorkflowStepKind.DispatchWork:
+                    case WorkflowStepKind.DispatchEach:
                     case WorkflowStepKind.Parallel:
                         if (step.Status == WorkflowStepRunStatus.Completed)
                         {

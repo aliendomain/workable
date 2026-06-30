@@ -1,3 +1,5 @@
+using System.Text.Json;
+
 namespace Workable;
 
 internal static class WorkflowExecutionSupport
@@ -66,6 +68,27 @@ internal static class WorkflowExecutionSupport
             Worker: null,
             receipt.Output,
             receipt.Messages);
+
+    public static (IReadOnlyList<WorkInput> Inputs, IReadOnlyList<WorkMessage> Messages) CreateDispatchEachInputs(
+        DispatchEachWorkflowStepDefinition step,
+        IReadOnlyList<WorkOutput?> outputs)
+    {
+        ArgumentNullException.ThrowIfNull(step);
+        ArgumentNullException.ThrowIfNull(outputs);
+
+        var inputs = new List<WorkInput>();
+        foreach (var output in outputs)
+        {
+            if (!TryResolveDispatchEachArray(step, output, out var items, out var message))
+            {
+                return ([], [message]);
+            }
+
+            inputs.AddRange(items.Select(static item => WorkInput.FromJson(item.GetRawText())));
+        }
+
+        return (inputs, []);
+    }
 
     public static async Task CancelOutstandingChildren(
         WorkflowRunState run,
@@ -170,5 +193,122 @@ internal static class WorkflowExecutionSupport
 
             await Task.Delay(WorkerControlPollInterval, cancellationToken);
         }
+    }
+
+    private static bool TryResolveDispatchEachArray(
+        DispatchEachWorkflowStepDefinition step,
+        WorkOutput? output,
+        out IReadOnlyList<JsonElement> items,
+        out WorkMessage message)
+    {
+        if (string.IsNullOrWhiteSpace(output?.Json))
+        {
+            items = [];
+            message = WorkMessage.Error(
+                "workable.workflow.dispatch_each.source_output_required",
+                $"Workflow step '{step.Name}' could not expand source step '{step.SourceStep.StepName}' because the source output was empty.",
+                "workflow.dispatch_each");
+            return false;
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(output.Json);
+            if (!TryResolveJsonPointer(document.RootElement, step.SourceSelector.JsonPointer, out var resolved))
+            {
+                items = [];
+                message = WorkMessage.Error(
+                    "workable.workflow.dispatch_each.source_pointer_not_found",
+                    $"Workflow step '{step.Name}' could not resolve JSON pointer '{step.SourceSelector.JsonPointer}' on source step '{step.SourceStep.StepName}'.",
+                    "workflow.dispatch_each");
+                return false;
+            }
+
+            if (resolved.ValueKind != JsonValueKind.Array)
+            {
+                items = [];
+                message = WorkMessage.Error(
+                    "workable.workflow.dispatch_each.source_output_not_array",
+                    $"Workflow step '{step.Name}' expected source step '{step.SourceStep.StepName}' to resolve to a JSON array.",
+                    "workflow.dispatch_each");
+                return false;
+            }
+
+            items = resolved.EnumerateArray().Select(static item => item.Clone()).ToArray();
+            message = default!;
+            return true;
+        }
+        catch (JsonException exception)
+        {
+            items = [];
+            message = WorkMessage.Error(
+                "workable.workflow.dispatch_each.source_output_invalid_json",
+                $"Workflow step '{step.Name}' could not parse the source output from step '{step.SourceStep.StepName}': {exception.Message}",
+                "workflow.dispatch_each");
+            return false;
+        }
+    }
+
+    private static bool TryResolveJsonPointer(
+        JsonElement root,
+        string? pointer,
+        out JsonElement resolved)
+    {
+        if (string.IsNullOrWhiteSpace(pointer))
+        {
+            resolved = root;
+            return true;
+        }
+
+        if (!pointer.StartsWith("/", StringComparison.Ordinal))
+        {
+            resolved = default;
+            return false;
+        }
+
+        var current = root;
+        foreach (var rawSegment in pointer.Split('/').Skip(1))
+        {
+            var segment = rawSegment
+                .Replace("~1", "/", StringComparison.Ordinal)
+                .Replace("~0", "~", StringComparison.Ordinal);
+
+            if (current.ValueKind == JsonValueKind.Object)
+            {
+                if (!current.TryGetProperty(segment, out current))
+                {
+                    resolved = default;
+                    return false;
+                }
+
+                continue;
+            }
+
+            if (current.ValueKind == JsonValueKind.Array &&
+                int.TryParse(segment, out var index) &&
+                index >= 0)
+            {
+                var currentIndex = 0;
+                foreach (var item in current.EnumerateArray())
+                {
+                    if (currentIndex == index)
+                    {
+                        current = item;
+                        goto NextSegment;
+                    }
+
+                    currentIndex++;
+                }
+            }
+
+            resolved = default;
+            return false;
+
+        NextSegment:
+            continue;
+        }
+
+        resolved = current;
+        return true;
     }
 }

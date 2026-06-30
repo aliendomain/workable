@@ -1240,7 +1240,7 @@ public sealed class WorkableHttpApiTests
             builder.AddWork(WorkDefinition.Create("http.workflow.child"), SuccessfulWork);
             builder.AddWorkflow(
                 WorkflowDefinition.Create("http.workflow.start"),
-                workflow => workflow.DispatchWork("dispatch", "http.workflow.child"));
+                workflow => workflow.DispatchWork("dispatch", WorkDefinition.Create("http.workflow.child")));
         });
         await system.Start();
 
@@ -1282,9 +1282,9 @@ public sealed class WorkableHttpApiTests
             builder.AddWorkflow(
                 WorkflowDefinition.Create("http.workflow.stop"),
                 workflow => workflow
-                    .DispatchWork("slow", "http.workflow.slow")
+                    .DispatchWork("slow", WorkDefinition.Create("http.workflow.slow"))
                     .Join("join")
-                    .DispatchWork("fast", "http.workflow.fast"));
+                    .DispatchWork("fast", WorkDefinition.Create("http.workflow.fast")));
         });
         await system.Start();
 
@@ -1328,7 +1328,7 @@ public sealed class WorkableHttpApiTests
                 });
             builder.AddWorkflow(
                 WorkflowDefinition.Create("http.workflow.cancel"),
-                workflow => workflow.DispatchWork("dispatch", "http.workflow.cancel.child"));
+                workflow => workflow.DispatchWork("dispatch", WorkDefinition.Create("http.workflow.cancel.child")));
         });
         await system.Start();
 
@@ -2396,7 +2396,7 @@ public sealed class WorkableHttpApiTests
             builder.AddAuthorizedTransportWork(WorkDefinition.Create("http.workflow.child"), SuccessfulWork);
             builder.AddWorkflow(
                 WorkflowDefinition.Create("http.workflow.start"),
-                workflow => workflow.DispatchWork("dispatch", "http.workflow.child"),
+                workflow => workflow.DispatchWork("dispatch", WorkDefinition.Create("http.workflow.child")),
                 authorize => authorize.AllowOperateToGroups(TransportAuthorizationTestSupport.OperateGroups.ToArray()));
         });
         var client = host.GetTestClient();
@@ -2446,8 +2446,8 @@ public sealed class WorkableHttpApiTests
                 WorkflowDefinition.Create("http.workflow.observe"),
                 workflow => workflow
                     .RunParallel("notify", parallel => parallel
-                        .DispatchWork("email", "http.workflow.observe.email")
-                        .DispatchWork("invoice", "http.workflow.observe.invoice"))
+                        .DispatchWork("email", WorkDefinition.Create("http.workflow.observe.email"))
+                        .DispatchWork("invoice", WorkDefinition.Create("http.workflow.observe.invoice")))
                     .Join("settle"),
                 authorize => authorize
                     .AllowReadToGroups(TransportAuthorizationTestSupport.ReadGroups.ToArray())
@@ -2535,15 +2535,15 @@ public sealed class WorkableHttpApiTests
                 WorkflowDefinition.Create("http.workflow.filter.running"),
                 workflow => workflow
                     .RunParallel("notify", parallel => parallel
-                        .DispatchWork("email", "http.workflow.filter.email")
-                        .DispatchWork("invoice", "http.workflow.filter.invoice"))
+                        .DispatchWork("email", WorkDefinition.Create("http.workflow.filter.email"))
+                        .DispatchWork("invoice", WorkDefinition.Create("http.workflow.filter.invoice")))
                     .Join("settle"),
                 authorize => authorize
                     .AllowReadToGroups(TransportAuthorizationTestSupport.ReadGroups.ToArray())
                     .AllowOperateToGroups(TransportAuthorizationTestSupport.OperateGroups.ToArray()));
             builder.AddWorkflow(
                 WorkflowDefinition.Create("http.workflow.filter.completed"),
-                workflow => workflow.DispatchWork("dispatch", "http.workflow.filter.done.child"),
+                workflow => workflow.DispatchWork("dispatch", WorkDefinition.Create("http.workflow.filter.done.child")),
                 authorize => authorize
                     .AllowReadToGroups(TransportAuthorizationTestSupport.ReadGroups.ToArray())
                     .AllowOperateToGroups(TransportAuthorizationTestSupport.OperateGroups.ToArray()));
@@ -2574,6 +2574,10 @@ public sealed class WorkableHttpApiTests
         detailResponse.EnsureSuccessStatusCode();
         var detailJson = JsonNode.Parse(await detailResponse.Content.ReadAsStringAsync())?.AsObject()
             ?? throw new InvalidOperationException("Expected workflow detail response.");
+        var childrenResponse = await client.GetAsync($"/workable/workflow-runs/{runId:D}/steps/notify/children?skip=1&take=1");
+        childrenResponse.EnsureSuccessStatusCode();
+        var childrenJson = JsonNode.Parse(await childrenResponse.Content.ReadAsStringAsync())?.AsObject()
+            ?? throw new InvalidOperationException("Expected workflow child page response.");
 
         release.TrySetResult();
 
@@ -2582,6 +2586,11 @@ public sealed class WorkableHttpApiTests
             ?? throw new InvalidOperationException("Expected notify step.");
         Assert.Equal(1, notify["childSample"]?.AsArray()?.Count);
         Assert.Null(notify["additionalChildCount"]);
+        Assert.Equal(2, childrenJson["totalCount"]?.GetValue<int>());
+        Assert.Equal(1, childrenJson["skip"]?.GetValue<int>());
+        Assert.Equal(1, childrenJson["take"]?.GetValue<int>());
+        var childWorker = Assert.Single(childrenJson["workers"]?.AsArray() ?? throw new InvalidOperationException("Expected workers page."));
+        Assert.Equal("http.workflow.filter.invoice", childWorker?["definitionName"]?.GetValue<string>());
     }
 
     [Fact]
@@ -2606,7 +2615,7 @@ public sealed class WorkableHttpApiTests
                 builder.AddAuthorizedTransportWork(WorkDefinition.Create("http.workflow.read.secured.child"), SuccessfulWork);
                 builder.AddWorkflow(
                     WorkflowDefinition.Create("http.workflow.read.secured"),
-                    workflow => workflow.DispatchWork("dispatch", "http.workflow.read.secured.child"),
+                    workflow => workflow.DispatchWork("dispatch", WorkDefinition.Create("http.workflow.read.secured.child")),
                     authorize => authorize
                         .AllowReadToGroups("workflow.read")
                         .AllowOperateToGroups("workflow.ops"));
@@ -2667,9 +2676,9 @@ public sealed class WorkableHttpApiTests
             builder.AddWorkflow(
                 WorkflowDefinition.Create("http.workflow.stop"),
                 workflow => workflow
-                    .DispatchWork("slow", "http.workflow.stop.slow")
+                    .DispatchWork("slow", WorkDefinition.Create("http.workflow.stop.slow"))
                     .Join("join")
-                    .DispatchWork("fast", "http.workflow.stop.fast"),
+                    .DispatchWork("fast", WorkDefinition.Create("http.workflow.stop.fast")),
                 authorize => authorize.AllowOperateToGroups(TransportAuthorizationTestSupport.OperateGroups.ToArray()));
         });
         var client = host.GetTestClient();
@@ -2741,9 +2750,9 @@ public sealed class WorkableHttpApiTests
             builder.AddWorkflow(
                 WorkflowDefinition.Create("http.workflow.pause"),
                 workflow => workflow
-                    .DispatchWork("slow", "http.workflow.pause.slow")
+                    .DispatchWork("slow", WorkDefinition.Create("http.workflow.pause.slow"))
                     .Join("join")
-                    .DispatchWork("fast", "http.workflow.pause.fast"),
+                    .DispatchWork("fast", WorkDefinition.Create("http.workflow.pause.fast")),
                 authorize => authorize.AllowOperateToGroups(TransportAuthorizationTestSupport.OperateGroups.ToArray()));
         });
         var client = host.GetTestClient();
@@ -2828,7 +2837,7 @@ public sealed class WorkableHttpApiTests
                 });
             builder.AddWorkflow(
                 WorkflowDefinition.Create("http.workflow.cancel"),
-                workflow => workflow.DispatchWork("dispatch", "http.workflow.cancel.child"),
+                workflow => workflow.DispatchWork("dispatch", WorkDefinition.Create("http.workflow.cancel.child")),
                 authorize => authorize.AllowOperateToGroups(TransportAuthorizationTestSupport.OperateGroups.ToArray()));
         });
         var client = host.GetTestClient();
@@ -2942,7 +2951,7 @@ public sealed class WorkableHttpApiTests
                 builder.AddAuthorizedTransportWork(WorkDefinition.Create("http.workflow.secured.child"), SuccessfulWork);
                 builder.AddWorkflow(
                     WorkflowDefinition.Create("http.workflow.secured"),
-                    workflow => workflow.DispatchWork("dispatch", "http.workflow.secured.child"),
+                    workflow => workflow.DispatchWork("dispatch", WorkDefinition.Create("http.workflow.secured.child")),
                     authorize => authorize.AllowOperateToGroups("workflow.ops"));
             },
             groups: TransportAuthorizationTestSupport.SystemAdministratorGroups);

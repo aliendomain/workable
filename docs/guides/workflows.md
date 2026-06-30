@@ -11,6 +11,7 @@ Workflow definitions are registered on `IWorkSystemBuilder` with `AddWorkflow(..
 The workflow step graph is composed from built-in step kinds:
 
 - `DispatchWork`
+- `DispatchEach`
 - `Parallel`
 - `Join`
 
@@ -29,16 +30,20 @@ Workflows are registered directly inside one hosted Workable system.
 ```csharp
 services.AddWorkableSystem(builder =>
 {
+    var prepareDefinition = WorkDefinition.Create("orders.prepare");
+    var emailDefinition = WorkDefinition.Create("orders.email");
+    var invoiceDefinition = WorkDefinition.Create("orders.invoice");
+
     builder.AddWork(
-        WorkDefinition.Create("orders.prepare"),
+        prepareDefinition,
         (_, _, _) => Task.FromResult(WorkExecutionResult.Success()));
 
     builder.AddWork(
-        WorkDefinition.Create("orders.email"),
+        emailDefinition,
         (_, _, _) => Task.FromResult(WorkExecutionResult.Success()));
 
     builder.AddWork(
-        WorkDefinition.Create("orders.invoice"),
+        invoiceDefinition,
         (_, _, _) => Task.FromResult(WorkExecutionResult.Success()));
 
     builder.AddWorkflow(
@@ -47,10 +52,10 @@ services.AddWorkableSystem(builder =>
             description: "Prepare the order, then send email and invoice work in parallel.",
             category: "Orders"),
         workflow => workflow
-            .DispatchWork("prepare", "orders.prepare")
+            .DispatchWork("prepare", prepareDefinition)
             .RunParallel("notify", parallel => parallel
-                .DispatchWork("email", "orders.email")
-                .DispatchWork("invoice", "orders.invoice"))
+                .DispatchWork("email", emailDefinition)
+                .DispatchWork("invoice", invoiceDefinition))
             .Join("settle"),
         authorize: auth => auth
             .AllowReadToGroups("orders.read")
@@ -65,15 +70,19 @@ Workflow names must be unique within one system and are matched case-insensitive
 Durable workflows opt in through `WorkflowCoordinationConfiguration.Durable`.
 
 ```csharp
+var prepareDefinition = WorkDefinition.Create("orders.prepare");
+var emailDefinition = WorkDefinition.Create("orders.email");
+var invoiceDefinition = WorkDefinition.Create("orders.invoice");
+
 builder.AddWorkflow(
     WorkflowDefinition.Create(
         "orders.fulfillment.durable",
         coordination: WorkflowCoordinationConfiguration.Durable),
     workflow => workflow
-        .DispatchWork("prepare", "orders.prepare")
+        .DispatchWork("prepare", prepareDefinition)
         .RunParallel("notify", parallel => parallel
-            .DispatchWork("email", "orders.email")
-            .DispatchWork("invoice", "orders.invoice"))
+            .DispatchWork("email", emailDefinition)
+            .DispatchWork("invoice", invoiceDefinition))
         .Join("settle"));
 ```
 
@@ -104,13 +113,45 @@ Durable workflows:
 
 ### Dispatch Work
 
-`DispatchWork(stepName, workDefinitionName, input)` queues one existing work definition.
+`DispatchWork(stepName, workDefinition, input)` queues one existing work definition.
 
 - `stepName` is the stable workflow-local step name
-- `workDefinitionName` is the target registered work definition
+- `workDefinition` is the target registered `WorkDefinition`
 - `input` is optional static `WorkInput`
 
 If the queue request is rejected, the workflow fails immediately.
+
+### Dispatch Each
+
+`DispatchEach(stepName, sourceStep, workDefinition, selector)` waits for the referenced earlier step to complete successfully, resolves a JSON array from that step's retained output, and queues one child worker per array element.
+
+- `stepName` is the stable workflow-local step name
+- `sourceStep` is the typed reference returned by an earlier `DispatchWork<TOutput>(...)`
+- `workDefinition` is the target registered `WorkDefinition`
+- `selector` identifies the array inside the source output. `output => output.Items` resolves `/items`; `output => output` selects the root array.
+
+Each array element becomes the `WorkInput` payload for one queued child worker.
+
+```csharp
+var loadDefinition = WorkDefinition.Create("orders.load");
+var processDefinition = WorkDefinition.Create("orders.process");
+
+builder.AddWork(loadDefinition, (_, _, _) =>
+    Task.FromResult(WorkExecutionResult.Success(
+        WorkOutput.FromValue(new OrderBatchOutput([new OrderItem("a"), new OrderItem("b")])))));
+
+builder.AddWork(processDefinition, (_, _, _) => Task.FromResult(WorkExecutionResult.Success()));
+
+builder.AddWorkflow(
+    WorkflowDefinition.Create("orders.dispatch-each.typed"),
+    workflow =>
+    {
+        var load = workflow.DispatchWork<OrderBatchOutput>("load", loadDefinition);
+        workflow.DispatchEach("fan-out", load, processDefinition, output => output.Items);
+    });
+```
+
+That authored shape still persists the same replay information, but the source step reference and selector path are now derived from typed values instead of hand-authored strings.
 
 ### Run Parallel
 
@@ -129,6 +170,7 @@ If any outstanding child worker completes unsuccessfully, the join step complete
 Top-level workflow steps are processed in registration order.
 
 - a `DispatchWork(...)` step queues child work and records the accepted child worker id on the workflow step snapshot when one exists
+- a `DispatchEach(...)` step waits for its source-step outputs, expands the resolved array, and records the accepted child worker ids for the queued fan-out workers
 - a `RunParallel(...)` step queues each child dispatch and records their accepted worker ids on the parallel step snapshot
 - a `Join(...)` step waits for all outstanding previously dispatched child work to complete before later workflow steps continue
 - a durable workflow persists each dispatch or join transition before later recovery depends on it
@@ -138,13 +180,18 @@ Workflow completion waits for accepted child work. `Join(...)` is the synchroniz
 `Join(...)` waits for the outstanding child work that has been dispatched before that point in the workflow. After a join completes, the workflow continues with a new outstanding set.
 
 ```csharp
+var workADefinition = WorkDefinition.Create("work.a");
+var workBDefinition = WorkDefinition.Create("work.b");
+var workCDefinition = WorkDefinition.Create("work.c");
+var workDDefinition = WorkDefinition.Create("work.d");
+
 workflow => workflow
-    .DispatchWork("a", "work.a")
+    .DispatchWork("a", workADefinition)
     .RunParallel("fanout", parallel => parallel
-        .DispatchWork("b", "work.b")
-        .DispatchWork("c", "work.c"))
+        .DispatchWork("b", workBDefinition)
+        .DispatchWork("c", workCDefinition))
     .Join("j1")
-    .DispatchWork("d", "work.d")
+    .DispatchWork("d", workDDefinition)
     .Join("j2");
 ```
 
@@ -157,14 +204,18 @@ If a child worker completes as failed, canceled, paused, or interrupted, the wor
 
 Completed child workers and completed workflow runs have separate retention lifetimes. Workable records the child completion receipt on the workflow run before later cleanup depends on it, so worker retention can stay aggressive without breaking joins or workflow status views.
 
+`DispatchEach(...)` uses the retained child completion receipts the same way joins do. That means source workers can still be expanded even after the original child worker has been purged, as long as the workflow run still retains the completion receipt.
+
 ## Authorization
 
 Workflow authorization uses the same builder and metadata model as work authorization.
 
 ```csharp
+var childDefinition = WorkDefinition.Create("sample.child");
+
 builder.AddWorkflow(
     WorkflowDefinition.Create("workflow.demo"),
-    workflow => workflow.DispatchWork("dispatch", "sample.child"),
+    workflow => workflow.DispatchWork("dispatch", childDefinition),
     authorize: auth => auth
         .AllowReadToGroups("workflow.read")
         .AllowOperateToGroups("workflow.ops"));

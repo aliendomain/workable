@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Runtime.CompilerServices;
 using Microsoft.Extensions.DependencyInjection;
 using Workable;
@@ -47,7 +48,7 @@ public sealed class WorkflowRuntimeShould
                 (_, _, _) => Task.FromResult(WorkExecutionResult.Success()));
             builder.AddWorkflow(
                 WorkflowDefinition.Create("workflow.secured"),
-                workflow => workflow.DispatchWork("dispatch", "sample.dispatch"),
+                workflow => workflow.DispatchWork("dispatch", Work("sample.dispatch")),
                 authorize: auth => auth.AllowOperateToGroups("workflow.ops"));
         });
 
@@ -82,7 +83,7 @@ public sealed class WorkflowRuntimeShould
                 (_, _, _) => Task.FromResult(WorkExecutionResult.Success()));
             builder.AddWorkflow(
                 WorkflowDefinition.Create("workflow.secured.system-admin"),
-                workflow => workflow.DispatchWork("dispatch", "sample.dispatch"),
+                workflow => workflow.DispatchWork("dispatch", Work("sample.dispatch")),
                 authorize: auth => auth.AllowOperateToGroups("workflow.ops"));
         });
 
@@ -126,7 +127,7 @@ public sealed class WorkflowRuntimeShould
                 });
             builder.AddWorkflow(
                 WorkflowDefinition.Create("workflow.dispatch"),
-                workflow => workflow.DispatchWork("dispatch", "sample.dispatch"));
+                workflow => workflow.DispatchWork("dispatch", Work("sample.dispatch")));
         });
 
         using var provider = services.BuildServiceProvider();
@@ -169,7 +170,7 @@ public sealed class WorkflowRuntimeShould
                 WorkflowDefinition.Create("workflow.dispatch.context"),
                 workflow => workflow.DispatchWork(
                     "dispatch",
-                    "sample.dispatch",
+                    Work("sample.dispatch"),
                     WorkInput.Empty.WithIdentifier(new WorkIdentifier("existing", "value"))));
         });
 
@@ -213,6 +214,162 @@ public sealed class WorkflowRuntimeShould
     }
 
     [Fact]
+    public async Task ExpandDispatchEachFromPriorOutputAndCompleteWorkflow()
+    {
+        var processed = new ConcurrentBag<string>();
+        var services = new ServiceCollection();
+
+        services.AddWorkableSystem(builder =>
+        {
+            builder.RequireAuthorization(false);
+            builder.AddWork(
+                WorkDefinition.Create("sample.load"),
+                (_, _, _) => Task.FromResult(WorkExecutionResult.Success(
+                    WorkOutput.FromJson("""{"items":[{"id":"alpha"},{"id":"beta"}]}"""))));
+            builder.AddWork(
+                WorkDefinition.Create("sample.process"),
+                (_, input, _) =>
+                {
+                    var item = input?.ToValue<DispatchEachItem>()
+                        ?? throw new InvalidOperationException("Expected dispatch-each item input.");
+                    processed.Add(item.Id);
+                    return Task.FromResult(WorkExecutionResult.Success());
+                });
+            builder.AddWorkflow(
+                WorkflowDefinition.Create("workflow.dispatch-each"),
+                workflow =>
+                {
+                    var load = workflow.DispatchWork<DispatchEachSourceOutput>("load", Work("sample.load"));
+                    workflow
+                        .DispatchEach("fan-out", load, Work("sample.process"), output => output.Items)
+                        .Join("join");
+                });
+        });
+
+        using var provider = services.BuildServiceProvider();
+        var system = (InMemoryWorkSystem)provider.GetRequiredService<IWorkSystemRegistry>().Default;
+        await system.Start();
+
+        var handle = system.WorkflowRuntime.Start(
+            "workflow.dispatch-each",
+            WorkRequestContext.Create(WorkInvocationChannel.InProcess));
+        var completion = await handle.WaitForCompletion();
+
+        Assert.True(completion.IsCompletedSuccessfully);
+        Assert.Equal(["alpha", "beta"], processed.OrderBy(static item => item, StringComparer.Ordinal).ToArray());
+        Assert.NotNull(completion.Run);
+        var fanOut = completion.Run!.Steps.Single(step => step.Name == "fan-out");
+        Assert.Equal(WorkflowStepRunStatus.Completed, fanOut.Status);
+        Assert.Equal(2, fanOut.WorkerIds.Count);
+    }
+
+    [Fact]
+    public async Task ExpandTypedDispatchEachSelectorFromPriorOutputAndCompleteWorkflow()
+    {
+        var processed = new ConcurrentBag<string>();
+        var services = new ServiceCollection();
+        var loadDefinition = WorkDefinition.Create("sample.load.typed");
+        var processDefinition = WorkDefinition.Create("sample.process.typed");
+
+        services.AddWorkableSystem(builder =>
+        {
+            builder.RequireAuthorization(false);
+            builder.AddWork(
+                loadDefinition,
+                (_, _, _) => Task.FromResult(WorkExecutionResult.Success(
+                    WorkOutput.FromValue(new DispatchEachSourceOutput(
+                        [new DispatchEachItem("alpha"), new DispatchEachItem("beta")])))));
+            builder.AddWork(
+                processDefinition,
+                (_, input, _) =>
+                {
+                    var item = input?.ToValue<DispatchEachItem>()
+                        ?? throw new InvalidOperationException("Expected dispatch-each item input.");
+                    processed.Add(item.Id);
+                    return Task.FromResult(WorkExecutionResult.Success());
+                });
+            builder.AddWorkflow(
+                WorkflowDefinition.Create("workflow.dispatch-each.typed"),
+                workflow =>
+                {
+                    var load = workflow.DispatchWork<DispatchEachSourceOutput>("load", loadDefinition);
+                    workflow
+                        .DispatchEach("fan-out", load, processDefinition, output => output.Items)
+                        .Join("join");
+                });
+        });
+
+        using var provider = services.BuildServiceProvider();
+        var system = (InMemoryWorkSystem)provider.GetRequiredService<IWorkSystemRegistry>().Default;
+        await system.Start();
+
+        var handle = system.WorkflowRuntime.Start(
+            "workflow.dispatch-each.typed",
+            WorkRequestContext.Create(WorkInvocationChannel.InProcess));
+        var completion = await handle.WaitForCompletion();
+
+        Assert.True(completion.IsCompletedSuccessfully);
+        Assert.Equal(["alpha", "beta"], processed.OrderBy(static item => item, StringComparer.Ordinal).ToArray());
+        Assert.NotNull(completion.Run);
+        var fanOut = completion.Run!.Steps.Single(step => step.Name == "fan-out");
+        Assert.Equal(WorkflowStepRunStatus.Completed, fanOut.Status);
+        Assert.Equal(2, fanOut.WorkerIds.Count);
+    }
+
+    [Fact]
+    public async Task ExpandTypedDispatchEachSelectorFromRootArrayOutputAndCompleteWorkflow()
+    {
+        var processed = new ConcurrentBag<string>();
+        var services = new ServiceCollection();
+        var loadDefinition = WorkDefinition.Create("sample.load.root-array");
+        var processDefinition = WorkDefinition.Create("sample.process.root-array");
+
+        services.AddWorkableSystem(builder =>
+        {
+            builder.RequireAuthorization(false);
+            builder.AddWork(
+                loadDefinition,
+                (_, _, _) => Task.FromResult(WorkExecutionResult.Success(
+                    WorkOutput.FromValue<IReadOnlyList<DispatchEachItem>>(
+                        [new DispatchEachItem("alpha"), new DispatchEachItem("beta")]))));
+            builder.AddWork(
+                processDefinition,
+                (_, input, _) =>
+                {
+                    var item = input?.ToValue<DispatchEachItem>()
+                        ?? throw new InvalidOperationException("Expected dispatch-each item input.");
+                    processed.Add(item.Id);
+                    return Task.FromResult(WorkExecutionResult.Success());
+                });
+            builder.AddWorkflow(
+                WorkflowDefinition.Create("workflow.dispatch-each.root-array"),
+                workflow =>
+                {
+                    var load = workflow.DispatchWork<IReadOnlyList<DispatchEachItem>>("load", loadDefinition);
+                    workflow
+                        .DispatchEach("fan-out", load, processDefinition, output => output)
+                        .Join("join");
+                });
+        });
+
+        using var provider = services.BuildServiceProvider();
+        var system = (InMemoryWorkSystem)provider.GetRequiredService<IWorkSystemRegistry>().Default;
+        await system.Start();
+
+        var handle = system.WorkflowRuntime.Start(
+            "workflow.dispatch-each.root-array",
+            WorkRequestContext.Create(WorkInvocationChannel.InProcess));
+        var completion = await handle.WaitForCompletion();
+
+        Assert.True(completion.IsCompletedSuccessfully);
+        Assert.Equal(["alpha", "beta"], processed.OrderBy(static item => item, StringComparer.Ordinal).ToArray());
+        Assert.NotNull(completion.Run);
+        var fanOut = completion.Run!.Steps.Single(step => step.Name == "fan-out");
+        Assert.Equal(WorkflowStepRunStatus.Completed, fanOut.Status);
+        Assert.Equal(2, fanOut.WorkerIds.Count);
+    }
+
+    [Fact]
     public async Task WaitAtJoinUntilParallelChildrenComplete()
     {
         var slowStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -243,8 +400,8 @@ public sealed class WorkflowRuntimeShould
                 WorkflowDefinition.Create("workflow.parallel.join"),
                 workflow => workflow
                     .RunParallel("dispatch", parallel => parallel
-                        .DispatchWork("quick", "sample.quick")
-                        .DispatchWork("slow", "sample.slow"))
+                        .DispatchWork("quick", Work("sample.quick"))
+                        .DispatchWork("slow", Work("sample.slow")))
                     .Join("join"));
         });
 
@@ -298,8 +455,8 @@ public sealed class WorkflowRuntimeShould
                 WorkflowDefinition.Create("workflow.parallel.failure"),
                 workflow => workflow
                     .RunParallel("dispatch", parallel => parallel
-                        .DispatchWork("good", "sample.good")
-                        .DispatchWork("bad", "sample.bad"))
+                        .DispatchWork("good", Work("sample.good"))
+                        .DispatchWork("bad", Work("sample.bad")))
                     .Join("join"));
         });
 
@@ -335,7 +492,7 @@ public sealed class WorkflowRuntimeShould
             builder.RequireAuthorization(false);
             builder.AddWorkflow(
                 WorkflowDefinition.Create("workflow.dispatch.missing-child"),
-                workflow => workflow.DispatchWork("dispatch", "sample.missing"));
+                workflow => workflow.DispatchWork("dispatch", Work("sample.missing")));
         });
 
         using var provider = services.BuildServiceProvider();
@@ -370,7 +527,7 @@ public sealed class WorkflowRuntimeShould
                 (_, _, _) => Task.FromResult(WorkExecutionResult.Failure([WorkMessage.Error("sample.fail", "Child failed.")])));
             builder.AddWorkflow(
                 WorkflowDefinition.Create("workflow.trailing.failure"),
-                workflow => workflow.DispatchWork("dispatch", "sample.fail"));
+                workflow => workflow.DispatchWork("dispatch", Work("sample.fail")));
         });
 
         using var provider = services.BuildServiceProvider();
@@ -413,7 +570,7 @@ public sealed class WorkflowRuntimeShould
                     .QueueDurably());
             builder.AddWorkflow(
                 WorkflowDefinition.Create("workflow.invalid.durable-child"),
-                workflow => workflow.DispatchWork("dispatch", "sample.durable"));
+                workflow => workflow.DispatchWork("dispatch", Work("sample.durable")));
         });
 
         using var provider = services.BuildServiceProvider();
@@ -447,7 +604,7 @@ public sealed class WorkflowRuntimeShould
                 WorkflowDefinition.Create(
                     "workflow.durable",
                     coordination: WorkflowCoordinationConfiguration.Durable),
-                workflow => workflow.DispatchWork("dispatch", "sample.dispatch"));
+                workflow => workflow.DispatchWork("dispatch", Work("sample.dispatch")));
         });
 
         using var provider = services.BuildServiceProvider();
@@ -488,7 +645,7 @@ public sealed class WorkflowRuntimeShould
                 WorkflowDefinition.Create(
                     "workflow.durable.dispatch",
                     coordination: WorkflowCoordinationConfiguration.Durable),
-                workflow => workflow.DispatchWork("dispatch", "sample.dispatch"));
+                workflow => workflow.DispatchWork("dispatch", Work("sample.dispatch")));
         });
 
         using var provider = services.BuildServiceProvider();
@@ -527,7 +684,7 @@ public sealed class WorkflowRuntimeShould
                 WorkflowDefinition.Create(
                     "workflow.durable.trailing.failure",
                     coordination: WorkflowCoordinationConfiguration.Durable),
-                workflow => workflow.DispatchWork("dispatch", "sample.fail"));
+                workflow => workflow.DispatchWork("dispatch", Work("sample.fail")));
         });
 
         using var provider = services.BuildServiceProvider();
@@ -566,7 +723,7 @@ public sealed class WorkflowRuntimeShould
                 WorkflowDefinition.Create(
                     "workflow.durable.missing-child",
                     coordination: WorkflowCoordinationConfiguration.Durable),
-                workflow => workflow.DispatchWork("dispatch", "sample.missing"));
+                workflow => workflow.DispatchWork("dispatch", Work("sample.missing")));
         });
 
         using var provider = services.BuildServiceProvider();
@@ -603,7 +760,7 @@ public sealed class WorkflowRuntimeShould
                 WorkflowDefinition.Create(
                     "workflow.durable.dispatch",
                     coordination: WorkflowCoordinationConfiguration.Durable),
-                workflow => workflow.DispatchWork("dispatch", "sample.dispatch"));
+                workflow => workflow.DispatchWork("dispatch", Work("sample.dispatch")));
         });
 
         using var provider = services.BuildServiceProvider();
@@ -717,7 +874,7 @@ public sealed class WorkflowRuntimeShould
                 (_, _, _) => Task.FromResult(WorkExecutionResult.Success()));
             builder.AddWorkflow(
                 WorkflowDefinition.Create("workflow.non-durable"),
-                workflow => workflow.DispatchWork("dispatch", "sample.dispatch"));
+                workflow => workflow.DispatchWork("dispatch", Work("sample.dispatch")));
         });
 
         using var provider = services.BuildServiceProvider();
@@ -790,6 +947,81 @@ public sealed class WorkflowRuntimeShould
             timeout: TimeSpan.FromSeconds(15));
 
         Assert.Equal("sample.beta", remainingRequest.Definition.Name);
+        Assert.Equal(0, Volatile.Read(ref resumedAlpha));
+        Assert.Equal(1, Volatile.Read(ref resumedBeta));
+    }
+
+    [Fact]
+    public async Task RecoverDurableDispatchEachRunAndOnlyReplayOutstandingExpandedChildren()
+    {
+        var store = new TestWorkflowPersistenceStore();
+        using var firstProvider = CreateDurableDispatchEachWorkflowProvider(
+            store,
+            _ => Task.CompletedTask,
+            (itemId, cancellationToken) => string.Equals(itemId, "alpha", StringComparison.Ordinal)
+                ? Task.CompletedTask
+                : Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken));
+        var firstSystem = GetNamedSystem(firstProvider, "workflow-tests");
+        await firstSystem.Start();
+
+        var handle = firstSystem.WorkflowRuntime.Start(
+            "workflow.durable.dispatch-each",
+            WorkRequestContext.Create(WorkInvocationChannel.InProcess));
+
+        WorkflowRunSnapshot? interruptedRun = null;
+        await TestEventually.Until(
+            () =>
+            {
+                interruptedRun = firstSystem.WorkflowRuntime.Get(handle.RunId!.Value);
+                return interruptedRun is not null &&
+                    interruptedRun.Steps.Single(step => step.Name == "join").Status == WorkflowStepRunStatus.Running &&
+                    interruptedRun.Steps.Single(step => step.Name == "join").WorkerIds.Count == 1;
+            },
+            "Expected the durable dispatch-each workflow join step to retain only the unfinished child worker before shutdown.",
+            timeout: TimeSpan.FromSeconds(15));
+
+        var remainingWorkerId = interruptedRun!.Steps.Single(step => step.Name == "join").WorkerIds.Single();
+        await StopWithTimeout(firstSystem, TimeSpan.FromSeconds(2));
+        var canceled = await handle.WaitForCompletion();
+        Assert.Equal(WorkflowRunStatus.Canceled, canceled.Status);
+        store.Requeue(remainingWorkerId);
+
+        var resumedLoads = 0;
+        var resumedAlpha = 0;
+        var resumedBeta = 0;
+        using var secondProvider = CreateDurableDispatchEachWorkflowProvider(
+            store,
+            _ =>
+            {
+                Interlocked.Increment(ref resumedLoads);
+                return Task.CompletedTask;
+            },
+            (itemId, _) =>
+            {
+                if (string.Equals(itemId, "alpha", StringComparison.Ordinal))
+                {
+                    Interlocked.Increment(ref resumedAlpha);
+                }
+                else
+                {
+                    Interlocked.Increment(ref resumedBeta);
+                }
+
+                return Task.CompletedTask;
+            });
+        var secondSystem = GetNamedSystem(secondProvider, "workflow-tests");
+        await secondSystem.Start();
+
+        await TestEventually.Until(
+            () =>
+            {
+                var recovered = secondSystem.WorkflowRuntime.Get(handle.RunId!.Value);
+                return recovered is not null && recovered.Status == WorkflowRunStatus.Completed;
+            },
+            "Expected the recovered durable dispatch-each workflow to resume only the unfinished child and complete.",
+            timeout: TimeSpan.FromSeconds(15));
+
+        Assert.Equal(0, Volatile.Read(ref resumedLoads));
         Assert.Equal(0, Volatile.Read(ref resumedAlpha));
         Assert.Equal(1, Volatile.Read(ref resumedBeta));
     }
@@ -959,10 +1191,10 @@ public sealed class WorkflowRuntimeShould
                 });
             builder.AddWorkflow(
                 WorkflowDefinition.Create("workflow.slow"),
-                workflow => workflow.DispatchWork("dispatch", "sample.slow"));
+                workflow => workflow.DispatchWork("dispatch", Work("sample.slow")));
             builder.AddWorkflow(
                 WorkflowDefinition.Create("workflow.fast"),
-                workflow => workflow.DispatchWork("dispatch", "sample.fast"));
+                workflow => workflow.DispatchWork("dispatch", Work("sample.fast")));
         });
 
         using var provider = services.BuildServiceProvider();
@@ -1012,7 +1244,7 @@ public sealed class WorkflowRuntimeShould
                 });
             builder.AddWorkflow(
                 WorkflowDefinition.Create("workflow.slow"),
-                workflow => workflow.DispatchWork("dispatch", "sample.slow"));
+                workflow => workflow.DispatchWork("dispatch", Work("sample.slow")));
         });
 
         using var provider = services.BuildServiceProvider();
@@ -1076,9 +1308,9 @@ public sealed class WorkflowRuntimeShould
                     "workflow.durable.stop",
                     coordination: WorkflowCoordinationConfiguration.Durable),
                 workflow => workflow
-                    .DispatchWork("slow", "sample.stop.slow")
+                    .DispatchWork("slow", Work("sample.stop.slow"))
                     .Join("join")
-                    .DispatchWork("fast", "sample.stop.fast"));
+                    .DispatchWork("fast", Work("sample.stop.fast")));
         });
 
         using var provider = services.BuildServiceProvider();
@@ -1144,9 +1376,9 @@ public sealed class WorkflowRuntimeShould
             builder.AddWorkflow(
                 WorkflowDefinition.Create("workflow.auto.resume"),
                 workflow => workflow
-                    .DispatchWork("process", "sample.auto.flaky")
+                    .DispatchWork("process", Work("sample.auto.flaky"))
                     .Join("process-join")
-                    .DispatchWork("finalize", "sample.auto.final"));
+                    .DispatchWork("finalize", Work("sample.auto.final")));
         });
 
         using var provider = services.BuildServiceProvider();
@@ -1239,9 +1471,9 @@ public sealed class WorkflowRuntimeShould
             builder.AddWorkflow(
                 WorkflowDefinition.Create("workflow.auto.resume.filtered"),
                 workflow => workflow
-                    .DispatchWork("process", "sample.auto.related.flaky")
+                    .DispatchWork("process", Work("sample.auto.related.flaky"))
                     .Join("process-join")
-                    .DispatchWork("finalize", "sample.auto.related.final"));
+                    .DispatchWork("finalize", Work("sample.auto.related.final")));
         });
 
         using var provider = services.BuildServiceProvider();
@@ -1327,9 +1559,9 @@ public sealed class WorkflowRuntimeShould
             builder.AddWorkflow(
                 WorkflowDefinition.Create("workflow.lifecycle.in-memory"),
                 workflow => workflow
-                    .DispatchWork("prepare", "sample.lifecycle.pauseable")
+                    .DispatchWork("prepare", Work("sample.lifecycle.pauseable"))
                     .Join("prepare-join")
-                    .DispatchWork("process", "sample.lifecycle.flaky"));
+                    .DispatchWork("process", Work("sample.lifecycle.flaky")));
         });
 
         using var provider = services.BuildServiceProvider();
@@ -1467,9 +1699,9 @@ public sealed class WorkflowRuntimeShould
                     "workflow.auto.resume.durable",
                     coordination: WorkflowCoordinationConfiguration.Durable),
                 workflow => workflow
-                    .DispatchWork("process", "sample.auto.durable.flaky")
+                    .DispatchWork("process", Work("sample.auto.durable.flaky"))
                     .Join("process-join")
-                    .DispatchWork("finalize", "sample.auto.durable.final"));
+                    .DispatchWork("finalize", Work("sample.auto.durable.final")));
         });
 
         using var provider = services.BuildServiceProvider();
@@ -1569,9 +1801,9 @@ public sealed class WorkflowRuntimeShould
                     "workflow.lifecycle.durable",
                     coordination: WorkflowCoordinationConfiguration.Durable),
                 workflow => workflow
-                    .DispatchWork("prepare", "sample.lifecycle.durable.pauseable")
+                    .DispatchWork("prepare", Work("sample.lifecycle.durable.pauseable"))
                     .Join("prepare-join")
-                    .DispatchWork("process", "sample.lifecycle.durable.flaky"));
+                    .DispatchWork("process", Work("sample.lifecycle.durable.flaky")));
         });
 
         using var provider = services.BuildServiceProvider();
@@ -1701,7 +1933,7 @@ public sealed class WorkflowRuntimeShould
                 WorkflowDefinition.Create(
                     "workflow.durable.cancel.requested",
                     coordination: WorkflowCoordinationConfiguration.Durable),
-                workflow => workflow.DispatchWork("dispatch", "sample.cancel.child"));
+                workflow => workflow.DispatchWork("dispatch", Work("sample.cancel.child")));
         });
 
         using var provider = services.BuildServiceProvider();
@@ -1761,8 +1993,8 @@ public sealed class WorkflowRuntimeShould
                 WorkflowDefinition.Create("workflow.parallel.purge-child"),
                 workflow => workflow
                     .RunParallel("dispatch", parallel => parallel
-                        .DispatchWork("quick", "sample.quick")
-                        .DispatchWork("slow", "sample.slow"))
+                        .DispatchWork("quick", Work("sample.quick"))
+                        .DispatchWork("slow", Work("sample.slow")))
                     .Join("join"));
         });
 
@@ -1844,8 +2076,8 @@ public sealed class WorkflowRuntimeShould
                 WorkflowDefinition.Create("workflow.parallel.retained-child"),
                 workflow => workflow
                     .RunParallel("dispatch", parallel => parallel
-                        .DispatchWork("quick", "sample.quick.retained")
-                        .DispatchWork("slow", "sample.slow.retained"))
+                        .DispatchWork("quick", Work("sample.quick.retained"))
+                        .DispatchWork("slow", Work("sample.slow.retained")))
                     .Join("join"));
         });
 
@@ -1917,7 +2149,7 @@ public sealed class WorkflowRuntimeShould
                 WorkflowDefinition.Create(
                     "workflow.final.child-lifetime",
                     coordination: WorkflowCoordinationConfiguration.Durable),
-                workflow => workflow.DispatchWork("dispatch", "sample.dispatch"));
+                workflow => workflow.DispatchWork("dispatch", Work("sample.dispatch")));
         });
 
         using var provider = services.BuildServiceProvider();
@@ -1991,8 +2223,8 @@ public sealed class WorkflowRuntimeShould
                     "workflow.failed.child-lifetime",
                     coordination: WorkflowCoordinationConfiguration.Durable),
                 workflow => workflow
-                    .DispatchWork("dispatch", "sample.retained.cancelable")
-                    .DispatchWork("missing", "sample.missing"));
+                    .DispatchWork("dispatch", Work("sample.retained.cancelable"))
+                    .DispatchWork("missing", Work("sample.missing")));
         });
 
         using var provider = services.BuildServiceProvider();
@@ -2091,9 +2323,54 @@ public sealed class WorkflowRuntimeShould
                     coordination: WorkflowCoordinationConfiguration.Durable),
                 workflow => workflow
                     .RunParallel("dispatch", parallel => parallel
-                        .DispatchWork("alpha", "sample.alpha")
-                        .DispatchWork("beta", "sample.beta"))
+                        .DispatchWork("alpha", Work("sample.alpha"))
+                        .DispatchWork("beta", Work("sample.beta")))
                     .Join("join"));
+        });
+
+        return services.BuildServiceProvider();
+    }
+
+    private static ServiceProvider CreateDurableDispatchEachWorkflowProvider(
+        TestWorkflowPersistenceStore store,
+        Func<CancellationToken, Task> load,
+        Func<string, CancellationToken, Task> process)
+    {
+        var services = new ServiceCollection();
+        services.AddSingleton<IWorkPersistenceStore>(store);
+        services.AddWorkableSystem("workflow-tests", builder =>
+        {
+            builder.RequireAuthorization(false);
+            builder.AddWork(
+                WorkDefinition.Create("sample.load"),
+                async (_, _, cancellationToken) =>
+                {
+                    await load(cancellationToken);
+                    return WorkExecutionResult.Success(
+                        WorkOutput.FromJson("""{"items":[{"id":"alpha"},{"id":"beta"}]}"""));
+                },
+                configuration => configuration.QueueDurably(fallbackPollingInterval: TimeSpan.FromSeconds(1)));
+            builder.AddWork(
+                WorkDefinition.Create("sample.process"),
+                async (_, input, cancellationToken) =>
+                {
+                    var item = input?.ToValue<DispatchEachItem>()
+                        ?? throw new InvalidOperationException("Expected dispatch-each item input.");
+                    await process(item.Id, cancellationToken);
+                    return WorkExecutionResult.Success();
+                },
+                configuration => configuration.QueueDurably(fallbackPollingInterval: TimeSpan.FromSeconds(1)));
+            builder.AddWorkflow(
+                WorkflowDefinition.Create(
+                    "workflow.durable.dispatch-each",
+                    coordination: WorkflowCoordinationConfiguration.Durable),
+                workflow =>
+                {
+                    var load = workflow.DispatchWork<DispatchEachSourceOutput>("load", Work("sample.load"));
+                    workflow
+                        .DispatchEach("fan-out", load, Work("sample.process"), output => output.Items)
+                        .Join("join");
+                });
         });
 
         return services.BuildServiceProvider();
@@ -2402,4 +2679,10 @@ public sealed class WorkflowRuntimeShould
             }
         }
     }
+
+    private static WorkDefinition Work(string name)
+        => WorkDefinition.Create(name);
+
+    private sealed record DispatchEachItem(string Id);
+    private sealed record DispatchEachSourceOutput(IReadOnlyList<DispatchEachItem> Items);
 }

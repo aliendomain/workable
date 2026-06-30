@@ -36,8 +36,8 @@ public sealed class WorkflowRunViewAdapterShould
                 WorkflowDefinition.Create("workflow.operator.parallel"),
                 workflow => workflow
                     .RunParallel("notify", parallel => parallel
-                        .DispatchWork("email", "workflow.operator.email")
-                        .DispatchWork("invoice", "workflow.operator.invoice"))
+                        .DispatchWork("email", WorkDefinition.Create("workflow.operator.email"))
+                        .DispatchWork("invoice", WorkDefinition.Create("workflow.operator.invoice")))
                     .Join("settle"));
         });
 
@@ -102,8 +102,8 @@ public sealed class WorkflowRunViewAdapterShould
                 WorkflowDefinition.Create("workflow.operator.join.waiting"),
                 workflow => workflow
                     .RunParallel("fan-out", parallel => parallel
-                        .DispatchWork("fast", "workflow.operator.fast")
-                        .DispatchWork("slow", "workflow.operator.slow"))
+                        .DispatchWork("fast", WorkDefinition.Create("workflow.operator.fast"))
+                        .DispatchWork("slow", WorkDefinition.Create("workflow.operator.slow")))
                     .Join("settle"));
         });
 
@@ -141,6 +141,70 @@ public sealed class WorkflowRunViewAdapterShould
     }
 
     [Fact]
+    public async Task PageSelectedStepChildren()
+    {
+        var firstStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var secondStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var services = new ServiceCollection();
+        services.AddWorkableSystem(builder =>
+        {
+            builder.RequireAuthorization(false);
+            builder.AddWork(
+                WorkDefinition.Create("workflow.operator.page.first"),
+                async (_, _, cancellationToken) =>
+                {
+                    firstStarted.TrySetResult();
+                    await release.Task.WaitAsync(cancellationToken);
+                    return WorkExecutionResult.Success();
+                });
+            builder.AddWork(
+                WorkDefinition.Create("workflow.operator.page.second"),
+                async (_, _, cancellationToken) =>
+                {
+                    secondStarted.TrySetResult();
+                    await release.Task.WaitAsync(cancellationToken);
+                    return WorkExecutionResult.Success();
+                });
+            builder.AddWorkflow(
+                WorkflowDefinition.Create("workflow.operator.page.parallel"),
+                workflow => workflow
+                    .RunParallel("notify", parallel => parallel
+                        .DispatchWork("first", WorkDefinition.Create("workflow.operator.page.first"))
+                        .DispatchWork("second", WorkDefinition.Create("workflow.operator.page.second")))
+                    .Join("settle"));
+        });
+
+        await using var provider = services.BuildServiceProvider();
+        var system = Assert.IsType<InMemoryWorkSystem>(provider.GetRequiredService<IWorkSystemRegistry>().Default);
+        await system.Start();
+
+        var handle = system.WorkflowRuntime.Start(
+            "workflow.operator.page.parallel",
+            WorkRequestContext.Create(WorkInvocationChannel.InProcess));
+        await Task.WhenAll(firstStarted.Task, secondStarted.Task).WaitAsync(TimeSpan.FromSeconds(5));
+
+        var page = await new WorkflowRunViewAdapter().StepChildren(
+            system,
+            WorkRequestContext.Create(WorkInvocationChannel.InProcess),
+            handle.RunId!.Value,
+            "notify",
+            skip: 1,
+            take: 1);
+
+        release.TrySetResult();
+        await handle.WaitForCompletion();
+
+        Assert.NotNull(page);
+        Assert.Equal(2, page!.TotalCount);
+        Assert.Equal(1, page.Skip);
+        Assert.Equal(1, page.Take);
+        var worker = Assert.Single(page.Workers);
+        Assert.Equal("workflow.operator.page.second", worker.DefinitionName);
+        Assert.Equal(WorkerState.Running, worker.State);
+    }
+
+    [Fact]
     public async Task HideUnreadableWorkflowRuns()
     {
         var services = new ServiceCollection();
@@ -161,7 +225,7 @@ public sealed class WorkflowRunViewAdapterShould
                 configuration => configuration.DoNotStart());
             builder.AddWorkflow(
                 WorkflowDefinition.Create("workflow.operator.secured"),
-                workflow => workflow.DispatchWork("dispatch", "workflow.operator.secured.child"),
+                workflow => workflow.DispatchWork("dispatch", WorkDefinition.Create("workflow.operator.secured.child")),
                 authorize: auth => auth
                     .AllowReadToGroups("workflow.read")
                     .AllowOperateToGroups("workflow.ops"));
@@ -215,7 +279,7 @@ public sealed class WorkflowRunViewAdapterShould
                 (_, _, _) => Task.FromResult(WorkExecutionResult.Success()));
             builder.AddWorkflow(
                 WorkflowDefinition.Create("workflow.operator.purge"),
-                workflow => workflow.DispatchWork("dispatch", "workflow.operator.purge.child"));
+                workflow => workflow.DispatchWork("dispatch", WorkDefinition.Create("workflow.operator.purge.child")));
         });
 
         await using var provider = services.BuildServiceProvider();
@@ -262,7 +326,7 @@ public sealed class WorkflowRunViewAdapterShould
                 });
             builder.AddWorkflow(
                 WorkflowDefinition.Create("workflow.operator.actions"),
-                workflow => workflow.DispatchWork("dispatch", "workflow.operator.actions.child"));
+                workflow => workflow.DispatchWork("dispatch", WorkDefinition.Create("workflow.operator.actions.child")));
         });
 
         await using var provider = services.BuildServiceProvider();
