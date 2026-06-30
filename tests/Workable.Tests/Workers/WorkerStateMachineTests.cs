@@ -201,11 +201,12 @@ public sealed class WorkerStateMachineTests
         => state is WorkerState.Queued or WorkerState.Paused or WorkerState.Failed ? WorkerState.Running : null;
 
     private static WorkActionStatus PauseStatus(WorkerState state)
-        => ConflictOr(state, state is WorkerState.Running or WorkerState.Waiting or WorkerState.Retrying);
+        => ConflictOr(state, state is WorkerState.Queued or WorkerState.Running or WorkerState.Waiting or WorkerState.Retrying);
 
     private static WorkerState? PauseNextState(WorkerState state)
         => state switch
         {
+            WorkerState.Queued => WorkerState.Paused,
             WorkerState.Running => WorkerState.Pausing,
             WorkerState.Waiting or WorkerState.Retrying => WorkerState.Paused,
             _ => null,

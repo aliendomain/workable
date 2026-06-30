@@ -48,4 +48,9 @@ public interface IWorkSystemSession
     /// Gets the caller-scoped event-stream surface.
     /// </summary>
     IWorkEventStream Events { get; }
+
+    /// <summary>
+    /// Gets the caller-scoped change-stream surface.
+    /// </summary>
+    IWorkChangeStream Changes { get; }
 }

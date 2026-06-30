@@ -10,6 +10,8 @@ internal sealed class WorkerEventPublisher(
     private const string PurgeEventType = "worker.purge";
     private static readonly IReadOnlySet<WorkIdentifier> EmptyIdentifiers = new HashSet<WorkIdentifier>();
 
+    internal Action<WorkerRecord, WorkCompletionStatus>? CompletionObserved { get; set; }
+
     internal void Queued(WorkerRecord worker)
         => this.PublishWithoutSynchronize(
             worker,
@@ -66,13 +68,16 @@ internal sealed class WorkerEventPublisher(
         WorkerRecord worker,
         WorkCompletionStatus status,
         bool recordReadModel = true)
-        => this.Publish(
+    {
+        this.Publish(
             worker,
             EventTypeFor(status),
             details: new WorkerEventPayloadDetails(
                 CompletionStatus: status,
                 IncludeLatestIteration: true),
             recordReadModel: recordReadModel);
+        this.CompletionObserved?.Invoke(worker, status);
+    }
 
     internal void Waiting(WorkerRecord worker)
     {

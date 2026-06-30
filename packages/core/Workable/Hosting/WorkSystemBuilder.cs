@@ -10,6 +10,7 @@ namespace Workable;
 internal sealed class WorkSystemBuilder(IServiceCollection services, string? name) : IWorkSystemBuilder
 {
     private readonly List<RegisteredWork> registeredWork = [];
+    private readonly List<RegisteredWorkflow> registeredWorkflows = [];
     private readonly List<Func<IServiceProvider, IWorkDefinitionSource>> workDefinitionSourceFactories = [];
     private readonly List<Func<IServiceProvider, IStartupWorkSource>> startupWorkSourceFactories = [];
     private readonly List<WorkExceptionClassifier> exceptionClassifiers = [];
@@ -268,6 +269,29 @@ internal sealed class WorkSystemBuilder(IServiceCollection services, string? nam
             configure,
             authorize);
 
+    public IWorkSystemBuilder AddWorkflow(
+        WorkflowDefinition definition,
+        Action<IWorkflowBuilder> build)
+        => this.AddWorkflow(definition, build, authorize: null);
+
+    public IWorkSystemBuilder AddWorkflow(
+        WorkflowDefinition definition,
+        Action<IWorkflowBuilder> build,
+        Action<IWorkAuthorizationBuilder>? authorize)
+    {
+        ArgumentNullException.ThrowIfNull(definition);
+        ArgumentNullException.ThrowIfNull(build);
+
+        var authorizedDefinition = ApplyWorkflowAuthorization(definition, authorize, out var operateAuthorization);
+        var builder = new WorkflowBuilder();
+        build(builder);
+        this.registeredWorkflows.Add(new RegisteredWorkflow(
+            authorizedDefinition,
+            builder.Build(),
+            operateAuthorization));
+        return this;
+    }
+
     public IWorkSystemBuilder AddWorkDefinitionSource<TSource>()
         where TSource : class, IWorkDefinitionSource
     {
@@ -313,6 +337,7 @@ internal sealed class WorkSystemBuilder(IServiceCollection services, string? nam
             WorkSystemId.New(),
             name,
             [.. this.registeredWork],
+            [.. this.registeredWorkflows],
             [.. this.workDefinitionSourceFactories],
             [.. this.startupWorkSourceFactories],
             [.. this.exceptionClassifiers],
@@ -323,6 +348,30 @@ internal sealed class WorkSystemBuilder(IServiceCollection services, string? nam
             this.shutdownGracePeriod,
             this.retention,
             this.capacity);
+
+    private static WorkflowDefinition ApplyWorkflowAuthorization(
+        WorkflowDefinition definition,
+        Action<IWorkAuthorizationBuilder>? authorize,
+        out WorkOperateAuthorizationConfiguration operateAuthorization)
+    {
+        ArgumentNullException.ThrowIfNull(definition);
+
+        var authorization = definition.Authorization;
+        operateAuthorization = WorkOperateAuthorizationConfiguration.FromDefinition(authorization);
+        if (authorize is not null)
+        {
+            var builder = new WorkAuthorizationBuilder();
+            authorize(builder);
+            var registration = builder.BuildRegistration();
+            authorization = registration.DefinitionAuthorization;
+            operateAuthorization = registration.OperateAuthorization;
+        }
+
+        return definition with
+        {
+            Authorization = authorization,
+        };
+    }
 
     private void RegisterInitializerTypes(WorkRegistrationConfiguration registration)
     {

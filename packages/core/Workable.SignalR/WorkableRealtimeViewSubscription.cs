@@ -8,4 +8,5 @@ internal sealed record WorkableRealtimeViewSubscription(
     WorkViewCriteria Criteria,
     string GroupName,
     long InitialReadModelSequence,
+    long InitialWorkflowSequence,
     WorkAuthorizationSnapshot Authorization);

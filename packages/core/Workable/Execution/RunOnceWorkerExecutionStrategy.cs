@@ -23,7 +23,7 @@ internal sealed class RunOnceWorkerExecutionStrategy(
         }
         finally
         {
-            worker.DisposeExecutionResources();
+            worker.DisposeExecutionResources(cancellationToken);
         }
     }
 }

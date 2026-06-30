@@ -1329,6 +1329,7 @@ public sealed class WorkableRealtimeWorkerOverviewUpdateFactoryTests
             new WorkWorkerOverviewOrigin(WorkInvocationChannel.HttpApi),
             "signalr.worker-overview",
             "SignalR",
+            [],
             0);
 
     private static WorkWorkerOverviewLatestIteration CreateLatestIteration(long sequence, WorkCompletionStatus status)

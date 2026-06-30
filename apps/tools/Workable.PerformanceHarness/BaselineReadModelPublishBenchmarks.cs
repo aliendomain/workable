@@ -8,7 +8,7 @@ namespace Workable.PerformanceHarness;
 /// <summary>
 /// Benchmarks the cost of publishing read-model updates after queue-time mutations.
 /// </summary>
-public sealed class BaselineReadModelPublishBenchmarks
+public class BaselineReadModelPublishBenchmarks
 {
     private WorkableBenchmarkSystem fixture = null!;
     private WorkerCriteria flushCriteria = null!;

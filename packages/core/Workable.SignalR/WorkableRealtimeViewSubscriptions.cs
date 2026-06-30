@@ -235,6 +235,7 @@ public sealed class WorkableRealtimeViewSubscriptions
             criteria,
             WorkableRealtimeGroups.View(system, key),
             GetAppliedSequence(system),
+            GetWorkflowSequence(system, viewName),
             authorization);
     }
 
@@ -242,6 +243,12 @@ public sealed class WorkableRealtimeViewSubscriptions
         => system is IWorkSystemReadModelClock clock
             ? clock.AppliedSequence
             : 0;
+
+    private static long GetWorkflowSequence(IWorkSystem system, string viewName)
+        => WorkableRealtimeWorkflowViews.IsWorkflowView(viewName) &&
+            system is IWorkSystemWorkflowClock clock
+                ? clock.WorkflowSequence
+                : 0;
 
     private static string CreateGroupKey(
         WorkSystemId systemId,

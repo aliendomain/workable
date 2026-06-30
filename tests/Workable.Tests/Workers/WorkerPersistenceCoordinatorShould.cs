@@ -211,7 +211,8 @@ public sealed class WorkerPersistenceCoordinatorShould
             getTrackedWorker: workerId => workers.TryGetValue(workerId, out var worker) ? worker : null,
             persistedWorkerMaterialized: (_, _) => Task.CompletedTask,
             interruptWorker: (_, _) => { },
-            logger: null);
+            logger: null,
+            durabilityOptions: WorkQueueDurabilityRuntimeOptions.Default);
     }
 
     private static WorkDefinition CreateDefinition(

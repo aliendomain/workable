@@ -222,7 +222,7 @@ public sealed class WorkableRealtimeWorkerOverviewSubscriptions
                         group?.LastError,
                         group?.StreamingStartedAt,
                         group?.StreamingStoppedAt,
-                        group?.EventStreamDiagnosticsProvider?.Invoke());
+                        group?.ChangeStreamDiagnosticsProvider?.Invoke());
                 })];
         }
     }
@@ -304,9 +304,9 @@ public sealed class WorkableRealtimeWorkerOverviewSubscriptions
         }
     }
 
-    internal void SetEventStreamDiagnosticsProvider(
+    internal void SetChangeStreamDiagnosticsProvider(
         string groupName,
-        Func<WorkEventSubscriptionDiagnosticsSnapshot>? diagnosticsProvider)
+        Func<WorkChangeSubscriptionDiagnosticsSnapshot>? diagnosticsProvider)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(groupName);
 
@@ -314,7 +314,7 @@ public sealed class WorkableRealtimeWorkerOverviewSubscriptions
         {
             if (this.groups.TryGetValue(groupName, out var group))
             {
-                group.EventStreamDiagnosticsProvider = diagnosticsProvider;
+                group.ChangeStreamDiagnosticsProvider = diagnosticsProvider;
                 SignalChangedLocked();
             }
         }
@@ -429,6 +429,6 @@ public sealed class WorkableRealtimeWorkerOverviewSubscriptions
 
         public DateTimeOffset? StreamingStoppedAt { get; set; }
 
-        public Func<WorkEventSubscriptionDiagnosticsSnapshot>? EventStreamDiagnosticsProvider { get; set; }
+        public Func<WorkChangeSubscriptionDiagnosticsSnapshot>? ChangeStreamDiagnosticsProvider { get; set; }
     }
 }

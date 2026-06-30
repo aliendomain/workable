@@ -14,6 +14,7 @@ The core API defines the public shape of Workable for discovering work, queueing
 - `IWorkerOperations` controls worker actions.
 - `IWorkQueryService` exposes the discoverable query facade. Each built-in query has a named method, with optional criteria and cancellation where applicable.
 - `IWorkEventStream` creates event subscriptions.
+- `IWorkChangeStream` creates compact state-change subscriptions for UI refresh, view invalidation, and other latest-state consumers.
 - `IWorkSystemDiagnostics` exposes runtime diagnostics for queue rejection, read-model projection, retention cleanup, concurrency backlog, durability loops, and idempotency duplicate rejection.
 - `Start` and `Stop` control system lifecycle.
 - `Stop` returns the shutdown grace period plus workers that were force-completed as interrupted because the grace period elapsed, including compact worker summaries and definition names.
@@ -47,6 +48,19 @@ Execution context also exposes the worker's `WorkRequestContext` (including `Ori
 - Catalogs do not accept new definitions after work definition sources complete and the system starts.
 - Work definition names must be unique within one system catalog.
 - A work definition can share input schema or CLR argument shape with other definitions.
+
+## Workflow Foundations
+
+- Workflows are registered through `IWorkSystemBuilder.AddWorkflow(...)`.
+- `WorkflowDefinition` mirrors work-definition metadata with name, category, description, schemas, authorization, revision, and version.
+- The workflow step graph supports `DispatchWork`, `Parallel`, and `Join`.
+- Workflow steps dispatch existing work definitions; they do not introduce a separate executor implementation model.
+- Workflows start by name, forward the original actor, origin, and authentication state from `WorkRequestContext` to child work, and add `workflow-run`, `workflow-definition`, and `workflow-step` identifiers to child work input.
+- Persisted workflow runs and queued workers retain actor, origin, and authentication state from `WorkRequestContext`, but do not retain precomputed authorization snapshots.
+- Workflow actions are `Start`, `Pause`, and `Cancel`. `Paused` and `Blocked` workflow runs can be started again, and blocked runs also resume automatically when their outstanding failed child workers are restarted and later complete successfully.
+- Non-durable workflows keep run state in memory.
+- Durable workflows require a named system, persist run state through `IWorkPersistenceStore`, upgrade child dispatches to durable queueing, and resume incomplete runs for that named system during system startup.
+- Non-durable workflows cannot dispatch child work whose effective queue configuration enables durable queueing.
 
 ## Work Identity And Grouping
 
@@ -101,6 +115,7 @@ Execution context also exposes the worker's `WorkRequestContext` (including `Ori
 
 ## Event Rules
 
+- Use `IWorkChangeStream` or higher-level realtime views for state refresh; use `IWorkEventStream` when the consumer needs raw event envelopes, payloads, event types, or event-by-event diagnostics.
 - Subscribe to `IWorkEventStream` before starting the activity you want to observe.
 - Events are delivered to subscriptions active at publish time.
 - Event streams are exposed from a single `IWorkSystem`.
@@ -123,7 +138,7 @@ Execution context also exposes the worker's `WorkRequestContext` (including `Ori
   - `Running -> Canceling -> Canceled`
   - `Running -> Interrupting -> Interrupted`
 - Additional control transitions can change that flow:
-  - `Waiting -> Paused` and `Retrying -> Paused`
+  - `Queued -> Paused`, `Waiting -> Paused`, and `Retrying -> Paused`
   - `Waiting -> Queued` and `Retrying -> Queued` through `Push`
   - `Failed -> Running` through `Start`
   - Non-final workers can move to `Canceled` when cancellation is applied
@@ -136,7 +151,7 @@ Execution context also exposes the worker's `WorkRequestContext` (including `Ori
 ## Worker Action Rules
 
 - `Start` applies to `Queued`, `Paused`, and `Failed` workers.
-- `Pause` applies to `Running`, `Waiting`, and `Retrying` workers.
+- `Pause` applies to `Queued`, `Running`, `Waiting`, and `Retrying` workers.
 - `Cancel` applies to non-final workers.
 - `Push` applies to `Waiting` and `Retrying` workers.
 - `Purge` applies to final workers.

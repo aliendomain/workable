@@ -101,6 +101,8 @@ public sealed class WorkableHttpWorkerAdapterShould
         public IWorkQueryService Query => throw new NotSupportedException();
 
         public IWorkEventStream Events => throw new NotSupportedException();
+
+        public IWorkChangeStream Changes => throw new NotSupportedException();
     }
 
     private sealed class RecordingWorkerOperations : IWorkerOperations

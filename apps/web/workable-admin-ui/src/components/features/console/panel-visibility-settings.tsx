@@ -96,7 +96,7 @@ export function PanelVisibilitySettings<TPanelId extends string>({
           <div className="border-t p-2">
             <Button
               className="h-9 w-full justify-start gap-2 text-muted-foreground"
-              onClick={onResetUi}
+              onClick={() => onResetUi()}
               size="sm"
               variant="ghost"
             >

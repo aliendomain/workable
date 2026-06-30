@@ -57,6 +57,7 @@ public sealed class WorkSystemAuthorizationConfigurationTests
         Assert.Throws<WorkSystemAuthorizationRequiredException>(() => system.Workers);
         Assert.Throws<WorkSystemAuthorizationRequiredException>(() => system.Query);
         Assert.Throws<WorkSystemAuthorizationRequiredException>(() => system.Events);
+        Assert.Throws<WorkSystemAuthorizationRequiredException>(() => system.Changes);
         Assert.Throws<WorkSystemAuthorizationRequiredException>(() => system.Diagnostics);
     }
 
@@ -75,6 +76,7 @@ public sealed class WorkSystemAuthorizationConfigurationTests
         Assert.NotNull(system.Workers);
         Assert.NotNull(system.Query);
         Assert.NotNull(system.Events);
+        Assert.NotNull(system.Changes);
         Assert.NotNull(system.Diagnostics);
     }
 
@@ -93,6 +95,59 @@ public sealed class WorkSystemAuthorizationConfigurationTests
         Assert.NotNull(session.Workers);
         Assert.NotNull(session.Query);
         Assert.NotNull(session.Events);
+        Assert.NotNull(session.Changes);
+    }
+
+    [Fact]
+    public async Task AuthorizedSessionFiltersChangeStreamByReadScope()
+    {
+        var visible = PausedDefinition("visible.change");
+        var hidden = PausedDefinition("hidden.change");
+        var provider = new ServiceCollection()
+            .AddSingleton<IWorkAuthorizationGroupProvider>(new TestGroupProvider(new Dictionary<string, IReadOnlySet<string>>
+            {
+                ["reader"] = Groups("visible.read"),
+            }))
+            .AddDefaultWorkableSystemForAuthorizationTests(builder => builder
+                .AddWork(visible, SuccessfulWork, configure: null, authorize: authorize => authorize.RequireGroups(
+                    readGroups: ["visible.read"],
+                    operateGroups: ["visible.operate"]))
+                .AddWork(hidden, SuccessfulWork, configure: null, authorize: authorize => authorize.RequireGroups(
+                    readGroups: ["hidden.read"],
+                    operateGroups: ["hidden.operate"])))
+            .BuildServiceProvider();
+        var system = provider.GetRequiredService<IWorkSystem>();
+        var inMemory = Assert.IsType<InMemoryWorkSystem>(system);
+        var readerSession = system.CreateSession(CreateRequestContext("reader"));
+        await using var subscription = readerSession.Changes.Subscribe();
+        await using var reader = subscription.Read().GetAsyncEnumerator();
+
+        inMemory.ChangeStream.Publish(WorkChangeKey.Definition(hidden.Name));
+        inMemory.ChangeStream.Publish(WorkChangeKey.Definition(visible.Name));
+
+        var change = await ReadNextChange(reader);
+        Assert.Equal(WorkChangeKey.Definition(visible.Name), change.Key);
+        var diagnostics = Assert.IsAssignableFrom<IWorkChangeSubscriptionDiagnostics>(subscription)
+            .GetDiagnosticsSnapshot();
+        Assert.Equal(0, diagnostics.AcceptedChangeCount);
+    }
+
+    [Fact]
+    public async Task AuthorizedSessionReturnsEmptyChangeStreamWithoutWorkOrDiagnosticsAccess()
+    {
+        var definition = PausedDefinition("private.change");
+        var provider = new ServiceCollection()
+            .AddDefaultWorkableSystemForAuthorizationTests(builder => builder
+                .AddWork(definition, SuccessfulWork, configure: null, authorize: authorize => authorize.RequireGroups(
+                    readGroups: ["private.read"],
+                    operateGroups: ["private.operate"])))
+            .BuildServiceProvider();
+        var system = provider.GetRequiredService<IWorkSystem>();
+        var session = system.CreateSession(CreateRequestContext("unknown"));
+        await using var subscription = session.Changes.Subscribe();
+        await using var reader = subscription.Read().GetAsyncEnumerator();
+
+        Assert.False(await reader.MoveNextAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(1)));
     }
 
     [Fact]
@@ -684,6 +739,11 @@ public sealed class WorkSystemAuthorizationConfigurationTests
             WorkInvocationChannel.InProcess,
             new WorkActor(Id: actorId),
             $"Authorize actor '{actorId}' in tests.");
+
+    private static async Task<WorkChange> ReadNextChange(IAsyncEnumerator<WorkChange> reader)
+        => await reader.MoveNextAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(5))
+            ? reader.Current
+            : throw new InvalidOperationException("Expected a change.");
 
     private static WorkRequestContext CreateKnownAuthenticatedRequestContext(string actorId)
         => WorkRequestContext.Create(

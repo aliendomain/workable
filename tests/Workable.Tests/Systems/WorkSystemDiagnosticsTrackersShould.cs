@@ -126,6 +126,77 @@ public sealed class WorkSystemDiagnosticsTrackersShould
     }
 
     [Fact]
+    public void DurabilityTrackerReportsClaimMetrics()
+    {
+        var tracker = new WorkSystemDurabilityDiagnosticsTracker();
+
+        tracker.RecordClaim(
+            claimedEntryCount: 3,
+            TimeSpan.FromMilliseconds(10),
+            TimeSpan.FromMilliseconds(4));
+        tracker.RecordClaim(
+            claimedEntryCount: 0,
+            TimeSpan.FromMilliseconds(5),
+            TimeSpan.FromMilliseconds(1));
+
+        var diagnostics = tracker.Snapshot(0, TimeSpan.Zero);
+        Assert.Equal(2, diagnostics.ClaimAttemptCount);
+        Assert.Equal(3, diagnostics.ClaimedEntryCount);
+        Assert.Equal(1, diagnostics.EmptyClaimCount);
+        Assert.Equal(0, diagnostics.LastClaimedEntryCount);
+        Assert.Equal(TimeSpan.FromMilliseconds(15), diagnostics.TotalClaimElapsed);
+        Assert.Equal(TimeSpan.FromMilliseconds(5), diagnostics.LastClaimElapsed);
+        Assert.Equal(TimeSpan.FromMilliseconds(10), diagnostics.MaxClaimElapsed);
+        Assert.Equal(TimeSpan.FromTicks(TimeSpan.FromMilliseconds(15).Ticks / 2), diagnostics.AverageClaimElapsed);
+        Assert.Equal(1.5, diagnostics.AverageClaimedEntries);
+        Assert.Equal(200, diagnostics.ClaimedEntriesPerSecond);
+        Assert.Equal(TimeSpan.FromMilliseconds(5), diagnostics.TotalClaimAcceptanceElapsed);
+        Assert.Equal(TimeSpan.FromMilliseconds(1), diagnostics.LastClaimAcceptanceElapsed);
+        Assert.Equal(TimeSpan.FromMilliseconds(4), diagnostics.MaxClaimAcceptanceElapsed);
+        Assert.Equal(TimeSpan.FromTicks(TimeSpan.FromMilliseconds(5).Ticks / 2), diagnostics.AverageClaimAcceptanceElapsed);
+        Assert.Equal(600, diagnostics.ClaimAcceptanceEntriesPerSecond);
+        Assert.Empty(diagnostics.RecentClaimSamples);
+    }
+
+    [Fact]
+    public void DurabilityTrackerRetainsBoundedRecentClaimSamplesWhenEnabled()
+    {
+        var tracker = new WorkSystemDurabilityDiagnosticsTracker(recentClaimSampleCapacity: 2);
+        var startedAt = DateTimeOffset.UtcNow;
+
+        tracker.RecordClaim(
+            claimedEntryCount: 1,
+            TimeSpan.FromMilliseconds(10),
+            TimeSpan.FromMilliseconds(1),
+            startedAt,
+            startedAt.AddMilliseconds(11));
+        tracker.RecordClaim(
+            claimedEntryCount: 2,
+            TimeSpan.FromMilliseconds(20),
+            TimeSpan.FromMilliseconds(2),
+            startedAt.AddMilliseconds(20),
+            startedAt.AddMilliseconds(42));
+        tracker.RecordClaim(
+            claimedEntryCount: 0,
+            TimeSpan.FromMilliseconds(30),
+            TimeSpan.FromMilliseconds(3),
+            startedAt.AddMilliseconds(50),
+            startedAt.AddMilliseconds(83));
+
+        var samples = tracker.Snapshot(0, TimeSpan.Zero).RecentClaimSamples;
+
+        Assert.Equal(2, samples.Count);
+        Assert.Equal(2, samples[0].Sequence);
+        Assert.Equal(2, samples[0].ClaimedEntryCount);
+        Assert.Equal(TimeSpan.FromMilliseconds(20), samples[0].ClaimElapsed);
+        Assert.Equal(TimeSpan.FromMilliseconds(2), samples[0].AcceptanceElapsed);
+        Assert.Equal(3, samples[1].Sequence);
+        Assert.Equal(0, samples[1].ClaimedEntryCount);
+        Assert.Equal(TimeSpan.FromMilliseconds(30), samples[1].ClaimElapsed);
+        Assert.Equal(TimeSpan.FromMilliseconds(3), samples[1].AcceptanceElapsed);
+    }
+
+    [Fact]
     public void DurabilityTrackerCapturesAndClearsLoopFailures()
     {
         var tracker = new WorkSystemDurabilityDiagnosticsTracker();

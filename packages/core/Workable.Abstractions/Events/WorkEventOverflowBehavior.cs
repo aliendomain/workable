@@ -3,7 +3,7 @@ using System.Diagnostics.CodeAnalysis;
 namespace Workable;
 
 /// <summary>
-/// Specifies how a bounded event subscription buffer behaves when it overflows.
+/// Specifies how bounded event subscription delivery behaves when it overflows.
 /// </summary>
 public enum WorkEventOverflowBehavior
 {

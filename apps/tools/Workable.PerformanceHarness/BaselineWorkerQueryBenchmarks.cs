@@ -8,7 +8,7 @@ namespace Workable.PerformanceHarness;
 /// <summary>
 /// Benchmarks representative worker-query patterns against a normally sized dataset.
 /// </summary>
-public sealed class BaselineWorkerQueryBenchmarks
+public class BaselineWorkerQueryBenchmarks
 {
     private WorkableBenchmarkSystem fixture = null!;
     private WorkerCriteria broadFirstPage = null!;

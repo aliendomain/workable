@@ -1232,10 +1232,15 @@ internal sealed class WorkerRecord(
         }
     }
 
-    public void DisposeExecutionResources()
+    public void DisposeExecutionResources(CancellationToken executionToken)
     {
         lock (this.sync)
         {
+            if (this.executionCancellation?.Token != executionToken)
+            {
+                return;
+            }
+
             this.ReleaseExecutionCancellationLocked();
         }
     }

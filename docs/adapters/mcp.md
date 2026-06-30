@@ -119,7 +119,7 @@ Use `workable_query_worker_iterations` when the user asks about execution histor
 Action tools are exposed by default so an MCP client can control workers after it has inspected them. Each action requires a `workerId` and the current `revision` from `workable_get_worker` or `workable_query_workers`.
 
 - `workable_start_worker`: start or retry a queued, paused, or failed worker.
-- `workable_pause_worker`: request a cooperative pause for a running worker or a recurring worker that is waiting.
+- `workable_pause_worker`: pause a queued, running, waiting, or retrying worker.
 - `workable_cancel_worker`: permanently stop a non-final worker.
 - `workable_push_worker`: skip the current recurrence wait and begin the next iteration immediately.
 - `workable_purge_worker`: permanently remove a completed or canceled worker from memory.

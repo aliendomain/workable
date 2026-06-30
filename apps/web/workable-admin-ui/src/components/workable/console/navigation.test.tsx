@@ -830,6 +830,7 @@ test("server tree and navigation header render expanded and breadcrumb option pa
           system={host.systems[0]}
           view="iteration"
           workerId={null}
+          workflowRunId={null}
         />
       </SidebarProvider>
     </ConsoleHeaderCapabilitiesProvider>

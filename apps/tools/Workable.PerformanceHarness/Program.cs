@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Globalization;
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using BenchmarkDotNet.Running;
@@ -22,58 +23,26 @@ if (options.ShowHelp)
     return 0;
 }
 
+var runTimestampUtc = DateTimeOffset.UtcNow;
+ (string ConnectionString, string Description)? resolvedDurability = options.QueueMode.IsDurable()
+    ? await ResolveDurability(options)
+    : null;
+
 Console.WriteLine("Workable performance harness");
 Console.WriteLine();
-PrintOptions(options);
+PrintOptions(options, resolvedDurability?.Description);
 
 if (!options.Scenario.Equals("lifecycle-fanout", StringComparison.OrdinalIgnoreCase))
 {
-    await ScenarioBenchmarkSuite.Run(options);
+    var scenarioMetrics = await RunScenarioRepeats(options);
+    WriteCsvIfRequested(options, runTimestampUtc, scenarioMetrics);
     return 0;
 }
 
-if (options.QueueMode.IsDurable())
-{
-    await PrepareDurabilityStore(options);
-}
-
-await using var provider = CreateProvider(options);
-var system = provider.GetRequiredService<IWorkSystemRegistry>().Default;
-var views = new WorkableViewQueryAdapter();
-var readModelLag = new ReadModelLagTracker();
-var lifecycleContext = WorkRequestContext.Create(
-    WorkInvocationChannel.InProcess,
-    new WorkActor(Id: "performance-harness", Name: "Performance Harness"),
-    "Control Workable performance harness.");
-
-await system.Start(lifecycleContext);
-try
-{
-    await WarmUp(system, views, options);
-
-    var scenario = Stopwatch.StartNew();
-    var fanout = RunOverviewFanout(system, views, options, readModelLag, CancellationToken.None);
-    var lifecycle = await RunLifecycle(system, options, readModelLag, CancellationToken.None);
-    var viewStats = await fanout;
-    scenario.Stop();
-
-    await system.Query.SystemWorkerCounts();
-    readModelLag.Observe(system);
-    var diagnostics = system.Diagnostics.ReadModel;
-
-    Console.WriteLine();
-    PrintLifecycle(lifecycle);
-    Console.WriteLine();
-    PrintFanout(viewStats);
-    Console.WriteLine();
-    PrintReadModel(diagnostics, readModelLag.MaxPendingUpdateCount);
-    Console.WriteLine();
-    Console.WriteLine($"Scenario elapsed: {FormatDuration(scenario.Elapsed)}");
-}
-finally
-{
-    await system.Stop(lifecycleContext);
-}
+var lifecycleFanoutMetrics = await RunLifecycleFanoutRepeats(
+    options,
+    resolvedDurability?.ConnectionString ?? options.DurabilityConnectionString);
+WriteCsvIfRequested(options, runTimestampUtc, lifecycleFanoutMetrics);
 
 return 0;
 
@@ -97,16 +66,124 @@ static bool TryRunBenchmarks(string[] args, out int exitCode)
     return true;
 }
 
-static ServiceProvider CreateProvider(HarnessOptions options)
+static Task<IReadOnlyList<HarnessMetricRow>> RunScenarioRepeats(
+    HarnessOptions options,
+    CancellationToken cancellationToken = default)
+    => RunRepeats(options, () => ScenarioBenchmarkSuite.Run(options, cancellationToken));
+
+static Task<IReadOnlyList<HarnessMetricRow>> RunLifecycleFanoutRepeats(
+    HarnessOptions options,
+    string durabilityConnectionString)
+    => RunRepeats(options, () => RunLifecycleFanout(options, durabilityConnectionString));
+
+static async Task<IReadOnlyList<HarnessMetricRow>> RunRepeats(
+    HarnessOptions options,
+    Func<Task<IReadOnlyList<HarnessMetricRow>>> runOnce)
+{
+    if (options.RepeatRuns <= 1)
+    {
+        return await runOnce();
+    }
+
+    var rows = new List<HarnessMetricRow>();
+    var runs = new List<IReadOnlyList<HarnessMetricRow>>(options.RepeatRuns);
+
+    Console.WriteLine();
+    Console.WriteLine($"Repeat runs: {options.RepeatRuns:N0}");
+
+    for (var run = 1; run <= options.RepeatRuns; run++)
+    {
+        Console.WriteLine();
+        Console.WriteLine($"Repeat run {run:N0}/{options.RepeatRuns:N0}");
+
+        var runRows = await runOnce();
+        runs.Add(runRows);
+
+        foreach (var row in runRows)
+        {
+            rows.Add(row with { Metric = $"run_{run:D2}_{row.Metric}" });
+        }
+    }
+
+    AddRepeatSummaryRows(rows, runs);
+    return rows;
+}
+
+static async Task<IReadOnlyList<HarnessMetricRow>> RunLifecycleFanout(
+    HarnessOptions options,
+    string durabilityConnectionString)
+{
+    if (options.QueueMode.IsDurable())
+    {
+        await PrepareDurabilityStore(
+            durabilityConnectionString,
+            options.DurabilitySchemaName,
+            options.DurabilityResetStore);
+    }
+
+    await using var provider = CreateProvider(options, durabilityConnectionString);
+    var system = provider.GetRequiredService<IWorkSystemRegistry>().Default;
+    var views = new WorkableViewQueryAdapter();
+    var readModelLag = new ReadModelLagTracker();
+    var lifecycleContext = WorkRequestContext.Create(
+        WorkInvocationChannel.InProcess,
+        new WorkActor(Id: "performance-harness", Name: "Performance Harness"),
+        "Control Workable performance harness.");
+
+    await system.Start(lifecycleContext);
+    try
+    {
+        await WarmUp(system, views, options);
+
+        var scenario = Stopwatch.StartNew();
+        var fanout = RunOverviewFanout(system, views, options, readModelLag, CancellationToken.None);
+        var lifecycle = await RunLifecycle(system, options, readModelLag, CancellationToken.None);
+        var viewStats = await fanout;
+        scenario.Stop();
+
+        await system.Query.SystemWorkerCounts();
+        readModelLag.Observe(system);
+        var diagnostics = system.Diagnostics.ReadModel;
+
+        Console.WriteLine();
+        PrintLifecycle(lifecycle);
+        Console.WriteLine();
+        PrintFanout(viewStats);
+        Console.WriteLine();
+        PrintReadModel(diagnostics, readModelLag.MaxPendingUpdateCount);
+        Console.WriteLine();
+        Console.WriteLine($"Scenario elapsed: {FormatDuration(scenario.Elapsed)}");
+
+        return CreateLifecycleFanoutCsvMetrics(
+            options,
+            lifecycle,
+            viewStats,
+            diagnostics,
+            readModelLag.MaxPendingUpdateCount,
+            scenario.Elapsed);
+    }
+    finally
+    {
+        await system.Stop(lifecycleContext);
+    }
+}
+
+static ServiceProvider CreateProvider(HarnessOptions options, string durabilityConnectionString)
 {
     var even = WorkDefinition.Create("perf.lifecycle.even", category: "Perf:Even");
     var odd = WorkDefinition.Create("perf.lifecycle.odd", category: "Perf:Odd");
     var services = new ServiceCollection();
     if (options.QueueMode.IsDurable())
     {
-        services.AddWorkableSqlServerDurableQueue(
-            options.DurabilityConnectionString,
-            options.DurabilitySchemaName);
+        services.AddWorkableSqlServerDurableQueue(new WorkableSqlServerQueueDurabilityOptions
+        {
+            ConnectionString = durabilityConnectionString,
+            SchemaName = options.DurabilitySchemaName,
+            EnqueueBatchSize = options.DurableEnqueueBatchSize,
+            EnqueueBatchWindow = TimeSpan.FromMilliseconds(options.DurableEnqueueBatchWindowMs),
+            ClaimBatchSize = options.DurableClaimBatchSize,
+            RecentClaimSampleCapacity = options.DurableClaimSampleCapacity,
+        });
     }
 
     return services
@@ -130,23 +207,42 @@ static Action<IWorkConfigurationBuilder> ConfigureQueueMode(HarnessQueueMode que
         _ => throw new ArgumentOutOfRangeException(nameof(queueMode), queueMode, "Unknown queue mode."),
     };
 
-static async Task PrepareDurabilityStore(HarnessOptions options)
+static async Task PrepareDurabilityStore(
+    string connectionString,
+    string schemaName,
+    bool resetStore)
 {
-    await EnsureDatabase(options.DurabilityConnectionString);
+    await EnsureDatabase(connectionString);
     await WorkableSqlServerSchema.Apply(
-        options.DurabilityConnectionString,
-        options.DurabilitySchemaName);
+        connectionString,
+        schemaName);
 
-    if (!options.DurabilityResetStore)
+    if (!resetStore)
     {
         return;
     }
 
-    await using var connection = new SqlConnection(options.DurabilityConnectionString);
+    await using var connection = new SqlConnection(connectionString);
     await connection.OpenAsync();
     await using var command = connection.CreateCommand();
-    command.CommandText = $"DELETE FROM {QuoteIdentifier(options.DurabilitySchemaName)}.[WorkEntries];";
+    command.CommandText =
+        $"""
+DELETE FROM {QuoteIdentifier(schemaName)}.[WorkflowRuns];
+DELETE FROM {QuoteIdentifier(schemaName)}.[WorkQueueEntries];
+DELETE FROM {QuoteIdentifier(schemaName)}.[WorkEntries];
+""";
     await command.ExecuteNonQueryAsync();
+}
+
+static async Task<(string ConnectionString, string Description)> ResolveDurability(HarnessOptions options)
+{
+    if (!string.IsNullOrWhiteSpace(options.DurabilityConnectionString))
+    {
+        return (options.DurabilityConnectionString, "explicit connection string");
+    }
+
+    var sql = await BenchmarkSqlServerEnvironment.GetShared();
+    return (sql.ConnectionString, sql.Description);
 }
 
 static async Task EnsureDatabase(string connectionString)
@@ -418,7 +514,7 @@ static JsonElement CreateThroughputOptions(HarnessOptions options)
     return json;
 }
 
-static void PrintOptions(HarnessOptions options)
+static void PrintOptions(HarnessOptions options, string? durabilityDescription)
 {
     Console.WriteLine("Configuration");
     Console.WriteLine($"  Scenario:           {options.Scenario}");
@@ -431,10 +527,20 @@ static void PrintOptions(HarnessOptions options)
     Console.WriteLine($"  Serialize payloads: {options.SerializePayloads}");
     Console.WriteLine($"  Warmup workers:     {options.WarmupWorkers:N0}");
     Console.WriteLine($"  Warmup views:       {options.WarmupViews:N0}");
+    Console.WriteLine($"  Repeat runs:        {options.RepeatRuns:N0}");
+    if (!string.IsNullOrWhiteSpace(options.CsvOutputPath))
+    {
+        Console.WriteLine($"  CSV output:         {options.CsvOutputPath}");
+    }
     if (options.QueueMode.IsDurable())
     {
         Console.WriteLine($"  SQL schema:         {options.DurabilitySchemaName}");
         Console.WriteLine($"  Reset durable rows: {options.DurabilityResetStore}");
+        Console.WriteLine($"  SQL batch size:     {options.DurableEnqueueBatchSize:N0}");
+        Console.WriteLine($"  SQL batch window:   {options.DurableEnqueueBatchWindowMs:N0} ms");
+        Console.WriteLine($"  SQL claim batch:    {options.DurableClaimBatchSize:N0}");
+        Console.WriteLine($"  SQL claim samples:  {options.DurableClaimSampleCapacity:N0}");
+        Console.WriteLine($"  SQL host:           {durabilityDescription ?? "explicit connection string"}");
     }
 }
 
@@ -505,6 +611,239 @@ static double Average(long total, long count)
 static string FormatDuration(TimeSpan duration)
     => $"{duration.TotalMilliseconds:N1} ms";
 
+static IReadOnlyList<HarnessMetricRow> CreateLifecycleFanoutCsvMetrics(
+    HarnessOptions options,
+    LifecycleResult lifecycle,
+    ViewFanoutResult fanout,
+    WorkSystemReadModelDiagnostics diagnostics,
+    long maxPendingUpdateCount,
+    TimeSpan scenarioElapsed)
+{
+    var rows = new List<HarnessMetricRow>();
+    AddIntMetric(rows, options.Scenario, "requested_workers", lifecycle.RequestedWorkers, "workers");
+    AddIntMetric(rows, options.Scenario, "accepted_workers", lifecycle.AcceptedWorkers, "workers");
+    AddIntMetric(rows, options.Scenario, "completed_workers", lifecycle.CompletedWorkers, "workers");
+    AddIntMetric(rows, options.Scenario, "rejected_workers", lifecycle.RejectedWorkers, "workers");
+    AddDoubleMetric(rows, options.Scenario, "elapsed_ms", lifecycle.Elapsed.TotalMilliseconds, "ms");
+    AddDoubleMetric(rows, options.Scenario, "queue_elapsed_ms", lifecycle.QueueElapsed.TotalMilliseconds, "ms");
+    AddDoubleMetric(rows, options.Scenario, "accepted_per_sec", Rate(lifecycle.AcceptedWorkers, lifecycle.QueueElapsed), "workers/sec");
+    AddDoubleMetric(rows, options.Scenario, "completed_per_sec", Rate(lifecycle.CompletedWorkers, lifecycle.Elapsed), "workers/sec");
+    AddDurationMetrics(rows, options.Scenario, "queue_latency", lifecycle.QueueLatency);
+    AddDurationMetrics(rows, options.Scenario, "completion_latency", lifecycle.CompletionLatency);
+
+    AddIntMetric(rows, options.Scenario, "view_calls", fanout.ViewCalls, "views");
+    AddIntMetric(rows, options.Scenario, "component_errors", fanout.ComponentErrors, "errors");
+    AddIntMetric(rows, options.Scenario, "subscriptions", fanout.Subscriptions, "subscriptions");
+    AddIntMetric(rows, options.Scenario, "iterations", fanout.Iterations, "iterations");
+    AddDoubleMetric(rows, options.Scenario, "fanout_elapsed_ms", fanout.Elapsed.TotalMilliseconds, "ms");
+    AddDoubleMetric(rows, options.Scenario, "views_per_sec", Rate(fanout.ViewCalls, fanout.Elapsed), "views/sec");
+    if (fanout.SerializedPayloads)
+    {
+        AddDoubleMetric(rows, options.Scenario, "avg_payload_bytes", Average(fanout.TotalPayloadBytes, fanout.ViewCalls), "bytes");
+    }
+
+    AddDurationMetrics(rows, options.Scenario, "view_latency", fanout.ViewLatency);
+    AddLongMetric(rows, options.Scenario, "read_model_enqueued_sequence", diagnostics.EnqueuedSequence, "updates");
+    AddLongMetric(rows, options.Scenario, "read_model_applied_sequence", diagnostics.AppliedSequence, "updates");
+    AddLongMetric(rows, options.Scenario, "read_model_pending_updates", diagnostics.PendingUpdateCount, "updates");
+    AddLongMetric(rows, options.Scenario, "read_model_max_pending_seen", maxPendingUpdateCount, "updates");
+    AddLongMetric(rows, options.Scenario, "read_model_applied_updates", diagnostics.AppliedUpdateCount, "updates");
+    AddLongMetric(rows, options.Scenario, "read_model_published_snapshots", diagnostics.PublishedSnapshotCount, "snapshots");
+    AddLongMetric(rows, options.Scenario, "read_model_last_batch_size", diagnostics.LastBatchSize, "updates");
+    AddDoubleMetric(rows, options.Scenario, "read_model_last_projection_ms", diagnostics.LastProjectionDuration.TotalMilliseconds, "ms");
+    AddDoubleMetric(rows, options.Scenario, "scenario_elapsed_ms", scenarioElapsed.TotalMilliseconds, "ms");
+    return rows;
+}
+
+static void AddDurationMetrics(
+    ICollection<HarnessMetricRow> rows,
+    string scenario,
+    string prefix,
+    DurationSnapshot snapshot)
+{
+    AddIntMetric(rows, scenario, $"{prefix}_count", snapshot.Count, "samples");
+    AddDoubleMetric(rows, scenario, $"{prefix}_mean_ms", snapshot.MeanMilliseconds, "ms");
+    AddDoubleMetric(rows, scenario, $"{prefix}_p50_ms", snapshot.P50Milliseconds, "ms");
+    AddDoubleMetric(rows, scenario, $"{prefix}_p95_ms", snapshot.P95Milliseconds, "ms");
+    AddDoubleMetric(rows, scenario, $"{prefix}_p99_ms", snapshot.P99Milliseconds, "ms");
+    AddDoubleMetric(rows, scenario, $"{prefix}_max_ms", snapshot.MaxMilliseconds, "ms");
+}
+
+static void AddIntMetric(ICollection<HarnessMetricRow> rows, string scenario, string metric, int value, string unit)
+    => rows.Add(new HarnessMetricRow(scenario, metric, value.ToString(CultureInfo.InvariantCulture), unit));
+
+static void AddLongMetric(ICollection<HarnessMetricRow> rows, string scenario, string metric, long value, string unit)
+    => rows.Add(new HarnessMetricRow(scenario, metric, value.ToString(CultureInfo.InvariantCulture), unit));
+
+static void AddDoubleMetric(ICollection<HarnessMetricRow> rows, string scenario, string metric, double value, string unit)
+    => rows.Add(new HarnessMetricRow(scenario, metric, value.ToString("0.###", CultureInfo.InvariantCulture), unit));
+
+static void AddRepeatSummaryRows(
+    ICollection<HarnessMetricRow> rows,
+    IReadOnlyList<IReadOnlyList<HarnessMetricRow>> runs)
+{
+    Console.WriteLine();
+    Console.WriteLine("Repeat summary");
+    Console.WriteLine("scenario\tmetric\tmin\tmedian\tmax\tmean\tspread_pct\tunit\truns");
+
+    var anySummary = false;
+    foreach (var group in runs
+        .SelectMany((runRows, index) => runRows.Select(row => (RunNumber: index + 1, Row: row)))
+        .GroupBy(item => (item.Row.Scenario, item.Row.Metric, item.Row.Unit)))
+    {
+        var values = new List<double>();
+        var runNumbers = new HashSet<int>();
+        var allNumeric = true;
+
+        foreach (var item in group)
+        {
+            if (!double.TryParse(item.Row.Value, NumberStyles.Float, CultureInfo.InvariantCulture, out var value) ||
+                double.IsNaN(value) ||
+                double.IsInfinity(value))
+            {
+                allNumeric = false;
+                break;
+            }
+
+            values.Add(value);
+            runNumbers.Add(item.RunNumber);
+        }
+
+        if (!allNumeric || values.Count == 0)
+        {
+            continue;
+        }
+
+        values.Sort();
+        var min = values[0];
+        var max = values[^1];
+        var median = Median(values);
+        var mean = values.Average();
+        var spreadPercent = SpreadPercent(min, median, max);
+        var metricPrefix = $"repeat_{group.Key.Metric}";
+
+        AddLongMetric(rows, group.Key.Scenario, $"{metricPrefix}_run_count", runNumbers.Count, "runs");
+        AddLongMetric(rows, group.Key.Scenario, $"{metricPrefix}_sample_count", values.Count, "samples");
+        AddDoubleMetric(rows, group.Key.Scenario, $"{metricPrefix}_min", min, group.Key.Unit);
+        AddDoubleMetric(rows, group.Key.Scenario, $"{metricPrefix}_median", median, group.Key.Unit);
+        AddDoubleMetric(rows, group.Key.Scenario, $"{metricPrefix}_max", max, group.Key.Unit);
+        AddDoubleMetric(rows, group.Key.Scenario, $"{metricPrefix}_mean", mean, group.Key.Unit);
+        if (spreadPercent is { } percent)
+        {
+            AddDoubleMetric(rows, group.Key.Scenario, $"{metricPrefix}_spread_pct", percent, "percent");
+        }
+
+        Console.WriteLine(
+            string.Create(
+                CultureInfo.InvariantCulture,
+                $"{group.Key.Scenario}\t{group.Key.Metric}\t{FormatMetricValue(min)}\t{FormatMetricValue(median)}\t{FormatMetricValue(max)}\t{FormatMetricValue(mean)}\t{FormatMetricValue(spreadPercent)}\t{group.Key.Unit}\t{runNumbers.Count}"));
+        anySummary = true;
+    }
+
+    if (!anySummary)
+    {
+        Console.WriteLine("No numeric metrics were available to summarize.");
+    }
+}
+
+static double Median(IReadOnlyList<double> sortedValues)
+{
+    var middle = sortedValues.Count / 2;
+    return sortedValues.Count % 2 == 0
+        ? (sortedValues[middle - 1] + sortedValues[middle]) / 2
+        : sortedValues[middle];
+}
+
+static double? SpreadPercent(double min, double median, double max)
+{
+    if (median == 0)
+    {
+        return min == max ? 0 : null;
+    }
+
+    return (max - min) / Math.Abs(median) * 100;
+}
+
+static string FormatMetricValue(double? value)
+    => value.HasValue
+        ? value.Value.ToString("0.###", CultureInfo.InvariantCulture)
+        : "-";
+
+static void WriteCsvIfRequested(
+    HarnessOptions options,
+    DateTimeOffset runTimestampUtc,
+    IReadOnlyList<HarnessMetricRow> rows)
+{
+    if (string.IsNullOrWhiteSpace(options.CsvOutputPath) || rows.Count == 0)
+    {
+        return;
+    }
+
+    var path = Path.GetFullPath(options.CsvOutputPath);
+    var directory = Path.GetDirectoryName(path);
+    if (!string.IsNullOrWhiteSpace(directory))
+    {
+        Directory.CreateDirectory(directory);
+    }
+
+    var builder = new StringBuilder();
+    builder.AppendLine("run_at_utc,scenario,metric,value,unit,queue_mode,workers,parallelism,work_delay_ms,view_subscriptions,view_iterations,serialize_payloads,throughput_window_seconds,throughput_bucket_seconds,warmup_workers,warmup_views");
+    foreach (var row in rows)
+    {
+        AppendCsv(builder, runTimestampUtc.ToString("O", CultureInfo.InvariantCulture));
+        builder.Append(',');
+        AppendCsv(builder, row.Scenario);
+        builder.Append(',');
+        AppendCsv(builder, row.Metric);
+        builder.Append(',');
+        AppendCsv(builder, row.Value);
+        builder.Append(',');
+        AppendCsv(builder, row.Unit);
+        builder.Append(',');
+        AppendCsv(builder, options.QueueMode.ToOptionValue());
+        builder.Append(',');
+        AppendCsv(builder, options.Workers.ToString(CultureInfo.InvariantCulture));
+        builder.Append(',');
+        AppendCsv(builder, options.Parallelism.ToString(CultureInfo.InvariantCulture));
+        builder.Append(',');
+        AppendCsv(builder, options.WorkDelay.TotalMilliseconds.ToString("0.###", CultureInfo.InvariantCulture));
+        builder.Append(',');
+        AppendCsv(builder, options.ViewSubscriptions.ToString(CultureInfo.InvariantCulture));
+        builder.Append(',');
+        AppendCsv(builder, options.ViewIterations.ToString(CultureInfo.InvariantCulture));
+        builder.Append(',');
+        AppendCsv(builder, options.SerializePayloads.ToString(CultureInfo.InvariantCulture));
+        builder.Append(',');
+        AppendCsv(builder, options.ThroughputWindowSeconds.ToString(CultureInfo.InvariantCulture));
+        builder.Append(',');
+        AppendCsv(builder, options.ThroughputBucketSeconds.ToString(CultureInfo.InvariantCulture));
+        builder.Append(',');
+        AppendCsv(builder, options.WarmupWorkers.ToString(CultureInfo.InvariantCulture));
+        builder.Append(',');
+        AppendCsv(builder, options.WarmupViews.ToString(CultureInfo.InvariantCulture));
+        builder.AppendLine();
+    }
+
+    File.WriteAllText(path, builder.ToString(), Encoding.UTF8);
+    Console.WriteLine();
+    Console.WriteLine($"CSV output:          {path}");
+}
+
+static void AppendCsv(StringBuilder builder, string? value)
+{
+    var text = value ?? string.Empty;
+    var requiresQuotes = text.IndexOfAny([',', '"', '\r', '\n']) >= 0;
+    if (!requiresQuotes)
+    {
+        builder.Append(text);
+        return;
+    }
+
+    builder.Append('"');
+    builder.Append(text.Replace("\"", "\"\"", StringComparison.Ordinal));
+    builder.Append('"');
+}
+
 static WorkRequestContext CreateHarnessRequestContext()
     => WorkRequestContext.Create(
         WorkInvocationChannel.InProcess,
@@ -555,9 +894,17 @@ internal sealed record HarnessOptions(
     int ThroughputBucketSeconds,
     int WarmupWorkers,
     int WarmupViews,
+    int RepeatRuns,
+    int SignalREventMaxBatchSize,
+    int SignalRBatchWindowMs,
     string DurabilityConnectionString,
     string DurabilitySchemaName,
     bool DurabilityResetStore,
+    int DurableEnqueueBatchSize,
+    int DurableEnqueueBatchWindowMs,
+    int DurableClaimBatchSize,
+    int DurableClaimSampleCapacity,
+    string? CsvOutputPath,
     bool ShowHelp)
 {
     public static HarnessOptions Parse(string[] args)
@@ -575,9 +922,17 @@ internal sealed record HarnessOptions(
             ThroughputBucketSeconds: 1,
             WarmupWorkers: 20,
             WarmupViews: 3,
-            DurabilityConnectionString: "Server=(localdb)\\MSSQLLocalDB;Database=WorkablePerformanceHarness;Integrated Security=true;TrustServerCertificate=true",
+            RepeatRuns: 1,
+            SignalREventMaxBatchSize: new WorkableSignalROptions().EventMaxBatchSize,
+            SignalRBatchWindowMs: 1,
+            DurabilityConnectionString: string.Empty,
             DurabilitySchemaName: "workable_perf",
             DurabilityResetStore: true,
+            DurableEnqueueBatchSize: WorkableSqlServerQueueDurabilityOptions.DefaultEnqueueBatchSize,
+            DurableEnqueueBatchWindowMs: (int)WorkableSqlServerQueueDurabilityOptions.DefaultEnqueueBatchWindow.TotalMilliseconds,
+            DurableClaimBatchSize: WorkableSqlServerQueueDurabilityOptions.DefaultClaimBatchSize,
+            DurableClaimSampleCapacity: 0,
+            CsvOutputPath: null,
             ShowHelp: false);
 
         for (var index = 0; index < args.Length; index++)
@@ -606,9 +961,17 @@ internal sealed record HarnessOptions(
                 "--throughput-bucket-seconds" => options with { ThroughputBucketSeconds = PositiveInt(name, value) },
                 "--warmup-workers" => options with { WarmupWorkers = NonNegativeInt(name, value) },
                 "--warmup-views" => options with { WarmupViews = NonNegativeInt(name, value) },
+                "--repeat-runs" or "--repeats" => options with { RepeatRuns = PositiveInt(name, value) },
+                "--signalr-event-max-batch-size" => options with { SignalREventMaxBatchSize = PositiveInt(name, value) },
+                "--signalr-batch-window-ms" => options with { SignalRBatchWindowMs = NonNegativeInt(name, value) },
                 "--durability-connection-string" => options with { DurabilityConnectionString = Required(name, value) },
                 "--durability-schema" => options with { DurabilitySchemaName = Required(name, value) },
                 "--durability-reset-store" => options with { DurabilityResetStore = Bool(name, value) },
+                "--durable-enqueue-batch-size" => options with { DurableEnqueueBatchSize = PositiveInt(name, value) },
+                "--durable-enqueue-batch-window-ms" => options with { DurableEnqueueBatchWindowMs = NonNegativeInt(name, value) },
+                "--durable-claim-batch-size" => options with { DurableClaimBatchSize = PositiveInt(name, value) },
+                "--durable-claim-sample-capacity" => options with { DurableClaimSampleCapacity = NonNegativeInt(name, value) },
+                "--csv-output" => options with { CsvOutputPath = Required(name, value) },
                 _ => throw new ArgumentException($"Unknown option '{name}'. Use --help for supported options."),
             };
         }
@@ -625,7 +988,7 @@ internal sealed record HarnessOptions(
         Console.WriteLine("  dotnet run --project src/Workable.PerformanceHarness -c Release -- --benchmarks [BenchmarkDotNet options]");
         Console.WriteLine();
         Console.WriteLine("Options:");
-        Console.WriteLine("  --scenario <name>                  Scenario: lifecycle-fanout, all, queue-only, start-to-completion, completion-only, mixed-queue-complete, completion-while-queue-heavy, queue-while-completion-heavy, mixed-90-10, mixed-50-50, mixed-10-90, read-model-latency, visibility-latency, index-update-cost, memory-growth, event-fanout, event-fanout-matrix. Default: lifecycle-fanout");
+        Console.WriteLine("  --scenario <name>                  Scenario: lifecycle-fanout, all, queue-only, dequeue-only, start-to-completion, completion-only, mixed-queue-complete, completion-while-queue-heavy, queue-while-completion-heavy, mixed-90-10, mixed-50-50, mixed-10-90, read-model-latency, visibility-latency, index-update-cost, memory-growth, memory-release-after-purge, durable-worker-claim-isolation, durable-worker-lifecycle-breakdown, durable-memory-release-after-purge, durable-workflow-memory-recovery, event-fanout, event-delivery, change-stream-fanout, event-fanout-matrix, subscription-churn, subscription-memory-release, publish-under-churn, signalr-fanout-matrix. Default: lifecycle-fanout");
         Console.WriteLine("  --queue-mode <mode>               Queue mode: in-memory, durable-idempotent, durable-non-idempotent. Default: in-memory");
         Console.WriteLine("  --workers <n>                     Workers to queue. Default: 1000");
         Console.WriteLine("  --parallelism <n>                 Concurrent queue/wait operations. Default: processor count");
@@ -637,9 +1000,17 @@ internal sealed record HarnessOptions(
         Console.WriteLine("  --throughput-bucket-seconds <n>   Throughput bucket size requested by overview. Default: 1");
         Console.WriteLine("  --warmup-workers <n>              Workers queued before measurement. Default: 20");
         Console.WriteLine("  --warmup-views <n>                Overview views before measurement. Default: 3");
-        Console.WriteLine("  --durability-connection-string <s> SQL Server connection string for durable modes. Default: LocalDB WorkablePerformanceHarness");
+        Console.WriteLine("  --repeat-runs|--repeats <n>       Repeat scenario runs and emit per-run plus min/median/max/mean/spread summary rows. Default: 1");
+        Console.WriteLine("  --signalr-event-max-batch-size <n> Maximum raw SignalR events per batch. Default: 512");
+        Console.WriteLine("  --signalr-batch-window-ms <n>     Raw SignalR event batch window in milliseconds. Default: 1");
+        Console.WriteLine("  --durability-connection-string <s> SQL Server connection string for durable modes. Default: auto (WORKABLE_SQLSERVER_TEST_CONNECTION_STRING, docker, or podman)");
         Console.WriteLine("  --durability-schema <s>           SQL schema for durable modes. Default: workable_perf");
         Console.WriteLine("  --durability-reset-store <true|false> Delete durable rows before measurement. Default: true");
+        Console.WriteLine("  --durable-enqueue-batch-size <n>  SQL durable enqueue microbatch size. Default: 64");
+        Console.WriteLine("  --durable-enqueue-batch-window-ms <n> SQL durable enqueue microbatch window in milliseconds. Default: 1");
+        Console.WriteLine("  --durable-claim-batch-size <n>    SQL durable claim batch size. Default: 7500");
+        Console.WriteLine("  --durable-claim-sample-capacity <n> Keep the last n detailed durable claim samples. Default: 0");
+        Console.WriteLine("  --csv-output <path>               Write scenario metrics to CSV.");
         Console.WriteLine("  --benchmarks                      Run BenchmarkDotNet baselines. Default filter: *Baseline*");
         Console.WriteLine("  -h|--help                         Show help.");
     }
@@ -786,3 +1157,9 @@ internal sealed record ViewFanoutResult(
     long TotalPayloadBytes,
     TimeSpan Elapsed,
     DurationSnapshot ViewLatency);
+
+internal sealed record HarnessMetricRow(
+    string Scenario,
+    string Metric,
+    string Value,
+    string Unit);

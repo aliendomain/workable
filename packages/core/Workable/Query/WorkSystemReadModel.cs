@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Diagnostics.CodeAnalysis;
 using System.Linq;
 using System.Threading.Channels;
 
@@ -39,6 +40,7 @@ internal sealed class WorkSystemReadModel : IWorkSystemReadModelStore, IAsyncDis
             SingleWriter = false,
         });
     private readonly WorkSystemReadModelState state = new();
+    private readonly WorkChangeStream? changes;
     private readonly Task projector;
     private readonly object projectionSync = new();
     private readonly object updateSync = new();
@@ -60,8 +62,10 @@ internal sealed class WorkSystemReadModel : IWorkSystemReadModelStore, IAsyncDis
         WorkSystemCatalog catalog,
         Func<WorkSystemState> getSystemState,
         string? workSystemName,
-        InMemoryWorkMetricsSink metrics)
+        InMemoryWorkMetricsSink metrics,
+        WorkChangeStream? changes = null)
     {
+        this.changes = changes;
         this.Query = new WorkSystemReadModelQueryService(catalog, getSystemState, workSystemName, this, metrics);
         this.projector = Task.Run(this.Project);
     }
@@ -190,6 +194,7 @@ internal sealed class WorkSystemReadModel : IWorkSystemReadModelStore, IAsyncDis
         {
             var lastPublishedAt = DateTimeOffset.MinValue;
             var updatesSinceLastPublish = 0L;
+            var changesSinceLastPublish = new HashSet<WorkChangeKey>();
             await foreach (var _ in this.updates.Reader.ReadAllAsync())
             {
                 var batch = this.TakePendingUpdates();
@@ -200,6 +205,7 @@ internal sealed class WorkSystemReadModel : IWorkSystemReadModelStore, IAsyncDis
 
                 foreach (var update in batch.Updates)
                 {
+                    this.RecordChangeKeys(update, changesSinceLastPublish);
                     this.Apply(update);
                 }
 
@@ -209,6 +215,8 @@ internal sealed class WorkSystemReadModel : IWorkSystemReadModelStore, IAsyncDis
                 if (this.ShouldPublishSnapshot(queueDrained, lastPublishedAt))
                 {
                     lastPublishedAt = this.Publish(batch.TargetSequence, updatesSinceLastPublish);
+                    this.PublishChanges(changesSinceLastPublish);
+                    changesSinceLastPublish.Clear();
                     updatesSinceLastPublish = 0;
                 }
             }
@@ -329,6 +337,87 @@ internal sealed class WorkSystemReadModel : IWorkSystemReadModelStore, IAsyncDis
             case ClearReadModelUpdate clear:
                 this.state.Clear(clear.Sequence);
                 break;
+        }
+    }
+
+    private void RecordChangeKeys(ReadModelUpdate update, HashSet<WorkChangeKey> keys)
+    {
+        if (this.changes is null)
+        {
+            return;
+        }
+
+        switch (update)
+        {
+            case RecordWorkerUpdate worker:
+                AddWorkerChangeKeys(worker.Worker, keys);
+                break;
+            case RecordIterationUpdate iteration:
+                AddWorkerChangeKeys(iteration.Iteration.Worker, keys);
+                break;
+            case ForgetWorkerUpdate worker:
+                AddForgottenWorkerChangeKeys(worker.WorkerId, this.state, keys);
+                break;
+            case ForgetWorkersUpdate workers:
+                foreach (var workerId in workers.WorkerIds)
+                {
+                    AddForgottenWorkerChangeKeys(workerId, this.state, keys);
+                }
+
+                break;
+            case ForgetIterationUpdate iteration:
+                AddForgottenWorkerChangeKeys(iteration.Iteration.WorkerId, this.state, keys);
+                break;
+            case ClearReadModelUpdate:
+                keys.Add(WorkChangeKey.System());
+                break;
+        }
+    }
+
+    private void PublishChanges(HashSet<WorkChangeKey> keys)
+    {
+        if (this.changes is null || keys.Count == 0)
+        {
+            return;
+        }
+
+        foreach (var key in keys)
+        {
+            this.changes.Publish(key);
+        }
+    }
+
+    private static void AddForgottenWorkerChangeKeys(
+        WorkerId workerId,
+        WorkSystemReadModelState state,
+        HashSet<WorkChangeKey> keys)
+    {
+        keys.Add(WorkChangeKey.System());
+        keys.Add(WorkChangeKey.Worker(workerId));
+        if (state.TryGetWorker(workerId, out var existing))
+        {
+            AddWorkerChangeKeys(existing, keys);
+        }
+    }
+
+    private static void AddWorkerChangeKeys(WorkerReadModelWorker worker, HashSet<WorkChangeKey> keys)
+    {
+        keys.Add(WorkChangeKey.System());
+        keys.Add(WorkChangeKey.Worker(worker.Id));
+        keys.Add(WorkChangeKey.Definition(worker.DefinitionName));
+        if (worker.SubjectId is { } subjectId)
+        {
+            keys.Add(WorkChangeKey.Subject(subjectId));
+        }
+
+        if (worker.ConcurrencyKey is { } concurrencyKey)
+        {
+            keys.Add(WorkChangeKey.Concurrency(concurrencyKey));
+        }
+
+        foreach (var identifier in worker.Identifiers)
+        {
+            keys.Add(WorkChangeKey.Identifier(identifier));
         }
     }
 
@@ -499,6 +588,9 @@ internal sealed class WorkSystemReadModelState
         this.workerSequences[worker.Id] = sequence;
         this.AddWorkerIndexes(worker);
     }
+
+    public bool TryGetWorker(WorkerId workerId, [NotNullWhen(true)] out WorkerReadModelWorker? worker)
+        => this.workers.TryGetValue(workerId, out worker);
 
     public void RecordIteration(WorkerReadModelIterationUpdate iteration, long sequence)
     {

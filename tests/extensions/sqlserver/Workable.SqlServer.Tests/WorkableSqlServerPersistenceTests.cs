@@ -4,6 +4,7 @@ using Microsoft.Data.SqlClient;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.FileProviders;
 using Microsoft.Extensions.Hosting;
+using System.Reflection;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Workable;
@@ -74,7 +75,7 @@ END
             configuration => configuration.QueueDurably().DoNotStart());
 
         await system.Start();
-        await system.Stop();
+        await StopWithTimeout(system);
 
         await using var connection = await this.OpenConnection();
         Assert.Equal(1, await Scalar<int>(connection, """
@@ -83,14 +84,38 @@ FROM sys.tables tables
 INNER JOIN sys.schemas schemas ON schemas.schema_id = tables.schema_id
 WHERE schemas.name = N'workable' AND tables.name = N'WorkEntries';
 """));
-        Assert.Equal(4, await Scalar<int>(connection, """
+        Assert.Equal(5, await Scalar<int>(connection, """
 SELECT COUNT(*)
 FROM sys.columns columns
 INNER JOIN sys.tables tables ON tables.object_id = columns.object_id
 INNER JOIN sys.schemas schemas ON schemas.schema_id = tables.schema_id
 WHERE schemas.name = N'workable'
   AND tables.name = N'WorkEntries'
-  AND columns.name IN (N'IsDurableQueued', N'HasIdempotencyReservation', N'ClaimedAt', N'ConcurrencyBucket');
+  AND columns.name IN (N'IsDurableQueued', N'HasIdempotencyReservation', N'HasPersistentConcurrency', N'ClaimedAt', N'ConcurrencyBucket');
+"""));
+        Assert.Equal(1, await Scalar<int>(connection, """
+SELECT COUNT(*)
+FROM sys.tables tables
+INNER JOIN sys.schemas schemas ON schemas.schema_id = tables.schema_id
+WHERE schemas.name = N'workable' AND tables.name = N'WorkQueueEntries';
+"""));
+        Assert.Equal(6, await Scalar<int>(connection, """
+SELECT COUNT(*)
+FROM sys.columns columns
+INNER JOIN sys.tables tables ON tables.object_id = columns.object_id
+INNER JOIN sys.schemas schemas ON schemas.schema_id = tables.schema_id
+WHERE schemas.name = N'workable'
+  AND tables.name = N'WorkQueueEntries'
+  AND columns.name IN (N'WorkerId', N'HasPersistentConcurrency', N'ConcurrencyScope', N'ConcurrencyMaximumCapacity', N'LeaseExpiresAt', N'ConcurrencyBucket');
+"""));
+        Assert.Equal(1, await Scalar<int>(connection, """
+SELECT COUNT(*)
+FROM sys.indexes indexes
+INNER JOIN sys.tables tables ON tables.object_id = indexes.object_id
+INNER JOIN sys.schemas schemas ON schemas.schema_id = tables.schema_id
+WHERE schemas.name = N'workable'
+  AND tables.name = N'WorkEntries'
+  AND indexes.name = N'IX_WorkableWorkEntries_PersistentConcurrencyReady';
 """));
         Assert.Equal(1, await Scalar<int>(connection, """
 SELECT COUNT(*)
@@ -100,6 +125,33 @@ INNER JOIN sys.schemas schemas ON schemas.schema_id = tables.schema_id
 WHERE schemas.name = N'workable'
   AND tables.name = N'WorkEntries'
   AND indexes.name = N'IX_WorkableWorkEntries_Concurrency';
+"""));
+        Assert.Equal(1, await Scalar<int>(connection, """
+SELECT COUNT(*)
+FROM sys.indexes indexes
+INNER JOIN sys.tables tables ON tables.object_id = indexes.object_id
+INNER JOIN sys.schemas schemas ON schemas.schema_id = tables.schema_id
+WHERE schemas.name = N'workable'
+  AND tables.name = N'WorkQueueEntries'
+  AND indexes.name = N'IX_WorkableWorkQueueEntries_Ready';
+"""));
+        Assert.Equal(1, await Scalar<int>(connection, """
+SELECT COUNT(*)
+FROM sys.indexes indexes
+INNER JOIN sys.tables tables ON tables.object_id = indexes.object_id
+INNER JOIN sys.schemas schemas ON schemas.schema_id = tables.schema_id
+WHERE schemas.name = N'workable'
+  AND tables.name = N'WorkQueueEntries'
+  AND indexes.name = N'IX_WorkableWorkQueueEntries_PersistentConcurrencyReady';
+"""));
+        Assert.Equal(1, await Scalar<int>(connection, """
+SELECT COUNT(*)
+FROM sys.indexes indexes
+INNER JOIN sys.tables tables ON tables.object_id = indexes.object_id
+INNER JOIN sys.schemas schemas ON schemas.schema_id = tables.schema_id
+WHERE schemas.name = N'workable'
+  AND tables.name = N'WorkQueueEntries'
+  AND indexes.name = N'IX_WorkableWorkQueueEntries_Concurrency';
 """));
         Assert.Equal(1, await Scalar<int>(connection, """
 SELECT COUNT(*)
@@ -119,6 +171,39 @@ INNER JOIN sys.schemas schemas ON schemas.schema_id = tables.schema_id
 WHERE schemas.name = N'workable'
   AND tables.name = N'WorkEntries'
   AND columns.name IN (N'WorkSystemId', N'DefinitionId');
+"""));
+        Assert.Equal(1, await Scalar<int>(connection, """
+SELECT COUNT(*)
+FROM sys.tables tables
+INNER JOIN sys.schemas schemas ON schemas.schema_id = tables.schema_id
+WHERE schemas.name = N'workable' AND tables.name = N'WorkflowRuns';
+"""));
+        Assert.Equal(6, await Scalar<int>(connection, """
+SELECT COUNT(*)
+FROM sys.columns columns
+INNER JOIN sys.tables tables ON tables.object_id = columns.object_id
+INNER JOIN sys.schemas schemas ON schemas.schema_id = tables.schema_id
+WHERE schemas.name = N'workable'
+  AND tables.name = N'WorkflowRuns'
+  AND columns.name IN (N'PersistenceScope', N'DefinitionFingerprint', N'RequestContextJson', N'StepsJson', N'PendingControlAction', N'UpdatedAt');
+"""));
+        Assert.Equal(0, await Scalar<int>(connection, """
+SELECT COUNT(*)
+FROM sys.columns columns
+INNER JOIN sys.tables tables ON tables.object_id = columns.object_id
+INNER JOIN sys.schemas schemas ON schemas.schema_id = tables.schema_id
+WHERE schemas.name = N'workable'
+  AND tables.name = N'WorkflowRuns'
+  AND columns.name = N'WorkSystemId';
+"""));
+        Assert.Equal(1, await Scalar<int>(connection, """
+SELECT COUNT(*)
+FROM sys.indexes indexes
+INNER JOIN sys.tables tables ON tables.object_id = indexes.object_id
+INNER JOIN sys.schemas schemas ON schemas.schema_id = tables.schema_id
+WHERE schemas.name = N'workable'
+  AND tables.name = N'WorkflowRuns'
+  AND indexes.name = N'IX_WorkableWorkflowRuns_Recovery';
 """));
     }
 
@@ -217,6 +302,803 @@ CREATE TABLE workable.WorkEntries
         Assert.Contains("could not deploy schema", exception.Message);
         var validation = Assert.IsType<InvalidOperationException>(exception.InnerException);
         Assert.Contains("IsDurableQueued", validation.Message);
+    }
+
+    [Fact]
+    public async Task DurableWorkflowCanStartAndCompleteWithSqlServerPersistence()
+    {
+        if (this.SkipIfUnavailable())
+        {
+            return;
+        }
+
+        await using var provider = new ServiceCollection()
+            .AddWorkableSqlServerDurableQueue(
+                this.ConnectionString,
+                SchemaName)
+            .AddWorkableSystem("workflow-tests", builder =>
+            {
+                builder.RequireAuthorization(false);
+                builder.AddWork(
+                    WorkDefinition.Create("sample.dispatch"),
+                    (_, _, _) => Task.FromResult(WorkExecutionResult.Success()));
+                builder.AddWorkflow(
+                    WorkflowDefinition.Create(
+                        "workflow.durable.dispatch",
+                        coordination: WorkflowCoordinationConfiguration.Durable),
+                    workflow => workflow.DispatchWork("dispatch", WorkDefinition.Create("sample.dispatch")));
+            })
+            .BuildServiceProvider();
+        var registry = provider.GetRequiredService<IWorkSystemRegistry>();
+        Assert.True(registry.TryGet("workflow-tests", out var namedSystem));
+        var system = namedSystem!;
+        await system.Start();
+
+        var handle = StartWorkflow(system, "workflow.durable.dispatch");
+        var completion = await WaitForWorkflowCompletion(handle);
+
+        Assert.True(IsWorkflowAccepted(handle));
+        Assert.Equal(WorkflowRunStatus.Completed.ToString(), WorkflowCompletionStatus(completion));
+
+        await using var connection = await this.OpenConnection();
+        Assert.Equal(1, await Scalar<int>(connection, """
+SELECT COUNT(*)
+FROM workable.WorkflowRuns;
+"""));
+        await TestEventually.Until(
+            async () => await Scalar<int>(connection, """
+SELECT COUNT(*)
+FROM workable.WorkEntries;
+""") == 0,
+            "Expected durable workflow child work entries to be cleaned up.");
+        await system.Stop();
+    }
+
+    [Fact]
+    public async Task DurableWorkflowCanceledByShutdownRecoversAfterRestart()
+    {
+        if (this.SkipIfUnavailable())
+        {
+            return;
+        }
+
+        const string workflowName = "workflow.durable.parallel.recover";
+        var alphaStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var betaStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        await using var firstProvider = new ServiceCollection()
+            .AddWorkableSqlServerDurableQueue(this.ConnectionString, SchemaName)
+            .AddWorkableSystem("workflow-tests", builder =>
+            {
+                builder.RequireAuthorization(false);
+                builder.AddWork(
+                    WorkDefinition.Create("sample.alpha"),
+                    async (_, _, cancellationToken) =>
+                    {
+                        alphaStarted.TrySetResult();
+                        await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+                        return WorkExecutionResult.Success();
+                    },
+                    configuration => configuration.QueueDurably(fallbackPollingInterval: TimeSpan.FromSeconds(1)));
+                builder.AddWork(
+                    WorkDefinition.Create("sample.beta"),
+                    async (_, _, cancellationToken) =>
+                    {
+                        betaStarted.TrySetResult();
+                        await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+                        return WorkExecutionResult.Success();
+                    },
+                    configuration => configuration.QueueDurably(fallbackPollingInterval: TimeSpan.FromSeconds(1)));
+                builder.AddWorkflow(
+                    WorkflowDefinition.Create(
+                        workflowName,
+                        coordination: WorkflowCoordinationConfiguration.Durable),
+                    workflow => workflow
+                        .RunParallel("dispatch", parallel => parallel
+                            .DispatchWork("alpha", WorkDefinition.Create("sample.alpha"))
+                            .DispatchWork("beta", WorkDefinition.Create("sample.beta")))
+                        .Join("join"));
+            })
+            .BuildServiceProvider();
+        var firstRegistry = firstProvider.GetRequiredService<IWorkSystemRegistry>();
+        Assert.True(firstRegistry.TryGet("workflow-tests", out var firstNamedSystem));
+        var firstSystem = firstNamedSystem!;
+        await firstSystem.Start();
+
+        var handle = StartWorkflow(firstSystem, workflowName);
+        var runId = RequiredWorkflowRunId(handle);
+        await WaitWithTimeout(alphaStarted.Task);
+        await WaitWithTimeout(betaStarted.Task);
+
+        await using (var beforeStop = await this.OpenConnection())
+        {
+            await TestEventually.Until(
+                async () => await Scalar<int>(beforeStop, """
+SELECT COUNT(*)
+FROM workable.WorkflowRuns;
+""") == 1,
+                "Expected the durable workflow run to be persisted before shutdown.");
+            await TestEventually.Until(
+                async () => await Scalar<int>(beforeStop, """
+SELECT COUNT(*)
+FROM workable.WorkEntries
+WHERE WorkSystemName = N'workflow-tests'
+  AND DefinitionName IN (N'sample.alpha', N'sample.beta');
+""") == 2,
+                "Expected both durable child workers to be persisted before shutdown.");
+        }
+
+        await StopWithTimeout(firstSystem);
+        var canceled = await WaitForWorkflowCompletion(handle);
+        Assert.Equal(WorkflowRunStatus.Canceled.ToString(), WorkflowCompletionStatus(canceled));
+        await using (var afterStop = await this.OpenConnection())
+        {
+            Assert.Equal(1, await Scalar<int>(afterStop, $"""
+SELECT COUNT(*)
+FROM workable.WorkflowRuns
+WHERE RunId = '{runId.Value:D}';
+"""));
+        }
+
+        await using (var expired = await this.OpenConnection())
+        {
+            await Execute(expired, """
+UPDATE workable.WorkQueueEntries
+SET LeaseExpiresAt = DATEADD(second, -1, SYSDATETIMEOFFSET())
+WHERE WorkSystemName = N'workflow-tests'
+  AND DefinitionName IN (N'sample.alpha', N'sample.beta');
+""");
+        }
+
+        var resumedChildren = 0;
+        var replayed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        await using var secondProvider = new ServiceCollection()
+            .AddWorkableSqlServerDurableQueue(this.ConnectionString, SchemaName)
+            .AddWorkableSystem("workflow-tests", builder =>
+            {
+                builder.RequireAuthorization(false);
+                builder.AddWork(
+                    WorkDefinition.Create("sample.alpha"),
+                    (_, _, _) =>
+                    {
+                        if (Interlocked.Increment(ref resumedChildren) == 2)
+                        {
+                            replayed.TrySetResult();
+                        }
+
+                        return Task.FromResult(WorkExecutionResult.Success());
+                    },
+                    configuration => configuration.QueueDurably(fallbackPollingInterval: TimeSpan.FromSeconds(1)));
+                builder.AddWork(
+                    WorkDefinition.Create("sample.beta"),
+                    (_, _, _) =>
+                    {
+                        if (Interlocked.Increment(ref resumedChildren) == 2)
+                        {
+                            replayed.TrySetResult();
+                        }
+
+                        return Task.FromResult(WorkExecutionResult.Success());
+                    },
+                    configuration => configuration.QueueDurably(fallbackPollingInterval: TimeSpan.FromSeconds(1)));
+                builder.AddWorkflow(
+                    WorkflowDefinition.Create(
+                        workflowName,
+                        coordination: WorkflowCoordinationConfiguration.Durable),
+                    workflow => workflow
+                        .RunParallel("dispatch", parallel => parallel
+                            .DispatchWork("alpha", WorkDefinition.Create("sample.alpha"))
+                            .DispatchWork("beta", WorkDefinition.Create("sample.beta")))
+                        .Join("join"));
+            })
+            .BuildServiceProvider();
+        var secondRegistry = secondProvider.GetRequiredService<IWorkSystemRegistry>();
+        Assert.True(secondRegistry.TryGet("workflow-tests", out var secondNamedSystem));
+        var secondSystem = secondNamedSystem!;
+        await secondSystem.Start();
+        await WaitWithTimeout(replayed.Task);
+
+        await TestEventually.Until(
+            () => WorkflowStatus(secondSystem, runId) == WorkflowRunStatus.Completed.ToString(),
+            "Expected the durable workflow to recover and complete after restart.",
+            timeout: TimeSpan.FromSeconds(15));
+
+        await using (var verification = await this.OpenConnection())
+        {
+            await TestEventually.Until(
+                async () => await Scalar<int>(verification, """
+SELECT COUNT(*)
+FROM workable.WorkflowRuns;
+""") == 1,
+                "Expected the recovered durable workflow run to remain persisted while its final child workers are still retained.");
+            await TestEventually.Until(
+                async () => await Scalar<int>(verification, """
+SELECT COUNT(*)
+FROM workable.WorkEntries
+WHERE WorkSystemName = N'workflow-tests';
+""") == 0,
+                "Expected recovered durable workflow child workers to be cleaned up after completion.");
+        }
+
+        await StopWithTimeout(secondSystem);
+        Assert.Equal(2, Volatile.Read(ref resumedChildren));
+    }
+
+    [Fact]
+    public async Task DurableWorkflowPauseRequestPersistsWhileOutstandingChildRuns()
+    {
+        if (this.SkipIfUnavailable())
+        {
+            return;
+        }
+
+        const string workflowName = "workflow.durable.stop.persist.sql";
+        var slowStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var fastRuns = 0;
+        await using var provider = new ServiceCollection()
+            .AddWorkableSqlServerDurableQueue(this.ConnectionString, SchemaName)
+            .AddWorkableSystem("workflow-tests", builder =>
+            {
+                builder.RequireAuthorization(false);
+                builder.AddWork(
+                    WorkDefinition.Create("sample.stop.slow"),
+                    async (_, _, cancellationToken) =>
+                    {
+                        slowStarted.TrySetResult();
+                        await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+                        return WorkExecutionResult.Success();
+                    },
+                    configuration => configuration.QueueDurably(fallbackPollingInterval: TimeSpan.FromSeconds(1)));
+                builder.AddWork(
+                    WorkDefinition.Create("sample.stop.fast"),
+                    (_, _, _) =>
+                    {
+                        Interlocked.Increment(ref fastRuns);
+                        return Task.FromResult(WorkExecutionResult.Success());
+                    },
+                    configuration => configuration.QueueDurably(fallbackPollingInterval: TimeSpan.FromSeconds(1)));
+                builder.AddWorkflow(
+                    WorkflowDefinition.Create(
+                        workflowName,
+                        coordination: WorkflowCoordinationConfiguration.Durable),
+                    workflow => workflow
+                        .DispatchWork("slow", WorkDefinition.Create("sample.stop.slow"))
+                        .Join("join")
+                        .DispatchWork("fast", WorkDefinition.Create("sample.stop.fast")));
+            })
+            .BuildServiceProvider();
+        var registry = provider.GetRequiredService<IWorkSystemRegistry>();
+        Assert.True(registry.TryGet("workflow-tests", out var namedSystem));
+        var system = namedSystem!;
+        await system.Start();
+
+        var handle = StartWorkflow(system, workflowName);
+        var runId = RequiredWorkflowRunId(handle);
+        await WaitWithTimeout(slowStarted.Task);
+
+        var pause = await ExecuteWorkflowAction(system, runId, "Pause");
+        Assert.True(WorkflowActionAccepted(pause));
+
+        await using (var connection = await this.OpenConnection())
+        {
+            await TestEventually.Until(
+                async () =>
+                {
+                    var pendingAction = await Scalar<string?>(
+                        connection,
+                        """
+SELECT TOP (1) PendingControlAction
+FROM workable.WorkflowRuns
+WHERE RunId = @RunId;
+""",
+                        new SqlParameter("@RunId", runId.Value));
+                    if (string.Equals(pendingAction, "Pause", StringComparison.Ordinal))
+                    {
+                        return true;
+                    }
+
+                    var status = await Scalar<string?>(
+                        connection,
+                        """
+SELECT TOP (1) Status
+FROM workable.WorkflowRuns
+WHERE RunId = @RunId;
+""",
+                        new SqlParameter("@RunId", runId.Value));
+                    return string.Equals(status, nameof(WorkflowRunStatus.Paused), StringComparison.Ordinal);
+                },
+                "Expected the durable workflow pause request to be persisted or applied while the outstanding child is still running.",
+                timeout: TimeSpan.FromSeconds(10));
+        }
+
+        await system.Stop();
+        var canceled = await WaitForWorkflowCompletion(handle);
+        Assert.Equal(WorkflowRunStatus.Canceled.ToString(), WorkflowCompletionStatus(canceled));
+        Assert.Equal(0, Volatile.Read(ref fastRuns));
+    }
+
+    [Fact]
+    public async Task DurableWorkflowRecoveryOnlyReplaysIncompleteParallelChildren()
+    {
+        if (this.SkipIfUnavailable())
+        {
+            return;
+        }
+
+        const string workflowName = "workflow.durable.parallel.partial-recover";
+        await using var firstProvider = new ServiceCollection()
+            .AddWorkableSqlServerDurableQueue(this.ConnectionString, SchemaName)
+            .AddWorkableSystem("workflow-tests", builder =>
+            {
+                builder.RequireAuthorization(false);
+                builder.AddWork(
+                    WorkDefinition.Create("sample.alpha"),
+                    (_, _, _) => Task.FromResult(WorkExecutionResult.Success()),
+                    configuration => configuration.QueueDurably(fallbackPollingInterval: TimeSpan.FromSeconds(1)));
+                builder.AddWork(
+                    WorkDefinition.Create("sample.beta"),
+                    async (_, _, cancellationToken) =>
+                    {
+                        await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+                        return WorkExecutionResult.Success();
+                    },
+                    configuration => configuration.QueueDurably(fallbackPollingInterval: TimeSpan.FromSeconds(1)));
+                builder.AddWorkflow(
+                    WorkflowDefinition.Create(
+                        workflowName,
+                        coordination: WorkflowCoordinationConfiguration.Durable),
+                    workflow => workflow
+                        .RunParallel("dispatch", parallel => parallel
+                            .DispatchWork("alpha", WorkDefinition.Create("sample.alpha"))
+                            .DispatchWork("beta", WorkDefinition.Create("sample.beta")))
+                        .Join("join"));
+            })
+            .BuildServiceProvider();
+        var firstRegistry = firstProvider.GetRequiredService<IWorkSystemRegistry>();
+        Assert.True(firstRegistry.TryGet("workflow-tests", out var firstNamedSystem));
+        var firstSystem = firstNamedSystem!;
+        await firstSystem.Start();
+
+        var handle = StartWorkflow(firstSystem, workflowName);
+        var runId = RequiredWorkflowRunId(handle);
+        await TestEventually.Until(
+            () => WorkflowStepWorkerIds(firstSystem, runId, "join").Count == 1,
+            "Expected the durable join step to retain only the unfinished child before shutdown.",
+            timeout: TimeSpan.FromSeconds(15));
+
+        var remainingWorkerId = WorkflowStepWorkerIds(firstSystem, runId, "join").Single();
+        await StopWithTimeout(firstSystem);
+        var canceled = await WaitForWorkflowCompletion(handle);
+        Assert.Equal(WorkflowRunStatus.Canceled.ToString(), WorkflowCompletionStatus(canceled));
+        await using (var afterStop = await this.OpenConnection())
+        {
+            Assert.Equal(1, await Scalar<int>(afterStop, $"""
+SELECT COUNT(*)
+FROM workable.WorkflowRuns
+WHERE RunId = '{runId.Value:D}';
+"""));
+        }
+
+        await using (var expired = await this.OpenConnection())
+        {
+            await Execute(expired, $"""
+UPDATE workable.WorkQueueEntries
+SET LeaseExpiresAt = DATEADD(second, -1, SYSDATETIMEOFFSET())
+WHERE WorkerId = '{remainingWorkerId.Value:D}';
+""");
+        }
+
+        var replayedAlpha = 0;
+        var replayedBeta = 0;
+        await using var secondProvider = new ServiceCollection()
+            .AddWorkableSqlServerDurableQueue(this.ConnectionString, SchemaName)
+            .AddWorkableSystem("workflow-tests", builder =>
+            {
+                builder.RequireAuthorization(false);
+                builder.AddWork(
+                    WorkDefinition.Create("sample.alpha"),
+                    (_, _, _) =>
+                    {
+                        Interlocked.Increment(ref replayedAlpha);
+                        return Task.FromResult(WorkExecutionResult.Success());
+                    },
+                    configuration => configuration.QueueDurably(fallbackPollingInterval: TimeSpan.FromSeconds(1)));
+                builder.AddWork(
+                    WorkDefinition.Create("sample.beta"),
+                    (_, _, _) =>
+                    {
+                        Interlocked.Increment(ref replayedBeta);
+                        return Task.FromResult(WorkExecutionResult.Success());
+                    },
+                    configuration => configuration.QueueDurably(fallbackPollingInterval: TimeSpan.FromSeconds(1)));
+                builder.AddWorkflow(
+                    WorkflowDefinition.Create(
+                        workflowName,
+                        coordination: WorkflowCoordinationConfiguration.Durable),
+                    workflow => workflow
+                        .RunParallel("dispatch", parallel => parallel
+                            .DispatchWork("alpha", WorkDefinition.Create("sample.alpha"))
+                            .DispatchWork("beta", WorkDefinition.Create("sample.beta")))
+                        .Join("join"));
+            })
+            .BuildServiceProvider();
+        var secondRegistry = secondProvider.GetRequiredService<IWorkSystemRegistry>();
+        Assert.True(secondRegistry.TryGet("workflow-tests", out var secondNamedSystem));
+        var secondSystem = secondNamedSystem!;
+        await secondSystem.Start();
+
+        await TestEventually.Until(
+            () => WorkflowStatus(secondSystem, runId) == WorkflowRunStatus.Completed.ToString(),
+            "Expected the durable workflow to recover and complete after replaying only the unfinished child.",
+            timeout: TimeSpan.FromSeconds(15));
+
+        await StopWithTimeout(secondSystem);
+        Assert.NotEqual(Guid.Empty, remainingWorkerId.Value);
+        Assert.Equal(0, Volatile.Read(ref replayedAlpha));
+        Assert.Equal(1, Volatile.Read(ref replayedBeta));
+    }
+
+    [Fact]
+    public async Task WorkflowRunViewShowsRecoveredSqlDurableWorkflowState()
+    {
+        if (this.SkipIfUnavailable())
+        {
+            return;
+        }
+
+        const string workflowName = "workflow.durable.parallel.status-recover";
+        await using var firstProvider = new ServiceCollection()
+            .AddWorkableSqlServerDurableQueue(this.ConnectionString, SchemaName)
+            .AddWorkableSystem("workflow-tests", builder =>
+            {
+                builder.RequireAuthorization(false);
+                builder.AddWork(
+                    WorkDefinition.Create("sample.alpha"),
+                    (_, _, _) => Task.FromResult(WorkExecutionResult.Success()),
+                    configuration => configuration.QueueDurably(fallbackPollingInterval: TimeSpan.FromSeconds(1)));
+                builder.AddWork(
+                    WorkDefinition.Create("sample.beta"),
+                    async (_, _, cancellationToken) =>
+                    {
+                        await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+                        return WorkExecutionResult.Success();
+                    },
+                    configuration => configuration.QueueDurably(fallbackPollingInterval: TimeSpan.FromSeconds(1)));
+                builder.AddWorkflow(
+                    WorkflowDefinition.Create(
+                        workflowName,
+                        coordination: WorkflowCoordinationConfiguration.Durable),
+                    workflow => workflow
+                        .RunParallel("dispatch", parallel => parallel
+                            .DispatchWork("alpha", WorkDefinition.Create("sample.alpha"))
+                            .DispatchWork("beta", WorkDefinition.Create("sample.beta")))
+                        .Join("join"));
+            })
+            .BuildServiceProvider();
+        var firstRegistry = firstProvider.GetRequiredService<IWorkSystemRegistry>();
+        Assert.True(firstRegistry.TryGet("workflow-tests", out var firstNamedSystem));
+        var firstSystem = firstNamedSystem!;
+        await firstSystem.Start();
+
+        var handle = StartWorkflow(firstSystem, workflowName);
+        var runId = RequiredWorkflowRunId(handle);
+        await TestEventually.Until(
+            () => WorkflowStepWorkerIds(firstSystem, runId, "join").Count == 1,
+            "Expected the durable join step to retain only the unfinished child before shutdown.",
+            timeout: TimeSpan.FromSeconds(15));
+
+        var remainingWorkerId = WorkflowStepWorkerIds(firstSystem, runId, "join").Single();
+        await StopWithTimeout(firstSystem);
+        await WaitForWorkflowCompletion(handle);
+
+        await using (var expired = await this.OpenConnection())
+        {
+            await Execute(expired, $"""
+UPDATE workable.WorkQueueEntries
+SET LeaseExpiresAt = DATEADD(second, -1, SYSDATETIMEOFFSET())
+WHERE WorkerId = '{remainingWorkerId.Value:D}';
+""");
+        }
+
+        var resumedBetaStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var resumedBetaRelease = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        await using var secondProvider = new ServiceCollection()
+            .AddWorkableSqlServerDurableQueue(this.ConnectionString, SchemaName)
+            .AddWorkableSystem("workflow-tests", builder =>
+            {
+                builder.RequireAuthorization(false);
+                builder.AddWork(
+                    WorkDefinition.Create("sample.alpha"),
+                    (_, _, _) => Task.FromResult(WorkExecutionResult.Success()),
+                    configuration => configuration.QueueDurably(fallbackPollingInterval: TimeSpan.FromSeconds(1)));
+                builder.AddWork(
+                    WorkDefinition.Create("sample.beta"),
+                    async (_, _, cancellationToken) =>
+                    {
+                        resumedBetaStarted.TrySetResult();
+                        await resumedBetaRelease.Task.WaitAsync(cancellationToken);
+                        return WorkExecutionResult.Success();
+                    },
+                    configuration => configuration.QueueDurably(fallbackPollingInterval: TimeSpan.FromSeconds(1)));
+                builder.AddWorkflow(
+                    WorkflowDefinition.Create(
+                        workflowName,
+                        coordination: WorkflowCoordinationConfiguration.Durable),
+                    workflow => workflow
+                        .RunParallel("dispatch", parallel => parallel
+                            .DispatchWork("alpha", WorkDefinition.Create("sample.alpha"))
+                            .DispatchWork("beta", WorkDefinition.Create("sample.beta")))
+                        .Join("join"));
+            })
+            .BuildServiceProvider();
+        var secondRegistry = secondProvider.GetRequiredService<IWorkSystemRegistry>();
+        Assert.True(secondRegistry.TryGet("workflow-tests", out var secondNamedSystem));
+        var secondSystem = secondNamedSystem!;
+        await secondSystem.Start();
+        await resumedBetaStarted.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+        var detail = await new WorkflowRunViewAdapter().Run(
+            secondSystem,
+            WorkRequestContext.Create(WorkInvocationChannel.InProcess),
+            runId);
+
+        resumedBetaRelease.TrySetResult();
+        await TestEventually.Until(
+            () => WorkflowStatus(secondSystem, runId) == WorkflowRunStatus.Completed.ToString(),
+            "Expected the recovered durable workflow to complete after inspection.",
+            timeout: TimeSpan.FromSeconds(15));
+
+        await StopWithTimeout(secondSystem);
+
+        Assert.NotNull(detail);
+        Assert.Equal("dispatch", detail!.CurrentStepName);
+        Assert.Equal(1, detail.OutstandingChildren.Active);
+        Assert.Equal(0, detail.OutstandingChildren.Unavailable);
+        Assert.Equal(2, Assert.Single(detail.Steps, step => step.Name == "dispatch").Children.Total);
+        Assert.Equal(1, Assert.Single(detail.Steps, step => step.Name == "join").Children.Total);
+    }
+
+    [Fact]
+    public async Task WorkflowRunsRoundTripThroughTheSqlPersistenceStore()
+    {
+        if (this.SkipIfUnavailable())
+        {
+            return;
+        }
+
+        await WorkableSqlServerSchema.Apply(this.ConnectionString, SchemaName);
+        await using var provider = new ServiceCollection()
+            .AddWorkableSqlServerDurableQueue(this.ConnectionString, SchemaName)
+            .BuildServiceProvider();
+        var store = provider.GetRequiredService<IWorkPersistenceStore>();
+        var run = CreateWorkflowRun("workflow-tests", "workflow.sql.roundtrip");
+
+        await store.UpsertWorkflowRun(run);
+        var loaded = new List<WorkflowRunPersistenceRecord>();
+        await foreach (var item in store.ListWorkflowRuns(
+            new WorkflowPersistenceReadRequest("workflow-tests")))
+        {
+            loaded.Add(item);
+        }
+
+        await store.DeleteWorkflowRun(new WorkflowPersistenceDeleteRequest(run.RunId));
+
+        Assert.Single(loaded);
+        Assert.Equal(run.RunId, loaded[0].RunId);
+        Assert.Equal(run.DefinitionName, loaded[0].DefinitionName);
+        Assert.Equal(run.DefinitionFingerprint, loaded[0].DefinitionFingerprint);
+        Assert.Equal(run.PendingControlAction, loaded[0].PendingControlAction);
+        Assert.Equal(run.RequestContext.Actor.Id, loaded[0].RequestContext.Actor.Id);
+        Assert.Equal(run.Steps.Single().WorkerIds, loaded[0].Steps.Single().WorkerIds);
+        Assert.Equal(run.ChildReceipts.Single().WorkerId, loaded[0].ChildReceipts.Single().WorkerId);
+        Assert.Equal(run.ChildReceipts.Single().StepName, loaded[0].ChildReceipts.Single().StepName);
+        Assert.Equal(run.ChildReceipts.Single().DefinitionName, loaded[0].ChildReceipts.Single().DefinitionName);
+        Assert.Equal(run.ChildReceipts.Single().CompletionStatus, loaded[0].ChildReceipts.Single().CompletionStatus);
+
+        await using var connection = await this.OpenConnection();
+        Assert.Equal(0, await Scalar<int>(connection, """
+SELECT COUNT(*)
+FROM workable.WorkflowRuns;
+"""));
+    }
+
+    [Fact]
+    public async Task WorkflowTransactionCommitsWorkflowRunsAndDurableWorkersAtomically()
+    {
+        if (this.SkipIfUnavailable())
+        {
+            return;
+        }
+
+        await WorkableSqlServerSchema.Apply(this.ConnectionString, SchemaName);
+        await using var provider = new ServiceCollection()
+            .AddWorkableSqlServerDurableQueue(this.ConnectionString, SchemaName)
+            .BuildServiceProvider();
+        var store = provider.GetRequiredService<IWorkPersistenceStore>();
+        var run = CreateWorkflowRun("workflow-tests", "workflow.sql.transaction.commit");
+        var workerId = WorkerId.New();
+
+        await using (var transaction = await store.BeginWorkflowTransaction(
+            new WorkflowPersistenceTransactionRequest("workflow-tests")))
+        {
+            await store.UpsertWorkflowRun(run, transaction);
+            await store.Enqueue(CreateDurableEnqueueRequest(
+                WorkSystemId.New(),
+                "workflow-tests",
+                workerId,
+                "sample.dispatch",
+                "workflow-transaction-commit",
+                transaction));
+
+            await transaction.Commit();
+        }
+
+        await using var connection = await this.OpenConnection();
+        Assert.Equal(1, await Scalar<int>(connection, """
+SELECT COUNT(*)
+FROM workable.WorkflowRuns;
+"""));
+        Assert.Equal(1, await CountRowsForSubject(connection, "workflow-transaction-commit"));
+    }
+
+    [Fact]
+    public async Task WorkflowTransactionRollbackDiscardsWorkflowRunsAndDurableWorkersTogether()
+    {
+        if (this.SkipIfUnavailable())
+        {
+            return;
+        }
+
+        await WorkableSqlServerSchema.Apply(this.ConnectionString, SchemaName);
+        await using var provider = new ServiceCollection()
+            .AddWorkableSqlServerDurableQueue(this.ConnectionString, SchemaName)
+            .BuildServiceProvider();
+        var store = provider.GetRequiredService<IWorkPersistenceStore>();
+        var run = CreateWorkflowRun("workflow-tests", "workflow.sql.transaction.rollback");
+        var workerId = WorkerId.New();
+
+        await using (var transaction = await store.BeginWorkflowTransaction(
+            new WorkflowPersistenceTransactionRequest("workflow-tests")))
+        {
+            await store.UpsertWorkflowRun(run, transaction);
+            await store.Enqueue(CreateDurableEnqueueRequest(
+                WorkSystemId.New(),
+                "workflow-tests",
+                workerId,
+                "sample.dispatch",
+                "workflow-transaction-rollback",
+                transaction));
+        }
+
+        await using var connection = await this.OpenConnection();
+        Assert.Equal(0, await Scalar<int>(connection, """
+SELECT COUNT(*)
+FROM workable.WorkflowRuns;
+"""));
+        Assert.Equal(0, await CountRowsForSubject(connection, "workflow-transaction-rollback"));
+    }
+
+    [Fact]
+    public async Task DurableWorkflowRecoveryFailsWhenTheRegisteredDefinitionShapeChanged()
+    {
+        if (this.SkipIfUnavailable())
+        {
+            return;
+        }
+
+        var workflowDefinitionId = WorkflowDefinitionId.New();
+        const string workflowName = "workflow.sql.recovery.definition-changed";
+        await using var firstProvider = new ServiceCollection()
+            .AddWorkableSqlServerDurableQueue(this.ConnectionString, SchemaName)
+            .AddWorkableSystem("workflow-tests", builder =>
+            {
+                builder.RequireAuthorization(false);
+                builder.AddWork(
+                    WorkDefinition.Create("sample.alpha"),
+                    async (_, _, cancellationToken) =>
+                    {
+                        await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+                        return WorkExecutionResult.Success();
+                    },
+                    configuration => configuration.QueueDurably(fallbackPollingInterval: TimeSpan.FromSeconds(1)));
+                builder.AddWorkflow(
+                    WorkflowDefinition.Create(
+                        workflowName,
+                        id: workflowDefinitionId,
+                        coordination: WorkflowCoordinationConfiguration.Durable),
+                    workflow => workflow
+                        .DispatchWork("dispatch", WorkDefinition.Create("sample.alpha"))
+                        .Join("join"));
+            })
+            .BuildServiceProvider();
+        var firstRegistry = firstProvider.GetRequiredService<IWorkSystemRegistry>();
+        Assert.True(firstRegistry.TryGet("workflow-tests", out var firstNamedSystem));
+        var firstSystem = firstNamedSystem!;
+        await firstSystem.Start();
+
+        var handle = StartWorkflow(firstSystem, workflowName);
+        var runId = RequiredWorkflowRunId(handle);
+        await TestEventually.Until(
+            () => WorkflowStatus(firstSystem, runId) == WorkflowRunStatus.Running.ToString(),
+            "Expected the durable workflow to start before restart.",
+            timeout: TimeSpan.FromSeconds(15));
+        await using (var persistedRunConnection = await this.OpenConnection())
+        {
+            await TestEventually.Until(
+                async () => await Scalar<int>(persistedRunConnection, $"""
+SELECT COUNT(*)
+FROM workable.WorkflowRuns
+WHERE RunId = '{runId.Value:D}';
+""") == 1,
+                "Expected the durable workflow run to be persisted before shutdown.",
+                timeout: TimeSpan.FromSeconds(15));
+            await TestEventually.Until(
+                async () => await Scalar<int>(persistedRunConnection, """
+SELECT COUNT(*)
+FROM workable.WorkEntries
+WHERE WorkSystemName = N'workflow-tests'
+  AND DefinitionName = N'sample.alpha';
+""") == 1,
+                "Expected the durable workflow child worker to be persisted before shutdown.",
+                timeout: TimeSpan.FromSeconds(15));
+        }
+
+        await StopWithTimeout(firstSystem);
+        var canceled = await WaitForWorkflowCompletion(handle);
+        Assert.Equal(WorkflowRunStatus.Canceled.ToString(), WorkflowCompletionStatus(canceled));
+
+        await using var secondProvider = new ServiceCollection()
+            .AddWorkableSqlServerDurableQueue(this.ConnectionString, SchemaName)
+            .AddWorkableSystem("workflow-tests", builder =>
+            {
+                builder.RequireAuthorization(false);
+                builder.AddWork(
+                    WorkDefinition.Create("sample.alpha"),
+                    (_, _, _) => Task.FromResult(WorkExecutionResult.Success()),
+                    configuration => configuration.QueueDurably(fallbackPollingInterval: TimeSpan.FromSeconds(1)));
+                builder.AddWork(
+                    WorkDefinition.Create("sample.beta"),
+                    (_, _, _) => Task.FromResult(WorkExecutionResult.Success()),
+                    configuration => configuration.QueueDurably(fallbackPollingInterval: TimeSpan.FromSeconds(1)));
+                builder.AddWorkflow(
+                    WorkflowDefinition.Create(
+                        workflowName,
+                        id: workflowDefinitionId,
+                        coordination: WorkflowCoordinationConfiguration.Durable),
+                    workflow => workflow
+                        .DispatchWork("dispatch", WorkDefinition.Create("sample.alpha"))
+                        .DispatchWork("archive", WorkDefinition.Create("sample.beta"))
+                        .Join("join"));
+            })
+            .BuildServiceProvider();
+        var secondRegistry = secondProvider.GetRequiredService<IWorkSystemRegistry>();
+        Assert.True(secondRegistry.TryGet("workflow-tests", out var secondNamedSystem));
+        var secondSystem = secondNamedSystem!;
+        await secondSystem.Start();
+
+        await TestEventually.Until(
+            () => WorkflowStatus(secondSystem, runId) == WorkflowRunStatus.Failed.ToString(),
+            "Expected the changed durable workflow definition to reject recovery of the persisted run.",
+            timeout: TimeSpan.FromSeconds(15));
+
+        var snapshot = WorkflowSnapshot(secondSystem, runId)
+            ?? throw new InvalidOperationException("Expected failed recovered workflow snapshot.");
+        var messages = (System.Collections.IEnumerable)(snapshot.GetType().GetProperty("Messages")?.GetValue(snapshot)
+            ?? throw new InvalidOperationException("Expected workflow messages."));
+        Assert.Contains(
+            messages.Cast<object>(),
+            message => string.Equals(
+                message.GetType().GetProperty("Code")?.GetValue(message)?.ToString(),
+                "workable.workflow.definition_mismatch",
+                StringComparison.Ordinal));
+
+        await using var connection = await this.OpenConnection();
+        Assert.Equal(1, await Scalar<int>(connection, $"""
+SELECT COUNT(*)
+FROM workable.WorkflowRuns
+WHERE RunId = '{runId.Value:D}';
+"""));
+
+        await StopWithTimeout(secondSystem);
     }
 
     [Fact]
@@ -629,11 +1511,13 @@ CREATE TABLE workable.WorkEntries
         await using var connection = await this.OpenConnection();
         var combinedRows = await Scalar<int>(connection, """
 SELECT COUNT(*)
-FROM workable.WorkEntries
-WHERE SubjectType = N'order'
-  AND SubjectValue = N'combined'
-  AND IsDurableQueued = 1
-  AND HasIdempotencyReservation = 1;
+FROM workable.WorkEntries entries
+INNER JOIN workable.WorkQueueEntries queue
+    ON queue.WorkerId = entries.WorkerId
+WHERE entries.SubjectType = N'order'
+  AND entries.SubjectValue = N'combined'
+  AND entries.IsDurableQueued = 0
+  AND entries.HasIdempotencyReservation = 1;
 """);
 
         await system.Stop();
@@ -664,17 +1548,152 @@ WHERE SubjectType = N'order'
         await using var connection = await this.OpenConnection();
         var durableOnlyRows = await Scalar<int>(connection, """
 SELECT COUNT(*)
-FROM workable.WorkEntries
-WHERE SubjectType = N'order'
-  AND SubjectValue = N'durable-no-idempotency'
-  AND IsDurableQueued = 1
-  AND HasIdempotencyReservation = 0;
+FROM workable.WorkEntries entries
+INNER JOIN workable.WorkQueueEntries queue
+    ON queue.WorkerId = entries.WorkerId
+WHERE entries.SubjectType = N'order'
+  AND entries.SubjectValue = N'durable-no-idempotency'
+  AND entries.IsDurableQueued = 0
+  AND entries.HasIdempotencyReservation = 0
+  AND queue.HasPersistentConcurrency = 0;
 """);
 
         await system.Stop();
 
         Assert.True(handle.QueueOutcome.IsAccepted);
         Assert.Equal(1, durableOnlyRows);
+    }
+
+    [Fact]
+    public async Task DurableQueueWithPersistentConcurrencyWritesClaimMetadata()
+    {
+        if (this.SkipIfUnavailable())
+        {
+            return;
+        }
+
+        var system = this.CreateSystem(
+            "sql-durable-persistent-concurrency-metadata",
+            (_, _, _) => Task.FromResult(WorkExecutionResult.Success()),
+            configuration => configuration
+                .QueueDurably()
+                .LimitConcurrency(
+                    maximumCapacity: 1,
+                    blockingMode: WorkConcurrencyBlockingMode.WhileExecuting,
+                    limitReachedBehavior: WorkConcurrencyLimitReachedBehavior.DeferStart)
+                .DoNotStart());
+        await system.Start();
+
+        var handle = await system.Queue.Enqueue("sql-durable-persistent-concurrency-metadata");
+
+        await using var connection = await this.OpenConnection();
+        var durableConcurrencyRows = await Scalar<int>(connection, """
+SELECT COUNT(*)
+FROM workable.WorkQueueEntries
+WHERE DefinitionName = N'sql-durable-persistent-concurrency-metadata'
+  AND HasPersistentConcurrency = 1
+  AND ConcurrencyScope = N'PerDefinition'
+  AND ConcurrencyMaximumCapacity = 1;
+""");
+
+        await system.Stop();
+
+        Assert.True(handle.QueueOutcome.IsAccepted);
+        Assert.Equal(1, durableConcurrencyRows);
+    }
+
+    [Fact]
+    public async Task ConcurrentNonTransactionalStoreEnqueuesPersistDurableRows()
+    {
+        if (this.SkipIfUnavailable())
+        {
+            return;
+        }
+
+        const int rowCount = 96;
+        const string systemName = "sql-store-batched-enqueue-system";
+        const string definitionName = "sql-store-batched-enqueue";
+        await WorkableSqlServerSchema.Apply(this.ConnectionString, SchemaName);
+        await using var provider = new ServiceCollection()
+            .AddWorkableSqlServerDurableQueue(this.ConnectionString, SchemaName)
+            .BuildServiceProvider();
+        var store = provider.GetRequiredService<IWorkPersistenceStore>();
+        var systemId = WorkSystemId.New();
+        var requests = Enumerable.Range(0, rowCount)
+            .Select(index => CreateDurableEnqueueRequest(
+                systemId,
+                systemName,
+                WorkerId.New(),
+                definitionName,
+                $"batched-store-{index}",
+                transaction: null,
+                enableIdempotency: false))
+            .ToArray();
+
+        await Task.WhenAll(requests.Select(request => store.Enqueue(request)));
+
+        await using var connection = await this.OpenConnection();
+        var persistedRows = await Scalar<int>(connection, """
+SELECT COUNT(*)
+FROM workable.WorkEntries entries
+INNER JOIN workable.WorkQueueEntries queue
+    ON queue.WorkerId = entries.WorkerId
+WHERE entries.WorkSystemName = N'sql-store-batched-enqueue-system'
+  AND entries.DefinitionName = N'sql-store-batched-enqueue'
+  AND entries.IsDurableQueued = 0
+  AND entries.HasIdempotencyReservation = 0;
+""");
+
+        Assert.Equal(rowCount, persistedRows);
+    }
+
+    [Fact]
+    public async Task ConcurrentBatchedStoreEnqueuePreservesDuplicateSubjectRejection()
+    {
+        if (this.SkipIfUnavailable())
+        {
+            return;
+        }
+
+        const string systemName = "sql-store-batched-duplicate-system";
+        const string definitionName = "sql-store-batched-duplicate";
+        const string subjectValue = "batched-store-duplicate";
+        await WorkableSqlServerSchema.Apply(this.ConnectionString, SchemaName);
+        await using var provider = new ServiceCollection()
+            .AddWorkableSqlServerDurableQueue(this.ConnectionString, SchemaName)
+            .BuildServiceProvider();
+        var store = provider.GetRequiredService<IWorkPersistenceStore>();
+        var systemId = WorkSystemId.New();
+        var requests = Enumerable.Range(0, 2)
+            .Select(_ => CreateDurableEnqueueRequest(
+                systemId,
+                systemName,
+                WorkerId.New(),
+                definitionName,
+                subjectValue,
+                transaction: null,
+                enableIdempotency: true))
+            .ToArray();
+
+        var results = await Task.WhenAll(requests.Select(async request =>
+        {
+            try
+            {
+                await store.Enqueue(request);
+                return (Exception?)null;
+            }
+            catch (Exception exception)
+            {
+                return exception;
+            }
+        }));
+
+        await using var connection = await this.OpenConnection();
+        var persistedRows = await CountRowsForSubject(connection, subjectValue);
+
+        Assert.Equal(1, results.Count(static exception => exception is null));
+        Assert.Single(results.OfType<WorkQueueDurabilityDuplicateException>());
+        Assert.Equal(1, persistedRows);
     }
 
     [Fact]
@@ -1462,17 +2481,17 @@ WHERE WorkSystemName = N'background'
         await using var verification = await this.OpenConnection();
         var claimedRows = await Scalar<int>(verification, """
 SELECT COUNT(*)
-FROM workable.WorkEntries
+FROM workable.WorkQueueEntries
 WHERE ClaimedBy IN (N'consumer-one', N'consumer-two');
 """);
         var firstRows = await Scalar<int>(verification, """
 SELECT COUNT(*)
-FROM workable.WorkEntries
+FROM workable.WorkQueueEntries
 WHERE ClaimedBy = N'consumer-one';
 """);
         var secondRows = await Scalar<int>(verification, """
 SELECT COUNT(*)
-FROM workable.WorkEntries
+FROM workable.WorkQueueEntries
 WHERE ClaimedBy = N'consumer-two';
 """);
 
@@ -1529,7 +2548,7 @@ WHERE ClaimedBy = N'consumer-two';
         await using var verification = await this.OpenConnection();
         var executingBuckets = await Scalar<int>(verification, """
 SELECT COUNT(*)
-FROM workable.WorkEntries
+FROM workable.WorkQueueEntries
 WHERE ConcurrencyBucket = N'Executing';
 """);
 
@@ -1846,10 +2865,12 @@ WHERE ConcurrencyBucket = N'Executing';
         await using var verification = await this.OpenConnection();
         var retainedRows = await Scalar<int>(verification, $"""
 SELECT COUNT(*)
-FROM workable.WorkEntries
-WHERE WorkerId = '{firstWorkerId.Value}'
-  AND IsDurableQueued = 0
-  AND ConcurrencyBucket IS NULL;
+FROM workable.WorkEntries entries
+LEFT JOIN workable.WorkQueueEntries queue
+    ON queue.WorkerId = entries.WorkerId
+WHERE entries.WorkerId = '{firstWorkerId.Value}'
+  AND entries.IsDurableQueued = 0
+  AND queue.WorkerId IS NULL;
 """);
 
         Assert.Equal(firstWorkerId, firstClaim.Single().Lease.WorkerId);
@@ -2251,6 +3272,17 @@ FROM workable.WorkEntries
         await command.ExecuteNonQueryAsync();
     }
 
+    private static async Task Execute(
+        SqlConnection connection,
+        string commandText,
+        params SqlParameter[] parameters)
+    {
+        await using var command = connection.CreateCommand();
+        command.CommandText = commandText;
+        command.Parameters.AddRange(parameters);
+        await command.ExecuteNonQueryAsync();
+    }
+
     private static async Task SetCreatedAt(
         SqlConnection connection,
         DbTransaction transaction,
@@ -2263,6 +3295,13 @@ FROM workable.WorkEntries
 UPDATE workable.WorkEntries
 SET CreatedAt = @CreatedAt
 WHERE SubjectValue = @SubjectValue;
+
+UPDATE queue
+SET CreatedAt = @CreatedAt
+FROM workable.WorkQueueEntries queue
+INNER JOIN workable.WorkEntries entries
+    ON entries.WorkerId = queue.WorkerId
+WHERE entries.SubjectValue = @SubjectValue;
 """;
         AddParameter(command, "@CreatedAt", createdAt);
         AddParameter(command, "@SubjectValue", subjectValue);
@@ -2337,6 +3376,7 @@ INSERT INTO workable.WorkEntries
     DefinitionName,
     IsDurableQueued,
     HasIdempotencyReservation,
+    HasPersistentConcurrency,
     SubjectType,
     SubjectValue,
     ConcurrencyType,
@@ -2355,8 +3395,9 @@ VALUES
     @WorkerId,
     @WorkSystemName,
     @DefinitionName,
-    @IsDurableQueued,
+    CAST(0 AS bit),
     @HasIdempotencyReservation,
+    @HasPersistentConcurrency,
     @SubjectType,
     @SubjectValue,
     @ConcurrencyType,
@@ -2366,18 +3407,70 @@ VALUES
     @ConfigurationJson,
     @OriginJson,
     @CreatedAt,
-    @ClaimedBy,
-    @LeaseId,
-    @LeaseExpiresAt
+    NULL,
+    NULL,
+    NULL
 );
+
+IF @IsDurableQueued = 1
+BEGIN
+    INSERT INTO workable.WorkQueueEntries
+    (
+        WorkerId,
+        WorkSystemName,
+        DefinitionName,
+        HasPersistentConcurrency,
+        ConcurrencyScope,
+        ConcurrencyMaximumCapacity,
+        SubjectType,
+        SubjectValue,
+        ConcurrencyType,
+        ConcurrencyValue,
+        CreatedAt,
+        ClaimedBy,
+        LeaseId,
+        LeaseExpiresAt,
+        ConcurrencyBucket
+    )
+    VALUES
+    (
+        @WorkerId,
+        @WorkSystemName,
+        @DefinitionName,
+        @HasPersistentConcurrency,
+        @ConcurrencyScope,
+        @ConcurrencyMaximumCapacity,
+        @SubjectType,
+        @SubjectValue,
+        @ConcurrencyType,
+        @ConcurrencyValue,
+        @CreatedAt,
+        @ClaimedBy,
+        @LeaseId,
+        @LeaseExpiresAt,
+        CASE
+            WHEN @HasPersistentConcurrency = 1 AND @LeaseId IS NOT NULL THEN N'Executing'
+            ELSE NULL
+        END
+    );
+END;
 """;
+        var hasPersistentConcurrency = rowConfiguration.Coordination.IsPersistentConcurrencyEnabled;
+        var subjectId = rowInput.SubjectId;
         command.Parameters.AddWithValue("@WorkerId", workerId.Value);
         command.Parameters.AddWithValue("@WorkSystemName", "default");
         command.Parameters.AddWithValue("@DefinitionName", definitionName);
         command.Parameters.AddWithValue("@IsDurableQueued", isDurableQueued);
         command.Parameters.AddWithValue("@HasIdempotencyReservation", hasIdempotencyReservation);
-        command.Parameters.AddWithValue("@SubjectType", "order");
-        command.Parameters.AddWithValue("@SubjectValue", subjectValue);
+        command.Parameters.AddWithValue("@HasPersistentConcurrency", hasPersistentConcurrency);
+        command.Parameters.AddWithValue(
+            "@ConcurrencyScope",
+            hasPersistentConcurrency ? rowConfiguration.Coordination.Concurrency.Scope.ToString() : DBNull.Value);
+        command.Parameters.AddWithValue(
+            "@ConcurrencyMaximumCapacity",
+            hasPersistentConcurrency ? rowConfiguration.Coordination.Concurrency.MaximumCapacity : DBNull.Value);
+        command.Parameters.AddWithValue("@SubjectType", (object?)subjectId?.Type ?? DBNull.Value);
+        command.Parameters.AddWithValue("@SubjectValue", (object?)subjectId?.Value ?? subjectValue);
         var concurrencyKey = rowInput.ConcurrencyKey;
         command.Parameters.AddWithValue("@ConcurrencyType", concurrencyKey is null ? DBNull.Value : concurrencyKey.Value.Type);
         command.Parameters.AddWithValue("@ConcurrencyValue", concurrencyKey is null ? DBNull.Value : concurrencyKey.Value.Value);
@@ -2457,6 +3550,12 @@ VALUES
         await system.Start(timeout.Token);
     }
 
+    private static async Task StopWithTimeout(IWorkSystem system)
+    {
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        await system.Stop(cancellationToken: timeout.Token);
+    }
+
     private static async Task<WorkCompletion> WaitForCompletion(IWorkerHandle handle)
     {
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
@@ -2488,6 +3587,23 @@ VALUES
         return (T)Convert.ChangeType(value, typeof(T));
     }
 
+    private static async Task<T?> Scalar<T>(
+        SqlConnection connection,
+        string commandText,
+        params SqlParameter[] parameters)
+    {
+        await using var command = connection.CreateCommand();
+        command.CommandText = commandText;
+        command.Parameters.AddRange(parameters);
+        var value = await command.ExecuteScalarAsync();
+        if (value is null or DBNull)
+        {
+            return default;
+        }
+
+        return (T?)Convert.ChangeType(value, Nullable.GetUnderlyingType(typeof(T)) ?? typeof(T));
+    }
+
     private static Task<int> CountRowsForSubject(SqlConnection connection, string subjectValue)
         => Scalar<int>(connection, $"""
 SELECT COUNT(*)
@@ -2507,7 +3623,7 @@ WHERE SubjectValue = N'{Escape(subjectValue)}';
         await using var command = connection.CreateCommand();
         command.CommandText = """
 SELECT LeaseExpiresAt
-FROM workable.WorkEntries
+FROM workable.WorkQueueEntries
 WHERE WorkerId = @WorkerId;
 """;
         command.Parameters.AddWithValue("@WorkerId", workerId.Value);
@@ -2521,6 +3637,182 @@ WHERE WorkerId = @WorkerId;
         => await TestEventually.Until(
             async () => await CountRowsForSubject(connection, subjectValue) == expected,
             $"Expected SQL Server work entry count for subject '{subjectValue}' to become {expected}.");
+
+    private static object StartWorkflow(IWorkSystem system, string workflowName)
+    {
+        var runtime = system.GetType()
+            .GetProperty("WorkflowRuntime", BindingFlags.Instance | BindingFlags.NonPublic)?
+            .GetValue(system)
+            ?? throw new InvalidOperationException("Expected workflow runtime property.");
+        return runtime.GetType()
+            .GetMethod("Start", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)?
+            .Invoke(
+                runtime,
+                [workflowName, WorkRequestContext.Create(WorkInvocationChannel.InProcess), CancellationToken.None])
+            ?? throw new InvalidOperationException("Expected workflow start handle.");
+    }
+
+    private static async Task<object> ExecuteWorkflowAction(
+        IWorkSystem system,
+        WorkflowRunId runId,
+        string actionName)
+    {
+        var runtime = system.GetType()
+            .GetProperty("WorkflowRuntime", BindingFlags.Instance | BindingFlags.NonPublic)?
+            .GetValue(system)
+            ?? throw new InvalidOperationException("Expected workflow runtime property.");
+        var executeMethod = runtime.GetType()
+            .GetMethods(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)
+            .Single(method =>
+            {
+                if (!string.Equals(method.Name, "Execute", StringComparison.Ordinal))
+                {
+                    return false;
+                }
+
+                var parameters = method.GetParameters();
+                return parameters.Length == 3 &&
+                    parameters[0].ParameterType == typeof(WorkflowRunId) &&
+                    parameters[2].ParameterType == typeof(WorkRequestContext);
+            });
+        var actionParameterType = executeMethod.GetParameters()[1].ParameterType;
+        var action = Enum.Parse(actionParameterType, actionName, ignoreCase: false);
+        var task = (Task)executeMethod.Invoke(
+            runtime,
+            [runId, action, WorkRequestContext.Create(WorkInvocationChannel.InProcess)])!;
+        await task.WaitAsync(CancellationToken.None);
+        return task.GetType().GetProperty("Result")?.GetValue(task)
+            ?? throw new InvalidOperationException("Expected workflow action outcome.");
+    }
+
+    private static async Task<object> WaitForWorkflowCompletion(object handle)
+    {
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var waitTask = (Task)handle.GetType()
+            .GetMethod("WaitForCompletion", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)?
+            .Invoke(handle, [timeout.Token])!;
+        await waitTask.WaitAsync(timeout.Token);
+        return waitTask.GetType().GetProperty("Result")?.GetValue(waitTask)
+            ?? throw new InvalidOperationException("Expected workflow completion result.");
+    }
+
+    private static bool IsWorkflowAccepted(object handle)
+    {
+        var startOutcome = handle.GetType().GetProperty("StartOutcome")?.GetValue(handle)
+            ?? throw new InvalidOperationException("Expected workflow start outcome.");
+        return (bool)(startOutcome.GetType().GetProperty("IsAccepted")?.GetValue(startOutcome) ?? false);
+    }
+
+    private static bool WorkflowActionAccepted(object outcome)
+        => (bool)(outcome.GetType().GetProperty("IsAccepted")?.GetValue(outcome) ?? false);
+
+    private static WorkflowRunId RequiredWorkflowRunId(object handle)
+        => handle.GetType().GetProperty("RunId")?.GetValue(handle) is WorkflowRunId runId
+            ? runId
+            : throw new InvalidOperationException("Expected workflow run id.");
+
+    private static string? WorkflowCompletionStatus(object completion)
+        => completion.GetType().GetProperty("Status")?.GetValue(completion)?.ToString();
+
+    private static string? WorkflowStatus(IWorkSystem system, WorkflowRunId runId)
+    {
+        var snapshot = WorkflowSnapshot(system, runId);
+        return snapshot?.GetType().GetProperty("Status")?.GetValue(snapshot)?.ToString();
+    }
+
+    private static IReadOnlyList<WorkerId> WorkflowStepWorkerIds(
+        IWorkSystem system,
+        WorkflowRunId runId,
+        string stepName)
+    {
+        var snapshot = WorkflowSnapshot(system, runId)
+            ?? throw new InvalidOperationException("Expected workflow snapshot.");
+        var steps = (System.Collections.IEnumerable)(snapshot.GetType().GetProperty("Steps")?.GetValue(snapshot)
+            ?? throw new InvalidOperationException("Expected workflow steps."));
+        var step = steps.Cast<object>().Single(candidate => string.Equals(
+            candidate.GetType().GetProperty("Name")?.GetValue(candidate)?.ToString(),
+            stepName,
+            StringComparison.Ordinal));
+        var workerIds = (System.Collections.IEnumerable)(step.GetType().GetProperty("WorkerIds")?.GetValue(step)
+            ?? throw new InvalidOperationException("Expected workflow step worker ids."));
+        return [.. workerIds.Cast<WorkerId>()];
+    }
+
+    private static object? WorkflowSnapshot(IWorkSystem system, WorkflowRunId runId)
+    {
+        var runtime = system.GetType()
+            .GetProperty("WorkflowRuntime", BindingFlags.Instance | BindingFlags.NonPublic)?
+            .GetValue(system)
+            ?? throw new InvalidOperationException("Expected workflow runtime property.");
+        return runtime.GetType()
+            .GetMethod("Get", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)?
+            .Invoke(runtime, [runId]);
+    }
+
+    private static WorkflowRunPersistenceRecord CreateWorkflowRun(
+        string systemName,
+        string definitionName)
+    {
+        var workerId = WorkerId.New();
+        var definition = WorkflowDefinition.Create(definitionName);
+        return new WorkflowRunPersistenceRecord(
+            systemName,
+            WorkflowRunId.New(),
+            definition.Version,
+            definitionName,
+            WorkRequestContext.Create(
+                WorkInvocationChannel.InProcess,
+                new WorkActor("workflow-sql-user", "Workflow SQL User"),
+                isAuthenticated: true),
+            WorkflowRunStatus.Running,
+            [
+                new WorkflowStepPersistenceRecord(
+                    "dispatch",
+                    WorkflowStepKind.DispatchWork,
+                    WorkflowStepRunStatus.Completed,
+                    [workerId],
+                    DateTimeOffset.UtcNow,
+                    DateTimeOffset.UtcNow,
+                    []),
+            ],
+            DateTimeOffset.UtcNow,
+            DateTimeOffset.UtcNow,
+            null,
+            [],
+            [
+                new WorkflowChildReceipt(
+                    workerId,
+                    "dispatch",
+                    definitionName,
+                    WorkerState.Completed,
+                    DateTimeOffset.UtcNow,
+                    [WorkMessage.Info("workflow.child.completed", "Child completed.")],
+                    WorkOutput.Empty),
+            ],
+            "sql-test-workflow-fingerprint",
+            "Stop");
+    }
+
+    private static WorkQueueDurabilityEnqueueRequest CreateDurableEnqueueRequest(
+        WorkSystemId systemId,
+        string systemName,
+        WorkerId workerId,
+        string definitionName,
+        string subjectValue,
+        IWorkQueueDurabilityTransaction? transaction,
+        bool enableIdempotency = true)
+        => new(
+            systemId,
+            systemName,
+            workerId,
+            WorkDefinition.Create(definitionName),
+            WorkInput.Empty.WithSubject(new WorkSubjectId("order", subjectValue)),
+            WorkerOptions.Default,
+            DurablePersistenceConcurrencyConfiguration(enableIdempotency: enableIdempotency),
+            WorkRequestContext.Create(WorkInvocationChannel.InProcess),
+            DateTimeOffset.UtcNow,
+            enableIdempotency ? new WorkQueueDurabilityIdempotency(new WorkSubjectId("order", subjectValue)) : null,
+            transaction);
 
     private static async Task WaitForFailedEntryRetained(SqlConnection connection, string subjectValue)
         => await TestEventually.Until(
@@ -2543,9 +3835,12 @@ WHERE WorkerId = @WorkerId;
     {
         await using var command = connection.CreateCommand();
         command.CommandText = $"""
-UPDATE workable.WorkEntries
+UPDATE queue
 SET LeaseExpiresAt = DATEADD(second, -1, SYSDATETIMEOFFSET())
-WHERE SubjectValue = N'{Escape(subjectValue)}';
+FROM workable.WorkQueueEntries queue
+INNER JOIN workable.WorkEntries entries
+    ON entries.WorkerId = queue.WorkerId
+WHERE entries.SubjectValue = N'{Escape(subjectValue)}';
 """;
         await command.ExecuteNonQueryAsync();
     }
@@ -2561,11 +3856,14 @@ WHERE SubjectValue = N'{Escape(subjectValue)}';
     private static Task<int> CountFailedRetainedRowsForSubject(SqlConnection connection, string subjectValue)
         => Scalar<int>(connection, $"""
 SELECT COUNT(*)
-FROM workable.WorkEntries
-WHERE SubjectValue = N'{Escape(subjectValue)}'
-  AND IsDurableQueued = 0
-  AND LeaseId IS NULL
-  AND LeaseExpiresAt IS NULL;
+FROM workable.WorkEntries entries
+LEFT JOIN workable.WorkQueueEntries queue
+    ON queue.WorkerId = entries.WorkerId
+WHERE entries.SubjectValue = N'{Escape(subjectValue)}'
+  AND entries.IsDurableQueued = 0
+  AND entries.LeaseId IS NULL
+  AND entries.LeaseExpiresAt IS NULL
+  AND queue.WorkerId IS NULL;
 """);
 
     private static string Quote(string identifier)

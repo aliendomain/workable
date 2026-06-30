@@ -82,8 +82,8 @@ function throughput(overrides: Partial<WorkSystemThroughput> = {}): WorkSystemTh
 }
 
 test("overview worker helpers expose row actions and detailed failed-worker detection", () => {
-  assert.deepEqual(getWorkerRowActions({ definitionName: "Import", id: { value: "w1" }, revision: 1, state: "Queued" }), ["Start", "Cancel"]);
-  assert.deepEqual(getWorkerRowActions({ definitionName: "Import", id: { value: "w1" }, revision: 1, state: "Running" }), ["Cancel"]);
+  assert.deepEqual(getWorkerRowActions({ definitionName: "Import", id: { value: "w1" }, revision: 1, state: "Queued" }), ["Start", "Pause", "Cancel"]);
+  assert.deepEqual(getWorkerRowActions({ definitionName: "Import", id: { value: "w1" }, revision: 1, state: "Running" }), ["Pause", "Cancel"]);
   assert.deepEqual(getWorkerRowActions({ definitionName: "Import", id: { value: "w1" }, revision: 1, state: "Completed" }), []);
   assert.deepEqual(toFailedWorkerActionTarget({
     definitionName: "Import",

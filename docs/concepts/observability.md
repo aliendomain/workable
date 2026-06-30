@@ -2,7 +2,7 @@
 
 ## Intent
 
-Workable events provide a live, low-cost view of worker activity. They are intended for notification, filtering, timelines, operational tools, and realtime UI refresh triggers. They are not intended to replace detail queries.
+Workable events provide a live, low-cost view of worker activity. They are intended for notification, filtering, timelines, operational tools, diagnostics, and consumers that need low-level `WorkEvent` envelopes. They are not intended to replace detail queries or to be the default state-refresh path for UIs.
 
 Each `IWorkSystem` exposes an event stream:
 
@@ -20,6 +20,14 @@ The intended usage pattern is:
 
 That keeps the event stream cheap while still letting richer UIs stay accurate.
 
+## Raw Events And State Changes
+
+Use raw events when the consumer needs the event envelope, payload, event type, or exact sequence of worker activity. Good fits include event viewers, diagnostic tools, log-style timelines, and low-level integrations.
+
+Use `IWorkChangeStream` when the consumer only needs to know that state changed and should be queried again. Each `IWorkSystem` exposes it through `workSystem.Changes`, and authorized sessions expose the caller-scoped equivalent through `session.Changes`. The change stream publishes compact keys such as worker, definition, subject, concurrency, identifier, diagnostics, and system changes. Repeated changes for the same key coalesce while a reader is behind, which makes it the preferred primitive for UI refresh, worker overview updates, and view invalidation.
+
+SignalR follows the same split: `WatchWorkerOverview` and view subscriptions use change-stream semantics, while `WatchEvents` is the raw-event surface for diagnostics and low-level consumers.
+
 ## Subscription Contract
 
 `Subscribe(...)` returns an `IWorkEventSubscription`. The subscription itself is just the owner of the stream registration. `Read(...)` is what produces the async event sequence:
@@ -32,7 +40,7 @@ await using var reader = subscription.Read(cancellationToken).GetAsyncEnumerator
 Important semantics:
 
 - the subscription starts receiving only future events
-- each subscription owns its own bounded buffer
+- each subscription has bounded delivery; unfiltered broad `DropOldest` subscriptions may share a source-event cursor log
 - canceling the read loop ends event reads; disposing the reader or subscription removes the subscription
 - disposing the subscription removes the subscription
 - one slow subscriber does not block other subscribers
@@ -90,6 +98,23 @@ The current worker event types are:
 - `worker.reconfigured`: a worker reconfiguration request was accepted.
 
 Action events such as `worker.cancel`, `worker.pause`, and `worker.push` describe the immediate action outcome. Completion events such as `worker.completed`, `worker.failed`, `worker.paused`, `worker.interrupted`, and `worker.canceled` describe the lifecycle result. Shutdown interruption publishes `worker.interrupted`; explicit API cancellation publishes the cancel action event and then the canceled completion event.
+
+Workflow runs also publish event types through the same event stream:
+
+- `workflow.started`
+- `workflow.resume`
+- `workflow.pause`
+- `workflow.cancel`
+- `workflow.step.updated`
+- `workflow.paused`
+- `workflow.blocked`
+- `workflow.completed`
+- `workflow.failed`
+- `workflow.canceled`
+
+`workflow.resume` is published both for explicit workflow-start requests against paused or blocked runs and for automatic resumes triggered after blocked failed child workers complete successfully.
+
+Workflow events keep `WorkDefinitionName` equal to the workflow definition name and use identifiers such as `workflow-run`, `workflow-definition`, and `workflow-step` so event consumers can filter one workflow run or one workflow node without introducing a separate transport.
 
 ## Payloads
 
@@ -571,11 +596,15 @@ Filters can match:
 
 Key filters can target a specific key kind (`Subject`, `ConcurrencyKey`, or `Identifier`) or omit the kind to match any key with the same type and value.
 
-Filters are applied before events enter the subscription buffer. For lazy-published events, Workable checks cheap metadata before constructing the event body, so filtered-out events do not pay the JSON payload cost.
+For subscriptions with a selective routing anchor, such as a worker id, definition name, subject, concurrency key, identifier, key filter, or event type, filters are applied before events enter the subscription buffer. For lazy-published events on those routed paths, Workable checks cheap metadata before constructing the event body, so filtered-out events do not pay the JSON payload cost.
+
+Unfiltered broad `DropOldest` subscriptions read from a shared source-event cursor log. Those subscriptions apply their filter while the reader advances through the log, so they avoid per-subscriber write fanout but still require the event envelope to be materialized once for the shared log.
 
 ## Buffering
 
-Each subscription has a bounded buffer. The default capacity is `256`, and the default overflow behavior is `DropOldest`.
+Each subscription has bounded delivery. The default overflow behavior is `DropOldest`. Selectively routed subscriptions default to a capacity of `256`; default unfiltered broad `DropOldest` subscriptions use a larger source-event cursor capacity of `8192`. If you pass `WorkEventSubscriptionOptions` explicitly, the supplied capacity is respected.
+
+For selectively routed subscriptions, capacity is the per-subscription event buffer. For shared cursor-log subscriptions, capacity is the retained source-event window the reader can fall behind before older source events are skipped.
 
 ```csharp
 await using var subscription = workSystem.Events.Subscribe(

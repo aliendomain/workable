@@ -6,10 +6,12 @@ internal sealed class WorkSystemSessionFactory(
     Func<WorkSystemState> getSystemState,
     WorkSystemDiagnostics diagnostics,
     WorkSystemCatalog catalog,
+    WorkflowCatalog workflows,
     WorkQueueService queue,
     WorkerOperations workers,
     WorkSystemReadModelQueryService query,
     WorkEventStream events,
+    WorkChangeStream changes,
     WorkSystemAuthorizationConfiguration systemAuthorizationConfiguration,
     IWorkAuthorizationGroupProvider groupProvider)
 {
@@ -23,6 +25,7 @@ internal sealed class WorkSystemSessionFactory(
         var sessionWorkers = new SessionWorkerOperations(workers, requestContext);
         var sessionQuery = new SessionWorkQueryService(query, requestContext);
         var sessionEvents = new SessionWorkEventStream(events, requestContext);
+        var sessionChanges = new SessionWorkChangeStream(changes, requestContext);
         if (!requiresAuthorization)
         {
             return new WorkSystemSession(
@@ -33,7 +36,8 @@ internal sealed class WorkSystemSessionFactory(
                 sessionQueue,
                 sessionWorkers,
                 sessionQuery,
-                sessionEvents);
+                sessionEvents,
+                sessionChanges);
         }
 
         var groups = requestContext.Authorization?.Groups
@@ -45,6 +49,19 @@ internal sealed class WorkSystemSessionFactory(
             groups,
             requestContext.IsAuthenticated && requestContext.Actor.IsKnown,
             systemAuthorization);
+        var isKnownAuthenticatedActor = requestContext.IsAuthenticated && requestContext.Actor.IsKnown;
+        var hasReadAllWorkAccess = systemAuthorization.HasReadAllWorkAccess();
+        var readableDefinitionNames = authorization.ReadableDefinitions()
+            .Select(definition => definition.Name)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var readableWorkflows = hasReadAllWorkAccess
+            ? workflows.Definitions
+            : workflows.Definitions.Where(workflow => workflow.Authorization.CanRead(groups, isKnownAuthenticatedActor));
+        foreach (var workflow in readableWorkflows)
+        {
+            readableDefinitionNames.Add(workflow.Name);
+        }
+
         return new WorkSystemSession(
             systemName,
             getSystemState,
@@ -55,6 +72,7 @@ internal sealed class WorkSystemSessionFactory(
             new AuthorizedWorkQueueService(catalog, sessionQueue, authorization, requestContext),
             new AuthorizedWorkerOperations(catalog, sessionWorkers, sessionQuery, authorization, requestContext),
             new AuthorizedWorkQueryService(sessionCatalog, sessionQuery, authorization),
-            new AuthorizedWorkEventStream(sessionEvents, authorization));
+            new AuthorizedWorkEventStream(sessionEvents, readableDefinitionNames),
+            new AuthorizedWorkChangeStream(sessionChanges, authorization, systemAuthorization.CanViewDiagnostics()));
     }
 }

@@ -207,6 +207,28 @@ public interface IWorkSystemBuilder
         where TExecutor : class;
 
     /// <summary>
+    /// Registers a workflow definition and its built-in step graph.
+    /// </summary>
+    /// <param name="definition">The definition metadata and baseline authorization for the workflow.</param>
+    /// <param name="build">Builds the workflow step graph.</param>
+    /// <returns>The same builder so additional system configuration can be chained.</returns>
+    IWorkSystemBuilder AddWorkflow(
+        WorkflowDefinition definition,
+        Action<IWorkflowBuilder> build);
+
+    /// <summary>
+    /// Registers a workflow definition, builds its step graph, and applies workflow-level authorization.
+    /// </summary>
+    /// <param name="definition">The definition metadata and baseline authorization for the workflow.</param>
+    /// <param name="build">Builds the workflow step graph.</param>
+    /// <param name="authorize">The callback that defines workflow-level read and operate authorization for this registration.</param>
+    /// <returns>The same builder so additional system configuration can be chained.</returns>
+    IWorkSystemBuilder AddWorkflow(
+        WorkflowDefinition definition,
+        Action<IWorkflowBuilder> build,
+        Action<IWorkAuthorizationBuilder>? authorize);
+
+    /// <summary>
     /// Adds a runtime definition source that contributes work to this system during startup.
     /// </summary>
     /// <typeparam name="TSource">The source type Workable resolves from dependency injection.</typeparam>

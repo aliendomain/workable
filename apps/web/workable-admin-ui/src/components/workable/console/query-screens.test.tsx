@@ -91,7 +91,7 @@ test("query table helper components render status, totals, placeholders, and dur
 });
 
 test("worker action helpers cover state action menus and startability", () => {
-  assert.deepEqual(getWorkerActions("Queued"), ["Start", "Cancel"]);
+  assert.deepEqual(getWorkerActions("Queued"), ["Start", "Pause", "Cancel"]);
   assert.deepEqual(getWorkerActions("Paused"), ["Start", "Cancel"]);
   assert.deepEqual(getWorkerActions("Failed"), ["Start", "Cancel"]);
   assert.deepEqual(getWorkerActions("Running"), ["Pause", "Cancel"]);

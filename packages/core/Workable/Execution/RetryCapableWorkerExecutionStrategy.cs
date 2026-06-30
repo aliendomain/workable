@@ -26,7 +26,7 @@ internal abstract class RetryCapableWorkerExecutionStrategy(
         }
         finally
         {
-            worker.DisposeExecutionResources();
+            worker.DisposeExecutionResources(cancellationToken);
         }
     }
 

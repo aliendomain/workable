@@ -115,6 +115,8 @@ public sealed class WorkableRealtimeBroadcastLaneRunnerShould
 
         public IWorkEventStream Events => throw new NotSupportedException();
 
+        public IWorkChangeStream Changes => throw new NotSupportedException();
+
         public IWorkSystemDiagnostics Diagnostics => throw new NotSupportedException();
 
         public WorkSystemAccessSummary DescribeAccess(WorkRequestContext requestContext)

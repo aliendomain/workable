@@ -2,7 +2,7 @@
 
 Date: 2026-06-01
 
-This audit verifies the 39 Markdown documentation files under `Docs` against the current source. Source code is the source of truth. Historical audit documents were checked for broken links and stale public names, but were otherwise preserved as historical records.
+This audit verifies the Markdown documentation files under `Docs` against the current source. Source code is the source of truth. Historical audit documents were checked for broken links and stale public names, but were otherwise preserved as historical records.
 
 ## Doc Inventory
 
@@ -13,7 +13,6 @@ This audit verifies the 39 Markdown documentation files under `Docs` against the
 | `Docs/adapters/http-api.md` | `packages/core/Workable.HttpApi`, ASP.NET Core authorization mapping, queue/result models, query routes, worker routes, debug route guards |
 | `Docs/adapters/mcp.md` | `packages/core/Workable.Mcp`, MCP tool router, invocation options, query/action tool names |
 | `Docs/adapters/realtime.md` | `packages/core/Workable.SignalR`, SignalR hub methods, client method names, realtime options, debug route behavior |
-| `Docs/backend-performance-audit.md` | `apps/tools/Workable.PerformanceHarness`, scenario names, benchmark commands, read-model/event performance notes |
 | `Docs/concepts/abstractions-extension-points.md` | `Workable.Abstractions`, persistence/metrics/realtime extension points, SQL Server integration link |
 | `Docs/concepts/abstractions-surface.md` | `Workable.Abstractions` public interfaces and session contracts |
 | `Docs/concepts/aspnetcore-integration.md` | `packages/core/Workable.AspNetCore`, request context and authorization group mapping |
@@ -122,10 +121,8 @@ This audit verifies the 39 Markdown documentation files under `Docs` against the
 
 ## Performance And Benchmark Coverage
 
-- Verified `Docs/backend-performance-audit.md` points to `apps/tools/Workable.PerformanceHarness` and lists the current named scenarios.
 - Verified the harness supports scenario output for queue-only, completion-only, mixed queue/complete, completion-heavy and queue-heavy variants, mixed ratios, read-model latency, visibility latency, index update cost, memory growth, event fanout, event fanout matrix, and start-to-completion.
 - Verified BenchmarkDotNet groups in `apps/tools/Workable.PerformanceHarness/README.md` remain current.
-- No performance doc changes were needed in this pass.
 
 ## Internal Contradictions
 

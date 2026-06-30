@@ -4,6 +4,7 @@ import {
   PanelVisibilitySettings,
   isPanelVisibleInSettings,
 } from "@/components/features/console/panel-visibility-settings";
+import { renderDom } from "@/test/dom";
 import {
   assertMarkupIncludes,
   renderMarkup,
@@ -44,4 +45,31 @@ test("panel visibility settings renders default and custom trigger labels", () =
     ),
     "aria-label=\"Worker panel settings\""
   );
+});
+
+test("panel visibility settings reset button invokes reset without forwarding the click event", async () => {
+  const resetCalls: unknown[] = [];
+  const result = await renderDom(
+    <PanelVisibilitySettings
+      buttonLabel="Worker panel settings"
+      hiddenPanelIds={["logs"]}
+      onPanelVisibilityChange={() => undefined}
+      onResetUi={(value?: unknown) => {
+        resetCalls.push(value);
+      }}
+      panelOptions={[
+        { id: "summary", label: "Summary", description: "Summary panel" },
+        { id: "logs", label: "Logs", description: "Log panel" },
+      ]}
+    />
+  );
+
+  try {
+    await result.click(result.getByRole("button", { name: "Worker panel settings" }));
+    await result.waitFor(() => result.getByRole("button", { name: "Reset UI to defaults" }));
+    await result.click(result.getByRole("button", { name: "Reset UI to defaults" }));
+    assert.deepEqual(resetCalls, [undefined]);
+  } finally {
+    await result.restore();
+  }
 });

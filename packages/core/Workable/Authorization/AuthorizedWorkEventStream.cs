@@ -1,6 +1,8 @@
 namespace Workable;
 
-internal sealed class AuthorizedWorkEventStream(IWorkEventStream inner, WorkAuthorizationEvaluator authorization) : IWorkEventStream
+internal sealed class AuthorizedWorkEventStream(
+    IWorkEventStream inner,
+    IReadOnlySet<string> readableDefinitionNames) : IWorkEventStream
 {
     public IWorkEventSubscription Subscribe(
         WorkEventFilter? filter = null,
@@ -14,22 +16,19 @@ internal sealed class AuthorizedWorkEventStream(IWorkEventStream inner, WorkAuth
 
     private WorkEventFilter? CreateAuthorizedFilter(WorkEventFilter? filter)
     {
-        var readable = authorization.ReadableDefinitions()
-            .Select(definition => definition.Name)
-            .ToHashSet(StringComparer.OrdinalIgnoreCase);
-        if (readable.Count == 0)
+        if (readableDefinitionNames.Count == 0)
         {
             return null;
         }
 
         if (!string.IsNullOrWhiteSpace(filter?.DefinitionName))
         {
-            return readable.Contains(filter.DefinitionName) ? filter : null;
+            return readableDefinitionNames.Contains(filter.DefinitionName) ? filter : null;
         }
 
         var definitionNames = filter?.DefinitionNames is { Count: > 0 } requested
-            ? requested.Where(readable.Contains).ToHashSet(StringComparer.OrdinalIgnoreCase)
-            : readable;
+            ? requested.Where(readableDefinitionNames.Contains).ToHashSet(StringComparer.OrdinalIgnoreCase)
+            : readableDefinitionNames;
 
         return definitionNames.Count == 0
             ? null

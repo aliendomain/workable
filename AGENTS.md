@@ -9,7 +9,10 @@ dotnet test .\Workable.slnx --no-restore --logger "console;verbosity=minimal" --
 npm.cmd test
 ```
 
-Run `npm.cmd test` from `apps\web\workable-admin-ui`.
+Run the UI test command from `apps\web\workable-admin-ui`.
+
+- On Windows, use `npm.cmd test`.
+- On macOS or Linux, use `npm test`.
 
 Run the `.NET` solution test command outside the sandbox. It covers the main API/backend test project and the SQL Server integration suite.
 

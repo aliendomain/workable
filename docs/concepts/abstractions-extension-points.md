@@ -18,9 +18,9 @@ If you are only queueing, querying, or controlling work, these are not the APIs 
 
 ## Persistence Providers
 
-`IWorkPersistenceStore` is the most substantial extension point in the package. It is the public contract behind durable queueing and persistence-backed idempotency.
+`IWorkPersistenceStore` is the most substantial extension point in the package. It is the public contract behind durable queueing, persistence-backed idempotency, and workflow-run persistence.
 
-The contract has a clear protocol shape:
+The worker-oriented durability protocol has a clear shape:
 
 1. `Initialize(...)`
 2. `Enqueue(...)`
@@ -29,12 +29,22 @@ The contract has a clear protocol shape:
 5. `RenewLeases(...)`
 6. `RetainFailed(...)` or `DeleteFinal(...)`
 
+The same interface also carries the workflow-oriented persistence protocol:
+
+1. `InitializeWorkflows(...)`
+2. `BeginWorkflowTransaction(...)`
+3. `ListWorkflowRuns(...)`
+4. `UpsertWorkflowRun(...)`
+5. `DeleteWorkflowRun(...)`
+
 That protocol tells you a lot about Workable's durability model:
 
 - accepted queue requests can be persisted before local execution starts
 - queue replay is lease based, not "everyone can poll the same row forever"
 - durable cleanup is separate from failed-work retention
 - persistence-backed idempotency can participate in the same provider
+- workflow orchestration state can live beside worker durability in the same store abstraction
+- workflow persistence can share one store-defined transaction with durable worker enqueue
 
 ### What The Provider Owns
 
@@ -47,8 +57,15 @@ At a practical level, a provider is responsible for:
 - renewing those leases while work is in flight
 - retaining failed durable entries when the host chooses to keep them
 - deleting final durable entries, with or without a caller-owned durability transaction
+- initializing workflow persistence for one system
+- beginning workflow persistence transactions that can also be passed through worker queue durability options
+- listing durable workflow runs that should be materialized during startup
+- storing the latest workflow-run snapshot
+- deleting persisted workflow runs after their retained final lifetime ends
 
 `WorkQueueDurabilityInitializationContext` is worth noticing because Workable hands the provider the system id, optional name, and current definitions. That is the provider's chance to prepare tables, validate schema, or align definition metadata before queue traffic begins.
+
+`WorkflowPersistenceInitializationContext` is the workflow-side equivalent. It gives the provider the configured system name, the registered durable workflow definitions for that system, and a `PersistenceScope` helper before durable workflow state is read or written.
 
 ### Important Durable Types
 
@@ -60,8 +77,21 @@ The durability-related record types all describe one coherent protocol:
 - `WorkQueueDurabilityEntry`
 - `WorkQueueDurabilityLease`
 - `WorkQueueDurabilityCleanupRequest`
+- `WorkflowPersistenceInitializationContext`
+- `WorkflowPersistenceTransactionRequest`
+- `WorkflowPersistenceReadRequest`
+- `WorkflowRunPersistenceRecord`
+- `WorkflowStepPersistenceRecord`
+- `WorkflowPersistenceDeleteRequest`
+- `IWorkflowPersistenceTransaction`
 
 `WorkQueueDurabilityEntry` is the payload that comes back from `ClaimReady(...)`. It carries the lease plus the definition name, input, options, configuration, origin, and creation time needed to materialize work back into memory.
+
+`WorkflowRunPersistenceRecord` is the workflow-side snapshot payload. It carries the run id, workflow definition version and name, request context, workflow status, persisted step snapshots, timestamps, workflow messages, retained child completion receipts, and the workflow persistence scope for the run.
+
+`IWorkflowPersistenceTransaction` extends `IWorkQueueDurabilityTransaction`, which lets one store-defined transaction span workflow-run persistence and durable child-worker enqueue.
+
+Workable uses that transaction boundary when a durable workflow advances from one dispatch boundary to the next. The same provider transaction can hold the updated workflow-run snapshot and the child workers that were queued from that step.
 
 ### Error Semantics
 

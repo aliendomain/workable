@@ -37,6 +37,7 @@ import {
   semanticTextToneClass,
   semanticToneForStateName,
 } from "@/lib/ui/state-tones";
+import { StatusCountPill } from "@/components/workable/console/status-count-pill";
 
 const iterationStatuses: WorkCompletionStatus[] = [
   "Executing",
@@ -77,25 +78,19 @@ export function IterationStatusStrip({
   return (
     <div className="flex gap-2 overflow-x-auto pb-1">
       {statuses.map((status) => (
-        <button
-          aria-label={`Open iterations filtered by ${status}`}
-          className={`inline-flex h-8 min-w-28 flex-1 cursor-pointer items-center justify-center gap-2 rounded-full border bg-muted/25 px-3 text-center ${subtleClickableTileClass} focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background`}
+        <StatusCountPill
+          ariaLabel={`Open iterations filtered by ${status}`}
+          badgeClassName={completionTone(status)}
+          className={`min-w-28 flex-1 justify-center text-center ${subtleClickableTileClass}`}
           key={status}
+          label={status}
           onClick={() => onSelectStatus(status)}
-          type="button"
-        >
-          <Badge className={`justify-center ${completionTone(status)}`} variant="outline">
-            {status}
-          </Badge>
-          <span
-            className={`font-mono text-sm leading-none ${semanticTextToneClass(
-              semanticToneForStateName(status),
-              "strong"
-            )}`}
-          >
-            {counts[status] ?? 0}
-          </span>
-        </button>
+          value={counts[status] ?? 0}
+          valueClassName={semanticTextToneClass(
+            semanticToneForStateName(status),
+            "strong"
+          )}
+        />
       ))}
     </div>
   );

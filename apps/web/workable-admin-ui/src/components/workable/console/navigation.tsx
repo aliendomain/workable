@@ -807,6 +807,7 @@ export function ConsoleNavigationHeader({
   systemNotifications,
   view,
   workerId,
+  workflowRunId,
 }: {
   breadcrumbParent?: {
     label: string;
@@ -825,6 +826,7 @@ export function ConsoleNavigationHeader({
   systemNotifications?: ReactNode;
   view: View;
   workerId: string | null;
+  workflowRunId: string | null;
 }) {
   const headerCapabilities = useResolvedConsoleHeaderCapabilities();
   const canOpenOverview = view !== "overview";
@@ -833,6 +835,8 @@ export function ConsoleNavigationHeader({
       ? definitionName ?? definitionId
       : view === "iteration" && iterationSequence !== null
         ? `#${iterationSequence}`
+      : view === "workflowRun" && workflowRunId
+        ? workflowRunId
       : view === "worker" && workerId
         ? workerId
         : navTitle(view);
@@ -941,6 +945,9 @@ function canOperateSystemWork(access?: WorkSystemAccessSummary) {
 }
 
 export function navTitle(view: View) {
+  if (view === "workflowRun") {
+    return "Workflow Run";
+  }
   if (view === "worker") {
     return "Worker Console";
   }
@@ -983,4 +990,3 @@ export function getSystemLifecycleActionLabel(
 export function systemStateDotClass(state?: string | null) {
   return semanticDotToneClass(semanticToneForStateName(state));
 }
-

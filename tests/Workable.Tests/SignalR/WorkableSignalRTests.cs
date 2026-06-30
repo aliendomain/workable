@@ -240,6 +240,71 @@ public sealed class WorkableSignalRTests
     }
 
     [Fact]
+    public async Task EventWatcherCanReceiveWorkflowEventsFilteredByDefinitionAndRunKey()
+    {
+        var childStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseChild = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var host = await CreateHost(
+            addSignalR: true,
+            configureWorkable: builder =>
+            {
+                builder.AddAuthorizedTransportWork(
+                    WorkDefinition.Create("signalr.workflow.child"),
+                    async (_, _, cancellationToken) =>
+                    {
+                        childStarted.TrySetResult();
+                        await releaseChild.Task.WaitAsync(cancellationToken);
+                        return WorkExecutionResult.Success();
+                    });
+                builder.AddWorkflow(
+                    WorkflowDefinition.Create("signalr.workflow"),
+                    workflow => workflow.DispatchWork("dispatch", WorkDefinition.Create("signalr.workflow.child")),
+                    authorize => authorize
+                        .AllowReadToGroups(TransportAuthorizationTestSupport.ReadGroups.ToArray())
+                        .AllowOperateToGroups(TransportAuthorizationTestSupport.OperateGroups.ToArray()));
+            });
+        var system = host.Services.GetRequiredService<IWorkSystemRegistry>().Default;
+        await using var connection = CreateConnection(host);
+        var events = Channel.CreateUnbounded<WorkableRealtimeEvent>();
+        CaptureRealtimeEvents(connection, events);
+
+        var workflowHandle = Assert.IsType<InMemoryWorkSystem>(system).WorkflowRuntime.Start(
+            "signalr.workflow",
+            TransportAuthorizationTestSupport.CreateTransportRequestContext(
+                WorkInvocationChannel.InProcess,
+                description: "Start workflow for SignalR workflow event test."));
+        var runId = workflowHandle.RunId?.Value.ToString("D")
+            ?? throw new InvalidOperationException("Expected workflow run id.");
+        await childStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        await connection.StartAsync();
+        await connection.InvokeAsync(
+            "WatchEvents",
+            new WorkableRealtimeEventCriteria(
+                EventTypes: ["workflow.completed"],
+                DefinitionNames: ["signalr.workflow"],
+                Keys:
+                [
+                    new WorkableRealtimeEventKeyCriteria(
+                        WorkKeyKind.Identifier,
+                        "workflow-run",
+                        runId),
+                ]),
+            null);
+
+        releaseChild.TrySetResult();
+        var completed = await ReadUntil(
+            events.Reader,
+            workEvent => workEvent.EventType == "workflow.completed");
+        var data = completed.Data ?? throw new InvalidOperationException("Expected workflow event payload.");
+
+        Assert.Equal("signalr.workflow", completed.WorkDefinitionName);
+        Assert.Contains(completed.Identifiers, identifier => identifier.Type == "workflow-run" && identifier.Value == runId);
+        Assert.Equal("signalr.workflow", data.GetProperty("run").GetProperty("definitionName").GetString());
+        Assert.Equal("Completed", data.GetProperty("run").GetProperty("status").GetString());
+    }
+
+    [Fact]
     public async Task EventWatcherReceivesBurstsAsBatches()
     {
         using var host = await CreateHost(addSignalR: true, configureSignalR: options =>
@@ -288,6 +353,47 @@ public sealed class WorkableSignalRTests
         Assert.Equal(
             expectedWorkerIds.OrderBy(static workerId => workerId.Value).ToArray(),
             actualWorkerIds.OrderBy(static workerId => workerId.Value).ToArray());
+    }
+
+    [Fact]
+    public async Task EventWatcherFlushesFullBatchWithoutWaitingForBatchWindow()
+    {
+        using var host = await CreateHost(addSignalR: true, configureSignalR: options =>
+        {
+            options.BatchTimeWindow = TimeSpan.FromSeconds(5);
+            options.EventMaxBatchSize = 2;
+        });
+        var system = host.Services.GetRequiredService<IWorkSystemRegistry>().Default;
+        var gate = host.Services.GetRequiredService<SignalRWorkGate>();
+        await using var connection = CreateConnection(host);
+        var batches = Channel.CreateUnbounded<WorkableRealtimeEventBatch>();
+        connection.On<WorkableRealtimeEventBatch>(
+            WorkableRealtimeClientMethods.WorkEvents,
+            batch => batches.Writer.TryWrite(batch));
+        await connection.StartAsync();
+        await connection.InvokeAsync(
+            "WatchEvents",
+            new WorkableRealtimeEventCriteria(["worker.completed"]),
+            null);
+
+        var session = Session(system);
+        var definition = session.Catalog.Definitions.Single(work => work.Name == "signalr.view");
+        var handles = await Task.WhenAll(Enumerable.Range(0, 2).Select(_ => session.Queue.Enqueue(definition.Name)));
+        await gate.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        gate.Release.SetResult();
+        await Task.WhenAll(handles.Select(handle => handle.WaitForCompletion()));
+        var expectedWorkerIds = handles
+            .Select(handle => handle.WorkerId ?? throw new InvalidOperationException("Expected accepted worker."))
+            .ToHashSet();
+
+        var batch = await ReadUntil(
+                batches.Reader,
+                batch => batch.Events.Count == expectedWorkerIds.Count &&
+                    batch.Events.Select(workEvent => workEvent.WorkerId).OfType<WorkerId>().ToHashSet().SetEquals(expectedWorkerIds))
+            .WaitAsync(TimeSpan.FromSeconds(2));
+
+        Assert.Equal(2, batch.Events.Count);
+        Assert.All(batch.Events, workEvent => Assert.Equal("worker.completed", workEvent.EventType));
     }
 
     [Fact]
@@ -366,6 +472,165 @@ public sealed class WorkableSignalRTests
     }
 
     [Fact]
+    public async Task ViewWatcherReceivesStateChangesWithoutPublishIntervalTick()
+    {
+        var timers = new ManualRealtimeTimerFactory();
+        using var host = await CreateHost(
+            addSignalR: true,
+            configureServices: services => services.AddSingleton<IWorkableRealtimeTimerFactory>(timers),
+            configureSignalR: options =>
+            {
+                options.PublishInterval = ManualViewPublishInterval;
+                options.DiagnosticsPublishInterval = ManualDiagnosticsPublishInterval;
+            });
+        var system = host.Services.GetRequiredService<IWorkSystemRegistry>().Default;
+        var gate = host.Services.GetRequiredService<SignalRWorkGate>();
+        await using var connection = CreateConnection(host);
+        const string subscriptionId = "overview";
+        var views = Channel.CreateUnbounded<WorkComponentQueryResult>();
+        CaptureRealtimeViews(connection, subscriptionId, views);
+        await connection.StartAsync();
+        await connection.InvokeAsync(
+            "WatchView",
+            subscriptionId,
+            "overview",
+            new WorkViewCriteria(Components:
+            [
+                new WorkComponentRequest("workers", "workers", Shape: WorkComponentShapes.Compact),
+            ]),
+            null);
+
+        var initial = await ReadUntil(views.Reader, view => view.Components.ContainsKey("workers"));
+
+        var handle = await Session(system).Queue.Enqueue("signalr.view");
+        await gate.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        gate.Release.SetResult();
+        var completion = await handle.WaitForCompletion();
+        Assert.True(completion.IsCompletedSuccessfully);
+
+        var updated = await ReadUntil(
+            views.Reader,
+            view =>
+            {
+                if (view.GeneratedAt <= initial.GeneratedAt ||
+                    !view.Components.TryGetValue("workers", out var component) ||
+                    component.Data is not JsonElement workerData)
+                {
+                    return false;
+                }
+
+                return workerData.GetProperty("activeWorkerCount").GetInt32() == 0 &&
+                    workerData.GetProperty("failedWorkerCount").GetInt32() == 0;
+            });
+        var workers = Assert.IsType<JsonElement>(updated.Components["workers"].Data);
+
+        Assert.Equal(["workers"], updated.Components.Keys.ToArray());
+        Assert.Equal(0, workers.GetProperty("activeWorkerCount").GetInt32());
+        Assert.Equal(0, workers.GetProperty("failedWorkerCount").GetInt32());
+    }
+
+    [Fact]
+    public async Task ViewWatcherUsesChangeStreamWithoutEventStreamSubscription()
+    {
+        var timers = new ManualRealtimeTimerFactory();
+        using var host = await CreateHost(
+            addSignalR: true,
+            configureServices: services => services.AddSingleton<IWorkableRealtimeTimerFactory>(timers),
+            configureSignalR: options =>
+            {
+                options.PublishInterval = ManualViewPublishInterval;
+                options.DiagnosticsPublishInterval = ManualDiagnosticsPublishInterval;
+            });
+        var system = host.Services.GetRequiredService<IWorkSystemRegistry>().Default;
+        var eventStream = GetEventStream(system);
+        var gate = host.Services.GetRequiredService<SignalRWorkGate>();
+        await using var connection = CreateConnection(host);
+        const string subscriptionId = "overview";
+        var views = Channel.CreateUnbounded<WorkComponentQueryResult>();
+        CaptureRealtimeViews(connection, subscriptionId, views);
+        await connection.StartAsync();
+
+        await connection.InvokeAsync(
+            "WatchView",
+            subscriptionId,
+            "overview",
+            new WorkViewCriteria(Components:
+            [
+                new WorkComponentRequest("workers", "workers", Shape: WorkComponentShapes.Compact),
+            ]),
+            null);
+
+        var initial = await ReadUntil(views.Reader, view => view.Components.ContainsKey("workers"));
+        var handle = await Session(system).Queue.Enqueue("signalr.view");
+        await gate.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        gate.Release.SetResult();
+        var completion = await handle.WaitForCompletion();
+        Assert.True(completion.IsCompletedSuccessfully);
+
+        _ = await ReadUntil(
+            views.Reader,
+            view => view.GeneratedAt > initial.GeneratedAt &&
+                view.Components.ContainsKey("workers"));
+
+        Assert.Equal(0, eventStream.ActiveSubscriptionCount);
+    }
+
+    [Fact]
+    public async Task ViewWatcherDoesNotReceiveWorkerViewForUnrelatedWorkerChanges()
+    {
+        var timers = new ManualRealtimeTimerFactory();
+        using var host = await CreateHost(
+            addSignalR: true,
+            configureServices: services => services.AddSingleton<IWorkableRealtimeTimerFactory>(timers),
+            configureSignalR: options =>
+            {
+                options.PublishInterval = ManualViewPublishInterval;
+                options.DiagnosticsPublishInterval = ManualDiagnosticsPublishInterval;
+            });
+        var system = host.Services.GetRequiredService<IWorkSystemRegistry>().Default;
+        var gate = host.Services.GetRequiredService<SignalRWorkGate>();
+        var session = Session(system);
+        var target = await session.Queue.Enqueue("signalr.view");
+        await gate.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        gate.Release.SetResult();
+        var targetCompletion = await target.WaitForCompletion();
+        Assert.True(targetCompletion.IsCompletedSuccessfully);
+        await TestEventually.Until(() => session.Diagnostics.ReadModel.PendingUpdateCount == 0);
+        var targetWorkerId = target.WorkerId ?? throw new InvalidOperationException("Expected accepted worker.");
+
+        await using var connection = CreateConnection(host);
+        const string subscriptionId = "worker";
+        var views = Channel.CreateUnbounded<WorkComponentQueryResult>();
+        CaptureRealtimeViews(connection, subscriptionId, views);
+        await connection.StartAsync();
+        await connection.InvokeAsync(
+            "WatchView",
+            subscriptionId,
+            "worker",
+            new WorkViewCriteria(Components:
+            [
+                new WorkComponentRequest(
+                    "worker",
+                    "workerDetail",
+                    JsonSerializer.SerializeToElement(new
+                    {
+                        workerId = targetWorkerId.Value,
+                    })),
+            ]),
+            null);
+
+        _ = await ReadUntil(views.Reader, view => view.Components.ContainsKey("worker"));
+        await DrainUntilQuiet(views.Reader, TimeSpan.FromMilliseconds(250));
+
+        var unrelated = await session.Queue.Enqueue("signalr.view");
+        var unrelatedCompletion = await unrelated.WaitForCompletion();
+        Assert.True(unrelatedCompletion.IsCompletedSuccessfully);
+        await TestEventually.Until(() => session.Diagnostics.ReadModel.PendingUpdateCount == 0);
+
+        await AssertNoItem(views.Reader, TimeSpan.FromSeconds(1));
+    }
+
+    [Fact]
     public async Task ViewWatcherContinuesPublishingOverviewThroughputWithoutReadModelChanges()
     {
         var timers = new ManualRealtimeTimerFactory();
@@ -405,6 +670,233 @@ public sealed class WorkableSignalRTests
                 view.Components.ContainsKey("throughput"));
 
         Assert.Equal(["throughput"], updated.Components.Keys.ToArray());
+    }
+
+    [Fact]
+    public async Task ViewWatcherReceivesWorkflowRunListUpdatesWhenWorkflowFailsWithoutReadModelChanges()
+    {
+        var timers = new ManualRealtimeTimerFactory();
+        using var host = await CreateHost(
+            addSignalR: true,
+            configureServices: services => services.AddSingleton<IWorkableRealtimeTimerFactory>(timers),
+            configureSignalR: options =>
+            {
+                options.PublishInterval = ManualViewPublishInterval;
+                options.DiagnosticsPublishInterval = ManualDiagnosticsPublishInterval;
+            },
+            configureWorkable: builder =>
+            {
+                builder.UseCapacity(new WorkSystemCapacityConfiguration
+                {
+                    MaximumWorkers = 1,
+                });
+                builder.AddAuthorizedTransportWork(
+                    WorkDefinition.Create("signalr.workflow.capacity-child"),
+                    SuccessfulWork);
+                builder.AddWorkflow(
+                    WorkflowDefinition.Create("signalr.workflow.capacity"),
+                    workflow => workflow.DispatchWork("dispatch", WorkDefinition.Create("signalr.workflow.capacity-child")));
+            });
+        var system = host.Services.GetRequiredService<IWorkSystemRegistry>().Default;
+        var gate = host.Services.GetRequiredService<SignalRWorkGate>();
+        await using var connection = CreateConnection(host);
+        const string subscriptionId = "workflow-runs";
+        var views = Channel.CreateUnbounded<WorkComponentQueryResult>();
+        CaptureRealtimeViews(connection, subscriptionId, views);
+        await connection.StartAsync();
+        await connection.InvokeAsync(
+            "WatchView",
+            subscriptionId,
+            "workflow-runs",
+            new WorkViewCriteria(Components:
+            [
+                new WorkComponentRequest(
+                    "workflowRuns",
+                    "workflowRuns",
+                    JsonSerializer.SerializeToElement(new
+                    {
+                        includeFinal = true,
+                    }),
+                    WorkComponentShapes.Detailed),
+            ]),
+            null);
+
+        var initial = await ReadUntil(
+            views.Reader,
+            view => view.Components.ContainsKey("workflowRuns"));
+        var initialRuns = Assert.IsType<JsonElement>(initial.Components["workflowRuns"].Data);
+        Assert.Equal(0, initialRuns.GetProperty("runs").GetArrayLength());
+
+        var blocker = await Session(system).Queue.Enqueue("signalr.view");
+        await gate.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        var handle = Assert.IsType<InMemoryWorkSystem>(system).WorkflowRuntime.Start(
+            "signalr.workflow.capacity",
+            TransportAuthorizationTestSupport.CreateTransportRequestContext(
+                WorkInvocationChannel.InProcess,
+                description: "Start workflow that will fail before any worker is created."));
+        await handle.WaitForCompletion();
+
+        await TestEventually.ClockAfter(initial.GeneratedAt);
+        await timers.TickWhenReady(ManualViewPublishInterval);
+        using (var updateTimeout = new CancellationTokenSource(TimeSpan.FromMilliseconds(750)))
+        {
+            try
+            {
+                await foreach (var view in views.Reader.ReadAllAsync(updateTimeout.Token))
+                {
+                    if (view.GeneratedAt <= initial.GeneratedAt ||
+                        !view.Components.TryGetValue("workflowRuns", out var component) ||
+                        component.Data is not JsonElement data)
+                    {
+                        continue;
+                    }
+
+                    var runs = data.GetProperty("runs");
+                    Assert.InRange(runs.GetArrayLength(), 0, 1);
+                    if (runs.GetArrayLength() == 1)
+                    {
+                        Assert.Equal(WorkflowRunStatus.Failed.ToString(), runs[0].GetProperty("status").GetString());
+                    }
+
+                    break;
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                // A workflow that leaves no visible run can settle back to the same empty list without emitting a distinct update.
+            }
+        }
+
+        gate.Release.TrySetResult();
+        await blocker.WaitForCompletion();
+    }
+
+    [Fact]
+    public async Task ViewWatcherReceivesWorkflowRunDetailUpdatesFromChildWorkerReadModelChanges()
+    {
+        var timers = new ManualRealtimeTimerFactory();
+        var childStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseChild = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var host = await CreateHost(
+            addSignalR: true,
+            configureServices: services => services.AddSingleton<IWorkableRealtimeTimerFactory>(timers),
+            configureSignalR: options =>
+            {
+                options.PublishInterval = ManualViewPublishInterval;
+                options.DiagnosticsPublishInterval = ManualDiagnosticsPublishInterval;
+            },
+            configureWorkable: builder =>
+            {
+                builder.AddAuthorizedTransportWork(
+                    WorkDefinition.Create(
+                        "signalr.workflow.manual-child",
+                        configuration: WorkConfiguration.Default with
+                        {
+                            Start = WorkStartConfiguration.DoNotStart,
+                        }),
+                    async (_, _, cancellationToken) =>
+                    {
+                        childStarted.TrySetResult();
+                        await releaseChild.Task.WaitAsync(cancellationToken);
+                        return WorkExecutionResult.Success();
+                    });
+                builder.AddWorkflow(
+                    WorkflowDefinition.Create("signalr.workflow.manual"),
+                    workflow => workflow.DispatchWork("dispatch", WorkDefinition.Create("signalr.workflow.manual-child")));
+            });
+        var system = Assert.IsType<InMemoryWorkSystem>(host.Services.GetRequiredService<IWorkSystemRegistry>().Default);
+        var startContext = TransportAuthorizationTestSupport.CreateTransportRequestContext(
+            WorkInvocationChannel.InProcess,
+            description: "Start workflow for workflow detail realtime view test.");
+        var handle = system.WorkflowRuntime.Start("signalr.workflow.manual", startContext);
+        var runId = handle.RunId ?? throw new InvalidOperationException("Expected workflow run id.");
+        await TestEventually.Until(() =>
+        {
+            var snapshot = system.WorkflowRuntime.Get(runId);
+            return snapshot?.Steps.Single(step => step.Name == "dispatch").WorkerIds.Count == 1;
+        });
+        var childWorkerId = system.WorkflowRuntime.Get(runId)!
+            .Steps
+            .Single(step => step.Name == "dispatch")
+            .WorkerIds
+            .Single();
+
+        await using var connection = CreateConnection(host);
+        const string subscriptionId = "workflow-run";
+        var views = Channel.CreateUnbounded<WorkComponentQueryResult>();
+        CaptureRealtimeViews(connection, subscriptionId, views);
+        await connection.StartAsync();
+        await connection.InvokeAsync(
+            "WatchView",
+            subscriptionId,
+            "workflow-run",
+            new WorkViewCriteria(Components:
+            [
+                new WorkComponentRequest(
+                    "workflowRun",
+                    "workflowRun",
+                    JsonSerializer.SerializeToElement(new
+                    {
+                        runId = runId.Value.ToString("D"),
+                    }),
+                    WorkComponentShapes.Detailed),
+            ]),
+            null);
+
+        var initial = await ReadUntil(
+            views.Reader,
+            view =>
+            {
+                if (!view.Components.TryGetValue("workflowRun", out var component) ||
+                    component.Data is not JsonElement data)
+                {
+                    return false;
+                }
+
+                return data
+                    .GetProperty("steps")[0]
+                    .GetProperty("childSample")[0]
+                    .GetProperty("state")
+                    .GetString() == nameof(WorkerState.Queued);
+            });
+        var initialDetail = Assert.IsType<JsonElement>(initial.Components["workflowRun"].Data);
+        Assert.Equal(nameof(WorkflowRunStatus.Running), initialDetail.GetProperty("status").GetString());
+
+        var worker = await Session(system).Query.Worker(childWorkerId)
+            ?? throw new InvalidOperationException("Expected child worker.");
+        var start = await Session(system).Workers.Execute(worker.Version, WorkAction.Start);
+        Assert.True(start.IsAccepted);
+        await childStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        await TestEventually.ClockAfter(initial.GeneratedAt);
+        await timers.TickWhenReady(ManualViewPublishInterval);
+        var started = await ReadUntil(
+            views.Reader,
+            view =>
+            {
+                if (view.GeneratedAt <= initial.GeneratedAt ||
+                    !view.Components.TryGetValue("workflowRun", out var component) ||
+                    component.Data is not JsonElement data)
+                {
+                    return false;
+                }
+
+                return data
+                    .GetProperty("steps")[0]
+                    .GetProperty("childSample")[0]
+                    .GetProperty("state")
+                    .GetString() == nameof(WorkerState.Running);
+            });
+        var startedDetail = Assert.IsType<JsonElement>(started.Components["workflowRun"].Data);
+
+        Assert.Equal(nameof(WorkflowRunStatus.Running), startedDetail.GetProperty("status").GetString());
+        Assert.Equal(
+            nameof(WorkerState.Running),
+            startedDetail.GetProperty("steps")[0].GetProperty("childSample")[0].GetProperty("state").GetString());
+
+        releaseChild.TrySetResult();
+        await handle.WaitForCompletion();
     }
 
     [Fact]
@@ -490,6 +982,72 @@ public sealed class WorkableSignalRTests
         {
             gate.Release.TrySetResult();
         }
+    }
+
+    [Fact]
+    public async Task WorkerOverviewWatcherUsesChangeStreamWithoutEventStreamSubscription()
+    {
+        using var host = await CreateHost(addSignalR: true);
+        var system = host.Services.GetRequiredService<IWorkSystemRegistry>().Default;
+        var eventStream = GetEventStream(system);
+        await using var connection = CreateConnection(host);
+        const string subscriptionId = "worker-overview";
+        var updates = Channel.CreateUnbounded<WorkWorkerOverviewRealtimeUpdate>();
+        CaptureWorkerOverviewUpdates(connection, subscriptionId, updates);
+        await connection.StartAsync();
+
+        var handle = await Session(system).Queue.Enqueue("signalr.worker");
+        var workerId = handle.WorkerId ?? throw new InvalidOperationException("Expected worker id.");
+
+        await connection.InvokeAsync(
+            "WatchWorkerOverview",
+            subscriptionId,
+            workerId.Value.ToString("D"),
+            new WorkWorkerOverviewRealtimeCriteria(
+                WorkerControls: WorkComponentShapes.Standard),
+            null);
+
+        var initial = await ReadUntil(
+            updates.Reader,
+            update => update.Worker?.WorkerId == workerId);
+
+        Assert.Equal(workerId, Require(initial.Worker).WorkerId);
+        Assert.Equal(0, eventStream.ActiveSubscriptionCount);
+    }
+
+    [Fact]
+    public async Task WorkerOverviewWatcherIgnoresUnrelatedWorkerChanges()
+    {
+        using var host = await CreateHost(addSignalR: true);
+        var system = host.Services.GetRequiredService<IWorkSystemRegistry>().Default;
+        var session = Session(system);
+        await using var connection = CreateConnection(host);
+        const string subscriptionId = "worker-overview";
+        var updates = Channel.CreateUnbounded<WorkWorkerOverviewRealtimeUpdate>();
+        CaptureWorkerOverviewUpdates(connection, subscriptionId, updates);
+        await connection.StartAsync();
+
+        var target = await session.Queue.Enqueue("signalr.worker");
+        var targetWorkerId = target.WorkerId ?? throw new InvalidOperationException("Expected worker id.");
+
+        await connection.InvokeAsync(
+            "WatchWorkerOverview",
+            subscriptionId,
+            targetWorkerId.Value.ToString("D"),
+            new WorkWorkerOverviewRealtimeCriteria(
+                WorkerControls: WorkComponentShapes.Standard),
+            null);
+
+        _ = await ReadUntil(
+            updates.Reader,
+            update => update.Worker?.WorkerId == targetWorkerId);
+        await DrainUntilQuiet(updates.Reader, TimeSpan.FromMilliseconds(250));
+
+        var unrelated = await session.Queue.Enqueue("signalr.worker");
+        Assert.NotEqual(targetWorkerId, unrelated.WorkerId);
+        await TestEventually.Until(() => session.Diagnostics.ReadModel.PendingUpdateCount == 0);
+
+        await AssertNoItem(updates.Reader, TimeSpan.FromSeconds(1));
     }
 
     [Fact]
@@ -1226,6 +1784,45 @@ public sealed class WorkableSignalRTests
         }
 
         throw new InvalidOperationException("Expected item was not received.");
+    }
+
+    private static async Task DrainUntilQuiet<T>(
+        ChannelReader<T> reader,
+        TimeSpan quietPeriod)
+    {
+        while (true)
+        {
+            using var cancellation = new CancellationTokenSource(quietPeriod);
+            try
+            {
+                if (!await reader.WaitToReadAsync(cancellation.Token))
+                {
+                    return;
+                }
+            }
+            catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
+            {
+                return;
+            }
+
+            while (reader.TryRead(out _))
+            {
+            }
+        }
+    }
+
+    private static async Task AssertNoItem<T>(
+        ChannelReader<T> reader,
+        TimeSpan timeout)
+    {
+        using var cancellation = new CancellationTokenSource(timeout);
+        try
+        {
+            Assert.False(await reader.WaitToReadAsync(cancellation.Token), "Expected no item to be received.");
+        }
+        catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
+        {
+        }
     }
 
     private static IReadOnlySet<T> Required<T>(IReadOnlySet<T>? values)

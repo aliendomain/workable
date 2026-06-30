@@ -17,6 +17,7 @@ internal static class WorkerStateMachine
 
             WorkAction.Pause => state switch
             {
+                WorkerState.Queued => WorkerStateTransition.Accepted(action, state, WorkerState.Paused),
                 WorkerState.Running => WorkerStateTransition.Accepted(action, state, WorkerState.Pausing, cancelsExecution: true),
                 WorkerState.Waiting or WorkerState.Retrying => WorkerStateTransition.Accepted(action, state, WorkerState.Paused),
                 _ => WorkerStateTransition.Invalid(action, state, "workable.worker.not_pausable", $"Worker cannot be paused from state '{state}'."),

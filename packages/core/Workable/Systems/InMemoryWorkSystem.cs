@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Diagnostics.CodeAnalysis;
+using System.Runtime.ExceptionServices;
 using System.Runtime.CompilerServices;
 using System.Threading.Channels;
 using Microsoft.Extensions.DependencyInjection;
@@ -11,6 +12,7 @@ internal sealed class InMemoryWorkSystem :
     IWorkSystem,
     IWorkSystemBuiltInHttpSurfaceAccess,
     IWorkSystemReadModelClock,
+    IWorkSystemWorkflowClock,
     IWorkSystemShutdownMetadata,
     IWorkSystemCapabilitySource
 {
@@ -21,6 +23,9 @@ internal sealed class InMemoryWorkSystem :
     private readonly IReadOnlyList<Func<IServiceProvider, IWorkDefinitionSource>> workDefinitionSourceFactories;
     private readonly IReadOnlyList<Func<IServiceProvider, IStartupWorkSource>> startupWorkSourceFactories;
     private readonly WorkSystemCatalog catalog;
+    private readonly WorkflowCatalog workflows;
+    private readonly WorkflowRuntime workflowRuntime;
+    private readonly WorkflowPersistenceCoordinator workflowPersistence;
     private readonly WorkQueueService queue;
     private readonly WorkerOperations workers;
     private readonly WorkSystemReadModel readModel;
@@ -29,6 +34,7 @@ internal sealed class InMemoryWorkSystem :
     private readonly WorkSystemSessionFactory sessions;
     private readonly InMemoryWorkMetricsSink metrics = new();
     private readonly WorkEventStream events = new();
+    private readonly WorkChangeStream changes = new();
     private readonly WorkSystemQueueDiagnosticsTracker queueDiagnostics = new();
     private readonly WorkSystemIdempotencyDiagnosticsTracker idempotencyDiagnostics = new();
     private readonly SemaphoreSlim lifecycleLock = new(1, 1);
@@ -70,8 +76,13 @@ internal sealed class InMemoryWorkSystem :
             this.Capabilities.PersistentCoordinationAvailable,
             implicitDefaultWorkerOptions,
             this.authorization,
-            authorizationLogger);
-        this.readModel = new WorkSystemReadModel(this.catalog, () => this.State, this.Name, this.metrics);
+            authorizationLogger,
+            this.changes);
+        this.workflows = new WorkflowCatalog(registration.Workflows);
+        this.workflowPersistence = new WorkflowPersistenceCoordinator(
+            persistenceStore,
+            this.Name);
+        this.readModel = new WorkSystemReadModel(this.catalog, () => this.State, this.Name, this.metrics, this.changes);
         this.workers = new WorkerOperations(
             this.catalog,
             () => this.State,
@@ -100,12 +111,58 @@ internal sealed class InMemoryWorkSystem :
             () => this.State,
             this.diagnostics,
             this.catalog,
+            this.workflows,
             this.queue,
             this.workers,
             this.query,
             this.events,
+            this.changes,
             this.authorization,
             this.groupProvider);
+        var workflowEvents = new WorkflowEventPublisher(this.Id, this.Name, this.events);
+        this.workflowRuntime = new WorkflowRuntime(
+            this.Name,
+            this.RequiresAuthorization,
+            this.workflows,
+            workDefinitionName => this.catalog.TryGetWork(workDefinitionName, out var registeredWork) ? registeredWork : null,
+            this.CreateSession,
+            this.workers.CreateHandle,
+            this.workers.GetAuthoritative,
+            this.workflowPersistence,
+            this.authorization,
+            this.groupProvider,
+            workflowEvents);
+        this.workers.SetWorkflowChildFinalizationObserver(this.workflowRuntime.ObserveFinalWorkflowChild);
+        this.workers.SetWorkflowChildRetentionGuard(this.workflowRuntime.ShouldKeepWorkflowChildWorker);
+        this.workers.SetWorkflowChildPurgedObserver(this.workflowRuntime.ObservePurgedWorkflowChild);
+        this.workers.SetCompletionObserver((worker, status) =>
+        {
+            if (!worker.Identifiers.Any(identifier => identifier.Type == "workflow-run"))
+            {
+                return;
+            }
+
+            _ = Task.Run(
+                async () =>
+                {
+                    try
+                    {
+                        if (status == WorkCompletionStatus.Completed)
+                        {
+                            await this.workflowRuntime.TryAutoResumeBlockedRunForCompletedWorker(worker.Id, CancellationToken.None);
+                        }
+                    }
+                    catch (Exception exception) when (IsNonCriticalException(exception))
+                    {
+                        this.logger?.LogWarning(
+                            exception,
+                            "Workflow auto-resume processing failed for worker {WorkerId} in work system {WorkSystem}.",
+                            worker.Id.Value,
+                            this.Name ?? this.Id.ToString());
+                    }
+                },
+                CancellationToken.None);
+        });
     }
 
     public WorkSystemId Id { get; }
@@ -120,7 +177,16 @@ internal sealed class InMemoryWorkSystem :
 
     public WorkSystemCapabilities Capabilities { get; }
 
+    internal WorkflowCatalog Workflows => this.workflows;
+
+    internal WorkflowRuntime WorkflowRuntime => this.workflowRuntime;
+
+    internal WorkerOperations WorkerOperations => this.workers;
+    internal WorkChangeStream ChangeStream => this.changes;
+
     long IWorkSystemReadModelClock.AppliedSequence => this.readModel.AppliedSequence;
+
+    long IWorkSystemWorkflowClock.WorkflowSequence => this.workflowRuntime.Version;
 
     public IWorkCatalog Catalog
     {
@@ -164,6 +230,15 @@ internal sealed class InMemoryWorkSystem :
         {
             this.ThrowIfAuthorizationRequiredForDirectAccess();
             return this.events;
+        }
+    }
+
+    public IWorkChangeStream Changes
+    {
+        get
+        {
+            this.ThrowIfAuthorizationRequiredForDirectAccess();
+            return this.changes;
         }
     }
 
@@ -292,28 +367,53 @@ internal sealed class InMemoryWorkSystem :
             }
 
             this.catalog.Freeze();
+            await this.workflowPersistence.Initialize(this.workflows.Definitions, cancellationToken);
+            this.workflowRuntime.StartExecutionLifetime();
             await this.workers.StartDispatching(cancellationToken);
             dispatchingStarted = true;
             this.State = WorkSystemState.Started;
             lifecycleStarted = true;
+            await this.workflowRuntime.RecoverDurableRuns(cancellationToken);
             await this.NotifyStarted(cancellationToken);
             await this.QueueAutomaticallyStartedWork(cancellationToken);
             await this.QueueStartupWork(cancellationToken);
         }
-        catch
+        catch (Exception exception)
         {
+            var cleanupExceptions = new List<Exception>();
+            TryCleanup(() => this.workflowRuntime.CancelExecutionLifetime(), cleanupExceptions);
             if (dispatchingStarted)
             {
-                await this.workers.StopDispatching(CancellationToken.None);
+                await TryCleanupAsync(
+                    () => this.workers.StopDispatching(CancellationToken.None),
+                    cleanupExceptions);
             }
+
+            await TryCleanupAsync(
+                () => this.workflowRuntime.WaitForExecutions(CancellationToken.None),
+                cleanupExceptions);
+            await TryCleanupAsync(
+                () => this.workflowRuntime.StopBackgroundTasks(CancellationToken.None),
+                cleanupExceptions);
+            TryCleanup(() => this.workflowRuntime.ClearRuns(), cleanupExceptions);
 
             if (lifecycleStarted)
             {
-                await this.NotifyStopped();
+                await TryCleanupAsync(
+                    () => this.NotifyStopped(),
+                    cleanupExceptions);
             }
 
             this.metrics.Clear();
             this.State = WorkSystemState.Stopped;
+            if (cleanupExceptions.Count > 0)
+            {
+                throw new AggregateException(
+                    "Workable failed to start and one or more cleanup operations also failed.",
+                    [exception, .. cleanupExceptions]);
+            }
+
+            ExceptionDispatchInfo.Capture(exception).Throw();
             throw;
         }
         finally
@@ -346,18 +446,73 @@ internal sealed class InMemoryWorkSystem :
             }
 
             this.State = WorkSystemState.Stopping;
-            await this.NotifyStopping(requestContext.Origin);
-            var result = await this.workers.StopDispatching(requestContext, cancellationToken);
-            await this.NotifyStopped();
+            var cleanupExceptions = new List<Exception>();
+            await TryCleanupAsync(() => this.NotifyStopping(requestContext.Origin), cleanupExceptions);
+            TryCleanup(() => this.workflowRuntime.CancelExecutionLifetime(), cleanupExceptions);
+
+            WorkSystemStopResult? result = null;
+            await TryCleanupAsync(
+                async () => result = await this.workers.StopDispatching(requestContext, cancellationToken),
+                cleanupExceptions);
+            await TryCleanupAsync(
+                () => this.workflowRuntime.WaitForExecutions(cancellationToken),
+                cleanupExceptions);
+            await TryCleanupAsync(
+                () => this.workflowRuntime.StopBackgroundTasks(cancellationToken),
+                cleanupExceptions);
+            TryCleanup(() => this.workflowRuntime.ClearRuns(), cleanupExceptions);
+            await TryCleanupAsync(() => this.NotifyStopped(), cleanupExceptions);
             this.metrics.Clear();
             this.State = WorkSystemState.Stopped;
-            return result;
+            if (cleanupExceptions.Count > 0)
+            {
+                throw new AggregateException(
+                    "Workable failed while stopping and one or more cleanup operations also failed.",
+                    cleanupExceptions);
+            }
+
+            return result ?? new WorkSystemStopResult([]);
         }
         finally
         {
             this.lifecycleLock.Release();
         }
     }
+
+    private static void TryCleanup(Action cleanup, List<Exception> exceptions)
+    {
+        try
+        {
+            cleanup();
+        }
+        catch (Exception exception) when (ShouldCaptureCleanupException(exception))
+        {
+            exceptions.Add(exception);
+        }
+    }
+
+    private static async Task TryCleanupAsync(Func<Task> cleanup, List<Exception> exceptions)
+    {
+        try
+        {
+            await cleanup();
+        }
+        catch (Exception exception) when (ShouldCaptureCleanupException(exception))
+        {
+            exceptions.Add(exception);
+        }
+    }
+
+    private static bool ShouldCaptureCleanupException(Exception exception)
+        => exception is not (
+            OperationCanceledException or
+            OutOfMemoryException or
+            StackOverflowException or
+            AccessViolationException or
+            AppDomainUnloadedException or
+            BadImageFormatException or
+            CannotUnloadAppDomainException or
+            ThreadAbortException);
 
     private async Task NotifyStopping(WorkOrigin origin)
     {
@@ -390,6 +545,7 @@ internal sealed class InMemoryWorkSystem :
         this.lifecycleLock.Dispose();
         await this.readModel.DisposeAsync();
         await this.events.DisposeAsync();
+        await this.changes.DisposeAsync();
     }
 
     private async Task DefineRuntimeWork(CancellationToken cancellationToken)

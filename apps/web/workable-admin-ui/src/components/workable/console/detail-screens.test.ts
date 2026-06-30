@@ -361,6 +361,13 @@ test("detail tone and action helpers cover status, completion, severity, and wor
     Push: true,
     Purge: false,
   });
+  assert.deepEqual(getAvailableWorkerActions("Queued"), {
+    Start: true,
+    Pause: true,
+    Cancel: true,
+    Push: false,
+    Purge: false,
+  });
   assert.deepEqual(getAvailableWorkerActions("Completed"), {
     Start: false,
     Pause: false,
