@@ -45,26 +45,26 @@ internal sealed class WorkEventStream : IWorkEventStream, IAsyncDisposable
     {
         ArgumentNullException.ThrowIfNull(workEvent);
 
-        if (!this.TryGetActiveIndex(out var index))
+        if (!this.TryGetActiveIndex(out var activeIndex))
         {
             return;
         }
 
-        PublishToSubscribers(index, this.eventLog, workEvent);
+        PublishToSubscribers(activeIndex, this.eventLog, workEvent);
     }
 
     internal void Publish<TState>(TState state, Func<TState, WorkEvent> createEvent)
     {
         ArgumentNullException.ThrowIfNull(createEvent);
 
-        if (!this.TryGetActiveIndex(out var index))
+        if (!this.TryGetActiveIndex(out var activeIndex))
         {
             return;
         }
 
         WorkEvent? workEvent = null;
-        AppendToCursorLog(index, this.eventLog, ref workEvent, state, createEvent);
-        PublishToRoutedSubscribers(index, ref workEvent, state, createEvent);
+        AppendToCursorLog(activeIndex, this.eventLog, ref workEvent, state, createEvent);
+        PublishToRoutedSubscribers(activeIndex, ref workEvent, state, createEvent);
     }
 
     internal void Publish<TState>(
@@ -75,21 +75,21 @@ internal sealed class WorkEventStream : IWorkEventStream, IAsyncDisposable
         ArgumentNullException.ThrowIfNull(createMetadata);
         ArgumentNullException.ThrowIfNull(createEvent);
 
-        if (!this.TryGetActiveIndex(out var index))
+        if (!this.TryGetActiveIndex(out var activeIndex))
         {
             return;
         }
 
-        WorkEventMetadata? metadata = index.HasRoutedFilteredSubscriptions
+        WorkEventMetadata? metadata = activeIndex.HasRoutedFilteredSubscriptions
             ? createMetadata(state)
             : null;
         WorkEvent? workEvent = null;
 
-        AppendToCursorLog(index, this.eventLog, ref workEvent, state, createEvent);
-        PublishToRoutedUnfilteredSubscribers(index.RoutedUnfiltered, ref workEvent, state, createEvent);
+        AppendToCursorLog(activeIndex, this.eventLog, ref workEvent, state, createEvent);
+        PublishToRoutedUnfilteredSubscribers(activeIndex.RoutedUnfiltered, ref workEvent, state, createEvent);
         if (metadata is not null)
         {
-            PublishToRoutedFilteredSubscribers(index, metadata, ref workEvent, state, createEvent);
+            PublishToRoutedFilteredSubscribers(activeIndex, metadata, ref workEvent, state, createEvent);
         }
     }
 
@@ -101,17 +101,17 @@ internal sealed class WorkEventStream : IWorkEventStream, IAsyncDisposable
         ArgumentNullException.ThrowIfNull(metadata);
         ArgumentNullException.ThrowIfNull(createEvent);
 
-        if (!this.TryGetActiveIndex(out var index))
+        if (!this.TryGetActiveIndex(out var activeIndex))
         {
             return;
         }
 
         WorkEvent? workEvent = null;
-        AppendToCursorLog(index, this.eventLog, ref workEvent, state, createEvent);
-        PublishToRoutedUnfilteredSubscribers(index.RoutedUnfiltered, ref workEvent, state, createEvent);
-        if (index.HasRoutedFilteredSubscriptions)
+        AppendToCursorLog(activeIndex, this.eventLog, ref workEvent, state, createEvent);
+        PublishToRoutedUnfilteredSubscribers(activeIndex.RoutedUnfiltered, ref workEvent, state, createEvent);
+        if (activeIndex.HasRoutedFilteredSubscriptions)
         {
-            PublishToRoutedFilteredSubscribers(index, metadata, ref workEvent, state, createEvent);
+            PublishToRoutedFilteredSubscribers(activeIndex, metadata, ref workEvent, state, createEvent);
         }
     }
 

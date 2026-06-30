@@ -240,12 +240,20 @@ END
                     $"The configured benchmark SQL Server container runtime '{configuredRuntime}' is not available.");
             }
 
-            foreach (var runtime in new[] { "docker", "podman" }.Select(candidate => new ContainerRuntime(candidate)))
+            var candidates = new[] { "docker", "podman" }
+                .Select(candidate => new ContainerRuntime(candidate));
+            var availableRuntimes = new List<ContainerRuntime>();
+            foreach (var runtime in candidates)
             {
                 if (await runtime.IsAvailable())
                 {
-                    return runtime;
+                    availableRuntimes.Add(runtime);
                 }
+            }
+
+            if (availableRuntimes.Count > 0)
+            {
+                return availableRuntimes[0];
             }
 
             throw new InvalidOperationException(
