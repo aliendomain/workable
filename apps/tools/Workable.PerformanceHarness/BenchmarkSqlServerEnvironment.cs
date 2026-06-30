@@ -241,6 +241,7 @@ END
             }
 
             var candidates = new[] { "docker", "podman" }
+                .Where(candidate => !string.IsNullOrWhiteSpace(candidate))
                 .Select(candidate => new ContainerRuntime(candidate));
             var availableRuntimes = new List<ContainerRuntime>();
             foreach (var runtime in candidates)

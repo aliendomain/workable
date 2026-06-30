@@ -199,7 +199,7 @@ internal sealed class WorkSystemDurabilityDiagnosticsTracker
     }
 
     private void RecordRecentClaimSample(
-        int claimedEntryCount,
+        int sampleClaimedEntryCount,
         TimeSpan elapsed,
         TimeSpan acceptanceElapsed,
         DateTimeOffset startedAt,
@@ -218,7 +218,7 @@ internal sealed class WorkSystemDurabilityDiagnosticsTracker
                 sequence,
                 startedAt,
                 completedAt,
-                claimedEntryCount,
+                sampleClaimedEntryCount,
                 elapsed,
                 acceptanceElapsed);
             if (this.recentClaimSampleCount < samples.Length)

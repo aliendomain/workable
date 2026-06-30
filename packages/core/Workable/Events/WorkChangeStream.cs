@@ -53,11 +53,11 @@ internal sealed class WorkChangeStream : IWorkChangeStream, IAsyncDisposable
             subscriptions);
     }
 
-    private void Publish(WorkChange change, WorkChangeSubscription[] subscriptions)
+    private void Publish(WorkChange change, WorkChangeSubscription[] targetSubscriptions)
     {
         ArgumentNullException.ThrowIfNull(change);
 
-        foreach (var subscription in subscriptions)
+        foreach (var subscription in targetSubscriptions)
         {
             subscription.Publish(change);
         }
