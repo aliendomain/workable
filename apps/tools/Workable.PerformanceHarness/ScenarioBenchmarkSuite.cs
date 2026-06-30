@@ -876,9 +876,12 @@ internal static class ScenarioBenchmarkSuite
         metrics.Add("allocated_bytes", allocatedBytes, "bytes");
         metrics.Add("allocated_bytes_per_worker", PerWorker(allocatedBytes, completed.CompletedWorkers), "bytes/worker");
         AddQueueMetrics(metrics, queued, "admission_");
+        var completionObservedWindow = stages.SnapshotQueueStartToCompletionWindow();
+
         metrics.Add("completed_workers", completed.CompletedWorkers, "workers");
+        metrics.Add("completion_observed_window_ms", completionObservedWindow.TotalMilliseconds, "ms");
         metrics.Add("completion_observer_drain_elapsed_ms", completed.Elapsed.TotalMilliseconds, "ms");
-        metrics.Add("completed_per_sec", Rate(completed.CompletedWorkers, completed.Elapsed), "workers/sec");
+        metrics.Add("completed_per_sec", Rate(completed.CompletedWorkers, completionObservedWindow), "workers/sec");
         AddDurationMetrics(metrics, "completion_wait_latency", completed.CompletionWaitLatency);
         AddDurationMetrics(metrics, "queue_start_to_executor_start", stages.SnapshotQueueStartToExecutorStart());
         AddDurationMetrics(metrics, "executor_duration", stages.SnapshotExecutorDuration());
@@ -1000,7 +1003,8 @@ internal static class ScenarioBenchmarkSuite
                 recovered.ConnectionString,
                 recovered.DurabilitySchemaName,
                 static counts => counts.WorkEntries == 0 && counts.WorkflowRuns == 0,
-                cancellationToken);
+                cancellationToken,
+                () => WorkflowBenchmarkReflection.DescribeRuns(recovered.System, runIds));
             recoveryStopwatch.Stop();
             recoveryDurability = recovered.System.Diagnostics.Durability;
             countsAfterRecovery = await ReadDurableStateCounts(
@@ -3885,6 +3889,9 @@ SELECT
         public DurationSnapshot SnapshotStartToCompletion()
             => this.Snapshot(this.queueStarted, this.completionObserved);
 
+        public TimeSpan SnapshotQueueStartToCompletionWindow()
+            => this.Window(this.queueStarted, this.completionObserved);
+
         private DurationSnapshot Snapshot(long[] startTicks, long[] endTicks)
         {
             var samples = new List<double>(startTicks.Length);
@@ -3913,6 +3920,35 @@ SELECT
                 Percentile(samples, 0.95),
                 Percentile(samples, 0.99),
                 samples[^1]);
+        }
+
+        private TimeSpan Window(long[] startTicks, long[] endTicks)
+        {
+            long earliest = 0;
+            long latest = 0;
+            for (var index = 0; index < startTicks.Length; index++)
+            {
+                var started = Volatile.Read(ref startTicks[index]);
+                var ended = Volatile.Read(ref endTicks[index]);
+                if (started <= 0 || ended < started)
+                {
+                    continue;
+                }
+
+                if (earliest == 0 || started < earliest)
+                {
+                    earliest = started;
+                }
+
+                if (ended > latest)
+                {
+                    latest = ended;
+                }
+            }
+
+            return earliest <= 0 || latest < earliest
+                ? TimeSpan.Zero
+                : Stopwatch.GetElapsedTime(earliest, latest);
         }
 
         private static double Percentile(List<double> sorted, double percentile)

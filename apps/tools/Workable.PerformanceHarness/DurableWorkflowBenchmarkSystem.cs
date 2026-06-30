@@ -9,6 +9,7 @@ internal sealed class DurableWorkflowBenchmarkSystem : IAsyncDisposable
 {
     private const string SystemName = "workflow-benchmarks";
     private const string SchemaName = "workable_perf";
+    private static readonly TimeSpan BenchmarkWorkflowChildPurgeInterval = TimeSpan.FromMilliseconds(100);
     private readonly ServiceProvider provider;
     private readonly WorkRequestContext requestContext;
     private readonly string schemaName;
@@ -64,21 +65,25 @@ internal sealed class DurableWorkflowBenchmarkSystem : IAsyncDisposable
             builder.AddWork(
                 WorkDefinition.Create("perf.workflow.durable.dispatch.child", category: "Perf:Workflow"),
                 childExecutorFactory(0),
-                configuration => configuration.QueueDurably(fallbackPollingInterval: TimeSpan.FromSeconds(1)));
+                configuration => configuration
+                    .QueueDurably(fallbackPollingInterval: TimeSpan.FromSeconds(1))
+                    .ConfigureRetention(purgeInterval: BenchmarkWorkflowChildPurgeInterval));
 
             for (var index = 0; index < Math.Max(1, branchCount); index++)
             {
                 builder.AddWork(
                     WorkDefinition.Create($"perf.workflow.durable.parallel.child.{index:D2}", category: "Perf:Workflow"),
                     childExecutorFactory(index),
-                    configuration => configuration.QueueDurably(fallbackPollingInterval: TimeSpan.FromSeconds(1)));
+                    configuration => configuration
+                        .QueueDurably(fallbackPollingInterval: TimeSpan.FromSeconds(1))
+                        .ConfigureRetention(purgeInterval: BenchmarkWorkflowChildPurgeInterval));
             }
 
             builder.AddWorkflow(
                 WorkflowDefinition.Create(
                     "perf.workflow.durable.dispatch",
                     coordination: WorkflowCoordinationConfiguration.Durable),
-                workflow => workflow.DispatchWork("dispatch", "perf.workflow.durable.dispatch.child"));
+                workflow => workflow.DispatchWork("dispatch", WorkDefinition.Create("perf.workflow.durable.dispatch.child")));
 
             builder.AddWorkflow(
                 WorkflowDefinition.Create(
@@ -92,7 +97,7 @@ internal sealed class DurableWorkflowBenchmarkSystem : IAsyncDisposable
                         {
                             parallel.DispatchWork(
                                 $"branch-{index:D2}",
-                                $"perf.workflow.durable.parallel.child.{index:D2}");
+                                WorkDefinition.Create($"perf.workflow.durable.parallel.child.{index:D2}"));
                         }
                     });
                     workflow.Join("join");

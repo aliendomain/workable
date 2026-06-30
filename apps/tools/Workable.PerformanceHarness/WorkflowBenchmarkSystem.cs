@@ -55,7 +55,7 @@ internal sealed class WorkflowBenchmarkSystem : IAsyncDisposable
 
             builder.AddWorkflow(
                 WorkflowDefinition.Create("perf.workflow.dispatch"),
-                workflow => workflow.DispatchWork("dispatch", "perf.workflow.dispatch.child"),
+                workflow => workflow.DispatchWork("dispatch", WorkDefinition.Create("perf.workflow.dispatch.child")),
                 authorize: requiresAuthorization ? AllowWorkflowOperatorGroups : null);
 
             builder.AddWorkflow(
@@ -68,7 +68,7 @@ internal sealed class WorkflowBenchmarkSystem : IAsyncDisposable
                         {
                             parallel.DispatchWork(
                                 $"branch-{index:D2}",
-                                $"perf.workflow.parallel.child.{index:D2}");
+                                WorkDefinition.Create($"perf.workflow.parallel.child.{index:D2}"));
                         }
                     });
                     workflow.Join("join");

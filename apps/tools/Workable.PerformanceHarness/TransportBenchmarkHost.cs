@@ -131,18 +131,18 @@ internal sealed class TransportBenchmarkHost : IAsyncDisposable
                             authorize: requiresAuthorization ? AllowOperatorGroups : null);
                         builder.AddWorkflow(
                             WorkflowDefinition.Create("perf.transport.workflow.fast"),
-                            workflow => workflow.DispatchWork("dispatch", "perf.transport.workflow.fast"),
+                            workflow => workflow.DispatchWork("dispatch", WorkDefinition.Create("perf.transport.workflow.fast")),
                             authorize: requiresAuthorization ? AllowWorkflowOperatorGroups : null);
                         builder.AddWorkflow(
                             WorkflowDefinition.Create("perf.transport.workflow.stop"),
                             workflow => workflow
-                                .DispatchWork("slow", "perf.transport.workflow.stop.slow")
+                                .DispatchWork("slow", WorkDefinition.Create("perf.transport.workflow.stop.slow"))
                                 .Join("join")
-                                .DispatchWork("fast", "perf.transport.workflow.stop.fast"),
+                                .DispatchWork("fast", WorkDefinition.Create("perf.transport.workflow.stop.fast")),
                             authorize: requiresAuthorization ? AllowWorkflowOperatorGroups : null);
                         builder.AddWorkflow(
                             WorkflowDefinition.Create("perf.transport.workflow.cancel"),
-                            workflow => workflow.DispatchWork("dispatch", "perf.transport.workflow.cancel.child"),
+                            workflow => workflow.DispatchWork("dispatch", WorkDefinition.Create("perf.transport.workflow.cancel.child")),
                             authorize: requiresAuthorization ? AllowWorkflowOperatorGroups : null);
                     });
                     if (requiresAuthorization)

@@ -2278,6 +2278,102 @@ public sealed class WorkflowRuntimeShould
         Assert.Contains(handle.RunId.Value, store.DeletedWorkflowRuns);
     }
 
+    [Fact]
+    public async Task RetryWorkflowChildRetentionPurgeAfterWorkflowBecomesFinal()
+    {
+        var store = new TestWorkflowPersistenceStore();
+        var slowRelease = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var services = new ServiceCollection();
+        services.AddSingleton<IWorkPersistenceStore>(store);
+        services.AddWorkableSystem("workflow-tests", builder =>
+        {
+            builder.RequireAuthorization(false);
+            builder.AddWork(
+                WorkDefinition.Create(
+                    "sample.retained.fast",
+                    configuration: WorkConfiguration.Default with
+                    {
+                        Retention = WorkRetentionConfiguration.Default with
+                        {
+                            PurgeInterval = TimeSpan.FromMilliseconds(20),
+                            MaximumFinalWorkers = 10,
+                        },
+                    }),
+                (_, _, _) => Task.FromResult(WorkExecutionResult.Success()));
+            builder.AddWork(
+                WorkDefinition.Create(
+                    "sample.retained.slow",
+                    configuration: WorkConfiguration.Default with
+                    {
+                        Retention = WorkRetentionConfiguration.Default with
+                        {
+                            PurgeInterval = TimeSpan.FromMilliseconds(20),
+                            MaximumFinalWorkers = 10,
+                        },
+                    }),
+                async (_, _, cancellationToken) =>
+                {
+                    await slowRelease.Task.WaitAsync(cancellationToken);
+                    return WorkExecutionResult.Success();
+                });
+            builder.AddWorkflow(
+                WorkflowDefinition.Create(
+                    "workflow.completed.child-lifetime.retry",
+                    coordination: WorkflowCoordinationConfiguration.Durable),
+                workflow => workflow
+                    .DispatchWork("fast", Work("sample.retained.fast"))
+                    .DispatchWork("slow", Work("sample.retained.slow")));
+        });
+
+        using var provider = services.BuildServiceProvider();
+        var system = GetNamedSystem(provider, "workflow-tests");
+        await system.Start();
+
+        var handle = system.WorkflowRuntime.Start(
+            "workflow.completed.child-lifetime.retry",
+            WorkRequestContext.Create(WorkInvocationChannel.InProcess));
+
+        WorkerId fastWorkerId = default;
+        await TestEventually.Until(
+            async () =>
+            {
+                var snapshot = system.WorkflowRuntime.Get(handle.RunId!.Value);
+                var fastStep = snapshot?.Steps.SingleOrDefault(step => step.Name == "fast");
+                if (fastStep is null || fastStep.WorkerIds.Count != 1 || snapshot!.Status == WorkflowRunStatus.Completed)
+                {
+                    return false;
+                }
+
+                fastWorkerId = fastStep.WorkerIds.Single();
+                var fastWorker = await system.Query.Worker(fastWorkerId);
+                return fastWorker?.State == WorkerState.Completed;
+            },
+            "Expected the fast child worker to complete while the workflow was still waiting on the slow child.",
+            timeout: TimeSpan.FromSeconds(10));
+
+        await Task.Delay(200);
+        slowRelease.TrySetResult();
+
+        var completion = await handle.WaitForCompletion().WaitAsync(TimeSpan.FromSeconds(10));
+        Assert.True(completion.IsCompletedSuccessfully);
+        Assert.NotNull(store.GetWorkflowRun(handle.RunId!.Value));
+
+        await TestEventually.Until(
+            async () => await system.Query.Worker(fastWorkerId) is null,
+            "Expected retention to retry the completed child purge after the workflow became final.",
+            timeout: TimeSpan.FromSeconds(10));
+        await TestEventually.Until(
+            () => system.WorkflowRuntime.Get(handle.RunId.Value) is null,
+            "Expected the final workflow run to disappear after retention purged its last child workers.",
+            timeout: TimeSpan.FromSeconds(10));
+        await TestEventually.Until(
+            () => store.GetWorkflowRun(handle.RunId.Value) is null,
+            "Expected the persisted final workflow run to disappear after retention purged its last child workers.",
+            timeout: TimeSpan.FromSeconds(10));
+
+        Assert.Contains(handle.RunId.Value, store.DeletedWorkflowRuns);
+    }
+
     private static async Task StopWithTimeout(IWorkSystem system, TimeSpan timeoutAfter)
     {
         using var timeout = new CancellationTokenSource(timeoutAfter);

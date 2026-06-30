@@ -1030,6 +1030,8 @@ internal sealed class WorkerOperations :
 
             if (this.ShouldKeepWorkflowChildWorker(worker))
             {
+                // Workflow children can become purgeable later once the parent run reaches a final state.
+                this.retention.Schedule(worker);
                 continue;
             }
 

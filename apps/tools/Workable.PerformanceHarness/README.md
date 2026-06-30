@@ -71,7 +71,7 @@ Focused opt-in scenarios:
 
 - `event-fanout-matrix` runs the same event fanout matrix logic as `event-fanout`, but as a dedicated single-scenario command for focused baselines.
 - `signalr-fanout-matrix` measures realtime transport fanout with a dedicated Kestrel host, live SignalR connections, low-latency publish windows, warmup validation, and bounded delivery waits.
-- `durable-worker-lifecycle-breakdown` measures SQL-backed durable worker admission, queue-to-executor-start latency, completion observation, read-model catchup, durability diagnostics, and durable row counts. Run it with `--queue-mode durable-idempotent` or `--queue-mode durable-non-idempotent`.
+- `durable-worker-lifecycle-breakdown` measures SQL-backed durable worker admission, queue-to-executor-start latency, completion observation, read-model catchup, durability diagnostics, and durable row counts. Its `completed_per_sec` metric uses the observed window from the first queue start to the last completion observation so the reported throughput is stable even when completion observers have already drained by the time the harness awaits them. Run it with `--queue-mode durable-idempotent` or `--queue-mode durable-non-idempotent`.
 - `durable-memory-release-after-purge` measures durable worker memory retention before purge, after purge-driven cleanup, and after a clean restart. Run it with `--queue-mode durable-idempotent` or `--queue-mode durable-non-idempotent`.
 - `durable-workflow-memory-recovery` measures durable workflow memory retention across interrupted runs, recovery completion, and a clean restart. Run it with `--queue-mode durable-idempotent` or `--queue-mode durable-non-idempotent`.
 
