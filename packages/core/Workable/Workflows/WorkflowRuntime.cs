@@ -187,6 +187,15 @@ internal sealed class WorkflowRuntime
         string workflowName,
         WorkRequestContext requestContext,
         CancellationToken cancellationToken = default)
+        => this.StartCore(workflowName, requestContext, cancellationToken)
+            .ConfigureAwait(false)
+            .GetAwaiter()
+            .GetResult();
+
+    private async Task<IWorkflowRunHandle> StartCore(
+        string workflowName,
+        WorkRequestContext requestContext,
+        CancellationToken cancellationToken)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(workflowName);
         ArgumentNullException.ThrowIfNull(requestContext);
@@ -231,6 +240,11 @@ internal sealed class WorkflowRuntime
 
         // Workable stores origin and actor durably, but not precomputed authorization snapshots.
         var run = WorkflowRunState.Create(workflow, requestContext.WithoutAuthorization(), this.AdvanceVersion);
+        if (workflow.Definition.Coordination.IsDurable)
+        {
+            await this.persistence.UpsertRun(this.CreatePersistenceRecord(run), cancellationToken);
+        }
+
         this.runs[run.Id] = run;
         this.AdvanceVersion();
         this.workflowEvents.Started(run.ToSnapshot(), requestContext);

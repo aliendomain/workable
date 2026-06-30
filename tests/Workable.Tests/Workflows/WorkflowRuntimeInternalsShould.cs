@@ -374,6 +374,66 @@ public sealed class WorkflowRuntimeInternalsShould
     }
 
     [Fact]
+    public async Task StartWaitsForInitialDurablePersistenceBeforeReturningAcceptedHandle()
+    {
+        var workerId = WorkerId.New();
+        var workflow = CreateWorkflow(
+            WorkflowDefinition.Create(
+                "workflow.durable.accepted.after.persist",
+                coordination: WorkflowCoordinationConfiguration.Durable),
+            Dispatch("dispatch", "sample.dispatch"));
+        var store = new BlockingWorkflowPersistenceStore();
+        var runtime = CreateRuntime(
+            catalog: new WorkflowCatalog([workflow]),
+            persistenceStore: store,
+            systemName: "workflow-tests",
+            createSession: _ => new TestWorkSystemSession(new DelegateQueueService((_, _, _, _) =>
+                Task.FromResult<IWorkerHandle>(new PendingWorkerHandle(workerId)))),
+            createWorkerHandle: id => new PendingWorkerHandle(id));
+        var requestContext = WorkRequestContext.Create(WorkInvocationChannel.InProcess);
+
+        var startTask = Task.Run(() => runtime.Start(workflow.Definition.Name, requestContext));
+        await store.FirstUpsertStarted.Task.WaitAsync(CancellationToken.None);
+
+        Assert.False(startTask.IsCompleted, "Expected durable workflow start to wait for the initial persisted run.");
+        Assert.Empty(runtime.ListVisible(requestContext, includeFinal: true));
+
+        store.ReleaseFirstUpsert.TrySetResult();
+        var handle = await startTask.WaitAsync(CancellationToken.None);
+
+        Assert.True(handle.StartOutcome.IsAccepted);
+        Assert.NotNull(handle.RunId);
+
+        runtime.CancelExecutionLifetime();
+        await runtime.WaitForExecutions(CancellationToken.None);
+    }
+
+    [Fact]
+    public void StartDoesNotRegisterRunWhenInitialDurablePersistenceFails()
+    {
+        var workerId = WorkerId.New();
+        var workflow = CreateWorkflow(
+            WorkflowDefinition.Create(
+                "workflow.durable.persist.failure",
+                coordination: WorkflowCoordinationConfiguration.Durable),
+            Dispatch("dispatch", "sample.dispatch"));
+        var store = new ThrowingWorkflowPersistenceStore(new InvalidOperationException("boom"));
+        var runtime = CreateRuntime(
+            catalog: new WorkflowCatalog([workflow]),
+            persistenceStore: store,
+            systemName: "workflow-tests",
+            createSession: _ => new TestWorkSystemSession(new DelegateQueueService((_, _, _, _) =>
+                Task.FromResult<IWorkerHandle>(new PendingWorkerHandle(workerId)))),
+            createWorkerHandle: id => new PendingWorkerHandle(id));
+        var requestContext = WorkRequestContext.Create(WorkInvocationChannel.InProcess);
+
+        var exception = Assert.Throws<InvalidOperationException>(() => runtime.Start(workflow.Definition.Name, requestContext));
+
+        Assert.Equal("boom", exception.Message);
+        Assert.Empty(runtime.ListVisible(requestContext, includeFinal: true));
+    }
+
+    [Fact]
     public async Task RunExecutionReturnsFailureWhenInternalExecutionThrows()
     {
         var workflow = CreateWorkflow(
@@ -860,6 +920,182 @@ public sealed class WorkflowRuntimeInternalsShould
             public Task Commit(CancellationToken cancellationToken = default)
                 => Task.CompletedTask;
         }
+    }
+
+    private sealed class BlockingWorkflowPersistenceStore : IWorkPersistenceStore
+    {
+        public TaskCompletionSource FirstUpsertStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public TaskCompletionSource ReleaseFirstUpsert { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public Task Initialize(WorkQueueDurabilityInitializationContext context, CancellationToken cancellationToken = default)
+            => Task.CompletedTask;
+
+        public Task Enqueue(WorkQueueDurabilityEnqueueRequest request, CancellationToken cancellationToken = default)
+            => Task.CompletedTask;
+
+        public Task ReserveIdempotency(WorkIdempotencyPersistenceRequest request, CancellationToken cancellationToken = default)
+            => Task.CompletedTask;
+
+        public async IAsyncEnumerable<WorkQueueDurabilityEntry> ClaimReady(
+            WorkQueueDurabilityClaimRequest request,
+            [EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
+            await Task.CompletedTask;
+            yield break;
+        }
+
+        public Task RenewLeases(
+            IReadOnlyList<WorkQueueDurabilityLease> leases,
+            TimeSpan leaseDuration,
+            CancellationToken cancellationToken = default)
+            => Task.CompletedTask;
+
+        public Task RetainFailed(
+            IReadOnlyList<WorkQueueDurabilityCleanupRequest> workers,
+            CancellationToken cancellationToken = default)
+            => Task.CompletedTask;
+
+        public Task DeleteFinal(
+            IReadOnlyList<WorkQueueDurabilityCleanupRequest> workers,
+            CancellationToken cancellationToken = default)
+            => Task.CompletedTask;
+
+        public Task DeleteFinal(
+            IReadOnlyList<WorkQueueDurabilityCleanupRequest> workers,
+            IWorkQueueDurabilityTransaction transaction,
+            CancellationToken cancellationToken = default)
+            => Task.CompletedTask;
+
+        public Task<IWorkflowPersistenceTransaction> BeginWorkflowTransaction(
+            WorkflowPersistenceTransactionRequest request,
+            CancellationToken cancellationToken = default)
+            => Task.FromResult<IWorkflowPersistenceTransaction>(new NoopWorkflowPersistenceTransaction());
+
+        public async IAsyncEnumerable<WorkflowRunPersistenceRecord> ListWorkflowRuns(
+            WorkflowPersistenceReadRequest request,
+            [EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
+            await Task.CompletedTask;
+            yield break;
+        }
+
+        public async Task UpsertWorkflowRun(
+            WorkflowRunPersistenceRecord run,
+            CancellationToken cancellationToken = default)
+        {
+            this.FirstUpsertStarted.TrySetResult();
+            await this.ReleaseFirstUpsert.Task.WaitAsync(cancellationToken);
+        }
+
+        public Task UpsertWorkflowRun(
+            WorkflowRunPersistenceRecord run,
+            IWorkflowPersistenceTransaction transaction,
+            CancellationToken cancellationToken = default)
+            => Task.CompletedTask;
+
+        public Task DeleteWorkflowRun(
+            WorkflowPersistenceDeleteRequest request,
+            CancellationToken cancellationToken = default)
+            => Task.CompletedTask;
+
+        public Task DeleteWorkflowRun(
+            WorkflowPersistenceDeleteRequest request,
+            IWorkflowPersistenceTransaction transaction,
+            CancellationToken cancellationToken = default)
+            => Task.CompletedTask;
+
+        public Task<bool> DurableWorkerExists(WorkerId workerId, CancellationToken cancellationToken = default)
+            => Task.FromResult(false);
+    }
+
+    private sealed class ThrowingWorkflowPersistenceStore(Exception exception) : IWorkPersistenceStore
+    {
+        public Task Initialize(WorkQueueDurabilityInitializationContext context, CancellationToken cancellationToken = default)
+            => Task.CompletedTask;
+
+        public Task Enqueue(WorkQueueDurabilityEnqueueRequest request, CancellationToken cancellationToken = default)
+            => Task.CompletedTask;
+
+        public Task ReserveIdempotency(WorkIdempotencyPersistenceRequest request, CancellationToken cancellationToken = default)
+            => Task.CompletedTask;
+
+        public async IAsyncEnumerable<WorkQueueDurabilityEntry> ClaimReady(
+            WorkQueueDurabilityClaimRequest request,
+            [EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
+            await Task.CompletedTask;
+            yield break;
+        }
+
+        public Task RenewLeases(
+            IReadOnlyList<WorkQueueDurabilityLease> leases,
+            TimeSpan leaseDuration,
+            CancellationToken cancellationToken = default)
+            => Task.CompletedTask;
+
+        public Task RetainFailed(
+            IReadOnlyList<WorkQueueDurabilityCleanupRequest> workers,
+            CancellationToken cancellationToken = default)
+            => Task.CompletedTask;
+
+        public Task DeleteFinal(
+            IReadOnlyList<WorkQueueDurabilityCleanupRequest> workers,
+            CancellationToken cancellationToken = default)
+            => Task.CompletedTask;
+
+        public Task DeleteFinal(
+            IReadOnlyList<WorkQueueDurabilityCleanupRequest> workers,
+            IWorkQueueDurabilityTransaction transaction,
+            CancellationToken cancellationToken = default)
+            => Task.CompletedTask;
+
+        public Task<IWorkflowPersistenceTransaction> BeginWorkflowTransaction(
+            WorkflowPersistenceTransactionRequest request,
+            CancellationToken cancellationToken = default)
+            => Task.FromResult<IWorkflowPersistenceTransaction>(new NoopWorkflowPersistenceTransaction());
+
+        public async IAsyncEnumerable<WorkflowRunPersistenceRecord> ListWorkflowRuns(
+            WorkflowPersistenceReadRequest request,
+            [EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
+            await Task.CompletedTask;
+            yield break;
+        }
+
+        public Task UpsertWorkflowRun(
+            WorkflowRunPersistenceRecord run,
+            CancellationToken cancellationToken = default)
+            => Task.FromException(exception);
+
+        public Task UpsertWorkflowRun(
+            WorkflowRunPersistenceRecord run,
+            IWorkflowPersistenceTransaction transaction,
+            CancellationToken cancellationToken = default)
+            => Task.FromException(exception);
+
+        public Task DeleteWorkflowRun(
+            WorkflowPersistenceDeleteRequest request,
+            CancellationToken cancellationToken = default)
+            => Task.CompletedTask;
+
+        public Task DeleteWorkflowRun(
+            WorkflowPersistenceDeleteRequest request,
+            IWorkflowPersistenceTransaction transaction,
+            CancellationToken cancellationToken = default)
+            => Task.CompletedTask;
+
+        public Task<bool> DurableWorkerExists(WorkerId workerId, CancellationToken cancellationToken = default)
+            => Task.FromResult(false);
+    }
+
+    private sealed class NoopWorkflowPersistenceTransaction : IWorkflowPersistenceTransaction
+    {
+        public ValueTask DisposeAsync()
+            => ValueTask.CompletedTask;
+
+        public Task Commit(CancellationToken cancellationToken = default)
+            => Task.CompletedTask;
     }
 
     private static DispatchWorkflowStepDefinition Dispatch(

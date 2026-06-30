@@ -1031,6 +1031,15 @@ WHERE RunId = '{runId.Value:D}';
 """) == 1,
                 "Expected the durable workflow run to be persisted before shutdown.",
                 timeout: TimeSpan.FromSeconds(15));
+            await TestEventually.Until(
+                async () => await Scalar<int>(persistedRunConnection, """
+SELECT COUNT(*)
+FROM workable.WorkEntries
+WHERE WorkSystemName = N'workflow-tests'
+  AND DefinitionName = N'sample.alpha';
+""") == 1,
+                "Expected the durable workflow child worker to be persisted before shutdown.",
+                timeout: TimeSpan.FromSeconds(15));
         }
 
         await StopWithTimeout(firstSystem);
