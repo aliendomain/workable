@@ -485,7 +485,7 @@ internal sealed class InMemoryWorkSystem :
         {
             cleanup();
         }
-        catch (Exception exception)
+        catch (Exception exception) when (ShouldCaptureCleanupException(exception))
         {
             exceptions.Add(exception);
         }
@@ -497,11 +497,22 @@ internal sealed class InMemoryWorkSystem :
         {
             await cleanup();
         }
-        catch (Exception exception)
+        catch (Exception exception) when (ShouldCaptureCleanupException(exception))
         {
             exceptions.Add(exception);
         }
     }
+
+    private static bool ShouldCaptureCleanupException(Exception exception)
+        => exception is not (
+            OperationCanceledException or
+            OutOfMemoryException or
+            StackOverflowException or
+            AccessViolationException or
+            AppDomainUnloadedException or
+            BadImageFormatException or
+            CannotUnloadAppDomainException or
+            ThreadAbortException);
 
     private async Task NotifyStopping(WorkOrigin origin)
     {
