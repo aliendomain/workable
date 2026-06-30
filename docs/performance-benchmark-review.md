@@ -1,274 +1,137 @@
 # Performance Benchmark Review: Next Enhancement Cases
 
-Reviewed: 2026-06-26
+Reviewed: 2026-06-29
 
 Primary data source: `artifacts/performance/workable-benchmark-history.xlsx`
 
-This review looks for the highest-leverage next performance work from the current benchmark history. It treats scenario/load-harness rows as the strongest signal, then uses BenchmarkDotNet rows and source-path inspection to explain likely causes and shape the next implementation cases.
+This review uses the cleaned 2026-06-29 rerun as the current baseline. Scenario/load-harness rows are treated as the strongest product signal because they exercise complete runtime flows. BenchmarkDotNet rows are useful supporting evidence, but rows with minimum-iteration warnings or surprising allocation changes are not used as product-proof by themselves.
 
-## Reading Notes
+## Clean Rerun Scope
 
-- The workbook contains 1,900 normalized history data rows in `All History` after the durable microbatch run.
-- Scenario rows are the best signal for runtime prioritization because they exercise complete queue, event, query, durability, and transport flows.
-- Several BenchmarkDotNet rows are useful directional evidence but need cleanup before they should drive product decisions. Many use short runs or one invocation per iteration, and several historical logs include timeout or `NA` cases.
-- HTTP API, MCP, and some SignalR connection microbenchmarks cluster around roughly 100 ms. Those rows are likely dominated by harness/TestServer/BenchmarkDotNet minimum-iteration behavior rather than pure runtime cost.
-- Memory release after purge and subscription disposal look healthy in the current scenario data. They are not first-order optimization targets.
+- Removed the prior problematic `artifacts/performance/rebenchmark-2026-06-29` artifact set before rerunning.
+- Reran the scenario suite artifacts for `scenarios-all`, `event-fanout-matrix`, `signalr-fanout-matrix`, `durable-memory-release-after-purge`, `durable-workflow-memory-recovery-32x8`, and durable worker lifecycle breakdown at 1,000 and 10,000 workers.
+- Reran the BenchmarkDotNet baseline suite with an explicit `--filter '*Baseline*`; this produced 56 baseline benchmark cases and excludes the opt-in million-worker stress benchmark.
+- Logged 1,648 new normalized rows under `source_group` values prefixed with `2026-06-29-rebenchmark`.
+- The workbook now has 3,548 data rows in `All History`, with 26 sheets and 26 resized Excel tables.
+- Kept the clean rerun CSV/report artifacts and the single full-suite BDN log; removed temporary workbook backups and preliminary probe logs.
 
-## Priority 1: Continue Durable SQL Queue Admission Work
+## Last Run Comparison
 
-This is the clearest high-impact case. Durable queueing is still far slower than the in-memory path, but internal SQL enqueue micro-batching moved the first meaningful throughput wall.
+The comparison below uses the previous logged source groups as the baseline: 2026-06-25 scenario rows, 2026-06-26 BenchmarkDotNet rows, and the 2026-06-26 post-microbatch durable lifecycle rows.
 
-Evidence:
+| Area | Previous | Clean rerun | Change | Read |
+| --- | ---: | ---: | ---: | --- |
+| In-memory queue-only accepted/sec | 45,821 | 48,733 | +6.4% | Slightly better |
+| In-memory start-to-completion completed/sec | 9,256 | 8,308 | -10.2% | Mild regression/noise |
+| In-memory completion-only completed/sec | 10,132 | 9,859 | -2.7% | Mostly stable |
+| Durable lifecycle admission/sec, 1k workers | 869 | 648 | -25.4% | Regressed |
+| Durable lifecycle admission/sec, 10k workers | 1,075 | 714 | -33.6% | Regressed |
+| Durable soak, 1k workers | 13.96 s | 17.541 s | +25.7% slower | Regressed |
+| Durable memory-release admission/sec | 434 | 606 | +39.7% | Better, but different scenario than lifecycle |
+| Event fanout baseline/no-subscriber completed/sec | 21,428 | 23,745 | +10.8% | Better |
+| Event-type fanout completed/sec, 64 subs | 14,152 | 15,220 | +7.5% | Better |
+| Identifier-match fanout completed/sec, 64 subs | 4,312 | 3,757 | -12.9% | Still poor |
+| SignalR unfiltered delivery/sec, 1 listener | 17,363 | 17,207 | -0.9% | Stable |
+| SignalR unfiltered delivery/sec, 64 listeners | 135,351 | 183,063 | +35.3% | Better |
+| SignalR event-type delivery/sec, 64 listeners | 150,942 | 120,924 | -19.9% | Regressed or noisy |
+| Worker broad first page, 100k workers | 10.085 ms | 8.185 ms | -18.8% faster | Better |
+| Worker identifier facet, 100k workers | 51.9 ms | 60.4 ms | +16.4% slower | Regressed |
+| Durable workflow recovery runs/sec | 31.806 | 34.701 | +9.1% | Better |
 
-- Durable memory-release scenario, 1,000 durable workers: accepted throughput is 433.718 workers/sec.
-- The same durable scenario has queue latency p95 48.909 ms and p99 81.171 ms.
-- Durable soak BenchmarkDotNet row for 1,000 workers takes 13,960 ms and allocates about 330,322 KiB.
-- In-memory memory-release scenario accepts 169,727 workers/sec and completes 11,008 workers/sec under similar 1,000-worker scale, which shows the gap is durable path specific.
+Important caveat: the authorized bulk-action BDN row is not a reliable improvement signal in this rerun. The 5,000-worker case moved from 245.74 ms and 186,458 KiB allocated to 263.69 us and 19.96 KiB allocated, which strongly suggests benchmark drift or that the measured path is no longer comparable. Treat it as a harness investigation, not a product performance win.
 
-Original likely causes:
+## Focused Regression Check
 
-- `WorkableSqlServerQueueDurabilityStore.Enqueue` opened a connection and issued one insert per worker when no caller transaction was provided.
-- The durable reader path in `WorkQueueDurabilityCoordinator` had a fixed local reader-signal debounce and a 100-item claim batch.
-- SQL Server durable claims now use split queue/payload tables, configurable claim batches, and batch updates; remaining cost is concentrated in SQL claim execution, row materialization, runtime acceptance, execution, and cleanup.
-- Persistent concurrency claim paths now use explicit `HasPersistentConcurrency`, `ConcurrencyScope`, and `ConcurrencyMaximumCapacity` queue columns, avoiding JSON extraction on the claim path.
+After the clean rerun, focused checks did not reproduce the scary parts as recent code regressions.
 
-Next enhancements:
+- Durable lifecycle still measures around 650-710 accepted/sec today, but the same result reproduces on commit `7bb98f4` (`Improve durable queue SQL throughput`): 666 accepted/sec and 651 claimed entries/sec for 1,000 workers. A fresh SQL schema, claim batch size 100, and restarting the SQL Server test container did not restore the older 869/1,075 accepted/sec rows. Treat the 2026-06-26 post-microbatch durable rows as optimistic or environment-sensitive until they can be reproduced.
+- Event fanout focused rerun: event-type 64-subscriber fanout measured 16,542 completed/sec, above both the old 14,152 row and the clean rerun 15,220 row. Identifier-match fanout measured 4,082 completed/sec, still poor but much closer to the old 4,312 row than the clean rerun suggested.
+- SignalR focused rerun: unfiltered single-listener delivery measured 17,379 events/sec, unfiltered 64-listener delivery measured 185,390 events/sec, and event-type 64-listener delivery measured 143,090 events/sec. The event-type row is still a little below the old 150,942 row, but the focused rerun looks more like noise than a confirmed transport regression.
 
-- Re-run the SQL enqueue microbatch size/window sweep when representative caller parallelism or payload shape changes; the current defaults favor the fastest observed sweep shape.
-- Keep caller-owned transaction enqueue on the direct path; evaluate whether transactional batch participation is worth the complexity later.
-- Investigate claim/materialization throughput next, using aggregate claim diagnostics and lifecycle breakdown metrics before introducing multiple readers.
-- Consider additional explicit columns only if future claim predicates start reading JSON again.
+## Repeat-Aware Current Vs Last
 
-Next benchmark case:
+The 1,000-worker fanout and SignalR rows are short enough that one run is a weak regression signal. Repeating those scenarios and checking 10,000-worker runs changes the read: fanout is mostly stable or improved, SignalR has delivery-wait variance, and durable remains the largest absolute bottleneck.
 
-- Continue using `durable-worker-lifecycle-breakdown` at 1,000 and 10,000 workers to split admission latency, queue-to-executor-start latency, completion observation, read-model catchup, and durable row cleanup. Re-run the batch-size/window matrix when caller parallelism, payload size, or SQL Server deployment shape changes.
+| Area | Previous | Clean rerun | Repeat-aware current | Read |
+| --- | ---: | ---: | ---: | --- |
+| Durable lifecycle admission/sec, 1k workers | 869 | 648 | 650-710 | Bottleneck; old previous row did not reproduce |
+| Durable lifecycle admission/sec, 10k workers | 1,075 | 714 | 709 | Bottleneck; old previous row did not reproduce |
+| Event fanout baseline/no-subscriber completed/sec | 21,428 | 23,745 | 22,869 median | Better/stable |
+| Event-type fanout completed/sec, 64 subs | 14,152 | 15,220 | 17,886 median | Better |
+| Identifier-match fanout completed/sec, 64 subs | 4,312 | 3,757 | 4,248 median | Stable, still expensive |
+| SignalR unfiltered delivery/sec, 1 listener | 17,363 | 17,207 | 17,625 median | Stable |
+| SignalR unfiltered delivery/sec, 64 listeners | 135,351 | 183,063 | 188,242 median | Better |
+| SignalR event-type delivery/sec, 64 listeners | 150,942 | 120,924 | 144,942 median | Mostly stable/noisy |
+| Worker identifier facet, 100k workers | 51.9 ms | 60.4 ms | 53.4-55.2 ms focused | Not confirmed; still allocation-heavy |
 
-Current `durable-worker-lifecycle-breakdown` baseline, durable non-idempotent, parallelism 16, 1 ms work delay:
+The 10,000-worker repeat checks are better stability probes than the 1,000-worker rows. Event fanout repeated within about 6-10% for the key rows. SignalR single-listener repeated within about 4%, while 64-listener delivery still varied by filter shape because delivery wait moved by hundreds of milliseconds to nearly a second. Focused worker facet checks also weakened the clean-run regression read: the clean committed `HEAD` measured 53.4 ms, the active tree after cleaning generated output measured 55.2 ms, and the older `a54f00d` benchmark-era commit measured 52.6 ms.
 
-- 1,000 workers: total 2,371.076 ms; admission 2,250.005 ms at 444.444 workers/sec; admission p95 46.885 ms and p99 78.829 ms; queue-to-executor-start p95 151.798 ms and p99 246.699 ms; executor p95 4.79 ms; executor-end-to-completion-observed p95 0.937 ms; allocation 163,094.584 bytes/worker.
-- 10,000 workers: total 22,230.073 ms; admission 22,098.91 ms at 452.511 workers/sec; admission p95 46.532 ms and p99 54.195 ms; queue-to-executor-start p95 138.518 ms and p99 161.223 ms; executor p95 4.544 ms; executor-end-to-completion-observed p95 0.294 ms; allocation 176,013.513 bytes/worker.
-- These rows are now stored in `artifacts/performance/workable-benchmark-history.xlsx` under `source_group=2026-06-26-durable-worker-lifecycle-breakdown`.
+## Priority 1: Durable SQL Lifecycle Throughput
 
-Post-change non-batching run, after removing the explicit SQL transaction from single-row enqueue and draining immediately on local reader signal:
+Durable SQL remains the clearest end-to-end bottleneck, but the follow-up check no longer points to a recent code regression. The current reproducible lifecycle baseline is roughly 650-710 accepted/sec, and that same range reproduces on the earlier durable-throughput commit. The BDN durable soak case still needs attention, but the 2026-06-26 post-microbatch lifecycle rows should not be treated as a stable baseline until reproduced.
 
-- 1,000 workers: total 2,217.55 ms; admission 2,105.515 ms at 474.943 workers/sec; admission p95 45.898 ms and p99 82.499 ms; queue-to-executor-start p95 135.288 ms and p99 165.172 ms; executor p95 4.205 ms; executor-end-to-completion-observed p95 1.424 ms; allocation 162,384.232 bytes/worker.
-- 10,000 workers: total 22,264.576 ms; admission 22,113.643 ms at 452.21 workers/sec; admission p95 47.385 ms and p99 54.45 ms; queue-to-executor-start p95 140.931 ms and p99 164.895 ms; executor p95 4.014 ms; executor-end-to-completion-observed p95 0.349 ms; allocation 174,148.545 bytes/worker.
-- These rows are stored in the workbook under `source_group=2026-06-26-durable-worker-lifecycle-breakdown-post-nonbatch`. The result is a clear 1,000-worker tail-latency improvement, but the 10,000-worker run is mostly neutral; durable admission still dominates and still needs deeper work.
+Next work:
 
-Post-microbatch run, after adding internal SQL provider micro-batching for non-transactional durable enqueue:
+- Add multi-run median/spread reporting for durable lifecycle rows before using them as regression gates.
+- Continue breaking down claim SQL execution, row materialization, runtime acceptance, completion cleanup, and read-model catchup.
+- Keep the lifecycle scenario as the main gate, because admission-only improvements are not enough if claim/materialization remains around the same order of throughput.
+- Avoid adding multiple durable readers until the single-reader SQL and materialization cost is better understood.
 
-- 1,000 workers: total 1,256.648 ms; admission 1,150.289 ms at 869.347 workers/sec; admission p95 31.363 ms and p99 69.798 ms; queue-to-executor-start p95 127.901 ms and p99 140.871 ms; executor p95 6.064 ms; executor-end-to-completion-observed p95 0.552 ms; allocation 87,262.936 bytes/worker.
-- 10,000 workers: total 9,440.796 ms; admission 9,299.02 ms at 1,075.382 workers/sec; admission p95 26.338 ms and p99 35.799 ms; queue-to-executor-start p95 90.262 ms and p99 113.614 ms; executor p95 3.379 ms; executor-end-to-completion-observed p95 0.351 ms; allocation 89,355.46 bytes/worker.
-- These rows are stored in the workbook under `source_group=2026-06-26-durable-worker-lifecycle-breakdown-post-microbatch`. The 10,000-worker run improved admission throughput by about 2.38x versus the post-nonbatch run and cut total elapsed by about 58%.
+## Priority 2: Event Fanout And Change Stream Adoption
 
-Exploratory 10,000-worker batch-size/window sweep, not added to the workbook:
+The event-type filtered path improved, and the repeated runs do not confirm a fanout regression. The remaining issue is absolute cost for consumers that intentionally subscribe to raw events: identifier-match and unfiltered raw fanout are still expensive because many subscribers create real per-event delivery pressure. Normal state-oriented framework paths now use change-stream semantics rather than raw event fanout. Use `change-stream-fanout` to measure active state watchers separately from `event-fanout`/`event-delivery`.
 
-- With default caller parallelism 18, batch size 64 and window 1 ms admitted 983.859 workers/sec in this run.
-- Raising caller parallelism is necessary to exercise larger microbatches; batch size alone cannot help when only 18 enqueue calls are outstanding.
-- Parallelism 128, batch size 64, window 1 ms admitted 5,218.434 workers/sec.
-- Parallelism 256, batch size 64, window 1 ms admitted 8,800.734 workers/sec.
-- Parallelism 512, batch size 64, window 1 ms admitted 11,770.512 workers/sec.
-- Larger batches were not automatically better in this harness. At parallelism 512 and window 1 ms, batch size 256 admitted 10,669.036 workers/sec and batch size 512 admitted 9,525.016 workers/sec.
-- Longer windows did not help the fastest cases. At parallelism 256 and batch size 256, window 1 ms admitted 6,173.616 workers/sec, window 2 ms admitted 5,710.417 workers/sec, and window 5 ms admitted 4,773.451 workers/sec.
-- Once admission exceeds roughly 5,000 workers/sec, queue-to-executor-start p95 rises into multi-second territory in this benchmark. That means insertion can exceed the 5x target, but durable reader/materialization/claim throughput becomes the next end-to-end bottleneck.
+Next work:
 
-Post-claim-fast-path smoke run, after adding explicit persistent-concurrency claim metadata:
+- Keep indexed raw-event filters, including event type and definition, on selective subscriptions; keep unfiltered broad subscribers on the global append/cursor path.
+- Keep dashboard/view consumers on `WorkChangeStream`; guard this with tests so state watchers do not regress back to raw event subscriptions.
+- Keep raw event streams for consumers that truly need every event.
+- Keep separate raw-event and change-stream benchmark rows, including accepted, delivered, dropped, and coalesced counts by subscription shape.
 
-- 1,000 workers: total 1,095.434 ms; admission 966.541 ms at 1,034.618 workers/sec; queue-to-executor-start p95 86.927 ms and p99 145.321 ms; claim total elapsed 980.073 ms; claim throughput 1,020.332 entries/sec.
-- 10,000 workers: total 10,324.647 ms; admission 10,231.28 ms at 977.395 workers/sec; queue-to-executor-start p95 93.37 ms and p99 110.097 ms; claim total elapsed 10,141.152 ms; claim throughput 986.081 entries/sec.
-- These smoke rows were not added to the workbook; they were used to validate the claim-path change.
+## Priority 3: Worker Query Facets And Broad Pages
 
-## Priority 2: Reduce Event Fanout Pressure, Drops, And Per-Subscriber Work
+Broad first page improved at 100k workers, and focused reruns do not confirm that `IdentifierKeyTypeFacet` regressed from the old 51.9 ms row. The facet path is still worth improving because it scans the flattened worker-key list, groups by type, then builds and sorts a full worker overview list before paging; the 100k benchmark allocates about 32 MiB per query. This is a dashboard/query scalability issue, not currently a proven regression.
 
-Event fanout is the largest throughput and allocation cliff in the scenario data. It also directly affects SignalR and dashboard workloads.
+Next work:
 
-Evidence:
+- Make broad first-page queries page-aware so they do not sort/materialize every candidate.
+- Avoid creating overview items until after the page window is known.
+- Split facet counts from facet preview workers.
+- Add benchmark rows for first page, deep page, and facet count-only paths.
 
-- Event fanout baseline with no subscriptions completes 63,146 workers/sec.
-- One unfiltered subscription drops completion throughput to 3,348 workers/sec and raises allocation from about 26.8 KiB/worker to 432.8 KiB/worker.
-- Sixty-four unfiltered subscriptions complete 4,563 workers/sec and drop roughly 303,558 of 320,000 accepted subscription events.
-- Sixty-four identifier-match subscriptions complete 4,376 workers/sec and allocate about 406.1 KiB/worker.
-- Sixty-four event-type-completed subscriptions are better at 13,889 workers/sec and about 79.5 KiB/worker, but still only 0.22x baseline throughput.
-- Event-delivery fanout with 64 unfiltered subscribers delivers all 320,000 events but completion wait p99 reaches 46.245 ms and allocation reaches about 737.6 KiB/worker.
+## Priority 4: SignalR Delivery And Coalesced View Updates
 
-Likely causes:
+The single-listener slowdown is not reproduced, 64-listener unfiltered delivery improved, and repeated 1,000-worker runs brought the event-type 64-listener median back near the previous baseline. SignalR still deserves attention because delivery wait is the source of the remaining variance: the 10,000-worker 64-listener runs spent seconds draining delivered events, and event-type/definition-name rows moved substantially by delivery wait rather than connection or watch setup.
 
-- `WorkEventStream` publishes to per-subscription bounded channels.
-- Unfiltered and most filtered subscriptions still require per-subscriber matching and enqueue work.
-- Identifier subscriptions are indexed, but event type and definition filters are still largely scanned.
-- The default subscription queue capacity causes heavy drops under bursty fanout. Dropping protects producers but still leaves significant matching/enqueue overhead.
-- Dashboard-style consumers often need latest state rather than every intermediate event.
+Next work:
 
-Next enhancements:
+- Add batch count, batch size, and SignalR send-duration diagnostics by filter shape before changing transport code again.
+- Push view and overview notifications through the core change stream where possible, then remove duplicated coalescing logic from SignalR.
+- Keep measuring raw-event delivery separately from coalesced view delivery.
 
-- Add subscription indexes for event type and definition name, similar in spirit to the identifier index.
-- Add a coalesced or latest-state subscription mode for dashboard views that do not require every event.
-- Avoid per-subscriber event materialization/enqueue when every relevant subscriber queue is already full.
-- Make event subscription capacity/backpressure policy explicit in options and scenario matrices.
-- Add telemetry for per-subscription accepted, dropped, delivered, and queue depth so fanout regressions are visible without custom scenario parsing.
+## Priority 5: Benchmark Harness Reliability
 
-Next benchmark case:
+The scenario harness now supports `--repeat-runs`/`--repeats`, which writes per-run rows and min/median/max/mean/spread summary rows into the same CSV. Use this for durable lifecycle, fanout, SignalR, and other noisy scenarios before calling a regression. Some BDN rows still have minimum-iteration warnings, and the authorized bulk-action row appears non-comparable. HTTP and MCP rows remain mostly harness/lifecycle dominated around 100 ms. This does not block scenario-driven work, but it does block using those BDN rows as regression gates.
 
-- Add an event fanout matrix that varies subscription count, filter selectivity, queue capacity, and delivery mode: raw event, coalesced latest-state, and view-update stream.
+Next work:
 
-## Priority 3: Make Broad Worker Queries And Facets Page-Aware
+- Repair or replace the authorized bulk benchmark before ranking that path.
+- Increase operation counts for HTTP, MCP, SignalR, and very small authorization benchmarks.
+- Mark known non-comparable rows in the workbook notes when a benchmark changes semantics.
+- Prefer scenario breakdown metrics when product behavior is the question.
 
-Indexed worker queries are already strong, but broad first-page queries and facets materialize too much data.
+## Priority 6: Durable Workflow Recovery And Child Reconnect
 
-Evidence:
+The scenario recovery row improved from 31.806 to 34.701 recovered runs/sec, and durable state cleanup is healthy after recovery. This is no longer ahead of durable SQL lifecycle throughput, worker facets, or fanout/SignalR delivery costs, but it remains worth tightening after the higher-order bottlenecks.
 
-- `IndexedIdentifierFirstPage` over 100,000 workers takes 0.286 ms and allocates about 221 KiB.
-- `BroadFirstPage` over 100,000 workers takes 10.085 ms and allocates about 3,517 KiB.
-- `BroadFirstPage` over 1,000,000 workers takes 76.54 ms and allocates about 35,154 KiB.
-- `IdentifierKeyTypeFacet` over 100,000 workers takes 51.9 ms and allocates about 33,203 KiB.
+Next work:
 
-Likely causes:
+- Keep the 32x8 recovery scenario as the smoke gate.
+- Add larger recovery shapes only after lifecycle throughput is stable.
+- Split recovery timing into list, deserialize, reconnect children, resume execution, cleanup, and read-model catchup phases.
 
-- `WorkSystemReadModelQueryService.Workers` filters, sorts, converts to overview items, materializes an array, then applies `Skip` and `Take`.
-- `WorkerKeyTypes` groups all worker keys and creates full worker overview lists per group before pagination.
-- The read model has useful indexes for narrow criteria, but broad sorted pages still behave like full scans.
+## Lower Priority Or Healthy Areas
 
-Next enhancements:
-
-- Add a page-aware query path for broad first pages, using a bounded top-N selection or maintained sorted index instead of sorting/materializing every candidate.
-- Avoid creating `WorkerOverviewItem` objects until after the page window is known.
-- Split facet results into counts and page previews; do not return full worker lists for each facet by default.
-- Maintain precomputed facet counts for identifier key type, definition, status, and common dashboard pivots.
-- Add an explicit benchmark for page 1, middle page, and deep page so offset behavior is visible.
-
-Next benchmark case:
-
-- Add a read-model query matrix for 100,000 and 1,000,000 workers covering broad first page, broad deep page, identifier first page, status-filtered page, and key-type facets with and without preview workers.
-
-## Priority 4: Lower Allocation And Double Reads In Authorized Bulk Actions
-
-Authorized bulk action is functional but allocates heavily at scale. The authorization wrapper likely prevents the faster direct bulk path from carrying most of the work.
-
-Evidence:
-
-- Authorized cancel of 1,000 queued workers takes 5.562 ms and allocates about 15,881 KiB.
-- Authorized cancel of 5,000 queued workers takes 245.74 ms and allocates about 186,458 KiB.
-- The growth is more than linear in elapsed time and remains allocation-heavy.
-
-Likely causes:
-
-- `AuthorizedWorkerOperations.ExecuteAll` pages workers through `query.Workers`.
-- Each returned overview is then authorized through `AuthorizeAction`, which fetches the full worker snapshot again through `query.Worker(workerId)`.
-- After authorization, each worker is passed individually to the inner operation.
-- Offset paging over a mutating data set can become inefficient or unstable because action execution changes worker state while later pages are selected.
-
-Next enhancements:
-
-- Add an authorized bulk execution path that authorizes from candidate snapshots already selected for the operation.
-- Stream worker ids and versions from the read model or worker index instead of repeatedly materializing overview pages.
-- Avoid offset pagination over the same set being mutated; use stable id/version cursors or collect candidate ids once.
-- Add an aggregate-result mode for callers that need counts and failures rather than one full outcome object per worker.
-- Let the direct bulk path handle execution after authorization has produced the candidate set.
-
-Next benchmark case:
-
-- Add authorized bulk cancel/retry/purge cases at 1,000, 5,000, and 25,000 workers, with metrics for query time, authorization time, execution time, outcome allocation, and total allocation.
-
-## Priority 5: Tune SignalR Fanout Batching And View Update Delivery
-
-SignalR raw event delivery is complete, but 64-subscriber scenarios show hundreds of milliseconds of delivery wait. View and overview delivery have additional per-client work that can become the next bottleneck for the admin UI.
-
-Evidence:
-
-- SignalR fanout with one unfiltered subscription delivers 1,000 events at 17,363 workers/sec.
-- SignalR fanout with 64 unfiltered subscriptions delivers all 64,000 events, but worker throughput drops to 2,115 workers/sec and delivery wait reaches 418.05 ms.
-- Sixty-four event-type subscriptions deliver all 64,000 events at 2,359 workers/sec with delivery wait 286.70 ms.
-- Sixty-four definition-name or identifier subscriptions are slightly better, around 2,528 to 2,580 workers/sec, but still spend hundreds of milliseconds in delivery wait.
-
-Likely causes:
-
-- Raw event broadcasting uses SignalR groups, which is the right primitive, but batching windows and batch sizes may not match bursty event production.
-- Worker overview and view update paths send client-specific envelopes by iterating group subscriptions.
-- The current transport benchmark host uses TestServer and LongPolling, which is useful for repeatable local testing but not enough to represent production WebSockets behavior.
-
-Next enhancements:
-
-- Tune event batch size and batch window under high subscriber counts.
-- Coalesce view and overview updates by worker/view key before sending to clients.
-- Introduce group-level envelopes where client-side subscription ids can be mapped without per-connection server sends.
-- Add delivery telemetry for batch size, batch wait, send duration, and group subscriber count.
-- Run the same scenario over WebSockets where possible before making transport-level conclusions.
-
-Next benchmark case:
-
-- Add a SignalR matrix that compares LongPolling/TestServer with WebSocket-capable hosting, varies batch size/window, and separates raw-event delivery from worker-overview/view update delivery.
-
-## Priority 6: Tighten Durable Workflow Recovery And Child Reconnect
-
-Workflow recovery is correct enough to benchmark, but it is still slow and some historical microbenchmarks have timeout noise. Treat this as a focused recovery-improvement case after durable admission and event fanout.
-
-Evidence:
-
-- Durable workflow memory-recovery scenario with 32 workflows and 8 branches takes 567.920 ms for startup and 1,006.1 ms for recovery.
-- Recovery throughput is 31.806 runs/sec.
-- Managed memory retained after recovery is about 8.63 MiB.
-- Durable child reconnect BenchmarkDotNet rows show 209.5 ms for 2 branches and 313.2 ms for 8 branches, but historical logs include timeout or `NA` cases.
-
-Likely causes:
-
-- Recovery has to list incomplete workflow runs, rehydrate workflow state, reconnect child workers, and clean final state.
-- Workflow state and child-branch information are durable JSON payloads, so deserialize/rehydrate cost can dominate small recovery runs.
-- Some BenchmarkDotNet recovery cases need harness fixes before they can be used as stable regression gates.
-
-Next enhancements:
-
-- Profile recovery into list, deserialize, reconnect child branches, resume execution, final cleanup, and read-model catchup phases.
-- Recover child branches with bounded parallelism when ordering does not require serial processing.
-- Reduce durable workflow state payload size for branch metadata and completed child records.
-- Make recovery benchmarks deterministic enough to fail on regressions rather than environmental timeouts.
-
-Next benchmark case:
-
-- Add a durable workflow recovery matrix for 32, 128, and 512 workflows with 2, 8, and 32 branches, including interrupted-load memory growth and post-recovery retained memory.
-
-## Priority 7: Clean Up Benchmark Harness Reliability
-
-This is not the highest product-runtime optimization, but it is necessary for making future performance calls with confidence.
-
-Evidence:
-
-- HTTP API benchmark rows cluster around 102 to 107 ms with about 5.6 to 6.3 MiB allocated per operation.
-- Experimental SignalR connection rows cluster around 101 to 105 ms with 6.7 to 9.8 MiB allocated.
-- Several BenchmarkDotNet logs contain timeout, failed, or `NA` rows for historical durable workflow, child reconnect, HTTP query, MCP stop/cancel, and SignalR fanout cases.
-- The workbook references normalized BenchmarkDotNet result sources, but current artifacts only include the history workbook and logs.
-
-Likely causes:
-
-- Some benchmarks use one invocation per iteration and short jobs, which makes BenchmarkDotNet minimum-iteration warnings dominate.
-- TestServer setup, host lifecycle, LongPolling transport, and adapter authorization setup can hide the cost of the operation being measured.
-- Failed historical rows make trend comparisons ambiguous.
-
-Next enhancements:
-
-- Increase operation count per invocation for HTTP, MCP, and SignalR microbenchmarks.
-- Separate host/client setup from measured operation paths where possible.
-- Export and retain BenchmarkDotNet CSV/JSON artifacts alongside the normalized workbook.
-- Mark failed/timeout rows explicitly in the workbook and exclude them from priority summaries.
-- Add scenario-level breakdown metrics before adding more microbenchmarks for the same surface.
-
-Next benchmark case:
-
-- Add a harness-health suite that runs representative HTTP, MCP, SignalR, durable recovery, and child reconnect cases with enough invocations to avoid minimum-iteration warnings, then records whether each case is stable enough for regression gating.
-
-## Lower-Priority Or Healthy Areas
-
-- In-memory purge looks healthy. The in-memory memory-release scenario purges 1,000 workers in 32.193 ms and releases more memory than the measured pre-purge growth.
-- Subscription disposal looks healthy. The subscription memory-release scenario releases about 23.51 MiB of 23.66 MiB growth and retains only about 158 KiB after disposal.
-- Read-model catchup is generally small in lifecycle scenarios, often around 1 to 13 ms. Backlog counters can be high immediately after a burst, but catchup time is not the first bottleneck compared with event fanout, durable admission, or broad query materialization.
-- Authorization single-operation benchmarks are small compared with bulk-action allocation and query/fanout costs.
-- HTTP API and MCP latency should not be optimized from the current 100 ms BenchmarkDotNet rows until the harness issue is resolved.
-
-## Recommended Order Of Work
-
-1. Continue durable SQL claim/materialization tuning now that enqueue micro-batching, split queue rows, claim batch sizing, and aggregate diagnostics are in place.
-2. Add event fanout indexes and a coalesced/latest-state subscription mode, then rerun event and SignalR fanout matrices.
-3. Make broad worker queries page-aware and split facets from full worker lists.
-4. Rework authorized bulk actions to avoid double reads and repeated materialization.
-5. Tune SignalR batching and view/overview delivery using transport-specific benchmarks.
-6. Profile and optimize durable workflow recovery after the durable queue path has better instrumentation.
-7. Stabilize the BenchmarkDotNet harness so HTTP, MCP, and recovery microbenchmarks become reliable regression gates.
+- In-memory queue acceptance is healthy and slightly faster in the clean run.
+- Durable workflow recovery improved in the scenario row.
+- Read model publish regressed from 1.013 ms to 1.220 ms at 25k workers, but the absolute number is still small compared with durable lifecycle and facet/query issues.

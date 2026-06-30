@@ -240,7 +240,7 @@ await connection.InvokeAsync(
 
 Raw event subscriptions are for event viewers, diagnostics, and consumers that want low-level `WorkEvent` envelopes rather than worker-overview state updates.
 
-Worker detail pages should generally prefer `WatchWorkerOverview` over raw event handling.
+Worker detail pages should generally prefer `WatchWorkerOverview` over raw event handling. Dashboards and state-oriented UI should prefer `WatchView`, `WatchWorkerOverview`, or other change-stream-backed surfaces. Use `WatchEvents` only when the client needs raw event payloads, event types, or event-by-event diagnostic output.
 
 Worker messages are delivered through `workable.event` for single events and `workable.events` for batches.
 

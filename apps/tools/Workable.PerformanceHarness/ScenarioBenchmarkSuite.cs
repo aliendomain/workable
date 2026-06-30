@@ -39,6 +39,7 @@ internal static class ScenarioBenchmarkSuite
         "memory-release-after-purge",
         "event-fanout",
         "event-delivery",
+        "change-stream-fanout",
         "subscription-churn",
         "subscription-memory-release",
         "publish-under-churn",
@@ -123,6 +124,7 @@ internal static class ScenarioBenchmarkSuite
             "durable-workflow-memory-recovery" => await RunDurableWorkflowMemoryRecovery(scenario, options, cancellationToken),
             "event-fanout" or "event-fanout-matrix" => await RunEventFanout(scenario, options, cancellationToken),
             "event-delivery" => await RunEventDelivery(scenario, options, cancellationToken),
+            "change-stream-fanout" => await RunChangeStreamFanout(scenario, options, cancellationToken),
             "subscription-churn" => await RunSubscriptionChurn(scenario, options, cancellationToken),
             "subscription-memory-release" => await RunSubscriptionMemoryRelease(scenario, options, cancellationToken),
             "publish-under-churn" => await RunPublishUnderChurn(scenario, options, cancellationToken),
@@ -907,15 +909,19 @@ internal static class ScenarioBenchmarkSuite
         var requestContext = BenchmarkRequestContexts.CreateAnonymous("Run durable workflow memory recovery benchmark.");
         var before = CaptureMemory();
         var runIds = new List<Guid>(runCount);
+        var expectedStartedChildren = runCount * branchCount;
+        var startedChildren = 0;
         var startStopwatch = Stopwatch.StartNew();
 
         MemorySnapshot afterInterruptedLoad;
         MemorySnapshot afterFirstStop;
         DurableStateCounts countsBeforeRestart;
+        DurableStateCounts countsAfterFirstStop;
         await using (var first = await DurableWorkflowBenchmarkSystem.Create(
             branchCount,
             _ => async (_, _, token) =>
             {
+                Interlocked.Increment(ref startedChildren);
                 await Task.Delay(Timeout.InfiniteTimeSpan, token);
                 return WorkExecutionResult.Success();
             },
@@ -936,8 +942,9 @@ internal static class ScenarioBenchmarkSuite
             await WaitForDurableState(
                 first.ConnectionString,
                 first.DurabilitySchemaName,
-                counts => counts.WorkflowRuns >= runCount,
-                cancellationToken);
+                counts => counts.WorkflowRuns >= runCount && counts.WorkEntries >= expectedStartedChildren,
+                cancellationToken,
+                () => WorkflowBenchmarkReflection.DescribeRuns(first.System, runIds));
             startStopwatch.Stop();
             countsBeforeRestart = await ReadDurableStateCounts(
                 first.ConnectionString,
@@ -947,6 +954,20 @@ internal static class ScenarioBenchmarkSuite
         }
 
         afterFirstStop = CaptureMemory();
+        countsAfterFirstStop = await ReadDurableStateCounts(
+            durability.ConnectionString,
+            options.DurabilitySchemaName,
+            cancellationToken);
+        if (countsAfterFirstStop.WorkflowRuns < runCount)
+        {
+            throw new InvalidOperationException(
+                $"Durable workflow shutdown lost recoverable workflow rows before restart. Expected at least {runCount}, found {countsAfterFirstStop.WorkflowRuns}. WorkEntries={countsAfterFirstStop.WorkEntries}.");
+        }
+
+        await DurableWorkflowBenchmarkSystem.ExpireDurableWorkerLeases(
+            durability.ConnectionString,
+            options.DurabilitySchemaName,
+            cancellationToken);
 
         var recoveryStopwatch = Stopwatch.StartNew();
         MemorySnapshot afterRecoveryCompletion;
@@ -1012,6 +1033,7 @@ internal static class ScenarioBenchmarkSuite
 
         metrics.Add("workflow_runs", runCount, "runs");
         metrics.Add("workflow_branch_count", branchCount, "branches");
+        metrics.Add("started_children_before_restart", Volatile.Read(ref startedChildren), "workers");
         metrics.Add("startup_elapsed_ms", startStopwatch.Elapsed.TotalMilliseconds, "ms");
         metrics.Add("startup_runs_per_sec", Rate(runCount, startStopwatch.Elapsed), "runs/sec");
         metrics.Add("recovery_elapsed_ms", recoveryStopwatch.Elapsed.TotalMilliseconds, "ms");
@@ -1025,6 +1047,7 @@ internal static class ScenarioBenchmarkSuite
         AddDurabilityMetrics(metrics, "durability_after_recovery", recoveryDurability);
         AddDurabilityMetrics(metrics, "durability_after_clean_restart", cleanRestartDurability);
         AddDurableStateMetrics(metrics, "durable_state_before_restart", countsBeforeRestart);
+        AddDurableStateMetrics(metrics, "durable_state_after_first_stop", countsAfterFirstStop);
         AddDurableStateMetrics(metrics, "durable_state_after_recovery", countsAfterRecovery);
         AddDurableStateMetrics(metrics, "durable_state_after_clean_restart", countsAfterCleanRestart);
         metrics.Add("managed_memory_growth_during_interrupted_load_bytes", afterInterruptedLoad.ManagedBytes - before.ManagedBytes, "bytes");
@@ -1127,6 +1150,53 @@ internal static class ScenarioBenchmarkSuite
         {
             metrics.Add("baseline_completed_per_sec", baseline.CompletedPerSecond, "workers/sec");
             metrics.Add("baseline_delivered_events_per_sec", baseline.DeliveredEventsPerSecond, "events/sec");
+        }
+
+        return metrics;
+    }
+
+    private static async Task<ScenarioMetrics> RunChangeStreamFanout(
+        string scenario,
+        HarnessOptions options,
+        CancellationToken cancellationToken)
+    {
+        var metrics = new ScenarioMetrics(scenario);
+        var maxSubscriptions = Math.Max(1, options.ViewSubscriptions);
+        var subscriptionCounts = new[] { 0, 1, 2, maxSubscriptions }
+            .Where(count => count <= maxSubscriptions)
+            .Distinct()
+            .ToArray();
+
+        ChangeStreamPassResult? baseline = null;
+        ChangeStreamPassResult? deliveryBaseline = null;
+        foreach (var subscriptionCount in subscriptionCounts)
+        {
+            var profileName = $"state_watchers_{subscriptionCount}";
+            var result = await RunChangeStreamPass(
+                $"{scenario}-{profileName}",
+                options,
+                subscriptionCount,
+                cancellationToken);
+            baseline ??= result;
+            deliveryBaseline ??= subscriptionCount > 0 ? result : null;
+            AddChangeStreamFanoutMetrics(
+                metrics,
+                profileName,
+                result,
+                baseline.CompletedPerSecond,
+                deliveryBaseline?.DeliveredChangesPerSecond ?? result.DeliveredChangesPerSecond);
+        }
+
+        if (baseline is not null)
+        {
+            metrics.Add("baseline_completed_per_sec", baseline.CompletedPerSecond, "workers/sec");
+            metrics.Add("baseline_read_model_catchup_ms", baseline.ReadModelCatchup.Elapsed.TotalMilliseconds, "ms");
+            metrics.Add("baseline_enqueued_updates", baseline.ReadModelCatchup.End.EnqueuedSequence, "updates");
+        }
+
+        if (deliveryBaseline is not null)
+        {
+            metrics.Add("baseline_delivered_changes_per_sec", deliveryBaseline.DeliveredChangesPerSecond, "changes/sec");
         }
 
         return metrics;
@@ -1313,6 +1383,8 @@ internal static class ScenarioBenchmarkSuite
         CancellationToken cancellationToken)
     {
         var metrics = new ScenarioMetrics(scenario);
+        metrics.Add("signalr_event_max_batch_size", options.SignalREventMaxBatchSize, "events");
+        metrics.Add("signalr_batch_window_ms", options.SignalRBatchWindowMs, "ms");
         var maxSubscriptions = Math.Max(1, options.ViewSubscriptions);
         var profiles = new (string Name, int Count, SignalRRealtimeFilterMode FilterMode)[]
         {
@@ -1508,6 +1580,96 @@ internal static class ScenarioBenchmarkSuite
         }
     }
 
+    private static async Task<ChangeStreamPassResult> RunChangeStreamPass(
+        string scenario,
+        HarnessOptions options,
+        int subscriptionCount,
+        CancellationToken cancellationToken)
+    {
+        await using var harness = await HarnessSystem.Create(options, cancellationToken);
+        var subscriptionOptions = new WorkChangeSubscriptionOptions(
+            Capacity: Math.Max(4096, options.Workers * 8));
+        var subscriptions = new List<IWorkChangeSubscription>(subscriptionCount);
+        using var readerCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        var consumerObservedChanges = new long[subscriptionCount];
+        var consumerTasks = new Task[subscriptionCount];
+
+        try
+        {
+            for (var index = 0; index < subscriptionCount; index++)
+            {
+                var subscription = harness.System.Changes.Subscribe(subscriptionOptions);
+                subscriptions.Add(subscription);
+                consumerTasks[index] = ConsumeChangeSubscription(
+                    subscription,
+                    index,
+                    consumerObservedChanges,
+                    readerCancellation.Token);
+            }
+
+            var allocatedBefore = GC.GetTotalAllocatedBytes(precise: false);
+            var stopwatch = Stopwatch.StartNew();
+            var queued = await QueueWorkers(
+                harness.System,
+                options.Workers,
+                workerOptions: null,
+                options,
+                scenario,
+                startIndex: 0,
+                cancellationToken);
+            var completionLatency = new DurationRecorder();
+            var completed = 0;
+            await RunParallel(
+                queued.Handles.Count,
+                options.Parallelism,
+                async index =>
+                {
+                    var waitStopwatch = Stopwatch.StartNew();
+                    var completion = await queued.Handles[index].WaitForCompletion(cancellationToken);
+                    waitStopwatch.Stop();
+                    completionLatency.Record(waitStopwatch.Elapsed);
+                    if (completion.IsCompletedSuccessfully)
+                    {
+                        Interlocked.Increment(ref completed);
+                    }
+                },
+                cancellationToken);
+            var catchup = await WaitForReadModel(harness.System, cancellationToken);
+            await WaitForChangeSubscriptionDrain(subscriptions, cancellationToken);
+            stopwatch.Stop();
+
+            var allocatedBytes = GC.GetTotalAllocatedBytes(precise: false) - allocatedBefore;
+            var diagnostics = SummarizeChangeSubscriptionDiagnostics(subscriptions);
+            var observedChanges = consumerObservedChanges.Sum();
+            return new ChangeStreamPassResult(
+                queued,
+                completed,
+                stopwatch.Elapsed,
+                completionLatency.Snapshot(),
+                catchup,
+                subscriptionCount,
+                allocatedBytes,
+                diagnostics,
+                observedChanges);
+        }
+        finally
+        {
+            readerCancellation.Cancel();
+            foreach (var subscription in subscriptions)
+            {
+                await subscription.DisposeAsync();
+            }
+
+            try
+            {
+                await Task.WhenAll(consumerTasks.Where(task => task is not null));
+            }
+            catch (OperationCanceledException) when (readerCancellation.IsCancellationRequested)
+            {
+            }
+        }
+    }
+
     private static async Task<SignalRRealtimePassResult> RunSignalRRealtimePass(
         string scenario,
         HarnessOptions options,
@@ -1518,7 +1680,10 @@ internal static class ScenarioBenchmarkSuite
         const string eventType = "worker.queued";
         var timeout = TimeSpan.FromSeconds(Math.Max(10, Math.Min(60, options.Workers / 25)));
 
-        await using var host = await SignalRScenarioHost.Create(cancellationToken);
+        await using var host = await SignalRScenarioHost.Create(
+            options.SignalREventMaxBatchSize,
+            TimeSpan.FromMilliseconds(options.SignalRBatchWindowMs),
+            cancellationToken);
         var connections = new List<Microsoft.AspNetCore.SignalR.Client.HubConnection>(subscriptionCount);
         var counters = new List<SignalRRealtimeCounter>(subscriptionCount);
         var connectLatencies = new DurationRecorder();
@@ -1756,6 +1921,24 @@ internal static class ScenarioBenchmarkSuite
         }
     }
 
+    private static async Task ConsumeChangeSubscription(
+        IWorkChangeSubscription subscription,
+        int index,
+        long[] observedChanges,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await foreach (var _ in subscription.Read(cancellationToken))
+            {
+                Interlocked.Increment(ref observedChanges[index]);
+            }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+        }
+    }
+
     private static WorkEventFilter? CreateSubscriptionChurnFilter(int cycle, int index)
         => ((cycle + index) % 5) switch
         {
@@ -1873,6 +2056,54 @@ internal static class ScenarioBenchmarkSuite
         }
     }
 
+    private static async Task WaitForChangeSubscriptionDrain(
+        IReadOnlyList<IWorkChangeSubscription> subscriptions,
+        CancellationToken cancellationToken)
+    {
+        if (subscriptions.Count == 0)
+        {
+            return;
+        }
+
+        var spins = 0;
+        while (true)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var pending = false;
+            foreach (var subscription in subscriptions)
+            {
+                if (subscription is not IWorkChangeSubscriptionDiagnostics diagnostics)
+                {
+                    continue;
+                }
+
+                var snapshot = diagnostics.GetDiagnosticsSnapshot();
+                if (snapshot.QueuedCount > 0 ||
+                    snapshot.DeliveredChangeCount +
+                    snapshot.CoalescedChangeCount +
+                    snapshot.DroppedChangeCount < snapshot.AcceptedChangeCount)
+                {
+                    pending = true;
+                    break;
+                }
+            }
+
+            if (!pending)
+            {
+                return;
+            }
+
+            if (spins++ < 10)
+            {
+                await Task.Yield();
+            }
+            else
+            {
+                await Task.Delay(1, cancellationToken);
+            }
+        }
+    }
+
     private static EventSubscriptionDiagnosticsSummary SummarizeSubscriptionDiagnostics(
         IReadOnlyList<IWorkEventSubscription> subscriptions)
     {
@@ -1902,6 +2133,41 @@ internal static class ScenarioBenchmarkSuite
             peakQueued,
             accepted,
             delivered,
+            dropped);
+    }
+
+    private static ChangeSubscriptionDiagnosticsSummary SummarizeChangeSubscriptionDiagnostics(
+        IReadOnlyList<IWorkChangeSubscription> subscriptions)
+    {
+        var queued = 0;
+        var peakQueued = 0;
+        var accepted = 0L;
+        var delivered = 0L;
+        var coalesced = 0L;
+        var dropped = 0L;
+        foreach (var subscription in subscriptions)
+        {
+            if (subscription is not IWorkChangeSubscriptionDiagnostics diagnostics)
+            {
+                continue;
+            }
+
+            var snapshot = diagnostics.GetDiagnosticsSnapshot();
+            queued += snapshot.QueuedCount;
+            peakQueued += snapshot.PeakQueuedCount;
+            accepted += snapshot.AcceptedChangeCount;
+            delivered += snapshot.DeliveredChangeCount;
+            coalesced += snapshot.CoalescedChangeCount;
+            dropped += snapshot.DroppedChangeCount;
+        }
+
+        return new ChangeSubscriptionDiagnosticsSummary(
+            subscriptions.Count,
+            queued,
+            peakQueued,
+            accepted,
+            delivered,
+            coalesced,
             dropped);
     }
 
@@ -2658,7 +2924,8 @@ SELECT
         string connectionString,
         string schemaName,
         Func<DurableStateCounts, bool> predicate,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        Func<string>? describeFailure = null)
     {
         var startedAt = Stopwatch.GetTimestamp();
         DurableStateCounts latest = new(0, 0);
@@ -2674,8 +2941,11 @@ SELECT
             await Task.Delay(10, cancellationToken);
         }
 
+        var detail = describeFailure?.Invoke();
         throw new TimeoutException(
-            $"Timed out waiting for durable state to settle. WorkEntries={latest.WorkEntries}, WorkflowRuns={latest.WorkflowRuns}.");
+            string.IsNullOrWhiteSpace(detail)
+                ? $"Timed out waiting for durable state to settle. WorkEntries={latest.WorkEntries}, WorkflowRuns={latest.WorkflowRuns}."
+                : $"Timed out waiting for durable state to settle. WorkEntries={latest.WorkEntries}, WorkflowRuns={latest.WorkflowRuns}. {detail}");
     }
 
     private static async Task RunParallel(
@@ -2769,6 +3039,7 @@ SELECT
     private static string NormalizeScenario(string scenario)
         => scenario.Trim().ToLowerInvariant() switch
         {
+            "scenarios-all" => "all",
             "mixed" => "mixed-queue-complete",
             "mixed-queueing-completion" => "mixed-queue-complete",
             "completion-heavy" => "queue-while-completion-heavy",
@@ -2924,6 +3195,47 @@ SELECT
         metrics.Add($"{prefix}_allocated_bytes", result.AllocatedBytes, "bytes");
         metrics.Add($"{prefix}_allocated_bytes_per_worker", PerWorker(result.AllocatedBytes, result.CompletedWorkers), "bytes/worker");
         metrics.Add($"{prefix}_read_model_catchup_ms", result.ReadModelCatchup.Elapsed.TotalMilliseconds, "ms");
+        AddDurationMetrics(metrics, $"{prefix}_completion_wait_latency", result.CompletionLatency);
+    }
+
+    private static void AddChangeStreamFanoutMetrics(
+        ScenarioMetrics metrics,
+        string prefix,
+        ChangeStreamPassResult result,
+        double baselineCompletedPerSecond,
+        double baselineDeliveredChangesPerSecond)
+    {
+        metrics.Add($"{prefix}_subscriptions", result.SubscriptionCount, "subscriptions");
+        metrics.Add($"{prefix}_accepted_workers", result.Queue.AcceptedWorkers, "workers");
+        metrics.Add($"{prefix}_rejected_workers", result.Queue.RejectedWorkers, "workers");
+        metrics.Add($"{prefix}_completed_workers", result.CompletedWorkers, "workers");
+        metrics.Add($"{prefix}_elapsed_ms", result.Elapsed.TotalMilliseconds, "ms");
+        metrics.Add($"{prefix}_completed_per_sec", result.CompletedPerSecond, "workers/sec");
+        metrics.Add(
+            $"{prefix}_completed_per_sec_ratio",
+            Math.Abs(baselineCompletedPerSecond) <= double.Epsilon
+                ? 0
+                : result.CompletedPerSecond / baselineCompletedPerSecond,
+            "ratio");
+        metrics.Add($"{prefix}_observed_changes", result.ObservedChanges, "changes");
+        metrics.Add($"{prefix}_delivered_changes", result.DeliveredChanges, "changes");
+        metrics.Add($"{prefix}_dropped_changes", result.DroppedChanges, "changes");
+        metrics.Add($"{prefix}_coalesced_changes", result.ChangeDiagnostics.CoalescedChanges, "changes");
+        metrics.Add($"{prefix}_accepted_changes", result.ChangeDiagnostics.AcceptedChanges, "changes");
+        metrics.Add($"{prefix}_queued_changes", result.ChangeDiagnostics.QueuedChanges, "changes");
+        metrics.Add($"{prefix}_peak_queued_changes", result.ChangeDiagnostics.PeakQueuedChanges, "changes");
+        metrics.Add($"{prefix}_delivered_changes_per_sec", result.DeliveredChangesPerSecond, "changes/sec");
+        metrics.Add(
+            $"{prefix}_delivered_changes_per_sec_ratio",
+            Math.Abs(baselineDeliveredChangesPerSecond) <= double.Epsilon
+                ? 0
+                : result.DeliveredChangesPerSecond / baselineDeliveredChangesPerSecond,
+            "ratio");
+        metrics.Add($"{prefix}_allocated_bytes", result.AllocatedBytes, "bytes");
+        metrics.Add($"{prefix}_allocated_bytes_per_worker", PerWorker(result.AllocatedBytes, result.CompletedWorkers), "bytes/worker");
+        metrics.Add($"{prefix}_read_model_catchup_ms", result.ReadModelCatchup.Elapsed.TotalMilliseconds, "ms");
+        metrics.Add($"{prefix}_read_model_enqueued_updates", result.ReadModelCatchup.End.EnqueuedSequence, "updates");
+        metrics.Add($"{prefix}_read_model_applied_delta", result.ReadModelCatchup.AppliedUpdateDelta, "updates");
         AddDurationMetrics(metrics, $"{prefix}_completion_wait_latency", result.CompletionLatency);
     }
 
@@ -3343,6 +3655,15 @@ SELECT
         long DeliveredEvents,
         long DroppedEvents);
 
+    private sealed record ChangeSubscriptionDiagnosticsSummary(
+        int Subscriptions,
+        int QueuedChanges,
+        int PeakQueuedChanges,
+        long AcceptedChanges,
+        long DeliveredChanges,
+        long CoalescedChanges,
+        long DroppedChanges);
+
     private sealed record SubscriptionChurnLoopResult(
         int Cycles,
         long SubscribeOperations,
@@ -3383,6 +3704,26 @@ SELECT
         public long DroppedEvents => this.SubscriptionDiagnostics.DroppedEvents;
 
         public double DeliveredEventsPerSecond => Rate(this.DeliveredEvents, this.Elapsed);
+    }
+
+    private sealed record ChangeStreamPassResult(
+        QueueOperationResult Queue,
+        int CompletedWorkers,
+        TimeSpan Elapsed,
+        DurationSnapshot CompletionLatency,
+        ReadModelCatchupResult ReadModelCatchup,
+        int SubscriptionCount,
+        long AllocatedBytes,
+        ChangeSubscriptionDiagnosticsSummary ChangeDiagnostics,
+        long ObservedChanges)
+    {
+        public double CompletedPerSecond => Rate(this.CompletedWorkers, this.Elapsed);
+
+        public long DeliveredChanges => this.ChangeDiagnostics.DeliveredChanges;
+
+        public long DroppedChanges => this.ChangeDiagnostics.DroppedChanges;
+
+        public double DeliveredChangesPerSecond => Rate(this.DeliveredChanges, this.Elapsed);
     }
 
     private sealed record SignalRRealtimePassResult(

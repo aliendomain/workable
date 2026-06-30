@@ -142,6 +142,14 @@ BEGIN
 END
 """,
             $"""
+IF OBJECT_ID(N'{escapedSchemaName}.WorkflowRuns', N'U') IS NOT NULL
+   AND COL_LENGTH(N'{escapedSchemaName}.WorkflowRuns', N'WorkSystemId') IS NOT NULL
+BEGIN
+    ALTER TABLE {workflowRunsTable}
+        DROP COLUMN WorkSystemId;
+END
+""",
+            $"""
 IF OBJECT_ID(N'{escapedSchemaName}.WorkEntries', N'U') IS NOT NULL
    AND COL_LENGTH(N'{escapedSchemaName}.WorkEntries', N'HasPersistentConcurrency') IS NULL
 BEGIN

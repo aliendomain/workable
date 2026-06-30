@@ -476,7 +476,7 @@ public sealed class WorkEventStreamTests
     }
 
     [Fact]
-    public async Task BroadEventTypeFiltersUseCursorLogAndFilterWhileReading()
+    public async Task EventTypeFiltersUseMetadataBeforeCreatingEvents()
     {
         var stream = new WorkEventStream();
         var metadataCreated = false;
@@ -507,11 +507,11 @@ public sealed class WorkEventStreamTests
 
         stream.Publish(accepted);
 
-        Assert.False(metadataCreated);
-        Assert.True(eventCreated);
+        Assert.True(metadataCreated);
+        Assert.False(eventCreated);
         Assert.Equal(accepted, await ReadNext(reader));
         var diagnostics = AssertNoQueuedEvents(subscription);
-        Assert.Equal(8192, diagnostics.Capacity);
+        Assert.Equal(256, diagnostics.Capacity);
         Assert.Equal(1, diagnostics.DeliveredEventCount);
     }
 
@@ -1031,14 +1031,14 @@ public sealed class WorkEventStreamTests
     }
 
     [Fact]
-    public async Task BroadFilteredSubscriptionsUseLargerCursorCapacity()
+    public async Task EventTypeFilteredSubscriptionsKeepDefaultChannelCapacity()
     {
         var stream = new WorkEventStream();
 
         await using var subscription = stream.Subscribe(new WorkEventFilter(EventType: "worker.completed"));
 
         var diagnostics = AssertNoQueuedEvents(subscription);
-        Assert.Equal(8192, diagnostics.Capacity);
+        Assert.Equal(256, diagnostics.Capacity);
     }
 
     [Fact]

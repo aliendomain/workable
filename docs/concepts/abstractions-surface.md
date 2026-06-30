@@ -179,10 +179,10 @@ The public contract is:
 
 - subscriptions only observe future events
 - each subscription has bounded delivery
-- selective filters apply before buffered delivery; broad `DropOldest` filters may be applied while reading a shared cursor log
+- selective filters, including event-type filters, apply before buffered delivery; unfiltered broad `DropOldest` subscriptions may be applied while reading a shared cursor log
 - disposing the subscription or canceling the read removes it
 
-This makes the event surface good for notification, correlation, and realtime refresh triggers. It is not a replay log.
+This makes the event surface good for notification, correlation, diagnostics, and low-level event consumers. Use `IWorkChangeStream` or higher-level realtime views for state-refresh triggers. The event stream is not a replay log.
 
 See [Observability](observability.md) for payload, filtering, and buffering details.
 

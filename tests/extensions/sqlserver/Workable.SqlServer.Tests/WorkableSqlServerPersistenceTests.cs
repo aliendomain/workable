@@ -430,6 +430,14 @@ WHERE WorkSystemName = N'workflow-tests'
         await StopWithTimeout(firstSystem);
         var canceled = await WaitForWorkflowCompletion(handle);
         Assert.Equal(WorkflowRunStatus.Canceled.ToString(), WorkflowCompletionStatus(canceled));
+        await using (var afterStop = await this.OpenConnection())
+        {
+            Assert.Equal(1, await Scalar<int>(afterStop, $"""
+SELECT COUNT(*)
+FROM workable.WorkflowRuns
+WHERE RunId = '{runId.Value:D}';
+"""));
+        }
 
         await using (var expired = await this.OpenConnection())
         {
@@ -641,6 +649,14 @@ WHERE RunId = @RunId;
         await StopWithTimeout(firstSystem);
         var canceled = await WaitForWorkflowCompletion(handle);
         Assert.Equal(WorkflowRunStatus.Canceled.ToString(), WorkflowCompletionStatus(canceled));
+        await using (var afterStop = await this.OpenConnection())
+        {
+            Assert.Equal(1, await Scalar<int>(afterStop, $"""
+SELECT COUNT(*)
+FROM workable.WorkflowRuns
+WHERE RunId = '{runId.Value:D}';
+"""));
+        }
 
         await using (var expired = await this.OpenConnection())
         {

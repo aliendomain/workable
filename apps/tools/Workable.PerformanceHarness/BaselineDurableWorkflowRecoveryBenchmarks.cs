@@ -34,7 +34,9 @@ public class BaselineDurableWorkflowRecoveryBenchmarks
             first.System,
             "perf.workflow.durable.dispatch",
             BenchmarkRequestContexts.CreateAnonymous("Prepare durable workflow recovery benchmark."));
-        childStarted.Task.GetAwaiter().GetResult();
+        DurableWorkflowBenchmarkSystem.WaitForSignal(
+            childStarted.Task,
+            "durable workflow child to start").GetAwaiter().GetResult();
         DurableWorkflowBenchmarkSystem.WaitForDurableState(
             first.ConnectionString,
             first.DurabilitySchemaName,

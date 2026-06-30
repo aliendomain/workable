@@ -40,17 +40,23 @@ internal sealed class WorkChangeStream : IWorkChangeStream, IAsyncDisposable
             return;
         }
 
+        var subscriptions = Volatile.Read(ref this.subscriptions);
+        if (subscriptions.Length == 0)
+        {
+            return;
+        }
+
         this.Publish(new WorkChange(
             Interlocked.Increment(ref this.sequence),
             DateTimeOffset.UtcNow,
-            key));
+            key),
+            subscriptions);
     }
 
-    private void Publish(WorkChange change)
+    private void Publish(WorkChange change, WorkChangeSubscription[] subscriptions)
     {
         ArgumentNullException.ThrowIfNull(change);
 
-        var subscriptions = Volatile.Read(ref this.subscriptions);
         foreach (var subscription in subscriptions)
         {
             subscription.Publish(change);

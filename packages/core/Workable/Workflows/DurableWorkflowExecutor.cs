@@ -112,6 +112,7 @@ internal sealed class DurableWorkflowExecutor(
                 return run.Cancel();
             }
 
+            cancellationToken.ThrowIfCancellationRequested();
             var success = run.Complete();
             await persistence.DeleteRun(run.Id, CancellationToken.None);
             return success;
@@ -128,7 +129,7 @@ internal sealed class DurableWorkflowExecutor(
                     "workable.workflow.execution_exception",
                     exception.Message,
                     "workflow.execution")],
-                CancellationToken.None);
+                cancellationToken);
         }
     }
 
@@ -299,17 +300,21 @@ internal sealed class DurableWorkflowExecutor(
     {
         if (await session.Query.Worker(workerId, cancellationToken) is { } snapshot && snapshot.IsFinal)
         {
-            return new WorkCompletion(
+            var completion = new WorkCompletion(
                 WorkerStateMachine.CompletionStatusFor(snapshot.State),
                 snapshot,
                 snapshot.Output,
                 snapshot.Messages);
+            ThrowIfChildCompletedUnsuccessfullyAfterWorkflowCancellation(completion, cancellationToken);
+            return completion;
         }
 
         var handle = createWorkerHandle(workerId);
         if (await persistence.DurableWorkerExists(workerId, cancellationToken))
         {
-            return await handle.WaitForCompletion(cancellationToken);
+            var completion = await handle.WaitForCompletion(cancellationToken);
+            ThrowIfChildCompletedUnsuccessfullyAfterWorkflowCancellation(completion, cancellationToken);
+            return completion;
         }
 
         return new WorkCompletion(
@@ -322,11 +327,23 @@ internal sealed class DurableWorkflowExecutor(
                 "workflow.execution")]);
     }
 
+    private static void ThrowIfChildCompletedUnsuccessfullyAfterWorkflowCancellation(
+        WorkCompletion completion,
+        CancellationToken cancellationToken)
+    {
+        if (cancellationToken.IsCancellationRequested &&
+            !completion.IsCompletedSuccessfully)
+        {
+            throw new OperationCanceledException(cancellationToken);
+        }
+    }
+
     private async Task<WorkflowRunCompletion> DeleteFailedRun(
         WorkflowRunState run,
         IReadOnlyList<WorkMessage> messages,
         CancellationToken cancellationToken)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         var failure = run.Fail(messages);
         await persistence.DeleteRun(run.Id, CancellationToken.None);
         return failure;

@@ -291,6 +291,47 @@ public sealed class WorkableSignalRTests
     }
 
     [Fact]
+    public async Task EventWatcherFlushesFullBatchWithoutWaitingForBatchWindow()
+    {
+        using var host = await CreateHost(addSignalR: true, configureSignalR: options =>
+        {
+            options.BatchTimeWindow = TimeSpan.FromSeconds(5);
+            options.EventMaxBatchSize = 2;
+        });
+        var system = host.Services.GetRequiredService<IWorkSystemRegistry>().Default;
+        var gate = host.Services.GetRequiredService<SignalRWorkGate>();
+        await using var connection = CreateConnection(host);
+        var batches = Channel.CreateUnbounded<WorkableRealtimeEventBatch>();
+        connection.On<WorkableRealtimeEventBatch>(
+            WorkableRealtimeClientMethods.WorkEvents,
+            batch => batches.Writer.TryWrite(batch));
+        await connection.StartAsync();
+        await connection.InvokeAsync(
+            "WatchEvents",
+            new WorkableRealtimeEventCriteria(["worker.completed"]),
+            null);
+
+        var session = Session(system);
+        var definition = session.Catalog.Definitions.Single(work => work.Name == "signalr.view");
+        var handles = await Task.WhenAll(Enumerable.Range(0, 2).Select(_ => session.Queue.Enqueue(definition.Name)));
+        await gate.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        gate.Release.SetResult();
+        await Task.WhenAll(handles.Select(handle => handle.WaitForCompletion()));
+        var expectedWorkerIds = handles
+            .Select(handle => handle.WorkerId ?? throw new InvalidOperationException("Expected accepted worker."))
+            .ToHashSet();
+
+        var batch = await ReadUntil(
+                batches.Reader,
+                batch => batch.Events.Count == expectedWorkerIds.Count &&
+                    batch.Events.Select(workEvent => workEvent.WorkerId).OfType<WorkerId>().ToHashSet().SetEquals(expectedWorkerIds))
+            .WaitAsync(TimeSpan.FromSeconds(2));
+
+        Assert.Equal(2, batch.Events.Count);
+        Assert.All(batch.Events, workEvent => Assert.Equal("worker.completed", workEvent.EventType));
+    }
+
+    [Fact]
     public async Task EventWatcherRejectsUnknownSystemNames()
     {
         using var host = await CreateHost(addSignalR: true);
@@ -421,6 +462,52 @@ public sealed class WorkableSignalRTests
         Assert.Equal(["workers"], updated.Components.Keys.ToArray());
         Assert.Equal(0, workers.GetProperty("activeWorkerCount").GetInt32());
         Assert.Equal(0, workers.GetProperty("failedWorkerCount").GetInt32());
+    }
+
+    [Fact]
+    public async Task ViewWatcherUsesChangeStreamWithoutEventStreamSubscription()
+    {
+        var timers = new ManualRealtimeTimerFactory();
+        using var host = await CreateHost(
+            addSignalR: true,
+            configureServices: services => services.AddSingleton<IWorkableRealtimeTimerFactory>(timers),
+            configureSignalR: options =>
+            {
+                options.PublishInterval = ManualViewPublishInterval;
+                options.DiagnosticsPublishInterval = ManualDiagnosticsPublishInterval;
+            });
+        var system = host.Services.GetRequiredService<IWorkSystemRegistry>().Default;
+        var eventStream = GetEventStream(system);
+        var gate = host.Services.GetRequiredService<SignalRWorkGate>();
+        await using var connection = CreateConnection(host);
+        const string subscriptionId = "overview";
+        var views = Channel.CreateUnbounded<WorkComponentQueryResult>();
+        CaptureRealtimeViews(connection, subscriptionId, views);
+        await connection.StartAsync();
+
+        await connection.InvokeAsync(
+            "WatchView",
+            subscriptionId,
+            "overview",
+            new WorkViewCriteria(Components:
+            [
+                new WorkComponentRequest("workers", "workers", Shape: WorkComponentShapes.Compact),
+            ]),
+            null);
+
+        var initial = await ReadUntil(views.Reader, view => view.Components.ContainsKey("workers"));
+        var handle = await Session(system).Queue.Enqueue("signalr.view");
+        await gate.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        gate.Release.SetResult();
+        var completion = await handle.WaitForCompletion();
+        Assert.True(completion.IsCompletedSuccessfully);
+
+        _ = await ReadUntil(
+            views.Reader,
+            view => view.GeneratedAt > initial.GeneratedAt &&
+                view.Components.ContainsKey("workers"));
+
+        Assert.Equal(0, eventStream.ActiveSubscriptionCount);
     }
 
     [Fact]

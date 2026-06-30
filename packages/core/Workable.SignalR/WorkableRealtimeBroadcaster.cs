@@ -291,7 +291,7 @@ internal sealed class WorkableRealtimeBroadcaster(
             events.Add(reader.Current);
         }
 
-        if (!delay.IsCompleted)
+        if (!delay.IsCompleted && events.Count < maxBatchSize)
         {
             await delay;
         }
@@ -622,7 +622,7 @@ internal sealed class WorkableRealtimeBroadcaster(
             pendingRead = null;
         }
 
-        if (!delay.IsCompleted)
+        if (!delay.IsCompleted && observedChangeCount < maxBatchSize)
         {
             await delay;
         }
@@ -766,7 +766,7 @@ internal sealed class WorkableRealtimeBroadcaster(
             changeCount++;
         }
 
-        if (!delay.IsCompleted)
+        if (!delay.IsCompleted && changeCount < maxBatchSize)
         {
             await delay;
         }

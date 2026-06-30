@@ -14,6 +14,7 @@ The core API defines the public shape of Workable for discovering work, queueing
 - `IWorkerOperations` controls worker actions.
 - `IWorkQueryService` exposes the discoverable query facade. Each built-in query has a named method, with optional criteria and cancellation where applicable.
 - `IWorkEventStream` creates event subscriptions.
+- `IWorkChangeStream` creates compact state-change subscriptions for UI refresh, view invalidation, and other latest-state consumers.
 - `IWorkSystemDiagnostics` exposes runtime diagnostics for queue rejection, read-model projection, retention cleanup, concurrency backlog, durability loops, and idempotency duplicate rejection.
 - `Start` and `Stop` control system lifecycle.
 - `Stop` returns the shutdown grace period plus workers that were force-completed as interrupted because the grace period elapsed, including compact worker summaries and definition names.
@@ -113,6 +114,7 @@ Execution context also exposes the worker's `WorkRequestContext` (including `Ori
 
 ## Event Rules
 
+- Use `IWorkChangeStream` or higher-level realtime views for state refresh; use `IWorkEventStream` when the consumer needs raw event envelopes, payloads, event types, or event-by-event diagnostics.
 - Subscribe to `IWorkEventStream` before starting the activity you want to observe.
 - Events are delivered to subscriptions active at publish time.
 - Event streams are exposed from a single `IWorkSystem`.

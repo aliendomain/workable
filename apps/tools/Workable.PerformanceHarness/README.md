@@ -20,6 +20,12 @@ Write scenario metrics to CSV:
 dotnet run --project apps\tools\Workable.PerformanceHarness --configuration Release -- --scenario all --csv-output .\artifacts\performance\scenario-baseline.csv
 ```
 
+Repeat a scenario and include per-run plus min/median/max/mean/spread summary rows in the same CSV:
+
+```powershell
+dotnet run --project apps\tools\Workable.PerformanceHarness --configuration Release -- --scenario signalr-fanout-matrix --workers 10000 --repeat-runs 5 --csv-output .\artifacts\performance\signalr-repeat.csv
+```
+
 Durable queueing with persistence-backed idempotency:
 
 ```powershell
@@ -38,7 +44,7 @@ The harness queues simple workers while concurrently recomputing overview compon
 
 In-memory scenario suite:
 
-- `all` runs the full in-memory named scenario suite below.
+- `all` runs the full in-memory named scenario suite below. `scenarios-all` is accepted as a compatibility alias for existing benchmark notes.
 - `queue-only` measures authoritative queue acceptance plus read-model catchup for queued workers that do not start.
 - `dequeue-only` measures the handoff from `Start` action dispatch to executor start for already-queued workers.
 - `start-to-completion` measures end-to-end queue-to-completion latency for workers that start immediately.
@@ -56,6 +62,7 @@ In-memory scenario suite:
 - `memory-release-after-purge` measures how much in-memory worker state is released after completed workers are explicitly purged.
 - `event-fanout` measures steady-state publish and subscription fanout cost across subscription counts and filter shapes.
 - `event-delivery` measures publish cost while subscriptions actively drain events and report delivered versus dropped counts.
+- `change-stream-fanout` measures the intended state-watcher path with active `IWorkChangeStream` readers across subscription counts and reports delivered, coalesced, and dropped changes.
 - `subscription-churn` measures subscription attach/detach throughput and latency.
 - `subscription-memory-release` measures retained managed and private memory after large subscription sets are disposed.
 - `publish-under-churn` measures worker publish/completion throughput while subscriptions are continuously created and removed.

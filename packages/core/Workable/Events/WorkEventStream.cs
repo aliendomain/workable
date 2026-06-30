@@ -218,7 +218,9 @@ internal sealed class WorkEventStream : IWorkEventStream, IAsyncDisposable
                 filter.SubjectId is not null ||
                 filter.ConcurrencyKey is not null ||
                 filter.Identifier is not null ||
-                HasValidKeyFilter(filter.Keys));
+                HasValidKeyFilter(filter.Keys) ||
+                !string.IsNullOrWhiteSpace(filter.EventType) ||
+                HasValidStringFilter(filter.EventTypes));
 
     private static bool HasValidStringFilter(IReadOnlySet<string>? values)
         => values is { Count: > 0 } &&

@@ -27,6 +27,7 @@ internal static class WorkflowBenchmarkReflection
             .GetMethod("Start", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)
             ?.Invoke(runtime, [workflowName, requestContext, cancellationToken])
             ?? throw new InvalidOperationException("Expected workflow runtime start handle.");
+        EnsureAcceptedStart(workflowName, handle);
         var runId = RequireProperty(handle, "RunId");
         var value = RequireProperty(runId, "Value");
         return (Guid)value;
@@ -34,13 +35,31 @@ internal static class WorkflowBenchmarkReflection
 
     public static WorkflowRunStatus? GetStatus(IWorkSystem system, Guid runId)
     {
-        var runtime = GetWorkflowRuntime(system);
-        var snapshot = runtime.GetType()
-            .GetMethod("Get", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)
-            ?.Invoke(runtime, [new WorkflowRunId(runId)]);
+        var snapshot = GetSnapshot(system, runId);
         return snapshot is null
             ? null
             : (WorkflowRunStatus)RequireProperty(snapshot, "Status");
+    }
+
+    public static string DescribeRuns(IWorkSystem system, IEnumerable<Guid> runIds)
+    {
+        var descriptions = runIds
+            .Take(5)
+            .Select(runId =>
+            {
+                var snapshot = GetSnapshot(system, runId);
+                if (snapshot is null)
+                {
+                    return $"{runId:D}: missing";
+                }
+
+                var status = RequireProperty(snapshot, "Status");
+                var messages = FormatMessages(snapshot);
+                return string.IsNullOrWhiteSpace(messages)
+                    ? $"{runId:D}: {status}"
+                    : $"{runId:D}: {status} ({messages})";
+            });
+        return $"Workflow status sample: {string.Join("; ", descriptions)}.";
     }
 
     private static object StartHandle(
@@ -50,10 +69,12 @@ internal static class WorkflowBenchmarkReflection
         CancellationToken cancellationToken)
     {
         var runtime = GetWorkflowRuntime(system);
-        return runtime.GetType()
+        var handle = runtime.GetType()
             .GetMethod("Start", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)
             ?.Invoke(runtime, [workflowName, requestContext, cancellationToken])
             ?? throw new InvalidOperationException("Expected workflow runtime start handle.");
+        EnsureAcceptedStart(workflowName, handle);
+        return handle;
     }
 
     private static async Task<object> WaitForCompletion(object handle, CancellationToken cancellationToken)
@@ -70,6 +91,58 @@ internal static class WorkflowBenchmarkReflection
             .GetProperty("WorkflowRuntime", BindingFlags.Instance | BindingFlags.NonPublic)
             ?.GetValue(system)
             ?? throw new InvalidOperationException("Expected internal workflow runtime.");
+
+    private static object? GetSnapshot(IWorkSystem system, Guid runId)
+    {
+        var runtime = GetWorkflowRuntime(system);
+        return runtime.GetType()
+            .GetMethod("Get", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)
+            ?.Invoke(runtime, [new WorkflowRunId(runId)]);
+    }
+
+    private static void EnsureAcceptedStart(string workflowName, object handle)
+    {
+        var startOutcome = RequireProperty(handle, "StartOutcome");
+        if ((bool)RequireProperty(startOutcome, "IsAccepted"))
+        {
+            return;
+        }
+
+        var status = RequireProperty(startOutcome, "Status");
+        var messages = RequireProperty(startOutcome, "Messages");
+        throw new InvalidOperationException(
+            $"Workflow '{workflowName}' start was rejected with status '{status}'. {messages}");
+    }
+
+    private static string FormatMessages(object snapshot)
+    {
+        var messages = EnumerateMessages(RequireProperty(snapshot, "Messages")).ToList();
+        var steps = RequireProperty(snapshot, "Steps");
+        if (steps is System.Collections.IEnumerable stepItems)
+        {
+            foreach (var step in stepItems.Cast<object>())
+            {
+                messages.AddRange(EnumerateMessages(RequireProperty(step, "Messages")));
+            }
+        }
+
+        return string.Join("; ", messages.Take(5));
+    }
+
+    private static IEnumerable<string> EnumerateMessages(object messages)
+    {
+        if (messages is not System.Collections.IEnumerable items)
+        {
+            yield break;
+        }
+
+        foreach (var item in items.Cast<object>())
+        {
+            var code = RequireProperty(item, "Code");
+            var text = RequireProperty(item, "Text");
+            yield return $"{code}: {text}";
+        }
+    }
 
     private static object RequireProperty(object instance, string propertyName)
         => instance.GetType()

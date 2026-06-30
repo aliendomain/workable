@@ -114,6 +114,14 @@ BEGIN
 END
 GO
 
+IF OBJECT_ID(N'workable.WorkflowRuns', N'U') IS NOT NULL
+   AND COL_LENGTH(N'workable.WorkflowRuns', N'WorkSystemId') IS NOT NULL
+BEGIN
+    ALTER TABLE [workable].[WorkflowRuns]
+        DROP COLUMN WorkSystemId;
+END
+GO
+
 IF OBJECT_ID(N'workable.WorkEntries', N'U') IS NOT NULL
    AND COL_LENGTH(N'workable.WorkEntries', N'HasPersistentConcurrency') IS NULL
 BEGIN
