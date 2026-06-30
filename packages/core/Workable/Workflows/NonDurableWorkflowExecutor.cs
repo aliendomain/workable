@@ -84,23 +84,15 @@ internal sealed class NonDurableWorkflowExecutor(
                                 return run.Fail(result.Messages);
                             }
 
-                            foreach (var handle in result.Handles)
+                            foreach (var handle in result.Handles.Where(handle => handle.WorkerId is not null))
                             {
-                                if (handle.WorkerId is { } workerId)
-                                {
-                                    activeHandles[workerId] = handle;
-                                }
+                                activeHandles[handle.WorkerId!.Value] = handle;
                             }
 
                             break;
                         }
                     case ParallelWorkflowStepDefinition parallel:
                         {
-                            if (status == WorkflowStepRunStatus.Completed)
-                            {
-                                break;
-                            }
-
                             run.MarkStepRunning(parallel.Name);
                             publisher.StepUpdated(run.ToSnapshot(), parallel.Name);
                             var workerIds = new List<WorkerId>();
@@ -284,13 +276,12 @@ internal sealed class NonDurableWorkflowExecutor(
         }
 
         var dispatchedHandles = new List<IWorkerHandle>();
-        foreach (var itemInput in expansion.Inputs)
+        foreach (var input in expansion.Inputs.Select(itemInput => WorkflowExecutionSupport.AddWorkflowIdentifiers(
+                     itemInput,
+                     run.Id,
+                     run.DefinitionName,
+                     step.Name)))
         {
-            var input = WorkflowExecutionSupport.AddWorkflowIdentifiers(
-                itemInput,
-                run.Id,
-                run.DefinitionName,
-                step.Name);
             var handle = await session.Queue.Enqueue(workDefinitionName, input, cancellationToken: cancellationToken);
             if (!handle.QueueOutcome.IsAccepted)
             {

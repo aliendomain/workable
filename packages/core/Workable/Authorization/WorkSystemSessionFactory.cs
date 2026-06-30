@@ -49,16 +49,17 @@ internal sealed class WorkSystemSessionFactory(
             groups,
             requestContext.IsAuthenticated && requestContext.Actor.IsKnown,
             systemAuthorization);
+        var isKnownAuthenticatedActor = requestContext.IsAuthenticated && requestContext.Actor.IsKnown;
+        var hasReadAllWorkAccess = systemAuthorization.HasReadAllWorkAccess();
         var readableDefinitionNames = authorization.ReadableDefinitions()
             .Select(definition => definition.Name)
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
-        foreach (var workflow in workflows.Definitions)
+        var readableWorkflows = hasReadAllWorkAccess
+            ? workflows.Definitions
+            : workflows.Definitions.Where(workflow => workflow.Authorization.CanRead(groups, isKnownAuthenticatedActor));
+        foreach (var workflow in readableWorkflows)
         {
-            if (systemAuthorization.HasReadAllWorkAccess() ||
-                workflow.Authorization.CanRead(groups, requestContext.IsAuthenticated && requestContext.Actor.IsKnown))
-            {
-                readableDefinitionNames.Add(workflow.Name);
-            }
+            readableDefinitionNames.Add(workflow.Name);
         }
 
         return new WorkSystemSession(

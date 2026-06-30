@@ -240,9 +240,8 @@ END
                     $"The configured benchmark SQL Server container runtime '{configuredRuntime}' is not available.");
             }
 
-            foreach (var candidate in new[] { "docker", "podman" })
+            foreach (var runtime in new[] { "docker", "podman" }.Select(candidate => new ContainerRuntime(candidate)))
             {
-                var runtime = new ContainerRuntime(candidate);
                 if (await runtime.IsAvailable())
                 {
                     return runtime;

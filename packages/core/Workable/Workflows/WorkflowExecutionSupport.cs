@@ -267,12 +267,10 @@ internal static class WorkflowExecutionSupport
         }
 
         var current = root;
-        foreach (var rawSegment in pointer.Split('/').Skip(1))
+        foreach (var segment in pointer.Split('/').Skip(1).Select(rawSegment => rawSegment
+                     .Replace("~1", "/", StringComparison.Ordinal)
+                     .Replace("~0", "~", StringComparison.Ordinal)))
         {
-            var segment = rawSegment
-                .Replace("~1", "/", StringComparison.Ordinal)
-                .Replace("~0", "~", StringComparison.Ordinal);
-
             if (current.ValueKind == JsonValueKind.Object)
             {
                 if (!current.TryGetProperty(segment, out current))

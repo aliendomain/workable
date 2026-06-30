@@ -391,12 +391,9 @@ internal sealed class WorkEventStream : IWorkEventStream, IAsyncDisposable
         }
 
         published ??= [];
-        foreach (var subscription in subscribers)
+        foreach (var subscription in subscribers.Where(published.Add))
         {
-            if (published.Add(subscription))
-            {
-                subscription.Publish(workEvent);
-            }
+            subscription.Publish(workEvent);
         }
     }
 

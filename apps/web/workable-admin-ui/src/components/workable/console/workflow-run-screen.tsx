@@ -1298,7 +1298,6 @@ function WorkflowWorkerProgressSummary({
 
   const finalCount = Math.min(summary.final, summary.total);
   const activeCount = Math.min(summary.active, Math.max(0, summary.total - finalCount));
-  const remainingCount = Math.max(0, summary.total - finalCount - activeCount);
   const completedPercent = summary.total > 0 ? (finalCount / summary.total) * 100 : 0;
   const activePercent = summary.total > 0 ? (activeCount / summary.total) * 100 : 0;
 

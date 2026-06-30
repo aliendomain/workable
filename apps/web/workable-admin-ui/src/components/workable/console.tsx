@@ -387,9 +387,6 @@ export function WorkableConsole() {
   const [workerUiSnapshotsByWorkerId, setWorkerUiSnapshotsByWorkerId] = useState<
     Record<string, WorkerConsoleViewUiStateSnapshot | undefined>
   >({});
-  const [workflowRunUiSnapshotsByRunId, setWorkflowRunUiSnapshotsByRunId] = useState<
-    Record<string, WorkflowRunConsoleViewUiStateSnapshot | undefined>
-  >({});
   const workflowRunUiSnapshotsByRunIdRef = useRef<
     Record<string, WorkflowRunConsoleViewUiStateSnapshot | undefined>
   >({});
@@ -411,21 +408,6 @@ export function WorkableConsole() {
       ...workflowRunUiSnapshotsByRunIdRef.current,
       [snapshot.runId]: snapshot,
     };
-    setWorkflowRunUiSnapshotsByRunId((current) => {
-      const previous = current[snapshot.runId];
-      if (
-        previous?.runId === snapshot.runId &&
-        previous.autoFollowCurrentStep === snapshot.autoFollowCurrentStep &&
-        previous.selectedStepName === snapshot.selectedStepName
-      ) {
-        return current;
-      }
-
-      return {
-        ...current,
-        [snapshot.runId]: snapshot,
-      };
-    });
   }, []);
   const viewScrollPositions = useRef<Partial<Record<ServerView, number>>>({});
   const readyViews = useRef<Set<string>>(new Set());
