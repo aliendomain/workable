@@ -43,12 +43,12 @@ public sealed record WorkableRealtimeDebugViewSubscriptionSnapshot(
 /// <param name="GroupName">The normalized SignalR group used to share the subscription.</param>
 /// <param name="Criteria">The normalized realtime criteria for the worker-overview subscription.</param>
 /// <param name="GroupConnectionCount">The number of connections currently sharing the same group.</param>
-/// <param name="IsStreaming">Indicates whether the shared group currently has an active event pump.</param>
-/// <param name="LastActivityAt">The most recent source-event activity seen by the shared group.</param>
+/// <param name="IsStreaming">Indicates whether the shared group currently has an active realtime pump.</param>
+/// <param name="LastActivityAt">The most recent source activity seen by the shared group.</param>
 /// <param name="LastError">The last observed streaming error, if any.</param>
 /// <param name="StreamingStartedAt">The time the current or most recent streaming session started.</param>
 /// <param name="StreamingStoppedAt">The time the most recent streaming session stopped.</param>
-/// <param name="EventStreamDiagnostics">Optional queue/channel diagnostics for the underlying event stream.</param>
+/// <param name="ChangeStreamDiagnostics">Optional queue/channel diagnostics for the underlying change stream.</param>
 public sealed record WorkableRealtimeDebugWorkerOverviewSubscriptionSnapshot(
     string ConnectionId,
     string SubscriptionId,
@@ -61,7 +61,7 @@ public sealed record WorkableRealtimeDebugWorkerOverviewSubscriptionSnapshot(
     string? LastError,
     DateTimeOffset? StreamingStartedAt,
     DateTimeOffset? StreamingStoppedAt,
-    WorkEventSubscriptionDiagnosticsSnapshot? EventStreamDiagnostics);
+    WorkChangeSubscriptionDiagnosticsSnapshot? ChangeStreamDiagnostics);
 
 /// <summary>
 /// Describes the active realtime subscriptions for one Workable system.

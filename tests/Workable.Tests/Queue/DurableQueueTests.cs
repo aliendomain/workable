@@ -618,6 +618,40 @@ public sealed class DurableQueueTests
     }
 
     [Fact]
+    public async Task DurableQueuePollsQuicklyForCallerTransactionWaiters()
+    {
+        var ran = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var store = new InMemoryDurableQueueStore();
+        var definition = WorkDefinition.Create("durable-local-waiter-poll", "Does not wait for the long fallback when a caller is waiting.");
+        var system = new ServiceCollection()
+            .AddSingleton<IWorkPersistenceStore>(store)
+            .AddWorkableSystem(builder => builder.AddWork(
+                definition,
+                (_, _, _) =>
+                {
+                    ran.TrySetResult();
+                    return Task.FromResult(WorkExecutionResult.Success());
+                },
+                configuration => configuration.QueueDurably(fallbackPollingInterval: TimeSpan.FromSeconds(5))))
+            .BuildServiceProvider()
+            .GetRequiredService<IWorkSystemRegistry>()
+            .Default;
+
+        await system.Start();
+
+        var handle = await system.Queue.Enqueue(
+            "durable-local-waiter-poll",
+            options: WorkerOptions.Default with { QueueDurabilityTransaction = new TestQueueDurabilityTransaction() });
+
+        var completion = await WaitForCompletion(handle, TimeSpan.FromSeconds(2));
+        await system.Stop();
+
+        Assert.True(handle.QueueOutcome.IsAccepted);
+        Assert.True(ran.Task.IsCompleted);
+        Assert.True(completion.IsCompletedSuccessfully);
+    }
+
+    [Fact]
     public async Task DurableQueueRetainsFailedWorkerUntilCanceledOrCompleted()
     {
         var store = new InMemoryDurableQueueStore();
@@ -1113,7 +1147,6 @@ public sealed class DurableQueueTests
             readerPollInterval: TimeSpan.FromMilliseconds(10),
             leaseRenewalInterval: TimeSpan.FromMilliseconds(10),
             retryDelay: TimeSpan.FromMilliseconds(10),
-            readerSignalDebounce: TimeSpan.FromMilliseconds(10),
             leaseDuration: TimeSpan.FromSeconds(1),
             batchSize: 10);
 

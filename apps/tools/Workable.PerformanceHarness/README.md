@@ -20,6 +20,12 @@ Write scenario metrics to CSV:
 dotnet run --project apps\tools\Workable.PerformanceHarness --configuration Release -- --scenario all --csv-output .\artifacts\performance\scenario-baseline.csv
 ```
 
+Repeat a scenario and include per-run plus min/median/max/mean/spread summary rows in the same CSV:
+
+```powershell
+dotnet run --project apps\tools\Workable.PerformanceHarness --configuration Release -- --scenario signalr-fanout-matrix --workers 10000 --repeat-runs 5 --csv-output .\artifacts\performance\signalr-repeat.csv
+```
+
 Durable queueing with persistence-backed idempotency:
 
 ```powershell
@@ -38,7 +44,7 @@ The harness queues simple workers while concurrently recomputing overview compon
 
 In-memory scenario suite:
 
-- `all` runs the full in-memory named scenario suite below.
+- `all` runs the full in-memory named scenario suite below. `scenarios-all` is accepted as a compatibility alias for existing benchmark notes.
 - `queue-only` measures authoritative queue acceptance plus read-model catchup for queued workers that do not start.
 - `dequeue-only` measures the handoff from `Start` action dispatch to executor start for already-queued workers.
 - `start-to-completion` measures end-to-end queue-to-completion latency for workers that start immediately.
@@ -56,6 +62,7 @@ In-memory scenario suite:
 - `memory-release-after-purge` measures how much in-memory worker state is released after completed workers are explicitly purged.
 - `event-fanout` measures steady-state publish and subscription fanout cost across subscription counts and filter shapes.
 - `event-delivery` measures publish cost while subscriptions actively drain events and report delivered versus dropped counts.
+- `change-stream-fanout` measures the intended state-watcher path with active `IWorkChangeStream` readers across subscription counts and reports delivered, coalesced, and dropped changes.
 - `subscription-churn` measures subscription attach/detach throughput and latency.
 - `subscription-memory-release` measures retained managed and private memory after large subscription sets are disposed.
 - `publish-under-churn` measures worker publish/completion throughput while subscriptions are continuously created and removed.
@@ -64,6 +71,7 @@ Focused opt-in scenarios:
 
 - `event-fanout-matrix` runs the same event fanout matrix logic as `event-fanout`, but as a dedicated single-scenario command for focused baselines.
 - `signalr-fanout-matrix` measures realtime transport fanout with a dedicated Kestrel host, live SignalR connections, low-latency publish windows, warmup validation, and bounded delivery waits.
+- `durable-worker-lifecycle-breakdown` measures SQL-backed durable worker admission, queue-to-executor-start latency, completion observation, read-model catchup, durability diagnostics, and durable row counts. Run it with `--queue-mode durable-idempotent` or `--queue-mode durable-non-idempotent`.
 - `durable-memory-release-after-purge` measures durable worker memory retention before purge, after purge-driven cleanup, and after a clean restart. Run it with `--queue-mode durable-idempotent` or `--queue-mode durable-non-idempotent`.
 - `durable-workflow-memory-recovery` measures durable workflow memory retention across interrupted runs, recovery completion, and a clean restart. Run it with `--queue-mode durable-idempotent` or `--queue-mode durable-non-idempotent`.
 
@@ -74,7 +82,7 @@ Legacy lifecycle benchmark:
 Queue-mode rules:
 
 - All named scenarios in the in-memory suite require `--queue-mode in-memory`.
-- The durable retained-memory scenarios require a durable queue mode.
+- The durable focused scenarios require a durable queue mode.
 - `lifecycle-fanout` is the only non-named scenario path that supports both in-memory and durable queue modes.
 
 When durable queueing is enabled and `--durability-connection-string` is omitted, the harness uses the same SQL discovery behavior as the SQL Server integration tests:
@@ -84,6 +92,12 @@ When durable queueing is enabled and `--durability-connection-string` is omitted
 - `WORKABLE_SQLSERVER_TEST_CONTAINER_RUNTIME`, `WORKABLE_SQLSERVER_TEST_CONTAINER_IMAGE`, and `WORKABLE_SQLSERVER_TEST_CONTAINER_REUSE` are honored the same way as the integration test suite.
 
 The harness deploys the `workable_perf` schema and deletes existing durable rows before each run by default. Override those with `--durability-connection-string`, `--durability-schema`, and `--durability-reset-store false`.
+
+Use `--durable-enqueue-batch-size` and `--durable-enqueue-batch-window-ms` to tune SQL durable enqueue microbatching during admission sweeps. Batching is the default durable SQL enqueue path; these flags only change the size and coalescing window used by the run.
+
+Use `--durable-claim-batch-size` to tune how many ready SQL durable queue rows each reader claim attempts to reserve before handing work back to the in-memory runtime.
+
+Use `--durable-claim-sample-capacity` to retain a bounded set of recent per-claim diagnostic samples. The default is `0`, so detailed sampling is off unless a run explicitly enables it.
 
 Use `--help` to see all options.
 

@@ -47,7 +47,12 @@ internal sealed class DurableWorkBenchmarkSystem : IAsyncDisposable
         string? durabilityConnectionString = null,
         string schemaName = SchemaName,
         bool resetStore = true,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        int? enqueueBatchSize = null,
+        TimeSpan? enqueueBatchWindow = null,
+        int? claimBatchSize = null,
+        int recentClaimSampleCapacity = 0,
+        Func<IWorkExecutionContext, WorkInput?, CancellationToken, Task<WorkExecutionResult>>? executor = null)
     {
         var connectionString = durabilityConnectionString;
         if (string.IsNullOrWhiteSpace(connectionString))
@@ -62,26 +67,36 @@ internal sealed class DurableWorkBenchmarkSystem : IAsyncDisposable
             resetStore,
             cancellationToken);
 
+        executor ??= SuccessfulWork;
+
         var services = new ServiceCollection();
-        services.AddWorkableSqlServerDurableQueue(connectionString, schemaName);
+        services.AddWorkableSqlServerDurableQueue(new WorkableSqlServerQueueDurabilityOptions
+        {
+            ConnectionString = connectionString,
+            SchemaName = schemaName,
+            EnqueueBatchSize = enqueueBatchSize ?? WorkableSqlServerQueueDurabilityOptions.DefaultEnqueueBatchSize,
+            EnqueueBatchWindow = enqueueBatchWindow ?? WorkableSqlServerQueueDurabilityOptions.DefaultEnqueueBatchWindow,
+            ClaimBatchSize = claimBatchSize ?? WorkableSqlServerQueueDurabilityOptions.DefaultClaimBatchSize,
+            RecentClaimSampleCapacity = recentClaimSampleCapacity,
+        });
         services.AddWorkableSystem("durable-benchmarks", builder =>
         {
             builder.RequireAuthorization(false);
             builder.AddWork(
                 WorkDefinition.Create("perf.durable.queued", category: "Perf:Durable"),
-                SuccessfulWork,
+                executor,
                 configuration => configuration.QueueDurably().DoNotStart());
             builder.AddWork(
                 WorkDefinition.Create("perf.durable.fast", category: "Perf:Durable"),
-                SuccessfulWork,
+                executor,
                 configuration => configuration.QueueDurably());
             builder.AddWork(
                 WorkDefinition.Create("perf.idempotent.persistent", category: "Perf:Durable"),
-                SuccessfulWork,
+                executor,
                 configuration => configuration.CoordinatePersistently().RejectDuplicateSubjects().DoNotStart());
             builder.AddWork(
                 WorkDefinition.Create("perf.idempotent.durable", category: "Perf:Durable"),
-                SuccessfulWork,
+                executor,
                 configuration => configuration.QueueDurably().RejectDuplicateSubjects().DoNotStart());
         });
 

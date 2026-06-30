@@ -100,7 +100,10 @@ internal sealed class DurableWorkflowBenchmarkSystem : IAsyncDisposable
         });
 
         var provider = services.BuildServiceProvider();
-        var system = provider.GetRequiredService<IWorkSystemRegistry>().Default;
+        var registry = provider.GetRequiredService<IWorkSystemRegistry>();
+        var system = registry.TryGet(SystemName, out var namedSystem)
+            ? namedSystem
+            : throw new InvalidOperationException($"Expected benchmark Workable system '{SystemName}'.");
         var requestContext = BenchmarkRequestContexts.CreateAnonymous("Run durable workflow performance benchmark.");
         await system.Start(requestContext, cancellationToken);
         return new DurableWorkflowBenchmarkSystem(
@@ -129,7 +132,8 @@ internal sealed class DurableWorkflowBenchmarkSystem : IAsyncDisposable
             await Task.Delay(50, cancellationToken);
         }
 
-        throw new TimeoutException($"Timed out waiting for workflow run '{runId:D}' to reach a final state.");
+        throw new TimeoutException(
+            $"Timed out waiting for workflow run '{runId:D}' to reach a final state. {WorkflowBenchmarkReflection.DescribeRuns(system, [runId])}");
     }
 
     public static async Task<DurableStateCounts> WaitForDurableState(
@@ -156,6 +160,21 @@ internal sealed class DurableWorkflowBenchmarkSystem : IAsyncDisposable
             $"Timed out waiting for durable workflow state to settle. WorkEntries={latest.WorkEntries}, WorkflowRuns={latest.WorkflowRuns}.");
     }
 
+    public static async Task WaitForSignal(
+        Task signal,
+        string description,
+        CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            await signal.WaitAsync(TimeSpan.FromSeconds(30), cancellationToken);
+        }
+        catch (TimeoutException exception)
+        {
+            throw new TimeoutException($"Timed out waiting for {description}.", exception);
+        }
+    }
+
     public static async Task ExpireDurableWorkerLeases(
         string connectionString,
         string schemaName,
@@ -166,7 +185,7 @@ internal sealed class DurableWorkflowBenchmarkSystem : IAsyncDisposable
         await using var command = connection.CreateCommand();
         command.CommandText =
             $"""
-UPDATE {QuoteIdentifier(schemaName)}.[WorkEntries]
+UPDATE {QuoteIdentifier(schemaName)}.[WorkQueueEntries]
 SET LeaseExpiresAt = DATEADD(second, -1, SYSDATETIMEOFFSET());
 """;
         await command.ExecuteNonQueryAsync(cancellationToken);

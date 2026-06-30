@@ -77,6 +77,15 @@ public interface IWorkSystem : IAsyncDisposable
     IWorkEventStream Events { get; }
 
     /// <summary>
+    /// Gets the direct change-stream surface for the system.
+    /// </summary>
+    /// <remarks>
+    /// This member is intended for open systems. When authorization is required, access may throw because no request
+    /// context is available for evaluation.
+    /// </remarks>
+    IWorkChangeStream Changes { get; }
+
+    /// <summary>
     /// Gets the direct diagnostics surface for the system.
     /// </summary>
     /// <remarks>

@@ -23,41 +23,57 @@ public class BaselineDurableChildReconnectBenchmarks
     [IterationSetup]
     public void IterationSetup()
     {
+        var childCount = Math.Max(1, this.BranchCount);
+        var expectedBlockedChildren = Math.Max(0, childCount - 1);
         var blockedBranches = 0;
         var allBlockedChildrenStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var first = DurableWorkflowBenchmarkSystem.Create(
-            this.BranchCount,
-            childExecutorFactory: index =>
-            {
-                if (index == 0)
+        DurableWorkflowBenchmarkSystem? first = null;
+        try
+        {
+            first = DurableWorkflowBenchmarkSystem.Create(
+                this.BranchCount,
+                childExecutorFactory: index =>
                 {
-                    return (_, _, _) => Task.FromResult(WorkExecutionResult.Success());
-                }
-
-                return async (_, _, cancellationToken) =>
-                {
-                    if (Interlocked.Increment(ref blockedBranches) == Math.Max(1, this.BranchCount) - 1)
+                    if (index == 0)
                     {
-                        allBlockedChildrenStarted.TrySetResult();
+                        return (_, _, _) => Task.FromResult(WorkExecutionResult.Success());
                     }
 
-                    await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
-                    return WorkExecutionResult.Success();
-                };
-            }).GetAwaiter().GetResult();
-        this.connectionString = first.ConnectionString;
-        this.schemaName = first.DurabilitySchemaName;
+                    return async (_, _, cancellationToken) =>
+                    {
+                        if (Interlocked.Increment(ref blockedBranches) == expectedBlockedChildren)
+                        {
+                            allBlockedChildrenStarted.TrySetResult();
+                        }
 
-        this.runId = WorkflowBenchmarkReflection.Start(
-            first.System,
-            "perf.workflow.durable.parallel",
-            BenchmarkRequestContexts.CreateAnonymous("Prepare durable child reconnect benchmark."));
-        allBlockedChildrenStarted.Task.GetAwaiter().GetResult();
-        DurableWorkflowBenchmarkSystem.WaitForDurableState(
-            first.ConnectionString,
-            first.DurabilitySchemaName,
-            counts => counts.WorkflowRuns >= 1 && counts.WorkEntries >= Math.Max(1, this.BranchCount)).GetAwaiter().GetResult();
-        first.DisposeAsync().AsTask().GetAwaiter().GetResult();
+                        await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+                        return WorkExecutionResult.Success();
+                    };
+                }).GetAwaiter().GetResult();
+            this.connectionString = first.ConnectionString;
+            this.schemaName = first.DurabilitySchemaName;
+
+            this.runId = WorkflowBenchmarkReflection.Start(
+                first.System,
+                "perf.workflow.durable.parallel",
+                BenchmarkRequestContexts.CreateAnonymous("Prepare durable child reconnect benchmark."));
+            if (expectedBlockedChildren > 0)
+            {
+                DurableWorkflowBenchmarkSystem.WaitForSignal(
+                    allBlockedChildrenStarted.Task,
+                    $"{expectedBlockedChildren.ToString(System.Globalization.CultureInfo.InvariantCulture)} blocked durable workflow children to start").GetAwaiter().GetResult();
+            }
+
+            DurableWorkflowBenchmarkSystem.WaitForDurableState(
+                first.ConnectionString,
+                first.DurabilitySchemaName,
+                counts => counts.WorkflowRuns >= 1 && counts.WorkEntries >= expectedBlockedChildren).GetAwaiter().GetResult();
+        }
+        finally
+        {
+            first?.DisposeAsync().AsTask().GetAwaiter().GetResult();
+        }
+
         DurableWorkflowBenchmarkSystem.ExpireDurableWorkerLeases(
             this.connectionString,
             this.schemaName).GetAwaiter().GetResult();

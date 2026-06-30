@@ -67,6 +67,7 @@ internal sealed class BenchmarkSqlServerEnvironment : IAsyncDisposable
         command.CommandText =
             $"""
 DELETE FROM {QuoteIdentifier(schemaName)}.[WorkflowRuns];
+DELETE FROM {QuoteIdentifier(schemaName)}.[WorkQueueEntries];
 DELETE FROM {QuoteIdentifier(schemaName)}.[WorkEntries];
 """;
         await command.ExecuteNonQueryAsync(cancellationToken);

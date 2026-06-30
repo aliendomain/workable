@@ -115,7 +115,7 @@ var outcome = await system.Workers.Reconfigure(
 
 ## Operational Notes
 
-The durable queue reader is signal-first. When this process accepts durable work without a caller-owned transaction, it wakes its local reader, waits briefly to coalesce bursty enqueue calls, then drains the database queue until empty. Each drain claims batches of up to 100 rows, so a long durable backlog is pulled into memory batch-by-batch instead of one row at a time.
+The durable queue reader is signal-first. When this process accepts durable work without a caller-owned transaction, it wakes its local reader and drains the database queue until empty. SQL Server durable enqueues are microbatched, and each reader drain claims configurable batches of up to 7,500 rows by default, so a long durable backlog is pulled into memory batch-by-batch instead of one row at a time.
 
 Polling remains as the cross-process and caller-transaction fallback. If another process enqueues work, or if the enqueue joined a transaction supplied by the caller, readers discover the row on the fallback polling interval after the transaction commits. The default fallback polling interval is five seconds and the minimum is one second.
 
@@ -240,10 +240,10 @@ public async Task<WorkExecutionResult> Execute(
 
 Failed durable work is also retained. A failed row remains available for inspection and retry until the worker is explicitly completed by restart or explicitly canceled through the worker API.
 
-SQL Server stores durable queue payloads and idempotency reservations in `workable.WorkEntries`. A row can represent queueing only, idempotency only, or both:
+SQL Server stores durable payloads and idempotency reservations in `workable.WorkEntries`, while ready queue rows live in the thinner `workable.WorkQueueEntries` table. Together they can represent queueing only, idempotency only, or both:
 
-- `IsDurableQueued = 1` means the durable queue reader can claim it.
-- `HasIdempotencyReservation = 1` means the row participates in duplicate-subject rejection.
+- A matching `WorkQueueEntries` row means the durable queue reader can claim the worker.
+- `WorkEntries.HasIdempotencyReservation = 1` means the row participates in duplicate-subject rejection.
 
 Rows are deleted when a worker reaches `Completed` or `Canceled`, or when the worker is purged. Failed and interrupted rows are retained. Until a retained row is completed or canceled, durable queue rows renew their claimed lease so another process does not replay active work; if the process dies, the lease expires and another runtime can claim the row.
 

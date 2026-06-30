@@ -11,7 +11,7 @@ public sealed class WorkableSignalROptions
     public string HubPath { get; set; } = "/workable/realtime";
 
     /// <summary>
-    /// Gets or sets how often non-diagnostics named view subscriptions are recomputed and published.
+    /// Gets or sets how often interval-required named views are recomputed and published.
     /// </summary>
     public TimeSpan PublishInterval { get; set; } = TimeSpan.FromSeconds(2);
 
@@ -31,22 +31,12 @@ public sealed class WorkableSignalROptions
     public WorkEventOverflowBehavior EventOverflowBehavior { get; set; } = WorkEventOverflowBehavior.DropWrite;
 
     /// <summary>
-    /// Gets or sets the overflow behavior used when a worker-overview subscription backlog reaches capacity.
-    /// </summary>
-    public WorkEventOverflowBehavior WorkerOverviewEventOverflowBehavior { get; set; } = WorkEventOverflowBehavior.DropOldest;
-
-    /// <summary>
-    /// Gets or sets the queued source-event threshold that causes worker-overview subscriptions to request a resync.
-    /// </summary>
-    public int WorkerOverviewResyncQueuedEventThreshold { get; set; } = 512;
-
-    /// <summary>
     /// Gets or sets the time window used to collect additional raw events into one batch.
     /// </summary>
     public TimeSpan BatchTimeWindow { get; set; } = TimeSpan.FromSeconds(1);
 
     /// <summary>
-    /// Gets or sets the coalescing window used for worker-overview delta broadcasts.
+    /// Gets or sets the coalescing window used for worker-overview broadcasts.
     /// </summary>
     public TimeSpan LiveTimeWindow { get; set; } = TimeSpan.FromMilliseconds(100);
 

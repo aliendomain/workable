@@ -19,6 +19,10 @@ internal sealed class WorkableRealtimeBroadcaster(
     IWorkableRealtimeTimerFactory timerFactory,
     WorkableRealtimeBroadcastLaneRunner laneRunner) : BackgroundService, IWorkSystemLifecycleObserver
 {
+    private static readonly WorkActor RealtimeBroadcasterActor = new(
+        Id: "workable.signalr.realtime-broadcaster",
+        Name: "Workable SignalR realtime broadcaster");
+
     private IDisposable? stoppingRegistration;
 
     public override Task StartAsync(CancellationToken cancellationToken)
@@ -287,7 +291,7 @@ internal sealed class WorkableRealtimeBroadcaster(
             events.Add(reader.Current);
         }
 
-        if (!delay.IsCompleted)
+        if (!delay.IsCompleted && events.Count < maxBatchSize)
         {
             await delay;
         }
@@ -317,47 +321,6 @@ internal sealed class WorkableRealtimeBroadcaster(
                 WorkableRealtimeClientMethods.WorkEvents,
                 WorkableRealtimeEventBatch.From(events),
                 cancellationToken);
-    }
-
-    private async Task<WorkerOverviewEventBatch> CollectWorkerOverviewEventBatch(
-        IAsyncEnumerator<WorkEvent> reader,
-        Task<bool>? pendingRead,
-        WorkEvent firstEvent,
-        CancellationToken cancellationToken)
-    {
-        var batchWindow = NormalizeLiveTimeWindow(options.Value);
-        var maxBatchSize = Math.Max(1, options.Value.EventMaxBatchSize);
-        if (maxBatchSize == 1 || batchWindow <= TimeSpan.Zero)
-        {
-            return new WorkerOverviewEventBatch([firstEvent], pendingRead);
-        }
-
-        var events = new List<WorkEvent> { firstEvent };
-        var delay = Task.Delay(batchWindow, cancellationToken);
-        while (events.Count < maxBatchSize)
-        {
-            pendingRead ??= reader.MoveNextAsync().AsTask();
-            var completed = await Task.WhenAny(pendingRead, delay);
-            if (completed != pendingRead)
-            {
-                break;
-            }
-
-            if (!await pendingRead)
-            {
-                return new WorkerOverviewEventBatch(events, null);
-            }
-
-            pendingRead = null;
-            events.Add(reader.Current);
-        }
-
-        if (!delay.IsCompleted)
-        {
-            await delay;
-        }
-
-        return new WorkerOverviewEventBatch(events, pendingRead);
     }
 
     private static async Task StopEventPump(
@@ -478,9 +441,14 @@ internal sealed class WorkableRealtimeBroadcaster(
         CancellationToken cancellationToken)
     {
         var pumpCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        var task = this.BroadcastWorkerOverviewGroup(
+            system,
+            subscription,
+            pumpCancellation.Token);
+
         return new EventPump(
             pumpCancellation,
-            this.BroadcastWorkerOverviewGroup(system, subscription, pumpCancellation.Token));
+            task);
     }
 
     private async Task BroadcastWorkerOverviewGroup(
@@ -491,80 +459,37 @@ internal sealed class WorkableRealtimeBroadcaster(
         var session = CreateAuthorizedSession(
             system,
             subscription.Authorization);
-        await using var events = session.Events.Subscribe(
-            new WorkEventFilter(WorkerId: subscription.WorkerId),
-            new WorkEventSubscriptionOptions(
-                options.Value.EventSubscriptionCapacity,
-                options.Value.WorkerOverviewEventOverflowBehavior));
-        var eventStreamDiagnostics = events as IWorkEventSubscriptionDiagnostics;
-        workerOverviewSubscriptions.SetEventStreamDiagnosticsProvider(
+        await using var changeSubscription = session.Changes.Subscribe(new WorkChangeSubscriptionOptions(
+            Math.Max(1, options.Value.EventSubscriptionCapacity)));
+        var changeStreamDiagnostics = changeSubscription as IWorkChangeSubscriptionDiagnostics;
+        workerOverviewSubscriptions.SetChangeStreamDiagnosticsProvider(
             subscription.GroupName,
-            eventStreamDiagnostics is null
+            changeStreamDiagnostics is null
                 ? null
-                : eventStreamDiagnostics.GetDiagnosticsSnapshot);
-        IAsyncEnumerator<WorkEvent>? reader = null;
+                : changeStreamDiagnostics.GetDiagnosticsSnapshot);
+        IAsyncEnumerator<WorkChange>? reader = null;
         Task<bool>? pendingRead = null;
         string? stopReason = null;
+        var hasPublishedState = false;
         try
         {
-            reader = events.Read(cancellationToken).GetAsyncEnumerator(cancellationToken);
+            reader = changeSubscription.Read(cancellationToken).GetAsyncEnumerator(cancellationToken);
             var current = await views.WorkerOverviewRealtimeState(
                 session,
                 subscription.WorkerId,
                 subscription.Criteria,
                 cancellationToken);
-            if (current is null)
+            if (current is not null)
             {
-                workerOverviewSubscriptions.SetStreaming(subscription.GroupName, isStreaming: true);
-            }
-            else
-            {
-                var startupBufferedEventLimit = Math.Max(1, options.Value.EventMaxBatchSize);
-                var startupBufferedEventCount = 0;
-                while (true)
-                {
-                    var bufferedRead = reader.MoveNextAsync();
-                    if (!bufferedRead.IsCompletedSuccessfully)
-                    {
-                        pendingRead = bufferedRead.AsTask();
-                        break;
-                    }
-
-                    if (!bufferedRead.Result)
-                    {
-                        return;
-                    }
-
-                    var bufferedUpdate = WorkableRealtimeWorkerOverviewUpdateFactory.Create(
-                        reader.Current,
-                        current,
-                        subscription.Criteria);
-                    if (bufferedUpdate is not null)
-                    {
-                        current = WorkableRealtimeWorkerOverviewUpdateFactory.Apply(
-                            current,
-                            bufferedUpdate,
-                            subscription.Criteria);
-                    }
-
-                    startupBufferedEventCount++;
-                    if (startupBufferedEventCount >= startupBufferedEventLimit)
-                    {
-                        // Under a flood, MoveNextAsync can keep completing synchronously and prevent
-                        // the worker overview subscription from ever declaring itself live. Cap the
-                        // startup prebuffer and let the normal batched loop catch up from there.
-                        pendingRead = Task.FromResult(true);
-                        break;
-                    }
-                }
-
                 await this.SendWorkerOverviewUpdateToGroup(
                     subscription.GroupName,
                     WorkableRealtimeWorkerOverviewUpdateFactory.CreateInitial(current),
                     cancellationToken);
                 workerOverviewSubscriptions.ReportActivity(subscription.GroupName, DateTimeOffset.UtcNow);
-                workerOverviewSubscriptions.SetStreaming(subscription.GroupName, isStreaming: true);
+                hasPublishedState = true;
             }
+
+            workerOverviewSubscriptions.SetStreaming(subscription.GroupName, isStreaming: true);
             while (!cancellationToken.IsCancellationRequested)
             {
                 pendingRead ??= reader.MoveNextAsync().AsTask();
@@ -573,68 +498,30 @@ internal sealed class WorkableRealtimeBroadcaster(
                     break;
                 }
 
-                var batch = await this.CollectWorkerOverviewEventBatch(
-                    reader,
-                    null,
-                    reader.Current,
-                    cancellationToken);
-                pendingRead = batch.PendingRead;
-                if (current is null)
+                if (!IsWorkerOverviewChange(reader.Current, subscription.WorkerId))
                 {
-                    current = await views.WorkerOverviewRealtimeState(
-                        session,
-                        subscription.WorkerId,
-                        subscription.Criteria,
-                        cancellationToken);
-                    if (current is null)
-                    {
-                        continue;
-                    }
-
-                    await this.SendWorkerOverviewUpdateToGroup(
-                        subscription.GroupName,
-                        WorkableRealtimeWorkerOverviewUpdateFactory.CreateInitial(current),
-                        cancellationToken);
-                    workerOverviewSubscriptions.ReportActivity(subscription.GroupName, DateTimeOffset.UtcNow);
+                    pendingRead = null;
                     continue;
                 }
 
-                var updates = new List<WorkWorkerOverviewRealtimeUpdate>(batch.Events.Count);
-                var batchStartState = current;
-                var batchState = current;
-                foreach (var workEvent in batch.Events)
-                {
-                    var update = WorkableRealtimeWorkerOverviewUpdateFactory.Create(
-                        workEvent,
-                        batchState,
-                        subscription.Criteria);
-                    if (update is null)
-                    {
-                        continue;
-                    }
-
-                    updates.Add(update);
-                    batchState = WorkableRealtimeWorkerOverviewUpdateFactory.Apply(
-                        batchState,
-                        update,
-                        subscription.Criteria);
-                }
-
-                var batchedUpdate = WorkableRealtimeWorkerOverviewUpdateFactory.Coalesce(
-                    batchStartState,
-                    updates,
+                pendingRead = await this.CollectWorkerOverviewChangeNotifications(
+                    reader,
+                    null,
+                    cancellationToken);
+                current = await views.WorkerOverviewRealtimeState(
+                    session,
+                    subscription.WorkerId,
                     subscription.Criteria,
-                    out current);
-                if (batchedUpdate is null)
+                    cancellationToken);
+                if (current is null)
                 {
-                    var skippedUpdateDiagnostics = eventStreamDiagnostics?.GetDiagnosticsSnapshot();
-                    if (ShouldResyncWorkerOverviewFromLag(skippedUpdateDiagnostics, options.Value))
+                    if (hasPublishedState)
                     {
                         await this.SendWorkerOverviewUpdateToGroup(
                             subscription.GroupName,
-                            CreateWorkerOverviewRefreshInstruction(skippedUpdateDiagnostics),
+                            CreateWorkerOverviewRefreshInstruction("Worker overview state changed and should be refreshed."),
                             cancellationToken);
-                        return;
+                        workerOverviewSubscriptions.ReportActivity(subscription.GroupName, DateTimeOffset.UtcNow);
                     }
 
                     continue;
@@ -642,26 +529,10 @@ internal sealed class WorkableRealtimeBroadcaster(
 
                 await this.SendWorkerOverviewUpdateToGroup(
                     subscription.GroupName,
-                    batchedUpdate,
+                    WorkableRealtimeWorkerOverviewUpdateFactory.CreateInitial(current),
                     cancellationToken);
-                workerOverviewSubscriptions.ReportActivity(subscription.GroupName, batchedUpdate.GeneratedAt);
-
-                var diagnostics = eventStreamDiagnostics?.GetDiagnosticsSnapshot();
-                if (diagnostics is not null && ShouldResyncWorkerOverviewFromLag(diagnostics, options.Value))
-                {
-                    logger.LogWarning(
-                        "SignalR worker overview for worker '{WorkerId}' in system '{SystemName}' is falling behind and will request a resync. Queued={QueuedCount}, Dropped={DroppedEventCount}, Capacity={Capacity}.",
-                        subscription.WorkerId.Value,
-                        system.Name,
-                        diagnostics.QueuedCount,
-                        diagnostics.DroppedEventCount,
-                        diagnostics.Capacity);
-                    await this.SendWorkerOverviewUpdateToGroup(
-                        subscription.GroupName,
-                        CreateWorkerOverviewRefreshInstruction(diagnostics),
-                        cancellationToken);
-                    return;
-                }
+                workerOverviewSubscriptions.ReportActivity(subscription.GroupName, DateTimeOffset.UtcNow);
+                hasPublishedState = true;
             }
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -696,7 +567,7 @@ internal sealed class WorkableRealtimeBroadcaster(
                 }
                 catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
                 {
-                    // Expected when the worker overview pump is stopped while a read is pending.
+                    // Expected when the worker overview pump is stopped while a change read is pending.
                 }
                 catch (NotSupportedException)
                 {
@@ -709,80 +580,245 @@ internal sealed class WorkableRealtimeBroadcaster(
                 await reader.DisposeAsync();
             }
 
-            workerOverviewSubscriptions.SetEventStreamDiagnosticsProvider(subscription.GroupName, null);
+            workerOverviewSubscriptions.SetChangeStreamDiagnosticsProvider(subscription.GroupName, null);
             if (!cancellationToken.IsCancellationRequested && stopReason is not null)
             {
                 workerOverviewSubscriptions.ReportError(subscription.GroupName, stopReason);
             }
+
             workerOverviewSubscriptions.SetStreaming(subscription.GroupName, isStreaming: false);
         }
     }
+
+    private async Task<Task<bool>?> CollectWorkerOverviewChangeNotifications(
+        IAsyncEnumerator<WorkChange> reader,
+        Task<bool>? pendingRead,
+        CancellationToken cancellationToken)
+    {
+        var batchWindow = NormalizeLiveTimeWindow(options.Value);
+        var maxBatchSize = Math.Max(1, options.Value.EventMaxBatchSize);
+        if (maxBatchSize == 1 || batchWindow <= TimeSpan.Zero)
+        {
+            return pendingRead;
+        }
+
+        var observedChangeCount = 1;
+        var delay = Task.Delay(batchWindow, cancellationToken);
+        while (observedChangeCount < maxBatchSize)
+        {
+            pendingRead ??= reader.MoveNextAsync().AsTask();
+            var completed = await Task.WhenAny(pendingRead, delay);
+            if (completed != pendingRead)
+            {
+                break;
+            }
+
+            if (!await pendingRead)
+            {
+                return null;
+            }
+
+            observedChangeCount++;
+            pendingRead = null;
+        }
+
+        if (!delay.IsCompleted && observedChangeCount < maxBatchSize)
+        {
+            await delay;
+        }
+
+        return pendingRead;
+    }
+
+    private static bool IsWorkerOverviewChange(WorkChange change, WorkerId workerId)
+        => change.Key.Kind == WorkChangeKind.Worker &&
+            string.Equals(change.Key.Value, workerId.Value.ToString("N"), StringComparison.OrdinalIgnoreCase);
 
     private async Task BroadcastViews(
         IWorkSystem system,
         CancellationToken cancellationToken)
     {
+        var session = CreateRealtimeBroadcasterSession(system);
+        await this.BroadcastViewsFromChanges(system, session.Changes, cancellationToken);
+    }
+
+    private async Task BroadcastViewsFromChanges(
+        IWorkSystem system,
+        IWorkChangeStream changes,
+        CancellationToken cancellationToken)
+    {
+        await using var changeSubscription = changes.Subscribe(new WorkChangeSubscriptionOptions(
+            Math.Max(1, options.Value.EventSubscriptionCapacity)));
         var lastPublishedVersionsByGroup = new Dictionary<string, WorkableRealtimeViewVersion>(StringComparer.Ordinal);
         using var timer = timerFactory.Create(options.Value.PublishInterval);
-        while (await timer.WaitForNextTickAsync(cancellationToken))
+        IAsyncEnumerator<WorkChange>? reader = null;
+        Task<bool>? pendingChangeRead = null;
+        Task<bool>? pendingTimerRead = null;
+        try
         {
-            var subscriptions = viewSubscriptions
-                .GetActiveSubscriptions(system)
-                .Where(subscription => !IsDiagnosticsView(subscription))
-                .ToArray();
-            var activeGroups = subscriptions
-                .Select(subscription => subscription.GroupName)
-                .ToHashSet(StringComparer.Ordinal);
-            foreach (var groupName in lastPublishedVersionsByGroup.Keys
-                .Where(groupName => !activeGroups.Contains(groupName))
-                .ToArray())
+            reader = changeSubscription.Read(cancellationToken).GetAsyncEnumerator(cancellationToken);
+            while (!cancellationToken.IsCancellationRequested)
             {
-                lastPublishedVersionsByGroup.Remove(groupName);
-            }
-
-            if (subscriptions.Length == 0)
-            {
-                continue;
-            }
-
-            var readModelSequence = system is IWorkSystemReadModelClock readModelClock
-                ? readModelClock.AppliedSequence
-                : 0;
-            var workflowSequence = system is IWorkSystemWorkflowClock workflowClock
-                ? workflowClock.WorkflowSequence
-                : 0;
-
-            if (system is not IWorkSystemReadModelClock && system is not IWorkSystemWorkflowClock)
-            {
-                foreach (var subscription in subscriptions)
+                pendingChangeRead ??= reader.MoveNextAsync().AsTask();
+                pendingTimerRead ??= timer.WaitForNextTickAsync(cancellationToken).AsTask();
+                var completed = await Task.WhenAny(pendingChangeRead, pendingTimerRead);
+                if (completed == pendingChangeRead)
                 {
-                    try
+                    if (!await pendingChangeRead)
                     {
-                        await this.BroadcastView(system, subscription, cancellationToken);
+                        break;
                     }
-                    catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+
+                    var changedKeys = new HashSet<WorkChangeKey>
                     {
-                        throw;
-                    }
-                    catch (Exception exception)
-                    {
-                        logger.LogError(
-                            exception,
-                            "Failed to broadcast SignalR view '{ViewName}' for system '{SystemName}' and group '{GroupName}'.",
-                            subscription.ViewName,
-                            system.Name,
-                            subscription.GroupName);
-                    }
+                        reader.Current.Key,
+                    };
+                    pendingChangeRead = await this.CollectChangeNotifications(
+                        reader,
+                        null,
+                        changedKeys,
+                        cancellationToken);
+                    await this.BroadcastViewSubscriptions(
+                        system,
+                        subscription => !this.RequiresIntervalPublish(subscription) &&
+                            views.ShouldPublishForChanges(subscription.ViewName, subscription.Criteria, changedKeys),
+                        lastPublishedVersionsByGroup,
+                        cancellationToken);
+                    continue;
                 }
 
-                continue;
+                if (!await pendingTimerRead)
+                {
+                    break;
+                }
+
+                pendingTimerRead = null;
+                await this.BroadcastViewSubscriptions(
+                    system,
+                    this.RequiresIntervalPublish,
+                    lastPublishedVersionsByGroup,
+                    cancellationToken);
+            }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            return;
+        }
+        catch (NotSupportedException) when (cancellationToken.IsCancellationRequested)
+        {
+            return;
+        }
+        finally
+        {
+            if (pendingChangeRead is not null && cancellationToken.IsCancellationRequested)
+            {
+                try
+                {
+                    await pendingChangeRead;
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    // Expected when the view pump is stopped while a change read is pending.
+                }
+                catch (NotSupportedException)
+                {
+                    // Expected when cancellation races async iterator disposal.
+                }
             }
 
-            foreach (var subscription in subscriptions)
+            if (reader is not null && !cancellationToken.IsCancellationRequested)
             {
-                var requiresIntervalPublish = views.RequiresIntervalPublish(
-                    subscription.ViewName,
-                    subscription.Criteria);
+                await reader.DisposeAsync();
+            }
+        }
+    }
+
+    private async Task<Task<bool>?> CollectChangeNotifications(
+        IAsyncEnumerator<WorkChange> reader,
+        Task<bool>? pendingRead,
+        HashSet<WorkChangeKey> changedKeys,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(changedKeys);
+
+        var batchWindow = NormalizeLiveTimeWindow(options.Value);
+        var maxBatchSize = Math.Max(1, options.Value.EventMaxBatchSize);
+        if (maxBatchSize == 1 || batchWindow <= TimeSpan.Zero)
+        {
+            return pendingRead;
+        }
+
+        var changeCount = 1;
+        var delay = Task.Delay(batchWindow, cancellationToken);
+        while (changeCount < maxBatchSize)
+        {
+            pendingRead ??= reader.MoveNextAsync().AsTask();
+            var completed = await Task.WhenAny(pendingRead, delay);
+            if (completed != pendingRead)
+            {
+                break;
+            }
+
+            if (!await pendingRead)
+            {
+                return null;
+            }
+
+            changedKeys.Add(reader.Current.Key);
+            pendingRead = null;
+            changeCount++;
+        }
+
+        if (!delay.IsCompleted && changeCount < maxBatchSize)
+        {
+            await delay;
+        }
+
+        return pendingRead;
+    }
+
+    private async Task BroadcastViewSubscriptions(
+        IWorkSystem system,
+        Func<WorkableRealtimeViewSubscription, bool> shouldBroadcast,
+        Dictionary<string, WorkableRealtimeViewVersion> lastPublishedVersionsByGroup,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(lastPublishedVersionsByGroup);
+
+        var allSubscriptions = viewSubscriptions
+            .GetActiveSubscriptions(system)
+            .Where(subscription => !IsDiagnosticsView(subscription))
+            .ToArray();
+        var activeGroups = allSubscriptions
+            .Select(subscription => subscription.GroupName)
+            .ToHashSet(StringComparer.Ordinal);
+        foreach (var groupName in lastPublishedVersionsByGroup.Keys
+            .Where(groupName => !activeGroups.Contains(groupName))
+            .ToArray())
+        {
+            lastPublishedVersionsByGroup.Remove(groupName);
+        }
+
+        var subscriptions = allSubscriptions
+            .Where(shouldBroadcast)
+            .ToArray();
+        if (subscriptions.Length == 0)
+        {
+            return;
+        }
+
+        var readModelSequence = system is IWorkSystemReadModelClock readModelClock
+            ? readModelClock.AppliedSequence
+            : 0;
+        var workflowSequence = system is IWorkSystemWorkflowClock workflowClock
+            ? workflowClock.WorkflowSequence
+            : 0;
+        var hasVersionedClocks = system is IWorkSystemReadModelClock || system is IWorkSystemWorkflowClock;
+        foreach (var subscription in subscriptions)
+        {
+            if (hasVersionedClocks)
+            {
+                var requiresIntervalPublish = this.RequiresIntervalPublish(subscription);
                 var currentVersion = new WorkableRealtimeViewVersion(
                     readModelSequence,
                     WorkableRealtimeWorkflowViews.IsWorkflowView(subscription.ViewName)
@@ -801,25 +837,32 @@ internal sealed class WorkableRealtimeBroadcaster(
                     lastPublishedVersionsByGroup[subscription.GroupName] = currentVersion;
                     continue;
                 }
+            }
 
-                try
+            try
+            {
+                await this.BroadcastView(system, subscription, cancellationToken);
+                if (hasVersionedClocks)
                 {
-                    await this.BroadcastView(system, subscription, cancellationToken);
-                    lastPublishedVersionsByGroup[subscription.GroupName] = currentVersion;
+                    lastPublishedVersionsByGroup[subscription.GroupName] = new WorkableRealtimeViewVersion(
+                        readModelSequence,
+                        WorkableRealtimeWorkflowViews.IsWorkflowView(subscription.ViewName)
+                            ? workflowSequence
+                            : 0);
                 }
-                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-                {
-                    throw;
-                }
-                catch (Exception exception)
-                {
-                    logger.LogError(
-                        exception,
-                        "Failed to broadcast SignalR view '{ViewName}' for system '{SystemName}' and group '{GroupName}'.",
-                        subscription.ViewName,
-                        system.Name,
-                        subscription.GroupName);
-                }
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception exception)
+            {
+                logger.LogError(
+                    exception,
+                    "Failed to broadcast SignalR view '{ViewName}' for system '{SystemName}' and group '{GroupName}'.",
+                    subscription.ViewName,
+                    system.Name,
+                    subscription.GroupName);
             }
         }
     }
@@ -1064,33 +1107,8 @@ internal sealed class WorkableRealtimeBroadcaster(
         }
     }
 
-    private static bool ShouldResyncWorkerOverviewFromLag(
-        WorkEventSubscriptionDiagnosticsSnapshot? diagnostics,
-        WorkableSignalROptions options)
+    private static WorkWorkerOverviewRealtimeUpdate CreateWorkerOverviewRefreshInstruction(string reason)
     {
-        if (diagnostics is null)
-        {
-            return false;
-        }
-
-        if (diagnostics.DroppedEventCount > 0)
-        {
-            return true;
-        }
-
-        var threshold = Math.Clamp(
-            options.WorkerOverviewResyncQueuedEventThreshold,
-            1,
-            diagnostics.Capacity);
-        return diagnostics.QueuedCount >= threshold;
-    }
-
-    private static WorkWorkerOverviewRealtimeUpdate CreateWorkerOverviewRefreshInstruction(
-        WorkEventSubscriptionDiagnosticsSnapshot? diagnostics)
-    {
-        var reason = diagnostics is null
-            ? "Realtime worker updates fell behind and should be refreshed."
-            : $"Realtime worker updates fell behind (queued {diagnostics.QueuedCount}/{diagnostics.Capacity}, dropped {diagnostics.DroppedEventCount}).";
         return new WorkWorkerOverviewRealtimeUpdate(
             DateTimeOffset.UtcNow,
             RequiresRefresh: true,
@@ -1118,6 +1136,11 @@ internal sealed class WorkableRealtimeBroadcaster(
         }
     }
 
+    private bool RequiresIntervalPublish(WorkableRealtimeViewSubscription subscription)
+        => views.RequiresIntervalPublish(
+            subscription.ViewName,
+            subscription.Criteria);
+
     private static bool IsDiagnosticsView(WorkableRealtimeViewSubscription subscription)
         => string.Equals(subscription.ViewName, "diagnostics", StringComparison.OrdinalIgnoreCase);
 
@@ -1134,6 +1157,23 @@ internal sealed class WorkableRealtimeBroadcaster(
                 authorization.Actor,
                 WorkOriginSurface.WorkableAdapter),
             Authorization: authorization));
+    }
+
+    private static IWorkSystemSession CreateRealtimeBroadcasterSession(IWorkSystem system)
+    {
+        ArgumentNullException.ThrowIfNull(system);
+
+        return system.CreateSession(new WorkRequestContext(
+            WorkOrigin.Create(
+                WorkInvocationChannel.SignalR,
+                RealtimeBroadcasterActor,
+                WorkOriginSurface.WorkableAdapter),
+            Description: "SignalR realtime broadcaster change-stream subscription.",
+            Authorization: WorkAuthorizationSnapshot.Create(
+                RealtimeBroadcasterActor,
+                [InternalWorkAuthorizationGroups.SystemAdministrator],
+                readableDefinitionIds: null),
+            IsAuthenticated: true));
     }
 
     private static bool IsDiagnosticsAlertChangesSubscription(WorkableRealtimeViewSubscription subscription)
@@ -1338,7 +1378,4 @@ internal sealed class WorkableRealtimeBroadcaster(
         IReadOnlyList<WorkEvent> Events,
         Task<bool>? PendingRead);
 
-    private sealed record WorkerOverviewEventBatch(
-        IReadOnlyList<WorkEvent> Events,
-        Task<bool>? PendingRead);
 }

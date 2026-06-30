@@ -623,6 +623,8 @@ public sealed class WorkflowRuntimeInternalsShould
         public IWorkQueryService Query { get; } = query ?? new DelegateQueryService(_ => Task.FromResult<WorkerSnapshot?>(null));
 
         public IWorkEventStream Events => throw new NotSupportedException();
+
+        public IWorkChangeStream Changes => throw new NotSupportedException();
     }
 
     private sealed class DelegateQueueService(

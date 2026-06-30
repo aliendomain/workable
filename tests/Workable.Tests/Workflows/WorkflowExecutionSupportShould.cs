@@ -320,6 +320,8 @@ public sealed class WorkflowExecutionSupportShould
         public IWorkQueryService Query => throw new NotSupportedException();
 
         public IWorkEventStream Events => throw new NotSupportedException();
+
+        public IWorkChangeStream Changes => throw new NotSupportedException();
     }
 
     private sealed class RecordingWorkerOperations(

@@ -69,6 +69,8 @@ internal sealed class WorkerOperations :
         this.readModel = readModel;
         this.concurrency = new WorkConcurrencyCoordinator();
         var persistenceLogger = rootServices.GetService<ILoggerFactory>()?.CreateLogger("Workable.Persistence");
+        var durabilityOptions = rootServices.GetService<WorkQueueDurabilityRuntimeOptions>() ??
+            WorkQueueDurabilityRuntimeOptions.Default;
         this.persistence = new WorkerPersistenceCoordinator(
             catalog,
             this.workers,
@@ -84,7 +86,8 @@ internal sealed class WorkerOperations :
             this.GetTrackedWorker,
             this.OnPersistedWorkerMaterialized,
             this.InterruptWorker,
-            persistenceLogger);
+            persistenceLogger,
+            durabilityOptions);
         this.workerEvents = new WorkerEventPublisher(workSystemId, workSystemName, events, this.SynchronizeWorkerIfTracked, readModel);
         var logger = rootServices.GetService<ILoggerFactory>()?.CreateLogger("Workable.WorkerExecution");
         var invoker = new WorkerExecutionInvoker(

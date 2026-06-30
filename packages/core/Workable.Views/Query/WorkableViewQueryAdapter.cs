@@ -588,6 +588,41 @@ public class WorkableViewQueryAdapter
     }
 
     /// <summary>
+    /// Determines whether a named view may have changed for the supplied latest-state change keys.
+    /// </summary>
+    public bool ShouldPublishForChanges(
+        string name,
+        WorkViewCriteria? criteria,
+        IReadOnlyCollection<WorkChangeKey> changes)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(name);
+        ArgumentNullException.ThrowIfNull(changes);
+        if (changes.Count == 0)
+        {
+            return false;
+        }
+
+        var query = criteria ?? new WorkViewCriteria();
+        var requests = NormalizeViewComponentRequests(name, query.Components);
+        if (requests is null)
+        {
+            return true;
+        }
+
+        var changeSet = new WorkChangeKeySet(changes);
+        try
+        {
+            return requests
+                .Select(NormalizeComponentRequest)
+                .Any(request => ComponentMayChangeOn(request, query.Scope, changeSet));
+        }
+        catch (Exception exception) when (ShouldFallbackToPublishing(exception))
+        {
+            return true;
+        }
+    }
+
+    /// <summary>
     /// Normalizes a component query into the canonical shape used by the adapter and realtime grouping.
     /// </summary>
     public WorkComponentCriteria NormalizeComponentCriteria(WorkComponentCriteria? criteria = null)
@@ -1979,6 +2014,114 @@ public class WorkableViewQueryAdapter
         => ComponentDescriptors.TryGetValue(request.Type.Trim(), out var descriptor) &&
             descriptor.RequiresIntervalPublish;
 
+    private static bool ComponentMayChangeOn(
+        WorkComponentRequest request,
+        WorkSystemCriteria? scope,
+        WorkChangeKeySet changes)
+    {
+        if (ComponentRequiresIntervalPublish(request))
+        {
+            return false;
+        }
+
+        return request.Type.Trim().ToLowerInvariant() switch
+        {
+            "system" => changes.HasUnknownSystemChange,
+            "catalog" => CatalogMayChange(scope, changes),
+            "workers" or "failedworkers" or "iterations" or "failediterations" or "completediterations" =>
+                ScopedWorkMayChange(scope, changes),
+            "workergrid" => GridMayChange(scope, request.Options, changes, CreateWorkerGridCriteria),
+            "iterationgrid" => GridMayChange(scope, request.Options, changes, CreateIterationGridCriteria),
+            "workerdetail" or "workercurrentiteration" => WorkerMayChange(request.Options, changes),
+            "workflowrun" or "workflowruns" =>
+                changes.HasDefinitionChange || changes.HasSystemChange || changes.HasWorkStateChange,
+            "systemdiagnostics" or "queuediagnostics" or "readmodeldiagnostics" or "retentiondiagnostics" or
+                "concurrencydiagnostics" or "durabilitydiagnostics" or "idempotencydiagnostics" =>
+                    changes.HasDiagnosticsChange || changes.HasSystemChange || changes.HasWorkStateChange,
+            _ => changes.HasUnknownSystemChange,
+        };
+    }
+
+    private static bool ShouldFallbackToPublishing(Exception exception)
+        => exception is JsonException or
+            InvalidOperationException or
+            ArgumentException or
+            NullReferenceException;
+
+    private static bool CatalogMayChange(WorkSystemCriteria? scope, WorkChangeKeySet changes)
+    {
+        if (changes.HasUnknownSystemChange)
+        {
+            return true;
+        }
+
+        if (HasDefinitionScope(scope))
+        {
+            return ScopedDefinitionsMayChange(scope, changes);
+        }
+
+        return changes.HasDefinitionChange;
+    }
+
+    private static bool ScopedWorkMayChange(WorkSystemCriteria? scope, WorkChangeKeySet changes)
+    {
+        if (changes.HasUnknownSystemChange)
+        {
+            return true;
+        }
+
+        if (HasDefinitionScope(scope))
+        {
+            return ScopedDefinitionsMayChange(scope, changes);
+        }
+
+        return changes.HasWorkStateChange;
+    }
+
+    private static bool GridMayChange<TCriteria>(
+        WorkSystemCriteria? scope,
+        JsonElement? options,
+        WorkChangeKeySet changes,
+        Func<WorkSystemCriteria?, JsonElement?, TCriteria> createCriteria)
+        where TCriteria : IWorkViewGridChangeCriteria
+    {
+        if (changes.HasUnknownSystemChange)
+        {
+            return true;
+        }
+
+        var criteria = createCriteria(scope, options);
+        return ScopedWorkMayChange(scope, changes) &&
+            (!HasKeyFilter(criteria.KeyKind, criteria.KeyType, criteria.KeyValue) ||
+                changes.ContainsStructuredKey(criteria.KeyKind, criteria.KeyType, criteria.KeyValue));
+    }
+
+    private static bool WorkerMayChange(JsonElement? options, WorkChangeKeySet changes)
+    {
+        if (changes.HasUnknownSystemChange)
+        {
+            return true;
+        }
+
+        return TryGetWorkerId(options, out var workerId) &&
+            changes.ContainsWorker(workerId);
+    }
+
+    private static bool HasDefinitionScope(WorkSystemCriteria? scope)
+        => !string.IsNullOrWhiteSpace(scope?.DefinitionName) ||
+            scope?.DefinitionNames is { Count: > 0 };
+
+    private static bool ScopedDefinitionsMayChange(WorkSystemCriteria? scope, WorkChangeKeySet changes)
+    {
+        if (!string.IsNullOrWhiteSpace(scope?.DefinitionName))
+        {
+            return changes.ContainsDefinition(scope.DefinitionName);
+        }
+
+        return scope?.DefinitionNames is { Count: > 0 } definitionNames &&
+            definitionNames.Any(changes.ContainsDefinition);
+    }
+
     private static void EnsureAuthorizedComponentAccess(
         IWorkSystemSession session,
         IReadOnlyList<WorkComponentRequest> requests)
@@ -2242,6 +2385,19 @@ public class WorkableViewQueryAdapter
             : throw new InvalidOperationException("workerId must be a valid GUID.");
     }
 
+    private static bool TryGetWorkerId(JsonElement? options, out WorkerId workerId)
+    {
+        var query = DeserializeOptions<WorkViewWorkerOptions>(options);
+        if (Guid.TryParse(query?.WorkerId, out var parsed))
+        {
+            workerId = new WorkerId(parsed);
+            return true;
+        }
+
+        workerId = default;
+        return false;
+    }
+
     private static T? DeserializeOptions<T>(JsonElement? options)
     {
         if (options is null || options.Value.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined)
@@ -2291,17 +2447,26 @@ public class WorkableViewQueryAdapter
             ? TryGetInt32(options.Value, propertyName)
             : null;
 
+    private interface IWorkViewGridChangeCriteria
+    {
+        WorkKeyKind? KeyKind { get; }
+
+        string? KeyType { get; }
+
+        string? KeyValue { get; }
+    }
+
     private sealed record WorkViewWorkerGridCriteria(
         WorkerCriteria Criteria,
         WorkKeyKind? KeyKind,
         string? KeyType,
-        string? KeyValue);
+        string? KeyValue) : IWorkViewGridChangeCriteria;
 
     private sealed record WorkViewIterationGridCriteria(
         WorkerIterationCriteria Criteria,
         WorkKeyKind? KeyKind,
         string? KeyType,
-        string? KeyValue);
+        string? KeyValue) : IWorkViewGridChangeCriteria;
 
     private sealed record WorkViewWorkerOptions(
         string? WorkerId = null);
@@ -2329,4 +2494,81 @@ public class WorkableViewQueryAdapter
 
     private sealed record WorkComponentDescriptor(
         bool RequiresIntervalPublish = false);
+
+    private sealed class WorkChangeKeySet
+    {
+        private readonly IReadOnlyCollection<WorkChangeKey> keys;
+
+        public WorkChangeKeySet(IReadOnlyCollection<WorkChangeKey> keys)
+        {
+            this.keys = keys;
+            this.HasSystemChange = keys.Any(key => key.Kind == WorkChangeKind.System);
+            this.HasDiagnosticsChange = keys.Any(key => key.Kind == WorkChangeKind.Diagnostics);
+            this.HasDefinitionChange = keys.Any(key => key.Kind == WorkChangeKind.Definition);
+            this.HasWorkStateChange = keys.Any(IsWorkStateChange);
+            this.HasUnknownSystemChange = this.HasSystemChange && !this.HasWorkStateChange && !this.HasDiagnosticsChange;
+        }
+
+        public bool HasSystemChange { get; }
+
+        public bool HasDiagnosticsChange { get; }
+
+        public bool HasDefinitionChange { get; }
+
+        public bool HasWorkStateChange { get; }
+
+        public bool HasUnknownSystemChange { get; }
+
+        public bool ContainsWorker(WorkerId workerId)
+        {
+            var value = workerId.Value.ToString("N");
+            return this.keys.Any(key =>
+                key.Kind == WorkChangeKind.Worker &&
+                string.Equals(key.Value, value, StringComparison.OrdinalIgnoreCase));
+        }
+
+        public bool ContainsDefinition(string definitionName)
+        {
+            if (string.IsNullOrWhiteSpace(definitionName))
+            {
+                return false;
+            }
+
+            return this.keys.Any(key =>
+                key.Kind == WorkChangeKind.Definition &&
+                string.Equals(key.Value, definitionName.Trim(), StringComparison.OrdinalIgnoreCase));
+        }
+
+        public bool ContainsStructuredKey(WorkKeyKind? keyKind, string? keyType, string? keyValue)
+        {
+            var changeKind = ToChangeKind(keyKind);
+            var normalizedType = NormalizeQueryText(keyType);
+            var normalizedValue = NormalizeQueryText(keyValue);
+            return this.keys.Any(key =>
+                IsStructuredKey(key.Kind) &&
+                (changeKind is null || key.Kind == changeKind) &&
+                (normalizedType is null || string.Equals(key.Type, normalizedType, StringComparison.Ordinal)) &&
+                (normalizedValue is null || string.Equals(key.Value, normalizedValue, StringComparison.Ordinal)));
+        }
+
+        private static bool IsWorkStateChange(WorkChangeKey key)
+            => key.Kind is WorkChangeKind.Worker or
+                WorkChangeKind.Definition or
+                WorkChangeKind.Subject or
+                WorkChangeKind.ConcurrencyKey or
+                WorkChangeKind.Identifier;
+
+        private static bool IsStructuredKey(WorkChangeKind kind)
+            => kind is WorkChangeKind.Subject or WorkChangeKind.ConcurrencyKey or WorkChangeKind.Identifier;
+
+        private static WorkChangeKind? ToChangeKind(WorkKeyKind? keyKind)
+            => keyKind switch
+            {
+                WorkKeyKind.Subject => WorkChangeKind.Subject,
+                WorkKeyKind.ConcurrencyKey => WorkChangeKind.ConcurrencyKey,
+                WorkKeyKind.Identifier => WorkChangeKind.Identifier,
+                null => null,
+                _ => null,
+            };
+    }
 }

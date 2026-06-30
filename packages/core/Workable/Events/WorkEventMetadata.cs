@@ -31,7 +31,46 @@ internal sealed class WorkEventMetadata(
         => this.Identifiers.Contains(identifier);
 
     public bool ContainsAnyKey(IReadOnlySet<WorkEventKeyFilter>? keys)
-        => WorkEventFilter.KeysMatch(keys, this.SubjectId, this.ConcurrencyKey, this.Identifiers);
+    {
+        if (keys is not { Count: > 0 })
+        {
+            return true;
+        }
+
+        foreach (var key in keys)
+        {
+            if (string.IsNullOrWhiteSpace(key.Type) || string.IsNullOrWhiteSpace(key.Value))
+            {
+                continue;
+            }
+
+            if (key.Kind is null or WorkKeyKind.Subject &&
+                this.SubjectId is { } subject &&
+                KeyEquals(key, subject.Type, subject.Value))
+            {
+                return true;
+            }
+
+            if (key.Kind is null or WorkKeyKind.ConcurrencyKey &&
+                this.ConcurrencyKey is { } concurrencyKey &&
+                KeyEquals(key, concurrencyKey.Type, concurrencyKey.Value))
+            {
+                return true;
+            }
+
+            if (key.Kind is null or WorkKeyKind.Identifier &&
+                this.Identifiers.Contains(new WorkIdentifier(key.Type, key.Value)))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static bool KeyEquals(WorkEventKeyFilter key, string type, string value)
+        => string.Equals(key.Type, type, StringComparison.Ordinal) &&
+            string.Equals(key.Value, value, StringComparison.Ordinal);
 
     internal IReadOnlySet<WorkIdentifier> Identifiers
         => this.identifiers ??= getIdentifiers?.Invoke() ?? EmptyIdentifiers;

@@ -24,7 +24,10 @@ internal sealed class SignalRScenarioHost : IAsyncDisposable
 
     public IWorkSystem System { get; }
 
-    public static async Task<SignalRScenarioHost> Create(CancellationToken cancellationToken = default)
+    public static async Task<SignalRScenarioHost> Create(
+        int eventMaxBatchSize,
+        TimeSpan batchTimeWindow,
+        CancellationToken cancellationToken = default)
     {
         var host = new HostBuilder()
             .ConfigureWebHost(web =>
@@ -66,7 +69,8 @@ internal sealed class SignalRScenarioHost : IAsyncDisposable
                         options.DiagnosticsPublishInterval = TimeSpan.FromMilliseconds(25);
                         options.MinimumTimeWindow = TimeSpan.FromMilliseconds(1);
                         options.LiveTimeWindow = TimeSpan.FromMilliseconds(1);
-                        options.BatchTimeWindow = TimeSpan.FromMilliseconds(1);
+                        options.BatchTimeWindow = batchTimeWindow;
+                        options.EventMaxBatchSize = eventMaxBatchSize;
                     });
                 });
                 web.Configure(app =>

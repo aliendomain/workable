@@ -11,6 +11,7 @@ internal sealed class WorkSystemSessionFactory(
     WorkerOperations workers,
     WorkSystemReadModelQueryService query,
     WorkEventStream events,
+    WorkChangeStream changes,
     WorkSystemAuthorizationConfiguration systemAuthorizationConfiguration,
     IWorkAuthorizationGroupProvider groupProvider)
 {
@@ -24,6 +25,7 @@ internal sealed class WorkSystemSessionFactory(
         var sessionWorkers = new SessionWorkerOperations(workers, requestContext);
         var sessionQuery = new SessionWorkQueryService(query, requestContext);
         var sessionEvents = new SessionWorkEventStream(events, requestContext);
+        var sessionChanges = new SessionWorkChangeStream(changes, requestContext);
         if (!requiresAuthorization)
         {
             return new WorkSystemSession(
@@ -34,7 +36,8 @@ internal sealed class WorkSystemSessionFactory(
                 sessionQueue,
                 sessionWorkers,
                 sessionQuery,
-                sessionEvents);
+                sessionEvents,
+                sessionChanges);
         }
 
         var groups = requestContext.Authorization?.Groups
@@ -68,6 +71,7 @@ internal sealed class WorkSystemSessionFactory(
             new AuthorizedWorkQueueService(catalog, sessionQueue, authorization, requestContext),
             new AuthorizedWorkerOperations(catalog, sessionWorkers, sessionQuery, authorization, requestContext),
             new AuthorizedWorkQueryService(sessionCatalog, sessionQuery, authorization),
-            new AuthorizedWorkEventStream(sessionEvents, readableDefinitionNames));
+            new AuthorizedWorkEventStream(sessionEvents, readableDefinitionNames),
+            new AuthorizedWorkChangeStream(sessionChanges, authorization, systemAuthorization.CanViewDiagnostics()));
     }
 }

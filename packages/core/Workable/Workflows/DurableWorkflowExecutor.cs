@@ -143,6 +143,7 @@ internal sealed class DurableWorkflowExecutor(
                     : await this.DeleteFailedRun(run, trailingCompletion.Messages, cancellationToken);
             }
 
+            cancellationToken.ThrowIfCancellationRequested();
             var success = run.Complete();
             return success;
         }
@@ -170,7 +171,7 @@ internal sealed class DurableWorkflowExecutor(
                     "workable.workflow.execution_exception",
                     exception.Message,
                     "workflow.execution")],
-                CancellationToken.None);
+                cancellationToken);
         }
     }
 
@@ -477,6 +478,11 @@ internal sealed class DurableWorkflowExecutor(
         var handleCompletion = handle.WaitForCompletion(cancellationToken);
         while (true)
         {
+            if (handleCompletion.IsCompleted)
+            {
+                return await handleCompletion;
+            }
+
             snapshot = getAuthoritativeWorker is not null
                 ? await getAuthoritativeWorker(workerId, cancellationToken)
                 : await session.Query.Worker(workerId, cancellationToken);
@@ -493,8 +499,37 @@ internal sealed class DurableWorkflowExecutor(
                 }
             }
 
+            var completed = await Task.WhenAny(
+                handleCompletion,
+                Task.Delay(WorkerObservationPollInterval, cancellationToken));
+            if (completed == handleCompletion)
+            {
+                return await handleCompletion;
+            }
+
             if (!await persistence.DurableWorkerExists(workerId, cancellationToken))
             {
+                if (handleCompletion.IsCompleted)
+                {
+                    return await handleCompletion;
+                }
+
+                snapshot = getAuthoritativeWorker is not null
+                    ? await getAuthoritativeWorker(workerId, cancellationToken)
+                    : await session.Query.Worker(workerId, cancellationToken);
+                if (snapshot is not null)
+                {
+                    var status = WorkerStateMachine.CompletionStatusFor(snapshot.State);
+                    if (status != WorkCompletionStatus.Invalid)
+                    {
+                        return new WorkCompletion(
+                            status,
+                            snapshot,
+                            snapshot.Output,
+                            snapshot.Messages);
+                    }
+                }
+
                 return new WorkCompletion(
                     WorkCompletionStatus.NotFound,
                     null,
@@ -504,14 +539,6 @@ internal sealed class DurableWorkflowExecutor(
                         $"Workflow child worker '{workerId.Value:D}' could not be recovered because its durable state no longer exists.",
                         "workflow.execution")]);
             }
-
-            var completed = await Task.WhenAny(
-                handleCompletion,
-                Task.Delay(WorkerObservationPollInterval, cancellationToken));
-            if (completed == handleCompletion)
-            {
-                return await handleCompletion;
-            }
         }
     }
 
@@ -520,6 +547,7 @@ internal sealed class DurableWorkflowExecutor(
         IReadOnlyList<WorkMessage> messages,
         CancellationToken cancellationToken)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         var failure = run.Fail(messages);
         await persistence.UpsertRun(this.CreatePersistenceRecord(run), cancellationToken);
         return failure;
