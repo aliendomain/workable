@@ -163,7 +163,7 @@ internal sealed class DurableWorkflowExecutor(
             await persistence.UpsertRun(this.CreatePersistenceRecord(run), CancellationToken.None);
             return paused;
         }
-        catch (Exception exception)
+        catch (Exception exception) when (ShouldHandleExecutionException(exception))
         {
             return await this.DeleteFailedRun(
                 run,
@@ -174,6 +174,18 @@ internal sealed class DurableWorkflowExecutor(
                 cancellationToken);
         }
     }
+
+    private static bool ShouldHandleExecutionException(Exception exception)
+        => exception is not (
+            OperationCanceledException or
+            OutOfMemoryException or
+            StackOverflowException or
+            AccessViolationException or
+            AppDomainUnloadedException or
+            BadImageFormatException or
+            CannotUnloadAppDomainException or
+            ThreadAbortException or
+            InvalidProgramException);
 
     private async Task<IReadOnlyList<WorkMessage>> Dispatch(
         WorkflowRunState run,

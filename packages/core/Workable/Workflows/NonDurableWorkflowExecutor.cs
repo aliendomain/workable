@@ -189,7 +189,7 @@ internal sealed class NonDurableWorkflowExecutor(
             await WorkflowExecutionSupport.PauseOutstandingChildren(run, session, getAuthoritativeWorker, CancellationToken.None);
             return run.Pause();
         }
-        catch (Exception exception)
+        catch (Exception exception) when (ShouldHandleExecutionException(exception))
         {
             return run.Fail(
                 [WorkMessage.Error(
@@ -198,6 +198,18 @@ internal sealed class NonDurableWorkflowExecutor(
                     "workflow.execution")]);
         }
     }
+
+    private static bool ShouldHandleExecutionException(Exception exception)
+        => exception is not (
+            OperationCanceledException or
+            OutOfMemoryException or
+            StackOverflowException or
+            AccessViolationException or
+            AppDomainUnloadedException or
+            BadImageFormatException or
+            CannotUnloadAppDomainException or
+            ThreadAbortException or
+            InvalidProgramException);
 
     private async Task<DispatchResult> Dispatch(
         WorkflowRunState run,
