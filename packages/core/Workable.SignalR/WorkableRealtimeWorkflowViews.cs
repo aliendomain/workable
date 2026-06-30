@@ -65,7 +65,19 @@ internal static class WorkableRealtimeWorkflowViews
                 _ => new WorkComponentResult("error", Error: $"Unknown component '{request.Type}'.", Shape: request.Shape),
             };
         }
-        catch (Exception exception)
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (ArgumentException exception)
+        {
+            return new WorkComponentResult("error", Error: exception.Message, Shape: request.Shape);
+        }
+        catch (InvalidOperationException exception)
+        {
+            return new WorkComponentResult("error", Error: exception.Message, Shape: request.Shape);
+        }
+        catch (JsonException exception)
         {
             return new WorkComponentResult("error", Error: exception.Message, Shape: request.Shape);
         }
