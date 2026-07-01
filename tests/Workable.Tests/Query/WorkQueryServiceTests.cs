@@ -296,6 +296,59 @@ public sealed class WorkQueryServiceTests
     }
 
     [Fact]
+    public async Task WorkerIterationsQueryReportsCurrentWorkerStateForRetryAttempts()
+    {
+        var attempts = 0;
+        var identifier = new WorkIdentifier("retry", "exhausted");
+        var definition = WorkDefinition.Create("iteration.retry.current-state", "Reports current worker state for retry attempts.");
+        await using var system = new ServiceCollection()
+            .AddWorkableSystem(builder => builder.AddWork(
+                definition,
+                (_, _, _) =>
+                {
+                    attempts++;
+                    throw new TimeoutException("Still failing.");
+                },
+                configuration => configuration
+                    .RetryTransientFailures(
+                        count: 1,
+                        initialDelay: TimeSpan.FromMilliseconds(1),
+                        jitter: TimeSpan.Zero)
+                    .ClassifyExceptions(exception => exception is TimeoutException
+                        ? WorkExceptionClassification.Transient
+                        : WorkExceptionClassification.Unknown)))
+            .BuildServiceProvider()
+            .GetRequiredService<IWorkSystemRegistry>()
+            .Default;
+
+        await system.Start();
+
+        var handle = await system.Queue.Enqueue(
+            "iteration.retry.current-state",
+            WorkInput.Empty.WithIdentifier(identifier));
+        await handle.WaitForCompletion();
+        await WaitForReadModel(system);
+        var workerId = RequiredWorkerId(handle);
+        var worker = await system.Query.Worker(workerId)
+            ?? throw new InvalidOperationException("Expected worker.");
+        var failed = await system.Query.WorkerIterations(new WorkerIterationCriteria(
+            WorkerId: workerId,
+            Statuses: new HashSet<WorkCompletionStatus> { WorkCompletionStatus.Failed }));
+        var failedByKey = Assert.Single((await system.Query.WorkIterationKeys(new WorkIterationKeyCriteria(
+            Kind: WorkKeyKind.Identifier,
+            Type: identifier.Type,
+            Value: identifier.Value,
+            Statuses: new HashSet<WorkCompletionStatus> { WorkCompletionStatus.Failed }))).Keys);
+
+        Assert.Equal(2, attempts);
+        Assert.Equal(WorkerState.Failed, worker.State);
+        Assert.Equal([2L, 1L], failed.Iterations.Select(iteration => iteration.Sequence));
+        Assert.All(failed.Iterations, iteration => Assert.Equal(WorkerState.Failed, iteration.WorkerState));
+        Assert.Equal([2L, 1L], failedByKey.Iterations.Select(iteration => iteration.Sequence));
+        Assert.All(failedByKey.Iterations, iteration => Assert.Equal(WorkerState.Failed, iteration.WorkerState));
+    }
+
+    [Fact]
     public async Task PurgingWorkerRemovesIndexedIterations()
     {
         await using var system = CreateSystem(
@@ -2073,5 +2126,4 @@ public sealed class WorkQueryServiceTests
             => Task.FromResult(WorkExecutionResult.Success());
     }
 }
-
 
