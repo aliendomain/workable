@@ -75,6 +75,7 @@ import {
   OverviewWorkerList,
   type WorkerActionTarget,
 } from "@/components/workable/console/overview-workers";
+import { StatusCountPill } from "@/components/workable/console/status-count-pill";
 import {
   stateTone,
   workableFetch,
@@ -991,7 +992,7 @@ function CompactWorkerStrip({
 }) {
   if (loading) {
     return (
-      <div className="flex h-8 items-center gap-2 overflow-x-auto">
+      <div className="workable-grid-scrollbar flex h-8 items-center gap-2 overflow-x-auto">
         <Skeleton className="h-7 w-32 rounded-full" />
         <Skeleton className="h-7 w-30 rounded-full" />
         <Skeleton className="h-7 w-30 rounded-full" />
@@ -1000,7 +1001,7 @@ function CompactWorkerStrip({
   }
 
   return (
-    <div className="flex min-h-8 items-center gap-2 overflow-x-auto">
+    <div className="workable-grid-scrollbar flex min-h-8 items-center gap-2 overflow-x-auto">
       <CompactWorkerStripItem
         label="Oldest queued"
         onClick={onOpenQueued}
@@ -1059,7 +1060,7 @@ function WorkerStateStrip({
 }) {
   if (loading) {
     return (
-      <div className="flex gap-2 overflow-x-auto pb-1">
+      <div className="workable-grid-scrollbar flex gap-2 overflow-x-auto pb-1">
         {overviewWorkerStates.map((state) => (
           <Skeleton className="h-8 min-w-28 flex-1 rounded-full" key={state} />
         ))}
@@ -1068,20 +1069,17 @@ function WorkerStateStrip({
   }
 
   return (
-    <div className="flex gap-2 overflow-x-auto pb-1">
+    <div className="workable-grid-scrollbar flex gap-2 overflow-x-auto pb-1">
       {overviewWorkerStates.map((state) => (
-        <button
-          aria-label={`Open workers filtered by ${state}`}
-          className={`inline-flex h-8 min-w-28 flex-1 cursor-pointer items-center justify-center gap-2 rounded-full border bg-muted/25 px-3 text-center ${subtleClickableTileClass} focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background`}
+        <StatusCountPill
+          ariaLabel={`Open workers filtered by ${state}`}
+          badgeClassName={stateTone(state)}
+          className={`min-w-28 flex-1 justify-center text-center ${subtleClickableTileClass}`}
           key={state}
           onClick={() => onSelectState(state)}
-          type="button"
-        >
-          <Badge className={`justify-center ${stateTone(state)}`} variant="outline">
-            {state}
-          </Badge>
-          <span className="font-mono text-sm leading-none">{counts[state] ?? 0}</span>
-        </button>
+          label={state}
+          value={counts[state] ?? 0}
+        />
       ))}
     </div>
   );

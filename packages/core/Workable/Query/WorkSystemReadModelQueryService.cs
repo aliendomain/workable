@@ -101,11 +101,12 @@ internal sealed class WorkSystemReadModelQueryService(
         var filtered = this.GetCandidateIterations(snapshot, query)
             .Where(iteration => Matches(iteration, query));
 
-        var sorted = Sort(filtered.Select(iteration => iteration.Overview), query.Sort, query.Direction);
+        var sorted = Sort(filtered, query.Sort, query.Direction);
         var materialized = sorted.ToArray();
         var page = materialized
             .Skip(normalizedSkip)
             .Take(normalizedTake)
+            .Select(iteration => CreateIterationOverviewItem(snapshot, iteration))
             .ToArray();
 
         return new WorkerIterationQueryResult(page, materialized.Length, normalizedSkip, normalizedTake);
@@ -225,7 +226,7 @@ internal sealed class WorkSystemReadModelQueryService(
                     first.Kind,
                     first.Type,
                     first.Value,
-                    CreateIterationOverviewList(group.Select(key => key.Iteration), query.Statuses));
+                    CreateIterationOverviewList(snapshot, group.Select(key => key.Iteration), query.Statuses));
             })
             .Where(key => key.Iterations.Count > 0)
             .OrderBy(key => key.Kind)
@@ -253,7 +254,7 @@ internal sealed class WorkSystemReadModelQueryService(
             .GroupBy(key => NormalizeType(key.Type))
             .Select(group =>
             {
-                var iterations = CreateIterationOverviewList(group.Select(key => key.Iteration), query.Statuses);
+                var iterations = CreateIterationOverviewList(snapshot, group.Select(key => key.Iteration), query.Statuses);
                 return new WorkIterationKeyTypeDescriptor(
                     group.First().Type,
                     iterations.Count,
@@ -766,7 +767,7 @@ internal sealed class WorkSystemReadModelQueryService(
             .OrderByDescending(iteration => iteration.CompletedAt)
             .ThenByDescending(iteration => iteration.Sequence)
             .Take(Math.Max(0, take))
-            .Select(iteration => iteration.Overview)];
+            .Select(iteration => CreateIterationOverviewItem(snapshot, iteration))];
 
     private static IEnumerable<WorkerReadModelWorker> GetWorkersByDefinition(
         WorkSystemReadModelSnapshot snapshot,
@@ -850,13 +851,22 @@ internal sealed class WorkSystemReadModelQueryService(
             .Select(worker => worker.Overview)];
 
     private static IReadOnlyList<WorkerIterationOverviewItem> CreateIterationOverviewList(
+        WorkSystemReadModelSnapshot snapshot,
         IEnumerable<WorkerReadModelIteration> iterations,
         IReadOnlySet<WorkCompletionStatus>? statuses)
         => [.. iterations
             .Where(iteration => statuses is null || statuses.Contains(iteration.Status))
             .DistinctBy(iteration => iteration.Reference)
             .OrderByDescending(iteration => iteration.CompletedAt)
-            .Select(iteration => iteration.Overview)];
+            .Select(iteration => CreateIterationOverviewItem(snapshot, iteration))];
+
+    private static WorkerIterationOverviewItem CreateIterationOverviewItem(
+        WorkSystemReadModelSnapshot snapshot,
+        WorkerReadModelIteration iteration)
+        => snapshot.WorkersById.TryGetValue(iteration.WorkerId, out var worker) &&
+            worker.State != iteration.WorkerState
+            ? iteration.Overview with { WorkerState = worker.State }
+            : iteration.Overview;
 
     private static Dictionary<WorkKeyKind, int> CountWorkersByKind(
         IEnumerable<WorkerReadModelKey> keys,
@@ -1015,6 +1025,22 @@ internal sealed class WorkSystemReadModelQueryService(
 
     private static IEnumerable<WorkerIterationOverviewItem> Sort(
         IEnumerable<WorkerIterationOverviewItem> iterations,
+        WorkerIterationCriteriaSort sort,
+        WorkCriteriaSortDirection direction)
+    {
+        var ascending = direction == WorkCriteriaSortDirection.Ascending;
+        return sort switch
+        {
+            WorkerIterationCriteriaSort.StartedAt => ascending ? iterations.OrderBy(iteration => iteration.StartedAt) : iterations.OrderByDescending(iteration => iteration.StartedAt),
+            WorkerIterationCriteriaSort.ExecutionDuration => ascending ? iterations.OrderBy(iteration => iteration.ExecutionDuration) : iterations.OrderByDescending(iteration => iteration.ExecutionDuration),
+            WorkerIterationCriteriaSort.DefinitionName => ascending ? iterations.OrderBy(iteration => iteration.DefinitionName) : iterations.OrderByDescending(iteration => iteration.DefinitionName),
+            WorkerIterationCriteriaSort.Status => ascending ? iterations.OrderBy(iteration => iteration.Status) : iterations.OrderByDescending(iteration => iteration.Status),
+            _ => ascending ? iterations.OrderBy(iteration => iteration.CompletedAt) : iterations.OrderByDescending(iteration => iteration.CompletedAt),
+        };
+    }
+
+    private static IEnumerable<WorkerReadModelIteration> Sort(
+        IEnumerable<WorkerReadModelIteration> iterations,
         WorkerIterationCriteriaSort sort,
         WorkCriteriaSortDirection direction)
     {
