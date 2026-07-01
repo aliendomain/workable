@@ -67,7 +67,7 @@ export function IterationStatusStrip({
 }) {
   if (loading) {
     return (
-      <div className="flex gap-2 overflow-x-auto pb-1">
+      <div className="workable-grid-scrollbar flex gap-2 overflow-x-auto pb-1">
         {statuses.map((status) => (
           <Skeleton className="h-8 min-w-28 flex-1 rounded-full" key={status} />
         ))}
@@ -76,7 +76,7 @@ export function IterationStatusStrip({
   }
 
   return (
-    <div className="flex gap-2 overflow-x-auto pb-1">
+    <div className="workable-grid-scrollbar flex gap-2 overflow-x-auto pb-1">
       {statuses.map((status) => (
         <StatusCountPill
           ariaLabel={`Open iterations filtered by ${status}`}
@@ -109,7 +109,7 @@ export function CompactIterationStrip({
 }) {
   if (loading) {
     return (
-      <div className="flex h-8 items-center gap-2 overflow-x-auto">
+      <div className="workable-grid-scrollbar flex h-8 items-center gap-2 overflow-x-auto">
         {statuses.map((status) => (
           <Skeleton className="h-7 w-30 rounded-full" key={status} />
         ))}
@@ -118,7 +118,7 @@ export function CompactIterationStrip({
   }
 
   return (
-    <div className="flex min-h-8 items-center gap-2 overflow-x-auto">
+    <div className="workable-grid-scrollbar flex min-h-8 items-center gap-2 overflow-x-auto">
       {statuses.map((status) => (
         <CompactIterationStripItem
           key={status}

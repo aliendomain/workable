@@ -53,6 +53,10 @@ test("overview view shows loading, component errors, and panel controls", async 
 
     await result.waitFor(() => result.getByText("Active workers"));
     await result.waitFor(() => result.getByText("Iterations unavailable"));
+    assert.ok(
+      result.getByRole("button", { name: "Open workers filtered by Queued" })
+        .closest(".workable-grid-scrollbar")
+    );
     assert.deepEqual(callbacks.statesLoaded, ["Started"]);
     assert.equal(callbacks.readyCount > 0, true);
 
@@ -269,6 +273,10 @@ test("overview iteration panels open status, key type, and recent worker flows",
 
   try {
     await result.waitFor(() => result.getByText("BillInvoices"));
+    assert.ok(
+      result.getByRole("button", { name: "Open iterations filtered by Failed" })
+        .closest(".workable-grid-scrollbar")
+    );
 
     await result.click(result.getByRole("button", { name: "Open iterations filtered by Failed" }));
     assert.deepEqual(callbacks.iterationFilters.at(-1), ["Failed"]);

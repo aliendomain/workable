@@ -24,14 +24,18 @@ export function StatusCountPill({
   valueClassName,
 }: StatusCountPillProps) {
   const content = (
-    <>
-      <Badge className={cn("justify-center", badgeClassName)} variant="outline">
-        {label}
-      </Badge>
-      <span className={cn("whitespace-nowrap font-mono font-medium text-sm leading-none", valueClassName)}>
+    <Badge
+      className={cn(
+        "h-8 w-full justify-center gap-2 px-3 text-sm transition-colors group-hover/status-count:border-primary/60",
+        badgeClassName
+      )}
+      variant="outline"
+    >
+      <span className="whitespace-nowrap">{label}</span>
+      <span className={cn("whitespace-nowrap font-mono font-medium leading-none", valueClassName)}>
         {value}
       </span>
-    </>
+    </Badge>
   );
 
   if (onClick) {
@@ -39,7 +43,7 @@ export function StatusCountPill({
       <button
         aria-label={ariaLabel}
         className={cn(
-          "inline-flex h-8 shrink-0 cursor-pointer items-center gap-2 rounded-full border bg-muted/25 px-3 text-left transition-colors hover:border-primary/60 hover:bg-accent/50 hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
+          "group/status-count inline-flex h-8 shrink-0 cursor-pointer items-center justify-center rounded-full text-left transition-colors hover:bg-accent/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
           className
         )}
         onClick={onClick}
@@ -51,7 +55,7 @@ export function StatusCountPill({
   }
 
   return (
-    <div className={cn("inline-flex h-8 shrink-0 items-center gap-2 rounded-full border bg-muted/25 px-3 text-left", className)}>
+    <div className={cn("inline-flex h-8 shrink-0 items-center justify-center rounded-full text-left", className)}>
       {content}
     </div>
   );
