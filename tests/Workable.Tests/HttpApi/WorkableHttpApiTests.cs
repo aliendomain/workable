@@ -1297,6 +1297,103 @@ public sealed class WorkableHttpApiTests
         Assert.Equal(expected, actual);
     }
 
+    [Fact]
+    public async Task HttpWorkflowAdapterUsesCommandRunForWaitStartResponse()
+    {
+        var runId = new WorkflowRunId(Guid.NewGuid());
+        var completedAt = DateTimeOffset.UtcNow;
+        var commandRun = new WorkflowCommandRun(
+            runId,
+            "http.workflow.command.snapshot",
+            WorkflowRunStatus.Completed,
+            [],
+            completedAt.AddSeconds(-1),
+            completedAt.AddSeconds(-1),
+            completedAt,
+            []);
+        var (system, _) = CreateHost(builder => builder.AddWorkflow(
+            WorkflowDefinition.Create("http.workflow.command.snapshot"),
+            workflow => workflow.Join("complete")));
+        var adapter = new WorkableHttpWorkflowAdapter(new StubWorkflowCommandDispatcher
+        {
+            StartResult = new WorkflowCommandResult(
+                WorkflowCommandStatus.Completed,
+                runId,
+                WorkflowRunStatus.Completed,
+                commandRun,
+                ErrorCode: null,
+                ErrorMessage: null,
+                Messages: []),
+        });
+
+        var result = await adapter.Start(
+            system,
+            "http.workflow.command.snapshot",
+            DirectRequestContext(),
+            new WorkableHttpWorkflowStartRequest(Completion: WorkableHttpCompletion.WaitForCompletion));
+
+        Assert.Equal(WorkableHttpWorkflowStartStatus.Accepted, result.Status);
+        Assert.Equal(runId.Value, result.RunId);
+        Assert.NotNull(result.Run);
+        Assert.Equal("http.workflow.command.snapshot", result.Run.DefinitionName);
+        Assert.Equal(WorkflowRunStatus.Completed, result.Run.Status);
+    }
+
+    [Fact]
+    public async Task HttpWorkflowAdapterDoesNotHydrateUnauthorizedActionRunById()
+    {
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var (system, _) = CreateHost(builder =>
+        {
+            builder.AddWork(
+                WorkDefinition.Create("http.workflow.command.secured.child"),
+                async (_, _, cancellationToken) =>
+                {
+                    started.TrySetResult();
+                    await release.Task.WaitAsync(cancellationToken);
+                    return WorkExecutionResult.Success();
+                });
+            builder.AddWorkflow(
+                WorkflowDefinition.Create("http.workflow.command.secured"),
+                workflow => workflow.DispatchWork("dispatch", WorkDefinition.Create("http.workflow.command.secured.child")));
+        });
+        await system.Start();
+        var runtime = Assert.IsType<InMemoryWorkSystem>(system).WorkflowRuntime;
+        var handle = runtime.Start("http.workflow.command.secured", DirectRequestContext());
+        var runId = handle.RunId ?? throw new InvalidOperationException("Expected workflow run id.");
+        await started.Task.WaitAsync(CancellationToken.None);
+        Assert.NotNull(runtime.Get(runId));
+        var adapter = new WorkableHttpWorkflowAdapter(new StubWorkflowCommandDispatcher
+        {
+            ExecuteResult = new WorkflowCommandResult(
+                WorkflowCommandStatus.Unauthorized,
+                runId,
+                RunStatus: null,
+                Run: null,
+                ErrorCode: "workable.workflow.run.unauthorized",
+                ErrorMessage: "You are not authorized to operate this workflow run.",
+                Messages: [WorkMessage.Error("workable.workflow.run.unauthorized", "You are not authorized to operate this workflow run.")]),
+        });
+
+        try
+        {
+            var result = await adapter.Execute(
+                system,
+                runId,
+                WorkflowAction.Cancel,
+                DirectRequestContext());
+
+            Assert.Equal(WorkableHttpWorkflowActionStatus.Unauthorized, result.Status);
+            Assert.Equal(runId.Value, result.RunId);
+            Assert.Null(result.Run);
+        }
+        finally
+        {
+            release.TrySetResult();
+        }
+    }
+
     private static T InvokePrivateHttpWorkflowAdapter<T>(
         string name,
         Type[] parameterTypes,
@@ -3199,6 +3296,53 @@ public sealed class WorkableHttpApiTests
         WorkableHttpQueryAdapter Query,
         WorkableHttpWorkflowAdapter Workflows,
         WorkableHttpWorkerAdapter Workers);
+
+    private sealed class StubWorkflowCommandDispatcher : IWorkflowCommandDispatcher
+    {
+        public WorkflowCommandResult? StartResult { get; init; }
+
+        public WorkflowCommandResult? ExecuteResult { get; init; }
+
+        public Task<WorkflowCommandResult> Start(
+            string workflowName,
+            WorkRequestContext requestContext,
+            WorkflowCommandOptions? options = null,
+            CancellationToken cancellationToken = default)
+            => this.Start(
+                systemName: null,
+                workflowName,
+                requestContext,
+                options,
+                cancellationToken);
+
+        public Task<WorkflowCommandResult> Start(
+            string? systemName,
+            string workflowName,
+            WorkRequestContext requestContext,
+            WorkflowCommandOptions? options = null,
+            CancellationToken cancellationToken = default)
+            => Task.FromResult(this.StartResult ?? throw new InvalidOperationException("Expected start result."));
+
+        public Task<WorkflowCommandResult> Execute(
+            WorkflowRunId runId,
+            WorkflowRunAction action,
+            WorkRequestContext requestContext,
+            CancellationToken cancellationToken = default)
+            => this.Execute(
+                systemName: null,
+                runId,
+                action,
+                requestContext,
+                cancellationToken);
+
+        public Task<WorkflowCommandResult> Execute(
+            string? systemName,
+            WorkflowRunId runId,
+            WorkflowRunAction action,
+            WorkRequestContext requestContext,
+            CancellationToken cancellationToken = default)
+            => Task.FromResult(this.ExecuteResult ?? throw new InvalidOperationException("Expected execute result."));
+    }
 
     private static Task<IHost> CreateHttpHost(
         bool authenticated = true,

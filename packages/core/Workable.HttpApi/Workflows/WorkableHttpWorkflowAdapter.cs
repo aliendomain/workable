@@ -22,7 +22,6 @@ internal sealed class WorkableHttpWorkflowAdapter(
         ArgumentException.ThrowIfNullOrWhiteSpace(workflowName);
         ArgumentNullException.ThrowIfNull(requestContext);
 
-        var runtime = ResolveRuntime(system).WorkflowRuntime;
         var result = await commands.Start(
             system.Name,
             workflowName,
@@ -44,7 +43,7 @@ internal sealed class WorkableHttpWorkflowAdapter(
         return new WorkableHttpWorkflowStartResult(
             WorkableHttpWorkflowStartStatus.Accepted,
             result.RunId.Value.Value,
-            WorkableHttpWorkflowRun.From(runtime.Get(result.RunId.Value)),
+            WorkableHttpWorkflowRun.From(result.Run),
             result.Messages);
     }
 
@@ -62,7 +61,6 @@ internal sealed class WorkableHttpWorkflowAdapter(
         ArgumentNullException.ThrowIfNull(requestContext);
         cancellationToken.ThrowIfCancellationRequested();
 
-        var runtime = ResolveRuntime(system).WorkflowRuntime;
         var result = await commands.Execute(
             system.Name,
             runId,
@@ -73,7 +71,7 @@ internal sealed class WorkableHttpWorkflowAdapter(
             MapActionStatus(result.Status),
             MapActionKind(action),
             (result.RunId ?? runId).Value,
-            WorkableHttpWorkflowRun.From(result.RunId is { } resultRunId ? runtime.Get(resultRunId) : null),
+            WorkableHttpWorkflowRun.From(result.Run),
             result.Messages);
     }
 
@@ -112,10 +110,6 @@ internal sealed class WorkableHttpWorkflowAdapter(
         int childSampleSize = 3,
         CancellationToken cancellationToken = default)
         => Views.Runs(system, requestContext, includeFinal, definitionName, childSampleSize, cancellationToken);
-
-    private static InMemoryWorkSystem ResolveRuntime(IWorkSystem system)
-        => system as InMemoryWorkSystem
-            ?? throw new InvalidOperationException("Workflow HTTP routes require the built-in Workable system implementation.");
 
     private static WorkableHttpWorkflowStartStatus MapStartStatus(WorkflowCommandStatus status)
         => status switch

@@ -142,18 +142,18 @@ public sealed class WorkflowCommandDispatcherShould
             "workflow.command.blocked",
             WorkRequestContext.Create(WorkInvocationChannel.InProcess),
             new WorkflowCommandOptions(WorkDispatchCompletion.ReturnAfterAccepted));
+        var runId = result.RunId ?? throw new InvalidOperationException("Expected workflow run id.");
         WorkflowRunSnapshot? blocked = null;
         await TestEventually.Until(
             () =>
             {
-                blocked = ((InMemoryWorkSystem)system).WorkflowRuntime.Get(result.RunId!.Value);
+                blocked = ((InMemoryWorkSystem)system).WorkflowRuntime.Get(runId);
                 return blocked?.Status == WorkflowRunStatus.Blocked;
             },
             "Expected the workflow to block when a joined child failed.");
 
         Assert.True(result.IsSuccess);
         Assert.Equal(WorkflowCommandStatus.Accepted, result.Status);
-        Assert.NotNull(result.RunId);
         Assert.Equal(WorkflowRunStatus.Running, result.RunStatus);
         Assert.Equal(WorkflowRunStatus.Blocked, blocked!.Status);
         Assert.Contains(blocked.Messages, message => message.Code == "workflow.command.child.failed");
@@ -280,12 +280,13 @@ public sealed class WorkflowCommandDispatcherShould
             "workflow.command.pause",
             WorkRequestContext.Create(WorkInvocationChannel.InProcess),
             new WorkflowCommandOptions(WorkDispatchCompletion.ReturnAfterAccepted));
+        var runId = start.RunId ?? throw new InvalidOperationException("Expected workflow run id.");
         await started.Task.WaitAsync(CancellationToken.None);
 
         try
         {
             var pause = await dispatcher.Execute(
-                start.RunId!.Value,
+                runId,
                 WorkflowRunAction.Pause,
                 WorkRequestContext.Create(WorkInvocationChannel.InProcess));
 
@@ -329,12 +330,13 @@ public sealed class WorkflowCommandDispatcherShould
             "workflow.command.cancel",
             WorkRequestContext.Create(WorkInvocationChannel.InProcess),
             new WorkflowCommandOptions(WorkDispatchCompletion.ReturnAfterAccepted));
+        var runId = start.RunId ?? throw new InvalidOperationException("Expected workflow run id.");
         await started.Task.WaitAsync(CancellationToken.None);
 
         try
         {
             var cancel = await dispatcher.Execute(
-                start.RunId!.Value,
+                runId,
                 WorkflowRunAction.Cancel,
                 WorkRequestContext.Create(WorkInvocationChannel.InProcess));
             release.TrySetResult();
@@ -342,7 +344,7 @@ public sealed class WorkflowCommandDispatcherShould
             await TestEventually.Until(
                 () =>
                 {
-                    canceled = ((InMemoryWorkSystem)system).WorkflowRuntime.Get(start.RunId.Value);
+                    canceled = ((InMemoryWorkSystem)system).WorkflowRuntime.Get(runId);
                     return canceled?.Status == WorkflowRunStatus.Canceled;
                 },
                 "Expected the workflow to cancel.");
@@ -389,20 +391,21 @@ public sealed class WorkflowCommandDispatcherShould
             "workflow.command.resume",
             WorkRequestContext.Create(WorkInvocationChannel.InProcess),
             new WorkflowCommandOptions(WorkDispatchCompletion.ReturnAfterAccepted));
+        var runId = start.RunId ?? throw new InvalidOperationException("Expected workflow run id.");
         await started.Task.WaitAsync(CancellationToken.None);
         var pause = await dispatcher.Execute(
-            start.RunId!.Value,
+            runId,
             WorkflowRunAction.Pause,
             WorkRequestContext.Create(WorkInvocationChannel.InProcess));
         Assert.True(pause.IsSuccess);
         await TestEventually.Until(
-            () => ((InMemoryWorkSystem)system).WorkflowRuntime.Get(start.RunId.Value)?.Status == WorkflowRunStatus.Paused,
+            () => ((InMemoryWorkSystem)system).WorkflowRuntime.Get(runId)?.Status == WorkflowRunStatus.Paused,
             "Expected the workflow to pause.");
 
         try
         {
             var resume = await dispatcher.Execute(
-                start.RunId.Value,
+                runId,
                 WorkflowRunAction.Start,
                 WorkRequestContext.Create(WorkInvocationChannel.InProcess));
 
@@ -462,9 +465,10 @@ public sealed class WorkflowCommandDispatcherShould
         var start = await dispatcher.Start(
             "workflow.command.final",
             WorkRequestContext.Create(WorkInvocationChannel.InProcess));
+        var runId = start.RunId ?? throw new InvalidOperationException("Expected workflow run id.");
 
         var result = await dispatcher.Execute(
-            start.RunId!.Value,
+            runId,
             WorkflowRunAction.Cancel,
             WorkRequestContext.Create(WorkInvocationChannel.InProcess));
 

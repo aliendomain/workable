@@ -50,6 +50,7 @@ public sealed class WorkflowCommandDispatcher(
                 ToCommandStatus(handle.StartOutcome.Status),
                 handle.RunId,
                 runStatus: null,
+                run: null,
                 handle.StartOutcome.Messages);
         }
 
@@ -59,15 +60,16 @@ public sealed class WorkflowCommandDispatcher(
             return CreateResult(
                 WorkflowCommandStatus.Accepted,
                 runId,
-                runId is { } acceptedRunId ? runtime.Get(acceptedRunId)?.Status : null,
+                run: runId is { } acceptedRunId ? runtime.Get(acceptedRunId) : null,
                 handle.StartOutcome.Messages);
         }
 
         var completion = await handle.WaitForCompletion(cancellationToken);
+        var completedRun = completion.Run ?? (runId is { } completedRunId ? runtime.Get(completedRunId) : null);
         return CreateResult(
             ToCommandStatus(completion.Status),
             runId,
-            completion.Run?.Status ?? (runId is { } completedRunId ? runtime.Get(completedRunId)?.Status : null),
+            completedRun,
             completion.Messages);
     }
 
@@ -108,7 +110,7 @@ public sealed class WorkflowCommandDispatcher(
         return CreateResult(
             ToCommandStatus(outcome.Status),
             outcome.RunId,
-            outcome.Run?.Status,
+            outcome.Run,
             outcome.Messages);
     }
 
@@ -153,13 +155,27 @@ public sealed class WorkflowCommandDispatcher(
             WorkflowCommandStatus.SystemNotFound,
             runId: null,
             runStatus: null,
+            run: null,
             messages);
     }
 
     private static WorkflowCommandResult CreateResult(
         WorkflowCommandStatus status,
         WorkflowRunId? runId,
+        WorkflowRunSnapshot? run,
+        IReadOnlyList<WorkMessage> messages)
+        => CreateResult(
+            status,
+            runId,
+            run?.Status,
+            run,
+            messages);
+
+    private static WorkflowCommandResult CreateResult(
+        WorkflowCommandStatus status,
+        WorkflowRunId? runId,
         WorkflowRunStatus? runStatus,
+        WorkflowRunSnapshot? run,
         IReadOnlyList<WorkMessage> messages)
     {
         var error = messages
@@ -170,12 +186,34 @@ public sealed class WorkflowCommandDispatcher(
             status,
             runId,
             runStatus,
+            run is null ? null : ToCommandRun(run),
             error?.Code,
             string.IsNullOrWhiteSpace(error?.Text)
                 ? null
                 : error.Text,
             messages);
     }
+
+    private static WorkflowCommandRun ToCommandRun(WorkflowRunSnapshot snapshot)
+        => new(
+            snapshot.Id,
+            snapshot.DefinitionName,
+            snapshot.Status,
+            snapshot.Steps.Select(ToCommandStep).ToArray(),
+            snapshot.CreatedAt,
+            snapshot.StartedAt,
+            snapshot.CompletedAt,
+            snapshot.Messages);
+
+    private static WorkflowCommandStep ToCommandStep(WorkflowStepRunSnapshot snapshot)
+        => new(
+            snapshot.Name,
+            snapshot.Kind,
+            snapshot.Status,
+            snapshot.WorkerIds,
+            snapshot.StartedAt,
+            snapshot.CompletedAt,
+            snapshot.Messages);
 
     private static WorkflowCommandStatus ToCommandStatus(WorkflowStartStatus status)
         => status switch

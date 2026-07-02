@@ -27,6 +27,20 @@ public sealed record WorkableHttpWorkflowRun(
                 snapshot.StartedAt,
                 snapshot.CompletedAt,
                 snapshot.Messages);
+
+    internal static WorkableHttpWorkflowRun? From(WorkflowCommandRun? snapshot)
+        => snapshot is null
+            ? null
+            : new WorkableHttpWorkflowRun(
+                snapshot.RunId.Value,
+                snapshot.DefinitionName,
+                snapshot.Status,
+                WorkflowAvailableActions.For(snapshot.Status),
+                snapshot.Steps.Select(WorkableHttpWorkflowStep.From).ToArray(),
+                snapshot.CreatedAt,
+                snapshot.StartedAt,
+                snapshot.CompletedAt,
+                snapshot.Messages);
 }
 
 /// <summary>
@@ -42,6 +56,16 @@ public sealed record WorkableHttpWorkflowStep(
     IReadOnlyList<WorkMessage> Messages)
 {
     internal static WorkableHttpWorkflowStep From(WorkflowStepRunSnapshot snapshot)
+        => new(
+            snapshot.Name,
+            snapshot.Kind,
+            snapshot.Status,
+            snapshot.WorkerIds.Select(workerId => workerId.Value).ToArray(),
+            snapshot.StartedAt,
+            snapshot.CompletedAt,
+            snapshot.Messages);
+
+    internal static WorkableHttpWorkflowStep From(WorkflowCommandStep snapshot)
         => new(
             snapshot.Name,
             snapshot.Kind,

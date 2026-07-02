@@ -123,6 +123,7 @@ public sealed class HttpContextWorkflowCommandDispatcher(
             WorkflowCommandStatus.RequestContextUnavailable,
             RunId: null,
             RunStatus: null,
+            Run: null,
             ErrorCode: messages[0].Code,
             ErrorMessage: messages[0].Text,
             Messages: messages);
