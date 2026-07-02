@@ -5,6 +5,7 @@ using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Security.Claims;
 using System.Collections.Concurrent;
+using System.Reflection;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
@@ -1254,6 +1255,63 @@ public sealed class WorkableHttpApiTests
         Assert.NotNull(result.RunId);
         Assert.NotNull(result.Run);
         Assert.Equal(WorkflowRunStatus.Completed, result.Run!.Status);
+    }
+
+    [Theory]
+    [InlineData(WorkflowCommandStatus.Accepted, WorkableHttpWorkflowStartStatus.Accepted)]
+    [InlineData(WorkflowCommandStatus.Running, WorkableHttpWorkflowStartStatus.Accepted)]
+    [InlineData(WorkflowCommandStatus.Paused, WorkableHttpWorkflowStartStatus.Accepted)]
+    [InlineData(WorkflowCommandStatus.Blocked, WorkableHttpWorkflowStartStatus.Accepted)]
+    [InlineData(WorkflowCommandStatus.Completed, WorkableHttpWorkflowStartStatus.Accepted)]
+    [InlineData(WorkflowCommandStatus.Failed, WorkableHttpWorkflowStartStatus.Accepted)]
+    [InlineData(WorkflowCommandStatus.Canceled, WorkableHttpWorkflowStartStatus.Accepted)]
+    [InlineData(WorkflowCommandStatus.NotFound, WorkableHttpWorkflowStartStatus.NotFound)]
+    [InlineData(WorkflowCommandStatus.Unauthorized, WorkableHttpWorkflowStartStatus.Unauthorized)]
+    [InlineData(WorkflowCommandStatus.Invalid, WorkableHttpWorkflowStartStatus.Invalid)]
+    public void HttpWorkflowAdapterMapsStartStatuses(
+        WorkflowCommandStatus source,
+        WorkableHttpWorkflowStartStatus expected)
+    {
+        var actual = InvokePrivateHttpWorkflowAdapter<WorkableHttpWorkflowStartStatus>(
+            "MapStartStatus",
+            [typeof(WorkflowCommandStatus)],
+            source);
+
+        Assert.Equal(expected, actual);
+    }
+
+    [Theory]
+    [InlineData(WorkflowCommandStatus.Accepted, WorkableHttpWorkflowActionStatus.Accepted)]
+    [InlineData(WorkflowCommandStatus.NotFound, WorkableHttpWorkflowActionStatus.NotFound)]
+    [InlineData(WorkflowCommandStatus.Unauthorized, WorkableHttpWorkflowActionStatus.Unauthorized)]
+    [InlineData(WorkflowCommandStatus.Invalid, WorkableHttpWorkflowActionStatus.Invalid)]
+    public void HttpWorkflowAdapterMapsActionStatuses(
+        WorkflowCommandStatus source,
+        WorkableHttpWorkflowActionStatus expected)
+    {
+        var actual = InvokePrivateHttpWorkflowAdapter<WorkableHttpWorkflowActionStatus>(
+            "MapActionStatus",
+            [typeof(WorkflowCommandStatus)],
+            source);
+
+        Assert.Equal(expected, actual);
+    }
+
+    private static T InvokePrivateHttpWorkflowAdapter<T>(
+        string name,
+        Type[] parameterTypes,
+        object argument)
+    {
+        var method = typeof(WorkableHttpWorkflowAdapter).GetMethod(
+            name,
+            BindingFlags.NonPublic | BindingFlags.Static,
+            binder: null,
+            parameterTypes,
+            modifiers: null)
+            ?? throw new InvalidOperationException($"Expected private method '{name}'.");
+
+        return (T)(method.Invoke(null, [argument])
+            ?? throw new InvalidOperationException($"Private method '{name}' returned null."));
     }
 
     [Fact]

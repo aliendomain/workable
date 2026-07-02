@@ -223,6 +223,22 @@ builder.AddWorkflow(
 
 Starting a workflow checks workflow operate permission.
 
+## Starting From In-Process Code
+
+In-process services can start workflows through `IWorkflowCommandDispatcher`.
+
+```csharp
+var result = await workflows.Start(
+    "orders.fulfillment",
+    requestContext,
+    new WorkflowCommandOptions(WorkDispatchCompletion.ReturnAfterAccepted),
+    cancellationToken);
+```
+
+The dispatcher resolves the target Workable system, applies workflow operate authorization using the supplied `WorkRequestContext`, starts the workflow by name, and can either return after acceptance or wait for terminal workflow completion.
+
+ASP.NET Core endpoints can use `IHttpContextWorkflowCommandDispatcher` to build the request context from the current `HttpContext`.
+
 ## Child Work Provenance
 
 Workflow-started child work stores the caller's actor, origin, and authentication state in `WorkRequestContext` and adds workflow correlation identifiers to the queued `WorkInput`:
