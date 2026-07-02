@@ -56,6 +56,7 @@ Execution context also exposes the worker's `WorkRequestContext` (including `Ori
 - The workflow step graph supports `DispatchWork`, `Parallel`, and `Join`.
 - Workflow steps dispatch existing work definitions; they do not introduce a separate executor implementation model.
 - Workflows start by name, forward the original actor, origin, and authentication state from `WorkRequestContext` to child work, and add `workflow-run`, `workflow-definition`, and `workflow-step` identifiers to child work input.
+- `IWorkflowCommandDispatcher` provides a standardized in-process start-and-optionally-wait path for callers that want system resolution, workflow authorization, execution, and completion mapping in one helper.
 - Persisted workflow runs and queued workers retain actor, origin, and authentication state from `WorkRequestContext`, but do not retain precomputed authorization snapshots.
 - Workflow actions are `Start`, `Pause`, and `Cancel`. `Paused` and `Blocked` workflow runs can be started again, and blocked runs also resume automatically when their outstanding failed child workers are restarted and later complete successfully.
 - Non-durable workflows keep run state in memory.
@@ -78,6 +79,7 @@ Execution context also exposes the worker's `WorkRequestContext` (including `Ori
 - Queue work by passing the definition name to `IWorkQueueService`.
 - `IWorkCommandDispatcher` provides a standardized queue-and-optionally-wait path for callers that want system resolution, session creation, queueing, and completion mapping in one helper.
 - `IHttpContextWorkCommandDispatcher` is the ASP.NET Core convenience wrapper for that same path when the current `HttpContext` should define the `WorkRequestContext`.
+- `IHttpContextWorkflowCommandDispatcher` is the ASP.NET Core convenience wrapper for workflow start and action commands from custom HTTP endpoints.
 - `IStartupWorkSource` can return startup queue requests after the catalog is ready.
 - Starting a stopped system runs automatic starts and startup work sources again without rebuilding work definitions that were already added by work definition sources.
 - Queue input can be supplied as `WorkInput` or as a typed CLR value that Workable serializes into `WorkInput`.

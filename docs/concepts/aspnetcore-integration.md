@@ -11,6 +11,7 @@ This package does not add Workable routes. It does not choose your authenticatio
 Use `Workable.AspNetCore` directly when:
 
 - your application has custom controllers or minimal APIs that queue work through `IHttpContextWorkCommandDispatcher`
+- your application has custom controllers or minimal APIs that start or operate workflow runs through `IHttpContextWorkflowCommandDispatcher`
 - you are building your own ASP.NET Core transport instead of using Workable's built-in HTTP, MCP, or SignalR adapters
 - you want Workable actor and authorization-group resolution to come from `HttpContext.User`
 
@@ -29,6 +30,7 @@ That registers:
 - `IWorkActorFactory`
 - `IWorkRequestContextFactory`
 - `IHttpContextWorkCommandDispatcher`
+- `IHttpContextWorkflowCommandDispatcher`
 - a default `IWorkAuthorizationGroupProvider`
 - `IHttpContextAccessor` when one is not already registered
 
@@ -68,6 +70,35 @@ app.MapPost("/welcome/{userId}", async (
 ```
 
 Use `WorkDispatchCompletion.WaitForCompletion` when the caller needs the final output in the HTTP response instead of returning after acceptance.
+
+## Preferred HTTP Workflow Command Path
+
+For custom ASP.NET Core endpoints that need to start or operate workflows, prefer `IHttpContextWorkflowCommandDispatcher`.
+
+```csharp
+app.MapPost("/orders/{orderId}/fulfill", async (
+    string orderId,
+    IHttpContextWorkflowCommandDispatcher workflows,
+    CancellationToken cancellationToken) =>
+{
+    var result = await workflows.Start(
+        "orders.fulfillment",
+        $"Start fulfillment for order {orderId}.",
+        new WorkflowCommandOptions(WorkDispatchCompletion.ReturnAfterAccepted),
+        cancellationToken);
+
+    return Results.Ok(new
+    {
+        result.Status,
+        result.RunId,
+        result.RunStatus,
+        result.ErrorCode,
+        result.ErrorMessage,
+    });
+});
+```
+
+Use `WorkflowRunAction.Start`, `WorkflowRunAction.Pause`, and `WorkflowRunAction.Cancel` with `Execute(...)` when a custom endpoint needs to operate an existing workflow run.
 
 ## Request Context Creation
 

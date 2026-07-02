@@ -3,7 +3,8 @@ namespace Workable;
 /// <summary>
 /// Adapts workflow start and control requests to the HTTP API surface.
 /// </summary>
-internal sealed class WorkableHttpWorkflowAdapter
+internal sealed class WorkableHttpWorkflowAdapter(
+    IWorkflowCommandDispatcher commands)
 {
     private static readonly WorkflowRunViewAdapter Views = new();
 
@@ -21,33 +22,29 @@ internal sealed class WorkableHttpWorkflowAdapter
         ArgumentException.ThrowIfNullOrWhiteSpace(workflowName);
         ArgumentNullException.ThrowIfNull(requestContext);
 
-        var runtime = ResolveRuntime(system).WorkflowRuntime;
-        var handle = runtime.Start(workflowName, requestContext, cancellationToken);
-        if (!handle.StartOutcome.IsAccepted)
+        var result = await commands.Start(
+            system.Name,
+            workflowName,
+            requestContext,
+            new WorkflowCommandOptions(
+                request?.Completion == WorkableHttpCompletion.WaitForCompletion
+                    ? WorkDispatchCompletion.WaitForCompletion
+                    : WorkDispatchCompletion.ReturnAfterAccepted),
+            cancellationToken);
+        if (result.RunId is null)
         {
             return new WorkableHttpWorkflowStartResult(
-                MapStartStatus(handle.StartOutcome.Status),
+                MapStartStatus(result.Status),
                 null,
                 null,
-                handle.StartOutcome.Messages);
-        }
-
-        var runId = handle.RunId?.Value;
-        if ((request?.Completion ?? WorkableHttpCompletion.ReturnAfterAccepted) == WorkableHttpCompletion.WaitForCompletion)
-        {
-            var completion = await handle.WaitForCompletion(cancellationToken);
-            return new WorkableHttpWorkflowStartResult(
-                WorkableHttpWorkflowStartStatus.Accepted,
-                runId,
-                WorkableHttpWorkflowRun.From(completion.Run ?? runtime.Get(handle.RunId!.Value)),
-                completion.Messages);
+                result.Messages);
         }
 
         return new WorkableHttpWorkflowStartResult(
             WorkableHttpWorkflowStartStatus.Accepted,
-            runId,
-            WorkableHttpWorkflowRun.From(handle.RunId is { } acceptedRunId ? runtime.Get(acceptedRunId) : null),
-            handle.StartOutcome.Messages);
+            result.RunId.Value.Value,
+            WorkableHttpWorkflowRun.From(result.Run),
+            result.Messages);
     }
 
     /// <summary>
@@ -64,13 +61,18 @@ internal sealed class WorkableHttpWorkflowAdapter
         ArgumentNullException.ThrowIfNull(requestContext);
         cancellationToken.ThrowIfCancellationRequested();
 
-        var outcome = await ResolveRuntime(system).WorkflowRuntime.Execute(runId, action, requestContext);
+        var result = await commands.Execute(
+            system.Name,
+            runId,
+            ToRunAction(action),
+            requestContext,
+            cancellationToken);
         return new WorkableHttpWorkflowActionResult(
-            MapActionStatus(outcome.Status),
+            MapActionStatus(result.Status),
             MapActionKind(action),
-            outcome.RunId.Value,
-            WorkableHttpWorkflowRun.From(outcome.Run),
-            outcome.Messages);
+            (result.RunId ?? runId).Value,
+            WorkableHttpWorkflowRun.From(result.Run),
+            result.Messages);
     }
 
     /// <summary>
@@ -109,25 +111,27 @@ internal sealed class WorkableHttpWorkflowAdapter
         CancellationToken cancellationToken = default)
         => Views.Runs(system, requestContext, includeFinal, definitionName, childSampleSize, cancellationToken);
 
-    private static InMemoryWorkSystem ResolveRuntime(IWorkSystem system)
-        => system as InMemoryWorkSystem
-            ?? throw new InvalidOperationException("Workflow HTTP routes require the built-in Workable system implementation.");
-
-    private static WorkableHttpWorkflowStartStatus MapStartStatus(WorkflowStartStatus status)
+    private static WorkableHttpWorkflowStartStatus MapStartStatus(WorkflowCommandStatus status)
         => status switch
         {
-            WorkflowStartStatus.Accepted => WorkableHttpWorkflowStartStatus.Accepted,
-            WorkflowStartStatus.NotFound => WorkableHttpWorkflowStartStatus.NotFound,
-            WorkflowStartStatus.Unauthorized => WorkableHttpWorkflowStartStatus.Unauthorized,
+            WorkflowCommandStatus.Accepted or
+            WorkflowCommandStatus.Running or
+            WorkflowCommandStatus.Paused or
+            WorkflowCommandStatus.Blocked or
+            WorkflowCommandStatus.Completed or
+            WorkflowCommandStatus.Failed or
+            WorkflowCommandStatus.Canceled => WorkableHttpWorkflowStartStatus.Accepted,
+            WorkflowCommandStatus.NotFound => WorkableHttpWorkflowStartStatus.NotFound,
+            WorkflowCommandStatus.Unauthorized => WorkableHttpWorkflowStartStatus.Unauthorized,
             _ => WorkableHttpWorkflowStartStatus.Invalid,
         };
 
-    private static WorkableHttpWorkflowActionStatus MapActionStatus(WorkflowActionStatus status)
+    private static WorkableHttpWorkflowActionStatus MapActionStatus(WorkflowCommandStatus status)
         => status switch
         {
-            WorkflowActionStatus.Accepted => WorkableHttpWorkflowActionStatus.Accepted,
-            WorkflowActionStatus.NotFound => WorkableHttpWorkflowActionStatus.NotFound,
-            WorkflowActionStatus.Unauthorized => WorkableHttpWorkflowActionStatus.Unauthorized,
+            WorkflowCommandStatus.Accepted => WorkableHttpWorkflowActionStatus.Accepted,
+            WorkflowCommandStatus.NotFound => WorkableHttpWorkflowActionStatus.NotFound,
+            WorkflowCommandStatus.Unauthorized => WorkableHttpWorkflowActionStatus.Unauthorized,
             _ => WorkableHttpWorkflowActionStatus.Invalid,
         };
 
@@ -137,5 +141,13 @@ internal sealed class WorkableHttpWorkflowAdapter
             WorkflowAction.Start => WorkableHttpWorkflowActionKind.Start,
             WorkflowAction.Pause => WorkableHttpWorkflowActionKind.Pause,
             _ => WorkableHttpWorkflowActionKind.Cancel,
+        };
+
+    private static WorkflowRunAction ToRunAction(WorkflowAction action)
+        => action switch
+        {
+            WorkflowAction.Start => WorkflowRunAction.Start,
+            WorkflowAction.Pause => WorkflowRunAction.Pause,
+            _ => WorkflowRunAction.Cancel,
         };
 }
