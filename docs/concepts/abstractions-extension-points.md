@@ -87,7 +87,7 @@ The durability-related record types all describe one coherent protocol:
 
 `WorkQueueDurabilityEntry` is the payload that comes back from `ClaimReady(...)`. It carries the lease plus the definition name, input, options, configuration, origin, and creation time needed to materialize work back into memory.
 
-`WorkflowRunPersistenceRecord` is the workflow-side snapshot payload. It carries the run id, workflow definition version and name, request context, workflow status, persisted step snapshots, timestamps, workflow messages, retained child completion receipts, and the workflow persistence scope for the run.
+`WorkflowRunPersistenceRecord` is the workflow-side snapshot payload. It carries the run id, workflow definition version and name, optional workflow input, request context, workflow status, persisted step snapshots, timestamps, workflow messages, retained child completion receipts, and the workflow persistence scope for the run.
 
 `IWorkflowPersistenceTransaction` extends `IWorkQueueDurabilityTransaction`, which lets one store-defined transaction span workflow-run persistence and durable child-worker enqueue.
 

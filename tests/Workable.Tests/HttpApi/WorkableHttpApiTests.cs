@@ -1257,6 +1257,48 @@ public sealed class WorkableHttpApiTests
         Assert.Equal(WorkflowRunStatus.Completed, result.Run!.Status);
     }
 
+    [Fact]
+    public async Task HttpApiCanStartWorkflowWithInput()
+    {
+        WorkInput? captured = null;
+        var (system, http) = CreateHost(builder =>
+        {
+            builder.AddWork(
+                WorkDefinition.Create("http.workflow.input.child"),
+                (_, input, _) =>
+                {
+                    captured = input;
+                    return Task.FromResult(WorkExecutionResult.Success());
+                });
+            builder.AddWorkflow(
+                WorkflowDefinition.Create("http.workflow.input"),
+                workflow => workflow.DispatchWorkFromWorkflowInput(
+                    "dispatch",
+                    WorkDefinition.Create("http.workflow.input.child")));
+        });
+        await system.Start();
+        using var document = JsonDocument.Parse("""{"externalKey":"http-42"}""");
+
+        var result = await http.Workflows.Start(
+            system,
+            "http.workflow.input",
+            DirectRequestContext(),
+            new WorkableHttpWorkflowStartRequest(
+                Input: document.RootElement.Clone(),
+                Completion: WorkableHttpCompletion.WaitForCompletion,
+                SubjectId: new WorkSubjectId("external", "http-42")));
+
+        Assert.True(result.IsAccepted);
+        Assert.NotNull(captured);
+        var payload = Assert.IsType<WorkflowHttpInput>(captured!.ToValue<WorkflowHttpInput>());
+        Assert.Equal("http-42", payload.ExternalKey);
+        Assert.Equal(new WorkSubjectId("external", "http-42"), captured.SubjectId);
+        Assert.NotNull(captured.Identifiers);
+        Assert.Contains(
+            captured.Identifiers,
+            identifier => identifier.Type == "workflow-step" && identifier.Value == "dispatch");
+    }
+
     [Theory]
     [InlineData(WorkflowCommandStatus.Accepted, WorkableHttpWorkflowStartStatus.Accepted)]
     [InlineData(WorkflowCommandStatus.Running, WorkableHttpWorkflowStartStatus.Accepted)]
@@ -2574,6 +2616,63 @@ public sealed class WorkableHttpApiTests
     }
 
     [Fact]
+    public async Task MappedHttpWorkflowStartRouteCanProvideWorkflowInput()
+    {
+        WorkInput? captured = null;
+        using var host = await CreateHttpHost(builder =>
+        {
+            builder.AddAuthorizedTransportWork(
+                WorkDefinition.Create("http.workflow.route.input.child"),
+                (_, input, _) =>
+                {
+                    captured = input;
+                    return Task.FromResult(WorkExecutionResult.Success());
+                });
+            builder.AddWorkflow(
+                WorkflowDefinition.Create("http.workflow.route.input"),
+                workflow => workflow.DispatchWorkFromWorkflowInput(
+                    "dispatch",
+                    WorkDefinition.Create("http.workflow.route.input.child")),
+                authorize => authorize.AllowOperateToGroups(TransportAuthorizationTestSupport.OperateGroups.ToArray()));
+        });
+        var client = host.GetTestClient();
+
+        var response = await client.PostAsJsonAsync(
+            "/workable/workflows/http.workflow.route.input",
+            new
+            {
+                input = new
+                {
+                    externalKey = "route-42",
+                },
+                completion = "waitForCompletion",
+                description = "Run workflow with input from the HTTP API route test.",
+                identifiers = new[]
+                {
+                    new
+                    {
+                        type = "external",
+                        value = "route-42",
+                    },
+                },
+            });
+        response.EnsureSuccessStatusCode();
+        var json = JsonNode.Parse(await response.Content.ReadAsStringAsync())
+            ?? throw new InvalidOperationException("Expected JSON response.");
+
+        Assert.Equal("Accepted", json["status"]?.GetValue<string>());
+        Assert.Equal("Completed", json["run"]?["status"]?.GetValue<string>());
+        Assert.NotNull(captured);
+        var payload = captured!.ToValue<WorkflowHttpInput>()
+            ?? throw new InvalidOperationException("Expected workflow input payload.");
+        Assert.Equal("route-42", payload.ExternalKey);
+        Assert.Contains(new WorkIdentifier("external", "route-42"), captured.Identifiers!);
+        Assert.Contains(
+            captured.Identifiers!,
+            identifier => identifier.Type == "workflow-step" && identifier.Value == "dispatch");
+    }
+
+    [Fact]
     public async Task MappedHttpWorkflowQueryRoutesReturnRunningWorkflowSummariesAndDetail()
     {
         var emailStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -3316,9 +3415,38 @@ public sealed class WorkableHttpApiTests
                 cancellationToken);
 
         public Task<WorkflowCommandResult> Start(
+            string workflowName,
+            WorkRequestContext requestContext,
+            WorkInput? input,
+            WorkflowCommandOptions? options = null,
+            CancellationToken cancellationToken = default)
+            => this.Start(
+                systemName: null,
+                workflowName,
+                requestContext,
+                input,
+                options,
+                cancellationToken);
+
+        public Task<WorkflowCommandResult> Start(
             string? systemName,
             string workflowName,
             WorkRequestContext requestContext,
+            WorkflowCommandOptions? options = null,
+            CancellationToken cancellationToken = default)
+            => this.Start(
+                systemName,
+                workflowName,
+                requestContext,
+                input: null,
+                options,
+                cancellationToken);
+
+        public Task<WorkflowCommandResult> Start(
+            string? systemName,
+            string workflowName,
+            WorkRequestContext requestContext,
+            WorkInput? input,
             WorkflowCommandOptions? options = null,
             CancellationToken cancellationToken = default)
             => Task.FromResult(this.StartResult ?? throw new InvalidOperationException("Expected start result."));
@@ -4079,6 +4207,8 @@ public sealed class WorkableHttpApiTests
             ]));
         }
     }
+
+    private sealed record WorkflowHttpInput(string ExternalKey);
 
     private sealed class CountingWorkAuthorizationGroupProvider(IEnumerable<string> groups) : IWorkAuthorizationGroupProvider
     {

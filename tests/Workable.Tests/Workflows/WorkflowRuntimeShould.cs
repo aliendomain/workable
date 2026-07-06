@@ -214,6 +214,183 @@ public sealed class WorkflowRuntimeShould
     }
 
     [Fact]
+    public async Task PassWorkflowInputToBoundDispatchSteps()
+    {
+        var received = new ConcurrentBag<string>();
+        var capturedInputs = new ConcurrentBag<WorkInput>();
+        var services = new ServiceCollection();
+
+        services.AddWorkableSystem(builder =>
+        {
+            builder.RequireAuthorization(false);
+            builder.AddWork(
+                WorkDefinition.Create("sample.workflow-input"),
+                (_, input, _) =>
+                {
+                    if (input is not null)
+                    {
+                        capturedInputs.Add(input);
+                    }
+
+                    var payload = input?.ToValue<WorkflowInputPayload>()
+                        ?? throw new InvalidOperationException("Expected workflow input payload.");
+                    received.Add(payload.ExternalKey);
+                    return Task.FromResult(WorkExecutionResult.Success());
+                });
+            builder.AddWorkflow(
+                WorkflowDefinition.Create("workflow.input.bound"),
+                workflow => workflow
+                    .DispatchWorkFromWorkflowInput("prepare", Work("sample.workflow-input"))
+                    .DispatchWorkFromWorkflowInput("archive", Work("sample.workflow-input")));
+        });
+
+        using var provider = services.BuildServiceProvider();
+        var system = (InMemoryWorkSystem)provider.GetRequiredService<IWorkSystemRegistry>().Default;
+        await system.Start();
+        var input = WorkInput
+            .FromValue(new WorkflowInputPayload("external-42"))
+            .WithIdentifier(new WorkIdentifier("external-key", "external-42"));
+
+        var handle = system.WorkflowRuntime.Start(
+            "workflow.input.bound",
+            WorkRequestContext.Create(WorkInvocationChannel.InProcess),
+            input);
+        var completion = await handle.WaitForCompletion();
+
+        Assert.True(completion.IsCompletedSuccessfully);
+        Assert.NotNull(completion.Run);
+        Assert.Equal(input.Json, completion.Run!.Input?.Json);
+        Assert.Equal(["external-42", "external-42"], received.OrderBy(static item => item, StringComparer.Ordinal).ToArray());
+        Assert.All(capturedInputs, captured => Assert.Contains(new WorkIdentifier("external-key", "external-42"), captured.Identifiers!));
+        Assert.Equal(
+            ["archive", "prepare"],
+            capturedInputs
+                .Select(input => input.Identifiers!.Single(identifier => identifier.Type == "workflow-step").Value)
+                .OrderBy(static item => item, StringComparer.Ordinal)
+                .ToArray());
+    }
+
+    [Fact]
+    public async Task StaticDispatchInputIgnoresWorkflowInput()
+    {
+        WorkInput? captured = null;
+        var services = new ServiceCollection();
+
+        services.AddWorkableSystem(builder =>
+        {
+            builder.RequireAuthorization(false);
+            builder.AddWork(
+                WorkDefinition.Create("sample.static-input"),
+                (_, input, _) =>
+                {
+                    captured = input;
+                    return Task.FromResult(WorkExecutionResult.Success());
+                });
+            builder.AddWorkflow(
+                WorkflowDefinition.Create("workflow.input.static"),
+                workflow => workflow.DispatchWork(
+                    "dispatch",
+                    Work("sample.static-input"),
+                    WorkInput.FromValue(new WorkflowInputPayload("static"))));
+        });
+
+        using var provider = services.BuildServiceProvider();
+        var system = (InMemoryWorkSystem)provider.GetRequiredService<IWorkSystemRegistry>().Default;
+        await system.Start();
+
+        var handle = system.WorkflowRuntime.Start(
+            "workflow.input.static",
+            WorkRequestContext.Create(WorkInvocationChannel.InProcess),
+            WorkInput.FromValue(new WorkflowInputPayload("workflow")));
+        var completion = await handle.WaitForCompletion();
+
+        Assert.True(completion.IsCompletedSuccessfully);
+        Assert.NotNull(captured);
+        var payload = captured!.ToValue<WorkflowInputPayload>()
+            ?? throw new InvalidOperationException("Expected static input payload.");
+        Assert.Equal("static", payload.ExternalKey);
+    }
+
+    [Fact]
+    public async Task BoundDispatchWithoutWorkflowInputStillReceivesWorkflowIdentifiers()
+    {
+        WorkInput? captured = null;
+        var services = new ServiceCollection();
+
+        services.AddWorkableSystem(builder =>
+        {
+            builder.RequireAuthorization(false);
+            builder.AddWork(
+                WorkDefinition.Create("sample.empty-workflow-input"),
+                (_, input, _) =>
+                {
+                    captured = input;
+                    return Task.FromResult(WorkExecutionResult.Success());
+                });
+            builder.AddWorkflow(
+                WorkflowDefinition.Create("workflow.input.empty"),
+                workflow => workflow.DispatchWorkFromWorkflowInput("dispatch", Work("sample.empty-workflow-input")));
+        });
+
+        using var provider = services.BuildServiceProvider();
+        var system = (InMemoryWorkSystem)provider.GetRequiredService<IWorkSystemRegistry>().Default;
+        await system.Start();
+
+        var handle = system.WorkflowRuntime.Start(
+            "workflow.input.empty",
+            WorkRequestContext.Create(WorkInvocationChannel.InProcess));
+        var completion = await handle.WaitForCompletion();
+
+        Assert.True(completion.IsCompletedSuccessfully);
+        Assert.NotNull(captured);
+        Assert.Null(captured!.Json);
+        Assert.Contains(
+            captured.Identifiers!,
+            identifier => identifier.Type == "workflow-step" && identifier.Value == "dispatch");
+    }
+
+    [Fact]
+    public async Task ParallelBoundDispatchStepsReceiveWorkflowInput()
+    {
+        var received = new ConcurrentBag<string>();
+        var services = new ServiceCollection();
+
+        services.AddWorkableSystem(builder =>
+        {
+            builder.RequireAuthorization(false);
+            builder.AddWork(
+                WorkDefinition.Create("sample.parallel-workflow-input"),
+                (_, input, _) =>
+                {
+                    var payload = input?.ToValue<WorkflowInputPayload>()
+                        ?? throw new InvalidOperationException("Expected workflow input payload.");
+                    received.Add(payload.ExternalKey);
+                    return Task.FromResult(WorkExecutionResult.Success());
+                });
+            builder.AddWorkflow(
+                WorkflowDefinition.Create("workflow.input.parallel"),
+                workflow => workflow
+                    .RunParallel("fan-out", parallel => parallel
+                        .DispatchWorkFromWorkflowInput("alpha", Work("sample.parallel-workflow-input"))
+                        .DispatchWorkFromWorkflowInput("beta", Work("sample.parallel-workflow-input")))
+                    .Join("join"));
+        });
+
+        using var provider = services.BuildServiceProvider();
+        var system = (InMemoryWorkSystem)provider.GetRequiredService<IWorkSystemRegistry>().Default;
+        await system.Start();
+
+        var handle = system.WorkflowRuntime.Start(
+            "workflow.input.parallel",
+            WorkRequestContext.Create(WorkInvocationChannel.InProcess),
+            WorkInput.FromValue(new WorkflowInputPayload("parallel-42")));
+        var completion = await handle.WaitForCompletion();
+
+        Assert.True(completion.IsCompletedSuccessfully);
+        Assert.Equal(["parallel-42", "parallel-42"], received.OrderBy(static item => item, StringComparer.Ordinal).ToArray());
+    }
+
+    [Fact]
     public async Task ExpandDispatchEachFromPriorOutputAndCompleteWorkflow()
     {
         var processed = new ConcurrentBag<string>();
@@ -952,6 +1129,66 @@ public sealed class WorkflowRuntimeShould
         Assert.Equal("sample.beta", remainingRequest.Definition.Name);
         Assert.Equal(0, Volatile.Read(ref resumedAlpha));
         Assert.Equal(1, Volatile.Read(ref resumedBeta));
+    }
+
+    [Fact]
+    public async Task RecoverDurableWorkflowRunAndDispatchLaterBoundStepWithWorkflowInput()
+    {
+        var store = new TestWorkflowPersistenceStore();
+        using var firstProvider = CreateDurableWorkflowInputRecoveryProvider(
+            store,
+            cancellationToken => Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken),
+            _ => throw new InvalidOperationException("Archive should not run before restart."));
+        var firstSystem = GetNamedSystem(firstProvider, "workflow-tests");
+        await firstSystem.Start();
+        var input = WorkInput.FromValue(new WorkflowInputPayload("durable-recovered"));
+
+        var handle = firstSystem.WorkflowRuntime.Start(
+            "workflow.durable.workflow-input.recovery",
+            WorkRequestContext.Create(WorkInvocationChannel.InProcess),
+            input);
+
+        WorkflowRunSnapshot? interruptedRun = null;
+        await TestEventually.Until(
+            () =>
+            {
+                interruptedRun = firstSystem.WorkflowRuntime.Get(handle.RunId!.Value);
+                return interruptedRun is not null &&
+                    interruptedRun.Steps.Single(step => step.Name == "join").Status == WorkflowStepRunStatus.Running;
+            },
+            "Expected the durable workflow to wait at the join before restart.",
+            timeout: TimeSpan.FromSeconds(15));
+
+        var blockerWorkerId = interruptedRun!.Steps.Single(step => step.Name == "join").WorkerIds.Single();
+        await StopWithTimeout(firstSystem, TimeSpan.FromSeconds(2));
+        var canceled = await handle.WaitForCompletion();
+        Assert.Equal(WorkflowRunStatus.Canceled, canceled.Status);
+        store.Requeue(blockerWorkerId);
+
+        WorkInput? archiveInput = null;
+        using var secondProvider = CreateDurableWorkflowInputRecoveryProvider(
+            store,
+            _ => Task.CompletedTask,
+            input => archiveInput = input);
+        var secondSystem = GetNamedSystem(secondProvider, "workflow-tests");
+        await secondSystem.Start();
+
+        await TestEventually.Until(
+            () =>
+            {
+                var recovered = secondSystem.WorkflowRuntime.Get(handle.RunId!.Value);
+                return recovered is not null && recovered.Status == WorkflowRunStatus.Completed;
+            },
+            "Expected the recovered durable workflow to dispatch the bound archive step and complete.",
+            timeout: TimeSpan.FromSeconds(15));
+
+        Assert.NotNull(archiveInput);
+        var payload = archiveInput!.ToValue<WorkflowInputPayload>()
+            ?? throw new InvalidOperationException("Expected archive input payload.");
+        Assert.Equal("durable-recovered", payload.ExternalKey);
+        Assert.Contains(
+            archiveInput.Identifiers!,
+            identifier => identifier.Type == "workflow-step" && identifier.Value == "archive");
     }
 
     [Fact]
@@ -2555,6 +2792,45 @@ public sealed class WorkflowRuntimeShould
         return services.BuildServiceProvider();
     }
 
+    private static ServiceProvider CreateDurableWorkflowInputRecoveryProvider(
+        TestWorkflowPersistenceStore store,
+        Func<CancellationToken, Task> block,
+        Action<WorkInput?> archive)
+    {
+        var services = new ServiceCollection();
+        services.AddSingleton<IWorkPersistenceStore>(store);
+        services.AddWorkableSystem("workflow-tests", builder =>
+        {
+            builder.RequireAuthorization(false);
+            builder.AddWork(
+                WorkDefinition.Create("sample.workflow-input.block"),
+                async (_, _, cancellationToken) =>
+                {
+                    await block(cancellationToken);
+                    return WorkExecutionResult.Success();
+                },
+                configuration => configuration.QueueDurably(fallbackPollingInterval: TimeSpan.FromSeconds(1)));
+            builder.AddWork(
+                WorkDefinition.Create("sample.workflow-input.archive"),
+                (_, input, _) =>
+                {
+                    archive(input);
+                    return Task.FromResult(WorkExecutionResult.Success());
+                },
+                configuration => configuration.QueueDurably(fallbackPollingInterval: TimeSpan.FromSeconds(1)));
+            builder.AddWorkflow(
+                WorkflowDefinition.Create(
+                    "workflow.durable.workflow-input.recovery",
+                    coordination: WorkflowCoordinationConfiguration.Durable),
+                workflow => workflow
+                    .DispatchWork("block", Work("sample.workflow-input.block"))
+                    .Join("join")
+                    .DispatchWorkFromWorkflowInput("archive", Work("sample.workflow-input.archive")));
+        });
+
+        return services.BuildServiceProvider();
+    }
+
     private static ServiceProvider CreateDurableDispatchEachWorkflowProvider(
         TestWorkflowPersistenceStore store,
         Func<CancellationToken, Task> load,
@@ -2909,4 +3185,5 @@ public sealed class WorkflowRuntimeShould
 
     private sealed record DispatchEachItem(string Id);
     private sealed record DispatchEachSourceOutput(IReadOnlyList<DispatchEachItem> Items);
+    private sealed record WorkflowInputPayload(string ExternalKey);
 }

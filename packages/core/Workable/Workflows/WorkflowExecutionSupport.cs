@@ -62,6 +62,18 @@ internal static class WorkflowExecutionSupport
             .WithIdentifier(new WorkIdentifier("workflow-definition", workflowDefinitionName))
             .WithIdentifier(new WorkIdentifier("workflow-step", stepName));
 
+    public static WorkInput? ResolveDispatchInput(
+        DispatchWorkflowStepDefinition step,
+        WorkflowRunState run)
+    {
+        ArgumentNullException.ThrowIfNull(step);
+        ArgumentNullException.ThrowIfNull(run);
+
+        return step.InputSource == WorkflowDispatchInputSource.WorkflowInput
+            ? run.Input
+            : step.Input;
+    }
+
     public static WorkCompletion FromReceipt(WorkflowChildReceipt receipt)
         => new(
             receipt.CompletionStatus,

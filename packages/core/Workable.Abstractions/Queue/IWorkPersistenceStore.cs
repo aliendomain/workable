@@ -338,6 +338,7 @@ public sealed record WorkQueueDurabilityCleanupRequest(
 /// <param name="RunId">The workflow run identifier.</param>
 /// <param name="DefinitionVersion">The workflow definition version used for the run.</param>
 /// <param name="DefinitionName">The workflow definition name.</param>
+/// <param name="Input">The input supplied when the workflow run was started, when one exists.</param>
 /// <param name="RequestContext">The caller context recorded for the workflow run.</param>
 /// <param name="Status">The current workflow run status.</param>
 /// <param name="Steps">The persisted workflow step snapshots.</param>
@@ -351,6 +352,7 @@ public sealed record WorkflowRunPersistenceRecord(
     WorkflowRunId RunId,
     WorkflowDefinitionVersion DefinitionVersion,
     string DefinitionName,
+    WorkInput? Input,
     WorkRequestContext RequestContext,
     WorkflowRunStatus Status,
     IReadOnlyList<WorkflowStepPersistenceRecord> Steps,

@@ -18,9 +18,26 @@ public sealed class HttpContextWorkflowCommandDispatcher(
         string? description = null,
         WorkflowCommandOptions? options = null,
         CancellationToken cancellationToken = default)
+        => this.Start(
+            workflowName,
+            input: null,
+            description,
+            options,
+            cancellationToken);
+
+    /// <summary>
+    /// Starts a workflow in the default unnamed system using the current HTTP request context with workflow input.
+    /// </summary>
+    public Task<WorkflowCommandResult> Start(
+        string workflowName,
+        WorkInput? input,
+        string? description = null,
+        WorkflowCommandOptions? options = null,
+        CancellationToken cancellationToken = default)
         => this.StartInSystem(
             systemName: null,
             workflowName,
+            input,
             description,
             options,
             cancellationToken);
@@ -31,6 +48,24 @@ public sealed class HttpContextWorkflowCommandDispatcher(
     public Task<WorkflowCommandResult> StartInSystem(
         string? systemName,
         string workflowName,
+        string? description = null,
+        WorkflowCommandOptions? options = null,
+        CancellationToken cancellationToken = default)
+        => this.StartInSystem(
+            systemName,
+            workflowName,
+            input: null,
+            description,
+            options,
+            cancellationToken);
+
+    /// <summary>
+    /// Starts a workflow in a specific system using the current HTTP request context with workflow input.
+    /// </summary>
+    public Task<WorkflowCommandResult> StartInSystem(
+        string? systemName,
+        string workflowName,
+        WorkInput? input,
         string? description = null,
         WorkflowCommandOptions? options = null,
         CancellationToken cancellationToken = default)
@@ -46,6 +81,7 @@ public sealed class HttpContextWorkflowCommandDispatcher(
             systemName,
             workflowName,
             requestContext,
+            input,
             options,
             cancellationToken);
     }

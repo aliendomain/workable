@@ -16,4 +16,14 @@ public interface IWorkflowParallelBuilder
         string stepName,
         WorkDefinition workDefinition,
         WorkInput? input = null);
+
+    /// <summary>
+    /// Adds a child step that queues one existing Workable work definition with the input supplied when the workflow run starts.
+    /// </summary>
+    /// <param name="stepName">The stable workflow-local child step name.</param>
+    /// <param name="workDefinition">The target Workable work definition.</param>
+    /// <returns>The same builder so additional parallel branches can be chained.</returns>
+    IWorkflowParallelBuilder DispatchWorkFromWorkflowInput(
+        string stepName,
+        WorkDefinition workDefinition);
 }

@@ -33,6 +33,27 @@ public interface IWorkflowBuilder
         WorkInput? input = null);
 
     /// <summary>
+    /// Adds a step that queues one existing Workable work definition with the input supplied when the workflow run starts.
+    /// </summary>
+    /// <param name="stepName">The stable workflow-local step name.</param>
+    /// <param name="workDefinition">The target Workable work definition.</param>
+    /// <returns>The same builder so additional steps can be chained.</returns>
+    IWorkflowBuilder DispatchWorkFromWorkflowInput(
+        string stepName,
+        WorkDefinition workDefinition);
+
+    /// <summary>
+    /// Adds a step that queues one existing Workable work definition with the input supplied when the workflow run starts and returns a typed reference to that step.
+    /// </summary>
+    /// <typeparam name="TOutput">The logical output type produced by the referenced step.</typeparam>
+    /// <param name="stepName">The stable workflow-local step name.</param>
+    /// <param name="workDefinition">The target Workable work definition.</param>
+    /// <returns>A typed reference that later workflow steps can use.</returns>
+    WorkflowStepReference<TOutput> DispatchWorkFromWorkflowInput<TOutput>(
+        string stepName,
+        WorkDefinition workDefinition);
+
+    /// <summary>
     /// Adds a step that expands a prior output array into one child work dispatch per element.
     /// </summary>
     /// <param name="stepName">The stable workflow-local step name.</param>

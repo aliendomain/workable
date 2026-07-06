@@ -26,6 +26,7 @@ internal sealed class WorkableHttpWorkflowAdapter(
             system.Name,
             workflowName,
             requestContext,
+            CreateInput(request),
             new WorkflowCommandOptions(
                 request?.Completion == WorkableHttpCompletion.WaitForCompletion
                     ? WorkDispatchCompletion.WaitForCompletion
@@ -45,6 +46,39 @@ internal sealed class WorkableHttpWorkflowAdapter(
             result.RunId.Value.Value,
             WorkableHttpWorkflowRun.From(result.Run),
             result.Messages);
+    }
+
+    private static WorkInput? CreateInput(WorkableHttpWorkflowStartRequest? request)
+    {
+        if (request is null)
+        {
+            return null;
+        }
+
+        if (request.Input is { } input)
+        {
+            return WorkInput.FromJson(
+                input.GetRawText(),
+                subjectId: request.SubjectId,
+                concurrencyKey: request.ConcurrencyKey,
+                identifiers: request.Identifiers);
+        }
+
+        if (request.SubjectId is null &&
+            request.ConcurrencyKey is null &&
+            request.Identifiers is null)
+        {
+            return null;
+        }
+
+        return WorkInput.Empty with
+        {
+            SubjectId = request.SubjectId,
+            ConcurrencyKey = request.ConcurrencyKey,
+            Identifiers = request.Identifiers is null
+                ? null
+                : new HashSet<WorkIdentifier>(request.Identifiers),
+        };
     }
 
     /// <summary>

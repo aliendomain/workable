@@ -34,6 +34,34 @@ public sealed class WorkflowRegistrationShould
     }
 
     [Fact]
+    public void RegisterWorkflowInputDispatchSteps()
+    {
+        var services = new ServiceCollection();
+        var prepareDefinition = WorkDefinition.Create("sample.prepare.input");
+        var archiveDefinition = WorkDefinition.Create("sample.archive.input");
+
+        services.AddWorkableSystem(builder => builder.AddWorkflow(
+            WorkflowDefinition.Create("workflow.demo.workflow-input"),
+            workflow => workflow
+                .DispatchWorkFromWorkflowInput("prepare", prepareDefinition)
+                .RunParallel("fan-out", parallel => parallel
+                    .DispatchWorkFromWorkflowInput("archive", archiveDefinition))));
+
+        using var provider = services.BuildServiceProvider();
+        var registration = provider.GetRequiredService<WorkSystemRegistration>();
+        var workflow = Assert.Single(registration.Workflows);
+
+        var prepare = Assert.IsType<DispatchWorkflowStepDefinition>(workflow.Steps[0]);
+        Assert.Equal(WorkflowDispatchInputSource.WorkflowInput, prepare.InputSource);
+        Assert.Null(prepare.Input);
+
+        var parallel = Assert.IsType<ParallelWorkflowStepDefinition>(workflow.Steps[1]);
+        var archive = Assert.IsType<DispatchWorkflowStepDefinition>(Assert.Single(parallel.Steps));
+        Assert.Equal(WorkflowDispatchInputSource.WorkflowInput, archive.InputSource);
+        Assert.Null(archive.Input);
+    }
+
+    [Fact]
     public void RegisterParallelStepWithChildDispatches()
     {
         var services = new ServiceCollection();

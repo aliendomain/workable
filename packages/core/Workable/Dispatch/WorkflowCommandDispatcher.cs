@@ -19,9 +19,26 @@ public sealed class WorkflowCommandDispatcher(
         WorkflowCommandOptions? options = null,
         CancellationToken cancellationToken = default)
         => this.Start(
+            workflowName,
+            requestContext,
+            input: null,
+            options,
+            cancellationToken);
+
+    /// <summary>
+    /// Starts a workflow through the default Workable system with workflow input.
+    /// </summary>
+    public Task<WorkflowCommandResult> Start(
+        string workflowName,
+        WorkRequestContext requestContext,
+        WorkInput? input,
+        WorkflowCommandOptions? options = null,
+        CancellationToken cancellationToken = default)
+        => this.Start(
             systemName: null,
             workflowName,
             requestContext,
+            input,
             options,
             cancellationToken);
 
@@ -34,6 +51,24 @@ public sealed class WorkflowCommandDispatcher(
         WorkRequestContext requestContext,
         WorkflowCommandOptions? options = null,
         CancellationToken cancellationToken = default)
+        => await this.Start(
+            systemName,
+            workflowName,
+            requestContext,
+            input: null,
+            options,
+            cancellationToken);
+
+    /// <summary>
+    /// Starts a workflow through a specific named Workable system with workflow input.
+    /// </summary>
+    public async Task<WorkflowCommandResult> Start(
+        string? systemName,
+        string workflowName,
+        WorkRequestContext requestContext,
+        WorkInput? input,
+        WorkflowCommandOptions? options = null,
+        CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(workflowName);
         ArgumentNullException.ThrowIfNull(requestContext);
@@ -43,7 +78,7 @@ public sealed class WorkflowCommandDispatcher(
             return systemNotFound;
         }
 
-        var handle = runtime.Start(workflowName, requestContext, cancellationToken);
+        var handle = runtime.Start(workflowName, requestContext, input, cancellationToken);
         if (!handle.StartOutcome.IsAccepted)
         {
             return CreateResult(

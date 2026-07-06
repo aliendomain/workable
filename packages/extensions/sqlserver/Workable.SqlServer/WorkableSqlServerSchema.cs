@@ -113,6 +113,7 @@ BEGIN
         DefinitionName nvarchar(450) NOT NULL,
         DefinitionFingerprint nvarchar(64) NOT NULL CONSTRAINT DF_WorkableWorkflowRuns_DefinitionFingerprint DEFAULT (N''),
         RequestContextJson nvarchar(max) NOT NULL,
+        WorkflowInputJson nvarchar(max) NULL,
         Status nvarchar(64) NOT NULL,
         StepsJson nvarchar(max) NOT NULL,
         MessagesJson nvarchar(max) NOT NULL,
@@ -132,6 +133,14 @@ BEGIN
     ALTER TABLE {workflowRunsTable}
         ADD DefinitionFingerprint nvarchar(64) NOT NULL
             CONSTRAINT DF_WorkableWorkflowRuns_DefinitionFingerprint DEFAULT (N'');
+END
+""",
+            $"""
+IF OBJECT_ID(N'{escapedSchemaName}.WorkflowRuns', N'U') IS NOT NULL
+   AND COL_LENGTH(N'{escapedSchemaName}.WorkflowRuns', N'WorkflowInputJson') IS NULL
+BEGIN
+    ALTER TABLE {workflowRunsTable}
+        ADD WorkflowInputJson nvarchar(max) NULL;
 END
 """,
             $"""
@@ -619,6 +628,7 @@ WHERE schemas.name = @SchemaName
             "DefinitionName",
             "DefinitionFingerprint",
             "RequestContextJson",
+            "WorkflowInputJson",
             "Status",
             "StepsJson",
             "MessagesJson",

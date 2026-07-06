@@ -208,7 +208,7 @@ internal sealed class DurableWorkflowExecutor(
                     var handle = await session.Queue.Enqueue(
                             workDefinitionName,
                             WorkflowExecutionSupport.AddWorkflowIdentifiers(
-                                step.Input,
+                                WorkflowExecutionSupport.ResolveDispatchInput(step, run),
                                 run.Id,
                                 run.DefinitionName,
                                 step.Name),
@@ -348,7 +348,7 @@ internal sealed class DurableWorkflowExecutor(
                         var handle = await session.Queue.Enqueue(
                             childWorkDefinitionName,
                             WorkflowExecutionSupport.AddWorkflowIdentifiers(
-                                child.Input,
+                                WorkflowExecutionSupport.ResolveDispatchInput(child, run),
                                 run.Id,
                                 run.DefinitionName,
                                 child.Name),

@@ -149,6 +149,7 @@ SELECT WorkSystemName,
        DefinitionName,
        DefinitionFingerprint,
        RequestContextJson,
+       WorkflowInputJson,
        Status,
        StepsJson,
        ChildReceiptsJson,
@@ -174,16 +175,17 @@ ORDER BY CreatedAt, RunId;
                             new WorkflowDefinitionId(reader.GetGuid(2)),
                             reader.GetInt64(3)),
                         reader.GetString(4),
+                        Deserialize<WorkInput>(reader, 7),
                         DeserializeRequestContext(reader, 6),
-                        Enum.Parse<WorkflowRunStatus>(reader.GetString(7), ignoreCase: false),
-                        Deserialize<WorkflowStepPersistenceRecord[]>(reader, 8) ?? [],
-                        reader.GetFieldValue<DateTimeOffset>(11),
-                        reader.IsDBNull(12) ? null : reader.GetFieldValue<DateTimeOffset>(12),
+                        Enum.Parse<WorkflowRunStatus>(reader.GetString(8), ignoreCase: false),
+                        Deserialize<WorkflowStepPersistenceRecord[]>(reader, 9) ?? [],
+                        reader.GetFieldValue<DateTimeOffset>(12),
                         reader.IsDBNull(13) ? null : reader.GetFieldValue<DateTimeOffset>(13),
-                        Deserialize<WorkMessage[]>(reader, 14) ?? [],
-                        Deserialize<WorkflowChildReceipt[]>(reader, 9) ?? [],
+                        reader.IsDBNull(14) ? null : reader.GetFieldValue<DateTimeOffset>(14),
+                        Deserialize<WorkMessage[]>(reader, 15) ?? [],
+                        Deserialize<WorkflowChildReceipt[]>(reader, 10) ?? [],
                         reader.GetString(5),
-                        reader.IsDBNull(10) ? null : reader.GetString(10)));
+                        reader.IsDBNull(11) ? null : reader.GetString(11)));
                 }
 
                 return runs;
@@ -1010,6 +1012,7 @@ USING
         @DefinitionName AS DefinitionName,
         @DefinitionFingerprint AS DefinitionFingerprint,
         @RequestContextJson AS RequestContextJson,
+        @WorkflowInputJson AS WorkflowInputJson,
         @Status AS Status,
         @StepsJson AS StepsJson,
         @MessagesJson AS MessagesJson,
@@ -1030,6 +1033,7 @@ WHEN MATCHED THEN
         DefinitionName = source.DefinitionName,
         DefinitionFingerprint = source.DefinitionFingerprint,
         RequestContextJson = source.RequestContextJson,
+        WorkflowInputJson = source.WorkflowInputJson,
         Status = source.Status,
         StepsJson = source.StepsJson,
         MessagesJson = source.MessagesJson,
@@ -1050,6 +1054,7 @@ WHEN NOT MATCHED THEN
         DefinitionName,
         DefinitionFingerprint,
         RequestContextJson,
+        WorkflowInputJson,
         Status,
         StepsJson,
         MessagesJson,
@@ -1070,6 +1075,7 @@ WHEN NOT MATCHED THEN
         source.DefinitionName,
         source.DefinitionFingerprint,
         source.RequestContextJson,
+        source.WorkflowInputJson,
         source.Status,
         source.StepsJson,
         source.MessagesJson,
@@ -1089,6 +1095,7 @@ WHEN NOT MATCHED THEN
         Add(command, "@DefinitionName", run.DefinitionName);
         Add(command, "@DefinitionFingerprint", run.DefinitionFingerprint);
         Add(command, "@RequestContextJson", Serialize(run.RequestContext));
+        Add(command, "@WorkflowInputJson", Serialize(run.Input));
         Add(command, "@Status", run.Status.ToString());
         Add(command, "@StepsJson", Serialize(run.Steps));
         Add(command, "@MessagesJson", Serialize(run.Messages));

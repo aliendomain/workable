@@ -47,11 +47,13 @@ public sealed class WorkflowRunStateShould
             Dispatch("archive", "sample.archive"));
         var runId = WorkflowRunId.New();
         var workerId = WorkerId.New();
+        var input = WorkInput.FromValue(new RehydrateInput("rehydrate-42"));
         var record = new WorkflowRunPersistenceRecord(
             "workflow-tests",
             runId,
             definition.Version,
             definition.Name,
+            input,
             WorkRequestContext.Create(WorkInvocationChannel.InProcess),
             WorkflowRunStatus.Running,
             [
@@ -91,12 +93,14 @@ public sealed class WorkflowRunStateShould
         var persisted = run.ToPersistenceRecord("workflow-tests");
 
         Assert.Equal(runId, snapshot.Id);
+        Assert.Equal(input.Json, snapshot.Input?.Json);
         Assert.Equal(["prepare", "join", "archive"], snapshot.Steps.Select(step => step.Name).ToArray());
         Assert.Equal(WorkflowStepRunStatus.Completed, snapshot.Steps[0].Status);
         Assert.Equal([workerId], snapshot.Steps[0].WorkerIds);
         Assert.Equal(WorkflowStepRunStatus.Running, snapshot.Steps[1].Status);
         Assert.Equal(WorkflowStepRunStatus.Pending, snapshot.Steps[2].Status);
         Assert.Equal(WorkflowDefinitionFingerprint.Create(workflow), persisted.DefinitionFingerprint);
+        Assert.Equal(input.Json, persisted.Input?.Json);
     }
 
     [Fact]
@@ -112,6 +116,7 @@ public sealed class WorkflowRunStateShould
             WorkflowRunId.New(),
             definition.Version,
             definition.Name,
+            null,
             WorkRequestContext.Create(WorkInvocationChannel.InProcess),
             WorkflowRunStatus.Running,
             [
@@ -219,4 +224,6 @@ public sealed class WorkflowRunStateShould
         string workDefinitionName,
         WorkInput? input = null)
         => new(stepName, WorkDefinition.Create(workDefinitionName), input);
+
+    private sealed record RehydrateInput(string Value);
 }

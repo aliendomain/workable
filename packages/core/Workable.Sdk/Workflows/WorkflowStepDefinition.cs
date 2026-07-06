@@ -27,6 +27,22 @@ public enum WorkflowStepKind
 }
 
 /// <summary>
+/// Identifies where a dispatch step should get its child work input.
+/// </summary>
+public enum WorkflowDispatchInputSource
+{
+    /// <summary>
+    /// The dispatch step uses the static input configured on the workflow definition.
+    /// </summary>
+    Static,
+
+    /// <summary>
+    /// The dispatch step uses the input supplied when the workflow run was started.
+    /// </summary>
+    WorkflowInput,
+}
+
+/// <summary>
 /// Represents one step in a workflow definition.
 /// </summary>
 /// <param name="Name">The stable workflow-local step name.</param>
@@ -41,10 +57,12 @@ public abstract record WorkflowStepDefinition(
 /// <param name="Name">The stable workflow-local step name.</param>
 /// <param name="WorkDefinition">The target Workable work definition.</param>
 /// <param name="Input">Optional static input payload supplied when the step queues work.</param>
+/// <param name="InputSource">Identifies whether the step uses static input or the workflow run input.</param>
 public sealed record DispatchWorkflowStepDefinition(
     string Name,
     WorkDefinition WorkDefinition,
-    WorkInput? Input = null)
+    WorkInput? Input = null,
+    WorkflowDispatchInputSource InputSource = WorkflowDispatchInputSource.Static)
     : WorkflowStepDefinition(Name, WorkflowStepKind.DispatchWork);
 
 /// <summary>
