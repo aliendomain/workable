@@ -33,6 +33,7 @@ internal static class WorkflowDefinitionFingerprint
                 dispatch.Kind,
                 dispatch.WorkDefinition.Name,
                 null,
+                dispatch.InputSource,
                 CreateInput(dispatch.Input),
                 []),
             DispatchEachWorkflowStepDefinition dispatchEach => new WorkflowStepShape(
@@ -41,10 +42,12 @@ internal static class WorkflowDefinitionFingerprint
                 dispatchEach.WorkDefinition.Name,
                 new WorkflowDispatchSourceShape(dispatchEach.SourceStep.StepName, dispatchEach.SourceSelector.JsonPointer),
                 null,
+                null,
                 []),
             ParallelWorkflowStepDefinition parallel => new WorkflowStepShape(
                 parallel.Name,
                 parallel.Kind,
+                null,
                 null,
                 null,
                 null,
@@ -55,11 +58,13 @@ internal static class WorkflowDefinitionFingerprint
                 null,
                 null,
                 null,
+                null,
                 []),
             _ => new WorkflowStepShape(
                 step.Name,
                 step.Kind,
                 step.GetType().FullName,
+                null,
                 null,
                 null,
                 []),
@@ -100,6 +105,7 @@ internal static class WorkflowDefinitionFingerprint
         WorkflowStepKind Kind,
         string? WorkDefinitionName,
         WorkflowDispatchSourceShape? Source,
+        WorkflowDispatchInputSource? InputSource,
         WorkflowInputShape? Input,
         IReadOnlyList<WorkflowStepShape> Steps);
 

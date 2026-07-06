@@ -19,6 +19,7 @@ internal sealed class WorkflowRunState
         WorkflowDefinitionVersion definitionVersion,
         string definitionName,
         string definitionFingerprint,
+        WorkInput? input,
         WorkRequestContext requestContext,
         DateTimeOffset createdAt,
         List<WorkflowStepRunState> steps,
@@ -28,6 +29,7 @@ internal sealed class WorkflowRunState
         this.DefinitionVersion = definitionVersion;
         this.DefinitionName = definitionName;
         this.DefinitionFingerprint = definitionFingerprint;
+        this.Input = input;
         this.RequestContext = requestContext;
         this.CreatedAt = createdAt;
         this.steps = steps;
@@ -43,6 +45,8 @@ internal sealed class WorkflowRunState
 
     public string DefinitionFingerprint { get; }
 
+    public WorkInput? Input { get; }
+
     public WorkRequestContext RequestContext { get; }
 
     public DateTimeOffset CreatedAt { get; }
@@ -50,12 +54,14 @@ internal sealed class WorkflowRunState
     public static WorkflowRunState Create(
         RegisteredWorkflow workflow,
         WorkRequestContext requestContext,
+        WorkInput? input = null,
         Action? onChanged = null)
         => new(
             WorkflowRunId.New(),
             workflow.Definition.Version,
             workflow.Definition.Name,
             WorkflowDefinitionFingerprint.Create(workflow),
+            input,
             requestContext,
             DateTimeOffset.UtcNow,
             workflow.Steps.Select(WorkflowStepRunState.FromDefinition).ToList(),
@@ -74,6 +80,7 @@ internal sealed class WorkflowRunState
             string.IsNullOrWhiteSpace(record.DefinitionFingerprint)
                 ? WorkflowDefinitionFingerprint.Create(workflow)
                 : record.DefinitionFingerprint,
+            record.Input,
             record.RequestContext,
             record.CreatedAt,
             workflow.Steps
@@ -105,6 +112,7 @@ internal sealed class WorkflowRunState
             record.DefinitionVersion,
             record.DefinitionName,
             record.DefinitionFingerprint,
+            record.Input,
             record.RequestContext,
             record.CreatedAt,
             record.Steps.Select(WorkflowStepRunState.FromPersistenceRecord).ToList(),
@@ -397,6 +405,7 @@ internal sealed class WorkflowRunState
                 this.Id,
                 this.DefinitionVersion,
                 this.DefinitionName,
+                this.Input,
                 this.RequestContext,
                 this.status,
                 this.steps.Select(step => step.ToPersistenceRecord()).ToArray(),
@@ -422,6 +431,7 @@ internal sealed class WorkflowRunState
             this.Id,
             this.DefinitionName,
             this.status,
+            this.Input,
             this.steps.Select(step => step.ToSnapshot()).ToArray(),
             this.CreatedAt,
             this.startedAt,

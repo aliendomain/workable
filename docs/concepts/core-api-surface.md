@@ -55,7 +55,7 @@ Execution context also exposes the worker's `WorkRequestContext` (including `Ori
 - `WorkflowDefinition` mirrors work-definition metadata with name, category, description, schemas, authorization, revision, and version.
 - The workflow step graph supports `DispatchWork`, `Parallel`, and `Join`.
 - Workflow steps dispatch existing work definitions; they do not introduce a separate executor implementation model.
-- Workflows start by name, forward the original actor, origin, and authentication state from `WorkRequestContext` to child work, and add `workflow-run`, `workflow-definition`, and `workflow-step` identifiers to child work input.
+- Workflows start by name with optional workflow input, forward the original actor, origin, and authentication state from `WorkRequestContext` to child work, and add `workflow-run`, `workflow-definition`, and `workflow-step` identifiers to child work input.
 - `IWorkflowCommandDispatcher` provides a standardized in-process start-and-optionally-wait path for callers that want system resolution, workflow authorization, execution, and completion mapping in one helper.
 - Persisted workflow runs and queued workers retain actor, origin, and authentication state from `WorkRequestContext`, but do not retain precomputed authorization snapshots.
 - Workflow actions are `Start`, `Pause`, and `Cancel`. `Paused` and `Blocked` workflow runs can be started again, and blocked runs also resume automatically when their outstanding failed child workers are restarted and later complete successfully.

@@ -224,6 +224,7 @@ public sealed class WorkableMcpTests
         var workflowSchema = JsonNode.Parse(workflowTool.InputSchemaJson)
             ?? throw new InvalidOperationException("Expected workflow tool schema JSON.");
         Assert.NotNull(workflowSchema["properties"]?["description"]);
+        Assert.NotNull(workflowSchema["properties"]?["input"]);
 
         var reconfigureTool = Assert.Single(tools, tool => tool.ToolName == "workable_reconfigure_work_definition");
         var reconfigureSchema = JsonNode.Parse(reconfigureTool.InputSchemaJson)
@@ -1271,6 +1272,62 @@ public sealed class WorkableMcpTests
     }
 
     [Fact]
+    public async Task McpServerCanStartWorkflowWithInput()
+    {
+        WorkInput? captured = null;
+        await using var provider = new ServiceCollection()
+            .AddTransportTestAuthorization()
+            .AddWorkableSystem(builder =>
+            {
+                builder.RequireAuthorization();
+                builder.AddAuthorizedTransportWork(
+                    WorkDefinition.Create("mcp.workflow.input.child", configuration: AllowMcp()),
+                    (_, input, _) =>
+                    {
+                        captured = input;
+                        return Task.FromResult(WorkExecutionResult.Success());
+                    });
+                builder.AddWorkflow(
+                    WorkflowDefinition.Create("mcp.workflow.input"),
+                    workflow => workflow.DispatchWorkFromWorkflowInput(
+                        "dispatch",
+                        WorkDefinition.Create("mcp.workflow.input.child")),
+                    authorize => authorize.AllowOperateToGroups(TransportAuthorizationTestSupport.OperateGroups.ToArray()));
+            })
+            .AddWorkableMcpServer()
+            .BuildServiceProvider();
+        var system = provider.GetRequiredService<IWorkSystemRegistry>().Default;
+        var router = provider.GetRequiredService<WorkableMcpToolRouter>();
+        await system.Start();
+
+        using var arguments = JsonDocument.Parse("""
+            {
+              "name": "mcp.workflow.input",
+              "waitForCompletion": true,
+              "input": {
+                "externalKey": "mcp-42"
+              }
+            }
+            """);
+        var result = await router.CallTool(
+            "workable_start_workflow",
+            arguments.RootElement,
+            options: null,
+            systemName: null,
+            requestContext: CreateMcpRequestContext("Start MCP workflow with input."));
+
+        Assert.False(result.IsError);
+        Assert.Contains("\"status\":\"Completed\"", result.Json);
+        Assert.NotNull(captured);
+        var payload = captured!.ToValue<WorkflowMcpInput>()
+            ?? throw new InvalidOperationException("Expected MCP workflow input payload.");
+        Assert.Equal("mcp-42", payload.ExternalKey);
+        Assert.Contains(
+            captured.Identifiers!,
+            identifier => identifier.Type == "workflow-step" && identifier.Value == "dispatch");
+    }
+
+    [Fact]
     public async Task McpServerCanStartAndPauseWorkflow()
     {
         var slowStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -2121,4 +2178,6 @@ public sealed class WorkableMcpTests
                 WorkInvocationChannel.HttpApi,
                 WorkInvocationChannel.Mcp),
         };
+
+    private sealed record WorkflowMcpInput(string ExternalKey);
 }

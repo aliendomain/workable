@@ -143,7 +143,11 @@ public sealed class WorkableMcpToolRouter(IWorkSystemRegistry registry)
                         var workflowName = ReadRequiredString(arguments, "name");
                         var workflowRequestContext = WithDescription(requestContext, ReadString(arguments, "description"));
                         var runtime = ResolveWorkflowRuntime(system);
-                        var handle = runtime.Start(workflowName, workflowRequestContext, cancellationToken);
+                        var handle = runtime.Start(
+                            workflowName,
+                            workflowRequestContext,
+                            ReadWorkflowStartInput(arguments),
+                            cancellationToken);
                         if (!handle.StartOutcome.IsAccepted)
                         {
                             return ToToolResult(new
@@ -821,6 +825,11 @@ public sealed class WorkableMcpToolRouter(IWorkSystemRegistry registry)
         return arguments;
     }
 
+    private static WorkInput? ReadWorkflowStartInput(JsonElement? arguments)
+        => TryGetProperty(arguments, "input", out var input) && input.ValueKind != JsonValueKind.Null
+            ? WorkInput.FromJson(input.GetRawText())
+            : null;
+
     private static string CreateWorkToolInputSchema(string inputSchemaJson)
     {
         var inputSchema = JsonNode.Parse(inputSchemaJson)
@@ -1223,6 +1232,9 @@ public sealed class WorkableMcpToolRouter(IWorkSystemRegistry registry)
             "waitForCompletion": {
               "type": "boolean",
               "description": "When true, waits for the workflow run to complete before returning."
+            },
+            "input": {
+              "description": "Optional JSON input made available to workflow steps bound to workflow input."
             },
             "description": {
               "type": "string",

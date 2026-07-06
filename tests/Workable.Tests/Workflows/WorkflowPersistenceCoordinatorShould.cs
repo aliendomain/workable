@@ -244,6 +244,7 @@ public sealed class WorkflowPersistenceCoordinatorShould
             WorkflowRunId.New(),
             WorkflowDefinition.Create(definitionName).Version,
             definitionName,
+            null,
             WorkRequestContext.Create(WorkInvocationChannel.InProcess),
             WorkflowRunStatus.Running,
             [new WorkflowStepPersistenceRecord(

@@ -4,6 +4,7 @@ internal sealed record WorkflowRunSnapshot(
     WorkflowRunId Id,
     string DefinitionName,
     WorkflowRunStatus Status,
+    WorkInput? Input,
     IReadOnlyList<WorkflowStepRunSnapshot> Steps,
     DateTimeOffset CreatedAt,
     DateTimeOffset? StartedAt,

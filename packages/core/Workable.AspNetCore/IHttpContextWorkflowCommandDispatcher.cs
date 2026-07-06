@@ -20,6 +20,22 @@ public interface IHttpContextWorkflowCommandDispatcher
         CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Starts a workflow in the default unnamed system with input for steps bound to workflow input.
+    /// </summary>
+    /// <param name="workflowName">The registered workflow definition name.</param>
+    /// <param name="input">Optional workflow-run input available to bound dispatch steps.</param>
+    /// <param name="description">Optional caller-supplied request description.</param>
+    /// <param name="options">Optional workflow command behavior overrides.</param>
+    /// <param name="cancellationToken">A token that cancels the start operation.</param>
+    /// <returns>The workflow command result.</returns>
+    Task<WorkflowCommandResult> Start(
+        string workflowName,
+        WorkInput? input,
+        string? description = null,
+        WorkflowCommandOptions? options = null,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Starts a workflow in a specific system.
     /// </summary>
     /// <param name="systemName">The target system name, or <see langword="null"/> for the default unnamed system.</param>
@@ -31,6 +47,24 @@ public interface IHttpContextWorkflowCommandDispatcher
     Task<WorkflowCommandResult> StartInSystem(
         string? systemName,
         string workflowName,
+        string? description = null,
+        WorkflowCommandOptions? options = null,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Starts a workflow in a specific system with input for steps bound to workflow input.
+    /// </summary>
+    /// <param name="systemName">The target system name, or <see langword="null"/> for the default unnamed system.</param>
+    /// <param name="workflowName">The registered workflow definition name.</param>
+    /// <param name="input">Optional workflow-run input available to bound dispatch steps.</param>
+    /// <param name="description">Optional caller-supplied request description.</param>
+    /// <param name="options">Optional workflow command behavior overrides.</param>
+    /// <param name="cancellationToken">A token that cancels the start operation.</param>
+    /// <returns>The workflow command result.</returns>
+    Task<WorkflowCommandResult> StartInSystem(
+        string? systemName,
+        string workflowName,
+        WorkInput? input,
         string? description = null,
         WorkflowCommandOptions? options = null,
         CancellationToken cancellationToken = default);

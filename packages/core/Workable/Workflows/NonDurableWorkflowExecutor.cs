@@ -99,7 +99,7 @@ internal sealed class NonDurableWorkflowExecutor(
                             foreach (var child in parallel.Steps.OfType<DispatchWorkflowStepDefinition>())
                             {
                                 var input = WorkflowExecutionSupport.AddWorkflowIdentifiers(
-                                    child.Input,
+                                    WorkflowExecutionSupport.ResolveDispatchInput(child, run),
                                     run.Id,
                                     run.DefinitionName,
                                     child.Name);
@@ -222,7 +222,7 @@ internal sealed class NonDurableWorkflowExecutor(
         publisher.StepUpdated(run.ToSnapshot(), step.Name);
         var workDefinitionName = step.WorkDefinition.Name;
         var input = WorkflowExecutionSupport.AddWorkflowIdentifiers(
-            step.Input,
+            WorkflowExecutionSupport.ResolveDispatchInput(step, run),
             run.Id,
             run.DefinitionName,
             step.Name);

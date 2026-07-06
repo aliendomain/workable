@@ -559,6 +559,7 @@ public sealed class WorkflowExecutorsShould
                 WorkflowRunId.New(),
                 workflow.Definition.Version,
                 workflow.Definition.Name,
+                null,
                 WorkRequestContext.Create(WorkInvocationChannel.InProcess),
                 WorkflowRunStatus.Running,
                 [
@@ -623,6 +624,7 @@ public sealed class WorkflowExecutorsShould
                 WorkflowRunId.New(),
                 workflow.Definition.Version,
                 workflow.Definition.Name,
+                null,
                 WorkRequestContext.Create(WorkInvocationChannel.InProcess),
                 WorkflowRunStatus.Running,
                 [

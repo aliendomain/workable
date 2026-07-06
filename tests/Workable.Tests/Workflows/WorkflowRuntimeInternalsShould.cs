@@ -240,6 +240,7 @@ public sealed class WorkflowRuntimeInternalsShould
             WorkflowRunId.New(),
             definition.Version,
             definition.Name,
+            null,
             WorkRequestContext.Create(WorkInvocationChannel.InProcess),
             WorkflowRunStatus.Running,
             [
@@ -606,6 +607,7 @@ public sealed class WorkflowRuntimeInternalsShould
             runId,
             definition.Version,
             definition.Name,
+            null,
             WorkRequestContext.Create(WorkInvocationChannel.InProcess),
             WorkflowRunStatus.Running,
             [

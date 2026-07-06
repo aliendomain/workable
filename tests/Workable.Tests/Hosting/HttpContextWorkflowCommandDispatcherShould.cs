@@ -87,6 +87,51 @@ public sealed class HttpContextWorkflowCommandDispatcherShould
     }
 
     [Fact]
+    public async Task StartWorkflowWithInput()
+    {
+        WorkflowHttpCommandCapture? capturedContext = null;
+        WorkInput? capturedInput = null;
+        await using var provider = new ServiceCollection()
+            .AddWorkableAspNetCoreAuthorization()
+            .AddWorkableSystem(builder =>
+            {
+                builder.AddWork(
+                    WorkDefinition.Create("http.workflow.command.input.child"),
+                    (context, input, _) =>
+                    {
+                        capturedContext = WorkflowHttpCommandCapture.From(context.RequestContext);
+                        capturedInput = input;
+                        return Task.FromResult(WorkExecutionResult.Success());
+                    });
+                builder.AddWorkflow(
+                    WorkflowDefinition.Create("http.workflow.command.input"),
+                    workflow => workflow.DispatchWorkFromWorkflowInput(
+                        "dispatch",
+                        WorkDefinition.Create("http.workflow.command.input.child")));
+            })
+            .BuildServiceProvider();
+        var system = provider.GetRequiredService<IWorkSystemRegistry>().Default;
+        await system.Start();
+        var dispatcher = provider.GetRequiredService<IHttpContextWorkflowCommandDispatcher>();
+        var httpContextAccessor = provider.GetRequiredService<IHttpContextAccessor>();
+        httpContextAccessor.HttpContext = CreateHttpContext();
+
+        var result = await dispatcher.Start(
+            "http.workflow.command.input",
+            WorkInput.FromValue(new WorkflowHttpCommandInput("http-context-42")),
+            "Start workflow with input through HTTP.");
+
+        Assert.True(result.IsSuccess);
+        Assert.NotNull(capturedContext);
+        Assert.Equal(WorkInvocationChannel.HttpApi, capturedContext!.Channel);
+        Assert.Equal("Start workflow with input through HTTP.", capturedContext.Description);
+        Assert.NotNull(capturedInput);
+        var payload = capturedInput!.ToValue<WorkflowHttpCommandInput>()
+            ?? throw new InvalidOperationException("Expected workflow input payload.");
+        Assert.Equal("http-context-42", payload.Value);
+    }
+
+    [Fact]
     public async Task ExecuteWorkflowAction()
     {
         var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -279,4 +324,6 @@ public sealed class HttpContextWorkflowCommandDispatcherShould
                 context.Url,
                 context.IsAuthenticated);
     }
+
+    private sealed record WorkflowHttpCommandInput(string Value);
 }

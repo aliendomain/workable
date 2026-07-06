@@ -21,7 +21,7 @@ Workflow definitions also carry:
 - input and output schemas
 - revision and version metadata
 
-Workflow runs are started by workflow name. Child steps use the `WorkInput` values configured on the workflow definition. Non-durable workflow run snapshots are in-memory process state. Durable workflows persist run snapshots through the registered `IWorkPersistenceStore`.
+Workflow runs are started by workflow name. Callers may also supply an optional workflow `WorkInput`. Child steps either use the static `WorkInput` values configured on the workflow definition or explicitly bind to the workflow-run input. Non-durable workflow run snapshots are in-memory process state. Durable workflows persist run snapshots through the registered `IWorkPersistenceStore`.
 
 ## Registering A Workflow
 
@@ -118,6 +118,22 @@ Durable workflows:
 - `stepName` is the stable workflow-local step name
 - `workDefinition` is the target registered `WorkDefinition`
 - `input` is optional static `WorkInput`
+
+`DispatchWorkFromWorkflowInput(stepName, workDefinition)` queues one existing work definition using the input supplied when the workflow run was started. Multiple steps can bind to the same workflow input.
+
+```csharp
+builder.AddWorkflow(
+    WorkflowDefinition.Create("orders.fulfillment"),
+    workflow => workflow
+        .DispatchWorkFromWorkflowInput("prepare", prepareDefinition)
+        .DispatchWork("notify", emailDefinition));
+
+await workflows.Start(
+    "orders.fulfillment",
+    requestContext,
+    WorkInput.FromValue(new FulfillmentInput("order-123")),
+    cancellationToken: cancellationToken);
+```
 
 If the queue request is rejected, the workflow fails immediately.
 
@@ -235,6 +251,17 @@ var result = await workflows.Start(
     cancellationToken);
 ```
 
+To provide data to steps bound with `DispatchWorkFromWorkflowInput(...)`, pass `WorkInput` when starting the workflow.
+
+```csharp
+var result = await workflows.Start(
+    "orders.fulfillment",
+    requestContext,
+    WorkInput.FromValue(new FulfillmentInput("order-123")),
+    new WorkflowCommandOptions(WorkDispatchCompletion.ReturnAfterAccepted),
+    cancellationToken);
+```
+
 The dispatcher resolves the target Workable system, applies workflow operate authorization using the supplied `WorkRequestContext`, starts the workflow by name, and can either return after acceptance or wait for terminal workflow completion.
 
 ASP.NET Core endpoints can use `IHttpContextWorkflowCommandDispatcher` to build the request context from the current `HttpContext`.
@@ -318,9 +345,21 @@ The HTTP API exposes workflow run status with:
 
 - `GET /workable/workflow-runs`
 - `GET /workable/workflow-runs/{runId}`
+- `POST /workable/workflows/{workflowName}`
 - `POST /workable/workflow-runs/{runId}/actions/start`
 - `POST /workable/workflow-runs/{runId}/actions/pause`
 - `POST /workable/workflow-runs/{runId}/actions/cancel`
+
+When starting a workflow over HTTP, the request body can include `input` for steps bound with `DispatchWorkFromWorkflowInput(...)`.
+
+```json
+{
+  "input": {
+    "orderId": "order-123"
+  },
+  "completion": "WaitForCompletion"
+}
+```
 
 `POST /workable/workflow-runs/{runId}/actions/stop` remains available as a compatibility alias for `pause`.
 

@@ -178,14 +178,14 @@ FROM sys.tables tables
 INNER JOIN sys.schemas schemas ON schemas.schema_id = tables.schema_id
 WHERE schemas.name = N'workable' AND tables.name = N'WorkflowRuns';
 """));
-        Assert.Equal(6, await Scalar<int>(connection, """
+        Assert.Equal(7, await Scalar<int>(connection, """
 SELECT COUNT(*)
 FROM sys.columns columns
 INNER JOIN sys.tables tables ON tables.object_id = columns.object_id
 INNER JOIN sys.schemas schemas ON schemas.schema_id = tables.schema_id
 WHERE schemas.name = N'workable'
   AND tables.name = N'WorkflowRuns'
-  AND columns.name IN (N'PersistenceScope', N'DefinitionFingerprint', N'RequestContextJson', N'StepsJson', N'PendingControlAction', N'UpdatedAt');
+  AND columns.name IN (N'PersistenceScope', N'DefinitionFingerprint', N'RequestContextJson', N'WorkflowInputJson', N'StepsJson', N'PendingControlAction', N'UpdatedAt');
 """));
         Assert.Equal(0, await Scalar<int>(connection, """
 SELECT COUNT(*)
@@ -887,6 +887,7 @@ WHERE WorkerId = '{remainingWorkerId.Value:D}';
         Assert.Equal(run.DefinitionName, loaded[0].DefinitionName);
         Assert.Equal(run.DefinitionFingerprint, loaded[0].DefinitionFingerprint);
         Assert.Equal(run.PendingControlAction, loaded[0].PendingControlAction);
+        Assert.Equal(run.Input?.Json, loaded[0].Input?.Json);
         Assert.Equal(run.RequestContext.Actor.Id, loaded[0].RequestContext.Actor.Id);
         Assert.Equal(run.Steps.Single().WorkerIds, loaded[0].Steps.Single().WorkerIds);
         Assert.Equal(run.ChildReceipts.Single().WorkerId, loaded[0].ChildReceipts.Single().WorkerId);
@@ -3645,7 +3646,12 @@ WHERE WorkerId = @WorkerId;
             .GetValue(system)
             ?? throw new InvalidOperationException("Expected workflow runtime property.");
         return runtime.GetType()
-            .GetMethod("Start", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)?
+            .GetMethod(
+                "Start",
+                BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic,
+                binder: null,
+                types: [typeof(string), typeof(WorkRequestContext), typeof(CancellationToken)],
+                modifiers: null)?
             .Invoke(
                 runtime,
                 [workflowName, WorkRequestContext.Create(WorkInvocationChannel.InProcess), CancellationToken.None])
@@ -3760,6 +3766,7 @@ WHERE WorkerId = @WorkerId;
             WorkflowRunId.New(),
             definition.Version,
             definitionName,
+            WorkInput.FromValue(new WorkflowSqlInput("sql-input")),
             WorkRequestContext.Create(
                 WorkInvocationChannel.InProcess,
                 new WorkActor("workflow-sql-user", "Workflow SQL User"),
@@ -3792,6 +3799,8 @@ WHERE WorkerId = @WorkerId;
             "sql-test-workflow-fingerprint",
             "Stop");
     }
+
+    private sealed record WorkflowSqlInput(string Value);
 
     private static WorkQueueDurabilityEnqueueRequest CreateDurableEnqueueRequest(
         WorkSystemId systemId,

@@ -52,6 +52,42 @@ public sealed class WorkflowCommandDispatcherShould
     }
 
     [Fact]
+    public async Task StartWorkflowWithInput()
+    {
+        WorkInput? captured = null;
+        await using var provider = new ServiceCollection()
+            .AddWorkableSystem(builder =>
+            {
+                builder.AddWork(
+                    WorkDefinition.Create("workflow.command.input.child"),
+                    (_, input, _) =>
+                    {
+                        captured = input;
+                        return Task.FromResult(WorkExecutionResult.Success());
+                    });
+                builder.AddWorkflow(
+                    WorkflowDefinition.Create("workflow.command.input"),
+                    workflow => workflow.DispatchWorkFromWorkflowInput(
+                        "dispatch",
+                        WorkDefinition.Create("workflow.command.input.child")));
+            })
+            .BuildServiceProvider();
+        var system = provider.GetRequiredService<IWorkSystemRegistry>().Default;
+        await system.Start();
+        var dispatcher = provider.GetRequiredService<IWorkflowCommandDispatcher>();
+
+        var result = await dispatcher.Start(
+            "workflow.command.input",
+            WorkRequestContext.Create(WorkInvocationChannel.InProcess),
+            WorkInput.FromValue(new WorkflowCommandInput("command-42")));
+
+        Assert.True(result.IsSuccess);
+        Assert.NotNull(captured);
+        var payload = Assert.IsType<WorkflowCommandInput>(captured!.ToValue<WorkflowCommandInput>());
+        Assert.Equal("command-42", payload.Value);
+    }
+
+    [Fact]
     public async Task StartWorkflowInNamedSystem()
     {
         await using var provider = new ServiceCollection()
@@ -651,4 +687,6 @@ public sealed class WorkflowCommandDispatcherShould
                 context.Url,
                 context.IsAuthenticated);
     }
+
+    private sealed record WorkflowCommandInput(string Value);
 }

@@ -25,6 +25,26 @@ internal sealed class WorkflowBuilder : IWorkflowBuilder
         return new WorkflowStepReference<TOutput>(stepName);
     }
 
+    public IWorkflowBuilder DispatchWorkFromWorkflowInput(
+        string stepName,
+        WorkDefinition workDefinition)
+    {
+        ValidateDispatch(stepName, workDefinition);
+        this.steps.Add(new DispatchWorkflowStepDefinition(
+            stepName,
+            workDefinition,
+            InputSource: WorkflowDispatchInputSource.WorkflowInput));
+        return this;
+    }
+
+    public WorkflowStepReference<TOutput> DispatchWorkFromWorkflowInput<TOutput>(
+        string stepName,
+        WorkDefinition workDefinition)
+    {
+        this.DispatchWorkFromWorkflowInput(stepName, workDefinition);
+        return new WorkflowStepReference<TOutput>(stepName);
+    }
+
     public IWorkflowBuilder DispatchEach<TSourceOutput, TChildInput>(
         string stepName,
         WorkflowStepReference<TSourceOutput> sourceStep,
@@ -81,6 +101,18 @@ internal sealed class WorkflowBuilder : IWorkflowBuilder
         {
             ValidateDispatch(stepName, workDefinition);
             this.steps.Add(new DispatchWorkflowStepDefinition(stepName, workDefinition, input));
+            return this;
+        }
+
+        public IWorkflowParallelBuilder DispatchWorkFromWorkflowInput(
+            string stepName,
+            WorkDefinition workDefinition)
+        {
+            ValidateDispatch(stepName, workDefinition);
+            this.steps.Add(new DispatchWorkflowStepDefinition(
+                stepName,
+                workDefinition,
+                InputSource: WorkflowDispatchInputSource.WorkflowInput));
             return this;
         }
 
