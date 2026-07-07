@@ -1353,6 +1353,16 @@ export function WorkableConsole() {
     setView("worker");
     refreshView("worker");
   }, [pushCurrentNavigation, refreshView, rememberCurrentViewScroll]);
+  const openWorkflowRunWorker = useCallback((
+    workerId: string,
+    workflowRunUiState?: WorkflowRunConsoleViewUiStateSnapshot
+  ) => {
+    if (workflowRunUiState) {
+      handleWorkflowRunUiStateChange(workflowRunUiState);
+    }
+
+    openWorker(workerId);
+  }, [handleWorkflowRunUiStateChange, openWorker]);
 
   const openIteration = (workerId: string, sequence: number, trackHistory = true) => {
     rememberCurrentViewScroll();
@@ -2457,7 +2467,7 @@ export function WorkableConsole() {
                               initialUiState={restoredWorkflowRunUiState}
                               key={selectedWorkflowRunId}
                               onActiveRealtimeConnectionCountChange={ignoreRealtimeConnectionCountChange}
-                              onOpenWorker={openWorker}
+                              onOpenWorker={openWorkflowRunWorker}
                               onRealtimePayloadOpenChange={setRealtimePayloadOpen}
                               onUiStateChange={handleWorkflowRunUiStateChange}
                               realtimePayloadCaptureEnabled={realtimePayloadCaptureEnabled}

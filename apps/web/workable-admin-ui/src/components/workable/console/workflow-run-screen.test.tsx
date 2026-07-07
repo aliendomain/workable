@@ -45,8 +45,8 @@ test("workflow run screen renders structure nodes and drills into workers from t
         refreshToken={0}
         workflowRunId="run-123"
       />
-    </ConsoleHeaderCapabilitiesProvider>
-    , {
+    </ConsoleHeaderCapabilitiesProvider>,
+    {
       setupWindow(window) {
         window.HTMLElement.prototype.scrollIntoView = function scrollIntoView() {
           scrolledNodeSnapshots.push(this.textContent ?? "");
@@ -161,6 +161,165 @@ test("workflow run screen restores the selected node from saved ui state", async
   } finally {
     fetchMock.restore();
     await result.restore();
+  }
+});
+
+test("workflow run screen highlights and restores the selected child worker row", async () => {
+  const openedWorkers: string[] = [];
+  const openedWorkerUiStates: unknown[] = [];
+  let latestUiState: unknown = null;
+  const fetchMock = installWorkflowFetch((call) => {
+    if (call.input === "/api/workable/systems/Ops/workflow-runs/run-123?childSampleSize=12") {
+      return Response.json(parallelWorkflowRun());
+    }
+
+    const childPage = tryWorkflowStepChildrenPageResponse(call.input, parallelWorkflowRun());
+    if (childPage) {
+      return Response.json(childPage);
+    }
+
+    return Response.json({ error: `Unhandled request: ${call.input}` }, { status: 500 });
+  });
+  const result = await renderDom(
+    <ConsoleHeaderCapabilitiesProvider>
+      <WorkflowRunConsoleView
+        connection={connection}
+        onActiveRealtimeConnectionCountChange={() => undefined}
+        onOpenWorker={(workerId, uiState) => {
+          openedWorkers.push(workerId);
+          openedWorkerUiStates.push(uiState);
+        }}
+        onRealtimePayloadOpenChange={() => undefined}
+        onUiStateChange={(state) => {
+          latestUiState = state;
+        }}
+        realtimePayloadCaptureEnabled={false}
+        realtimePayloadMaxMessages={20}
+        realtimePayloadOpen={false}
+        refreshToken={0}
+        workflowRunId="run-123"
+      />
+    </ConsoleHeaderCapabilitiesProvider>
+  );
+
+  try {
+    await result.waitFor(() => result.getByRole("button", { name: /ImportInvoice/i }));
+    const workflowGraphScroll = result.container.querySelector(".workable-grid-scrollbar");
+    assert.ok(workflowGraphScroll instanceof result.dom.window.HTMLElement);
+    await result.scroll(workflowGraphScroll, {
+      clientHeight: 360,
+      scrollHeight: 1200,
+      scrollTop: 148,
+    });
+    const importWorkerButton = result.getByRole("button", { name: /ImportInvoice/i });
+    assert.equal(importWorkerButton.getAttribute("aria-pressed"), "false");
+
+    await result.click(importWorkerButton);
+
+    assert.deepEqual(openedWorkers, ["worker-child-1"]);
+    assert.equal(
+      result.getByRole("button", { name: /ImportInvoice/i }).getAttribute("aria-pressed"),
+      "true"
+    );
+    assert.deepEqual(latestUiState, {
+      autoFollowCurrentStep: true,
+      runId: "run-123",
+      selectedChildWorkerId: "worker-child-1",
+      selectedChildWorkerPageIndex: 0,
+      selectedStepName: "fan-out",
+      workflowGraphScrollTop: 148,
+    });
+    assert.deepEqual(openedWorkerUiStates, [latestUiState]);
+    assert.equal(result.queryByText("Selected"), null);
+  } finally {
+    fetchMock.restore();
+    await result.restore();
+  }
+
+  const restoredScrollMaxByElement = new WeakMap<HTMLElement, number>();
+  const restoredScrollTopByElement = new WeakMap<HTMLElement, number>();
+  const restoredResizeCallbacks: ResizeObserverCallback[] = [];
+  const restoreFetchMock = installWorkflowFetch((call) => {
+    if (call.input === "/api/workable/systems/Ops/workflow-runs/run-123?childSampleSize=12") {
+      return Response.json(parallelWorkflowRun());
+    }
+
+    const childPage = tryWorkflowStepChildrenPageResponse(call.input, parallelWorkflowRun());
+    if (childPage) {
+      return Response.json(childPage);
+    }
+
+    return Response.json({ error: `Unhandled request: ${call.input}` }, { status: 500 });
+  });
+  const restored = await renderDom(
+    <ConsoleHeaderCapabilitiesProvider>
+      <WorkflowRunConsoleView
+        connection={connection}
+        initialUiState={{
+          autoFollowCurrentStep: true,
+          runId: "run-123",
+          selectedChildWorkerId: "worker-child-1",
+          selectedChildWorkerPageIndex: 0,
+          selectedStepName: "fan-out",
+          workflowGraphScrollTop: 148,
+        }}
+        onActiveRealtimeConnectionCountChange={() => undefined}
+        onOpenWorker={() => undefined}
+        onRealtimePayloadOpenChange={() => undefined}
+        realtimePayloadCaptureEnabled={false}
+        realtimePayloadMaxMessages={20}
+        realtimePayloadOpen={false}
+        refreshToken={0}
+        workflowRunId="run-123"
+      />
+    </ConsoleHeaderCapabilitiesProvider>
+    , {
+      setupWindow(window) {
+        Object.defineProperty(window.HTMLElement.prototype, "scrollTop", {
+          configurable: true,
+          get() {
+            return restoredScrollTopByElement.get(this) ?? 0;
+          },
+          set(value: number) {
+            const maxScrollTop = restoredScrollMaxByElement.get(this) ?? 0;
+            restoredScrollTopByElement.set(this, Math.min(value, maxScrollTop));
+          },
+        });
+
+        class ManualResizeObserver implements ResizeObserver {
+          constructor(private readonly callback: ResizeObserverCallback) {}
+
+          disconnect() {}
+          observe() {
+            restoredResizeCallbacks.push(this.callback);
+          }
+          unobserve() {}
+        }
+
+        globalThis.ResizeObserver = ManualResizeObserver as typeof ResizeObserver;
+        window.ResizeObserver = ManualResizeObserver as typeof ResizeObserver;
+      },
+    }
+  );
+
+  try {
+    await restored.waitFor(() => restored.getByRole("button", { name: /ImportInvoice/i }));
+    const restoredImportWorkerButton = restored.getByRole("button", { name: /ImportInvoice/i });
+    assert.equal(restoredImportWorkerButton.getAttribute("aria-pressed"), "true");
+    assert.equal(restored.queryByText("Selected"), null);
+    const restoredWorkflowGraphScroll = restored.container.querySelector(".workable-grid-scrollbar");
+    assert.ok(restoredWorkflowGraphScroll instanceof restored.dom.window.HTMLElement);
+    assert.equal(restoredWorkflowGraphScroll.scrollTop, 0);
+    restoredScrollMaxByElement.set(restoredWorkflowGraphScroll, 400);
+    for (const callback of restoredResizeCallbacks) {
+      callback([], {} as ResizeObserver);
+    }
+    await restored.waitFor(() => {
+      assert.equal(restoredWorkflowGraphScroll.scrollTop, 148);
+    });
+  } finally {
+    restoreFetchMock.restore();
+    await restored.restore();
   }
 });
 
@@ -589,6 +748,8 @@ test("workflow run screen uses server-provided workflow action availability", as
 
 test("workflow run screen pages selected-node workers for large fan-out steps", async () => {
   const largeRun = largeDispatchEachWorkflowRun();
+  const openedWorkers: string[] = [];
+  let latestUiState: unknown = null;
   const fetchMock = installWorkflowFetch((call) => {
     if (call.input === "/api/workable/systems/Ops/workflow-runs/run-123?childSampleSize=12") {
       return Response.json(largeRun);
@@ -606,8 +767,11 @@ test("workflow run screen pages selected-node workers for large fan-out steps", 
       <WorkflowRunConsoleView
         connection={connection}
         onActiveRealtimeConnectionCountChange={() => undefined}
-        onOpenWorker={() => undefined}
+        onOpenWorker={(workerId) => openedWorkers.push(workerId)}
         onRealtimePayloadOpenChange={() => undefined}
+        onUiStateChange={(state) => {
+          latestUiState = state;
+        }}
         realtimePayloadCaptureEnabled={false}
         realtimePayloadMaxMessages={20}
         realtimePayloadOpen={false}
@@ -622,14 +786,74 @@ test("workflow run screen pages selected-node workers for large fan-out steps", 
     result.getByRole("button", { name: /LoadWorker01/i });
     await result.click(result.getByRole("button", { name: "Next" }));
     await result.waitFor(() => result.getByText("13-15 of 15 workers"));
-    result.getByRole("button", { name: /LoadWorker13/i });
+    const worker13Button = result.getByRole("button", { name: /LoadWorker13/i });
     assert.equal(result.queryByText("LoadWorker01"), null);
+    await result.click(worker13Button);
+    assert.deepEqual(openedWorkers, ["worker-child-13"]);
+    assert.equal(
+      result.getByRole("button", { name: /LoadWorker13/i }).getAttribute("aria-pressed"),
+      "true"
+    );
+    assert.deepEqual(latestUiState, {
+      autoFollowCurrentStep: true,
+      runId: "run-123",
+      selectedChildWorkerId: "worker-child-13",
+      selectedChildWorkerPageIndex: 1,
+      selectedStepName: "fan-out-batch",
+      workflowGraphScrollTop: 0,
+    });
     await result.click(result.getByRole("button", { name: "Previous" }));
     await result.waitFor(() => result.getByText("1-12 of 15 workers"));
     result.getByRole("button", { name: /LoadWorker01/i });
   } finally {
     fetchMock.restore();
     await result.restore();
+  }
+
+  const restoreFetchMock = installWorkflowFetch((call) => {
+    if (call.input === "/api/workable/systems/Ops/workflow-runs/run-123?childSampleSize=12") {
+      return Response.json(largeRun);
+    }
+
+    const childPage = tryWorkflowStepChildrenPageResponse(call.input, largeRun);
+    if (childPage) {
+      return Response.json(childPage);
+    }
+
+    return Response.json({ error: `Unhandled request: ${call.input}` }, { status: 500 });
+  });
+  const restored = await renderDom(
+    <ConsoleHeaderCapabilitiesProvider>
+      <WorkflowRunConsoleView
+        connection={connection}
+        initialUiState={{
+          autoFollowCurrentStep: true,
+          runId: "run-123",
+          selectedChildWorkerId: "worker-child-13",
+          selectedChildWorkerPageIndex: 1,
+          selectedStepName: "fan-out-batch",
+        }}
+        onActiveRealtimeConnectionCountChange={() => undefined}
+        onOpenWorker={() => undefined}
+        onRealtimePayloadOpenChange={() => undefined}
+        realtimePayloadCaptureEnabled={false}
+        realtimePayloadMaxMessages={20}
+        realtimePayloadOpen={false}
+        refreshToken={0}
+        workflowRunId="run-123"
+      />
+    </ConsoleHeaderCapabilitiesProvider>
+  );
+
+  try {
+    await restored.waitFor(() => restored.getByText("13-15 of 15 workers"));
+    assert.equal(
+      restored.getByRole("button", { name: /LoadWorker13/i }).getAttribute("aria-pressed"),
+      "true"
+    );
+  } finally {
+    restoreFetchMock.restore();
+    await restored.restore();
   }
 });
 
