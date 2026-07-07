@@ -72,7 +72,10 @@ type WorkflowRunStateOverlay = {
 export type WorkflowRunConsoleViewUiStateSnapshot = {
   autoFollowCurrentStep: boolean;
   runId: string;
+  selectedChildWorkerId?: string | null;
+  selectedChildWorkerPageIndex?: number;
   selectedStepName: string | null;
+  workflowGraphScrollTop?: number;
 };
 type WorkflowActionResult = {
   action: WorkflowAction;
@@ -163,7 +166,7 @@ export function WorkflowRunConsoleView({
   connection: WorkableConnection;
   initialUiState?: WorkflowRunConsoleViewUiStateSnapshot | null;
   onActiveRealtimeConnectionCountChange: (count: number) => void;
-  onOpenWorker: (workerId: string) => void;
+  onOpenWorker: (workerId: string, uiState?: WorkflowRunConsoleViewUiStateSnapshot) => void;
   onRealtimePayloadOpenChange: (open: boolean) => void;
   onUiStateChange?: (state: WorkflowRunConsoleViewUiStateSnapshot) => void;
   realtimePayloadCaptureEnabled: boolean;
@@ -386,6 +389,68 @@ export function WorkflowRunConsoleView({
   const controlsDisabled = pendingAction !== null || !run;
   const availableActions = run?.availableActions ?? emptyAvailableWorkflowActions;
   const hasError = Boolean(workflowDetail.error) && !run;
+  const restoredWorkflowGraphScrollTop = initialUiState?.runId === workflowRunId
+    ? normalizeWorkflowGraphScrollTop(initialUiState.workflowGraphScrollTop)
+    : 0;
+  const workflowGraphScrollRef = useRef<HTMLDivElement | null>(null);
+  const workflowGraphContentRef = useRef<HTMLDivElement | null>(null);
+  const workflowGraphScrollTopRef = useRef(restoredWorkflowGraphScrollTop);
+  const restoredWorkflowGraphScrollKeyRef = useRef<string | null>(null);
+  useEffect(() => {
+    workflowGraphScrollTopRef.current = restoredWorkflowGraphScrollTop;
+    restoredWorkflowGraphScrollKeyRef.current = null;
+  }, [restoredWorkflowGraphScrollTop, workflowRunId]);
+  useEffect(() => {
+    if (!run || hiddenPanelIds.has("workflowGraph")) {
+      return;
+    }
+
+    const restoreKey = `${workflowRunId}:${restoredWorkflowGraphScrollTop}`;
+    if (restoredWorkflowGraphScrollKeyRef.current === restoreKey) {
+      return;
+    }
+
+    const scrollContainer = workflowGraphScrollRef.current;
+    if (!scrollContainer) {
+      return;
+    }
+
+    const restore = () => {
+      scrollContainer.scrollTop = restoredWorkflowGraphScrollTop;
+      workflowGraphScrollTopRef.current = scrollContainer.scrollTop;
+
+      if (scrollContainer.scrollTop >= restoredWorkflowGraphScrollTop) {
+        restoredWorkflowGraphScrollKeyRef.current = restoreKey;
+      }
+    };
+
+    const frame = requestAnimationFrame(restore);
+    const resizeObserver = typeof ResizeObserver === "undefined"
+      ? null
+      : new ResizeObserver(restore);
+    resizeObserver?.observe(workflowGraphContentRef.current ?? scrollContainer);
+
+    return () => {
+      cancelAnimationFrame(frame);
+      resizeObserver?.disconnect();
+    };
+  }, [hiddenPanelIds, restoredWorkflowGraphScrollTop, run, workflowRunId]);
+  const createWorkflowRunUiStateSnapshot = useCallback((state: WorkflowRunConsoleViewUiStateSnapshot) => ({
+    ...state,
+    workflowGraphScrollTop: workflowGraphScrollTopRef.current,
+  }), []);
+  const handleWorkflowRunUiStateChange = useCallback((state: WorkflowRunConsoleViewUiStateSnapshot) => {
+    onUiStateChange?.(createWorkflowRunUiStateSnapshot(state));
+  }, [createWorkflowRunUiStateSnapshot, onUiStateChange]);
+  const handleOpenWorkflowWorker = useCallback((
+    workerId: string,
+    uiState?: WorkflowRunConsoleViewUiStateSnapshot
+  ) => {
+    onOpenWorker(
+      workerId,
+      uiState ? createWorkflowRunUiStateSnapshot(uiState) : undefined
+    );
+  }, [createWorkflowRunUiStateSnapshot, onOpenWorker]);
 
   return (
     <ConsolePageLayout scrollMode="browser">
@@ -471,8 +536,14 @@ export function WorkflowRunConsoleView({
                 onClose={() => setPanelVisible("workflowGraph", false)}
                 title="Workflow Graph"
               >
-                <div className="workable-grid-scrollbar max-h-[70vh] overflow-auto pr-1">
-                  <div className="pr-1 pb-1">
+                <div
+                  className="workable-grid-scrollbar max-h-[70vh] overflow-auto pr-1"
+                  onScroll={(event) => {
+                    workflowGraphScrollTopRef.current = event.currentTarget.scrollTop;
+                  }}
+                  ref={workflowGraphScrollRef}
+                >
+                  <div className="pr-1 pb-1" ref={workflowGraphContentRef}>
                     {run.steps.length === 0 ? (
                       <ConsoleEmptyState padding="compact">
                         No workflow steps have been materialized for this run yet.
@@ -485,11 +556,17 @@ export function WorkflowRunConsoleView({
                         initialAutoFollowCurrentStep={initialUiState?.runId === workflowRunId
                           ? initialUiState.autoFollowCurrentStep
                           : undefined}
+                        initialSelectedChildWorkerId={initialUiState?.runId === workflowRunId
+                          ? initialUiState.selectedChildWorkerId ?? null
+                          : null}
+                        initialSelectedChildWorkerPageIndex={initialUiState?.runId === workflowRunId
+                          ? initialUiState.selectedChildWorkerPageIndex
+                          : undefined}
                         initialSelectedStepName={initialUiState?.runId === workflowRunId
                           ? initialUiState.selectedStepName
                           : null}
-                        onOpenWorker={onOpenWorker}
-                        onUiStateChange={onUiStateChange}
+                        onOpenWorker={handleOpenWorkflowWorker}
+                        onUiStateChange={handleWorkflowRunUiStateChange}
                         outstandingChildren={run.outstandingChildren}
                         runStatus={run.status}
                         stepChildPageRefreshToken={stepChildPageRefreshToken}
@@ -571,6 +648,8 @@ function WorkflowFlowChart({
   currentStepName,
   currentStepStatus,
   initialAutoFollowCurrentStep,
+  initialSelectedChildWorkerId,
+  initialSelectedChildWorkerPageIndex,
   initialSelectedStepName,
   onOpenWorker,
   onUiStateChange,
@@ -584,8 +663,10 @@ function WorkflowFlowChart({
   currentStepName?: string | null;
   currentStepStatus?: WorkflowOperatorNodeStatus | null;
   initialAutoFollowCurrentStep?: boolean;
+  initialSelectedChildWorkerId?: string | null;
+  initialSelectedChildWorkerPageIndex?: number;
   initialSelectedStepName?: string | null;
-  onOpenWorker: (workerId: string) => void;
+  onOpenWorker: (workerId: string, uiState?: WorkflowRunConsoleViewUiStateSnapshot) => void;
   onUiStateChange?: (state: WorkflowRunConsoleViewUiStateSnapshot) => void;
   outstandingChildren: WorkflowChildWorkerSummary;
   runStatus: WorkflowRunStatus;
@@ -623,6 +704,12 @@ function WorkflowFlowChart({
       currentActivity?.name ?? currentStepName ?? null
     )
   );
+  const [selectedChildWorkerId, setSelectedChildWorkerId] = useState<string | null>(
+    () => initialSelectedChildWorkerId ?? null
+  );
+  const [selectedChildWorkerPageIndex, setSelectedChildWorkerPageIndex] = useState(
+    () => normalizeWorkflowWorkerPageIndex(initialSelectedChildWorkerPageIndex)
+  );
   const [autoFollowCurrentStep, setAutoFollowCurrentStep] = useState(
     () => initialAutoFollowCurrentStep ?? true
   );
@@ -647,13 +734,34 @@ function WorkflowFlowChart({
       setSelectedStepName(autoSelectedStepName);
     }
   }, [activeSelectionAnchor, autoFollowCurrentStep, autoSelectedStepName, selectedStepName, steps]);
+  const previousSelectedStepNameRef = useRef(selectedStepName);
+  useEffect(() => {
+    const previousSelectedStepName = previousSelectedStepNameRef.current;
+    previousSelectedStepNameRef.current = selectedStepName;
+
+    if (previousSelectedStepName === selectedStepName) {
+      return;
+    }
+
+    setSelectedChildWorkerId(null);
+    setSelectedChildWorkerPageIndex(0);
+  }, [selectedStepName]);
   useEffect(() => {
     onUiStateChange?.({
       autoFollowCurrentStep,
       runId: workflowRunId,
+      selectedChildWorkerId,
+      selectedChildWorkerPageIndex,
       selectedStepName,
     });
-  }, [autoFollowCurrentStep, onUiStateChange, selectedStepName, workflowRunId]);
+  }, [
+    autoFollowCurrentStep,
+    onUiStateChange,
+    selectedChildWorkerId,
+    selectedChildWorkerPageIndex,
+    selectedStepName,
+    workflowRunId,
+  ]);
   const selectedStep = useMemo(
     () => selectedStepName ? findWorkflowStepByName(steps, selectedStepName) : null,
     [selectedStepName, steps]
@@ -672,7 +780,31 @@ function WorkflowFlowChart({
   const handleSelectStep = useCallback((stepName: string) => {
     setAutoFollowCurrentStep(false);
     setSelectedStepName(stepName);
+    setSelectedChildWorkerId(null);
+    setSelectedChildWorkerPageIndex(0);
   }, []);
+  const handleWorkerPageIndexChange = useCallback((pageIndex: number) => {
+    setSelectedChildWorkerPageIndex(normalizeWorkflowWorkerPageIndex(pageIndex));
+  }, []);
+  const handleOpenWorker = useCallback((workerId: string) => {
+    const nextUiState = {
+      autoFollowCurrentStep,
+      runId: workflowRunId,
+      selectedChildWorkerId: workerId,
+      selectedChildWorkerPageIndex,
+      selectedStepName,
+    } satisfies WorkflowRunConsoleViewUiStateSnapshot;
+    setSelectedChildWorkerId(workerId);
+    onUiStateChange?.(nextUiState);
+    onOpenWorker(workerId, nextUiState);
+  }, [
+    autoFollowCurrentStep,
+    onOpenWorker,
+    onUiStateChange,
+    selectedChildWorkerPageIndex,
+    selectedStepName,
+    workflowRunId,
+  ]);
 
   useEffect(() => {
     if (!shouldFollowCurrentActivity) {
@@ -731,8 +863,11 @@ function WorkflowFlowChart({
         {selectedStep ? (
           <WorkflowSelectedNodeInspector
             connection={connection}
-            onOpenWorker={onOpenWorker}
+            onOpenWorker={handleOpenWorker}
+            onPageIndexChange={handleWorkerPageIndexChange}
+            pageIndex={selectedChildWorkerPageIndex}
             refreshToken={stepChildPageRefreshToken}
+            selectedWorkerId={selectedChildWorkerId}
             step={selectedStep}
             workflowRunId={workflowRunId}
           />
@@ -785,17 +920,22 @@ function WorkflowStructureSequence({
 function WorkflowSelectedNodeInspector({
   connection,
   onOpenWorker,
+  onPageIndexChange,
+  pageIndex,
   refreshToken,
+  selectedWorkerId,
   step,
   workflowRunId,
 }: {
   connection: WorkableConnection;
   onOpenWorker: (workerId: string) => void;
+  onPageIndexChange: (pageIndex: number) => void;
+  pageIndex: number;
   refreshToken: number;
+  selectedWorkerId?: string | null;
   step: WorkflowStepOperatorView;
   workflowRunId: string;
 }) {
-  const [pageIndex, setPageIndex] = useState(0);
   const pageSkip = pageIndex * workflowNodeWorkerPageSize;
   const initialPageSampleCount = Math.min(workflowNodeWorkerPageSize, step.children.total);
   const shouldLoadPagedChildren = step.children.total > 0 && (
@@ -828,10 +968,6 @@ function WorkflowSelectedNodeInspector({
   const hasPreviousPage = pageIndex > 0;
   const hasNextPage = pageSkip + pagedWorkers.length < totalWorkers;
 
-  useEffect(() => {
-    setPageIndex(0);
-  }, [step.name]);
-
   return (
     <div className="space-y-4">
       <div className="space-y-2">
@@ -858,7 +994,7 @@ function WorkflowSelectedNodeInspector({
               <div className="flex items-center gap-2">
                 <Button
                   disabled={!hasPreviousPage}
-                  onClick={() => setPageIndex((current) => Math.max(0, current - 1))}
+                  onClick={() => onPageIndexChange(Math.max(0, pageIndex - 1))}
                   size="sm"
                   type="button"
                   variant="outline"
@@ -867,7 +1003,7 @@ function WorkflowSelectedNodeInspector({
                 </Button>
                 <Button
                   disabled={!hasNextPage}
-                  onClick={() => setPageIndex((current) => current + 1)}
+                  onClick={() => onPageIndexChange(pageIndex + 1)}
                   size="sm"
                   type="button"
                   variant="outline"
@@ -887,29 +1023,42 @@ function WorkflowSelectedNodeInspector({
               Loading associated workers...
             </p>
           ) : null}
-          {pagedWorkers.map((worker) => (
-            <Button
-              key={worker.workerId}
-              className="h-auto min-h-12 w-full min-w-0 justify-between gap-3 overflow-hidden rounded-xl px-3 py-3 text-left"
-              onClick={() => onOpenWorker(worker.workerId)}
-              title={`${worker.definitionName} · ${worker.workerId}`}
-              type="button"
-              variant="outline"
-            >
-              <span className="min-w-0 flex-1">
-                <span className="block truncate font-medium text-sm">{worker.definitionName}</span>
-                <span className="block truncate font-mono text-muted-foreground text-xs">
-                  {worker.workerId}
+          {pagedWorkers.map((worker) => {
+            const selected = worker.workerId === selectedWorkerId;
+
+            return (
+              <Button
+                aria-pressed={selected}
+                key={worker.workerId}
+                className={cn(
+                  "h-auto min-h-12 w-full min-w-0 justify-between gap-3 overflow-hidden rounded-xl px-3 py-3 text-left",
+                  selected
+                    ? "border-primary bg-primary/10 text-foreground shadow-sm ring-2 ring-primary/45 hover:border-primary hover:bg-primary/15"
+                    : ""
+                )}
+                onClick={() => onOpenWorker(worker.workerId)}
+                title={`${worker.definitionName} · ${worker.workerId}`}
+                type="button"
+                variant="outline"
+              >
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate font-medium text-sm">{worker.definitionName}</span>
+                  <span className={cn(
+                    "block truncate font-mono text-xs",
+                    selected ? "text-foreground/75" : "text-muted-foreground"
+                  )}>
+                    {worker.workerId}
+                  </span>
                 </span>
-              </span>
-              <span className="flex shrink-0 items-center gap-2">
-                {isWorkflowWorkerExecuting(worker.state) ? <WorkflowExecutingIndicator /> : null}
-                <Badge className={semanticBadgeToneClass(workerStateTone(worker.state))} variant="secondary">
-                  {worker.state}
-                </Badge>
-              </span>
-            </Button>
-          ))}
+                <span className="flex shrink-0 items-center gap-2">
+                  {isWorkflowWorkerExecuting(worker.state) ? <WorkflowExecutingIndicator /> : null}
+                  <Badge className={semanticBadgeToneClass(workerStateTone(worker.state))} variant="secondary">
+                    {worker.state}
+                  </Badge>
+                </span>
+              </Button>
+            );
+          })}
         </div>
       ) : step.children.total > 0 ? (
         <p className="text-muted-foreground text-sm">
@@ -923,6 +1072,18 @@ function WorkflowSelectedNodeInspector({
       ) : null}
     </div>
   );
+}
+
+function normalizeWorkflowWorkerPageIndex(pageIndex: number | null | undefined) {
+  return Math.max(0, Math.floor(pageIndex ?? 0));
+}
+
+function normalizeWorkflowGraphScrollTop(scrollTop: number | null | undefined) {
+  if (typeof scrollTop !== "number" || !Number.isFinite(scrollTop)) {
+    return 0;
+  }
+
+  return Math.max(0, Math.floor(scrollTop));
 }
 
 function filterRenderedWorkflowSteps(
