@@ -23,9 +23,8 @@ internal static class WorkflowBenchmarkReflection
         CancellationToken cancellationToken = default)
     {
         var runtime = GetWorkflowRuntime(system);
-        var handle = runtime.GetType()
-            .GetMethod("Start", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)
-            ?.Invoke(runtime, [workflowName, requestContext, cancellationToken])
+        var handle = GetStartMethod(runtime)
+            .Invoke(runtime, [workflowName, requestContext, cancellationToken])
             ?? throw new InvalidOperationException("Expected workflow runtime start handle.");
         EnsureAcceptedStart(workflowName, handle);
         var runId = RequireProperty(handle, "RunId");
@@ -69,13 +68,22 @@ internal static class WorkflowBenchmarkReflection
         CancellationToken cancellationToken)
     {
         var runtime = GetWorkflowRuntime(system);
-        var handle = runtime.GetType()
-            .GetMethod("Start", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)
-            ?.Invoke(runtime, [workflowName, requestContext, cancellationToken])
+        var handle = GetStartMethod(runtime)
+            .Invoke(runtime, [workflowName, requestContext, cancellationToken])
             ?? throw new InvalidOperationException("Expected workflow runtime start handle.");
         EnsureAcceptedStart(workflowName, handle);
         return handle;
     }
+
+    private static MethodInfo GetStartMethod(object runtime)
+        => runtime.GetType()
+            .GetMethod(
+                "Start",
+                BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic,
+                binder: null,
+                types: [typeof(string), typeof(WorkRequestContext), typeof(CancellationToken)],
+                modifiers: null)
+            ?? throw new InvalidOperationException("Expected workflow runtime start method.");
 
     private static async Task<object> WaitForCompletion(object handle, CancellationToken cancellationToken)
     {
