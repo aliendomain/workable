@@ -2,6 +2,7 @@ namespace Workable;
 
 internal sealed class WorkSystemSession(
     string? systemName,
+    WorkSystemCapabilities capabilities,
     Func<WorkSystemState> getSystemState,
     IWorkSystemDiagnostics diagnostics,
     IWorkCatalog catalog,
@@ -9,9 +10,11 @@ internal sealed class WorkSystemSession(
     IWorkerOperations workers,
     IWorkQueryService query,
     IWorkEventStream events,
-    IWorkChangeStream changes) : IWorkSystemSession
+    IWorkChangeStream changes) : IWorkSystemSession, IWorkSystemCapabilitySource
 {
     public string? SystemName { get; } = systemName;
+
+    public WorkSystemCapabilities Capabilities { get; } = capabilities;
 
     public WorkSystemState SystemState => getSystemState();
 

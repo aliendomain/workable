@@ -1,7 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { act } from "react";
 import { ConsoleHeaderCapabilitiesProvider } from "@/components/features/console/header-capabilities";
-import { WorkflowRunConsoleView, createWorkflowRunDetailPath } from "@/components/workable/console/workflow-run-screen";
+import {
+  WorkflowRunConsoleView,
+  createWorkflowGraphRenderModel,
+  createWorkflowRunDetailPath,
+} from "@/components/workable/console/workflow-run-screen";
 import { renderDom } from "@/test/dom";
 import type { WorkableConnection, WorkflowRunDetailView } from "@/lib/workable";
 
@@ -15,6 +20,65 @@ test("workflow run detail path includes the requested child sample size", () => 
     createWorkflowRunDetailPath("run-123", { childSampleSize: 12 }),
     "workflow-runs/run-123?childSampleSize=12"
   );
+});
+
+test("workflow graph render model preserves nested branch structure without joins", () => {
+  const model = createWorkflowGraphRenderModel(
+    nestedBranchWorkflowRun().steps,
+    {
+      currentStepName: "branch-parallel-right",
+      selectedStepName: "branch-finalize",
+    }
+  );
+
+  assert.deepEqual(
+    model.sequence.map((node) => node.name),
+    ["prepare-nested", "outer-fan-out", "finish-nested"]
+  );
+  assert.deepEqual(model.hiddenJoinNames, [
+    "branch-inner-join",
+    "branch-join",
+    "outer-join",
+  ]);
+  assert.deepEqual(model.currentPath, [
+    "outer-fan-out",
+    "branch-docs",
+    "branch-parallel",
+    "branch-parallel-right",
+  ]);
+  assert.deepEqual(model.selectedPath, [
+    "outer-fan-out",
+    "branch-docs",
+    "branch-finalize",
+  ]);
+
+  const outerParallel = model.sequence[1];
+  assert.equal(outerParallel.kind, "Parallel");
+  assert.equal(outerParallel.containsCurrent, true);
+  assert.equal(outerParallel.containsSelected, true);
+  assert.deepEqual(
+    outerParallel.branchLanes.map((lane) => lane.rootStepName),
+    ["branch-docs", "branch-notify"]
+  );
+
+  const branchDocs = outerParallel.branchLanes[0].steps[0];
+  assert.equal(branchDocs.kind, "Branch");
+  assert.equal(branchDocs.containsCurrent, true);
+  assert.equal(branchDocs.containsSelected, true);
+  assert.deepEqual(
+    branchDocs.nestedSequence.map((node) => node.name),
+    ["branch-collect", "branch-parse", "branch-parallel", "branch-finalize"]
+  );
+
+  const branchParallel = branchDocs.nestedSequence[2];
+  assert.equal(branchParallel.kind, "Parallel");
+  assert.equal(branchParallel.containsCurrent, true);
+  assert.equal(branchParallel.containsSelected, false);
+  assert.deepEqual(
+    branchParallel.branchLanes.map((lane) => lane.rootStepName),
+    ["branch-parallel-left", "branch-parallel-right"]
+  );
+  assert.equal(branchParallel.branchLanes[1].containsCurrent, true);
 });
 
 test("workflow run screen renders structure nodes and drills into workers from the selected node", async () => {
@@ -223,10 +287,15 @@ test("workflow run screen highlights and restores the selected child worker row"
     );
     assert.deepEqual(latestUiState, {
       autoFollowCurrentStep: true,
+      collapsedBranchIds: [
+        "fan-out:branch:0:branch-a",
+        "fan-out:branch:1:branch-b",
+      ],
       runId: "run-123",
       selectedChildWorkerId: "worker-child-1",
       selectedChildWorkerPageIndex: 0,
       selectedStepName: "fan-out",
+      workflowGraphScrollLeft: 0,
       workflowGraphScrollTop: 148,
     });
     assert.deepEqual(openedWorkerUiStates, [latestUiState]);
@@ -384,7 +453,399 @@ test("workflow run screen stops auto-following after a manual node selection", a
   }
 });
 
-test("workflow run screen shows settled parallel branch counts as a single summary node", async () => {
+test("workflow run screen renders nested child branch lanes and inspects nested branch nodes", async () => {
+  const nestedRun = nestedBranchWorkflowRun();
+  const fetchMock = installWorkflowFetch((call) => {
+    if (call.input === "/api/workable/systems/Ops/workflow-runs/run-123?childSampleSize=12") {
+      return Response.json(nestedRun);
+    }
+
+    const childPage = tryWorkflowStepChildrenPageResponse(call.input, nestedRun);
+    if (childPage) {
+      return Response.json(childPage);
+    }
+
+    return Response.json({ error: `Unhandled request: ${call.input}` }, { status: 500 });
+  });
+  const result = await renderDom(
+    <ConsoleHeaderCapabilitiesProvider>
+      <WorkflowRunConsoleView
+        connection={connection}
+        onActiveRealtimeConnectionCountChange={() => undefined}
+        onOpenWorker={() => undefined}
+        onRealtimePayloadOpenChange={() => undefined}
+        realtimePayloadCaptureEnabled={false}
+        realtimePayloadMaxMessages={20}
+        realtimePayloadOpen={false}
+        refreshToken={0}
+        workflowRunId="run-123"
+      />
+    </ConsoleHeaderCapabilitiesProvider>
+  );
+
+  try {
+    await result.waitFor(() => result.getByRole("button", { name: /outer-fan-out/i }));
+    result.getByRole("button", { name: /branch-docs/i });
+    assert.equal(result.queryByText("branch-finalize"), null);
+    await result.click(result.getByRole("button", { name: "Expand branch branch-docs" }));
+    result.getByRole("button", { name: /branch-parallel/i });
+    result.getByRole("button", { name: /branch-parallel-right/i });
+    assert.equal((result.container.textContent?.match(/Branches/g) ?? []).length >= 1, true);
+    assert.equal((result.container.textContent?.match(/Branch 1/g) ?? []).length >= 2, true);
+    assert.equal(result.queryByText("branch-inner-join"), null);
+    assert.equal(result.queryByText("branch-join"), null);
+    assert.equal(result.queryByText("outer-join"), null);
+
+    await result.click(result.getByRole("button", { name: /branch-finalize/i }));
+    await result.waitFor(() => result.getByRole("button", { name: /FinalizeBranchDocuments/i }));
+  } finally {
+    fetchMock.restore();
+    await result.restore();
+  }
+});
+
+test("workflow run screen collapses branch lanes and saves the collapsed branch state", async () => {
+  const nestedRun = nestedBranchWorkflowRun();
+  let latestUiState: unknown = null;
+  const fetchMock = installWorkflowFetch((call) => {
+    if (call.input === "/api/workable/systems/Ops/workflow-runs/run-123?childSampleSize=12") {
+      return Response.json(nestedRun);
+    }
+
+    const childPage = tryWorkflowStepChildrenPageResponse(call.input, nestedRun);
+    if (childPage) {
+      return Response.json(childPage);
+    }
+
+    return Response.json({ error: `Unhandled request: ${call.input}` }, { status: 500 });
+  });
+  const result = await renderDom(
+    <ConsoleHeaderCapabilitiesProvider>
+      <WorkflowRunConsoleView
+        connection={connection}
+        onActiveRealtimeConnectionCountChange={() => undefined}
+        onOpenWorker={() => undefined}
+        onRealtimePayloadOpenChange={() => undefined}
+        onUiStateChange={(state) => {
+          latestUiState = state;
+        }}
+        realtimePayloadCaptureEnabled={false}
+        realtimePayloadMaxMessages={20}
+        realtimePayloadOpen={false}
+        refreshToken={0}
+        workflowRunId="run-123"
+      />
+    </ConsoleHeaderCapabilitiesProvider>
+  );
+
+  try {
+    await result.waitFor(() => result.getByRole("button", { name: "Expand branch branch-docs" }));
+    assert.equal(result.queryByText("branch-finalize"), null);
+    assert.equal(result.queryByText("workflow nodes collapsed."), null);
+
+    await result.click(result.getByRole("button", { name: "branch-docs" }));
+    await result.waitFor(() => result.getByRole("button", { name: /CollectBranchDocuments/i }));
+    assert.deepEqual(latestUiState, {
+      autoFollowCurrentStep: false,
+      collapsedBranchIds: [
+        "branch-parallel:branch:0:branch-parallel-left",
+        "branch-parallel:branch:1:branch-parallel-right",
+        "outer-fan-out:branch:0:branch-docs",
+        "outer-fan-out:branch:1:branch-notify",
+      ],
+      runId: "run-123",
+      selectedChildWorkerId: null,
+      selectedChildWorkerPageIndex: 0,
+      selectedStepName: "branch-docs",
+      workflowGraphScrollLeft: 0,
+      workflowGraphScrollTop: 0,
+    });
+
+    await result.click(result.getByRole("button", { name: "Expand branch branch-docs" }));
+    await result.waitFor(() => result.getByRole("button", { name: /branch-finalize/i }));
+
+    await result.click(result.getByRole("button", { name: "Collapse branch branch-docs" }));
+
+    await result.waitFor(() => result.getByRole("button", { name: "Expand branch branch-docs" }));
+    assert.equal(result.queryByText("workflow nodes collapsed."), null);
+    assert.deepEqual(latestUiState, {
+      autoFollowCurrentStep: false,
+      collapsedBranchIds: [
+        "branch-parallel:branch:0:branch-parallel-left",
+        "branch-parallel:branch:1:branch-parallel-right",
+        "outer-fan-out:branch:0:branch-docs",
+        "outer-fan-out:branch:1:branch-notify",
+      ],
+      runId: "run-123",
+      selectedChildWorkerId: null,
+      selectedChildWorkerPageIndex: 0,
+      selectedStepName: "branch-docs",
+      workflowGraphScrollLeft: 0,
+      workflowGraphScrollTop: 0,
+    });
+
+    await result.click(result.getByRole("button", { name: "Expand branch branch-docs" }));
+
+    await result.waitFor(() => result.getByRole("button", { name: /branch-finalize/i }));
+  } finally {
+    fetchMock.restore();
+    await result.restore();
+  }
+});
+
+test("workflow run screen focuses a branch lane and restores the full graph from breadcrumbs", async () => {
+  const nestedRun = nestedBranchWorkflowRun();
+  let latestUiState: unknown = null;
+  const fetchMock = installWorkflowFetch((call) => {
+    if (call.input === "/api/workable/systems/Ops/workflow-runs/run-123?childSampleSize=12") {
+      return Response.json(nestedRun);
+    }
+
+    const childPage = tryWorkflowStepChildrenPageResponse(call.input, nestedRun);
+    if (childPage) {
+      return Response.json(childPage);
+    }
+
+    return Response.json({ error: `Unhandled request: ${call.input}` }, { status: 500 });
+  });
+  const result = await renderDom(
+    <ConsoleHeaderCapabilitiesProvider>
+      <WorkflowRunConsoleView
+        connection={connection}
+        onActiveRealtimeConnectionCountChange={() => undefined}
+        onOpenWorker={() => undefined}
+        onRealtimePayloadOpenChange={() => undefined}
+        onUiStateChange={(state) => {
+          latestUiState = state;
+        }}
+        realtimePayloadCaptureEnabled={false}
+        realtimePayloadMaxMessages={20}
+        realtimePayloadOpen={false}
+        refreshToken={0}
+        workflowRunId="run-123"
+      />
+    </ConsoleHeaderCapabilitiesProvider>
+  );
+
+  try {
+    await result.waitFor(() => result.getByRole("button", { name: "Focus branch branch-docs" }));
+    assert.equal(result.queryByText("branch-finalize"), null);
+
+    await result.click(result.getByRole("button", { name: "Focus branch branch-docs" }));
+
+    await result.waitFor(() => result.getByText("Branch 1: branch-docs"));
+    result.getByRole("button", { name: /branch-finalize/i });
+    assert.equal(result.queryByText("finish-nested"), null);
+    assert.equal(result.queryByText("branch-notify"), null);
+    assert.deepEqual(latestUiState, {
+      autoFollowCurrentStep: false,
+      collapsedBranchIds: [
+        "branch-parallel:branch:0:branch-parallel-left",
+        "branch-parallel:branch:1:branch-parallel-right",
+        "outer-fan-out:branch:0:branch-docs",
+        "outer-fan-out:branch:1:branch-notify",
+      ],
+      focusedBranchId: "outer-fan-out:branch:0:branch-docs",
+      runId: "run-123",
+      selectedChildWorkerId: null,
+      selectedChildWorkerPageIndex: 0,
+      selectedStepName: "branch-docs",
+      workflowGraphScrollLeft: 0,
+      workflowGraphScrollTop: 0,
+    });
+
+    await result.click(result.getByRole("button", { name: "Focus branch branch-parallel-left" }));
+
+    await result.waitFor(() => result.getByText("Branch 1: branch-parallel-left"));
+    result.getByText("Branch 1: branch-docs");
+    result.getByRole("button", { name: /RenderBranchPreview/i });
+    assert.equal(result.queryByText("branch-finalize"), null);
+
+    await result.click(result.getByRole("button", { name: "Branch 1: branch-docs" }));
+    await result.waitFor(() => result.getByRole("button", { name: /branch-finalize/i }));
+    assert.deepEqual(latestUiState, {
+      autoFollowCurrentStep: false,
+      collapsedBranchIds: [
+        "branch-parallel:branch:0:branch-parallel-left",
+        "branch-parallel:branch:1:branch-parallel-right",
+        "outer-fan-out:branch:0:branch-docs",
+        "outer-fan-out:branch:1:branch-notify",
+      ],
+      focusedBranchId: "outer-fan-out:branch:0:branch-docs",
+      runId: "run-123",
+      selectedChildWorkerId: null,
+      selectedChildWorkerPageIndex: 0,
+      selectedStepName: "branch-parallel-left",
+      workflowGraphScrollLeft: 0,
+      workflowGraphScrollTop: 0,
+    });
+
+    await result.click(result.getByRole("button", { name: "Workflow" }));
+
+    await result.waitFor(() => result.getByRole("button", { name: /finish-nested/i }));
+    assert.deepEqual(latestUiState, {
+      autoFollowCurrentStep: false,
+      collapsedBranchIds: [
+        "branch-parallel:branch:0:branch-parallel-left",
+        "branch-parallel:branch:1:branch-parallel-right",
+        "outer-fan-out:branch:0:branch-docs",
+        "outer-fan-out:branch:1:branch-notify",
+      ],
+      runId: "run-123",
+      selectedChildWorkerId: null,
+      selectedChildWorkerPageIndex: 0,
+      selectedStepName: "branch-parallel-left",
+      workflowGraphScrollLeft: 0,
+      workflowGraphScrollTop: 0,
+    });
+  } finally {
+    fetchMock.restore();
+    await result.restore();
+  }
+});
+
+test("workflow run screen toggles the workflow graph detailed view", async () => {
+  const expandedStates: boolean[] = [];
+  const fetchMock = installWorkflowFetch((call) => {
+    if (call.input === "/api/workable/systems/Ops/workflow-runs/run-123?childSampleSize=12") {
+      return Response.json(parallelWorkflowRun());
+    }
+
+    const childPage = tryWorkflowStepChildrenPageResponse(call.input, parallelWorkflowRun());
+    if (childPage) {
+      return Response.json(childPage);
+    }
+
+    return Response.json({ error: `Unhandled request: ${call.input}` }, { status: 500 });
+  });
+  const result = await renderDom(
+    <ConsoleHeaderCapabilitiesProvider>
+      <WorkflowRunConsoleView
+        connection={connection}
+        onActiveRealtimeConnectionCountChange={() => undefined}
+        onOpenWorker={() => undefined}
+        onRealtimePayloadOpenChange={() => undefined}
+        onWorkflowGraphExpandedChange={(expanded) => {
+          expandedStates.push(expanded);
+        }}
+        realtimePayloadCaptureEnabled={false}
+        realtimePayloadMaxMessages={20}
+        realtimePayloadOpen={false}
+        refreshToken={0}
+        workflowRunId="run-123"
+      />
+    </ConsoleHeaderCapabilitiesProvider>
+  );
+
+  try {
+    await result.waitFor(() => result.getByText("Workflow Graph"));
+
+    await result.click(result.getByRole("button", { name: "Next view: Detailed" }));
+    await result.waitFor(() => result.getByRole("button", { name: "Next view: Standard" }));
+    assert.equal(expandedStates.at(-1), true);
+
+    await result.click(result.getByRole("button", { name: "Next view: Standard" }));
+    await result.waitFor(() => result.getByRole("button", { name: "Next view: Detailed" }));
+    assert.equal(expandedStates.at(-1), false);
+  } finally {
+    fetchMock.restore();
+    await result.restore();
+  }
+});
+
+test("workflow run screen lets the graph viewport be dragged to pan oversized graphs", async () => {
+  const fetchMock = installWorkflowFetch((call) => {
+    if (call.input === "/api/workable/systems/Ops/workflow-runs/run-123?childSampleSize=12") {
+      return Response.json(nestedBranchWorkflowRun());
+    }
+
+    const childPage = tryWorkflowStepChildrenPageResponse(call.input, nestedBranchWorkflowRun());
+    if (childPage) {
+      return Response.json(childPage);
+    }
+
+    return Response.json({ error: `Unhandled request: ${call.input}` }, { status: 500 });
+  });
+  const result = await renderDom(
+    <ConsoleHeaderCapabilitiesProvider>
+      <WorkflowRunConsoleView
+        connection={connection}
+        onActiveRealtimeConnectionCountChange={() => undefined}
+        onOpenWorker={() => undefined}
+        onRealtimePayloadOpenChange={() => undefined}
+        realtimePayloadCaptureEnabled={false}
+        realtimePayloadMaxMessages={20}
+        realtimePayloadOpen={false}
+        refreshToken={0}
+        workflowRunId="run-123"
+      />
+    </ConsoleHeaderCapabilitiesProvider>,
+    {
+      setupWindow(window) {
+        class TestPointerEvent extends window.MouseEvent {
+          readonly isPrimary: boolean;
+          readonly pointerId: number;
+
+          constructor(type: string, init: MouseEventInit & { isPrimary?: boolean; pointerId?: number } = {}) {
+            super(type, init);
+            this.isPrimary = init.isPrimary ?? true;
+            this.pointerId = init.pointerId ?? 1;
+          }
+        }
+
+        window.PointerEvent = TestPointerEvent as typeof window.PointerEvent;
+      },
+    }
+  );
+
+  try {
+    await result.waitFor(() => result.getByText("Workflow Graph"));
+    const workflowGraphScroll = result.container.querySelector(".workable-grid-scrollbar");
+    assert.ok(workflowGraphScroll instanceof result.dom.window.HTMLElement);
+    workflowGraphScroll.scrollLeft = 220;
+    workflowGraphScroll.scrollTop = 120;
+    const expandBranch = result.getByRole("button", { name: "Expand branch branch-docs" });
+
+    await dispatchWorkflowPointer(result, expandBranch, "pointerdown", {
+      clientX: 120,
+      clientY: 120,
+    });
+    await dispatchWorkflowPointer(result, expandBranch, "pointermove", {
+      clientX: 40,
+      clientY: 70,
+    });
+    await dispatchWorkflowPointer(result, expandBranch, "pointerup", {
+      clientX: 40,
+      clientY: 70,
+    });
+
+    assert.equal(workflowGraphScroll.scrollLeft, 220);
+    assert.equal(workflowGraphScroll.scrollTop, 120);
+    await result.click(expandBranch);
+    await result.waitFor(() => result.getByRole("button", { name: /branch-finalize/i }));
+
+    await dispatchWorkflowPointer(result, workflowGraphScroll, "pointerdown", {
+      clientX: 100,
+      clientY: 100,
+    });
+    await dispatchWorkflowPointer(result, workflowGraphScroll, "pointermove", {
+      clientX: 40,
+      clientY: 70,
+    });
+    await dispatchWorkflowPointer(result, workflowGraphScroll, "pointerup", {
+      clientX: 40,
+      clientY: 70,
+    });
+
+    assert.equal(workflowGraphScroll.scrollLeft, 280);
+    assert.equal(workflowGraphScroll.scrollTop, 150);
+  } finally {
+    fetchMock.restore();
+    await result.restore();
+  }
+});
+
+test("workflow run screen shows settled parallel branch lanes without rendering joins", async () => {
   const fetchMock = installWorkflowFetch((call) => {
     if (call.input === "/api/workable/systems/Ops/workflow-runs/run-123?childSampleSize=12") {
       return Response.json(completedParallelWorkflowRun());
@@ -414,11 +875,14 @@ test("workflow run screen shows settled parallel branch counts as a single summa
   );
 
   try {
-    await result.waitFor(() => result.getByText("fan-out"));
-    assert.equal(result.queryByText("Branch 1"), null);
+    await result.waitFor(() => result.getByRole("button", { name: /fan-out/i }));
+    assert.equal((result.container.textContent?.match(/Branches/g) ?? []).length >= 1, true);
+    result.getByText("Branch 1");
+    result.getByText("Branch 2");
+    result.getByRole("button", { name: /branch-a/i });
+    result.getByRole("button", { name: /branch-b/i });
     assert.equal(result.queryByText("parallel branches collapsed"), null);
     assert.equal(result.queryByText("fan-out-complete"), null);
-    result.getByText("2");
   } finally {
     fetchMock.restore();
     await result.restore();
@@ -796,10 +1260,12 @@ test("workflow run screen pages selected-node workers for large fan-out steps", 
     );
     assert.deepEqual(latestUiState, {
       autoFollowCurrentStep: true,
+      collapsedBranchIds: [],
       runId: "run-123",
       selectedChildWorkerId: "worker-child-13",
       selectedChildWorkerPageIndex: 1,
       selectedStepName: "fan-out-batch",
+      workflowGraphScrollLeft: 0,
       workflowGraphScrollTop: 0,
     });
     await result.click(result.getByRole("button", { name: "Previous" }));
@@ -1166,6 +1632,252 @@ function completedWorkflowRun(): WorkflowRunDetailView {
   };
 }
 
+function nestedBranchWorkflowRun(): WorkflowRunDetailView {
+  return workflowRun({
+    currentStepName: "branch-parallel-right",
+    currentStepStatus: "Running",
+    outstandingChildren: {
+      active: 2,
+      final: 4,
+      total: 6,
+    },
+    steps: [
+      {
+        childSample: [
+          {
+            definitionName: "PrepareNestedWorkflow",
+            state: "Completed",
+            workerId: "worker-prepare-nested",
+          },
+        ],
+        children: {
+          active: 0,
+          final: 1,
+          total: 1,
+        },
+        kind: "DispatchWork",
+        name: "prepare-nested",
+        status: "Completed",
+        steps: [],
+      },
+      {
+        childSample: [],
+        children: {
+          active: 2,
+          final: 3,
+          total: 5,
+        },
+        kind: "Parallel",
+        name: "outer-fan-out",
+        status: "WaitingOnChildren",
+        steps: [
+          {
+            childSample: [],
+            children: {
+              active: 1,
+              final: 2,
+              total: 3,
+            },
+            kind: "Branch",
+            name: "branch-docs",
+            status: "WaitingOnChildren",
+            steps: [
+              {
+                childSample: [
+                  {
+                    definitionName: "CollectBranchDocuments",
+                    state: "Completed",
+                    workerId: "worker-branch-docs",
+                  },
+                ],
+                children: {
+                  active: 0,
+                  final: 1,
+                  total: 1,
+                },
+                kind: "DispatchWork",
+                name: "branch-collect",
+                status: "Completed",
+                steps: [],
+              },
+              {
+                childSample: [
+                  {
+                    definitionName: "ParseBranchDocuments",
+                    state: "Completed",
+                    workerId: "worker-branch-parse",
+                  },
+                ],
+                children: {
+                  active: 0,
+                  final: 1,
+                  total: 1,
+                },
+                kind: "DispatchWork",
+                name: "branch-parse",
+                status: "Completed",
+                steps: [],
+              },
+              {
+                childSample: [],
+                children: {
+                  active: 1,
+                  final: 1,
+                  total: 2,
+                },
+                kind: "Parallel",
+                name: "branch-parallel",
+                status: "WaitingOnChildren",
+                steps: [
+                  {
+                    childSample: [
+                      {
+                        definitionName: "RenderBranchPreview",
+                        state: "Completed",
+                        workerId: "worker-branch-left",
+                      },
+                    ],
+                    children: {
+                      active: 0,
+                      final: 1,
+                      total: 1,
+                    },
+                    kind: "DispatchEach",
+                    name: "branch-parallel-left",
+                    status: "Completed",
+                    steps: [],
+                  },
+                  {
+                    childSample: [
+                      {
+                        definitionName: "PublishBranchPreview",
+                        state: "Running",
+                        workerId: "worker-branch-right",
+                      },
+                    ],
+                    children: {
+                      active: 1,
+                      final: 0,
+                      total: 1,
+                    },
+                    kind: "DispatchWork",
+                    name: "branch-parallel-right",
+                    status: "Running",
+                    steps: [],
+                  },
+                  {
+                    childSample: [],
+                    children: {
+                      active: 1,
+                      final: 1,
+                      total: 2,
+                    },
+                    kind: "Join",
+                    name: "branch-inner-join",
+                    status: "WaitingOnChildren",
+                    steps: [],
+                  },
+                ],
+              },
+              {
+                childSample: [
+                  {
+                    definitionName: "FinalizeBranchDocuments",
+                    state: "Queued",
+                    workerId: "worker-branch-finalize",
+                  },
+                ],
+                children: {
+                  active: 0,
+                  final: 1,
+                  total: 1,
+                },
+                kind: "DispatchWork",
+                name: "branch-finalize",
+                status: "Pending",
+                steps: [],
+              },
+              {
+                childSample: [],
+                children: {
+                  active: 0,
+                  final: 0,
+                  total: 0,
+                },
+                kind: "Join",
+                name: "branch-join",
+                status: "WaitingOnChildren",
+                steps: [],
+              },
+            ],
+          },
+          {
+            childSample: [],
+            children: {
+              active: 0,
+              final: 1,
+              total: 1,
+            },
+            kind: "Branch",
+            name: "branch-notify",
+            status: "Completed",
+            steps: [
+              {
+                childSample: [
+                  {
+                    definitionName: "NotifyBranchWatchers",
+                    state: "Completed",
+                    workerId: "worker-branch-notify",
+                  },
+                ],
+                children: {
+                  active: 0,
+                  final: 1,
+                  total: 1,
+                },
+                kind: "DispatchWork",
+                name: "branch-notify-worker",
+                status: "Completed",
+                steps: [],
+              },
+            ],
+          },
+        ],
+      },
+      {
+        childSample: [],
+        children: {
+          active: 2,
+          final: 4,
+          total: 6,
+        },
+        kind: "Join",
+        name: "outer-join",
+        status: "WaitingOnChildren",
+        steps: [],
+      },
+      {
+        childSample: [
+          {
+            definitionName: "FinishNestedWorkflow",
+            state: "Queued",
+            workerId: "worker-finish-nested",
+          },
+        ],
+        children: {
+          active: 0,
+          final: 0,
+          total: 1,
+        },
+        kind: "DispatchWork",
+        name: "finish-nested",
+        status: "Pending",
+        steps: [],
+      },
+    ],
+  });
+}
+
 function dispatchEachWorkflowRun(): WorkflowRunDetailView {
   return workflowRun({
     currentStepName: "fan-out-batch",
@@ -1319,6 +2031,24 @@ function tryWorkflowStepChildrenPageResponse(input: string, run: WorkflowRunDeta
     totalCount: workers.length,
     workers: workers.slice(skip, skip + take),
   };
+}
+
+async function dispatchWorkflowPointer(
+  result: Awaited<ReturnType<typeof renderDom>>,
+  target: Element,
+  type: string,
+  init: PointerEventInit
+) {
+  await act(async () => {
+    target.dispatchEvent(new result.dom.window.PointerEvent(type, {
+      bubbles: true,
+      button: 0,
+      cancelable: true,
+      isPrimary: true,
+      pointerId: 1,
+      ...init,
+    }));
+  });
 }
 
 function findWorkflowStepForTest(

@@ -52,6 +52,14 @@ internal static class WorkflowDefinitionFingerprint
                 null,
                 null,
                 parallel.Steps.Select(CreateStep).ToArray()),
+            BranchWorkflowStepDefinition branch => new WorkflowStepShape(
+                branch.Name,
+                branch.Kind,
+                null,
+                null,
+                null,
+                null,
+                branch.Steps.Select(CreateStep).ToArray()),
             JoinWorkflowStepDefinition join => new WorkflowStepShape(
                 join.Name,
                 join.Kind,

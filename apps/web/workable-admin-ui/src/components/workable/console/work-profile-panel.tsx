@@ -45,6 +45,7 @@ import {
 import { semanticBadgeToneClass } from "@/lib/ui/state-tones";
 import { cn } from "@/lib/utils";
 import type {
+  WorkCompletionStatus,
   WorkComponentShape,
   WorkProfileMetricType,
   WorkProfileSnapshot,
@@ -100,6 +101,11 @@ type WorkProfileMethodScopeEntry = WorkProfileMethodScopeOption & {
 
 type WorkProfileMethodScopeSelection = {
   nodeIds: readonly string[];
+};
+
+type WorkProfileAvailability = {
+  label: string;
+  message: string;
 };
 
 type WorkProfileHotspotMatch = {
@@ -376,19 +382,34 @@ export function findWorkProfileHotspots(
 }
 
 export function WorkProfilePanel({
+  iterationIsFinal,
+  iterationStatus,
   onClose,
   onViewStateChange,
   profile,
+  profilingEnabled,
   sqlProfilingAvailable = true,
   viewState,
 }: {
+  iterationIsFinal?: boolean;
+  iterationStatus?: WorkCompletionStatus | null;
   onClose: () => void;
   onViewStateChange: (shape: WorkComponentShape) => void;
   profile?: WorkProfileSnapshot | null;
+  profilingEnabled?: boolean | null;
   sqlProfilingAvailable?: boolean;
   viewState: WorkComponentShape;
 }) {
   const summary = useMemo(() => summarizeWorkProfile(profile), [profile]);
+  const availability = useMemo(
+    () => resolveWorkProfileAvailability({
+      iterationIsFinal,
+      iterationStatus,
+      profile,
+      profilingEnabled,
+    }),
+    [iterationIsFinal, iterationStatus, profile, profilingEnabled]
+  );
   const expandableNodeIds = useMemo(
     () => profile ? collectWorkProfileExpandableNodeIds(profile.root) : [],
     [profile]
@@ -575,7 +596,14 @@ export function WorkProfilePanel({
         onClose={onClose}
         onViewStateChange={onViewStateChange}
         supportedViewStates={["compact", "standard", "detailed"]}
-        title={<WorkProfilePanelTitle profile={profile} summary={summary} viewState={viewState} />}
+        title={(
+          <WorkProfilePanelTitle
+            availability={availability}
+            profile={profile}
+            summary={summary}
+            viewState={viewState}
+          />
+        )}
         viewState={viewState}
       >
         <section
@@ -587,7 +615,7 @@ export function WorkProfilePanel({
         >
           {!profile ? (
             <ConsoleEmptyState className="flex min-h-0 flex-1 items-center justify-center" fill padding="spacious">
-              Profiling was not enabled for this iteration, so no profile tree was captured.
+              {availability?.message}
             </ConsoleEmptyState>
           ) : (
             <PanelScrollViewport
@@ -810,10 +838,12 @@ export function WorkProfilePanel({
 }
 
 function WorkProfilePanelTitle({
+  availability,
   profile,
   summary,
   viewState,
 }: {
+  availability: WorkProfileAvailability | null;
   profile?: WorkProfileSnapshot | null;
   summary: WorkProfileSummary | null;
   viewState: WorkComponentShape;
@@ -845,11 +875,53 @@ function WorkProfilePanelTitle({
             <ProfileSummaryPill label="Depth" value={summary.maxDepth.toString()} />
           </>
         ) : (
-          <ProfileSummaryPill label="State" value="Unavailable" />
+          <ProfileSummaryPill label="State" value={availability?.label ?? "Unavailable"} />
         )
       ) : null}
     </>
   );
+}
+
+function resolveWorkProfileAvailability({
+  iterationIsFinal,
+  iterationStatus,
+  profile,
+  profilingEnabled,
+}: {
+  iterationIsFinal?: boolean;
+  iterationStatus?: WorkCompletionStatus | null;
+  profile?: WorkProfileSnapshot | null;
+  profilingEnabled?: boolean | null;
+}): WorkProfileAvailability | null {
+  if (profile) {
+    return null;
+  }
+
+  if (profilingEnabled === false) {
+    return {
+      label: "Disabled",
+      message: "Profiling was disabled for this iteration, so no profile tree was captured.",
+    };
+  }
+
+  if (iterationIsFinal === false || iterationStatus === "Executing") {
+    return {
+      label: "Pending",
+      message: "This iteration is still executing. Profiling is enabled, and the profile tree will appear after the iteration finishes.",
+    };
+  }
+
+  if (profilingEnabled === true) {
+    return {
+      label: "Unavailable",
+      message: "Profiling was enabled for this iteration, but no profile snapshot is available. The snapshot may have been omitted from this response or could not be captured.",
+    };
+  }
+
+  return {
+    label: "Unavailable",
+    message: "No profile snapshot is available for this iteration.",
+  };
 }
 
 function WorkProfilePanelActions({

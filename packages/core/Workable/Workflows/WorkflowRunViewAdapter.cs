@@ -248,6 +248,8 @@ public sealed class WorkflowRunViewAdapter
                 return CreateDispatchEachStepView(dispatchEach, run, snapshotsByName, receiptLookup, workersByStepName, childSampleSize);
             case ParallelWorkflowStepDefinition parallel:
                 return CreateParallelStepView(parallel, run, snapshotsByName, receiptLookup, workersByStepName, childSampleSize);
+            case BranchWorkflowStepDefinition branch:
+                return CreateBranchStepView(branch, run, snapshotsByName, receiptLookup, workersByStepName, childSampleSize);
             case JoinWorkflowStepDefinition join:
                 return CreateJoinStepView(join, run, snapshotsByName, workers, receiptLookup, childSampleSize);
             default:
@@ -319,11 +321,18 @@ public sealed class WorkflowRunViewAdapter
     {
         snapshotsByName.TryGetValue(parallel.Name, out var snapshot);
         var childSteps = parallel.Steps
-            .OfType<DispatchWorkflowStepDefinition>()
-            .Select(child => CreateDispatchStepView(child, run, snapshotsByName, receiptLookup, workersByStepName, childSampleSize))
+            .Select(child => CreateStepView(
+                child,
+                run,
+                snapshotsByName,
+                new Dictionary<WorkerId, WorkerSnapshot?>(),
+                receiptLookup,
+                workersByStepName,
+                childSampleSize))
             .ToArray();
         var allWorkers = parallel.Steps
-            .SelectMany(step => workersByStepName.TryGetValue(step.Name, out var matchedWorkers) ? matchedWorkers : [])
+            .SelectMany(GetWorkflowStepNames)
+            .SelectMany(stepName => workersByStepName.TryGetValue(stepName, out var matchedWorkers) ? matchedWorkers : [])
             .ToArray();
         var childIds = snapshot?.WorkerIds ?? allWorkers.Select(worker => worker.Id).ToArray();
         var childStates = BuildChildStates(childIds, allWorkers.ToDictionary(worker => worker.Id, static worker => (WorkerSnapshot?)worker), receiptLookup);
@@ -365,6 +374,44 @@ public sealed class WorkflowRunViewAdapter
             workerIds,
             childWorkers,
             [],
+            snapshot?.Messages ?? [],
+            childSampleSize);
+    }
+
+    private static WorkflowStepOperatorView CreateBranchStepView(
+        BranchWorkflowStepDefinition branch,
+        WorkflowRunSnapshot run,
+        IReadOnlyDictionary<string, WorkflowStepRunSnapshot> snapshotsByName,
+        IReadOnlyDictionary<WorkerId, WorkflowChildReceipt> receiptLookup,
+        IReadOnlyDictionary<string, WorkerSnapshot[]> workersByStepName,
+        int childSampleSize)
+    {
+        snapshotsByName.TryGetValue(branch.Name, out var snapshot);
+        var childSteps = branch.Steps
+            .Select(child => CreateStepView(
+                child,
+                run,
+                snapshotsByName,
+                new Dictionary<WorkerId, WorkerSnapshot?>(),
+                receiptLookup,
+                workersByStepName,
+                childSampleSize))
+            .ToArray();
+        var allWorkers = branch.Steps
+            .SelectMany(GetWorkflowStepNames)
+            .SelectMany(stepName => workersByStepName.TryGetValue(stepName, out var matchedWorkers) ? matchedWorkers : [])
+            .ToArray();
+        var childIds = snapshot?.WorkerIds ?? allWorkers.Select(worker => worker.Id).ToArray();
+        var childStates = BuildChildStates(childIds, allWorkers.ToDictionary(worker => worker.Id, static worker => (WorkerSnapshot?)worker), receiptLookup);
+        return CreateOperatorStep(
+            branch.Name,
+            branch.Kind,
+            ResolveParallelStatus(snapshot, run.Status, childSteps),
+            snapshot?.StartedAt,
+            snapshot?.CompletedAt,
+            childIds,
+            childStates,
+            childSteps,
             snapshot?.Messages ?? [],
             childSampleSize);
     }
@@ -616,15 +663,16 @@ public sealed class WorkflowRunViewAdapter
         var outstanding = new List<WorkerId>();
         foreach (var step in snapshot.Steps)
         {
-                switch (step.Kind)
-                {
-                    case WorkflowStepKind.DispatchWork:
-                    case WorkflowStepKind.DispatchEach:
-                    case WorkflowStepKind.Parallel:
-                        if (step.Status == WorkflowStepRunStatus.Completed)
-                        {
-                            outstanding.AddRange(step.WorkerIds.Where(workerId => !IsResolvedChild(workerId, snapshot.ChildReceipts)));
-                        }
+            switch (step.Kind)
+            {
+                case WorkflowStepKind.DispatchWork:
+                case WorkflowStepKind.DispatchEach:
+                case WorkflowStepKind.Parallel:
+                case WorkflowStepKind.Branch:
+                    if (step.Status == WorkflowStepRunStatus.Completed)
+                    {
+                        outstanding.AddRange(step.WorkerIds.Where(workerId => !IsResolvedChild(workerId, snapshot.ChildReceipts)));
+                    }
 
                     break;
                 case WorkflowStepKind.Join:
@@ -637,7 +685,7 @@ public sealed class WorkflowRunViewAdapter
             }
         }
 
-        return outstanding;
+        return [.. outstanding.Distinct()];
     }
 
     private static IReadOnlyList<WorkerId> GetOutstandingWorkerIdsBeforeJoin(WorkflowRunSnapshot run, string joinStepName)
@@ -660,6 +708,7 @@ public sealed class WorkflowRunViewAdapter
                 case WorkflowStepKind.DispatchWork:
                 case WorkflowStepKind.DispatchEach:
                 case WorkflowStepKind.Parallel:
+                case WorkflowStepKind.Branch:
                     if (step.Status == WorkflowStepRunStatus.Completed)
                     {
                         outstanding.AddRange(step.WorkerIds.Where(workerId => !IsResolvedChild(workerId, run.ChildReceipts)));
@@ -676,13 +725,30 @@ public sealed class WorkflowRunViewAdapter
             }
         }
 
-        return outstanding;
+        return [.. outstanding.Distinct()];
     }
 
     private static string? GetWorkflowStepName(WorkerSnapshot worker)
         => worker.Identifiers
             .FirstOrDefault(identifier => string.Equals(identifier.Type, "workflow-step", StringComparison.Ordinal))
             .Value;
+
+    private static IEnumerable<string> GetWorkflowStepNames(WorkflowStepDefinition step)
+    {
+        yield return step.Name;
+
+        var childSteps = step switch
+        {
+            ParallelWorkflowStepDefinition parallel => parallel.Steps,
+            BranchWorkflowStepDefinition branch => branch.Steps,
+            _ => [],
+        };
+
+        foreach (var childName in childSteps.SelectMany(GetWorkflowStepNames))
+        {
+            yield return childName;
+        }
+    }
 
     private static bool TryGetStepWorkerIds(
         IReadOnlyList<WorkflowStepDefinition> steps,
@@ -700,6 +766,12 @@ public sealed class WorkflowRunViewAdapter
 
             if (step is ParallelWorkflowStepDefinition parallel &&
                 TryGetStepWorkerIds(parallel.Steps, snapshot, stepName, out workerIds))
+            {
+                return true;
+            }
+
+            if (step is BranchWorkflowStepDefinition branch &&
+                TryGetStepWorkerIds(branch.Steps, snapshot, stepName, out workerIds))
             {
                 return true;
             }
@@ -728,6 +800,15 @@ public sealed class WorkflowRunViewAdapter
                 }
 
                 return [.. parallel.Steps
+                    .SelectMany(child => GetStepWorkerIds(child, snapshot))
+                    .Distinct()];
+            case BranchWorkflowStepDefinition branch:
+                if (stepSnapshot?.WorkerIds.Count > 0)
+                {
+                    return stepSnapshot.WorkerIds;
+                }
+
+                return [.. branch.Steps
                     .SelectMany(child => GetStepWorkerIds(child, snapshot))
                     .Distinct()];
             case JoinWorkflowStepDefinition join:

@@ -90,6 +90,8 @@ public sealed class WorkableHttpWorkerAdapterShould
 
         public WorkSystemState SystemState => throw new NotSupportedException();
 
+        public WorkSystemCapabilities Capabilities => WorkSystemCapabilities.None;
+
         public IWorkSystemDiagnostics Diagnostics => throw new NotSupportedException();
 
         public IWorkCatalog Catalog => throw new NotSupportedException();

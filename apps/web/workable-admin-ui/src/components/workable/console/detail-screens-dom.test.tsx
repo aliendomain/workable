@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { ConsoleHeaderCapabilitiesProvider } from "@/components/features/console/header-capabilities";
-import { QueueDialog, WorkerConsoleView } from "@/components/workable/console/detail-screens";
+import {
+  QueueDialog,
+  WorkerConsoleView,
+  resolveIterationSqlProfilingAvailable,
+} from "@/components/workable/console/detail-screens";
 import { renderDom } from "@/test/dom";
 import type {
   QueueWorkRequest,
@@ -14,6 +18,28 @@ const connection: WorkableConnection = {
   apiUrl: "https://console.example.com/workable",
   systemName: "Ops",
 };
+
+test("iteration profile SQL availability prefers the live overview capability over stored navigation state", () => {
+  assert.equal(
+    resolveIterationSqlProfilingAvailable({
+      capabilities: {
+        persistentCoordinationAvailable: false,
+        sqlProfilingAvailable: true,
+      },
+    }, false),
+    true
+  );
+  assert.equal(
+    resolveIterationSqlProfilingAvailable({
+      capabilities: {
+        persistentCoordinationAvailable: false,
+        sqlProfilingAvailable: false,
+      },
+    }, true),
+    false
+  );
+  assert.equal(resolveIterationSqlProfilingAvailable(null, false), false);
+});
 
 test("queue dialog applies schema defaults, submits edited input, and closes on Queue", async () => {
   const openChanges: boolean[] = [];

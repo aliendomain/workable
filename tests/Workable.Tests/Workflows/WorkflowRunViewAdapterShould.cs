@@ -50,10 +50,18 @@ public sealed class WorkflowRunViewAdapterShould
             WorkRequestContext.Create(WorkInvocationChannel.InProcess));
         await Task.WhenAll(emailStarted.Task, invoiceStarted.Task).WaitAsync(TimeSpan.FromSeconds(5));
 
-        var detail = await new WorkflowRunViewAdapter().Run(
-            system,
-            WorkRequestContext.Create(WorkInvocationChannel.InProcess),
-            handle.RunId!.Value);
+        WorkflowRunDetailView? detail = null;
+        var adapter = new WorkflowRunViewAdapter();
+        await TestEventually.Until(
+            async () =>
+            {
+                detail = await adapter.Run(
+                    system,
+                    WorkRequestContext.Create(WorkInvocationChannel.InProcess),
+                    handle.RunId!.Value);
+                return detail?.Steps.Single(step => step.Name == "notify").Status == WorkflowOperatorNodeStatus.WaitingOnChildren;
+            },
+            "Expected the parallel workflow node to wait on running child workers before inspection.");
 
         release.TrySetResult();
         await handle.WaitForCompletion();
@@ -138,6 +146,226 @@ public sealed class WorkflowRunViewAdapterShould
         var child = Assert.Single(settle.ChildSample);
         Assert.Equal("workflow.operator.slow", child.DefinitionName);
         Assert.Equal(WorkerState.Running, child.State);
+    }
+
+    [Fact]
+    public async Task BuildBranchDetailAndPageBranchChildren()
+    {
+        var collectStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var renderStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var publishStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var services = new ServiceCollection();
+        services.AddWorkableSystem(builder =>
+        {
+            builder.RequireAuthorization(false);
+            builder.AddWork(
+                WorkDefinition.Create("workflow.operator.branch.collect"),
+                async (_, _, cancellationToken) =>
+                {
+                    collectStarted.TrySetResult();
+                    await release.Task.WaitAsync(cancellationToken);
+                    return WorkExecutionResult.Success();
+                });
+            builder.AddWork(
+                WorkDefinition.Create("workflow.operator.branch.render"),
+                async (_, _, cancellationToken) =>
+                {
+                    renderStarted.TrySetResult();
+                    await release.Task.WaitAsync(cancellationToken);
+                    return WorkExecutionResult.Success();
+                });
+            builder.AddWork(
+                WorkDefinition.Create("workflow.operator.branch.publish"),
+                async (_, _, cancellationToken) =>
+                {
+                    publishStarted.TrySetResult();
+                    await release.Task.WaitAsync(cancellationToken);
+                    return WorkExecutionResult.Success();
+                });
+            builder.AddWorkflow(
+                WorkflowDefinition.Create("workflow.operator.branch"),
+                workflow => workflow
+                    .RunParallel("fan-out", parallel => parallel
+                        .Branch("documents", branch => branch
+                            .DispatchWork("collect", WorkDefinition.Create("workflow.operator.branch.collect"))
+                            .RunParallel("replicate", replicate => replicate
+                                .DispatchWork("render", WorkDefinition.Create("workflow.operator.branch.render"))
+                                .DispatchWork("publish", WorkDefinition.Create("workflow.operator.branch.publish")))))
+                    .Join("settle"));
+        });
+
+        await using var provider = services.BuildServiceProvider();
+        var system = Assert.IsType<InMemoryWorkSystem>(provider.GetRequiredService<IWorkSystemRegistry>().Default);
+        await system.Start();
+
+        var handle = system.WorkflowRuntime.Start(
+            "workflow.operator.branch",
+            WorkRequestContext.Create(WorkInvocationChannel.InProcess));
+        await Task.WhenAll(collectStarted.Task, renderStarted.Task, publishStarted.Task).WaitAsync(TimeSpan.FromSeconds(5));
+
+        WorkflowRunDetailView? detail = null;
+        var adapter = new WorkflowRunViewAdapter();
+        await TestEventually.Until(
+            async () =>
+            {
+                detail = await adapter.Run(
+                    system,
+                    WorkRequestContext.Create(WorkInvocationChannel.InProcess),
+                    handle.RunId!.Value);
+                return detail?.Steps
+                    .Single(step => step.Name == "fan-out")
+                    .Steps
+                    .Single(step => step.Name == "documents")
+                    .Status == WorkflowOperatorNodeStatus.WaitingOnChildren;
+            },
+            "Expected the branch node to wait on its running child workers before inspection.");
+
+        var branchChildren = await adapter.StepChildren(
+            system,
+            WorkRequestContext.Create(WorkInvocationChannel.InProcess),
+            handle.RunId!.Value,
+            "documents",
+            skip: 0,
+            take: 10);
+        var runs = await adapter.Runs(
+            system,
+            WorkRequestContext.Create(WorkInvocationChannel.InProcess));
+        var nestedChild = await adapter.StepChildren(
+            system,
+            WorkRequestContext.Create(WorkInvocationChannel.InProcess),
+            handle.RunId!.Value,
+            "render",
+            skip: 0,
+            take: 10);
+
+        release.TrySetResult();
+        await handle.WaitForCompletion();
+
+        Assert.NotNull(detail);
+        var fanOut = Assert.Single(detail!.Steps, step => step.Name == "fan-out");
+        var documents = Assert.Single(fanOut.Steps, step => step.Name == "documents");
+        Assert.Equal(WorkflowStepKind.Branch, documents.Kind);
+        Assert.Equal(WorkflowOperatorNodeStatus.WaitingOnChildren, documents.Status);
+        Assert.Equal(3, documents.Children.Total);
+        Assert.Equal(["collect", "replicate"], documents.Steps.Select(step => step.Name).ToArray());
+        Assert.All(documents.ChildSample, worker => Assert.Equal(WorkerState.Running, worker.State));
+
+        Assert.NotNull(branchChildren);
+        Assert.Equal(3, branchChildren!.TotalCount);
+        Assert.Equal(
+            ["workflow.operator.branch.collect", "workflow.operator.branch.publish", "workflow.operator.branch.render"],
+            branchChildren.Workers.Select(worker => worker.DefinitionName).OrderBy(static name => name, StringComparer.Ordinal).ToArray());
+        var runSummary = Assert.Single(runs.Runs, item => item.RunId == handle.RunId!.Value.Value);
+        Assert.Equal(3, runSummary.OutstandingChildren.Total);
+        Assert.NotNull(nestedChild);
+        var renderWorker = Assert.Single(nestedChild!.Workers);
+        Assert.Equal("workflow.operator.branch.render", renderWorker.DefinitionName);
+        Assert.Equal(WorkerState.Running, renderWorker.State);
+    }
+
+    [Fact]
+    public void ResolveBranchChildWorkersFromNestedStepsWhenBranchHasNoDirectWorkers()
+    {
+        var collectWorkerId = WorkerId.New();
+        var renderWorkerId = WorkerId.New();
+        var publishWorkerId = WorkerId.New();
+        IReadOnlyList<WorkflowStepDefinition> steps =
+        [
+            new ParallelWorkflowStepDefinition(
+                "fan-out",
+                [
+                    new BranchWorkflowStepDefinition(
+                        "documents",
+                        [
+                            new DispatchWorkflowStepDefinition(
+                                "collect",
+                                WorkDefinition.Create("workflow.operator.branch.collect")),
+                            new ParallelWorkflowStepDefinition(
+                                "replicate",
+                                [
+                                    new DispatchWorkflowStepDefinition(
+                                        "render",
+                                        WorkDefinition.Create("workflow.operator.branch.render")),
+                                    new DispatchWorkflowStepDefinition(
+                                        "publish",
+                                        WorkDefinition.Create("workflow.operator.branch.publish")),
+                                ]),
+                        ]),
+                ]),
+        ];
+        var snapshot = new WorkflowRunSnapshot(
+            WorkflowRunId.New(),
+            "workflow.operator.branch",
+            WorkflowRunStatus.Running,
+            null,
+            [
+                new WorkflowStepRunSnapshot(
+                    "fan-out",
+                    WorkflowStepKind.Parallel,
+                    WorkflowStepRunStatus.Running,
+                    [],
+                    DateTimeOffset.UtcNow,
+                    null,
+                    []),
+                new WorkflowStepRunSnapshot(
+                    "documents",
+                    WorkflowStepKind.Branch,
+                    WorkflowStepRunStatus.Running,
+                    [],
+                    DateTimeOffset.UtcNow,
+                    null,
+                    []),
+                new WorkflowStepRunSnapshot(
+                    "collect",
+                    WorkflowStepKind.DispatchWork,
+                    WorkflowStepRunStatus.Completed,
+                    [collectWorkerId],
+                    DateTimeOffset.UtcNow,
+                    DateTimeOffset.UtcNow,
+                    []),
+                new WorkflowStepRunSnapshot(
+                    "replicate",
+                    WorkflowStepKind.Parallel,
+                    WorkflowStepRunStatus.Running,
+                    [],
+                    DateTimeOffset.UtcNow,
+                    null,
+                    []),
+                new WorkflowStepRunSnapshot(
+                    "render",
+                    WorkflowStepKind.DispatchWork,
+                    WorkflowStepRunStatus.Completed,
+                    [renderWorkerId],
+                    DateTimeOffset.UtcNow,
+                    DateTimeOffset.UtcNow,
+                    []),
+                new WorkflowStepRunSnapshot(
+                    "publish",
+                    WorkflowStepKind.DispatchWork,
+                    WorkflowStepRunStatus.Completed,
+                    [publishWorkerId],
+                    DateTimeOffset.UtcNow,
+                    DateTimeOffset.UtcNow,
+                    []),
+            ],
+            DateTimeOffset.UtcNow,
+            DateTimeOffset.UtcNow,
+            null,
+            [],
+            []);
+
+        var method = typeof(WorkflowRunViewAdapter).GetMethod(
+            "TryGetStepWorkerIds",
+            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
+        Assert.NotNull(method);
+        object?[] arguments = [steps, snapshot, "documents", null];
+
+        var found = Assert.IsType<bool>(method.Invoke(null, arguments));
+
+        Assert.True(found);
+        var workerIds = Assert.IsAssignableFrom<IReadOnlyList<WorkerId>>(arguments[3]);
+        Assert.Equal([collectWorkerId, renderWorkerId, publishWorkerId], workerIds);
     }
 
     [Fact]

@@ -7,12 +7,17 @@ Before creating any commit in this repository, run the full validation set that 
 ```powershell
 dotnet test .\Workable.slnx --no-restore --logger "console;verbosity=minimal" --blame-hang-timeout 2m
 npm.cmd test
+npm.cmd run build
 ```
 
-Run the UI test command from `apps\web\workable-admin-ui`.
+Run the UI test and build commands from `apps\web\workable-admin-ui`.
 
 - On Windows, use `npm.cmd test`.
+- On Windows, use `npm.cmd run build`.
 - On macOS or Linux, use `npm test`.
+- On macOS or Linux, use `npm run build`.
+
+The UI unit test harness transpiles TypeScript/TSX quickly for DOM tests, but it does not replace the Next.js compiler/type-check pass. Run `npm run build` after UI changes to catch JSX parser and strict TypeScript errors that may not surface in `npm test`.
 
 Run the `.NET` solution test command outside the sandbox. It covers the main API/backend test project and the SQL Server integration suite.
 

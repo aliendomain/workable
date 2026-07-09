@@ -98,6 +98,62 @@ public sealed class WorkflowRegistrationShould
     }
 
     [Fact]
+    public void RegisterParallelBranchesWithSequentialWorkflowStructure()
+    {
+        var services = new ServiceCollection();
+        var collectDefinition = WorkDefinition.Create("sample.collect");
+        var normalizeDefinition = WorkDefinition.Create("sample.normalize");
+        var renderDefinition = WorkDefinition.Create("sample.render");
+        var publishDefinition = WorkDefinition.Create("sample.publish");
+
+        services.AddWorkableSystem(builder => builder.AddWorkflow(
+            WorkflowDefinition.Create("workflow.demo.branch"),
+            workflow => workflow.RunParallel("fan-out", parallel => parallel
+                .Branch("documents", branch => branch
+                    .DispatchWork("collect", collectDefinition)
+                    .DispatchWork("normalize", normalizeDefinition))
+                .Branch("publishing", branch => branch
+                    .RunParallel("replicate", replicate => replicate
+                        .DispatchWork("render", renderDefinition)
+                        .DispatchWork("publish", publishDefinition))))));
+
+        using var provider = services.BuildServiceProvider();
+        var registration = provider.GetRequiredService<WorkSystemRegistration>();
+        var workflow = Assert.Single(registration.Workflows);
+        var fanOut = Assert.IsType<ParallelWorkflowStepDefinition>(Assert.Single(workflow.Steps));
+
+        Assert.Collection(
+            fanOut.Steps,
+            documents =>
+            {
+                var branch = Assert.IsType<BranchWorkflowStepDefinition>(documents);
+                Assert.Equal("documents", branch.Name);
+                Assert.Collection(
+                    branch.Steps,
+                    collect =>
+                    {
+                        var dispatch = Assert.IsType<DispatchWorkflowStepDefinition>(collect);
+                        Assert.Equal("collect", dispatch.Name);
+                        Assert.Equal("sample.collect", dispatch.WorkDefinition.Name);
+                    },
+                    normalize =>
+                    {
+                        var dispatch = Assert.IsType<DispatchWorkflowStepDefinition>(normalize);
+                        Assert.Equal("normalize", dispatch.Name);
+                        Assert.Equal("sample.normalize", dispatch.WorkDefinition.Name);
+                    });
+            },
+            publishing =>
+            {
+                var branch = Assert.IsType<BranchWorkflowStepDefinition>(publishing);
+                Assert.Equal("publishing", branch.Name);
+                var replicate = Assert.IsType<ParallelWorkflowStepDefinition>(Assert.Single(branch.Steps));
+                Assert.Equal("replicate", replicate.Name);
+                Assert.Equal(["render", "publish"], replicate.Steps.Select(step => step.Name).ToArray());
+            });
+    }
+
+    [Fact]
     public void RegisterDispatchEachStep()
     {
         var services = new ServiceCollection();

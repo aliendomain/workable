@@ -108,6 +108,7 @@ internal sealed class InMemoryWorkSystem :
         this.sessions = new WorkSystemSessionFactory(
             this.Id,
             this.Name,
+            this.Capabilities,
             () => this.State,
             this.diagnostics,
             this.catalog,

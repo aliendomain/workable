@@ -2489,6 +2489,7 @@ export function IterationConsoleView({
   );
   const landing = iterationOverview.data;
   const activeIteration = landing?.iteration;
+  const effectiveSqlProfilingAvailable = resolveIterationSqlProfilingAvailable(landing, sqlProfilingAvailable);
   const iterationLogQueryKey = useMemo(
     () => `${iterationLogSortDirection}|${normalizedSelectedIterationLogLevels.join(",")}`,
     [iterationLogSortDirection, normalizedSelectedIterationLogLevels]
@@ -2739,10 +2740,13 @@ export function IterationConsoleView({
             ) : null}
             {!hiddenPanelIds.has("iterationProfile") ? (
               <WorkProfilePanel
+                iterationIsFinal={activeIteration.isFinal}
+                iterationStatus={activeIteration.status}
                 onClose={() => setIterationPanelVisible("iterationProfile", false)}
                 onViewStateChange={setIterationProfilePanelViewState}
                 profile={activeIteration.profile}
-                sqlProfilingAvailable={sqlProfilingAvailable}
+                profilingEnabled={landing.worker.profilingEnabled}
+                sqlProfilingAvailable={effectiveSqlProfilingAvailable}
                 viewState={profileViewState}
               />
             ) : null}
@@ -2802,6 +2806,13 @@ export function IterationConsoleView({
       </PanelAggregateFrame>
     </ConsolePageLayout>
   );
+}
+
+export function resolveIterationSqlProfilingAvailable(
+  landing: Pick<WorkWorkerIterationOverviewComponent, "capabilities"> | null | undefined,
+  fallback: boolean
+): boolean {
+  return landing?.capabilities?.sqlProfilingAvailable ?? fallback;
 }
 
 export function QueueDialog({

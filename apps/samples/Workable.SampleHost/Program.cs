@@ -11,6 +11,7 @@ var builder = WebApplication.CreateBuilder(args);
 const string sampleCorsPolicy = "WorkableSampleUi";
 const int sampleHttpPort = 61932;
 const string sampleOperatorWorkflowName = "sample.demo.workflow.operator-lab";
+const string sampleMultiBranchWorkflowName = "sample.demo.workflow.multi-branch-app";
 const string sampleDataflowWorkflowName = "sample.demo.workflow.dataflow-lab";
 const string sampleLargeDataflowWorkflowName = "sample.demo.workflow.large-dataflow-lab";
 
@@ -209,6 +210,141 @@ builder.Services.AddWorkableSystem(workable =>
                     "Close operator workflow",
                     2_000,
                     "closeout")),
+        authorize: CreateSampleWorkAuthorization(
+            SampleFakeAuth.OperationsCustomReadGroup,
+            SampleFakeAuth.OperationsCustomOperateGroup));
+    workable.AddWorkflow(
+        DemoWorkflowDefinition(
+            sampleMultiBranchWorkflowName,
+            "Samples:Workflow",
+            "Multi-branch app release workflow that combines worker steps and nested structure nodes for branch viewer testing."),
+        workflow => workflow
+            .DispatchWork(
+                "prepare-release",
+                sampleQuickDefinition,
+                DemoWorkflowTimedInput(
+                    "Prepare app release inputs",
+                    3_500,
+                    "prepare-release",
+                    "multi-branch-app"))
+            .RunParallel("release-streams", parallel => parallel
+                .Branch("mobile-app", branch => branch
+                    .DispatchWork(
+                        "mobile-api-contract",
+                        sampleQuickDefinition,
+                        DemoWorkflowTimedInput(
+                            "Validate mobile API contract",
+                            4_500,
+                            "mobile-api-contract",
+                            "multi-branch-app"))
+                    .RunParallel("mobile-validation", validation => validation
+                        .DispatchWork(
+                            "ios-smoke",
+                            sampleLongDefinition,
+                            DemoWorkflowTimedInput(
+                                "Run iOS release smoke tests",
+                                12_000,
+                                "ios-smoke",
+                                "multi-branch-app"))
+                        .DispatchWork(
+                            "android-smoke",
+                            sampleLongDefinition,
+                            DemoWorkflowTimedInput(
+                                "Run Android release smoke tests",
+                                13_500,
+                                "android-smoke",
+                                "multi-branch-app")))
+                    .Join("mobile-validation-complete")
+                    .DispatchWork(
+                        "mobile-signoff",
+                        sampleQuickDefinition,
+                        DemoWorkflowTimedInput(
+                            "Sign off mobile release",
+                            3_000,
+                            "mobile-signoff",
+                            "multi-branch-app")))
+                .Branch("web-portal", branch => branch
+                    .DispatchWork(
+                        "web-build",
+                        sampleThrottledDefinition,
+                        DemoWorkflowTimedInput(
+                            "Build web portal release",
+                            7_000,
+                            "web-build",
+                            "multi-branch-app"))
+                    .RunParallel("web-verification", verification => verification
+                        .DispatchWork(
+                            "accessibility-audit",
+                            sampleLongDefinition,
+                            DemoWorkflowTimedInput(
+                                "Run accessibility audit",
+                                10_500,
+                                "accessibility-audit",
+                                "multi-branch-app"))
+                        .DispatchWork(
+                            "visual-regression",
+                            sampleLongDefinition,
+                            DemoWorkflowTimedInput(
+                                "Run visual regression pack",
+                                14_000,
+                                "visual-regression",
+                                "multi-branch-app")))
+                    .Join("web-verification-complete")
+                    .DispatchWork(
+                        "web-signoff",
+                        sampleQuickDefinition,
+                        DemoWorkflowTimedInput(
+                            "Sign off web release",
+                            3_000,
+                            "web-signoff",
+                            "multi-branch-app")))
+                .Branch("operations-readiness", branch => branch
+                    .DispatchWork(
+                        "support-briefing",
+                        sampleMessagePanelDefinition,
+                        DemoWorkflowMessagePanelInput(
+                            "support-briefing",
+                            "multi-branch-app"))
+                    .DispatchWork(
+                        "runbook-check",
+                        sampleQuickDefinition,
+                        DemoWorkflowTimedInput(
+                            "Verify release runbook",
+                            4_000,
+                            "runbook-check",
+                            "multi-branch-app"))
+                    .RunParallel("readiness-checks", readiness => readiness
+                        .DispatchWork(
+                            "incident-channel",
+                            sampleQuickDefinition,
+                            DemoWorkflowTimedInput(
+                                "Prepare incident response channel",
+                                3_500,
+                                "incident-channel",
+                                "multi-branch-app"))
+                        .DispatchWork(
+                            "rollout-window",
+                            sampleLongDefinition,
+                            DemoWorkflowTimedInput(
+                                "Confirm rollout window",
+                                8_500,
+                                "rollout-window",
+                                "multi-branch-app")))))
+            .Join("release-streams-complete")
+            .DispatchWork(
+                "combine-release-plan",
+                sampleProfilingLabDefinition,
+                DemoWorkflowProfilingInput(
+                    "multi-branch-app",
+                    "combine-release-plan"))
+            .DispatchWork(
+                "publish-release",
+                sampleQuickDefinition,
+                DemoWorkflowTimedInput(
+                    "Publish combined app release",
+                    3_500,
+                    "publish-release",
+                    "multi-branch-app")),
         authorize: CreateSampleWorkAuthorization(
             SampleFakeAuth.OperationsCustomReadGroup,
             SampleFakeAuth.OperationsCustomOperateGroup));
@@ -592,6 +728,18 @@ app.MapGet("/", (HttpContext context) =>
                     </tr>
                     <tr>
                         <td>
+                            <div class="action-name">Workflow multi-branch app</div>
+                            <div class="action-description">Start an app release workflow with named branch structure nodes, nested parallel validation, joins, profiling, and worker rows for branch viewer testing.</div>
+                        </td>
+                        <td>
+                            <div class="action-controls">
+                                <button id="workflow-multi-branch-start" type="button">Start multi-branch workflow</button>
+                            </div>
+                        </td>
+                        <td><p class="status" id="workflow-multi-branch-status">Ready.</p></td>
+                    </tr>
+                    <tr>
+                        <td>
                             <div class="action-name">Workflow large dataflow lab</div>
                             <div class="action-description">Start a larger DispatchEach workflow that generates enough child workers to exercise paging in the workflow node inspector.</div>
                         </td>
@@ -718,6 +866,7 @@ app.MapGet("/", (HttpContext context) =>
                 const workableApiUrl = document.getElementById('workable-api-url');
                 const copyWorkableApiUrl = document.getElementById('copy-workable-api-url');
                 const sampleWorkflowName = {{JsonSerializer.Serialize(sampleOperatorWorkflowName)}};
+                const sampleMultiBranchWorkflowName = {{JsonSerializer.Serialize(sampleMultiBranchWorkflowName)}};
                 const sampleDataflowWorkflowName = {{JsonSerializer.Serialize(sampleDataflowWorkflowName)}};
                 const sampleLargeDataflowWorkflowName = {{JsonSerializer.Serialize(sampleLargeDataflowWorkflowName)}};
 
@@ -771,6 +920,7 @@ app.MapGet("/", (HttpContext context) =>
 
                 const button = document.getElementById('toggle');
                 const workflowStart = document.getElementById('workflow-start');
+                const workflowMultiBranchStart = document.getElementById('workflow-multi-branch-start');
                 const workflowDataflowStart = document.getElementById('workflow-dataflow-start');
                 const workflowLargeDataflowStart = document.getElementById('workflow-large-dataflow-start');
                 const forceCancel = document.getElementById('force-cancel');
@@ -800,6 +950,7 @@ app.MapGet("/", (HttpContext context) =>
                 const systemFulfillment = document.getElementById('system-fulfillment');
                 const status = document.getElementById('status');
                 const workflowStatus = document.getElementById('workflow-status');
+                const workflowMultiBranchStatus = document.getElementById('workflow-multi-branch-status');
                 const workflowDataflowStatus = document.getElementById('workflow-dataflow-status');
                 const workflowLargeDataflowStatus = document.getElementById('workflow-large-dataflow-status');
                 const burstStatus = document.getElementById('burst-status');
@@ -896,6 +1047,7 @@ app.MapGet("/", (HttpContext context) =>
                 async function refreshWorkflows() {
                     await Promise.all([
                         refreshWorkflow(sampleWorkflowName, workflowStatus),
+                        refreshWorkflow(sampleMultiBranchWorkflowName, workflowMultiBranchStatus),
                         refreshWorkflow(sampleDataflowWorkflowName, workflowDataflowStatus),
                         refreshWorkflow(sampleLargeDataflowWorkflowName, workflowLargeDataflowStatus)
                     ]);
@@ -994,6 +1146,14 @@ app.MapGet("/", (HttpContext context) =>
                         workflowStatus,
                         sampleWorkflowName,
                         'Start the sample operator workflow from the sample host.');
+                });
+
+                workflowMultiBranchStart.addEventListener('click', async () => {
+                    await startWorkflow(
+                        workflowMultiBranchStart,
+                        workflowMultiBranchStatus,
+                        sampleMultiBranchWorkflowName,
+                        'Start the sample multi-branch app workflow from the sample host.');
                 });
 
                 workflowDataflowStart.addEventListener('click', async () => {
