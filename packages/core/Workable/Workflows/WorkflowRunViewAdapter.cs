@@ -794,7 +794,7 @@ public sealed class WorkflowRunViewAdapter
             case DispatchEachWorkflowStepDefinition:
                 return stepSnapshot?.WorkerIds ?? [];
             case ParallelWorkflowStepDefinition parallel:
-                if (stepSnapshot?.WorkerIds.Count > 0)
+                if (stepSnapshot is { WorkerIds.Count: > 0 })
                 {
                     return stepSnapshot.WorkerIds;
                 }
@@ -803,7 +803,7 @@ public sealed class WorkflowRunViewAdapter
                     .SelectMany(child => GetStepWorkerIds(child, snapshot))
                     .Distinct()];
             case BranchWorkflowStepDefinition branch:
-                if (stepSnapshot?.WorkerIds.Count > 0)
+                if (stepSnapshot is { WorkerIds.Count: > 0 })
                 {
                     return stepSnapshot.WorkerIds;
                 }
@@ -812,7 +812,7 @@ public sealed class WorkflowRunViewAdapter
                     .SelectMany(child => GetStepWorkerIds(child, snapshot))
                     .Distinct()];
             case JoinWorkflowStepDefinition join:
-                if (stepSnapshot?.WorkerIds.Count > 0)
+                if (stepSnapshot is { WorkerIds.Count: > 0 })
                 {
                     return stepSnapshot.WorkerIds;
                 }

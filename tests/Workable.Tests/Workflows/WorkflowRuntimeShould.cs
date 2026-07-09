@@ -747,6 +747,72 @@ public sealed class WorkflowRuntimeShould
     }
 
     [Fact]
+    public async Task ScopeJoinInsideParallelBranchToBranchChildren()
+    {
+        var betaStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var betaRelease = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var alphaAfterStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var services = new ServiceCollection();
+
+        services.AddWorkableSystem(builder =>
+        {
+            builder.RequireAuthorization(false);
+            builder.AddWork(
+                WorkDefinition.Create("sample.branch.alpha.before-join"),
+                async (_, _, cancellationToken) =>
+                {
+                    await betaStarted.Task.WaitAsync(cancellationToken);
+                    return WorkExecutionResult.Success();
+                });
+            builder.AddWork(
+                WorkDefinition.Create("sample.branch.alpha.after-join"),
+                (_, _, _) =>
+                {
+                    alphaAfterStarted.TrySetResult();
+                    return Task.FromResult(WorkExecutionResult.Success());
+                });
+            builder.AddWork(
+                WorkDefinition.Create("sample.branch.beta.slow"),
+                async (_, _, cancellationToken) =>
+                {
+                    betaStarted.TrySetResult();
+                    await betaRelease.Task.WaitAsync(cancellationToken);
+                    return WorkExecutionResult.Success();
+                });
+            builder.AddWorkflow(
+                WorkflowDefinition.Create("workflow.parallel.branch-local-join"),
+                workflow => workflow
+                    .RunParallel("fan-out", parallel => parallel
+                        .Branch("alpha", branch => branch
+                            .DispatchWork("alpha-before", Work("sample.branch.alpha.before-join"))
+                            .Join("alpha-join")
+                            .DispatchWork("alpha-after", Work("sample.branch.alpha.after-join")))
+                        .Branch("beta", branch => branch
+                            .DispatchWork("beta-slow", Work("sample.branch.beta.slow"))))
+                    .Join("join"));
+        });
+
+        using var provider = services.BuildServiceProvider();
+        var system = (InMemoryWorkSystem)provider.GetRequiredService<IWorkSystemRegistry>().Default;
+        await system.Start();
+
+        var handle = system.WorkflowRuntime.Start(
+            "workflow.parallel.branch-local-join",
+            WorkRequestContext.Create(WorkInvocationChannel.InProcess));
+        await betaStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        await alphaAfterStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.False(handle.WaitForCompletion().IsCompleted);
+
+        betaRelease.TrySetResult();
+        var completion = await handle.WaitForCompletion();
+
+        Assert.True(completion.IsCompletedSuccessfully);
+        Assert.NotNull(completion.Run);
+        Assert.Equal(WorkflowRunStatus.Completed, completion.Run!.Status);
+    }
+
+    [Fact]
     public async Task WaitAtJoinUntilParallelChildrenComplete()
     {
         var slowStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -1251,6 +1317,80 @@ public sealed class WorkflowRuntimeShould
         Assert.True(completion.IsCompletedSuccessfully);
         Assert.Equal(["alpha"], alphaAfterProcessed.ToArray());
         Assert.Equal(3, store.Enqueued.Count);
+        Assert.NotNull(completion.Run);
+        Assert.Equal(WorkflowRunStatus.Completed, completion.Run!.Status);
+    }
+
+    [Fact]
+    public async Task ScopeDurableJoinInsideParallelBranchToBranchChildren()
+    {
+        var betaStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var betaRelease = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var alphaAfterStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var store = new TestWorkflowPersistenceStore();
+        var services = new ServiceCollection();
+
+        services.AddSingleton<IWorkPersistenceStore>(store);
+        services.AddWorkableSystem("workflow-tests", builder =>
+        {
+            builder.RequireAuthorization(false);
+            builder.AddWork(
+                WorkDefinition.Create("sample.durable.branch.alpha.before-join"),
+                async (_, _, cancellationToken) =>
+                {
+                    await betaStarted.Task.WaitAsync(cancellationToken);
+                    return WorkExecutionResult.Success();
+                },
+                configuration => configuration.QueueDurably(fallbackPollingInterval: TimeSpan.FromSeconds(1)));
+            builder.AddWork(
+                WorkDefinition.Create("sample.durable.branch.alpha.after-join"),
+                (_, _, _) =>
+                {
+                    alphaAfterStarted.TrySetResult();
+                    return Task.FromResult(WorkExecutionResult.Success());
+                },
+                configuration => configuration.QueueDurably(fallbackPollingInterval: TimeSpan.FromSeconds(1)));
+            builder.AddWork(
+                WorkDefinition.Create("sample.durable.branch.beta.slow"),
+                async (_, _, cancellationToken) =>
+                {
+                    betaStarted.TrySetResult();
+                    await betaRelease.Task.WaitAsync(cancellationToken);
+                    return WorkExecutionResult.Success();
+                },
+                configuration => configuration.QueueDurably(fallbackPollingInterval: TimeSpan.FromSeconds(1)));
+            builder.AddWorkflow(
+                WorkflowDefinition.Create(
+                    "workflow.durable.parallel.branch-local-join",
+                    coordination: WorkflowCoordinationConfiguration.Durable),
+                workflow => workflow
+                    .RunParallel("fan-out", parallel => parallel
+                        .Branch("alpha", branch => branch
+                            .DispatchWork("alpha-before", Work("sample.durable.branch.alpha.before-join"))
+                            .Join("alpha-join")
+                            .DispatchWork("alpha-after", Work("sample.durable.branch.alpha.after-join")))
+                        .Branch("beta", branch => branch
+                            .DispatchWork("beta-slow", Work("sample.durable.branch.beta.slow"))))
+                    .Join("join"));
+        });
+
+        using var provider = services.BuildServiceProvider();
+        var system = GetNamedSystem(provider, "workflow-tests");
+        await system.Start();
+
+        var handle = system.WorkflowRuntime.Start(
+            "workflow.durable.parallel.branch-local-join",
+            WorkRequestContext.Create(WorkInvocationChannel.InProcess));
+        await betaStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        await alphaAfterStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.False(handle.WaitForCompletion().IsCompleted);
+
+        betaRelease.TrySetResult();
+        var completion = await handle.WaitForCompletion();
+
+        Assert.True(handle.StartOutcome.IsAccepted);
+        Assert.True(completion.IsCompletedSuccessfully);
         Assert.NotNull(completion.Run);
         Assert.Equal(WorkflowRunStatus.Completed, completion.Run!.Status);
     }

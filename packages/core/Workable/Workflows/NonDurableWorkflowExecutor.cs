@@ -52,6 +52,7 @@ internal sealed class NonDurableWorkflowExecutor(
                     step,
                     activeHandles,
                     workerHandleFactory,
+                    scopedJoinWorkerIds: null,
                     cancellationToken);
                 if (stepCompletion is not null)
                 {
@@ -116,6 +117,7 @@ internal sealed class NonDurableWorkflowExecutor(
         WorkflowStepDefinition step,
         System.Collections.Concurrent.ConcurrentDictionary<WorkerId, IWorkerHandle> activeHandles,
         Func<WorkerId, IWorkerHandle> workerHandleFactory,
+        IReadOnlyList<WorkerId>? scopedJoinWorkerIds,
         CancellationToken cancellationToken)
     {
         var status = run.GetStepStatus(step.Name);
@@ -179,11 +181,17 @@ internal sealed class NonDurableWorkflowExecutor(
                 {
                     if (status == WorkflowStepRunStatus.Pending)
                     {
-                        run.MarkStepRunning(join.Name, run.GetOutstandingWorkerIds());
+                        run.MarkStepRunning(join.Name, scopedJoinWorkerIds ?? run.GetOutstandingWorkerIds());
                         publisher.StepUpdated(run.ToSnapshot(), join.Name);
                     }
 
-                    var completion = await this.WaitForJoinOutstanding(run, join.Name, activeHandles, workerHandleFactory, cancellationToken);
+                    var completion = await this.WaitForJoinOutstanding(
+                        run,
+                        join.Name,
+                        activeHandles,
+                        workerHandleFactory,
+                        scopedJoinWorkerIds,
+                        cancellationToken);
                     if (!completion.IsCompletedSuccessfully)
                     {
                         if (completion.Status != WorkflowRunStatus.Blocked)
@@ -223,17 +231,21 @@ internal sealed class NonDurableWorkflowExecutor(
         publisher.StepUpdated(run.ToSnapshot(), step.Name);
 
         var childTasks = step.Steps
-            .Select(child => this.ExecuteStep(run, session, child, activeHandles, workerHandleFactory, cancellationToken))
+            .Select(child => this.ExecuteStep(
+                run,
+                session,
+                child,
+                activeHandles,
+                workerHandleFactory,
+                scopedJoinWorkerIds: null,
+                cancellationToken))
             .ToArray();
         var childCompletions = await Task.WhenAll(childTasks);
-        foreach (var completion in childCompletions)
+        foreach (var completion in childCompletions.Where(static completion => completion is not null))
         {
-            if (completion is not null)
-            {
-                run.FailStep(step.Name, completion.Messages);
-                publisher.StepUpdated(run.ToSnapshot(), step.Name);
-                return completion;
-            }
+            run.FailStep(step.Name, completion!.Messages);
+            publisher.StepUpdated(run.ToSnapshot(), step.Name);
+            return completion;
         }
 
         run.MarkStepCompleted(step.Name, CollectStepWorkerIds(run, step.Steps));
@@ -255,7 +267,17 @@ internal sealed class NonDurableWorkflowExecutor(
 
         foreach (var child in step.Steps)
         {
-            var completion = await this.ExecuteStep(run, session, child, activeHandles, workerHandleFactory, cancellationToken);
+            var scopedJoinWorkerIds = child is JoinWorkflowStepDefinition
+                ? GetOutstandingWorkerIdsBeforeStep(run, step.Steps, child.Name)
+                : null;
+            var completion = await this.ExecuteStep(
+                run,
+                session,
+                child,
+                activeHandles,
+                workerHandleFactory,
+                scopedJoinWorkerIds,
+                cancellationToken);
             if (completion is not null)
             {
                 run.FailStep(step.Name, completion.Messages);
@@ -273,6 +295,38 @@ internal sealed class NonDurableWorkflowExecutor(
         WorkflowRunState run,
         IEnumerable<WorkflowStepDefinition> steps)
         => [.. steps.SelectMany(step => CollectStepWorkerIds(run, step)).Distinct()];
+
+    private static IReadOnlyList<WorkerId> GetOutstandingWorkerIdsBeforeStep(
+        WorkflowRunState run,
+        IReadOnlyList<WorkflowStepDefinition> steps,
+        string stepName)
+    {
+        var outstanding = new List<WorkerId>();
+        foreach (var step in steps)
+        {
+            if (string.Equals(step.Name, stepName, StringComparison.Ordinal))
+            {
+                return [.. outstanding.Distinct()];
+            }
+
+            if (step is JoinWorkflowStepDefinition)
+            {
+                if (run.GetStepStatus(step.Name) == WorkflowStepRunStatus.Completed)
+                {
+                    outstanding.Clear();
+                }
+
+                continue;
+            }
+
+            if (run.GetStepStatus(step.Name) == WorkflowStepRunStatus.Completed)
+            {
+                outstanding.AddRange(CollectStepWorkerIds(run, step));
+            }
+        }
+
+        return [];
+    }
 
     private static IEnumerable<WorkerId> CollectStepWorkerIds(
         WorkflowRunState run,
@@ -401,6 +455,7 @@ internal sealed class NonDurableWorkflowExecutor(
         string joinStepName,
         IReadOnlyDictionary<WorkerId, IWorkerHandle> activeHandles,
         Func<WorkerId, IWorkerHandle> workerHandleFactory,
+        IReadOnlyList<WorkerId>? fallbackOutstandingWorkerIds,
         CancellationToken cancellationToken)
     {
         var outstanding = run.GetStepWorkerIds(joinStepName)
@@ -408,7 +463,7 @@ internal sealed class NonDurableWorkflowExecutor(
             .ToList();
         if (outstanding.Count == 0)
         {
-            outstanding = run.GetOutstandingWorkerIds()
+            outstanding = (fallbackOutstandingWorkerIds ?? run.GetOutstandingWorkerIds())
                 .Distinct()
                 .ToList();
             if (outstanding.Count > 0)

@@ -49,7 +49,13 @@ internal sealed class DurableWorkflowExecutor(
                     continue;
                 }
 
-                var stepCompletion = await this.ExecuteStep(run, session, step, persistenceGate, cancellationToken);
+                var stepCompletion = await this.ExecuteStep(
+                    run,
+                    session,
+                    step,
+                    persistenceGate,
+                    scopedJoinWorkerIds: null,
+                    cancellationToken);
                 if (stepCompletion is not null)
                 {
                     return stepCompletion;
@@ -118,6 +124,7 @@ internal sealed class DurableWorkflowExecutor(
         IWorkSystemSession session,
         WorkflowStepDefinition step,
         WorkflowRunPersistenceGate persistenceGate,
+        IReadOnlyList<WorkerId>? scopedJoinWorkerIds,
         CancellationToken cancellationToken)
     {
         var status = run.GetStepStatus(step.Name);
@@ -167,12 +174,18 @@ internal sealed class DurableWorkflowExecutor(
                 {
                     if (status == WorkflowStepRunStatus.Pending)
                     {
-                        run.MarkStepRunning(join.Name, run.GetOutstandingWorkerIds());
+                        run.MarkStepRunning(join.Name, scopedJoinWorkerIds ?? run.GetOutstandingWorkerIds());
                         await this.UpsertRun(run, persistenceGate, CancellationToken.None);
                         publisher.StepUpdated(run.ToSnapshot(), join.Name);
                     }
 
-                    var completion = await this.WaitForJoinOutstanding(run, session, join.Name, persistenceGate, cancellationToken);
+                    var completion = await this.WaitForJoinOutstanding(
+                        run,
+                        session,
+                        join.Name,
+                        persistenceGate,
+                        scopedJoinWorkerIds,
+                        cancellationToken);
                     if (!completion.IsCompletedSuccessfully)
                     {
                         if (completion.Status != WorkflowRunStatus.Blocked)
@@ -215,18 +228,21 @@ internal sealed class DurableWorkflowExecutor(
         publisher.StepUpdated(run.ToSnapshot(), step.Name);
 
         var childTasks = step.Steps
-            .Select(child => this.ExecuteStep(run, session, child, persistenceGate, cancellationToken))
+            .Select(child => this.ExecuteStep(
+                run,
+                session,
+                child,
+                persistenceGate,
+                scopedJoinWorkerIds: null,
+                cancellationToken))
             .ToArray();
         var childCompletions = await Task.WhenAll(childTasks);
-        foreach (var completion in childCompletions)
+        foreach (var completion in childCompletions.Where(static completion => completion is not null))
         {
-            if (completion is not null)
-            {
-                run.FailStep(step.Name, completion.Messages);
-                await this.UpsertRun(run, persistenceGate, CancellationToken.None);
-                publisher.StepUpdated(run.ToSnapshot(), step.Name);
-                return new WorkflowRunCompletion(completion.Status, run.ToSnapshot(), completion.Messages);
-            }
+            run.FailStep(step.Name, completion!.Messages);
+            await this.UpsertRun(run, persistenceGate, CancellationToken.None);
+            publisher.StepUpdated(run.ToSnapshot(), step.Name);
+            return new WorkflowRunCompletion(completion.Status, run.ToSnapshot(), completion.Messages);
         }
 
         run.MarkStepCompleted(step.Name, CollectStepWorkerIds(run, step.Steps));
@@ -248,7 +264,16 @@ internal sealed class DurableWorkflowExecutor(
 
         foreach (var child in step.Steps)
         {
-            var completion = await this.ExecuteStep(run, session, child, persistenceGate, cancellationToken);
+            var scopedJoinWorkerIds = child is JoinWorkflowStepDefinition
+                ? GetOutstandingWorkerIdsBeforeStep(run, step.Steps, child.Name)
+                : null;
+            var completion = await this.ExecuteStep(
+                run,
+                session,
+                child,
+                persistenceGate,
+                scopedJoinWorkerIds,
+                cancellationToken);
             if (completion is not null)
             {
                 run.FailStep(step.Name, completion.Messages);
@@ -268,6 +293,38 @@ internal sealed class DurableWorkflowExecutor(
         WorkflowRunState run,
         IEnumerable<WorkflowStepDefinition> steps)
         => [.. steps.SelectMany(step => CollectStepWorkerIds(run, step)).Distinct()];
+
+    private static IReadOnlyList<WorkerId> GetOutstandingWorkerIdsBeforeStep(
+        WorkflowRunState run,
+        IReadOnlyList<WorkflowStepDefinition> steps,
+        string stepName)
+    {
+        var outstanding = new List<WorkerId>();
+        foreach (var step in steps)
+        {
+            if (string.Equals(step.Name, stepName, StringComparison.Ordinal))
+            {
+                return [.. outstanding.Distinct()];
+            }
+
+            if (step is JoinWorkflowStepDefinition)
+            {
+                if (run.GetStepStatus(step.Name) == WorkflowStepRunStatus.Completed)
+                {
+                    outstanding.Clear();
+                }
+
+                continue;
+            }
+
+            if (run.GetStepStatus(step.Name) == WorkflowStepRunStatus.Completed)
+            {
+                outstanding.AddRange(CollectStepWorkerIds(run, step));
+            }
+        }
+
+        return [];
+    }
 
     private static IEnumerable<WorkerId> CollectStepWorkerIds(
         WorkflowRunState run,
@@ -450,6 +507,7 @@ internal sealed class DurableWorkflowExecutor(
         IWorkSystemSession session,
         string joinStepName,
         WorkflowRunPersistenceGate persistenceGate,
+        IReadOnlyList<WorkerId>? fallbackOutstandingWorkerIds,
         CancellationToken cancellationToken)
     {
         var outstanding = run.GetStepWorkerIds(joinStepName)
@@ -457,7 +515,7 @@ internal sealed class DurableWorkflowExecutor(
             .ToList();
         if (outstanding.Count == 0)
         {
-            outstanding = run.GetOutstandingWorkerIds()
+            outstanding = (fallbackOutstandingWorkerIds ?? run.GetOutstandingWorkerIds())
                 .Distinct()
                 .ToList();
             if (outstanding.Count > 0)
