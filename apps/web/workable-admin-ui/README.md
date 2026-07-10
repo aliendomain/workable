@@ -11,6 +11,22 @@ npm run dev
 
 Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
 
+For deployment and load-balancer probes, the admin UI exposes a public health endpoint:
+
+```text
+GET /health
+```
+
+Example response:
+
+```json
+{
+  "status": "ok",
+  "service": "workable-admin-ui",
+  "timestamp": "2026-07-08T16:00:00.000Z"
+}
+```
+
 ## Admin UI Security Defaults
 
 The admin UI is default-deny. The page and `/api/workable/*` proxy require authentication unless you explicitly opt into anonymous local use. The proxy does not implement its own operation-level role map; the hosted Workable API remains the authority for whether the current caller may read, operate, configure, run lifecycle actions, or inspect diagnostics.
