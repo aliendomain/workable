@@ -116,6 +116,19 @@ internal sealed class WorkflowBuilder : IWorkflowBuilder
             return this;
         }
 
+        public IWorkflowParallelBuilder Branch(
+            string branchName,
+            Action<IWorkflowBuilder> configure)
+        {
+            ArgumentException.ThrowIfNullOrWhiteSpace(branchName);
+            ArgumentNullException.ThrowIfNull(configure);
+
+            var branch = new WorkflowBuilder();
+            configure(branch);
+            this.steps.Add(new BranchWorkflowStepDefinition(branchName, branch.Build()));
+            return this;
+        }
+
         public IReadOnlyList<WorkflowStepDefinition> Build() => [.. this.steps];
     }
 }

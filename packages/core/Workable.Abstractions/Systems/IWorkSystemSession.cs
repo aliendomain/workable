@@ -20,6 +20,11 @@ public interface IWorkSystemSession
     WorkSystemState SystemState { get; }
 
     /// <summary>
+    /// Gets the optional capability snapshot for the underlying system.
+    /// </summary>
+    WorkSystemCapabilities Capabilities { get; }
+
+    /// <summary>
     /// Gets the caller-scoped diagnostics surface.
     /// </summary>
     IWorkSystemDiagnostics Diagnostics { get; }

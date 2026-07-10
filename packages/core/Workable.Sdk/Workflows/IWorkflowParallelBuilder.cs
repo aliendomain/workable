@@ -26,4 +26,14 @@ public interface IWorkflowParallelBuilder
     IWorkflowParallelBuilder DispatchWorkFromWorkflowInput(
         string stepName,
         WorkDefinition workDefinition);
+
+    /// <summary>
+    /// Adds a named sequential branch that may contain worker and structure nodes.
+    /// </summary>
+    /// <param name="branchName">The stable workflow-local branch name.</param>
+    /// <param name="configure">Builds the sequential branch body.</param>
+    /// <returns>The same builder so additional parallel branches can be chained.</returns>
+    IWorkflowParallelBuilder Branch(
+        string branchName,
+        Action<IWorkflowBuilder> configure);
 }

@@ -48,6 +48,7 @@ public sealed record WorkWorkerIterationOverviewCriteria(
 /// </summary>
 public sealed record WorkWorkerIterationOverviewComponent(
     WorkWorkerIterationOverviewActivity Activity,
+    WorkSystemCapabilities Capabilities,
     WorkWorkerIterationOverviewWorker Worker,
     WorkInput? Input,
     WorkWorkerIterationOverviewIteration Iteration,
@@ -62,7 +63,8 @@ public sealed record WorkWorkerIterationOverviewWorker(
     string DefinitionName,
     WorkSubjectId? SubjectId,
     WorkConcurrencyKey? ConcurrencyKey,
-    IReadOnlySet<WorkIdentifier> Identifiers);
+    IReadOnlySet<WorkIdentifier> Identifiers,
+    bool ProfilingEnabled);
 
 /// <summary>
 /// Describes the retained iteration snapshot embedded in the overview landing payload.

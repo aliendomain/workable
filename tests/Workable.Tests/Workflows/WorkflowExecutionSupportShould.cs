@@ -309,6 +309,8 @@ public sealed class WorkflowExecutionSupportShould
 
         public WorkSystemState SystemState => WorkSystemState.Started;
 
+        public WorkSystemCapabilities Capabilities => WorkSystemCapabilities.None;
+
         public IWorkSystemDiagnostics Diagnostics => throw new NotSupportedException();
 
         public IWorkCatalog Catalog => throw new NotSupportedException();

@@ -1,6 +1,8 @@
 using System.Collections.Concurrent;
 using System.Runtime.CompilerServices;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.FileProviders;
+using Microsoft.Extensions.Hosting;
 using Workable;
 
 namespace Workable.Tests;
@@ -146,6 +148,45 @@ public sealed class WorkflowRuntimeShould
         var step = Assert.Single(run.Steps);
         Assert.Equal(WorkflowStepRunStatus.Completed, step.Status);
         Assert.Single(step.WorkerIds);
+    }
+
+    [Fact]
+    public async Task WorkflowDispatchedChildWorkersInheritNonProductionProfilingDefault()
+    {
+        var services = new ServiceCollection();
+        services.AddSingleton<IHostEnvironment>(new TestHostEnvironment(Environments.Development));
+        services.AddWorkableSystem(builder =>
+        {
+            builder.RequireAuthorization(false);
+            builder.AddWork(
+                WorkDefinition.Create("sample.profiled.workflow-child"),
+                (context, _, _) =>
+                {
+                    context.Profile.AddInfo("workflow child profile");
+                    return Task.FromResult(WorkExecutionResult.Success());
+                });
+            builder.AddWorkflow(
+                WorkflowDefinition.Create("workflow.profiled-child"),
+                workflow => workflow.DispatchWork("dispatch", Work("sample.profiled.workflow-child")));
+        });
+
+        await using var provider = services.BuildServiceProvider();
+        await using var system = (InMemoryWorkSystem)provider.GetRequiredService<IWorkSystemRegistry>().Default;
+        await system.Start();
+
+        var handle = system.WorkflowRuntime.Start(
+            "workflow.profiled-child",
+            WorkRequestContext.Create(WorkInvocationChannel.InProcess));
+        var completion = await handle.WaitForCompletion();
+
+        Assert.True(completion.IsCompletedSuccessfully);
+        var childWorkerId = Assert.Single(Assert.Single(completion.Run!.Steps).WorkerIds);
+        var child = await system.WorkerOperations.Get(childWorkerId)
+            ?? throw new InvalidOperationException("Expected workflow child worker snapshot.");
+        var profile = child.Profile ?? throw new InvalidOperationException("Expected workflow child profile.");
+
+        Assert.True(child.Options.ProfilingEnabled);
+        Assert.Contains(FlattenProfile(profile.Root), node => node.Label == "workflow child profile");
     }
 
     [Fact]
@@ -547,6 +588,231 @@ public sealed class WorkflowRuntimeShould
     }
 
     [Fact]
+    public async Task ExecuteParallelBranchesWithSequentialWorkflowStructure()
+    {
+        var completed = new ConcurrentBag<string>();
+        var services = new ServiceCollection();
+
+        services.AddWorkableSystem(builder =>
+        {
+            builder.RequireAuthorization(false);
+            builder.AddWork(
+                WorkDefinition.Create("sample.branch.collect"),
+                (_, _, _) =>
+                {
+                    completed.Add("collect");
+                    return Task.FromResult(WorkExecutionResult.Success());
+                });
+            builder.AddWork(
+                WorkDefinition.Create("sample.branch.normalize"),
+                (_, _, _) =>
+                {
+                    completed.Add("normalize");
+                    return Task.FromResult(WorkExecutionResult.Success());
+                });
+            builder.AddWork(
+                WorkDefinition.Create("sample.branch.render"),
+                (_, _, _) =>
+                {
+                    completed.Add("render");
+                    return Task.FromResult(WorkExecutionResult.Success());
+                });
+            builder.AddWork(
+                WorkDefinition.Create("sample.branch.publish"),
+                (_, _, _) =>
+                {
+                    completed.Add("publish");
+                    return Task.FromResult(WorkExecutionResult.Success());
+                });
+            builder.AddWorkflow(
+                WorkflowDefinition.Create("workflow.parallel.branches"),
+                workflow => workflow
+                    .RunParallel("fan-out", parallel => parallel
+                        .Branch("documents", branch => branch
+                            .DispatchWork("collect", Work("sample.branch.collect"))
+                            .DispatchWork("normalize", Work("sample.branch.normalize")))
+                        .Branch("publishing", branch => branch
+                            .RunParallel("replicate", replicate => replicate
+                                .DispatchWork("render", Work("sample.branch.render"))
+                                .DispatchWork("publish", Work("sample.branch.publish")))))
+                    .Join("join"));
+        });
+
+        using var provider = services.BuildServiceProvider();
+        var system = (InMemoryWorkSystem)provider.GetRequiredService<IWorkSystemRegistry>().Default;
+        await system.Start();
+
+        var handle = system.WorkflowRuntime.Start(
+            "workflow.parallel.branches",
+            WorkRequestContext.Create(WorkInvocationChannel.InProcess));
+        var completion = await handle.WaitForCompletion();
+
+        Assert.True(completion.IsCompletedSuccessfully);
+        Assert.Equal(
+            ["collect", "normalize", "publish", "render"],
+            completed.OrderBy(static item => item, StringComparer.Ordinal).ToArray());
+        Assert.NotNull(completion.Run);
+        var run = completion.Run!;
+        Assert.Equal(WorkflowRunStatus.Completed, run.Status);
+        Assert.Equal(WorkflowStepRunStatus.Completed, run.Steps.Single(step => step.Name == "fan-out").Status);
+        Assert.Equal(WorkflowStepRunStatus.Completed, run.Steps.Single(step => step.Name == "documents").Status);
+        Assert.Equal(WorkflowStepRunStatus.Completed, run.Steps.Single(step => step.Name == "publishing").Status);
+        Assert.Equal(WorkflowStepRunStatus.Completed, run.Steps.Single(step => step.Name == "replicate").Status);
+        Assert.Equal(4, run.Steps.Single(step => step.Name == "fan-out").WorkerIds.Count);
+        Assert.Equal(2, run.Steps.Single(step => step.Name == "documents").WorkerIds.Count);
+        Assert.Equal(2, run.Steps.Single(step => step.Name == "publishing").WorkerIds.Count);
+        Assert.Equal(2, run.Steps.Single(step => step.Name == "replicate").WorkerIds.Count);
+        Assert.Equal(WorkflowStepRunStatus.Completed, run.Steps.Single(step => step.Name == "join").Status);
+    }
+
+    [Fact]
+    public async Task ExecuteParallelBranchBodiesConcurrently()
+    {
+        var alphaStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var alphaRelease = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var betaStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var alphaAfterProcessed = new ConcurrentBag<string>();
+        var services = new ServiceCollection();
+
+        services.AddWorkableSystem(builder =>
+        {
+            builder.RequireAuthorization(false);
+            builder.AddWork(
+                WorkDefinition.Create("sample.branch.alpha.load"),
+                async (_, _, cancellationToken) =>
+                {
+                    alphaStarted.TrySetResult();
+                    await alphaRelease.Task.WaitAsync(cancellationToken);
+                    return WorkExecutionResult.Success(
+                        WorkOutput.FromValue(new DispatchEachSourceOutput([new DispatchEachItem("alpha")])));
+                });
+            builder.AddWork(
+                WorkDefinition.Create("sample.branch.alpha.after"),
+                (_, input, _) =>
+                {
+                    var item = input?.ToValue<DispatchEachItem>()
+                        ?? throw new InvalidOperationException("Expected dispatch-each item input.");
+                    alphaAfterProcessed.Add(item.Id);
+                    return Task.FromResult(WorkExecutionResult.Success());
+                });
+            builder.AddWork(
+                WorkDefinition.Create("sample.branch.beta"),
+                (_, _, _) =>
+                {
+                    betaStarted.TrySetResult();
+                    return Task.FromResult(WorkExecutionResult.Success());
+                });
+            builder.AddWorkflow(
+                WorkflowDefinition.Create("workflow.parallel.branch-bodies"),
+                workflow => workflow
+                    .RunParallel("fan-out", parallel => parallel
+                        .Branch("alpha", branch =>
+                        {
+                            var load = branch.DispatchWork<DispatchEachSourceOutput>(
+                                "alpha-load",
+                                Work("sample.branch.alpha.load"));
+                            branch.DispatchEach(
+                                "alpha-after",
+                                load,
+                                Work("sample.branch.alpha.after"),
+                                output => output.Items);
+                        })
+                        .Branch("beta", branch => branch
+                            .DispatchWork("beta-work", Work("sample.branch.beta"))))
+                    .Join("join"));
+        });
+
+        using var provider = services.BuildServiceProvider();
+        var system = (InMemoryWorkSystem)provider.GetRequiredService<IWorkSystemRegistry>().Default;
+        await system.Start();
+
+        var handle = system.WorkflowRuntime.Start(
+            "workflow.parallel.branch-bodies",
+            WorkRequestContext.Create(WorkInvocationChannel.InProcess));
+        await alphaStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await betaStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        var runningRun = system.WorkflowRuntime.Get(handle.RunId!.Value);
+        Assert.NotNull(runningRun);
+        Assert.Equal(WorkflowStepRunStatus.Running, runningRun!.Steps.Single(step => step.Name == "alpha").Status);
+        Assert.Equal(WorkflowStepRunStatus.Completed, runningRun.Steps.Single(step => step.Name == "beta").Status);
+
+        alphaRelease.TrySetResult();
+        var completion = await handle.WaitForCompletion();
+
+        Assert.True(completion.IsCompletedSuccessfully);
+        Assert.Equal(["alpha"], alphaAfterProcessed.ToArray());
+        Assert.NotNull(completion.Run);
+        Assert.Equal(WorkflowRunStatus.Completed, completion.Run!.Status);
+    }
+
+    [Fact]
+    public async Task ScopeJoinInsideParallelBranchToBranchChildren()
+    {
+        var betaStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var betaRelease = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var alphaAfterStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var services = new ServiceCollection();
+
+        services.AddWorkableSystem(builder =>
+        {
+            builder.RequireAuthorization(false);
+            builder.AddWork(
+                WorkDefinition.Create("sample.branch.alpha.before-join"),
+                async (_, _, cancellationToken) =>
+                {
+                    await betaStarted.Task.WaitAsync(cancellationToken);
+                    return WorkExecutionResult.Success();
+                });
+            builder.AddWork(
+                WorkDefinition.Create("sample.branch.alpha.after-join"),
+                (_, _, _) =>
+                {
+                    alphaAfterStarted.TrySetResult();
+                    return Task.FromResult(WorkExecutionResult.Success());
+                });
+            builder.AddWork(
+                WorkDefinition.Create("sample.branch.beta.slow"),
+                async (_, _, cancellationToken) =>
+                {
+                    betaStarted.TrySetResult();
+                    await betaRelease.Task.WaitAsync(cancellationToken);
+                    return WorkExecutionResult.Success();
+                });
+            builder.AddWorkflow(
+                WorkflowDefinition.Create("workflow.parallel.branch-local-join"),
+                workflow => workflow
+                    .RunParallel("fan-out", parallel => parallel
+                        .Branch("alpha", branch => branch
+                            .DispatchWork("alpha-before", Work("sample.branch.alpha.before-join"))
+                            .Join("alpha-join")
+                            .DispatchWork("alpha-after", Work("sample.branch.alpha.after-join")))
+                        .Branch("beta", branch => branch
+                            .DispatchWork("beta-slow", Work("sample.branch.beta.slow"))))
+                    .Join("join"));
+        });
+
+        using var provider = services.BuildServiceProvider();
+        var system = (InMemoryWorkSystem)provider.GetRequiredService<IWorkSystemRegistry>().Default;
+        await system.Start();
+
+        var handle = system.WorkflowRuntime.Start(
+            "workflow.parallel.branch-local-join",
+            WorkRequestContext.Create(WorkInvocationChannel.InProcess));
+        await betaStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        await alphaAfterStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.False(handle.WaitForCompletion().IsCompleted);
+
+        betaRelease.TrySetResult();
+        var completion = await handle.WaitForCompletion();
+
+        Assert.True(completion.IsCompletedSuccessfully);
+        Assert.NotNull(completion.Run);
+        Assert.Equal(WorkflowRunStatus.Completed, completion.Run!.Status);
+    }
+
+    [Fact]
     public async Task WaitAtJoinUntilParallelChildrenComplete()
     {
         var slowStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -767,6 +1033,43 @@ public sealed class WorkflowRuntimeShould
     }
 
     [Fact]
+    public async Task RejectNonDurableWorkflowThatDispatchesDurableWorkInsideBranch()
+    {
+        var services = new ServiceCollection();
+
+        services.AddWorkableSystem(builder =>
+        {
+            builder.RequireAuthorization(false);
+            builder.AddWork(
+                WorkDefinition.Create("sample.branch.durable"),
+                (_, _, _) => Task.FromResult(WorkExecutionResult.Success()),
+                configuration => configuration
+                    .CoordinatePersistently()
+                    .QueueDurably());
+            builder.AddWorkflow(
+                WorkflowDefinition.Create("workflow.invalid.branch-durable-child"),
+                workflow => workflow.RunParallel("fan-out", parallel => parallel
+                    .Branch("documents", branch => branch
+                        .DispatchWork("dispatch", Work("sample.branch.durable")))));
+        });
+
+        using var provider = services.BuildServiceProvider();
+        var system = (InMemoryWorkSystem)provider.GetRequiredService<IWorkSystemRegistry>().Default;
+        await system.Start();
+
+        var handle = system.WorkflowRuntime.Start(
+            "workflow.invalid.branch-durable-child",
+            WorkRequestContext.Create(WorkInvocationChannel.InProcess));
+        var completion = await handle.WaitForCompletion();
+
+        Assert.False(handle.StartOutcome.IsAccepted);
+        Assert.Equal(WorkflowRunStatus.Invalid, completion.Status);
+        Assert.Contains(
+            handle.StartOutcome.Messages,
+            message => message.Code == "workable.workflow.child_durability_requires_durable_workflow");
+    }
+
+    [Fact]
     public async Task RejectDurableWorkflowWhenNoPersistenceStoreIsRegistered()
     {
         var services = new ServiceCollection();
@@ -841,6 +1144,255 @@ public sealed class WorkflowRuntimeShould
         Assert.True(store.Enqueued[0].Configuration.Coordination.IsDurabilityEnabled);
         Assert.NotNull(store.GetWorkflowRun(handle.RunId!.Value));
         Assert.DoesNotContain(handle.RunId.Value, store.DeletedWorkflowRuns);
+    }
+
+    [Fact]
+    public async Task ExecuteDurableParallelBranchesWithSequentialWorkflowStructure()
+    {
+        var completed = new ConcurrentBag<string>();
+        var store = new TestWorkflowPersistenceStore();
+        var services = new ServiceCollection();
+
+        services.AddSingleton<IWorkPersistenceStore>(store);
+        services.AddWorkableSystem("workflow-tests", builder =>
+        {
+            builder.RequireAuthorization(false);
+            builder.AddWork(
+                WorkDefinition.Create("sample.durable.branch.collect"),
+                (_, _, _) =>
+                {
+                    completed.Add("collect");
+                    return Task.FromResult(WorkExecutionResult.Success());
+                });
+            builder.AddWork(
+                WorkDefinition.Create("sample.durable.branch.normalize"),
+                (_, _, _) =>
+                {
+                    completed.Add("normalize");
+                    return Task.FromResult(WorkExecutionResult.Success());
+                });
+            builder.AddWork(
+                WorkDefinition.Create("sample.durable.branch.render"),
+                (_, _, _) =>
+                {
+                    completed.Add("render");
+                    return Task.FromResult(WorkExecutionResult.Success());
+                });
+            builder.AddWork(
+                WorkDefinition.Create("sample.durable.branch.publish"),
+                (_, _, _) =>
+                {
+                    completed.Add("publish");
+                    return Task.FromResult(WorkExecutionResult.Success());
+                });
+            builder.AddWorkflow(
+                WorkflowDefinition.Create(
+                    "workflow.durable.parallel.branches",
+                    coordination: WorkflowCoordinationConfiguration.Durable),
+                workflow => workflow
+                    .RunParallel("fan-out", parallel => parallel
+                        .Branch("documents", branch => branch
+                            .DispatchWork("collect", Work("sample.durable.branch.collect"))
+                            .DispatchWork("normalize", Work("sample.durable.branch.normalize")))
+                        .Branch("publishing", branch => branch
+                            .RunParallel("replicate", replicate => replicate
+                                .DispatchWork("render", Work("sample.durable.branch.render"))
+                                .DispatchWork("publish", Work("sample.durable.branch.publish")))))
+                    .Join("join"));
+        });
+
+        using var provider = services.BuildServiceProvider();
+        var system = GetNamedSystem(provider, "workflow-tests");
+        await system.Start();
+
+        var handle = system.WorkflowRuntime.Start(
+            "workflow.durable.parallel.branches",
+            WorkRequestContext.Create(WorkInvocationChannel.InProcess));
+        var completion = await handle.WaitForCompletion();
+
+        Assert.True(handle.StartOutcome.IsAccepted);
+        Assert.True(completion.IsCompletedSuccessfully);
+        Assert.Equal(
+            ["collect", "normalize", "publish", "render"],
+            completed.OrderBy(static item => item, StringComparer.Ordinal).ToArray());
+        Assert.Equal(4, store.Enqueued.Count);
+        Assert.All(store.Enqueued, request => Assert.True(request.Configuration.Coordination.IsDurabilityEnabled));
+        Assert.NotNull(completion.Run);
+        var run = completion.Run!;
+        Assert.Equal(WorkflowRunStatus.Completed, run.Status);
+        Assert.Equal(WorkflowStepRunStatus.Completed, run.Steps.Single(step => step.Name == "fan-out").Status);
+        Assert.Equal(WorkflowStepRunStatus.Completed, run.Steps.Single(step => step.Name == "documents").Status);
+        Assert.Equal(WorkflowStepRunStatus.Completed, run.Steps.Single(step => step.Name == "publishing").Status);
+        Assert.Equal(WorkflowStepRunStatus.Completed, run.Steps.Single(step => step.Name == "replicate").Status);
+        Assert.Equal(4, run.Steps.Single(step => step.Name == "fan-out").WorkerIds.Count);
+        Assert.Equal(2, run.Steps.Single(step => step.Name == "documents").WorkerIds.Count);
+        Assert.Equal(2, run.Steps.Single(step => step.Name == "publishing").WorkerIds.Count);
+        Assert.Equal(2, run.Steps.Single(step => step.Name == "replicate").WorkerIds.Count);
+        Assert.Equal(WorkflowStepRunStatus.Completed, run.Steps.Single(step => step.Name == "join").Status);
+    }
+
+    [Fact]
+    public async Task ExecuteDurableParallelBranchBodiesConcurrently()
+    {
+        var alphaStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var alphaRelease = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var betaStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var alphaAfterProcessed = new ConcurrentBag<string>();
+        var store = new TestWorkflowPersistenceStore();
+        var services = new ServiceCollection();
+
+        services.AddSingleton<IWorkPersistenceStore>(store);
+        services.AddWorkableSystem("workflow-tests", builder =>
+        {
+            builder.RequireAuthorization(false);
+            builder.AddWork(
+                WorkDefinition.Create("sample.durable.branch.alpha.load"),
+                async (_, _, cancellationToken) =>
+                {
+                    alphaStarted.TrySetResult();
+                    await alphaRelease.Task.WaitAsync(cancellationToken);
+                    return WorkExecutionResult.Success(
+                        WorkOutput.FromValue(new DispatchEachSourceOutput([new DispatchEachItem("alpha")])));
+                },
+                configuration => configuration.QueueDurably(fallbackPollingInterval: TimeSpan.FromSeconds(1)));
+            builder.AddWork(
+                WorkDefinition.Create("sample.durable.branch.alpha.after"),
+                (_, input, _) =>
+                {
+                    var item = input?.ToValue<DispatchEachItem>()
+                        ?? throw new InvalidOperationException("Expected dispatch-each item input.");
+                    alphaAfterProcessed.Add(item.Id);
+                    return Task.FromResult(WorkExecutionResult.Success());
+                },
+                configuration => configuration.QueueDurably(fallbackPollingInterval: TimeSpan.FromSeconds(1)));
+            builder.AddWork(
+                WorkDefinition.Create("sample.durable.branch.beta"),
+                (_, _, _) =>
+                {
+                    betaStarted.TrySetResult();
+                    return Task.FromResult(WorkExecutionResult.Success());
+                },
+                configuration => configuration.QueueDurably(fallbackPollingInterval: TimeSpan.FromSeconds(1)));
+            builder.AddWorkflow(
+                WorkflowDefinition.Create(
+                    "workflow.durable.parallel.branch-bodies",
+                    coordination: WorkflowCoordinationConfiguration.Durable),
+                workflow => workflow
+                    .RunParallel("fan-out", parallel => parallel
+                        .Branch("alpha", branch =>
+                        {
+                            var load = branch.DispatchWork<DispatchEachSourceOutput>(
+                                "alpha-load",
+                                Work("sample.durable.branch.alpha.load"));
+                            branch.DispatchEach(
+                                "alpha-after",
+                                load,
+                                Work("sample.durable.branch.alpha.after"),
+                                output => output.Items);
+                        })
+                        .Branch("beta", branch => branch
+                            .DispatchWork("beta-work", Work("sample.durable.branch.beta"))))
+                    .Join("join"));
+        });
+
+        using var provider = services.BuildServiceProvider();
+        var system = GetNamedSystem(provider, "workflow-tests");
+        await system.Start();
+
+        var handle = system.WorkflowRuntime.Start(
+            "workflow.durable.parallel.branch-bodies",
+            WorkRequestContext.Create(WorkInvocationChannel.InProcess));
+        await alphaStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await betaStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        var runningRun = system.WorkflowRuntime.Get(handle.RunId!.Value);
+        Assert.NotNull(runningRun);
+        Assert.Equal(WorkflowStepRunStatus.Running, runningRun!.Steps.Single(step => step.Name == "alpha").Status);
+        Assert.Equal(WorkflowStepRunStatus.Completed, runningRun.Steps.Single(step => step.Name == "beta").Status);
+
+        alphaRelease.TrySetResult();
+        var completion = await handle.WaitForCompletion();
+
+        Assert.True(handle.StartOutcome.IsAccepted);
+        Assert.True(completion.IsCompletedSuccessfully);
+        Assert.Equal(["alpha"], alphaAfterProcessed.ToArray());
+        Assert.Equal(3, store.Enqueued.Count);
+        Assert.NotNull(completion.Run);
+        Assert.Equal(WorkflowRunStatus.Completed, completion.Run!.Status);
+    }
+
+    [Fact]
+    public async Task ScopeDurableJoinInsideParallelBranchToBranchChildren()
+    {
+        var betaStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var betaRelease = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var alphaAfterStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var store = new TestWorkflowPersistenceStore();
+        var services = new ServiceCollection();
+
+        services.AddSingleton<IWorkPersistenceStore>(store);
+        services.AddWorkableSystem("workflow-tests", builder =>
+        {
+            builder.RequireAuthorization(false);
+            builder.AddWork(
+                WorkDefinition.Create("sample.durable.branch.alpha.before-join"),
+                async (_, _, cancellationToken) =>
+                {
+                    await betaStarted.Task.WaitAsync(cancellationToken);
+                    return WorkExecutionResult.Success();
+                },
+                configuration => configuration.QueueDurably(fallbackPollingInterval: TimeSpan.FromSeconds(1)));
+            builder.AddWork(
+                WorkDefinition.Create("sample.durable.branch.alpha.after-join"),
+                (_, _, _) =>
+                {
+                    alphaAfterStarted.TrySetResult();
+                    return Task.FromResult(WorkExecutionResult.Success());
+                },
+                configuration => configuration.QueueDurably(fallbackPollingInterval: TimeSpan.FromSeconds(1)));
+            builder.AddWork(
+                WorkDefinition.Create("sample.durable.branch.beta.slow"),
+                async (_, _, cancellationToken) =>
+                {
+                    betaStarted.TrySetResult();
+                    await betaRelease.Task.WaitAsync(cancellationToken);
+                    return WorkExecutionResult.Success();
+                },
+                configuration => configuration.QueueDurably(fallbackPollingInterval: TimeSpan.FromSeconds(1)));
+            builder.AddWorkflow(
+                WorkflowDefinition.Create(
+                    "workflow.durable.parallel.branch-local-join",
+                    coordination: WorkflowCoordinationConfiguration.Durable),
+                workflow => workflow
+                    .RunParallel("fan-out", parallel => parallel
+                        .Branch("alpha", branch => branch
+                            .DispatchWork("alpha-before", Work("sample.durable.branch.alpha.before-join"))
+                            .Join("alpha-join")
+                            .DispatchWork("alpha-after", Work("sample.durable.branch.alpha.after-join")))
+                        .Branch("beta", branch => branch
+                            .DispatchWork("beta-slow", Work("sample.durable.branch.beta.slow"))))
+                    .Join("join"));
+        });
+
+        using var provider = services.BuildServiceProvider();
+        var system = GetNamedSystem(provider, "workflow-tests");
+        await system.Start();
+
+        var handle = system.WorkflowRuntime.Start(
+            "workflow.durable.parallel.branch-local-join",
+            WorkRequestContext.Create(WorkInvocationChannel.InProcess));
+        await betaStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        await alphaAfterStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.False(handle.WaitForCompletion().IsCompleted);
+
+        betaRelease.TrySetResult();
+        var completion = await handle.WaitForCompletion();
+
+        Assert.True(handle.StartOutcome.IsAccepted);
+        Assert.True(completion.IsCompletedSuccessfully);
+        Assert.NotNull(completion.Run);
+        Assert.Equal(WorkflowRunStatus.Completed, completion.Run!.Status);
     }
 
     [Fact]
@@ -2424,7 +2976,7 @@ public sealed class WorkflowRuntimeShould
                     {
                         Retention = WorkRetentionConfiguration.Default with
                         {
-                            PurgeInterval = TimeSpan.FromMilliseconds(20),
+                            PurgeInterval = TimeSpan.FromMilliseconds(250),
                             MaximumFinalWorkers = 10,
                         },
                     }),
@@ -3182,6 +3734,29 @@ public sealed class WorkflowRuntimeShould
 
     private static WorkDefinition Work(string name)
         => WorkDefinition.Create(name);
+
+    private static IEnumerable<WorkProfileSnapshotNode> FlattenProfile(WorkProfileSnapshotNode node)
+    {
+        yield return node;
+        foreach (var child in node.Children)
+        {
+            foreach (var descendant in FlattenProfile(child))
+            {
+                yield return descendant;
+            }
+        }
+    }
+
+    private sealed class TestHostEnvironment(string environmentName) : IHostEnvironment
+    {
+        public string EnvironmentName { get; set; } = environmentName;
+
+        public string ApplicationName { get; set; } = "Workable.Tests";
+
+        public string ContentRootPath { get; set; } = AppContext.BaseDirectory;
+
+        public IFileProvider ContentRootFileProvider { get; set; } = new NullFileProvider();
+    }
 
     private sealed record DispatchEachItem(string Id);
     private sealed record DispatchEachSourceOutput(IReadOnlyList<DispatchEachItem> Items);

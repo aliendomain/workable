@@ -521,6 +521,7 @@ export type WorkWorkerIterationOverviewWorker = {
   subjectId?: WorkTypedValue | null;
   concurrencyKey?: WorkTypedValue | null;
   identifiers: WorkTypedValue[];
+  profilingEnabled: boolean;
 };
 
 export type WorkWorkerIterationOverviewIteration = {
@@ -549,6 +550,7 @@ export type WorkWorkerIterationOverviewLogSection = {
 
 export type WorkWorkerIterationOverviewComponent = {
   activity: WorkWorkerIterationOverviewActivity;
+  capabilities?: WorkableHttpSystemCapabilities | null;
   worker: WorkWorkerIterationOverviewWorker;
   input?: WorkData | null;
   iteration: WorkWorkerIterationOverviewIteration;
@@ -646,7 +648,7 @@ export type WorkflowAvailableActions = {
   cancel: boolean;
 };
 
-export type WorkflowStepKind = "DispatchWork" | "DispatchEach" | "Parallel" | "Join";
+export type WorkflowStepKind = "DispatchWork" | "DispatchEach" | "Parallel" | "Branch" | "Join";
 
 export type WorkflowOperatorNodeStatus =
   | "Pending"

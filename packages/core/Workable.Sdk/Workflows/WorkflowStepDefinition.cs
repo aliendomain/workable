@@ -21,6 +21,11 @@ public enum WorkflowStepKind
     Parallel,
 
     /// <summary>
+    /// A named sequential branch inside a structural workflow step.
+    /// </summary>
+    Branch,
+
+    /// <summary>
     /// A synchronization barrier that waits for prior parallel work to settle.
     /// </summary>
     Join,
@@ -88,6 +93,16 @@ public sealed record ParallelWorkflowStepDefinition(
     string Name,
     IReadOnlyList<WorkflowStepDefinition> Steps)
     : WorkflowStepDefinition(Name, WorkflowStepKind.Parallel);
+
+/// <summary>
+/// Represents a named sequential branch inside a workflow structure node.
+/// </summary>
+/// <param name="Name">The stable workflow-local branch name.</param>
+/// <param name="Steps">The sequential child steps in this branch.</param>
+public sealed record BranchWorkflowStepDefinition(
+    string Name,
+    IReadOnlyList<WorkflowStepDefinition> Steps)
+    : WorkflowStepDefinition(Name, WorkflowStepKind.Branch);
 
 /// <summary>
 /// Represents a synchronization barrier that waits for prior parallel branches to settle.

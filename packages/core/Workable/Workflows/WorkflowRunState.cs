@@ -64,7 +64,7 @@ internal sealed class WorkflowRunState
             input,
             requestContext,
             DateTimeOffset.UtcNow,
-            workflow.Steps.Select(WorkflowStepRunState.FromDefinition).ToList(),
+            FlattenStepDefinitions(workflow.Steps).Select(WorkflowStepRunState.FromDefinition).ToList(),
             onChanged);
 
     public static WorkflowRunState Rehydrate(
@@ -83,7 +83,7 @@ internal sealed class WorkflowRunState
             record.Input,
             record.RequestContext,
             record.CreatedAt,
-            workflow.Steps
+            FlattenStepDefinitions(workflow.Steps)
                 .Select(step => WorkflowStepRunState.FromDefinition(
                     step,
                     persistedSteps.TryGetValue(step.Name, out var persisted) ? persisted : null))
@@ -203,6 +203,7 @@ internal sealed class WorkflowRunState
                     case WorkflowStepKind.DispatchWork:
                     case WorkflowStepKind.DispatchEach:
                     case WorkflowStepKind.Parallel:
+                    case WorkflowStepKind.Branch:
                         if (step.Status == WorkflowStepRunStatus.Completed)
                         {
                             outstanding.AddRange(step.WorkerIds);
@@ -219,7 +220,7 @@ internal sealed class WorkflowRunState
                 }
             }
 
-            return outstanding;
+            return [.. outstanding.Distinct()];
         }
     }
 
@@ -425,6 +426,26 @@ internal sealed class WorkflowRunState
             : Enum.TryParse<WorkflowAction>(value, ignoreCase: false, out var action)
                 ? action
                 : null;
+
+    private static IEnumerable<WorkflowStepDefinition> FlattenStepDefinitions(IEnumerable<WorkflowStepDefinition> steps)
+    {
+        foreach (var step in steps)
+        {
+            yield return step;
+
+            var childSteps = step switch
+            {
+                ParallelWorkflowStepDefinition parallel => parallel.Steps,
+                BranchWorkflowStepDefinition branch => branch.Steps,
+                _ => [],
+            };
+
+            foreach (var child in FlattenStepDefinitions(childSteps))
+            {
+                yield return child;
+            }
+        }
+    }
 
     private WorkflowRunSnapshot ToSnapshotLocked()
         => new(

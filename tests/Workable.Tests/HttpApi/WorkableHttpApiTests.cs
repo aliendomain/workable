@@ -962,7 +962,8 @@ public sealed class WorkableHttpApiTests
                 authorize => authorize.RequireGroups(
                     TransportAuthorizationTestSupport.ReadGroups,
                     TransportAuthorizationTestSupport.OperateGroups));
-        });
+        },
+        configureServices: services => services.AddSingleton<IWorkSystemCapabilityContributor, TestSqlProfilingCapabilityContributor>());
         var client = host.GetTestClient();
         var system = host.Services.GetRequiredService<IWorkSystemRegistry>().Default;
         var session = TransportAuthorizationTestSupport.CreateTransportSession(system, WorkInvocationChannel.HttpApi);
@@ -986,6 +987,7 @@ public sealed class WorkableHttpApiTests
         var json = await GetJson(client, $"/workable/workers/{workerId:D}/iterations/1/overview");
 
         Assert.Equal("Logs", json["activity"]?.GetValue<string>());
+        Assert.True(json["capabilities"]?["sqlProfilingAvailable"]?.GetValue<bool>());
         Assert.Equal(workerId.ToString("D"), json["worker"]?["workerId"]?["value"]?.GetValue<string>());
         Assert.Equal("http.route.iteration.overview", json["worker"]?["definitionName"]?.GetValue<string>());
         Assert.Equal("claim", json["worker"]?["subjectId"]?["type"]?.GetValue<string>());

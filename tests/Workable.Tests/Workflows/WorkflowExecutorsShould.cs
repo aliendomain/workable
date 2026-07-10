@@ -89,6 +89,39 @@ public sealed class WorkflowExecutorsShould
     }
 
     [Fact]
+    public async Task FailNonDurableBranchWhenChildDispatchIsRejected()
+    {
+        var queueCalls = 0;
+        var executor = new NonDurableWorkflowExecutor(
+            _ => new TestWorkSystemSession(new DelegateQueueService((name, _, _, _) =>
+                Task.FromResult<IWorkerHandle>(
+                    Interlocked.Increment(ref queueCalls) == 2
+                        ? RejectedHandle(WorkQueueOutcome.Invalid(
+                            [WorkMessage.Error("workflow.branch.rejected", $"Rejected {name}.")]))
+                        : AcceptedHandle(WorkerId.New())))));
+        var workflow = CreateWorkflow(
+            WorkflowDefinition.Create("workflow.non-durable.branch.reject"),
+            new ParallelWorkflowStepDefinition("dispatch",
+            [
+                new BranchWorkflowStepDefinition("documents",
+                [
+                    Dispatch("alpha", "sample.alpha"),
+                    Dispatch("beta", "sample.beta"),
+                ]),
+            ]));
+        var run = WorkflowRunState.Create(workflow, WorkRequestContext.Create(WorkInvocationChannel.InProcess));
+
+        var completion = await executor.Execute(run, workflow, CancellationToken.None);
+        var snapshot = run.ToSnapshot();
+
+        Assert.Equal(WorkflowRunStatus.Failed, completion.Status);
+        Assert.Contains(completion.Messages, message => message.Code == "workflow.branch.rejected");
+        Assert.Equal(WorkflowStepRunStatus.Failed, snapshot.Steps.Single(step => step.Name == "documents").Status);
+        Assert.Equal(WorkflowStepRunStatus.Failed, snapshot.Steps.Single(step => step.Name == "dispatch").Status);
+        Assert.Equal(2, queueCalls);
+    }
+
+    [Fact]
     public async Task FailNonDurableExecutionWhenJoinObservesCanceledChild()
     {
         var alphaId = WorkerId.New();
@@ -296,6 +329,33 @@ public sealed class WorkflowExecutorsShould
     }
 
     [Fact]
+    public async Task BlockNonDurableExecutionWhenDispatchEachSourceIsPaused()
+    {
+        var loadWorkerId = WorkerId.New();
+        var executor = new NonDurableWorkflowExecutor(
+            _ => new TestWorkSystemSession(new DelegateQueueService((_, _, _, _) =>
+                Task.FromResult<IWorkerHandle>(new TestWorkerHandle(
+                    WorkQueueOutcome.Accepted(loadWorkerId),
+                    loadWorkerId,
+                    Task.FromResult(new WorkCompletion(
+                        WorkCompletionStatus.Paused,
+                        null,
+                        null,
+                        [WorkMessage.Warning("workflow.source.paused", "Source paused.")])))))));
+        var workflow = CreateWorkflow(
+            WorkflowDefinition.Create("workflow.non-durable.dispatch-each.source-paused"),
+            Dispatch("load", "sample.load"),
+            DispatchEach("fan-out", "load", "sample.process", "/items"));
+        var run = WorkflowRunState.Create(workflow, WorkRequestContext.Create(WorkInvocationChannel.InProcess));
+
+        var completion = await executor.Execute(run, workflow, CancellationToken.None);
+
+        Assert.Equal(WorkflowRunStatus.Blocked, completion.Status);
+        Assert.Contains(completion.Messages, message => message.Code == "workflow.source.paused");
+        Assert.Equal(WorkflowStepRunStatus.Running, run.ToSnapshot().Steps.Single(step => step.Name == "fan-out").Status);
+    }
+
+    [Fact]
     public async Task PersistJoinTransitionsAndDeleteCompletedDurableRun()
     {
         var store = new RecordingWorkflowStore();
@@ -328,7 +388,9 @@ public sealed class WorkflowExecutorsShould
         var completion = await executor.Execute(run, workflow, CancellationToken.None);
 
         Assert.True(completion.IsCompletedSuccessfully);
-        Assert.Equal(5, store.Upserts.Count);
+        Assert.Contains(store.Upserts, record => record.Steps.Single(step => step.Name == "alpha").Status == WorkflowStepRunStatus.Completed);
+        Assert.Contains(store.Upserts, record => record.Steps.Single(step => step.Name == "beta").Status == WorkflowStepRunStatus.Completed);
+        Assert.Contains(store.Upserts, record => record.Steps.Single(step => step.Name == "dispatch").Status == WorkflowStepRunStatus.Completed);
         Assert.Contains(store.Upserts, record => record.Steps.Single(step => step.Name == "join").Status == WorkflowStepRunStatus.Running);
         Assert.Contains(store.Upserts, record => record.Steps.Single(step => step.Name == "join").Status == WorkflowStepRunStatus.Completed);
         Assert.Empty(store.DeletedRunIds);
@@ -484,7 +546,86 @@ public sealed class WorkflowExecutorsShould
         Assert.Equal(WorkflowRunStatus.Failed, completion.Status);
         Assert.Contains(completion.Messages, message => message.Code == "workflow.dispatch.rejected");
         Assert.Empty(store.DeletedRunIds);
-        Assert.Equal(WorkflowRunStatus.Failed, Assert.Single(store.Upserts).Status);
+        Assert.Equal(WorkflowRunStatus.Failed, store.Upserts.Last().Status);
+    }
+
+    [Fact]
+    public async Task PersistFailedDurableBranchWhenChildDispatchIsRejected()
+    {
+        var store = new RecordingWorkflowStore();
+        var persistence = new WorkflowPersistenceCoordinator(store, "workflow-tests");
+        var queueCalls = 0;
+        var executor = new DurableWorkflowExecutor(
+            "workflow-tests",
+            name => CreateRegisteredWork(name),
+            _ => new TestWorkSystemSession(new DelegateQueueService((name, _, _, _) =>
+                Task.FromResult<IWorkerHandle>(
+                    Interlocked.Increment(ref queueCalls) == 2
+                        ? RejectedHandle(WorkQueueOutcome.Invalid(
+                            [WorkMessage.Error("workflow.branch.rejected", $"Rejected {name}.")]))
+                        : AcceptedHandle(WorkerId.New())))),
+            workerId => CompletedHandle(workerId),
+            persistence);
+        var workflow = CreateWorkflow(
+            WorkflowDefinition.Create(
+                "workflow.durable.branch.reject",
+                coordination: WorkflowCoordinationConfiguration.Durable),
+            new ParallelWorkflowStepDefinition("dispatch",
+            [
+                new BranchWorkflowStepDefinition("documents",
+                [
+                    Dispatch("alpha", "sample.alpha"),
+                    Dispatch("beta", "sample.beta"),
+                ]),
+            ]));
+        var run = WorkflowRunState.Create(workflow, WorkRequestContext.Create(WorkInvocationChannel.InProcess));
+
+        var completion = await executor.Execute(run, workflow, CancellationToken.None);
+        var snapshot = run.ToSnapshot();
+
+        Assert.Equal(WorkflowRunStatus.Failed, completion.Status);
+        Assert.Contains(completion.Messages, message => message.Code == "workflow.branch.rejected");
+        Assert.Equal(WorkflowStepRunStatus.Failed, snapshot.Steps.Single(step => step.Name == "documents").Status);
+        Assert.Equal(WorkflowStepRunStatus.Failed, snapshot.Steps.Single(step => step.Name == "dispatch").Status);
+        Assert.Contains(store.Upserts, record => record.Steps.Single(step => step.Name == "documents").Status == WorkflowStepRunStatus.Failed);
+        Assert.Contains(store.Upserts, record => record.Steps.Single(step => step.Name == "dispatch").Status == WorkflowStepRunStatus.Failed);
+        Assert.Equal(2, queueCalls);
+    }
+
+    [Fact]
+    public async Task PersistBlockedDurableRunWhenDispatchEachSourceIsPaused()
+    {
+        var store = new RecordingWorkflowStore();
+        var persistence = new WorkflowPersistenceCoordinator(store, "workflow-tests");
+        var loadWorkerId = WorkerId.New();
+        var executor = new DurableWorkflowExecutor(
+            "workflow-tests",
+            name => CreateRegisteredWork(name),
+            _ => new TestWorkSystemSession(new DelegateQueueService((_, _, _, _) =>
+                Task.FromResult<IWorkerHandle>(AcceptedHandle(loadWorkerId)))),
+            workerId => new TestWorkerHandle(
+                WorkQueueOutcome.Accepted(workerId),
+                workerId,
+                Task.FromResult(new WorkCompletion(
+                    WorkCompletionStatus.Paused,
+                    null,
+                    null,
+                    [WorkMessage.Warning("workflow.source.paused", "Source paused.")]))),
+            persistence);
+        var workflow = CreateWorkflow(
+            WorkflowDefinition.Create(
+                "workflow.durable.dispatch-each.source-paused",
+                coordination: WorkflowCoordinationConfiguration.Durable),
+            Dispatch("load", "sample.load"),
+            DispatchEach("fan-out", "load", "sample.process", "/items"));
+        var run = WorkflowRunState.Create(workflow, WorkRequestContext.Create(WorkInvocationChannel.InProcess));
+
+        var completion = await executor.Execute(run, workflow, CancellationToken.None);
+
+        Assert.Equal(WorkflowRunStatus.Blocked, completion.Status);
+        Assert.Contains(completion.Messages, message => message.Code == "workflow.source.paused");
+        Assert.Equal(WorkflowStepRunStatus.Running, run.ToSnapshot().Steps.Single(step => step.Name == "fan-out").Status);
+        Assert.Equal(WorkflowRunStatus.Blocked, store.Upserts.Last().Status);
     }
 
     [Fact]
@@ -828,6 +969,8 @@ public sealed class WorkflowExecutorsShould
         public string? SystemName => "workflow-tests";
 
         public WorkSystemState SystemState => WorkSystemState.Started;
+
+        public WorkSystemCapabilities Capabilities => WorkSystemCapabilities.None;
 
         public IWorkSystemDiagnostics Diagnostics => throw new NotSupportedException();
 

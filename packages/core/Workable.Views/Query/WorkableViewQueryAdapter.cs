@@ -139,12 +139,14 @@ public class WorkableViewQueryAdapter
 
         return new WorkWorkerIterationOverviewComponent(
             activity,
+            session.Capabilities,
             new WorkWorkerIterationOverviewWorker(
                 worker.Id,
                 worker.DefinitionName,
                 worker.SubjectId,
                 worker.ConcurrencyKey,
-                worker.Identifiers),
+                worker.Identifiers,
+                worker.Options.ProfilingEnabled),
             query.IncludeInput ? worker.Input : null,
             new WorkWorkerIterationOverviewIteration(
                 snapshot.Sequence,

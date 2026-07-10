@@ -482,6 +482,49 @@ test("work profile panel renders compact summary pills and unavailable state", (
   assertMarkupIncludes(unavailable, "Unavailable");
 });
 
+test("work profile panel distinguishes disabled, pending, and missing profile snapshots", () => {
+  const disabled = renderMarkup(
+    <WorkProfilePanel
+      iterationIsFinal
+      iterationStatus="Completed"
+      onClose={() => undefined}
+      onViewStateChange={() => undefined}
+      profile={null}
+      profilingEnabled={false}
+      viewState="standard"
+    />
+  );
+  assertMarkupIncludes(disabled, "Profiling was disabled for this iteration");
+
+  const pending = renderMarkup(
+    <WorkProfilePanel
+      iterationIsFinal={false}
+      iterationStatus="Executing"
+      onClose={() => undefined}
+      onViewStateChange={() => undefined}
+      profile={null}
+      profilingEnabled
+      viewState="standard"
+    />
+  );
+  assertMarkupIncludes(pending, "This iteration is still executing");
+  assertMarkupIncludes(pending, "profile tree will appear after the iteration finishes");
+
+  const missing = renderMarkup(
+    <WorkProfilePanel
+      iterationIsFinal
+      iterationStatus="Completed"
+      onClose={() => undefined}
+      onViewStateChange={() => undefined}
+      profile={null}
+      profilingEnabled
+      viewState="standard"
+    />
+  );
+  assertMarkupIncludes(missing, "Profiling was enabled for this iteration");
+  assertMarkupIncludes(missing, "no profile snapshot is available");
+});
+
 test("work profile panel keeps the method scope picker fixed-width and truncated", async () => {
   const result = await renderDom(
     <WorkProfilePanel
@@ -755,7 +798,7 @@ test("work profile panel disables SQL actions and explains how to enable them wh
     <WorkProfilePanel
       onClose={() => undefined}
       onViewStateChange={() => undefined}
-      profile={sqlProfileSnapshot()}
+      profile={profileSnapshot()}
       sqlProfilingAvailable={false}
       viewState="standard"
     />

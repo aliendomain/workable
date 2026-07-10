@@ -74,6 +74,7 @@ internal static class WorkflowEventPayloads
                     case WorkflowStepKind.DispatchWork:
                     case WorkflowStepKind.DispatchEach:
                     case WorkflowStepKind.Parallel:
+                    case WorkflowStepKind.Branch:
                         if (step.Status == WorkflowStepRunStatus.Completed)
                         {
                             outstanding += step.WorkerIds.Count(workerId =>

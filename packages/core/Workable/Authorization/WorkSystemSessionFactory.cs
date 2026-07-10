@@ -3,6 +3,7 @@ namespace Workable;
 internal sealed class WorkSystemSessionFactory(
     WorkSystemId systemId,
     string? systemName,
+    WorkSystemCapabilities capabilities,
     Func<WorkSystemState> getSystemState,
     WorkSystemDiagnostics diagnostics,
     WorkSystemCatalog catalog,
@@ -30,6 +31,7 @@ internal sealed class WorkSystemSessionFactory(
         {
             return new WorkSystemSession(
                 systemName,
+                capabilities,
                 getSystemState,
                 sessionDiagnostics,
                 sessionCatalog,
@@ -64,6 +66,7 @@ internal sealed class WorkSystemSessionFactory(
 
         return new WorkSystemSession(
             systemName,
+            capabilities,
             getSystemState,
             systemAuthorization.CanViewDiagnostics()
                 ? sessionDiagnostics

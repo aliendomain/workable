@@ -1004,6 +1004,9 @@ internal sealed class WorkflowRuntime
                 case ParallelWorkflowStepDefinition parallel:
                     this.ValidateDispatchDurability(workflow, parallel.Steps, messages);
                     break;
+                case BranchWorkflowStepDefinition branch:
+                    this.ValidateDispatchDurability(workflow, branch.Steps, messages);
+                    break;
             }
         }
     }

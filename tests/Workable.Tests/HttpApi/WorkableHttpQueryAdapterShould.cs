@@ -66,6 +66,7 @@ public sealed class WorkableHttpQueryAdapterShould
         var definition = WorkDefinition.Create("http.query.adapter.iteration");
         var services = new ServiceCollection();
         services.AddLogging();
+        services.AddSingleton<IWorkSystemCapabilityContributor, TestSqlProfilingCapabilityContributor>();
         services.AddWorkableSystem(builder => builder.AddWork<LoggedExecutor>(
             definition,
             configuration => configuration.ConfigureLogging(level: LogLevel.Information)));
@@ -93,6 +94,7 @@ public sealed class WorkableHttpQueryAdapterShould
 
         Assert.NotNull(overview);
         Assert.Equal(WorkWorkerIterationOverviewActivity.Logs, overview.Activity);
+        Assert.True(overview.Capabilities.SqlProfilingAvailable);
         Assert.Equal(RequiredWorkerId(handle), overview.Worker.WorkerId);
         Assert.Equal(definition.Name, overview.Worker.DefinitionName);
         Assert.Equal(1, overview.Iteration.Sequence);
@@ -205,6 +207,15 @@ public sealed class WorkableHttpQueryAdapterShould
             return Task.FromResult(WorkExecutionResult.Success(
                 WorkOutput.FromJson("""{"ok":true}"""),
                 [WorkMessage.Warning("query.adapter.warning", "Query adapter warning.")]));
+        }
+    }
+
+    private sealed class TestSqlProfilingCapabilityContributor : IWorkSystemCapabilityContributor
+    {
+        public void ConfigureCapabilities(WorkSystemCapabilitiesBuilder capabilities)
+        {
+            ArgumentNullException.ThrowIfNull(capabilities);
+            capabilities.SqlProfilingAvailable = true;
         }
     }
 }

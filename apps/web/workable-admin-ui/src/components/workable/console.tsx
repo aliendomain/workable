@@ -196,6 +196,7 @@ import {
   semanticToneForEventType,
   semanticToneForNotificationTone,
 } from "@/lib/ui/state-tones";
+import { cn } from "@/lib/utils";
 import {
   STORAGE_KEY,
   cloneOverviewScope,
@@ -345,6 +346,9 @@ export function WorkableConsole() {
   const [realtimePayloadMaxMessages, setRealtimePayloadMaxMessages] = useState(100);
   const [realtimePayloadOpen, setRealtimePayloadOpen] = useState(false);
   const [realtimePayloadActiveTab, setRealtimePayloadActiveTab] = useState<RealtimePayloadWindowTab>("payloads");
+  const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [workflowGraphExpanded, setWorkflowGraphExpanded] = useState(false);
+  const workflowGraphPreviousSidebarOpenRef = useRef<boolean | null>(null);
   const [eventViewerMaxMessages, setEventViewerMaxMessages] = useState(100);
   const [selectedEventViewerDefinitionIds, setSelectedEventViewerDefinitionIds] = useState<string[]>([]);
   const [selectedEventViewerEventTypes, setSelectedEventViewerEventTypes] = useState<string[]>([]);
@@ -2054,8 +2058,29 @@ export function WorkableConsole() {
     }
   };
 
+  const handleWorkflowGraphExpandedChange = useCallback((expanded: boolean) => {
+    setWorkflowGraphExpanded(expanded);
+    setSidebarOpen((current) => {
+      if (expanded) {
+        if (workflowGraphPreviousSidebarOpenRef.current === null) {
+          workflowGraphPreviousSidebarOpenRef.current = current;
+        }
+
+        return false;
+      }
+
+      const previousSidebarOpen = workflowGraphPreviousSidebarOpenRef.current;
+      workflowGraphPreviousSidebarOpenRef.current = null;
+      return previousSidebarOpen ?? current;
+    });
+  }, []);
+
   return (
-    <SidebarProvider scrollMode={usesPanelOwnedScroll ? "panel" : "browser"}>
+    <SidebarProvider
+      onOpenChange={setSidebarOpen}
+      open={sidebarOpen}
+      scrollMode={usesPanelOwnedScroll ? "panel" : "browser"}
+    >
       <DiagnosticsAlertSubscriptions
         captureEnabled={captureRealtimePayloads}
         enabled={hasMounted}
@@ -2145,7 +2170,12 @@ export function WorkableConsole() {
       </Sidebar>
       <SidebarInset>
         <main className="flex min-h-0 flex-1 flex-col bg-background">
-          <div className="relative mx-auto flex min-h-0 w-full max-w-7xl flex-1 flex-col p-4 md:p-6">
+          <div className={cn(
+            "relative mx-auto flex min-h-0 w-full flex-1 flex-col",
+            workflowGraphExpanded
+              ? "max-w-none p-2 md:p-3"
+              : "max-w-7xl p-4 md:p-6"
+          )}>
               {!hydratedConnection && (
                 <EmptyServerState
                   description={
@@ -2469,6 +2499,7 @@ export function WorkableConsole() {
                               onActiveRealtimeConnectionCountChange={ignoreRealtimeConnectionCountChange}
                               onOpenWorker={openWorkflowRunWorker}
                               onRealtimePayloadOpenChange={setRealtimePayloadOpen}
+                              onWorkflowGraphExpandedChange={handleWorkflowGraphExpandedChange}
                               onUiStateChange={handleWorkflowRunUiStateChange}
                               realtimePayloadCaptureEnabled={realtimePayloadCaptureEnabled}
                               realtimePayloadMaxMessages={realtimePayloadMaxMessages}
