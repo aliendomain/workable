@@ -14,19 +14,19 @@ All three packages use the `Workable` namespace.
 
 Optional packages add persistence, security, transport, and realtime integrations:
 
-- Use [`Workable.SqlServer`](../../packages/extensions/sqlserver/README.md) when the host wants SQL Server persistence for durable queueing, persistence-backed idempotency, and persistence-backed concurrency.
+- Use [`Workable.SqlServer`](../../packages/extensions/sqlserver/README.md) when the host wants SQL Server persistence for durable queueing and completion, durable workflows, persistence-backed idempotency, and persistence-backed concurrency.
 - Use `Workable.AspNetCore` when the host needs its own controllers, minimal APIs, or custom transports to dispatch Workable work from the current `HttpContext`.
 - Use `Workable.Entra` when an ASP.NET Core target app should validate Microsoft Entra ID bearer tokens for Workable HTTP, MCP, and SignalR adapter calls.
 - `Workable.Views` provides shared component-view contracts and projections used by HTTP and SignalR adapters. Most applications receive it transitively through `Workable.HttpApi` or `Workable.SignalR` instead of referencing it directly.
-- Use `Workable.HttpApi` when the host wants Workable to provide standard HTTP routes for queueing work, querying workers, and sending worker actions such as pause, cancel, push, and purge.
-- Use `Workable.Mcp` when the host wants authored work definitions, work-system query tools, and worker action tools to be available to an MCP client, such as an LLM tool host.
-- Use `Workable.SignalR` when the host wants browser clients to receive realtime worker events and component-view updates.
+- Use `Workable.HttpApi` when the host wants Workable to provide standard HTTP routes for queueing work, starting and inspecting workflow runs, querying workers, and sending worker actions such as pause, cancel, push, and purge.
+- Use `Workable.Mcp` when the host wants authored work definitions, work-system and workflow query tools, and worker or workflow action tools to be available to an MCP client, such as an LLM tool host.
+- Use `Workable.SignalR` when the host wants browser clients to receive realtime worker and workflow events plus component-view updates.
 
 The core host does not need these packages unless it wants one of those integration points.
 
 ## Hosting Workable Systems in your Application
 
-You can host one Workable system or several. An unnamed registration is the explicit default system. If every system is named, the first registered system becomes the default. Injecting IWorkSystem gives that default system directly, while IWorkSystemRegistry lets host code choose a specific named system by name or id.
+You can host one Workable system or several. An unnamed registration is the explicit default system. If every system is named, the first registered system becomes the default. Injecting `IWorkSystem` gives that default system directly, while `IWorkSystemRegistry` lets host code choose a specific named system by name.
 
 Multiple systems are useful when different areas of the application need isolation. For example, you might separate customer-facing work from internal operations work, give each system different authorization or retention settings, or expose only one system to a particular client surface. If you only need one catalog and one set of runtime policies, the default system is usually enough.
 
@@ -335,7 +335,7 @@ WorkCompletion<SendWelcomeEmailResult> completion =
 
 The returned worker handle gives immediate queue outcome details and can be awaited for completion, including typed output when the work returns a typed result.
 
-Use `IWorkSystemRegistry` instead when the host has multiple systems and the caller needs to choose by name or id.
+Use `IWorkSystemRegistry` instead when the host has multiple systems and the caller needs to choose by name.
 
 The HTTP API adapter exposes the default system at the mapped prefix and named systems under `/systems/{systemName}`. The MCP adapter exposes one system per MCP endpoint; pass `systemName` to `MapWorkableMcp` when mapping an endpoint for a named system. The SignalR adapter exposes one realtime hub; pass `systemName` to hub methods when subscribing to a named system.
 

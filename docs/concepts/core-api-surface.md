@@ -53,7 +53,8 @@ Execution context also exposes the worker's creation `WorkRequestContext` (inclu
 
 - Workflows are registered through `IWorkSystemBuilder.AddWorkflow(...)`.
 - `WorkflowDefinition` mirrors work-definition metadata with name, category, description, schemas, authorization, revision, and version.
-- The workflow step graph supports `DispatchWork`, typed `DispatchEach` fan-out, `Parallel`, and `Join`.
+- The workflow step graph supports `DispatchWork`, typed `DispatchEach` fan-out, `Parallel`, named sequential `Branch` bodies inside parallel sections, and `Join`.
+- Sibling branches execute concurrently. Each branch can contain dispatch, fan-out, nested parallel, and branch-local join steps in sequential order.
 - `DispatchEach` defaults canceled children to `Continue`; a step can instead use `Block` or `CancelWorkflow` without changing ordinary `DispatchWork` cancellation behavior.
 - Workflow steps dispatch existing work definitions; they do not introduce a separate executor implementation model.
 - Workflows start by name with optional workflow input, forward the original actor, origin, and authentication state from `WorkRequestContext` to child work, and add `workflow-run`, `workflow-definition`, and `workflow-step` identifiers to child work input.

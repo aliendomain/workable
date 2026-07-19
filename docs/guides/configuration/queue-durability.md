@@ -36,7 +36,19 @@ public sealed class CapturePaymentWork : IWorkExecutor
 }
 ```
 
-`WorkQueueDurabilityAttribute` enables durable queueing with the default fallback polling interval. Durable completion is not configured by attribute; use startup, queue-time, or worker reconfiguration for that.
+`WorkQueueDurabilityAttribute` enables durable queueing with the default fallback polling interval. Its optional `completeDurably` and `fallbackPollingSeconds` arguments can also enable durable completion or change the polling interval:
+
+```csharp
+[WorkQueueDurability(completeDurably: true, fallbackPollingSeconds: 10)]
+public sealed class CapturePaymentWork : IWorkExecutor
+{
+    public Task<WorkExecutionResult> Execute(
+        IWorkExecutionContext context,
+        WorkInput? input,
+        CancellationToken cancellationToken)
+        => Task.FromResult(WorkExecutionResult.Success());
+}
+```
 
 ## Startup Configuration
 

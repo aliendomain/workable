@@ -2,6 +2,8 @@
 
 Reviewed: 2026-06-29
 
+This is a dated benchmark record. Scenario names and measurements below describe the recorded 2026-06-29 runs and are not a current performance guarantee; use the performance harness README and a fresh run for the current harness surface.
+
 Primary data source: `artifacts/performance/workable-benchmark-history.xlsx`
 
 This review uses the cleaned 2026-06-29 rerun as the current baseline. Scenario/load-harness rows are treated as the strongest product signal because they exercise complete runtime flows. BenchmarkDotNet rows are useful supporting evidence, but rows with minimum-iteration warnings or surprising allocation changes are not used as product-proof by themselves.

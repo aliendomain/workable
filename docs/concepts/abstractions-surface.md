@@ -13,6 +13,7 @@ Reach for `Workable.Abstractions` when your code needs to:
 - query workers, iterations, or system state
 - subscribe to work events
 - apply worker actions or runtime reconfiguration
+- start workflows or operate workflow runs through the shared command dispatcher
 - participate in authorization-aware request handling
 
 If the same code also needs to create systems, add work-definition sources, or configure hosting behavior, that is where `Workable` takes over.
@@ -119,7 +120,7 @@ System-boundary failures are where `WorkSystemAuthorizationRequiredException` an
 
 - `Definitions`
 - `ListByCategory(...)`
-- `TryGet(...)` by id or name
+- `TryGet(...)` by name
 - `Reconfigure(...)`
 - `IsFrozen`
 
@@ -129,7 +130,7 @@ System-boundary failures are where `WorkSystemAuthorizationRequiredException` an
 
 ## Queue Surface
 
-`IWorkQueueService` accepts work by definition id or name, with either raw `WorkInput` or typed CLR input.
+`IWorkQueueService` accepts work by definition name, with either raw `WorkInput` or typed CLR input.
 
 Queueing always returns an `IWorkerHandle`, even when the request is rejected. The handle bridges two moments:
 
@@ -139,6 +140,20 @@ Queueing always returns an `IWorkerHandle`, even when the request is rejected. T
 That is why the same queue API works for fire-and-forget, request/response, and operator tooling.
 
 See [Outcomes And Control](outcomes-and-control.md) for the full outcome model.
+
+## Workflow Command Surface
+
+`IWorkflowCommandDispatcher` is the public, host-independent command surface for workflow runs. It is registered by the Workable host and lives in `Workable.Abstractions` so application services and libraries can start or operate workflows without referencing the runtime implementation or going through an HTTP adapter.
+
+The dispatcher provides default-system and named-system overloads for:
+
+- starting a workflow by name, with optional `WorkInput`
+- returning after acceptance or waiting for terminal completion through `WorkflowCommandOptions`
+- executing `WorkflowRunAction.Start`, `Pause`, or `Cancel` against an existing run
+
+Every call takes a `WorkRequestContext`, so workflow authorization and child-work provenance use the same actor, origin, and authentication model as the rest of the abstractions surface. Results use `WorkflowCommandResult`, `WorkflowCommandStatus`, and authorized workflow-run snapshots instead of transport-specific response types.
+
+See [Workflows](../guides/workflows.md#starting-from-in-process-code) for examples and lifecycle semantics.
 
 ## Worker Control Surface
 
@@ -236,5 +251,6 @@ Most consumer code falls into one of these shapes:
 - inject `IWorkSystem` and queue or query the default system
 - inject `IWorkSystemRegistry` and choose a named system
 - accept an `IWorkSystemSession` when the caller context is already known
+- inject `IWorkflowCommandDispatcher` when a consumer needs workflow commands without runtime or transport dependencies
 
 That is the package's job: give downstream code a stable, host-independent surface for using Workable without dragging runtime internals across the package boundary.

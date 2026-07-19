@@ -29,7 +29,7 @@ Queueing returns an `IWorkerHandle`. The handle always contains a `WorkQueueOutc
 - `Unauthorized`
 - `NotFound`
 
-If the status is `Accepted`, the outcome includes the accepted definition id and worker id. If it is not accepted, the caller still gets structured `WorkMessage` values explaining why.
+If the status is `Accepted`, the outcome includes the created worker id. The queued definition remains available from the resulting worker snapshot and catalog. If the request is not accepted, the caller still gets structured `WorkMessage` values explaining why.
 
 Think of `WorkQueueOutcome` as "did Workable accept the request and create a worker record?" It does not say anything yet about whether the worker eventually completed successfully.
 
@@ -138,7 +138,7 @@ Definition reconfiguration updates defaults for future workers. It returns `Work
 
 The payload shapes are intentionally different:
 
-- `WorkerReconfiguration` changes one existing worker's effective start, coordination, recurrence, retry, logging, retention, or profiling settings
+- `WorkerReconfiguration` changes one existing worker's effective start, coordination, recurrence, retry, failed-worker handling, logging, retention, or profiling settings
 - `WorkDefinitionReconfiguration` changes definition defaults for future workers through `DefaultOptions` and `Configuration`
 
 `WorkDefinitionReconfigurationStatus` values are:

@@ -13,6 +13,7 @@ The workflow step graph is composed from built-in step kinds:
 - `DispatchWork`
 - `DispatchEach`
 - `Parallel`
+- `Branch`
 - `Join`
 
 Workflow definitions also carry:
@@ -190,9 +191,31 @@ That authored shape still persists the same replay information, but the source s
 
 ### Run Parallel
 
-`RunParallel(stepName, configure)` groups child dispatch steps that should be accepted together before the workflow moves on.
+`RunParallel(stepName, configure)` starts its direct child steps concurrently and waits for those child structures to settle before the workflow moves on.
 
-A parallel section contains child `DispatchWork(...)` steps.
+A parallel section can contain direct `DispatchWork(...)` steps or named sequential branches created with `Branch(...)`.
+
+### Branch
+
+`Branch(branchName, configure)` is available inside `RunParallel(...)`. Each branch has its own sequential workflow body, while sibling branches execute concurrently.
+
+Branch bodies use the full `IWorkflowBuilder` surface. They can dispatch work, use typed `DispatchEach(...)`, create nested parallel sections, and use branch-local joins. A join inside one branch waits only for outstanding child work in that branch; it does not wait for sibling branches.
+
+```csharp
+workflow => workflow
+    .RunParallel("release-streams", parallel => parallel
+        .Branch("mobile", branch => branch
+            .DispatchWork("build", mobileBuildDefinition)
+            .RunParallel("smoke-tests", smoke => smoke
+                .DispatchWork("ios", iosSmokeDefinition)
+                .DispatchWork("android", androidSmokeDefinition))
+            .Join("mobile-tested")
+            .DispatchWork("sign-off", mobileSignOffDefinition))
+        .Branch("web", branch => branch
+            .DispatchWork("build", webBuildDefinition)
+            .DispatchWork("sign-off", webSignOffDefinition)))
+    .Join("release-streams-complete");
+```
 
 ### Join
 
@@ -206,7 +229,8 @@ Top-level workflow steps are processed in registration order.
 
 - a `DispatchWork(...)` step queues child work and records the accepted child worker id on the workflow step snapshot when one exists
 - a `DispatchEach(...)` step waits for its source-step outputs, expands the resolved array, and records the accepted child worker ids for the queued fan-out workers
-- a `RunParallel(...)` step queues each child dispatch and records their accepted worker ids on the parallel step snapshot
+- a `RunParallel(...)` step executes direct child dispatches and named branch bodies concurrently, and records their accepted worker ids on the parallel step snapshot
+- a `Branch(...)` step executes its nested workflow steps in order while sibling branches continue independently
 - a `Join(...)` step waits for all outstanding previously dispatched child work to complete before later workflow steps continue
 - a durable workflow persists each dispatch or join transition before later recovery depends on it
 
@@ -364,6 +388,7 @@ The HTTP API exposes workflow run status with:
 
 - `GET /workable/workflow-runs`
 - `GET /workable/workflow-runs/{runId}`
+- `GET /workable/workflow-runs/{runId}/steps/{stepName}/children`
 - `POST /workable/workflows/{workflowName}`
 - `POST /workable/workflow-runs/{runId}/actions/start`
 - `POST /workable/workflow-runs/{runId}/actions/pause`
@@ -392,15 +417,20 @@ When starting a workflow over HTTP, the request body can include `input` for ste
 
 - `childSampleSize`
 
+`GET /workable/workflow-runs/{runId}/steps/{stepName}/children` accepts `skip` and `take` and returns a paged worker slice for the selected workflow node, including branch and parallel structure nodes.
+
 ### MCP
 
 The MCP adapter exposes matching workflow run queries with:
 
 - `workable_query_workflow_runs`
 - `workable_get_workflow_run`
+- `workable_start_workflow`
 - `workable_start_workflow_run`
 - `workable_pause_workflow_run`
 - `workable_cancel_workflow`
+
+`workable_start_workflow` creates a new run by workflow name. `workable_start_workflow_run` resumes an existing paused or blocked run by run id.
 
 `workable_stop_workflow` remains available as a compatibility alias for `workable_pause_workflow_run`.
 

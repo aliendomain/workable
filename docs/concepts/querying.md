@@ -653,6 +653,10 @@ The examples below show the serialized JSON shape returned by HTTP and MCP adapt
       "maximumDelay": "00:00:30",
       "backoff": "Exponential"
     },
+    "failedWorker": {
+      "handling": "Manual",
+      "autoCancelAfter": "00:10:00"
+    },
     "logging": {
       "isEnabled": true,
       "level": "Information",
@@ -862,6 +866,10 @@ Origin descriptions are optional. Built-in HTTP and MCP transports preserve them
           "maximumDelay": "00:00:30",
           "backoff": "Exponential"
         },
+        "failedWorker": {
+          "handling": "Manual",
+          "autoCancelAfter": "00:10:00"
+        },
         "logging": {
           "isEnabled": true,
           "level": "Information",
@@ -967,6 +975,10 @@ Origin descriptions are optional. Built-in HTTP and MCP transports preserve them
         "jitter": "00:00:00.5000000",
         "maximumDelay": "00:00:30",
         "backoff": "Exponential"
+      },
+      "failedWorker": {
+        "handling": "Manual",
+        "autoCancelAfter": "00:10:00"
       },
       "logging": {
         "isEnabled": true,

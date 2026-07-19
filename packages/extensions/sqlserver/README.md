@@ -4,10 +4,10 @@
 
 See also:
 
-- [Documentation Index](../../docs/README.md)
-- [Getting Started](../../docs/guides/getting-started.md)
-- [Queue Durability Configuration](../../docs/guides/configuration/queue-durability.md)
-- [Configuration Interactions](../../docs/guides/configuration/interactions.md)
+- [Documentation Index](../../../docs/README.md)
+- [Getting Started](../../../docs/guides/getting-started.md)
+- [Queue Durability Configuration](../../../docs/guides/configuration/queue-durability.md)
+- [Configuration Interactions](../../../docs/guides/configuration/interactions.md)
 
 ## Runtime Configuration
 
@@ -125,7 +125,7 @@ SQL Server treats `LeaseId` as a fencing token. Lease renewal, failed-row retent
 
 ## Schema CLI
 
-The SQL Server integration includes a CLI project at `tools/Workable.SqlServer.Cli`.
+The SQL Server integration includes a CLI project at `apps/tools/Workable.SqlServer.Cli`.
 
 Generate the schema script:
 

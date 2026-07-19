@@ -1,6 +1,6 @@
 # Workable MCP
 
-Workable can expose authored work definitions, work-system query tools, and worker action tools through the `Workable.Mcp` adapter package.
+Workable can expose authored work definitions, work-system and workflow query tools, and worker or workflow action tools through the `Workable.Mcp` adapter package.
 
 The adapter does not change how work is authored or executed. It projects an `IWorkSystem` catalog into tool descriptors and invokes tools by queueing work through Workable.
 
@@ -49,8 +49,8 @@ An MCP client connected to `/workable/systems/email/mcp` only sees tools for the
 The MCP server exposes three kinds of tools:
 
 - Work tools queue work definitions that allow `WorkInvocationChannel.Mcp`.
-- Query tools inspect worker status, worker snapshots, work definitions, work info, work keys, and status summaries.
-- Action tools start, pause, cancel, push, and purge existing workers, and can reconfigure work definition defaults.
+- Query tools inspect worker status, worker snapshots, work definitions, work info, work keys, status summaries, and workflow runs.
+- Action tools start, pause, cancel, push, and purge existing workers; start and operate workflow runs; and reconfigure work definition defaults.
 
 Work tools use MCP-safe names. For example, a Workable work definition named `email.welcome.send` is exposed as `workable_work_email_welcome_send`.
 
@@ -105,6 +105,8 @@ Query tools are exposed by default so an MCP client can inspect what is happenin
 - `workable_query_work_iteration_keys`
 - `workable_query_work_iteration_key_types`
 - `workable_get_worker_status_summary`
+- `workable_query_workflow_runs`
+- `workable_get_workflow_run`
 
 These tools use the same query engine as the .NET API. They do not mutate workers. Worker queries can filter by selected configuration flags with `recurrenceEnabled`, `concurrencyEnabled`, and `profilingEnabled`.
 
@@ -113,6 +115,8 @@ Use `workable_query_worker_key_types` when the user asks broadly for workers tie
 Use `workable_query_work_iteration_key_types` and `workable_query_work_iteration_keys` when the user asks about actual executions tied to a relationship, such as failed claim work or completed customer work. These tools filter by iteration completion status and return `WorkerIterationOverviewItem` rows.
 
 Use `workable_query_worker_iterations` when the user asks about execution history, recent failures, retry attempts, or recurring activity. It can filter by worker id, work name, category, completion status, subject, concurrency key, identifier, and time range. Use `workable_get_worker_iteration` when the client already has a worker id and iteration sequence and needs the full iteration output, messages, logs, or profile.
+
+Use `workable_query_workflow_runs` for operator-style workflow monitoring. It can include final runs, filter by workflow definition name, and control the compact child-worker sample size. Use `workable_get_workflow_run` for one run's step graph and child-worker summaries.
 
 ## Action Tools
 
@@ -124,6 +128,12 @@ Action tools are exposed by default so an MCP client can control workers after i
 - `workable_push_worker`: skip the current recurrence wait and begin the next iteration immediately.
 - `workable_purge_worker`: permanently remove a completed or canceled worker from memory.
 - `workable_reconfigure_work_definition`: change a work definition's default worker options and/or default runtime configuration for future queued workers.
+- `workable_start_workflow`: create a new run for a registered workflow name, optionally with workflow input and wait-for-completion behavior.
+- `workable_start_workflow_run`: resume an existing paused or blocked workflow run by run id.
+- `workable_pause_workflow_run`: pause a running workflow and its pausable outstanding child workers.
+- `workable_cancel_workflow`: cancel a workflow and request cancellation of its outstanding cancellable child workers.
+
+`workable_stop_workflow` remains a compatibility alias for `workable_pause_workflow_run`.
 
 Worker action tool calls record a `WorkOrigin` with `WorkInvocationChannel.Mcp`. The origin is retained in the worker's action history and is published on the action event. Action tools accept an optional top-level `description` that is copied into that origin. Definition default reconfiguration requires the current definition id and revision from `workable_query_work_definitions` or `workable_get_work_info`, and `workable_reconfigure_work_definition` also accepts an optional top-level `description`.
 
@@ -281,7 +291,7 @@ builder.Services.AddWorkableMcpServer(options =>
 });
 ```
 
-`ToolCatalog` controls how work definitions are projected into MCP work tools, including whether definitions without compatible JSON input schemas are included and what fallback input schema JSON they receive when they are. `Invocation` controls how MCP work tools return after queueing, the default `WorkerOptions` applied to those queued workers, and any completion timeout used when the server waits for completion. Query tools always return the query result for the current request. Action tools return the `WorkActionOutcome` for the requested worker action, or the definition reconfiguration outcome for `workable_reconfigure_work_definition`.
+`ToolCatalog` controls how work definitions are projected into MCP work tools, including whether definitions without compatible JSON input schemas are included and what fallback input schema JSON they receive when they are. `Invocation` controls how MCP work tools return after queueing, the default `WorkerOptions` applied to those queued workers, and any completion timeout used when the server waits for completion. Query tools always return the query result for the current request. Action tools return the worker action outcome, definition reconfiguration outcome, or workflow command/run payload for the requested operation.
 
 ## Package Boundary
 

@@ -333,6 +333,6 @@ See [Start Configuration](configuration/start.md) for the available policies and
 
 ## Configuration
 
-Queueing applies definition configuration, contributed configuration, and queue options before accepting the worker. Workable has configuration options for start behavior, coordination state and protections, recurrence, transient retry, logging, and retention. At the system level, `MaximumWorkers` is checked before accepting a worker so an in-memory system can reject new queue requests when the approximate non-final worker record count is at capacity. Completed and canceled workers are retained for history but do not block admission; interrupted and failed workers are not final.
+Queueing applies definition configuration, contributed configuration, and queue options before accepting the worker. Workable has configuration options for start behavior, coordination state and protections, recurrence, transient retry, failed-worker handling, logging, retention, and definition-level invocation channels. At the system level, `MaximumWorkers` is checked before accepting a worker so an in-memory system can reject new queue requests when the approximate non-final worker record count is at capacity. Completed and canceled workers are retained for history but do not block admission; interrupted and failed workers are not final.
 
 See [Work Configuration](configuration/README.md) for the configuration surface and the per-feature configuration documents.

@@ -19,8 +19,8 @@ Start with [Getting Started](guides/getting-started.md) if you are evaluating wh
 - [Implementing Work](guides/implementing-work.md): write executor code, use `IWorkExecutionContext`, and understand failure, cancellation, pause, and interruption behavior.
 - [Microsoft Entra Authentication](guides/entra-authentication.md): configure Entra bearer-token authentication and claim mapping for Workable surfaces.
 - [Registration](guides/registration.md): define work in feature assemblies, generate definitions from sources, queue startup work, target named systems, and isolate catalogs.
-- [Workflows](guides/workflows.md): register multi-step orchestrations that dispatch existing work definitions, fan out parallel child work, and join on completion.
-- [Queueing](guides/queueing.md): queue work by name or id, pass input, set queue options, and await completion.
+- [Workflows](guides/workflows.md): register multi-step orchestrations that dispatch existing work definitions, fan out from typed outputs, run named parallel branches, and join on completion.
+- [Queueing](guides/queueing.md): queue work by name, pass input, set queue options, and await completion.
 - [Configuration](guides/configuration/README.md): configuration sources, override order, and runtime reconfiguration rules.
   - [Start Configuration](guides/configuration/start.md): automatic start behavior and when queue calls return.
   - [Idempotency Configuration](guides/configuration/idempotency.md): duplicate prevention by `WorkSubjectId`.

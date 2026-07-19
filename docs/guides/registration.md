@@ -187,13 +187,24 @@ Hosts can also register workflow definitions directly on `IWorkSystemBuilder`.
 ```csharp
 services.AddWorkableSystem(builder =>
 {
+    var prepareDefinition = WorkDefinition.Create("orders.prepare");
+    var emailDefinition = WorkDefinition.Create("orders.email");
+    var invoiceDefinition = WorkDefinition.Create("orders.invoice");
+
+    builder.AddWork(prepareDefinition, (_, _, _) =>
+        Task.FromResult(WorkExecutionResult.Success()));
+    builder.AddWork(emailDefinition, (_, _, _) =>
+        Task.FromResult(WorkExecutionResult.Success()));
+    builder.AddWork(invoiceDefinition, (_, _, _) =>
+        Task.FromResult(WorkExecutionResult.Success()));
+
     builder.AddWorkflow(
         WorkflowDefinition.Create("orders.fulfillment", category: "Orders"),
         workflow => workflow
-            .DispatchWork("prepare", "orders.prepare")
+            .DispatchWork("prepare", prepareDefinition)
             .RunParallel("notify", parallel => parallel
-                .DispatchWork("email", "orders.email")
-                .DispatchWork("invoice", "orders.invoice"))
+                .DispatchWork("email", emailDefinition)
+                .DispatchWork("invoice", invoiceDefinition))
             .Join("settle"));
 });
 ```
@@ -384,7 +395,7 @@ public sealed class MailboxWorkDefinitionSource(
 }
 ```
 
-Definition sources run when the system starts, before `IWorkCatalog.IsFrozen` becomes `true`. Definitions added by a source are normal catalog entries: they can be queued by name or id, queried, exposed through HTTP or MCP when allowed by invocation configuration, and configured like any other work definition.
+Definition sources run when the system starts, before `IWorkCatalog.IsFrozen` becomes `true`. Definitions added by a source are normal catalog entries: they can be queued by name, queried, exposed through HTTP or MCP when allowed by invocation configuration, and configured like any other work definition.
 
 Definition sources can target a named system.
 
