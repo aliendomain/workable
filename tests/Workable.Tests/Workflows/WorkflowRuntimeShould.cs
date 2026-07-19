@@ -587,6 +587,311 @@ public sealed class WorkflowRuntimeShould
         Assert.Equal(2, fanOut.WorkerIds.Count);
     }
 
+    [Theory]
+    [InlineData(WorkflowCanceledChildBehavior.Continue, WorkflowRunStatus.Completed)]
+    [InlineData(WorkflowCanceledChildBehavior.Block, WorkflowRunStatus.Blocked)]
+    [InlineData(WorkflowCanceledChildBehavior.CancelWorkflow, WorkflowRunStatus.Canceled)]
+    public async Task ApplyDispatchEachCanceledChildBehavior(
+        WorkflowCanceledChildBehavior canceledChildBehavior,
+        WorkflowRunStatus expectedStatus)
+    {
+        var started = new ConcurrentDictionary<string, WorkerId>(StringComparer.Ordinal);
+        var downstreamRuns = new ConcurrentBag<string>();
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var workflowName = $"workflow.dispatch-each.canceled.{canceledChildBehavior}".ToLowerInvariant();
+        var services = new ServiceCollection();
+
+        services.AddWorkableSystem(builder =>
+        {
+            builder.RequireAuthorization(false);
+            builder.AddWork(
+                WorkDefinition.Create("sample.load.canceled-policy"),
+                (_, _, _) => Task.FromResult(WorkExecutionResult.Success(
+                    WorkOutput.FromValue(new DispatchEachSourceOutput(
+                        [new DispatchEachItem("alpha"), new DispatchEachItem("beta")])))));
+            builder.AddWork(
+                WorkDefinition.Create("sample.process.canceled-policy"),
+                async (context, input, cancellationToken) =>
+                {
+                    var item = input?.ToValue<DispatchEachItem>()
+                        ?? throw new InvalidOperationException("Expected dispatch-each item input.");
+                    started[item.Id] = context.WorkerId;
+                    await release.Task.WaitAsync(cancellationToken);
+                    return WorkExecutionResult.Success();
+                });
+            foreach (var downstreamName in new[]
+                     {
+                         "sample.downstream.canceled-policy.alpha",
+                         "sample.downstream.canceled-policy.beta",
+                         "sample.downstream.canceled-policy.gamma",
+                     })
+            {
+                var capturedName = downstreamName;
+                builder.AddWork(
+                    WorkDefinition.Create(capturedName),
+                    (_, _, _) =>
+                    {
+                        downstreamRuns.Add(capturedName);
+                        return Task.FromResult(WorkExecutionResult.Success());
+                    });
+            }
+
+            builder.AddWorkflow(
+                WorkflowDefinition.Create(workflowName),
+                workflow =>
+                {
+                    var load = workflow.DispatchWork<DispatchEachSourceOutput>(
+                        "load",
+                        Work("sample.load.canceled-policy"));
+                    var continuation = workflow
+                        .DispatchEach(
+                            "fan-out",
+                            load,
+                            Work("sample.process.canceled-policy"),
+                            output => output.Items,
+                            canceledChildBehavior)
+                        .Join("join");
+                    switch (canceledChildBehavior)
+                    {
+                        case WorkflowCanceledChildBehavior.Continue:
+                            continuation
+                                .DispatchWork(
+                                    "post-continue-finalize",
+                                    Work("sample.downstream.canceled-policy.alpha"))
+                                .Join("post-continue-finalize-join");
+                            break;
+                        case WorkflowCanceledChildBehavior.Block:
+                            continuation
+                                .RunParallel("post-block-parallel", parallel => parallel
+                                    .DispatchWork(
+                                        "post-block-alpha",
+                                        Work("sample.downstream.canceled-policy.alpha"))
+                                    .DispatchWork(
+                                        "post-block-beta",
+                                        Work("sample.downstream.canceled-policy.beta")))
+                                .Join("post-block-parallel-join")
+                                .DispatchWork(
+                                    "post-block-tail",
+                                    Work("sample.downstream.canceled-policy.gamma"))
+                                .Join("post-block-tail-join");
+                            break;
+                        case WorkflowCanceledChildBehavior.CancelWorkflow:
+                            continuation
+                                .DispatchWork(
+                                    "post-cancel-prepare",
+                                    Work("sample.downstream.canceled-policy.alpha"))
+                                .Join("post-cancel-prepare-join")
+                                .RunParallel("post-cancel-parallel", parallel => parallel
+                                    .DispatchWork(
+                                        "post-cancel-beta",
+                                        Work("sample.downstream.canceled-policy.beta"))
+                                    .DispatchWork(
+                                        "post-cancel-gamma",
+                                        Work("sample.downstream.canceled-policy.gamma")))
+                                .Join("post-cancel-parallel-join")
+                                .DispatchWork(
+                                    "post-cancel-tail",
+                                    Work("sample.downstream.canceled-policy.alpha"))
+                                .Join("post-cancel-tail-join");
+                            break;
+                    }
+                });
+        });
+
+        using var provider = services.BuildServiceProvider();
+        var system = (InMemoryWorkSystem)provider.GetRequiredService<IWorkSystemRegistry>().Default;
+        await system.Start();
+
+        var requestContext = WorkRequestContext.Create(WorkInvocationChannel.InProcess);
+        var handle = system.WorkflowRuntime.Start(workflowName, requestContext);
+        await TestEventually.Until(
+            () => started.Count == 2,
+            "Expected both dispatch-each children to start.",
+            timeout: TimeSpan.FromSeconds(10));
+
+        var canceledWorkerId = started["alpha"];
+        var canceledWorker = await system.Query.Worker(canceledWorkerId);
+        var cancel = await system.Workers.Execute(canceledWorker!.Version, WorkAction.Cancel);
+        Assert.True(cancel.IsAccepted);
+        await TestEventually.Until(
+            async () => (await system.Query.Worker(canceledWorkerId))?.State == WorkerState.Canceled,
+            "Expected the selected dispatch-each child to be canceled.",
+            timeout: TimeSpan.FromSeconds(10));
+
+        var expectedFanOutStatus = canceledChildBehavior switch
+        {
+            WorkflowCanceledChildBehavior.Continue => WorkflowOperatorNodeStatus.WaitingOnChildren,
+            WorkflowCanceledChildBehavior.Block => WorkflowOperatorNodeStatus.Blocked,
+            WorkflowCanceledChildBehavior.CancelWorkflow => WorkflowOperatorNodeStatus.Canceled,
+            _ => throw new ArgumentOutOfRangeException(nameof(canceledChildBehavior)),
+        };
+        WorkflowRunDetailView? canceledDetail = null;
+        var viewAdapter = new WorkflowRunViewAdapter();
+        await TestEventually.Until(
+            async () =>
+            {
+                canceledDetail = await viewAdapter.Run(system, requestContext, handle.RunId!.Value);
+                return canceledDetail?.Steps.Single(step => step.Name == "fan-out").Status == expectedFanOutStatus;
+            },
+            $"Expected the dispatch-each node to report {expectedFanOutStatus} for {canceledChildBehavior}.",
+            timeout: TimeSpan.FromSeconds(10));
+
+        var canceledFanOut = Assert.Single(canceledDetail!.Steps, step => step.Name == "fan-out");
+        Assert.True(
+            canceledFanOut.Children.ByState.TryGetValue(WorkerState.Canceled, out var canceledCount) && canceledCount >= 1);
+
+        if (canceledChildBehavior == WorkflowCanceledChildBehavior.Continue)
+        {
+            release.TrySetResult();
+            var completion = await handle.WaitForCompletion().WaitAsync(TimeSpan.FromSeconds(10));
+            Assert.Equal(expectedStatus, completion.Status);
+            Assert.Equal(WorkerState.Completed, (await system.Query.Worker(started["beta"]))!.State);
+            Assert.Equal(["sample.downstream.canceled-policy.alpha"], downstreamRuns);
+            Assert.Equal(
+                2,
+                completion.Run!.Steps.Count(step => step.Name.StartsWith("post-", StringComparison.Ordinal)));
+            Assert.All(
+                completion.Run.Steps.Where(step => step.Name.StartsWith("post-", StringComparison.Ordinal)),
+                step => Assert.Equal(WorkflowStepRunStatus.Completed, step.Status));
+
+            var completedDetail = await viewAdapter.Run(system, requestContext, handle.RunId!.Value);
+            var completedFanOut = Assert.Single(completedDetail!.Steps, step => step.Name == "fan-out");
+            Assert.Equal(WorkflowOperatorNodeStatus.Completed, completedFanOut.Status);
+            Assert.Equal(2, completedFanOut.Children.Final);
+            Assert.Equal(1, completedFanOut.Children.ByState[WorkerState.Completed]);
+            Assert.Equal(1, completedFanOut.Children.ByState[WorkerState.Canceled]);
+            return;
+        }
+
+        await TestEventually.Until(
+            () => system.WorkflowRuntime.Get(handle.RunId!.Value)?.Status == expectedStatus,
+            $"Expected the workflow to reach {expectedStatus} after its dispatch-each child was canceled.",
+            timeout: TimeSpan.FromSeconds(10));
+
+        var settledRun = system.WorkflowRuntime.Get(handle.RunId!.Value)!;
+        var expectedDownstreamStepCount = canceledChildBehavior == WorkflowCanceledChildBehavior.Block
+            ? 6
+            : 8;
+        Assert.Equal(
+            expectedDownstreamStepCount,
+            settledRun.Steps.Count(step => step.Name.StartsWith("post-", StringComparison.Ordinal)));
+        Assert.All(
+            settledRun.Steps.Where(step => step.Name.StartsWith("post-", StringComparison.Ordinal)),
+            step => Assert.Equal(WorkflowStepRunStatus.Pending, step.Status));
+        Assert.Empty(downstreamRuns);
+
+        if (canceledChildBehavior == WorkflowCanceledChildBehavior.Block)
+        {
+            Assert.Equal(WorkerState.Running, (await system.Query.Worker(started["beta"]))!.State);
+            var workflowCancel = await system.WorkflowRuntime.Execute(
+                handle.RunId!.Value,
+                WorkflowAction.Cancel,
+                requestContext);
+            Assert.True(workflowCancel.IsAccepted);
+            Assert.Equal(
+                WorkflowRunStatus.Canceled,
+                (await handle.WaitForCompletion().WaitAsync(TimeSpan.FromSeconds(10))).Status);
+            return;
+        }
+
+        Assert.Equal(
+            WorkflowRunStatus.Canceled,
+            (await handle.WaitForCompletion().WaitAsync(TimeSpan.FromSeconds(10))).Status);
+        await TestEventually.Until(
+            async () => (await system.Query.Worker(started["beta"]))?.State == WorkerState.Canceled,
+            "Expected CancelWorkflow to cancel the remaining dispatch-each child.",
+            timeout: TimeSpan.FromSeconds(10));
+    }
+
+    [Fact]
+    public async Task CancelBlockedWorkflowWhenCancelWorkflowDispatchEachChildIsCanceledLater()
+    {
+        var started = new ConcurrentDictionary<string, WorkerId>(StringComparer.Ordinal);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var downstreamRuns = 0;
+        var services = new ServiceCollection();
+
+        services.AddWorkableSystem(builder =>
+        {
+            builder.RequireAuthorization(false);
+            builder.AddWork(
+                WorkDefinition.Create("sample.canceled-policy.fail-first"),
+                (_, _, _) => Task.FromResult(WorkExecutionResult.Failure(
+                    [WorkMessage.Error("sample.failed", "Block before the selected fan-out child is canceled.")])));
+            builder.AddWork(
+                WorkDefinition.Create("sample.canceled-policy.load-late-cancel"),
+                (_, _, _) => Task.FromResult(WorkExecutionResult.Success(
+                    WorkOutput.FromValue(new DispatchEachSourceOutput(
+                        [new DispatchEachItem("alpha"), new DispatchEachItem("beta")])))));
+            builder.AddWork(
+                WorkDefinition.Create("sample.canceled-policy.process-late-cancel"),
+                async (context, input, cancellationToken) =>
+                {
+                    var item = input?.ToValue<DispatchEachItem>()
+                        ?? throw new InvalidOperationException("Expected dispatch-each item input.");
+                    started[item.Id] = context.WorkerId;
+                    await release.Task.WaitAsync(cancellationToken);
+                    return WorkExecutionResult.Success();
+                });
+            builder.AddWork(
+                WorkDefinition.Create("sample.canceled-policy.after-late-cancel"),
+                (_, _, _) =>
+                {
+                    Interlocked.Increment(ref downstreamRuns);
+                    return Task.FromResult(WorkExecutionResult.Success());
+                });
+            builder.AddWorkflow(
+                WorkflowDefinition.Create("workflow.dispatch-each.cancel-after-block"),
+                workflow =>
+                {
+                    workflow.DispatchWork("fail-first", Work("sample.canceled-policy.fail-first"));
+                    var load = workflow.DispatchWork<DispatchEachSourceOutput>(
+                        "load",
+                        Work("sample.canceled-policy.load-late-cancel"));
+                    workflow
+                        .DispatchEach(
+                            "fan-out",
+                            load,
+                            Work("sample.canceled-policy.process-late-cancel"),
+                            output => output.Items,
+                            WorkflowCanceledChildBehavior.CancelWorkflow)
+                        .Join("join")
+                        .DispatchWork(
+                            "after-cancel",
+                            Work("sample.canceled-policy.after-late-cancel"))
+                        .Join("after-cancel-join");
+                });
+        });
+
+        using var provider = services.BuildServiceProvider();
+        var system = (InMemoryWorkSystem)provider.GetRequiredService<IWorkSystemRegistry>().Default;
+        await system.Start();
+        var handle = system.WorkflowRuntime.Start(
+            "workflow.dispatch-each.cancel-after-block",
+            WorkRequestContext.Create(WorkInvocationChannel.InProcess));
+
+        await TestEventually.Until(
+            () => started.Count == 2 &&
+                system.WorkflowRuntime.Get(handle.RunId!.Value)?.Status == WorkflowRunStatus.Blocked,
+            "Expected the workflow to block on the failed child while both fan-out children remained active.",
+            timeout: TimeSpan.FromSeconds(10));
+
+        var canceledWorker = await system.Query.Worker(started["alpha"]);
+        var cancel = await system.Workers.Execute(canceledWorker!.Version, WorkAction.Cancel);
+        Assert.True(cancel.IsAccepted);
+
+        var completion = await handle.WaitForCompletion().WaitAsync(TimeSpan.FromSeconds(10));
+        Assert.Equal(WorkflowRunStatus.Canceled, completion.Status);
+        await TestEventually.Until(
+            async () => (await system.Query.Worker(started["beta"]))?.State == WorkerState.Canceled,
+            "Expected the late CancelWorkflow policy to cancel the remaining fan-out child.",
+            timeout: TimeSpan.FromSeconds(10));
+        Assert.Equal(0, Volatile.Read(ref downstreamRuns));
+        Assert.All(
+            completion.Run!.Steps.Where(step => step.Name.StartsWith("after-cancel", StringComparison.Ordinal)),
+            step => Assert.Equal(WorkflowStepRunStatus.Pending, step.Status));
+    }
+
     [Fact]
     public async Task ExecuteParallelBranchesWithSequentialWorkflowStructure()
     {

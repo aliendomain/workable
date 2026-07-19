@@ -48,6 +48,7 @@ internal sealed class NonDurableWorkflowExecutor(
 
                 var stepCompletion = await this.ExecuteStep(
                     run,
+                    workflow,
                     session,
                     step,
                     activeHandles,
@@ -67,12 +68,12 @@ internal sealed class NonDurableWorkflowExecutor(
                     workerId => activeHandles.TryGetValue(workerId, out var handle)
                         ? handle
                         : workerHandleFactory(workerId),
+                    run,
+                    workflow,
                     cancellationToken);
                 if (!completion.IsCompletedSuccessfully)
                 {
-                    return completion.Status == WorkflowRunStatus.Blocked
-                        ? run.Block(completion.Messages)
-                        : run.Fail(completion.Messages);
+                    return CompleteFromChildOutcome(run, completion);
                 }
             }
 
@@ -113,6 +114,7 @@ internal sealed class NonDurableWorkflowExecutor(
 
     private async Task<WorkflowRunCompletion?> ExecuteStep(
         WorkflowRunState run,
+        RegisteredWorkflow workflow,
         IWorkSystemSession session,
         WorkflowStepDefinition step,
         System.Collections.Concurrent.ConcurrentDictionary<WorkerId, IWorkerHandle> activeHandles,
@@ -174,9 +176,9 @@ internal sealed class NonDurableWorkflowExecutor(
                     return null;
                 }
             case ParallelWorkflowStepDefinition parallel:
-                return await this.ExecuteParallel(run, session, parallel, activeHandles, workerHandleFactory, cancellationToken);
+                return await this.ExecuteParallel(run, workflow, session, parallel, activeHandles, workerHandleFactory, cancellationToken);
             case BranchWorkflowStepDefinition branch:
-                return await this.ExecuteBranch(run, session, branch, activeHandles, workerHandleFactory, cancellationToken);
+                return await this.ExecuteBranch(run, workflow, session, branch, activeHandles, workerHandleFactory, cancellationToken);
             case JoinWorkflowStepDefinition join:
                 {
                     if (status == WorkflowStepRunStatus.Pending)
@@ -187,6 +189,7 @@ internal sealed class NonDurableWorkflowExecutor(
 
                     var completion = await this.WaitForJoinOutstanding(
                         run,
+                        workflow,
                         join.Name,
                         activeHandles,
                         workerHandleFactory,
@@ -194,15 +197,13 @@ internal sealed class NonDurableWorkflowExecutor(
                         cancellationToken);
                     if (!completion.IsCompletedSuccessfully)
                     {
-                        if (completion.Status != WorkflowRunStatus.Blocked)
+                        if (completion.Status == WorkflowRunStatus.Failed)
                         {
                             run.FailStep(join.Name, completion.Messages);
                         }
 
                         publisher.StepUpdated(run.ToSnapshot(), join.Name);
-                        return completion.Status == WorkflowRunStatus.Blocked
-                            ? run.Block(completion.Messages)
-                            : run.Fail(completion.Messages);
+                        return CompleteFromChildOutcome(run, completion);
                     }
 
                     run.MarkStepCompleted(join.Name);
@@ -220,6 +221,7 @@ internal sealed class NonDurableWorkflowExecutor(
 
     private async Task<WorkflowRunCompletion?> ExecuteParallel(
         WorkflowRunState run,
+        RegisteredWorkflow workflow,
         IWorkSystemSession session,
         ParallelWorkflowStepDefinition step,
         System.Collections.Concurrent.ConcurrentDictionary<WorkerId, IWorkerHandle> activeHandles,
@@ -233,6 +235,7 @@ internal sealed class NonDurableWorkflowExecutor(
         var childTasks = step.Steps
             .Select(child => this.ExecuteStep(
                 run,
+                workflow,
                 session,
                 child,
                 activeHandles,
@@ -243,7 +246,10 @@ internal sealed class NonDurableWorkflowExecutor(
         var childCompletions = await Task.WhenAll(childTasks);
         foreach (var completion in childCompletions.Where(static completion => completion is not null))
         {
-            run.FailStep(step.Name, completion!.Messages);
+            if (completion!.Status != WorkflowRunStatus.Canceled)
+            {
+                run.FailStep(step.Name, completion.Messages);
+            }
             publisher.StepUpdated(run.ToSnapshot(), step.Name);
             return completion;
         }
@@ -255,6 +261,7 @@ internal sealed class NonDurableWorkflowExecutor(
 
     private async Task<WorkflowRunCompletion?> ExecuteBranch(
         WorkflowRunState run,
+        RegisteredWorkflow workflow,
         IWorkSystemSession session,
         BranchWorkflowStepDefinition step,
         System.Collections.Concurrent.ConcurrentDictionary<WorkerId, IWorkerHandle> activeHandles,
@@ -272,6 +279,7 @@ internal sealed class NonDurableWorkflowExecutor(
                 : null;
             var completion = await this.ExecuteStep(
                 run,
+                workflow,
                 session,
                 child,
                 activeHandles,
@@ -280,7 +288,10 @@ internal sealed class NonDurableWorkflowExecutor(
                 cancellationToken);
             if (completion is not null)
             {
-                run.FailStep(step.Name, completion.Messages);
+                if (completion.Status != WorkflowRunStatus.Canceled)
+                {
+                    run.FailStep(step.Name, completion.Messages);
+                }
                 publisher.StepUpdated(run.ToSnapshot(), step.Name);
                 return completion;
             }
@@ -452,6 +463,7 @@ internal sealed class NonDurableWorkflowExecutor(
 
     private async Task<WorkflowRunCompletion> WaitForJoinOutstanding(
         WorkflowRunState run,
+        RegisteredWorkflow workflow,
         string joinStepName,
         IReadOnlyDictionary<WorkerId, IWorkerHandle> activeHandles,
         Func<WorkerId, IWorkerHandle> workerHandleFactory,
@@ -472,41 +484,33 @@ internal sealed class NonDurableWorkflowExecutor(
             }
         }
 
-        while (outstanding.Count > 0)
+        var pending = outstanding.ToDictionary(
+            static workerId => workerId,
+            workerId => this.WaitForWorkerCompletion(
+                run,
+                workerId,
+                activeHandles,
+                workerHandleFactory,
+                cancellationToken));
+        while (pending.Count > 0)
         {
-            var workerId = outstanding[0];
-            if (run.TryGetChildReceipt(workerId, out var receipt) &&
-                receipt is not null)
-            {
-                if (receipt.CompletionStatus != WorkCompletionStatus.Completed)
-                {
-                    return new WorkflowRunCompletion(
-                        WorkflowExecutionSupport.ToWorkflowStatus(receipt.CompletionStatus),
-                        null,
-                        receipt.Messages);
-                }
+            var completedTask = await Task.WhenAny(pending.Values);
+            var completed = pending.Single(item => ReferenceEquals(item.Value, completedTask));
+            pending.Remove(completed.Key);
 
-                outstanding.RemoveAt(0);
-                run.RemoveStepWorkerId(joinStepName, workerId);
-                var receiptPublisher = workflowEvents ?? new WorkflowEventPublisher(default, null, new WorkEventStream());
-                receiptPublisher.StepUpdated(run.ToSnapshot(), joinStepName);
-                continue;
-            }
-
-            var handle = activeHandles.TryGetValue(workerId, out var activeHandle)
-                ? activeHandle
-                : workerHandleFactory(workerId);
-            var completion = await handle.WaitForCompletion(cancellationToken);
-            if (completion.Status != WorkCompletionStatus.Completed)
+            var completion = await completed.Value;
+            var status = WorkflowExecutionSupport.ToWorkflowStatus(
+                completion.Status,
+                WorkflowExecutionSupport.ResolveCanceledChildBehavior(run, workflow, completed.Key));
+            if (status != WorkflowRunStatus.Completed)
             {
                 return new WorkflowRunCompletion(
-                    WorkflowExecutionSupport.ToWorkflowStatus(completion.Status),
+                    status,
                     null,
                     completion.Messages);
             }
 
-            outstanding.RemoveAt(0);
-            run.RemoveStepWorkerId(joinStepName, workerId);
+            run.RemoveStepWorkerId(joinStepName, completed.Key);
             var publisher = workflowEvents ?? new WorkflowEventPublisher(default, null, new WorkEventStream());
             publisher.StepUpdated(run.ToSnapshot(), joinStepName);
         }
@@ -532,6 +536,16 @@ internal sealed class NonDurableWorkflowExecutor(
             : workerHandleFactory(workerId);
         return await handle.WaitForCompletion(cancellationToken);
     }
+
+    private static WorkflowRunCompletion CompleteFromChildOutcome(
+        WorkflowRunState run,
+        WorkflowRunCompletion completion)
+        => completion.Status switch
+        {
+            WorkflowRunStatus.Blocked => run.Block(completion.Messages),
+            WorkflowRunStatus.Canceled => run.Cancel(cancelOutstandingChildren: true),
+            _ => run.Fail(completion.Messages),
+        };
 
     private sealed record DispatchResult(
         bool IsAccepted,

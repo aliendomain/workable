@@ -182,6 +182,118 @@ public sealed class WorkflowRuntimeInternalsShould
     }
 
     [Fact]
+    public async Task RecoverDurableBlockedRunCancelsForRetainedCancelWorkflowChildReceipt()
+    {
+        var loadWorkerId = WorkerId.New();
+        var canceledWorkerId = WorkerId.New();
+        var runningWorkerId = WorkerId.New();
+        var definition = WorkflowDefinition.Create(
+            "workflow.durable.recover.dispatch-each-canceled",
+            coordination: WorkflowCoordinationConfiguration.Durable);
+        var workflow = CreateWorkflow(
+            definition,
+            Dispatch("load", "sample.load"),
+            new DispatchEachWorkflowStepDefinition(
+                "fan-out",
+                new WorkflowStepReference<object?>("load"),
+                WorkDefinition.Create("sample.process"),
+                new WorkflowOutputSelector("/items"),
+                WorkflowCanceledChildBehavior.CancelWorkflow),
+            new JoinWorkflowStepDefinition("join"),
+            Dispatch("after-cancel", "sample.after-cancel"));
+        var now = DateTimeOffset.UtcNow;
+        var persistedRun = new WorkflowRunPersistenceRecord(
+            "workflow-tests",
+            WorkflowRunId.New(),
+            definition.Version,
+            definition.Name,
+            null,
+            WorkRequestContext.Create(WorkInvocationChannel.InProcess),
+            WorkflowRunStatus.Blocked,
+            [
+                new WorkflowStepPersistenceRecord(
+                    "load",
+                    WorkflowStepKind.DispatchWork,
+                    WorkflowStepRunStatus.Completed,
+                    [loadWorkerId],
+                    now,
+                    now,
+                    []),
+                new WorkflowStepPersistenceRecord(
+                    "fan-out",
+                    WorkflowStepKind.DispatchEach,
+                    WorkflowStepRunStatus.Completed,
+                    [canceledWorkerId, runningWorkerId],
+                    now,
+                    now,
+                    []),
+                new WorkflowStepPersistenceRecord(
+                    "join",
+                    WorkflowStepKind.Join,
+                    WorkflowStepRunStatus.Running,
+                    [canceledWorkerId, runningWorkerId],
+                    now,
+                    null,
+                    []),
+                new WorkflowStepPersistenceRecord(
+                    "after-cancel",
+                    WorkflowStepKind.DispatchWork,
+                    WorkflowStepRunStatus.Pending,
+                    [],
+                    null,
+                    null,
+                    []),
+            ],
+            now,
+            now,
+            null,
+            [],
+            [
+                new WorkflowChildReceipt(
+                    canceledWorkerId,
+                    "fan-out",
+                    "sample.process",
+                    WorkerState.Canceled,
+                    now,
+                    [],
+                    null),
+            ],
+            WorkflowDefinitionFingerprint.Create(workflow));
+        var store = new RawWorkflowPersistenceStore([persistedRun]);
+        var workerOperations = new RecordingWorkerOperations();
+        var snapshots = new Dictionary<WorkerId, WorkerSnapshot>
+        {
+            [loadWorkerId] = CreateSnapshot(loadWorkerId, WorkerState.Completed),
+            [canceledWorkerId] = CreateSnapshot(canceledWorkerId, WorkerState.Canceled),
+            [runningWorkerId] = CreateSnapshot(runningWorkerId, WorkerState.Running),
+        };
+        var runtime = CreateRuntime(
+            catalog: new WorkflowCatalog([workflow]),
+            persistenceStore: store,
+            systemName: "workflow-tests",
+            createSession: _ => new TestWorkSystemSession(
+                new DelegateQueueService((_, _, _, _) => throw new NotSupportedException()),
+                workers: workerOperations,
+                query: new DelegateQueryService(id => Task.FromResult(snapshots.GetValueOrDefault(id)))),
+            createWorkerHandle: _ => throw new InvalidOperationException("Recovery should cancel from retained worker state."));
+
+        await runtime.RecoverDurableRuns(CancellationToken.None);
+
+        var recovered = runtime.Get(persistedRun.RunId);
+        Assert.Equal(WorkflowRunStatus.Canceled, recovered!.Status);
+        Assert.Contains(
+            workerOperations.Executions,
+            execution => execution == (runningWorkerId, WorkAction.Cancel));
+        Assert.DoesNotContain(
+            workerOperations.Executions,
+            execution => execution.WorkerId == canceledWorkerId);
+        Assert.Contains(store.UpsertedRuns, run => run.Status == WorkflowRunStatus.Canceled);
+        Assert.Equal(
+            WorkflowStepRunStatus.Pending,
+            recovered.Steps.Single(step => step.Name == "after-cancel").Status);
+    }
+
+    [Fact]
     public async Task RecoverDurableRunsHonorsPersistedCancelRequestAndCancelsOutstandingChildren()
     {
         var workerId = WorkerId.New();
@@ -830,6 +942,8 @@ public sealed class WorkflowRuntimeInternalsShould
 
         public List<WorkflowRunId> DeletedRuns { get; } = [];
 
+        public List<WorkflowRunPersistenceRecord> UpsertedRuns { get; } = [];
+
         public Task Initialize(WorkQueueDurabilityInitializationContext context, CancellationToken cancellationToken = default)
             => Task.CompletedTask;
 
@@ -891,13 +1005,19 @@ public sealed class WorkflowRuntimeInternalsShould
         public Task UpsertWorkflowRun(
             WorkflowRunPersistenceRecord run,
             CancellationToken cancellationToken = default)
-            => Task.CompletedTask;
+        {
+            this.UpsertedRuns.Add(run);
+            return Task.CompletedTask;
+        }
 
         public Task UpsertWorkflowRun(
             WorkflowRunPersistenceRecord run,
             IWorkflowPersistenceTransaction transaction,
             CancellationToken cancellationToken = default)
-            => Task.CompletedTask;
+        {
+            this.UpsertedRuns.Add(run);
+            return Task.CompletedTask;
+        }
 
         public Task DeleteWorkflowRun(
             WorkflowPersistenceDeleteRequest request,

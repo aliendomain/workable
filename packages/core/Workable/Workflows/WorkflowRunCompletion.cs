@@ -3,7 +3,8 @@ namespace Workable;
 internal sealed record WorkflowRunCompletion(
     WorkflowRunStatus Status,
     WorkflowRunSnapshot? Run,
-    IReadOnlyList<WorkMessage> Messages)
+    IReadOnlyList<WorkMessage> Messages,
+    bool CancelOutstandingChildren = false)
 {
     public bool IsCompletedSuccessfully => this.Status == WorkflowRunStatus.Completed;
 

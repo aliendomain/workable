@@ -49,16 +49,23 @@ internal sealed class WorkflowBuilder : IWorkflowBuilder
         string stepName,
         WorkflowStepReference<TSourceOutput> sourceStep,
         WorkDefinition workDefinition,
-        Expression<Func<TSourceOutput, IEnumerable<TChildInput>?>> selector)
+        Expression<Func<TSourceOutput, IEnumerable<TChildInput>?>> selector,
+        WorkflowCanceledChildBehavior canceledChildBehavior = WorkflowCanceledChildBehavior.Continue)
     {
         ValidateDispatch(stepName, workDefinition);
         ArgumentNullException.ThrowIfNull(sourceStep);
         ArgumentNullException.ThrowIfNull(selector);
+        if (!Enum.IsDefined(canceledChildBehavior))
+        {
+            throw new ArgumentOutOfRangeException(nameof(canceledChildBehavior));
+        }
+
         this.steps.Add(new DispatchEachWorkflowStepDefinition(
             stepName,
             sourceStep,
             workDefinition,
-            WorkflowOutputSelector.Create(selector)));
+            WorkflowOutputSelector.Create(selector),
+            canceledChildBehavior));
         return this;
     }
 

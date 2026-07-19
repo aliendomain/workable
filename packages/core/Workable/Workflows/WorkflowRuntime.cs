@@ -166,6 +166,10 @@ internal sealed class WorkflowRuntime
             {
                 await this.TryPurgeFinalRunIfChildrenGone(run, cancellationToken);
             }
+            else if (ShouldCancelWorkflowForCanceledChild(run, workflow))
+            {
+                await this.ApplyCanceledChildWorkflowCancellation(run, workflow, cancellationToken);
+            }
             else if (run.GetStatus() == WorkflowRunStatus.Running)
             {
                 this.StartExecution(run, workflow);
@@ -535,7 +539,8 @@ internal sealed class WorkflowRuntime
         try
         {
             var completion = await this.Execute(run, workflow, control, wasPaused);
-            if (control.CancelRequested && completion.Status == WorkflowRunStatus.Canceled)
+            if (completion.Status == WorkflowRunStatus.Canceled &&
+                (control.CancelRequested || completion.CancelOutstandingChildren))
             {
                 await WorkflowExecutionSupport.CancelOutstandingChildren(
                     run,
@@ -796,14 +801,63 @@ internal sealed class WorkflowRuntime
             return;
         }
 
-        if (this.catalog.TryGet(run.DefinitionName, out var workflow) &&
-            workflow.Definition.Coordination.IsDurable)
+        this.catalog.TryGet(run.DefinitionName, out var workflow);
+        if (workflow?.Definition.Coordination.IsDurable == true)
         {
             await this.persistence.UpsertRun(this.CreatePersistenceRecord(run), cancellationToken);
         }
 
         this.workflowEvents.StepUpdated(run.ToSnapshot(), stepName);
+        if (worker.State == WorkerState.Canceled &&
+            workflow is not null &&
+            WorkflowExecutionSupport.ResolveCanceledChildBehavior(workflow, stepName) ==
+                WorkflowCanceledChildBehavior.CancelWorkflow)
+        {
+            await this.ApplyCanceledChildWorkflowCancellation(run, workflow, cancellationToken);
+        }
     }
+
+    private async Task ApplyCanceledChildWorkflowCancellation(
+        WorkflowRunState run,
+        RegisteredWorkflow workflow,
+        CancellationToken cancellationToken)
+    {
+        if (this.controls.TryGetValue(run.Id, out var control))
+        {
+            control.RequestCancel();
+            return;
+        }
+
+        var status = run.GetStatus();
+        if (status is not (WorkflowRunStatus.Running or WorkflowRunStatus.Blocked or WorkflowRunStatus.Paused) ||
+            (status == WorkflowRunStatus.Running && this.executions.ContainsKey(run.Id)))
+        {
+            return;
+        }
+
+        await WorkflowExecutionSupport.CancelOutstandingChildren(
+            run,
+            this.createSession(run.RequestContext),
+            this.getAuthoritativeWorker,
+            CancellationToken.None);
+        var canceled = run.Cancel();
+        if (workflow.Definition.Coordination.IsDurable)
+        {
+            await this.persistence.UpsertRun(this.CreatePersistenceRecord(run), CancellationToken.None);
+        }
+
+        run.TrySetCompletion(canceled);
+        this.workflowEvents.Completion(canceled);
+        await this.TryPurgeFinalRunIfChildrenGone(run, cancellationToken);
+    }
+
+    private static bool ShouldCancelWorkflowForCanceledChild(
+        WorkflowRunState run,
+        RegisteredWorkflow workflow)
+        => run.GetChildReceipts().Any(receipt =>
+            receipt.CompletionStatus == WorkCompletionStatus.Canceled &&
+            WorkflowExecutionSupport.ResolveCanceledChildBehavior(workflow, receipt.StepName) ==
+                WorkflowCanceledChildBehavior.CancelWorkflow);
 
     internal bool ShouldKeepWorkflowChildWorker(WorkerSnapshot worker)
     {
@@ -913,7 +967,7 @@ internal sealed class WorkflowRuntime
         WorkflowExecutionControl control)
         => completion.Status switch
         {
-            WorkflowRunStatus.Canceled => control.CancelRequested,
+            WorkflowRunStatus.Canceled => control.CancelRequested || completion.CancelOutstandingChildren,
             WorkflowRunStatus.Completed => true,
             WorkflowRunStatus.Failed => true,
             _ => false,

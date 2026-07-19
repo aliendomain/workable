@@ -6,6 +6,36 @@ namespace Workable.Tests;
 public sealed class WorkflowRunStateShould
 {
     [Fact]
+    public void IncludeDispatchEachCanceledChildBehaviorInDefinitionFingerprint()
+    {
+        var definition = WorkflowDefinition.Create("workflow.dispatch-each.fingerprint");
+        var source = new WorkflowStepReference<object?>("load");
+        var selector = new WorkflowOutputSelector("/items");
+        var continueWorkflow = CreateWorkflow(
+            definition,
+            Dispatch("load", "sample.load"),
+            new DispatchEachWorkflowStepDefinition(
+                "fan-out",
+                source,
+                WorkDefinition.Create("sample.process"),
+                selector,
+                WorkflowCanceledChildBehavior.Continue));
+        var blockWorkflow = CreateWorkflow(
+            definition,
+            Dispatch("load", "sample.load"),
+            new DispatchEachWorkflowStepDefinition(
+                "fan-out",
+                source,
+                WorkDefinition.Create("sample.process"),
+                selector,
+                WorkflowCanceledChildBehavior.Block));
+
+        Assert.NotEqual(
+            WorkflowDefinitionFingerprint.Create(continueWorkflow),
+            WorkflowDefinitionFingerprint.Create(blockWorkflow));
+    }
+
+    [Fact]
     public void TrackOutstandingWorkersAcrossJoinBoundaries()
     {
         var workflow = CreateWorkflow(

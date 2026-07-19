@@ -39,18 +39,96 @@ internal static class WorkflowExecutionSupport
         return await WaitForOutstanding(outstanding, cancellationToken);
     }
 
-    public static WorkflowRunStatus ToWorkflowStatus(WorkCompletionStatus status)
+    public static async Task<WorkflowRunCompletion> WaitForOutstanding(
+        IReadOnlyList<WorkerId> workerIds,
+        Func<WorkerId, IWorkerHandle> createWorkerHandle,
+        WorkflowRunState run,
+        RegisteredWorkflow workflow,
+        CancellationToken cancellationToken)
+    {
+        var pending = workerIds
+            .Distinct()
+            .Select(workerId => new PendingChildCompletion(
+                workerId,
+                createWorkerHandle(workerId).WaitForCompletion(cancellationToken)))
+            .ToList();
+
+        while (pending.Count > 0)
+        {
+            var completedTask = await Task.WhenAny(pending.Select(static item => item.Completion));
+            var completedIndex = pending.FindIndex(item => ReferenceEquals(item.Completion, completedTask));
+            var completed = pending[completedIndex];
+            pending.RemoveAt(completedIndex);
+
+            var completion = await completed.Completion;
+            var status = ToWorkflowStatus(
+                completion.Status,
+                ResolveCanceledChildBehavior(run, workflow, completed.WorkerId));
+            if (status == WorkflowRunStatus.Completed)
+            {
+                continue;
+            }
+
+            return new WorkflowRunCompletion(status, null, completion.Messages);
+        }
+
+        return new WorkflowRunCompletion(WorkflowRunStatus.Completed, null, []);
+    }
+
+    public static WorkflowRunStatus ToWorkflowStatus(
+        WorkCompletionStatus status,
+        WorkflowCanceledChildBehavior canceledChildBehavior = WorkflowCanceledChildBehavior.Block)
         => status switch
         {
             WorkCompletionStatus.Completed => WorkflowRunStatus.Completed,
             WorkCompletionStatus.Failed => WorkflowRunStatus.Blocked,
             WorkCompletionStatus.Paused => WorkflowRunStatus.Blocked,
-            WorkCompletionStatus.Canceled => WorkflowRunStatus.Blocked,
+            WorkCompletionStatus.Canceled => canceledChildBehavior switch
+            {
+                WorkflowCanceledChildBehavior.Continue => WorkflowRunStatus.Completed,
+                WorkflowCanceledChildBehavior.CancelWorkflow => WorkflowRunStatus.Canceled,
+                _ => WorkflowRunStatus.Blocked,
+            },
             WorkCompletionStatus.Interrupted => WorkflowRunStatus.Blocked,
             WorkCompletionStatus.NotFound => WorkflowRunStatus.Failed,
             WorkCompletionStatus.Invalid => WorkflowRunStatus.Failed,
             _ => WorkflowRunStatus.Failed,
         };
+
+    public static WorkflowCanceledChildBehavior ResolveCanceledChildBehavior(
+        WorkflowRunState run,
+        RegisteredWorkflow workflow,
+        WorkerId workerId)
+    {
+        ArgumentNullException.ThrowIfNull(run);
+        ArgumentNullException.ThrowIfNull(workflow);
+
+        foreach (var step in FlattenSteps(workflow.Steps))
+        {
+            if (step is DispatchEachWorkflowStepDefinition dispatchEach &&
+                run.TryGetStepWorkerIds(dispatchEach.Name, out var workerIds) &&
+                workerIds.Contains(workerId))
+            {
+                return dispatchEach.CanceledChildBehavior;
+            }
+        }
+
+        return WorkflowCanceledChildBehavior.Block;
+    }
+
+    public static WorkflowCanceledChildBehavior ResolveCanceledChildBehavior(
+        RegisteredWorkflow workflow,
+        string stepName)
+    {
+        ArgumentNullException.ThrowIfNull(workflow);
+        ArgumentException.ThrowIfNullOrWhiteSpace(stepName);
+
+        return FlattenSteps(workflow.Steps)
+            .OfType<DispatchEachWorkflowStepDefinition>()
+            .FirstOrDefault(step => string.Equals(step.Name, stepName, StringComparison.Ordinal))
+            ?.CanceledChildBehavior
+            ?? WorkflowCanceledChildBehavior.Block;
+    }
 
     public static WorkInput AddWorkflowIdentifiers(
         WorkInput? input,
@@ -207,6 +285,26 @@ internal static class WorkflowExecutionSupport
         }
     }
 
+    private static IEnumerable<WorkflowStepDefinition> FlattenSteps(
+        IEnumerable<WorkflowStepDefinition> steps)
+    {
+        foreach (var step in steps)
+        {
+            yield return step;
+
+            var children = step switch
+            {
+                ParallelWorkflowStepDefinition parallel => parallel.Steps,
+                BranchWorkflowStepDefinition branch => branch.Steps,
+                _ => [],
+            };
+            foreach (var child in FlattenSteps(children))
+            {
+                yield return child;
+            }
+        }
+    }
+
     private static bool TryResolveDispatchEachArray(
         DispatchEachWorkflowStepDefinition step,
         WorkOutput? output,
@@ -321,4 +419,8 @@ internal static class WorkflowExecutionSupport
         resolved = current;
         return true;
     }
+
+    private sealed record PendingChildCompletion(
+        WorkerId WorkerId,
+        Task<WorkCompletion> Completion);
 }

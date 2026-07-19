@@ -148,6 +148,16 @@ If the queue request is rejected, the workflow fails immediately.
 
 Each array element becomes the `WorkInput` payload for one queued child worker.
 
+`DispatchEach(...)` also accepts a `canceledChildBehavior` that controls what happens when an expanded child worker is canceled:
+
+- `WorkflowCanceledChildBehavior.Continue` is the default. The canceled child is treated as skipped, and the workflow waits for the remaining children before continuing.
+- `WorkflowCanceledChildBehavior.Block` leaves the workflow blocked at its next join or final child wait.
+- `WorkflowCanceledChildBehavior.CancelWorkflow` cancels the workflow and requests cancellation of its remaining outstanding child workers.
+
+The policy applies only to workers expanded by that `DispatchEach(...)` step. Canceled workers created by ordinary `DispatchWork(...)` steps continue to block the workflow.
+
+The operator view follows the configured policy. With `Continue`, the `DispatchEach` node remains `WaitingOnChildren` while any sibling is active and becomes `Completed` after every sibling has either completed or been canceled; its child summary still reports the canceled count. `Block` reports the node as `Blocked`, and `CancelWorkflow` reports it as `Canceled`.
+
 ```csharp
 var loadDefinition = WorkDefinition.Create("orders.load");
 var processDefinition = WorkDefinition.Create("orders.process");
@@ -179,7 +189,7 @@ A parallel section contains child `DispatchWork(...)` steps.
 
 `Join(stepName)` waits for earlier dispatched child work to settle.
 
-If any outstanding child worker completes unsuccessfully, the join step completes as blocked. When the blocked child was a failed worker and that worker is later restarted and completes successfully, Workable resumes the workflow automatically. When a completed child worker has already been purged, joins use the workflow's retained child completion receipt.
+If any outstanding child worker fails, pauses, or is interrupted, the join step completes as blocked. A canceled child also blocks unless its originating `DispatchEach(...)` step configures `Continue` or `CancelWorkflow`. When the blocked child was a failed worker and that worker is later restarted and completes successfully, Workable resumes the workflow automatically. When a completed child worker has already been purged, joins use the workflow's retained child completion receipt.
 
 ## Execution Semantics
 
@@ -216,7 +226,7 @@ In that workflow:
 - `j1` waits for `a`, `b`, and `c`
 - `j2` waits for `d`
 
-If a child worker completes as failed, canceled, paused, or interrupted, the workflow run completes as `Blocked`. A blocked workflow run can always be started again manually. It also resumes automatically when its outstanding failed child workers are restarted and later complete successfully.
+If a child worker completes as failed, paused, or interrupted, the workflow run completes as `Blocked`. Canceled `DispatchWork(...)` children also block. A canceled `DispatchEach(...)` child follows that step's configured cancellation behavior. A blocked workflow run can always be started again manually. It also resumes automatically when its outstanding failed child workers are restarted and later complete successfully.
 
 Completed child workers and completed workflow runs have separate retention lifetimes. Workable records the child completion receipt on the workflow run before later cleanup depends on it, so worker retention can stay aggressive without breaking joins or workflow status views.
 

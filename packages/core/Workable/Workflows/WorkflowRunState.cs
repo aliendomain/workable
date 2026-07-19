@@ -363,7 +363,7 @@ internal sealed class WorkflowRunState
         }
     }
 
-    public WorkflowRunCompletion Cancel()
+    public WorkflowRunCompletion Cancel(bool cancelOutstandingChildren = false)
     {
         lock (this.sync)
         {
@@ -372,7 +372,11 @@ internal sealed class WorkflowRunState
             this.messages = [];
             this.completedAt = DateTimeOffset.UtcNow;
             this.onChanged?.Invoke();
-            return new WorkflowRunCompletion(this.status, this.ToSnapshotLocked(), this.messages);
+            return new WorkflowRunCompletion(
+                this.status,
+                this.ToSnapshotLocked(),
+                this.messages,
+                cancelOutstandingChildren);
         }
     }
 

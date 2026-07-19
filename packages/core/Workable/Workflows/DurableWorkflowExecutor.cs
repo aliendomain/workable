@@ -51,6 +51,7 @@ internal sealed class DurableWorkflowExecutor(
 
                 var stepCompletion = await this.ExecuteStep(
                     run,
+                    workflow,
                     session,
                     step,
                     persistenceGate,
@@ -64,14 +65,17 @@ internal sealed class DurableWorkflowExecutor(
 
             var trailingCompletion = await this.WaitForOutstandingWorkers(
                 run,
+                workflow,
                 session,
                 run.GetOutstandingWorkerIds(),
                 cancellationToken);
             if (!trailingCompletion.IsCompletedSuccessfully)
             {
-                return trailingCompletion.Status == WorkflowRunStatus.Blocked
-                    ? await this.UpsertBlockedRun(run, trailingCompletion.Messages, persistenceGate, cancellationToken)
-                    : await this.DeleteFailedRun(run, trailingCompletion.Messages, persistenceGate, cancellationToken);
+                return await this.CompleteFromChildOutcome(
+                    run,
+                    trailingCompletion,
+                    persistenceGate,
+                    cancellationToken);
             }
 
             cancellationToken.ThrowIfCancellationRequested();
@@ -121,6 +125,7 @@ internal sealed class DurableWorkflowExecutor(
 
     private async Task<WorkflowRunCompletion?> ExecuteStep(
         WorkflowRunState run,
+        RegisteredWorkflow workflow,
         IWorkSystemSession session,
         WorkflowStepDefinition step,
         WorkflowRunPersistenceGate persistenceGate,
@@ -167,9 +172,9 @@ internal sealed class DurableWorkflowExecutor(
                     return null;
                 }
             case ParallelWorkflowStepDefinition parallel:
-                return await this.ExecuteParallel(run, session, parallel, persistenceGate, cancellationToken);
+                return await this.ExecuteParallel(run, workflow, session, parallel, persistenceGate, cancellationToken);
             case BranchWorkflowStepDefinition branch:
-                return await this.ExecuteBranch(run, session, branch, persistenceGate, cancellationToken);
+                return await this.ExecuteBranch(run, workflow, session, branch, persistenceGate, cancellationToken);
             case JoinWorkflowStepDefinition join:
                 {
                     if (status == WorkflowStepRunStatus.Pending)
@@ -181,6 +186,7 @@ internal sealed class DurableWorkflowExecutor(
 
                     var completion = await this.WaitForJoinOutstanding(
                         run,
+                        workflow,
                         session,
                         join.Name,
                         persistenceGate,
@@ -188,15 +194,17 @@ internal sealed class DurableWorkflowExecutor(
                         cancellationToken);
                     if (!completion.IsCompletedSuccessfully)
                     {
-                        if (completion.Status != WorkflowRunStatus.Blocked)
+                        if (completion.Status == WorkflowRunStatus.Failed)
                         {
                             run.FailStep(join.Name, completion.Messages);
                         }
 
                         publisher.StepUpdated(run.ToSnapshot(), join.Name);
-                        return completion.Status == WorkflowRunStatus.Blocked
-                            ? await this.UpsertBlockedRun(run, completion.Messages, persistenceGate, cancellationToken)
-                            : await this.DeleteFailedRun(run, completion.Messages, persistenceGate, cancellationToken);
+                        return await this.CompleteFromChildOutcome(
+                            run,
+                            completion,
+                            persistenceGate,
+                            cancellationToken);
                     }
 
                     run.MarkStepCompleted(join.Name);
@@ -218,6 +226,7 @@ internal sealed class DurableWorkflowExecutor(
 
     private async Task<WorkflowRunCompletion?> ExecuteParallel(
         WorkflowRunState run,
+        RegisteredWorkflow workflow,
         IWorkSystemSession session,
         ParallelWorkflowStepDefinition step,
         WorkflowRunPersistenceGate persistenceGate,
@@ -230,6 +239,7 @@ internal sealed class DurableWorkflowExecutor(
         var childTasks = step.Steps
             .Select(child => this.ExecuteStep(
                 run,
+                workflow,
                 session,
                 child,
                 persistenceGate,
@@ -239,10 +249,17 @@ internal sealed class DurableWorkflowExecutor(
         var childCompletions = await Task.WhenAll(childTasks);
         foreach (var completion in childCompletions.Where(static completion => completion is not null))
         {
-            run.FailStep(step.Name, completion!.Messages);
+            if (completion!.Status != WorkflowRunStatus.Canceled)
+            {
+                run.FailStep(step.Name, completion.Messages);
+            }
             await this.UpsertRun(run, persistenceGate, CancellationToken.None);
             publisher.StepUpdated(run.ToSnapshot(), step.Name);
-            return new WorkflowRunCompletion(completion.Status, run.ToSnapshot(), completion.Messages);
+            return new WorkflowRunCompletion(
+                completion.Status,
+                run.ToSnapshot(),
+                completion.Messages,
+                completion.CancelOutstandingChildren);
         }
 
         run.MarkStepCompleted(step.Name, CollectStepWorkerIds(run, step.Steps));
@@ -253,6 +270,7 @@ internal sealed class DurableWorkflowExecutor(
 
     private async Task<WorkflowRunCompletion?> ExecuteBranch(
         WorkflowRunState run,
+        RegisteredWorkflow workflow,
         IWorkSystemSession session,
         BranchWorkflowStepDefinition step,
         WorkflowRunPersistenceGate persistenceGate,
@@ -269,6 +287,7 @@ internal sealed class DurableWorkflowExecutor(
                 : null;
             var completion = await this.ExecuteStep(
                 run,
+                workflow,
                 session,
                 child,
                 persistenceGate,
@@ -276,10 +295,17 @@ internal sealed class DurableWorkflowExecutor(
                 cancellationToken);
             if (completion is not null)
             {
-                run.FailStep(step.Name, completion.Messages);
+                if (completion.Status != WorkflowRunStatus.Canceled)
+                {
+                    run.FailStep(step.Name, completion.Messages);
+                }
                 await this.UpsertRun(run, persistenceGate, CancellationToken.None);
                 publisher.StepUpdated(run.ToSnapshot(), step.Name);
-                return new WorkflowRunCompletion(completion.Status, run.ToSnapshot(), completion.Messages);
+                return new WorkflowRunCompletion(
+                    completion.Status,
+                    run.ToSnapshot(),
+                    completion.Messages,
+                    completion.CancelOutstandingChildren);
             }
         }
 
@@ -504,6 +530,7 @@ internal sealed class DurableWorkflowExecutor(
 
     private async Task<WorkflowRunCompletion> WaitForJoinOutstanding(
         WorkflowRunState run,
+        RegisteredWorkflow workflow,
         IWorkSystemSession session,
         string joinStepName,
         WorkflowRunPersistenceGate persistenceGate,
@@ -525,20 +552,28 @@ internal sealed class DurableWorkflowExecutor(
             }
         }
 
-        while (outstanding.Count > 0)
+        var pending = outstanding.ToDictionary(
+            static workerId => workerId,
+            workerId => this.WaitForWorkerCompletion(run, session, workerId, cancellationToken));
+        while (pending.Count > 0)
         {
-            var workerId = outstanding[0];
-            var completion = await this.WaitForWorkerCompletion(run, session, workerId, cancellationToken);
-            if (!completion.IsCompletedSuccessfully)
+            var completedTask = await Task.WhenAny(pending.Values);
+            var completed = pending.Single(item => ReferenceEquals(item.Value, completedTask));
+            pending.Remove(completed.Key);
+
+            var completion = await completed.Value;
+            var status = WorkflowExecutionSupport.ToWorkflowStatus(
+                completion.Status,
+                WorkflowExecutionSupport.ResolveCanceledChildBehavior(run, workflow, completed.Key));
+            if (status != WorkflowRunStatus.Completed)
             {
                 return new WorkflowRunCompletion(
-                    WorkflowExecutionSupport.ToWorkflowStatus(completion.Status),
+                    status,
                     null,
                     completion.Messages);
             }
 
-            outstanding.RemoveAt(0);
-            run.RemoveStepWorkerId(joinStepName, workerId);
+            run.RemoveStepWorkerId(joinStepName, completed.Key);
             await this.UpsertRun(run, persistenceGate, CancellationToken.None);
             var publisher = workflowEvents ?? new WorkflowEventPublisher(default, null, new WorkEventStream());
             publisher.StepUpdated(run.ToSnapshot(), joinStepName);
@@ -549,17 +584,30 @@ internal sealed class DurableWorkflowExecutor(
 
     private async Task<WorkflowRunCompletion> WaitForOutstandingWorkers(
         WorkflowRunState run,
+        RegisteredWorkflow workflow,
         IWorkSystemSession session,
         IReadOnlyList<WorkerId> workerIds,
         CancellationToken cancellationToken)
     {
-        foreach (var workerId in workerIds.Distinct())
+        var pending = workerIds
+            .Distinct()
+            .ToDictionary(
+                static workerId => workerId,
+                workerId => this.WaitForWorkerCompletion(run, session, workerId, cancellationToken));
+        while (pending.Count > 0)
         {
-            var completion = await this.WaitForWorkerCompletion(run, session, workerId, cancellationToken);
-            if (!completion.IsCompletedSuccessfully)
+            var completedTask = await Task.WhenAny(pending.Values);
+            var completed = pending.Single(item => ReferenceEquals(item.Value, completedTask));
+            pending.Remove(completed.Key);
+
+            var completion = await completed.Value;
+            var status = WorkflowExecutionSupport.ToWorkflowStatus(
+                completion.Status,
+                WorkflowExecutionSupport.ResolveCanceledChildBehavior(run, workflow, completed.Key));
+            if (status != WorkflowRunStatus.Completed)
             {
                 return new WorkflowRunCompletion(
-                    WorkflowExecutionSupport.ToWorkflowStatus(completion.Status),
+                    status,
                     null,
                     completion.Messages);
             }
@@ -697,6 +745,27 @@ internal sealed class DurableWorkflowExecutor(
         var blocked = run.Block(messages);
         await this.UpsertRun(run, persistenceGate, cancellationToken);
         return blocked;
+    }
+
+    private async Task<WorkflowRunCompletion> CompleteFromChildOutcome(
+        WorkflowRunState run,
+        WorkflowRunCompletion completion,
+        WorkflowRunPersistenceGate persistenceGate,
+        CancellationToken cancellationToken)
+    {
+        if (completion.Status == WorkflowRunStatus.Blocked)
+        {
+            return await this.UpsertBlockedRun(run, completion.Messages, persistenceGate, cancellationToken);
+        }
+
+        if (completion.Status == WorkflowRunStatus.Canceled)
+        {
+            var canceled = run.Cancel(cancelOutstandingChildren: true);
+            await this.UpsertRun(run, persistenceGate, cancellationToken);
+            return canceled;
+        }
+
+        return await this.DeleteFailedRun(run, completion.Messages, persistenceGate, cancellationToken);
     }
 
     private sealed class WorkflowRunPersistenceGate

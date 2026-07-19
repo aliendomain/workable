@@ -187,7 +187,60 @@ public sealed class WorkflowRegistrationShould
                 Assert.Equal("load", dispatchEach.SourceStep.StepName);
                 Assert.Equal("sample.process", dispatchEach.WorkDefinition.Name);
                 Assert.Equal("/items", dispatchEach.SourceSelector.JsonPointer);
+                Assert.Equal(WorkflowCanceledChildBehavior.Continue, dispatchEach.CanceledChildBehavior);
             });
+    }
+
+    [Fact]
+    public void RegisterDispatchEachCanceledChildBehavior()
+    {
+        var services = new ServiceCollection();
+        var loadDefinition = WorkDefinition.Create("sample.load.canceled-policy");
+        var processDefinition = WorkDefinition.Create("sample.process.canceled-policy");
+
+        services.AddWorkableSystem(builder => builder.AddWorkflow(
+            WorkflowDefinition.Create("workflow.demo.dispatch-each.canceled-policy"),
+            workflow =>
+            {
+                var load = workflow.DispatchWork<DispatchEachSourceOutput>("load", loadDefinition);
+                workflow.DispatchEach(
+                    "fan-out",
+                    load,
+                    processDefinition,
+                    output => output.Items,
+                    WorkflowCanceledChildBehavior.CancelWorkflow);
+            }));
+
+        using var provider = services.BuildServiceProvider();
+        var registration = provider.GetRequiredService<WorkSystemRegistration>();
+        var workflow = Assert.Single(registration.Workflows);
+        var fanOut = Assert.IsType<DispatchEachWorkflowStepDefinition>(workflow.Steps[1]);
+
+        Assert.Equal(WorkflowCanceledChildBehavior.CancelWorkflow, fanOut.CanceledChildBehavior);
+    }
+
+    [Fact]
+    public void RejectInvalidDispatchEachCanceledChildBehavior()
+    {
+        var services = new ServiceCollection();
+        var loadDefinition = WorkDefinition.Create("sample.load.invalid-canceled-policy");
+        var processDefinition = WorkDefinition.Create("sample.process.invalid-canceled-policy");
+
+        var exception = Assert.Throws<ArgumentOutOfRangeException>(() =>
+            services.AddWorkableSystem(builder => builder.AddWorkflow(
+                WorkflowDefinition.Create("workflow.demo.dispatch-each.invalid-canceled-policy"),
+                workflow =>
+                {
+                    var load = workflow.DispatchWork<DispatchEachSourceOutput>("load", loadDefinition);
+                    workflow.DispatchEach(
+                        "fan-out",
+                        load,
+                        processDefinition,
+                        output => output.Items,
+                        (WorkflowCanceledChildBehavior)999);
+                })));
+
+        Assert.Equal("canceledChildBehavior", exception.ParamName);
     }
 
     [Fact]

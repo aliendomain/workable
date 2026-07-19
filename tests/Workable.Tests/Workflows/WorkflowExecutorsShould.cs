@@ -628,6 +628,131 @@ public sealed class WorkflowExecutorsShould
         Assert.Equal(WorkflowRunStatus.Blocked, store.Upserts.Last().Status);
     }
 
+    [Theory]
+    [InlineData(WorkflowCanceledChildBehavior.Continue, WorkflowRunStatus.Completed)]
+    [InlineData(WorkflowCanceledChildBehavior.Block, WorkflowRunStatus.Blocked)]
+    [InlineData(WorkflowCanceledChildBehavior.CancelWorkflow, WorkflowRunStatus.Canceled)]
+    public async Task ApplyDispatchEachCanceledChildBehaviorInDurableExecution(
+        WorkflowCanceledChildBehavior canceledChildBehavior,
+        WorkflowRunStatus expectedStatus)
+    {
+        var store = new RecordingWorkflowStore();
+        var persistence = new WorkflowPersistenceCoordinator(store, "workflow-tests");
+        var loadWorkerId = WorkerId.New();
+        var expandedWorkerIds = new List<WorkerId>();
+        var executor = new DurableWorkflowExecutor(
+            "workflow-tests",
+            name => CreateRegisteredWork(name),
+            _ => new TestWorkSystemSession(new DelegateQueueService((name, _, _, _) =>
+            {
+                var workerId = string.Equals(name, "sample.load", StringComparison.Ordinal)
+                    ? loadWorkerId
+                    : WorkerId.New();
+                if (workerId != loadWorkerId)
+                {
+                    expandedWorkerIds.Add(workerId);
+                }
+
+                return Task.FromResult<IWorkerHandle>(AcceptedHandle(workerId));
+            })),
+            workerId => workerId == loadWorkerId
+                ? new TestWorkerHandle(
+                    WorkQueueOutcome.Accepted(workerId),
+                    workerId,
+                    Task.FromResult(new WorkCompletion(
+                        WorkCompletionStatus.Completed,
+                        null,
+                        WorkOutput.FromJson("""{"items":[{"id":"alpha"},{"id":"beta"}]}"""),
+                        [])))
+                : new TestWorkerHandle(
+                    WorkQueueOutcome.Accepted(workerId),
+                    workerId,
+                    Task.FromResult(new WorkCompletion(
+                        workerId == expandedWorkerIds[0]
+                            ? WorkCompletionStatus.Canceled
+                            : WorkCompletionStatus.Completed,
+                        null,
+                        null,
+                        []))),
+            persistence);
+        var workflow = CreateWorkflow(
+            WorkflowDefinition.Create(
+                $"workflow.durable.dispatch-each.canceled.{canceledChildBehavior}".ToLowerInvariant(),
+                coordination: WorkflowCoordinationConfiguration.Durable),
+            Dispatch("load", "sample.load"),
+            DispatchEach(
+                "fan-out",
+                "load",
+                "sample.process",
+                "/items",
+                canceledChildBehavior),
+            new JoinWorkflowStepDefinition("join"));
+        var run = WorkflowRunState.Create(workflow, WorkRequestContext.Create(WorkInvocationChannel.InProcess));
+
+        var completion = await executor.Execute(run, workflow, CancellationToken.None);
+
+        Assert.Equal(expectedStatus, completion.Status);
+        Assert.Equal(2, expandedWorkerIds.Count);
+        Assert.Equal(
+            canceledChildBehavior == WorkflowCanceledChildBehavior.CancelWorkflow,
+            completion.CancelOutstandingChildren);
+    }
+
+    [Theory]
+    [InlineData(WorkflowCanceledChildBehavior.Continue, WorkflowRunStatus.Completed)]
+    [InlineData(WorkflowCanceledChildBehavior.Block, WorkflowRunStatus.Blocked)]
+    [InlineData(WorkflowCanceledChildBehavior.CancelWorkflow, WorkflowRunStatus.Canceled)]
+    public async Task ApplyDispatchEachCanceledChildBehaviorInNonDurableExecution(
+        WorkflowCanceledChildBehavior canceledChildBehavior,
+        WorkflowRunStatus expectedStatus)
+    {
+        var expandedWorkerCount = 0;
+        var executor = new NonDurableWorkflowExecutor(
+            _ => new TestWorkSystemSession(new DelegateQueueService((name, _, _, _) =>
+            {
+                var workerId = WorkerId.New();
+                if (string.Equals(name, "sample.load", StringComparison.Ordinal))
+                {
+                    return Task.FromResult<IWorkerHandle>(new TestWorkerHandle(
+                        WorkQueueOutcome.Accepted(workerId),
+                        workerId,
+                        Task.FromResult(new WorkCompletion(
+                            WorkCompletionStatus.Completed,
+                            null,
+                            WorkOutput.FromJson("""{"items":[{"id":"alpha"},{"id":"beta"}]}"""),
+                            []))));
+                }
+
+                var completionStatus = Interlocked.Increment(ref expandedWorkerCount) == 1
+                    ? WorkCompletionStatus.Canceled
+                    : WorkCompletionStatus.Completed;
+                return Task.FromResult<IWorkerHandle>(new TestWorkerHandle(
+                    WorkQueueOutcome.Accepted(workerId),
+                    workerId,
+                    Task.FromResult(new WorkCompletion(completionStatus, null, null, []))));
+            })));
+        var workflow = CreateWorkflow(
+            WorkflowDefinition.Create(
+                $"workflow.non-durable.dispatch-each.canceled.{canceledChildBehavior}".ToLowerInvariant()),
+            Dispatch("load", "sample.load"),
+            DispatchEach(
+                "fan-out",
+                "load",
+                "sample.process",
+                "/items",
+                canceledChildBehavior),
+            new JoinWorkflowStepDefinition("join"));
+        var run = WorkflowRunState.Create(workflow, WorkRequestContext.Create(WorkInvocationChannel.InProcess));
+
+        var completion = await executor.Execute(run, workflow, CancellationToken.None);
+
+        Assert.Equal(expectedStatus, completion.Status);
+        Assert.Equal(2, expandedWorkerCount);
+        Assert.Equal(
+            canceledChildBehavior == WorkflowCanceledChildBehavior.CancelWorkflow,
+            completion.CancelOutstandingChildren);
+    }
+
     [Fact]
     public async Task DeleteDurableRunWhenJoinObservesFailedChildCompletion()
     {
@@ -905,12 +1030,14 @@ public sealed class WorkflowExecutorsShould
         string stepName,
         string sourceStepName,
         string workDefinitionName,
-        string? sourceJsonPointer = null)
+        string? sourceJsonPointer = null,
+        WorkflowCanceledChildBehavior canceledChildBehavior = WorkflowCanceledChildBehavior.Continue)
         => new(
             stepName,
             new WorkflowStepReference<object?>(sourceStepName),
             WorkDefinition.Create(workDefinitionName),
-            new WorkflowOutputSelector(sourceJsonPointer));
+            new WorkflowOutputSelector(sourceJsonPointer),
+            canceledChildBehavior);
 
     private static RegisteredWork CreateRegisteredWork(string name)
         => new(
