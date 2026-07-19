@@ -200,7 +200,7 @@ services.AddWorkableSystem(builder =>
 
 Workflows are not executor classes. They are named orchestration definitions that dispatch existing work definitions through built-in step shapes.
 
-Workflow authorization uses the same `IWorkAuthorizationBuilder` model as work registration. See [Workflows](workflows.md) for the current runtime scope, execution semantics, and in-memory-only limitations.
+Workflow authorization uses the same `IWorkAuthorizationBuilder` model as work registration. See [Workflows](workflows.md) for the current runtime scope, execution semantics, and durability behavior.
 
 When several registrations share the same fluent work configuration or authorization, group them with `WithWorkDefaults(...)`.
 

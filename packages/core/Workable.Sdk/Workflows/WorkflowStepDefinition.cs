@@ -58,7 +58,7 @@ public enum WorkflowCanceledChildBehavior
     Continue = 0,
 
     /// <summary>
-    /// Blocks the workflow at its next synchronization point.
+    /// Blocks the workflow at its next synchronization point without canceling the remaining sibling workers.
     /// </summary>
     Block = 1,
 
