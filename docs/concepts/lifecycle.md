@@ -114,7 +114,7 @@ sequenceDiagram
     end
 ```
 
-Executors receive a Workable-owned `CancellationToken`. Explicit API cancellation and interruption both cancel that token, but they produce different lifecycle outcomes. During interruption, `IWorkExecutionContext.IsInterrupted` returns `true` and `IWorkExecutionContext.InterruptionReason` reports why, such as `Shutdown` or `LeaseLost`, so executor code can distinguish recoverable interruption from an explicit cancel request.
+Executors receive a Workable-owned `CancellationToken`. Explicit API cancellation and interruption both cancel that token, but they produce different lifecycle outcomes. For an accepted explicit cancel action, `IWorkExecutionContext.CancellationRequestContext` is set before the token is canceled; its actor identifies the canceling caller when known, and its description contains the optional `WorkerActionRequest.Reason`. During interruption, `CancellationRequestContext` remains `null`, `IsInterrupted` returns `true`, and `InterruptionReason` reports why, such as `Shutdown` or `LeaseLost`.
 
 ## Recurring Execution
 

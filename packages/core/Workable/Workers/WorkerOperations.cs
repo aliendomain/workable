@@ -470,23 +470,31 @@ internal sealed class WorkerOperations :
         WorkerVersion worker,
         WorkAction action,
         CancellationToken cancellationToken = default)
+        => this.Execute(worker, new WorkerActionRequest(action), cancellationToken);
+
+    public Task<WorkActionOutcome> Execute(
+        WorkerVersion worker,
+        WorkerActionRequest request,
+        CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
+        ArgumentNullException.ThrowIfNull(request);
         return this.Execute(
             worker,
-            action,
+            request,
             WorkRequestContext.Create(WorkInvocationChannel.InProcess),
             cancellationToken);
     }
 
     internal Task<WorkActionOutcome> Execute(
         WorkerVersion worker,
-        WorkAction action,
+        WorkerActionRequest request,
         WorkRequestContext requestContext,
         CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        return this.ApplyAction(worker, action, requestContext, cancellationToken);
+        ArgumentNullException.ThrowIfNull(request);
+        return this.ApplyAction(worker, request, requestContext, cancellationToken);
     }
 
     public Task<WorkerBulkActionOutcome> ExecuteAll(
@@ -522,7 +530,11 @@ internal sealed class WorkerOperations :
         {
             cancellationToken.ThrowIfCancellationRequested();
             var version = candidate.ToSummary().Version;
-            outcomes.Add(await this.ApplyAction(version, action, requestContext, cancellationToken));
+            outcomes.Add(await this.ApplyAction(
+                version,
+                new WorkerActionRequest(action),
+                requestContext,
+                cancellationToken));
         }
 
         return new WorkerBulkActionOutcome(
@@ -534,15 +546,17 @@ internal sealed class WorkerOperations :
 
     private async Task<WorkActionOutcome> ApplyAction(
         WorkerVersion worker,
-        WorkAction action,
+        WorkerActionRequest request,
         WorkRequestContext requestContext,
         CancellationToken cancellationToken)
     {
+        var action = request.Action;
         if (!this.workers.TryGetValue(worker.WorkerId, out var record))
         {
             return WorkActionOutcome.NotFound(action, worker.WorkerId);
         }
 
+        var storedRequestContext = CreateStoredActionRequestContext(requestContext, request);
         WorkActionOutcome outcome;
         if (action == WorkAction.Purge)
         {
@@ -555,13 +569,12 @@ internal sealed class WorkerOperations :
             {
                 WorkAction.Start => this.Start(record, worker.Revision, advancesRevision: true, bypassConcurrencyWhenFlexible: true),
                 WorkAction.Pause => record.RequestPause(worker.Revision),
-                WorkAction.Cancel => record.RequestCancel(worker.Revision),
+                WorkAction.Cancel => record.RequestCancel(worker.Revision, storedRequestContext),
                 WorkAction.Push => record.Push(worker.Revision),
                 _ => WorkActionOutcome.Invalid(action, record.ToSnapshot(), [WorkMessage.Error("workable.action.invalid", $"Action '{action}' is not supported.")]),
             };
         }
 
-        var storedRequestContext = requestContext.WithoutAuthorization();
         record.RecordActionHistory(outcome, storedRequestContext);
 
         if (outcome.IsAccepted)
@@ -592,6 +605,16 @@ internal sealed class WorkerOperations :
 
     private static bool ShouldSignalCurrentCompletion(WorkAction action)
         => action != WorkAction.Pause;
+
+    private static WorkRequestContext CreateStoredActionRequestContext(
+        WorkRequestContext requestContext,
+        WorkerActionRequest request)
+    {
+        var storedRequestContext = requestContext.WithoutAuthorization();
+        return request.Reason is null
+            ? storedRequestContext
+            : storedRequestContext with { Description = request.Reason };
+    }
 
     public Task<WorkActionOutcome> Reconfigure(
         WorkerVersion worker,
@@ -984,7 +1007,7 @@ internal sealed class WorkerOperations :
         foreach (var schedule in schedules)
         {
             if (!this.workers.TryGetValue(schedule.WorkerId, out var worker) ||
-                !worker.TryAutoCancelFailedWorker(schedule.StateSequence, out var outcome) ||
+                !worker.TryAutoCancelFailedWorker(schedule.StateSequence, requestContext, out var outcome) ||
                 outcome is null)
             {
                 continue;

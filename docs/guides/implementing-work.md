@@ -64,6 +64,7 @@ That means executor code should treat each execution attempt as a clean DI scope
 - `WorkerId`: the worker currently executing.
 - `Definition`: the `WorkDefinition` being executed.
 - `RequestContext`: the original `WorkRequestContext` for this worker. Use `RequestContext.Origin` for durable provenance and `RequestContext.Description` / `RequestContext.Url` for caller-supplied request metadata.
+- `CancellationRequestContext`: the caller context for an accepted explicit cancellation request stopping the current execution. Its `Actor` identifies the canceling caller when known, and its `Description` contains the optional action reason.
 - `Options`: the effective `WorkerOptions` for this worker.
 - `Configuration`: the effective `WorkConfiguration` for this worker.
 
@@ -294,6 +295,7 @@ Important nuance:
 If a running worker is canceled:
 
 - the worker moves to `Canceling`
+- `context.CancellationRequestContext` becomes available before Workable signals the execution token
 - Workable cancels the execution token
 - `context.IsInterrupted` remains `false`
 
@@ -345,6 +347,21 @@ catch (OperationCanceledException) when (context.InterruptionReason == WorkInter
 ```
 
 In many cases, though, the best behavior is simply to let `OperationCanceledException` propagate so Workable can translate the current control state into `Paused`, `Canceled`, or `Interrupted`.
+
+When cleanup or auditing needs the explicit cancellation caller and reason, inspect the cancellation request context and then rethrow:
+
+```csharp
+catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+{
+    WorkActor? canceledBy = context.CancellationRequestContext?.Actor;
+    string? reason = context.CancellationRequestContext?.Description;
+
+    await audit.RecordCancellation(context.WorkerId, canceledBy, reason);
+    throw;
+}
+```
+
+`CancellationRequestContext` remains `null` for pause, shutdown interruption, lease loss, and cancellation that did not come from an accepted explicit worker-cancel action.
 
 ## What Happens If Executor Code Swallows Cancellation
 

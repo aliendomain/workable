@@ -148,9 +148,24 @@ See [Outcomes And Control](outcomes-and-control.md) for the full outcome model.
 - `ExecuteAll(...)` for bulk actions
 - `Reconfigure(...)` for runtime worker reconfiguration
 
-Single-worker operations are revision-aware through `WorkerVersion`. Bulk operations intentionally report one `WorkActionOutcome` per matched worker instead of collapsing the whole batch into one coarse result.
+Single-worker operations are revision-aware through `WorkerVersion`. The concise `Execute(worker, action, cancellationToken)` overload remains available, while `Execute(worker, WorkerActionRequest, cancellationToken)` adds an optional per-action `Reason`. The session still supplies caller identity and transport provenance; the action request supplies what should happen and why.
+
+```csharp
+await session.Workers.Execute(
+    worker.Version,
+    new WorkerActionRequest(
+        WorkAction.Cancel,
+        Reason: "The customer withdrew the order."),
+    cancellationToken);
+```
+
+For running work stopped by an accepted explicit cancel action, the sanitized action context is available to executor code through `IWorkExecutionContext.CancellationRequestContext`. Its `Actor` identifies the caller when known, and its `Description` contains the action reason. Workable establishes that value before canceling the execution token. It remains `null` for pause, shutdown interruption, and lease loss.
+
+Bulk operations intentionally report one `WorkActionOutcome` per matched worker instead of collapsing the whole batch into one coarse result.
 
 This surface is for existing workers. Changing defaults for future workers belongs on `IWorkCatalog.Reconfigure(...)`.
+
+Adding the `WorkerActionRequest` overload to `IWorkerOperations` and `CancellationRequestContext` to `IWorkExecutionContext` changes those public interface shapes. Hosts that implement either interface themselves must add the new member when upgrading.
 
 ## Query Surface
 

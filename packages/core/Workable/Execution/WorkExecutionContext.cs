@@ -5,6 +5,7 @@ internal sealed class WorkExecutionContext(
     WorkerId WorkerId,
     WorkDefinition Definition,
     WorkRequestContext RequestContext,
+    Func<WorkRequestContext?> CancellationRequestContextCallback,
     WorkerOptions Options,
     WorkConfiguration Configuration,
     Func<WorkInterruptionReason?> InterruptionReasonCallback,
@@ -28,6 +29,8 @@ internal sealed class WorkExecutionContext(
     public WorkDefinition Definition { get; } = Definition;
 
     public WorkRequestContext RequestContext { get; } = RequestContext;
+
+    public WorkRequestContext? CancellationRequestContext => CancellationRequestContextCallback();
 
     public WorkerOptions Options { get; } = Options;
 

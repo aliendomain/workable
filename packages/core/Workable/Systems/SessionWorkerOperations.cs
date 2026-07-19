@@ -8,7 +8,13 @@ internal sealed class SessionWorkerOperations(
         WorkerVersion worker,
         WorkAction action,
         CancellationToken cancellationToken = default)
-        => inner.Execute(worker, action, requestContext, cancellationToken);
+        => this.Execute(worker, new WorkerActionRequest(action), cancellationToken);
+
+    public Task<WorkActionOutcome> Execute(
+        WorkerVersion worker,
+        WorkerActionRequest request,
+        CancellationToken cancellationToken = default)
+        => inner.Execute(worker, request, requestContext, cancellationToken);
 
     public Task<WorkerBulkActionOutcome> ExecuteAll(
         WorkAction action,

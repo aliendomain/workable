@@ -354,6 +354,12 @@ public sealed class WorkflowExecutionSupportShould
             return Task.FromResult(WorkActionOutcome.Accepted(action, CreateSnapshot(worker.WorkerId, nextState, worker.Revision), []));
         }
 
+        public Task<WorkActionOutcome> Execute(
+            WorkerVersion worker,
+            WorkerActionRequest request,
+            CancellationToken cancellationToken = default)
+            => this.Execute(worker, request.Action, cancellationToken);
+
         public Task<WorkerBulkActionOutcome> ExecuteAll(
             WorkAction action,
             WorkerBulkActionFilter? filter = null,

@@ -303,7 +303,12 @@ WorkerSnapshot? worker = await workSystem.Query.Worker(handle.WorkerId!.Value);
 
 if (worker is not null)
 {
-    await workSystem.Workers.Execute(worker.Version, WorkAction.Cancel, cancellationToken);
+    await workSystem.Workers.Execute(
+        worker.Version,
+        new WorkerActionRequest(
+            WorkAction.Cancel,
+            Reason: "The customer withdrew the order."),
+        cancellationToken);
 }
 ```
 

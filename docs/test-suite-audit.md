@@ -1,6 +1,6 @@
 # Test Suite Audit
 
-Last updated: 2026-06-11
+Last updated: 2026-07-19
 
 ## Scope
 
@@ -18,6 +18,14 @@ Current full-suite command:
 dotnet test .\Workable.slnx --no-restore --logger "console;verbosity=minimal" --blame-hang-timeout 2m
 ```
 
+Current coverage command:
+
+```powershell
+dotnet test tests\Workable.Tests\Workable.Tests.csproj --no-restore --collect "XPlat Code Coverage"
+```
+
+The 2026-07-19 cancellation-request-context change has 100% changed executable line coverage (46/46), exceeding the 95% changed-code target. The complete core-library report is currently 89.87% line coverage (23,487/26,134); reaching 95% globally remains a separate repository-wide coverage project rather than a claim made by this feature work.
+
 Focused commands:
 
 ```powershell
@@ -31,8 +39,8 @@ Last full run:
 
 ```text
 dotnet test .\Workable.slnx --no-restore --logger "console;verbosity=minimal" --blame-hang-timeout 2m
-Passed: Workable.Tests, 1010 passed
-Passed: Workable.SqlServer.Tests, 45 passed
+Passed: Workable.Tests, 1427 passed
+Passed: Workable.SqlServer.Tests, 66 passed
 Overall: 1055 passed, 0 failed
 ```
 

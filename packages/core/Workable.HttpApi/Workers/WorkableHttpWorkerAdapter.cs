@@ -24,7 +24,10 @@ public sealed class WorkableHttpWorkerAdapter
         ArgumentNullException.ThrowIfNull(session);
         ArgumentNullException.ThrowIfNull(request);
 
-        return session.Workers.Execute(new WorkerVersion(workerId, request.Revision), action, cancellationToken);
+        return session.Workers.Execute(
+            new WorkerVersion(workerId, request.Revision),
+            new WorkerActionRequest(action, request.Description),
+            cancellationToken);
     }
 
     /// <summary>

@@ -24,7 +24,7 @@ The core API defines the public shape of Workable for discovering work, queueing
 `IWorkSystemRegistry` exposes the default system, lookup by name for named systems, and enumeration of registered systems.
 
 Work execution receives scoped services and profile access through `IWorkExecutionContext`.
-Execution context also exposes the worker's `WorkRequestContext` (including `Origin`), whether interruption is currently being applied through `IsInterrupted`, and the nullable `InterruptionReason` (`Shutdown` or `LeaseLost`).
+Execution context also exposes the worker's creation `WorkRequestContext` (including `Origin`), the nullable `CancellationRequestContext` for an accepted explicit cancel request, whether interruption is currently being applied through `IsInterrupted`, and the nullable `InterruptionReason` (`Shutdown` or `LeaseLost`). A cancellation request context is published before Workable signals the execution token, so executor cleanup can read its actor and optional reason without querying action history.
 
 ## Definition Rules
 
@@ -86,6 +86,7 @@ Execution context also exposes the worker's `WorkRequestContext` (including `Ori
 - Queueing returns an `IWorkerHandle` with immediate `WorkQueueOutcome` information.
 - Worker handles can be awaited as raw `WorkCompletion` or typed `WorkCompletion<TOutput>`.
 - Worker actions return `WorkActionOutcome`.
+- Single-worker actions accept either a concise `WorkAction` or a `WorkerActionRequest` containing the action and an optional human-readable `Reason`.
 - Bulk worker actions return `WorkerBulkActionOutcome` with one `WorkActionOutcome` per matched worker.
 - Worker snapshots expose durable action history for worker actions and reconfiguration attempts that reached an existing worker, including the associated retained iteration sequence when the action was recorded against a tracked iteration.
 - Worker snapshots expose `CurrentIterationSequence` and `LastIterationSequence` so callers can cheaply locate the active or most recently completed iteration.

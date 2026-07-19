@@ -6,6 +6,28 @@ namespace Workable.Tests;
 public sealed class AuthorizedWorkerOperationsShould
 {
     [Fact]
+    public async Task ForwardAuthorizedWorkerActionRequestWithReason()
+    {
+        var visible = CreateRegisteredWork("visible.work", authorize => authorize.AllowOperateToGroups("visible.operate"));
+        var operations = CreateOperations(
+            groups: ["visible.operate"],
+            works: [visible],
+            out _,
+            out var query,
+            out var inner);
+        var workerId = WorkerId.New();
+        query.WorkersById[workerId] = CreateWorkerSnapshot(workerId, visible.Definition);
+        var request = new WorkerActionRequest(WorkAction.Cancel, "The customer withdrew the order.");
+
+        await operations.Execute(new WorkerVersion(workerId, Revision: 7), request);
+
+        Assert.Equal(request, Assert.Single(inner.ExecutedRequests));
+        Assert.Equal(
+            new RecordedAction(new WorkerVersion(workerId, Revision: 7), WorkAction.Cancel),
+            Assert.Single(inner.Executed));
+    }
+
+    [Fact]
     public async Task ReturnUnauthorizedWithoutCallingInnerForWorkersOutsideOperateScope()
     {
         var visible = CreateRegisteredWork("visible.work", authorize => authorize.AllowOperateToGroups("visible.operate"));
@@ -565,6 +587,8 @@ public sealed class AuthorizedWorkerOperationsShould
     {
         public List<RecordedAction> Executed { get; } = [];
 
+        public List<WorkerActionRequest> ExecutedRequests { get; } = [];
+
         public List<RecordedReconfigure> Reconfigured { get; } = [];
 
         public Task<WorkActionOutcome> Execute(
@@ -574,6 +598,15 @@ public sealed class AuthorizedWorkerOperationsShould
         {
             this.Executed.Add(new RecordedAction(worker, action));
             return Task.FromResult(WorkActionOutcome.NotFound(action, worker.WorkerId));
+        }
+
+        public Task<WorkActionOutcome> Execute(
+            WorkerVersion worker,
+            WorkerActionRequest request,
+            CancellationToken cancellationToken = default)
+        {
+            this.ExecutedRequests.Add(request);
+            return this.Execute(worker, request.Action, cancellationToken);
         }
 
         public Task<WorkerBulkActionOutcome> ExecuteAll(

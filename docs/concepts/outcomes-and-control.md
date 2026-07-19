@@ -158,6 +158,19 @@ For workers:
 - `Execute(...)` and `Reconfigure(...)` require `WorkerVersion`
 - stale callers receive `Conflict`
 
+The concise `Execute(worker, action, cancellationToken)` overload applies an action without a reason. Use the `WorkerActionRequest` overload when the action should carry a human-readable reason:
+
+```csharp
+await session.Workers.Execute(
+    worker.Version,
+    new WorkerActionRequest(
+        WorkAction.Cancel,
+        Reason: "The customer withdrew the order."),
+    cancellationToken);
+```
+
+The action reason is recorded as the action request context description. For an accepted cancellation of running code, that same context becomes available through `IWorkExecutionContext.CancellationRequestContext` before Workable signals the execution cancellation token.
+
 For definitions:
 
 - `Reconfigure(...)` requires `WorkDefinitionVersion`

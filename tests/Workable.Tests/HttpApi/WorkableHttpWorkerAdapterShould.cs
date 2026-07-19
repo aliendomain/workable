@@ -11,10 +11,17 @@ public sealed class WorkableHttpWorkerAdapterShould
         var session = new RecordingSession(operations);
         var adapter = new WorkableHttpWorkerAdapter();
 
-        await adapter.Execute(session, workerId, WorkAction.Pause, new WorkableHttpWorkerActionRequest(42));
+        await adapter.Execute(
+            session,
+            workerId,
+            WorkAction.Pause,
+            new WorkableHttpWorkerActionRequest(42, "Pause while the dependency is unavailable."));
 
         Assert.Equal(new WorkerVersion(workerId, 42), operations.ExecutedWorker);
         Assert.Equal(WorkAction.Pause, operations.ExecutedAction);
+        Assert.Equal(
+            new WorkerActionRequest(WorkAction.Pause, "Pause while the dependency is unavailable."),
+            operations.ExecutedRequest);
     }
 
     [Fact]
@@ -113,6 +120,8 @@ public sealed class WorkableHttpWorkerAdapterShould
 
         public WorkAction? ExecutedAction { get; private set; }
 
+        public WorkerActionRequest? ExecutedRequest { get; private set; }
+
         public WorkAction? ExecutedBulkAction { get; private set; }
 
         public WorkerBulkActionFilter? ExecutedBulkFilter { get; private set; }
@@ -125,11 +134,18 @@ public sealed class WorkableHttpWorkerAdapterShould
             WorkerVersion worker,
             WorkAction action,
             CancellationToken cancellationToken = default)
+            => this.Execute(worker, new WorkerActionRequest(action), cancellationToken);
+
+        public Task<WorkActionOutcome> Execute(
+            WorkerVersion worker,
+            WorkerActionRequest request,
+            CancellationToken cancellationToken = default)
         {
             this.ExecutedWorker = worker;
-            this.ExecutedAction = action;
+            this.ExecutedAction = request.Action;
+            this.ExecutedRequest = request;
 
-            return Task.FromResult(WorkActionOutcome.NotFound(action, worker.WorkerId));
+            return Task.FromResult(WorkActionOutcome.NotFound(request.Action, worker.WorkerId));
         }
 
         public Task<WorkerBulkActionOutcome> ExecuteAll(

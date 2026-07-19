@@ -71,8 +71,7 @@ internal static class WorkableHttpWorkerRoutes
             var session = WorkableHttpRequestContext.CreateSession(
                 httpContext,
                 system,
-                requestContexts,
-                request.Description);
+                requestContexts);
             var result = await workers.Execute(session, new WorkerId(workerId), parsedAction, request, cancellationToken);
             return WorkableHttpRouteResults.ToActionHttpResult(result);
         });

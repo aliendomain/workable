@@ -8,7 +8,7 @@ The built-in HTTP adapter also stamps queued work and worker actions with `WorkO
 
 Invocation-channel rules matter for work invocation, not for general system/query/worker discovery routes. Definition listing, diagnostics, worker reads, lifecycle routes, and other read/control surfaces are governed by authorization and route shape, not by definition invocation-channel settings.
 
-HTTP queueing, worker actions, and worker reconfiguration record a `WorkRequestContext` from the request. Its nested `Origin` carries the durable actor/channel provenance, and the request context also captures the HTTP path as `RequestContext.Url`. Built-in queue, action, bulk-action, and reconfiguration request bodies can also supply an optional `description` value, which Workable stores on `RequestContext.Description`.
+HTTP queueing, worker actions, and worker reconfiguration record a `WorkRequestContext` from the request. Its nested `Origin` carries the durable actor/channel provenance, and the request context also captures the HTTP path as `RequestContext.Url`. Built-in queue, action, bulk-action, and reconfiguration request bodies can also supply an optional `description` value. For a single-worker action, the adapter maps that wire-level value to `WorkerActionRequest.Reason`, and Workable records it on the action context as `RequestContext.Description`.
 
 `Workable.HttpApi` is an authenticated transport. Anonymous callers are rejected before Workable routes run or request bodies are bound, and mapped systems must be authorization-enabled.
 
@@ -712,7 +712,7 @@ Content-Type: application/json
 }
 ```
 
-The action route supports `Start`, `Pause`, `Cancel`, `Push`, and `Purge`. `description` is optional and is copied into the action-history origin when supplied.
+The action route supports `Start`, `Pause`, `Cancel`, `Push`, and `Purge`. `description` remains the public wire name and is mapped to `WorkerActionRequest.Reason`. Workable records it as the action history's `RequestContext.Description`; for an accepted cancel of running code, the same value is available to executor code through `IWorkExecutionContext.CancellationRequestContext.Description` before the execution token is signaled.
 
 Apply a worker action to all workers in the system.
 
