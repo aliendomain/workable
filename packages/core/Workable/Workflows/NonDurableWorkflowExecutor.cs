@@ -83,7 +83,7 @@ internal sealed class NonDurableWorkflowExecutor(
         {
             if (isCancelRequested() || !isPauseRequested())
             {
-                return run.Cancel();
+                return new WorkflowRunCompletion(WorkflowRunStatus.Canceled, null, []);
             }
 
             var session = createSession(run.RequestContext);
@@ -562,7 +562,11 @@ internal sealed class NonDurableWorkflowExecutor(
         => completion.Status switch
         {
             WorkflowRunStatus.Blocked => run.Block(completion.Messages),
-            WorkflowRunStatus.Canceled => run.Cancel(cancelOutstandingChildren: true),
+            WorkflowRunStatus.Canceled => new WorkflowRunCompletion(
+                WorkflowRunStatus.Canceled,
+                null,
+                completion.Messages,
+                CancelOutstandingChildren: true),
             _ => run.Fail(completion.Messages),
         };
 

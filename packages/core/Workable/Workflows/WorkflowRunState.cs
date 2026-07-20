@@ -8,6 +8,7 @@ internal sealed class WorkflowRunState
     private readonly Action? onChanged;
     private readonly TaskCompletionSource<WorkflowRunCompletion> completion =
         new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private int completionClaimed;
     private IReadOnlyList<WorkMessage> messages = [];
     private WorkflowRunStatus status;
     private WorkflowAction? pendingControlAction;
@@ -138,8 +139,29 @@ internal sealed class WorkflowRunState
     public Task<WorkflowRunCompletion> WaitForCompletion()
         => this.completion.Task;
 
+    public bool IsCompletionFaulted => this.completion.Task.IsFaulted;
+
+    public bool TryClaimCompletion()
+        => Interlocked.CompareExchange(ref this.completionClaimed, 1, 0) == 0;
+
     public bool TrySetCompletion(WorkflowRunCompletion value)
+    {
+        if (!this.TryClaimCompletion())
+        {
+            return false;
+        }
+
+        return this.completion.TrySetResult(value);
+    }
+
+    public bool TrySetClaimedCompletion(WorkflowRunCompletion value)
         => this.completion.TrySetResult(value);
+
+    public bool TrySetClaimedCompletionException(Exception exception)
+    {
+        ArgumentNullException.ThrowIfNull(exception);
+        return this.completion.TrySetException(exception);
+    }
 
     public void MarkRunning()
     {

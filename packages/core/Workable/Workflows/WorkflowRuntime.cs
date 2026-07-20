@@ -464,15 +464,16 @@ internal sealed class WorkflowRuntime
                 }
 
                 var canceled = run.Cancel();
-                if (workflow.Definition.Coordination.IsDurable)
+                if (await this.TryPersistAndSetFinalCompletion(
+                    run,
+                    canceled,
+                    workflow.Definition.Coordination.IsDurable))
                 {
-                    await this.persistence.UpsertRun(run.Id, () => this.CreatePersistenceRecord(run), CancellationToken.None);
+                    this.workflowEvents.ActionAccepted(canceled.Run ?? snapshot, action, requestContext);
+                    this.workflowEvents.Completion(canceled);
+                    await this.TryPurgeFinalRunIfChildrenGone(run, CancellationToken.None);
                 }
 
-                run.TrySetCompletion(canceled);
-                this.workflowEvents.ActionAccepted(canceled.Run ?? snapshot, action, requestContext);
-                this.workflowEvents.Completion(canceled);
-                await this.TryPurgeFinalRunIfChildrenGone(run, CancellationToken.None);
                 return WorkflowActionOutcome.Accepted(action, canceled.Run ?? snapshot);
             }
             finally
@@ -623,12 +624,13 @@ internal sealed class WorkflowRuntime
                 "workable.workflow.definition_mismatch",
                 $"Workflow '{record.DefinitionName}' run '{record.RunId.Value:D}' could not be recovered because the persisted workflow definition fingerprint does not match the current registered workflow.",
                 "workflow.definition")]);
-        run.TrySetCompletion(completion);
-        this.workflowEvents.Completion(completion);
         this.runs.TryAdd(run.Id, run);
         this.AdvanceVersion();
-        await this.persistence.UpsertRun(run.Id, () => this.CreatePersistenceRecord(run), CancellationToken.None);
-        await this.TryPurgeFinalRunIfChildrenGone(run, CancellationToken.None);
+        if (await this.TryPersistAndSetFinalCompletion(run, completion, shouldPersist: true))
+        {
+            this.workflowEvents.Completion(completion);
+            await this.TryPurgeFinalRunIfChildrenGone(run, CancellationToken.None);
+        }
     }
 
     private async Task<WorkflowRunCompletion> RunExecution(
@@ -680,13 +682,14 @@ internal sealed class WorkflowRuntime
 
                 var shouldPersistState = workflow.Definition.Coordination.IsDurable &&
                     (completion.Status == WorkflowRunStatus.Blocked || ShouldPersistFinalState(completion, control));
-                var shouldPublishCompletion = true;
-                if (completion.IsFinal)
-                {
-                    shouldPublishCompletion = run.TrySetCompletion(completion);
-                }
+                var shouldPublishCompletion = completion.IsFinal
+                    ? await this.TryPersistAndSetFinalCompletion(
+                        run,
+                        completion,
+                        shouldPersistState)
+                    : true;
 
-                if (shouldPersistState && shouldPublishCompletion)
+                if (!completion.IsFinal && shouldPersistState)
                 {
                     await this.persistence.UpsertRun(run.Id, () => this.CreatePersistenceRecord(run), CancellationToken.None);
                 }
@@ -734,13 +737,12 @@ internal sealed class WorkflowRuntime
                 }
 
                 var completion = run.Cancel();
-                var shouldPublishCompletion = run.TrySetCompletion(completion);
-                if (shouldPublishCompletion &&
-                    workflow.Definition.Coordination.IsDurable &&
-                    ShouldPersistFinalState(completion, control))
-                {
-                    await this.persistence.UpsertRun(run.Id, () => this.CreatePersistenceRecord(run), CancellationToken.None);
-                }
+                var shouldPersistCompletion = workflow.Definition.Coordination.IsDurable &&
+                    ShouldPersistFinalState(completion, control);
+                var shouldPublishCompletion = await this.TryPersistAndSetFinalCompletion(
+                    run,
+                    completion,
+                    shouldPersistCompletion);
 
                 if (shouldPublishCompletion)
                 {
@@ -768,18 +770,17 @@ internal sealed class WorkflowRuntime
             this.workflowEvents.Completion(paused);
             return paused;
         }
-        catch (Exception exception)
+        catch (Exception exception) when (!run.IsCompletionFaulted)
         {
             var completion = run.Fail(
                 [WorkMessage.Error(
                     "workable.workflow.execution_exception",
                     exception.Message,
                     "workflow.execution")]);
-            var shouldPublishCompletion = run.TrySetCompletion(completion);
-            if (shouldPublishCompletion && workflow.Definition.Coordination.IsDurable)
-            {
-                await this.persistence.UpsertRun(run.Id, () => this.CreatePersistenceRecord(run), CancellationToken.None);
-            }
+            var shouldPublishCompletion = await this.TryPersistAndSetFinalCompletion(
+                run,
+                completion,
+                workflow.Definition.Coordination.IsDurable);
 
             if (shouldPublishCompletion)
             {
@@ -849,6 +850,36 @@ internal sealed class WorkflowRuntime
 
     private WorkflowRunPersistenceRecord CreatePersistenceRecord(WorkflowRunState run)
         => run.ToPersistenceRecord(this.systemName);
+
+    private async Task<bool> TryPersistAndSetFinalCompletion(
+        WorkflowRunState run,
+        WorkflowRunCompletion completion,
+        bool shouldPersist)
+    {
+        if (!run.TryClaimCompletion())
+        {
+            return false;
+        }
+
+        try
+        {
+            if (shouldPersist)
+            {
+                await this.persistence.UpsertRun(
+                    run.Id,
+                    () => this.CreatePersistenceRecord(run),
+                    CancellationToken.None);
+            }
+        }
+        catch (Exception exception)
+        {
+            run.TrySetClaimedCompletionException(exception);
+            throw;
+        }
+
+        run.TrySetClaimedCompletion(completion);
+        return true;
+    }
 
     private async Task TryAutoResumeBlockedRun(
         WorkflowRunId runId,
@@ -1028,12 +1059,10 @@ internal sealed class WorkflowRuntime
                 }
 
                 var canceled = run.Cancel();
-                if (workflow.Definition.Coordination.IsDurable)
-                {
-                    await this.persistence.UpsertRun(run.Id, () => this.CreatePersistenceRecord(run), CancellationToken.None);
-                }
-
-                if (run.TrySetCompletion(canceled))
+                if (await this.TryPersistAndSetFinalCompletion(
+                    run,
+                    canceled,
+                    workflow.Definition.Coordination.IsDurable))
                 {
                     this.workflowEvents.Completion(canceled);
                     await this.TryPurgeFinalRunIfChildrenGone(run, CancellationToken.None);

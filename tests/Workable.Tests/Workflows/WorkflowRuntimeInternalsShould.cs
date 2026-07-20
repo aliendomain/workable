@@ -1235,6 +1235,133 @@ public sealed class WorkflowRuntimeInternalsShould
     }
 
     [Fact]
+    public async Task BlockNonDurableCanceledExecutionWhenOutstandingChildRejectsCancellation()
+    {
+        var workerId = WorkerId.New();
+        var workflow = CreateWorkflow(
+            WorkflowDefinition.Create("workflow.runtime.non-durable-rejected-child-cancel"),
+            Dispatch("dispatch", "sample.dispatch"));
+        var workers = new RejectingWorkerOperations();
+        var runtime = CreateRuntime(
+            catalog: new WorkflowCatalog([workflow]),
+            persistenceStore: null,
+            systemName: null,
+            createSession: _ => new TestWorkSystemSession(
+                new DelegateQueueService((_, _, _, _) => throw new InvalidOperationException("No dispatch expected.")),
+                workers,
+                new DelegateQueryService(_ => Task.FromResult<WorkerSnapshot?>(CreateSnapshot(workerId, WorkerState.Running)))),
+            createWorkerHandle: id => new PendingWorkerHandle(id));
+        var run = WorkflowRunState.Create(workflow, WorkRequestContext.Create(WorkInvocationChannel.InProcess));
+        run.MarkStepCompleted("dispatch", [workerId]);
+        var controlType = typeof(WorkflowRuntime).GetNestedType(
+            "WorkflowExecutionControl",
+            BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("Expected workflow execution control type.");
+        var control = Activator.CreateInstance(
+            controlType,
+            BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic,
+            binder: null,
+            args: [CancellationToken.None],
+            culture: null)
+            ?? throw new InvalidOperationException("Expected workflow execution control instance.");
+        controlType.GetMethod("RequestCancel")!.Invoke(control, null);
+        var runExecution = typeof(WorkflowRuntime).GetMethod(
+            "RunExecution",
+            BindingFlags.Instance | BindingFlags.NonPublic,
+            binder: null,
+            types: [typeof(WorkflowRunState), typeof(RegisteredWorkflow), controlType, typeof(bool)],
+            modifiers: null)
+            ?? throw new InvalidOperationException("Expected controlled RunExecution method.");
+
+        try
+        {
+            var task = Assert.IsType<Task<WorkflowRunCompletion>>(
+                runExecution.Invoke(runtime, [run, workflow, control, false]));
+            var completion = await task;
+
+            Assert.Equal(WorkflowRunStatus.Blocked, completion.Status);
+            Assert.False(completion.IsFinal);
+            Assert.Equal(WorkflowRunStatus.Blocked, run.GetStatus());
+            Assert.Contains(completion.Messages, message => message.Code == "workable.worker.unauthorized");
+            Assert.Single(workers.Executions);
+        }
+        finally
+        {
+            ((IDisposable)control).Dispose();
+        }
+    }
+
+    [Fact]
+    public async Task BlockNonDurableCancelWorkflowPolicyWhenSiblingCancellationIsRejected()
+    {
+        var canceledWorkerId = WorkerId.New();
+        var runningWorkerId = WorkerId.New();
+        var workflow = CreateWorkflow(
+            WorkflowDefinition.Create("workflow.runtime.non-durable-policy-rejected-child-cancel"),
+            new DispatchEachWorkflowStepDefinition(
+                "fan-out",
+                new WorkflowStepReference<object?>("load"),
+                WorkDefinition.Create("sample.process"),
+                new WorkflowOutputSelector("/items"),
+                WorkflowCanceledChildBehavior.CancelWorkflow));
+        var workers = new RejectingWorkerOperations();
+        var runtime = CreateRuntime(
+            catalog: new WorkflowCatalog([workflow]),
+            persistenceStore: null,
+            systemName: null,
+            createSession: _ => new TestWorkSystemSession(
+                new DelegateQueueService((_, _, _, _) => throw new InvalidOperationException("No dispatch expected.")),
+                workers,
+                new DelegateQueryService(workerId => Task.FromResult<WorkerSnapshot?>(
+                    CreateSnapshot(
+                        workerId,
+                        workerId == canceledWorkerId ? WorkerState.Canceled : WorkerState.Running)))),
+            createWorkerHandle: workerId => workerId == canceledWorkerId
+                ? new TestWorkerHandle(
+                    WorkQueueOutcome.Accepted(workerId),
+                    workerId,
+                    Task.FromResult(new WorkCompletion(WorkCompletionStatus.Canceled, null, null, [])))
+                : new PendingWorkerHandle(workerId));
+        var run = WorkflowRunState.Create(workflow, WorkRequestContext.Create(WorkInvocationChannel.InProcess));
+        run.MarkStepCompleted("fan-out", [canceledWorkerId, runningWorkerId]);
+        var controlType = typeof(WorkflowRuntime).GetNestedType(
+            "WorkflowExecutionControl",
+            BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("Expected workflow execution control type.");
+        var control = Activator.CreateInstance(
+            controlType,
+            BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic,
+            binder: null,
+            args: [CancellationToken.None],
+            culture: null)
+            ?? throw new InvalidOperationException("Expected workflow execution control instance.");
+        var runExecution = typeof(WorkflowRuntime).GetMethod(
+            "RunExecution",
+            BindingFlags.Instance | BindingFlags.NonPublic,
+            binder: null,
+            types: [typeof(WorkflowRunState), typeof(RegisteredWorkflow), controlType, typeof(bool)],
+            modifiers: null)
+            ?? throw new InvalidOperationException("Expected controlled RunExecution method.");
+
+        try
+        {
+            var task = Assert.IsType<Task<WorkflowRunCompletion>>(
+                runExecution.Invoke(runtime, [run, workflow, control, false]));
+            var completion = await task.WaitAsync(TimeSpan.FromSeconds(1));
+
+            Assert.Equal(WorkflowRunStatus.Blocked, completion.Status);
+            Assert.False(completion.IsFinal);
+            Assert.Equal(WorkflowRunStatus.Blocked, run.GetStatus());
+            Assert.Contains(completion.Messages, message => message.Code == "workable.worker.unauthorized");
+            Assert.Equal([(runningWorkerId, WorkAction.Cancel)], workers.Executions);
+        }
+        finally
+        {
+            ((IDisposable)control).Dispose();
+        }
+    }
+
+    [Fact]
     public async Task BlockCanceledChildPolicyWhenSiblingCancellationIsRejected()
     {
         var workerId = WorkerId.New();
@@ -1516,6 +1643,51 @@ public sealed class WorkflowRuntimeInternalsShould
 
         Assert.Empty(GetExecutions(runtime));
         Assert.Equal(0, GetActionGateCount(runtime));
+    }
+
+    [Fact]
+    public async Task SuccessfulDurableCompletionFaultsWhenItsFinalPersistenceFails()
+    {
+        var finalWriteEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseFinalWrite = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var store = new RawWorkflowPersistenceStore(
+            [],
+            async run =>
+            {
+                if (run.Status == WorkflowRunStatus.Completed)
+                {
+                    finalWriteEntered.TrySetResult();
+                    await releaseFinalWrite.Task;
+                    throw new InvalidOperationException("Final workflow persistence failed.");
+                }
+            });
+        var workflow = CreateWorkflow(
+            WorkflowDefinition.Create(
+                "workflow.runtime.successful-final-persistence-failure",
+                coordination: WorkflowCoordinationConfiguration.Durable));
+        var runtime = CreateRuntime(
+            catalog: new WorkflowCatalog([workflow]),
+            persistenceStore: store,
+            systemName: "workflow-tests",
+            createSession: _ => new TestWorkSystemSession(new DelegateQueueService((_, _, _, _) =>
+                throw new InvalidOperationException("An empty workflow must not dispatch work."))),
+            createWorkerHandle: _ => throw new NotSupportedException());
+        var requestContext = WorkRequestContext.Create(WorkInvocationChannel.InProcess);
+
+        var handle = runtime.Start(workflow.Definition.Name, requestContext);
+        await finalWriteEntered.Task.WaitAsync(TimeSpan.FromSeconds(1));
+        var execution = GetExecutions(runtime)[handle.RunId!.Value];
+        var publicCompletion = handle.WaitForCompletion();
+        Assert.False(publicCompletion.IsCompleted);
+        releaseFinalWrite.TrySetResult();
+
+        var publicFailure = await Assert.ThrowsAsync<InvalidOperationException>(() => publicCompletion);
+        var executionFailure = await Assert.ThrowsAsync<InvalidOperationException>(() => execution);
+
+        Assert.Equal("Final workflow persistence failed.", publicFailure.Message);
+        Assert.Equal("Final workflow persistence failed.", executionFailure.Message);
+        Assert.Empty(GetExecutions(runtime));
+        Assert.Equal(WorkflowRunStatus.Completed, runtime.Get(handle.RunId.Value)?.Status);
     }
 
     [Fact]
