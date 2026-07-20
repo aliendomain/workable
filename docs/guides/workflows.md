@@ -143,7 +143,7 @@ If the queue request is rejected, the workflow fails immediately.
 `DispatchEach(stepName, sourceStep, workDefinition, selector)` waits for the referenced earlier step to complete successfully, resolves a JSON array from that step's retained output, and queues one child worker per array element.
 
 - `stepName` is the stable workflow-local step name
-- `sourceStep` is the typed reference returned by an earlier `DispatchWork<TOutput>(...)`
+- `sourceStep` is a typed reference returned by an earlier `DispatchWork<TOutput>(...)` or by calling `Outputs<TOutput>()` on a `DispatchEach(...)` step
 - `workDefinition` is the target registered `WorkDefinition`
 - `selector` identifies the array inside the source output. `output => output.Items` resolves `/items`; `output => output` selects the root array.
 
@@ -188,6 +188,20 @@ builder.AddWorkflow(
 ```
 
 That authored shape still persists the same replay information, but the source step reference and selector path are now derived from typed values instead of hand-authored strings.
+
+When each fan-out child produces a known output type, `Outputs<TOutput>()` returns a typed reference to those per-child outputs. A later `DispatchEach(...)` applies its selector to every completed child output, enabling chained fan-out without reconstructing a reference from the earlier step name.
+
+```csharp
+var processedOrders = workflow
+    .DispatchEach("process-orders", load, processDefinition, output => output.Items)
+    .Outputs<ProcessedOrderOutput>();
+
+workflow.DispatchEach(
+    "publish-artifacts",
+    processedOrders,
+    publishDefinition,
+    output => output.Artifacts);
+```
 
 ### Run Parallel
 

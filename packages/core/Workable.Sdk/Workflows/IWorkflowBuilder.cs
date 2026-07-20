@@ -61,8 +61,8 @@ public interface IWorkflowBuilder
     /// <param name="workDefinition">The target Workable work definition.</param>
     /// <param name="selector">A typed selector that resolves the source array within the completed output.</param>
     /// <param name="canceledChildBehavior">How the workflow should react when one of the expanded child workers is canceled.</param>
-    /// <returns>The same builder so additional steps can be chained.</returns>
-    IWorkflowBuilder DispatchEach<TSourceOutput, TChildInput>(
+    /// <returns>A builder stage that can either continue the workflow or expose a typed reference to each dispatched child's output.</returns>
+    IWorkflowDispatchEachBuilder DispatchEach<TSourceOutput, TChildInput>(
         string stepName,
         WorkflowStepReference<TSourceOutput> sourceStep,
         WorkDefinition workDefinition,

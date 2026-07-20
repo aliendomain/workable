@@ -647,6 +647,75 @@ public sealed class WorkflowRuntimeShould
     }
 
     [Fact]
+    public async Task ExpandDispatchEachFromPriorDispatchEachChildOutputs()
+    {
+        var gathered = new ConcurrentBag<string>();
+        var services = new ServiceCollection();
+        var loadDefinition = WorkDefinition.Create("sample.load.chained-fan-out");
+        var processDefinition = WorkDefinition.Create("sample.process.chained-fan-out");
+        var gatherDefinition = WorkDefinition.Create("sample.gather.chained-fan-out");
+
+        services.AddWorkableSystem(builder =>
+        {
+            builder.RequireAuthorization(false);
+            builder.AddWork(
+                loadDefinition,
+                (_, _, _) => Task.FromResult(WorkExecutionResult.Success(
+                    WorkOutput.FromValue(new DispatchEachSourceOutput(
+                        [new DispatchEachItem("alpha"), new DispatchEachItem("beta")])))));
+            builder.AddWork(
+                processDefinition,
+                (_, input, _) =>
+                {
+                    var item = input?.ToValue<DispatchEachItem>()
+                        ?? throw new InvalidOperationException("Expected dispatch-each item input.");
+                    return Task.FromResult(WorkExecutionResult.Success(
+                        WorkOutput.FromValue(new DispatchEachSourceOutput(
+                            [new DispatchEachItem($"{item.Id}-artifact")]))));
+                });
+            builder.AddWork(
+                gatherDefinition,
+                (_, input, _) =>
+                {
+                    var item = input?.ToValue<DispatchEachItem>()
+                        ?? throw new InvalidOperationException("Expected chained dispatch-each item input.");
+                    gathered.Add(item.Id);
+                    return Task.FromResult(WorkExecutionResult.Success());
+                });
+            builder.AddWorkflow(
+                WorkflowDefinition.Create("workflow.dispatch-each.chained"),
+                workflow =>
+                {
+                    var load = workflow.DispatchWork<DispatchEachSourceOutput>("load", loadDefinition);
+                    var processed = workflow
+                        .DispatchEach("process", load, processDefinition, output => output.Items)
+                        .Outputs<DispatchEachSourceOutput>();
+
+                    workflow
+                        .DispatchEach("gather", processed, gatherDefinition, output => output.Items)
+                        .Join("join");
+                });
+        });
+
+        using var provider = services.BuildServiceProvider();
+        var system = (InMemoryWorkSystem)provider.GetRequiredService<IWorkSystemRegistry>().Default;
+        await system.Start();
+
+        var handle = system.WorkflowRuntime.Start(
+            "workflow.dispatch-each.chained",
+            WorkRequestContext.Create(WorkInvocationChannel.InProcess));
+        var completion = await handle.WaitForCompletion();
+
+        Assert.True(completion.IsCompletedSuccessfully);
+        Assert.Equal(
+            ["alpha-artifact", "beta-artifact"],
+            gathered.OrderBy(static item => item, StringComparer.Ordinal).ToArray());
+        Assert.NotNull(completion.Run);
+        Assert.Equal(2, completion.Run!.Steps.Single(step => step.Name == "process").WorkerIds.Count);
+        Assert.Equal(2, completion.Run.Steps.Single(step => step.Name == "gather").WorkerIds.Count);
+    }
+
+    [Fact]
     public async Task ExpandTypedDispatchEachSelectorFromRootArrayOutputAndCompleteWorkflow()
     {
         var processed = new ConcurrentBag<string>();
