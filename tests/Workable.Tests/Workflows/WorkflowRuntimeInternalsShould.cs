@@ -653,6 +653,73 @@ public sealed class WorkflowRuntimeInternalsShould
     }
 
     [Fact]
+    public async Task AutoResumeReceiptPersistenceCannotRestoreTheBlockedState()
+    {
+        var workerId = WorkerId.New();
+        var runningWriteEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseRunningWrite = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var firstRunningWrite = 0;
+        var definition = WorkflowDefinition.Create(
+            "workflow.durable.auto-resume.receipt-race",
+            coordination: WorkflowCoordinationConfiguration.Durable);
+        var workflow = CreateWorkflow(
+            definition,
+            Dispatch("dispatch", "sample.dispatch"),
+            new JoinWorkflowStepDefinition("join"));
+        var store = new RawWorkflowPersistenceStore(
+            [],
+            async persisted =>
+            {
+                if (persisted.Status == WorkflowRunStatus.Running &&
+                    Interlocked.CompareExchange(ref firstRunningWrite, 1, 0) == 0)
+                {
+                    runningWriteEntered.TrySetResult();
+                    await releaseRunningWrite.Task;
+                }
+            });
+        var run = WorkflowRunState.Create(
+            workflow,
+            WorkRequestContext.Create(WorkInvocationChannel.InProcess));
+        run.MarkStepCompleted("dispatch", [workerId]);
+        run.Block([WorkMessage.Error("sample.blocked", "Blocked before auto-resume.")]);
+        var completedWorker = CreateSnapshot(
+            workerId,
+            WorkerState.Completed,
+            new HashSet<WorkIdentifier>
+            {
+                new("workflow-run", run.Id.Value.ToString("D")),
+                new("workflow-step", "dispatch"),
+            });
+        var runtime = CreateRuntime(
+            catalog: new WorkflowCatalog([workflow]),
+            persistenceStore: store,
+            systemName: "workflow-tests",
+            createSession: _ => throw new NotSupportedException(),
+            createWorkerHandle: _ => throw new NotSupportedException(),
+            getAuthoritativeWorker: (id, _) => Task.FromResult<WorkerSnapshot?>(
+                id == workerId ? completedWorker : null));
+        GetRuns(runtime).TryAdd(run.Id, run);
+
+        var autoResume = runtime.TryAutoResumeBlockedRunForCompletedWorker(workerId, CancellationToken.None);
+        await runningWriteEntered.Task.WaitAsync(TimeSpan.FromSeconds(1));
+        var receiptPersistence = runtime.ObserveFinalWorkflowChild(completedWorker, CancellationToken.None);
+        await Task.Delay(TimeSpan.FromMilliseconds(50));
+        Assert.False(receiptPersistence.IsCompleted);
+
+        releaseRunningWrite.TrySetResult();
+        await Task.WhenAll(autoResume, receiptPersistence).WaitAsync(TimeSpan.FromSeconds(5));
+        await runtime.WaitForExecutions(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.DoesNotContain(
+            store.UpsertedRuns,
+            persisted => persisted.ChildReceipts.Count > 0 && persisted.Status == WorkflowRunStatus.Blocked);
+        Assert.Contains(
+            store.UpsertedRuns,
+            persisted => persisted.ChildReceipts.Any(receipt => receipt.WorkerId == workerId) &&
+                persisted.Status is WorkflowRunStatus.Running or WorkflowRunStatus.Completed);
+    }
+
+    [Fact]
     public async Task IgnoreCompletedWorkersThatCannotIdentifyAWorkflowRun()
     {
         var workerId = WorkerId.New();
@@ -1800,6 +1867,46 @@ public sealed class WorkflowRuntimeInternalsShould
     }
 
     [Fact]
+    public async Task FinalRunPurgeBatchesDurableChildExistenceChecks()
+    {
+        var workerIds = Enumerable.Range(0, 4).Select(_ => WorkerId.New()).ToArray();
+        var definition = WorkflowDefinition.Create(
+            "workflow.runtime.final-purge-batch",
+            coordination: WorkflowCoordinationConfiguration.Durable);
+        var workflow = CreateWorkflow(
+            definition,
+            Dispatch("dispatch", "sample.dispatch"));
+        var store = new RawWorkflowPersistenceStore([]);
+        var runtime = CreateRuntime(
+            catalog: new WorkflowCatalog([workflow]),
+            persistenceStore: store,
+            systemName: "workflow-tests",
+            createSession: _ => throw new NotSupportedException(),
+            createWorkerHandle: _ => throw new NotSupportedException(),
+            getAuthoritativeWorker: (_, _) => Task.FromResult<WorkerSnapshot?>(null));
+        var run = WorkflowRunState.Create(
+            workflow,
+            WorkRequestContext.Create(WorkInvocationChannel.InProcess));
+        run.MarkStepCompleted("dispatch", workerIds);
+        run.CommitFinalCompletion(run.CreateFinalCompletion(WorkflowRunStatus.Completed));
+        GetRuns(runtime).TryAdd(run.Id, run);
+        var tryPurge = typeof(WorkflowRuntime).GetMethod(
+            "TryPurgeFinalRunIfChildrenGone",
+            BindingFlags.Instance | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("Expected final workflow purge method.");
+
+        var task = Assert.IsAssignableFrom<Task>(tryPurge.Invoke(
+            runtime,
+            [run, CancellationToken.None, null]));
+        await task;
+
+        Assert.Equal(0, store.DurableWorkerExistsCalls);
+        var lookup = Assert.Single(store.DurableWorkerLookupBatches);
+        Assert.Equal(workerIds.OrderBy(id => id.Value), lookup.OrderBy(id => id.Value));
+        Assert.Equal([run.Id], store.DeletedRuns);
+    }
+
+    [Fact]
     public async Task WaitForExecutionsReturnsAfterCancelingTheExecutionLifetime()
     {
         var workerId = WorkerId.New();
@@ -2552,6 +2659,10 @@ public sealed class WorkflowRuntimeInternalsShould
 
         public List<WorkflowRunPersistenceRecord> UpsertedRuns { get; } = [];
 
+        public int DurableWorkerExistsCalls { get; private set; }
+
+        public List<IReadOnlyCollection<WorkerId>> DurableWorkerLookupBatches { get; } = [];
+
         public Task Initialize(WorkQueueDurabilityInitializationContext context, CancellationToken cancellationToken = default)
             => Task.CompletedTask;
 
@@ -2590,6 +2701,22 @@ public sealed class WorkflowRuntimeInternalsShould
             IWorkQueueDurabilityTransaction transaction,
             CancellationToken cancellationToken = default)
             => Task.CompletedTask;
+
+        public Task<bool> DurableWorkerExists(
+            WorkerId workerId,
+            CancellationToken cancellationToken = default)
+        {
+            this.DurableWorkerExistsCalls++;
+            return Task.FromResult(false);
+        }
+
+        public Task<IReadOnlySet<WorkerId>> DurableWorkersExist(
+            IReadOnlyCollection<WorkerId> workerIds,
+            CancellationToken cancellationToken = default)
+        {
+            this.DurableWorkerLookupBatches.Add(workerIds.ToArray());
+            return Task.FromResult<IReadOnlySet<WorkerId>>(new HashSet<WorkerId>());
+        }
 
         public Task<IWorkflowPersistenceTransaction> BeginWorkflowTransaction(
             WorkflowPersistenceTransactionRequest request,

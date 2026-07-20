@@ -154,6 +154,43 @@ public sealed class WorkerRetentionSchedulerShould
     }
 
     [Fact]
+    public async Task DeferredScheduleSupersedesAnEarlierPurgeDeadline()
+    {
+        var index = new WorkerIndex();
+        var purged = new TaskCompletionSource<IReadOnlyList<WorkerId>>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var workerId = WorkerId.New();
+        var originallyScheduled = CreateWorker(
+            "retention.deferred-deadline.original",
+            purgeInterval: TimeSpan.FromMilliseconds(50),
+            workerId: workerId);
+        var deferred = CreateWorker(
+            "retention.deferred-deadline.replacement",
+            purgeInterval: TimeSpan.FromMilliseconds(600),
+            workerId: workerId);
+        using var scheduler = new WorkerRetentionScheduler(
+            index,
+            WorkSystemRetentionConfiguration.Default,
+            (workerIds, _) =>
+            {
+                purged.TrySetResult(workerIds);
+                return workerIds.Count;
+            });
+        scheduler.Schedule(originallyScheduled);
+        scheduler.ScheduleDeferred(deferred);
+        scheduler.Start();
+
+        var prematurePurge = await Task.WhenAny(
+            purged.Task,
+            Task.Delay(TimeSpan.FromMilliseconds(250)));
+
+        Assert.NotSame(purged.Task, prematurePurge);
+        var purgedWorkerIds = await purged.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await scheduler.Stop(CancellationToken.None);
+        Assert.Equal(workerId, Assert.Single(purgedWorkerIds));
+    }
+
+    [Fact]
     public async Task RecordPurgeFailuresAndClearTheAlertAfterALaterSuccessfulRun()
     {
         var index = new WorkerIndex();
@@ -194,7 +231,8 @@ public sealed class WorkerRetentionSchedulerShould
         string definitionName,
         bool final = true,
         TimeSpan? purgeInterval = null,
-        DateTimeOffset? createdAt = null)
+        DateTimeOffset? createdAt = null,
+        WorkerId? workerId = null)
     {
         var configuration = WorkConfiguration.Default with
         {
@@ -207,7 +245,7 @@ public sealed class WorkerRetentionSchedulerShould
         var definition = WorkDefinition.Create(definitionName, configuration: configuration);
         var timestamp = createdAt ?? DateTimeOffset.UtcNow;
         var worker = new WorkerRecord(
-            WorkerId.New(),
+            workerId ?? WorkerId.New(),
             new RegisteredWork(definition, _ => new NoopExecutor(), []),
             WorkInput.Empty,
             WorkerOptions.Default,

@@ -27,6 +27,7 @@ internal sealed class WorkerRetentionScheduler(
     private TimeSpan lastRunDuration;
     private int lastPurgedCount;
     private long totalPurgedCount;
+    private long nextScheduleGeneration;
     private string? schedulerFailureType;
     private string? schedulerFailureMessage;
 
@@ -131,8 +132,9 @@ internal sealed class WorkerRetentionScheduler(
         var dueAt = DateTimeOffset.UtcNow + worker.Configuration.Retention.PurgeInterval;
         lock (this.sync)
         {
-            this.TrackFinalWorkerLocked(worker, includeInCountRetention);
-            this.scheduledPurges.Enqueue(new ScheduledPurge(worker.Id), dueAt);
+            var scheduleGeneration = ++this.nextScheduleGeneration;
+            this.TrackFinalWorkerLocked(worker, includeInCountRetention, scheduleGeneration);
+            this.scheduledPurges.Enqueue(new ScheduledPurge(worker.Id, scheduleGeneration), dueAt);
             this.scheduledPurgeHighWaterMark = Math.Max(
                 this.scheduledPurgeHighWaterMark,
                 this.scheduledPurges.Count);
@@ -222,7 +224,8 @@ internal sealed class WorkerRetentionScheduler(
                 dueAt <= DateTimeOffset.UtcNow)
             {
                 this.scheduledPurges.Dequeue();
-                if (!this.finalWorkerEntriesById.TryGetValue(scheduledPurge.WorkerId, out var entry))
+                if (!this.finalWorkerEntriesById.TryGetValue(scheduledPurge.WorkerId, out var entry) ||
+                    entry.ScheduleGeneration != scheduledPurge.ScheduleGeneration)
                 {
                     continue;
                 }
@@ -464,12 +467,16 @@ internal sealed class WorkerRetentionScheduler(
         }
     }
 
-    private void TrackFinalWorkerLocked(WorkerRecord worker, bool includeInCountRetention)
+    private void TrackFinalWorkerLocked(
+        WorkerRecord worker,
+        bool includeInCountRetention,
+        long scheduleGeneration)
     {
         var entry = new FinalWorkerRetentionEntry(
             worker.CreatedAt,
             worker.Id,
-            worker.Work.Definition.Id);
+            worker.Work.Definition.Id,
+            scheduleGeneration);
 
         this.RemoveFinalWorkerLocked(worker.Id);
         this.finalWorkerEntriesById[worker.Id] = entry;
@@ -539,12 +546,15 @@ internal sealed class WorkerRetentionScheduler(
         }
     }
 
-    private sealed record ScheduledPurge(WorkerId WorkerId);
+    private sealed record ScheduledPurge(
+        WorkerId WorkerId,
+        long ScheduleGeneration);
 
     private sealed record FinalWorkerRetentionEntry(
         DateTimeOffset CreatedAt,
         WorkerId WorkerId,
-        WorkDefinitionId DefinitionId);
+        WorkDefinitionId DefinitionId,
+        long ScheduleGeneration);
 
     private sealed class FinalWorkerRetentionEntryComparer : IComparer<FinalWorkerRetentionEntry>
     {

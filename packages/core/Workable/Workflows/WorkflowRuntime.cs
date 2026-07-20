@@ -986,13 +986,16 @@ internal sealed class WorkflowRuntime
 
             if (workflow.Definition.Coordination.IsDurable)
             {
-                await this.persistence.UpsertRun(
+                await this.persistence.UpsertRunAndApply(
                     run.Id,
                     () => run.ToRunningPersistenceRecord(this.systemName),
+                    run.MarkRunning,
                     CancellationToken.None);
             }
-
-            run.MarkRunning();
+            else
+            {
+                run.MarkRunning();
+            }
             var resumedSnapshot = run.ToSnapshot();
             this.StartExecution(run, workflow, wasPaused: false);
             this.workflowEvents.ActionAccepted(resumedSnapshot, WorkflowAction.Start, run.RequestContext);
@@ -1300,6 +1303,7 @@ internal sealed class WorkflowRuntime
             }
         }
 
+        var durableWorkerIds = new List<WorkerId>(workerIds.Count);
         foreach (var workerId in workerIds)
         {
             var snapshot = this.getAuthoritativeWorker is not null
@@ -1310,11 +1314,16 @@ internal sealed class WorkflowRuntime
                 return;
             }
 
-            if (justPurgedWorkerId != workerId &&
-                await this.persistence.DurableWorkerExists(workerId, cancellationToken))
+            if (justPurgedWorkerId != workerId)
             {
-                return;
+                durableWorkerIds.Add(workerId);
             }
+        }
+
+        if (durableWorkerIds.Count > 0 &&
+            (await this.persistence.DurableWorkersExist(durableWorkerIds, cancellationToken)).Count > 0)
+        {
+            return;
         }
 
         if (this.runs.TryRemove(run.Id, out _))
