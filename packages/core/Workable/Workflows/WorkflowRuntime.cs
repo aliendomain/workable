@@ -29,7 +29,7 @@ internal sealed class WorkflowRuntime
     private readonly ConcurrentDictionary<WorkflowRunId, byte> cancellationsInProgress = new();
     private readonly ConcurrentDictionary<WorkerId, Lazy<Task>> receiptPersistences = new();
     private readonly ConcurrentDictionary<WorkerId, byte> failedReceiptPersistences = new();
-    private readonly ConcurrentDictionary<WorkflowRunId, Lazy<Task>> autoResumeRetries = new();
+    private readonly ConcurrentDictionary<WorkflowRunId, AutoResumeRetryState> autoResumeRetries = new();
     private readonly Lock lifecycleSync = new();
     private CancellationTokenSource executionLifetime = new();
     private long version;
@@ -101,8 +101,8 @@ internal sealed class WorkflowRuntime
     public async Task StopBackgroundTasks(CancellationToken cancellationToken)
     {
         var pending = this.autoResumeRetries.Values
-            .Where(static retry => retry.IsValueCreated)
-            .Select(static retry => retry.Value)
+            .Where(static retry => retry.Task.IsValueCreated)
+            .Select(static retry => retry.Task.Value)
             .ToArray();
         if (pending.Length > 0)
         {
@@ -1132,23 +1132,47 @@ internal sealed class WorkflowRuntime
 
     private void ScheduleAutoResumeRetry(WorkflowRunId runId)
     {
-        var retry = this.autoResumeRetries.GetOrAdd(
-            runId,
-            _ => new Lazy<Task>(
-                () => this.RetryAutoResumeBlockedRun(runId),
-                LazyThreadSafetyMode.ExecutionAndPublication));
-        _ = retry.Value;
+        while (true)
+        {
+            if (this.autoResumeRetries.TryGetValue(runId, out var existing))
+            {
+                existing.RequestRetry();
+                // Recheck ownership after publishing the request so a retiring retry either
+                // consumes it or this caller installs a successor after removal.
+                if (this.autoResumeRetries.TryGetValue(runId, out var current) &&
+                    ReferenceEquals(existing, current))
+                {
+                    _ = existing.Task.Value;
+                    return;
+                }
+
+                continue;
+            }
+
+            var created = new AutoResumeRetryState(
+                state => this.RetryAutoResumeBlockedRun(runId, state));
+            created.RequestRetry();
+            if (this.autoResumeRetries.TryAdd(runId, created))
+            {
+                _ = created.Task.Value;
+                return;
+            }
+        }
     }
 
-    private async Task RetryAutoResumeBlockedRun(WorkflowRunId runId)
+    private async Task RetryAutoResumeBlockedRun(
+        WorkflowRunId runId,
+        AutoResumeRetryState retryState)
     {
         var delay = AutoResumeRetryInitialDelay;
         var cancellationToken = this.GetExecutionLifetimeToken();
         try
         {
+            retryState.ConsumeRetryRequest();
             while (this.runs.TryGetValue(runId, out var run) &&
                 run.GetStatus() == WorkflowRunStatus.Blocked)
             {
+                retryState.ConsumeRetryRequest();
                 try
                 {
                     await Task.Delay(delay, cancellationToken);
@@ -1173,7 +1197,14 @@ internal sealed class WorkflowRuntime
         }
         finally
         {
-            this.autoResumeRetries.TryRemove(runId, out _);
+            // Remove this exact owner before consuming the handoff. A racing scheduler will
+            // then either leave a request on this state or install the successor itself.
+            this.autoResumeRetries.TryRemove(
+                new KeyValuePair<WorkflowRunId, AutoResumeRetryState>(runId, retryState));
+            if (retryState.ConsumeRetryRequest())
+            {
+                this.ScheduleAutoResumeRetry(runId);
+            }
         }
     }
 
@@ -1674,6 +1705,26 @@ internal sealed class WorkflowRuntime
         NotEligible,
         Deferred,
         Resumed,
+    }
+
+    private sealed class AutoResumeRetryState
+    {
+        private int retryRequested;
+
+        public AutoResumeRetryState(Func<AutoResumeRetryState, Task> createTask)
+        {
+            this.Task = new Lazy<Task>(
+                () => createTask(this),
+                LazyThreadSafetyMode.ExecutionAndPublication);
+        }
+
+        public Lazy<Task> Task { get; }
+
+        public void RequestRetry()
+            => Interlocked.Exchange(ref this.retryRequested, 1);
+
+        public bool ConsumeRetryRequest()
+            => Interlocked.Exchange(ref this.retryRequested, 0) == 1;
     }
 
     private sealed class WorkflowActionGate

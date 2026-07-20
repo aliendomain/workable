@@ -721,6 +721,149 @@ public sealed class WorkflowRuntimeInternalsShould
     }
 
     [Fact]
+    public async Task HandOffAutoResumeRequestWhenAnExistingRetryRetires()
+    {
+        var workerId = WorkerId.New();
+        var runningWriteAttempts = 0;
+        var executionSessions = 0;
+        var authoritativeLookupStarted = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseAuthoritativeLookup = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var definition = WorkflowDefinition.Create(
+            "workflow.durable.auto-resume.retry-retirement-handoff",
+            coordination: WorkflowCoordinationConfiguration.Durable);
+        var workflow = CreateWorkflow(
+            definition,
+            Dispatch("dispatch", "sample.dispatch"),
+            new JoinWorkflowStepDefinition("join"));
+        var run = WorkflowRunState.Create(
+            workflow,
+            WorkRequestContext.Create(WorkInvocationChannel.InProcess));
+        run.MarkStepCompleted("dispatch", [workerId]);
+        run.Block([WorkMessage.Error("sample.blocked", "Blocked before auto-resume.")]);
+        var runningWorker = CreateSnapshot(workerId, WorkerState.Running);
+        var completedWorker = CreateSnapshot(
+            workerId,
+            WorkerState.Completed,
+            new HashSet<WorkIdentifier>
+            {
+                new("workflow-run", run.Id.Value.ToString("D")),
+                new("workflow-step", "dispatch"),
+            });
+        var store = new RawWorkflowPersistenceStore(
+            [],
+            persisted =>
+            {
+                if (persisted.Status == WorkflowRunStatus.Running &&
+                    persisted.Steps.Single(step => step.Name == "join").Status == WorkflowStepRunStatus.Pending &&
+                    Interlocked.Increment(ref runningWriteAttempts) == 1)
+                {
+                    return Task.FromException(new InvalidOperationException(
+                        "transient auto-resume persistence failure during retry retirement"));
+                }
+
+                return Task.CompletedTask;
+            });
+        var runtime = CreateRuntime(
+            catalog: new WorkflowCatalog([workflow]),
+            persistenceStore: store,
+            systemName: "workflow-tests",
+            createSession: _ =>
+            {
+                Interlocked.Increment(ref executionSessions);
+                return new TestWorkSystemSession(
+                    new DelegateQueueService((_, _, _, _) => throw new NotSupportedException()),
+                    query: new DelegateQueryService(id => Task.FromResult<WorkerSnapshot?>(
+                        id == workerId ? completedWorker : null)));
+            },
+            createWorkerHandle: _ => throw new InvalidOperationException(
+                "The authoritative completed child should settle without a worker handle."),
+            getAuthoritativeWorker: async (id, cancellationToken) =>
+            {
+                if (id != workerId)
+                {
+                    return null;
+                }
+
+                authoritativeLookupStarted.TrySetResult();
+                await releaseAuthoritativeLookup.Task.WaitAsync(cancellationToken);
+                return runningWorker;
+            });
+        GetRuns(runtime).TryAdd(run.Id, run);
+        var scheduleRetry = typeof(WorkflowRuntime).GetMethod(
+            "ScheduleAutoResumeRetry",
+            BindingFlags.Instance | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("Expected auto-resume retry scheduler.");
+
+        scheduleRetry.Invoke(runtime, [run.Id]);
+        await authoritativeLookupStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await runtime.ObserveFinalWorkflowChild(completedWorker, CancellationToken.None);
+        releaseAuthoritativeLookup.TrySetResult();
+
+        var completion = await run.WaitForCompletion().WaitAsync(TimeSpan.FromSeconds(5));
+        await runtime.WaitForExecutions(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(5));
+        await runtime.StopBackgroundTasks(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.True(completion.IsCompletedSuccessfully);
+        Assert.Equal(2, Volatile.Read(ref runningWriteAttempts));
+        Assert.Equal(1, Volatile.Read(ref executionSessions));
+        Assert.Equal(0, GetAutoResumeRetryCount(runtime));
+        Assert.Equal(0, GetActionGateCount(runtime));
+    }
+
+    [Fact]
+    public async Task RetireHandedOffAutoResumeRequestWhenRunIsNoLongerBlocked()
+    {
+        var workerId = WorkerId.New();
+        var authoritativeLookupStarted = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseAuthoritativeLookup = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var workflow = CreateWorkflow(
+            WorkflowDefinition.Create("workflow.auto-resume.retry-retirement-running"),
+            Dispatch("dispatch", "sample.dispatch"),
+            new JoinWorkflowStepDefinition("join"));
+        var run = WorkflowRunState.Create(
+            workflow,
+            WorkRequestContext.Create(WorkInvocationChannel.InProcess));
+        run.MarkStepCompleted("dispatch", [workerId]);
+        run.Block([WorkMessage.Error("sample.blocked", "Blocked before auto-resume.")]);
+        var runtime = CreateRuntime(
+            catalog: new WorkflowCatalog([workflow]),
+            persistenceStore: null,
+            systemName: null,
+            createSession: _ => throw new NotSupportedException(),
+            createWorkerHandle: _ => throw new NotSupportedException(),
+            getAuthoritativeWorker: async (id, cancellationToken) =>
+            {
+                if (id != workerId)
+                {
+                    return null;
+                }
+
+                authoritativeLookupStarted.TrySetResult();
+                await releaseAuthoritativeLookup.Task.WaitAsync(cancellationToken);
+                return CreateSnapshot(workerId, WorkerState.Running);
+            });
+        GetRuns(runtime).TryAdd(run.Id, run);
+        var scheduleRetry = typeof(WorkflowRuntime).GetMethod(
+            "ScheduleAutoResumeRetry",
+            BindingFlags.Instance | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("Expected auto-resume retry scheduler.");
+
+        scheduleRetry.Invoke(runtime, [run.Id]);
+        await authoritativeLookupStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        run.MarkRunning();
+        scheduleRetry.Invoke(runtime, [run.Id]);
+        releaseAuthoritativeLookup.TrySetResult();
+        await runtime.StopBackgroundTasks(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.Equal(WorkflowRunStatus.Running, run.GetStatus());
+        Assert.Equal(0, GetAutoResumeRetryCount(runtime));
+    }
+
+    [Fact]
     public async Task ContinueAutoResumeRetryAfterCompetingCancellationFails()
     {
         var workerId = WorkerId.New();
