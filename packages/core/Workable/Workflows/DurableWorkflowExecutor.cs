@@ -408,6 +408,7 @@ internal sealed class DurableWorkflowExecutor(
         {
             await persistenceGate.Run(
                 () => persistence.ExecuteTransaction(
+                    run.Id,
                     async (transaction, transactionOptions, transactionCancellationToken) =>
                     {
                         var handle = await session.Queue.Enqueue(
@@ -492,6 +493,7 @@ internal sealed class DurableWorkflowExecutor(
         {
             await persistenceGate.Run(
                 () => persistence.ExecuteTransaction(
+                    run.Id,
                     async (transaction, transactionOptions, transactionCancellationToken) =>
                     {
                         var workerIds = new List<WorkerId>();

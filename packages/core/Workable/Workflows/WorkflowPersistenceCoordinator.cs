@@ -96,10 +96,7 @@ internal sealed class WorkflowPersistenceCoordinator(
         ArgumentNullException.ThrowIfNull(createRun);
         return transaction is null
             ? this.UpsertRun(runId, createRun, cancellationToken)
-            : this.RunExclusive(
-                runId,
-                () => this.store!.UpsertWorkflowRun(createRun(), transaction, cancellationToken),
-                cancellationToken);
+            : this.store!.UpsertWorkflowRun(createRun(), transaction, cancellationToken);
     }
 
     public async Task DeleteRun(WorkflowRunId runId, CancellationToken cancellationToken)
@@ -129,9 +126,15 @@ internal sealed class WorkflowPersistenceCoordinator(
         ?? Task.FromResult<IReadOnlySet<WorkerId>>(new HashSet<WorkerId>());
 
     public Task ExecuteTransaction(
+        WorkflowRunId runId,
         Func<IWorkflowPersistenceTransaction?, WorkerOptions, CancellationToken, Task> action,
         CancellationToken cancellationToken)
-        => this.ExecuteInTransaction(action, cancellationToken);
+        => this.store is null
+            ? this.ExecuteInTransaction(action, cancellationToken)
+            : this.RunExclusive(
+                runId,
+                () => this.ExecuteInTransaction(action, cancellationToken),
+                cancellationToken);
 
     private async Task RunExclusive(
         WorkflowRunId runId,

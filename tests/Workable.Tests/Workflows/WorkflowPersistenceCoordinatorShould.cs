@@ -134,6 +134,45 @@ public sealed class WorkflowPersistenceCoordinatorShould
     }
 
     [Fact]
+    public async Task HoldTheRunGateUntilATransactionCommits()
+    {
+        var commitEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseCommit = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var store = new RecordingWorkflowPersistenceStore
+        {
+            TransactionCommitHandler = async _ =>
+            {
+                commitEntered.TrySetResult();
+                await releaseCommit.Task;
+            },
+        };
+        var coordinator = new WorkflowPersistenceCoordinator(store, "workflow-persistence-tests");
+        var run = CreateRun("workflow-persistence-tests", "workflow.one");
+
+        var transactionalWrite = coordinator.ExecuteTransaction(
+            run.RunId,
+            (transaction, _, cancellationToken) => coordinator.UpsertRun(
+                run.RunId,
+                () => run with { Status = WorkflowRunStatus.Running },
+                transaction,
+                cancellationToken),
+            CancellationToken.None);
+        await commitEntered.Task.WaitAsync(TimeSpan.FromSeconds(1));
+        var laterWrite = coordinator.UpsertRun(
+            run.RunId,
+            () => run with { Status = WorkflowRunStatus.Completed },
+            CancellationToken.None);
+
+        Assert.False(laterWrite.IsCompleted);
+        releaseCommit.TrySetResult();
+        await Task.WhenAll(transactionalWrite, laterWrite);
+
+        Assert.Equal(
+            [WorkflowRunStatus.Running, WorkflowRunStatus.Completed],
+            store.CommittedRuns.Select(record => record.Status));
+    }
+
+    [Fact]
     public async Task CoalesceConcurrentReceiptCheckpointsForOneRun()
     {
         var store = new RecordingWorkflowPersistenceStore();
@@ -287,6 +326,7 @@ public sealed class WorkflowPersistenceCoordinatorShould
         WorkerOptions? observedOptions = null;
 
         await coordinator.ExecuteTransaction(
+            WorkflowRunId.New(),
             (transaction, options, _) =>
             {
                 observedTransaction = transaction;
@@ -340,6 +380,7 @@ public sealed class WorkflowPersistenceCoordinatorShould
         WorkerOptions? dispatchOptions = null;
 
         await coordinator.ExecuteTransaction(
+            run.RunId,
             async (transaction, options, transactionCancellationToken) =>
             {
                 await coordinator.UpsertRun(run, transaction, transactionCancellationToken);
@@ -366,6 +407,7 @@ public sealed class WorkflowPersistenceCoordinatorShould
 
         await Assert.ThrowsAsync<InvalidOperationException>(() =>
             coordinator.ExecuteTransaction(
+                WorkflowRunId.New(),
                 (_, _, _) => throw new InvalidOperationException("transaction failed"),
                 CancellationToken.None));
 
@@ -383,6 +425,7 @@ public sealed class WorkflowPersistenceCoordinatorShould
         var run = CreateRun("workflow-persistence-tests", "workflow.one");
 
         await coordinator.ExecuteTransaction(
+            run.RunId,
             (transaction, _, transactionCancellationToken) =>
                 coordinator.DeleteRun(run.RunId, transaction, transactionCancellationToken),
             CancellationToken.None);
@@ -425,6 +468,8 @@ public sealed class WorkflowPersistenceCoordinatorShould
 
         public List<WorkflowRunPersistenceRecord> UpsertedRuns { get; } = [];
 
+        public List<WorkflowRunPersistenceRecord> CommittedRuns { get; } = [];
+
         public List<WorkflowPersistenceDeleteRequest> DeletedRuns { get; } = [];
 
         public List<(Guid TransactionId, WorkflowRunPersistenceRecord Run)> TransactionalUpserts { get; } = [];
@@ -438,6 +483,8 @@ public sealed class WorkflowPersistenceCoordinatorShould
         public IReadOnlyList<WorkflowRunPersistenceRecord> IncompleteRuns { get; init; } = [];
 
         public Func<WorkflowRunPersistenceRecord, CancellationToken, Task>? UpsertHandler { get; init; }
+
+        public Func<CancellationToken, Task>? TransactionCommitHandler { get; init; }
 
         public Func<WorkerId, CancellationToken, Task<bool>>? DurableWorkerExistsHandler { get; init; }
 
@@ -498,7 +545,9 @@ public sealed class WorkflowPersistenceCoordinatorShould
             WorkflowPersistenceTransactionRequest request,
             CancellationToken cancellationToken = default)
         {
-            var transaction = new RecordingWorkflowPersistenceTransaction();
+            var transaction = new RecordingWorkflowPersistenceTransaction(
+                this.CommittedRuns,
+                this.TransactionCommitHandler);
             this.Transactions.Add(transaction);
             return Task.FromResult<IWorkflowPersistenceTransaction>(transaction);
         }
@@ -526,6 +575,8 @@ public sealed class WorkflowPersistenceCoordinatorShould
             {
                 await this.UpsertHandler(run, cancellationToken);
             }
+
+            this.CommittedRuns.Add(run);
         }
 
         public Task UpsertWorkflowRun(
@@ -533,7 +584,9 @@ public sealed class WorkflowPersistenceCoordinatorShould
             IWorkflowPersistenceTransaction transaction,
             CancellationToken cancellationToken = default)
         {
-            this.TransactionalUpserts.Add((((RecordingWorkflowPersistenceTransaction)transaction).Id, run));
+            var recordingTransaction = (RecordingWorkflowPersistenceTransaction)transaction;
+            this.TransactionalUpserts.Add((recordingTransaction.Id, run));
+            recordingTransaction.Stage(run);
             return Task.CompletedTask;
         }
 
@@ -560,8 +613,12 @@ public sealed class WorkflowPersistenceCoordinatorShould
             this.Dispatches.Add((transaction.Id, options));
         }
 
-        public sealed class RecordingWorkflowPersistenceTransaction : IWorkflowPersistenceTransaction
+        public sealed class RecordingWorkflowPersistenceTransaction(
+            List<WorkflowRunPersistenceRecord> committedRuns,
+            Func<CancellationToken, Task>? commitHandler) : IWorkflowPersistenceTransaction
         {
+            private readonly List<WorkflowRunPersistenceRecord> pendingRuns = [];
+
             public Guid Id { get; } = Guid.NewGuid();
 
             public bool Committed { get; private set; }
@@ -569,10 +626,18 @@ public sealed class WorkflowPersistenceCoordinatorShould
             public ValueTask DisposeAsync()
                 => ValueTask.CompletedTask;
 
-            public Task Commit(CancellationToken cancellationToken = default)
+            public void Stage(WorkflowRunPersistenceRecord run)
+                => this.pendingRuns.Add(run);
+
+            public async Task Commit(CancellationToken cancellationToken = default)
             {
+                if (commitHandler is not null)
+                {
+                    await commitHandler(cancellationToken);
+                }
+
+                committedRuns.AddRange(this.pendingRuns);
                 this.Committed = true;
-                return Task.CompletedTask;
             }
         }
     }

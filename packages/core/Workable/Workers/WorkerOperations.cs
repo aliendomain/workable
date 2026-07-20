@@ -613,6 +613,7 @@ internal sealed class WorkerOperations :
                 if (guardRetention)
                 {
                     this.finalizationInProgress.TryRemove(record.Id, out _);
+                    this.retention.Schedule(record);
                 }
             }
         }
@@ -988,6 +989,7 @@ internal sealed class WorkerOperations :
             if (guardRetention)
             {
                 this.finalizationInProgress.TryRemove(worker.Id, out _);
+                this.retention.Schedule(worker);
             }
         }
     }
@@ -1070,6 +1072,7 @@ internal sealed class WorkerOperations :
                 if (guardRetention)
                 {
                     this.finalizationInProgress.TryRemove(worker.Id, out _);
+                    this.retention.Schedule(worker);
                 }
             }
         }
@@ -1099,7 +1102,6 @@ internal sealed class WorkerOperations :
 
             if (this.finalizationInProgress.ContainsKey(workerId))
             {
-                this.retention.Schedule(worker);
                 continue;
             }
 

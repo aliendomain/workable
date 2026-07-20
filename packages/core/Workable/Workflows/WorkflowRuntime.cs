@@ -20,7 +20,8 @@ internal sealed class WorkflowRuntime
     private readonly ConcurrentDictionary<WorkflowRunId, WorkflowRunState> runs = new();
     private readonly ConcurrentDictionary<WorkflowRunId, Task<WorkflowRunCompletion>> executions = new();
     private readonly ConcurrentDictionary<WorkflowRunId, WorkflowExecutionControl> controls = new();
-    private readonly ConcurrentDictionary<WorkflowRunId, SemaphoreSlim> actionGates = new();
+    private readonly Lock actionGatesSync = new();
+    private readonly Dictionary<WorkflowRunId, WorkflowActionGate> actionGates = [];
     private readonly ConcurrentDictionary<WorkflowRunId, byte> cancellationsInProgress = new();
     private readonly ConcurrentDictionary<WorkerId, byte> receiptPersistences = new();
     private readonly Lock lifecycleSync = new();
@@ -103,7 +104,6 @@ internal sealed class WorkflowRuntime
             this.runs.Clear();
             this.executions.Clear();
             this.controls.Clear();
-            this.actionGates.Clear();
             this.cancellationsInProgress.Clear();
             this.receiptPersistences.Clear();
         }
@@ -340,8 +340,23 @@ internal sealed class WorkflowRuntime
         WorkRequestContext requestContext)
     {
         ArgumentNullException.ThrowIfNull(requestContext);
-        var actionGate = this.actionGates.GetOrAdd(runId, static _ => new SemaphoreSlim(1, 1));
-        await actionGate.WaitAsync(CancellationToken.None);
+        if (action == WorkflowAction.Start &&
+            this.runs.TryGetValue(runId, out var settlingRun) &&
+            settlingRun.GetStatus() is WorkflowRunStatus.Paused or WorkflowRunStatus.Blocked &&
+            this.executions.TryGetValue(runId, out var settlingExecution))
+        {
+            try
+            {
+                await settlingExecution;
+            }
+            catch (Exception exception) when (IsNonCriticalExecutionFailure(exception))
+            {
+                // The action is validated against the authoritative run state after settlement.
+            }
+        }
+
+        var actionGate = this.ReferenceActionGate(runId);
+        await actionGate.Sync.WaitAsync(CancellationToken.None);
         try
         {
 
@@ -510,7 +525,8 @@ internal sealed class WorkflowRuntime
         }
         finally
         {
-            actionGate.Release();
+            actionGate.Sync.Release();
+            this.ReleaseActionGate(runId, actionGate);
         }
     }
 
@@ -538,15 +554,64 @@ internal sealed class WorkflowRuntime
                 $"Workflow run '{run.Id.Value:D}' is already executing.");
         }
 
-        var executionTask = Task.Run(
-            () => this.RunExecution(run, workflow, control, wasPaused),
-            CancellationToken.None);
-        if (!this.executions.TryAdd(run.Id, executionTask))
+        var executionCompletion = new TaskCompletionSource<WorkflowRunCompletion>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        if (!this.executions.TryAdd(run.Id, executionCompletion.Task))
         {
             this.controls.TryRemove(run.Id, out var removedControl);
             removedControl?.Dispose();
             throw new InvalidOperationException(
                 $"Workflow run '{run.Id.Value:D}' is already executing.");
+        }
+
+        _ = Task.Run(
+            () => this.RunRegisteredExecution(run, workflow, control, wasPaused, executionCompletion),
+            CancellationToken.None);
+    }
+
+    private async Task RunRegisteredExecution(
+        WorkflowRunState run,
+        RegisteredWorkflow workflow,
+        WorkflowExecutionControl control,
+        bool wasPaused,
+        TaskCompletionSource<WorkflowRunCompletion> executionCompletion)
+    {
+        WorkflowRunCompletion? result = null;
+        OperationCanceledException? cancellation = null;
+        Exception? failure = null;
+        try
+        {
+            result = await this.RunExecution(run, workflow, control, wasPaused);
+        }
+        catch (OperationCanceledException exception)
+        {
+            cancellation = exception;
+        }
+        catch (Exception exception)
+        {
+            failure = exception;
+        }
+        finally
+        {
+            if (this.controls.TryRemove(run.Id, out var controlToDispose))
+            {
+                controlToDispose.Dispose();
+            }
+
+            this.executions.TryRemove(run.Id, out _);
+        }
+
+        if (result is not null)
+        {
+            executionCompletion.TrySetResult(result);
+        }
+        else if (cancellation is not null)
+        {
+            executionCompletion.TrySetCanceled(cancellation.CancellationToken);
+        }
+        else
+        {
+            executionCompletion.TrySetException(failure!);
         }
     }
 
@@ -598,35 +663,51 @@ internal sealed class WorkflowRuntime
                 }
             }
 
-            if (completion.Status == WorkflowRunStatus.Canceled)
+            var actionGate = this.ReferenceActionGate(run.Id);
+            await actionGate.Sync.WaitAsync(CancellationToken.None);
+            try
             {
-                completion = run.Cancel(completion.CancelOutstandingChildren);
-            }
+                if (!completion.IsFinal && run.GetStatus() != completion.Status)
+                {
+                    var current = run.ToSnapshot();
+                    return new WorkflowRunCompletion(current.Status, current, current.Messages);
+                }
 
-            var shouldPersistState = workflow.Definition.Coordination.IsDurable &&
-                (completion.Status == WorkflowRunStatus.Blocked || ShouldPersistFinalState(completion, control));
-            var shouldPublishCompletion = true;
-            if (completion.IsFinal)
+                if (completion.Status == WorkflowRunStatus.Canceled)
+                {
+                    completion = run.Cancel(completion.CancelOutstandingChildren);
+                }
+
+                var shouldPersistState = workflow.Definition.Coordination.IsDurable &&
+                    (completion.Status == WorkflowRunStatus.Blocked || ShouldPersistFinalState(completion, control));
+                var shouldPublishCompletion = true;
+                if (completion.IsFinal)
+                {
+                    shouldPublishCompletion = run.TrySetCompletion(completion);
+                }
+
+                if (shouldPersistState && shouldPublishCompletion)
+                {
+                    await this.persistence.UpsertRun(run.Id, () => this.CreatePersistenceRecord(run), CancellationToken.None);
+                }
+
+                if (shouldPublishCompletion)
+                {
+                    this.workflowEvents.Completion(completion);
+                }
+
+                if (completion.IsFinal && shouldPersistState && shouldPublishCompletion)
+                {
+                    await this.TryPurgeFinalRunIfChildrenGone(run, CancellationToken.None);
+                }
+
+                return completion;
+            }
+            finally
             {
-                shouldPublishCompletion = run.TrySetCompletion(completion);
+                actionGate.Sync.Release();
+                this.ReleaseActionGate(run.Id, actionGate);
             }
-
-            if (shouldPersistState && shouldPublishCompletion)
-            {
-                await this.persistence.UpsertRun(run.Id, () => this.CreatePersistenceRecord(run), CancellationToken.None);
-            }
-
-            if (shouldPublishCompletion)
-            {
-                this.workflowEvents.Completion(completion);
-            }
-
-            if (completion.IsFinal && shouldPersistState && shouldPublishCompletion)
-            {
-                await this.TryPurgeFinalRunIfChildrenGone(run, CancellationToken.None);
-            }
-
-            return completion;
         }
         catch (OperationCanceledException) when (control.Token.IsCancellationRequested)
         {
@@ -706,14 +787,6 @@ internal sealed class WorkflowRuntime
                 await this.TryPurgeFinalRunIfChildrenGone(run, CancellationToken.None);
             }
             return completion;
-        }
-        finally
-        {
-            this.executions.TryRemove(run.Id, out _);
-            if (this.controls.TryRemove(run.Id, out var controlToDispose))
-            {
-                controlToDispose.Dispose();
-            }
         }
     }
 
@@ -924,8 +997,8 @@ internal sealed class WorkflowRuntime
             return;
         }
 
-        var actionGate = this.actionGates.GetOrAdd(run.Id, static _ => new SemaphoreSlim(1, 1));
-        await actionGate.WaitAsync(CancellationToken.None);
+        var actionGate = this.ReferenceActionGate(run.Id);
+        await actionGate.Sync.WaitAsync(CancellationToken.None);
         try
         {
             var status = run.GetStatus();
@@ -973,7 +1046,8 @@ internal sealed class WorkflowRuntime
         }
         finally
         {
-            actionGate.Release();
+            actionGate.Sync.Release();
+            this.ReleaseActionGate(run.Id, actionGate);
         }
     }
 
@@ -1037,6 +1111,17 @@ internal sealed class WorkflowRuntime
 
     private static bool IsFinal(WorkflowRunStatus status)
         => status is WorkflowRunStatus.Completed or WorkflowRunStatus.Failed or WorkflowRunStatus.Canceled;
+
+    private static bool IsNonCriticalExecutionFailure(Exception exception)
+        => exception is not (
+            OutOfMemoryException or
+            StackOverflowException or
+            AccessViolationException or
+            AppDomainUnloadedException or
+            BadImageFormatException or
+            CannotUnloadAppDomainException or
+            ThreadAbortException or
+            InvalidProgramException);
 
     private async Task TryPurgeFinalRunIfChildrenGone(
         WorkflowRunState run,
@@ -1151,6 +1236,33 @@ internal sealed class WorkflowRuntime
             definition.Authorization.CanRead(groups, requestContext.IsAuthenticated && requestContext.Actor.IsKnown);
     }
 
+    private WorkflowActionGate ReferenceActionGate(WorkflowRunId runId)
+    {
+        lock (this.actionGatesSync)
+        {
+            if (!this.actionGates.TryGetValue(runId, out var gate))
+            {
+                gate = new WorkflowActionGate();
+                this.actionGates[runId] = gate;
+            }
+
+            gate.References++;
+            return gate;
+        }
+    }
+
+    private void ReleaseActionGate(WorkflowRunId runId, WorkflowActionGate gate)
+    {
+        lock (this.actionGatesSync)
+        {
+            gate.References--;
+            if (gate.References == 0)
+            {
+                this.actionGates.Remove(runId);
+            }
+        }
+    }
+
     private IReadOnlyList<WorkMessage> ValidateDispatchDurability(RegisteredWorkflow workflow)
     {
         if (workflow.Definition.Coordination.IsDurable)
@@ -1226,6 +1338,13 @@ internal sealed class WorkflowRuntime
         {
             this.cancellation.Dispose();
         }
+    }
+
+    private sealed class WorkflowActionGate
+    {
+        public SemaphoreSlim Sync { get; } = new(1, 1);
+
+        public int References { get; set; }
     }
 
     private static void ApplyControlRequest(WorkflowExecutionControl control, WorkflowAction action)

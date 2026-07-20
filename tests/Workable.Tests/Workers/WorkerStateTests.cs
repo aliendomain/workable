@@ -676,7 +676,7 @@ public sealed class WorkerStateTests
     }
 
     [Fact]
-    public async Task RetentionDefersPurgeWhileFinalizationIsInProgress()
+    public async Task RetentionDefersPurgeWithoutReschedulingWhileFinalizationIsInProgress()
     {
         var definition = WorkDefinition.Create("retention-finalization-guard");
         var system = CreateSystem(
@@ -687,6 +687,18 @@ public sealed class WorkerStateTests
         var completion = await handle.WaitForCompletion();
         var workerId = RequiredCompletionWorker(completion).Id;
         var operations = ((InMemoryWorkSystem)system).WorkerOperations;
+        var retention = (WorkerRetentionScheduler)(typeof(WorkerOperations).GetField(
+            "retention",
+            BindingFlags.Instance | BindingFlags.NonPublic)
+            ?.GetValue(operations)
+            ?? throw new InvalidOperationException("Expected retention scheduler."));
+        var takeOldest = typeof(WorkerRetentionScheduler).GetMethod(
+            "TakeOldestFinalWorkers",
+            BindingFlags.Instance | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("Expected retention selection method.");
+        var selected = Assert.IsAssignableFrom<IReadOnlyList<WorkerId>>(
+            takeOldest.Invoke(retention, [definition.Id, 1]));
+        Assert.Equal(workerId, Assert.Single(selected));
         var guardedWorkers = (ConcurrentDictionary<WorkerId, byte>)(typeof(WorkerOperations).GetField(
             "finalizationInProgress",
             BindingFlags.Instance | BindingFlags.NonPublic)
@@ -703,6 +715,7 @@ public sealed class WorkerStateTests
 
             Assert.Equal(0, purged);
             Assert.NotNull(await system.Query.Worker(workerId));
+            Assert.Equal(0, retention.Diagnostics.TrackedFinalWorkerCount);
         }
         finally
         {
