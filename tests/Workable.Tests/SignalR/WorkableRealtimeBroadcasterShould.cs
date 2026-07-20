@@ -415,7 +415,7 @@ public sealed class WorkableRealtimeBroadcasterShould
             "EventPump",
             System.Reflection.BindingFlags.NonPublic);
         Assert.NotNull(pumpType);
-        var cancellation = new CancellationTokenSource();
+        using var cancellation = new CancellationTokenSource();
         var pump = Activator.CreateInstance(pumpType, cancellation, pumpTask);
         Assert.NotNull(pump);
         var method = broadcasterType.GetMethod(

@@ -112,16 +112,11 @@ internal static class WorkflowExecutionSupport
         ArgumentNullException.ThrowIfNull(run);
         ArgumentNullException.ThrowIfNull(workflow);
 
-        foreach (var step in FlattenSteps(workflow.Steps))
-        {
-            if (step is DispatchEachWorkflowStepDefinition dispatchEach &&
-                run.StepContainsWorker(dispatchEach.Name, workerId))
-            {
-                return dispatchEach.CanceledChildBehavior;
-            }
-        }
-
-        return WorkflowCanceledChildBehavior.Block;
+        return FlattenSteps(workflow.Steps)
+            .OfType<DispatchEachWorkflowStepDefinition>()
+            .FirstOrDefault(step => run.StepContainsWorker(step.Name, workerId))?
+            .CanceledChildBehavior
+            ?? WorkflowCanceledChildBehavior.Block;
     }
 
     public static WorkInput AddWorkflowIdentifiers(

@@ -889,12 +889,11 @@ public sealed class WorkflowRuntimeShould
                          "sample.downstream.canceled-policy.gamma",
                      })
             {
-                var capturedName = downstreamName;
                 builder.AddWork(
-                    WorkDefinition.Create(capturedName),
+                    WorkDefinition.Create(downstreamName),
                     (_, _, _) =>
                     {
-                        downstreamRuns.Add(capturedName);
+                        downstreamRuns.Add(downstreamName);
                         return Task.FromResult(WorkExecutionResult.Success());
                     });
             }

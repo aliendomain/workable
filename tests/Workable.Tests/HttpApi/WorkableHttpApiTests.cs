@@ -2016,8 +2016,10 @@ public sealed class WorkableHttpApiTests
             authenticated: false,
             surfaceAccessGroups: ["surface.operator"],
             configureServices: DisableTransportPolicy);
-        using var preflight = await preflightHost.GetTestClient().SendAsync(
-            new HttpRequestMessage(HttpMethod.Options, "/workable/definitions"));
+        using var preflightRequest = new HttpRequestMessage(
+            HttpMethod.Options,
+            "/workable/definitions");
+        using var preflight = await preflightHost.GetTestClient().SendAsync(preflightRequest);
 
         using var anonymousHost = await CreateHttpHost(
             authenticated: false,

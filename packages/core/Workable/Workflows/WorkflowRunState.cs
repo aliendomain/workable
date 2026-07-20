@@ -427,12 +427,12 @@ internal sealed class WorkflowRunState
                 return this.CurrentCompletionLocked();
             }
 
-            var messages = finalMessages ?? [];
-            var completedAt = DateTimeOffset.UtcNow;
+            var completionMessages = finalMessages ?? [];
+            var finalCompletedAt = DateTimeOffset.UtcNow;
             return new WorkflowRunCompletion(
                 finalStatus,
-                this.ToSnapshotLocked(finalStatus, completedAt, messages),
-                messages,
+                this.ToSnapshotLocked(finalStatus, finalCompletedAt, completionMessages),
+                completionMessages,
                 cancelOutstandingChildren);
         }
     }

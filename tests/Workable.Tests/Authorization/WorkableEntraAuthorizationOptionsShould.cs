@@ -13,7 +13,7 @@ public sealed class WorkableEntraAuthorizationOptionsShould
     [Fact]
     public async Task BindSecuritySettingsFromConfigurationAtThePublicRegistrationBoundary()
     {
-        var configuration = new ConfigurationManager
+        using var configuration = new ConfigurationManager
         {
             ["TenantId"] = "tenant-id",
             ["Audience"] = "api://primary-audience",
@@ -58,7 +58,7 @@ public sealed class WorkableEntraAuthorizationOptionsShould
     [Fact]
     public async Task FallBackToSecureDefaultsForInvalidBooleanConfiguration()
     {
-        var configuration = new ConfigurationManager
+        using var configuration = new ConfigurationManager
         {
             ["TenantId"] = "tenant-id",
             ["Audience"] = "api://primary-audience",
