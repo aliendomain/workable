@@ -519,8 +519,13 @@ internal sealed class WorkflowRuntime
                     "workflow.run")]);
         }
 
-        if (action == WorkflowAction.Pause && control.CancelRequested)
+        if (control.CancelRequested)
         {
+            if (action == WorkflowAction.Cancel)
+            {
+                return WorkflowActionOutcome.Accepted(action, snapshot);
+            }
+
             return WorkflowActionOutcome.Invalid(
                 action,
                 runId,
@@ -962,23 +967,27 @@ internal sealed class WorkflowRuntime
         }
     }
 
-    private async Task TryAutoResumeBlockedRun(
+    private async Task<AutoResumeAttemptResult> TryAutoResumeBlockedRun(
         WorkflowRunId runId,
         CancellationToken cancellationToken)
     {
         if (!this.runs.TryGetValue(runId, out var run))
         {
-            return;
+            return AutoResumeAttemptResult.NotEligible;
         }
 
         var snapshot = run.ToSnapshot();
         if (snapshot.Status != WorkflowRunStatus.Blocked ||
-            this.controls.ContainsKey(runId) ||
-            this.executions.ContainsKey(runId) ||
-            this.cancellationsInProgress.ContainsKey(runId) ||
             !this.catalog.TryGet(snapshot.DefinitionName, out var workflow))
         {
-            return;
+            return AutoResumeAttemptResult.NotEligible;
+        }
+
+        if (this.controls.ContainsKey(runId) ||
+            this.executions.ContainsKey(runId) ||
+            this.cancellationsInProgress.ContainsKey(runId))
+        {
+            return AutoResumeAttemptResult.Deferred;
         }
 
         var outstandingWorkerIds = run.GetOutstandingWorkerIds()
@@ -986,7 +995,7 @@ internal sealed class WorkflowRuntime
             .ToArray();
         if (outstandingWorkerIds.Length == 0)
         {
-            return;
+            return AutoResumeAttemptResult.NotEligible;
         }
 
         foreach (var workerId in outstandingWorkerIds)
@@ -1006,7 +1015,7 @@ internal sealed class WorkflowRuntime
                     workerId,
                     WorkerStateMachine.CompletionStatusFor(worker.State)))
             {
-                return;
+                return AutoResumeAttemptResult.NotEligible;
             }
         }
 
@@ -1016,12 +1025,16 @@ internal sealed class WorkflowRuntime
         {
             if (!this.runs.TryGetValue(runId, out var currentRun) ||
                 !ReferenceEquals(run, currentRun) ||
-                run.GetStatus() != WorkflowRunStatus.Blocked ||
-                this.controls.ContainsKey(runId) ||
+                run.GetStatus() != WorkflowRunStatus.Blocked)
+            {
+                return AutoResumeAttemptResult.NotEligible;
+            }
+
+            if (this.controls.ContainsKey(runId) ||
                 this.executions.ContainsKey(runId) ||
                 this.cancellationsInProgress.ContainsKey(runId))
             {
-                return;
+                return AutoResumeAttemptResult.Deferred;
             }
 
             if (workflow.Definition.Coordination.IsDurable)
@@ -1039,6 +1052,7 @@ internal sealed class WorkflowRuntime
             var resumedSnapshot = run.ToSnapshot();
             this.StartExecution(run, workflow, wasPaused: false);
             this.workflowEvents.ActionAccepted(resumedSnapshot, WorkflowAction.Start, run.RequestContext);
+            return AutoResumeAttemptResult.Resumed;
         }
         finally
         {
@@ -1103,7 +1117,11 @@ internal sealed class WorkflowRuntime
     {
         try
         {
-            await this.TryAutoResumeBlockedRun(runId, CancellationToken.None);
+            if (await this.TryAutoResumeBlockedRun(runId, CancellationToken.None) ==
+                AutoResumeAttemptResult.Deferred)
+            {
+                this.ScheduleAutoResumeRetry(runId);
+            }
         }
         catch (Exception exception) when (IsNonCriticalExecutionFailure(exception))
         {
@@ -1134,8 +1152,13 @@ internal sealed class WorkflowRuntime
                 try
                 {
                     await Task.Delay(delay, cancellationToken);
-                    await this.TryAutoResumeBlockedRun(runId, cancellationToken);
-                    return;
+                    var result = await this.TryAutoResumeBlockedRun(runId, cancellationToken);
+                    if (result != AutoResumeAttemptResult.Deferred)
+                    {
+                        return;
+                    }
+
+                    delay = NextAutoResumeRetryDelay(delay);
                 }
                 catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
                 {
@@ -1144,9 +1167,7 @@ internal sealed class WorkflowRuntime
                 catch (Exception exception) when (IsNonCriticalExecutionFailure(exception))
                 {
                     this.LogAutoResumeFailure(runId, exception);
-                    delay = TimeSpan.FromMilliseconds(Math.Min(
-                        delay.TotalMilliseconds * 2,
-                        AutoResumeRetryMaximumDelay.TotalMilliseconds));
+                    delay = NextAutoResumeRetryDelay(delay);
                 }
             }
         }
@@ -1162,6 +1183,11 @@ internal sealed class WorkflowRuntime
             "Workflow auto-resume processing failed for run {WorkflowRunId} in work system {WorkSystem}; retrying while the run remains blocked.",
             runId.Value,
             this.systemName ?? "default");
+
+    private static TimeSpan NextAutoResumeRetryDelay(TimeSpan delay)
+        => TimeSpan.FromMilliseconds(Math.Min(
+            delay.TotalMilliseconds * 2,
+            AutoResumeRetryMaximumDelay.TotalMilliseconds));
 
     private async Task PersistWorkflowChildReceiptCoalesced(
         WorkflowRunState run,
@@ -1641,6 +1667,13 @@ internal sealed class WorkflowRuntime
         {
             this.cancellation.Dispose();
         }
+    }
+
+    private enum AutoResumeAttemptResult
+    {
+        NotEligible,
+        Deferred,
+        Resumed,
     }
 
     private sealed class WorkflowActionGate
