@@ -311,7 +311,7 @@ public sealed class WorkflowRuntimeInternalsShould
             definition,
             workerId,
             WorkflowAction.Cancel.ToString());
-        var workerOperations = new RecordingWorkerOperations();
+        var workerOperations = new BlockingRecordingWorkerOperations();
         var store = new RawWorkflowPersistenceStore([persistedRun]);
         var runtime = CreateRuntime(
             catalog: new WorkflowCatalog([workflow]),
@@ -325,10 +325,20 @@ public sealed class WorkflowRuntimeInternalsShould
 
         await runtime.RecoverDurableRuns(CancellationToken.None);
 
-        await TestEventually.Until(
-            () => runtime.Get(persistedRun.RunId)?.Status == WorkflowRunStatus.Canceled,
-            "Expected the recovered durable workflow run to honor the persisted cancel request.",
-            timeout: TimeSpan.FromSeconds(10));
+        await workerOperations.ExecutionStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var executionCompletion = runtime.WaitForExecutions(CancellationToken.None);
+        try
+        {
+            Assert.Equal(WorkflowRunStatus.Canceled, runtime.Get(persistedRun.RunId)?.Status);
+            Assert.Empty(workerOperations.Executions);
+            Assert.False(executionCompletion.IsCompleted);
+        }
+        finally
+        {
+            workerOperations.ReleaseExecution.TrySetResult();
+        }
+
+        await executionCompletion.WaitAsync(TimeSpan.FromSeconds(5));
 
         Assert.Contains(workerOperations.Executions, execution =>
             execution.WorkerId == workerId && execution.Action == WorkAction.Cancel);
@@ -1288,6 +1298,49 @@ public sealed class WorkflowRuntimeInternalsShould
             => throw new NotSupportedException();
 
         public Task<WorkActionOutcome> Reconfigure(WorkerVersion worker, WorkerReconfiguration changes, CancellationToken cancellationToken = default)
+            => throw new NotSupportedException();
+    }
+
+    private sealed class BlockingRecordingWorkerOperations : IWorkerOperations
+    {
+        public List<(WorkerId WorkerId, WorkAction Action)> Executions { get; } = [];
+
+        public TaskCompletionSource ExecutionStarted { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public TaskCompletionSource ReleaseExecution { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public Task<WorkActionOutcome> Execute(
+            WorkerVersion worker,
+            WorkAction action,
+            CancellationToken cancellationToken = default)
+            => this.Execute(worker, new WorkerActionRequest(action), cancellationToken);
+
+        public async Task<WorkActionOutcome> Execute(
+            WorkerVersion worker,
+            WorkerActionRequest request,
+            CancellationToken cancellationToken = default)
+        {
+            this.ExecutionStarted.TrySetResult();
+            await this.ReleaseExecution.Task.WaitAsync(cancellationToken);
+            this.Executions.Add((worker.WorkerId, request.Action));
+            return WorkActionOutcome.Accepted(
+                request.Action,
+                CreateSnapshot(worker.WorkerId, WorkerState.Canceled),
+                []);
+        }
+
+        public Task<WorkerBulkActionOutcome> ExecuteAll(
+            WorkAction action,
+            WorkerBulkActionFilter? filter = null,
+            CancellationToken cancellationToken = default)
+            => throw new NotSupportedException();
+
+        public Task<WorkActionOutcome> Reconfigure(
+            WorkerVersion worker,
+            WorkerReconfiguration changes,
+            CancellationToken cancellationToken = default)
             => throw new NotSupportedException();
     }
 
