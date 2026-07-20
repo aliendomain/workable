@@ -536,6 +536,23 @@ internal sealed class WorkflowRuntime
                     "workflow.run")]);
         }
 
+        if (control.PauseRequested)
+        {
+            if (action == WorkflowAction.Pause)
+            {
+                return WorkflowActionOutcome.Accepted(action, snapshot);
+            }
+
+            return WorkflowActionOutcome.Invalid(
+                action,
+                runId,
+                snapshot,
+                [WorkMessage.Error(
+                    "workable.workflow.run.pause_pending",
+                    $"Workflow run '{runId.Value:D}' already has an accepted pause and cannot be canceled until it settles.",
+                    "workflow.run")]);
+        }
+
         var outcomeSnapshot = run.ToSnapshot();
         var storedActionContext = requestContext.WithoutAuthorization();
         if (workflow.Definition.Coordination.IsDurable)
@@ -638,7 +655,7 @@ internal sealed class WorkflowRuntime
         {
             if (this.controls.TryRemove(run.Id, out var controlToDispose))
             {
-                controlToDispose.Dispose();
+                using var _ = controlToDispose;
             }
 
             this.executions.TryRemove(run.Id, out _);
@@ -733,12 +750,11 @@ internal sealed class WorkflowRuntime
 
                 var shouldPersistState = workflow.Definition.Coordination.IsDurable &&
                     (completion.Status == WorkflowRunStatus.Blocked || ShouldPersistFinalState(completion, control));
-                var shouldPublishCompletion = completion.IsFinal
-                    ? await this.TryPersistAndSetFinalCompletion(
+                var shouldPublishCompletion = !completion.IsFinal ||
+                    await this.TryPersistAndSetFinalCompletion(
                         run,
                         completion,
-                        shouldPersistState)
-                    : true;
+                        shouldPersistState);
 
                 if (completion.IsFinal && !shouldPublishCompletion)
                 {

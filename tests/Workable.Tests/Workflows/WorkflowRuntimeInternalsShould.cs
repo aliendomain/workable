@@ -1728,6 +1728,76 @@ public sealed class WorkflowRuntimeInternalsShould
         Assert.Equal(0, GetActionGateCount(runtime));
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task RejectCancelWhileAcceptedPauseIsSettling(bool isDurable)
+    {
+        var childId = WorkerId.New();
+        var workflow = CreateWorkflow(
+            WorkflowDefinition.Create(
+                $"workflow.runtime.pause-settling.{(isDurable ? "durable" : "in-memory")}",
+                coordination: isDurable
+                    ? WorkflowCoordinationConfiguration.Durable
+                    : WorkflowCoordinationConfiguration.Default),
+            Dispatch("dispatch", "sample.dispatch"));
+        var store = new RawWorkflowPersistenceStore([]);
+        var workerOperations = new BlockingRecordingWorkerOperations();
+        var runtime = CreateRuntime(
+            catalog: new WorkflowCatalog([workflow]),
+            persistenceStore: store,
+            systemName: "workflow-tests",
+            createSession: _ => new TestWorkSystemSession(
+                new DelegateQueueService((_, _, _, _) =>
+                    Task.FromResult<IWorkerHandle>(new PendingWorkerHandle(childId))),
+                workerOperations,
+                new DelegateQueryService(id => Task.FromResult<WorkerSnapshot?>(
+                    id == childId ? CreateSnapshot(childId, WorkerState.Running) : null))),
+            createWorkerHandle: id => new PendingWorkerHandle(id),
+            getRegisteredWork: CreateRegisteredWork);
+        var pauseContext = WorkRequestContext.Create(
+            WorkInvocationChannel.HttpApi,
+            new WorkActor("pause-operator", "Pause Operator"),
+            description: "Pause for maintenance",
+            isAuthenticated: true);
+        var cancelContext = WorkRequestContext.Create(
+            WorkInvocationChannel.HttpApi,
+            new WorkActor("cancel-operator", "Cancel Operator"),
+            description: "Cancel while pausing",
+            isAuthenticated: true);
+        var handle = runtime.Start(workflow.Definition.Name, pauseContext);
+        await TestEventually.Until(
+            () => runtime.Get(handle.RunId!.Value)?.Steps.Single().WorkerIds.Contains(childId) == true,
+            "Expected the workflow to be waiting on its child.");
+
+        var pause = await runtime.Execute(handle.RunId!.Value, WorkflowAction.Pause, pauseContext);
+        await workerOperations.ExecutionStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var cancel = await runtime.Execute(handle.RunId.Value, WorkflowAction.Cancel, cancelContext);
+
+        Assert.True(pause.IsAccepted);
+        Assert.Equal(WorkflowActionStatus.Invalid, cancel.Status);
+        Assert.Contains(cancel.Messages, message => message.Code == "workable.workflow.run.pause_pending");
+        if (isDurable)
+        {
+            var persistedIntent = store.UpsertedRuns.Last(run => run.PendingControlAction is not null);
+            Assert.Equal(WorkflowAction.Pause.ToString(), persistedIntent.PendingControlAction);
+            Assert.Equal("pause-operator", persistedIntent.PendingControlRequestContext?.Actor.Id);
+            Assert.Equal("Pause for maintenance", persistedIntent.PendingControlRequestContext?.Description);
+        }
+
+        workerOperations.ReleaseExecution.TrySetResult();
+        await TestEventually.Until(
+            () => runtime.Get(handle.RunId.Value)?.Status == WorkflowRunStatus.Paused,
+            "Expected the accepted pause to settle without being replaced by cancellation.");
+        await runtime.WaitForExecutions(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.Equal(WorkflowRunStatus.Paused, runtime.Get(handle.RunId.Value)?.Status);
+        Assert.Single(workerOperations.Executions);
+        Assert.Equal(WorkAction.Pause, workerOperations.Executions[0].Action);
+        Assert.DoesNotContain(store.UpsertedRuns, persisted => persisted.Status == WorkflowRunStatus.Canceled);
+        Assert.Equal(0, GetActionGateCount(runtime));
+    }
+
     [Fact]
     public async Task PreserveFirstDurableCancellationContextWhenCancellationIsRepeated()
     {

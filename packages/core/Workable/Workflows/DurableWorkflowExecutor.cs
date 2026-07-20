@@ -917,6 +917,7 @@ internal sealed class DurableWorkflowExecutor(
             }
             catch (OperationCanceledException) when (this.cancellation.IsCancellationRequested)
             {
+                // Cancellation is expected while stopping the background pump.
             }
 
             this.signal.Dispose();
