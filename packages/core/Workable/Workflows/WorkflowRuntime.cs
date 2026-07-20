@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using Microsoft.Extensions.Logging;
 
 namespace Workable;
 
@@ -15,6 +16,7 @@ internal sealed class WorkflowRuntime
     private readonly WorkflowEventPublisher workflowEvents;
     private readonly WorkSystemAuthorizationConfiguration systemAuthorizationConfiguration;
     private readonly IWorkAuthorizationGroupProvider groupProvider;
+    private readonly ILogger? logger;
     private readonly NonDurableWorkflowExecutor nonDurable;
     private readonly DurableWorkflowExecutor? durable;
     private readonly ConcurrentDictionary<WorkflowRunId, WorkflowRunState> runs = new();
@@ -40,7 +42,8 @@ internal sealed class WorkflowRuntime
         WorkflowPersistenceCoordinator persistence,
         WorkSystemAuthorizationConfiguration systemAuthorizationConfiguration,
         IWorkAuthorizationGroupProvider groupProvider,
-        WorkflowEventPublisher? workflowEvents = null)
+        WorkflowEventPublisher? workflowEvents = null,
+        ILogger? logger = null)
     {
         this.systemName = systemName;
         this.requiresAuthorization = requiresAuthorization;
@@ -53,6 +56,7 @@ internal sealed class WorkflowRuntime
         this.workflowEvents = workflowEvents ?? new WorkflowEventPublisher(default, null, new WorkEventStream());
         this.systemAuthorizationConfiguration = systemAuthorizationConfiguration;
         this.groupProvider = groupProvider;
+        this.logger = logger;
         this.nonDurable = new NonDurableWorkflowExecutor(createSession, createWorkerHandle, this.workflowEvents, getAuthoritativeWorker);
         if (!string.IsNullOrWhiteSpace(systemName))
         {
@@ -622,6 +626,11 @@ internal sealed class WorkflowRuntime
         {
             executionCompletion.TrySetException(failure!);
         }
+
+        if (run.GetStatus() == WorkflowRunStatus.Blocked)
+        {
+            await this.TryAutoResumeBlockedRunSafely(run.Id);
+        }
     }
 
     private async Task FailRecoveredRunForDefinitionMismatch(WorkflowRunPersistenceRecord record)
@@ -1060,6 +1069,24 @@ internal sealed class WorkflowRuntime
                 WorkflowCanceledChildBehavior.CancelWorkflow)
         {
             await this.ApplyCanceledChildWorkflowCancellation(run, workflow, cancellationToken);
+        }
+
+        await this.TryAutoResumeBlockedRunSafely(run.Id);
+    }
+
+    private async Task TryAutoResumeBlockedRunSafely(WorkflowRunId runId)
+    {
+        try
+        {
+            await this.TryAutoResumeBlockedRun(runId, CancellationToken.None);
+        }
+        catch (Exception exception) when (IsNonCriticalExecutionFailure(exception))
+        {
+            this.logger?.LogWarning(
+                exception,
+                "Workflow auto-resume processing failed for run {WorkflowRunId} in work system {WorkSystem}.",
+                runId.Value,
+                this.systemName ?? "default");
         }
     }
 

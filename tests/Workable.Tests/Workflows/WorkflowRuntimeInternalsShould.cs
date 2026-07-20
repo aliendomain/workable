@@ -652,6 +652,85 @@ public sealed class WorkflowRuntimeInternalsShould
         Assert.Equal(0, GetActionGateCount(runtime));
     }
 
+    [Theory]
+    [InlineData(WorkflowCanceledChildBehavior.Continue, WorkflowRunStatus.Completed)]
+    [InlineData(WorkflowCanceledChildBehavior.Block, WorkflowRunStatus.Blocked)]
+    [InlineData(WorkflowCanceledChildBehavior.CancelWorkflow, WorkflowRunStatus.Blocked)]
+    public async Task AutoResumeBlockedRunOnlyWhenAuthoritativeCanceledSiblingPolicyContinues(
+        WorkflowCanceledChildBehavior canceledChildBehavior,
+        WorkflowRunStatus expectedStatus)
+    {
+        var completedWorkerId = WorkerId.New();
+        var canceledWorkerId = WorkerId.New();
+        var definition = WorkflowDefinition.Create(
+            $"workflow.durable.auto-resume.canceled-{canceledChildBehavior.ToString().ToLowerInvariant()}",
+            coordination: WorkflowCoordinationConfiguration.Durable);
+        var workflow = CreateWorkflow(
+            definition,
+            new DispatchEachWorkflowStepDefinition(
+                "fan-out",
+                new WorkflowStepReference<object?>("source"),
+                WorkDefinition.Create("sample.process"),
+                new WorkflowOutputSelector("/items"),
+                canceledChildBehavior));
+        var run = WorkflowRunState.Create(
+            workflow,
+            WorkRequestContext.Create(WorkInvocationChannel.InProcess));
+        run.MarkStepCompleted("fan-out", [completedWorkerId, canceledWorkerId]);
+        run.Block([WorkMessage.Error("sample.blocked", "Blocked before auto-resume.")]);
+        var completedWorker = CreateSnapshot(
+            completedWorkerId,
+            WorkerState.Completed,
+            new HashSet<WorkIdentifier>
+            {
+                new("workflow-run", run.Id.Value.ToString("D")),
+                new("workflow-step", "fan-out"),
+            });
+        var canceledWorker = CreateSnapshot(
+            canceledWorkerId,
+            WorkerState.Canceled,
+            new HashSet<WorkIdentifier>
+            {
+                new("workflow-run", run.Id.Value.ToString("D")),
+                new("workflow-step", "fan-out"),
+            });
+        var store = new RawWorkflowPersistenceStore([]);
+        var runtime = CreateRuntime(
+            catalog: new WorkflowCatalog([workflow]),
+            persistenceStore: store,
+            systemName: "workflow-tests",
+            createSession: _ => new TestWorkSystemSession(
+                new DelegateQueueService((_, _, _, _) => throw new NotSupportedException()),
+                query: new DelegateQueryService(workerId => Task.FromResult<WorkerSnapshot?>(workerId switch
+                {
+                    var id when id == completedWorkerId => completedWorker,
+                    var id when id == canceledWorkerId => canceledWorker,
+                    _ => null,
+                }))),
+            createWorkerHandle: _ => throw new InvalidOperationException(
+                "Authoritative final snapshots should settle the recovered workflow without worker handles."),
+            getAuthoritativeWorker: (workerId, _) => Task.FromResult<WorkerSnapshot?>(workerId switch
+            {
+                var id when id == completedWorkerId => completedWorker,
+                var id when id == canceledWorkerId => canceledWorker,
+                _ => null,
+            }));
+        GetRuns(runtime).TryAdd(run.Id, run);
+
+        await runtime.TryAutoResumeBlockedRunForCompletedWorker(completedWorkerId, CancellationToken.None);
+
+        if (expectedStatus == WorkflowRunStatus.Completed)
+        {
+            await TestEventually.Until(
+                () => runtime.Get(run.Id)?.Status == expectedStatus,
+                "Expected Continue to treat the authoritative canceled sibling as settled.");
+            return;
+        }
+
+        Assert.Equal(expectedStatus, runtime.Get(run.Id)?.Status);
+        Assert.Empty(GetExecutions(runtime));
+    }
+
     [Fact]
     public async Task AutoResumeReceiptPersistenceCannotRestoreTheBlockedState()
     {
