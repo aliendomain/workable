@@ -426,13 +426,16 @@ internal sealed class WorkflowRuntime
             var wasPaused = snapshot.Status == WorkflowRunStatus.Paused;
             if (workflow.Definition.Coordination.IsDurable)
             {
-                await this.persistence.UpsertRun(
+                await this.persistence.UpsertRunAndApply(
                     run.Id,
                     () => run.ToRunningPersistenceRecord(this.systemName),
+                    run.MarkRunning,
                     CancellationToken.None);
             }
-
-            run.MarkRunning();
+            else
+            {
+                run.MarkRunning();
+            }
             var resumedSnapshot = run.ToSnapshot();
             this.StartExecution(run, workflow, wasPaused);
             this.workflowEvents.ActionAccepted(resumedSnapshot, action, requestContext);
@@ -457,7 +460,7 @@ internal sealed class WorkflowRuntime
 
             try
             {
-                var cancelSession = this.createSession(run.RequestContext);
+                var cancelSession = this.createSession(requestContext);
                 var childCancellation = await WorkflowExecutionSupport.CancelOutstandingChildren(
                     run,
                     cancelSession,
@@ -500,22 +503,26 @@ internal sealed class WorkflowRuntime
         }
 
         var outcomeSnapshot = run.ToSnapshot();
+        var storedActionContext = requestContext.WithoutAuthorization();
         if (workflow.Definition.Coordination.IsDurable)
         {
-            await this.persistence.UpsertRun(
+            await this.persistence.UpsertRunAndApply(
                 run.Id,
-                () => run.ToPendingControlActionPersistenceRecord(this.systemName, action),
+                () => run.ToPendingControlActionPersistenceRecord(this.systemName, action, storedActionContext),
+                () =>
+                {
+                    if (!run.TryRecordAcceptedControlAction(action, storedActionContext, out outcomeSnapshot))
+                    {
+                        throw new InvalidOperationException(
+                            $"Workflow run '{run.Id.Value:D}' became final while its '{action}' action gate was held.");
+                    }
+                },
                 CancellationToken.None);
-            if (!run.TryRecordAcceptedControlAction(action, out outcomeSnapshot))
-            {
-                throw new InvalidOperationException(
-                    $"Workflow run '{run.Id.Value:D}' became final while its '{action}' action gate was held.");
-            }
         }
 
         if (action == WorkflowAction.Cancel)
         {
-            control.RequestCancel();
+            control.RequestCancelWithContext(storedActionContext);
         }
         else
         {
@@ -546,7 +553,7 @@ internal sealed class WorkflowRuntime
         var control = new WorkflowExecutionControl(this.GetExecutionLifetimeToken());
         if (run.GetPendingControlAction() is { } pendingAction)
         {
-            ApplyControlRequest(control, pendingAction);
+            ApplyControlRequest(control, pendingAction, run.GetPendingControlRequestContext());
         }
 
         if (!this.controls.TryAdd(run.Id, control))
@@ -658,7 +665,7 @@ internal sealed class WorkflowRuntime
             {
                 var childCancellation = await WorkflowExecutionSupport.CancelOutstandingChildren(
                     run,
-                    this.createSession(run.RequestContext),
+                    this.createSession(control.CancellationRequestContext ?? run.RequestContext),
                     this.getAuthoritativeWorker,
                     CancellationToken.None);
                 if (!childCancellation.IsSuccessful)
@@ -730,7 +737,7 @@ internal sealed class WorkflowRuntime
                 {
                     var childCancellation = await WorkflowExecutionSupport.CancelOutstandingChildren(
                         run,
-                        this.createSession(run.RequestContext),
+                        this.createSession(control.CancellationRequestContext ?? run.RequestContext),
                         this.getAuthoritativeWorker,
                         CancellationToken.None);
                     if (!childCancellation.IsSuccessful)
@@ -880,10 +887,16 @@ internal sealed class WorkflowRuntime
         {
             if (shouldPersist)
             {
-                await this.persistence.UpsertRun(
+                await this.persistence.UpsertRunAndApply(
                     run.Id,
                     () => run.ToPersistenceRecord(this.systemName, completion),
+                    () =>
+                    {
+                        var persistedCompletion = run.CommitFinalCompletion(completion);
+                        run.TrySetClaimedCompletion(persistedCompletion);
+                    },
                     CancellationToken.None);
+                return true;
             }
         }
         catch (Exception exception)
@@ -1450,6 +1463,7 @@ internal sealed class WorkflowRuntime
         private readonly CancellationTokenSource cancellation;
         private int pauseRequested;
         private int cancelRequested;
+        private WorkRequestContext? cancellationRequestContext;
 
         public WorkflowExecutionControl(CancellationToken lifetimeToken)
         {
@@ -1462,6 +1476,8 @@ internal sealed class WorkflowRuntime
 
         public bool CancelRequested => Volatile.Read(ref this.cancelRequested) == 1;
 
+        public WorkRequestContext? CancellationRequestContext => Volatile.Read(ref this.cancellationRequestContext);
+
         public void RequestPause()
         {
             Interlocked.Exchange(ref this.pauseRequested, 1);
@@ -1469,7 +1485,21 @@ internal sealed class WorkflowRuntime
         }
 
         public void RequestCancel()
+            => this.RequestCancelCore(requestContext: null);
+
+        public void RequestCancelWithContext(WorkRequestContext requestContext)
         {
+            ArgumentNullException.ThrowIfNull(requestContext);
+            this.RequestCancelCore(requestContext);
+        }
+
+        private void RequestCancelCore(WorkRequestContext? requestContext)
+        {
+            if (requestContext is not null)
+            {
+                Volatile.Write(ref this.cancellationRequestContext, requestContext.WithoutAuthorization());
+            }
+
             Interlocked.Exchange(ref this.cancelRequested, 1);
             this.cancellation.Cancel();
         }
@@ -1487,11 +1517,22 @@ internal sealed class WorkflowRuntime
         public int References { get; set; }
     }
 
-    private static void ApplyControlRequest(WorkflowExecutionControl control, WorkflowAction action)
+    private static void ApplyControlRequest(
+        WorkflowExecutionControl control,
+        WorkflowAction action,
+        WorkRequestContext? requestContext)
     {
         if (action == WorkflowAction.Cancel)
         {
-            control.RequestCancel();
+            if (requestContext is null)
+            {
+                control.RequestCancel();
+            }
+            else
+            {
+                control.RequestCancelWithContext(requestContext);
+            }
+
             return;
         }
 

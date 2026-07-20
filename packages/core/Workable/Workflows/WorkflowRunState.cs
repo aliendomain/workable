@@ -12,6 +12,7 @@ internal sealed class WorkflowRunState
     private IReadOnlyList<WorkMessage> messages = [];
     private WorkflowRunStatus status;
     private WorkflowAction? pendingControlAction;
+    private WorkRequestContext? pendingControlRequestContext;
     private DateTimeOffset? startedAt;
     private DateTimeOffset? completedAt;
 
@@ -92,6 +93,7 @@ internal sealed class WorkflowRunState
             onChanged);
         run.status = record.Status;
         run.pendingControlAction = ParsePendingControlAction(record.PendingControlAction);
+        run.pendingControlRequestContext = record.PendingControlRequestContext;
         run.startedAt = record.StartedAt;
         run.completedAt = record.CompletedAt;
         run.messages = record.Messages;
@@ -123,6 +125,7 @@ internal sealed class WorkflowRunState
             onChanged);
         run.status = record.Status;
         run.pendingControlAction = ParsePendingControlAction(record.PendingControlAction);
+        run.pendingControlRequestContext = record.PendingControlRequestContext;
         run.startedAt = record.StartedAt;
         run.completedAt = record.CompletedAt;
         run.messages = record.Messages;
@@ -176,6 +179,7 @@ internal sealed class WorkflowRunState
             this.status = WorkflowRunStatus.Running;
             this.completedAt = null;
             this.pendingControlAction = null;
+            this.pendingControlRequestContext = null;
             this.messages = [];
             this.onChanged?.Invoke();
         }
@@ -197,10 +201,20 @@ internal sealed class WorkflowRunState
         }
     }
 
+    public WorkRequestContext? GetPendingControlRequestContext()
+    {
+        lock (this.sync)
+        {
+            return this.pendingControlRequestContext;
+        }
+    }
+
     public bool TryRecordAcceptedControlAction(
         WorkflowAction action,
+        WorkRequestContext requestContext,
         out WorkflowRunSnapshot snapshot)
     {
+        ArgumentNullException.ThrowIfNull(requestContext);
         lock (this.sync)
         {
             if (this.status is WorkflowRunStatus.Completed or WorkflowRunStatus.Failed or WorkflowRunStatus.Canceled)
@@ -210,6 +224,7 @@ internal sealed class WorkflowRunState
             }
 
             this.pendingControlAction = action;
+            this.pendingControlRequestContext = requestContext.WithoutAuthorization();
             snapshot = this.ToSnapshotLocked();
             this.onChanged?.Invoke();
             return true;
@@ -384,6 +399,7 @@ internal sealed class WorkflowRunState
 
             this.status = WorkflowRunStatus.Completed;
             this.pendingControlAction = null;
+            this.pendingControlRequestContext = null;
             this.messages = [];
             this.completedAt = DateTimeOffset.UtcNow;
             this.onChanged?.Invoke();
@@ -438,6 +454,7 @@ internal sealed class WorkflowRunState
 
             this.status = completion.Status;
             this.pendingControlAction = null;
+            this.pendingControlRequestContext = null;
             this.messages = completion.Messages;
             this.completedAt = completion.Run?.CompletedAt ?? DateTimeOffset.UtcNow;
             this.onChanged?.Invoke();
@@ -460,6 +477,7 @@ internal sealed class WorkflowRunState
 
             this.status = WorkflowRunStatus.Paused;
             this.pendingControlAction = null;
+            this.pendingControlRequestContext = null;
             this.completedAt = null;
             this.messages = pauseMessages ?? [];
             this.onChanged?.Invoke();
@@ -478,6 +496,7 @@ internal sealed class WorkflowRunState
 
             this.status = WorkflowRunStatus.Blocked;
             this.pendingControlAction = null;
+            this.pendingControlRequestContext = null;
             this.completedAt = null;
             this.messages = blockMessages;
             this.onChanged?.Invoke();
@@ -496,6 +515,7 @@ internal sealed class WorkflowRunState
 
             this.status = WorkflowRunStatus.Canceled;
             this.pendingControlAction = null;
+            this.pendingControlRequestContext = null;
             this.messages = [];
             this.completedAt = DateTimeOffset.UtcNow;
             this.onChanged?.Invoke();
@@ -518,6 +538,7 @@ internal sealed class WorkflowRunState
 
             this.status = WorkflowRunStatus.Failed;
             this.pendingControlAction = null;
+            this.pendingControlRequestContext = null;
             this.messages = failureMessages;
             this.completedAt = DateTimeOffset.UtcNow;
             this.onChanged?.Invoke();
@@ -548,7 +569,8 @@ internal sealed class WorkflowRunState
                 this.status,
                 this.completedAt,
                 this.messages,
-                this.pendingControlAction);
+                this.pendingControlAction,
+                this.pendingControlRequestContext);
         }
     }
 
@@ -569,7 +591,8 @@ internal sealed class WorkflowRunState
                 completion.Status,
                 completion.Run?.CompletedAt ?? DateTimeOffset.UtcNow,
                 completion.Messages,
-                pendingControlAction: null);
+                pendingControlAction: null,
+                pendingControlRequestContext: null);
         }
     }
 
@@ -582,14 +605,17 @@ internal sealed class WorkflowRunState
                 WorkflowRunStatus.Running,
                 persistedCompletedAt: null,
                 persistedMessages: [],
-                pendingControlAction: null);
+                pendingControlAction: null,
+                pendingControlRequestContext: null);
         }
     }
 
     public WorkflowRunPersistenceRecord ToPendingControlActionPersistenceRecord(
         string? workSystemName,
-        WorkflowAction action)
+        WorkflowAction action,
+        WorkRequestContext requestContext)
     {
+        ArgumentNullException.ThrowIfNull(requestContext);
         lock (this.sync)
         {
             return this.ToPersistenceRecordLocked(
@@ -597,7 +623,8 @@ internal sealed class WorkflowRunState
                 this.status,
                 this.completedAt,
                 this.messages,
-                action);
+                action,
+                requestContext.WithoutAuthorization());
         }
     }
 
@@ -606,7 +633,8 @@ internal sealed class WorkflowRunState
         WorkflowRunStatus persistedStatus,
         DateTimeOffset? persistedCompletedAt,
         IReadOnlyList<WorkMessage> persistedMessages,
-        WorkflowAction? pendingControlAction)
+        WorkflowAction? pendingControlAction,
+        WorkRequestContext? pendingControlRequestContext)
         => new(
             workSystemName,
             this.Id,
@@ -622,7 +650,8 @@ internal sealed class WorkflowRunState
             persistedMessages,
             this.childReceipts.Values.ToArray(),
             this.DefinitionFingerprint,
-            pendingControlAction?.ToString());
+            pendingControlAction?.ToString(),
+            pendingControlRequestContext);
 
     private static WorkflowAction? ParsePendingControlAction(string? value)
         => string.Equals(value, "Stop", StringComparison.Ordinal)

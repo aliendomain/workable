@@ -109,6 +109,51 @@ public sealed class WorkerRetentionSchedulerShould
     }
 
     [Fact]
+    public async Task DeferredWorkersAreNotImmediatelyReselectedByCountRetention()
+    {
+        var index = new WorkerIndex();
+        var firstAttempt = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var secondAttempt = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var worker = CreateWorker("retention.deferred-count-retry");
+        index.Register(worker);
+        WorkerRetentionScheduler? scheduler = null;
+        var attempts = 0;
+        scheduler = new WorkerRetentionScheduler(
+            index,
+            WorkSystemRetentionConfiguration.Default with { MaximumFinalWorkers = 0 },
+            (_, _) =>
+            {
+                var attempt = Interlocked.Increment(ref attempts);
+                scheduler!.ScheduleDeferred(worker);
+                if (attempt == 1)
+                {
+                    firstAttempt.TrySetResult();
+                }
+                else
+                {
+                    secondAttempt.TrySetResult();
+                }
+
+                return 0;
+            });
+        using (scheduler)
+        {
+            scheduler.Schedule(worker);
+            scheduler.Start();
+            await firstAttempt.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+            var unexpectedRetry = await Task.WhenAny(
+                secondAttempt.Task,
+                Task.Delay(TimeSpan.FromMilliseconds(250)));
+            await scheduler.Stop(CancellationToken.None);
+
+            Assert.NotSame(secondAttempt.Task, unexpectedRetry);
+            Assert.Equal(1, Volatile.Read(ref attempts));
+            Assert.Equal(1, scheduler.Diagnostics.TrackedFinalWorkerCount);
+        }
+    }
+
+    [Fact]
     public async Task RecordPurgeFailuresAndClearTheAlertAfterALaterSuccessfulRun()
     {
         var index = new WorkerIndex();

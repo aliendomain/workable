@@ -154,6 +154,7 @@ SELECT WorkSystemName,
        StepsJson,
        ChildReceiptsJson,
        PendingControlAction,
+       PendingControlRequestContextJson,
        CreatedAt,
        StartedAt,
        CompletedAt,
@@ -179,13 +180,14 @@ ORDER BY CreatedAt, RunId;
                         DeserializeRequestContext(reader, 6),
                         Enum.Parse<WorkflowRunStatus>(reader.GetString(8), ignoreCase: false),
                         Deserialize<WorkflowStepPersistenceRecord[]>(reader, 9) ?? [],
-                        reader.GetFieldValue<DateTimeOffset>(12),
-                        reader.IsDBNull(13) ? null : reader.GetFieldValue<DateTimeOffset>(13),
+                        reader.GetFieldValue<DateTimeOffset>(13),
                         reader.IsDBNull(14) ? null : reader.GetFieldValue<DateTimeOffset>(14),
-                        Deserialize<WorkMessage[]>(reader, 15) ?? [],
+                        reader.IsDBNull(15) ? null : reader.GetFieldValue<DateTimeOffset>(15),
+                        Deserialize<WorkMessage[]>(reader, 16) ?? [],
                         Deserialize<WorkflowChildReceipt[]>(reader, 10) ?? [],
                         reader.GetString(5),
-                        reader.IsDBNull(11) ? null : reader.GetString(11)));
+                        reader.IsDBNull(11) ? null : reader.GetString(11),
+                        DeserializeOptionalRequestContext(reader, 12)));
                 }
 
                 return runs;
@@ -1055,6 +1057,7 @@ USING
         @MessagesJson AS MessagesJson,
         @ChildReceiptsJson AS ChildReceiptsJson,
         @PendingControlAction AS PendingControlAction,
+        @PendingControlRequestContextJson AS PendingControlRequestContextJson,
         @CreatedAt AS CreatedAt,
         @StartedAt AS StartedAt,
         @CompletedAt AS CompletedAt,
@@ -1076,6 +1079,7 @@ WHEN MATCHED THEN
         MessagesJson = source.MessagesJson,
         ChildReceiptsJson = source.ChildReceiptsJson,
         PendingControlAction = source.PendingControlAction,
+        PendingControlRequestContextJson = source.PendingControlRequestContextJson,
         CreatedAt = source.CreatedAt,
         StartedAt = source.StartedAt,
         CompletedAt = source.CompletedAt,
@@ -1097,6 +1101,7 @@ WHEN NOT MATCHED THEN
         MessagesJson,
         ChildReceiptsJson,
         PendingControlAction,
+        PendingControlRequestContextJson,
         CreatedAt,
         StartedAt,
         CompletedAt,
@@ -1118,6 +1123,7 @@ WHEN NOT MATCHED THEN
         source.MessagesJson,
         source.ChildReceiptsJson,
         source.PendingControlAction,
+        source.PendingControlRequestContextJson,
         source.CreatedAt,
         source.StartedAt,
         source.CompletedAt,
@@ -1138,6 +1144,7 @@ WHEN NOT MATCHED THEN
         Add(command, "@MessagesJson", Serialize(run.Messages));
         Add(command, "@ChildReceiptsJson", Serialize(run.ChildReceipts));
         Add(command, "@PendingControlAction", run.PendingControlAction);
+        Add(command, "@PendingControlRequestContextJson", Serialize(run.PendingControlRequestContext));
         Add(command, "@CreatedAt", run.CreatedAt);
         Add(command, "@StartedAt", run.StartedAt);
         Add(command, "@CompletedAt", run.CompletedAt);
@@ -1768,6 +1775,11 @@ VALUES
             JsonSerializer.Deserialize<WorkOrigin>(json, JsonOptions) ??
             WorkOrigin.Create(WorkInvocationChannel.InProcess));
     }
+
+    private static WorkRequestContext? DeserializeOptionalRequestContext(DbDataReader reader, int ordinal)
+        => reader.IsDBNull(ordinal)
+            ? null
+            : DeserializeRequestContext(reader, ordinal);
 
     private static void Add(DbCommand command, string name, object? value)
     {

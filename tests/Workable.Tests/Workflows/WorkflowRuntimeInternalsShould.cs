@@ -790,6 +790,69 @@ public sealed class WorkflowRuntimeInternalsShould
     }
 
     [Fact]
+    public async Task PreserveFinalDurableStateWhenAChildReceiptArrivesDuringFinalPersistence()
+    {
+        var childId = WorkerId.New();
+        var finalWriteEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseFinalWrite = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var workflow = CreateWorkflow(
+            WorkflowDefinition.Create(
+                "workflow.runtime.final-receipt-race",
+                coordination: WorkflowCoordinationConfiguration.Durable),
+            Dispatch("dispatch", "sample.dispatch"));
+        var store = new RawWorkflowPersistenceStore(
+            [],
+            async persisted =>
+            {
+                if (persisted.Status == WorkflowRunStatus.Completed && persisted.ChildReceipts.Count == 0)
+                {
+                    finalWriteEntered.TrySetResult();
+                    await releaseFinalWrite.Task;
+                }
+            });
+        var runtime = CreateRuntime(
+            catalog: new WorkflowCatalog([workflow]),
+            persistenceStore: store,
+            systemName: "workflow-tests",
+            createSession: _ => throw new NotSupportedException(),
+            createWorkerHandle: _ => throw new NotSupportedException());
+        var run = WorkflowRunState.Create(
+            workflow,
+            WorkRequestContext.Create(WorkInvocationChannel.InProcess));
+        run.MarkStepCompleted("dispatch", [childId]);
+        GetRuns(runtime).TryAdd(run.Id, run);
+        var child = CreateSnapshot(
+            childId,
+            WorkerState.Completed,
+            new HashSet<WorkIdentifier>
+            {
+                new("workflow-run", run.Id.Value.ToString("D")),
+                new("workflow-step", "dispatch"),
+            });
+        var settleFinal = typeof(WorkflowRuntime).GetMethod(
+            "TryPersistAndSetFinalCompletionWithActionGate",
+            BindingFlags.Instance | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("Expected final workflow settlement method.");
+        var finalPersistence = Assert.IsAssignableFrom<Task<bool>>(settleFinal.Invoke(
+            runtime,
+            [run, run.CreateFinalCompletion(WorkflowRunStatus.Completed), true]));
+
+        await finalWriteEntered.Task.WaitAsync(TimeSpan.FromSeconds(1));
+        var receiptPersistence = runtime.ObserveFinalWorkflowChild(child, CancellationToken.None);
+        await Task.Delay(TimeSpan.FromMilliseconds(50));
+        Assert.False(receiptPersistence.IsCompleted);
+
+        releaseFinalWrite.TrySetResult();
+        Assert.True(await finalPersistence.WaitAsync(TimeSpan.FromSeconds(1)));
+        await receiptPersistence.WaitAsync(TimeSpan.FromSeconds(1));
+
+        var persisted = store.UpsertedRuns[^1];
+        Assert.Equal(WorkflowRunStatus.Completed, persisted.Status);
+        Assert.Contains(persisted.ChildReceipts, receipt => receipt.WorkerId == childId);
+        Assert.Equal(WorkflowRunStatus.Completed, run.GetStatus());
+    }
+
+    [Fact]
     public async Task KeepChildForRetentionAndRequestFinalizationRetryAfterReceiptPersistenceFails()
     {
         var childId = WorkerId.New();
@@ -945,24 +1008,42 @@ public sealed class WorkflowRuntimeInternalsShould
             WorkflowDefinition.Create($"workflow.runtime.control.{workflowAction.ToString().ToLowerInvariant()}"),
             Dispatch("dispatch", "sample.dispatch"));
         var workerOperations = new RecordingWorkerOperations();
+        var sessionContexts = new ConcurrentQueue<WorkRequestContext>();
         var runtime = CreateRuntime(
             catalog: new WorkflowCatalog([workflow]),
             persistenceStore: null,
             systemName: null,
-            createSession: _ => new TestWorkSystemSession(
-                new DelegateQueueService((_, _, _, _) =>
-                    Task.FromResult<IWorkerHandle>(new PendingWorkerHandle(childId))),
-                workers: workerOperations,
-                query: new DelegateQueryService(id => Task.FromResult(
-                    id == childId ? CreateSnapshot(childId, WorkerState.Running) : null))),
+            createSession: context =>
+            {
+                sessionContexts.Enqueue(context);
+                return new TestWorkSystemSession(
+                    new DelegateQueueService((_, _, _, _) =>
+                        Task.FromResult<IWorkerHandle>(new PendingWorkerHandle(childId))),
+                    workers: workerOperations,
+                    query: new DelegateQueryService(id => Task.FromResult(
+                        id == childId ? CreateSnapshot(childId, WorkerState.Running) : null)));
+            },
             createWorkerHandle: id => new PendingWorkerHandle(id));
-        var requestContext = WorkRequestContext.Create(WorkInvocationChannel.InProcess);
-        var handle = runtime.Start(workflow.Definition.Name, requestContext);
+        var startContext = WorkRequestContext.Create(
+            WorkInvocationChannel.InProcess,
+            new WorkActor("workflow-starter", "Workflow Starter"));
+        var operatorContext = WorkRequestContext.Create(
+            WorkInvocationChannel.HttpApi,
+            new WorkActor("workflow-operator", "Workflow Operator"),
+            description: "Cancel for deployment",
+            isAuthenticated: true) with
+        {
+            Authorization = WorkAuthorizationSnapshot.Create(
+                new WorkActor("workflow-operator", "Workflow Operator"),
+                ["operators"],
+                []),
+        };
+        var handle = runtime.Start(workflow.Definition.Name, startContext);
         await TestEventually.Until(
             () => runtime.Get(handle.RunId!.Value)?.Steps.Single().WorkerIds.Contains(childId) == true,
             "Expected the workflow to wait on its child before applying operator control.");
 
-        var outcome = await runtime.Execute(handle.RunId!.Value, workflowAction, requestContext);
+        var outcome = await runtime.Execute(handle.RunId!.Value, workflowAction, operatorContext);
         if (expectedStatus == WorkflowRunStatus.Canceled)
         {
             var completion = await handle.WaitForCompletion().WaitAsync(TimeSpan.FromSeconds(5));
@@ -979,6 +1060,66 @@ public sealed class WorkflowRuntimeInternalsShould
         Assert.Equal(expectedStatus, runtime.Get(handle.RunId.Value)!.Status);
         Assert.Contains(workerOperations.Executions, execution =>
             execution.WorkerId == childId && execution.Action == childAction);
+        if (workflowAction == WorkflowAction.Cancel)
+        {
+            Assert.Contains(sessionContexts, context =>
+                context.Actor.Id == "workflow-operator" &&
+                context.Description == "Cancel for deployment" &&
+                context.Authorization is null);
+        }
+    }
+
+    [Fact]
+    public async Task RecoverPendingDurableCancellationWithItsOperatorContext()
+    {
+        var childId = WorkerId.New();
+        var definition = WorkflowDefinition.Create(
+            "workflow.runtime.recovered-cancel-context",
+            coordination: WorkflowCoordinationConfiguration.Durable);
+        var workflow = CreateWorkflow(
+            definition,
+            Dispatch("dispatch", "sample.dispatch"),
+            new JoinWorkflowStepDefinition("join"));
+        var cancellationContext = WorkRequestContext.Create(
+            WorkInvocationChannel.HttpApi,
+            new WorkActor("recovered-operator", "Recovered Operator"),
+            description: "Cancel recovered workflow",
+            isAuthenticated: true);
+        var persistedRun = CreatePersistedRun(
+            "workflow-tests",
+            WorkflowRunId.New(),
+            definition,
+            childId,
+            WorkflowAction.Cancel.ToString(),
+            cancellationContext);
+        var store = new RawWorkflowPersistenceStore([persistedRun]);
+        var workerOperations = new RecordingWorkerOperations();
+        var sessionContexts = new ConcurrentQueue<WorkRequestContext>();
+        var runtime = CreateRuntime(
+            catalog: new WorkflowCatalog([workflow]),
+            persistenceStore: store,
+            systemName: "workflow-tests",
+            createSession: context =>
+            {
+                sessionContexts.Enqueue(context);
+                return new TestWorkSystemSession(
+                    new DelegateQueueService((_, _, _, _) => throw new NotSupportedException()),
+                    workerOperations,
+                    new DelegateQueryService(id => Task.FromResult<WorkerSnapshot?>(
+                        id == childId ? CreateSnapshot(childId, WorkerState.Running) : null)));
+            },
+            createWorkerHandle: id => new PendingWorkerHandle(id));
+
+        await runtime.RecoverDurableRuns(CancellationToken.None);
+        await TestEventually.Until(
+            () => runtime.Get(persistedRun.RunId)?.Status == WorkflowRunStatus.Canceled,
+            "Expected the recovered cancellation intent to settle the workflow.");
+
+        Assert.Contains(workerOperations.Executions, execution =>
+            execution.WorkerId == childId && execution.Action == WorkAction.Cancel);
+        Assert.Contains(sessionContexts, context =>
+            context.Actor.Id == "recovered-operator" &&
+            context.Description == "Cancel recovered workflow");
     }
 
     [Theory]
@@ -2090,7 +2231,8 @@ public sealed class WorkflowRuntimeInternalsShould
         WorkflowRunId runId,
         WorkflowDefinition definition,
         WorkerId workerId,
-        string? pendingControlAction = null)
+        string? pendingControlAction = null,
+        WorkRequestContext? pendingControlRequestContext = null)
     {
         var workflow = CreateWorkflow(
             definition,
@@ -2128,7 +2270,8 @@ public sealed class WorkflowRuntimeInternalsShould
             [],
             [],
             WorkflowDefinitionFingerprint.Create(workflow),
-            pendingControlAction);
+            pendingControlAction,
+            pendingControlRequestContext);
     }
 
     private static WorkerSnapshot CreateSnapshot(

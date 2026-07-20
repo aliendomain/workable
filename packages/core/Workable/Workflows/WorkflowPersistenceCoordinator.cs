@@ -64,6 +64,28 @@ internal sealed class WorkflowPersistenceCoordinator(
             cancellationToken);
     }
 
+    public Task UpsertRunAndApply(
+        WorkflowRunId runId,
+        Func<WorkflowRunPersistenceRecord> createRun,
+        Action applyPersistedState,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(createRun);
+        ArgumentNullException.ThrowIfNull(applyPersistedState);
+        return this.RunExclusive(
+            runId,
+            async () =>
+            {
+                if (this.store is not null)
+                {
+                    await this.store.UpsertWorkflowRun(createRun(), cancellationToken);
+                }
+
+                applyPersistedState();
+            },
+            cancellationToken);
+    }
+
     public Task UpsertRunCoalesced(
         WorkflowRunId runId,
         Func<WorkflowRunPersistenceRecord> createRun,

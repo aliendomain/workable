@@ -284,13 +284,27 @@ public sealed class WorkflowRunStateShould
             definition,
             Dispatch("dispatch", "sample.dispatch"));
         var run = WorkflowRunState.Create(workflow, WorkRequestContext.Create(WorkInvocationChannel.InProcess));
+        var controlContext = WorkRequestContext.Create(
+            WorkInvocationChannel.HttpApi,
+            new WorkActor("workflow-operator", "Workflow Operator"),
+            description: "Pause for maintenance",
+            isAuthenticated: true) with
+        {
+            Authorization = WorkAuthorizationSnapshot.Create(
+                new WorkActor("workflow-operator", "Workflow Operator"),
+                ["operators"],
+                []),
+        };
 
-        Assert.True(run.TryRecordAcceptedControlAction(WorkflowAction.Pause, out _));
+        Assert.True(run.TryRecordAcceptedControlAction(WorkflowAction.Pause, controlContext, out _));
         var persisted = run.ToPersistenceRecord("workflow-tests");
         var rehydrated = WorkflowRunState.Rehydrate(workflow, persisted);
 
         Assert.Equal(WorkflowAction.Pause.ToString(), persisted.PendingControlAction);
         Assert.Equal(WorkflowAction.Pause, rehydrated.GetPendingControlAction());
+        Assert.Equal("workflow-operator", persisted.PendingControlRequestContext?.Actor.Id);
+        Assert.Equal("Pause for maintenance", rehydrated.GetPendingControlRequestContext()?.Description);
+        Assert.Null(persisted.PendingControlRequestContext?.Authorization);
     }
 
     [Fact]

@@ -116,6 +116,12 @@ internal sealed class WorkerRetentionScheduler(
     }
 
     public void Schedule(WorkerRecord worker)
+        => this.Schedule(worker, includeInCountRetention: true);
+
+    public void ScheduleDeferred(WorkerRecord worker)
+        => this.Schedule(worker, includeInCountRetention: false);
+
+    private void Schedule(WorkerRecord worker, bool includeInCountRetention)
     {
         if (!worker.IsFinal)
         {
@@ -125,13 +131,16 @@ internal sealed class WorkerRetentionScheduler(
         var dueAt = DateTimeOffset.UtcNow + worker.Configuration.Retention.PurgeInterval;
         lock (this.sync)
         {
-            this.TrackFinalWorkerLocked(worker);
+            this.TrackFinalWorkerLocked(worker, includeInCountRetention);
             this.scheduledPurges.Enqueue(new ScheduledPurge(worker.Id), dueAt);
             this.scheduledPurgeHighWaterMark = Math.Max(
                 this.scheduledPurgeHighWaterMark,
                 this.scheduledPurges.Count);
-            this.countRetentionTargetsByDefinition[worker.Work.Definition.Id] = worker.Configuration.Retention.MaximumFinalWorkers;
-            this.systemCountRetentionDirty = true;
+            if (includeInCountRetention)
+            {
+                this.countRetentionTargetsByDefinition[worker.Work.Definition.Id] = worker.Configuration.Retention.MaximumFinalWorkers;
+                this.systemCountRetentionDirty = true;
+            }
         }
 
         this.Signal();
@@ -455,7 +464,7 @@ internal sealed class WorkerRetentionScheduler(
         }
     }
 
-    private void TrackFinalWorkerLocked(WorkerRecord worker)
+    private void TrackFinalWorkerLocked(WorkerRecord worker, bool includeInCountRetention)
     {
         var entry = new FinalWorkerRetentionEntry(
             worker.CreatedAt,
@@ -464,6 +473,11 @@ internal sealed class WorkerRetentionScheduler(
 
         this.RemoveFinalWorkerLocked(worker.Id);
         this.finalWorkerEntriesById[worker.Id] = entry;
+        if (!includeInCountRetention)
+        {
+            return;
+        }
+
         this.finalWorkers.Add(entry);
 
         if (!this.finalWorkersByDefinition.TryGetValue(entry.DefinitionId, out var definitionWorkers))

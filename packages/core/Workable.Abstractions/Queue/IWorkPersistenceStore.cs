@@ -385,6 +385,7 @@ public sealed record WorkQueueDurabilityCleanupRequest(
 /// <param name="CompletedAt">The time the workflow run reached a final state, when one exists.</param>
 /// <param name="Messages">The current workflow run messages.</param>
 /// <param name="ChildReceipts">The retained child completion receipts captured for the workflow run.</param>
+/// <param name="PendingControlRequestContext">The caller context for a pending workflow control action, when one exists.</param>
 public sealed record WorkflowRunPersistenceRecord(
     string? WorkSystemName,
     WorkflowRunId RunId,
@@ -400,7 +401,8 @@ public sealed record WorkflowRunPersistenceRecord(
     IReadOnlyList<WorkMessage> Messages,
     IReadOnlyList<WorkflowChildReceipt> ChildReceipts,
     string DefinitionFingerprint = "",
-    string? PendingControlAction = null)
+    string? PendingControlAction = null,
+    WorkRequestContext? PendingControlRequestContext = null)
 {
     /// <summary>
     /// Gets the origin metadata extracted from <see cref="RequestContext"/>.

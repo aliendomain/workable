@@ -1125,7 +1125,7 @@ internal sealed class WorkerOperations :
                 }
                 catch
                 {
-                    this.retention.Schedule(worker);
+                    this.retention.ScheduleDeferred(worker);
                     continue;
                 }
                 finally
@@ -1134,14 +1134,14 @@ internal sealed class WorkerOperations :
                 }
 
                 // Give worker-state persistence a full retention interval to settle before purging.
-                this.retention.Schedule(worker);
+                this.retention.ScheduleDeferred(worker);
                 continue;
             }
 
             if (this.ShouldKeepWorkflowChildWorker(worker))
             {
                 // Workflow children can become purgeable later once the parent run reaches a final state.
-                this.retention.Schedule(worker);
+                this.retention.ScheduleDeferred(worker);
                 continue;
             }
 
