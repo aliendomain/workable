@@ -963,12 +963,20 @@ internal sealed class DurableWorkflowExecutor(
 
                         throw;
                     }
-                    catch (Exception exception)
+                    catch (OperationCanceledException exception)
                     {
-                        foreach (var completion in batch.Values.SelectMany(static requests => requests))
-                        {
-                            completion.TrySetException(exception);
-                        }
+                        SetBatchException(batch, exception);
+                    }
+                    catch (Exception exception) when (ShouldHandleExecutionException(exception))
+                    {
+                        SetBatchException(batch, exception);
+                    }
+                    catch (Exception exception)
+                        when (!ShouldHandleExecutionException(exception) &&
+                            exception is not OperationCanceledException)
+                    {
+                        SetBatchException(batch, exception);
+                        throw;
                     }
                 }
             }
@@ -985,6 +993,16 @@ internal sealed class DurableWorkflowExecutor(
                 {
                     completion.TrySetCanceled(this.cancellation.Token);
                 }
+            }
+        }
+
+        private static void SetBatchException(
+            IReadOnlyDictionary<WorkerId, List<TaskCompletionSource<bool>>> batch,
+            Exception exception)
+        {
+            foreach (var completion in batch.Values.SelectMany(static requests => requests))
+            {
+                completion.TrySetException(exception);
             }
         }
     }

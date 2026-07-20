@@ -36,6 +36,7 @@ internal sealed class WorkerOperations :
     private readonly TimeSpan shutdownGracePeriod;
     private readonly WorkSystemCapacityConfiguration capacity;
     private readonly WorkSystemQueueDiagnosticsTracker queueDiagnostics;
+    private readonly ILogger? logger;
     private readonly bool persistenceStoreAvailable;
     private CancellationTokenSource systemExecutionLifetime = new();
     private volatile bool acceptingWork;
@@ -91,7 +92,7 @@ internal sealed class WorkerOperations :
             persistenceLogger,
             durabilityOptions);
         this.workerEvents = new WorkerEventPublisher(workSystemId, workSystemName, events, this.SynchronizeWorkerIfTracked, readModel);
-        var logger = rootServices.GetService<ILoggerFactory>()?.CreateLogger("Workable.WorkerExecution");
+        this.logger = rootServices.GetService<ILoggerFactory>()?.CreateLogger("Workable.WorkerExecution");
         var invoker = new WorkerExecutionInvoker(
             workSystemId,
             workSystemName,
@@ -101,8 +102,8 @@ internal sealed class WorkerOperations :
             this.AddIdentifier,
             new WorkInitializationExecutor(rootServices));
         var exceptionHandler = new WorkerExecutionExceptionHandler(
-            new WorkExceptionClassifierChain(systemExceptionClassifiers, globalExceptionClassifiers, logger),
-            logger);
+            new WorkExceptionClassifierChain(systemExceptionClassifiers, globalExceptionClassifiers, this.logger),
+            this.logger);
         var attemptRunner = new WorkerExecutionAttemptRunner(invoker, exceptionHandler);
         var completionRecorder = new WorkerExecutionCompletionRecorder(this.workerEvents);
         this.iterationTransitions = new WorkerIterationTransitionCoordinator(this.workerEvents);
@@ -1123,8 +1124,12 @@ internal sealed class WorkerOperations :
                     this.SynchronizeFailedWorkerAutoCancel(worker);
                     this.ScheduleConcurrencyDrain(worker.Work.Definition.Id);
                 }
-                catch
+                catch (Exception exception) when (IsNonCriticalRetentionFailure(exception))
                 {
+                    this.logger?.LogWarning(
+                        exception,
+                        "Workflow child finalization failed for worker {WorkerId}; retention will be retried.",
+                        worker.Id);
                     this.retention.ScheduleDeferred(worker);
                     continue;
                 }
@@ -1278,6 +1283,17 @@ internal sealed class WorkerOperations :
         HashSet<WorkerId>? workerIdSet,
         WorkerId workerId)
         => workerIdSet?.Contains(workerId) ?? workerIds.Contains(workerId);
+
+    private static bool IsNonCriticalRetentionFailure(Exception exception)
+        => exception is not (
+            OutOfMemoryException or
+            StackOverflowException or
+            AccessViolationException or
+            AppDomainUnloadedException or
+            BadImageFormatException or
+            CannotUnloadAppDomainException or
+            ThreadAbortException or
+            InvalidProgramException);
 
     private IReadOnlyList<WorkerSnapshot> GetSubjectWorkersLocked(WorkSubjectId subjectId)
         => this.persistence.GetSubjectWorkers(subjectId);

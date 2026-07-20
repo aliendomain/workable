@@ -1359,6 +1359,42 @@ public sealed class WorkflowExecutorsShould
                 .WaitAsync(TimeSpan.FromSeconds(2)));
     }
 
+    [Fact]
+    public async Task CompleteActiveExistenceBatchWhenProviderThrowsCriticalException()
+    {
+        var workerId = WorkerId.New();
+        var store = new RecordingWorkflowStore
+        {
+            DurableWorkersExistHandler = _ => throw new BadImageFormatException("Critical existence lookup failure."),
+        };
+        var persistence = new WorkflowPersistenceCoordinator(store, "workflow-tests");
+        var executor = new DurableWorkflowExecutor(
+            "workflow-tests",
+            name => CreateRegisteredWork(name),
+            _ => new TestWorkSystemSession(
+                new DelegateQueueService((_, _, _, _) => throw new NotSupportedException()),
+                query: new DelegateQueryService(_ => Task.FromResult<WorkerSnapshot?>(null))),
+            id => new CancellationAwareWorkerHandle(
+                id,
+                new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously)),
+            persistence);
+        var workflow = CreateWorkflow(
+            WorkflowDefinition.Create(
+                "workflow.durable.critical-existence-failure",
+                coordination: WorkflowCoordinationConfiguration.Durable),
+            Dispatch("dispatch", "sample.dispatch"),
+            new JoinWorkflowStepDefinition("join"));
+        var run = WorkflowRunState.Create(workflow, WorkRequestContext.Create(WorkInvocationChannel.InProcess));
+        run.MarkStepCompleted("dispatch", [workerId]);
+        run.MarkStepRunning("join", [workerId]);
+
+        var exception = await Assert.ThrowsAsync<BadImageFormatException>(async () =>
+            await executor.Execute(run, workflow, CancellationToken.None)
+                .WaitAsync(TimeSpan.FromSeconds(2)));
+
+        Assert.Equal("Critical existence lookup failure.", exception.Message);
+    }
+
     [Theory]
     [InlineData(true, WorkCompletionStatus.Completed)]
     [InlineData(false, WorkCompletionStatus.NotFound)]

@@ -2857,6 +2857,40 @@ public sealed class WorkflowRuntimeInternalsShould
     }
 
     [Fact]
+    public async Task ExposeCriticalFinalPersistenceFailureAndReleaseExecutionBookkeeping()
+    {
+        var store = new RawWorkflowPersistenceStore(
+            [],
+            run => run.Status == WorkflowRunStatus.Completed
+                ? Task.FromException(new BadImageFormatException("Critical final persistence failure."))
+                : Task.CompletedTask);
+        var workflow = CreateWorkflow(
+            WorkflowDefinition.Create(
+                "workflow.runtime.critical-final-persistence-failure",
+                coordination: WorkflowCoordinationConfiguration.Durable));
+        var runtime = CreateRuntime(
+            catalog: new WorkflowCatalog([workflow]),
+            persistenceStore: store,
+            systemName: "workflow-tests",
+            createSession: _ => new TestWorkSystemSession(new DelegateQueueService((_, _, _, _) =>
+                throw new InvalidOperationException("An empty workflow must not dispatch work."))),
+            createWorkerHandle: _ => throw new NotSupportedException());
+
+        var handle = runtime.Start(
+            workflow.Definition.Name,
+            WorkRequestContext.Create(WorkInvocationChannel.InProcess));
+        var exception = await Assert.ThrowsAsync<BadImageFormatException>(async () =>
+            await handle.WaitForCompletion().WaitAsync(TimeSpan.FromSeconds(2)));
+        await TestEventually.Until(
+            () => GetExecutions(runtime).Count == 0,
+            "Expected critical workflow failure cleanup to release execution bookkeeping.");
+
+        Assert.Equal("Critical final persistence failure.", exception.Message);
+        Assert.Equal(0, GetActionGateCount(runtime));
+        Assert.Equal(WorkflowRunStatus.Running, runtime.Get(handle.RunId!.Value)?.Status);
+    }
+
+    [Fact]
     public async Task DoNotReturnAStaleBlockedCompletionAfterManualCancellation()
     {
         var workerId = WorkerId.New();

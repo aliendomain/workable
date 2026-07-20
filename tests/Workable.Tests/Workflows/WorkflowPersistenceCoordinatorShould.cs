@@ -209,6 +209,29 @@ public sealed class WorkflowPersistenceCoordinatorShould
     }
 
     [Fact]
+    public async Task PropagateCriticalCoalescedWriteFailuresAndAcceptALaterCheckpoint()
+    {
+        var attempts = 0;
+        var store = new RecordingWorkflowPersistenceStore
+        {
+            UpsertHandler = (_, _) => Interlocked.Increment(ref attempts) == 1
+                ? Task.FromException(new BadImageFormatException("Critical checkpoint failure."))
+                : Task.CompletedTask,
+        };
+        var coordinator = new WorkflowPersistenceCoordinator(store, "workflow-persistence-tests");
+        var run = CreateRun("workflow-persistence-tests", "workflow.one");
+
+        var exception = await Assert.ThrowsAsync<BadImageFormatException>(async () =>
+            await coordinator.UpsertRunCoalesced(run.RunId, () => run, CancellationToken.None)
+                .WaitAsync(TimeSpan.FromSeconds(1)));
+        await coordinator.UpsertRunCoalesced(run.RunId, () => run, CancellationToken.None)
+            .WaitAsync(TimeSpan.FromSeconds(1));
+
+        Assert.Equal("Critical checkpoint failure.", exception.Message);
+        Assert.Equal(2, attempts);
+    }
+
+    [Fact]
     public async Task ContinueCoalescedPumpWhenCheckpointArrivesDuringAWrite()
     {
         var firstWriteEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);

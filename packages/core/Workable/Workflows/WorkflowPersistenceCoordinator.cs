@@ -295,12 +295,29 @@ internal sealed class WorkflowPersistenceCoordinator(
                         waiter.TrySetResult();
                     }
                 }
-                catch (Exception exception)
+                catch (Exception exception) when (IsNonCriticalPersistenceFailure(exception))
                 {
-                    foreach (var waiter in waiters)
+                    SetWaiterException(waiters, exception);
+                }
+                catch (Exception exception)
+                    when (!IsNonCriticalPersistenceFailure(exception))
+                {
+                    SetWaiterException(waiters, exception);
+
+                    TaskCompletionSource[] pendingWaiters;
+                    lock (this.sync)
                     {
-                        waiter.TrySetException(exception);
+                        pendingWaiters = [.. this.waiters];
+                        this.waiters.Clear();
+                        this.isRunning = false;
+                        if (this.isStopped)
+                        {
+                            this.drained.TrySetException(exception);
+                        }
                     }
+
+                    SetWaiterException(pendingWaiters, exception);
+                    throw;
                 }
 
                 lock (this.sync)
@@ -318,7 +335,28 @@ internal sealed class WorkflowPersistenceCoordinator(
                 }
             }
         }
+
+        private static void SetWaiterException(
+            IEnumerable<TaskCompletionSource> waiters,
+            Exception exception)
+        {
+            foreach (var waiter in waiters)
+            {
+                waiter.TrySetException(exception);
+            }
+        }
     }
+
+    private static bool IsNonCriticalPersistenceFailure(Exception exception)
+        => exception is not (
+            OutOfMemoryException or
+            StackOverflowException or
+            AccessViolationException or
+            AppDomainUnloadedException or
+            BadImageFormatException or
+            CannotUnloadAppDomainException or
+            ThreadAbortException or
+            InvalidProgramException);
 
     private async Task UpsertRunCore(
         WorkflowRunPersistenceRecord run,

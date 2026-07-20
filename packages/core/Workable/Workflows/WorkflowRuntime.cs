@@ -647,9 +647,14 @@ internal sealed class WorkflowRuntime
         {
             cancellation = exception;
         }
-        catch (Exception exception)
+        catch (Exception exception) when (IsNonCriticalExecutionFailure(exception))
         {
             failure = exception;
+        }
+        catch (Exception exception) when (!IsNonCriticalExecutionFailure(exception))
+        {
+            executionCompletion.TrySetException(exception);
+            throw;
         }
         finally
         {
