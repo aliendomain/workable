@@ -1270,6 +1270,243 @@ public sealed class WorkableRealtimeWorkerOverviewUpdateFactoryTests
         Assert.Equal(retryAt, failedTimelineItem.Failure!.PendingState!.NextRunAt);
     }
 
+    [Fact]
+    public void IgnoreLogEventsWithoutAUsableInScopeLogEntry()
+    {
+        var occurredAt = DateTimeOffset.UtcNow;
+        var current = CreateState();
+        var criteria = new WorkWorkerOverviewRealtimeCriteria(
+            WorkerLogs: WorkComponentShapes.Standard,
+            LogIterationSequence: 7,
+            LogLevels: [Microsoft.Extensions.Logging.LogLevel.Error]);
+
+        var missingLog = WorkableRealtimeWorkerOverviewUpdateFactory.Create(
+            CreateEvent("worker.log", new { }),
+            current,
+            criteria);
+        var wrongIteration = WorkableRealtimeWorkerOverviewUpdateFactory.Create(
+            CreateEvent("worker.log", LogPayload(8, "Error"), occurredAt),
+            current,
+            criteria);
+        var invalidLevel = WorkableRealtimeWorkerOverviewUpdateFactory.Create(
+            CreateEvent("worker.log", LogPayload(7, "not-a-level"), occurredAt),
+            current,
+            criteria);
+        var excludedLevel = WorkableRealtimeWorkerOverviewUpdateFactory.Create(
+            CreateEvent("worker.log", LogPayload(7, "Information"), occurredAt),
+            current,
+            criteria);
+
+        Assert.Null(missingLog);
+        Assert.Null(wrongIteration);
+        Assert.Null(invalidLevel);
+        Assert.Null(excludedLevel);
+    }
+
+    [Fact]
+    public void PreserveForwardCompatibilityForUnknownEventsAndApplyTheirSnapshotFields()
+    {
+        var occurredAt = DateTimeOffset.UtcNow;
+        var current = CreateState();
+        var criteria = new WorkWorkerOverviewRealtimeCriteria();
+        var update = RequireUpdate(WorkableRealtimeWorkerOverviewUpdateFactory.Create(
+            CreateEvent(
+                "worker.future-event",
+                new
+                {
+                    Worker = new
+                    {
+                        Revision = 9L,
+                        StateSequence = 12L,
+                        UpdatedAt = occurredAt,
+                        StateChangedAt = occurredAt.AddSeconds(-1),
+                        State = WorkerState.Waiting,
+                        NextRunAt = occurredAt.AddMinutes(1),
+                        RetryAttempt = (int?)null,
+                        ConfigDifferenceCount = 4,
+                        LogSummary = new
+                        {
+                            Total = 36,
+                            Critical = 1,
+                            Error = 2,
+                            Errors = 3,
+                            Warning = 4,
+                            Warnings = 5,
+                            Information = 6,
+                            Debug = 7,
+                            Trace = 8,
+                        },
+                        TimelineSummary = new
+                        {
+                            Total = 10,
+                            UserActionCount = 2,
+                            SystemEventCount = 7,
+                            FailureCount = 1,
+                        },
+                    },
+                    Iteration = new
+                    {
+                        Sequence = 5L,
+                        StartedAt = occurredAt.AddSeconds(-5),
+                        CompletedAt = (DateTimeOffset?)null,
+                        ExecutionDuration = (TimeSpan?)null,
+                        Status = WorkCompletionStatus.Executing,
+                        AttemptCount = 2,
+                    },
+                },
+                occurredAt),
+            current,
+            criteria));
+
+        Assert.Equal(WorkerState.Waiting, update.Worker?.State);
+        Assert.Equal(4, update.Worker?.ConfigDifferenceCount);
+        Assert.Equal(5, update.LatestIteration?.Sequence);
+        Assert.Equal(36, update.LogSummary?.Total);
+        Assert.Equal(1, update.LogSummary?.Critical);
+        Assert.Equal(2, update.LogSummary?.Error);
+        Assert.Equal(3, update.LogSummary?.Errors);
+        Assert.Equal(4, update.LogSummary?.Warning);
+        Assert.Equal(5, update.LogSummary?.Warnings);
+        Assert.Equal(6, update.LogSummary?.Information);
+        Assert.Equal(7, update.LogSummary?.Debug);
+        Assert.Equal(8, update.LogSummary?.Trace);
+        Assert.Equal(10, update.TimelineSummary?.Total);
+
+        var sparse = RequireUpdate(WorkableRealtimeWorkerOverviewUpdateFactory.Create(
+            CreateEvent("worker.another-future-event", new { }),
+            current,
+            criteria));
+        Assert.Same(current.Worker, sparse.Worker);
+        Assert.Null(sparse.LatestIteration);
+    }
+
+    [Fact]
+    public void CreateCanceledActionAndStateTimelineItemsFromAcceptedCancelEvents()
+    {
+        var occurredAt = DateTimeOffset.UtcNow;
+        var current = CreateState();
+        var criteria = new WorkWorkerOverviewRealtimeCriteria(
+            WorkerTimeline: WorkComponentShapes.Standard);
+        var update = RequireUpdate(WorkableRealtimeWorkerOverviewUpdateFactory.Create(
+            CreateEvent(
+                "worker.cancel",
+                new
+                {
+                    Worker = new
+                    {
+                        Revision = 2L,
+                        StateSequence = 8L,
+                        UpdatedAt = occurredAt,
+                        StateChangedAt = occurredAt,
+                        State = WorkerState.Canceled,
+                    },
+                    Origin = new
+                    {
+                        Channel = WorkInvocationChannel.SignalR,
+                        Actor = new { Id = "operator", Name = "Operator", Email = "operator@example.test" },
+                    },
+                    Action = WorkAction.Cancel,
+                    ActionStatus = WorkActionStatus.Accepted,
+                },
+                occurredAt),
+            current,
+            criteria));
+
+        Assert.Equal(WorkerState.Canceled, update.Worker?.State);
+        Assert.Contains(update.TimelineItems!, item =>
+            item.Kind == WorkWorkerOverviewTimelineItemKind.ActionRequest &&
+            item.Action == WorkAction.Cancel &&
+            item.Category == WorkWorkerOverviewTimelineCategory.UserAction);
+        Assert.Contains(update.TimelineItems!, item =>
+            item.Kind == WorkWorkerOverviewTimelineItemKind.StateChange &&
+            item.State == WorkerState.Canceled);
+    }
+
+    [Fact]
+    public void IgnoreIterationDetailsWhenAnIterationEventCarriesNoIterationSnapshot()
+    {
+        var current = CreateState();
+        var update = RequireUpdate(WorkableRealtimeWorkerOverviewUpdateFactory.Create(
+            CreateEvent("worker.completed", new { }),
+            current,
+            new WorkWorkerOverviewRealtimeCriteria(
+                WorkerDuration: WorkComponentShapes.Standard,
+                WorkerTimeline: WorkComponentShapes.Standard)));
+
+        Assert.Same(current.Worker, update.Worker);
+        Assert.Null(update.LatestIteration);
+        Assert.Null(update.RecentIterations);
+        Assert.Null(update.TimelineItems);
+    }
+
+    [Fact]
+    public void MergeLogEntriesInAscendingOrderWithStableIdTieBreaking()
+    {
+        var occurredAt = DateTimeOffset.UtcNow;
+        var current = CreateState() with
+        {
+            LogEntries =
+            [
+                LogEntry("b", occurredAt, "old-b"),
+                LogEntry("a", occurredAt, "old-a"),
+            ],
+        };
+        var update = new WorkWorkerOverviewRealtimeUpdate(
+            occurredAt,
+            LogEntries:
+            [
+                LogEntry("b", occurredAt, "new-b"),
+                LogEntry("c", occurredAt.AddSeconds(1), "new-c"),
+            ]);
+
+        var next = WorkableRealtimeWorkerOverviewUpdateFactory.Apply(
+            current,
+            update,
+            new WorkWorkerOverviewRealtimeCriteria(
+                WorkerLogs: WorkComponentShapes.Standard,
+                LogSortDirection: WorkWorkerOverviewSortDirection.Asc));
+
+        Assert.Equal(["a", "b", "c"], next.LogEntries.Select(entry => entry.Id).ToArray());
+        Assert.Equal("new-b", next.LogEntries[1].Message);
+    }
+
+    private static object LogPayload(long iterationSequence, string level)
+        => new
+        {
+            Iteration = new
+            {
+                Sequence = iterationSequence,
+                StartedAt = DateTimeOffset.UtcNow.AddSeconds(-1),
+                CompletedAt = (DateTimeOffset?)null,
+                ExecutionDuration = (TimeSpan?)null,
+                Status = WorkCompletionStatus.Executing,
+                AttemptCount = 1,
+            },
+            Log = new
+            {
+                Id = $"log-{iterationSequence}-{level}",
+                Ordinal = 1L,
+                Category = "Tests",
+                Level = level,
+                EventId = new { Id = 1, Name = "test" },
+                Message = "message",
+                ExceptionType = (string?)null,
+                ExceptionMessage = (string?)null,
+            },
+        };
+
+    private static WorkWorkerOverviewLogEntry LogEntry(string id, DateTimeOffset occurredAt, string message)
+        => new(
+            id,
+            occurredAt,
+            Microsoft.Extensions.Logging.LogLevel.Information,
+            "Tests",
+            message,
+            1,
+            "test",
+            null,
+            null);
+
     private static WorkEvent CreateEvent(string eventType, object payload, DateTimeOffset? occurredAt = null)
         => new(
             occurredAt ?? DateTimeOffset.UtcNow,

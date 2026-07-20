@@ -178,6 +178,170 @@ public sealed class WorkableViewQueryAdapterTests
     }
 
     [Fact]
+    public void ShouldPublishForChangesSkipsEmptyAndIntervalOnlyChanges()
+    {
+        var adapter = new WorkableViewQueryAdapter();
+        var throughput = new WorkViewCriteria(Components:
+        [
+            new WorkComponentRequest("throughput", "throughput"),
+        ]);
+
+        Assert.False(adapter.ShouldPublishForChanges("overview", null, []));
+        Assert.False(adapter.ShouldPublishForChanges(
+            "overview",
+            throughput,
+            [WorkChangeKey.Worker(WorkerId.New())]));
+    }
+
+    [Fact]
+    public void ShouldPublishForChangesUsesConservativeFallbacksForUnknownViewsAndSystemChanges()
+    {
+        var adapter = new WorkableViewQueryAdapter();
+        var unknownComponent = new WorkViewCriteria(Components:
+        [
+            new WorkComponentRequest("future", "futureComponent"),
+        ]);
+        var systemComponent = new WorkViewCriteria(Components:
+        [
+            new WorkComponentRequest("system", "system"),
+        ]);
+
+        Assert.True(adapter.ShouldPublishForChanges(
+            "future-view",
+            null,
+            [WorkChangeKey.Worker(WorkerId.New())]));
+        Assert.False(adapter.ShouldPublishForChanges(
+            "overview",
+            unknownComponent,
+            [WorkChangeKey.Worker(WorkerId.New())]));
+        Assert.True(adapter.ShouldPublishForChanges(
+            "overview",
+            unknownComponent,
+            [WorkChangeKey.System()]));
+        Assert.False(adapter.ShouldPublishForChanges(
+            "overview",
+            systemComponent,
+            [WorkChangeKey.Diagnostics("queue")]));
+        Assert.True(adapter.ShouldPublishForChanges(
+            "overview",
+            systemComponent,
+            [WorkChangeKey.System()]));
+    }
+
+    [Fact]
+    public void ShouldPublishForChangesScopesCatalogAndWorkerComponentsToDefinitionSets()
+    {
+        var adapter = new WorkableViewQueryAdapter();
+        var scope = new WorkSystemCriteria(DefinitionNames: new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "billing.close",
+            "billing.refund",
+        });
+        var catalog = new WorkViewCriteria(scope,
+        [
+            new WorkComponentRequest("catalog", "catalog"),
+        ]);
+        var workers = new WorkViewCriteria(scope,
+        [
+            new WorkComponentRequest("workers", "workers"),
+        ]);
+
+        Assert.True(adapter.ShouldPublishForChanges(
+            "overview",
+            catalog,
+            [WorkChangeKey.Definition("billing.refund")]));
+        Assert.False(adapter.ShouldPublishForChanges(
+            "overview",
+            catalog,
+            [WorkChangeKey.Definition("shipping.close")]));
+        Assert.True(adapter.ShouldPublishForChanges(
+            "overview",
+            catalog,
+            [WorkChangeKey.System()]));
+        Assert.True(adapter.ShouldPublishForChanges(
+            "overview",
+            workers,
+            [WorkChangeKey.Definition("billing.close")]));
+        Assert.False(adapter.ShouldPublishForChanges(
+            "overview",
+            workers,
+            [WorkChangeKey.Definition("shipping.close")]));
+        Assert.True(adapter.ShouldPublishForChanges(
+            "overview",
+            workers,
+            [WorkChangeKey.System()]));
+    }
+
+    [Theory]
+    [InlineData("workerGrid", WorkKeyKind.Subject)]
+    [InlineData("workerGrid", WorkKeyKind.ConcurrencyKey)]
+    [InlineData("workerGrid", WorkKeyKind.Identifier)]
+    [InlineData("iterationGrid", WorkKeyKind.Subject)]
+    [InlineData("iterationGrid", WorkKeyKind.ConcurrencyKey)]
+    [InlineData("iterationGrid", WorkKeyKind.Identifier)]
+    public void ShouldPublishForChangesMatchesEveryStructuredGridKey(
+        string componentType,
+        WorkKeyKind keyKind)
+    {
+        var adapter = new WorkableViewQueryAdapter();
+        const string keyType = "invoice";
+        const string keyValue = "inv-100";
+        var criteria = new WorkViewCriteria(Components:
+        [
+            new WorkComponentRequest(
+                "grid",
+                componentType,
+                JsonSerializer.SerializeToElement(new { keyKind, keyType, keyValue })),
+        ]);
+        var matching = CreateStructuredChange(keyKind, keyType, keyValue);
+        var unrelated = CreateStructuredChange(keyKind, keyType, "inv-200");
+
+        Assert.True(adapter.ShouldPublishForChanges("overview", criteria, [matching]));
+        Assert.False(adapter.ShouldPublishForChanges("overview", criteria, [unrelated]));
+        Assert.True(adapter.ShouldPublishForChanges("overview", criteria, [WorkChangeKey.System()]));
+    }
+
+    [Fact]
+    public void ShouldPublishWorkerComponentsConservativelyForUnknownSystemChanges()
+    {
+        var adapter = new WorkableViewQueryAdapter();
+        var workerId = WorkerId.New();
+        var criteria = new WorkViewCriteria(Components:
+        [
+            new WorkComponentRequest(
+                "worker",
+                "workerCurrentIteration",
+                JsonSerializer.SerializeToElement(new { workerId = workerId.Value })),
+        ]);
+
+        Assert.True(adapter.ShouldPublishForChanges("worker", criteria, [WorkChangeKey.System()]));
+        Assert.False(adapter.ShouldPublishForChanges(
+            "worker",
+            criteria,
+            [WorkChangeKey.Worker(WorkerId.New())]));
+    }
+
+    [Fact]
+    public async Task ReturnNullForMissingWorkerAndIterationDetailSections()
+    {
+        var services = new ServiceCollection();
+        services.AddWorkableSystem(builder => builder.RequireAuthorization(false));
+        await using var provider = services.BuildServiceProvider();
+        var system = provider.GetRequiredService<IWorkSystemRegistry>().Default;
+        await system.Start();
+        var session = system.CreateSession(WorkRequestContext.Create(WorkInvocationChannel.InProcess));
+        var adapter = new WorkableViewQueryAdapter();
+        var workerId = WorkerId.New();
+        var iteration = new WorkerIterationReference(workerId, 1);
+
+        Assert.Null(await adapter.WorkerIterationMessages(session, iteration));
+        Assert.Null(await adapter.WorkerIterationLogs(session, iteration));
+        Assert.Null(await adapter.WorkerOverview(session, workerId));
+        Assert.Null(await adapter.WorkerOverviewLogs(session, workerId));
+        Assert.Null(await adapter.WorkerOverviewTimeline(session, workerId));
+    }
+
+    [Fact]
     public async Task WorkerOverviewReturnsLogsPageForLogsInitialPanel()
     {
         var definition = WorkDefinition.Create("views.worker.landing.logs", "Returns worker overview logs.");
@@ -862,6 +1026,18 @@ public sealed class WorkableViewQueryAdapterTests
         Assert.Null(landing.Logs.Page);
         Assert.True(landing.Worker.IsFinal);
     }
+
+    private static WorkChangeKey CreateStructuredChange(
+        WorkKeyKind kind,
+        string type,
+        string value)
+        => kind switch
+        {
+            WorkKeyKind.Subject => WorkChangeKey.Subject(new WorkSubjectId(type, value)),
+            WorkKeyKind.ConcurrencyKey => WorkChangeKey.Concurrency(new WorkConcurrencyKey(type, value)),
+            WorkKeyKind.Identifier => WorkChangeKey.Identifier(new WorkIdentifier(type, value)),
+            _ => throw new ArgumentOutOfRangeException(nameof(kind), kind, "Expected a structured work key kind."),
+        };
 
     private static IWorkSystemSession CreateTransportSession(
         IWorkSystem system,

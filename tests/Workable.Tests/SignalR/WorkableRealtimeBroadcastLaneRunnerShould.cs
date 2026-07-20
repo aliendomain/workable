@@ -92,6 +92,94 @@ public sealed class WorkableRealtimeBroadcastLaneRunnerShould
         Assert.Equal(1, attempts);
     }
 
+    [Fact]
+    public async Task StopWhenCancellationInterruptsTheRestartDelay()
+    {
+        using var cancellation = new CancellationTokenSource();
+        var attempts = 0;
+        var delayCalls = 0;
+        var runner = CreateRunner(async (_, token) =>
+        {
+            delayCalls++;
+            await cancellation.CancelAsync();
+            token.ThrowIfCancellationRequested();
+        });
+
+        await runner.Run(
+            new TestWorkSystem("test-system"),
+            "views",
+            (_, _) =>
+            {
+                attempts++;
+                return Task.CompletedTask;
+            },
+            cancellation.Token);
+
+        Assert.Equal(1, attempts);
+        Assert.Equal(1, delayCalls);
+    }
+
+    [Fact]
+    public async Task PropagateCancellationThatDoesNotBelongToTheHostToken()
+    {
+        using var hostCancellation = new CancellationTokenSource();
+        using var unrelatedCancellation = new CancellationTokenSource();
+        await unrelatedCancellation.CancelAsync();
+        var runner = CreateRunner((_, _) => throw new InvalidOperationException("Delay should not run."));
+
+        var exception = await Assert.ThrowsAnyAsync<OperationCanceledException>(() => runner.Run(
+            new TestWorkSystem("test-system"),
+            "events",
+            (_, _) => Task.FromCanceled(unrelatedCancellation.Token),
+            hostCancellation.Token));
+
+        Assert.Equal(unrelatedCancellation.Token, exception.CancellationToken);
+    }
+
+    [Fact]
+    public async Task UseOneSecondAsTheDefaultRestartDelay()
+    {
+        using var cancellation = new CancellationTokenSource();
+        var runner = CreateRunner(async (delay, token) =>
+        {
+            Assert.Equal(TimeSpan.FromSeconds(1), delay);
+            await cancellation.CancelAsync();
+            token.ThrowIfCancellationRequested();
+        });
+
+        await runner.Run(
+            new TestWorkSystem("test-system"),
+            "diagnostics",
+            (_, _) => Task.CompletedTask,
+            cancellation.Token);
+    }
+
+    [Fact]
+    public void RejectMissingConstructorDependencies()
+    {
+        Assert.Throws<ArgumentNullException>(() =>
+            new WorkableRealtimeBroadcastLaneRunner(null!, Task.Delay));
+        Assert.Throws<ArgumentNullException>(() =>
+            new WorkableRealtimeBroadcastLaneRunner(
+                NullLogger<WorkableRealtimeBroadcastLaneRunner>.Instance,
+                null!));
+    }
+
+    [Fact]
+    public async Task RejectMissingRunDependencies()
+    {
+        var runner = CreateRunner(Task.Delay);
+        var system = new TestWorkSystem("test-system");
+        Func<IWorkSystem, CancellationToken, Task> broadcast = (_, _) => Task.CompletedTask;
+
+        await Assert.ThrowsAsync<ArgumentNullException>(() => runner.Run(
+            null!, "events", broadcast, CancellationToken.None));
+        await Assert.ThrowsAsync<ArgumentNullException>(() => runner.Run(
+            system, null!, broadcast, CancellationToken.None));
+        await Assert.ThrowsAsync<ArgumentNullException>(() => runner.Run(
+            system, "events", null!, CancellationToken.None));
+    }
+
     private static WorkableRealtimeBroadcastLaneRunner CreateRunner(Func<TimeSpan, CancellationToken, Task> delay)
         => new(NullLogger<WorkableRealtimeBroadcastLaneRunner>.Instance, delay);
 

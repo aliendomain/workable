@@ -108,6 +108,10 @@ public static class WorkableEntraServiceCollectionExtensions
             {
                 AddUnique(groupClaimTypes, WorkableEntraAuthorizationDefaults.ScopeClaimType);
             }
+            else
+            {
+                RemoveAll(groupClaimTypes, WorkableEntraAuthorizationDefaults.ScopeClaimType);
+            }
 
             if (options.MapAppRolesToWorkableGroups)
             {
@@ -117,10 +121,22 @@ public static class WorkableEntraServiceCollectionExtensions
                     WorkableEntraAuthorizationDefaults.RoleClaimType,
                     ClaimTypes.Role);
             }
+            else
+            {
+                RemoveAll(
+                    groupClaimTypes,
+                    WorkableEntraAuthorizationDefaults.RolesClaimType,
+                    WorkableEntraAuthorizationDefaults.RoleClaimType,
+                    ClaimTypes.Role);
+            }
 
             if (options.MapGroupsToWorkableGroups)
             {
                 AddUnique(groupClaimTypes, WorkableEntraAuthorizationDefaults.GroupsClaimType);
+            }
+            else
+            {
+                RemoveAll(groupClaimTypes, WorkableEntraAuthorizationDefaults.GroupsClaimType);
             }
 
             authorization.GroupClaimTypes = groupClaimTypes;
@@ -205,4 +221,7 @@ public static class WorkableEntraServiceCollectionExtensions
             }
         }
     }
+
+    private static void RemoveAll(List<string> target, params string[] values)
+        => target.RemoveAll(candidate => values.Contains(candidate, StringComparer.OrdinalIgnoreCase));
 }

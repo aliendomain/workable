@@ -151,6 +151,118 @@ public sealed class WorkflowRuntimeShould
     }
 
     [Fact]
+    public async Task WorkflowControlRejectsInvalidTransitionsAndAllowsPausedCancellation()
+    {
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var services = new ServiceCollection();
+        services.AddWorkableSystem(builder =>
+        {
+            builder.RequireAuthorization(false);
+            builder.AddWork(
+                WorkDefinition.Create("workflow.control.slow"),
+                async (_, _, cancellationToken) =>
+                {
+                    started.TrySetResult();
+                    await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+                    return WorkExecutionResult.Success();
+                });
+            builder.AddWorkflow(
+                WorkflowDefinition.Create("workflow.control.transitions"),
+                workflow => workflow
+                    .DispatchWork("slow", Work("workflow.control.slow"))
+                    .Join("join"));
+        });
+        using var provider = services.BuildServiceProvider();
+        var system = (InMemoryWorkSystem)provider.GetRequiredService<IWorkSystemRegistry>().Default;
+        await system.Start();
+        var requestContext = WorkRequestContext.Create(WorkInvocationChannel.InProcess);
+        var handle = system.WorkflowRuntime.Start("workflow.control.transitions", requestContext);
+        var runId = handle.RunId ?? throw new InvalidOperationException("Expected workflow run id.");
+        await started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        var startWhileRunning = await system.WorkflowRuntime.Execute(runId, WorkflowAction.Start, requestContext);
+        var pause = await system.WorkflowRuntime.Execute(runId, WorkflowAction.Pause, requestContext);
+        await TestEventually.Until(
+            () => system.WorkflowRuntime.Get(runId)?.Status == WorkflowRunStatus.Paused,
+            "Expected workflow to settle as paused.");
+        var pauseWhilePaused = await system.WorkflowRuntime.Execute(runId, WorkflowAction.Pause, requestContext);
+        var cancel = await system.WorkflowRuntime.Execute(runId, WorkflowAction.Cancel, requestContext);
+        var startAfterFinal = await system.WorkflowRuntime.Execute(runId, WorkflowAction.Start, requestContext);
+        var missing = await system.WorkflowRuntime.Execute(WorkflowRunId.New(), WorkflowAction.Cancel, requestContext);
+
+        Assert.Equal(WorkflowActionStatus.Invalid, startWhileRunning.Status);
+        Assert.Contains(startWhileRunning.Messages, message => message.Code == "workable.workflow.run.not_resumable");
+        Assert.True(pause.IsAccepted);
+        Assert.Equal(WorkflowActionStatus.Invalid, pauseWhilePaused.Status);
+        Assert.Contains(pauseWhilePaused.Messages, message => message.Code == "workable.workflow.run.not_executing");
+        Assert.True(cancel.IsAccepted);
+        Assert.Equal(WorkflowRunStatus.Canceled, system.WorkflowRuntime.Get(runId)?.Status);
+        Assert.Equal(WorkflowActionStatus.Invalid, startAfterFinal.Status);
+        Assert.Contains(startAfterFinal.Messages, message => message.Code == "workable.workflow.run.final");
+        Assert.Equal(WorkflowActionStatus.NotFound, missing.Status);
+    }
+
+    [Fact]
+    public async Task WorkflowVisibilityAndControlUseIndependentReadAndOperateAuthorization()
+    {
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var services = new ServiceCollection();
+        services.AddSingleton<IWorkAuthorizationGroupProvider>(new TestWorkflowGroupProvider(
+            new Dictionary<string, IReadOnlySet<string>>
+            {
+                ["workflow-operator"] = Groups("workflow.ops"),
+                ["workflow-reader"] = Groups("workflow.read"),
+                ["workflow-outsider"] = Groups("other"),
+            }));
+        services.AddWorkableSystem(builder =>
+        {
+            builder.RequireAuthorization(true);
+            builder.AddWork(
+                WorkDefinition.Create("workflow.authorization.slow"),
+                async (_, _, cancellationToken) =>
+                {
+                    started.TrySetResult();
+                    await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+                    return WorkExecutionResult.Success();
+                },
+                configure: null,
+                authorize: authorization => authorization.AllowOperateToGroups("workflow.ops"));
+            builder.AddWorkflow(
+                WorkflowDefinition.Create("workflow.authorization.controls"),
+                workflow => workflow.DispatchWork("slow", Work("workflow.authorization.slow")),
+                authorize: authorization => authorization
+                    .AllowReadToGroups("workflow.read", "workflow.ops")
+                    .AllowOperateToGroups("workflow.ops"));
+        });
+        using var provider = services.BuildServiceProvider();
+        var system = (InMemoryWorkSystem)provider.GetRequiredService<IWorkSystemRegistry>().Default;
+        await system.Start();
+        var operatorContext = WorkRequestContext.Create(
+            WorkInvocationChannel.InProcess,
+            new WorkActor("workflow-operator"));
+        var readerContext = WorkRequestContext.Create(
+            WorkInvocationChannel.InProcess,
+            new WorkActor("workflow-reader"));
+        var outsiderContext = WorkRequestContext.Create(
+            WorkInvocationChannel.InProcess,
+            new WorkActor("workflow-outsider"));
+        var handle = system.WorkflowRuntime.Start("workflow.authorization.controls", operatorContext);
+        var runId = handle.RunId ?? throw new InvalidOperationException("Expected workflow run id.");
+        await started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        var unauthorizedPause = await system.WorkflowRuntime.Execute(runId, WorkflowAction.Pause, readerContext);
+
+        Assert.Equal(WorkflowActionStatus.Unauthorized, unauthorizedPause.Status);
+        Assert.NotNull(system.WorkflowRuntime.GetVisible(runId, readerContext));
+        Assert.Single(system.WorkflowRuntime.ListVisible(readerContext));
+        Assert.Null(system.WorkflowRuntime.GetVisible(runId, outsiderContext));
+        Assert.Empty(system.WorkflowRuntime.ListVisible(outsiderContext));
+
+        var cancel = await system.WorkflowRuntime.Execute(runId, WorkflowAction.Cancel, operatorContext);
+        Assert.True(cancel.IsAccepted);
+    }
+
+    [Fact]
     public async Task WorkflowDispatchedChildWorkersInheritNonProductionProfilingDefault()
     {
         var services = new ServiceCollection();

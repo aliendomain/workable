@@ -165,6 +165,53 @@ public sealed class WorkChangeStreamTests
     }
 
     [Fact]
+    public async Task RemovingAMiddleSubscriberKeepsTheRemainingSubscribersOrderedAndActive()
+    {
+        var stream = new WorkChangeStream();
+        await using var first = stream.Subscribe();
+        var middle = stream.Subscribe();
+        await using var last = stream.Subscribe();
+        await using var firstReader = first.Read().GetAsyncEnumerator();
+        await using var lastReader = last.Read().GetAsyncEnumerator();
+        var key = WorkChangeKey.Worker(WorkerId.New());
+
+        await middle.DisposeAsync();
+        stream.Publish(key);
+
+        Assert.Equal(2, stream.ActiveSubscriptionCount);
+        Assert.Equal(key, (await ReadNext(firstReader)).Key);
+        Assert.Equal(key, (await ReadNext(lastReader)).Key);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task LinkSubscriptionAndEnumeratorCancellationTokens(bool cancelSubscriptionToken)
+    {
+        var stream = new WorkChangeStream();
+        await using var subscription = stream.Subscribe();
+        using var subscriptionCancellation = new CancellationTokenSource();
+        using var enumeratorCancellation = new CancellationTokenSource();
+        var reader = subscription
+            .Read(subscriptionCancellation.Token)
+            .GetAsyncEnumerator(enumeratorCancellation.Token);
+        var read = reader.MoveNextAsync().AsTask();
+
+        if (cancelSubscriptionToken)
+        {
+            await subscriptionCancellation.CancelAsync();
+        }
+        else
+        {
+            await enumeratorCancellation.CancelAsync();
+        }
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => read);
+        await reader.DisposeAsync();
+        Assert.Equal(0, stream.ActiveSubscriptionCount);
+    }
+
+    [Fact]
     public async Task DisposingSubscriptionCompletesPendingReader()
     {
         var stream = new WorkChangeStream();
@@ -206,6 +253,19 @@ public sealed class WorkChangeStreamTests
 
         Assert.False(await ReadCompletion(read));
         Assert.Equal(0, stream.ActiveSubscriptionCount);
+    }
+
+    [Fact]
+    public async Task DisposedStreamIsIdempotentRejectsSubscriptionsAndIgnoresPublications()
+    {
+        var stream = new WorkChangeStream();
+        await stream.DisposeAsync();
+
+        stream.Publish(WorkChangeKey.System());
+        await stream.DisposeAsync();
+
+        Assert.Equal(0, stream.ActiveSubscriptionCount);
+        Assert.Throws<ObjectDisposedException>(() => stream.Subscribe());
     }
 
     [Fact]

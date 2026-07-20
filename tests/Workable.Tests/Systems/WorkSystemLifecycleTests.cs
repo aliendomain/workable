@@ -1,5 +1,6 @@
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 using Workable;
 
 namespace Workable.Tests;
@@ -226,6 +227,54 @@ public sealed class WorkSystemLifecycleTests
 
         Assert.Equal(WorkCompletionStatus.Interrupted, (await first.WaitForCompletion()).Status);
         Assert.Equal(WorkCompletionStatus.Interrupted, (await second.WaitForCompletion()).Status);
+    }
+
+    [Fact]
+    public async Task HostedServiceLogsTheShutdownPlanAndForcedInterruptionsWithoutFloodingWorkerDetails()
+    {
+        var tracker = new ShutdownTracker();
+        var logs = new CapturingLoggerProvider();
+        var provider = new ServiceCollection()
+            .AddLogging(builder => builder.AddProvider(logs))
+            .AddSingleton(tracker)
+            .AddWorkableSystem(builder => builder
+                .StartWithHost()
+                .UseShutdownGracePeriod(TimeSpan.FromMilliseconds(20))
+                .AddWork<CancellationIgnoringShutdownWork>(WorkDefinition.Create("shutdown.logged")))
+            .BuildServiceProvider();
+        var system = provider.GetRequiredService<IWorkSystemRegistry>().Default;
+        var hostedService = Assert.Single(provider.GetServices<IHostedService>());
+
+        await hostedService.StartAsync(CancellationToken.None);
+        var first = await system.Queue.Enqueue("shutdown.logged");
+        var second = await system.Queue.Enqueue("shutdown.logged");
+        await TestEventually.Until(async () =>
+        {
+            var workers = await system.Query.Workers(new WorkerCriteria(
+                States: new HashSet<WorkerState> { WorkerState.Running }));
+            return workers.TotalCount == 2;
+        });
+
+        await hostedService.StopAsync(CancellationToken.None);
+
+        Assert.Equal(WorkCompletionStatus.Interrupted, (await first.WaitForCompletion()).Status);
+        Assert.Equal(WorkCompletionStatus.Interrupted, (await second.WaitForCompletion()).Status);
+        Assert.Contains(logs.Entries, entry =>
+            entry.Level == LogLevel.Information &&
+            entry.Message.Contains("Workable shutdown started", StringComparison.Ordinal) &&
+            entry.Message.Contains("Workers to stop: 2", StringComparison.Ordinal) &&
+            entry.Message.Contains("default 0:00:00.02", StringComparison.Ordinal));
+        Assert.Contains(logs.Entries, entry =>
+            entry.Level == LogLevel.Information &&
+            entry.Message.Contains("Stopping workers", StringComparison.Ordinal) &&
+            entry.Message.Contains("shutdown.logged x2", StringComparison.Ordinal));
+        Assert.Contains(logs.Entries, entry =>
+            entry.Level == LogLevel.Warning &&
+            entry.Message.Contains("Force-interrupted 2 worker(s)", StringComparison.Ordinal) &&
+            entry.Message.Contains("shutdown.logged x2", StringComparison.Ordinal));
+        Assert.Contains(logs.Entries, entry =>
+            entry.Level == LogLevel.Information &&
+            entry.Message.Contains("shutdown complete: 1 system(s), 2 cooperative cancellation(s)", StringComparison.OrdinalIgnoreCase));
     }
 
     [Fact]
@@ -664,5 +713,3 @@ public sealed class WorkSystemLifecycleTests
         }
     }
 }
-
-

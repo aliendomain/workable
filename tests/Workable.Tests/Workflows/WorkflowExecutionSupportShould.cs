@@ -96,6 +96,42 @@ public sealed class WorkflowExecutionSupportShould
     }
 
     [Fact]
+    public void ExpandDispatchEachArraysAtTheRootAndAcrossEscapedJsonPointerSegments()
+    {
+        var root = WorkflowExecutionSupport.CreateDispatchEachInputs(
+            DispatchEach(selector: null),
+            [WorkOutput.FromJson("""[{"id":"root"}]""")]);
+        var nested = WorkflowExecutionSupport.CreateDispatchEachInputs(
+            DispatchEach("/groups/0/a~1b~0c"),
+            [WorkOutput.FromJson("""{"groups":[{"a/b~c":[{"id":"nested"}]}]}""")]);
+
+        Assert.Empty(root.Messages);
+        Assert.Equal("""{"id":"root"}""", Assert.Single(root.Inputs).Json);
+        Assert.Empty(nested.Messages);
+        Assert.Equal("""{"id":"nested"}""", Assert.Single(nested.Inputs).Json);
+    }
+
+    [Theory]
+    [InlineData(null, "/items", "workable.workflow.dispatch_each.source_output_required")]
+    [InlineData("not-json", "/items", "workable.workflow.dispatch_each.source_output_invalid_json")]
+    [InlineData("{\"items\":[]}", "items", "workable.workflow.dispatch_each.source_pointer_not_found")]
+    [InlineData("{\"items\":[]}", "/missing", "workable.workflow.dispatch_each.source_pointer_not_found")]
+    [InlineData("{\"items\":[]}", "/items/2", "workable.workflow.dispatch_each.source_pointer_not_found")]
+    [InlineData("{\"items\":{}}", "/items", "workable.workflow.dispatch_each.source_output_not_array")]
+    public void RejectDispatchEachOutputsThatCannotResolveToAnArray(
+        string? json,
+        string selector,
+        string expectedCode)
+    {
+        var expansion = WorkflowExecutionSupport.CreateDispatchEachInputs(
+            DispatchEach(selector),
+            [json is null ? null : WorkOutput.FromJson(json)]);
+
+        Assert.Empty(expansion.Inputs);
+        Assert.Equal(expectedCode, Assert.Single(expansion.Messages).Code);
+    }
+
+    [Fact]
     public async Task CancelOutstandingChildrenCancelsDistinctNonFinalWorkersOnly()
     {
         var runningWorkerId = WorkerId.New();
@@ -378,4 +414,11 @@ public sealed class WorkflowExecutionSupportShould
         string workDefinitionName,
         WorkInput? input = null)
         => new(stepName, WorkDefinition.Create(workDefinitionName), input);
+
+    private static DispatchEachWorkflowStepDefinition DispatchEach(string? selector)
+        => new(
+            "dispatch-each",
+            new WorkflowStepReference<object>("source"),
+            WorkDefinition.Create("sample.dispatch-each"),
+            new WorkflowOutputSelector(selector));
 }

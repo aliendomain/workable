@@ -985,6 +985,134 @@ public sealed class WorkableSignalRTests
     }
 
     [Fact]
+    public async Task WorkerOverviewWatcherKeepsItsSubscriptionWhenTheWorkerDoesNotExistYet()
+    {
+        using var host = await CreateHost(addSignalR: true);
+        var system = host.Services.GetRequiredService<IWorkSystemRegistry>().Default;
+        var subscriptions = host.Services.GetRequiredService<WorkableRealtimeWorkerOverviewSubscriptions>();
+        await using var connection = CreateConnection(host);
+        const string subscriptionId = "worker-overview-missing";
+        var workerId = WorkerId.New();
+        var updates = Channel.CreateUnbounded<WorkWorkerOverviewRealtimeUpdate>();
+        CaptureWorkerOverviewUpdates(connection, subscriptionId, updates);
+        await connection.StartAsync();
+
+        await connection.InvokeAsync(
+            "WatchWorkerOverview",
+            subscriptionId,
+            workerId.Value.ToString("D"),
+            new WorkWorkerOverviewRealtimeCriteria(WorkerControls: WorkComponentShapes.Standard),
+            null);
+
+        var subscription = Assert.Single(subscriptions.GetDebugSubscriptions(system));
+        Assert.Equal(subscriptionId, subscription.SubscriptionId);
+        Assert.Equal(workerId, subscription.WorkerId);
+        await AssertNoItem(updates.Reader, TimeSpan.FromMilliseconds(250));
+
+        await connection.InvokeAsync("UnwatchWorkerOverview", subscriptionId, null);
+        Assert.Empty(subscriptions.GetDebugSubscriptions(system));
+    }
+
+    [Fact]
+    public async Task WorkerOverviewWatcherRequestsAFullRefreshWhenTheObservedWorkerIsPurged()
+    {
+        using var host = await CreateHost(addSignalR: true);
+        var system = host.Services.GetRequiredService<IWorkSystemRegistry>().Default;
+        var session = Session(system);
+        await using var connection = CreateConnection(host);
+        const string subscriptionId = "worker-overview-purge";
+        var updates = Channel.CreateUnbounded<WorkWorkerOverviewRealtimeUpdate>();
+        CaptureWorkerOverviewUpdates(connection, subscriptionId, updates);
+        await connection.StartAsync();
+        var handle = await session.Queue.Enqueue("signalr.worker");
+        var workerId = handle.WorkerId ?? throw new InvalidOperationException("Expected worker id.");
+
+        await connection.InvokeAsync(
+            "WatchWorkerOverview",
+            subscriptionId,
+            workerId.Value.ToString("D"),
+            new WorkWorkerOverviewRealtimeCriteria(WorkerControls: WorkComponentShapes.Standard),
+            null);
+        _ = await ReadUntil(updates.Reader, update => update.Worker?.WorkerId == workerId);
+        var queued = await session.Query.Worker(workerId) ?? throw new InvalidOperationException("Expected worker.");
+        var cancel = await session.Workers.Execute(queued.Version, WorkAction.Cancel);
+        Assert.True(cancel.IsAccepted);
+        _ = await ReadUntil(updates.Reader, update => update.Worker?.State == WorkerState.Canceled);
+        var canceled = await session.Query.Worker(workerId) ?? throw new InvalidOperationException("Expected canceled worker.");
+
+        var purge = await session.Workers.Execute(canceled.Version, WorkAction.Purge);
+        var refresh = await ReadUntil(updates.Reader, update => update.RequiresRefresh);
+
+        Assert.True(purge.IsAccepted);
+        Assert.Null(await session.Query.Worker(workerId));
+        Assert.True(refresh.RequiresRefresh);
+        Assert.Contains("refreshed", refresh.RefreshReason, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task HubUnwatchMethodsReleaseViewAndWorkerOverviewSubscriptions()
+    {
+        using var host = await CreateHost(addSignalR: true);
+        var system = host.Services.GetRequiredService<IWorkSystemRegistry>().Default;
+        var viewSubscriptions = host.Services.GetRequiredService<WorkableRealtimeViewSubscriptions>();
+        var workerSubscriptions = host.Services.GetRequiredService<WorkableRealtimeWorkerOverviewSubscriptions>();
+        var handle = await Session(system).Queue.Enqueue("signalr.worker");
+        var workerId = handle.WorkerId ?? throw new InvalidOperationException("Expected worker id.");
+        await using var connection = CreateConnection(host);
+        await connection.StartAsync();
+
+        await connection.InvokeAsync("WatchView", "view-subscription", "overview", null, null);
+        await connection.InvokeAsync(
+            "WatchWorkerOverview",
+            "worker-subscription",
+            workerId.Value.ToString("D"),
+            new WorkWorkerOverviewRealtimeCriteria(),
+            null);
+        await TestEventually.Until(() =>
+            viewSubscriptions.GetDebugSubscriptions(system).Count == 1 &&
+            workerSubscriptions.GetDebugSubscriptions(system).Count == 1);
+
+        await connection.InvokeAsync("UnwatchView", "view-subscription", null);
+        await connection.InvokeAsync("UnwatchWorkerOverview", "worker-subscription", null);
+
+        Assert.Empty(viewSubscriptions.GetDebugSubscriptions(system));
+        Assert.Empty(workerSubscriptions.GetDebugSubscriptions(system));
+    }
+
+    [Fact]
+    public async Task HubDisconnectReleasesEverySubscriptionKind()
+    {
+        using var host = await CreateHost(addSignalR: true);
+        var system = host.Services.GetRequiredService<IWorkSystemRegistry>().Default;
+        var events = host.Services.GetRequiredService<WorkableRealtimeEventSubscriptions>();
+        var views = host.Services.GetRequiredService<WorkableRealtimeViewSubscriptions>();
+        var workers = host.Services.GetRequiredService<WorkableRealtimeWorkerOverviewSubscriptions>();
+        var handle = await Session(system).Queue.Enqueue("signalr.worker");
+        var workerId = handle.WorkerId ?? throw new InvalidOperationException("Expected worker id.");
+        await using var connection = CreateConnection(host);
+        await connection.StartAsync();
+        await connection.InvokeAsync("WatchEvents", new WorkableRealtimeEventCriteria(), null);
+        await connection.InvokeAsync("WatchView", "disconnect-view", "overview", null, null);
+        await connection.InvokeAsync(
+            "WatchWorkerOverview",
+            "disconnect-worker",
+            workerId.Value.ToString("D"),
+            new WorkWorkerOverviewRealtimeCriteria(),
+            null);
+        await TestEventually.Until(() =>
+            events.GetDebugSubscriptions(system).Count == 1 &&
+            views.GetDebugSubscriptions(system).Count == 1 &&
+            workers.GetDebugSubscriptions(system).Count == 1);
+
+        await connection.StopAsync();
+
+        await TestEventually.Until(() =>
+            events.GetDebugSubscriptions(system).Count == 0 &&
+            views.GetDebugSubscriptions(system).Count == 0 &&
+            workers.GetDebugSubscriptions(system).Count == 0);
+    }
+
+    [Fact]
     public async Task WorkerOverviewWatcherUsesChangeStreamWithoutEventStreamSubscription()
     {
         using var host = await CreateHost(addSignalR: true);
@@ -1264,6 +1392,107 @@ public sealed class WorkableSignalRTests
         Assert.Equal("compact", updated.Components["idempotencyDiagnostics"].Shape);
         Assert.Equal(0, idempotency.GetProperty("duplicateRejectionCount").GetInt64());
         Assert.Equal(JsonValueKind.Null, idempotency.GetProperty("lastDuplicateRejectedStorage").ValueKind);
+    }
+
+    [Fact]
+    public async Task DiagnosticsAlertWatcherReceivesACompleteShuttingDownSnapshotBeforeTheSystemStops()
+    {
+        using var host = await CreateHost(addSignalR: true);
+        var system = host.Services.GetRequiredService<IWorkSystemRegistry>().Default;
+        await using var connection = CreateConnection(host);
+        const string subscriptionId = "shutdown-diagnostics";
+        var updates = Channel.CreateUnbounded<WorkComponentQueryResult>();
+        CaptureRealtimeViews(connection, subscriptionId, updates);
+        await connection.StartAsync();
+        var alertOptions = JsonSerializer.SerializeToElement(new { publishMode = "alertChanges" });
+        await connection.InvokeAsync(
+            "WatchView",
+            subscriptionId,
+            "diagnostics",
+            new WorkViewCriteria(Components:
+            [
+                new("system", "systemDiagnostics", alertOptions, WorkComponentShapes.Compact),
+                new("queue", "queueDiagnostics", alertOptions, WorkComponentShapes.Compact),
+                new("readModel", "readModelDiagnostics", alertOptions, WorkComponentShapes.Compact),
+                new("retention", "retentionDiagnostics", alertOptions, WorkComponentShapes.Compact),
+                new("concurrency", "concurrencyDiagnostics", alertOptions, WorkComponentShapes.Compact),
+                new("durability", "durabilityDiagnostics", alertOptions, WorkComponentShapes.Compact),
+            ]),
+            null);
+        _ = await ReadUntil(updates.Reader, view => view.Components.ContainsKey("system"));
+
+        var stop = system.Stop(TransportAuthorizationTestSupport.CreateTransportRequestContext(
+            description: "Verify realtime shutdown diagnostics."));
+        var shuttingDown = await ReadUntil(updates.Reader, view =>
+        {
+            if (!view.Components.TryGetValue("system", out var component) ||
+                component.Data is not JsonElement data)
+            {
+                return false;
+            }
+
+            return data.GetProperty("isShuttingDown").GetBoolean();
+        });
+        await stop;
+
+        Assert.Equal(
+            ["system", "queue", "readModel", "retention", "concurrency", "durability"],
+            shuttingDown.Components.Keys.ToArray());
+        Assert.All(shuttingDown.Components.Values, component =>
+        {
+            Assert.Equal("ok", component.Status);
+            Assert.Equal(WorkComponentShapes.Compact, component.Shape);
+        });
+        var systemData = Assert.IsType<JsonElement>(shuttingDown.Components["system"].Data);
+        Assert.Equal(JsonValueKind.Null, systemData.GetProperty("systemName").ValueKind);
+        Assert.Equal("Stopping", systemData.GetProperty("systemState").GetString());
+        Assert.True(systemData.GetProperty("isShuttingDown").GetBoolean());
+        Assert.IsType<JsonElement>(shuttingDown.Components["queue"].Data);
+        Assert.IsType<JsonElement>(shuttingDown.Components["readModel"].Data);
+        Assert.IsType<JsonElement>(shuttingDown.Components["retention"].Data);
+        Assert.IsType<JsonElement>(shuttingDown.Components["concurrency"].Data);
+        Assert.IsType<JsonElement>(shuttingDown.Components["durability"].Data);
+    }
+
+    [Fact]
+    public async Task DiagnosticsAlertWatcherReceivesAStoppingSnapshotForApplicationShutdown()
+    {
+        using var host = await CreateHost(addSignalR: true);
+        await using var connection = CreateConnection(host);
+        const string subscriptionId = "host-shutdown-diagnostics";
+        var updates = Channel.CreateUnbounded<WorkComponentQueryResult>();
+        CaptureRealtimeViews(connection, subscriptionId, updates);
+        await connection.StartAsync();
+        var alertOptions = JsonSerializer.SerializeToElement(new { publishMode = "alertChanges" });
+        await connection.InvokeAsync(
+            "WatchView",
+            subscriptionId,
+            "diagnostics",
+            new WorkViewCriteria(Components:
+            [
+                new("system", "systemDiagnostics", alertOptions, WorkComponentShapes.Compact),
+            ]),
+            null);
+        _ = await ReadUntil(updates.Reader, view => view.Components.ContainsKey("system"));
+
+        var broadcaster = host.Services
+            .GetServices<IHostedService>()
+            .OfType<WorkableRealtimeBroadcaster>()
+            .Single();
+        await broadcaster.BroadcastApplicationStoppingAsync();
+        var shuttingDown = await ReadUntil(updates.Reader, view =>
+        {
+            if (!view.Components.TryGetValue("system", out var component) ||
+                component.Data is not JsonElement data)
+            {
+                return false;
+            }
+
+            return data.GetProperty("isShuttingDown").GetBoolean();
+        });
+        var systemData = Assert.IsType<JsonElement>(shuttingDown.Components["system"].Data);
+        Assert.Equal(nameof(WorkSystemState.Stopping), systemData.GetProperty("systemState").GetString());
+        Assert.True(systemData.GetProperty("isShuttingDown").GetBoolean());
     }
 
     [Fact]

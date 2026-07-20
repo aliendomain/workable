@@ -925,6 +925,67 @@ public sealed class WorkflowExecutorsShould
         Assert.Equal(WorkflowRunStatus.Failed, Assert.Single(store.Upserts).Status);
     }
 
+    [Theory]
+    [InlineData(true, WorkCompletionStatus.Completed)]
+    [InlineData(false, WorkCompletionStatus.NotFound)]
+    public async Task RecheckAuthoritativeStateWhenDurableChildStateDisappearsDuringObservation(
+        bool finalSnapshotAppears,
+        WorkCompletionStatus expectedStatus)
+    {
+        var workerId = WorkerId.New();
+        var store = new RecordingWorkflowStore();
+        var durableChecks = 0;
+        store.DurableWorkerExistsHandler = _ => Interlocked.Increment(ref durableChecks) == 1;
+        var persistence = new WorkflowPersistenceCoordinator(store, "workflow-tests");
+        var snapshotReads = 0;
+        var running = CreateSnapshot(workerId, WorkerState.Running);
+        var completed = CreateSnapshot(workerId, WorkerState.Completed);
+        var executor = new DurableWorkflowExecutor(
+            "workflow-tests",
+            name => CreateRegisteredWork(name),
+            _ => new TestWorkSystemSession(new DelegateQueueService((_, _, _, _) => throw new NotSupportedException())),
+            id => new TestWorkerHandle(
+                WorkQueueOutcome.Accepted(id),
+                id,
+                new TaskCompletionSource<WorkCompletion>(TaskCreationOptions.RunContinuationsAsynchronously).Task),
+            persistence,
+            getAuthoritativeWorker: (_, _) =>
+            {
+                var read = Interlocked.Increment(ref snapshotReads);
+                return Task.FromResult<WorkerSnapshot?>(read <= 2
+                    ? running
+                    : finalSnapshotAppears ? completed : null);
+            });
+        var workflow = CreateWorkflow(
+            WorkflowDefinition.Create(
+                "workflow.durable.child-disappears",
+                coordination: WorkflowCoordinationConfiguration.Durable),
+            Dispatch("dispatch", "sample.dispatch"));
+        var run = WorkflowRunState.Create(workflow, WorkRequestContext.Create(WorkInvocationChannel.InProcess));
+        var method = typeof(DurableWorkflowExecutor).GetMethod(
+            "WaitForWorkerCompletion",
+            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+        Assert.NotNull(method);
+
+        var task = Assert.IsAssignableFrom<Task>(method.Invoke(
+            executor,
+            [run, new TestWorkSystemSession(new DelegateQueueService((_, _, _, _) => throw new NotSupportedException())), workerId, CancellationToken.None]));
+        await task;
+        var completion = Assert.IsType<WorkCompletion>(task.GetType().GetProperty("Result")!.GetValue(task));
+
+        Assert.Equal(expectedStatus, completion.Status);
+        Assert.Equal(2, Volatile.Read(ref durableChecks));
+        Assert.Equal(3, Volatile.Read(ref snapshotReads));
+        if (finalSnapshotAppears)
+        {
+            Assert.Same(completed, completion.Worker);
+        }
+        else
+        {
+            Assert.Contains(completion.Messages, message => message.Code == "workable.workflow.child.not_found");
+        }
+    }
+
     [Fact]
     public async Task CancelOutstandingSiblingWorkersWhenJoinFails()
     {
@@ -1141,6 +1202,8 @@ public sealed class WorkflowExecutorsShould
 
         public HashSet<WorkerId> MissingWorkerIds { get; } = [];
 
+        public Func<WorkerId, bool>? DurableWorkerExistsHandler { get; set; }
+
         public Task Initialize(WorkQueueDurabilityInitializationContext context, CancellationToken cancellationToken = default)
             => Task.CompletedTask;
 
@@ -1183,7 +1246,7 @@ public sealed class WorkflowExecutorsShould
         public Task<bool> DurableWorkerExists(
             WorkerId workerId,
             CancellationToken cancellationToken = default)
-            => Task.FromResult(!this.MissingWorkerIds.Contains(workerId));
+            => Task.FromResult(this.DurableWorkerExistsHandler?.Invoke(workerId) ?? !this.MissingWorkerIds.Contains(workerId));
 
         public Task<IWorkflowPersistenceTransaction> BeginWorkflowTransaction(
             WorkflowPersistenceTransactionRequest request,

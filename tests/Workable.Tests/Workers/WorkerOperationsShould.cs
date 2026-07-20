@@ -21,6 +21,26 @@ public sealed class WorkerOperationsShould
                 cancellation.Token));
     }
 
+    [Fact]
+    public async Task ReturnStableMissingOutcomesForWorkerAndCategoryTargets()
+    {
+        var system = CreateSystem();
+        await system.Start();
+        var workerId = WorkerId.New();
+
+        var reconfigure = await system.Workers.Reconfigure(
+            new WorkerVersion(workerId, 1),
+            new WorkerReconfiguration());
+        var bulk = await system.Workers.ExecuteAll(
+            WorkAction.Cancel,
+            new WorkerBulkActionFilter(Category: "missing.category", IncludeSubcategories: true));
+
+        Assert.Equal(WorkActionStatus.NotFound, reconfigure.Status);
+        Assert.Equal(workerId, reconfigure.WorkerId);
+        Assert.Equal(0, bulk.MatchedWorkerCount);
+        Assert.Empty(bulk.Outcomes);
+    }
+
     private static IWorkSystem CreateSystem()
         => new ServiceCollection()
             .AddWorkableSystem(builder => builder.AddWork(

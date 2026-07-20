@@ -24,7 +24,7 @@ Current coverage command:
 dotnet test tests\Workable.Tests\Workable.Tests.csproj --no-restore --collect "XPlat Code Coverage"
 ```
 
-The 2026-07-19 cancellation-request-context change has 100% changed executable line coverage (46/46), exceeding the 95% changed-code target. The complete core-library report is currently 89.87% line coverage (23,487/26,134); reaching 95% globally remains a separate repository-wide coverage project rather than a claim made by this feature work.
+The complete core-library report is currently 95.06% line coverage (24,876/26,167) and 85.25% branch coverage (7,203/8,449). This is up from the 2026-07-19 baseline of 89.88% lines (23,490/26,134) and 77.62% branches. The 95% line target is now met, with 17 covered executable lines above the exact threshold at the current denominator.
 
 Focused commands:
 
@@ -35,18 +35,88 @@ dotnet test tests\extensions\sqlserver\Workable.SqlServer.Tests\Workable.SqlServ
 
 ## Current Pass/Fail State
 
-Last full run:
+Last coverage run:
+
+```text
+dotnet test tests\Workable.Tests\Workable.Tests.csproj --no-restore --collect "XPlat Code Coverage"
+Passed: Workable.Tests, 1601 passed
+Coverage: 95.06% lines, 85.25% branches
+```
+
+Last full validation:
 
 ```text
 dotnet test .\Workable.slnx --no-restore --logger "console;verbosity=minimal" --blame-hang-timeout 2m
-Passed: Workable.Tests, 1427 passed
+Passed: Workable.Tests, 1601 passed
 Passed: Workable.SqlServer.Tests, 66 passed
-Overall: 1493 passed, 0 failed
+Overall: 1667 passed, 0 failed
+
+npm test
+Passed: 258, failed: 0
+
+npm run build
+Passed: optimized production build, TypeScript check, and 10 generated routes
 ```
 
 The SQL Server integration tests previously failed because their test systems used the production default authorization requirement while the tests used direct system access. That was repaired by adding the SQL Server test-only `AddWorkableSystem` wrapper that opts those test registrations out of authorization, matching the main test project convention.
 
 On 2026-06-11, a focused HTTP verification run for `WorkableHttpApiTests` and `WorkableHttpQueryAdapterShould` passed 75 tests after the iteration-overview route and adapter changes.
+
+## 95% Coverage Initiative (2026-07-19)
+
+The target is measured separately for the Coverlet-instrumented .NET runtime libraries and the admin UI. Combining those percentages would hide risk because the tools use different denominators and source mapping.
+
+### Current measurement
+
+| Surface | Line coverage | Branch coverage | Passing tests | Interpretation |
+| --- | ---: | ---: | ---: | --- |
+| .NET runtime libraries | 95.06% (24,876/26,167) | 85.25% (7,203/8,449) | 1,601 | Repeatable Coverlet/Cobertura measurement across the core packages; the 95% line target is met. |
+| Admin UI, Node native diagnostic | 64.27% | 77.51% | 258 | Includes every `src/**/*.ts(x)` file and excludes tests/support, but the custom TypeScript transpiler maps erased type declarations as uncovered lines. Use this to locate gaps, not yet as a CI threshold. |
+
+The .NET passes added 1,386 covered production lines and 174 executed core test cases over the baseline. Package line coverage is now:
+
+| Package | Line coverage |
+| --- | ---: |
+| `Workable.Entra` | 99.33% |
+| `Workable.AspNetCore` | 99.24% |
+| `Workable.Mcp` | 97.41% |
+| `Workable.HttpApi` | 95.36% |
+| `Workable.Abstractions` | 94.25% |
+| `Workable.Views` | 97.22% |
+| `Workable` | 94.57% |
+| `Workable.SignalR` | 94.70% |
+
+### High-value coverage added
+
+- Entra configuration is tested at the public registration boundary, including trimming, secure defaults, invalid configuration rejection, query-token behavior, and independent role/group mapping opt-outs. This exposed and fixed a real security configuration defect: disabling the Entra role or group mapper did not remove ASP.NET Core's default role/group claim types, so disabled sources could still authorize Workable operations.
+- Every documented work registration shape is exercised both during static system registration and runtime definition-source registration, including shared defaults, nested defaults, typed delegates, typed outputs, service-backed executors, attributed executors, and per-work authorization overrides.
+- Every mapped named-system HTTP query, worker-control, and workflow route now proves that an unknown system returns the stable structured `workable.http.system.not_found` contract. Queue, worker action, workflow action/start, reconfiguration, authorization denial, and criteria mappings also have direct status/payload tests.
+- Documented view names, overview shapes, diagnostic failure isolation, grid filters, facet keys, scope, paging, worker overview projections, and failure metadata fallbacks have direct contract coverage.
+- Documented workflow fan-out semantics now cover root and nested arrays, array indexes, RFC 6901 `/` and `~` escaping, malformed JSON, empty output, missing pointers, and non-array output. Workflow authorization, invalid transitions, and durable child behavior remain covered through public runtime tests.
+- Durable queue tests now prove fail-closed behavior for missing/unavailable stores, reserve failures, and untracked completion. This protects against accepting work that cannot satisfy its durability guarantee.
+- Durable cleanup now covers transaction and background-batch lease loss, including diagnostics, lease release, removal of lost work, and unaffected cleanup bookkeeping.
+- Realtime tests now cover shutdown-alert snapshots for both system and application shutdown, missing-worker watches, worker purge refreshes, explicit unwatch cleanup, disconnect cleanup, and stable subscription release behavior. Focused reliability tests cover lane completion/fault restart, default backoff, cancellation during work or backoff, unrelated cancellation propagation, critical-exception preservation, workflow component isolation, forward-compatible unknown events, cancellation deltas, missing iteration snapshots, log filtering, summary replacement, and deterministic log ordering.
+- Direct broadcaster tests now cover diagnostics and worker-overview delivery failure isolation, per-client retry/error accounting, inactive-group cleanup, completed and faulted event pumps, disabled batching, cancellation/disposal races, completed view sources, and stream-diagnostics release.
+- Lifecycle logging now asserts the shutdown plan, bounded worker detail, forced interruption warning, and completion message without relying on elapsed-time assertions.
+- Worker lifecycle edge tests now cover invalid completion signals, final-state reconfiguration, stale and early failed-worker auto-cancel schedules, shutdown versus lease-loss interruption, per-iteration trace-log eviction, recurrence action-history eviction, and disabled concurrency accounting. Direct retention scheduler tests cover mixed-definition due batches, oldest-first system caps, failure diagnostics and recovery, non-final exclusion, forgetting, and clearing.
+- Event and change streams now cover shared lazy event construction, explicit-empty filter overflow diagnostics, linked subscription/enumerator cancellation, middle-subscriber removal, disposal idempotence, and post-disposal behavior. The empty-filter test exposed and fixed undercounted accepted/dropped cursor diagnostics.
+- Authorization evaluation now verifies fail-closed unknown definitions, all-definition access, the work-admin bypass, and the exact action-to-operation permission mapping.
+- Workflow operator views now have a deterministic status contract matrix for pending, running, waiting, paused, blocked, failed, canceled, and completed nodes; child-outcome precedence; recorded and fallback composite-step worker IDs; and fail-fast handling for unsupported step kinds. Runtime recovery tests also cover offline child completion, final-run purge, child control forwarding, and execution-control cleanup.
+- Read-model and view-query tests now cover every documented worker/iteration sort field, partial-versus-critical definition health, missing authoritative readers, projector failure surfacing, all detailed diagnostics facets, and default component-shape normalization.
+- Workflow control tests now cover durable child state disappearing during observation, authoritative rechecks, removed definitions, orphaned control state, duplicate resume bookkeeping, direct durable cancellation of paused runs, and preemptive pause/cancel settlement. HTTP and MCP tests cover stable invalid-action, successful query, surface-gate preflight/challenge, authorization-disabled-system rejection, missing work-info, not-found reconfiguration, and malformed JSON contracts.
+
+### Target status and residual risks
+
+The 95% runtime-library line target is met at 95.06%. Because the margin is only 17 executable lines, 95% should be treated as a floor: new production behavior should arrive with tests that preserve or improve the ratio. The largest useful remaining risk clusters are:
+
+1. Worker state and operation edge cases around concurrent revisions, timeline rollback, purge/retention races, interruption reasons, and failed-worker auto-cancel.
+2. Durable workflow executor persistence-gate failures and the narrow runtime races where a run becomes final between control validation and control recording.
+3. SignalR broadcaster group-removal failures and remaining event/view/change-pump races that require deterministic orchestration to exercise safely.
+4. Event/read-model queue compaction under concurrent forget/record operations and fatal-exception cleanup filters.
+
+Several uncovered areas are low-value coverage targets: forwarding-only overloads, compiler-generated record members, impossible enum/default branches, and defensive exception filters that require reflection or invalid internal state to reach. They should not be tested merely to move the percentage. Where an important failure path is currently inseparable from a private loop, add a deterministic seam first and then test the public behavior.
+
+The UI needs a source-map-aware coverage setup before a 95% gate is credible. Node's native report currently counts erased declarations in the large `src/lib/workable.ts` contract file as uncovered executable lines. The most useful UI gaps visible even with that limitation are API-client failures, proxy/token edge cases, realtime reconnection/cleanup, and full console workflow transitions. Browser-level tests are still absent, so login-to-console, reconnect, and cross-route persistence remain integration risks despite broad component coverage.
 
 ## Projects
 
@@ -82,7 +152,7 @@ Test projects:
 
 ## Test Inventory
 
-Current test files with executable tests: 108 files. xUnit reports 1493 executed cases because theories expand into multiple cases.
+Current test files with executable tests: 118 files. The last full .NET solution validation reports 1,667 executed cases because theories expand into multiple cases: 1,601 core cases and 66 SQL Server integration cases.
 
 Largest coverage areas:
 
@@ -94,6 +164,7 @@ Largest coverage areas:
 | `tests/Workable.Tests/Authorization/AuthorizedWorkQueueServiceShould.cs` | Focused authorized queue service not-found, unauthorized, and forwarding behavior. |
 | `tests/Workable.Tests/Authorization/AuthorizedWorkerOperationsShould.cs` | Focused authorized worker operation and bulk operation scoping behavior. |
 | `tests/Workable.Tests/Authorization/WorkAuthorizationBuilderShould.cs` | Focused fluent authorization builder behavior. |
+| `tests/Workable.Tests/Authorization/WorkableEntraAuthorizationOptionsShould.cs` | Public Entra registration, secure-default, opt-out, and invalid-configuration behavior. |
 | `tests/Workable.Tests/Configuration/WorkConfigurationBuilderShould.cs` | Focused fluent work configuration builder behavior. |
 | `tests/Workable.Tests/Execution/NoOpWorkProfilerShould.cs` | Focused no-op profiler behavior. |
 | `tests/Workable.Tests/Execution/WorkExecutorAdapterFactoryShould.cs` | Focused executor adapter factory boundary behavior. |
@@ -107,6 +178,8 @@ Largest coverage areas:
 | `tests/Workable.Tests/Systems/WorkSystemDiagnosticsTrackersShould.cs` | Focused diagnostics tracker state behavior. |
 | `tests/Workable.Tests/Workers/WorkerOperationsShould.cs` | Focused worker operations public cancellation contract behavior. |
 | `tests/Workable.Tests/Workers/WorkerPersistenceCoordinatorShould.cs` | Focused persistence coordinator queue acceptance and persistence handoff behavior. |
+| `tests/Workable.Tests/Workers/WorkerRecordEdgeCasesShould.cs` | Worker completion, auto-cancel, interruption, logging, recurrence-history, and concurrency edge behavior. |
+| `tests/Workable.Tests/Workers/WorkerRetentionSchedulerShould.cs` | Direct retention scheduling, mixed-definition batching, count caps, failure recovery, and bookkeeping behavior. |
 | `tests/Workable.Tests/Queue/WorkQueueAcceptanceCoordinatorShould.cs` | Focused queue acceptance preparation, durable/idempotency/concurrency behavior. |
 | `tests/Workable.Tests/Authorization/AuthorizedWorkQueryServiceShould.cs` | Focused authorization query scope and hidden-result behavior. |
 | `tests/Workable.Tests/Hosting/HttpContextWorkActorFactoryShould.cs` | Focused AspNetCore actor factory behavior. |
@@ -117,11 +190,14 @@ Largest coverage areas:
 | `tests/Workable.Tests/SignalR/WorkableRealtimeViewSubscriptionsShould.cs` | Focused SignalR view subscription coordinator behavior. |
 | `tests/Workable.Tests/SignalR/WorkableRealtimeWorkerOverviewSubscriptionsShould.cs` | Focused SignalR worker-overview subscription coordinator behavior. |
 | `tests/Workable.Tests/SignalR/WorkableRealtimeBroadcastRulesShould.cs` | Focused SignalR broadcaster publication/alert-change decision behavior. |
+| `tests/Workable.Tests/SignalR/WorkableRealtimeWorkflowViewsShould.cs` | Focused workflow-view name, request-context, input-validation, and per-component error-isolation behavior. |
 | `tests/Workable.Tests/HttpApi/WorkableHttpApiTests.cs` | HTTP API adapter and transport behavior. |
 | `tests/Workable.Tests/HttpApi/WorkableHttpCatalogAdapterShould.cs` | Focused HTTP catalog adapter sorting and catalog-level mapping behavior. |
 | `tests/Workable.Tests/HttpApi/WorkableHttpQueueAdapterShould.cs` | Focused HTTP queue adapter input/options, rejection, completion-status, and null-guard mapping behavior. |
 | `tests/Workable.Tests/HttpApi/WorkableHttpQueryAdapterShould.cs` | Focused HTTP query adapter definition-info, worker-configuration, iteration-overview activity/include-flag behavior, and missing-result mapping behavior. |
 | `tests/Workable.Tests/HttpApi/WorkableHttpWorkerAdapterShould.cs` | Focused HTTP worker adapter action, bulk-filter, reconfiguration, and null-guard mapping behavior. |
+| `tests/Workable.Tests/HttpApi/WorkableHttpCriteriaShould.cs` | Complete HTTP worker and iteration criteria mapping contract. |
+| `tests/Workable.Tests/HttpApi/WorkableHttpRouteResultsShould.cs` | Stable HTTP status and structured permission-denial result mappings. |
 | `tests/Workable.Tests/Query/WorkQueryServiceTests.cs` | Query/read-model behavior through system APIs. |
 | `tests/Workable.Tests/Queue/DurableQueueTests.cs` | Durable queue and persistence coordination behavior. |
 | `tests/Workable.Tests/Queue/WorkQueueServiceShould.cs` | Focused queue service validation and invocation-channel contract behavior. |
@@ -134,6 +210,9 @@ Largest coverage areas:
 | `tests/Workable.Tests/SignalR/WorkableSignalRFiltersShould.cs` | Focused SignalR authentication and authorization hub-filter behavior. |
 | `tests/Workable.Tests/SignalR/WorkableRealtimeBroadcastLaneRunnerShould.cs` | Focused SignalR broadcast lane restart and cancellation behavior. |
 | `tests/Workable.Tests/Views/WorkableViewQueryAdapterTests.cs` | View adapter projection behavior. |
+| `tests/Workable.Tests/Views/WorkableViewContractShould.cs` | Documented named views, shapes, grid filtering, diagnostics isolation, and overview materialization. |
+| `tests/Workable.Tests/Hosting/WorkDefinitionBuilderOverloadShould.cs` | Every documented static registration overload plus nested/shared default composition. |
+| `tests/Workable.Tests/Workflows/WorkflowExecutionSupportShould.cs` | Workflow completion mapping, child control, dispatch input, and DispatchEach JSON-pointer behavior. |
 
 ## Service Coverage Table
 
@@ -559,6 +638,8 @@ Runtime-library gaps remaining after this pass:
 | 2026-06-01 | `dotnet test tests\Workable.Tests\Workable.Tests.csproj --no-restore --logger "console;verbosity=minimal" --blame-hang-timeout 2m` | Passed, 1010 | Main project verification after worker bulk-action cancellation coverage. |
 | 2026-06-01 | `dotnet test .\Workable.slnx --no-restore --logger "console;verbosity=minimal" --blame-hang-timeout 2m` | Passed, 1010 main + 45 SQL Server/tooling | Full solution verification after worker bulk-action cancellation coverage. |
 | 2026-06-01 | `dotnet test .\Workable.slnx --no-restore --logger "console;verbosity=minimal" --blame-hang-timeout 2m` | Passed, 1010 main + 45 SQL Server/tooling | Final completion-audit full solution verification. |
+| 2026-07-19 | `dotnet test tests\Workable.Tests\Workable.Tests.csproj --no-restore --collect "XPlat Code Coverage"` | Passed, 1,601; 95.06% lines and 85.25% branches | Final 95% initiative coverage checkpoint. |
+| 2026-07-19 | `dotnet test .\Workable.slnx --no-restore --logger "console;verbosity=minimal" --blame-hang-timeout 2m` | Passed, 1,601 main + 66 SQL Server/tooling | Full solution verification after reaching the 95% line target. |
 
 Prior test-suite repair before this audit document:
 
@@ -566,7 +647,8 @@ Prior test-suite repair before this audit document:
 
 ## Completion Audit Evidence
 
-- Full solution validation passes: `Workable.Tests` has 1427 passing tests and `Workable.SqlServer.Tests` has 66 passing tests.
+- Full solution validation passes: `Workable.Tests` has 1,601 passing tests and `Workable.SqlServer.Tests` has 66 passing tests.
+- Core runtime coverage is 95.06% lines (24,876/26,167) and 85.25% branches (7,203/8,449), meeting the 95% line target.
 - Runtime service-like suffix scan found 72 service-like types and 0 missing audit entries after documented private nested helper exclusions.
 - No service coverage row is classified as Fix, Add, Merge, Delete, or Investigate; all runtime service-like rows are Keep or explicitly Out of scope.
 - Bad-test pattern scans found no `Assert.True(true)`, `Assert.False(false)`, Moq usage, public test methods with underscores, `Thread.Sleep`, numeric fixed `Task.Delay`, or fixed `Task.Delay(TimeSpan.From...)` observation sleeps. Remaining delay usages are intentional cancellation-blocking worker bodies or shared bounded eventual helpers.
