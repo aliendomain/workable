@@ -426,7 +426,8 @@ internal sealed class DurableWorkflowExecutor(
 
                         run.MarkStepCompleted(step.Name, [workerId]);
                         await persistence.UpsertRun(
-                            this.CreatePersistenceRecord(run),
+                            run.Id,
+                            () => this.CreatePersistenceRecord(run),
                             transaction,
                             transactionCancellationToken);
                     },
@@ -469,39 +470,19 @@ internal sealed class DurableWorkflowExecutor(
                     "workflow.dispatch_each")]);
         }
 
-        var outputs = new List<WorkOutput?>();
-        foreach (var workerId in sourceWorkerIds.Distinct())
+        var sources = await WorkflowExecutionSupport.CollectDispatchEachSourceOutputs(
+            run,
+            workflow,
+            sourceWorkerIds,
+            (workerId, waitCancellationToken) =>
+                this.WaitForWorkerCompletion(run, session, workerId, waitCancellationToken),
+            cancellationToken);
+        if (!sources.IsSuccessful)
         {
-            var completion = await this.WaitForWorkerCompletion(run, session, workerId, cancellationToken);
-            if (completion.Status == WorkCompletionStatus.Canceled)
-            {
-                var canceledChildBehavior = WorkflowExecutionSupport.ResolveCanceledChildBehavior(
-                    run,
-                    workflow,
-                    workerId);
-                if (canceledChildBehavior == WorkflowCanceledChildBehavior.Continue)
-                {
-                    continue;
-                }
-
-                return new DispatchEachOutcome(
-                    false,
-                    WorkflowExecutionSupport.ToWorkflowStatus(completion.Status, canceledChildBehavior),
-                    completion.Messages);
-            }
-
-            if (completion.Status != WorkCompletionStatus.Completed)
-            {
-                return new DispatchEachOutcome(
-                    false,
-                    WorkflowExecutionSupport.ToWorkflowStatus(completion.Status),
-                    completion.Messages);
-            }
-
-            outputs.Add(completion.Output);
+            return new DispatchEachOutcome(false, sources.FailureStatus, sources.Messages);
         }
 
-        var expansion = WorkflowExecutionSupport.CreateDispatchEachInputs(step, outputs);
+        var expansion = WorkflowExecutionSupport.CreateDispatchEachInputs(step, sources.Outputs);
         if (expansion.Messages.Count > 0)
         {
             return new DispatchEachOutcome(false, WorkflowRunStatus.Failed, expansion.Messages);
@@ -535,7 +516,8 @@ internal sealed class DurableWorkflowExecutor(
 
                         run.MarkStepCompleted(step.Name, workerIds);
                         await persistence.UpsertRun(
-                            this.CreatePersistenceRecord(run),
+                            run.Id,
+                            () => this.CreatePersistenceRecord(run),
                             transaction,
                             transactionCancellationToken);
                     },
@@ -559,7 +541,7 @@ internal sealed class DurableWorkflowExecutor(
         WorkflowRunPersistenceGate persistenceGate,
         CancellationToken cancellationToken)
         => await persistenceGate.Run(
-            () => persistence.UpsertRun(this.CreatePersistenceRecord(run), cancellationToken),
+            () => persistence.UpsertRun(run.Id, () => this.CreatePersistenceRecord(run), cancellationToken),
             cancellationToken);
 
     private async Task<WorkflowRunCompletion> WaitForJoinOutstanding(
@@ -620,7 +602,13 @@ internal sealed class DurableWorkflowExecutor(
                 }
 
                 run.RemoveStepWorkerId(joinStepName, completed.WorkerId);
-                await this.UpsertRun(run, persistenceGate, CancellationToken.None);
+                var remainingAfterCompletion = remaining - 1;
+                if (remainingAfterCompletion > 0 &&
+                    (remainingAfterCompletion & (remainingAfterCompletion - 1)) == 0)
+                {
+                    await this.UpsertRun(run, persistenceGate, CancellationToken.None);
+                }
+
                 var publisher = workflowEvents ?? new WorkflowEventPublisher(default, null, new WorkEventStream());
                 publisher.StepUpdated(run.ToSnapshot(), joinStepName);
             }
@@ -968,7 +956,16 @@ internal sealed class DurableWorkflowExecutor(
                             }
                         }
                     }
-                    catch (Exception exception) when (exception is not OperationCanceledException)
+                    catch (OperationCanceledException) when (this.cancellation.IsCancellationRequested)
+                    {
+                        foreach (var completion in batch.Values.SelectMany(static requests => requests))
+                        {
+                            completion.TrySetCanceled(this.cancellation.Token);
+                        }
+
+                        throw;
+                    }
+                    catch (Exception exception)
                     {
                         foreach (var completion in batch.Values.SelectMany(static requests => requests))
                         {

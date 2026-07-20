@@ -425,41 +425,23 @@ internal sealed class NonDurableWorkflowExecutor(
                     "workflow.dispatch_each")]);
         }
 
-        var outputs = new List<WorkOutput?>();
-        foreach (var workerId in sourceWorkerIds.Distinct())
+        var sources = await WorkflowExecutionSupport.CollectDispatchEachSourceOutputs(
+            run,
+            workflow,
+            sourceWorkerIds,
+            (workerId, waitCancellationToken) => this.WaitForWorkerCompletion(
+                run,
+                workerId,
+                activeHandles,
+                workerHandleFactory,
+                waitCancellationToken),
+            cancellationToken);
+        if (!sources.IsSuccessful)
         {
-            var completion = await this.WaitForWorkerCompletion(run, workerId, activeHandles, workerHandleFactory, cancellationToken);
-            if (completion.Status == WorkCompletionStatus.Canceled)
-            {
-                var canceledChildBehavior = WorkflowExecutionSupport.ResolveCanceledChildBehavior(
-                    run,
-                    workflow,
-                    workerId);
-                if (canceledChildBehavior == WorkflowCanceledChildBehavior.Continue)
-                {
-                    continue;
-                }
-
-                return new DispatchEachResult(
-                    false,
-                    [],
-                    WorkflowExecutionSupport.ToWorkflowStatus(completion.Status, canceledChildBehavior),
-                    completion.Messages);
-            }
-
-            if (completion.Status != WorkCompletionStatus.Completed)
-            {
-                return new DispatchEachResult(
-                    false,
-                    [],
-                    WorkflowExecutionSupport.ToWorkflowStatus(completion.Status),
-                    completion.Messages);
-            }
-
-            outputs.Add(completion.Output);
+            return new DispatchEachResult(false, [], sources.FailureStatus, sources.Messages);
         }
 
-        var expansion = WorkflowExecutionSupport.CreateDispatchEachInputs(step, outputs);
+        var expansion = WorkflowExecutionSupport.CreateDispatchEachInputs(step, sources.Outputs);
         if (expansion.Messages.Count > 0)
         {
             return new DispatchEachResult(false, [], WorkflowRunStatus.Failed, expansion.Messages);

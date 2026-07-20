@@ -1,3 +1,5 @@
+using System.Collections.Concurrent;
+
 namespace Workable;
 
 /// <summary>
@@ -99,17 +101,24 @@ public interface IWorkPersistenceStore
     {
         ArgumentNullException.ThrowIfNull(workerIds);
 
-        var existing = new HashSet<WorkerId>();
-        foreach (var workerId in workerIds)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            if (await this.DurableWorkerExists(workerId, cancellationToken))
+        const int maximumConcurrency = 16;
+        var existing = new ConcurrentDictionary<WorkerId, byte>();
+        await Parallel.ForEachAsync(
+            workerIds.Distinct(),
+            new ParallelOptions
             {
-                existing.Add(workerId);
-            }
-        }
+                CancellationToken = cancellationToken,
+                MaxDegreeOfParallelism = maximumConcurrency,
+            },
+            async (workerId, itemCancellationToken) =>
+            {
+                if (await this.DurableWorkerExists(workerId, itemCancellationToken))
+                {
+                    existing.TryAdd(workerId, 0);
+                }
+            });
 
-        return existing;
+        return existing.Keys.ToHashSet();
     }
 
     /// <summary>

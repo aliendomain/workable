@@ -1,3 +1,5 @@
+using System.Collections.Concurrent;
+using System.Reflection;
 using Microsoft.Extensions.DependencyInjection;
 using Workable;
 
@@ -671,6 +673,41 @@ public sealed class WorkerStateTests
         await TestEventually.Until(async () => await system.Query.Worker(failedWorker.Id) is null);
 
         Assert.Equal(WorkCompletionStatus.Failed, failed.Status);
+    }
+
+    [Fact]
+    public async Task RetentionDefersPurgeWhileFinalizationIsInProgress()
+    {
+        var definition = WorkDefinition.Create("retention-finalization-guard");
+        var system = CreateSystem(
+            definition,
+            (_, _, _) => Task.FromResult(WorkExecutionResult.Success()));
+        await system.Start();
+        var handle = await system.Queue.Enqueue(definition.Name);
+        var completion = await handle.WaitForCompletion();
+        var workerId = RequiredCompletionWorker(completion).Id;
+        var operations = ((InMemoryWorkSystem)system).WorkerOperations;
+        var guardedWorkers = (ConcurrentDictionary<WorkerId, byte>)(typeof(WorkerOperations).GetField(
+            "finalizationInProgress",
+            BindingFlags.Instance | BindingFlags.NonPublic)
+            ?.GetValue(operations)
+            ?? throw new InvalidOperationException("Expected finalization guard registry."));
+        guardedWorkers[workerId] = 0;
+        var purge = typeof(WorkerOperations).GetMethod(
+            "PurgeFinalWorkersForRetention",
+            BindingFlags.Instance | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("Expected retention purge method.");
+        try
+        {
+            var purged = Assert.IsType<int>(purge.Invoke(operations, [new[] { workerId }, null]));
+
+            Assert.Equal(0, purged);
+            Assert.NotNull(await system.Query.Worker(workerId));
+        }
+        finally
+        {
+            guardedWorkers.TryRemove(workerId, out _);
+        }
     }
 
     [Fact]

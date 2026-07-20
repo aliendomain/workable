@@ -1080,6 +1080,41 @@ public sealed class WorkflowRuntimeInternalsShould
             persisted.RunId == run.Id && persisted.Status == WorkflowRunStatus.Canceled);
     }
 
+    [Fact]
+    public async Task KeepBlockedWorkflowNonFinalWhenChildCancellationIsRejected()
+    {
+        var workerId = WorkerId.New();
+        var workflow = CreateWorkflow(
+            WorkflowDefinition.Create(
+                "workflow.runtime.rejected-child-cancel",
+                coordination: WorkflowCoordinationConfiguration.Durable),
+            Dispatch("dispatch", "sample.dispatch"));
+        var workers = new RejectingWorkerOperations();
+        var store = new RawWorkflowPersistenceStore([]);
+        var runtime = CreateRuntime(
+            catalog: new WorkflowCatalog([workflow]),
+            persistenceStore: store,
+            systemName: "workflow-tests",
+            createSession: _ => new TestWorkSystemSession(
+                new DelegateQueueService((_, _, _, _) => throw new InvalidOperationException("No dispatch expected.")),
+                workers,
+                new DelegateQueryService(_ => Task.FromResult<WorkerSnapshot?>(CreateSnapshot(workerId, WorkerState.Running)))),
+            createWorkerHandle: _ => throw new NotSupportedException());
+        var requestContext = WorkRequestContext.Create(WorkInvocationChannel.InProcess);
+        var run = WorkflowRunState.Create(workflow, requestContext);
+        run.MarkStepCompleted("dispatch", [workerId]);
+        run.Block([WorkMessage.Error("sample.blocked", "Blocked before cancellation.")]);
+        GetRuns(runtime).TryAdd(run.Id, run);
+
+        var outcome = await runtime.Execute(run.Id, WorkflowAction.Cancel, requestContext);
+
+        Assert.False(outcome.IsAccepted);
+        Assert.Equal(WorkflowActionStatus.Invalid, outcome.Status);
+        Assert.Equal(WorkflowRunStatus.Blocked, run.GetStatus());
+        Assert.Contains(outcome.Messages, message => message.Code == "workable.worker.unauthorized");
+        Assert.Single(workers.Executions);
+    }
+
     [Theory]
     [InlineData("Cancel", WorkflowRunStatus.Canceled)]
     [InlineData("Pause", WorkflowRunStatus.Paused)]
@@ -1132,6 +1167,66 @@ public sealed class WorkflowRuntimeInternalsShould
             Assert.Equal(expectedStatus, completion.Status);
             Assert.Contains(store.UpsertedRuns, persisted =>
                 persisted.RunId == run.Id && persisted.Status == expectedStatus);
+        }
+        finally
+        {
+            ((IDisposable)control).Dispose();
+        }
+    }
+
+    [Fact]
+    public async Task BlockCanceledExecutionWhenOutstandingChildRejectsCancellation()
+    {
+        var workerId = WorkerId.New();
+        var workflow = CreateWorkflow(
+            WorkflowDefinition.Create(
+                "workflow.runtime.active-rejected-child-cancel",
+                coordination: WorkflowCoordinationConfiguration.Durable),
+            Dispatch("dispatch", "sample.dispatch"));
+        var workers = new RejectingWorkerOperations();
+        var store = new RawWorkflowPersistenceStore([]);
+        var runtime = CreateRuntime(
+            catalog: new WorkflowCatalog([workflow]),
+            persistenceStore: store,
+            systemName: "workflow-tests",
+            createSession: _ => new TestWorkSystemSession(
+                new DelegateQueueService((_, _, _, _) => throw new InvalidOperationException("No dispatch expected.")),
+                workers,
+                new DelegateQueryService(_ => Task.FromResult<WorkerSnapshot?>(CreateSnapshot(workerId, WorkerState.Running)))),
+            createWorkerHandle: _ => throw new NotSupportedException());
+        var run = WorkflowRunState.Create(workflow, WorkRequestContext.Create(WorkInvocationChannel.InProcess));
+        run.MarkStepCompleted("dispatch", [workerId]);
+        var controlType = typeof(WorkflowRuntime).GetNestedType(
+            "WorkflowExecutionControl",
+            BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("Expected workflow execution control type.");
+        var control = Activator.CreateInstance(
+            controlType,
+            BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic,
+            binder: null,
+            args: [CancellationToken.None],
+            culture: null)
+            ?? throw new InvalidOperationException("Expected workflow execution control instance.");
+        controlType.GetMethod("RequestCancel")!.Invoke(control, null);
+        var runExecution = typeof(WorkflowRuntime).GetMethod(
+            "RunExecution",
+            BindingFlags.Instance | BindingFlags.NonPublic,
+            binder: null,
+            types: [typeof(WorkflowRunState), typeof(RegisteredWorkflow), controlType, typeof(bool)],
+            modifiers: null)
+            ?? throw new InvalidOperationException("Expected controlled RunExecution method.");
+
+        try
+        {
+            var task = Assert.IsType<Task<WorkflowRunCompletion>>(
+                runExecution.Invoke(runtime, [run, workflow, control, false]));
+            var completion = await task;
+
+            Assert.Equal(WorkflowRunStatus.Blocked, completion.Status);
+            Assert.False(completion.IsFinal);
+            Assert.Contains(completion.Messages, message => message.Code == "workable.worker.unauthorized");
+            Assert.Contains(store.UpsertedRuns, persisted =>
+                persisted.RunId == run.Id && persisted.Status == WorkflowRunStatus.Blocked);
         }
         finally
         {
@@ -1204,6 +1299,33 @@ public sealed class WorkflowRuntimeInternalsShould
 
         var completion = await run.WaitForCompletion();
         Assert.True(completion.IsCompletedSuccessfully);
+    }
+
+    [Fact]
+    public void StartExecutionRejectsDuplicateExecutionBookkeeping()
+    {
+        var workflow = CreateWorkflow(
+            WorkflowDefinition.Create("workflow.runtime.duplicate-execution"),
+            Dispatch("dispatch", "sample.dispatch"));
+        var runtime = CreateRuntime(
+            catalog: new WorkflowCatalog([workflow]),
+            persistenceStore: null,
+            systemName: null,
+            createSession: _ => throw new NotSupportedException(),
+            createWorkerHandle: _ => throw new NotSupportedException());
+        var run = WorkflowRunState.Create(workflow, WorkRequestContext.Create(WorkInvocationChannel.InProcess));
+        GetExecutions(runtime).TryAdd(
+            run.Id,
+            Task.FromResult(new WorkflowRunCompletion(WorkflowRunStatus.Running, run.ToSnapshot(), [])));
+        var startExecution = typeof(WorkflowRuntime).GetMethod(
+            "StartExecution",
+            BindingFlags.Instance | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("Expected StartExecution method.");
+
+        var exception = Assert.Throws<TargetInvocationException>(() =>
+            startExecution.Invoke(runtime, [run, workflow, false]));
+
+        Assert.IsType<InvalidOperationException>(exception.InnerException);
     }
 
     private static WorkflowRuntime CreateRuntime(
@@ -1452,6 +1574,38 @@ public sealed class WorkflowRuntimeInternalsShould
             => throw new NotSupportedException();
 
         public Task<WorkActionOutcome> Reconfigure(WorkerVersion worker, WorkerReconfiguration changes, CancellationToken cancellationToken = default)
+            => throw new NotSupportedException();
+    }
+
+    private sealed class RejectingWorkerOperations : IWorkerOperations
+    {
+        public List<(WorkerId WorkerId, WorkAction Action)> Executions { get; } = [];
+
+        public Task<WorkActionOutcome> Execute(
+            WorkerVersion worker,
+            WorkAction action,
+            CancellationToken cancellationToken = default)
+        {
+            this.Executions.Add((worker.WorkerId, action));
+            return Task.FromResult(WorkActionOutcome.Unauthorized(action, worker.WorkerId));
+        }
+
+        public Task<WorkActionOutcome> Execute(
+            WorkerVersion worker,
+            WorkerActionRequest request,
+            CancellationToken cancellationToken = default)
+            => this.Execute(worker, request.Action, cancellationToken);
+
+        public Task<WorkerBulkActionOutcome> ExecuteAll(
+            WorkAction action,
+            WorkerBulkActionFilter? filter = null,
+            CancellationToken cancellationToken = default)
+            => throw new NotSupportedException();
+
+        public Task<WorkActionOutcome> Reconfigure(
+            WorkerVersion worker,
+            WorkerReconfiguration changes,
+            CancellationToken cancellationToken = default)
             => throw new NotSupportedException();
     }
 

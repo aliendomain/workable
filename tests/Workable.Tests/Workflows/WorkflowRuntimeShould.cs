@@ -1074,6 +1074,100 @@ public sealed class WorkflowRuntimeShould
     }
 
     [Fact]
+    public async Task CancelLargeQueuedFanOutWithoutRecursiveWorkflowCancellation()
+    {
+        const int childCount = 128;
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var startedWorker = new TaskCompletionSource<WorkerId>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var items = Enumerable.Range(0, childCount)
+            .Select(index => new DispatchEachItem($"item-{index}"))
+            .ToArray();
+        var services = new ServiceCollection();
+
+        services.AddWorkableSystem(builder =>
+        {
+            builder.RequireAuthorization(false);
+            builder.AddWork(
+                WorkDefinition.Create("sample.cancel-recursion.fail"),
+                (_, _, _) => Task.FromResult(WorkExecutionResult.Failure(
+                    [WorkMessage.Error("sample.failed", "Block the workflow before cancellation.")])));
+            builder.AddWork(
+                WorkDefinition.Create("sample.cancel-recursion.load"),
+                (_, _, _) => Task.FromResult(WorkExecutionResult.Success(
+                    WorkOutput.FromValue(new DispatchEachSourceOutput(items)))));
+            builder.AddWork(
+                WorkDefinition.Create(
+                    "sample.cancel-recursion.child",
+                    configuration: WorkConfiguration.Default with
+                    {
+                        Coordination = WorkCoordinationConfiguration.Default with
+                        {
+                            IsEnabled = true,
+                            Concurrency = WorkConcurrencyConfiguration.Default with
+                            {
+                                IsEnabled = true,
+                                MaximumCapacity = 1,
+                                LimitReachedBehavior = WorkConcurrencyLimitReachedBehavior.DeferStart,
+                            },
+                        },
+                    }),
+                async (context, _, cancellationToken) =>
+                {
+                    startedWorker.TrySetResult(context.WorkerId);
+                    await release.Task.WaitAsync(cancellationToken);
+                    return WorkExecutionResult.Success();
+                });
+            builder.AddWorkflow(
+                WorkflowDefinition.Create("workflow.cancel-recursion"),
+                workflow =>
+                {
+                    workflow.DispatchWork("fail", Work("sample.cancel-recursion.fail"));
+                    var load = workflow.DispatchWork<DispatchEachSourceOutput>(
+                        "load",
+                        Work("sample.cancel-recursion.load"));
+                    workflow
+                        .DispatchEach(
+                            "fan-out",
+                            load,
+                            Work("sample.cancel-recursion.child"),
+                            output => output.Items,
+                            WorkflowCanceledChildBehavior.CancelWorkflow)
+                        .Join("join");
+                });
+        });
+
+        using var provider = services.BuildServiceProvider();
+        var system = (InMemoryWorkSystem)provider.GetRequiredService<IWorkSystemRegistry>().Default;
+        await system.Start();
+        var handle = system.WorkflowRuntime.Start(
+            "workflow.cancel-recursion",
+            WorkRequestContext.Create(WorkInvocationChannel.InProcess));
+        var runningWorkerId = await startedWorker.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        await TestEventually.Until(
+            () => system.WorkflowRuntime.Get(handle.RunId!.Value)?.Steps
+                .Single(step => step.Name == "fan-out").WorkerIds.Count == childCount,
+            "Expected every fan-out child to be queued before cancellation.",
+            timeout: TimeSpan.FromSeconds(10));
+
+        var runningWorker = await system.Query.Worker(runningWorkerId);
+        var cancellation = await system.Workers.Execute(runningWorker!.Version, WorkAction.Cancel);
+
+        Assert.True(cancellation.IsAccepted);
+        var completion = await handle.WaitForCompletion().WaitAsync(TimeSpan.FromSeconds(10));
+        Assert.Equal(WorkflowRunStatus.Canceled, completion.Status);
+        await TestEventually.Until(
+            async () =>
+            {
+                var workers = await Task.WhenAll(
+                    completion.Run!.Steps.Single(step => step.Name == "fan-out").WorkerIds
+                        .Select(workerId => system.Query.Worker(workerId)));
+                return workers.All(worker => worker?.State == WorkerState.Canceled);
+            },
+            "Expected all queued fan-out children to be canceled without recursive cancellation.",
+            timeout: TimeSpan.FromSeconds(10));
+    }
+
+    [Fact]
     public async Task ExecuteParallelBranchesWithSequentialWorkflowStructure()
     {
         var completed = new ConcurrentBag<string>();

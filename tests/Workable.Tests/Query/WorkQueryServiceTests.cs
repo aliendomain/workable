@@ -1110,23 +1110,31 @@ public sealed class WorkQueryServiceTests
         await (await system.Queue.Enqueue("query.definition.health")).WaitForCompletion();
         var second = await system.Queue.Enqueue("query.definition.health");
         var third = await system.Queue.Enqueue("query.definition.health");
-        await Task.WhenAll(secondStarted.Task, thirdStarted.Task).WaitAsync(TimeSpan.FromSeconds(5));
-        await WaitForReadModel(system);
+        try
+        {
+            await Task.WhenAll(secondStarted.Task, thirdStarted.Task).WaitAsync(TimeSpan.FromSeconds(5));
+            await WaitForReadModel(system);
 
-        var needsAttention = await system.Query.WorkInfo("query.definition.health");
-        Assert.NotNull(needsAttention);
-        Assert.Equal(WorkDefinitionStatus.NeedsAttention, needsAttention!.Status);
+            var needsAttention = await system.Query.WorkInfo("query.definition.health");
+            Assert.NotNull(needsAttention);
+            Assert.Equal(WorkDefinitionStatus.NeedsAttention, needsAttention!.Status);
 
-        releaseThird.TrySetResult();
-        await third.WaitForCompletion();
-        await WaitForReadModel(system);
-        var critical = await system.Query.WorkInfo("query.definition.health");
+            releaseThird.TrySetResult();
+            await third.WaitForCompletion();
+            await WaitForReadModel(system);
+            var critical = await system.Query.WorkInfo("query.definition.health");
 
-        releaseSecond.TrySetResult();
-        await second.WaitForCompletion();
+            releaseSecond.TrySetResult();
+            await second.WaitForCompletion();
 
-        Assert.NotNull(critical);
-        Assert.Equal(WorkDefinitionStatus.Critical, critical!.Status);
+            Assert.NotNull(critical);
+            Assert.Equal(WorkDefinitionStatus.Critical, critical!.Status);
+        }
+        finally
+        {
+            releaseSecond.TrySetResult();
+            releaseThird.TrySetResult();
+        }
     }
 
     [Fact]

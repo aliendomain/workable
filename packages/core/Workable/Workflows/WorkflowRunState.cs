@@ -138,13 +138,18 @@ internal sealed class WorkflowRunState
     public Task<WorkflowRunCompletion> WaitForCompletion()
         => this.completion.Task;
 
-    public void TrySetCompletion(WorkflowRunCompletion value)
+    public bool TrySetCompletion(WorkflowRunCompletion value)
         => this.completion.TrySetResult(value);
 
     public void MarkRunning()
     {
         lock (this.sync)
         {
+            if (IsFinalStatus(this.status))
+            {
+                return;
+            }
+
             this.startedAt ??= DateTimeOffset.UtcNow;
             this.status = WorkflowRunStatus.Running;
             this.completedAt = null;
@@ -350,6 +355,11 @@ internal sealed class WorkflowRunState
     {
         lock (this.sync)
         {
+            if (IsFinalStatus(this.status))
+            {
+                return this.CurrentCompletionLocked();
+            }
+
             this.status = WorkflowRunStatus.Completed;
             this.pendingControlAction = null;
             this.messages = [];
@@ -363,6 +373,11 @@ internal sealed class WorkflowRunState
     {
         lock (this.sync)
         {
+            if (IsFinalStatus(this.status))
+            {
+                return this.CurrentCompletionLocked();
+            }
+
             this.status = WorkflowRunStatus.Paused;
             this.pendingControlAction = null;
             this.completedAt = null;
@@ -376,6 +391,11 @@ internal sealed class WorkflowRunState
     {
         lock (this.sync)
         {
+            if (IsFinalStatus(this.status))
+            {
+                return this.CurrentCompletionLocked();
+            }
+
             this.status = WorkflowRunStatus.Blocked;
             this.pendingControlAction = null;
             this.completedAt = null;
@@ -389,6 +409,11 @@ internal sealed class WorkflowRunState
     {
         lock (this.sync)
         {
+            if (IsFinalStatus(this.status))
+            {
+                return this.CurrentCompletionLocked();
+            }
+
             this.status = WorkflowRunStatus.Canceled;
             this.pendingControlAction = null;
             this.messages = [];
@@ -406,6 +431,11 @@ internal sealed class WorkflowRunState
     {
         lock (this.sync)
         {
+            if (IsFinalStatus(this.status))
+            {
+                return this.CurrentCompletionLocked();
+            }
+
             this.status = WorkflowRunStatus.Failed;
             this.pendingControlAction = null;
             this.messages = failureMessages;
@@ -414,6 +444,12 @@ internal sealed class WorkflowRunState
             return new WorkflowRunCompletion(this.status, this.ToSnapshotLocked(), this.messages);
         }
     }
+
+    private WorkflowRunCompletion CurrentCompletionLocked()
+        => new(this.status, this.ToSnapshotLocked(), this.messages);
+
+    private static bool IsFinalStatus(WorkflowRunStatus status)
+        => status is WorkflowRunStatus.Completed or WorkflowRunStatus.Failed or WorkflowRunStatus.Canceled;
 
     public WorkflowRunSnapshot ToSnapshot()
     {

@@ -455,6 +455,42 @@ public sealed class WorkflowExecutorsShould
     }
 
     [Fact]
+    public async Task CheckpointLargeJoinProgressWithoutOneWritePerChild()
+    {
+        const int childCount = 128;
+        var workerIds = Enumerable.Range(0, childCount).Select(_ => WorkerId.New()).ToArray();
+        var store = new RecordingWorkflowStore();
+        var persistence = new WorkflowPersistenceCoordinator(store, "workflow-tests");
+        var executor = new DurableWorkflowExecutor(
+            "workflow-tests",
+            name => CreateRegisteredWork(name),
+            _ => new TestWorkSystemSession(
+                new DelegateQueueService((_, _, _, _) => throw new InvalidOperationException("No dispatch expected."))),
+            CompletedHandle,
+            persistence);
+        var workflow = CreateWorkflow(
+            WorkflowDefinition.Create(
+                "workflow.durable.join.scaling",
+                coordination: WorkflowCoordinationConfiguration.Durable),
+            Dispatch("dispatch", "sample.dispatch"),
+            new JoinWorkflowStepDefinition("join"));
+        var run = WorkflowRunState.Create(workflow, WorkRequestContext.Create(WorkInvocationChannel.InProcess));
+        run.MarkStepCompleted("dispatch", workerIds);
+        run.MarkStepRunning("join", workerIds);
+
+        var completion = await executor.Execute(run, workflow, CancellationToken.None);
+
+        Assert.True(completion.IsCompletedSuccessfully);
+        var progressWrites = store.Upserts.Count(record =>
+            record.Steps.Single(step => step.Name == "join") is
+            {
+                Status: WorkflowStepRunStatus.Running,
+                WorkerIds: { Count: > 0 },
+            });
+        Assert.InRange(progressWrites, 1, 8);
+    }
+
+    [Fact]
     public async Task PersistFailedDurableRunForUnsupportedStepKind()
     {
         var store = new RecordingWorkflowStore();
@@ -1283,6 +1319,40 @@ public sealed class WorkflowExecutorsShould
         var batch = Assert.Single(store.DurableWorkerExistenceBatches);
         Assert.Equal(workerIds.OrderBy(static id => id.Value), batch.OrderBy(static id => id.Value));
         Assert.Equal(0, store.DurableWorkerExistenceCalls);
+    }
+
+    [Fact]
+    public async Task CompleteActiveExistenceBatchWhenProviderThrowsOperationCanceledException()
+    {
+        var workerId = WorkerId.New();
+        var store = new RecordingWorkflowStore
+        {
+            DurableWorkersExistHandler = _ => throw new OperationCanceledException("Provider canceled its lookup."),
+        };
+        var persistence = new WorkflowPersistenceCoordinator(store, "workflow-tests");
+        var executor = new DurableWorkflowExecutor(
+            "workflow-tests",
+            name => CreateRegisteredWork(name),
+            _ => new TestWorkSystemSession(
+                new DelegateQueueService((_, _, _, _) => throw new NotSupportedException()),
+                query: new DelegateQueryService(_ => Task.FromResult<WorkerSnapshot?>(null))),
+            id => new CancellationAwareWorkerHandle(
+                id,
+                new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously)),
+            persistence);
+        var workflow = CreateWorkflow(
+            WorkflowDefinition.Create(
+                "workflow.durable.provider-canceled-existence",
+                coordination: WorkflowCoordinationConfiguration.Durable),
+            Dispatch("dispatch", "sample.dispatch"),
+            new JoinWorkflowStepDefinition("join"));
+        var run = WorkflowRunState.Create(workflow, WorkRequestContext.Create(WorkInvocationChannel.InProcess));
+        run.MarkStepCompleted("dispatch", [workerId]);
+        run.MarkStepRunning("join", [workerId]);
+
+        await Assert.ThrowsAsync<OperationCanceledException>(async () =>
+            await executor.Execute(run, workflow, CancellationToken.None)
+                .WaitAsync(TimeSpan.FromSeconds(2)));
     }
 
     [Theory]
