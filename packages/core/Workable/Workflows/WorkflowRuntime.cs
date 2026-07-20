@@ -958,13 +958,19 @@ internal sealed class WorkflowRuntime
         foreach (var workerId in outstandingWorkerIds)
         {
             if (run.TryGetChildReceipt(workerId, out var receipt) &&
-                receipt?.CompletionStatus == WorkCompletionStatus.Completed)
+                receipt is not null &&
+                IsSatisfiedForAutoResume(run, workflow, workerId, receipt.CompletionStatus))
             {
                 continue;
             }
 
-            var worker = await this.GetCompletedWorkerSnapshot(workerId, cancellationToken);
-            if (worker is null)
+            var worker = await this.GetWorkerSnapshot(workerId, cancellationToken);
+            if (worker is null ||
+                !IsSatisfiedForAutoResume(
+                    run,
+                    workflow,
+                    workerId,
+                    WorkerStateMachine.CompletionStatusFor(worker.State)))
             {
                 return;
             }
@@ -1257,13 +1263,31 @@ internal sealed class WorkflowRuntime
         WorkerId workerId,
         CancellationToken cancellationToken)
     {
-        var worker = this.getAuthoritativeWorker is not null
-            ? await this.getAuthoritativeWorker(workerId, cancellationToken)
-            : await this.createSession(WorkRequestContext.Create(WorkInvocationChannel.InProcess)).Query.Worker(workerId, cancellationToken);
+        var worker = await this.GetWorkerSnapshot(workerId, cancellationToken);
         return worker?.State == WorkerState.Completed
             ? worker
             : null;
     }
+
+    private async Task<WorkerSnapshot?> GetWorkerSnapshot(
+        WorkerId workerId,
+        CancellationToken cancellationToken)
+    {
+        var worker = this.getAuthoritativeWorker is not null
+            ? await this.getAuthoritativeWorker(workerId, cancellationToken)
+            : await this.createSession(WorkRequestContext.Create(WorkInvocationChannel.InProcess)).Query.Worker(workerId, cancellationToken);
+        return worker;
+    }
+
+    private static bool IsSatisfiedForAutoResume(
+        WorkflowRunState run,
+        RegisteredWorkflow workflow,
+        WorkerId workerId,
+        WorkCompletionStatus completionStatus)
+        => completionStatus == WorkCompletionStatus.Completed ||
+            (completionStatus == WorkCompletionStatus.Canceled &&
+                WorkflowExecutionSupport.ResolveCanceledChildBehavior(run, workflow, workerId) ==
+                    WorkflowCanceledChildBehavior.Continue);
 
     private static bool IsFinal(WorkflowRunStatus status)
         => status is WorkflowRunStatus.Completed or WorkflowRunStatus.Failed or WorkflowRunStatus.Canceled;
