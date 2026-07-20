@@ -463,7 +463,7 @@ internal sealed class WorkflowRuntime
                     return WorkflowActionOutcome.Invalid(action, runId, run.ToSnapshot(), childCancellation.Messages);
                 }
 
-                var canceled = run.Cancel();
+                var canceled = run.CreateFinalCompletion(WorkflowRunStatus.Canceled);
                 if (await this.TryPersistAndSetFinalCompletion(
                     run,
                     canceled,
@@ -619,7 +619,8 @@ internal sealed class WorkflowRuntime
     private async Task FailRecoveredRunForDefinitionMismatch(WorkflowRunPersistenceRecord record)
     {
         var run = WorkflowRunState.FromPersistenceRecord(record, this.AdvanceVersion);
-        var completion = run.Fail(
+        var completion = run.CreateFinalCompletion(
+            WorkflowRunStatus.Failed,
             [WorkMessage.Error(
                 "workable.workflow.definition_mismatch",
                 $"Workflow '{record.DefinitionName}' run '{record.RunId.Value:D}' could not be recovered because the persisted workflow definition fingerprint does not match the current registered workflow.",
@@ -677,7 +678,10 @@ internal sealed class WorkflowRuntime
 
                 if (completion.Status == WorkflowRunStatus.Canceled)
                 {
-                    completion = run.Cancel(completion.CancelOutstandingChildren);
+                    completion = run.CreateFinalCompletion(
+                        WorkflowRunStatus.Canceled,
+                        completion.Messages,
+                        completion.CancelOutstandingChildren);
                 }
 
                 var shouldPersistState = workflow.Definition.Coordination.IsDurable &&
@@ -736,7 +740,7 @@ internal sealed class WorkflowRuntime
                     }
                 }
 
-                var completion = run.Cancel();
+                var completion = run.CreateFinalCompletion(WorkflowRunStatus.Canceled);
                 var shouldPersistCompletion = workflow.Definition.Coordination.IsDurable &&
                     ShouldPersistFinalState(completion, control);
                 var shouldPublishCompletion = await this.TryPersistAndSetFinalCompletion(
@@ -772,7 +776,8 @@ internal sealed class WorkflowRuntime
         }
         catch (Exception exception) when (!run.IsCompletionFaulted)
         {
-            var completion = run.Fail(
+            var completion = run.CreateFinalCompletion(
+                WorkflowRunStatus.Failed,
                 [WorkMessage.Error(
                     "workable.workflow.execution_exception",
                     exception.Message,
@@ -861,13 +866,14 @@ internal sealed class WorkflowRuntime
             return false;
         }
 
+        var isAlreadyCommitted = run.GetStatus() == completion.Status;
         try
         {
-            if (shouldPersist)
+            if (shouldPersist && !isAlreadyCommitted)
             {
                 await this.persistence.UpsertRun(
                     run.Id,
-                    () => this.CreatePersistenceRecord(run),
+                    () => run.ToPersistenceRecord(this.systemName, completion),
                     CancellationToken.None);
             }
         }
@@ -877,6 +883,7 @@ internal sealed class WorkflowRuntime
             throw;
         }
 
+        run.CommitFinalCompletion(completion);
         run.TrySetClaimedCompletion(completion);
         return true;
     }
@@ -1058,7 +1065,7 @@ internal sealed class WorkflowRuntime
                     return;
                 }
 
-                var canceled = run.Cancel();
+                var canceled = run.CreateFinalCompletion(WorkflowRunStatus.Canceled);
                 if (await this.TryPersistAndSetFinalCompletion(
                     run,
                     canceled,

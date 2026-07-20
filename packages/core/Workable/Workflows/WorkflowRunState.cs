@@ -391,6 +391,64 @@ internal sealed class WorkflowRunState
         }
     }
 
+    public WorkflowRunCompletion CreateFinalCompletion(
+        WorkflowRunStatus finalStatus,
+        IReadOnlyList<WorkMessage>? finalMessages = null,
+        bool cancelOutstandingChildren = false)
+    {
+        if (!IsFinalStatus(finalStatus))
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(finalStatus),
+                finalStatus,
+                "A staged workflow completion must use a final status.");
+        }
+
+        lock (this.sync)
+        {
+            if (IsFinalStatus(this.status))
+            {
+                return this.CurrentCompletionLocked();
+            }
+
+            var messages = finalMessages ?? [];
+            var completedAt = DateTimeOffset.UtcNow;
+            return new WorkflowRunCompletion(
+                finalStatus,
+                this.ToSnapshotLocked(finalStatus, completedAt, messages),
+                messages,
+                cancelOutstandingChildren);
+        }
+    }
+
+    public WorkflowRunCompletion CommitFinalCompletion(WorkflowRunCompletion completion)
+    {
+        ArgumentNullException.ThrowIfNull(completion);
+        if (!completion.IsFinal)
+        {
+            throw new ArgumentException("Only a final workflow completion can be committed.", nameof(completion));
+        }
+
+        lock (this.sync)
+        {
+            if (IsFinalStatus(this.status))
+            {
+                return this.CurrentCompletionLocked();
+            }
+
+            this.status = completion.Status;
+            this.pendingControlAction = null;
+            this.messages = completion.Messages;
+            this.completedAt = completion.Run?.CompletedAt ?? DateTimeOffset.UtcNow;
+            this.onChanged?.Invoke();
+            return new WorkflowRunCompletion(
+                this.status,
+                this.ToSnapshotLocked(),
+                this.messages,
+                completion.CancelOutstandingChildren);
+        }
+    }
+
     public WorkflowRunCompletion Pause(IReadOnlyList<WorkMessage>? pauseMessages = null)
     {
         lock (this.sync)
@@ -485,24 +543,58 @@ internal sealed class WorkflowRunState
     {
         lock (this.sync)
         {
-            return new WorkflowRunPersistenceRecord(
+            return this.ToPersistenceRecordLocked(
                 workSystemName,
-                this.Id,
-                this.DefinitionVersion,
-                this.DefinitionName,
-                this.Input,
-                this.RequestContext,
                 this.status,
-                this.steps.Select(step => step.ToPersistenceRecord()).ToArray(),
-                this.CreatedAt,
-                this.startedAt,
                 this.completedAt,
                 this.messages,
-                this.childReceipts.Values.ToArray(),
-                this.DefinitionFingerprint,
-                this.pendingControlAction?.ToString());
+                this.pendingControlAction);
         }
     }
+
+    public WorkflowRunPersistenceRecord ToPersistenceRecord(
+        string? workSystemName,
+        WorkflowRunCompletion completion)
+    {
+        ArgumentNullException.ThrowIfNull(completion);
+        if (!completion.IsFinal)
+        {
+            throw new ArgumentException("Only a final workflow completion can be persisted as staged state.", nameof(completion));
+        }
+
+        lock (this.sync)
+        {
+            return this.ToPersistenceRecordLocked(
+                workSystemName,
+                completion.Status,
+                completion.Run?.CompletedAt ?? DateTimeOffset.UtcNow,
+                completion.Messages,
+                pendingControlAction: null);
+        }
+    }
+
+    private WorkflowRunPersistenceRecord ToPersistenceRecordLocked(
+        string? workSystemName,
+        WorkflowRunStatus persistedStatus,
+        DateTimeOffset? persistedCompletedAt,
+        IReadOnlyList<WorkMessage> persistedMessages,
+        WorkflowAction? pendingControlAction)
+        => new(
+            workSystemName,
+            this.Id,
+            this.DefinitionVersion,
+            this.DefinitionName,
+            this.Input,
+            this.RequestContext,
+            persistedStatus,
+            this.steps.Select(step => step.ToPersistenceRecord()).ToArray(),
+            this.CreatedAt,
+            this.startedAt,
+            persistedCompletedAt,
+            persistedMessages,
+            this.childReceipts.Values.ToArray(),
+            this.DefinitionFingerprint,
+            pendingControlAction?.ToString());
 
     private static WorkflowAction? ParsePendingControlAction(string? value)
         => string.Equals(value, "Stop", StringComparison.Ordinal)
@@ -542,6 +634,22 @@ internal sealed class WorkflowRunState
             this.startedAt,
             this.completedAt,
             this.messages,
+            this.childReceipts.Values.ToArray());
+
+    private WorkflowRunSnapshot ToSnapshotLocked(
+        WorkflowRunStatus snapshotStatus,
+        DateTimeOffset? snapshotCompletedAt,
+        IReadOnlyList<WorkMessage> snapshotMessages)
+        => new(
+            this.Id,
+            this.DefinitionName,
+            snapshotStatus,
+            this.Input,
+            this.steps.Select(step => step.ToSnapshot()).ToArray(),
+            this.CreatedAt,
+            this.startedAt,
+            snapshotCompletedAt,
+            snapshotMessages,
             this.childReceipts.Values.ToArray());
 
     private sealed class WorkflowStepRunState

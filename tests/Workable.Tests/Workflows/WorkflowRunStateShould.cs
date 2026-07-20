@@ -5,6 +5,59 @@ namespace Workable.Tests;
 [Trait("Category", "Workflows")]
 public sealed class WorkflowRunStateShould
 {
+    [Theory]
+    [InlineData(WorkflowRunStatus.Completed)]
+    [InlineData(WorkflowRunStatus.Failed)]
+    [InlineData(WorkflowRunStatus.Canceled)]
+    public void StageFinalCompletionUntilItIsCommitted(WorkflowRunStatus finalStatus)
+    {
+        var workflow = CreateWorkflow(WorkflowDefinition.Create("workflow.staged-completion"));
+        var run = WorkflowRunState.Create(
+            workflow,
+            WorkRequestContext.Create(WorkInvocationChannel.InProcess));
+        IReadOnlyList<WorkMessage> messages = finalStatus == WorkflowRunStatus.Failed
+            ? new[] { WorkMessage.Error("workflow.failed", "Expected failure.") }
+            : [];
+
+        var completion = run.CreateFinalCompletion(
+            finalStatus,
+            messages,
+            cancelOutstandingChildren: finalStatus == WorkflowRunStatus.Canceled);
+        var visibleBeforeCommit = run.ToSnapshot();
+        var ordinaryPersistence = run.ToPersistenceRecord("workflow-tests");
+        var stagedPersistence = run.ToPersistenceRecord("workflow-tests", completion);
+
+        Assert.Equal(WorkflowRunStatus.Running, visibleBeforeCommit.Status);
+        Assert.Null(visibleBeforeCommit.CompletedAt);
+        Assert.Equal(WorkflowRunStatus.Running, ordinaryPersistence.Status);
+        Assert.Null(ordinaryPersistence.CompletedAt);
+        Assert.Equal(finalStatus, completion.Status);
+        Assert.Equal(finalStatus, stagedPersistence.Status);
+        Assert.NotNull(stagedPersistence.CompletedAt);
+        Assert.Equal(messages, stagedPersistence.Messages);
+
+        var committed = run.CommitFinalCompletion(completion);
+
+        Assert.Equal(finalStatus, committed.Status);
+        Assert.Equal(finalStatus, run.ToSnapshot().Status);
+        Assert.Equal(finalStatus == WorkflowRunStatus.Canceled, committed.CancelOutstandingChildren);
+        Assert.Equal(finalStatus, run.CommitFinalCompletion(completion).Status);
+    }
+
+    [Fact]
+    public void RejectNonFinalStagedCompletions()
+    {
+        var workflow = CreateWorkflow(WorkflowDefinition.Create("workflow.invalid-staged-completion"));
+        var run = WorkflowRunState.Create(
+            workflow,
+            WorkRequestContext.Create(WorkInvocationChannel.InProcess));
+        var nonFinal = new WorkflowRunCompletion(WorkflowRunStatus.Blocked, run.ToSnapshot(), []);
+
+        Assert.Throws<ArgumentOutOfRangeException>(() => run.CreateFinalCompletion(WorkflowRunStatus.Blocked));
+        Assert.Throws<ArgumentException>(() => run.CommitFinalCompletion(nonFinal));
+        Assert.Throws<ArgumentException>(() => run.ToPersistenceRecord("workflow-tests", nonFinal));
+    }
+
     [Fact]
     public void IncludeDispatchEachCanceledChildBehaviorInDefinitionFingerprint()
     {

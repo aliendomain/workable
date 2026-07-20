@@ -1629,20 +1629,29 @@ public sealed class WorkflowRuntimeInternalsShould
         var handle = runtime.Start(workflow.Definition.Name, requestContext);
         await failedWriteEntered.Task.WaitAsync(TimeSpan.FromSeconds(1));
         var execution = GetExecutions(runtime)[handle.RunId!.Value];
+        var publicCompletion = handle.WaitForCompletion();
+
+        Assert.False(publicCompletion.IsCompleted);
+        Assert.Equal(WorkflowRunStatus.Running, runtime.Get(handle.RunId.Value)?.Status);
         releaseFailedWrite.TrySetResult();
 
         if (isCanceled)
         {
             await Assert.ThrowsAnyAsync<OperationCanceledException>(() => execution);
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => publicCompletion);
         }
         else
         {
             var exception = await Assert.ThrowsAsync<InvalidOperationException>(() => execution);
+            var publicException = await Assert.ThrowsAsync<InvalidOperationException>(() => publicCompletion);
             Assert.Equal("Persistence failed.", exception.Message);
+            Assert.Equal("Persistence failed.", publicException.Message);
         }
 
         Assert.Empty(GetExecutions(runtime));
         Assert.Equal(0, GetActionGateCount(runtime));
+        Assert.Equal(WorkflowRunStatus.Running, runtime.Get(handle.RunId.Value)?.Status);
+        Assert.Null(runtime.Get(handle.RunId.Value)?.CompletedAt);
     }
 
     [Fact]
@@ -1679,6 +1688,8 @@ public sealed class WorkflowRuntimeInternalsShould
         var execution = GetExecutions(runtime)[handle.RunId!.Value];
         var publicCompletion = handle.WaitForCompletion();
         Assert.False(publicCompletion.IsCompleted);
+        Assert.Equal(WorkflowRunStatus.Running, runtime.Get(handle.RunId.Value)?.Status);
+        Assert.Null(runtime.Get(handle.RunId.Value)?.CompletedAt);
         releaseFinalWrite.TrySetResult();
 
         var publicFailure = await Assert.ThrowsAsync<InvalidOperationException>(() => publicCompletion);
@@ -1687,7 +1698,44 @@ public sealed class WorkflowRuntimeInternalsShould
         Assert.Equal("Final workflow persistence failed.", publicFailure.Message);
         Assert.Equal("Final workflow persistence failed.", executionFailure.Message);
         Assert.Empty(GetExecutions(runtime));
-        Assert.Equal(WorkflowRunStatus.Completed, runtime.Get(handle.RunId.Value)?.Status);
+        Assert.Equal(WorkflowRunStatus.Running, runtime.Get(handle.RunId.Value)?.Status);
+        Assert.Null(runtime.Get(handle.RunId.Value)?.CompletedAt);
+
+        var persistedRunning = Assert.Single(
+            store.UpsertedRuns,
+            run => run.Status == WorkflowRunStatus.Running);
+        var recoveredFinalWriteEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseRecoveredFinalWrite = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var recoveryStore = new RawWorkflowPersistenceStore(
+            [persistedRunning],
+            async run =>
+            {
+                if (run.Status == WorkflowRunStatus.Completed)
+                {
+                    recoveredFinalWriteEntered.TrySetResult();
+                    await releaseRecoveredFinalWrite.Task;
+                }
+            });
+        var recoveredRuntime = CreateRuntime(
+            catalog: new WorkflowCatalog([workflow]),
+            persistenceStore: recoveryStore,
+            systemName: "workflow-tests",
+            createSession: _ => new TestWorkSystemSession(new DelegateQueueService((_, _, _, _) =>
+                throw new InvalidOperationException("An empty workflow must not dispatch work."))),
+            createWorkerHandle: _ => throw new NotSupportedException());
+
+        await recoveredRuntime.RecoverDurableRuns(CancellationToken.None);
+        await recoveredFinalWriteEntered.Task.WaitAsync(TimeSpan.FromSeconds(1));
+
+        Assert.Equal(WorkflowRunStatus.Running, recoveredRuntime.Get(handle.RunId.Value)?.Status);
+        releaseRecoveredFinalWrite.TrySetResult();
+        await recoveredRuntime.WaitForExecutions(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(1));
+
+        Assert.Null(recoveredRuntime.Get(handle.RunId.Value));
+        Assert.Contains(
+            recoveryStore.UpsertedRuns,
+            run => run.Status == WorkflowRunStatus.Completed && run.RunId == handle.RunId.Value);
+        Assert.Contains(handle.RunId.Value, recoveryStore.DeletedRuns);
     }
 
     [Fact]
