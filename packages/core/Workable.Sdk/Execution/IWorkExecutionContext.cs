@@ -37,7 +37,7 @@ public interface IWorkExecutionContext
     /// This value is separate from <see cref="RequestContext"/>, which describes the request that created the worker.
     /// It is <see langword="null"/> before cancellation is requested and when execution stops for another reason.
     /// </remarks>
-    WorkRequestContext? CancellationRequestContext { get; }
+    WorkRequestContext? CancellationRequestContext => null;
 
     /// <summary>
     /// Gets the effective worker options used for the current worker.

@@ -549,6 +549,11 @@ internal sealed class WorkflowRuntime
                     CancellationToken.None);
             }
 
+            if (completion.Status == WorkflowRunStatus.Canceled)
+            {
+                completion = run.Cancel(completion.CancelOutstandingChildren);
+            }
+
             var shouldPersistFinalState = workflow.Definition.Coordination.IsDurable &&
                 ShouldPersistFinalState(completion, control);
             if (completion.IsFinal)
@@ -572,7 +577,6 @@ internal sealed class WorkflowRuntime
         {
             if (control.CancelRequested || !control.PauseRequested)
             {
-                var completion = run.Cancel();
                 if (control.CancelRequested)
                 {
                     await WorkflowExecutionSupport.CancelOutstandingChildren(
@@ -581,6 +585,8 @@ internal sealed class WorkflowRuntime
                         this.getAuthoritativeWorker,
                         CancellationToken.None);
                 }
+
+                var completion = run.Cancel();
 
                 run.TrySetCompletion(completion);
                 if (workflow.Definition.Coordination.IsDurable &&
@@ -649,14 +655,14 @@ internal sealed class WorkflowRuntime
             return;
         }
 
-        var workflowRunIdentifier = worker.Identifiers.FirstOrDefault(identifier => identifier.Type == "workflow-run");
-        if (string.IsNullOrWhiteSpace(workflowRunIdentifier.Value) ||
-            !Guid.TryParse(workflowRunIdentifier.Value, out var workflowRunId))
+        if (!TryGetWorkflowIdentifiers(worker, out var runId, out var stepName) ||
+            !this.runs.TryGetValue(runId, out var run) ||
+            !run.StepContainsWorker(stepName, worker.Id))
         {
             return;
         }
 
-        await this.TryAutoResumeBlockedRun(new WorkflowRunId(workflowRunId), cancellationToken);
+        await this.TryAutoResumeBlockedRun(runId, cancellationToken);
     }
 
     private Task<WorkflowRunCompletion> RunExecution(
@@ -777,7 +783,8 @@ internal sealed class WorkflowRuntime
         ArgumentNullException.ThrowIfNull(worker);
 
         if (!TryGetWorkflowIdentifiers(worker, out var runId, out var stepName) ||
-            !this.runs.TryGetValue(runId, out var run))
+            !this.runs.TryGetValue(runId, out var run) ||
+            !run.StepContainsWorker(stepName, worker.Id))
         {
             return;
         }
@@ -863,8 +870,9 @@ internal sealed class WorkflowRuntime
     {
         ArgumentNullException.ThrowIfNull(worker);
 
-        if (!TryGetWorkflowIdentifiers(worker, out var runId, out _) ||
-            !this.runs.TryGetValue(runId, out var run))
+        if (!TryGetWorkflowIdentifiers(worker, out var runId, out var stepName) ||
+            !this.runs.TryGetValue(runId, out var run) ||
+            !run.StepContainsWorker(stepName, worker.Id))
         {
             return false;
         }
@@ -885,8 +893,9 @@ internal sealed class WorkflowRuntime
     {
         ArgumentNullException.ThrowIfNull(worker);
 
-        if (!TryGetWorkflowIdentifiers(worker, out var runId, out _) ||
+        if (!TryGetWorkflowIdentifiers(worker, out var runId, out var stepName) ||
             !this.runs.TryGetValue(runId, out var run) ||
+            !run.StepContainsWorker(stepName, worker.Id) ||
             !IsFinal(run.GetStatus()))
         {
             return;

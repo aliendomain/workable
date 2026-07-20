@@ -65,6 +65,12 @@ internal sealed class WorkflowPersistenceCoordinator(
         => this.store?.DurableWorkerExists(workerId, cancellationToken)
         ?? Task.FromResult(false);
 
+    public Task<IReadOnlySet<WorkerId>> DurableWorkersExist(
+        IReadOnlyCollection<WorkerId> workerIds,
+        CancellationToken cancellationToken)
+        => this.store?.DurableWorkersExist(workerIds, cancellationToken)
+        ?? Task.FromResult<IReadOnlySet<WorkerId>>(new HashSet<WorkerId>());
+
     public Task ExecuteTransaction(
         Func<IWorkflowPersistenceTransaction?, WorkerOptions, CancellationToken, Task> action,
         CancellationToken cancellationToken)

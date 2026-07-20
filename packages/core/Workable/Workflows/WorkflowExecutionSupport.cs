@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Threading.Channels;
 
 namespace Workable;
 
@@ -54,19 +55,19 @@ internal static class WorkflowExecutionSupport
                 .Select(workerId => new PendingChildCompletion(
                     workerId,
                     createWorkerHandle(workerId).WaitForCompletion(pendingCancellation.Token)))
-                .ToList();
+                .ToArray();
+            var completions = new WorkflowChildCompletionQueue(
+                pending.Select(static item => (item.WorkerId, item.Completion)));
 
-            while (pending.Count > 0)
+            for (var remaining = pending.Length; remaining > 0; remaining--)
             {
-                var completedTask = await Task.WhenAny(pending.Select(static item => item.Completion));
-                var completedIndex = pending.FindIndex(item => ReferenceEquals(item.Completion, completedTask));
-                var completed = pending[completedIndex];
-                pending.RemoveAt(completedIndex);
-
-                var completion = await completed.Completion;
+                var completed = await completions.ReadAsync(cancellationToken);
+                var completion = completed.Completion;
                 var status = ToWorkflowStatus(
                     completion.Status,
-                    ResolveCanceledChildBehavior(run, workflow, completed.WorkerId));
+                    completion.Status == WorkCompletionStatus.Canceled
+                        ? ResolveCanceledChildBehavior(run, workflow, completed.WorkerId)
+                        : WorkflowCanceledChildBehavior.Block);
                 if (status == WorkflowRunStatus.Completed)
                 {
                     continue;
@@ -114,8 +115,7 @@ internal static class WorkflowExecutionSupport
         foreach (var step in FlattenSteps(workflow.Steps))
         {
             if (step is DispatchEachWorkflowStepDefinition dispatchEach &&
-                run.TryGetStepWorkerIds(dispatchEach.Name, out var workerIds) &&
-                workerIds.Contains(workerId))
+                run.StepContainsWorker(dispatchEach.Name, workerId))
             {
                 return dispatchEach.CanceledChildBehavior;
             }
@@ -415,6 +415,59 @@ internal static class WorkflowExecutionSupport
     }
 
     private sealed record PendingChildCompletion(
+        WorkerId WorkerId,
+        Task<WorkCompletion> Completion);
+}
+
+internal sealed class WorkflowChildCompletionQueue
+{
+    private readonly Channel<PendingCompletion> completions = Channel.CreateUnbounded<PendingCompletion>(
+        new UnboundedChannelOptions
+        {
+            SingleReader = true,
+            SingleWriter = false,
+            AllowSynchronousContinuations = false,
+        });
+
+    public WorkflowChildCompletionQueue(
+        IEnumerable<(WorkerId WorkerId, Task<WorkCompletion> Completion)> pending)
+    {
+        ArgumentNullException.ThrowIfNull(pending);
+
+        foreach (var item in pending)
+        {
+            _ = item.Completion.ContinueWith(
+                completedTask =>
+                {
+                    // Observe faults even when the caller returns early after another child fails.
+                    // The reader still awaits the task and propagates the exception when selected.
+                    if (completedTask.IsFaulted)
+                    {
+                        _ = completedTask.Exception;
+                    }
+
+                    this.completions.Writer.TryWrite(
+                        new PendingCompletion(item.WorkerId, completedTask));
+                },
+                CancellationToken.None,
+                TaskContinuationOptions.ExecuteSynchronously,
+                TaskScheduler.Default);
+        }
+    }
+
+    public async ValueTask<CompletedChild> ReadAsync(CancellationToken cancellationToken)
+    {
+        var pending = await this.completions.Reader.ReadAsync(cancellationToken);
+        return new CompletedChild(
+            pending.WorkerId,
+            await pending.Completion.ConfigureAwait(false));
+    }
+
+    internal readonly record struct CompletedChild(
+        WorkerId WorkerId,
+        WorkCompletion Completion);
+
+    private readonly record struct PendingCompletion(
         WorkerId WorkerId,
         Task<WorkCompletion> Completion);
 }

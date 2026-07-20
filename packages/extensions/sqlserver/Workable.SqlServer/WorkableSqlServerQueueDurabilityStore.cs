@@ -262,6 +262,43 @@ WHERE WorkerId = @WorkerId;
                 return Convert.ToInt32(await command.ExecuteScalarAsync(cancellationToken)) > 0;
             });
 
+    public Task<IReadOnlySet<WorkerId>> DurableWorkersExist(
+        IReadOnlyCollection<WorkerId> workerIds,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(workerIds);
+        if (workerIds.Count == 0)
+        {
+            return Task.FromResult<IReadOnlySet<WorkerId>>(new HashSet<WorkerId>());
+        }
+
+        return ExecuteWithStoreUnavailableHandling<IReadOnlySet<WorkerId>>(
+            "checking durable worker existence in batch",
+            async () =>
+            {
+                await using var connection = new SqlConnection(options.ConnectionString);
+                await connection.OpenAsync(cancellationToken);
+                await using var command = connection.CreateCommand();
+                command.CommandText = RequiredDmlSetOptions + $"""
+SELECT queue.WorkerId
+FROM {this.entriesTable} queue
+INNER JOIN OPENJSON(@WorkerIdsJson)
+WITH (WorkerId uniqueidentifier '$') requested
+    ON requested.WorkerId = queue.WorkerId;
+""";
+                Add(command, "@WorkerIdsJson", Serialize(workerIds.Select(static workerId => workerId.Value)));
+
+                var existing = new HashSet<WorkerId>();
+                await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+                while (await reader.ReadAsync(cancellationToken))
+                {
+                    existing.Add(new WorkerId(reader.GetGuid(0)));
+                }
+
+                return existing;
+            });
+    }
+
     public async Task Enqueue(WorkQueueDurabilityEnqueueRequest request, CancellationToken cancellationToken = default)
     {
         if (TryGetSqlServerTransaction(request.Transaction, out var existingConnection, out var existingTransaction))

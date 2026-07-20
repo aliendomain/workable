@@ -84,6 +84,35 @@ public interface IWorkPersistenceStore
         => Task.FromResult(false);
 
     /// <summary>
+    /// Returns the durable worker entries that still exist from a supplied worker-id set.
+    /// </summary>
+    /// <remarks>
+    /// Persistence providers should override this method with one batched lookup. The default implementation preserves
+    /// compatibility for existing providers by delegating to <see cref="DurableWorkerExists"/>.
+    /// </remarks>
+    /// <param name="workerIds">The worker ids to check.</param>
+    /// <param name="cancellationToken">A token that cancels the lookup.</param>
+    /// <returns>The subset of supplied worker ids whose durable entries still exist.</returns>
+    async Task<IReadOnlySet<WorkerId>> DurableWorkersExist(
+        IReadOnlyCollection<WorkerId> workerIds,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(workerIds);
+
+        var existing = new HashSet<WorkerId>();
+        foreach (var workerId in workerIds)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (await this.DurableWorkerExists(workerId, cancellationToken))
+            {
+                existing.Add(workerId);
+            }
+        }
+
+        return existing;
+    }
+
+    /// <summary>
     /// Initializes workflow persistence support for a system and its registered workflow definitions.
     /// </summary>
     /// <param name="context">The system and workflow definition context to initialize.</param>

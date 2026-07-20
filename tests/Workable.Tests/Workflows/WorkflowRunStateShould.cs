@@ -67,6 +67,38 @@ public sealed class WorkflowRunStateShould
     }
 
     [Fact]
+    public void MaintainStepWorkerMembershipAcrossStateChangesAndRehydration()
+    {
+        var workflow = CreateWorkflow(
+            WorkflowDefinition.Create("workflow.worker-membership"),
+            Dispatch("dispatch", "sample.dispatch"),
+            new JoinWorkflowStepDefinition("join"));
+        var run = WorkflowRunState.Create(
+            workflow,
+            WorkRequestContext.Create(WorkInvocationChannel.InProcess));
+        var alpha = WorkerId.New();
+        var beta = WorkerId.New();
+
+        run.MarkStepCompleted("dispatch", [alpha, beta]);
+
+        Assert.True(run.StepContainsWorker("dispatch", alpha));
+        Assert.True(run.StepContainsWorker("dispatch", beta));
+        Assert.False(run.StepContainsWorker("dispatch", WorkerId.New()));
+
+        run.RemoveStepWorkerId("dispatch", alpha);
+
+        Assert.False(run.StepContainsWorker("dispatch", alpha));
+        Assert.True(run.StepContainsWorker("dispatch", beta));
+
+        var rehydrated = WorkflowRunState.Rehydrate(
+            workflow,
+            run.ToPersistenceRecord("workflow-tests"));
+
+        Assert.False(rehydrated.StepContainsWorker("dispatch", alpha));
+        Assert.True(rehydrated.StepContainsWorker("dispatch", beta));
+    }
+
+    [Fact]
     public void RehydrateUsesDefinitionOrderAndRestoresPersistedStepState()
     {
         var definition = WorkflowDefinition.Create("workflow.rehydrate");

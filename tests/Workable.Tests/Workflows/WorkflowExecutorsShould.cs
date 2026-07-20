@@ -696,9 +696,14 @@ public sealed class WorkflowExecutorsShould
         Assert.Equal(
             canceledChildBehavior == WorkflowCanceledChildBehavior.CancelWorkflow,
             completion.CancelOutstandingChildren);
-        if (expectedStatus != WorkflowRunStatus.Completed)
+        if (expectedStatus == WorkflowRunStatus.Blocked)
         {
             Assert.Equal(expectedStatus, store.Upserts.Last().Status);
+        }
+        else if (expectedStatus == WorkflowRunStatus.Canceled)
+        {
+            Assert.Equal(WorkflowRunStatus.Running, run.GetStatus());
+            Assert.DoesNotContain(store.Upserts, item => item.Status == WorkflowRunStatus.Canceled);
         }
     }
 
@@ -902,9 +907,14 @@ public sealed class WorkflowExecutorsShould
         Assert.Equal(
             canceledChildBehavior == WorkflowCanceledChildBehavior.CancelWorkflow,
             completion.CancelOutstandingChildren);
-        if (expectedStatus != WorkflowRunStatus.Completed)
+        if (expectedStatus == WorkflowRunStatus.Blocked)
         {
             Assert.Equal(expectedStatus, store.Upserts.Last().Status);
+        }
+        else if (expectedStatus == WorkflowRunStatus.Canceled)
+        {
+            Assert.Equal(WorkflowRunStatus.Running, run.GetStatus());
+            Assert.DoesNotContain(store.Upserts, item => item.Status == WorkflowRunStatus.Canceled);
         }
     }
 
@@ -1191,6 +1201,90 @@ public sealed class WorkflowExecutorsShould
         Assert.Equal(WorkflowRunStatus.Failed, Assert.Single(store.Upserts).Status);
     }
 
+    [Fact]
+    public async Task ObserveLargeChildCompletionSetInCompletionOrderWithOneSourceEnumeration()
+    {
+        const int childCount = 4096;
+        var workerIds = Enumerable.Range(0, childCount).Select(_ => WorkerId.New()).ToArray();
+        var completionSources = workerIds
+            .Select(_ => new TaskCompletionSource<WorkCompletion>(TaskCreationOptions.RunContinuationsAsynchronously))
+            .ToArray();
+        var sourceEnumerations = 0;
+
+        IEnumerable<(WorkerId WorkerId, Task<WorkCompletion> Completion)> PendingChildren()
+        {
+            Interlocked.Increment(ref sourceEnumerations);
+            for (var index = 0; index < childCount; index++)
+            {
+                yield return (workerIds[index], completionSources[index].Task);
+            }
+        }
+
+        var completions = new WorkflowChildCompletionQueue(PendingChildren());
+        for (var index = childCount - 1; index >= 0; index--)
+        {
+            completionSources[index].SetResult(
+                new WorkCompletion(WorkCompletionStatus.Completed, null, null, []));
+
+            var completed = await completions.ReadAsync(CancellationToken.None);
+
+            Assert.Equal(workerIds[index], completed.WorkerId);
+            Assert.Equal(WorkCompletionStatus.Completed, completed.Completion.Status);
+        }
+
+        Assert.Equal(1, Volatile.Read(ref sourceEnumerations));
+    }
+
+    [Fact]
+    public async Task PropagateFaultFromChildCompletionQueue()
+    {
+        var expected = new InvalidOperationException("Child wait failed.");
+        var completions = new WorkflowChildCompletionQueue(
+            [(WorkerId.New(), Task.FromException<WorkCompletion>(expected))]);
+
+        var actual = await Assert.ThrowsAsync<InvalidOperationException>(
+            async () => await completions.ReadAsync(CancellationToken.None));
+
+        Assert.Same(expected, actual);
+    }
+
+    [Fact]
+    public async Task BatchDurableExistenceChecksForLargeOutstandingFanOuts()
+    {
+        var workerIds = Enumerable.Range(0, 128).Select(_ => WorkerId.New()).ToArray();
+        var store = new RecordingWorkflowStore
+        {
+            DurableWorkersExistHandler = _ => new HashSet<WorkerId>(),
+        };
+        var persistence = new WorkflowPersistenceCoordinator(store, "workflow-tests");
+        var executor = new DurableWorkflowExecutor(
+            "workflow-tests",
+            name => CreateRegisteredWork(name),
+            _ => new TestWorkSystemSession(
+                new DelegateQueueService((_, _, _, _) => throw new NotSupportedException()),
+                query: new DelegateQueryService(_ => Task.FromResult<WorkerSnapshot?>(null))),
+            workerId => new CancellationAwareWorkerHandle(
+                workerId,
+                new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously)),
+            persistence);
+        var workflow = CreateWorkflow(
+            WorkflowDefinition.Create(
+                "workflow.durable.batched-child-existence",
+                coordination: WorkflowCoordinationConfiguration.Durable),
+            Dispatch("dispatch", "sample.dispatch"),
+            new JoinWorkflowStepDefinition("join"));
+        var run = WorkflowRunState.Create(workflow, WorkRequestContext.Create(WorkInvocationChannel.InProcess));
+        run.MarkStepCompleted("dispatch", workerIds);
+        run.MarkStepRunning("join", workerIds);
+
+        var completion = await executor.Execute(run, workflow, CancellationToken.None);
+
+        Assert.Equal(WorkflowRunStatus.Failed, completion.Status);
+        var batch = Assert.Single(store.DurableWorkerExistenceBatches);
+        Assert.Equal(workerIds.OrderBy(static id => id.Value), batch.OrderBy(static id => id.Value));
+        Assert.Equal(0, store.DurableWorkerExistenceCalls);
+    }
+
     [Theory]
     [InlineData(true, WorkCompletionStatus.Completed)]
     [InlineData(false, WorkCompletionStatus.NotFound)]
@@ -1235,7 +1329,7 @@ public sealed class WorkflowExecutorsShould
 
         var task = Assert.IsAssignableFrom<Task>(method.Invoke(
             executor,
-            [run, new TestWorkSystemSession(new DelegateQueueService((_, _, _, _) => throw new NotSupportedException())), workerId, CancellationToken.None]));
+            [run, new TestWorkSystemSession(new DelegateQueueService((_, _, _, _) => throw new NotSupportedException())), workerId, CancellationToken.None, null]));
         await task;
         var completion = Assert.IsType<WorkCompletion>(task.GetType().GetProperty("Result")!.GetValue(task));
 
@@ -1478,6 +1572,12 @@ public sealed class WorkflowExecutorsShould
 
         public Func<WorkerId, bool>? DurableWorkerExistsHandler { get; set; }
 
+        public Func<IReadOnlyCollection<WorkerId>, IReadOnlySet<WorkerId>>? DurableWorkersExistHandler { get; set; }
+
+        public List<IReadOnlyList<WorkerId>> DurableWorkerExistenceBatches { get; } = [];
+
+        public int DurableWorkerExistenceCalls { get; private set; }
+
         public Task Initialize(WorkQueueDurabilityInitializationContext context, CancellationToken cancellationToken = default)
             => Task.CompletedTask;
 
@@ -1520,7 +1620,26 @@ public sealed class WorkflowExecutorsShould
         public Task<bool> DurableWorkerExists(
             WorkerId workerId,
             CancellationToken cancellationToken = default)
-            => Task.FromResult(this.DurableWorkerExistsHandler?.Invoke(workerId) ?? !this.MissingWorkerIds.Contains(workerId));
+        {
+            this.DurableWorkerExistenceCalls++;
+            return Task.FromResult(this.DurableWorkerExistsHandler?.Invoke(workerId) ?? !this.MissingWorkerIds.Contains(workerId));
+        }
+
+        public Task<IReadOnlySet<WorkerId>> DurableWorkersExist(
+            IReadOnlyCollection<WorkerId> workerIds,
+            CancellationToken cancellationToken = default)
+        {
+            this.DurableWorkerExistenceBatches.Add([.. workerIds]);
+            if (this.DurableWorkersExistHandler is not null)
+            {
+                return Task.FromResult(this.DurableWorkersExistHandler(workerIds));
+            }
+
+            IReadOnlySet<WorkerId> existing = workerIds
+                .Where(workerId => this.DurableWorkerExistsHandler?.Invoke(workerId) ?? !this.MissingWorkerIds.Contains(workerId))
+                .ToHashSet();
+            return Task.FromResult(existing);
+        }
 
         public Task<IWorkflowPersistenceTransaction> BeginWorkflowTransaction(
             WorkflowPersistenceTransactionRequest request,

@@ -8,6 +8,35 @@ namespace Workable.Tests;
 public sealed class WorkflowRegistrationShould
 {
     [Fact]
+    public void PreservePreviouslyPublishedOperationInterfaceMembers()
+    {
+        var requestOverload = Assert.Single(
+            typeof(IWorkerOperations).GetMethods(),
+            method => method.Name == nameof(IWorkerOperations.Execute) &&
+                method.GetParameters()[1].ParameterType == typeof(WorkerActionRequest));
+        Assert.False(requestOverload.IsAbstract);
+        Assert.False(
+            typeof(IWorkExecutionContext)
+                .GetProperty(nameof(IWorkExecutionContext.CancellationRequestContext))!
+                .GetMethod!
+                .IsAbstract);
+    }
+
+    [Fact]
+    public async Task ForwardNewWorkerActionRequestsToPreviouslyPublishedImplementations()
+    {
+        IWorkerOperations operations = new PreviouslyPublishedWorkerOperations();
+        var worker = new WorkerVersion(WorkerId.New(), Revision: 7);
+
+        var outcome = await operations.Execute(
+            worker,
+            new WorkerActionRequest(WorkAction.Cancel, "operator request"));
+
+        Assert.Equal(WorkAction.Cancel, outcome.Action);
+        Assert.Equal(worker.WorkerId, outcome.WorkerId);
+    }
+
+    [Fact]
     public void RegisterDispatchWorkStep()
     {
         var services = new ServiceCollection();
@@ -31,6 +60,27 @@ public sealed class WorkflowRegistrationShould
         var step = Assert.IsType<DispatchWorkflowStepDefinition>(dispatch);
         Assert.Equal("prepare", step.Name);
         Assert.Equal("sample.prepare", step.WorkDefinition.Name);
+    }
+
+    private sealed class PreviouslyPublishedWorkerOperations : IWorkerOperations
+    {
+        public Task<WorkActionOutcome> Execute(
+            WorkerVersion worker,
+            WorkAction action,
+            CancellationToken cancellationToken = default)
+            => Task.FromResult(WorkActionOutcome.NotFound(action, worker.WorkerId));
+
+        public Task<WorkerBulkActionOutcome> ExecuteAll(
+            WorkAction action,
+            WorkerBulkActionFilter? filter = null,
+            CancellationToken cancellationToken = default)
+            => throw new NotSupportedException();
+
+        public Task<WorkActionOutcome> Reconfigure(
+            WorkerVersion worker,
+            WorkerReconfiguration changes,
+            CancellationToken cancellationToken = default)
+            => throw new NotSupportedException();
     }
 
     [Fact]

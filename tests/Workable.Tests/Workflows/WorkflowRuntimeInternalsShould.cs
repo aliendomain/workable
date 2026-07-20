@@ -261,7 +261,7 @@ public sealed class WorkflowRuntimeInternalsShould
             ],
             WorkflowDefinitionFingerprint.Create(workflow));
         var store = new RawWorkflowPersistenceStore([persistedRun]);
-        var workerOperations = new RecordingWorkerOperations();
+        var workerOperations = new BlockingRecordingWorkerOperations();
         var snapshots = new Dictionary<WorkerId, WorkerSnapshot>
         {
             [loadWorkerId] = CreateSnapshot(loadWorkerId, WorkerState.Completed),
@@ -278,7 +278,21 @@ public sealed class WorkflowRuntimeInternalsShould
                 query: new DelegateQueryService(id => Task.FromResult(snapshots.GetValueOrDefault(id)))),
             createWorkerHandle: _ => throw new InvalidOperationException("Recovery should cancel from retained worker state."));
 
-        await runtime.RecoverDurableRuns(CancellationToken.None);
+        var recovery = runtime.RecoverDurableRuns(CancellationToken.None);
+        await workerOperations.ExecutionStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        try
+        {
+            Assert.Equal(WorkflowRunStatus.Blocked, runtime.Get(persistedRun.RunId)?.Status);
+            Assert.Empty(workerOperations.Executions);
+            Assert.DoesNotContain(store.UpsertedRuns, run => run.Status == WorkflowRunStatus.Canceled);
+            Assert.False(recovery.IsCompleted);
+        }
+        finally
+        {
+            workerOperations.ReleaseExecution.TrySetResult();
+        }
+
+        await recovery.WaitAsync(TimeSpan.FromSeconds(5));
 
         var recovered = runtime.Get(persistedRun.RunId);
         Assert.Equal(WorkflowRunStatus.Canceled, recovered!.Status);
@@ -338,6 +352,7 @@ public sealed class WorkflowRuntimeInternalsShould
         await runtime.RecoverDurableRuns(CancellationToken.None);
 
         Assert.Equal(WorkflowRunStatus.Paused, runtime.Get(run.Id)!.Status);
+        Assert.Empty(runtime.Get(run.Id)!.ChildReceipts);
     }
 
     [Fact]
@@ -375,8 +390,9 @@ public sealed class WorkflowRuntimeInternalsShould
         var executionCompletion = runtime.WaitForExecutions(CancellationToken.None);
         try
         {
-            Assert.Equal(WorkflowRunStatus.Canceled, runtime.Get(persistedRun.RunId)?.Status);
+            Assert.Equal(WorkflowRunStatus.Running, runtime.Get(persistedRun.RunId)?.Status);
             Assert.Empty(workerOperations.Executions);
+            Assert.DoesNotContain(store.UpsertedRuns, run => run.Status == WorkflowRunStatus.Canceled);
             Assert.False(executionCompletion.IsCompleted);
         }
         finally
@@ -388,6 +404,8 @@ public sealed class WorkflowRuntimeInternalsShould
 
         Assert.Contains(workerOperations.Executions, execution =>
             execution.WorkerId == workerId && execution.Action == WorkAction.Cancel);
+        Assert.Equal(WorkflowRunStatus.Canceled, runtime.Get(persistedRun.RunId)?.Status);
+        Assert.Contains(store.UpsertedRuns, run => run.Status == WorkflowRunStatus.Canceled);
         Assert.Empty(store.DeletedRuns);
     }
 
@@ -718,9 +736,49 @@ public sealed class WorkflowRuntimeInternalsShould
         await runtime.ObserveFinalWorkflowChild(forgedWorker, CancellationToken.None);
 
         Assert.Equal(WorkflowRunStatus.Paused, runtime.Get(run.Id)!.Status);
-        Assert.Contains(
-            store.UpsertedRuns,
-            persisted => persisted.RunId == run.Id && persisted.Status == WorkflowRunStatus.Paused);
+        Assert.Empty(runtime.Get(run.Id)!.ChildReceipts);
+        Assert.Empty(store.UpsertedRuns);
+        Assert.False(runtime.ShouldKeepWorkflowChildWorker(forgedWorker));
+    }
+
+    [Fact]
+    public async Task IgnoreForgedWorkflowChildWhenConsideringBlockedRunAutoResume()
+    {
+        var legitimateChildId = WorkerId.New();
+        var forgedWorkerId = WorkerId.New();
+        var workflow = CreateWorkflow(
+            WorkflowDefinition.Create(
+                "workflow.runtime.forged-child-auto-resume",
+                coordination: WorkflowCoordinationConfiguration.Durable),
+            Dispatch("dispatch", "sample.dispatch"),
+            new JoinWorkflowStepDefinition("join"));
+        var run = WorkflowRunState.Create(
+            workflow,
+            WorkRequestContext.Create(WorkInvocationChannel.InProcess));
+        run.MarkStepCompleted("dispatch", [legitimateChildId]);
+        run.Block([WorkMessage.Error("workflow.child.blocked", "A child blocked the workflow.")]);
+        var forgedWorker = CreateSnapshot(
+            forgedWorkerId,
+            WorkerState.Completed,
+            new HashSet<WorkIdentifier>
+            {
+                new("workflow-run", run.Id.Value.ToString("D")),
+                new("workflow-step", "dispatch"),
+            });
+        var runtime = CreateRuntime(
+            catalog: new WorkflowCatalog([workflow]),
+            persistenceStore: null,
+            systemName: null,
+            createSession: _ => throw new InvalidOperationException(
+                "A forged child must not resume the workflow."),
+            createWorkerHandle: _ => throw new NotSupportedException(),
+            getAuthoritativeWorker: (workerId, _) => Task.FromResult<WorkerSnapshot?>(
+                workerId == forgedWorkerId ? forgedWorker : null));
+        GetRuns(runtime).TryAdd(run.Id, run);
+
+        await runtime.TryAutoResumeBlockedRunForCompletedWorker(forgedWorkerId, CancellationToken.None);
+
+        Assert.Equal(WorkflowRunStatus.Blocked, runtime.Get(run.Id)!.Status);
     }
 
     [Theory]

@@ -96,7 +96,10 @@ internal sealed class WorkflowRunState
         run.messages = record.Messages;
         foreach (var receipt in record.ChildReceipts)
         {
-            run.childReceipts[receipt.WorkerId] = receipt;
+            if (run.StepContainsWorker(receipt.StepName, receipt.WorkerId))
+            {
+                run.childReceipts[receipt.WorkerId] = receipt;
+            }
         }
         return run;
     }
@@ -124,7 +127,10 @@ internal sealed class WorkflowRunState
         run.messages = record.Messages;
         foreach (var receipt in record.ChildReceipts)
         {
-            run.childReceipts[receipt.WorkerId] = receipt;
+            if (run.StepContainsWorker(receipt.StepName, receipt.WorkerId))
+            {
+                run.childReceipts[receipt.WorkerId] = receipt;
+            }
         }
         return run;
     }
@@ -274,6 +280,15 @@ internal sealed class WorkflowRunState
         }
     }
 
+    public bool StepContainsWorker(string name, WorkerId workerId)
+    {
+        lock (this.sync)
+        {
+            var step = this.steps.SingleOrDefault(step => string.Equals(step.Name, name, StringComparison.Ordinal));
+            return step?.ContainsWorker(workerId) == true;
+        }
+    }
+
     public bool TryGetChildReceipt(WorkerId workerId, out WorkflowChildReceipt? receipt)
     {
         lock (this.sync)
@@ -294,6 +309,13 @@ internal sealed class WorkflowRunState
     {
         lock (this.sync)
         {
+            var step = this.steps.SingleOrDefault(
+                step => string.Equals(step.Name, receipt.StepName, StringComparison.Ordinal));
+            if (step?.ContainsWorker(receipt.WorkerId) != true)
+            {
+                return false;
+            }
+
             if (this.childReceipts.TryGetValue(receipt.WorkerId, out var existing) &&
                 existing == receipt)
             {
@@ -467,6 +489,7 @@ internal sealed class WorkflowRunState
     private sealed class WorkflowStepRunState
     {
         private readonly List<WorkerId> workerIds = [];
+        private readonly HashSet<WorkerId> workerIdLookup = [];
         private IReadOnlyList<WorkMessage> messages = [];
 
         private WorkflowStepRunState(string name, WorkflowStepKind kind)
@@ -504,7 +527,7 @@ internal sealed class WorkflowRunState
             state.StartedAt = record.StartedAt;
             state.CompletedAt = record.CompletedAt;
             state.messages = record.Messages;
-            state.workerIds.AddRange(record.WorkerIds);
+            state.SetWorkerIds(record.WorkerIds);
             return state;
         }
 
@@ -519,7 +542,7 @@ internal sealed class WorkflowRunState
                 CompletedAt = record.CompletedAt,
                 messages = record.Messages,
             };
-            state.workerIds.AddRange(record.WorkerIds);
+            state.SetWorkerIds(record.WorkerIds);
             return state;
         }
 
@@ -529,8 +552,7 @@ internal sealed class WorkflowRunState
             this.StartedAt ??= DateTimeOffset.UtcNow;
             if (workerIds is not null)
             {
-                this.workerIds.Clear();
-                this.workerIds.AddRange(workerIds);
+                this.SetWorkerIds(workerIds);
             }
         }
 
@@ -541,8 +563,7 @@ internal sealed class WorkflowRunState
             this.CompletedAt = DateTimeOffset.UtcNow;
             if (workerIds is not null)
             {
-                this.workerIds.Clear();
-                this.workerIds.AddRange(workerIds);
+                this.SetWorkerIds(workerIds);
             }
         }
 
@@ -554,8 +575,22 @@ internal sealed class WorkflowRunState
             this.messages = failureMessages;
         }
 
+        public bool ContainsWorker(WorkerId workerId)
+            => this.workerIdLookup.Contains(workerId);
+
         public void RemoveWorkerId(WorkerId workerId)
-            => this.workerIds.Remove(workerId);
+        {
+            this.workerIds.Remove(workerId);
+            this.workerIdLookup.Remove(workerId);
+        }
+
+        private void SetWorkerIds(IEnumerable<WorkerId> workerIds)
+        {
+            this.workerIds.Clear();
+            this.workerIds.AddRange(workerIds);
+            this.workerIdLookup.Clear();
+            this.workerIdLookup.UnionWith(this.workerIds);
+        }
 
         public WorkflowStepRunSnapshot ToSnapshot()
             => new(

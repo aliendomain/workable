@@ -28,7 +28,11 @@ public interface IWorkerOperations
     Task<WorkActionOutcome> Execute(
         WorkerVersion worker,
         WorkerActionRequest request,
-        CancellationToken cancellationToken = default);
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        return this.Execute(worker, request.Action, cancellationToken);
+    }
 
     /// <summary>
     /// Applies one worker action to every worker matched by the supplied bulk-action filter.

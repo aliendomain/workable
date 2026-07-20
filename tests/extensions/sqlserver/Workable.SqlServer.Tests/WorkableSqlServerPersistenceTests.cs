@@ -942,6 +942,43 @@ FROM workable.WorkflowRuns;
     }
 
     [Fact]
+    public async Task BatchChecksDurableWorkerExistence()
+    {
+        if (this.SkipIfUnavailable())
+        {
+            return;
+        }
+
+        await WorkableSqlServerSchema.Apply(this.ConnectionString, SchemaName);
+        await using var provider = new ServiceCollection()
+            .AddWorkableSqlServerDurableQueue(this.ConnectionString, SchemaName)
+            .BuildServiceProvider();
+        var store = provider.GetRequiredService<IWorkPersistenceStore>();
+        var systemId = WorkSystemId.New();
+        var alpha = WorkerId.New();
+        var beta = WorkerId.New();
+        var missing = WorkerId.New();
+        await store.Enqueue(CreateDurableEnqueueRequest(
+            systemId,
+            "workflow-tests",
+            alpha,
+            "sample.dispatch",
+            "batch-existence-alpha",
+            transaction: null));
+        await store.Enqueue(CreateDurableEnqueueRequest(
+            systemId,
+            "workflow-tests",
+            beta,
+            "sample.dispatch",
+            "batch-existence-beta",
+            transaction: null));
+
+        var existing = await store.DurableWorkersExist([alpha, missing, beta]);
+
+        Assert.True(existing.SetEquals([alpha, beta]));
+    }
+
+    [Fact]
     public async Task WorkflowTransactionRollbackDiscardsWorkflowRunsAndDurableWorkersTogether()
     {
         if (this.SkipIfUnavailable())

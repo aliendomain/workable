@@ -521,18 +521,19 @@ internal sealed class NonDurableWorkflowExecutor(
                 activeHandles,
                 workerHandleFactory,
                 pendingCancellation.Token));
+        var completions = new WorkflowChildCompletionQueue(
+            pending.Select(static item => (item.Key, item.Value)));
         try
         {
-            while (pending.Count > 0)
+            for (var remaining = pending.Count; remaining > 0; remaining--)
             {
-                var completedTask = await Task.WhenAny(pending.Values);
-                var completed = pending.Single(item => ReferenceEquals(item.Value, completedTask));
-                pending.Remove(completed.Key);
-
-                var completion = await completed.Value;
+                var completed = await completions.ReadAsync(cancellationToken);
+                var completion = completed.Completion;
                 var status = WorkflowExecutionSupport.ToWorkflowStatus(
                     completion.Status,
-                    WorkflowExecutionSupport.ResolveCanceledChildBehavior(run, workflow, completed.Key));
+                    completion.Status == WorkCompletionStatus.Canceled
+                        ? WorkflowExecutionSupport.ResolveCanceledChildBehavior(run, workflow, completed.WorkerId)
+                        : WorkflowCanceledChildBehavior.Block);
                 if (status != WorkflowRunStatus.Completed)
                 {
                     return new WorkflowRunCompletion(
@@ -541,7 +542,7 @@ internal sealed class NonDurableWorkflowExecutor(
                         completion.Messages);
                 }
 
-                run.RemoveStepWorkerId(joinStepName, completed.Key);
+                run.RemoveStepWorkerId(joinStepName, completed.WorkerId);
                 var publisher = workflowEvents ?? new WorkflowEventPublisher(default, null, new WorkEventStream());
                 publisher.StepUpdated(run.ToSnapshot(), joinStepName);
             }

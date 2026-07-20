@@ -59,9 +59,10 @@ public sealed class WorkflowRunViewAdapterShould
                     system,
                     WorkRequestContext.Create(WorkInvocationChannel.InProcess),
                     handle.RunId!.Value);
-                return detail?.Steps.Single(step => step.Name == "notify").Status == WorkflowOperatorNodeStatus.WaitingOnChildren;
+                return detail?.Steps.Single(step => step.Name == "notify").Status == WorkflowOperatorNodeStatus.WaitingOnChildren &&
+                    detail.Steps.Single(step => step.Name == "settle").Status == WorkflowOperatorNodeStatus.WaitingOnChildren;
             },
-            "Expected the parallel workflow node to wait on running child workers before inspection.");
+            "Expected the parallel and join nodes to wait on running child workers before inspection.");
 
         release.TrySetResult();
         await handle.WaitForCompletion();
