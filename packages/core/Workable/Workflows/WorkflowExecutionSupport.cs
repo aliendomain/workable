@@ -46,33 +46,41 @@ internal static class WorkflowExecutionSupport
         RegisteredWorkflow workflow,
         CancellationToken cancellationToken)
     {
-        var pending = workerIds
-            .Distinct()
-            .Select(workerId => new PendingChildCompletion(
-                workerId,
-                createWorkerHandle(workerId).WaitForCompletion(cancellationToken)))
-            .ToList();
-
-        while (pending.Count > 0)
+        using var pendingCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        try
         {
-            var completedTask = await Task.WhenAny(pending.Select(static item => item.Completion));
-            var completedIndex = pending.FindIndex(item => ReferenceEquals(item.Completion, completedTask));
-            var completed = pending[completedIndex];
-            pending.RemoveAt(completedIndex);
+            var pending = workerIds
+                .Distinct()
+                .Select(workerId => new PendingChildCompletion(
+                    workerId,
+                    createWorkerHandle(workerId).WaitForCompletion(pendingCancellation.Token)))
+                .ToList();
 
-            var completion = await completed.Completion;
-            var status = ToWorkflowStatus(
-                completion.Status,
-                ResolveCanceledChildBehavior(run, workflow, completed.WorkerId));
-            if (status == WorkflowRunStatus.Completed)
+            while (pending.Count > 0)
             {
-                continue;
+                var completedTask = await Task.WhenAny(pending.Select(static item => item.Completion));
+                var completedIndex = pending.FindIndex(item => ReferenceEquals(item.Completion, completedTask));
+                var completed = pending[completedIndex];
+                pending.RemoveAt(completedIndex);
+
+                var completion = await completed.Completion;
+                var status = ToWorkflowStatus(
+                    completion.Status,
+                    ResolveCanceledChildBehavior(run, workflow, completed.WorkerId));
+                if (status == WorkflowRunStatus.Completed)
+                {
+                    continue;
+                }
+
+                return new WorkflowRunCompletion(status, null, completion.Messages);
             }
 
-            return new WorkflowRunCompletion(status, null, completion.Messages);
+            return new WorkflowRunCompletion(WorkflowRunStatus.Completed, null, []);
         }
-
-        return new WorkflowRunCompletion(WorkflowRunStatus.Completed, null, []);
+        finally
+        {
+            pendingCancellation.Cancel();
+        }
     }
 
     public static WorkflowRunStatus ToWorkflowStatus(
@@ -114,20 +122,6 @@ internal static class WorkflowExecutionSupport
         }
 
         return WorkflowCanceledChildBehavior.Block;
-    }
-
-    public static WorkflowCanceledChildBehavior ResolveCanceledChildBehavior(
-        RegisteredWorkflow workflow,
-        string stepName)
-    {
-        ArgumentNullException.ThrowIfNull(workflow);
-        ArgumentException.ThrowIfNullOrWhiteSpace(stepName);
-
-        return FlattenSteps(workflow.Steps)
-            .OfType<DispatchEachWorkflowStepDefinition>()
-            .FirstOrDefault(step => string.Equals(step.Name, stepName, StringComparison.Ordinal))
-            ?.CanceledChildBehavior
-            ?? WorkflowCanceledChildBehavior.Block;
     }
 
     public static WorkInput AddWorkflowIdentifiers(

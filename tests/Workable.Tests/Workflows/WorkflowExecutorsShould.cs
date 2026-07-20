@@ -696,6 +696,10 @@ public sealed class WorkflowExecutorsShould
         Assert.Equal(
             canceledChildBehavior == WorkflowCanceledChildBehavior.CancelWorkflow,
             completion.CancelOutstandingChildren);
+        if (expectedStatus != WorkflowRunStatus.Completed)
+        {
+            Assert.Equal(expectedStatus, store.Upserts.Last().Status);
+        }
     }
 
     [Theory]
@@ -751,6 +755,268 @@ public sealed class WorkflowExecutorsShould
         Assert.Equal(
             canceledChildBehavior == WorkflowCanceledChildBehavior.CancelWorkflow,
             completion.CancelOutstandingChildren);
+    }
+
+    [Theory]
+    [InlineData(WorkflowCanceledChildBehavior.Continue, WorkflowRunStatus.Completed)]
+    [InlineData(WorkflowCanceledChildBehavior.Block, WorkflowRunStatus.Blocked)]
+    [InlineData(WorkflowCanceledChildBehavior.CancelWorkflow, WorkflowRunStatus.Canceled)]
+    public async Task ApplyCanceledSourceBehaviorWhenChainingNonDurableDispatchEachOutputs(
+        WorkflowCanceledChildBehavior canceledChildBehavior,
+        WorkflowRunStatus expectedStatus)
+    {
+        var processCount = 0;
+        var gatheredInputs = new List<string>();
+        var executor = new NonDurableWorkflowExecutor(
+            _ => new TestWorkSystemSession(new DelegateQueueService((name, input, _, _) =>
+            {
+                var workerId = WorkerId.New();
+                var completion = name switch
+                {
+                    "sample.load" => new WorkCompletion(
+                        WorkCompletionStatus.Completed,
+                        null,
+                        WorkOutput.FromJson("""{"items":[{"id":"alpha"},{"id":"beta"}]}"""),
+                        []),
+                    "sample.process" when Interlocked.Increment(ref processCount) == 1 => new WorkCompletion(
+                        WorkCompletionStatus.Canceled,
+                        null,
+                        null,
+                        []),
+                    "sample.process" => new WorkCompletion(
+                        WorkCompletionStatus.Completed,
+                        null,
+                        WorkOutput.FromJson("""{"items":[{"id":"beta-artifact"}]}"""),
+                        []),
+                    "sample.gather" => RecordGatheredInput(input, gatheredInputs),
+                    _ => throw new InvalidOperationException($"Unexpected work definition '{name}'."),
+                };
+                return Task.FromResult<IWorkerHandle>(new TestWorkerHandle(
+                    WorkQueueOutcome.Accepted(workerId),
+                    workerId,
+                    Task.FromResult(completion)));
+            })));
+        var workflow = CreateWorkflow(
+            WorkflowDefinition.Create("workflow.non-durable.chained-canceled-continue"),
+            Dispatch("load", "sample.load"),
+            DispatchEach(
+                "process",
+                "load",
+                "sample.process",
+                "/items",
+                canceledChildBehavior),
+            DispatchEach("gather", "process", "sample.gather", "/items"),
+            new JoinWorkflowStepDefinition("join"));
+        var run = WorkflowRunState.Create(workflow, WorkRequestContext.Create(WorkInvocationChannel.InProcess));
+
+        var completion = await executor.Execute(run, workflow, CancellationToken.None);
+
+        Assert.Equal(expectedStatus, completion.Status);
+        if (canceledChildBehavior == WorkflowCanceledChildBehavior.Continue)
+        {
+            Assert.Equal(["""{"id":"beta-artifact"}"""], gatheredInputs);
+        }
+        else
+        {
+            Assert.Empty(gatheredInputs);
+        }
+
+        Assert.Equal(
+            canceledChildBehavior == WorkflowCanceledChildBehavior.CancelWorkflow,
+            completion.CancelOutstandingChildren);
+    }
+
+    [Theory]
+    [InlineData(WorkflowCanceledChildBehavior.Continue, WorkflowRunStatus.Completed)]
+    [InlineData(WorkflowCanceledChildBehavior.Block, WorkflowRunStatus.Blocked)]
+    [InlineData(WorkflowCanceledChildBehavior.CancelWorkflow, WorkflowRunStatus.Canceled)]
+    public async Task ApplyCanceledSourceBehaviorWhenChainingDurableDispatchEachOutputs(
+        WorkflowCanceledChildBehavior canceledChildBehavior,
+        WorkflowRunStatus expectedStatus)
+    {
+        var store = new RecordingWorkflowStore();
+        var persistence = new WorkflowPersistenceCoordinator(store, "workflow-tests");
+        var processCount = 0;
+        var gatheredInputs = new List<string>();
+        var completions = new Dictionary<WorkerId, WorkCompletion>();
+        var executor = new DurableWorkflowExecutor(
+            "workflow-tests",
+            CreateRegisteredWork,
+            _ => new TestWorkSystemSession(new DelegateQueueService((name, input, _, _) =>
+            {
+                var workerId = WorkerId.New();
+                completions[workerId] = name switch
+                {
+                    "sample.load" => new WorkCompletion(
+                        WorkCompletionStatus.Completed,
+                        null,
+                        WorkOutput.FromJson("""{"items":[{"id":"alpha"},{"id":"beta"}]}"""),
+                        []),
+                    "sample.process" when Interlocked.Increment(ref processCount) == 1 => new WorkCompletion(
+                        WorkCompletionStatus.Canceled,
+                        null,
+                        null,
+                        []),
+                    "sample.process" => new WorkCompletion(
+                        WorkCompletionStatus.Completed,
+                        null,
+                        WorkOutput.FromJson("""{"items":[{"id":"beta-artifact"}]}"""),
+                        []),
+                    "sample.gather" => RecordGatheredInput(input, gatheredInputs),
+                    _ => throw new InvalidOperationException($"Unexpected work definition '{name}'."),
+                };
+                return Task.FromResult<IWorkerHandle>(AcceptedHandle(workerId));
+            })),
+            workerId => new TestWorkerHandle(
+                WorkQueueOutcome.Accepted(workerId),
+                workerId,
+                Task.FromResult(completions[workerId])),
+            persistence);
+        var workflow = CreateWorkflow(
+            WorkflowDefinition.Create(
+                "workflow.durable.chained-canceled-continue",
+                coordination: WorkflowCoordinationConfiguration.Durable),
+            Dispatch("load", "sample.load"),
+            DispatchEach(
+                "process",
+                "load",
+                "sample.process",
+                "/items",
+                canceledChildBehavior),
+            DispatchEach("gather", "process", "sample.gather", "/items"),
+            new JoinWorkflowStepDefinition("join"));
+        var run = WorkflowRunState.Create(workflow, WorkRequestContext.Create(WorkInvocationChannel.InProcess));
+
+        var completion = await executor.Execute(run, workflow, CancellationToken.None);
+
+        Assert.Equal(expectedStatus, completion.Status);
+        if (canceledChildBehavior == WorkflowCanceledChildBehavior.Continue)
+        {
+            Assert.Equal(["""{"id":"beta-artifact"}"""], gatheredInputs);
+        }
+        else
+        {
+            Assert.Empty(gatheredInputs);
+        }
+
+        Assert.Equal(
+            canceledChildBehavior == WorkflowCanceledChildBehavior.CancelWorkflow,
+            completion.CancelOutstandingChildren);
+        if (expectedStatus != WorkflowRunStatus.Completed)
+        {
+            Assert.Equal(expectedStatus, store.Upserts.Last().Status);
+        }
+    }
+
+    [Fact]
+    public async Task CancelRemainingDurableJoinWaitersWhenOneChildBlocksTheWorkflow()
+    {
+        var store = new RecordingWorkflowStore();
+        var persistence = new WorkflowPersistenceCoordinator(store, "workflow-tests");
+        var processCount = 0;
+        var pendingWaitCanceled = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var workerHandles = new Dictionary<WorkerId, IWorkerHandle>();
+        var executor = new DurableWorkflowExecutor(
+            "workflow-tests",
+            CreateRegisteredWork,
+            _ => new TestWorkSystemSession(new DelegateQueueService((name, _, _, _) =>
+            {
+                var workerId = WorkerId.New();
+                workerHandles[workerId] = name switch
+                {
+                    "sample.load" => new TestWorkerHandle(
+                        WorkQueueOutcome.Accepted(workerId),
+                        workerId,
+                        Task.FromResult(new WorkCompletion(
+                            WorkCompletionStatus.Completed,
+                            null,
+                            WorkOutput.FromJson("""{"items":[{"id":"alpha"},{"id":"beta"}]}"""),
+                            []))),
+                    "sample.process" when Interlocked.Increment(ref processCount) == 1 => new TestWorkerHandle(
+                        WorkQueueOutcome.Accepted(workerId),
+                        workerId,
+                        Task.FromResult(new WorkCompletion(WorkCompletionStatus.Canceled, null, null, []))),
+                    "sample.process" => new CancellationAwareWorkerHandle(workerId, pendingWaitCanceled),
+                    _ => throw new InvalidOperationException($"Unexpected work definition '{name}'."),
+                };
+                return Task.FromResult<IWorkerHandle>(AcceptedHandle(workerId));
+            })),
+            workerId => workerHandles[workerId],
+            persistence);
+        var workflow = CreateWorkflow(
+            WorkflowDefinition.Create(
+                "workflow.durable.cancel-pending-join-waits",
+                coordination: WorkflowCoordinationConfiguration.Durable),
+            Dispatch("load", "sample.load"),
+            DispatchEach(
+                "fan-out",
+                "load",
+                "sample.process",
+                "/items",
+                WorkflowCanceledChildBehavior.Block),
+            new JoinWorkflowStepDefinition("join"));
+        var run = WorkflowRunState.Create(workflow, WorkRequestContext.Create(WorkInvocationChannel.InProcess));
+
+        var completion = await executor.Execute(run, workflow, CancellationToken.None);
+
+        Assert.Equal(WorkflowRunStatus.Blocked, completion.Status);
+        await pendingWaitCanceled.Task.WaitAsync(TimeSpan.FromSeconds(1));
+        Assert.Equal(WorkflowRunStatus.Blocked, store.Upserts.Last().Status);
+    }
+
+    [Fact]
+    public async Task CancelRemainingDurableTrailingWaitersWhenOneChildBlocksTheWorkflow()
+    {
+        var store = new RecordingWorkflowStore();
+        var persistence = new WorkflowPersistenceCoordinator(store, "workflow-tests");
+        var processCount = 0;
+        var pendingWaitCanceled = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var workerHandles = new Dictionary<WorkerId, IWorkerHandle>();
+        var executor = new DurableWorkflowExecutor(
+            "workflow-tests",
+            CreateRegisteredWork,
+            _ => new TestWorkSystemSession(new DelegateQueueService((name, _, _, _) =>
+            {
+                var workerId = WorkerId.New();
+                workerHandles[workerId] = name switch
+                {
+                    "sample.load" => new TestWorkerHandle(
+                        WorkQueueOutcome.Accepted(workerId),
+                        workerId,
+                        Task.FromResult(new WorkCompletion(
+                            WorkCompletionStatus.Completed,
+                            null,
+                            WorkOutput.FromJson("""{"items":[{"id":"alpha"},{"id":"beta"}]}"""),
+                            []))),
+                    "sample.process" when Interlocked.Increment(ref processCount) == 1 => new TestWorkerHandle(
+                        WorkQueueOutcome.Accepted(workerId),
+                        workerId,
+                        Task.FromResult(new WorkCompletion(WorkCompletionStatus.Canceled, null, null, []))),
+                    "sample.process" => new CancellationAwareWorkerHandle(workerId, pendingWaitCanceled),
+                    _ => throw new InvalidOperationException($"Unexpected work definition '{name}'."),
+                };
+                return Task.FromResult<IWorkerHandle>(AcceptedHandle(workerId));
+            })),
+            workerId => workerHandles[workerId],
+            persistence);
+        var workflow = CreateWorkflow(
+            WorkflowDefinition.Create(
+                "workflow.durable.cancel-pending-trailing-waits",
+                coordination: WorkflowCoordinationConfiguration.Durable),
+            Dispatch("load", "sample.load"),
+            DispatchEach(
+                "fan-out",
+                "load",
+                "sample.process",
+                "/items",
+                WorkflowCanceledChildBehavior.Block));
+        var run = WorkflowRunState.Create(workflow, WorkRequestContext.Create(WorkInvocationChannel.InProcess));
+
+        var completion = await executor.Execute(run, workflow, CancellationToken.None);
+
+        Assert.Equal(WorkflowRunStatus.Blocked, completion.Status);
+        await pendingWaitCanceled.Task.WaitAsync(TimeSpan.FromSeconds(1));
+        Assert.Equal(WorkflowRunStatus.Blocked, store.Upserts.Last().Status);
     }
 
     [Fact]
@@ -1124,6 +1390,14 @@ public sealed class WorkflowExecutorsShould
             null,
             Task.FromResult(new WorkCompletion(WorkCompletionStatus.Invalid, null, null, outcome.Messages)));
 
+    private static WorkCompletion RecordGatheredInput(
+        WorkInput? input,
+        List<string> gatheredInputs)
+    {
+        gatheredInputs.Add(input?.Json ?? throw new InvalidOperationException("Expected gathered input."));
+        return new WorkCompletion(WorkCompletionStatus.Completed, null, null, []);
+    }
+
     private static WorkerSnapshot CreateSnapshot(WorkerId workerId, WorkerState state)
         => new(
             workerId,
@@ -1309,6 +1583,32 @@ public sealed class WorkflowExecutorsShould
 
         public Task<WorkCompletion> WaitForCompletion(CancellationToken cancellationToken = default)
             => completion;
+
+        public async Task<WorkCompletion<TOutput>> WaitForCompletion<TOutput>(CancellationToken cancellationToken = default)
+            => (await this.WaitForCompletion(cancellationToken)).ToTyped<TOutput>();
+    }
+
+    private sealed class CancellationAwareWorkerHandle(
+        WorkerId workerId,
+        TaskCompletionSource waitCanceled) : IWorkerHandle
+    {
+        public WorkQueueOutcome QueueOutcome { get; } = WorkQueueOutcome.Accepted(workerId);
+
+        public WorkerId? WorkerId { get; } = workerId;
+
+        public async Task<WorkCompletion> WaitForCompletion(CancellationToken cancellationToken = default)
+        {
+            try
+            {
+                await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+                throw new InvalidOperationException("Expected the pending child wait to be canceled.");
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                waitCanceled.TrySetResult();
+                throw;
+            }
+        }
 
         public async Task<WorkCompletion<TOutput>> WaitForCompletion<TOutput>(CancellationToken cancellationToken = default)
             => (await this.WaitForCompletion(cancellationToken)).ToTyped<TOutput>();

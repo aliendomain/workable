@@ -810,7 +810,7 @@ internal sealed class WorkflowRuntime
         this.workflowEvents.StepUpdated(run.ToSnapshot(), stepName);
         if (worker.State == WorkerState.Canceled &&
             workflow is not null &&
-            WorkflowExecutionSupport.ResolveCanceledChildBehavior(workflow, stepName) ==
+            WorkflowExecutionSupport.ResolveCanceledChildBehavior(run, workflow, worker.Id) ==
                 WorkflowCanceledChildBehavior.CancelWorkflow)
         {
             await this.ApplyCanceledChildWorkflowCancellation(run, workflow, cancellationToken);
@@ -856,7 +856,7 @@ internal sealed class WorkflowRuntime
         RegisteredWorkflow workflow)
         => run.GetChildReceipts().Any(receipt =>
             receipt.CompletionStatus == WorkCompletionStatus.Canceled &&
-            WorkflowExecutionSupport.ResolveCanceledChildBehavior(workflow, receipt.StepName) ==
+            WorkflowExecutionSupport.ResolveCanceledChildBehavior(run, workflow, receipt.WorkerId) ==
                 WorkflowCanceledChildBehavior.CancelWorkflow);
 
     internal bool ShouldKeepWorkflowChildWorker(WorkerSnapshot worker)

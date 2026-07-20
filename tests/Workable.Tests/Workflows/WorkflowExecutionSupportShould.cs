@@ -54,6 +54,36 @@ public sealed class WorkflowExecutionSupportShould
         Assert.Equal(1, Volatile.Read(ref createdHandles));
     }
 
+    [Fact]
+    public async Task CancelRemainingWaitersWhenOneOutstandingChildBlocksTheWorkflow()
+    {
+        var canceledWorkerId = WorkerId.New();
+        var pendingWorkerId = WorkerId.New();
+        var pendingWaitCanceled = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var workflow = CreateWorkflow(DispatchEach(
+            selector: null,
+            canceledChildBehavior: WorkflowCanceledChildBehavior.Block));
+        var run = WorkflowRunState.Create(
+            workflow,
+            WorkRequestContext.Create(WorkInvocationChannel.InProcess));
+        run.MarkStepCompleted("dispatch-each", [canceledWorkerId, pendingWorkerId]);
+
+        var completion = await WorkflowExecutionSupport.WaitForOutstanding(
+            [canceledWorkerId, pendingWorkerId],
+            workerId => workerId == canceledWorkerId
+                ? new TestWorkerHandle(
+                    WorkQueueOutcome.Accepted(workerId),
+                    workerId,
+                    Task.FromResult(new WorkCompletion(WorkCompletionStatus.Canceled, null, null, [])))
+                : new CancellationAwareWorkerHandle(workerId, pendingWaitCanceled),
+            run,
+            workflow,
+            CancellationToken.None);
+
+        Assert.Equal(WorkflowRunStatus.Blocked, completion.Status);
+        await pendingWaitCanceled.Task.WaitAsync(TimeSpan.FromSeconds(1));
+    }
+
     [Theory]
     [InlineData(WorkCompletionStatus.Completed, WorkflowRunStatus.Completed)]
     [InlineData(WorkCompletionStatus.Canceled, WorkflowRunStatus.Blocked)]
@@ -339,6 +369,32 @@ public sealed class WorkflowExecutionSupportShould
             => (await this.WaitForCompletion(cancellationToken)).ToTyped<TOutput>();
     }
 
+    private sealed class CancellationAwareWorkerHandle(
+        WorkerId workerId,
+        TaskCompletionSource waitCanceled) : IWorkerHandle
+    {
+        public WorkQueueOutcome QueueOutcome { get; } = WorkQueueOutcome.Accepted(workerId);
+
+        public WorkerId? WorkerId { get; } = workerId;
+
+        public async Task<WorkCompletion> WaitForCompletion(CancellationToken cancellationToken = default)
+        {
+            try
+            {
+                await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+                throw new InvalidOperationException("Expected the pending child wait to be canceled.");
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                waitCanceled.TrySetResult();
+                throw;
+            }
+        }
+
+        public async Task<WorkCompletion<TOutput>> WaitForCompletion<TOutput>(CancellationToken cancellationToken = default)
+            => (await this.WaitForCompletion(cancellationToken)).ToTyped<TOutput>();
+    }
+
     private sealed class TestWorkSystemSession(IWorkerOperations workers) : IWorkSystemSession
     {
         public string? SystemName => "workflow-tests";
@@ -415,10 +471,13 @@ public sealed class WorkflowExecutionSupportShould
         WorkInput? input = null)
         => new(stepName, WorkDefinition.Create(workDefinitionName), input);
 
-    private static DispatchEachWorkflowStepDefinition DispatchEach(string? selector)
+    private static DispatchEachWorkflowStepDefinition DispatchEach(
+        string? selector,
+        WorkflowCanceledChildBehavior canceledChildBehavior = WorkflowCanceledChildBehavior.Continue)
         => new(
             "dispatch-each",
             new WorkflowStepReference<object>("source"),
             WorkDefinition.Create("sample.dispatch-each"),
-            new WorkflowOutputSelector(selector));
+            new WorkflowOutputSelector(selector),
+            canceledChildBehavior);
 }

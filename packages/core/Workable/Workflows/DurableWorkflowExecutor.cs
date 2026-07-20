@@ -155,13 +155,29 @@ internal sealed class DurableWorkflowExecutor(
                 }
             case DispatchEachWorkflowStepDefinition dispatchEach:
                 {
-                    var outcome = await this.DispatchEach(run, session, dispatchEach, persistenceGate, cancellationToken);
+                    var outcome = await this.DispatchEach(
+                        run,
+                        workflow,
+                        session,
+                        dispatchEach,
+                        persistenceGate,
+                        cancellationToken);
                     if (!outcome.IsAccepted)
                     {
                         if (outcome.FailureStatus == WorkflowRunStatus.Blocked)
                         {
                             publisher.StepUpdated(run.ToSnapshot(), dispatchEach.Name);
                             return await this.UpsertBlockedRun(run, outcome.Messages, persistenceGate, cancellationToken);
+                        }
+
+                        if (outcome.FailureStatus == WorkflowRunStatus.Canceled)
+                        {
+                            publisher.StepUpdated(run.ToSnapshot(), dispatchEach.Name);
+                            return await this.CompleteFromChildOutcome(
+                                run,
+                                new WorkflowRunCompletion(outcome.FailureStatus, null, outcome.Messages),
+                                persistenceGate,
+                                cancellationToken);
                         }
 
                         run.FailStep(dispatchEach.Name, outcome.Messages);
@@ -428,6 +444,7 @@ internal sealed class DurableWorkflowExecutor(
 
     private async Task<DispatchEachOutcome> DispatchEach(
         WorkflowRunState run,
+        RegisteredWorkflow workflow,
         IWorkSystemSession session,
         DispatchEachWorkflowStepDefinition step,
         WorkflowRunPersistenceGate persistenceGate,
@@ -456,6 +473,23 @@ internal sealed class DurableWorkflowExecutor(
         foreach (var workerId in sourceWorkerIds.Distinct())
         {
             var completion = await this.WaitForWorkerCompletion(run, session, workerId, cancellationToken);
+            if (completion.Status == WorkCompletionStatus.Canceled)
+            {
+                var canceledChildBehavior = WorkflowExecutionSupport.ResolveCanceledChildBehavior(
+                    run,
+                    workflow,
+                    workerId);
+                if (canceledChildBehavior == WorkflowCanceledChildBehavior.Continue)
+                {
+                    continue;
+                }
+
+                return new DispatchEachOutcome(
+                    false,
+                    WorkflowExecutionSupport.ToWorkflowStatus(completion.Status, canceledChildBehavior),
+                    completion.Messages);
+            }
+
             if (completion.Status != WorkCompletionStatus.Completed)
             {
                 return new DispatchEachOutcome(
@@ -552,34 +586,42 @@ internal sealed class DurableWorkflowExecutor(
             }
         }
 
+        using var pendingCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         var pending = outstanding.ToDictionary(
             static workerId => workerId,
-            workerId => this.WaitForWorkerCompletion(run, session, workerId, cancellationToken));
-        while (pending.Count > 0)
+            workerId => this.WaitForWorkerCompletion(run, session, workerId, pendingCancellation.Token));
+        try
         {
-            var completedTask = await Task.WhenAny(pending.Values);
-            var completed = pending.Single(item => ReferenceEquals(item.Value, completedTask));
-            pending.Remove(completed.Key);
-
-            var completion = await completed.Value;
-            var status = WorkflowExecutionSupport.ToWorkflowStatus(
-                completion.Status,
-                WorkflowExecutionSupport.ResolveCanceledChildBehavior(run, workflow, completed.Key));
-            if (status != WorkflowRunStatus.Completed)
+            while (pending.Count > 0)
             {
-                return new WorkflowRunCompletion(
-                    status,
-                    null,
-                    completion.Messages);
+                var completedTask = await Task.WhenAny(pending.Values);
+                var completed = pending.Single(item => ReferenceEquals(item.Value, completedTask));
+                pending.Remove(completed.Key);
+
+                var completion = await completed.Value;
+                var status = WorkflowExecutionSupport.ToWorkflowStatus(
+                    completion.Status,
+                    WorkflowExecutionSupport.ResolveCanceledChildBehavior(run, workflow, completed.Key));
+                if (status != WorkflowRunStatus.Completed)
+                {
+                    return new WorkflowRunCompletion(
+                        status,
+                        null,
+                        completion.Messages);
+                }
+
+                run.RemoveStepWorkerId(joinStepName, completed.Key);
+                await this.UpsertRun(run, persistenceGate, CancellationToken.None);
+                var publisher = workflowEvents ?? new WorkflowEventPublisher(default, null, new WorkEventStream());
+                publisher.StepUpdated(run.ToSnapshot(), joinStepName);
             }
 
-            run.RemoveStepWorkerId(joinStepName, completed.Key);
-            await this.UpsertRun(run, persistenceGate, CancellationToken.None);
-            var publisher = workflowEvents ?? new WorkflowEventPublisher(default, null, new WorkEventStream());
-            publisher.StepUpdated(run.ToSnapshot(), joinStepName);
+            return new WorkflowRunCompletion(WorkflowRunStatus.Completed, null, []);
         }
-
-        return new WorkflowRunCompletion(WorkflowRunStatus.Completed, null, []);
+        finally
+        {
+            pendingCancellation.Cancel();
+        }
     }
 
     private async Task<WorkflowRunCompletion> WaitForOutstandingWorkers(
@@ -589,31 +631,39 @@ internal sealed class DurableWorkflowExecutor(
         IReadOnlyList<WorkerId> workerIds,
         CancellationToken cancellationToken)
     {
+        using var pendingCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         var pending = workerIds
             .Distinct()
             .ToDictionary(
                 static workerId => workerId,
-                workerId => this.WaitForWorkerCompletion(run, session, workerId, cancellationToken));
-        while (pending.Count > 0)
+                workerId => this.WaitForWorkerCompletion(run, session, workerId, pendingCancellation.Token));
+        try
         {
-            var completedTask = await Task.WhenAny(pending.Values);
-            var completed = pending.Single(item => ReferenceEquals(item.Value, completedTask));
-            pending.Remove(completed.Key);
-
-            var completion = await completed.Value;
-            var status = WorkflowExecutionSupport.ToWorkflowStatus(
-                completion.Status,
-                WorkflowExecutionSupport.ResolveCanceledChildBehavior(run, workflow, completed.Key));
-            if (status != WorkflowRunStatus.Completed)
+            while (pending.Count > 0)
             {
-                return new WorkflowRunCompletion(
-                    status,
-                    null,
-                    completion.Messages);
-            }
-        }
+                var completedTask = await Task.WhenAny(pending.Values);
+                var completed = pending.Single(item => ReferenceEquals(item.Value, completedTask));
+                pending.Remove(completed.Key);
 
-        return new WorkflowRunCompletion(WorkflowRunStatus.Completed, null, []);
+                var completion = await completed.Value;
+                var status = WorkflowExecutionSupport.ToWorkflowStatus(
+                    completion.Status,
+                    WorkflowExecutionSupport.ResolveCanceledChildBehavior(run, workflow, completed.Key));
+                if (status != WorkflowRunStatus.Completed)
+                {
+                    return new WorkflowRunCompletion(
+                        status,
+                        null,
+                        completion.Messages);
+                }
+            }
+
+            return new WorkflowRunCompletion(WorkflowRunStatus.Completed, null, []);
+        }
+        finally
+        {
+            pendingCancellation.Cancel();
+        }
     }
 
     private async Task<WorkCompletion> WaitForWorkerCompletion(

@@ -295,6 +295,52 @@ public sealed class WorkflowRuntimeInternalsShould
     }
 
     [Fact]
+    public async Task RecoverDurableRunIgnoresForgedCancelWorkflowChildReceipt()
+    {
+        var loadWorkerId = WorkerId.New();
+        var legitimateChildId = WorkerId.New();
+        var forgedWorkerId = WorkerId.New();
+        var workflow = CreateWorkflow(
+            WorkflowDefinition.Create(
+                "workflow.durable.recover.forged-child-receipt",
+                coordination: WorkflowCoordinationConfiguration.Durable),
+            Dispatch("load", "sample.load"),
+            new DispatchEachWorkflowStepDefinition(
+                "fan-out",
+                new WorkflowStepReference<object?>("load"),
+                WorkDefinition.Create("sample.process"),
+                new WorkflowOutputSelector("/items"),
+                WorkflowCanceledChildBehavior.CancelWorkflow),
+            new JoinWorkflowStepDefinition("join"));
+        var run = WorkflowRunState.Create(
+            workflow,
+            WorkRequestContext.Create(WorkInvocationChannel.InProcess));
+        run.MarkStepCompleted("load", [loadWorkerId]);
+        run.MarkStepCompleted("fan-out", [legitimateChildId]);
+        run.RecordChildReceipt(new WorkflowChildReceipt(
+            forgedWorkerId,
+            "fan-out",
+            "sample.process",
+            WorkerState.Canceled,
+            DateTimeOffset.UtcNow,
+            [],
+            null));
+        run.Pause();
+        var store = new RawWorkflowPersistenceStore([run.ToPersistenceRecord("workflow-tests")]);
+        var runtime = CreateRuntime(
+            catalog: new WorkflowCatalog([workflow]),
+            persistenceStore: store,
+            systemName: "workflow-tests",
+            createSession: _ => throw new InvalidOperationException(
+                "A forged retained receipt must not cancel the recovered workflow."),
+            createWorkerHandle: _ => throw new NotSupportedException());
+
+        await runtime.RecoverDurableRuns(CancellationToken.None);
+
+        Assert.Equal(WorkflowRunStatus.Paused, runtime.Get(run.Id)!.Status);
+    }
+
+    [Fact]
     public async Task RecoverDurableRunsHonorsPersistedCancelRequestAndCancelsOutstandingChildren()
     {
         var workerId = WorkerId.New();
@@ -625,6 +671,56 @@ public sealed class WorkflowRuntimeInternalsShould
         Assert.True(runtime.ShouldKeepWorkflowChildWorker(runningChild));
         Assert.Equal(WorkflowRunStatus.Running, runtime.Get(handle.RunId.Value)!.Status);
         runtime.ClearRuns();
+    }
+
+    [Fact]
+    public async Task IgnoreCancelWorkflowPolicyForWorkerWithForgedWorkflowIdentifiers()
+    {
+        var loadWorkerId = WorkerId.New();
+        var legitimateChildId = WorkerId.New();
+        var forgedWorkerId = WorkerId.New();
+        var workflow = CreateWorkflow(
+            WorkflowDefinition.Create(
+                "workflow.runtime.forged-child-identifiers",
+                coordination: WorkflowCoordinationConfiguration.Durable),
+            Dispatch("load", "sample.load"),
+            new DispatchEachWorkflowStepDefinition(
+                "fan-out",
+                new WorkflowStepReference<object?>("load"),
+                WorkDefinition.Create("sample.process"),
+                new WorkflowOutputSelector("/items"),
+                WorkflowCanceledChildBehavior.CancelWorkflow),
+            new JoinWorkflowStepDefinition("join"));
+        var store = new RawWorkflowPersistenceStore([]);
+        var runtime = CreateRuntime(
+            catalog: new WorkflowCatalog([workflow]),
+            persistenceStore: store,
+            systemName: "workflow-tests",
+            createSession: _ => throw new InvalidOperationException(
+                "A worker that is not recorded against the workflow must not cancel it."),
+            createWorkerHandle: _ => throw new NotSupportedException());
+        var run = WorkflowRunState.Create(
+            workflow,
+            WorkRequestContext.Create(WorkInvocationChannel.InProcess));
+        run.MarkStepCompleted("load", [loadWorkerId]);
+        run.MarkStepCompleted("fan-out", [legitimateChildId]);
+        run.Pause();
+        GetRuns(runtime).TryAdd(run.Id, run);
+        var forgedWorker = CreateSnapshot(
+            forgedWorkerId,
+            WorkerState.Canceled,
+            new HashSet<WorkIdentifier>
+            {
+                new("workflow-run", run.Id.Value.ToString("D")),
+                new("workflow-step", "fan-out"),
+            });
+
+        await runtime.ObserveFinalWorkflowChild(forgedWorker, CancellationToken.None);
+
+        Assert.Equal(WorkflowRunStatus.Paused, runtime.Get(run.Id)!.Status);
+        Assert.Contains(
+            store.UpsertedRuns,
+            persisted => persisted.RunId == run.Id && persisted.Status == WorkflowRunStatus.Paused);
     }
 
     [Theory]
