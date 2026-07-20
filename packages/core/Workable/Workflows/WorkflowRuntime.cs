@@ -23,7 +23,7 @@ internal sealed class WorkflowRuntime
     private readonly Lock actionGatesSync = new();
     private readonly Dictionary<WorkflowRunId, WorkflowActionGate> actionGates = [];
     private readonly ConcurrentDictionary<WorkflowRunId, byte> cancellationsInProgress = new();
-    private readonly ConcurrentDictionary<WorkerId, byte> receiptPersistences = new();
+    private readonly ConcurrentDictionary<WorkerId, Lazy<Task>> receiptPersistences = new();
     private readonly Lock lifecycleSync = new();
     private CancellationTokenSource executionLifetime = new();
     private long version;
@@ -422,13 +422,16 @@ internal sealed class WorkflowRuntime
             }
 
             var wasPaused = snapshot.Status == WorkflowRunStatus.Paused;
-            run.MarkRunning();
-            var resumedSnapshot = run.ToSnapshot();
             if (workflow.Definition.Coordination.IsDurable)
             {
-                await this.persistence.UpsertRun(run.Id, () => this.CreatePersistenceRecord(run), CancellationToken.None);
+                await this.persistence.UpsertRun(
+                    run.Id,
+                    () => run.ToRunningPersistenceRecord(this.systemName),
+                    CancellationToken.None);
             }
 
+            run.MarkRunning();
+            var resumedSnapshot = run.ToSnapshot();
             this.StartExecution(run, workflow, wasPaused);
             this.workflowEvents.ActionAccepted(resumedSnapshot, action, requestContext);
             return WorkflowActionOutcome.Accepted(action, resumedSnapshot);
@@ -497,19 +500,15 @@ internal sealed class WorkflowRuntime
         var outcomeSnapshot = run.ToSnapshot();
         if (workflow.Definition.Coordination.IsDurable)
         {
+            await this.persistence.UpsertRun(
+                run.Id,
+                () => run.ToPendingControlActionPersistenceRecord(this.systemName, action),
+                CancellationToken.None);
             if (!run.TryRecordAcceptedControlAction(action, out outcomeSnapshot))
             {
-                return WorkflowActionOutcome.Invalid(
-                    action,
-                    runId,
-                    outcomeSnapshot,
-                    [WorkMessage.Error(
-                        "workable.workflow.run.final",
-                        $"Workflow run '{runId.Value:D}' is already final and cannot accept '{action}'.",
-                        "workflow.run")]);
+                throw new InvalidOperationException(
+                    $"Workflow run '{run.Id.Value:D}' became final while its '{action}' action gate was held.");
             }
-
-            await this.persistence.UpsertRun(run.Id, () => this.CreatePersistenceRecord(run), CancellationToken.None);
         }
 
         if (action == WorkflowAction.Cancel)
@@ -627,7 +626,7 @@ internal sealed class WorkflowRuntime
                 "workflow.definition")]);
         this.runs.TryAdd(run.Id, run);
         this.AdvanceVersion();
-        if (await this.TryPersistAndSetFinalCompletion(run, completion, shouldPersist: true))
+        if (await this.TryPersistAndSetFinalCompletionWithActionGate(run, completion, shouldPersist: true))
         {
             this.workflowEvents.Completion(completion);
             await this.TryPurgeFinalRunIfChildrenGone(run, CancellationToken.None);
@@ -693,6 +692,11 @@ internal sealed class WorkflowRuntime
                         shouldPersistState)
                     : true;
 
+                if (completion.IsFinal && !shouldPublishCompletion)
+                {
+                    return await run.WaitForCompletion();
+                }
+
                 if (!completion.IsFinal && shouldPersistState)
                 {
                     await this.persistence.UpsertRun(run.Id, () => this.CreatePersistenceRecord(run), CancellationToken.None);
@@ -743,7 +747,7 @@ internal sealed class WorkflowRuntime
                 var completion = run.CreateFinalCompletion(WorkflowRunStatus.Canceled);
                 var shouldPersistCompletion = workflow.Definition.Coordination.IsDurable &&
                     ShouldPersistFinalState(completion, control);
-                var shouldPublishCompletion = await this.TryPersistAndSetFinalCompletion(
+                var shouldPublishCompletion = await this.TryPersistAndSetFinalCompletionWithActionGate(
                     run,
                     completion,
                     shouldPersistCompletion);
@@ -757,7 +761,9 @@ internal sealed class WorkflowRuntime
                     }
                 }
 
-                return completion;
+                return shouldPublishCompletion
+                    ? completion
+                    : await run.WaitForCompletion();
             }
 
             await WorkflowExecutionSupport.PauseOutstandingChildren(
@@ -782,7 +788,7 @@ internal sealed class WorkflowRuntime
                     "workable.workflow.execution_exception",
                     exception.Message,
                     "workflow.execution")]);
-            var shouldPublishCompletion = await this.TryPersistAndSetFinalCompletion(
+            var shouldPublishCompletion = await this.TryPersistAndSetFinalCompletionWithActionGate(
                 run,
                 completion,
                 workflow.Definition.Coordination.IsDurable);
@@ -792,7 +798,9 @@ internal sealed class WorkflowRuntime
                 this.workflowEvents.Completion(completion);
                 await this.TryPurgeFinalRunIfChildrenGone(run, CancellationToken.None);
             }
-            return completion;
+            return shouldPublishCompletion
+                ? completion
+                : await run.WaitForCompletion();
         }
     }
 
@@ -866,10 +874,9 @@ internal sealed class WorkflowRuntime
             return false;
         }
 
-        var isAlreadyCommitted = run.GetStatus() == completion.Status;
         try
         {
-            if (shouldPersist && !isAlreadyCommitted)
+            if (shouldPersist)
             {
                 await this.persistence.UpsertRun(
                     run.Id,
@@ -883,9 +890,27 @@ internal sealed class WorkflowRuntime
             throw;
         }
 
-        run.CommitFinalCompletion(completion);
-        run.TrySetClaimedCompletion(completion);
+        var committed = run.CommitFinalCompletion(completion);
+        run.TrySetClaimedCompletion(committed);
         return true;
+    }
+
+    private async Task<bool> TryPersistAndSetFinalCompletionWithActionGate(
+        WorkflowRunState run,
+        WorkflowRunCompletion completion,
+        bool shouldPersist)
+    {
+        var actionGate = this.ReferenceActionGate(run.Id);
+        await actionGate.Sync.WaitAsync(CancellationToken.None);
+        try
+        {
+            return await this.TryPersistAndSetFinalCompletion(run, completion, shouldPersist);
+        }
+        finally
+        {
+            actionGate.Sync.Release();
+            this.ReleaseActionGate(run.Id, actionGate);
+        }
     }
 
     private async Task TryAutoResumeBlockedRun(
@@ -930,23 +955,38 @@ internal sealed class WorkflowRuntime
             }
         }
 
-        run.MarkRunning();
-        var resumedSnapshot = run.ToSnapshot();
-        if (workflow.Definition.Coordination.IsDurable)
-        {
-            await this.persistence.UpsertRun(run.Id, () => this.CreatePersistenceRecord(run), CancellationToken.None);
-        }
-
+        var actionGate = this.ReferenceActionGate(runId);
+        await actionGate.Sync.WaitAsync(CancellationToken.None);
         try
         {
-            this.StartExecution(run, workflow, wasPaused: false);
-        }
-        catch (InvalidOperationException)
-        {
-            return;
-        }
+            if (!this.runs.TryGetValue(runId, out var currentRun) ||
+                !ReferenceEquals(run, currentRun) ||
+                run.GetStatus() != WorkflowRunStatus.Blocked ||
+                this.controls.ContainsKey(runId) ||
+                this.executions.ContainsKey(runId) ||
+                this.cancellationsInProgress.ContainsKey(runId))
+            {
+                return;
+            }
 
-        this.workflowEvents.ActionAccepted(resumedSnapshot, WorkflowAction.Start, run.RequestContext);
+            if (workflow.Definition.Coordination.IsDurable)
+            {
+                await this.persistence.UpsertRun(
+                    run.Id,
+                    () => run.ToRunningPersistenceRecord(this.systemName),
+                    CancellationToken.None);
+            }
+
+            run.MarkRunning();
+            var resumedSnapshot = run.ToSnapshot();
+            this.StartExecution(run, workflow, wasPaused: false);
+            this.workflowEvents.ActionAccepted(resumedSnapshot, WorkflowAction.Start, run.RequestContext);
+        }
+        finally
+        {
+            actionGate.Sync.Release();
+            this.ReleaseActionGate(runId, actionGate);
+        }
     }
 
     private CancellationToken GetExecutionLifetimeToken()
@@ -987,35 +1027,70 @@ internal sealed class WorkflowRuntime
             worker.StateChangedAt,
             worker.Messages,
             worker.Output);
-        if (!run.RecordChildReceipt(receipt))
-        {
-            return;
-        }
-
         this.catalog.TryGet(run.DefinitionName, out var workflow);
-        if (workflow?.Definition.Coordination.IsDurable == true)
-        {
-            this.receiptPersistences[worker.Id] = 0;
-            try
-            {
-                await this.persistence.UpsertRunCoalesced(
-                    run.Id,
-                    () => this.CreatePersistenceRecord(run),
-                    CancellationToken.None);
-            }
-            finally
-            {
-                this.receiptPersistences.TryRemove(worker.Id, out _);
-            }
-        }
+        await this.PersistWorkflowChildReceiptCoalesced(run, stepName, receipt, workflow);
 
-        this.workflowEvents.StepUpdated(run.ToSnapshot(), stepName);
         if (worker.State == WorkerState.Canceled &&
             workflow is not null &&
             WorkflowExecutionSupport.ResolveCanceledChildBehavior(run, workflow, worker.Id) ==
                 WorkflowCanceledChildBehavior.CancelWorkflow)
         {
             await this.ApplyCanceledChildWorkflowCancellation(run, workflow, cancellationToken);
+        }
+    }
+
+    private async Task PersistWorkflowChildReceiptCoalesced(
+        WorkflowRunState run,
+        string stepName,
+        WorkflowChildReceipt receipt,
+        RegisteredWorkflow? workflow)
+    {
+        while (true)
+        {
+            var receiptPersistence = this.receiptPersistences.GetOrAdd(
+                receipt.WorkerId,
+                _ => new Lazy<Task>(
+                    () => this.PersistWorkflowChildReceipt(run, stepName, receipt, workflow),
+                    LazyThreadSafetyMode.ExecutionAndPublication));
+            try
+            {
+                await receiptPersistence.Value;
+            }
+            finally
+            {
+                if (this.receiptPersistences.TryGetValue(receipt.WorkerId, out var current) &&
+                    ReferenceEquals(current, receiptPersistence))
+                {
+                    this.receiptPersistences.TryRemove(receipt.WorkerId, out _);
+                }
+            }
+
+            if (run.TryGetChildReceipt(receipt.WorkerId, out var persistedReceipt) &&
+                (persistedReceipt == receipt || persistedReceipt?.CompletedAt >= receipt.CompletedAt))
+            {
+                return;
+            }
+        }
+    }
+
+    private async Task PersistWorkflowChildReceipt(
+        WorkflowRunState run,
+        string stepName,
+        WorkflowChildReceipt receipt,
+        RegisteredWorkflow? workflow)
+    {
+        var changed = run.RecordChildReceipt(receipt);
+        if (workflow?.Definition.Coordination.IsDurable == true)
+        {
+            await this.persistence.UpsertRunCoalesced(
+                run.Id,
+                () => this.CreatePersistenceRecord(run),
+                CancellationToken.None);
+        }
+
+        if (changed)
+        {
+            this.workflowEvents.StepUpdated(run.ToSnapshot(), stepName);
         }
     }
 

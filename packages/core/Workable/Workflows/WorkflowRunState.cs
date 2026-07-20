@@ -344,7 +344,7 @@ internal sealed class WorkflowRunState
             }
 
             if (this.childReceipts.TryGetValue(receipt.WorkerId, out var existing) &&
-                existing == receipt)
+                (existing == receipt || existing.CompletedAt >= receipt.CompletedAt))
             {
                 return false;
             }
@@ -570,6 +570,34 @@ internal sealed class WorkflowRunState
                 completion.Run?.CompletedAt ?? DateTimeOffset.UtcNow,
                 completion.Messages,
                 pendingControlAction: null);
+        }
+    }
+
+    public WorkflowRunPersistenceRecord ToRunningPersistenceRecord(string? workSystemName)
+    {
+        lock (this.sync)
+        {
+            return this.ToPersistenceRecordLocked(
+                workSystemName,
+                WorkflowRunStatus.Running,
+                persistedCompletedAt: null,
+                persistedMessages: [],
+                pendingControlAction: null);
+        }
+    }
+
+    public WorkflowRunPersistenceRecord ToPendingControlActionPersistenceRecord(
+        string? workSystemName,
+        WorkflowAction action)
+    {
+        lock (this.sync)
+        {
+            return this.ToPersistenceRecordLocked(
+                workSystemName,
+                this.status,
+                this.completedAt,
+                this.messages,
+                action);
         }
     }
 

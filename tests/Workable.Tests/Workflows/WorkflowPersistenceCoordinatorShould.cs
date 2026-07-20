@@ -238,6 +238,22 @@ public sealed class WorkflowPersistenceCoordinatorShould
     }
 
     [Fact]
+    public async Task DrainAcceptedCoalescedCheckpointBeforeDeletingRun()
+    {
+        var store = new RecordingWorkflowPersistenceStore();
+        var coordinator = new WorkflowPersistenceCoordinator(store, "workflow-persistence-tests");
+        var run = CreateRun("workflow-persistence-tests", "workflow.one");
+
+        var checkpoint = coordinator.UpsertRunCoalesced(run.RunId, () => run, CancellationToken.None);
+        var deletion = coordinator.DeleteRun(run.RunId, CancellationToken.None);
+        await Task.WhenAll(checkpoint, deletion);
+
+        Assert.Equal(["upsert", "delete"], store.RunOperations);
+        Assert.Equal(run, Assert.Single(store.CommittedRuns));
+        Assert.Equal(run.RunId, Assert.Single(store.DeletedRuns).RunId);
+    }
+
+    [Fact]
     public async Task CoalescedUpsertHonorsMissingStoreAndCanceledCaller()
     {
         var run = CreateRun("workflow-persistence-tests", "workflow.one");
@@ -480,6 +496,8 @@ public sealed class WorkflowPersistenceCoordinatorShould
 
         public List<RecordingWorkflowPersistenceTransaction> Transactions { get; } = [];
 
+        public ConcurrentQueue<string> RunOperations { get; } = [];
+
         public IReadOnlyList<WorkflowRunPersistenceRecord> IncompleteRuns { get; init; } = [];
 
         public Func<WorkflowRunPersistenceRecord, CancellationToken, Task>? UpsertHandler { get; init; }
@@ -570,6 +588,7 @@ public sealed class WorkflowPersistenceCoordinatorShould
             WorkflowRunPersistenceRecord run,
             CancellationToken cancellationToken = default)
         {
+            this.RunOperations.Enqueue("upsert");
             this.UpsertedRuns.Add(run);
             if (this.UpsertHandler is not null)
             {
@@ -594,6 +613,7 @@ public sealed class WorkflowPersistenceCoordinatorShould
             WorkflowPersistenceDeleteRequest request,
             CancellationToken cancellationToken = default)
         {
+            this.RunOperations.Enqueue("delete");
             this.DeletedRuns.Add(request);
             return Task.CompletedTask;
         }

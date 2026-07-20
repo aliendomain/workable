@@ -491,7 +491,7 @@ public sealed class WorkflowExecutorsShould
     }
 
     [Fact]
-    public async Task PersistFailedDurableRunForUnsupportedStepKind()
+    public async Task ReturnFailedDurableCandidateForUnsupportedStepKindWithoutCommittingIt()
     {
         var store = new RecordingWorkflowStore();
         var persistence = new WorkflowPersistenceCoordinator(store, "workflow-tests");
@@ -512,12 +512,13 @@ public sealed class WorkflowExecutorsShould
 
         Assert.Equal(WorkflowRunStatus.Failed, completion.Status);
         Assert.Contains(completion.Messages, message => message.Code == "workable.workflow.step.unsupported");
+        Assert.Equal(WorkflowRunStatus.Running, run.ToSnapshot().Status);
         Assert.Empty(store.DeletedRunIds);
-        Assert.Equal(WorkflowRunStatus.Failed, Assert.Single(store.Upserts).Status);
+        Assert.DoesNotContain(store.Upserts, record => record.Status == WorkflowRunStatus.Failed);
     }
 
     [Fact]
-    public async Task PersistFailedDurableRunWhenSingleDispatchIsRejected()
+    public async Task ReturnFailedDurableCandidateWhenSingleDispatchIsRejectedWithoutCommittingIt()
     {
         var store = new RecordingWorkflowStore();
         var persistence = new WorkflowPersistenceCoordinator(store, "workflow-tests");
@@ -541,12 +542,13 @@ public sealed class WorkflowExecutorsShould
         Assert.Equal(WorkflowRunStatus.Failed, completion.Status);
         Assert.Contains(completion.Messages, message => message.Code == "workflow.dispatch.rejected");
         Assert.Equal(WorkflowStepRunStatus.Failed, run.ToSnapshot().Steps.Single(step => step.Name == "dispatch").Status);
+        Assert.Equal(WorkflowRunStatus.Running, run.ToSnapshot().Status);
         Assert.Empty(store.DeletedRunIds);
-        Assert.Equal(WorkflowRunStatus.Failed, Assert.Single(store.Upserts).Status);
+        Assert.DoesNotContain(store.Upserts, record => record.Status == WorkflowRunStatus.Failed);
     }
 
     [Fact]
-    public async Task PersistFailedDurableRunWhenParallelDispatchIsRejected()
+    public async Task ReturnFailedDurableCandidateWhenParallelDispatchIsRejectedWithoutCommittingIt()
     {
         var store = new RecordingWorkflowStore();
         var persistence = new WorkflowPersistenceCoordinator(store, "workflow-tests");
@@ -581,8 +583,9 @@ public sealed class WorkflowExecutorsShould
 
         Assert.Equal(WorkflowRunStatus.Failed, completion.Status);
         Assert.Contains(completion.Messages, message => message.Code == "workflow.dispatch.rejected");
+        Assert.Equal(WorkflowRunStatus.Running, run.ToSnapshot().Status);
         Assert.Empty(store.DeletedRunIds);
-        Assert.Equal(WorkflowRunStatus.Failed, store.Upserts.Last().Status);
+        Assert.DoesNotContain(store.Upserts, record => record.Status == WorkflowRunStatus.Failed);
     }
 
     [Fact]
@@ -1172,7 +1175,7 @@ public sealed class WorkflowExecutorsShould
     }
 
     [Fact]
-    public async Task PersistFailedDurableRunWhenRecoveredChildStateIsMissing()
+    public async Task ReturnFailedDurableCandidateWhenRecoveredChildStateIsMissingWithoutCommittingIt()
     {
         var workerId = WorkerId.New();
         var store = new RecordingWorkflowStore();
@@ -1233,8 +1236,9 @@ public sealed class WorkflowExecutorsShould
 
         Assert.Equal(WorkflowRunStatus.Failed, completion.Status);
         Assert.Contains(completion.Messages, message => message.Code == "workable.workflow.child.not_found");
+        Assert.Equal(WorkflowRunStatus.Running, run.ToSnapshot().Status);
         Assert.Empty(store.DeletedRunIds);
-        Assert.Equal(WorkflowRunStatus.Failed, Assert.Single(store.Upserts).Status);
+        Assert.DoesNotContain(store.Upserts, record => record.Status == WorkflowRunStatus.Failed);
     }
 
     [Fact]

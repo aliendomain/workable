@@ -101,12 +101,22 @@ internal sealed class WorkflowPersistenceCoordinator(
 
     public async Task DeleteRun(WorkflowRunId runId, CancellationToken cancellationToken)
     {
+        this.coalescedUpserts.TryGetValue(runId, out var coalescedUpsert);
+        if (coalescedUpsert is not null)
+        {
+            await coalescedUpsert.StopAndDrain();
+        }
+
         await this.RunExclusive(
             runId,
             () => this.store?.DeleteWorkflowRun(new WorkflowPersistenceDeleteRequest(runId), cancellationToken)
                 ?? Task.CompletedTask,
             cancellationToken);
-        this.coalescedUpserts.TryRemove(runId, out _);
+        if (coalescedUpsert is not null)
+        {
+            this.coalescedUpserts.TryRemove(
+                new KeyValuePair<WorkflowRunId, CoalescedUpsertState>(runId, coalescedUpsert));
+        }
     }
 
     public Task DeleteRun(
@@ -192,8 +202,11 @@ internal sealed class WorkflowPersistenceCoordinator(
         private static readonly TimeSpan CoalescingInterval = TimeSpan.FromMilliseconds(5);
         private readonly Lock sync = new();
         private readonly List<TaskCompletionSource> waiters = [];
+        private readonly TaskCompletionSource drained =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
         private Func<WorkflowRunPersistenceRecord>? createRun;
         private bool isRunning;
+        private bool isStopped;
 
         public Task Enqueue(
             Func<WorkflowRunPersistenceRecord> createRun,
@@ -203,6 +216,11 @@ internal sealed class WorkflowPersistenceCoordinator(
             var waiter = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
             lock (this.sync)
             {
+                if (this.isStopped)
+                {
+                    return Task.CompletedTask;
+                }
+
                 this.createRun = createRun;
                 this.waiters.Add(waiter);
                 if (!this.isRunning)
@@ -213,6 +231,20 @@ internal sealed class WorkflowPersistenceCoordinator(
             }
 
             return waiter.Task.WaitAsync(cancellationToken);
+        }
+
+        public Task StopAndDrain()
+        {
+            lock (this.sync)
+            {
+                this.isStopped = true;
+                if (!this.isRunning)
+                {
+                    this.drained.TrySetResult();
+                }
+
+                return this.drained.Task;
+            }
         }
 
         private async Task Run()
@@ -254,6 +286,11 @@ internal sealed class WorkflowPersistenceCoordinator(
                     if (this.waiters.Count == 0)
                     {
                         this.isRunning = false;
+                        if (this.isStopped)
+                        {
+                            this.drained.TrySetResult();
+                        }
+
                         return;
                     }
                 }

@@ -326,6 +326,39 @@ public sealed class WorkflowRunStateShould
         Assert.Equal(WorkCompletionStatus.Completed, receipt.CompletionStatus);
     }
 
+    [Fact]
+    public void DoNotReplaceAChildReceiptWithAnOlderFinalState()
+    {
+        var workflow = CreateWorkflow(
+            WorkflowDefinition.Create("workflow.child-receipt-order"),
+            Dispatch("dispatch", "sample.dispatch"));
+        var run = WorkflowRunState.Create(
+            workflow,
+            WorkRequestContext.Create(WorkInvocationChannel.InProcess));
+        var workerId = WorkerId.New();
+        var failedAt = DateTimeOffset.UtcNow;
+        var canceledAt = failedAt.AddMilliseconds(1);
+        run.MarkStepCompleted("dispatch", [workerId]);
+        var canceled = new WorkflowChildReceipt(
+            workerId,
+            "dispatch",
+            "sample.dispatch",
+            WorkerState.Canceled,
+            canceledAt,
+            [],
+            null);
+        var failed = canceled with
+        {
+            State = WorkerState.Failed,
+            CompletedAt = failedAt,
+        };
+
+        Assert.True(run.RecordChildReceipt(canceled));
+        Assert.False(run.RecordChildReceipt(failed));
+
+        Assert.Equal(canceled, Assert.Single(run.GetChildReceipts()));
+    }
+
     private static RegisteredWorkflow CreateWorkflow(
         WorkflowDefinition definition,
         params WorkflowStepDefinition[] steps)

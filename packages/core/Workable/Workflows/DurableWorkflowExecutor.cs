@@ -99,13 +99,12 @@ internal sealed class DurableWorkflowExecutor(
         }
         catch (Exception exception) when (ShouldHandleExecutionException(exception))
         {
-            return await this.PersistFailedRunCompletion(
+            return this.CreateFailedRunCompletion(
                 run,
                 [WorkMessage.Error(
                     "workable.workflow.execution_exception",
                     exception.Message,
                     "workflow.execution")],
-                persistenceGate,
                 cancellationToken);
         }
     }
@@ -147,7 +146,7 @@ internal sealed class DurableWorkflowExecutor(
                     {
                         run.FailStep(dispatch.Name, messages);
                         publisher.StepUpdated(run.ToSnapshot(), dispatch.Name);
-                        return await this.PersistFailedRunCompletion(run, messages, persistenceGate, cancellationToken);
+                        return this.CreateFailedRunCompletion(run, messages, cancellationToken);
                     }
 
                     return null;
@@ -181,7 +180,7 @@ internal sealed class DurableWorkflowExecutor(
 
                         run.FailStep(dispatchEach.Name, outcome.Messages);
                         publisher.StepUpdated(run.ToSnapshot(), dispatchEach.Name);
-                        return await this.PersistFailedRunCompletion(run, outcome.Messages, persistenceGate, cancellationToken);
+                        return this.CreateFailedRunCompletion(run, outcome.Messages, cancellationToken);
                     }
 
                     return null;
@@ -228,13 +227,12 @@ internal sealed class DurableWorkflowExecutor(
                     return null;
                 }
             default:
-                return await this.PersistFailedRunCompletion(
+                return this.CreateFailedRunCompletion(
                     run,
                     [WorkMessage.Error(
                         "workable.workflow.step.unsupported",
                         $"Workflow step '{step.Name}' uses unsupported kind '{step.Kind}'.",
                         "workflow.step")],
-                    persistenceGate,
                     cancellationToken);
         }
     }
@@ -800,21 +798,13 @@ internal sealed class DurableWorkflowExecutor(
             ? persistence.DurableWorkerExists(workerId, cancellationToken)
             : durableWorkerExists(workerId, cancellationToken);
 
-    private async Task<WorkflowRunCompletion> PersistFailedRunCompletion(
+    private WorkflowRunCompletion CreateFailedRunCompletion(
         WorkflowRunState run,
         IReadOnlyList<WorkMessage> messages,
-        WorkflowRunPersistenceGate persistenceGate,
         CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        var failure = run.CreateFinalCompletion(WorkflowRunStatus.Failed, messages);
-        await persistenceGate.Run(
-            () => persistence.UpsertRun(
-                run.Id,
-                () => run.ToPersistenceRecord(workSystemKey, failure),
-                cancellationToken),
-            cancellationToken);
-        return run.CommitFinalCompletion(failure);
+        return run.CreateFinalCompletion(WorkflowRunStatus.Failed, messages);
     }
 
     private async Task<WorkflowRunCompletion> UpsertBlockedRun(
@@ -848,11 +838,7 @@ internal sealed class DurableWorkflowExecutor(
                 CancelOutstandingChildren: true);
         }
 
-        return await this.PersistFailedRunCompletion(
-            run,
-            completion.Messages,
-            persistenceGate,
-            cancellationToken);
+        return this.CreateFailedRunCompletion(run, completion.Messages, cancellationToken);
     }
 
     private sealed class WorkflowRunPersistenceGate
