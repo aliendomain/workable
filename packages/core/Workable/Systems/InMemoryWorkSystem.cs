@@ -134,6 +134,7 @@ internal sealed class InMemoryWorkSystem :
             this.groupProvider,
             workflowEvents);
         this.workers.SetWorkflowChildFinalizationObserver(this.workflowRuntime.ObserveFinalWorkflowChild);
+        this.workers.SetWorkflowChildFinalizationRetryGuard(this.workflowRuntime.ShouldRetryWorkflowChildFinalization);
         this.workers.SetWorkflowChildRetentionGuard(this.workflowRuntime.ShouldKeepWorkflowChildWorker);
         this.workers.SetWorkflowChildPurgedObserver(this.workflowRuntime.ObservePurgedWorkflowChild);
         this.workers.SetCompletionObserver((worker, status) =>

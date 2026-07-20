@@ -413,7 +413,8 @@ internal sealed class NonDurableWorkflowExecutor(
         var workDefinitionName = step.WorkDefinition.Name;
 
         if (!run.TryGetStepWorkerIds(step.SourceStep.StepName, out var sourceWorkerIds) ||
-            sourceWorkerIds.Count == 0)
+            (sourceWorkerIds.Count == 0 &&
+                run.GetStepStatus(step.SourceStep.StepName) != WorkflowStepRunStatus.Completed))
         {
             return new DispatchEachResult(
                 false,

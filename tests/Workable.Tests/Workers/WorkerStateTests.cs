@@ -724,6 +724,60 @@ public sealed class WorkerStateTests
     }
 
     [Fact]
+    public async Task RetentionRetriesFailedWorkflowChildFinalizationBeforePurging()
+    {
+        var definition = WorkDefinition.Create(
+            "retention-finalization-retry",
+            configuration: WorkConfiguration.Default with
+            {
+                Retention = WorkRetentionConfiguration.Default with
+                {
+                    PurgeInterval = TimeSpan.FromMinutes(10),
+                },
+            });
+        var system = CreateSystem(
+            definition,
+            (_, _, _) => Task.FromResult(WorkExecutionResult.Success()));
+        await system.Start();
+        var handle = await system.Queue.Enqueue(
+            definition.Name,
+            WorkInput.Empty.WithIdentifier(new WorkIdentifier("workflow-run", Guid.NewGuid().ToString("D"))));
+        var completion = await handle.WaitForCompletion();
+        var workerId = RequiredCompletionWorker(completion).Id;
+        var operations = ((InMemoryWorkSystem)system).WorkerOperations;
+        var retryRequired = true;
+        var attempts = 0;
+        operations.SetWorkflowChildFinalizationRetryGuard(_ => retryRequired);
+        operations.SetWorkflowChildFinalizationObserver((_, _) =>
+        {
+            if (Interlocked.Increment(ref attempts) == 1)
+            {
+                throw new InvalidOperationException("receipt persistence failed");
+            }
+
+            retryRequired = false;
+            return Task.CompletedTask;
+        });
+        var purge = typeof(WorkerOperations).GetMethod(
+            "PurgeFinalWorkersForRetention",
+            BindingFlags.Instance | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("Expected retention purge method.");
+
+        var firstPurge = Assert.IsType<int>(purge.Invoke(operations, [new[] { workerId }, null]));
+        var secondPurge = Assert.IsType<int>(purge.Invoke(operations, [new[] { workerId }, null]));
+
+        Assert.Equal(0, firstPurge);
+        Assert.Equal(0, secondPurge);
+        Assert.Equal(2, attempts);
+        Assert.NotNull(await system.Query.Worker(workerId));
+
+        var finalPurge = Assert.IsType<int>(purge.Invoke(operations, [new[] { workerId }, null]));
+
+        Assert.Equal(1, finalPurge);
+        Assert.Null(await system.Query.Worker(workerId));
+    }
+
+    [Fact]
     public async Task RuntimeOverrideCanRequireManualFailedWorkerHandling()
     {
         var definition = WorkDefinition.Create("failed-runtime-manual", "Execution can force manual failed-worker handling.",

@@ -30,6 +30,7 @@ internal sealed class WorkerOperations :
     private readonly FailedWorkerAutoCancelScheduler failedWorkerAutoCancel;
     private readonly WorkerRetentionScheduler retention;
     private Func<WorkerSnapshot, CancellationToken, Task>? workflowChildFinalizationObserver;
+    private Func<WorkerSnapshot, bool>? workflowChildFinalizationRetryGuard;
     private Func<WorkerSnapshot, bool>? workflowChildRetentionGuard;
     private Func<WorkerSnapshot, CancellationToken, Task>? workflowChildPurgedObserver;
     private readonly TimeSpan shutdownGracePeriod;
@@ -138,6 +139,9 @@ internal sealed class WorkerOperations :
 
     internal void SetWorkflowChildFinalizationObserver(Func<WorkerSnapshot, CancellationToken, Task>? observer)
         => this.workflowChildFinalizationObserver = observer;
+
+    internal void SetWorkflowChildFinalizationRetryGuard(Func<WorkerSnapshot, bool>? guard)
+        => this.workflowChildFinalizationRetryGuard = guard;
 
     internal void SetWorkflowChildRetentionGuard(Func<WorkerSnapshot, bool>? guard)
         => this.workflowChildRetentionGuard = guard;
@@ -1105,6 +1109,35 @@ internal sealed class WorkerOperations :
                 continue;
             }
 
+            if (this.ShouldRetryWorkflowChildFinalization(worker))
+            {
+                this.finalizationInProgress[worker.Id] = 0;
+                try
+                {
+                    this.ObserveWorkflowChildFinalization(worker, CancellationToken.None)
+                        .GetAwaiter()
+                        .GetResult();
+                    this.concurrency.Synchronize(worker);
+                    this.TrackFinalWorkerForCapacity(worker);
+                    this.persistence.SynchronizeWorkerState(worker);
+                    this.SynchronizeFailedWorkerAutoCancel(worker);
+                    this.ScheduleConcurrencyDrain(worker.Work.Definition.Id);
+                }
+                catch
+                {
+                    this.retention.Schedule(worker);
+                    continue;
+                }
+                finally
+                {
+                    this.finalizationInProgress.TryRemove(worker.Id, out _);
+                }
+
+                // Give worker-state persistence a full retention interval to settle before purging.
+                this.retention.Schedule(worker);
+                continue;
+            }
+
             if (this.ShouldKeepWorkflowChildWorker(worker))
             {
                 // Workflow children can become purgeable later once the parent run reaches a final state.
@@ -1226,6 +1259,18 @@ internal sealed class WorkerOperations :
         }
 
         return this.workflowChildRetentionGuard(snapshot);
+    }
+
+    private bool ShouldRetryWorkflowChildFinalization(WorkerRecord worker)
+    {
+        if (!worker.IsFinal || this.workflowChildFinalizationRetryGuard is null)
+        {
+            return false;
+        }
+
+        var snapshot = worker.ToSnapshot();
+        return snapshot.Identifiers.Any(identifier => identifier.Type == "workflow-run") &&
+            this.workflowChildFinalizationRetryGuard(snapshot);
     }
 
     private static bool ContainsWorker(

@@ -715,6 +715,88 @@ public sealed class WorkflowRuntimeShould
         Assert.Equal(2, completion.Run.Steps.Single(step => step.Name == "gather").WorkerIds.Count);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task CompleteChainedDispatchEachWhenTheFirstFanOutIsEmpty(bool durable)
+    {
+        var processExecutions = 0;
+        var gatherExecutions = 0;
+        var services = new ServiceCollection();
+        if (durable)
+        {
+            services.AddSingleton<IWorkPersistenceStore>(new TestWorkflowPersistenceStore());
+        }
+
+        Action<IWorkConfigurationBuilder> configureWork = configuration =>
+        {
+            if (durable)
+            {
+                configuration.QueueDurably(fallbackPollingInterval: TimeSpan.FromSeconds(1));
+            }
+        };
+        services.AddWorkableSystem(durable ? "workflow-tests" : null, builder =>
+        {
+            builder.RequireAuthorization(false);
+            var loadDefinition = WorkDefinition.Create($"sample.load.empty-chain.{durable}");
+            var processDefinition = WorkDefinition.Create($"sample.process.empty-chain.{durable}");
+            var gatherDefinition = WorkDefinition.Create($"sample.gather.empty-chain.{durable}");
+            builder.AddWork(
+                loadDefinition,
+                (_, _, _) => Task.FromResult(WorkExecutionResult.Success(
+                    WorkOutput.FromValue(new DispatchEachSourceOutput([])))),
+                configureWork);
+            builder.AddWork(
+                processDefinition,
+                (_, _, _) =>
+                {
+                    Interlocked.Increment(ref processExecutions);
+                    return Task.FromResult(WorkExecutionResult.Success(
+                        WorkOutput.FromValue(new DispatchEachSourceOutput([]))));
+                },
+                configureWork);
+            builder.AddWork(
+                gatherDefinition,
+                (_, _, _) =>
+                {
+                    Interlocked.Increment(ref gatherExecutions);
+                    return Task.FromResult(WorkExecutionResult.Success());
+                },
+                configureWork);
+            builder.AddWorkflow(
+                WorkflowDefinition.Create(
+                    $"workflow.dispatch-each.empty-chain.{durable}",
+                    coordination: durable
+                        ? WorkflowCoordinationConfiguration.Durable
+                        : WorkflowCoordinationConfiguration.Default),
+                workflow =>
+                {
+                    var load = workflow.DispatchWork<DispatchEachSourceOutput>("load", loadDefinition);
+                    var processed = workflow
+                        .DispatchEach("process", load, processDefinition, output => output.Items)
+                        .Outputs<DispatchEachSourceOutput>();
+                    workflow
+                        .DispatchEach("gather", processed, gatherDefinition, output => output.Items)
+                        .Join("join");
+                });
+        });
+
+        using var provider = services.BuildServiceProvider();
+        var system = Assert.IsType<InMemoryWorkSystem>(provider.GetRequiredService<IWorkSystemRegistry>().Default);
+        await system.Start();
+
+        var handle = system.WorkflowRuntime.Start(
+            $"workflow.dispatch-each.empty-chain.{durable}",
+            WorkRequestContext.Create(WorkInvocationChannel.InProcess));
+        var completion = await handle.WaitForCompletion().WaitAsync(TimeSpan.FromSeconds(10));
+
+        Assert.True(completion.IsCompletedSuccessfully);
+        Assert.Equal(0, Volatile.Read(ref processExecutions));
+        Assert.Equal(0, Volatile.Read(ref gatherExecutions));
+        Assert.Empty(completion.Run!.Steps.Single(step => step.Name == "process").WorkerIds);
+        Assert.Empty(completion.Run.Steps.Single(step => step.Name == "gather").WorkerIds);
+    }
+
     [Fact]
     public async Task ExpandTypedDispatchEachSelectorFromRootArrayOutputAndCompleteWorkflow()
     {

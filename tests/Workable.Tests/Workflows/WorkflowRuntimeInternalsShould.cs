@@ -790,6 +790,58 @@ public sealed class WorkflowRuntimeInternalsShould
     }
 
     [Fact]
+    public async Task KeepChildForRetentionAndRequestFinalizationRetryAfterReceiptPersistenceFails()
+    {
+        var childId = WorkerId.New();
+        var attempts = 0;
+        var workflow = CreateWorkflow(
+            WorkflowDefinition.Create(
+                "workflow.runtime.failed-receipt-retry",
+                coordination: WorkflowCoordinationConfiguration.Durable),
+            Dispatch("dispatch", "sample.dispatch"));
+        var store = new RawWorkflowPersistenceStore(
+            [],
+            _ => Interlocked.Increment(ref attempts) == 1
+                ? Task.FromException(new InvalidOperationException("receipt persistence failed"))
+                : Task.CompletedTask);
+        var runtime = CreateRuntime(
+            catalog: new WorkflowCatalog([workflow]),
+            persistenceStore: store,
+            systemName: "workflow-tests",
+            createSession: _ => throw new NotSupportedException(),
+            createWorkerHandle: _ => throw new NotSupportedException());
+        var run = WorkflowRunState.Create(
+            workflow,
+            WorkRequestContext.Create(WorkInvocationChannel.InProcess));
+        run.MarkStepCompleted("dispatch", [childId]);
+        GetRuns(runtime).TryAdd(run.Id, run);
+        var child = CreateSnapshot(
+            childId,
+            WorkerState.Completed,
+            new HashSet<WorkIdentifier>
+            {
+                new("workflow-run", run.Id.Value.ToString("D")),
+                new("workflow-step", "dispatch"),
+            });
+
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            runtime.ObserveFinalWorkflowChild(child, CancellationToken.None));
+
+        Assert.Equal("receipt persistence failed", exception.Message);
+        Assert.True(runtime.ShouldKeepWorkflowChildWorker(child));
+        Assert.True(runtime.ShouldRetryWorkflowChildFinalization(child));
+
+        await runtime.ObserveFinalWorkflowChild(child, CancellationToken.None);
+
+        Assert.False(runtime.ShouldRetryWorkflowChildFinalization(child));
+        Assert.False(runtime.ShouldKeepWorkflowChildWorker(child));
+        Assert.Equal(2, attempts);
+        Assert.Contains(
+            store.UpsertedRuns,
+            persisted => persisted.ChildReceipts.Any(receipt => receipt.WorkerId == childId));
+    }
+
+    [Fact]
     public async Task IgnoreCancelWorkflowPolicyForWorkerWithForgedWorkflowIdentifiers()
     {
         var loadWorkerId = WorkerId.New();

@@ -457,7 +457,8 @@ internal sealed class DurableWorkflowExecutor(
         publisher.StepUpdated(run.ToSnapshot(), step.Name);
 
         if (!run.TryGetStepWorkerIds(step.SourceStep.StepName, out var sourceWorkerIds) ||
-            sourceWorkerIds.Count == 0)
+            (sourceWorkerIds.Count == 0 &&
+                run.GetStepStatus(step.SourceStep.StepName) != WorkflowStepRunStatus.Completed))
         {
             return new DispatchEachOutcome(
                 false,

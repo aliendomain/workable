@@ -24,6 +24,7 @@ internal sealed class WorkflowRuntime
     private readonly Dictionary<WorkflowRunId, WorkflowActionGate> actionGates = [];
     private readonly ConcurrentDictionary<WorkflowRunId, byte> cancellationsInProgress = new();
     private readonly ConcurrentDictionary<WorkerId, Lazy<Task>> receiptPersistences = new();
+    private readonly ConcurrentDictionary<WorkerId, byte> failedReceiptPersistences = new();
     private readonly Lock lifecycleSync = new();
     private CancellationTokenSource executionLifetime = new();
     private long version;
@@ -106,6 +107,7 @@ internal sealed class WorkflowRuntime
             this.controls.Clear();
             this.cancellationsInProgress.Clear();
             this.receiptPersistences.Clear();
+            this.failedReceiptPersistences.Clear();
         }
 
         foreach (var run in activeRuns)
@@ -1079,16 +1081,27 @@ internal sealed class WorkflowRuntime
         WorkflowChildReceipt receipt,
         RegisteredWorkflow? workflow)
     {
+        var isRetry = this.failedReceiptPersistences.ContainsKey(receipt.WorkerId);
         var changed = run.RecordChildReceipt(receipt);
-        if (workflow?.Definition.Coordination.IsDurable == true)
+        try
         {
-            await this.persistence.UpsertRunCoalesced(
-                run.Id,
-                () => this.CreatePersistenceRecord(run),
-                CancellationToken.None);
+            if (workflow?.Definition.Coordination.IsDurable == true)
+            {
+                await this.persistence.UpsertRunCoalesced(
+                    run.Id,
+                    () => this.CreatePersistenceRecord(run),
+                    CancellationToken.None);
+            }
+
+            this.failedReceiptPersistences.TryRemove(receipt.WorkerId, out _);
+        }
+        catch
+        {
+            this.failedReceiptPersistences[receipt.WorkerId] = 0;
+            throw;
         }
 
-        if (changed)
+        if (changed || isRetry)
         {
             this.workflowEvents.StepUpdated(run.ToSnapshot(), stepName);
         }
@@ -1181,14 +1194,30 @@ internal sealed class WorkflowRuntime
             return false;
         }
 
+        if (this.failedReceiptPersistences.ContainsKey(worker.Id) ||
+            this.receiptPersistences.ContainsKey(worker.Id))
+        {
+            return true;
+        }
+
         var status = run.GetStatus();
         if (IsFinal(status))
         {
-            return this.receiptPersistences.ContainsKey(worker.Id);
+            return false;
         }
 
         return !run.TryGetChildReceipt(worker.Id, out var receipt) ||
             receipt?.CompletionStatus != WorkCompletionStatus.Completed;
+    }
+
+    internal bool ShouldRetryWorkflowChildFinalization(WorkerSnapshot worker)
+    {
+        ArgumentNullException.ThrowIfNull(worker);
+
+        return this.failedReceiptPersistences.ContainsKey(worker.Id) &&
+            TryGetWorkflowIdentifiers(worker, out var runId, out var stepName) &&
+            this.runs.TryGetValue(runId, out var run) &&
+            run.StepContainsWorker(stepName, worker.Id);
     }
 
     internal async Task ObservePurgedWorkflowChild(
