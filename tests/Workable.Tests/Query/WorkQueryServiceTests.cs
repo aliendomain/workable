@@ -1084,32 +1084,42 @@ public sealed class WorkQueryServiceTests
     [Fact]
     public async Task DefinitionHealthDistinguishesPartialFailureFromEqualActiveAndFailedCounts()
     {
-        var invocation = 0;
         var secondStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var thirdStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var releaseSecond = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var releaseThird = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         await using var system = CreateSystem(
             WorkDefinition.Create("query.definition.health"),
-            async (_, _, cancellationToken) =>
+            async (_, input, cancellationToken) =>
             {
-                var current = Interlocked.Increment(ref invocation);
-                if (current == 1)
+                if (input?.Json == "\"failed\"")
                 {
                     return WorkExecutionResult.Failure(
                         [WorkMessage.Error("query.health.failed", "Expected health test failure.")]);
                 }
 
-                var started = current == 2 ? secondStarted : thirdStarted;
-                var release = current == 2 ? releaseSecond : releaseThird;
+                var (started, release) = input?.Json switch
+                {
+                    "\"second\"" => (secondStarted, releaseSecond),
+                    "\"third\"" => (thirdStarted, releaseThird),
+                    _ => throw new InvalidOperationException("Expected a definition-health test input."),
+                };
                 started.TrySetResult();
                 await release.Task.WaitAsync(cancellationToken);
                 return WorkExecutionResult.Success();
             });
         await system.Start();
-        await (await system.Queue.Enqueue("query.definition.health")).WaitForCompletion();
-        var second = await system.Queue.Enqueue("query.definition.health");
-        var third = await system.Queue.Enqueue("query.definition.health");
+        await (await system.Queue.Enqueue(
+            "query.definition.health",
+            WorkInput.FromValue("failed")))
+            .WaitForCompletion()
+            .WaitAsync(TimeSpan.FromSeconds(5));
+        var second = await system.Queue.Enqueue(
+            "query.definition.health",
+            WorkInput.FromValue("second"));
+        var third = await system.Queue.Enqueue(
+            "query.definition.health",
+            WorkInput.FromValue("third"));
         try
         {
             await Task.WhenAll(secondStarted.Task, thirdStarted.Task).WaitAsync(TimeSpan.FromSeconds(5));
@@ -1120,12 +1130,12 @@ public sealed class WorkQueryServiceTests
             Assert.Equal(WorkDefinitionStatus.NeedsAttention, needsAttention!.Status);
 
             releaseThird.TrySetResult();
-            await third.WaitForCompletion();
+            await third.WaitForCompletion().WaitAsync(TimeSpan.FromSeconds(5));
             await WaitForReadModel(system);
             var critical = await system.Query.WorkInfo("query.definition.health");
 
             releaseSecond.TrySetResult();
-            await second.WaitForCompletion();
+            await second.WaitForCompletion().WaitAsync(TimeSpan.FromSeconds(5));
 
             Assert.NotNull(critical);
             Assert.Equal(WorkDefinitionStatus.Critical, critical!.Status);
