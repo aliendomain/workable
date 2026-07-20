@@ -1725,6 +1725,7 @@ public sealed class WorkflowRuntimeInternalsShould
         var completion = await handle.WaitForCompletion().WaitAsync(TimeSpan.FromSeconds(5));
 
         Assert.Equal(WorkflowRunStatus.Canceled, completion.Status);
+        await runtime.WaitForExecutions(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(5));
         Assert.Equal(0, GetActionGateCount(runtime));
     }
 
