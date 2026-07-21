@@ -7,11 +7,19 @@ internal sealed class AuthorizedWorkerOperations(
     WorkAuthorizationEvaluator authorization,
     WorkRequestContext requestContext) : IWorkerOperations
 {
-    public async Task<WorkActionOutcome> Execute(
+    public Task<WorkActionOutcome> Execute(
         WorkerVersion worker,
         WorkAction action,
         CancellationToken cancellationToken = default)
+        => this.Execute(worker, new WorkerActionRequest(action), cancellationToken);
+
+    public async Task<WorkActionOutcome> Execute(
+        WorkerVersion worker,
+        WorkerActionRequest request,
+        CancellationToken cancellationToken = default)
     {
+        ArgumentNullException.ThrowIfNull(request);
+        var action = request.Action;
         var authorizationResult = await this.AuthorizeAction(worker.WorkerId, action, cancellationToken);
         if (authorizationResult.Status is WorkerActionAuthorizationStatus.NotFound)
         {
@@ -31,7 +39,7 @@ internal sealed class AuthorizedWorkerOperations(
                 authorizationResult.Messages);
         }
 
-        return await inner.Execute(worker, action, cancellationToken);
+        return await inner.Execute(worker, request, cancellationToken);
     }
 
     public async Task<WorkerBulkActionOutcome> ExecuteAll(

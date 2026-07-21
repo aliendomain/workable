@@ -45,21 +45,28 @@ internal sealed class WorkflowBuilder : IWorkflowBuilder
         return new WorkflowStepReference<TOutput>(stepName);
     }
 
-    public IWorkflowBuilder DispatchEach<TSourceOutput, TChildInput>(
+    public IWorkflowDispatchEachBuilder DispatchEach<TSourceOutput, TChildInput>(
         string stepName,
         WorkflowStepReference<TSourceOutput> sourceStep,
         WorkDefinition workDefinition,
-        Expression<Func<TSourceOutput, IEnumerable<TChildInput>?>> selector)
+        Expression<Func<TSourceOutput, IEnumerable<TChildInput>?>> selector,
+        WorkflowCanceledChildBehavior canceledChildBehavior = WorkflowCanceledChildBehavior.Continue)
     {
         ValidateDispatch(stepName, workDefinition);
         ArgumentNullException.ThrowIfNull(sourceStep);
         ArgumentNullException.ThrowIfNull(selector);
+        if (!Enum.IsDefined(canceledChildBehavior))
+        {
+            throw new ArgumentOutOfRangeException(nameof(canceledChildBehavior));
+        }
+
         this.steps.Add(new DispatchEachWorkflowStepDefinition(
             stepName,
             sourceStep,
             workDefinition,
-            WorkflowOutputSelector.Create(selector)));
-        return this;
+            WorkflowOutputSelector.Create(selector),
+            canceledChildBehavior));
+        return new WorkflowDispatchEachBuilder(this, stepName);
     }
 
     public IWorkflowBuilder RunParallel(
@@ -88,6 +95,57 @@ internal sealed class WorkflowBuilder : IWorkflowBuilder
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(stepName);
         ArgumentNullException.ThrowIfNull(workDefinition);
+    }
+
+    private sealed class WorkflowDispatchEachBuilder(
+        WorkflowBuilder workflow,
+        string stepName) : IWorkflowDispatchEachBuilder
+    {
+        public WorkflowStepReference<TOutput> Outputs<TOutput>()
+            => new(stepName);
+
+        public IWorkflowBuilder DispatchWork(
+            string childStepName,
+            WorkDefinition workDefinition,
+            WorkInput? input = null)
+            => workflow.DispatchWork(childStepName, workDefinition, input);
+
+        public WorkflowStepReference<TOutput> DispatchWork<TOutput>(
+            string childStepName,
+            WorkDefinition workDefinition,
+            WorkInput? input = null)
+            => workflow.DispatchWork<TOutput>(childStepName, workDefinition, input);
+
+        public IWorkflowBuilder DispatchWorkFromWorkflowInput(
+            string childStepName,
+            WorkDefinition workDefinition)
+            => workflow.DispatchWorkFromWorkflowInput(childStepName, workDefinition);
+
+        public WorkflowStepReference<TOutput> DispatchWorkFromWorkflowInput<TOutput>(
+            string childStepName,
+            WorkDefinition workDefinition)
+            => workflow.DispatchWorkFromWorkflowInput<TOutput>(childStepName, workDefinition);
+
+        public IWorkflowDispatchEachBuilder DispatchEach<TSourceOutput, TChildInput>(
+            string childStepName,
+            WorkflowStepReference<TSourceOutput> sourceStep,
+            WorkDefinition workDefinition,
+            Expression<Func<TSourceOutput, IEnumerable<TChildInput>?>> selector,
+            WorkflowCanceledChildBehavior canceledChildBehavior = WorkflowCanceledChildBehavior.Continue)
+            => workflow.DispatchEach(
+                childStepName,
+                sourceStep,
+                workDefinition,
+                selector,
+                canceledChildBehavior);
+
+        public IWorkflowBuilder RunParallel(
+            string childStepName,
+            Action<IWorkflowParallelBuilder> configure)
+            => workflow.RunParallel(childStepName, configure);
+
+        public IWorkflowBuilder Join(string childStepName)
+            => workflow.Join(childStepName);
     }
 
     private sealed class WorkflowParallelBuilder : IWorkflowParallelBuilder

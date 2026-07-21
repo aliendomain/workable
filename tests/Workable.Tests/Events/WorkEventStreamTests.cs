@@ -204,6 +204,29 @@ public sealed class WorkEventStreamTests
     }
 
     [Fact]
+    public async Task LazyPublishCreatesOneSharedEventForCursorAndRoutedSubscribers()
+    {
+        var stream = new WorkEventStream();
+        var workerId = WorkerId.New();
+        await using var cursorSubscription = stream.Subscribe();
+        await using var routedSubscription = stream.Subscribe(new WorkEventFilter(WorkerId: workerId));
+        await using var cursorReader = cursorSubscription.Read().GetAsyncEnumerator();
+        await using var routedReader = routedSubscription.Read().GetAsyncEnumerator();
+        var expected = CreateEvent(workerId: workerId);
+        var createCalls = 0;
+
+        stream.Publish(expected, workEvent =>
+        {
+            createCalls++;
+            return workEvent;
+        });
+
+        Assert.Same(expected, await ReadNext(cursorReader));
+        Assert.Same(expected, await ReadNext(routedReader));
+        Assert.Equal(1, createCalls);
+    }
+
+    [Fact]
     public async Task LazyPublishWithMetadataDoesNotCreateEventWhenFiltersDoNotMatch()
     {
         var stream = new WorkEventStream();
@@ -1115,6 +1138,60 @@ public sealed class WorkEventStreamTests
     }
 
     [Fact]
+    public async Task EmptyFilterPreservesUnfilteredCursorOverflowDiagnostics()
+    {
+        var stream = new WorkEventStream();
+        await using var subscription = stream.Subscribe(
+            new WorkEventFilter(),
+            new WorkEventSubscriptionOptions(Capacity: 2));
+        await using var reader = subscription.Read().GetAsyncEnumerator();
+        var first = CreateEvent(eventType: "worker.queued");
+        var second = CreateEvent(eventType: "worker.started");
+        var third = CreateEvent(eventType: "worker.completed");
+
+        stream.Publish(first);
+        stream.Publish(second);
+        stream.Publish(third);
+
+        var beforeRead = Assert
+            .IsAssignableFrom<IWorkEventSubscriptionDiagnostics>(subscription)
+            .GetDiagnosticsSnapshot();
+        Assert.Equal(2, beforeRead.QueuedCount);
+        Assert.Equal(3, beforeRead.AcceptedEventCount);
+        Assert.Equal(1, beforeRead.DroppedEventCount);
+        Assert.Equal(second, await ReadNext(reader));
+        Assert.Equal(third, await ReadNext(reader));
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task LinkSubscriptionAndEnumeratorCancellationTokens(bool cancelSubscriptionToken)
+    {
+        var stream = new WorkEventStream();
+        await using var subscription = stream.Subscribe();
+        using var subscriptionCancellation = new CancellationTokenSource();
+        using var enumeratorCancellation = new CancellationTokenSource();
+        var reader = subscription
+            .Read(subscriptionCancellation.Token)
+            .GetAsyncEnumerator(enumeratorCancellation.Token);
+        var read = reader.MoveNextAsync().AsTask();
+
+        if (cancelSubscriptionToken)
+        {
+            await subscriptionCancellation.CancelAsync();
+        }
+        else
+        {
+            await enumeratorCancellation.CancelAsync();
+        }
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => read);
+        await reader.DisposeAsync();
+        Assert.Equal(0, stream.ActiveSubscriptionCount);
+    }
+
+    [Fact]
     public async Task BoundedSubscriptionsCanDropNewest()
     {
         var stream = new WorkEventStream();
@@ -1322,6 +1399,81 @@ public sealed class WorkEventStreamTests
         Assert.Equal(handle.WorkerId, workEvent.WorkerId);
         Assert.Equal(definition.Name, workEvent.WorkDefinitionName);
         Assert.Equal("worker.queued", workEvent.EventType);
+    }
+
+    [Fact]
+    public async Task MakeCleanupIdempotentAndIgnoreLazyPublicationAfterCleanup()
+    {
+        var stream = new WorkEventStream();
+        var subscription = stream.Subscribe();
+        var metadata = new WorkEventMetadata(
+            WorkSystemId.New(),
+            WorkerId.New(),
+            WorkDefinitionId.New(),
+            "cleanup.definition",
+            null,
+            null,
+            "worker.completed");
+        var created = 0;
+
+        await subscription.DisposeAsync();
+        stream.Publish(metadata, 1, _ =>
+        {
+            created++;
+            return CreateEvent(eventType: "worker.completed");
+        });
+        typeof(WorkEventStream).GetMethod("Remove", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
+            .Invoke(stream, [subscription]);
+        await stream.DisposeAsync();
+        await stream.DisposeAsync();
+        stream.Publish(metadata, 2, _ =>
+        {
+            created++;
+            return CreateEvent(eventType: "worker.completed");
+        });
+
+        Assert.Equal(0, created);
+        Assert.Equal(0, stream.ActiveSubscriptionCount);
+    }
+
+    [Fact]
+    public async Task IgnoreUnmatchedIdentifierAndMalformedKeyFiltersWithoutCreatingLazyEvents()
+    {
+        var stream = new WorkEventStream();
+        var expectedIdentifier = new WorkIdentifier("invoice", "expected");
+        await using var identifierSubscription = stream.Subscribe(
+            new WorkEventFilter(Identifier: expectedIdentifier),
+            new WorkEventSubscriptionOptions(OverflowBehavior: WorkEventOverflowBehavior.DropWrite));
+        await using var malformedKeySubscription = stream.Subscribe(
+            new WorkEventFilter(Keys: new HashSet<WorkEventKeyFilter>
+            {
+                new(null, "", ""),
+            }),
+            new WorkEventSubscriptionOptions(OverflowBehavior: WorkEventOverflowBehavior.DropWrite));
+        var unmatched = CreateEvent(
+            eventType: "worker.completed",
+            identifiers: new HashSet<WorkIdentifier> { new("invoice", "other") });
+
+        stream.Publish(unmatched);
+        var metadata = new WorkEventMetadata(
+            unmatched.WorkSystemId,
+            unmatched.WorkerId,
+            unmatched.WorkDefinitionId,
+            unmatched.WorkDefinitionName,
+            unmatched.SubjectId,
+            unmatched.ConcurrencyKey,
+            unmatched.EventType,
+            () => unmatched.Identifiers);
+        var created = false;
+        stream.Publish(metadata, unmatched, state =>
+        {
+            created = true;
+            return state;
+        });
+
+        Assert.False(created);
+        Assert.Equal(0, AssertNoQueuedEvents(identifierSubscription).AcceptedEventCount);
+        Assert.Equal(0, AssertNoQueuedEvents(malformedKeySubscription).AcceptedEventCount);
     }
 
     private static Task<WorkExecutionResult> SuccessfulWork(

@@ -91,6 +91,240 @@ public sealed class WorkflowPersistenceCoordinatorShould
     }
 
     [Fact]
+    public async Task SerializeRunWritesAndCreateSnapshotsAfterEnteringTheRunGate()
+    {
+        var firstWriteEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseFirstWrite = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var activeWrites = 0;
+        var maximumActiveWrites = 0;
+        var store = new RecordingWorkflowPersistenceStore
+        {
+            UpsertHandler = async (_, _) =>
+            {
+                var active = Interlocked.Increment(ref activeWrites);
+                var observedMaximum = Volatile.Read(ref maximumActiveWrites);
+                while (active > observedMaximum &&
+                    Interlocked.CompareExchange(ref maximumActiveWrites, active, observedMaximum) != observedMaximum)
+                {
+                    observedMaximum = Volatile.Read(ref maximumActiveWrites);
+                }
+                if (firstWriteEntered.TrySetResult())
+                {
+                    await releaseFirstWrite.Task;
+                }
+
+                Interlocked.Decrement(ref activeWrites);
+            },
+        };
+        var coordinator = new WorkflowPersistenceCoordinator(store, "workflow-persistence-tests");
+        var run = CreateRun("workflow-persistence-tests", "workflow.one");
+        var status = WorkflowRunStatus.Running;
+
+        var first = coordinator.UpsertRun(run.RunId, () => run with { Status = status }, CancellationToken.None);
+        await firstWriteEntered.Task.WaitAsync(TimeSpan.FromSeconds(1));
+        status = WorkflowRunStatus.Completed;
+        var second = coordinator.UpsertRun(run.RunId, () => run with { Status = status }, CancellationToken.None);
+        releaseFirstWrite.TrySetResult();
+        await Task.WhenAll(first, second);
+
+        Assert.Equal(1, maximumActiveWrites);
+        Assert.Equal(
+            [WorkflowRunStatus.Running, WorkflowRunStatus.Completed],
+            store.UpsertedRuns.Select(record => record.Status));
+    }
+
+    [Fact]
+    public async Task HoldTheRunGateUntilATransactionCommits()
+    {
+        var commitEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseCommit = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var store = new RecordingWorkflowPersistenceStore
+        {
+            TransactionCommitHandler = async _ =>
+            {
+                commitEntered.TrySetResult();
+                await releaseCommit.Task;
+            },
+        };
+        var coordinator = new WorkflowPersistenceCoordinator(store, "workflow-persistence-tests");
+        var run = CreateRun("workflow-persistence-tests", "workflow.one");
+
+        var transactionalWrite = coordinator.ExecuteTransaction(
+            run.RunId,
+            (transaction, _, cancellationToken) => coordinator.UpsertRun(
+                run.RunId,
+                () => run with { Status = WorkflowRunStatus.Running },
+                transaction,
+                cancellationToken),
+            CancellationToken.None);
+        await commitEntered.Task.WaitAsync(TimeSpan.FromSeconds(1));
+        var laterWrite = coordinator.UpsertRun(
+            run.RunId,
+            () => run with { Status = WorkflowRunStatus.Completed },
+            CancellationToken.None);
+
+        Assert.False(laterWrite.IsCompleted);
+        releaseCommit.TrySetResult();
+        await Task.WhenAll(transactionalWrite, laterWrite);
+
+        Assert.Equal(
+            [WorkflowRunStatus.Running, WorkflowRunStatus.Completed],
+            store.CommittedRuns.Select(record => record.Status));
+    }
+
+    [Fact]
+    public async Task CoalesceConcurrentReceiptCheckpointsForOneRun()
+    {
+        var store = new RecordingWorkflowPersistenceStore();
+        var coordinator = new WorkflowPersistenceCoordinator(store, "workflow-persistence-tests");
+        var run = CreateRun("workflow-persistence-tests", "workflow.one");
+        var checkpoints = Enumerable.Range(0, 64)
+            .Select(_ => coordinator.UpsertRunCoalesced(run.RunId, () => run, CancellationToken.None))
+            .ToArray();
+
+        await Task.WhenAll(checkpoints);
+
+        Assert.InRange(store.UpsertedRuns.Count, 1, 2);
+    }
+
+    [Fact]
+    public async Task PropagateCoalescedWriteFailuresAndAcceptALaterCheckpoint()
+    {
+        var attempts = 0;
+        var store = new RecordingWorkflowPersistenceStore
+        {
+            UpsertHandler = (_, _) => Interlocked.Increment(ref attempts) == 1
+                ? Task.FromException(new InvalidOperationException("checkpoint failed"))
+                : Task.CompletedTask,
+        };
+        var coordinator = new WorkflowPersistenceCoordinator(store, "workflow-persistence-tests");
+        var run = CreateRun("workflow-persistence-tests", "workflow.one");
+
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            coordinator.UpsertRunCoalesced(run.RunId, () => run, CancellationToken.None));
+        await coordinator.UpsertRunCoalesced(run.RunId, () => run, CancellationToken.None);
+
+        Assert.Equal("checkpoint failed", exception.Message);
+        Assert.Equal(2, attempts);
+    }
+
+    [Fact]
+    public async Task PropagateCriticalCoalescedWriteFailuresAndAcceptALaterCheckpoint()
+    {
+        var attempts = 0;
+        var store = new RecordingWorkflowPersistenceStore
+        {
+            UpsertHandler = (_, _) => Interlocked.Increment(ref attempts) == 1
+                ? Task.FromException(new BadImageFormatException("Critical checkpoint failure."))
+                : Task.CompletedTask,
+        };
+        var coordinator = new WorkflowPersistenceCoordinator(store, "workflow-persistence-tests");
+        var run = CreateRun("workflow-persistence-tests", "workflow.one");
+
+        var exception = await Assert.ThrowsAsync<BadImageFormatException>(async () =>
+            await coordinator.UpsertRunCoalesced(run.RunId, () => run, CancellationToken.None)
+                .WaitAsync(TimeSpan.FromSeconds(1)));
+        await coordinator.UpsertRunCoalesced(run.RunId, () => run, CancellationToken.None)
+            .WaitAsync(TimeSpan.FromSeconds(1));
+
+        Assert.Equal("Critical checkpoint failure.", exception.Message);
+        Assert.Equal(2, attempts);
+    }
+
+    [Fact]
+    public async Task ContinueCoalescedPumpWhenCheckpointArrivesDuringAWrite()
+    {
+        var firstWriteEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseFirstWrite = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var attempts = 0;
+        var store = new RecordingWorkflowPersistenceStore
+        {
+            UpsertHandler = async (_, _) =>
+            {
+                if (Interlocked.Increment(ref attempts) == 1)
+                {
+                    firstWriteEntered.TrySetResult();
+                    await releaseFirstWrite.Task;
+                }
+            },
+        };
+        var coordinator = new WorkflowPersistenceCoordinator(store, "workflow-persistence-tests");
+        var run = CreateRun("workflow-persistence-tests", "workflow.one");
+
+        var first = coordinator.UpsertRunCoalesced(run.RunId, () => run, CancellationToken.None);
+        await firstWriteEntered.Task.WaitAsync(TimeSpan.FromSeconds(1));
+        var second = coordinator.UpsertRunCoalesced(run.RunId, () => run, CancellationToken.None);
+        releaseFirstWrite.TrySetResult();
+        await Task.WhenAll(first, second);
+
+        Assert.Equal(2, attempts);
+    }
+
+    [Fact]
+    public async Task DrainAcceptedCoalescedCheckpointBeforeDeletingRun()
+    {
+        var store = new RecordingWorkflowPersistenceStore();
+        var coordinator = new WorkflowPersistenceCoordinator(store, "workflow-persistence-tests");
+        var run = CreateRun("workflow-persistence-tests", "workflow.one");
+
+        var checkpoint = coordinator.UpsertRunCoalesced(run.RunId, () => run, CancellationToken.None);
+        var deletion = coordinator.DeleteRun(run.RunId, CancellationToken.None);
+        await Task.WhenAll(checkpoint, deletion);
+
+        Assert.Equal(["upsert", "delete"], store.RunOperations);
+        Assert.Equal(run, Assert.Single(store.CommittedRuns));
+        Assert.Equal(run.RunId, Assert.Single(store.DeletedRuns).RunId);
+    }
+
+    [Fact]
+    public async Task CoalescedUpsertHonorsMissingStoreAndCanceledCaller()
+    {
+        var run = CreateRun("workflow-persistence-tests", "workflow.one");
+        var unavailable = new WorkflowPersistenceCoordinator(null, "workflow-persistence-tests");
+        await unavailable.UpsertRunCoalesced(run.RunId, () => run, CancellationToken.None);
+
+        var available = new WorkflowPersistenceCoordinator(
+            new RecordingWorkflowPersistenceStore(),
+            "workflow-persistence-tests");
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            available.UpsertRunCoalesced(run.RunId, () => run, cancellation.Token));
+    }
+
+    [Fact]
+    public async Task BoundParallelismInTheDefaultDurableWorkerExistenceFallback()
+    {
+        var active = 0;
+        var maximumActive = 0;
+        var store = new RecordingWorkflowPersistenceStore
+        {
+            DurableWorkerExistsHandler = async (_, cancellationToken) =>
+            {
+                var current = Interlocked.Increment(ref active);
+                var observedMaximum = Volatile.Read(ref maximumActive);
+                while (current > observedMaximum &&
+                    Interlocked.CompareExchange(ref maximumActive, current, observedMaximum) != observedMaximum)
+                {
+                    observedMaximum = Volatile.Read(ref maximumActive);
+                }
+
+                await Task.Delay(10, cancellationToken);
+                Interlocked.Decrement(ref active);
+                return true;
+            },
+        };
+        var coordinator = new WorkflowPersistenceCoordinator(store, "workflow-persistence-tests");
+        var workerIds = Enumerable.Range(0, 64).Select(_ => WorkerId.New()).ToArray();
+
+        var existing = await coordinator.DurableWorkersExist(workerIds, CancellationToken.None);
+
+        Assert.Equal(workerIds.OrderBy(id => id.Value), existing.OrderBy(id => id.Value));
+        Assert.InRange(maximumActive, 2, 16);
+    }
+
+    [Fact]
     public async Task ListRunsWithoutStoreReturnsAnEmptySequence()
     {
         var coordinator = new WorkflowPersistenceCoordinator(
@@ -131,6 +365,7 @@ public sealed class WorkflowPersistenceCoordinatorShould
         WorkerOptions? observedOptions = null;
 
         await coordinator.ExecuteTransaction(
+            WorkflowRunId.New(),
             (transaction, options, _) =>
             {
                 observedTransaction = transaction;
@@ -184,6 +419,7 @@ public sealed class WorkflowPersistenceCoordinatorShould
         WorkerOptions? dispatchOptions = null;
 
         await coordinator.ExecuteTransaction(
+            run.RunId,
             async (transaction, options, transactionCancellationToken) =>
             {
                 await coordinator.UpsertRun(run, transaction, transactionCancellationToken);
@@ -210,6 +446,7 @@ public sealed class WorkflowPersistenceCoordinatorShould
 
         await Assert.ThrowsAsync<InvalidOperationException>(() =>
             coordinator.ExecuteTransaction(
+                WorkflowRunId.New(),
                 (_, _, _) => throw new InvalidOperationException("transaction failed"),
                 CancellationToken.None));
 
@@ -227,6 +464,7 @@ public sealed class WorkflowPersistenceCoordinatorShould
         var run = CreateRun("workflow-persistence-tests", "workflow.one");
 
         await coordinator.ExecuteTransaction(
+            run.RunId,
             (transaction, _, transactionCancellationToken) =>
                 coordinator.DeleteRun(run.RunId, transaction, transactionCancellationToken),
             CancellationToken.None);
@@ -269,6 +507,8 @@ public sealed class WorkflowPersistenceCoordinatorShould
 
         public List<WorkflowRunPersistenceRecord> UpsertedRuns { get; } = [];
 
+        public List<WorkflowRunPersistenceRecord> CommittedRuns { get; } = [];
+
         public List<WorkflowPersistenceDeleteRequest> DeletedRuns { get; } = [];
 
         public List<(Guid TransactionId, WorkflowRunPersistenceRecord Run)> TransactionalUpserts { get; } = [];
@@ -279,7 +519,15 @@ public sealed class WorkflowPersistenceCoordinatorShould
 
         public List<RecordingWorkflowPersistenceTransaction> Transactions { get; } = [];
 
+        public ConcurrentQueue<string> RunOperations { get; } = [];
+
         public IReadOnlyList<WorkflowRunPersistenceRecord> IncompleteRuns { get; init; } = [];
+
+        public Func<WorkflowRunPersistenceRecord, CancellationToken, Task>? UpsertHandler { get; init; }
+
+        public Func<CancellationToken, Task>? TransactionCommitHandler { get; init; }
+
+        public Func<WorkerId, CancellationToken, Task<bool>>? DurableWorkerExistsHandler { get; init; }
 
         public Task Initialize(WorkQueueDurabilityInitializationContext context, CancellationToken cancellationToken = default)
             => Task.CompletedTask;
@@ -314,6 +562,12 @@ public sealed class WorkflowPersistenceCoordinatorShould
             CancellationToken cancellationToken = default)
             => Task.CompletedTask;
 
+        public Task<bool> DurableWorkerExists(
+            WorkerId workerId,
+            CancellationToken cancellationToken = default)
+            => this.DurableWorkerExistsHandler?.Invoke(workerId, cancellationToken)
+                ?? Task.FromResult(false);
+
         public Task DeleteFinal(
             IReadOnlyList<WorkQueueDurabilityCleanupRequest> workers,
             IWorkQueueDurabilityTransaction transaction,
@@ -332,7 +586,9 @@ public sealed class WorkflowPersistenceCoordinatorShould
             WorkflowPersistenceTransactionRequest request,
             CancellationToken cancellationToken = default)
         {
-            var transaction = new RecordingWorkflowPersistenceTransaction();
+            var transaction = new RecordingWorkflowPersistenceTransaction(
+                this.CommittedRuns,
+                this.TransactionCommitHandler);
             this.Transactions.Add(transaction);
             return Task.FromResult<IWorkflowPersistenceTransaction>(transaction);
         }
@@ -351,12 +607,18 @@ public sealed class WorkflowPersistenceCoordinatorShould
             await Task.CompletedTask;
         }
 
-        public Task UpsertWorkflowRun(
+        public async Task UpsertWorkflowRun(
             WorkflowRunPersistenceRecord run,
             CancellationToken cancellationToken = default)
         {
+            this.RunOperations.Enqueue("upsert");
             this.UpsertedRuns.Add(run);
-            return Task.CompletedTask;
+            if (this.UpsertHandler is not null)
+            {
+                await this.UpsertHandler(run, cancellationToken);
+            }
+
+            this.CommittedRuns.Add(run);
         }
 
         public Task UpsertWorkflowRun(
@@ -364,7 +626,9 @@ public sealed class WorkflowPersistenceCoordinatorShould
             IWorkflowPersistenceTransaction transaction,
             CancellationToken cancellationToken = default)
         {
-            this.TransactionalUpserts.Add((((RecordingWorkflowPersistenceTransaction)transaction).Id, run));
+            var recordingTransaction = (RecordingWorkflowPersistenceTransaction)transaction;
+            this.TransactionalUpserts.Add((recordingTransaction.Id, run));
+            recordingTransaction.Stage(run);
             return Task.CompletedTask;
         }
 
@@ -372,6 +636,7 @@ public sealed class WorkflowPersistenceCoordinatorShould
             WorkflowPersistenceDeleteRequest request,
             CancellationToken cancellationToken = default)
         {
+            this.RunOperations.Enqueue("delete");
             this.DeletedRuns.Add(request);
             return Task.CompletedTask;
         }
@@ -391,8 +656,12 @@ public sealed class WorkflowPersistenceCoordinatorShould
             this.Dispatches.Add((transaction.Id, options));
         }
 
-        public sealed class RecordingWorkflowPersistenceTransaction : IWorkflowPersistenceTransaction
+        public sealed class RecordingWorkflowPersistenceTransaction(
+            List<WorkflowRunPersistenceRecord> committedRuns,
+            Func<CancellationToken, Task>? commitHandler) : IWorkflowPersistenceTransaction
         {
+            private readonly List<WorkflowRunPersistenceRecord> pendingRuns = [];
+
             public Guid Id { get; } = Guid.NewGuid();
 
             public bool Committed { get; private set; }
@@ -400,10 +669,18 @@ public sealed class WorkflowPersistenceCoordinatorShould
             public ValueTask DisposeAsync()
                 => ValueTask.CompletedTask;
 
-            public Task Commit(CancellationToken cancellationToken = default)
+            public void Stage(WorkflowRunPersistenceRecord run)
+                => this.pendingRuns.Add(run);
+
+            public async Task Commit(CancellationToken cancellationToken = default)
             {
+                if (commitHandler is not null)
+                {
+                    await commitHandler(cancellationToken);
+                }
+
+                committedRuns.AddRange(this.pendingRuns);
                 this.Committed = true;
-                return Task.CompletedTask;
             }
         }
     }

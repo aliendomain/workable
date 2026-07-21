@@ -68,7 +68,7 @@ Use `IWorkQueryService.Worker` when you need full authoritative worker detail.
 WorkerSnapshot? worker = await workSystem.Query.Worker(workerId, cancellationToken: cancellationToken);
 ```
 
-`WorkerSnapshot.ActionHistory` records worker action and reconfiguration attempts that were applied to that worker. Each entry includes the operation kind, action when applicable, outcome status, `RequestContext`, revision, state sequence, messages, the associated iteration sequence when the action was recorded against a tracked iteration, and requested reconfiguration changes when applicable. `RequestContext.Origin` still carries the durable actor/channel provenance.
+`WorkerSnapshot.ActionHistory` records worker action and reconfiguration attempts that were applied to that worker. Each entry includes the operation kind, action when applicable, outcome status, `RequestContext`, revision, state sequence, messages, the associated iteration sequence when the action was recorded against a tracked iteration, and requested reconfiguration changes when applicable. `RequestContext.Origin` carries the durable actor/channel provenance. When a single-worker action uses `WorkerActionRequest.Reason`, Workable records that reason in `RequestContext.Description`.
 
 Use `IWorkQueryService.Workers` to retrieve workers that match a `WorkerCriteria`. It returns `WorkerOverviewItem` rows instead of full snapshots.
 
@@ -653,6 +653,10 @@ The examples below show the serialized JSON shape returned by HTTP and MCP adapt
       "maximumDelay": "00:00:30",
       "backoff": "Exponential"
     },
+    "failedWorker": {
+      "handling": "Manual",
+      "autoCancelAfter": "00:10:00"
+    },
     "logging": {
       "isEnabled": true,
       "level": "Information",
@@ -862,6 +866,10 @@ Origin descriptions are optional. Built-in HTTP and MCP transports preserve them
           "maximumDelay": "00:00:30",
           "backoff": "Exponential"
         },
+        "failedWorker": {
+          "handling": "Manual",
+          "autoCancelAfter": "00:10:00"
+        },
         "logging": {
           "isEnabled": true,
           "level": "Information",
@@ -967,6 +975,10 @@ Origin descriptions are optional. Built-in HTTP and MCP transports preserve them
         "jitter": "00:00:00.5000000",
         "maximumDelay": "00:00:30",
         "backoff": "Exponential"
+      },
+      "failedWorker": {
+        "handling": "Manual",
+        "autoCancelAfter": "00:10:00"
       },
       "logging": {
         "isEnabled": true,

@@ -7,6 +7,62 @@ namespace Workable.Tests;
 public sealed class WorkerActionHistoryTests
 {
     [Fact]
+    public async Task CancellationRequestContextIsVisibleToExecutingCodeWithActionReason()
+    {
+        var executionStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var observedCancellationContext = new TaskCompletionSource<WorkRequestContext?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var definition = WorkDefinition.Create("history.cancellation-context");
+        await using var system = CreateSystem(definition, async (context, _, cancellationToken) =>
+        {
+            Assert.Null(context.CancellationRequestContext);
+            executionStarted.TrySetResult();
+            try
+            {
+                await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+                return WorkExecutionResult.Success();
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                observedCancellationContext.TrySetResult(context.CancellationRequestContext);
+                throw;
+            }
+        });
+        await system.Start();
+
+        var handle = await system.Queue.Enqueue(definition.Name);
+        await executionStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var worker = await system.Query.Worker(RequiredWorkerId(handle))
+            ?? throw new InvalidOperationException("Expected worker.");
+        var sessionRequestContext = WorkRequestContext.Create(
+            WorkInvocationChannel.HttpApi,
+            new WorkActor("cancellation-user", "Cancellation User", "cancel@example.test"),
+            description: "Operate the worker through the HTTP API.",
+            url: "https://workable.test/workers/cancel",
+            isAuthenticated: true);
+        var session = system.CreateSession(sessionRequestContext);
+
+        var outcome = await session.Workers.Execute(
+            worker.Version,
+            new WorkerActionRequest(WorkAction.Cancel, "The customer withdrew the order."));
+        var cancellationRequestContext = await observedCancellationContext.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var completion = await handle.WaitForCompletion().WaitAsync(TimeSpan.FromSeconds(5));
+        var canceledWorker = await system.Query.Worker(worker.Id)
+            ?? throw new InvalidOperationException("Expected canceled worker.");
+        var history = Assert.Single(canceledWorker.ActionHistory);
+
+        Assert.True(outcome.IsAccepted);
+        Assert.Equal(WorkCompletionStatus.Canceled, completion.Status);
+        Assert.NotNull(cancellationRequestContext);
+        Assert.Equal("cancellation-user", cancellationRequestContext.Actor.Id);
+        Assert.Equal("Cancellation User", cancellationRequestContext.Actor.Name);
+        Assert.Equal("cancel@example.test", cancellationRequestContext.Actor.Email);
+        Assert.Equal("The customer withdrew the order.", cancellationRequestContext.Description);
+        Assert.Equal("https://workable.test/workers/cancel", cancellationRequestContext.Url);
+        Assert.Null(cancellationRequestContext.Authorization);
+        Assert.Equal("The customer withdrew the order.", history.RequestContext.Description);
+    }
+
+    [Fact]
     public async Task DirectInProcessWorkerActionsRecordDurableHistory()
     {
         var definition = WorkDefinition.Create(

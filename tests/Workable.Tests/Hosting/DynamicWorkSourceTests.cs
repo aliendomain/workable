@@ -78,6 +78,41 @@ public sealed class DynamicWorkSourceTests
     }
 
     [Fact]
+    public async Task RuntimeDefinitionSourcesSupportEveryDocumentedRegistrationOverload()
+    {
+        var system = new ServiceCollection()
+            .AddScoped<RuntimeEchoExecutor>()
+            .AddScoped<AttributedRuntimeEchoExecutor>()
+            .AddScoped<ConfiguredAttributedRuntimeEchoExecutor>()
+            .AddScoped<AuthorizedAttributedRuntimeEchoExecutor>()
+            .AddWorkableSystem(builder => builder
+                .RequireAuthorization(false)
+                .AddWorkDefinitionSource<RuntimeOverloadDefinitionSource>())
+            .BuildServiceProvider()
+            .GetRequiredService<IWorkSystemRegistry>()
+            .Default;
+
+        await system.Start();
+
+        var definitions = system.Catalog.Definitions
+            .Where(definition => definition.Name.StartsWith("runtime.overload", StringComparison.Ordinal))
+            .ToArray();
+        Assert.Equal(15, definitions.Length);
+        Assert.All(definitions, definition => Assert.Equal(LogLevel.Warning, definition.Configuration.Logging.Level));
+        Assert.All(definitions, definition => Assert.Equal(["runtime.operator"], definition.Authorization.Operate.Groups));
+
+        var raw = await (await system.Queue.Enqueue("runtime.overload.raw")).WaitForCompletion();
+        var typed = await (await system.Queue.Enqueue("runtime.overload.typed", new EchoInput("typed"))).WaitForCompletion<EchoOutput>();
+        var service = await (await system.Queue.Enqueue("runtime.overload.service", new EchoInput("service"))).WaitForCompletion<EchoOutput>();
+        var attributed = await (await system.Queue.Enqueue("runtime.overload.attributed", new EchoInput("attributed"))).WaitForCompletion<EchoOutput>();
+
+        Assert.True(raw.IsCompletedSuccessfully);
+        Assert.Equal("typed", typed.Output?.Message);
+        Assert.Equal("service", service.Output?.Message);
+        Assert.Equal("attributed", attributed.Output?.Message);
+    }
+
+    [Fact]
     public async Task WorkDefinitionSourceUsesScopedServicesAndDisposesTheStartupScope()
     {
         var provider = new ServiceCollection()
@@ -437,11 +472,76 @@ public sealed class DynamicWorkSourceTests
         }
     }
 
+    private sealed class RuntimeOverloadDefinitionSource : IWorkDefinitionSource
+    {
+        public Task DefineWork(IWorkDefinitionBuilder builder, CancellationToken cancellationToken = default)
+        {
+            builder.WithWorkDefaults(
+                work =>
+                {
+                    work.AddWork(WorkDefinition.Create("runtime.overload.raw"), SuccessfulWork);
+                    work.AddWork(WorkDefinition.Create("runtime.overload.raw.config"), SuccessfulWork, NoOverrides);
+                    work.AddWork(WorkDefinition.Create("runtime.overload.raw.authorized"), SuccessfulWork, NoOverrides, NoAuthorizationOverrides);
+                    work.AddWork<EchoInput>(WorkDefinition.Create("runtime.overload.input"), SuccessfulTypedWork);
+                    work.AddWork<EchoInput>(WorkDefinition.Create("runtime.overload.input.config"), SuccessfulTypedWork, NoOverrides);
+                    work.AddWork<EchoInput>(WorkDefinition.Create("runtime.overload.input.authorized"), SuccessfulTypedWork, NoOverrides, NoAuthorizationOverrides);
+                    work.AddWork<EchoInput, EchoOutput>(WorkDefinition.Create("runtime.overload.typed"), EchoWork);
+                    work.AddWork<EchoInput, EchoOutput>(WorkDefinition.Create("runtime.overload.typed.config"), EchoWork, NoOverrides);
+                    work.AddWork<EchoInput, EchoOutput>(WorkDefinition.Create("runtime.overload.typed.authorized"), EchoWork, NoOverrides, NoAuthorizationOverrides);
+                    work.AddWork<RuntimeEchoExecutor>(WorkDefinition.Create("runtime.overload.service"));
+                    work.AddWork<RuntimeEchoExecutor>(WorkDefinition.Create("runtime.overload.service.config"), NoOverrides);
+                    work.AddWork<RuntimeEchoExecutor>(WorkDefinition.Create("runtime.overload.service.authorized"), NoOverrides, NoAuthorizationOverrides);
+                    work.AddWork<AttributedRuntimeEchoExecutor>();
+                    work.AddWork<ConfiguredAttributedRuntimeEchoExecutor>(NoOverrides);
+                    work.AddWork<AuthorizedAttributedRuntimeEchoExecutor>(NoOverrides, NoAuthorizationOverrides);
+                },
+                configure => configure.ConfigureLogging(level: LogLevel.Warning),
+                authorize => authorize.AllowOperateToGroups("runtime.operator"));
+            return Task.CompletedTask;
+        }
+
+        private static Task<WorkExecutionResult> SuccessfulTypedWork(
+            IWorkExecutionContext context,
+            EchoInput input,
+            CancellationToken cancellationToken)
+            => Task.FromResult(WorkExecutionResult.Success());
+
+        private static Task<WorkExecutionResult<EchoOutput>> EchoWork(
+            IWorkExecutionContext context,
+            EchoInput input,
+            CancellationToken cancellationToken)
+            => Task.FromResult(WorkExecutionResult<EchoOutput>.Success(new EchoOutput(input.Message)));
+
+        private static void NoOverrides(IWorkConfigurationBuilder builder)
+        {
+        }
+
+        private static void NoAuthorizationOverrides(IWorkAuthorizationBuilder builder)
+        {
+        }
+    }
+
     private sealed class RuntimeEchoExecutor : IWorkExecutor<EchoInput, EchoOutput>
     {
         public Task<WorkExecutionResult<EchoOutput>> Execute(IWorkExecutionContext context, EchoInput input, CancellationToken cancellationToken)
             => Task.FromResult(WorkExecutionResult<EchoOutput>.Success(new EchoOutput(input.Message)));
     }
+
+    [WorkMetadata("runtime.overload.attributed", "Dynamic:Definitions")]
+    private class AttributedRuntimeEchoExecutor : IWorkExecutor<EchoInput, EchoOutput>
+    {
+        public Task<WorkExecutionResult<EchoOutput>> Execute(
+            IWorkExecutionContext context,
+            EchoInput input,
+            CancellationToken cancellationToken)
+            => Task.FromResult(WorkExecutionResult<EchoOutput>.Success(new EchoOutput(input.Message)));
+    }
+
+    [WorkMetadata("runtime.overload.attributed.config", "Dynamic:Definitions")]
+    private sealed class ConfiguredAttributedRuntimeEchoExecutor : AttributedRuntimeEchoExecutor;
+
+    [WorkMetadata("runtime.overload.attributed.authorized", "Dynamic:Definitions")]
+    private sealed class AuthorizedAttributedRuntimeEchoExecutor : AttributedRuntimeEchoExecutor;
 
     private sealed class ScopedDefinitionSource(
         ScopedDefinitionDependency dependency,

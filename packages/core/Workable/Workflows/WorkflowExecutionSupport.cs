@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Threading.Channels;
 
 namespace Workable;
 
@@ -39,28 +40,104 @@ internal static class WorkflowExecutionSupport
         return await WaitForOutstanding(outstanding, cancellationToken);
     }
 
-    public static WorkflowRunStatus ToWorkflowStatus(WorkCompletionStatus status)
+    public static async Task<WorkflowRunCompletion> WaitForOutstanding(
+        IReadOnlyList<WorkerId> workerIds,
+        Func<WorkerId, IWorkerHandle> createWorkerHandle,
+        WorkflowRunState run,
+        RegisteredWorkflow workflow,
+        CancellationToken cancellationToken)
+    {
+        using var pendingCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        try
+        {
+            var pending = workerIds
+                .Distinct()
+                .Select(workerId => new PendingChildCompletion(
+                    workerId,
+                    createWorkerHandle(workerId).WaitForCompletion(pendingCancellation.Token)))
+                .ToArray();
+            var completions = new WorkflowChildCompletionQueue(
+                pending.Select(static item => (item.WorkerId, item.Completion)));
+
+            for (var remaining = pending.Length; remaining > 0; remaining--)
+            {
+                var completed = await completions.ReadAsync(cancellationToken);
+                var completion = completed.Completion;
+                var status = ToWorkflowStatus(
+                    completion.Status,
+                    completion.Status == WorkCompletionStatus.Canceled
+                        ? ResolveCanceledChildBehavior(run, workflow, completed.WorkerId)
+                        : WorkflowCanceledChildBehavior.Block);
+                if (status == WorkflowRunStatus.Completed)
+                {
+                    continue;
+                }
+
+                return new WorkflowRunCompletion(status, null, completion.Messages);
+            }
+
+            return new WorkflowRunCompletion(WorkflowRunStatus.Completed, null, []);
+        }
+        finally
+        {
+            pendingCancellation.Cancel();
+        }
+    }
+
+    public static WorkflowRunStatus ToWorkflowStatus(
+        WorkCompletionStatus status,
+        WorkflowCanceledChildBehavior canceledChildBehavior = WorkflowCanceledChildBehavior.Block)
         => status switch
         {
             WorkCompletionStatus.Completed => WorkflowRunStatus.Completed,
             WorkCompletionStatus.Failed => WorkflowRunStatus.Blocked,
             WorkCompletionStatus.Paused => WorkflowRunStatus.Blocked,
-            WorkCompletionStatus.Canceled => WorkflowRunStatus.Blocked,
+            WorkCompletionStatus.Canceled => canceledChildBehavior switch
+            {
+                WorkflowCanceledChildBehavior.Continue => WorkflowRunStatus.Completed,
+                WorkflowCanceledChildBehavior.CancelWorkflow => WorkflowRunStatus.Canceled,
+                _ => WorkflowRunStatus.Blocked,
+            },
             WorkCompletionStatus.Interrupted => WorkflowRunStatus.Blocked,
             WorkCompletionStatus.NotFound => WorkflowRunStatus.Failed,
             WorkCompletionStatus.Invalid => WorkflowRunStatus.Failed,
             _ => WorkflowRunStatus.Failed,
         };
 
+    public static WorkflowCanceledChildBehavior ResolveCanceledChildBehavior(
+        WorkflowRunState run,
+        RegisteredWorkflow workflow,
+        WorkerId workerId)
+    {
+        ArgumentNullException.ThrowIfNull(run);
+        ArgumentNullException.ThrowIfNull(workflow);
+
+        return FlattenSteps(workflow.Steps)
+            .OfType<DispatchEachWorkflowStepDefinition>()
+            .FirstOrDefault(step => run.StepContainsWorker(step.Name, workerId))?
+            .CanceledChildBehavior
+            ?? WorkflowCanceledChildBehavior.Block;
+    }
+
     public static WorkInput AddWorkflowIdentifiers(
         WorkInput? input,
         WorkflowRunId runId,
         string workflowDefinitionName,
         string stepName)
-        => (input ?? WorkInput.Empty)
+        => ((input ?? WorkInput.Empty) with
+            {
+                Identifiers = input?.Identifiers?
+                    .Where(static identifier => !IsReservedWorkflowIdentifier(identifier.Type))
+                    .ToHashSet(),
+            })
             .WithIdentifier(new WorkIdentifier("workflow-run", runId.ToString()))
             .WithIdentifier(new WorkIdentifier("workflow-definition", workflowDefinitionName))
             .WithIdentifier(new WorkIdentifier("workflow-step", stepName));
+
+    private static bool IsReservedWorkflowIdentifier(string type)
+        => type.Equals("workflow-run", StringComparison.OrdinalIgnoreCase) ||
+            type.Equals("workflow-definition", StringComparison.OrdinalIgnoreCase) ||
+            type.Equals("workflow-step", StringComparison.OrdinalIgnoreCase);
 
     public static WorkInput? ResolveDispatchInput(
         DispatchWorkflowStepDefinition step,
@@ -102,7 +179,68 @@ internal static class WorkflowExecutionSupport
         return (inputs, []);
     }
 
-    public static async Task CancelOutstandingChildren(
+    public static async Task<DispatchEachSourceCompletion> CollectDispatchEachSourceOutputs(
+        WorkflowRunState run,
+        RegisteredWorkflow workflow,
+        IReadOnlyList<WorkerId> sourceWorkerIds,
+        Func<WorkerId, CancellationToken, Task<WorkCompletion>> waitForCompletion,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(run);
+        ArgumentNullException.ThrowIfNull(workflow);
+        ArgumentNullException.ThrowIfNull(sourceWorkerIds);
+        ArgumentNullException.ThrowIfNull(waitForCompletion);
+
+        var workerIds = sourceWorkerIds.Distinct().ToArray();
+        var indexes = workerIds
+            .Select(static (workerId, index) => (workerId, index))
+            .ToDictionary(static item => item.workerId, static item => item.index);
+        var outputs = new WorkOutput?[workerIds.Length];
+        var included = new bool[workerIds.Length];
+        using var pendingCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        var completions = new WorkflowChildCompletionQueue(workerIds.Select(workerId =>
+            (workerId, waitForCompletion(workerId, pendingCancellation.Token))));
+        try
+        {
+            for (var remaining = workerIds.Length; remaining > 0; remaining--)
+            {
+                var completed = await completions.ReadAsync(cancellationToken);
+                var completion = completed.Completion;
+                if (completion.Status == WorkCompletionStatus.Canceled)
+                {
+                    var behavior = ResolveCanceledChildBehavior(run, workflow, completed.WorkerId);
+                    if (behavior == WorkflowCanceledChildBehavior.Continue)
+                    {
+                        continue;
+                    }
+
+                    return DispatchEachSourceCompletion.Failed(
+                        ToWorkflowStatus(completion.Status, behavior),
+                        completion.Messages);
+                }
+
+                if (completion.Status != WorkCompletionStatus.Completed)
+                {
+                    return DispatchEachSourceCompletion.Failed(
+                        ToWorkflowStatus(completion.Status),
+                        completion.Messages);
+                }
+
+                var index = indexes[completed.WorkerId];
+                outputs[index] = completion.Output;
+                included[index] = true;
+            }
+
+            return DispatchEachSourceCompletion.Completed(
+                outputs.Where((_, index) => included[index]).ToArray());
+        }
+        finally
+        {
+            pendingCancellation.Cancel();
+        }
+    }
+
+    public static async Task<ChildCancellationOutcome> CancelOutstandingChildren(
         WorkflowRunState run,
         IWorkSystemSession session,
         Func<WorkerId, CancellationToken, Task<WorkerSnapshot?>>? getAuthoritativeWorker,
@@ -111,16 +249,43 @@ internal static class WorkflowExecutionSupport
         ArgumentNullException.ThrowIfNull(run);
         ArgumentNullException.ThrowIfNull(session);
 
+        var failures = new List<WorkMessage>();
         foreach (var workerId in run.GetOutstandingWorkerIds().Distinct())
         {
-            var snapshot = await GetSettledWorkerSnapshot(workerId, session, getAuthoritativeWorker, cancellationToken);
-            if (snapshot is null || snapshot.IsFinal)
+            for (var attempt = 0; attempt < 8; attempt++)
             {
-                continue;
-            }
+                var snapshot = await GetWorkerSnapshot(workerId, session, getAuthoritativeWorker, cancellationToken);
+                if (snapshot is null || snapshot.IsFinal || snapshot.State == WorkerState.Canceling)
+                {
+                    break;
+                }
 
-            await session.Workers.Execute(snapshot.Version, WorkAction.Cancel, cancellationToken);
+                var outcome = await session.Workers.Execute(snapshot.Version, WorkAction.Cancel, cancellationToken);
+                if (outcome.IsAccepted || outcome.Status == WorkActionStatus.NotFound ||
+                    outcome.Worker?.IsFinal == true || outcome.Worker?.State == WorkerState.Canceling)
+                {
+                    break;
+                }
+
+                if (outcome.Status == WorkActionStatus.Conflict && attempt < 7)
+                {
+                    await Task.Delay(WorkerControlPollInterval, cancellationToken);
+                    continue;
+                }
+
+                failures.AddRange(outcome.Messages.Count > 0
+                    ? outcome.Messages
+                    : [WorkMessage.Error(
+                        "workable.workflow.child_cancel_rejected",
+                        $"Workflow child worker '{workerId}' rejected cancellation with status '{outcome.Status}'.",
+                        "workflow.child")]);
+                break;
+            }
         }
+
+        return failures.Count == 0
+            ? ChildCancellationOutcome.Success
+            : new ChildCancellationOutcome(false, failures);
     }
 
     public static async Task PauseOutstandingChildren(
@@ -204,6 +369,35 @@ internal static class WorkflowExecutionSupport
             }
 
             await Task.Delay(WorkerControlPollInterval, cancellationToken);
+        }
+    }
+
+    private static Task<WorkerSnapshot?> GetWorkerSnapshot(
+        WorkerId workerId,
+        IWorkSystemSession session,
+        Func<WorkerId, CancellationToken, Task<WorkerSnapshot?>>? getAuthoritativeWorker,
+        CancellationToken cancellationToken)
+        => getAuthoritativeWorker is not null
+            ? getAuthoritativeWorker(workerId, cancellationToken)
+            : session.Query.Worker(workerId, cancellationToken);
+
+    private static IEnumerable<WorkflowStepDefinition> FlattenSteps(
+        IEnumerable<WorkflowStepDefinition> steps)
+    {
+        foreach (var step in steps)
+        {
+            yield return step;
+
+            var children = step switch
+            {
+                ParallelWorkflowStepDefinition parallel => parallel.Steps,
+                BranchWorkflowStepDefinition branch => branch.Steps,
+                _ => [],
+            };
+            foreach (var child in FlattenSteps(children))
+            {
+                yield return child;
+            }
         }
     }
 
@@ -321,4 +515,83 @@ internal static class WorkflowExecutionSupport
         resolved = current;
         return true;
     }
+
+    private sealed record PendingChildCompletion(
+        WorkerId WorkerId,
+        Task<WorkCompletion> Completion);
+}
+
+internal sealed record DispatchEachSourceCompletion(
+    bool IsSuccessful,
+    WorkflowRunStatus FailureStatus,
+    IReadOnlyList<WorkOutput?> Outputs,
+    IReadOnlyList<WorkMessage> Messages)
+{
+    public static DispatchEachSourceCompletion Completed(IReadOnlyList<WorkOutput?> outputs)
+        => new(true, WorkflowRunStatus.Completed, outputs, []);
+
+    public static DispatchEachSourceCompletion Failed(
+        WorkflowRunStatus status,
+        IReadOnlyList<WorkMessage> messages)
+        => new(false, status, [], messages);
+}
+
+internal sealed record ChildCancellationOutcome(
+    bool IsSuccessful,
+    IReadOnlyList<WorkMessage> Messages)
+{
+    public static ChildCancellationOutcome Success { get; } = new(true, []);
+}
+
+internal sealed class WorkflowChildCompletionQueue
+{
+    private readonly Channel<PendingCompletion> completions = Channel.CreateUnbounded<PendingCompletion>(
+        new UnboundedChannelOptions
+        {
+            SingleReader = true,
+            SingleWriter = false,
+            AllowSynchronousContinuations = false,
+        });
+
+    public WorkflowChildCompletionQueue(
+        IEnumerable<(WorkerId WorkerId, Task<WorkCompletion> Completion)> pending)
+    {
+        ArgumentNullException.ThrowIfNull(pending);
+
+        foreach (var item in pending)
+        {
+            _ = item.Completion.ContinueWith(
+                completedTask =>
+                {
+                    // Observe faults even when the caller returns early after another child fails.
+                    // The reader still awaits the task and propagates the exception when selected.
+                    if (completedTask.IsFaulted)
+                    {
+                        _ = completedTask.Exception;
+                    }
+
+                    this.completions.Writer.TryWrite(
+                        new PendingCompletion(item.WorkerId, completedTask));
+                },
+                CancellationToken.None,
+                TaskContinuationOptions.ExecuteSynchronously,
+                TaskScheduler.Default);
+        }
+    }
+
+    public async ValueTask<CompletedChild> ReadAsync(CancellationToken cancellationToken)
+    {
+        var pending = await this.completions.Reader.ReadAsync(cancellationToken);
+        return new CompletedChild(
+            pending.WorkerId,
+            await pending.Completion.ConfigureAwait(false));
+    }
+
+    internal readonly record struct CompletedChild(
+        WorkerId WorkerId,
+        WorkCompletion Completion);
+
+    private readonly record struct PendingCompletion(
+        WorkerId WorkerId,
+        Task<WorkCompletion> Completion);
 }

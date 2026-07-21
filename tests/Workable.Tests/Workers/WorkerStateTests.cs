@@ -1,3 +1,5 @@
+using System.Collections.Concurrent;
+using System.Reflection;
 using Microsoft.Extensions.DependencyInjection;
 using Workable;
 
@@ -671,6 +673,108 @@ public sealed class WorkerStateTests
         await TestEventually.Until(async () => await system.Query.Worker(failedWorker.Id) is null);
 
         Assert.Equal(WorkCompletionStatus.Failed, failed.Status);
+    }
+
+    [Fact]
+    public async Task RetentionDefersPurgeWithoutReschedulingWhileFinalizationIsInProgress()
+    {
+        var definition = WorkDefinition.Create("retention-finalization-guard");
+        var system = CreateSystem(
+            definition,
+            (_, _, _) => Task.FromResult(WorkExecutionResult.Success()));
+        await system.Start();
+        var handle = await system.Queue.Enqueue(definition.Name);
+        var completion = await handle.WaitForCompletion();
+        var workerId = RequiredCompletionWorker(completion).Id;
+        var operations = ((InMemoryWorkSystem)system).WorkerOperations;
+        var retention = (WorkerRetentionScheduler)(typeof(WorkerOperations).GetField(
+            "retention",
+            BindingFlags.Instance | BindingFlags.NonPublic)
+            ?.GetValue(operations)
+            ?? throw new InvalidOperationException("Expected retention scheduler."));
+        var takeOldest = typeof(WorkerRetentionScheduler).GetMethod(
+            "TakeOldestFinalWorkers",
+            BindingFlags.Instance | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("Expected retention selection method.");
+        var selected = Assert.IsAssignableFrom<IReadOnlyList<WorkerId>>(
+            takeOldest.Invoke(retention, [definition.Id, 1]));
+        Assert.Equal(workerId, Assert.Single(selected));
+        var guardedWorkers = (ConcurrentDictionary<WorkerId, byte>)(typeof(WorkerOperations).GetField(
+            "finalizationInProgress",
+            BindingFlags.Instance | BindingFlags.NonPublic)
+            ?.GetValue(operations)
+            ?? throw new InvalidOperationException("Expected finalization guard registry."));
+        guardedWorkers[workerId] = 0;
+        var purge = typeof(WorkerOperations).GetMethod(
+            "PurgeFinalWorkersForRetention",
+            BindingFlags.Instance | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("Expected retention purge method.");
+        try
+        {
+            var purged = Assert.IsType<int>(purge.Invoke(operations, [new[] { workerId }, null]));
+
+            Assert.Equal(0, purged);
+            Assert.NotNull(await system.Query.Worker(workerId));
+            Assert.Equal(0, retention.Diagnostics.TrackedFinalWorkerCount);
+        }
+        finally
+        {
+            guardedWorkers.TryRemove(workerId, out _);
+        }
+    }
+
+    [Fact]
+    public async Task RetentionRetriesFailedWorkflowChildFinalizationBeforePurging()
+    {
+        var definition = WorkDefinition.Create(
+            "retention-finalization-retry",
+            configuration: WorkConfiguration.Default with
+            {
+                Retention = WorkRetentionConfiguration.Default with
+                {
+                    PurgeInterval = TimeSpan.FromMinutes(10),
+                },
+            });
+        var system = CreateSystem(
+            definition,
+            (_, _, _) => Task.FromResult(WorkExecutionResult.Success()));
+        await system.Start();
+        var handle = await system.Queue.Enqueue(
+            definition.Name,
+            WorkInput.Empty.WithIdentifier(new WorkIdentifier("workflow-run", Guid.NewGuid().ToString("D"))));
+        var completion = await handle.WaitForCompletion();
+        var workerId = RequiredCompletionWorker(completion).Id;
+        var operations = ((InMemoryWorkSystem)system).WorkerOperations;
+        var retryRequired = true;
+        var attempts = 0;
+        operations.SetWorkflowChildFinalizationRetryGuard(_ => retryRequired);
+        operations.SetWorkflowChildFinalizationObserver((_, _) =>
+        {
+            if (Interlocked.Increment(ref attempts) == 1)
+            {
+                throw new InvalidOperationException("receipt persistence failed");
+            }
+
+            retryRequired = false;
+            return Task.CompletedTask;
+        });
+        var purge = typeof(WorkerOperations).GetMethod(
+            "PurgeFinalWorkersForRetention",
+            BindingFlags.Instance | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("Expected retention purge method.");
+
+        var firstPurge = Assert.IsType<int>(purge.Invoke(operations, [new[] { workerId }, null]));
+        var secondPurge = Assert.IsType<int>(purge.Invoke(operations, [new[] { workerId }, null]));
+
+        Assert.Equal(0, firstPurge);
+        Assert.Equal(0, secondPurge);
+        Assert.Equal(2, attempts);
+        Assert.NotNull(await system.Query.Worker(workerId));
+
+        var finalPurge = Assert.IsType<int>(purge.Invoke(operations, [new[] { workerId }, null]));
+
+        Assert.Equal(1, finalPurge);
+        Assert.Null(await system.Query.Worker(workerId));
     }
 
     [Fact]

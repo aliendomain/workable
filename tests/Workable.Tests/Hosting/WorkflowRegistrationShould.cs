@@ -8,6 +8,35 @@ namespace Workable.Tests;
 public sealed class WorkflowRegistrationShould
 {
     [Fact]
+    public void PreservePreviouslyPublishedOperationInterfaceMembers()
+    {
+        var requestOverload = Assert.Single(
+            typeof(IWorkerOperations).GetMethods(),
+            method => method.Name == nameof(IWorkerOperations.Execute) &&
+                method.GetParameters()[1].ParameterType == typeof(WorkerActionRequest));
+        Assert.False(requestOverload.IsAbstract);
+        Assert.False(
+            typeof(IWorkExecutionContext)
+                .GetProperty(nameof(IWorkExecutionContext.CancellationRequestContext))!
+                .GetMethod!
+                .IsAbstract);
+    }
+
+    [Fact]
+    public async Task ForwardNewWorkerActionRequestsToPreviouslyPublishedImplementations()
+    {
+        IWorkerOperations operations = new PreviouslyPublishedWorkerOperations();
+        var worker = new WorkerVersion(WorkerId.New(), Revision: 7);
+
+        var outcome = await operations.Execute(
+            worker,
+            new WorkerActionRequest(WorkAction.Cancel, "operator request"));
+
+        Assert.Equal(WorkAction.Cancel, outcome.Action);
+        Assert.Equal(worker.WorkerId, outcome.WorkerId);
+    }
+
+    [Fact]
     public void RegisterDispatchWorkStep()
     {
         var services = new ServiceCollection();
@@ -31,6 +60,27 @@ public sealed class WorkflowRegistrationShould
         var step = Assert.IsType<DispatchWorkflowStepDefinition>(dispatch);
         Assert.Equal("prepare", step.Name);
         Assert.Equal("sample.prepare", step.WorkDefinition.Name);
+    }
+
+    private sealed class PreviouslyPublishedWorkerOperations : IWorkerOperations
+    {
+        public Task<WorkActionOutcome> Execute(
+            WorkerVersion worker,
+            WorkAction action,
+            CancellationToken cancellationToken = default)
+            => Task.FromResult(WorkActionOutcome.NotFound(action, worker.WorkerId));
+
+        public Task<WorkerBulkActionOutcome> ExecuteAll(
+            WorkAction action,
+            WorkerBulkActionFilter? filter = null,
+            CancellationToken cancellationToken = default)
+            => throw new NotSupportedException();
+
+        public Task<WorkActionOutcome> Reconfigure(
+            WorkerVersion worker,
+            WorkerReconfiguration changes,
+            CancellationToken cancellationToken = default)
+            => throw new NotSupportedException();
     }
 
     [Fact]
@@ -187,7 +237,60 @@ public sealed class WorkflowRegistrationShould
                 Assert.Equal("load", dispatchEach.SourceStep.StepName);
                 Assert.Equal("sample.process", dispatchEach.WorkDefinition.Name);
                 Assert.Equal("/items", dispatchEach.SourceSelector.JsonPointer);
+                Assert.Equal(WorkflowCanceledChildBehavior.Continue, dispatchEach.CanceledChildBehavior);
             });
+    }
+
+    [Fact]
+    public void RegisterDispatchEachCanceledChildBehavior()
+    {
+        var services = new ServiceCollection();
+        var loadDefinition = WorkDefinition.Create("sample.load.canceled-policy");
+        var processDefinition = WorkDefinition.Create("sample.process.canceled-policy");
+
+        services.AddWorkableSystem(builder => builder.AddWorkflow(
+            WorkflowDefinition.Create("workflow.demo.dispatch-each.canceled-policy"),
+            workflow =>
+            {
+                var load = workflow.DispatchWork<DispatchEachSourceOutput>("load", loadDefinition);
+                workflow.DispatchEach(
+                    "fan-out",
+                    load,
+                    processDefinition,
+                    output => output.Items,
+                    WorkflowCanceledChildBehavior.CancelWorkflow);
+            }));
+
+        using var provider = services.BuildServiceProvider();
+        var registration = provider.GetRequiredService<WorkSystemRegistration>();
+        var workflow = Assert.Single(registration.Workflows);
+        var fanOut = Assert.IsType<DispatchEachWorkflowStepDefinition>(workflow.Steps[1]);
+
+        Assert.Equal(WorkflowCanceledChildBehavior.CancelWorkflow, fanOut.CanceledChildBehavior);
+    }
+
+    [Fact]
+    public void RejectInvalidDispatchEachCanceledChildBehavior()
+    {
+        var services = new ServiceCollection();
+        var loadDefinition = WorkDefinition.Create("sample.load.invalid-canceled-policy");
+        var processDefinition = WorkDefinition.Create("sample.process.invalid-canceled-policy");
+
+        var exception = Assert.Throws<ArgumentOutOfRangeException>(() =>
+            services.AddWorkableSystem(builder => builder.AddWorkflow(
+                WorkflowDefinition.Create("workflow.demo.dispatch-each.invalid-canceled-policy"),
+                workflow =>
+                {
+                    var load = workflow.DispatchWork<DispatchEachSourceOutput>("load", loadDefinition);
+                    workflow.DispatchEach(
+                        "fan-out",
+                        load,
+                        processDefinition,
+                        output => output.Items,
+                        (WorkflowCanceledChildBehavior)999);
+                })));
+
+        Assert.Equal("canceledChildBehavior", exception.ParamName);
     }
 
     [Fact]
@@ -225,6 +328,128 @@ public sealed class WorkflowRegistrationShould
                 Assert.Equal("sample.process", dispatchEach.WorkDefinition.Name);
                 Assert.Equal("/items", dispatchEach.SourceSelector.JsonPointer);
             });
+    }
+
+    [Fact]
+    public void ReturnTypedReferenceToDispatchEachChildOutputs()
+    {
+        var services = new ServiceCollection();
+        var loadDefinition = WorkDefinition.Create("sample.load.chained");
+        var processDefinition = WorkDefinition.Create("sample.process.chained");
+        var gatherDefinition = WorkDefinition.Create("sample.gather.chained");
+
+        services.AddWorkableSystem(builder => builder.AddWorkflow(
+            WorkflowDefinition.Create("workflow.demo.dispatch-each.chained"),
+            workflow =>
+            {
+                var load = workflow.DispatchWork<DispatchEachSourceOutput>("load", loadDefinition);
+                var processed = workflow
+                    .DispatchEach("process", load, processDefinition, output => output.Items)
+                    .Outputs<DispatchEachSourceOutput>();
+
+                workflow.DispatchEach("gather", processed, gatherDefinition, output => output.Items);
+            }));
+
+        using var provider = services.BuildServiceProvider();
+        var registration = provider.GetRequiredService<WorkSystemRegistration>();
+        var workflow = Assert.Single(registration.Workflows);
+
+        var gather = Assert.IsType<DispatchEachWorkflowStepDefinition>(workflow.Steps[2]);
+        Assert.Equal("process", gather.SourceStep.StepName);
+        Assert.Equal("sample.gather.chained", gather.WorkDefinition.Name);
+        Assert.Equal("/items", gather.SourceSelector.JsonPointer);
+    }
+
+    [Fact]
+    public void ContinueBuildingTheSameWorkflowFromDispatchEachResult()
+    {
+        var services = new ServiceCollection();
+        var loadDefinition = WorkDefinition.Create("sample.load.continue");
+        var processDefinition = WorkDefinition.Create("sample.process.continue");
+        var directDefinition = WorkDefinition.Create("sample.direct.continue");
+        var typedDefinition = WorkDefinition.Create("sample.typed.continue");
+        var workflowInputDefinition = WorkDefinition.Create("sample.workflow-input.continue");
+        var typedWorkflowInputDefinition = WorkDefinition.Create("sample.typed-workflow-input.continue");
+        var nestedFanOutDefinition = WorkDefinition.Create("sample.nested-fan-out.continue");
+        var parallelDefinition = WorkDefinition.Create("sample.parallel.continue");
+        var directInput = WorkInput.FromValue(new DispatchEachSourceItem("direct-input"));
+        WorkflowStepReference<DispatchEachSourceOutput>? typedDispatch = null;
+        WorkflowStepReference<DispatchEachSourceOutput>? typedWorkflowInputDispatch = null;
+
+        services.AddWorkableSystem(builder => builder.AddWorkflow(
+            WorkflowDefinition.Create("workflow.demo.dispatch-each.continue"),
+            workflow =>
+            {
+                var load = workflow.DispatchWork<DispatchEachSourceOutput>("load", loadDefinition);
+                var fanOut = workflow.DispatchEach(
+                    "fan-out",
+                    load,
+                    processDefinition,
+                    output => output.Items);
+                var fanOutOutputs = fanOut.Outputs<DispatchEachSourceOutput>();
+
+                fanOut.DispatchWork("direct", directDefinition, directInput);
+                typedDispatch = fanOut.DispatchWork<DispatchEachSourceOutput>("typed", typedDefinition);
+                fanOut.DispatchWorkFromWorkflowInput("workflow-input", workflowInputDefinition);
+                typedWorkflowInputDispatch = fanOut.DispatchWorkFromWorkflowInput<DispatchEachSourceOutput>(
+                    "typed-workflow-input",
+                    typedWorkflowInputDefinition);
+                fanOut.DispatchEach(
+                    "nested-fan-out",
+                    fanOutOutputs,
+                    nestedFanOutDefinition,
+                    output => output.Items,
+                    WorkflowCanceledChildBehavior.CancelWorkflow);
+                fanOut.RunParallel(
+                    "parallel",
+                    parallel => parallel.DispatchWork("parallel-child", parallelDefinition));
+                fanOut.Join("join");
+            }));
+
+        using var provider = services.BuildServiceProvider();
+        var registration = provider.GetRequiredService<WorkSystemRegistration>();
+        var workflow = Assert.Single(registration.Workflows);
+
+        Assert.Equal(
+            [
+                "load",
+                "fan-out",
+                "direct",
+                "typed",
+                "workflow-input",
+                "typed-workflow-input",
+                "nested-fan-out",
+                "parallel",
+                "join",
+            ],
+            workflow.Steps.Select(step => step.Name).ToArray());
+        Assert.Equal("typed", typedDispatch?.StepName);
+        Assert.Equal("typed-workflow-input", typedWorkflowInputDispatch?.StepName);
+
+        var direct = Assert.IsType<DispatchWorkflowStepDefinition>(workflow.Steps[2]);
+        var typed = Assert.IsType<DispatchWorkflowStepDefinition>(workflow.Steps[3]);
+        Assert.Equal("sample.direct.continue", direct.WorkDefinition.Name);
+        Assert.Same(directInput, direct.Input);
+        Assert.Equal("sample.typed.continue", typed.WorkDefinition.Name);
+
+        var workflowInput = Assert.IsType<DispatchWorkflowStepDefinition>(workflow.Steps[4]);
+        var typedWorkflowInput = Assert.IsType<DispatchWorkflowStepDefinition>(workflow.Steps[5]);
+        Assert.Equal("sample.workflow-input.continue", workflowInput.WorkDefinition.Name);
+        Assert.Equal("sample.typed-workflow-input.continue", typedWorkflowInput.WorkDefinition.Name);
+        Assert.Equal(WorkflowDispatchInputSource.WorkflowInput, workflowInput.InputSource);
+        Assert.Equal(WorkflowDispatchInputSource.WorkflowInput, typedWorkflowInput.InputSource);
+
+        var nestedFanOut = Assert.IsType<DispatchEachWorkflowStepDefinition>(workflow.Steps[6]);
+        Assert.Equal("fan-out", nestedFanOut.SourceStep.StepName);
+        Assert.Equal("sample.nested-fan-out.continue", nestedFanOut.WorkDefinition.Name);
+        Assert.Equal("/items", nestedFanOut.SourceSelector.JsonPointer);
+        Assert.Equal(WorkflowCanceledChildBehavior.CancelWorkflow, nestedFanOut.CanceledChildBehavior);
+
+        var parallel = Assert.IsType<ParallelWorkflowStepDefinition>(workflow.Steps[7]);
+        var parallelChild = Assert.IsType<DispatchWorkflowStepDefinition>(Assert.Single(parallel.Steps));
+        Assert.Equal("parallel-child", parallelChild.Name);
+        Assert.Equal("sample.parallel.continue", parallelChild.WorkDefinition.Name);
+        Assert.IsType<JoinWorkflowStepDefinition>(workflow.Steps[8]);
     }
 
     [Fact]

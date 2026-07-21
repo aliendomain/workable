@@ -33,6 +33,7 @@ internal sealed class WorkerRecord(
     private WorkProfileSnapshot? profile;
     private WorkProfileSnapshot? pendingIterationProfile;
     private CurrentWorkerIteration? currentIteration;
+    private WorkRequestContext? cancellationRequestContext;
     private WorkInterruptionReason? interruptionReason;
     private DateTimeOffset? firstStartedAt;
     private DateTimeOffset? nextRunAt;
@@ -130,6 +131,17 @@ internal sealed class WorkerRecord(
         }
     }
 
+    public WorkRequestContext? CancellationRequestContext
+    {
+        get
+        {
+            lock (this.sync)
+            {
+                return this.cancellationRequestContext;
+            }
+        }
+    }
+
     public bool IsCompletionSignaled
     {
         get
@@ -221,6 +233,7 @@ internal sealed class WorkerRecord(
             var wasFailed = this.State == WorkerState.Failed;
             this.ReleaseExecutionCancellationLocked();
             this.executionCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            this.cancellationRequestContext = null;
             executionToken = this.executionCancellation.Token;
             this.ApplyAcceptedTransitionLocked(transition, advancesRevision);
             this.IsStartDeferred = false;
@@ -286,8 +299,12 @@ internal sealed class WorkerRecord(
         return outcome;
     }
 
-    public WorkActionOutcome RequestCancel(long expectedRevision)
+    public WorkActionOutcome RequestCancel(
+        long expectedRevision,
+        WorkRequestContext cancellationRequestContext)
     {
+        ArgumentNullException.ThrowIfNull(cancellationRequestContext);
+
         CancellationTokenSource? cancellation = null;
         WorkActionOutcome outcome;
 
@@ -300,6 +317,7 @@ internal sealed class WorkerRecord(
             }
 
             var transition = checkedTransition.RequiredTransition;
+            this.cancellationRequestContext = cancellationRequestContext;
             this.ApplyAcceptedTransitionLocked(transition);
 
             cancellation = transition.CancelsExecution ? this.executionCancellation : null;
@@ -698,8 +716,13 @@ internal sealed class WorkerRecord(
         }
     }
 
-    public bool TryAutoCancelFailedWorker(long requiredStateSequence, out WorkActionOutcome? outcome)
+    public bool TryAutoCancelFailedWorker(
+        long requiredStateSequence,
+        WorkRequestContext cancellationRequestContext,
+        out WorkActionOutcome? outcome)
     {
+        ArgumentNullException.ThrowIfNull(cancellationRequestContext);
+
         lock (this.sync)
         {
             outcome = null;
@@ -721,6 +744,7 @@ internal sealed class WorkerRecord(
             }
 
             var transition = checkedTransition.RequiredTransition;
+            this.cancellationRequestContext = cancellationRequestContext;
             this.ApplyAcceptedTransitionLocked(transition);
             this.SignalRecurrenceWaitLocked();
             outcome = this.ToOutcomeLocked(transition);

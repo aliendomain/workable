@@ -34,8 +34,9 @@ The same interface also carries the workflow-oriented persistence protocol:
 1. `InitializeWorkflows(...)`
 2. `BeginWorkflowTransaction(...)`
 3. `ListWorkflowRuns(...)`
-4. `UpsertWorkflowRun(...)`
-5. `DeleteWorkflowRun(...)`
+4. `DurableWorkersExist(...)`
+5. `UpsertWorkflowRun(...)`
+6. `DeleteWorkflowRun(...)`
 
 That protocol tells you a lot about Workable's durability model:
 
@@ -60,6 +61,7 @@ At a practical level, a provider is responsible for:
 - initializing workflow persistence for one system
 - beginning workflow persistence transactions that can also be passed through worker queue durability options
 - listing durable workflow runs that should be materialized during startup
+- checking retained child-worker existence in batches while durable joins are waiting
 - storing the latest workflow-run snapshot
 - deleting persisted workflow runs after their retained final lifetime ends
 
@@ -92,6 +94,8 @@ The durability-related record types all describe one coherent protocol:
 `IWorkflowPersistenceTransaction` extends `IWorkQueueDurabilityTransaction`, which lets one store-defined transaction span workflow-run persistence and durable child-worker enqueue.
 
 Workable uses that transaction boundary when a durable workflow advances from one dispatch boundary to the next. The same provider transaction can hold the updated workflow-run snapshot and the child workers that were queued from that step.
+
+Durable joins coalesce outstanding-child retention checks through `DurableWorkersExist(...)`. Providers should override it with one set-based lookup; its default implementation calls `DurableWorkerExists(...)` for each id so existing providers remain compatible.
 
 ### Error Semantics
 

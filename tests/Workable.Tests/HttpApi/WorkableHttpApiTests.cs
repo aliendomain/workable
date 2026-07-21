@@ -2006,6 +2006,74 @@ public sealed class WorkableHttpApiTests
     }
 
     [Fact]
+    public async Task SurfaceGateAllowsPreflightAndReturnsItsStableAnonymousChallenge()
+    {
+        static void DisableTransportPolicy(IServiceCollection services)
+            => services.PostConfigure<WorkableAspNetCoreAuthorizationOptions>(options =>
+                options.TransportAuthenticationScheme = null);
+
+        using var preflightHost = await CreateHttpHost(
+            authenticated: false,
+            surfaceAccessGroups: ["surface.operator"],
+            configureServices: DisableTransportPolicy);
+        using var preflightRequest = new HttpRequestMessage(
+            HttpMethod.Options,
+            "/workable/definitions");
+        using var preflight = await preflightHost.GetTestClient().SendAsync(preflightRequest);
+
+        using var anonymousHost = await CreateHttpHost(
+            authenticated: false,
+            surfaceAccessGroups: ["surface.operator"],
+            configureServices: DisableTransportPolicy);
+        using var anonymous = await anonymousHost.GetTestClient().GetAsync("/workable/definitions");
+        var anonymousJson = await anonymous.Content.ReadAsStringAsync();
+
+        Assert.NotEqual(HttpStatusCode.Unauthorized, preflight.StatusCode);
+        Assert.NotEqual(HttpStatusCode.Forbidden, preflight.StatusCode);
+        Assert.Equal(HttpStatusCode.Unauthorized, anonymous.StatusCode);
+        Assert.Contains("workable.http.authentication_required", anonymousJson);
+    }
+
+    [Fact]
+    public async Task MappingRejectsAnyAuthorizationDisabledSystemAndNamesIt()
+    {
+        using var host = new HostBuilder()
+            .ConfigureWebHost(web =>
+            {
+                web.UseTestServer();
+                web.ConfigureServices(services =>
+                {
+                    services.AddRouting();
+                    services.AddWorkableSystem(builder => builder.RequireAuthorization(false));
+                    services.AddWorkableHttpApi();
+                });
+                web.Configure(app =>
+                {
+                    app.UseRouting();
+                    app.UseEndpoints(endpoints => endpoints.MapWorkableApi("/workable"));
+                });
+            })
+            .Build();
+
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(() => host.StartAsync());
+
+        Assert.Contains("<default>", exception.Message, StringComparison.Ordinal);
+        Assert.Contains("do not require authorization", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task MalformedConfiguredUrlsDoNotEnableDebugRoutes()
+    {
+        using var host = await CreateHttpHost(
+            authenticated: false,
+            configuredUrls: "not-an-absolute-url");
+
+        using var response = await host.GetTestClient().GetAsync("/workable/debug/realtime");
+
+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+    }
+
+    [Fact]
     public async Task MappedHttpCanUseExplicitWorkableAuthenticationSchemeWithoutChangingHostDefaultScheme()
     {
         using var host = await CreateExplicitSchemeHttpHost();
@@ -3199,6 +3267,54 @@ public sealed class WorkableHttpApiTests
     }
 
     [Fact]
+    public async Task MappedHttpWorkerActionRoutesRejectUnsupportedActionsWithTheStableContract()
+    {
+        using var host = await CreateHttpHost();
+        var client = host.GetTestClient();
+
+        var bulk = await client.PostAsJsonAsync(
+            "/workable/workers/actions/not-a-real-action",
+            new { description = "Attempt unsupported bulk worker action." });
+        var single = await client.PostAsJsonAsync(
+            $"/workable/workers/{Guid.NewGuid():D}/actions/not-a-real-action",
+            new { revision = 1, description = "Attempt unsupported worker action." });
+
+        Assert.Equal(HttpStatusCode.BadRequest, bulk.StatusCode);
+        Assert.Contains("workable.http.action.invalid", await bulk.Content.ReadAsStringAsync(), StringComparison.Ordinal);
+        Assert.Equal(HttpStatusCode.BadRequest, single.StatusCode);
+        Assert.Contains("workable.http.action.invalid", await single.Content.ReadAsStringAsync(), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task MappedHttpQueryRoutesReturnTheirDocumentedSuccessPayloads()
+    {
+        using var host = await CreateHttpHost();
+        var client = host.GetTestClient();
+
+        var components = await client.PostAsJsonAsync(
+            "/workable/components/query",
+            new
+            {
+                components = new[]
+                {
+                    new { id = "system", type = "system", shape = "compact" },
+                },
+            });
+        var definitions = await client.PostAsJsonAsync("/workable/definitions/query", new { });
+        var definitionInfo = await client.GetAsync("/workable/definitions/http.route.case/info");
+        var statusSummary = await client.PostAsJsonAsync("/workable/workers/status-summary", new { });
+
+        components.EnsureSuccessStatusCode();
+        definitions.EnsureSuccessStatusCode();
+        definitionInfo.EnsureSuccessStatusCode();
+        statusSummary.EnsureSuccessStatusCode();
+        Assert.Contains("system", await components.Content.ReadAsStringAsync(), StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("http.route.case", await definitions.Content.ReadAsStringAsync(), StringComparison.Ordinal);
+        Assert.Contains("http.route.case", await definitionInfo.Content.ReadAsStringAsync(), StringComparison.Ordinal);
+        Assert.Contains("counts", await statusSummary.Content.ReadAsStringAsync(), StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public async Task MappedHttpWorkflowStartRouteRequiresWorkflowOperatePermission()
     {
         using var host = await CreateHttpHost(
@@ -3341,6 +3457,65 @@ public sealed class WorkableHttpApiTests
         Assert.Equal(System.Net.HttpStatusCode.NotFound, response.StatusCode);
         var json = await response.Content.ReadAsStringAsync();
         Assert.Contains("workable.http.system.not_found", json);
+    }
+
+    [Fact]
+    public async Task EveryMappedNamedSystemQueryRouteReturnsStructuredNotFoundForUnknownSystem()
+    {
+        using var host = await CreateMultiSystemHttpHost();
+        var client = host.GetTestClient();
+        const string workerId = "11111111-2222-3333-4444-555555555555";
+        var routes = new (HttpMethod Method, string Path)[]
+        {
+            (HttpMethod.Post, "/components/query"),
+            (HttpMethod.Post, "/components/system"),
+            (HttpMethod.Post, "/views/overview"),
+            (HttpMethod.Post, "/definitions/query"),
+            (HttpMethod.Get, "/definitions/missing/info"),
+            (HttpMethod.Get, "/work/missing/info"),
+            (HttpMethod.Get, $"/workers/{workerId}"),
+            (HttpMethod.Get, $"/workers/{workerId}/configuration"),
+            (HttpMethod.Get, $"/workers/{workerId}/overview"),
+            (HttpMethod.Get, $"/workers/{workerId}/overview/logs"),
+            (HttpMethod.Get, $"/workers/{workerId}/overview/timeline"),
+            (HttpMethod.Get, $"/workers/{workerId}/iterations/1"),
+            (HttpMethod.Get, $"/workers/{workerId}/iterations/1/overview"),
+            (HttpMethod.Get, $"/workers/{workerId}/iterations/1/overview/messages"),
+            (HttpMethod.Get, $"/workers/{workerId}/iterations/1/overview/logs"),
+            (HttpMethod.Get, "/workers/status-summary"),
+            (HttpMethod.Post, "/workers/status-summary"),
+            (HttpMethod.Post, "/work-keys/query"),
+            (HttpMethod.Get, "/work-keys/types"),
+            (HttpMethod.Post, "/work-keys/types/query"),
+            (HttpMethod.Post, "/work-iteration-keys/query"),
+            (HttpMethod.Get, "/work-iteration-keys/types"),
+            (HttpMethod.Post, "/work-iteration-keys/types/query"),
+            (HttpMethod.Post, "/workers/actions/pause"),
+            (HttpMethod.Post, $"/workers/{workerId}/actions/pause"),
+            (HttpMethod.Post, $"/workers/{workerId}/reconfigure"),
+            (HttpMethod.Get, "/workflow-runs"),
+            (HttpMethod.Get, $"/workflow-runs/{workerId}"),
+            (HttpMethod.Get, $"/workflow-runs/{workerId}/steps/step/children"),
+            (HttpMethod.Post, "/workflows/example"),
+            (HttpMethod.Post, $"/workflow-runs/{workerId}/actions/cancel"),
+        };
+
+        foreach (var (method, path) in routes)
+        {
+            using var request = new HttpRequestMessage(
+                method,
+                $"/workable/systems/missing{path}");
+            if (method == HttpMethod.Post)
+            {
+                request.Content = JsonContent.Create(new { });
+            }
+
+            using var response = await client.SendAsync(request);
+            var json = await response.Content.ReadAsStringAsync();
+
+            Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+            Assert.Contains("workable.http.system.not_found", json);
+        }
     }
 
     [Fact]

@@ -15,6 +15,22 @@ public sealed class WorkflowExecutionSupportShould
     }
 
     [Fact]
+    public void FinalWorkflowStateCannotRegressToANonFinalState()
+    {
+        var run = WorkflowRunState.Create(
+            CreateWorkflow(Dispatch("dispatch", "sample.dispatch")),
+            WorkRequestContext.Create(WorkInvocationChannel.InProcess));
+        var canceled = run.Cancel();
+        Assert.True(run.TrySetCompletion(canceled));
+
+        var blocked = run.Block([WorkMessage.Error("sample.late", "Late failure.")]);
+        run.MarkRunning();
+
+        Assert.Equal(WorkflowRunStatus.Canceled, blocked.Status);
+        Assert.Equal(WorkflowRunStatus.Canceled, run.GetStatus());
+    }
+
+    [Fact]
     public async Task ReturnCompletedWithoutCreatingHandlesWhenNoOutstandingWorkersExist()
     {
         var createdHandles = 0;
@@ -52,6 +68,36 @@ public sealed class WorkflowExecutionSupportShould
 
         Assert.True(completion.IsCompletedSuccessfully);
         Assert.Equal(1, Volatile.Read(ref createdHandles));
+    }
+
+    [Fact]
+    public async Task CancelRemainingWaitersWhenOneOutstandingChildBlocksTheWorkflow()
+    {
+        var canceledWorkerId = WorkerId.New();
+        var pendingWorkerId = WorkerId.New();
+        var pendingWaitCanceled = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var workflow = CreateWorkflow(DispatchEach(
+            selector: null,
+            canceledChildBehavior: WorkflowCanceledChildBehavior.Block));
+        var run = WorkflowRunState.Create(
+            workflow,
+            WorkRequestContext.Create(WorkInvocationChannel.InProcess));
+        run.MarkStepCompleted("dispatch-each", [canceledWorkerId, pendingWorkerId]);
+
+        var completion = await WorkflowExecutionSupport.WaitForOutstanding(
+            [canceledWorkerId, pendingWorkerId],
+            workerId => workerId == canceledWorkerId
+                ? new TestWorkerHandle(
+                    WorkQueueOutcome.Accepted(workerId),
+                    workerId,
+                    Task.FromResult(new WorkCompletion(WorkCompletionStatus.Canceled, null, null, [])))
+                : new CancellationAwareWorkerHandle(workerId, pendingWaitCanceled),
+            run,
+            workflow,
+            CancellationToken.None);
+
+        Assert.Equal(WorkflowRunStatus.Blocked, completion.Status);
+        await pendingWaitCanceled.Task.WaitAsync(TimeSpan.FromSeconds(1));
     }
 
     [Theory]
@@ -96,6 +142,109 @@ public sealed class WorkflowExecutionSupportShould
     }
 
     [Fact]
+    public void AddWorkflowIdentifiersReplacesCallerSuppliedReservedIdentifiers()
+    {
+        var input = WorkInput.Empty.WithIdentifiers(
+        [
+            new WorkIdentifier("workflow-run", "attacker-run"),
+            new WorkIdentifier("WORKFLOW-STEP", "attacker-step"),
+            new WorkIdentifier("workflow-definition", "attacker-definition"),
+            new WorkIdentifier("tenant", "acme"),
+        ]);
+
+        var updated = WorkflowExecutionSupport.AddWorkflowIdentifiers(
+            input,
+            new WorkflowRunId(Guid.Parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")),
+            "workflow.demo",
+            "dispatch");
+
+        Assert.Contains(new WorkIdentifier("tenant", "acme"), updated.Identifiers!);
+        Assert.DoesNotContain(updated.Identifiers!, identifier => identifier.Value.StartsWith("attacker", StringComparison.Ordinal));
+        Assert.Single(updated.Identifiers!, identifier => identifier.Type == "workflow-run");
+        Assert.Single(updated.Identifiers!, identifier => identifier.Type == "workflow-definition");
+        Assert.Single(updated.Identifiers!, identifier => identifier.Type == "workflow-step");
+    }
+
+    [Fact]
+    public async Task CollectDispatchEachSourcesFailsFastWhenLaterChildCancels()
+    {
+        var pendingWorkerId = WorkerId.New();
+        var canceledWorkerId = WorkerId.New();
+        var pendingWaitCanceled = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var workflow = CreateWorkflow(DispatchEach(
+            selector: null,
+            canceledChildBehavior: WorkflowCanceledChildBehavior.Block));
+        var run = WorkflowRunState.Create(
+            workflow,
+            WorkRequestContext.Create(WorkInvocationChannel.InProcess));
+        run.MarkStepCompleted("dispatch-each", [pendingWorkerId, canceledWorkerId]);
+
+        var result = await WorkflowExecutionSupport.CollectDispatchEachSourceOutputs(
+            run,
+            workflow,
+            [pendingWorkerId, canceledWorkerId],
+            async (workerId, cancellationToken) =>
+            {
+                if (workerId == canceledWorkerId)
+                {
+                    return new WorkCompletion(WorkCompletionStatus.Canceled, null, null, []);
+                }
+
+                try
+                {
+                    await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+                    throw new InvalidOperationException("Expected the pending source wait to be canceled.");
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    pendingWaitCanceled.TrySetResult();
+                    throw;
+                }
+            },
+            CancellationToken.None);
+
+        Assert.False(result.IsSuccessful);
+        Assert.Equal(WorkflowRunStatus.Blocked, result.FailureStatus);
+        await pendingWaitCanceled.Task.WaitAsync(TimeSpan.FromSeconds(1));
+    }
+
+    [Fact]
+    public void ExpandDispatchEachArraysAtTheRootAndAcrossEscapedJsonPointerSegments()
+    {
+        var root = WorkflowExecutionSupport.CreateDispatchEachInputs(
+            DispatchEach(selector: null),
+            [WorkOutput.FromJson("""[{"id":"root"}]""")]);
+        var nested = WorkflowExecutionSupport.CreateDispatchEachInputs(
+            DispatchEach("/groups/0/a~1b~0c"),
+            [WorkOutput.FromJson("""{"groups":[{"a/b~c":[{"id":"nested"}]}]}""")]);
+
+        Assert.Empty(root.Messages);
+        Assert.Equal("""{"id":"root"}""", Assert.Single(root.Inputs).Json);
+        Assert.Empty(nested.Messages);
+        Assert.Equal("""{"id":"nested"}""", Assert.Single(nested.Inputs).Json);
+    }
+
+    [Theory]
+    [InlineData(null, "/items", "workable.workflow.dispatch_each.source_output_required")]
+    [InlineData("not-json", "/items", "workable.workflow.dispatch_each.source_output_invalid_json")]
+    [InlineData("{\"items\":[]}", "items", "workable.workflow.dispatch_each.source_pointer_not_found")]
+    [InlineData("{\"items\":[]}", "/missing", "workable.workflow.dispatch_each.source_pointer_not_found")]
+    [InlineData("{\"items\":[]}", "/items/2", "workable.workflow.dispatch_each.source_pointer_not_found")]
+    [InlineData("{\"items\":{}}", "/items", "workable.workflow.dispatch_each.source_output_not_array")]
+    public void RejectDispatchEachOutputsThatCannotResolveToAnArray(
+        string? json,
+        string selector,
+        string expectedCode)
+    {
+        var expansion = WorkflowExecutionSupport.CreateDispatchEachInputs(
+            DispatchEach(selector),
+            [json is null ? null : WorkOutput.FromJson(json)]);
+
+        Assert.Empty(expansion.Inputs);
+        Assert.Equal(expectedCode, Assert.Single(expansion.Messages).Code);
+    }
+
+    [Fact]
     public async Task CancelOutstandingChildrenCancelsDistinctNonFinalWorkersOnly()
     {
         var runningWorkerId = WorkerId.New();
@@ -124,6 +273,67 @@ public sealed class WorkflowExecutionSupportShould
                 Assert.Equal(runningWorkerId, execution.Worker.WorkerId);
                 Assert.Equal(WorkAction.Cancel, execution.Action);
             });
+    }
+
+    [Fact]
+    public async Task CancelOutstandingChildrenReportsRejectedCancellation()
+    {
+        var workerId = WorkerId.New();
+        var run = CreateRunWithOutstandingWorkers(workerId);
+        var rejection = WorkActionOutcome.Unauthorized(WorkAction.Cancel, workerId);
+        var workers = new RecordingWorkerOperations(new Dictionary<WorkerId, Queue<WorkActionOutcome>>
+        {
+            [workerId] = new([rejection]),
+        });
+        var snapshots = CreateSnapshotSource(new Dictionary<WorkerId, Queue<WorkerSnapshot?>>
+        {
+            [workerId] = new([CreateSnapshot(workerId, WorkerState.Running)]),
+        });
+
+        var result = await WorkflowExecutionSupport.CancelOutstandingChildren(
+            run,
+            new TestWorkSystemSession(workers),
+            snapshots,
+            CancellationToken.None);
+
+        Assert.False(result.IsSuccessful);
+        Assert.Equal(rejection.Messages, result.Messages);
+        Assert.Single(workers.Executions);
+    }
+
+    [Fact]
+    public async Task CancelOutstandingChildrenRetriesRevisionConflicts()
+    {
+        var workerId = WorkerId.New();
+        var run = CreateRunWithOutstandingWorkers(workerId);
+        var workers = new RecordingWorkerOperations(new Dictionary<WorkerId, Queue<WorkActionOutcome>>
+        {
+            [workerId] = new([
+                WorkActionOutcome.Conflict(
+                    WorkAction.Cancel,
+                    CreateSnapshot(workerId, WorkerState.Running, revision: 2),
+                    [WorkMessage.Error("workable.worker.conflict", "The worker changed.", "worker.revision")]),
+                WorkActionOutcome.Accepted(
+                    WorkAction.Cancel,
+                    CreateSnapshot(workerId, WorkerState.Canceling, revision: 3)),
+            ]),
+        });
+        var snapshots = CreateSnapshotSource(new Dictionary<WorkerId, Queue<WorkerSnapshot?>>
+        {
+            [workerId] = new([
+                CreateSnapshot(workerId, WorkerState.Running, revision: 1),
+                CreateSnapshot(workerId, WorkerState.Running, revision: 2),
+            ]),
+        });
+
+        var result = await WorkflowExecutionSupport.CancelOutstandingChildren(
+            run,
+            new TestWorkSystemSession(workers),
+            snapshots,
+            CancellationToken.None);
+
+        Assert.True(result.IsSuccessful);
+        Assert.Equal([1L, 2L], workers.Executions.Select(execution => execution.Worker.Revision));
     }
 
     [Fact]
@@ -303,6 +513,32 @@ public sealed class WorkflowExecutionSupportShould
             => (await this.WaitForCompletion(cancellationToken)).ToTyped<TOutput>();
     }
 
+    private sealed class CancellationAwareWorkerHandle(
+        WorkerId workerId,
+        TaskCompletionSource waitCanceled) : IWorkerHandle
+    {
+        public WorkQueueOutcome QueueOutcome { get; } = WorkQueueOutcome.Accepted(workerId);
+
+        public WorkerId? WorkerId { get; } = workerId;
+
+        public async Task<WorkCompletion> WaitForCompletion(CancellationToken cancellationToken = default)
+        {
+            try
+            {
+                await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+                throw new InvalidOperationException("Expected the pending child wait to be canceled.");
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                waitCanceled.TrySetResult();
+                throw;
+            }
+        }
+
+        public async Task<WorkCompletion<TOutput>> WaitForCompletion<TOutput>(CancellationToken cancellationToken = default)
+            => (await this.WaitForCompletion(cancellationToken)).ToTyped<TOutput>();
+    }
+
     private sealed class TestWorkSystemSession(IWorkerOperations workers) : IWorkSystemSession
     {
         public string? SystemName => "workflow-tests";
@@ -354,6 +590,12 @@ public sealed class WorkflowExecutionSupportShould
             return Task.FromResult(WorkActionOutcome.Accepted(action, CreateSnapshot(worker.WorkerId, nextState, worker.Revision), []));
         }
 
+        public Task<WorkActionOutcome> Execute(
+            WorkerVersion worker,
+            WorkerActionRequest request,
+            CancellationToken cancellationToken = default)
+            => this.Execute(worker, request.Action, cancellationToken);
+
         public Task<WorkerBulkActionOutcome> ExecuteAll(
             WorkAction action,
             WorkerBulkActionFilter? filter = null,
@@ -372,4 +614,14 @@ public sealed class WorkflowExecutionSupportShould
         string workDefinitionName,
         WorkInput? input = null)
         => new(stepName, WorkDefinition.Create(workDefinitionName), input);
+
+    private static DispatchEachWorkflowStepDefinition DispatchEach(
+        string? selector,
+        WorkflowCanceledChildBehavior canceledChildBehavior = WorkflowCanceledChildBehavior.Continue)
+        => new(
+            "dispatch-each",
+            new WorkflowStepReference<object>("source"),
+            WorkDefinition.Create("sample.dispatch-each"),
+            new WorkflowOutputSelector(selector),
+            canceledChildBehavior);
 }

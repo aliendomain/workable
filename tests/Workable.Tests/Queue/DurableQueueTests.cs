@@ -968,6 +968,58 @@ public sealed class DurableQueueTests
     }
 
     [Fact]
+    public async Task MissingPersistenceStoreFailsClosedForEveryDurabilityEntryPoint()
+    {
+        var definition = WorkDefinition.Create("durability.store.required");
+        var workerId = WorkerId.New();
+        var coordinator = CreateCoordinator(null, (_, _) => Task.CompletedTask);
+
+        await coordinator.InitializeAndDrain([definition], CancellationToken.None);
+        var enqueue = await coordinator.Enqueue(
+            CreateDurableRequest(definition, workerId),
+            CancellationToken.None);
+        var reserve = await coordinator.ReserveIdempotency(
+            CreateIdempotencyRequest(definition, workerId),
+            CancellationToken.None);
+        var completionError = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            coordinator.CompleteDurably(
+                workerId,
+                new TestQueueDurabilityTransaction(),
+                CancellationToken.None));
+
+        Assert.Contains(enqueue.Messages, message => message.Code == "workable.queue_durability.store_required");
+        Assert.Contains(reserve.Messages, message => message.Code == "workable.idempotency.persistence_store_required");
+        Assert.Contains("registered work persistence store", completionError.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task PersistenceBackedIdempotencyReportsStoreUnavailabilityAndUntrackedCompletion()
+    {
+        var definition = WorkDefinition.Create("durability.idempotency.unavailable");
+        var workerId = WorkerId.New();
+        var unavailable = CreateCoordinator(
+            new FailingInitializeDurableQueueStore(new WorkPersistenceStoreUnavailableException(
+                "offline",
+                new InvalidOperationException("offline"))),
+            (_, _) => Task.CompletedTask);
+        var available = CreateCoordinator(new InMemoryDurableQueueStore(), (_, _) => Task.CompletedTask);
+
+        var reserve = await unavailable.ReserveIdempotency(
+            CreateIdempotencyRequest(definition, workerId),
+            CancellationToken.None);
+        var completionError = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            available.CompleteDurably(
+                workerId,
+                new TestQueueDurabilityTransaction(),
+                CancellationToken.None));
+
+        Assert.Contains(reserve.Messages, message =>
+            message.Code == "workable.idempotency.persistence_store_unreachable" &&
+            message.Text.Contains("offline", StringComparison.Ordinal));
+        Assert.Contains("persisted durable queue row", completionError.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public async Task BackgroundReaderRetriesAfterClaimFailure()
     {
         using var lifetime = new CancellationTokenSource();
@@ -1037,6 +1089,66 @@ public sealed class DurableQueueTests
         lifetime.Cancel();
 
         Assert.Equal(workerId, lostWorkerId);
+    }
+
+    [Fact]
+    public async Task TransactionalDurableCompletionReportsAndRemovesALostLease()
+    {
+        var workerId = WorkerId.New();
+        var lease = new WorkQueueDurabilityLease(workerId, "test-owner", "lost-completion-lease");
+        var store = new InMemoryDurableQueueStore
+        {
+            LoseLeaseOnDeleteFinal = lease,
+        };
+        var lostLease = new TaskCompletionSource<WorkerId>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var coordinator = CreateCoordinator(
+            store,
+            (_, _) => Task.CompletedTask,
+            leaseLost: lostLease.SetResult);
+        coordinator.TrackLease(workerId, lease);
+
+        var exception = await Assert.ThrowsAsync<WorkQueueDurabilityLeaseLostException>(() =>
+            coordinator.CompleteDurably(workerId, new TestQueueDurabilityTransaction(), CancellationToken.None));
+
+        Assert.Equal(lease, Assert.Single(exception.Leases));
+        Assert.Equal(workerId, await lostLease.Task.WaitAsync(TimeSpan.FromSeconds(2)));
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            coordinator.CompleteDurably(workerId, new TestQueueDurabilityTransaction(), CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task CleanupBatchReleasesLostLeaseAndCompletesUnaffectedBookkeeping()
+    {
+        using var lifetime = new CancellationTokenSource();
+        var lostWorkerId = WorkerId.New();
+        var unaffectedWorkerId = WorkerId.New();
+        var lostLease = new WorkQueueDurabilityLease(lostWorkerId, "test-owner", "lost-cleanup-lease");
+        var unaffectedLease = new WorkQueueDurabilityLease(unaffectedWorkerId, "test-owner", "valid-cleanup-lease");
+        var store = new InMemoryDurableQueueStore
+        {
+            LoseLeaseOnDeleteFinal = lostLease,
+        };
+        var reportedLostLease = new TaskCompletionSource<WorkerId>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var coordinator = CreateCoordinator(
+            store,
+            (_, _) => Task.CompletedTask,
+            lifetime.Token,
+            reportedLostLease.SetResult);
+        coordinator.TrackLease(lostWorkerId, lostLease);
+        coordinator.TrackLease(unaffectedWorkerId, unaffectedLease);
+
+        coordinator.StartBackgroundTasks();
+        coordinator.DeleteFinal(lostWorkerId);
+        coordinator.DeleteFinal(unaffectedWorkerId);
+
+        Assert.Equal(lostWorkerId, await reportedLostLease.Task.WaitAsync(TimeSpan.FromSeconds(2)));
+        await TestEventually.Until(
+            () => coordinator.Diagnostics.PendingCleanupCount == 0,
+            "Expected lease-loss cleanup to settle both lost and unaffected bookkeeping.",
+            timeout: TimeSpan.FromSeconds(2));
+        using var stopTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+        await coordinator.StopBackgroundTasks(stopTimeout.Token);
+        lifetime.Cancel();
     }
 
     [Fact]
@@ -1129,7 +1241,7 @@ public sealed class DurableQueueTests
     }
 
     private static WorkQueueDurabilityCoordinator CreateCoordinator(
-        IWorkPersistenceStore store,
+        IWorkPersistenceStore? store,
         Func<WorkQueueDurabilityEntry, CancellationToken, Task> acceptPersistedEntry,
         CancellationToken lifetimeToken = default,
         Action<WorkerId>? leaseLost = null,
@@ -1149,6 +1261,19 @@ public sealed class DurableQueueTests
             retryDelay: TimeSpan.FromMilliseconds(10),
             leaseDuration: TimeSpan.FromSeconds(1),
             batchSize: 10);
+
+    private static WorkIdempotencyPersistenceRequest CreateIdempotencyRequest(
+        WorkDefinition definition,
+        WorkerId workerId)
+        => new(
+            WorkSystemId.New(),
+            "durable-tests",
+            workerId,
+            definition,
+            new WorkSubjectId("test", workerId.Value.ToString("N")),
+            WorkRequestContext.Create(WorkInvocationChannel.InProcess),
+            DateTimeOffset.UtcNow,
+            Transaction: null);
 
     private static WorkQueueDurabilityEnqueueRequest CreateDurableRequest(
         WorkDefinition definition,
@@ -1198,6 +1323,8 @@ public sealed class DurableQueueTests
         public int RenewLeaseAttempts { get; private set; }
 
         public bool LoseLeaseOnRenew { get; set; }
+
+        public WorkQueueDurabilityLease? LoseLeaseOnDeleteFinal { get; set; }
 
         public bool BlockDeleteFinal { get; set; }
 
@@ -1361,6 +1488,12 @@ public sealed class DurableQueueTests
             IReadOnlyList<WorkQueueDurabilityCleanupRequest> workers,
             CancellationToken cancellationToken = default)
         {
+            if (this.LoseLeaseOnDeleteFinal is { } lostLease)
+            {
+                this.LoseLeaseOnDeleteFinal = null;
+                throw new WorkQueueDurabilityLeaseLostException(lostLease);
+            }
+
             if (this.BlockDeleteFinal)
             {
                 this.DeleteFinalStarted.TrySetResult();

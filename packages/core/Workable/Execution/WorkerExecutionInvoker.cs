@@ -84,6 +84,7 @@ internal sealed class WorkerExecutionInvoker(
             worker.Id,
             worker.Work.Definition,
             worker.RequestContext,
+            () => worker.CancellationRequestContext,
             worker.Options,
             worker.Configuration,
             () => worker.InterruptionReason,

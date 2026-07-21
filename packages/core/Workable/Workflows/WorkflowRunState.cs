@@ -8,9 +8,11 @@ internal sealed class WorkflowRunState
     private readonly Action? onChanged;
     private readonly TaskCompletionSource<WorkflowRunCompletion> completion =
         new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private int completionClaimed;
     private IReadOnlyList<WorkMessage> messages = [];
     private WorkflowRunStatus status;
     private WorkflowAction? pendingControlAction;
+    private WorkRequestContext? pendingControlRequestContext;
     private DateTimeOffset? startedAt;
     private DateTimeOffset? completedAt;
 
@@ -91,12 +93,16 @@ internal sealed class WorkflowRunState
             onChanged);
         run.status = record.Status;
         run.pendingControlAction = ParsePendingControlAction(record.PendingControlAction);
+        run.pendingControlRequestContext = record.PendingControlRequestContext;
         run.startedAt = record.StartedAt;
         run.completedAt = record.CompletedAt;
         run.messages = record.Messages;
         foreach (var receipt in record.ChildReceipts)
         {
-            run.childReceipts[receipt.WorkerId] = receipt;
+            if (run.StepContainsWorker(receipt.StepName, receipt.WorkerId))
+            {
+                run.childReceipts[receipt.WorkerId] = receipt;
+            }
         }
         return run;
     }
@@ -119,12 +125,16 @@ internal sealed class WorkflowRunState
             onChanged);
         run.status = record.Status;
         run.pendingControlAction = ParsePendingControlAction(record.PendingControlAction);
+        run.pendingControlRequestContext = record.PendingControlRequestContext;
         run.startedAt = record.StartedAt;
         run.completedAt = record.CompletedAt;
         run.messages = record.Messages;
         foreach (var receipt in record.ChildReceipts)
         {
-            run.childReceipts[receipt.WorkerId] = receipt;
+            if (run.StepContainsWorker(receipt.StepName, receipt.WorkerId))
+            {
+                run.childReceipts[receipt.WorkerId] = receipt;
+            }
         }
         return run;
     }
@@ -132,17 +142,44 @@ internal sealed class WorkflowRunState
     public Task<WorkflowRunCompletion> WaitForCompletion()
         => this.completion.Task;
 
-    public void TrySetCompletion(WorkflowRunCompletion value)
+    public bool IsCompletionFaulted => this.completion.Task.IsFaulted;
+
+    public bool TryClaimCompletion()
+        => Interlocked.CompareExchange(ref this.completionClaimed, 1, 0) == 0;
+
+    public bool TrySetCompletion(WorkflowRunCompletion value)
+    {
+        if (!this.TryClaimCompletion())
+        {
+            return false;
+        }
+
+        return this.completion.TrySetResult(value);
+    }
+
+    public bool TrySetClaimedCompletion(WorkflowRunCompletion value)
         => this.completion.TrySetResult(value);
+
+    public bool TrySetClaimedCompletionException(Exception exception)
+    {
+        ArgumentNullException.ThrowIfNull(exception);
+        return this.completion.TrySetException(exception);
+    }
 
     public void MarkRunning()
     {
         lock (this.sync)
         {
+            if (IsFinalStatus(this.status))
+            {
+                return;
+            }
+
             this.startedAt ??= DateTimeOffset.UtcNow;
             this.status = WorkflowRunStatus.Running;
             this.completedAt = null;
             this.pendingControlAction = null;
+            this.pendingControlRequestContext = null;
             this.messages = [];
             this.onChanged?.Invoke();
         }
@@ -164,10 +201,20 @@ internal sealed class WorkflowRunState
         }
     }
 
+    public WorkRequestContext? GetPendingControlRequestContext()
+    {
+        lock (this.sync)
+        {
+            return this.pendingControlRequestContext;
+        }
+    }
+
     public bool TryRecordAcceptedControlAction(
         WorkflowAction action,
+        WorkRequestContext requestContext,
         out WorkflowRunSnapshot snapshot)
     {
+        ArgumentNullException.ThrowIfNull(requestContext);
         lock (this.sync)
         {
             if (this.status is WorkflowRunStatus.Completed or WorkflowRunStatus.Failed or WorkflowRunStatus.Canceled)
@@ -177,6 +224,7 @@ internal sealed class WorkflowRunState
             }
 
             this.pendingControlAction = action;
+            this.pendingControlRequestContext = requestContext.WithoutAuthorization();
             snapshot = this.ToSnapshotLocked();
             this.onChanged?.Invoke();
             return true;
@@ -274,6 +322,15 @@ internal sealed class WorkflowRunState
         }
     }
 
+    public bool StepContainsWorker(string name, WorkerId workerId)
+    {
+        lock (this.sync)
+        {
+            var step = this.steps.SingleOrDefault(step => string.Equals(step.Name, name, StringComparison.Ordinal));
+            return step?.ContainsWorker(workerId) == true;
+        }
+    }
+
     public bool TryGetChildReceipt(WorkerId workerId, out WorkflowChildReceipt? receipt)
     {
         lock (this.sync)
@@ -294,8 +351,15 @@ internal sealed class WorkflowRunState
     {
         lock (this.sync)
         {
+            var step = this.steps.SingleOrDefault(
+                step => string.Equals(step.Name, receipt.StepName, StringComparison.Ordinal));
+            if (step?.ContainsWorker(receipt.WorkerId) != true)
+            {
+                return false;
+            }
+
             if (this.childReceipts.TryGetValue(receipt.WorkerId, out var existing) &&
-                existing == receipt)
+                (existing == receipt || existing.CompletedAt >= receipt.CompletedAt))
             {
                 return false;
             }
@@ -328,8 +392,14 @@ internal sealed class WorkflowRunState
     {
         lock (this.sync)
         {
+            if (IsFinalStatus(this.status))
+            {
+                return this.CurrentCompletionLocked();
+            }
+
             this.status = WorkflowRunStatus.Completed;
             this.pendingControlAction = null;
+            this.pendingControlRequestContext = null;
             this.messages = [];
             this.completedAt = DateTimeOffset.UtcNow;
             this.onChanged?.Invoke();
@@ -337,12 +407,77 @@ internal sealed class WorkflowRunState
         }
     }
 
+    public WorkflowRunCompletion CreateFinalCompletion(
+        WorkflowRunStatus finalStatus,
+        IReadOnlyList<WorkMessage>? finalMessages = null,
+        bool cancelOutstandingChildren = false)
+    {
+        if (!IsFinalStatus(finalStatus))
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(finalStatus),
+                finalStatus,
+                "A staged workflow completion must use a final status.");
+        }
+
+        lock (this.sync)
+        {
+            if (IsFinalStatus(this.status))
+            {
+                return this.CurrentCompletionLocked();
+            }
+
+            var completionMessages = finalMessages ?? [];
+            var finalCompletedAt = DateTimeOffset.UtcNow;
+            return new WorkflowRunCompletion(
+                finalStatus,
+                this.ToSnapshotLocked(finalStatus, finalCompletedAt, completionMessages),
+                completionMessages,
+                cancelOutstandingChildren);
+        }
+    }
+
+    public WorkflowRunCompletion CommitFinalCompletion(WorkflowRunCompletion finalCompletion)
+    {
+        ArgumentNullException.ThrowIfNull(finalCompletion);
+        if (!finalCompletion.IsFinal)
+        {
+            throw new ArgumentException("Only a final workflow completion can be committed.", nameof(finalCompletion));
+        }
+
+        lock (this.sync)
+        {
+            if (IsFinalStatus(this.status))
+            {
+                return this.CurrentCompletionLocked();
+            }
+
+            this.status = finalCompletion.Status;
+            this.pendingControlAction = null;
+            this.pendingControlRequestContext = null;
+            this.messages = finalCompletion.Messages;
+            this.completedAt = finalCompletion.Run?.CompletedAt ?? DateTimeOffset.UtcNow;
+            this.onChanged?.Invoke();
+            return new WorkflowRunCompletion(
+                this.status,
+                this.ToSnapshotLocked(),
+                this.messages,
+                finalCompletion.CancelOutstandingChildren);
+        }
+    }
+
     public WorkflowRunCompletion Pause(IReadOnlyList<WorkMessage>? pauseMessages = null)
     {
         lock (this.sync)
         {
+            if (IsFinalStatus(this.status))
+            {
+                return this.CurrentCompletionLocked();
+            }
+
             this.status = WorkflowRunStatus.Paused;
             this.pendingControlAction = null;
+            this.pendingControlRequestContext = null;
             this.completedAt = null;
             this.messages = pauseMessages ?? [];
             this.onChanged?.Invoke();
@@ -354,8 +489,14 @@ internal sealed class WorkflowRunState
     {
         lock (this.sync)
         {
+            if (IsFinalStatus(this.status))
+            {
+                return this.CurrentCompletionLocked();
+            }
+
             this.status = WorkflowRunStatus.Blocked;
             this.pendingControlAction = null;
+            this.pendingControlRequestContext = null;
             this.completedAt = null;
             this.messages = blockMessages;
             this.onChanged?.Invoke();
@@ -363,16 +504,26 @@ internal sealed class WorkflowRunState
         }
     }
 
-    public WorkflowRunCompletion Cancel()
+    public WorkflowRunCompletion Cancel(bool cancelOutstandingChildren = false)
     {
         lock (this.sync)
         {
+            if (IsFinalStatus(this.status))
+            {
+                return this.CurrentCompletionLocked();
+            }
+
             this.status = WorkflowRunStatus.Canceled;
             this.pendingControlAction = null;
+            this.pendingControlRequestContext = null;
             this.messages = [];
             this.completedAt = DateTimeOffset.UtcNow;
             this.onChanged?.Invoke();
-            return new WorkflowRunCompletion(this.status, this.ToSnapshotLocked(), this.messages);
+            return new WorkflowRunCompletion(
+                this.status,
+                this.ToSnapshotLocked(),
+                this.messages,
+                cancelOutstandingChildren);
         }
     }
 
@@ -380,14 +531,26 @@ internal sealed class WorkflowRunState
     {
         lock (this.sync)
         {
+            if (IsFinalStatus(this.status))
+            {
+                return this.CurrentCompletionLocked();
+            }
+
             this.status = WorkflowRunStatus.Failed;
             this.pendingControlAction = null;
+            this.pendingControlRequestContext = null;
             this.messages = failureMessages;
             this.completedAt = DateTimeOffset.UtcNow;
             this.onChanged?.Invoke();
             return new WorkflowRunCompletion(this.status, this.ToSnapshotLocked(), this.messages);
         }
     }
+
+    private WorkflowRunCompletion CurrentCompletionLocked()
+        => new(this.status, this.ToSnapshotLocked(), this.messages);
+
+    private static bool IsFinalStatus(WorkflowRunStatus status)
+        => status is WorkflowRunStatus.Completed or WorkflowRunStatus.Failed or WorkflowRunStatus.Canceled;
 
     public WorkflowRunSnapshot ToSnapshot()
     {
@@ -401,24 +564,94 @@ internal sealed class WorkflowRunState
     {
         lock (this.sync)
         {
-            return new WorkflowRunPersistenceRecord(
+            return this.ToPersistenceRecordLocked(
                 workSystemName,
-                this.Id,
-                this.DefinitionVersion,
-                this.DefinitionName,
-                this.Input,
-                this.RequestContext,
                 this.status,
-                this.steps.Select(step => step.ToPersistenceRecord()).ToArray(),
-                this.CreatedAt,
-                this.startedAt,
                 this.completedAt,
                 this.messages,
-                this.childReceipts.Values.ToArray(),
-                this.DefinitionFingerprint,
-                this.pendingControlAction?.ToString());
+                this.pendingControlAction,
+                this.pendingControlRequestContext);
         }
     }
+
+    public WorkflowRunPersistenceRecord ToPersistenceRecord(
+        string? workSystemName,
+        WorkflowRunCompletion runCompletion)
+    {
+        ArgumentNullException.ThrowIfNull(runCompletion);
+        if (!runCompletion.IsFinal)
+        {
+            throw new ArgumentException("Only a final workflow completion can be persisted as staged state.", nameof(runCompletion));
+        }
+
+        lock (this.sync)
+        {
+            return this.ToPersistenceRecordLocked(
+                workSystemName,
+                runCompletion.Status,
+                runCompletion.Run?.CompletedAt ?? DateTimeOffset.UtcNow,
+                runCompletion.Messages,
+                persistedPendingControlAction: null,
+                persistedPendingControlRequestContext: null);
+        }
+    }
+
+    public WorkflowRunPersistenceRecord ToRunningPersistenceRecord(string? workSystemName)
+    {
+        lock (this.sync)
+        {
+            return this.ToPersistenceRecordLocked(
+                workSystemName,
+                WorkflowRunStatus.Running,
+                persistedCompletedAt: null,
+                persistedMessages: [],
+                persistedPendingControlAction: null,
+                persistedPendingControlRequestContext: null);
+        }
+    }
+
+    public WorkflowRunPersistenceRecord ToPendingControlActionPersistenceRecord(
+        string? workSystemName,
+        WorkflowAction action,
+        WorkRequestContext requestContext)
+    {
+        ArgumentNullException.ThrowIfNull(requestContext);
+        lock (this.sync)
+        {
+            return this.ToPersistenceRecordLocked(
+                workSystemName,
+                this.status,
+                this.completedAt,
+                this.messages,
+                action,
+                requestContext.WithoutAuthorization());
+        }
+    }
+
+    private WorkflowRunPersistenceRecord ToPersistenceRecordLocked(
+        string? workSystemName,
+        WorkflowRunStatus persistedStatus,
+        DateTimeOffset? persistedCompletedAt,
+        IReadOnlyList<WorkMessage> persistedMessages,
+        WorkflowAction? persistedPendingControlAction,
+        WorkRequestContext? persistedPendingControlRequestContext)
+        => new(
+            workSystemName,
+            this.Id,
+            this.DefinitionVersion,
+            this.DefinitionName,
+            this.Input,
+            this.RequestContext,
+            persistedStatus,
+            this.steps.Select(step => step.ToPersistenceRecord()).ToArray(),
+            this.CreatedAt,
+            this.startedAt,
+            persistedCompletedAt,
+            persistedMessages,
+            this.childReceipts.Values.ToArray(),
+            this.DefinitionFingerprint,
+            persistedPendingControlAction?.ToString(),
+            persistedPendingControlRequestContext);
 
     private static WorkflowAction? ParsePendingControlAction(string? value)
         => string.Equals(value, "Stop", StringComparison.Ordinal)
@@ -460,9 +693,26 @@ internal sealed class WorkflowRunState
             this.messages,
             this.childReceipts.Values.ToArray());
 
+    private WorkflowRunSnapshot ToSnapshotLocked(
+        WorkflowRunStatus snapshotStatus,
+        DateTimeOffset? snapshotCompletedAt,
+        IReadOnlyList<WorkMessage> snapshotMessages)
+        => new(
+            this.Id,
+            this.DefinitionName,
+            snapshotStatus,
+            this.Input,
+            this.steps.Select(step => step.ToSnapshot()).ToArray(),
+            this.CreatedAt,
+            this.startedAt,
+            snapshotCompletedAt,
+            snapshotMessages,
+            this.childReceipts.Values.ToArray());
+
     private sealed class WorkflowStepRunState
     {
         private readonly List<WorkerId> workerIds = [];
+        private readonly HashSet<WorkerId> workerIdLookup = [];
         private IReadOnlyList<WorkMessage> messages = [];
 
         private WorkflowStepRunState(string name, WorkflowStepKind kind)
@@ -500,7 +750,7 @@ internal sealed class WorkflowRunState
             state.StartedAt = record.StartedAt;
             state.CompletedAt = record.CompletedAt;
             state.messages = record.Messages;
-            state.workerIds.AddRange(record.WorkerIds);
+            state.SetWorkerIds(record.WorkerIds);
             return state;
         }
 
@@ -515,7 +765,7 @@ internal sealed class WorkflowRunState
                 CompletedAt = record.CompletedAt,
                 messages = record.Messages,
             };
-            state.workerIds.AddRange(record.WorkerIds);
+            state.SetWorkerIds(record.WorkerIds);
             return state;
         }
 
@@ -525,8 +775,7 @@ internal sealed class WorkflowRunState
             this.StartedAt ??= DateTimeOffset.UtcNow;
             if (workerIds is not null)
             {
-                this.workerIds.Clear();
-                this.workerIds.AddRange(workerIds);
+                this.SetWorkerIds(workerIds);
             }
         }
 
@@ -537,8 +786,7 @@ internal sealed class WorkflowRunState
             this.CompletedAt = DateTimeOffset.UtcNow;
             if (workerIds is not null)
             {
-                this.workerIds.Clear();
-                this.workerIds.AddRange(workerIds);
+                this.SetWorkerIds(workerIds);
             }
         }
 
@@ -550,8 +798,22 @@ internal sealed class WorkflowRunState
             this.messages = failureMessages;
         }
 
+        public bool ContainsWorker(WorkerId workerId)
+            => this.workerIdLookup.Contains(workerId);
+
         public void RemoveWorkerId(WorkerId workerId)
-            => this.workerIds.Remove(workerId);
+        {
+            this.workerIds.Remove(workerId);
+            this.workerIdLookup.Remove(workerId);
+        }
+
+        private void SetWorkerIds(IEnumerable<WorkerId> workerIds)
+        {
+            this.workerIds.Clear();
+            this.workerIds.AddRange(workerIds);
+            this.workerIdLookup.Clear();
+            this.workerIdLookup.UnionWith(this.workerIds);
+        }
 
         public WorkflowStepRunSnapshot ToSnapshot()
             => new(

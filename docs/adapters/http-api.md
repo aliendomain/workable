@@ -1,6 +1,6 @@
 # Workable HTTP API
 
-Workable can expose queueing, worker operations, system operations, and query APIs through the `Workable.HttpApi` adapter package.
+Workable can expose queueing, workflow runs, worker operations, system operations, and query APIs through the `Workable.HttpApi` adapter package.
 
 The HTTP API adapter uses the same Workable catalog and queueing system as direct in-process code. A work definition can be queued through HTTP only when its invocation configuration allows `WorkInvocationChannel.HttpApi`.
 
@@ -8,7 +8,7 @@ The built-in HTTP adapter also stamps queued work and worker actions with `WorkO
 
 Invocation-channel rules matter for work invocation, not for general system/query/worker discovery routes. Definition listing, diagnostics, worker reads, lifecycle routes, and other read/control surfaces are governed by authorization and route shape, not by definition invocation-channel settings.
 
-HTTP queueing, worker actions, and worker reconfiguration record a `WorkRequestContext` from the request. Its nested `Origin` carries the durable actor/channel provenance, and the request context also captures the HTTP path as `RequestContext.Url`. Built-in queue, action, bulk-action, and reconfiguration request bodies can also supply an optional `description` value, which Workable stores on `RequestContext.Description`.
+HTTP queueing, worker actions, and worker reconfiguration record a `WorkRequestContext` from the request. Its nested `Origin` carries the durable actor/channel provenance, and the request context also captures the HTTP path as `RequestContext.Url`. Built-in queue, action, bulk-action, and reconfiguration request bodies can also supply an optional `description` value. For a single-worker action, the adapter maps that wire-level value to `WorkerActionRequest.Reason`, and Workable records it on the action context as `RequestContext.Description`.
 
 `Workable.HttpApi` is an authenticated transport. Anonymous callers are rejected before Workable routes run or request bodies are bound, and mapped systems must be authorization-enabled.
 
@@ -77,6 +77,7 @@ GET /workable/systems/email/definitions
 POST /workable/systems/email/work/email.welcome.send
 GET /workable/systems/email/workers/22222222-2222-2222-2222-222222222222
 POST /workable/systems/email/views/workers
+GET /workable/systems/email/workflow-runs
 POST /workable/systems/email/workers/22222222-2222-2222-2222-222222222222/actions/cancel
 ```
 
@@ -451,7 +452,7 @@ Queue requests can include HTTP worker options and input identity metadata.
 }
 ```
 
-HTTP queue options use `WorkableHttpWorkerOptions`. Its `configuration` shape includes start behavior, coordination, recurrence, transient retry, logging, and retention. Coordination selects local or persistent coordination state, then enables duplicate protection, capacity limits, durable queueing, and durable completion under that mode. Retention includes `purgeInterval` and the asynchronously enforced `maximumFinalWorkers` target. Invocation channels are not part of the HTTP queue request because they are definition-level configuration, not per-request overrides.
+HTTP queue options use `WorkableHttpWorkerOptions`. Its `configuration` shape includes start behavior, coordination, recurrence, transient retry, failed-worker handling, logging, and retention. Coordination selects local or persistent coordination state, then enables duplicate protection, capacity limits, durable queueing, and durable completion under that mode. Retention includes `purgeInterval` and the asynchronously enforced `maximumFinalWorkers` target. Invocation channels are not part of the HTTP queue request because they are definition-level configuration, not per-request overrides.
 
 The accepted worker remains owned by Workable and can be queried, observed, or controlled through Workable.
 
@@ -698,6 +699,56 @@ GET /workable/work-iteration-keys/types?search=claim%20work&skip=0&take=50
 
 The iteration key type query is also available as `POST /workable/work-iteration-keys/types/query`. Iteration key responses are paginated and include `WorkerIterationOverviewItem` rows attached to matching keys.
 
+## Workflow Runs
+
+Start a registered workflow by name. The body is optional; by default the route returns after acceptance.
+
+```http
+POST /workable/workflows/orders.fulfillment
+Content-Type: application/json
+
+{
+  "input": {
+    "orderId": "order-123"
+  },
+  "description": "Start fulfillment from the operations console.",
+  "completion": "ReturnAfterAccepted"
+}
+```
+
+The start request also accepts optional `subjectId`, `concurrencyKey`, and `identifiers` values that are attached to the workflow input. Set `completion` to `WaitForCompletion` when the response should wait for a terminal workflow-run result.
+
+List visible active workflow runs, optionally including final runs or filtering by workflow definition name.
+
+```http
+GET /workable/workflow-runs?includeFinal=true&definitionName=orders.fulfillment&childSampleSize=3
+```
+
+Read one workflow run and its operator-oriented step graph.
+
+```http
+GET /workable/workflow-runs/33333333-3333-3333-3333-333333333333?childSampleSize=3
+```
+
+Page through the child workers associated with one selected workflow node. The node can be a dispatch, fan-out, parallel, or branch structure node.
+
+```http
+GET /workable/workflow-runs/33333333-3333-3333-3333-333333333333/steps/release-streams/children?skip=0&take=25
+```
+
+Operate an existing workflow run with `start`, `pause`, or `cancel`:
+
+```http
+POST /workable/workflow-runs/33333333-3333-3333-3333-333333333333/actions/pause
+Content-Type: application/json
+
+{
+  "description": "Pause the release while the downstream API is unavailable."
+}
+```
+
+`stop` remains a compatibility alias for `pause`. Workflow action route values are parsed case-insensitively. The named-system forms place the same paths under `/workable/systems/{systemName}`.
+
 ## Worker Operations
 
 Worker operations require the worker id and the revision observed by the caller.
@@ -712,7 +763,7 @@ Content-Type: application/json
 }
 ```
 
-The action route supports `Start`, `Pause`, `Cancel`, `Push`, and `Purge`. `description` is optional and is copied into the action-history origin when supplied.
+The action route supports `Start`, `Pause`, `Cancel`, `Push`, and `Purge`. `description` remains the public wire name and is mapped to `WorkerActionRequest.Reason`. Workable records it as the action history's `RequestContext.Description`; for an accepted cancel of running code, the same value is available to executor code through `IWorkExecutionContext.CancellationRequestContext.Description` before the execution token is signaled.
 
 Apply a worker action to all workers in the system.
 

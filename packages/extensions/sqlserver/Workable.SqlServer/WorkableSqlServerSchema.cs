@@ -119,6 +119,7 @@ BEGIN
         MessagesJson nvarchar(max) NOT NULL,
         ChildReceiptsJson nvarchar(max) NOT NULL CONSTRAINT DF_WorkableWorkflowRuns_ChildReceiptsJson DEFAULT (N'[]'),
         PendingControlAction nvarchar(32) NULL,
+        PendingControlRequestContextJson nvarchar(max) NULL,
         CreatedAt datetimeoffset NOT NULL,
         StartedAt datetimeoffset NULL,
         CompletedAt datetimeoffset NULL,
@@ -149,6 +150,14 @@ IF OBJECT_ID(N'{escapedSchemaName}.WorkflowRuns', N'U') IS NOT NULL
 BEGIN
     ALTER TABLE {workflowRunsTable}
         ADD PendingControlAction nvarchar(32) NULL;
+END
+""",
+            $"""
+IF OBJECT_ID(N'{escapedSchemaName}.WorkflowRuns', N'U') IS NOT NULL
+   AND COL_LENGTH(N'{escapedSchemaName}.WorkflowRuns', N'PendingControlRequestContextJson') IS NULL
+BEGIN
+    ALTER TABLE {workflowRunsTable}
+        ADD PendingControlRequestContextJson nvarchar(max) NULL;
 END
 """,
             $"""
@@ -634,6 +643,7 @@ WHERE schemas.name = @SchemaName
             "MessagesJson",
             "ChildReceiptsJson",
             "PendingControlAction",
+            "PendingControlRequestContextJson",
             "CreatedAt",
             "StartedAt",
             "CompletedAt",

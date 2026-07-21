@@ -1,3 +1,5 @@
+using System.Collections.Concurrent;
+
 namespace Workable;
 
 /// <summary>
@@ -82,6 +84,42 @@ public interface IWorkPersistenceStore
         WorkerId workerId,
         CancellationToken cancellationToken = default)
         => Task.FromResult(false);
+
+    /// <summary>
+    /// Returns the durable worker entries that still exist from a supplied worker-id set.
+    /// </summary>
+    /// <remarks>
+    /// Persistence providers should override this method with one batched lookup. The default implementation preserves
+    /// compatibility for existing providers by delegating to <see cref="DurableWorkerExists"/>.
+    /// </remarks>
+    /// <param name="workerIds">The worker ids to check.</param>
+    /// <param name="cancellationToken">A token that cancels the lookup.</param>
+    /// <returns>The subset of supplied worker ids whose durable entries still exist.</returns>
+    async Task<IReadOnlySet<WorkerId>> DurableWorkersExist(
+        IReadOnlyCollection<WorkerId> workerIds,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(workerIds);
+
+        const int maximumConcurrency = 16;
+        var existing = new ConcurrentDictionary<WorkerId, byte>();
+        await Parallel.ForEachAsync(
+            workerIds.Distinct(),
+            new ParallelOptions
+            {
+                CancellationToken = cancellationToken,
+                MaxDegreeOfParallelism = maximumConcurrency,
+            },
+            async (workerId, itemCancellationToken) =>
+            {
+                if (await this.DurableWorkerExists(workerId, itemCancellationToken))
+                {
+                    existing.TryAdd(workerId, 0);
+                }
+            });
+
+        return existing.Keys.ToHashSet();
+    }
 
     /// <summary>
     /// Initializes workflow persistence support for a system and its registered workflow definitions.
@@ -347,6 +385,7 @@ public sealed record WorkQueueDurabilityCleanupRequest(
 /// <param name="CompletedAt">The time the workflow run reached a final state, when one exists.</param>
 /// <param name="Messages">The current workflow run messages.</param>
 /// <param name="ChildReceipts">The retained child completion receipts captured for the workflow run.</param>
+/// <param name="PendingControlRequestContext">The caller context for a pending workflow control action, when one exists.</param>
 public sealed record WorkflowRunPersistenceRecord(
     string? WorkSystemName,
     WorkflowRunId RunId,
@@ -362,7 +401,8 @@ public sealed record WorkflowRunPersistenceRecord(
     IReadOnlyList<WorkMessage> Messages,
     IReadOnlyList<WorkflowChildReceipt> ChildReceipts,
     string DefinitionFingerprint = "",
-    string? PendingControlAction = null)
+    string? PendingControlAction = null,
+    WorkRequestContext? PendingControlRequestContext = null)
 {
     /// <summary>
     /// Gets the origin metadata extracted from <see cref="RequestContext"/>.

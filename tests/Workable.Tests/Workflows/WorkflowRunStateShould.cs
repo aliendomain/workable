@@ -5,6 +5,89 @@ namespace Workable.Tests;
 [Trait("Category", "Workflows")]
 public sealed class WorkflowRunStateShould
 {
+    [Theory]
+    [InlineData(WorkflowRunStatus.Completed)]
+    [InlineData(WorkflowRunStatus.Failed)]
+    [InlineData(WorkflowRunStatus.Canceled)]
+    public void StageFinalCompletionUntilItIsCommitted(WorkflowRunStatus finalStatus)
+    {
+        var workflow = CreateWorkflow(WorkflowDefinition.Create("workflow.staged-completion"));
+        var run = WorkflowRunState.Create(
+            workflow,
+            WorkRequestContext.Create(WorkInvocationChannel.InProcess));
+        IReadOnlyList<WorkMessage> messages = finalStatus == WorkflowRunStatus.Failed
+            ? new[] { WorkMessage.Error("workflow.failed", "Expected failure.") }
+            : [];
+
+        var completion = run.CreateFinalCompletion(
+            finalStatus,
+            messages,
+            cancelOutstandingChildren: finalStatus == WorkflowRunStatus.Canceled);
+        var visibleBeforeCommit = run.ToSnapshot();
+        var ordinaryPersistence = run.ToPersistenceRecord("workflow-tests");
+        var stagedPersistence = run.ToPersistenceRecord("workflow-tests", completion);
+
+        Assert.Equal(WorkflowRunStatus.Running, visibleBeforeCommit.Status);
+        Assert.Null(visibleBeforeCommit.CompletedAt);
+        Assert.Equal(WorkflowRunStatus.Running, ordinaryPersistence.Status);
+        Assert.Null(ordinaryPersistence.CompletedAt);
+        Assert.Equal(finalStatus, completion.Status);
+        Assert.Equal(finalStatus, stagedPersistence.Status);
+        Assert.NotNull(stagedPersistence.CompletedAt);
+        Assert.Equal(messages, stagedPersistence.Messages);
+
+        var committed = run.CommitFinalCompletion(completion);
+
+        Assert.Equal(finalStatus, committed.Status);
+        Assert.Equal(finalStatus, run.ToSnapshot().Status);
+        Assert.Equal(finalStatus == WorkflowRunStatus.Canceled, committed.CancelOutstandingChildren);
+        Assert.Equal(finalStatus, run.CommitFinalCompletion(completion).Status);
+    }
+
+    [Fact]
+    public void RejectNonFinalStagedCompletions()
+    {
+        var workflow = CreateWorkflow(WorkflowDefinition.Create("workflow.invalid-staged-completion"));
+        var run = WorkflowRunState.Create(
+            workflow,
+            WorkRequestContext.Create(WorkInvocationChannel.InProcess));
+        var nonFinal = new WorkflowRunCompletion(WorkflowRunStatus.Blocked, run.ToSnapshot(), []);
+
+        Assert.Throws<ArgumentOutOfRangeException>(() => run.CreateFinalCompletion(WorkflowRunStatus.Blocked));
+        Assert.Throws<ArgumentException>(() => run.CommitFinalCompletion(nonFinal));
+        Assert.Throws<ArgumentException>(() => run.ToPersistenceRecord("workflow-tests", nonFinal));
+    }
+
+    [Fact]
+    public void IncludeDispatchEachCanceledChildBehaviorInDefinitionFingerprint()
+    {
+        var definition = WorkflowDefinition.Create("workflow.dispatch-each.fingerprint");
+        var source = new WorkflowStepReference<object?>("load");
+        var selector = new WorkflowOutputSelector("/items");
+        var continueWorkflow = CreateWorkflow(
+            definition,
+            Dispatch("load", "sample.load"),
+            new DispatchEachWorkflowStepDefinition(
+                "fan-out",
+                source,
+                WorkDefinition.Create("sample.process"),
+                selector,
+                WorkflowCanceledChildBehavior.Continue));
+        var blockWorkflow = CreateWorkflow(
+            definition,
+            Dispatch("load", "sample.load"),
+            new DispatchEachWorkflowStepDefinition(
+                "fan-out",
+                source,
+                WorkDefinition.Create("sample.process"),
+                selector,
+                WorkflowCanceledChildBehavior.Block));
+
+        Assert.NotEqual(
+            WorkflowDefinitionFingerprint.Create(continueWorkflow),
+            WorkflowDefinitionFingerprint.Create(blockWorkflow));
+    }
+
     [Fact]
     public void TrackOutstandingWorkersAcrossJoinBoundaries()
     {
@@ -34,6 +117,38 @@ public sealed class WorkflowRunStateShould
 
         run.MarkStepCompleted("archive", [fourth]);
         Assert.Equal([fourth], run.GetOutstandingWorkerIds());
+    }
+
+    [Fact]
+    public void MaintainStepWorkerMembershipAcrossStateChangesAndRehydration()
+    {
+        var workflow = CreateWorkflow(
+            WorkflowDefinition.Create("workflow.worker-membership"),
+            Dispatch("dispatch", "sample.dispatch"),
+            new JoinWorkflowStepDefinition("join"));
+        var run = WorkflowRunState.Create(
+            workflow,
+            WorkRequestContext.Create(WorkInvocationChannel.InProcess));
+        var alpha = WorkerId.New();
+        var beta = WorkerId.New();
+
+        run.MarkStepCompleted("dispatch", [alpha, beta]);
+
+        Assert.True(run.StepContainsWorker("dispatch", alpha));
+        Assert.True(run.StepContainsWorker("dispatch", beta));
+        Assert.False(run.StepContainsWorker("dispatch", WorkerId.New()));
+
+        run.RemoveStepWorkerId("dispatch", alpha);
+
+        Assert.False(run.StepContainsWorker("dispatch", alpha));
+        Assert.True(run.StepContainsWorker("dispatch", beta));
+
+        var rehydrated = WorkflowRunState.Rehydrate(
+            workflow,
+            run.ToPersistenceRecord("workflow-tests"));
+
+        Assert.False(rehydrated.StepContainsWorker("dispatch", alpha));
+        Assert.True(rehydrated.StepContainsWorker("dispatch", beta));
     }
 
     [Fact]
@@ -169,13 +284,27 @@ public sealed class WorkflowRunStateShould
             definition,
             Dispatch("dispatch", "sample.dispatch"));
         var run = WorkflowRunState.Create(workflow, WorkRequestContext.Create(WorkInvocationChannel.InProcess));
+        var controlContext = WorkRequestContext.Create(
+            WorkInvocationChannel.HttpApi,
+            new WorkActor("workflow-operator", "Workflow Operator"),
+            description: "Pause for maintenance",
+            isAuthenticated: true) with
+        {
+            Authorization = WorkAuthorizationSnapshot.Create(
+                new WorkActor("workflow-operator", "Workflow Operator"),
+                ["operators"],
+                []),
+        };
 
-        Assert.True(run.TryRecordAcceptedControlAction(WorkflowAction.Pause, out _));
+        Assert.True(run.TryRecordAcceptedControlAction(WorkflowAction.Pause, controlContext, out _));
         var persisted = run.ToPersistenceRecord("workflow-tests");
         var rehydrated = WorkflowRunState.Rehydrate(workflow, persisted);
 
         Assert.Equal(WorkflowAction.Pause.ToString(), persisted.PendingControlAction);
         Assert.Equal(WorkflowAction.Pause, rehydrated.GetPendingControlAction());
+        Assert.Equal("workflow-operator", persisted.PendingControlRequestContext?.Actor.Id);
+        Assert.Equal("Pause for maintenance", rehydrated.GetPendingControlRequestContext()?.Description);
+        Assert.Null(persisted.PendingControlRequestContext?.Authorization);
     }
 
     [Fact]
@@ -209,6 +338,39 @@ public sealed class WorkflowRunStateShould
         Assert.Equal("dispatch", receipt.StepName);
         Assert.Equal("sample.dispatch", receipt.DefinitionName);
         Assert.Equal(WorkCompletionStatus.Completed, receipt.CompletionStatus);
+    }
+
+    [Fact]
+    public void DoNotReplaceAChildReceiptWithAnOlderFinalState()
+    {
+        var workflow = CreateWorkflow(
+            WorkflowDefinition.Create("workflow.child-receipt-order"),
+            Dispatch("dispatch", "sample.dispatch"));
+        var run = WorkflowRunState.Create(
+            workflow,
+            WorkRequestContext.Create(WorkInvocationChannel.InProcess));
+        var workerId = WorkerId.New();
+        var failedAt = DateTimeOffset.UtcNow;
+        var canceledAt = failedAt.AddMilliseconds(1);
+        run.MarkStepCompleted("dispatch", [workerId]);
+        var canceled = new WorkflowChildReceipt(
+            workerId,
+            "dispatch",
+            "sample.dispatch",
+            WorkerState.Canceled,
+            canceledAt,
+            [],
+            null);
+        var failed = canceled with
+        {
+            State = WorkerState.Failed,
+            CompletedAt = failedAt,
+        };
+
+        Assert.True(run.RecordChildReceipt(canceled));
+        Assert.False(run.RecordChildReceipt(failed));
+
+        Assert.Equal(canceled, Assert.Single(run.GetChildReceipts()));
     }
 
     private static RegisteredWorkflow CreateWorkflow(

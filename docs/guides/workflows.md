@@ -13,6 +13,7 @@ The workflow step graph is composed from built-in step kinds:
 - `DispatchWork`
 - `DispatchEach`
 - `Parallel`
+- `Branch`
 - `Join`
 
 Workflow definitions also carry:
@@ -142,11 +143,25 @@ If the queue request is rejected, the workflow fails immediately.
 `DispatchEach(stepName, sourceStep, workDefinition, selector)` waits for the referenced earlier step to complete successfully, resolves a JSON array from that step's retained output, and queues one child worker per array element.
 
 - `stepName` is the stable workflow-local step name
-- `sourceStep` is the typed reference returned by an earlier `DispatchWork<TOutput>(...)`
+- `sourceStep` is a typed reference returned by an earlier `DispatchWork<TOutput>(...)` or by calling `Outputs<TOutput>()` on a `DispatchEach(...)` step
 - `workDefinition` is the target registered `WorkDefinition`
 - `selector` identifies the array inside the source output. `output => output.Items` resolves `/items`; `output => output` selects the root array.
 
 Each array element becomes the `WorkInput` payload for one queued child worker.
+
+`DispatchEach(...)` performs the fan-out queueing before it waits for the expanded children. Canceling one accepted child therefore does not prevent its accepted siblings from starting. Of the three child-cancellation policies, only `CancelWorkflow` responds by requesting cancellation of every remaining outstanding child.
+
+`DispatchEach(...)` also accepts a `canceledChildBehavior` that controls what happens when an expanded child worker is canceled:
+
+- `WorkflowCanceledChildBehavior.Continue` is the default. The canceled child is treated as skipped, and the workflow waits for the remaining children before continuing.
+- `WorkflowCanceledChildBehavior.Block` leaves the workflow blocked at its next join or final child wait without canceling the remaining siblings.
+- `WorkflowCanceledChildBehavior.CancelWorkflow` cancels the workflow and requests cancellation of its remaining outstanding child workers.
+
+The policy applies only to workers expanded by that `DispatchEach(...)` step. Canceled workers created by ordinary `DispatchWork(...)` steps continue to block the workflow.
+
+The operator view follows the configured policy. With `Continue`, the `DispatchEach` node remains `WaitingOnChildren` while any sibling is active and becomes `Completed` after every sibling has either completed or been canceled; its child summary still reports the canceled count. `Block` reports the node as `Blocked`, and `CancelWorkflow` reports it as `Canceled`.
+
+The cancellation policy is part of the workflow definition fingerprint used for durable recovery. Changing it while an incomplete durable run is retained produces the same definition-mismatch handling as changing the workflow step graph.
 
 ```csharp
 var loadDefinition = WorkDefinition.Create("orders.load");
@@ -163,23 +178,64 @@ builder.AddWorkflow(
     workflow =>
     {
         var load = workflow.DispatchWork<OrderBatchOutput>("load", loadDefinition);
-        workflow.DispatchEach("fan-out", load, processDefinition, output => output.Items);
+        workflow.DispatchEach(
+            "fan-out",
+            load,
+            processDefinition,
+            output => output.Items,
+            canceledChildBehavior: WorkflowCanceledChildBehavior.Continue);
     });
 ```
 
 That authored shape still persists the same replay information, but the source step reference and selector path are now derived from typed values instead of hand-authored strings.
 
+When each fan-out child produces a known output type, `Outputs<TOutput>()` returns a typed reference to those per-child outputs. A later `DispatchEach(...)` applies its selector to every completed child output, enabling chained fan-out without reconstructing a reference from the earlier step name.
+
+```csharp
+var processedOrders = workflow
+    .DispatchEach("process-orders", load, processDefinition, output => output.Items)
+    .Outputs<ProcessedOrderOutput>();
+
+workflow.DispatchEach(
+    "publish-artifacts",
+    processedOrders,
+    publishDefinition,
+    output => output.Artifacts);
+```
+
 ### Run Parallel
 
-`RunParallel(stepName, configure)` groups child dispatch steps that should be accepted together before the workflow moves on.
+`RunParallel(stepName, configure)` starts its direct child steps concurrently and waits for those child structures to settle before the workflow moves on.
 
-A parallel section contains child `DispatchWork(...)` steps.
+A parallel section can contain direct `DispatchWork(...)` steps or named sequential branches created with `Branch(...)`.
+
+### Branch
+
+`Branch(branchName, configure)` is available inside `RunParallel(...)`. Each branch has its own sequential workflow body, while sibling branches execute concurrently.
+
+Branch bodies use the full `IWorkflowBuilder` surface. They can dispatch work, use typed `DispatchEach(...)`, create nested parallel sections, and use branch-local joins. A join inside one branch waits only for outstanding child work in that branch; it does not wait for sibling branches.
+
+```csharp
+workflow => workflow
+    .RunParallel("release-streams", parallel => parallel
+        .Branch("mobile", branch => branch
+            .DispatchWork("build", mobileBuildDefinition)
+            .RunParallel("smoke-tests", smoke => smoke
+                .DispatchWork("ios", iosSmokeDefinition)
+                .DispatchWork("android", androidSmokeDefinition))
+            .Join("mobile-tested")
+            .DispatchWork("sign-off", mobileSignOffDefinition))
+        .Branch("web", branch => branch
+            .DispatchWork("build", webBuildDefinition)
+            .DispatchWork("sign-off", webSignOffDefinition)))
+    .Join("release-streams-complete");
+```
 
 ### Join
 
 `Join(stepName)` waits for earlier dispatched child work to settle.
 
-If any outstanding child worker completes unsuccessfully, the join step completes as blocked. When the blocked child was a failed worker and that worker is later restarted and completes successfully, Workable resumes the workflow automatically. When a completed child worker has already been purged, joins use the workflow's retained child completion receipt.
+If any outstanding child worker fails, pauses, or is interrupted, the join step completes as blocked. A canceled child also blocks unless its originating `DispatchEach(...)` step configures `Continue` or `CancelWorkflow`. When the blocked child was a failed worker and that worker is later restarted and completes successfully, Workable resumes the workflow automatically. When a completed child worker has already been purged, joins use the workflow's retained child completion receipt.
 
 ## Execution Semantics
 
@@ -187,7 +243,8 @@ Top-level workflow steps are processed in registration order.
 
 - a `DispatchWork(...)` step queues child work and records the accepted child worker id on the workflow step snapshot when one exists
 - a `DispatchEach(...)` step waits for its source-step outputs, expands the resolved array, and records the accepted child worker ids for the queued fan-out workers
-- a `RunParallel(...)` step queues each child dispatch and records their accepted worker ids on the parallel step snapshot
+- a `RunParallel(...)` step executes direct child dispatches and named branch bodies concurrently, and records their accepted worker ids on the parallel step snapshot
+- a `Branch(...)` step executes its nested workflow steps in order while sibling branches continue independently
 - a `Join(...)` step waits for all outstanding previously dispatched child work to complete before later workflow steps continue
 - a durable workflow persists each dispatch or join transition before later recovery depends on it
 
@@ -216,7 +273,7 @@ In that workflow:
 - `j1` waits for `a`, `b`, and `c`
 - `j2` waits for `d`
 
-If a child worker completes as failed, canceled, paused, or interrupted, the workflow run completes as `Blocked`. A blocked workflow run can always be started again manually. It also resumes automatically when its outstanding failed child workers are restarted and later complete successfully.
+If a child worker completes as failed, paused, or interrupted, the workflow run completes as `Blocked`. Canceled `DispatchWork(...)` children also block. A canceled `DispatchEach(...)` child follows that step's configured cancellation behavior. An operator can issue `Start` for a blocked workflow; when the blocking cause is a final canceled child, the run blocks again because starting it does not replace that child outcome. A blocked run resumes automatically only when its outstanding failed child workers are restarted and later complete successfully.
 
 Completed child workers and completed workflow runs have separate retention lifetimes. Workable records the child completion receipt on the workflow run before later cleanup depends on it, so worker retention can stay aggressive without breaking joins or workflow status views.
 
@@ -302,7 +359,7 @@ Workflow runs use these public statuses:
 - `Failed`
 - `Canceled`
 
-`Paused` means the workflow accepted a pause request and stopped before dispatching later steps. `Blocked` means one or more child workers settled unsuccessfully and the workflow is waiting for those child workers to be corrected. Failed child workers that are restarted and later complete successfully cause the workflow to resume automatically.
+`Paused` means the workflow accepted a pause request and stopped before dispatching later steps. `Blocked` means one or more child workers settled unsuccessfully, or a canceled `DispatchEach(...)` child used the `Block` policy. Failed child workers that are restarted and later complete successfully cause the workflow to resume automatically. A canceled child is already final, so starting a workflow blocked by that cancellation does not make the child successful; an operator can leave the run blocked for inspection or cancel the workflow run.
 
 Workflow actions follow the workflow-run status:
 
@@ -345,6 +402,7 @@ The HTTP API exposes workflow run status with:
 
 - `GET /workable/workflow-runs`
 - `GET /workable/workflow-runs/{runId}`
+- `GET /workable/workflow-runs/{runId}/steps/{stepName}/children`
 - `POST /workable/workflows/{workflowName}`
 - `POST /workable/workflow-runs/{runId}/actions/start`
 - `POST /workable/workflow-runs/{runId}/actions/pause`
@@ -373,15 +431,20 @@ When starting a workflow over HTTP, the request body can include `input` for ste
 
 - `childSampleSize`
 
+`GET /workable/workflow-runs/{runId}/steps/{stepName}/children` accepts `skip` and `take` and returns a paged worker slice for the selected workflow node, including branch and parallel structure nodes.
+
 ### MCP
 
 The MCP adapter exposes matching workflow run queries with:
 
 - `workable_query_workflow_runs`
 - `workable_get_workflow_run`
+- `workable_start_workflow`
 - `workable_start_workflow_run`
 - `workable_pause_workflow_run`
 - `workable_cancel_workflow`
+
+`workable_start_workflow` creates a new run by workflow name. `workable_start_workflow_run` resumes an existing paused or blocked run by run id.
 
 `workable_stop_workflow` remains available as a compatibility alias for `workable_pause_workflow_run`.
 

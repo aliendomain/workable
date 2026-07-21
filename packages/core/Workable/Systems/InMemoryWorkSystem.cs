@@ -132,38 +132,12 @@ internal sealed class InMemoryWorkSystem :
             this.workflowPersistence,
             this.authorization,
             this.groupProvider,
-            workflowEvents);
+            workflowEvents,
+            this.logger);
         this.workers.SetWorkflowChildFinalizationObserver(this.workflowRuntime.ObserveFinalWorkflowChild);
+        this.workers.SetWorkflowChildFinalizationRetryGuard(this.workflowRuntime.ShouldRetryWorkflowChildFinalization);
         this.workers.SetWorkflowChildRetentionGuard(this.workflowRuntime.ShouldKeepWorkflowChildWorker);
         this.workers.SetWorkflowChildPurgedObserver(this.workflowRuntime.ObservePurgedWorkflowChild);
-        this.workers.SetCompletionObserver((worker, status) =>
-        {
-            if (!worker.Identifiers.Any(identifier => identifier.Type == "workflow-run"))
-            {
-                return;
-            }
-
-            _ = Task.Run(
-                async () =>
-                {
-                    try
-                    {
-                        if (status == WorkCompletionStatus.Completed)
-                        {
-                            await this.workflowRuntime.TryAutoResumeBlockedRunForCompletedWorker(worker.Id, CancellationToken.None);
-                        }
-                    }
-                    catch (Exception exception) when (IsNonCriticalException(exception))
-                    {
-                        this.logger?.LogWarning(
-                            exception,
-                            "Workflow auto-resume processing failed for worker {WorkerId} in work system {WorkSystem}.",
-                            worker.Id.Value,
-                            this.Name ?? this.Id.ToString());
-                    }
-                },
-                CancellationToken.None);
-        });
     }
 
     public WorkSystemId Id { get; }

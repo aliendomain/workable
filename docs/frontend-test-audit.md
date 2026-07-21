@@ -2,6 +2,8 @@
 
 Date: 2026-06-01
 
+This is a dated audit record. Counts, generated routes, and coverage observations describe the repository at the time of each recorded run; use the admin UI README, current source, and a fresh `npm test` / `npm run build` for the current supported surface.
+
 ## Scope
 
 Frontend app audited: `apps/web/workable-admin-ui`.

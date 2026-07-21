@@ -301,7 +301,7 @@ public sealed class WorkflowRunViewAdapter
         return CreateOperatorStep(
             dispatchEach.Name,
             dispatchEach.Kind,
-            ResolveDispatchStatus(snapshot, run.Status, childStates),
+            ResolveDispatchStatus(snapshot, run.Status, childStates, dispatchEach.CanceledChildBehavior),
             snapshot?.StartedAt,
             snapshot?.CompletedAt,
             childIds,
@@ -491,7 +491,8 @@ public sealed class WorkflowRunViewAdapter
     private static WorkflowOperatorNodeStatus ResolveDispatchStatus(
         WorkflowStepRunSnapshot? snapshot,
         WorkflowRunStatus runStatus,
-        IReadOnlyList<WorkflowChildState> childWorkers)
+        IReadOnlyList<WorkflowChildState> childWorkers,
+        WorkflowCanceledChildBehavior? canceledChildBehavior = null)
     {
         if (snapshot is null)
         {
@@ -500,21 +501,7 @@ public sealed class WorkflowRunViewAdapter
                 return WorkflowOperatorNodeStatus.Pending;
             }
 
-            if (childWorkers.Any(worker => worker.State is WorkerState.Canceled or WorkerState.Canceling))
-            {
-                return WorkflowOperatorNodeStatus.Canceled;
-            }
-
-            if (childWorkers.Any(worker => worker.State is WorkerState.Failed or WorkerState.Interrupted or WorkerState.Paused))
-            {
-                return runStatus == WorkflowRunStatus.Paused
-                    ? WorkflowOperatorNodeStatus.Paused
-                    : WorkflowOperatorNodeStatus.Blocked;
-            }
-
-            return childWorkers.Any(worker => !worker.State.IsFinal())
-                ? WorkflowOperatorNodeStatus.WaitingOnChildren
-                : WorkflowOperatorNodeStatus.Completed;
+            return ResolveDispatchChildStatus(runStatus, childWorkers, canceledChildBehavior);
         }
 
         if (snapshot.Status == WorkflowStepRunStatus.Pending)
@@ -544,9 +531,25 @@ public sealed class WorkflowRunViewAdapter
                 : WorkflowOperatorNodeStatus.Running;
         }
 
+        return ResolveDispatchChildStatus(runStatus, childWorkers, canceledChildBehavior);
+    }
+
+    private static WorkflowOperatorNodeStatus ResolveDispatchChildStatus(
+        WorkflowRunStatus runStatus,
+        IReadOnlyList<WorkflowChildState> childWorkers,
+        WorkflowCanceledChildBehavior? canceledChildBehavior)
+    {
         if (childWorkers.Any(worker => worker.State is WorkerState.Canceled or WorkerState.Canceling))
         {
-            return WorkflowOperatorNodeStatus.Canceled;
+            switch (canceledChildBehavior)
+            {
+                case WorkflowCanceledChildBehavior.Continue:
+                    break;
+                case WorkflowCanceledChildBehavior.Block:
+                    return WorkflowOperatorNodeStatus.Blocked;
+                default:
+                    return WorkflowOperatorNodeStatus.Canceled;
+            }
         }
 
         if (childWorkers.Any(worker => worker.State is WorkerState.Failed or WorkerState.Interrupted or WorkerState.Paused))

@@ -20,6 +20,7 @@ internal sealed class WorkerOperations :
     private readonly WorkerIndex index = new();
     private readonly WorkerPersistenceCoordinator persistence;
     private readonly ConcurrentDictionary<WorkerIterationReference, WorkCompletionStatus> iterationStatuses = [];
+    private readonly ConcurrentDictionary<WorkerId, byte> finalizationInProgress = [];
     private readonly InMemoryWorkMetricsSink metrics;
     private readonly IWorkSystemReadModelStore readModel;
     private readonly Lock lifecycleSync = new();
@@ -29,11 +30,13 @@ internal sealed class WorkerOperations :
     private readonly FailedWorkerAutoCancelScheduler failedWorkerAutoCancel;
     private readonly WorkerRetentionScheduler retention;
     private Func<WorkerSnapshot, CancellationToken, Task>? workflowChildFinalizationObserver;
+    private Func<WorkerSnapshot, bool>? workflowChildFinalizationRetryGuard;
     private Func<WorkerSnapshot, bool>? workflowChildRetentionGuard;
     private Func<WorkerSnapshot, CancellationToken, Task>? workflowChildPurgedObserver;
     private readonly TimeSpan shutdownGracePeriod;
     private readonly WorkSystemCapacityConfiguration capacity;
     private readonly WorkSystemQueueDiagnosticsTracker queueDiagnostics;
+    private readonly ILogger? logger;
     private readonly bool persistenceStoreAvailable;
     private CancellationTokenSource systemExecutionLifetime = new();
     private volatile bool acceptingWork;
@@ -89,7 +92,7 @@ internal sealed class WorkerOperations :
             persistenceLogger,
             durabilityOptions);
         this.workerEvents = new WorkerEventPublisher(workSystemId, workSystemName, events, this.SynchronizeWorkerIfTracked, readModel);
-        var logger = rootServices.GetService<ILoggerFactory>()?.CreateLogger("Workable.WorkerExecution");
+        this.logger = rootServices.GetService<ILoggerFactory>()?.CreateLogger("Workable.WorkerExecution");
         var invoker = new WorkerExecutionInvoker(
             workSystemId,
             workSystemName,
@@ -99,8 +102,8 @@ internal sealed class WorkerOperations :
             this.AddIdentifier,
             new WorkInitializationExecutor(rootServices));
         var exceptionHandler = new WorkerExecutionExceptionHandler(
-            new WorkExceptionClassifierChain(systemExceptionClassifiers, globalExceptionClassifiers, logger),
-            logger);
+            new WorkExceptionClassifierChain(systemExceptionClassifiers, globalExceptionClassifiers, this.logger),
+            this.logger);
         var attemptRunner = new WorkerExecutionAttemptRunner(invoker, exceptionHandler);
         var completionRecorder = new WorkerExecutionCompletionRecorder(this.workerEvents);
         this.iterationTransitions = new WorkerIterationTransitionCoordinator(this.workerEvents);
@@ -137,6 +140,9 @@ internal sealed class WorkerOperations :
 
     internal void SetWorkflowChildFinalizationObserver(Func<WorkerSnapshot, CancellationToken, Task>? observer)
         => this.workflowChildFinalizationObserver = observer;
+
+    internal void SetWorkflowChildFinalizationRetryGuard(Func<WorkerSnapshot, bool>? guard)
+        => this.workflowChildFinalizationRetryGuard = guard;
 
     internal void SetWorkflowChildRetentionGuard(Func<WorkerSnapshot, bool>? guard)
         => this.workflowChildRetentionGuard = guard;
@@ -470,23 +476,31 @@ internal sealed class WorkerOperations :
         WorkerVersion worker,
         WorkAction action,
         CancellationToken cancellationToken = default)
+        => this.Execute(worker, new WorkerActionRequest(action), cancellationToken);
+
+    public Task<WorkActionOutcome> Execute(
+        WorkerVersion worker,
+        WorkerActionRequest request,
+        CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
+        ArgumentNullException.ThrowIfNull(request);
         return this.Execute(
             worker,
-            action,
+            request,
             WorkRequestContext.Create(WorkInvocationChannel.InProcess),
             cancellationToken);
     }
 
     internal Task<WorkActionOutcome> Execute(
         WorkerVersion worker,
-        WorkAction action,
+        WorkerActionRequest request,
         WorkRequestContext requestContext,
         CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        return this.ApplyAction(worker, action, requestContext, cancellationToken);
+        ArgumentNullException.ThrowIfNull(request);
+        return this.ApplyAction(worker, request, requestContext, cancellationToken);
     }
 
     public Task<WorkerBulkActionOutcome> ExecuteAll(
@@ -522,7 +536,11 @@ internal sealed class WorkerOperations :
         {
             cancellationToken.ThrowIfCancellationRequested();
             var version = candidate.ToSummary().Version;
-            outcomes.Add(await this.ApplyAction(version, action, requestContext, cancellationToken));
+            outcomes.Add(await this.ApplyAction(
+                version,
+                new WorkerActionRequest(action),
+                requestContext,
+                cancellationToken));
         }
 
         return new WorkerBulkActionOutcome(
@@ -534,15 +552,17 @@ internal sealed class WorkerOperations :
 
     private async Task<WorkActionOutcome> ApplyAction(
         WorkerVersion worker,
-        WorkAction action,
+        WorkerActionRequest request,
         WorkRequestContext requestContext,
         CancellationToken cancellationToken)
     {
+        var action = request.Action;
         if (!this.workers.TryGetValue(worker.WorkerId, out var record))
         {
             return WorkActionOutcome.NotFound(action, worker.WorkerId);
         }
 
+        var storedRequestContext = CreateStoredActionRequestContext(requestContext, request);
         WorkActionOutcome outcome;
         if (action == WorkAction.Purge)
         {
@@ -555,34 +575,51 @@ internal sealed class WorkerOperations :
             {
                 WorkAction.Start => this.Start(record, worker.Revision, advancesRevision: true, bypassConcurrencyWhenFlexible: true),
                 WorkAction.Pause => record.RequestPause(worker.Revision),
-                WorkAction.Cancel => record.RequestCancel(worker.Revision),
+                WorkAction.Cancel => record.RequestCancel(worker.Revision, storedRequestContext),
                 WorkAction.Push => record.Push(worker.Revision),
                 _ => WorkActionOutcome.Invalid(action, record.ToSnapshot(), [WorkMessage.Error("workable.action.invalid", $"Action '{action}' is not supported.")]),
             };
         }
 
-        var storedRequestContext = requestContext.WithoutAuthorization();
         record.RecordActionHistory(outcome, storedRequestContext);
 
         if (outcome.IsAccepted)
         {
-            if (action != WorkAction.Purge)
+            var guardRetention = action != WorkAction.Purge && record.IsFinal;
+            if (guardRetention)
             {
-                await this.ObserveWorkflowChildFinalization(record, cancellationToken);
+                this.finalizationInProgress[record.Id] = 0;
+                this.retention.Schedule(record);
             }
 
-            this.HandleAcceptedWorkerChange(record, action);
-            if (action != WorkAction.Purge)
+            try
             {
-                this.SynchronizeWorkerIfTracked(record);
-                if (ShouldSignalCurrentCompletion(action))
+                if (action != WorkAction.Purge)
                 {
-                    record.SignalCurrentCompletion();
+                    await this.ObserveWorkflowChildFinalization(record, cancellationToken);
+                }
+
+                this.HandleAcceptedWorkerChange(record, action);
+                if (action != WorkAction.Purge)
+                {
+                    this.SynchronizeWorkerIfTracked(record);
+                    if (ShouldSignalCurrentCompletion(action))
+                    {
+                        record.SignalCurrentCompletion();
+                    }
+                }
+                else
+                {
+                    await this.ObserveWorkflowChildPurged(record, cancellationToken);
                 }
             }
-            else
+            finally
             {
-                await this.ObserveWorkflowChildPurged(record, cancellationToken);
+                if (guardRetention)
+                {
+                    this.finalizationInProgress.TryRemove(record.Id, out _);
+                    this.retention.Schedule(record);
+                }
             }
         }
 
@@ -592,6 +629,16 @@ internal sealed class WorkerOperations :
 
     private static bool ShouldSignalCurrentCompletion(WorkAction action)
         => action != WorkAction.Pause;
+
+    private static WorkRequestContext CreateStoredActionRequestContext(
+        WorkRequestContext requestContext,
+        WorkerActionRequest request)
+    {
+        var storedRequestContext = requestContext.WithoutAuthorization();
+        return request.Reason is null
+            ? storedRequestContext
+            : storedRequestContext with { Description = request.Reason };
+    }
 
     public Task<WorkActionOutcome> Reconfigure(
         WorkerVersion worker,
@@ -915,7 +962,6 @@ internal sealed class WorkerOperations :
 
         if (action != WorkAction.Purge && worker.IsFinal)
         {
-            this.retention.Schedule(worker);
             this.persistence.SynchronizeWorkerState(worker);
         }
 
@@ -925,19 +971,32 @@ internal sealed class WorkerOperations :
 
     private async Task HandleWorkerExecutionCompleted(WorkerRecord worker, CancellationToken cancellationToken)
     {
-        await this.ObserveWorkflowChildFinalization(worker, cancellationToken);
-        this.concurrency.Synchronize(worker);
-        this.TrackFinalWorkerForCapacity(worker);
-
-        if (worker.IsFinal)
+        var guardRetention = worker.IsFinal;
+        if (guardRetention)
         {
+            this.finalizationInProgress[worker.Id] = 0;
             this.retention.Schedule(worker);
         }
 
-        this.persistence.SynchronizeWorkerState(worker);
-        this.SynchronizeFailedWorkerAutoCancel(worker);
+        try
+        {
+            await this.ObserveWorkflowChildFinalization(worker, cancellationToken);
+            this.concurrency.Synchronize(worker);
+            this.TrackFinalWorkerForCapacity(worker);
 
-        this.ScheduleConcurrencyDrain(worker.Work.Definition.Id);
+            this.persistence.SynchronizeWorkerState(worker);
+            this.SynchronizeFailedWorkerAutoCancel(worker);
+
+            this.ScheduleConcurrencyDrain(worker.Work.Definition.Id);
+        }
+        finally
+        {
+            if (guardRetention)
+            {
+                this.finalizationInProgress.TryRemove(worker.Id, out _);
+                this.retention.Schedule(worker);
+            }
+        }
     }
 
     private WorkActionOutcome Purge(WorkerRecord worker, long expectedRevision)
@@ -984,25 +1043,43 @@ internal sealed class WorkerOperations :
         foreach (var schedule in schedules)
         {
             if (!this.workers.TryGetValue(schedule.WorkerId, out var worker) ||
-                !worker.TryAutoCancelFailedWorker(schedule.StateSequence, out var outcome) ||
+                !worker.TryAutoCancelFailedWorker(schedule.StateSequence, requestContext, out var outcome) ||
                 outcome is null)
             {
                 continue;
             }
 
             worker.RecordActionHistory(outcome, requestContext);
-            this.ObserveWorkflowChildFinalization(worker, CancellationToken.None)
-                .GetAwaiter()
-                .GetResult();
-            this.HandleAcceptedWorkerChange(worker, WorkAction.Cancel);
-            this.SynchronizeWorkerIfTracked(worker);
-            if (ShouldSignalCurrentCompletion(WorkAction.Cancel))
+            var guardRetention = worker.IsFinal;
+            if (guardRetention)
             {
-                worker.SignalCurrentCompletion();
+                this.finalizationInProgress[worker.Id] = 0;
+                this.retention.Schedule(worker);
             }
 
-            this.workerEvents.ActionApplied(worker, outcome, requestContext);
-            autoCanceledCount++;
+            try
+            {
+                this.ObserveWorkflowChildFinalization(worker, CancellationToken.None)
+                    .GetAwaiter()
+                    .GetResult();
+                this.HandleAcceptedWorkerChange(worker, WorkAction.Cancel);
+                this.SynchronizeWorkerIfTracked(worker);
+                if (ShouldSignalCurrentCompletion(WorkAction.Cancel))
+                {
+                    worker.SignalCurrentCompletion();
+                }
+
+                this.workerEvents.ActionApplied(worker, outcome, requestContext);
+                autoCanceledCount++;
+            }
+            finally
+            {
+                if (guardRetention)
+                {
+                    this.finalizationInProgress.TryRemove(worker.Id, out _);
+                    this.retention.Schedule(worker);
+                }
+            }
         }
 
         return autoCanceledCount;
@@ -1028,10 +1105,48 @@ internal sealed class WorkerOperations :
                 continue;
             }
 
+            if (this.finalizationInProgress.ContainsKey(workerId))
+            {
+                continue;
+            }
+
+            if (this.ShouldRetryWorkflowChildFinalization(worker))
+            {
+                this.finalizationInProgress[worker.Id] = 0;
+                try
+                {
+                    this.ObserveWorkflowChildFinalization(worker, CancellationToken.None)
+                        .GetAwaiter()
+                        .GetResult();
+                    this.concurrency.Synchronize(worker);
+                    this.TrackFinalWorkerForCapacity(worker);
+                    this.persistence.SynchronizeWorkerState(worker);
+                    this.SynchronizeFailedWorkerAutoCancel(worker);
+                    this.ScheduleConcurrencyDrain(worker.Work.Definition.Id);
+                }
+                catch (Exception exception) when (IsNonCriticalRetentionFailure(exception))
+                {
+                    this.logger?.LogWarning(
+                        exception,
+                        "Workflow child finalization failed for worker {WorkerId}; retention will be retried.",
+                        worker.Id);
+                    this.retention.ScheduleDeferred(worker);
+                    continue;
+                }
+                finally
+                {
+                    this.finalizationInProgress.TryRemove(worker.Id, out _);
+                }
+
+                // Give worker-state persistence a full retention interval to settle before purging.
+                this.retention.ScheduleDeferred(worker);
+                continue;
+            }
+
             if (this.ShouldKeepWorkflowChildWorker(worker))
             {
                 // Workflow children can become purgeable later once the parent run reaches a final state.
-                this.retention.Schedule(worker);
+                this.retention.ScheduleDeferred(worker);
                 continue;
             }
 
@@ -1151,11 +1266,34 @@ internal sealed class WorkerOperations :
         return this.workflowChildRetentionGuard(snapshot);
     }
 
+    private bool ShouldRetryWorkflowChildFinalization(WorkerRecord worker)
+    {
+        if (!worker.IsFinal || this.workflowChildFinalizationRetryGuard is null)
+        {
+            return false;
+        }
+
+        var snapshot = worker.ToSnapshot();
+        return snapshot.Identifiers.Any(identifier => identifier.Type == "workflow-run") &&
+            this.workflowChildFinalizationRetryGuard(snapshot);
+    }
+
     private static bool ContainsWorker(
         List<WorkerId> workerIds,
         HashSet<WorkerId>? workerIdSet,
         WorkerId workerId)
         => workerIdSet?.Contains(workerId) ?? workerIds.Contains(workerId);
+
+    private static bool IsNonCriticalRetentionFailure(Exception exception)
+        => exception is not (
+            OutOfMemoryException or
+            StackOverflowException or
+            AccessViolationException or
+            AppDomainUnloadedException or
+            BadImageFormatException or
+            CannotUnloadAppDomainException or
+            ThreadAbortException or
+            InvalidProgramException);
 
     private IReadOnlyList<WorkerSnapshot> GetSubjectWorkersLocked(WorkSubjectId subjectId)
         => this.persistence.GetSubjectWorkers(subjectId);

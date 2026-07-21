@@ -111,6 +111,25 @@ public sealed class WorkableRealtimeBroadcastRulesShould
         Assert.True(state.IsAlerting);
     }
 
+    [Fact]
+    public void TreatOrdinaryViewFailuresAsNonCritical()
+        => Assert.True(WorkableRealtimeBroadcastRules.IsNonCriticalBroadcastException(
+            new InvalidOperationException("One subscriber failed.")));
+
+    [Theory]
+    [MemberData(nameof(CriticalBroadcastExceptions))]
+    public void PreserveProcessAndCancellationExceptions(object candidate)
+    {
+        var exception = Assert.IsAssignableFrom<Exception>(candidate);
+
+        Assert.False(WorkableRealtimeBroadcastRules.IsNonCriticalBroadcastException(exception));
+    }
+
+    [Fact]
+    public void RejectMissingBroadcastExceptions()
+        => Assert.Throws<ArgumentNullException>(() =>
+            WorkableRealtimeBroadcastRules.IsNonCriticalBroadcastException(null!));
+
     public static IEnumerable<object[]> DiagnosticAlertingStates()
     {
         yield return [AlertState(alertableRejectedWorkCount: 1)];
@@ -125,6 +144,20 @@ public sealed class WorkableRealtimeBroadcastRulesShould
         yield return [AlertState(hasLeaseRenewalFailure: true)];
         yield return [AlertState(hasCleanupFailure: true)];
         yield return [AlertState(systemState: WorkSystemState.Stopping)];
+    }
+
+    public static IEnumerable<object[]> CriticalBroadcastExceptions()
+    {
+        yield return [new OperationCanceledException()];
+        yield return [new OutOfMemoryException()];
+        yield return [new StackOverflowException()];
+        yield return [new AccessViolationException()];
+        yield return [new AppDomainUnloadedException()];
+        yield return [new BadImageFormatException()];
+        yield return [new CannotUnloadAppDomainException()];
+        yield return [new InvalidProgramException()];
+        yield return [System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(
+            typeof(global::System.Threading.ThreadAbortException))];
     }
 
     private static WorkableRealtimeDiagnosticsAlertState AlertState(

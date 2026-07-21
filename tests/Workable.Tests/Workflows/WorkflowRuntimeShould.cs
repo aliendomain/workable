@@ -151,6 +151,118 @@ public sealed class WorkflowRuntimeShould
     }
 
     [Fact]
+    public async Task WorkflowControlRejectsInvalidTransitionsAndAllowsPausedCancellation()
+    {
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var services = new ServiceCollection();
+        services.AddWorkableSystem(builder =>
+        {
+            builder.RequireAuthorization(false);
+            builder.AddWork(
+                WorkDefinition.Create("workflow.control.slow"),
+                async (_, _, cancellationToken) =>
+                {
+                    started.TrySetResult();
+                    await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+                    return WorkExecutionResult.Success();
+                });
+            builder.AddWorkflow(
+                WorkflowDefinition.Create("workflow.control.transitions"),
+                workflow => workflow
+                    .DispatchWork("slow", Work("workflow.control.slow"))
+                    .Join("join"));
+        });
+        using var provider = services.BuildServiceProvider();
+        var system = (InMemoryWorkSystem)provider.GetRequiredService<IWorkSystemRegistry>().Default;
+        await system.Start();
+        var requestContext = WorkRequestContext.Create(WorkInvocationChannel.InProcess);
+        var handle = system.WorkflowRuntime.Start("workflow.control.transitions", requestContext);
+        var runId = handle.RunId ?? throw new InvalidOperationException("Expected workflow run id.");
+        await started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        var startWhileRunning = await system.WorkflowRuntime.Execute(runId, WorkflowAction.Start, requestContext);
+        var pause = await system.WorkflowRuntime.Execute(runId, WorkflowAction.Pause, requestContext);
+        await TestEventually.Until(
+            () => system.WorkflowRuntime.Get(runId)?.Status == WorkflowRunStatus.Paused,
+            "Expected workflow to settle as paused.");
+        var pauseWhilePaused = await system.WorkflowRuntime.Execute(runId, WorkflowAction.Pause, requestContext);
+        var cancel = await system.WorkflowRuntime.Execute(runId, WorkflowAction.Cancel, requestContext);
+        var startAfterFinal = await system.WorkflowRuntime.Execute(runId, WorkflowAction.Start, requestContext);
+        var missing = await system.WorkflowRuntime.Execute(WorkflowRunId.New(), WorkflowAction.Cancel, requestContext);
+
+        Assert.Equal(WorkflowActionStatus.Invalid, startWhileRunning.Status);
+        Assert.Contains(startWhileRunning.Messages, message => message.Code == "workable.workflow.run.not_resumable");
+        Assert.True(pause.IsAccepted);
+        Assert.Equal(WorkflowActionStatus.Invalid, pauseWhilePaused.Status);
+        Assert.Contains(pauseWhilePaused.Messages, message => message.Code == "workable.workflow.run.not_executing");
+        Assert.True(cancel.IsAccepted);
+        Assert.Equal(WorkflowRunStatus.Canceled, system.WorkflowRuntime.Get(runId)?.Status);
+        Assert.Equal(WorkflowActionStatus.Invalid, startAfterFinal.Status);
+        Assert.Contains(startAfterFinal.Messages, message => message.Code == "workable.workflow.run.final");
+        Assert.Equal(WorkflowActionStatus.NotFound, missing.Status);
+    }
+
+    [Fact]
+    public async Task WorkflowVisibilityAndControlUseIndependentReadAndOperateAuthorization()
+    {
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var services = new ServiceCollection();
+        services.AddSingleton<IWorkAuthorizationGroupProvider>(new TestWorkflowGroupProvider(
+            new Dictionary<string, IReadOnlySet<string>>
+            {
+                ["workflow-operator"] = Groups("workflow.ops"),
+                ["workflow-reader"] = Groups("workflow.read"),
+                ["workflow-outsider"] = Groups("other"),
+            }));
+        services.AddWorkableSystem(builder =>
+        {
+            builder.RequireAuthorization(true);
+            builder.AddWork(
+                WorkDefinition.Create("workflow.authorization.slow"),
+                async (_, _, cancellationToken) =>
+                {
+                    started.TrySetResult();
+                    await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+                    return WorkExecutionResult.Success();
+                },
+                configure: null,
+                authorize: authorization => authorization.AllowOperateToGroups("workflow.ops"));
+            builder.AddWorkflow(
+                WorkflowDefinition.Create("workflow.authorization.controls"),
+                workflow => workflow.DispatchWork("slow", Work("workflow.authorization.slow")),
+                authorize: authorization => authorization
+                    .AllowReadToGroups("workflow.read", "workflow.ops")
+                    .AllowOperateToGroups("workflow.ops"));
+        });
+        using var provider = services.BuildServiceProvider();
+        var system = (InMemoryWorkSystem)provider.GetRequiredService<IWorkSystemRegistry>().Default;
+        await system.Start();
+        var operatorContext = WorkRequestContext.Create(
+            WorkInvocationChannel.InProcess,
+            new WorkActor("workflow-operator"));
+        var readerContext = WorkRequestContext.Create(
+            WorkInvocationChannel.InProcess,
+            new WorkActor("workflow-reader"));
+        var outsiderContext = WorkRequestContext.Create(
+            WorkInvocationChannel.InProcess,
+            new WorkActor("workflow-outsider"));
+        var handle = system.WorkflowRuntime.Start("workflow.authorization.controls", operatorContext);
+        var runId = handle.RunId ?? throw new InvalidOperationException("Expected workflow run id.");
+        await started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        var unauthorizedPause = await system.WorkflowRuntime.Execute(runId, WorkflowAction.Pause, readerContext);
+
+        Assert.Equal(WorkflowActionStatus.Unauthorized, unauthorizedPause.Status);
+        Assert.NotNull(system.WorkflowRuntime.GetVisible(runId, readerContext));
+        Assert.Single(system.WorkflowRuntime.ListVisible(readerContext));
+        Assert.Null(system.WorkflowRuntime.GetVisible(runId, outsiderContext));
+        Assert.Empty(system.WorkflowRuntime.ListVisible(outsiderContext));
+
+        var cancel = await system.WorkflowRuntime.Execute(runId, WorkflowAction.Cancel, operatorContext);
+        Assert.True(cancel.IsAccepted);
+    }
+
+    [Fact]
     public async Task WorkflowDispatchedChildWorkersInheritNonProductionProfilingDefault()
     {
         var services = new ServiceCollection();
@@ -535,6 +647,157 @@ public sealed class WorkflowRuntimeShould
     }
 
     [Fact]
+    public async Task ExpandDispatchEachFromPriorDispatchEachChildOutputs()
+    {
+        var gathered = new ConcurrentBag<string>();
+        var services = new ServiceCollection();
+        var loadDefinition = WorkDefinition.Create("sample.load.chained-fan-out");
+        var processDefinition = WorkDefinition.Create("sample.process.chained-fan-out");
+        var gatherDefinition = WorkDefinition.Create("sample.gather.chained-fan-out");
+
+        services.AddWorkableSystem(builder =>
+        {
+            builder.RequireAuthorization(false);
+            builder.AddWork(
+                loadDefinition,
+                (_, _, _) => Task.FromResult(WorkExecutionResult.Success(
+                    WorkOutput.FromValue(new DispatchEachSourceOutput(
+                        [new DispatchEachItem("alpha"), new DispatchEachItem("beta")])))));
+            builder.AddWork(
+                processDefinition,
+                (_, input, _) =>
+                {
+                    var item = input?.ToValue<DispatchEachItem>()
+                        ?? throw new InvalidOperationException("Expected dispatch-each item input.");
+                    return Task.FromResult(WorkExecutionResult.Success(
+                        WorkOutput.FromValue(new DispatchEachSourceOutput(
+                            [new DispatchEachItem($"{item.Id}-artifact")]))));
+                });
+            builder.AddWork(
+                gatherDefinition,
+                (_, input, _) =>
+                {
+                    var item = input?.ToValue<DispatchEachItem>()
+                        ?? throw new InvalidOperationException("Expected chained dispatch-each item input.");
+                    gathered.Add(item.Id);
+                    return Task.FromResult(WorkExecutionResult.Success());
+                });
+            builder.AddWorkflow(
+                WorkflowDefinition.Create("workflow.dispatch-each.chained"),
+                workflow =>
+                {
+                    var load = workflow.DispatchWork<DispatchEachSourceOutput>("load", loadDefinition);
+                    var processed = workflow
+                        .DispatchEach("process", load, processDefinition, output => output.Items)
+                        .Outputs<DispatchEachSourceOutput>();
+
+                    workflow
+                        .DispatchEach("gather", processed, gatherDefinition, output => output.Items)
+                        .Join("join");
+                });
+        });
+
+        using var provider = services.BuildServiceProvider();
+        var system = (InMemoryWorkSystem)provider.GetRequiredService<IWorkSystemRegistry>().Default;
+        await system.Start();
+
+        var handle = system.WorkflowRuntime.Start(
+            "workflow.dispatch-each.chained",
+            WorkRequestContext.Create(WorkInvocationChannel.InProcess));
+        var completion = await handle.WaitForCompletion();
+
+        Assert.True(completion.IsCompletedSuccessfully);
+        Assert.Equal(
+            ["alpha-artifact", "beta-artifact"],
+            gathered.OrderBy(static item => item, StringComparer.Ordinal).ToArray());
+        Assert.NotNull(completion.Run);
+        Assert.Equal(2, completion.Run!.Steps.Single(step => step.Name == "process").WorkerIds.Count);
+        Assert.Equal(2, completion.Run.Steps.Single(step => step.Name == "gather").WorkerIds.Count);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task CompleteChainedDispatchEachWhenTheFirstFanOutIsEmpty(bool durable)
+    {
+        var processExecutions = 0;
+        var gatherExecutions = 0;
+        var services = new ServiceCollection();
+        if (durable)
+        {
+            services.AddSingleton<IWorkPersistenceStore>(new TestWorkflowPersistenceStore());
+        }
+
+        Action<IWorkConfigurationBuilder> configureWork = configuration =>
+        {
+            if (durable)
+            {
+                configuration.QueueDurably(fallbackPollingInterval: TimeSpan.FromSeconds(1));
+            }
+        };
+        services.AddWorkableSystem(durable ? "workflow-tests" : null, builder =>
+        {
+            builder.RequireAuthorization(false);
+            var loadDefinition = WorkDefinition.Create($"sample.load.empty-chain.{durable}");
+            var processDefinition = WorkDefinition.Create($"sample.process.empty-chain.{durable}");
+            var gatherDefinition = WorkDefinition.Create($"sample.gather.empty-chain.{durable}");
+            builder.AddWork(
+                loadDefinition,
+                (_, _, _) => Task.FromResult(WorkExecutionResult.Success(
+                    WorkOutput.FromValue(new DispatchEachSourceOutput([])))),
+                configureWork);
+            builder.AddWork(
+                processDefinition,
+                (_, _, _) =>
+                {
+                    Interlocked.Increment(ref processExecutions);
+                    return Task.FromResult(WorkExecutionResult.Success(
+                        WorkOutput.FromValue(new DispatchEachSourceOutput([]))));
+                },
+                configureWork);
+            builder.AddWork(
+                gatherDefinition,
+                (_, _, _) =>
+                {
+                    Interlocked.Increment(ref gatherExecutions);
+                    return Task.FromResult(WorkExecutionResult.Success());
+                },
+                configureWork);
+            builder.AddWorkflow(
+                WorkflowDefinition.Create(
+                    $"workflow.dispatch-each.empty-chain.{durable}",
+                    coordination: durable
+                        ? WorkflowCoordinationConfiguration.Durable
+                        : WorkflowCoordinationConfiguration.Default),
+                workflow =>
+                {
+                    var load = workflow.DispatchWork<DispatchEachSourceOutput>("load", loadDefinition);
+                    var processed = workflow
+                        .DispatchEach("process", load, processDefinition, output => output.Items)
+                        .Outputs<DispatchEachSourceOutput>();
+                    workflow
+                        .DispatchEach("gather", processed, gatherDefinition, output => output.Items)
+                        .Join("join");
+                });
+        });
+
+        using var provider = services.BuildServiceProvider();
+        var system = Assert.IsType<InMemoryWorkSystem>(provider.GetRequiredService<IWorkSystemRegistry>().Default);
+        await system.Start();
+
+        var handle = system.WorkflowRuntime.Start(
+            $"workflow.dispatch-each.empty-chain.{durable}",
+            WorkRequestContext.Create(WorkInvocationChannel.InProcess));
+        var completion = await handle.WaitForCompletion().WaitAsync(TimeSpan.FromSeconds(10));
+
+        Assert.True(completion.IsCompletedSuccessfully);
+        Assert.Equal(0, Volatile.Read(ref processExecutions));
+        Assert.Equal(0, Volatile.Read(ref gatherExecutions));
+        Assert.Empty(completion.Run!.Steps.Single(step => step.Name == "process").WorkerIds);
+        Assert.Empty(completion.Run.Steps.Single(step => step.Name == "gather").WorkerIds);
+    }
+
+    [Fact]
     public async Task ExpandTypedDispatchEachSelectorFromRootArrayOutputAndCompleteWorkflow()
     {
         var processed = new ConcurrentBag<string>();
@@ -585,6 +848,404 @@ public sealed class WorkflowRuntimeShould
         var fanOut = completion.Run!.Steps.Single(step => step.Name == "fan-out");
         Assert.Equal(WorkflowStepRunStatus.Completed, fanOut.Status);
         Assert.Equal(2, fanOut.WorkerIds.Count);
+    }
+
+    [Theory]
+    [InlineData(WorkflowCanceledChildBehavior.Continue, WorkflowRunStatus.Completed)]
+    [InlineData(WorkflowCanceledChildBehavior.Block, WorkflowRunStatus.Blocked)]
+    [InlineData(WorkflowCanceledChildBehavior.CancelWorkflow, WorkflowRunStatus.Canceled)]
+    public async Task ApplyDispatchEachCanceledChildBehavior(
+        WorkflowCanceledChildBehavior canceledChildBehavior,
+        WorkflowRunStatus expectedStatus)
+    {
+        var started = new ConcurrentDictionary<string, WorkerId>(StringComparer.Ordinal);
+        var downstreamRuns = new ConcurrentBag<string>();
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var workflowName = $"workflow.dispatch-each.canceled.{canceledChildBehavior}".ToLowerInvariant();
+        var services = new ServiceCollection();
+
+        services.AddWorkableSystem(builder =>
+        {
+            builder.RequireAuthorization(false);
+            builder.AddWork(
+                WorkDefinition.Create("sample.load.canceled-policy"),
+                (_, _, _) => Task.FromResult(WorkExecutionResult.Success(
+                    WorkOutput.FromValue(new DispatchEachSourceOutput(
+                        [new DispatchEachItem("alpha"), new DispatchEachItem("beta")])))));
+            builder.AddWork(
+                WorkDefinition.Create("sample.process.canceled-policy"),
+                async (context, input, cancellationToken) =>
+                {
+                    var item = input?.ToValue<DispatchEachItem>()
+                        ?? throw new InvalidOperationException("Expected dispatch-each item input.");
+                    started[item.Id] = context.WorkerId;
+                    await release.Task.WaitAsync(cancellationToken);
+                    return WorkExecutionResult.Success();
+                });
+            foreach (var downstreamName in new[]
+                     {
+                         "sample.downstream.canceled-policy.alpha",
+                         "sample.downstream.canceled-policy.beta",
+                         "sample.downstream.canceled-policy.gamma",
+                     })
+            {
+                builder.AddWork(
+                    WorkDefinition.Create(downstreamName),
+                    (_, _, _) =>
+                    {
+                        downstreamRuns.Add(downstreamName);
+                        return Task.FromResult(WorkExecutionResult.Success());
+                    });
+            }
+
+            builder.AddWorkflow(
+                WorkflowDefinition.Create(workflowName),
+                workflow =>
+                {
+                    var load = workflow.DispatchWork<DispatchEachSourceOutput>(
+                        "load",
+                        Work("sample.load.canceled-policy"));
+                    var continuation = workflow
+                        .DispatchEach(
+                            "fan-out",
+                            load,
+                            Work("sample.process.canceled-policy"),
+                            output => output.Items,
+                            canceledChildBehavior)
+                        .Join("join");
+                    switch (canceledChildBehavior)
+                    {
+                        case WorkflowCanceledChildBehavior.Continue:
+                            continuation
+                                .DispatchWork(
+                                    "post-continue-finalize",
+                                    Work("sample.downstream.canceled-policy.alpha"))
+                                .Join("post-continue-finalize-join");
+                            break;
+                        case WorkflowCanceledChildBehavior.Block:
+                            continuation
+                                .RunParallel("post-block-parallel", parallel => parallel
+                                    .DispatchWork(
+                                        "post-block-alpha",
+                                        Work("sample.downstream.canceled-policy.alpha"))
+                                    .DispatchWork(
+                                        "post-block-beta",
+                                        Work("sample.downstream.canceled-policy.beta")))
+                                .Join("post-block-parallel-join")
+                                .DispatchWork(
+                                    "post-block-tail",
+                                    Work("sample.downstream.canceled-policy.gamma"))
+                                .Join("post-block-tail-join");
+                            break;
+                        case WorkflowCanceledChildBehavior.CancelWorkflow:
+                            continuation
+                                .DispatchWork(
+                                    "post-cancel-prepare",
+                                    Work("sample.downstream.canceled-policy.alpha"))
+                                .Join("post-cancel-prepare-join")
+                                .RunParallel("post-cancel-parallel", parallel => parallel
+                                    .DispatchWork(
+                                        "post-cancel-beta",
+                                        Work("sample.downstream.canceled-policy.beta"))
+                                    .DispatchWork(
+                                        "post-cancel-gamma",
+                                        Work("sample.downstream.canceled-policy.gamma")))
+                                .Join("post-cancel-parallel-join")
+                                .DispatchWork(
+                                    "post-cancel-tail",
+                                    Work("sample.downstream.canceled-policy.alpha"))
+                                .Join("post-cancel-tail-join");
+                            break;
+                    }
+                });
+        });
+
+        using var provider = services.BuildServiceProvider();
+        var system = (InMemoryWorkSystem)provider.GetRequiredService<IWorkSystemRegistry>().Default;
+        await system.Start();
+
+        var requestContext = WorkRequestContext.Create(WorkInvocationChannel.InProcess);
+        var handle = system.WorkflowRuntime.Start(workflowName, requestContext);
+        await TestEventually.Until(
+            () => started.Count == 2,
+            "Expected both dispatch-each children to start.",
+            timeout: TimeSpan.FromSeconds(10));
+
+        var canceledWorkerId = started["alpha"];
+        var canceledWorker = await system.Query.Worker(canceledWorkerId);
+        var cancel = await system.Workers.Execute(canceledWorker!.Version, WorkAction.Cancel);
+        Assert.True(cancel.IsAccepted);
+        await TestEventually.Until(
+            async () => (await system.Query.Worker(canceledWorkerId))?.State == WorkerState.Canceled,
+            "Expected the selected dispatch-each child to be canceled.",
+            timeout: TimeSpan.FromSeconds(10));
+
+        var expectedFanOutStatus = canceledChildBehavior switch
+        {
+            WorkflowCanceledChildBehavior.Continue => WorkflowOperatorNodeStatus.WaitingOnChildren,
+            WorkflowCanceledChildBehavior.Block => WorkflowOperatorNodeStatus.Blocked,
+            WorkflowCanceledChildBehavior.CancelWorkflow => WorkflowOperatorNodeStatus.Canceled,
+            _ => throw new ArgumentOutOfRangeException(nameof(canceledChildBehavior)),
+        };
+        WorkflowRunDetailView? canceledDetail = null;
+        var viewAdapter = new WorkflowRunViewAdapter();
+        await TestEventually.Until(
+            async () =>
+            {
+                canceledDetail = await viewAdapter.Run(system, requestContext, handle.RunId!.Value);
+                return canceledDetail?.Steps.Single(step => step.Name == "fan-out").Status == expectedFanOutStatus;
+            },
+            $"Expected the dispatch-each node to report {expectedFanOutStatus} for {canceledChildBehavior}.",
+            timeout: TimeSpan.FromSeconds(10));
+
+        var canceledFanOut = Assert.Single(canceledDetail!.Steps, step => step.Name == "fan-out");
+        Assert.True(
+            canceledFanOut.Children.ByState.TryGetValue(WorkerState.Canceled, out var canceledCount) && canceledCount >= 1);
+
+        if (canceledChildBehavior == WorkflowCanceledChildBehavior.Continue)
+        {
+            release.TrySetResult();
+            var completion = await handle.WaitForCompletion().WaitAsync(TimeSpan.FromSeconds(10));
+            Assert.Equal(expectedStatus, completion.Status);
+            Assert.Equal(WorkerState.Completed, (await system.Query.Worker(started["beta"]))!.State);
+            Assert.Equal(["sample.downstream.canceled-policy.alpha"], downstreamRuns);
+            Assert.Equal(
+                2,
+                completion.Run!.Steps.Count(step => step.Name.StartsWith("post-", StringComparison.Ordinal)));
+            Assert.All(
+                completion.Run.Steps.Where(step => step.Name.StartsWith("post-", StringComparison.Ordinal)),
+                step => Assert.Equal(WorkflowStepRunStatus.Completed, step.Status));
+
+            var completedDetail = await viewAdapter.Run(system, requestContext, handle.RunId!.Value);
+            var completedFanOut = Assert.Single(completedDetail!.Steps, step => step.Name == "fan-out");
+            Assert.Equal(WorkflowOperatorNodeStatus.Completed, completedFanOut.Status);
+            Assert.Equal(2, completedFanOut.Children.Final);
+            Assert.Equal(1, completedFanOut.Children.ByState[WorkerState.Completed]);
+            Assert.Equal(1, completedFanOut.Children.ByState[WorkerState.Canceled]);
+            return;
+        }
+
+        await TestEventually.Until(
+            () => system.WorkflowRuntime.Get(handle.RunId!.Value)?.Status == expectedStatus,
+            $"Expected the workflow to reach {expectedStatus} after its dispatch-each child was canceled.",
+            timeout: TimeSpan.FromSeconds(10));
+
+        var settledRun = system.WorkflowRuntime.Get(handle.RunId!.Value)!;
+        var expectedDownstreamStepCount = canceledChildBehavior == WorkflowCanceledChildBehavior.Block
+            ? 6
+            : 8;
+        Assert.Equal(
+            expectedDownstreamStepCount,
+            settledRun.Steps.Count(step => step.Name.StartsWith("post-", StringComparison.Ordinal)));
+        Assert.All(
+            settledRun.Steps.Where(step => step.Name.StartsWith("post-", StringComparison.Ordinal)),
+            step => Assert.Equal(WorkflowStepRunStatus.Pending, step.Status));
+        Assert.Empty(downstreamRuns);
+
+        if (canceledChildBehavior == WorkflowCanceledChildBehavior.Block)
+        {
+            Assert.Equal(WorkerState.Running, (await system.Query.Worker(started["beta"]))!.State);
+            var workflowCancel = await system.WorkflowRuntime.Execute(
+                handle.RunId!.Value,
+                WorkflowAction.Cancel,
+                requestContext);
+            Assert.True(workflowCancel.IsAccepted);
+            Assert.Equal(
+                WorkflowRunStatus.Canceled,
+                (await handle.WaitForCompletion().WaitAsync(TimeSpan.FromSeconds(10))).Status);
+            return;
+        }
+
+        Assert.Equal(
+            WorkflowRunStatus.Canceled,
+            (await handle.WaitForCompletion().WaitAsync(TimeSpan.FromSeconds(10))).Status);
+        await TestEventually.Until(
+            async () => (await system.Query.Worker(started["beta"]))?.State == WorkerState.Canceled,
+            "Expected CancelWorkflow to cancel the remaining dispatch-each child.",
+            timeout: TimeSpan.FromSeconds(10));
+    }
+
+    [Fact]
+    public async Task CancelBlockedWorkflowWhenCancelWorkflowDispatchEachChildIsCanceledLater()
+    {
+        var started = new ConcurrentDictionary<string, WorkerId>(StringComparer.Ordinal);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var downstreamRuns = 0;
+        var services = new ServiceCollection();
+
+        services.AddWorkableSystem(builder =>
+        {
+            builder.RequireAuthorization(false);
+            builder.AddWork(
+                WorkDefinition.Create("sample.canceled-policy.fail-first"),
+                (_, _, _) => Task.FromResult(WorkExecutionResult.Failure(
+                    [WorkMessage.Error("sample.failed", "Block before the selected fan-out child is canceled.")])));
+            builder.AddWork(
+                WorkDefinition.Create("sample.canceled-policy.load-late-cancel"),
+                (_, _, _) => Task.FromResult(WorkExecutionResult.Success(
+                    WorkOutput.FromValue(new DispatchEachSourceOutput(
+                        [new DispatchEachItem("alpha"), new DispatchEachItem("beta")])))));
+            builder.AddWork(
+                WorkDefinition.Create("sample.canceled-policy.process-late-cancel"),
+                async (context, input, cancellationToken) =>
+                {
+                    var item = input?.ToValue<DispatchEachItem>()
+                        ?? throw new InvalidOperationException("Expected dispatch-each item input.");
+                    started[item.Id] = context.WorkerId;
+                    await release.Task.WaitAsync(cancellationToken);
+                    return WorkExecutionResult.Success();
+                });
+            builder.AddWork(
+                WorkDefinition.Create("sample.canceled-policy.after-late-cancel"),
+                (_, _, _) =>
+                {
+                    Interlocked.Increment(ref downstreamRuns);
+                    return Task.FromResult(WorkExecutionResult.Success());
+                });
+            builder.AddWorkflow(
+                WorkflowDefinition.Create("workflow.dispatch-each.cancel-after-block"),
+                workflow =>
+                {
+                    workflow.DispatchWork("fail-first", Work("sample.canceled-policy.fail-first"));
+                    var load = workflow.DispatchWork<DispatchEachSourceOutput>(
+                        "load",
+                        Work("sample.canceled-policy.load-late-cancel"));
+                    workflow
+                        .DispatchEach(
+                            "fan-out",
+                            load,
+                            Work("sample.canceled-policy.process-late-cancel"),
+                            output => output.Items,
+                            WorkflowCanceledChildBehavior.CancelWorkflow)
+                        .Join("join")
+                        .DispatchWork(
+                            "after-cancel",
+                            Work("sample.canceled-policy.after-late-cancel"))
+                        .Join("after-cancel-join");
+                });
+        });
+
+        using var provider = services.BuildServiceProvider();
+        var system = (InMemoryWorkSystem)provider.GetRequiredService<IWorkSystemRegistry>().Default;
+        await system.Start();
+        var handle = system.WorkflowRuntime.Start(
+            "workflow.dispatch-each.cancel-after-block",
+            WorkRequestContext.Create(WorkInvocationChannel.InProcess));
+
+        await TestEventually.Until(
+            () => started.Count == 2 &&
+                system.WorkflowRuntime.Get(handle.RunId!.Value)?.Status == WorkflowRunStatus.Blocked,
+            "Expected the workflow to block on the failed child while both fan-out children remained active.",
+            timeout: TimeSpan.FromSeconds(10));
+
+        var canceledWorker = await system.Query.Worker(started["alpha"]);
+        var cancel = await system.Workers.Execute(canceledWorker!.Version, WorkAction.Cancel);
+        Assert.True(cancel.IsAccepted);
+
+        var completion = await handle.WaitForCompletion().WaitAsync(TimeSpan.FromSeconds(10));
+        Assert.Equal(WorkflowRunStatus.Canceled, completion.Status);
+        await TestEventually.Until(
+            async () => (await system.Query.Worker(started["beta"]))?.State == WorkerState.Canceled,
+            "Expected the late CancelWorkflow policy to cancel the remaining fan-out child.",
+            timeout: TimeSpan.FromSeconds(10));
+        Assert.Equal(0, Volatile.Read(ref downstreamRuns));
+        Assert.All(
+            completion.Run!.Steps.Where(step => step.Name.StartsWith("after-cancel", StringComparison.Ordinal)),
+            step => Assert.Equal(WorkflowStepRunStatus.Pending, step.Status));
+    }
+
+    [Fact]
+    public async Task CancelLargeQueuedFanOutWithoutRecursiveWorkflowCancellation()
+    {
+        const int childCount = 128;
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var startedWorker = new TaskCompletionSource<WorkerId>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var items = Enumerable.Range(0, childCount)
+            .Select(index => new DispatchEachItem($"item-{index}"))
+            .ToArray();
+        var services = new ServiceCollection();
+
+        services.AddWorkableSystem(builder =>
+        {
+            builder.RequireAuthorization(false);
+            builder.AddWork(
+                WorkDefinition.Create("sample.cancel-recursion.fail"),
+                (_, _, _) => Task.FromResult(WorkExecutionResult.Failure(
+                    [WorkMessage.Error("sample.failed", "Block the workflow before cancellation.")])));
+            builder.AddWork(
+                WorkDefinition.Create("sample.cancel-recursion.load"),
+                (_, _, _) => Task.FromResult(WorkExecutionResult.Success(
+                    WorkOutput.FromValue(new DispatchEachSourceOutput(items)))));
+            builder.AddWork(
+                WorkDefinition.Create(
+                    "sample.cancel-recursion.child",
+                    configuration: WorkConfiguration.Default with
+                    {
+                        Coordination = WorkCoordinationConfiguration.Default with
+                        {
+                            IsEnabled = true,
+                            Concurrency = WorkConcurrencyConfiguration.Default with
+                            {
+                                IsEnabled = true,
+                                MaximumCapacity = 1,
+                                LimitReachedBehavior = WorkConcurrencyLimitReachedBehavior.DeferStart,
+                            },
+                        },
+                    }),
+                async (context, _, cancellationToken) =>
+                {
+                    startedWorker.TrySetResult(context.WorkerId);
+                    await release.Task.WaitAsync(cancellationToken);
+                    return WorkExecutionResult.Success();
+                });
+            builder.AddWorkflow(
+                WorkflowDefinition.Create("workflow.cancel-recursion"),
+                workflow =>
+                {
+                    workflow.DispatchWork("fail", Work("sample.cancel-recursion.fail"));
+                    var load = workflow.DispatchWork<DispatchEachSourceOutput>(
+                        "load",
+                        Work("sample.cancel-recursion.load"));
+                    workflow
+                        .DispatchEach(
+                            "fan-out",
+                            load,
+                            Work("sample.cancel-recursion.child"),
+                            output => output.Items,
+                            WorkflowCanceledChildBehavior.CancelWorkflow)
+                        .Join("join");
+                });
+        });
+
+        using var provider = services.BuildServiceProvider();
+        var system = (InMemoryWorkSystem)provider.GetRequiredService<IWorkSystemRegistry>().Default;
+        await system.Start();
+        var handle = system.WorkflowRuntime.Start(
+            "workflow.cancel-recursion",
+            WorkRequestContext.Create(WorkInvocationChannel.InProcess));
+        var runningWorkerId = await startedWorker.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        await TestEventually.Until(
+            () => system.WorkflowRuntime.Get(handle.RunId!.Value)?.Steps
+                .Single(step => step.Name == "fan-out").WorkerIds.Count == childCount,
+            "Expected every fan-out child to be queued before cancellation.",
+            timeout: TimeSpan.FromSeconds(10));
+
+        var runningWorker = await system.Query.Worker(runningWorkerId);
+        var cancellation = await system.Workers.Execute(runningWorker!.Version, WorkAction.Cancel);
+
+        Assert.True(cancellation.IsAccepted);
+        var completion = await handle.WaitForCompletion().WaitAsync(TimeSpan.FromSeconds(10));
+        Assert.Equal(WorkflowRunStatus.Canceled, completion.Status);
+        await TestEventually.Until(
+            async () =>
+            {
+                var workers = await Task.WhenAll(
+                    completion.Run!.Steps.Single(step => step.Name == "fan-out").WorkerIds
+                        .Select(workerId => system.Query.Worker(workerId)));
+                return workers.All(worker => worker?.State == WorkerState.Canceled);
+            },
+            "Expected all queued fan-out children to be canceled without recursive cancellation.",
+            timeout: TimeSpan.FromSeconds(10));
     }
 
     [Fact]
@@ -2230,6 +2891,259 @@ public sealed class WorkflowRuntimeShould
         Assert.Equal([failedWorkerId], completed!.Steps.Single(step => step.Name == "process").WorkerIds);
     }
 
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public async Task AutoResumeBlockedWorkflowAfterFailedChildRestartsAndContinueSiblingCancels(
+        bool durable,
+        bool cancelBeforeRestart)
+    {
+        var suffix = $"{(durable ? "durable" : "in-memory")}.{(cancelBeforeRestart ? "cancel-first" : "restart-first")}";
+        var store = new TestWorkflowPersistenceStore();
+        var started = new ConcurrentDictionary<string, WorkerId>(StringComparer.Ordinal);
+        var flakyRuns = 0;
+        var finalRuns = 0;
+        var services = new ServiceCollection();
+        if (durable)
+        {
+            services.AddSingleton<IWorkPersistenceStore>(store);
+        }
+
+        Action<IWorkConfigurationBuilder> configureWork = configuration =>
+        {
+            if (durable)
+            {
+                configuration.QueueDurably(fallbackPollingInterval: TimeSpan.FromSeconds(1));
+            }
+        };
+        var loadDefinition = WorkDefinition.Create($"sample.auto.dispatch-each.load.{suffix}");
+        var processDefinition = WorkDefinition.Create($"sample.auto.dispatch-each.process.{suffix}");
+        var finalDefinition = WorkDefinition.Create($"sample.auto.dispatch-each.final.{suffix}");
+        var workflowName = $"workflow.auto.dispatch-each.{suffix}";
+        services.AddWorkableSystem(durable ? "workflow-tests" : null, builder =>
+        {
+            builder.RequireAuthorization(false);
+            builder.AddWork(
+                loadDefinition,
+                (_, _, _) => Task.FromResult(WorkExecutionResult.Success(
+                    WorkOutput.FromValue(new DispatchEachSourceOutput(
+                        [new DispatchEachItem("cancel"), new DispatchEachItem("flaky")])))),
+                configureWork);
+            builder.AddWork(
+                processDefinition,
+                async (context, input, cancellationToken) =>
+                {
+                    var item = input?.ToValue<DispatchEachItem>()
+                        ?? throw new InvalidOperationException("Expected dispatch-each item input.");
+                    started[item.Id] = context.WorkerId;
+                    if (item.Id == "cancel")
+                    {
+                        await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+                        return WorkExecutionResult.Success();
+                    }
+
+                    return Interlocked.Increment(ref flakyRuns) == 1
+                        ? WorkExecutionResult.Failure(
+                            [WorkMessage.Error("sample.auto.dispatch-each.failed", "Child failed on the first attempt.")])
+                        : WorkExecutionResult.Success();
+                },
+                configureWork);
+            builder.AddWork(
+                finalDefinition,
+                (_, _, _) =>
+                {
+                    Interlocked.Increment(ref finalRuns);
+                    return Task.FromResult(WorkExecutionResult.Success());
+                },
+                configureWork);
+            builder.AddWorkflow(
+                WorkflowDefinition.Create(
+                    workflowName,
+                    coordination: durable
+                        ? WorkflowCoordinationConfiguration.Durable
+                        : WorkflowCoordinationConfiguration.Default),
+                workflow =>
+                {
+                    var load = workflow.DispatchWork<DispatchEachSourceOutput>("load", loadDefinition);
+                    workflow
+                        .DispatchEach(
+                            "fan-out",
+                            load,
+                            processDefinition,
+                            output => output.Items,
+                            WorkflowCanceledChildBehavior.Continue)
+                        .Join("fan-out-join")
+                        .DispatchWork("finalize", finalDefinition);
+                });
+        });
+
+        using var provider = services.BuildServiceProvider();
+        var system = durable
+            ? GetNamedSystem(provider, "workflow-tests")
+            : Assert.IsType<InMemoryWorkSystem>(provider.GetRequiredService<IWorkSystemRegistry>().Default);
+        await system.Start();
+
+        var handle = system.WorkflowRuntime.Start(
+            workflowName,
+            WorkRequestContext.Create(WorkInvocationChannel.InProcess));
+        await TestEventually.Until(
+            () => started.Count == 2 &&
+                system.WorkflowRuntime.Get(handle.RunId!.Value)?.Status == WorkflowRunStatus.Blocked,
+            "Expected one dispatch-each child to remain active while its sibling blocked the workflow.",
+            timeout: TimeSpan.FromSeconds(durable ? 15 : 10));
+
+        var canceledWorkerId = started["cancel"];
+        var failedWorkerId = started["flaky"];
+
+        async Task CancelContinueChild()
+        {
+            var canceledWorker = await system.Query.Worker(canceledWorkerId);
+            var canceled = await system.Workers.Execute(canceledWorker!.Version, WorkAction.Cancel);
+            Assert.True(canceled.IsAccepted);
+            await TestEventually.Until(
+                async () =>
+                {
+                    var worker = await system.Query.Worker(canceledWorkerId);
+                    var run = system.WorkflowRuntime.Get(handle.RunId!.Value);
+                    return worker?.State == WorkerState.Canceled &&
+                        run?.ChildReceipts.Any(receipt =>
+                            receipt.WorkerId == canceledWorkerId &&
+                            receipt.CompletionStatus == WorkCompletionStatus.Canceled) == true;
+                },
+                "Expected the canceled Continue child receipt to be retained.",
+                timeout: TimeSpan.FromSeconds(durable ? 15 : 10));
+
+            if (durable)
+            {
+                await TestEventually.Until(
+                    () => store.GetWorkflowRun(handle.RunId!.Value)?.ChildReceipts.Any(receipt =>
+                        receipt.WorkerId == canceledWorkerId &&
+                        receipt.CompletionStatus == WorkCompletionStatus.Canceled) == true,
+                    "Expected the canceled Continue child receipt to be persisted durably.",
+                    timeout: TimeSpan.FromSeconds(15));
+            }
+        }
+
+        async Task RestartFailedChild()
+        {
+            var failedWorker = await system.Query.Worker(failedWorkerId);
+            Assert.Equal(WorkerState.Failed, failedWorker!.State);
+            var restarted = await system.Workers.Execute(failedWorker.Version, WorkAction.Start);
+            Assert.True(restarted.IsAccepted);
+            await TestEventually.Until(
+                async () => (await system.Query.Worker(failedWorkerId))?.State == WorkerState.Completed,
+                "Expected the restarted dispatch-each child to complete.",
+                timeout: TimeSpan.FromSeconds(durable ? 15 : 10));
+        }
+
+        if (cancelBeforeRestart)
+        {
+            await CancelContinueChild();
+            await RestartFailedChild();
+        }
+        else
+        {
+            await RestartFailedChild();
+            Assert.Equal(WorkflowRunStatus.Blocked, system.WorkflowRuntime.Get(handle.RunId!.Value)?.Status);
+            Assert.Equal(0, Volatile.Read(ref finalRuns));
+            await CancelContinueChild();
+        }
+
+        var completion = await handle.WaitForCompletion().WaitAsync(TimeSpan.FromSeconds(durable ? 15 : 10));
+
+        Assert.True(completion.IsCompletedSuccessfully);
+        Assert.Equal(WorkflowRunStatus.Completed, completion.Status);
+        Assert.Equal(2, Volatile.Read(ref flakyRuns));
+        Assert.Equal(1, Volatile.Read(ref finalRuns));
+        Assert.Equal(WorkerState.Canceled, (await system.Query.Worker(canceledWorkerId))!.State);
+        Assert.Equal(WorkerState.Completed, (await system.Query.Worker(failedWorkerId))!.State);
+        Assert.Equal(2, completion.Run!.Steps.Single(step => step.Name == "fan-out").WorkerIds.Count);
+    }
+
+    [Fact]
+    public async Task AutoResumeBlockedDurableWorkflowWhenRestartedChildSettlesBehindBlockedPersistence()
+    {
+        var blockedWriteEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseBlockedWrite = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var blockedWrites = 0;
+        var flakyRuns = 0;
+        var finalRuns = 0;
+        var store = new TestWorkflowPersistenceStore
+        {
+            BeforeWorkflowUpsert = async (run, cancellationToken) =>
+            {
+                if (run.Status == WorkflowRunStatus.Blocked &&
+                    Interlocked.Increment(ref blockedWrites) == 1)
+                {
+                    blockedWriteEntered.TrySetResult();
+                    await releaseBlockedWrite.Task.WaitAsync(cancellationToken);
+                }
+            },
+        };
+        var services = new ServiceCollection();
+        services.AddSingleton<IWorkPersistenceStore>(store);
+        services.AddWorkableSystem("workflow-tests", builder =>
+        {
+            builder.RequireAuthorization(false);
+            builder.AddWork(
+                WorkDefinition.Create("sample.auto.settlement.flaky"),
+                (_, _, _) => Task.FromResult(
+                    Interlocked.Increment(ref flakyRuns) == 1
+                        ? WorkExecutionResult.Failure(
+                            [WorkMessage.Error("sample.auto.settlement.failed", "Child failed on the first attempt.")])
+                        : WorkExecutionResult.Success()),
+                configuration => configuration.QueueDurably(fallbackPollingInterval: TimeSpan.FromSeconds(1)));
+            builder.AddWork(
+                WorkDefinition.Create("sample.auto.settlement.final"),
+                (_, _, _) =>
+                {
+                    Interlocked.Increment(ref finalRuns);
+                    return Task.FromResult(WorkExecutionResult.Success());
+                },
+                configuration => configuration.QueueDurably(fallbackPollingInterval: TimeSpan.FromSeconds(1)));
+            builder.AddWorkflow(
+                WorkflowDefinition.Create(
+                    "workflow.auto.settlement",
+                    coordination: WorkflowCoordinationConfiguration.Durable),
+                workflow => workflow
+                    .DispatchWork("process", Work("sample.auto.settlement.flaky"))
+                    .Join("process-join")
+                    .DispatchWork("finalize", Work("sample.auto.settlement.final")));
+        });
+
+        using var provider = services.BuildServiceProvider();
+        var system = GetNamedSystem(provider, "workflow-tests");
+        await system.Start();
+        var handle = system.WorkflowRuntime.Start(
+            "workflow.auto.settlement",
+            WorkRequestContext.Create(WorkInvocationChannel.InProcess));
+
+        await blockedWriteEntered.Task.WaitAsync(TimeSpan.FromSeconds(15));
+        try
+        {
+            var blocked = system.WorkflowRuntime.Get(handle.RunId!.Value);
+            Assert.Equal(WorkflowRunStatus.Blocked, blocked?.Status);
+            var failedWorkerId = blocked!.Steps.Single(step => step.Name == "process").WorkerIds.Single();
+            var failedWorker = await system.Query.Worker(failedWorkerId);
+            Assert.Equal(WorkerState.Failed, failedWorker!.State);
+
+            var restarted = await system.Workers.Execute(failedWorker.Version, WorkAction.Start);
+            Assert.True(restarted.IsAccepted);
+            Assert.False(handle.WaitForCompletion().IsCompleted);
+        }
+        finally
+        {
+            releaseBlockedWrite.TrySetResult();
+        }
+
+        var completion = await handle.WaitForCompletion().WaitAsync(TimeSpan.FromSeconds(15));
+        Assert.True(completion.IsCompletedSuccessfully);
+        Assert.Equal(2, Volatile.Read(ref flakyRuns));
+        Assert.Equal(1, Volatile.Read(ref finalRuns));
+    }
+
     [Fact]
     public async Task DoesNotAutoResumeBlockedWorkflowWhenAnUnrelatedWorkerCompletes()
     {
@@ -3484,6 +4398,8 @@ public sealed class WorkflowRuntimeShould
 
         public List<WorkflowRunId> DeletedWorkflowRuns { get; } = [];
 
+        public Func<WorkflowRunPersistenceRecord, CancellationToken, Task>? BeforeWorkflowUpsert { get; init; }
+
         public WorkflowRunPersistenceRecord? GetWorkflowRun(WorkflowRunId runId)
         {
             lock (this.sync)
@@ -3630,17 +4546,20 @@ public sealed class WorkflowRuntimeShould
             await Task.CompletedTask;
         }
 
-        public Task UpsertWorkflowRun(
+        public async Task UpsertWorkflowRun(
             WorkflowRunPersistenceRecord run,
             CancellationToken cancellationToken = default)
         {
+            if (this.BeforeWorkflowUpsert is not null)
+            {
+                await this.BeforeWorkflowUpsert(run, cancellationToken);
+            }
+
             lock (this.sync)
             {
                 this.WorkflowUpserts.Add(run);
                 this.workflowRuns[run.RunId] = run;
             }
-
-            return Task.CompletedTask;
         }
 
         public Task UpsertWorkflowRun(

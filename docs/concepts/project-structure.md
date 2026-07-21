@@ -26,6 +26,7 @@ Generated or local-run folders such as `bin`, `obj`, `TestResults`, `artifacts`,
 - `IWorkExecutor`
 - `IWorkExecutionContext`
 - `WorkExecutionResult`
+- workflow definitions, step builders, and workflow coordination configuration
 - `AddWorkableWork`
 
 Feature libraries reference `Workable.Sdk` when they need to declare work, configure work defaults, or implement executors.
@@ -40,6 +41,7 @@ Feature libraries reference `Workable.Sdk` when they need to declare work, confi
 - `IWorkerOperations`
 - `IWorkQueryService`
 - `IWorkEventStream`
+- `IWorkflowCommandDispatcher` and workflow command result contracts
 - worker snapshots, query criteria, query results, action outcomes, queue outcomes, completions, and event records
 
 Libraries reference `Workable.Abstractions` when they need to queue, query, observe, or control work but do not host Workable themselves.
@@ -48,6 +50,7 @@ Libraries reference `Workable.Abstractions` when they need to queue, query, obse
 
 - in-memory system implementation
 - worker lifecycle, queueing, dispatch, retention, coordination, durability, concurrency, and event-stream behavior
+- workflow registration, execution, persistence coordination, recovery, and operator views
 - `AddWorkableSystem`
 
 Host applications reference `Workable` when they need to create systems and run the in-process runtime. `Workable` also references the abstractions package, so host applications can inject and use `IWorkSystem` directly.
@@ -60,6 +63,7 @@ Host applications reference `Workable` when they need to create systems and run 
 - queue request DTOs and queue routes under `Queue`
 - HTTP query criteria, query adapter, and query routes under `Query`
 - worker action and reconfiguration routes under `Workers`
+- workflow start, query, paging, and action routes under `Workflows`
 - invocation channel enforcement for `WorkInvocationChannel.HttpApi`
 
 Applications reference `Workable.HttpApi` when they want to expose Workable systems through HTTP endpoints.
@@ -69,6 +73,7 @@ Applications reference `Workable.HttpApi` when they want to expose Workable syst
 - component and view request DTOs
 - component result envelopes
 - overview, worker-grid, iteration-grid, catalog, and throughput component projections
+- workflow-run list, detail, step graph, and child-worker projections
 - the typed worker-overview landing and realtime contracts
 - shared view and worker-overview normalization used by HTTP and realtime transports
 
@@ -95,7 +100,8 @@ ASP.NET Core applications reference `Workable.Entra` when Workable adapter reque
 - MCP-style tool descriptors for work definitions
 - work invocation through `IWorkQueueService`
 - query tools for worker status, worker snapshots, work definitions, work info, work keys, and status summaries
-- action tools for start, pause, cancel, push, and purge
+- workflow-run query tools and workflow start, resume, pause, and cancel tools
+- worker action tools for start, pause, cancel, push, and purge
 - schema compatibility handling for MCP tool input
 - invocation channel enforcement for `WorkInvocationChannel.Mcp`
 
@@ -175,6 +181,8 @@ Folder names are vocabulary, not decoration. A folder with the same name in two 
 
 `Events` contains event-stream contracts, event payloads, publishers, and subscription behavior.
 
+`Workflows` contains workflow definition contracts in the SDK, workflow command contracts in abstractions, and workflow registration, execution, persistence, recovery, event, and operator-view behavior in the runtime and adapters.
+
 `Metrics` contains metrics sinks and throughput/activity aggregation. Metrics files should describe captured system activity, not UI presentation.
 
 `Hosting` contains integration and entry-point code: service-collection extensions, endpoint mapping, hosted services, builders, registration records, registries, route binding, and host-origin helpers. It should not become a general service folder.
@@ -207,11 +215,11 @@ Folder names are vocabulary, not decoration. A folder with the same name in two 
 
 Avoid generic `Services` folders as a catch-all. Prefer the domain folders above, or `Hosting` when the code is truly host-entry-point glue.
 
-HTTP adapter folders use the same domain words as the core surface. A route file, adapter file, and DTOs for the same operation family live together in `Catalog`, `Query`, `Queue`, `Systems`, or `Workers`; do not create a nested `Routes` folder unless all adapter operation folders adopt the same split.
+HTTP adapter folders use the same domain words as the core surface. A route file, adapter file, and DTOs for the same operation family live together in `Catalog`, `Query`, `Queue`, `Systems`, `Workers`, or `Workflows`; do not create a nested `Routes` folder unless all adapter operation folders adopt the same split.
 
-MCP currently uses a compact tool-oriented surface at the project root because its tool descriptors and router cross queue, query, catalog, and worker action concerns. If the MCP surface grows enough to split, use the same adapter folder vocabulary as HTTP: `Hosting` for registration/transport entry points, `Catalog` for catalog tools, `Query` for read-only tools, `Queue` for invocation tools, `Systems` for system selection/lifecycle tools, and `Workers` for worker action tools.
+MCP currently uses a compact tool-oriented surface at the project root because its tool descriptors and router cross queue, query, catalog, worker action, and workflow concerns. If the MCP surface grows enough to split, use the same adapter folder vocabulary as HTTP: `Hosting` for registration/transport entry points, `Catalog` for catalog tools, `Query` for read-only tools, `Queue` for invocation tools, `Systems` for system selection/lifecycle tools, `Workers` for worker action tools, and `Workflows` for workflow tools.
 
-Tests mirror the production concern folder when a feature has enough tests to group: `Catalog`, `Configuration`, `Execution`, `Hosting`, `HttpApi`, `Mcp`, `Query`, `Queue`, `SignalR`, `Systems`, and `Workers`. Cross-cutting helpers belong in `TestSupport`. Generated test output such as `TestResults` is not part of the source structure.
+Tests mirror the production concern folder when a feature has enough tests to group: `Catalog`, `Configuration`, `Execution`, `Hosting`, `HttpApi`, `Mcp`, `Query`, `Queue`, `SignalR`, `Systems`, `Views`, `Workers`, and `Workflows`. Cross-cutting helpers belong in `TestSupport`. Generated test output such as `TestResults` is not part of the source structure.
 
 The admin UI follows Next.js conventions rather than the .NET domain folder vocabulary. Keep route handlers in `src/app`, generic UI primitives in `src/components/ui`, Workable-specific UI in `src/components/workable`, hooks in `src/hooks`, and client helpers in `src/lib`.
 

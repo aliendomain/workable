@@ -40,7 +40,10 @@ internal static class WorkflowDefinitionFingerprint
                 dispatchEach.Name,
                 dispatchEach.Kind,
                 dispatchEach.WorkDefinition.Name,
-                new WorkflowDispatchSourceShape(dispatchEach.SourceStep.StepName, dispatchEach.SourceSelector.JsonPointer),
+                new WorkflowDispatchSourceShape(
+                    dispatchEach.SourceStep.StepName,
+                    dispatchEach.SourceSelector.JsonPointer,
+                    dispatchEach.CanceledChildBehavior),
                 null,
                 null,
                 []),
@@ -119,7 +122,8 @@ internal static class WorkflowDefinitionFingerprint
 
     private sealed record WorkflowDispatchSourceShape(
         string StepName,
-        string? JsonPointer);
+        string? JsonPointer,
+        WorkflowCanceledChildBehavior CanceledChildBehavior);
 
     private sealed record WorkflowInputShape(
         string? Json,

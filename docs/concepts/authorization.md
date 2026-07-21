@@ -169,9 +169,14 @@ Within `WithWorkDefaults(...)`, the group-level `authorize` callback runs before
 Workflow definitions use the same `WorkDefinitionAuthorization` metadata shape and the same `IWorkAuthorizationBuilder` fluent model as work definitions.
 
 ```csharp
+var childDefinition = WorkDefinition.Create("sample.child");
+
+builder.AddWork(childDefinition, (_, _, _) =>
+    Task.FromResult(WorkExecutionResult.Success()));
+
 builder.AddWorkflow(
     WorkflowDefinition.Create("workflow.demo"),
-    workflow => workflow.DispatchWork("dispatch", "sample.child"),
+    workflow => workflow.DispatchWork("dispatch", childDefinition),
     authorize: auth => auth
         .AllowReadToGroups("workflow.read")
         .AllowOperateToGroups("workflow.ops"));

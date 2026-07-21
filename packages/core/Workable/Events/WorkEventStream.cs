@@ -20,6 +20,7 @@ internal sealed class WorkEventStream : IWorkEventStream, IAsyncDisposable
         WorkEventFilter? filter = null,
         WorkEventSubscriptionOptions? options = null)
     {
+        filter = NormalizeFilter(filter);
         options ??= GetDefaultOptions(filter);
         if (options.Capacity <= 0)
         {
@@ -197,6 +198,20 @@ internal sealed class WorkEventStream : IWorkEventStream, IAsyncDisposable
         => ShouldUseCursorLog(filter, DefaultOptions)
             ? DefaultCursorLogOptions
             : DefaultOptions;
+
+    private static WorkEventFilter? NormalizeFilter(WorkEventFilter? filter)
+        => filter is not null &&
+            filter.WorkerId is null &&
+            filter.DefinitionName is null &&
+            filter.DefinitionNames is not { Count: > 0 } &&
+            filter.SubjectId is null &&
+            filter.ConcurrencyKey is null &&
+            filter.Identifier is null &&
+            filter.Keys is not { Count: > 0 } &&
+            filter.EventType is null &&
+            filter.EventTypes is not { Count: > 0 }
+                ? null
+                : filter;
 
     private static bool ShouldUseCursorLog(
         WorkEventFilter? filter,

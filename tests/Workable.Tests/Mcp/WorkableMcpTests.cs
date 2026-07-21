@@ -1236,6 +1236,70 @@ public sealed class WorkableMcpTests
     }
 
     [Fact]
+    public async Task McpServerGetWorkInfoDistinguishesKnownMissingAndBlankNames()
+    {
+        var definition = WorkDefinition.Create("mcp.work.info", "Describes MCP work.", configuration: AllowMcp());
+        await using var provider = CreateProvider(definition, SuccessfulWork);
+        var router = provider.GetRequiredService<WorkableMcpToolRouter>();
+        using var knownArguments = JsonDocument.Parse("""{"name":"mcp.work.info"}""");
+        using var missingArguments = JsonDocument.Parse("""{"name":"mcp.work.missing"}""");
+        using var blankArguments = JsonDocument.Parse("""{"name":" "}""");
+
+        var known = await router.CallTool(
+            "workable_get_work_info",
+            knownArguments.RootElement,
+            null,
+            null,
+            CreateMcpRequestContext("Get known work info."));
+        var missing = await router.CallTool(
+            "workable_get_work_info",
+            missingArguments.RootElement,
+            null,
+            null,
+            CreateMcpRequestContext("Get missing work info."));
+        var blank = await router.CallTool(
+            "workable_get_work_info",
+            blankArguments.RootElement,
+            null,
+            null,
+            CreateMcpRequestContext("Get blank work info."));
+
+        Assert.Contains("\"found\":true", known.Json);
+        Assert.Contains("mcp.work.info", known.Json);
+        Assert.Contains("\"found\":false", missing.Json);
+        Assert.Contains("mcp.work.missing", missing.Json);
+        Assert.Contains("\"found\":false", blank.Json);
+    }
+
+    [Fact]
+    public async Task McpDefinitionReconfigurationReturnsNotFoundAndConvertsMalformedJsonToToolErrors()
+    {
+        await using var provider = CreateProvider(
+            WorkDefinition.Create("mcp.reconfigure.known", configuration: AllowMcp()),
+            SuccessfulWork);
+        var router = provider.GetRequiredService<WorkableMcpToolRouter>();
+        using var missingArguments = JsonDocument.Parse("""{"name":"mcp.reconfigure.missing","revision":0}""");
+        using var malformedArguments = JsonDocument.Parse("""{"name":"mcp.reconfigure.known","revision":0,"changes":{"configuration":"invalid"}}""");
+
+        var missing = await router.CallTool(
+            "workable_reconfigure_work_definition",
+            missingArguments.RootElement,
+            null,
+            null,
+            CreateMcpRequestContext("Reconfigure missing work."));
+        var malformed = await router.CallTool(
+            "workable_reconfigure_work_definition",
+            malformedArguments.RootElement,
+            null,
+            null,
+            CreateMcpRequestContext("Reconfigure work with malformed JSON."));
+
+        Assert.Contains("\"status\":\"NotFound\"", missing.Json);
+        Assert.True(malformed.IsError);
+        Assert.Contains("workable.mcp.arguments_invalid", malformed.Json);
+    }
+
+    [Fact]
     public async Task McpServerCanReconfigureWorkDefinitionDefaults()
     {
         var definition = WorkDefinition.Create("mcp.definition.reconfigure", "Can change defaults.", configuration: AllowMcp());

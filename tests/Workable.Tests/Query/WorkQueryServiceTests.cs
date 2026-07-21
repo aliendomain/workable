@@ -1020,6 +1020,171 @@ public sealed class WorkQueryServiceTests
     }
 
     [Fact]
+    public async Task WorkerAndIterationQueriesHonorEveryDocumentedSortField()
+    {
+        await using var system = new ServiceCollection()
+            .AddWorkableSystem(builder =>
+            {
+                builder.AddWork(
+                    WorkDefinition.Create("query.sort.alpha"),
+                    (_, _, _) => Task.FromResult(WorkExecutionResult.Failure(
+                        [WorkMessage.Error("query.sort.failed", "Expected sort test failure.")])));
+                builder.AddWork(
+                    WorkDefinition.Create("query.sort.zulu"),
+                    SuccessfulWork);
+                builder.AddWork(
+                    WorkDefinition.Create(
+                        "query.sort.middle",
+                        configuration: WorkConfiguration.Default with
+                        {
+                            Start = WorkStartConfiguration.DoNotStart,
+                        }),
+                    SuccessfulWork);
+            })
+            .BuildServiceProvider()
+            .GetRequiredService<IWorkSystemRegistry>()
+            .Default;
+        await system.Start();
+        await (await system.Queue.Enqueue("query.sort.alpha")).WaitForCompletion();
+        await (await system.Queue.Enqueue("query.sort.zulu")).WaitForCompletion();
+        await system.Queue.Enqueue("query.sort.middle");
+        await WaitForReadModel(system);
+
+        var byUpdated = await system.Query.Workers(new WorkerCriteria(
+            Sort: WorkerCriteriaSort.UpdatedAt,
+            Direction: WorkCriteriaSortDirection.Ascending));
+        var byDefinition = await system.Query.Workers(new WorkerCriteria(
+            Sort: WorkerCriteriaSort.DefinitionName,
+            Direction: WorkCriteriaSortDirection.Ascending));
+        var byState = await system.Query.Workers(new WorkerCriteria(
+            Sort: WorkerCriteriaSort.State,
+            Direction: WorkCriteriaSortDirection.Ascending));
+        var iterationsByStarted = await system.Query.WorkerIterations(new WorkerIterationCriteria(
+            Sort: WorkerIterationCriteriaSort.StartedAt,
+            Direction: WorkCriteriaSortDirection.Ascending));
+        var iterationsByDuration = await system.Query.WorkerIterations(new WorkerIterationCriteria(
+            Sort: WorkerIterationCriteriaSort.ExecutionDuration,
+            Direction: WorkCriteriaSortDirection.Ascending));
+        var iterationsByDefinition = await system.Query.WorkerIterations(new WorkerIterationCriteria(
+            Sort: WorkerIterationCriteriaSort.DefinitionName,
+            Direction: WorkCriteriaSortDirection.Ascending));
+        var iterationsByStatus = await system.Query.WorkerIterations(new WorkerIterationCriteria(
+            Sort: WorkerIterationCriteriaSort.Status,
+            Direction: WorkCriteriaSortDirection.Ascending));
+
+        Assert.Equal(byUpdated.Workers.OrderBy(worker => worker.UpdatedAt), byUpdated.Workers);
+        Assert.Equal(byDefinition.Workers.OrderBy(worker => worker.DefinitionName), byDefinition.Workers);
+        Assert.Equal(byState.Workers.OrderBy(worker => worker.State), byState.Workers);
+        Assert.Equal(iterationsByStarted.Iterations.OrderBy(iteration => iteration.StartedAt), iterationsByStarted.Iterations);
+        Assert.Equal(iterationsByDuration.Iterations.OrderBy(iteration => iteration.ExecutionDuration), iterationsByDuration.Iterations);
+        Assert.Equal(iterationsByDefinition.Iterations.OrderBy(iteration => iteration.DefinitionName), iterationsByDefinition.Iterations);
+        Assert.Equal(iterationsByStatus.Iterations.OrderBy(iteration => iteration.Status), iterationsByStatus.Iterations);
+    }
+
+    [Fact]
+    public async Task DefinitionHealthDistinguishesPartialFailureFromEqualActiveAndFailedCounts()
+    {
+        var secondStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var thirdStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseSecond = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseThird = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        await using var system = CreateSystem(
+            WorkDefinition.Create("query.definition.health"),
+            async (_, input, cancellationToken) =>
+            {
+                if (input?.Json == "\"failed\"")
+                {
+                    return WorkExecutionResult.Failure(
+                        [WorkMessage.Error("query.health.failed", "Expected health test failure.")]);
+                }
+
+                var (started, release) = input?.Json switch
+                {
+                    "\"second\"" => (secondStarted, releaseSecond),
+                    "\"third\"" => (thirdStarted, releaseThird),
+                    _ => throw new InvalidOperationException("Expected a definition-health test input."),
+                };
+                started.TrySetResult();
+                await release.Task.WaitAsync(cancellationToken);
+                return WorkExecutionResult.Success();
+            });
+        await system.Start();
+        await (await system.Queue.Enqueue(
+            "query.definition.health",
+            WorkInput.FromValue("failed")))
+            .WaitForCompletion()
+            .WaitAsync(TimeSpan.FromSeconds(5));
+        var second = await system.Queue.Enqueue(
+            "query.definition.health",
+            WorkInput.FromValue("second"));
+        var third = await system.Queue.Enqueue(
+            "query.definition.health",
+            WorkInput.FromValue("third"));
+        try
+        {
+            await Task.WhenAll(secondStarted.Task, thirdStarted.Task).WaitAsync(TimeSpan.FromSeconds(5));
+            await WaitForReadModel(system);
+
+            var needsAttention = await system.Query.WorkInfo("query.definition.health");
+            Assert.NotNull(needsAttention);
+            Assert.Equal(WorkDefinitionStatus.NeedsAttention, needsAttention!.Status);
+
+            releaseThird.TrySetResult();
+            await third.WaitForCompletion().WaitAsync(TimeSpan.FromSeconds(5));
+            await WaitForReadModel(system);
+            var critical = await system.Query.WorkInfo("query.definition.health");
+
+            releaseSecond.TrySetResult();
+            await second.WaitForCompletion().WaitAsync(TimeSpan.FromSeconds(5));
+
+            Assert.NotNull(critical);
+            Assert.Equal(WorkDefinitionStatus.Critical, critical!.Status);
+        }
+        finally
+        {
+            releaseSecond.TrySetResult();
+            releaseThird.TrySetResult();
+        }
+    }
+
+    [Fact]
+    public async Task ReturnMissingDetailsBeforeAuthoritativeReadersAreAttached()
+    {
+        var catalog = new WorkSystemCatalog([], persistenceStoreAvailable: false);
+        await using var readModel = new WorkSystemReadModel(
+            catalog,
+            () => WorkSystemState.Started,
+            workSystemName: null,
+            new InMemoryWorkMetricsSink());
+        var workerId = WorkerId.New();
+
+        readModel.ForgetWorkers([]);
+        readModel.Clear();
+        await readModel.Flush();
+
+        Assert.Null(await readModel.Query.Worker(workerId));
+        Assert.Null(await readModel.Query.WorkerIteration(new WorkerIterationReference(workerId, 1)));
+
+        using var cancellation = new CancellationTokenSource();
+        await cancellation.CancelAsync();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => readModel.Query.Worker(workerId, cancellation.Token));
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => readModel.Query.WorkerIteration(
+            new WorkerIterationReference(workerId, 1),
+            cancellation.Token));
+
+        var failure = new InvalidOperationException("projector unavailable");
+        var projectorException = typeof(WorkSystemReadModel).GetField(
+            "projectorException",
+            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("Expected projector failure field.");
+        projectorException.SetValue(readModel, failure);
+        var surfaced = Assert.Throws<InvalidOperationException>(readModel.ThrowIfProjectorFailed);
+        projectorException.SetValue(readModel, null);
+
+        Assert.Same(failure, surfaced.InnerException);
+    }
+
+    [Fact]
     public async Task WorkInfoQueryReturnsDefinitionStatusAndWorkerRollup()
     {
         var definition = WorkDefinition.Create("rollup.work", "Reports worker counts.",
@@ -2126,4 +2291,3 @@ public sealed class WorkQueryServiceTests
             => Task.FromResult(WorkExecutionResult.Success());
     }
 }
-

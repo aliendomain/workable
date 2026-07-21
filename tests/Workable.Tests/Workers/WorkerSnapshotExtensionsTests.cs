@@ -1,4 +1,5 @@
 using Microsoft.Extensions.Logging;
+using System.Text.Json;
 using Workable;
 
 namespace Workable.Tests;
@@ -145,6 +146,28 @@ public sealed class WorkerSnapshotExtensionsTests
                     State: WorkerState.Canceled,
                     Messages: [],
                     IterationSequence: 3),
+                new WorkerActionHistoryEntry(
+                    OccurredAt: DateTimeOffset.UtcNow.AddSeconds(-24),
+                    Kind: WorkerActionHistoryKind.WorkerAction,
+                    Action: WorkAction.Pause,
+                    Status: WorkActionStatus.Accepted,
+                    RequestContext: requestContext,
+                    Revision: 2,
+                    StateSequence: 1,
+                    State: WorkerState.Paused,
+                    Messages: [],
+                    IterationSequence: 3),
+                new WorkerActionHistoryEntry(
+                    OccurredAt: DateTimeOffset.UtcNow.AddSeconds(-23),
+                    Kind: WorkerActionHistoryKind.WorkerAction,
+                    Action: WorkAction.Start,
+                    Status: WorkActionStatus.Invalid,
+                    RequestContext: requestContext,
+                    Revision: 3,
+                    StateSequence: 1,
+                    State: WorkerState.Paused,
+                    Messages: [],
+                    IterationSequence: 3),
             ]);
 
         var events = worker.GetActivityEvents();
@@ -158,9 +181,121 @@ public sealed class WorkerSnapshotExtensionsTests
             item.Kind == WorkerActivityEventKind.StateChange &&
             item.State == WorkerState.Canceled);
         Assert.Contains(events, item =>
+            item.Kind == WorkerActivityEventKind.StateChange &&
+            item.State == WorkerState.Paused);
+        Assert.Contains(events, item =>
             item.Kind == WorkerActivityEventKind.Iteration &&
             item.Category == WorkerActivityEventCategory.Failure &&
             item.Sequence == 3);
+    }
+
+    [Fact]
+    public void GetMergedIterationsPrefersTheLatestTerminalSnapshot()
+    {
+        var earlier = new WorkerIterationSnapshot(
+            4,
+            DateTimeOffset.UtcNow.AddMinutes(-2),
+            DateTimeOffset.UtcNow.AddMinutes(-1),
+            TimeSpan.FromMinutes(1),
+            WorkCompletionStatus.Failed,
+            WorkOutput.FromValue("earlier"),
+            []);
+        var later = earlier with
+        {
+            CompletedAt = DateTimeOffset.UtcNow,
+            Status = WorkCompletionStatus.Completed,
+            Output = WorkOutput.FromValue("later"),
+        };
+        var worker = CreateWorkerSnapshot(iterations: [earlier], currentIteration: later);
+
+        var merged = Assert.Single(worker.GetMergedIterations());
+
+        Assert.Equal(WorkCompletionStatus.Completed, merged.Status);
+        Assert.Equal("later", merged.Output?.ToValue<string>());
+    }
+
+    [Fact]
+    public void FailureResolverUsesRetainedLogsAndJsonMetadataFallbacks()
+    {
+        var logFailure = WorkerIterationFailureResolver.Resolve(
+            messages: [],
+            logs:
+            [
+                new WorkerLogEntry(
+                    DateTimeOffset.UtcNow,
+                    WorkerId.New(),
+                    WorkDefinitionId.New(),
+                    "tests.failure",
+                    LogLevel.Error,
+                    new EventId(10, "failure"),
+                    "rendered failure",
+                    "System.TimeoutException",
+                    "The operation timed out."),
+            ],
+            fallbackMessage: "fallback");
+        var metadataFailure = WorkerIterationFailureResolver.Resolve(
+            messages:
+            [
+                new WorkMessage(
+                    "metadata.failure",
+                    WorkMessageSeverity.Error,
+                    "metadata fallback",
+                    Metadata: new Dictionary<string, object?>
+                    {
+                        ["failureSource"] = JsonSerializer.SerializeToElement("executionContext"),
+                        ["exceptionType"] = JsonSerializer.SerializeToElement("System.InvalidOperationException"),
+                        ["exceptionMessage"] = JsonSerializer.SerializeToElement(42),
+                    }),
+            ],
+            logs: [],
+            fallbackMessage: "fallback");
+
+        Assert.Equal(WorkerIterationFailureKind.Exception, logFailure.Kind);
+        Assert.Equal("System.TimeoutException", logFailure.ExceptionType);
+        Assert.Equal("The operation timed out.", logFailure.Message);
+        Assert.Equal(WorkerIterationFailureKind.Exception, metadataFailure.Kind);
+        Assert.Equal("42", metadataFailure.Message);
+        Assert.True(metadataFailure.DeclaredByWork);
+    }
+
+    [Fact]
+    public void WorkerOverviewProjectionPreservesOperationalSummaryFields()
+    {
+        var now = DateTimeOffset.UtcNow;
+        var identifier = new WorkIdentifier("invoice", "INV-42");
+        var summary = new WorkerSummary(
+            WorkerId.New(),
+            7,
+            5,
+            "projection.worker",
+            "Projection:Workers",
+            new WorkSubjectId("account", "ACCT-1"),
+            new WorkConcurrencyKey("tenant", "TENANT-1"),
+            new HashSet<WorkIdentifier> { identifier },
+            WorkRequestContext.Create(WorkInvocationChannel.HttpApi),
+            WorkerState.Waiting,
+            null,
+            now.AddMinutes(-2),
+            now.AddMinutes(-1),
+            now)
+        {
+            QueueDuration = TimeSpan.FromSeconds(3),
+            TotalExecutionDuration = TimeSpan.FromSeconds(8),
+            NextRunAt = now.AddMinutes(5),
+        };
+
+        var overview = WorkerOverviewItem.From(summary);
+
+        Assert.Equal(summary.Id, overview.Id);
+        Assert.Equal(summary.DefinitionName, overview.DefinitionName);
+        Assert.Equal(summary.DefinitionCategory, overview.Category);
+        Assert.Equal(summary.SubjectId, overview.SubjectId);
+        Assert.Equal(summary.ConcurrencyKey, overview.ConcurrencyKey);
+        Assert.Contains(identifier, overview.Identifiers);
+        Assert.Equal(summary.QueueDuration, overview.QueueDuration);
+        Assert.Equal(summary.TotalExecutionDuration, overview.TotalExecutionDuration);
+        Assert.Equal(summary.NextRunAt, overview.NextRunAt);
+        Assert.False(overview.IsFinal);
     }
 
     [Fact]

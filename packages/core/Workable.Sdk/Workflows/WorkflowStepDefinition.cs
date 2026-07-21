@@ -48,6 +48,27 @@ public enum WorkflowDispatchInputSource
 }
 
 /// <summary>
+/// Describes how a workflow should react when a worker dispatched by a <c>DispatchEach</c> step is canceled.
+/// </summary>
+public enum WorkflowCanceledChildBehavior
+{
+    /// <summary>
+    /// Treats the canceled child as skipped and allows the workflow to continue after the remaining children settle.
+    /// </summary>
+    Continue = 0,
+
+    /// <summary>
+    /// Blocks the workflow at its next synchronization point without canceling the remaining sibling workers.
+    /// </summary>
+    Block = 1,
+
+    /// <summary>
+    /// Cancels the workflow and its remaining outstanding child workers.
+    /// </summary>
+    CancelWorkflow = 2,
+}
+
+/// <summary>
 /// Represents one step in a workflow definition.
 /// </summary>
 /// <param name="Name">The stable workflow-local step name.</param>
@@ -77,11 +98,13 @@ public sealed record DispatchWorkflowStepDefinition(
 /// <param name="SourceStep">The earlier workflow step whose completed output should be expanded.</param>
 /// <param name="WorkDefinition">The target Workable work definition.</param>
 /// <param name="SourceSelector">The generated selector that chooses the array within the source output. When its JSON pointer is omitted, the root output value must be an array.</param>
+/// <param name="CanceledChildBehavior">The behavior to apply when one of the expanded child workers is canceled.</param>
 public sealed record DispatchEachWorkflowStepDefinition(
     string Name,
     WorkflowStepReference SourceStep,
     WorkDefinition WorkDefinition,
-    WorkflowOutputSelector SourceSelector)
+    WorkflowOutputSelector SourceSelector,
+    WorkflowCanceledChildBehavior CanceledChildBehavior = WorkflowCanceledChildBehavior.Continue)
     : WorkflowStepDefinition(Name, WorkflowStepKind.DispatchEach);
 
 /// <summary>

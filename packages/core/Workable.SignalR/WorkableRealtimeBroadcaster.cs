@@ -58,7 +58,7 @@ internal sealed class WorkableRealtimeBroadcaster(
         }
     }
 
-    private async Task BroadcastApplicationStoppingAsync()
+    internal async Task BroadcastApplicationStoppingAsync()
     {
         foreach (var system in registry.Systems.Where(system => system.State != WorkSystemState.Stopped))
         {
@@ -855,7 +855,7 @@ internal sealed class WorkableRealtimeBroadcaster(
             {
                 throw;
             }
-            catch (Exception exception) when (IsNonCriticalBroadcastException(exception))
+            catch (Exception exception) when (WorkableRealtimeBroadcastRules.IsNonCriticalBroadcastException(exception))
             {
                 logger.LogError(
                     exception,
@@ -1331,17 +1331,6 @@ internal sealed class WorkableRealtimeBroadcaster(
             property.TryGetInt32(out var value)
                 ? value
                 : null;
-
-    private static bool IsNonCriticalBroadcastException(Exception exception)
-        => exception is not OperationCanceledException and
-            not OutOfMemoryException and
-            not StackOverflowException and
-            not AccessViolationException and
-            not AppDomainUnloadedException and
-            not BadImageFormatException and
-            not CannotUnloadAppDomainException and
-            not InvalidProgramException and
-            not global::System.Threading.ThreadAbortException;
 
     private static TimeSpan NormalizeInterval(TimeSpan interval, TimeSpan fallback)
         => interval > TimeSpan.Zero ? interval : fallback;

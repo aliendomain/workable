@@ -179,6 +179,8 @@ These view names are built in:
 - `iterations`: defaults to one `iterationGrid` component
 - `worker`: defaults to `workerDetail` and `workerCurrentIteration` components
 - `diagnostics`: defaults to the compact diagnostics component set
+- `workflow-runs`: defaults to one `workflowRuns` component
+- `workflow-run`: defaults to one `workflowRun` component
 
 Unknown view names do not throw. They return an error component in the result map instead.
 
@@ -205,6 +207,8 @@ These component names are built in:
 - `concurrencyDiagnostics`
 - `durabilityDiagnostics`
 - `idempotencyDiagnostics`
+- `workflowRuns`
+- `workflowRun`
 
 ## Default View Composition
 
@@ -215,6 +219,8 @@ When a caller omits components, Workable fills in defaults:
 - `iterations` defaults to `iterationGrid`
 - `worker` defaults to `workerDetail` and `workerCurrentIteration`
 - `diagnostics` defaults to compact `queueDiagnostics`, `readModelDiagnostics`, `retentionDiagnostics`, `concurrencyDiagnostics`, `durabilityDiagnostics`, and `idempotencyDiagnostics`
+- `workflow-runs` defaults to `workflowRuns`
+- `workflow-run` defaults to `workflowRun`
 
 This makes the default experience convenient, but it also means custom UIs should be explicit about components once the layout diverges from the built-in admin story.
 
@@ -258,6 +264,8 @@ Most components need only `id`, `type`, and `shape`. A few also accept JSON opti
 - `workerGrid`: `states`, `configuration`, `skip`, `take`, and optional `keyKind`, `keyType`, and `keyValue`
 - `iterationGrid`: `statuses`, `skip`, `take`, and optional `keyKind`, `keyType`, and `keyValue`
 - `workerDetail` and `workerCurrentIteration`: `workerId`
+- `workflowRuns`: `includeFinal`, `definitionName`, and `childSampleSize`
+- `workflowRun`: `runId` and `childSampleSize`
 - `readModelDiagnostics`: `warningThreshold`
 - `retentionDiagnostics`: `warningSeconds`
 - `concurrencyDiagnostics`: `warningSeconds`

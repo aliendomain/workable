@@ -67,7 +67,7 @@ MCP exposes default-system work definitions with protocol-safe names such as:
 - `workable_work_sample_delay`
 - `workable_work_fulfillment_picklist_create`
 
-The MCP server also exposes Workable query tools such as `workable_query_workers` and `workable_get_worker_status_summary`.
+The MCP server also exposes Workable query and workflow tools such as `workable_query_workers`, `workable_get_worker_status_summary`, and `workable_query_workflow_runs`.
 
 MCP work calls wait for completion by default. Calling `workable_work_sample_echo` returns the completed worker output in the tool result. HTTP work calls return after queue acceptance by default.
 
@@ -76,7 +76,8 @@ The HTTP API exposes the standard Workable routes. For example:
 - `GET /workable/definitions`
 - `GET /workable/systems/fulfillment/definitions`
 - `POST /workable/work/sample.echo`
-- `POST /workable/workers/query`
+- `GET /workable/workflow-runs`
+- `GET /workable/workers/status-summary`
 - `POST /workable/workers/{workerId}/actions/{action}`
 
 ## Testing MCP Locally
@@ -124,7 +125,7 @@ Check that the host is running:
 ```powershell
 Invoke-RestMethod http://localhost:61932/fake-auth/system-admin/workable/definitions
 Invoke-RestMethod http://localhost:61932/fake-auth/system-admin/workable/workers/status-summary
-Invoke-RestMethod http://localhost:61932/fake-auth/system-admin/workable/systems
+Invoke-RestMethod http://localhost:61932/fake-auth/system-admin/workable/host
 ```
 
 Point an MCP client that supports HTTP transport at:
