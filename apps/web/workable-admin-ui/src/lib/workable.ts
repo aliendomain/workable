@@ -1235,9 +1235,12 @@ export type QueueRequestSchemaField = {
 
 export {
   WorkableApiError,
+  WorkableRealtimeAuthenticationError,
   createWorkableRealtimeUrl,
   formatDateTime,
   getWorkableRealtimeAccessToken,
+  invalidateWorkableRealtimeAccessToken,
+  isWorkableRealtimeAuthenticationError,
   safeJsonParse,
   stateTone,
   workableFetch,
