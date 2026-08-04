@@ -101,13 +101,13 @@ Execution context also exposes the worker's creation `WorkRequestContext` (inclu
 - Completed work results are exposed as `WorkOutput`.
 - Worker snapshots can expose captured logs and profile snapshots.
 - Worker snapshots expose the `WorkRequestContext` that queued the worker, including its durable `Origin`.
-- `IWorkQueryService.Worker` returns a full `WorkerSnapshot`.
+- `IWorkQueryService.Worker` returns a full `WorkerSnapshot`; authorization-enabled sessions require diagnostics permission for its latest and per-iteration profiles.
 - `IWorkQueryService.Worker` and `IWorkQueryService.WorkerIteration` return authoritative retained detail.
 - Aggregate and list-style query methods read from the runtime read model; the in-memory model starts empty with the process and is cleared when the system stops.
 - Control and correctness paths use live worker records instead of the eventually consistent read model. This includes idempotency checks, concurrency decisions, worker actions, shutdown interruption, retention purge selection, and bulk action execution.
 - `IWorkSystem.Diagnostics` exposes queue, read-model, retention, concurrency, durability, and idempotency diagnostics. See [Work Diagnostics](diagnostics.md).
 - `IWorkQueryService.Workers` returns lightweight `WorkerOverviewItem` rows.
-- `IWorkQueryService.WorkerIteration` returns one full `WorkerIterationSnapshot` by worker id and iteration sequence.
+- `IWorkQueryService.WorkerIteration` returns one full `WorkerIterationSnapshot` by worker id and iteration sequence; authorization-enabled sessions without diagnostics permission receive it without profile data.
 - `IWorkQueryService.WorkerIterations` returns lightweight `WorkerIterationOverviewItem` rows.
 - `IWorkQueryService.WorkerKeys` and `IWorkQueryService.WorkerKeyTypes` expose searchable subject, concurrency key, and identifier indexes with matching worker overview rows.
 - `IWorkQueryService.WorkIterationKeys` and `IWorkQueryService.WorkIterationKeyTypes` expose the same key search shape for worker iteration overview rows.

@@ -149,7 +149,47 @@ Current benchmark groups:
 - `BaselineMcpQueryBenchmarks` measures MCP worker query, summary, and detail tools over seeded data.
 - `BaselineAuthorizationBenchmarks` measures authorization-sensitive queue, query, and workflow execution paths.
 - `BaselineIdempotencyBenchmarks` measures persistence-backed idempotency acceptance, duplicate rejection, and duplicate contention.
+- `BaselineProfilingAdmissionBenchmarks` measures bounded automatic-node omission accounting, temporary full-capture rule misses at zero and maximum active rules, the worst case where 1,000 matching rules have pending exhausted leases, and completion of 1,000 one-shot rules.
+- `BaselineProfilingHttpBenchmarks` measures the process-wide listener tax, admitted and post-cap HTTP activity overhead, concurrent HTTP sampling at the profile cap, and the actual admitted-request path with a 1,000,000-character URI.
+- `BaselineProfilingHttpUriBenchmarks` measures sanitized URI capture at 128, 32,768, and 1,000,000 path characters.
+- `BaselineProfilingFinalizationBenchmarks` measures profile publication with zero, 100, and 1,000 settled pending instrumentation operations.
+- `BaselineProfilingSnapshotBenchmarks` measures large flat and deeply nested profile snapshot publication plus bounded deep-tree text rendering.
+- `BaselineProfilingTeardownBenchmarks` measures unregistering one system while a shared HTTP observer tracks active requests for eight systems.
+- `BaselineSqlProfilingBenchmarks` measures successful, failed, and unsupported-value SQL profile context capture.
+- `BaselineSqlProfilingListenerBenchmarks` measures SqlClient event admission with no SQL listener, outside a Workable profile, and inside an eligible Workable profile. It batches 50,000,000 checks per invocation and reports per-check cost.
 - `StressMillionWorkerQueryBenchmarks` measures broad and indexed first-page queries over 1,000,000 queued workers. This benchmark is intentionally excluded from the default filter.
+
+### Profiling optimization comparison
+
+The profiling performance pass on 2026-08-04 used the same `MediumRun` BenchmarkDotNet cases before and after the implementation changes on an Apple M5 Max with .NET 10.0.8. The most representative results were:
+
+| Case | Before | After | Change |
+| --- | ---: | ---: | ---: |
+| Admitted HTTP request | 2.894 μs, 5.75 KB | 2.600 μs, 5.41 KB | 1.11x faster |
+| Sanitized URI, 128-character path | 385.4 ns, 904 B | 385.2 ns, 904 B | unchanged common path |
+| Sanitized URI, 32,768-character path | 50.21 μs, 132.41 KB | 6.82 μs, 28.27 KB | 7.36x faster |
+| Sanitized URI, 1,000,000-character path | 1.697 ms, 3.82 MB | 6.82 μs, 28.27 KB | 249x faster |
+| Miss across 1,000 exhausted matching capture rules | 10.72 μs | 85.88 ns | 125x faster |
+| Miss with 1,000 unrelated capture rules | 73.98 ns | 67.82 ns | 1.09x faster |
+| Render a 1,000-level profile | 727.6 μs, 8.88 MB | 100.7 μs, 667.33 KB | 7.23x faster |
+| Unregister one of eight active systems | 64.18 μs, 24.02 KB | 22.73 μs, 8.06 KB | 2.82x faster |
+| Finalize 1,000 settled pending operations | 85.76 μs, 8.11 KB | 81.91 μs, 8.11 KB | no regression; the profile registration drain no longer spins |
+
+The listener-only and post-cap measurements remained within run-to-run variance. Snapshot materialization for 10,000 flat nodes and 5,000 nested scopes also remained effectively unchanged; the rendering improvement comes from applying explicit output bounds rather than changing immutable snapshot contents.
+
+A follow-up pass on the same machine measured the remaining automatic-capture hot paths with identical before/after cases:
+
+| Case | Before | After | Change |
+| --- | ---: | ---: | ---: |
+| Complete one of 1,000 one-shot capture rules | 15.32 μs, 41.81 KB | 224.2 ns, 40 B | 68.3x faster; allocations reduced by more than 99.9% |
+| Admitted HTTP request with 1,000,000-character URI | 46.89 μs, 33.23 KB | 11.93 μs, 33.3 KB | 3.93x faster; source inspection is bounded |
+| Successful representative SQL context | 8.694 μs, 75.73 KB | 9.137 μs, 27.8 KB | latency within run variance; 63.3% less allocation |
+| Failed representative SQL context | 10.057 μs, 84 KB | 8.975 μs, 30.07 KB | 1.12x faster; 64.2% less allocation |
+| Unsupported value with 100,000-character whitespace statement | 33.085 μs, 3.51 KB | 13.995 μs, 3.51 KB | 2.36x faster |
+| SQL event check outside a Workable profile | enabled, 1.6698 ns | rejected, 3.3223 ns | adds a 1.65 ns admission check and prevents provider payload emission |
+| SQL event check inside an eligible profile | enabled, 1.7145 ns | enabled, 5.4372 ns | adds 3.72 ns only while SQL profiling is active |
+
+The SQL-listener benchmark measures only the provider's `IsEnabled` decision. Its outside-profile improvement is the change from an enabled event to a rejected event: the slightly more expensive predicate prevents SqlClient from constructing and publishing the much larger diagnostic payload. Focused tests assert the enabled/rejected states in addition to the timing benchmark.
 
 Experimental opt-in benchmarks:
 

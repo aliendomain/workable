@@ -234,7 +234,8 @@ public sealed class AuthorizedWorkQueueServiceShould
                 systemAuthorizationConfiguration is null
                     ? null
                     : new WorkSystemAuthorizationEvaluator(systemAuthorizationConfiguration, normalizedGroups)),
-            requestContext);
+            requestContext,
+            canViewDiagnostics: false);
     }
 
     private static RegisteredWork CreateRegisteredWork(

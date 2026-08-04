@@ -14,7 +14,8 @@ internal sealed class InMemoryWorkSystem :
     IWorkSystemReadModelClock,
     IWorkSystemWorkflowClock,
     IWorkSystemShutdownMetadata,
-    IWorkSystemCapabilitySource
+    IWorkSystemCapabilitySource,
+    IWorkProfileCaptureRuleSystem
 {
     private readonly IServiceProvider rootServices;
     private readonly ILogger<InMemoryWorkSystem>? logger;
@@ -35,6 +36,7 @@ internal sealed class InMemoryWorkSystem :
     private readonly InMemoryWorkMetricsSink metrics = new();
     private readonly WorkEventStream events = new();
     private readonly WorkChangeStream changes = new();
+    private readonly WorkProfileCaptureRuleStore profileCaptureRules = new();
     private readonly WorkSystemQueueDiagnosticsTracker queueDiagnostics = new();
     private readonly WorkSystemIdempotencyDiagnosticsTracker idempotencyDiagnostics = new();
     private readonly SemaphoreSlim lifecycleLock = new(1, 1);
@@ -70,6 +72,7 @@ internal sealed class InMemoryWorkSystem :
         }
 
         this.Capabilities = capabilities.Build();
+        this.ProfilingConfiguration = registration.Profiling;
         var authorizationLogger = rootServices.GetService<ILoggerFactory>()?.CreateLogger("Workable.Authorization");
         this.catalog = new WorkSystemCatalog(
             work,
@@ -96,6 +99,8 @@ internal sealed class InMemoryWorkSystem :
             this.ShutdownGracePeriod,
             registration.Retention,
             registration.Capacity,
+            registration.Profiling,
+            this.profileCaptureRules,
             this.metrics,
             this.queueDiagnostics,
             this.idempotencyDiagnostics,
@@ -152,12 +157,28 @@ internal sealed class InMemoryWorkSystem :
 
     public WorkSystemCapabilities Capabilities { get; }
 
+    public WorkSystemProfilingConfiguration ProfilingConfiguration { get; }
+
     internal WorkflowCatalog Workflows => this.workflows;
 
     internal WorkflowRuntime WorkflowRuntime => this.workflowRuntime;
 
     internal WorkerOperations WorkerOperations => this.workers;
     internal WorkChangeStream ChangeStream => this.changes;
+
+    public IReadOnlyList<WorkProfileCaptureRuleSnapshot> GetProfileCaptureRules()
+        => this.profileCaptureRules.GetRules();
+
+    public WorkProfileCaptureRuleSnapshot CreateProfileCaptureRule(
+        string? definitionName,
+        string? actorId,
+        int maximumMatches,
+        TimeSpan expiresAfter,
+        WorkActor createdBy)
+        => this.profileCaptureRules.Create(definitionName, actorId, maximumMatches, expiresAfter, createdBy);
+
+    public bool DeleteProfileCaptureRule(Guid id)
+        => this.profileCaptureRules.Delete(id);
 
     long IWorkSystemReadModelClock.AppliedSequence => this.readModel.AppliedSequence;
 
@@ -397,13 +418,25 @@ internal sealed class InMemoryWorkSystem :
         }
     }
 
-    public Task<WorkSystemStopResult> Stop(
+    public async Task<WorkSystemStopResult> Stop(
         WorkRequestContext requestContext,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(requestContext);
-        this.EnsureControlSystemAccess(requestContext);
-        return this.StopCore(requestContext, cancellationToken);
+        if (!this.RequiresAuthorization)
+        {
+            return await this.StopCore(requestContext, cancellationToken);
+        }
+
+        var authorization = this.ResolveAuthorization(requestContext);
+        if (!authorization.CanControlSystem())
+        {
+            throw new WorkSystemAccessDeniedException(WorkSystemPermission.ControlSystem, this.Id, this.Name);
+        }
+
+        return WorkProfileAccessFilter.Apply(
+            await this.StopCore(requestContext, cancellationToken),
+            authorization.CanViewDiagnostics());
     }
 
     private async Task<WorkSystemStopResult> StopCore(

@@ -122,6 +122,7 @@ import {
   type FeedbackTone,
 } from "@/components/workable/console/feedback-panel";
 import { WorkProfilePanel } from "@/components/workable/console/work-profile-panel";
+import { ProfilingCaptureRulesCard } from "@/components/workable/console/profiling-capture-rules-card";
 import {
   formatRelativeTime,
   useLiveRelativeTimeNow,
@@ -718,6 +719,10 @@ export function DefinitionView({
               </div>
             </CardContent>
           </Card>
+          <ProfilingCaptureRulesCard
+            connection={connection}
+            definitionName={definition.name}
+          />
           <Card>
             <CardHeader className="gap-3 md:flex-row md:items-center md:justify-between">
               <div>
@@ -2247,6 +2252,11 @@ export function WorkerConsoleView({
                     label={primaryIteration ? `Latest output (iteration #${primaryIteration.sequence})` : "Latest output"}
                   />
                 </div>
+                <ProfilingCaptureRulesCard
+                  actorId={worker.origin.actor?.id}
+                  connection={connection}
+                  definitionName={worker.definitionName}
+                />
               </PanelShell>
             ) : null}
             {!hiddenPanelIds.has("workerConfiguration") ? (

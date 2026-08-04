@@ -78,6 +78,11 @@ internal sealed class WorkAuthorizationEvaluator(
         ArgumentNullException.ThrowIfNull(registeredWork);
         ArgumentNullException.ThrowIfNull(requestContext);
 
+        if (RequestsFullProfileCapture(options) && systemAuthorization?.CanViewDiagnostics() != true)
+        {
+            return WorkOperateAuthorizationDecision.Deny();
+        }
+
         if (systemAuthorization?.HasOperateAllWorkAccess() == true)
         {
             return WorkOperateAuthorizationDecision.Allow();
@@ -158,6 +163,11 @@ internal sealed class WorkAuthorizationEvaluator(
         ArgumentNullException.ThrowIfNull(changes);
         ArgumentNullException.ThrowIfNull(requestContext);
 
+        if (RequestsFullProfileCapture(changes.DefaultOptions) && systemAuthorization?.CanViewDiagnostics() != true)
+        {
+            return WorkOperateAuthorizationDecision.Deny();
+        }
+
         if (systemAuthorization?.HasOperateAllWorkAccess() == true)
         {
             return WorkOperateAuthorizationDecision.Allow();
@@ -210,6 +220,13 @@ internal sealed class WorkAuthorizationEvaluator(
         => new(
             changes.DefaultOptions,
             changes.Configuration);
+
+    private static bool RequestsFullProfileCapture(WorkerOptions? options)
+        => options is
+        {
+            HasExplicitProfilingCaptureMode: true,
+            ProfilingCaptureMode: WorkProfileCaptureMode.Full,
+        };
 
     private bool CanAttempt(RegisteredWork registeredWork, WorkOperationPermissions permission)
         => registeredWork.Definition.Authorization.CanOperate(groups, isKnownAuthenticatedUser) &&

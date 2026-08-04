@@ -53,7 +53,10 @@ public sealed class WorkableHttpQueryAdapter : WorkableViewQueryAdapter
                 worker.SubjectId,
                 worker.ConcurrencyKey,
                 await this.WorkInfo(session, worker.DefinitionName, cancellationToken),
-                WorkableHttpQueueRequestDescriptor.Create(system));
+                WorkableHttpQueueRequestDescriptor.Create(system))
+            {
+                ProfilingCaptureMode = worker.Options.ProfilingCaptureMode,
+            };
     }
 
 }

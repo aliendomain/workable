@@ -91,6 +91,7 @@ public static class WorkableHttpApiExtensions
         WorkableHttpQueryRoutes.Map(group);
         WorkableHttpWorkflowRoutes.Map(group);
         WorkableHttpWorkerRoutes.Map(group);
+        WorkableHttpProfilingRoutes.Map(group);
     }
 
     private static void HandleAuthorizationDenied(RouteGroupBuilder group)

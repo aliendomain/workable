@@ -151,7 +151,9 @@ The response includes host capabilities plus each visible system's id, optional 
       "state": "Started",
       "isDefault": true,
       "capabilities": {
-        "persistentCoordinationAvailable": true
+        "persistentCoordinationAvailable": true,
+        "sqlProfilingAvailable": true,
+        "httpClientProfilingAvailable": true
       },
       "access": {
         "isSystemAdministrator": false,
@@ -171,7 +173,7 @@ The response includes host capabilities plus each visible system's id, optional 
 
 The host-level `capabilities` object lets clients discover optional transport features exposed by the host. `realtime` reports whether `Workable.SignalR` is registered and, when it is, advertises the hub transport details clients should use.
 
-The per-system `capabilities` object is reserved for system-specific runtime behavior. `persistentCoordinationAvailable` tells clients whether that system currently has persistent coordination available through a registered persistence store. In practice, that means persistent coordination settings such as `storage: "Persistent"` can be honored for features like durable queueing, persistence-backed idempotency, and persistence-backed coordination.
+The per-system `capabilities` object is reserved for system-specific runtime behavior. `persistentCoordinationAvailable` tells clients whether that system currently has persistent coordination available through a registered persistence store. In practice, that means persistent coordination settings such as `storage: "Persistent"` can be honored for features like durable queueing, persistence-backed idempotency, and persistence-backed coordination. `sqlProfilingAvailable` and `httpClientProfilingAvailable` report whether the corresponding automatic profiling instrumentation is registered for captured worker profiles.
 
 The systems list is filtered to systems where the caller has actual access. Read access, operate access, diagnostics access, control access, or administrator roles are all enough to make a system visible.
 For the built-in HTTP API specifically, `/workable/host` lists only systems where the caller has both:
@@ -206,6 +208,52 @@ GET /workable/systems/email/diagnostics
 The response includes queue, read-model, retention, concurrency, durability, and idempotency diagnostics. Use it to monitor alertable queue rejections, query freshness, projector pressure, retention lag, deferred-start backlog, durable coordination lag, duplicate rejection, and internal diagnostics failures.
 
 Diagnostics require the system-level `Diagnostics` permission or `SystemAdministrator`.
+
+## Temporary Full Profile Capture
+
+The built-in API exposes temporary rules that enable full profiling for matching future workers:
+
+```http
+GET /workable/profiling/capture-rules
+POST /workable/profiling/capture-rules
+DELETE /workable/profiling/capture-rules/{ruleId}
+```
+
+Named-system variants are available under `/workable/systems/{systemName}/profiling/capture-rules`.
+
+Create a rule for a work definition, stable actor id, or both:
+
+```json
+{
+  "definitionName": "payment.authorize",
+  "actorId": "user-123",
+  "maximumMatches": 5,
+  "expiresAfterMinutes": 30,
+  "description": "Investigate intermittent payment latency"
+}
+```
+
+At least one of `definitionName` or `actorId` is required. Each selector is limited to 512 characters. `maximumMatches` defaults to `1` and must be between `1` and `1000`. `expiresAfterMinutes` defaults to `30` and must be between `1` and `1440`. A system can have at most 1,000 active rules; creating another returns a validation error. Definition matching is case-insensitive, while actor ids use exact ordinal matching. If several rules match, combined definition-and-actor rules take precedence over single-selector rules; equally specific rules are selected oldest first.
+
+Matching happens transactionally during queue acceptance. Steady-state queue requests read a preordered immutable rule snapshot and atomically reserve a match without taking the rule-administration lock; administration and one-time terminal rule cleanup use the lock. A rejected queue attempt returns its reserved match to the rule. An accepted worker has profiling enabled and retains `profilingCaptureMode: "Full"` in its effective options, including when it is placed in a durable queue. Rules themselves are temporary in-memory operational state. They remain through a system stop/start in the same host but are cleared by a host restart.
+
+`Full` means that automatic SQL, HTTP, and extension nodes do not consume the system's bounded automatic-instrumentation allowance for that worker iteration. It does not bypass queue authorization, invocation-channel restrictions, profile retention, HTTP privacy exclusions, or SQL parameter redaction.
+
+Listing, creating, and deleting rules require diagnostics access. `SystemAdministrator` has diagnostics permission by default, but it does not receive work queue permission merely by creating a rule. The matching worker must still be queued by a caller authorized for that definition and invocation channel.
+
+An authorized definition-reconfiguration request that explicitly sets `profilingCaptureMode` to `Full` also requires diagnostics access in addition to the definition's normal reconfiguration permission. This prevents work-operation permission alone from bypassing the bounded automatic-instrumentation limit. Trusted host startup configuration is unaffected.
+
+Returning retained profile data also requires diagnostics access. Without it, worker and iteration query responses, wait-for-completion results, worker-action outcomes, and system-stop worker snapshots retain their normal authorized fields but expose no latest or per-iteration profile. Work read or operate permission by itself is not sufficient to retrieve profile telemetry.
+
+The Workable admin UI exposes the same operations:
+
+- For a work type, select the system, open **Catalog**, select the definition, and use **Full profile capture**.
+- For a user, open **Workers**, select a retained worker for that actor, expand **Worker controls**, and use **Capture by user**.
+- Use **Capture this user + work type** from the same worker card when both selectors should match.
+
+The selected existing worker supplies an actor id; it is not changed or reprofiled. Capture rules apply only to future accepted workers.
+
+## Diagnostics Response Example
 
 ```json
 {

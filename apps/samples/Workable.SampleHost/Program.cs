@@ -47,6 +47,13 @@ builder.Services.AddCors(options =>
 
 builder.Services.AddWorkableSqlServerDurableQueue(samplePersistence.ConnectionString);
 builder.Services.AddWorkableSqlServerProfiling();
+builder.Services.AddWorkableHttpClientProfiling();
+builder.Services.AddHttpClient<DemoProfilingHttpProbe>(client =>
+{
+    client.BaseAddress = new Uri(
+        builder.Configuration["WorkableSample:ProfilingHttpBaseAddress"] ??
+        $"http://127.0.0.1:{sampleHttpPort}");
+});
 builder.Services.AddSingleton<DemoRecurringIterationPlanStore>();
 builder.Services.AddSingleton(new DemoProfilingSqlConnection(samplePersistence.ConnectionString));
 builder.Services.AddScoped<DemoProfilingActivationMarker>();
@@ -69,7 +76,7 @@ builder.Services.AddWorkableSystem(workable =>
     var sampleProfilingLabDefinition = DemoProfileDefinition(
         "sample.demo.profiling-lab",
         "Samples:Demo",
-        "One-shot profiling showcase with nested scopes, timings, injected-service contributions, and SQL command capture.");
+        "One-shot profiling showcase with nested scopes, timings, injected-service contributions, SQL command capture, and outbound HTTP capture.");
     var sampleWorkflowSeedDefinition = DemoDefinition(
         "sample.demo.workflow.seed",
         "Samples:Workflow",
@@ -1470,6 +1477,20 @@ var sampleWorkload = app.MapGroup("/sample-workload");
 
 sampleWorkload.MapGet("", (DemoWorkloadController controller)
     => Results.Ok(controller.Status()));
+sampleWorkload.MapGet("/profiling-http-probe/{sectionOrdinal:int}", async (
+    int sectionOrdinal,
+    string phase,
+    HttpContext context,
+    CancellationToken cancellationToken) =>
+{
+    await Task.Delay(15 + Math.Clamp(sectionOrdinal, 1, 6) * 5, cancellationToken);
+    context.Response.Headers["X-Workable-Sample-Probe"] = "completed";
+    return Results.Ok(new DemoProfilingHttpSnapshot(
+        sectionOrdinal,
+        phase,
+        context.Request.Method,
+        DateTimeOffset.UtcNow));
+});
 sampleWorkload.MapPost("/toggle", async (DemoWorkloadController controller, CancellationToken cancellationToken)
     => Results.Ok(await controller.Toggle(cancellationToken)));
 sampleWorkload.MapPost("/interval", (DemoWorkloadController controller, DemoWorkloadIntervalRequest request)

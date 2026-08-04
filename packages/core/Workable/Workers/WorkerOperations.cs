@@ -36,6 +36,7 @@ internal sealed class WorkerOperations :
     private readonly TimeSpan shutdownGracePeriod;
     private readonly WorkSystemCapacityConfiguration capacity;
     private readonly WorkSystemQueueDiagnosticsTracker queueDiagnostics;
+    private readonly WorkProfileCaptureRuleStore profileCaptureRules;
     private readonly ILogger? logger;
     private readonly bool persistenceStoreAvailable;
     private CancellationTokenSource systemExecutionLifetime = new();
@@ -57,6 +58,8 @@ internal sealed class WorkerOperations :
         TimeSpan shutdownGracePeriod,
         WorkSystemRetentionConfiguration retentionConfiguration,
         WorkSystemCapacityConfiguration capacity,
+        WorkSystemProfilingConfiguration profilingConfiguration,
+        WorkProfileCaptureRuleStore profileCaptureRules,
         InMemoryWorkMetricsSink metrics,
         WorkSystemQueueDiagnosticsTracker queueDiagnostics,
         WorkSystemIdempotencyDiagnosticsTracker idempotencyDiagnostics,
@@ -66,6 +69,7 @@ internal sealed class WorkerOperations :
         this.getSystemState = getSystemState;
         this.shutdownGracePeriod = shutdownGracePeriod;
         this.capacity = capacity;
+        this.profileCaptureRules = profileCaptureRules;
         this.metrics = metrics;
         this.queueDiagnostics = queueDiagnostics;
         this.persistenceStoreAvailable = persistenceStore is not null;
@@ -100,7 +104,8 @@ internal sealed class WorkerOperations :
             this.persistence,
             this.workerEvents,
             this.AddIdentifier,
-            new WorkInitializationExecutor(rootServices));
+            new WorkInitializationExecutor(rootServices),
+            profilingConfiguration);
         var exceptionHandler = new WorkerExecutionExceptionHandler(
             new WorkExceptionClassifierChain(systemExceptionClassifiers, globalExceptionClassifiers, this.logger),
             this.logger);
@@ -167,9 +172,15 @@ internal sealed class WorkerOperations :
         var storedRequestContext = requestContext.WithoutAuthorization();
 
         var workerId = WorkerId.New();
-        var runtimePlan = options is null
+        using var fullCaptureRule = this.profileCaptureRules.TryAcquire(
+            registeredWork.Definition.Name,
+            storedRequestContext);
+        var effectiveOptions = fullCaptureRule is null
+            ? options
+            : ForceFullProfileCapture(options);
+        var runtimePlan = effectiveOptions is null
             ? registeredWork.DefaultRuntimePlan
-            : RegisteredWorkRuntimePlan.Create(registeredWork.Definition, options);
+            : RegisteredWorkRuntimePlan.Create(registeredWork.Definition, effectiveOptions);
         if (runtimePlan.ConfigurationErrors.Count > 0)
         {
             return this.RejectQueue(WorkQueueOutcome.Invalid(runtimePlan.ConfigurationErrors));
@@ -205,6 +216,8 @@ internal sealed class WorkerOperations :
             return this.RejectQueue(acceptance.Outcome);
         }
 
+        fullCaptureRule?.Commit();
+
         if (acceptance.Handle is { } durableHandle)
         {
             return durableHandle;
@@ -228,6 +241,13 @@ internal sealed class WorkerOperations :
         await WaitForStartPolicy(record, runtimePlan.StartPolicy, cancellationToken);
         return handle;
     }
+
+    private static WorkerOptions ForceFullProfileCapture(WorkerOptions? options)
+        => (options ?? WorkerOptions.Default) with
+        {
+            ProfilingEnabled = true,
+            ProfilingCaptureMode = WorkProfileCaptureMode.Full,
+        };
 
     internal IWorkerHandle RejectQueue(WorkQueueOutcome rejection)
     {
@@ -585,7 +605,7 @@ internal sealed class WorkerOperations :
 
         if (outcome.IsAccepted)
         {
-            var guardRetention = action != WorkAction.Purge && record.IsFinal;
+            var guardRetention = action is not (WorkAction.Purge or WorkAction.Start) && record.IsFinal;
             if (guardRetention)
             {
                 this.finalizationInProgress[record.Id] = 0;
@@ -594,7 +614,7 @@ internal sealed class WorkerOperations :
 
             try
             {
-                if (action != WorkAction.Purge)
+                if (action is not (WorkAction.Purge or WorkAction.Start))
                 {
                     await this.ObserveWorkflowChildFinalization(record, cancellationToken);
                 }

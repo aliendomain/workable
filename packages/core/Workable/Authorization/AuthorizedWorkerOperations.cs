@@ -5,7 +5,8 @@ internal sealed class AuthorizedWorkerOperations(
     IWorkerOperations inner,
     IWorkQueryService query,
     WorkAuthorizationEvaluator authorization,
-    WorkRequestContext requestContext) : IWorkerOperations
+    WorkRequestContext requestContext,
+    bool canViewDiagnostics) : IWorkerOperations
 {
     public Task<WorkActionOutcome> Execute(
         WorkerVersion worker,
@@ -33,13 +34,15 @@ internal sealed class AuthorizedWorkerOperations(
 
         if (authorizationResult.Status is WorkerActionAuthorizationStatus.Invalid)
         {
-            return WorkActionOutcome.Invalid(
+            return WorkProfileAccessFilter.Apply(WorkActionOutcome.Invalid(
                 action,
                 authorizationResult.Worker,
-                authorizationResult.Messages);
+                authorizationResult.Messages), canViewDiagnostics);
         }
 
-        return await inner.Execute(worker, request, cancellationToken);
+        return WorkProfileAccessFilter.Apply(
+            await inner.Execute(worker, request, cancellationToken),
+            canViewDiagnostics);
     }
 
     public async Task<WorkerBulkActionOutcome> ExecuteAll(
@@ -101,7 +104,9 @@ internal sealed class AuthorizedWorkerOperations(
             skip += result.Workers.Count;
         }
 
-        return new WorkerBulkActionOutcome(action, filter, matchedWorkerCount, outcomes);
+        return WorkProfileAccessFilter.Apply(
+            new WorkerBulkActionOutcome(action, filter, matchedWorkerCount, outcomes),
+            canViewDiagnostics);
     }
 
     public async Task<WorkActionOutcome> Reconfigure(
@@ -122,13 +127,15 @@ internal sealed class AuthorizedWorkerOperations(
 
         if (authorizationResult.Status is WorkerActionAuthorizationStatus.Invalid)
         {
-            return WorkActionOutcome.Invalid(
+            return WorkProfileAccessFilter.Apply(WorkActionOutcome.Invalid(
                 WorkAction.Start,
                 authorizationResult.Worker,
-                authorizationResult.Messages);
+                authorizationResult.Messages), canViewDiagnostics);
         }
 
-        return await inner.Reconfigure(worker, changes, cancellationToken);
+        return WorkProfileAccessFilter.Apply(
+            await inner.Reconfigure(worker, changes, cancellationToken),
+            canViewDiagnostics);
     }
 
     private async Task<WorkerActionAuthorizationResult> AuthorizeAction(

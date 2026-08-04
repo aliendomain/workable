@@ -405,7 +405,7 @@ The examples below show the serialized JSON shape returned by HTTP and MCP adapt
 }
 ```
 
-`IWorkQueryService.WorkerIteration` returns the full retained `WorkerIterationSnapshot`, including `attemptCount`, derived `failure`, output, timestamped structured messages, logs, and profile for that iteration.
+`IWorkQueryService.WorkerIteration` returns the full retained `WorkerIterationSnapshot`, including `attemptCount`, derived `failure`, output, timestamped structured messages, logs, and—when the session has diagnostics permission—the profile for that iteration. Authorized sessions without diagnostics permission receive the iteration with `Profile` removed.
 
 ```json
 {
@@ -567,7 +567,7 @@ The examples below show the serialized JSON shape returned by HTTP and MCP adapt
 
 ### Worker Snapshot
 
-`IWorkQueryService.Worker` returns a full `WorkerSnapshot`. It includes the same worker identity, relationship, and state fields as `WorkerOverviewItem`, plus input, output, options, configuration, messages, origin, retained iterations, captured logs, durable action history, timing fields, and the latest profile snapshot when profiling is enabled.
+`IWorkQueryService.Worker` returns a full `WorkerSnapshot`. It includes the same worker identity, relationship, and state fields as `WorkerOverviewItem`, plus input, output, options, configuration, messages, origin, retained iterations, captured logs, durable action history, and timing fields. On authorization-enabled systems, the latest and retained iteration profiles are included only when the session has diagnostics permission.
 
 ```json
 {

@@ -1,4 +1,5 @@
 using Microsoft.Data.SqlClient;
+using System.Net.Http.Json;
 using Workable;
 
 namespace SampleHost.Demo;
@@ -44,6 +45,12 @@ internal sealed record DemoProfilingSqlSnapshot(
     string DatabaseName,
     int SessionId,
     int MatchingDurableEntries);
+
+internal sealed record DemoProfilingHttpSnapshot(
+    int SectionOrdinal,
+    string Phase,
+    string Method,
+    DateTimeOffset RespondedAt);
 
 internal sealed class DemoProfilingLabWork(
     DemoProfilingActivationMarker activationMarker,
@@ -232,6 +239,7 @@ internal sealed class DemoProfilingPipeline(
 
 internal sealed class DemoProfilingSectionWorker(
     DemoProfilingSqlProbe sqlProbe,
+    DemoProfilingHttpProbe httpProbe,
     IWorkProfiler profiler,
     ILogger<DemoProfilingSectionWorker> logger)
 {
@@ -281,6 +289,17 @@ internal sealed class DemoProfilingSectionWorker(
         {
             var sqlSnapshot = await sqlProbe.CaptureAsync(section, cancellationToken);
             sqlScope.SetResult(sqlSnapshot);
+        }
+
+        using (var httpScope = profiler.CreateScope("Capture HTTP sample", new
+        {
+            section.Ordinal,
+            section.Label,
+            Purpose = "show outbound request and response timing in the profiling tree",
+        }))
+        {
+            var httpSnapshot = await httpProbe.CaptureAsync(section, cancellationToken);
+            httpScope.SetResult(httpSnapshot);
         }
 
         var totalDelayMilliseconds = 0;
@@ -347,6 +366,37 @@ internal sealed class DemoProfilingSectionWorker(
             section.Label,
             section.Steps.Count,
             totalDelayMilliseconds);
+    }
+}
+
+internal sealed class DemoProfilingHttpProbe(
+    HttpClient httpClient,
+    IWorkProfiler profiler)
+{
+    internal async Task<DemoProfilingHttpSnapshot> CaptureAsync(
+        DemoProfilingSectionPlan section,
+        CancellationToken cancellationToken)
+    {
+        using var scope = profiler.CreateMethodScope<DemoProfilingHttpProbe>(new
+        {
+            section.Ordinal,
+            section.Label,
+            section.Phase,
+            Target = "sample host loopback endpoint",
+        });
+
+        var path = $"sample-workload/profiling-http-probe/{section.Ordinal}" +
+            $"?phase={Uri.EscapeDataString(section.Phase)}&label={Uri.EscapeDataString(section.Label)}";
+        using var request = new HttpRequestMessage(HttpMethod.Get, path);
+        request.Headers.Add("X-Workable-Sample-Section", section.Ordinal.ToString());
+
+        using var response = await httpClient.SendAsync(request, cancellationToken);
+        response.EnsureSuccessStatusCode();
+        var snapshot = await response.Content.ReadFromJsonAsync<DemoProfilingHttpSnapshot>(cancellationToken)
+            ?? throw new InvalidOperationException("Expected the sample profiling HTTP endpoint to return a response.");
+
+        scope.SetResult(snapshot);
+        return snapshot;
     }
 }
 

@@ -140,6 +140,43 @@ public sealed class AuthorizedWorkQueryServiceShould
         Assert.Equal(1, inner.WorkInfoByNameCallCount);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task RequireDiagnosticsPermissionForWorkerProfiles(bool canViewDiagnostics)
+    {
+        var query = CreateQueryService(
+            out var visible,
+            out _,
+            out var inner,
+            canViewDiagnostics);
+        var profile = new WorkProfile("sensitive profile").ToSnapshot();
+        var iteration = CreateIteration() with { Profile = profile };
+        var workerId = WorkerId.New();
+        inner.WorkerToReturn = CreateWorker(workerId, visible) with
+        {
+            Profile = profile,
+            Iterations = [iteration],
+            CurrentIteration = iteration,
+            LastIteration = iteration,
+        };
+        inner.WorkerIterationToReturn = iteration;
+
+        var returnedWorker = await query.Worker(workerId);
+        var returnedIteration = await query.WorkerIteration(
+            new WorkerIterationReference(workerId, iteration.Sequence));
+
+        Assert.NotNull(returnedWorker);
+        Assert.NotNull(returnedIteration);
+        Assert.Equal(canViewDiagnostics, returnedWorker.Profile is not null);
+        Assert.Equal(canViewDiagnostics, Assert.Single(returnedWorker.Iterations).Profile is not null);
+        Assert.Equal(canViewDiagnostics, returnedWorker.CurrentIteration?.Profile is not null);
+        Assert.Equal(canViewDiagnostics, returnedWorker.LastIteration?.Profile is not null);
+        Assert.Equal(canViewDiagnostics, returnedIteration.Profile is not null);
+        Assert.NotNull(inner.WorkerToReturn.Profile);
+        Assert.NotNull(inner.WorkerIterationToReturn.Profile);
+    }
+
     [Fact]
     public async Task PassAnEmptySystemScopeWhenRequestedDefinitionIsUnreadable()
     {
@@ -160,7 +197,8 @@ public sealed class AuthorizedWorkQueryServiceShould
     private static AuthorizedWorkQueryService CreateQueryService(
         out WorkDefinition visible,
         out WorkDefinition hidden,
-        out RecordingWorkQueryService inner)
+        out RecordingWorkQueryService inner,
+        bool canViewDiagnostics = false)
     {
         visible = CreateDefinition("visible.work", "visible.read");
         hidden = CreateDefinition("hidden.work", "hidden.read");
@@ -174,7 +212,8 @@ public sealed class AuthorizedWorkQueryServiceShould
         return new AuthorizedWorkQueryService(
             catalog,
             inner,
-            new WorkAuthorizationEvaluator(catalog, Groups("visible.read"), false));
+            new WorkAuthorizationEvaluator(catalog, Groups("visible.read"), false),
+            canViewDiagnostics);
     }
 
     private static WorkDefinition CreateDefinition(string name, string readGroup)

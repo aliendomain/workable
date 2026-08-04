@@ -108,6 +108,250 @@ public sealed class WorkableHttpApiTests
     }
 
     [Fact]
+    public async Task MappedHttpRoutesCreateListConsumeAndDeleteFullProfileCaptureRules()
+    {
+        const string definitionName = "http.profile-capture-rule";
+        using var host = await CreateHttpHost(builder =>
+        {
+            builder.ConfigureProfiling(maximumAutomaticInstrumentationNodes: 1);
+            builder.AddAuthorizedTransportWork(
+                WorkDefinition.Create(definitionName),
+                SuccessfulWork);
+        }, groups: TransportAuthorizationTestSupport.SystemAdministratorGroups
+            .Concat(TransportAuthorizationTestSupport.OperateGroups));
+        var client = host.GetTestClient();
+        var system = host.Services.GetRequiredService<IWorkSystemRegistry>().Default;
+
+        var createdResponse = await client.PostAsJsonAsync(
+            "/workable/profiling/capture-rules",
+            new
+            {
+                definitionName,
+                maximumMatches = 2,
+                expiresAfterMinutes = 15,
+                description = "Investigate slow orders",
+            });
+        createdResponse.EnsureSuccessStatusCode();
+        var created = await createdResponse.Content.ReadFromJsonAsync<WorkableHttpProfilingCaptureRule>()
+            ?? throw new InvalidOperationException("Expected a profile capture rule.");
+
+        var state = await client.GetFromJsonAsync<WorkableHttpProfilingCaptureState>(
+            "/workable/profiling/capture-rules")
+            ?? throw new InvalidOperationException("Expected profile capture state.");
+
+        Assert.Equal(definitionName, created.DefinitionName);
+        Assert.Equal("user-123", created.CreatedBy.Id);
+        Assert.Equal(2, created.RemainingMatches);
+        Assert.Equal(1, state.MaximumAutomaticInstrumentationNodes);
+        Assert.Equal(created.Id, Assert.Single(state.Rules).Id);
+
+        var first = await (await Direct(system).Queue.Enqueue(definitionName)).WaitForCompletion();
+        var firstWorker = first.Worker ?? throw new InvalidOperationException(
+            $"Expected completed worker, received {first.Status}: {string.Join("; ", first.Messages.Select(message => message.Text))}");
+        Assert.True(firstWorker.Options.ProfilingEnabled);
+        Assert.Equal(WorkProfileCaptureMode.Full, firstWorker.Options.ProfilingCaptureMode);
+        Assert.NotNull(firstWorker.Profile);
+
+        state = await client.GetFromJsonAsync<WorkableHttpProfilingCaptureState>(
+            "/workable/profiling/capture-rules")
+            ?? throw new InvalidOperationException("Expected profile capture state.");
+        Assert.Equal(1, Assert.Single(state.Rules).RemainingMatches);
+
+        var deleteResponse = await client.DeleteAsync($"/workable/profiling/capture-rules/{created.Id}");
+        Assert.Equal(HttpStatusCode.NoContent, deleteResponse.StatusCode);
+        Assert.Empty((await client.GetFromJsonAsync<WorkableHttpProfilingCaptureState>(
+            "/workable/profiling/capture-rules"))!.Rules);
+    }
+
+    [Fact]
+    public async Task MappedHttpRouteRejectsInvalidProfileCaptureRule()
+    {
+        using var host = await CreateHttpHost(
+            builder => builder.AddAuthorizedTransportWork(
+                WorkDefinition.Create("http.profile-capture-invalid"),
+                SuccessfulWork),
+            groups: TransportAuthorizationTestSupport.SystemAdministratorGroups);
+        var client = host.GetTestClient();
+
+        var response = await client.PostAsJsonAsync(
+            "/workable/profiling/capture-rules",
+            new
+            {
+                maximumMatches = 0,
+                expiresAfterMinutes = 30,
+            });
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Contains(
+            "workable.profiling.capture_rule.invalid",
+            await response.Content.ReadAsStringAsync(),
+            StringComparison.Ordinal);
+
+        var oversizedSelector = await client.PostAsJsonAsync(
+            "/workable/profiling/capture-rules",
+            new
+            {
+                actorId = new string('a', WorkProfileCaptureRuleStore.MaximumSelectorLength + 1),
+            });
+
+        Assert.Equal(HttpStatusCode.BadRequest, oversizedSelector.StatusCode);
+        Assert.Contains(
+            WorkProfileCaptureRuleStore.MaximumSelectorLength.ToString(),
+            await oversizedSelector.Content.ReadAsStringAsync(),
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task MappedHttpActorCaptureRuleAppliesToWorkQueuedByThatUser()
+    {
+        const string definitionName = "http.profile-capture-actor";
+        using var host = await CreateHttpHost(
+            builder => builder.AddAuthorizedTransportWork(
+                WorkDefinition.Create(definitionName),
+                SuccessfulWork),
+            groups: TransportAuthorizationTestSupport.SystemAdministratorGroups
+                .Concat(TransportAuthorizationTestSupport.OperateGroups));
+        var client = host.GetTestClient();
+
+        (await client.PostAsJsonAsync(
+            "/workable/profiling/capture-rules",
+            new
+            {
+                actorId = "user-123",
+                maximumMatches = 1,
+                expiresAfterMinutes = 5,
+            })).EnsureSuccessStatusCode();
+
+        var queueResponse = await client.PostAsJsonAsync(
+            $"/workable/work/{definitionName}",
+            new { completion = "waitForCompletion" });
+        queueResponse.EnsureSuccessStatusCode();
+        var queueJson = JsonNode.Parse(await queueResponse.Content.ReadAsStringAsync())
+            ?? throw new InvalidOperationException("Expected queue result.");
+        var workerId = new WorkerId(Guid.Parse(
+            queueJson["workerId"]?["value"]?.GetValue<string>()
+                ?? throw new InvalidOperationException("Expected queued worker id.")));
+        var worker = await Direct(host.Services.GetRequiredService<IWorkSystemRegistry>().Default)
+            .Query.Worker(workerId)
+            ?? throw new InvalidOperationException("Expected queued worker.");
+
+        Assert.Equal("Completed", queueJson["status"]?.GetValue<string>());
+        Assert.True(worker.Options.ProfilingEnabled);
+        Assert.Equal(
+            WorkProfileCaptureMode.Full,
+            worker.Options.ProfilingCaptureMode);
+        Assert.Empty((await client.GetFromJsonAsync<WorkableHttpProfilingCaptureState>(
+            "/workable/profiling/capture-rules"))!.Rules);
+    }
+
+    [Fact]
+    public async Task MappedHttpProfileCaptureRulesRequireDiagnosticsAccessInsteadOfSystemControl()
+    {
+        using var deniedHost = await CreateHttpHost(
+            groups: TransportAuthorizationTestSupport.WorkAdministratorGroups);
+        var deniedClient = deniedHost.GetTestClient();
+
+        var deniedList = await deniedClient.GetAsync("/workable/profiling/capture-rules");
+        var deniedCreate = await deniedClient.PostAsJsonAsync(
+            "/workable/profiling/capture-rules",
+            new { definitionName = "http.route.case" });
+
+        Assert.Equal(HttpStatusCode.Forbidden, deniedList.StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, deniedCreate.StatusCode);
+
+        using var allowedHost = await CreateHttpHost(
+            groups: TransportAuthorizationTestSupport.WorkAdministratorGroups
+                .Concat(TransportAuthorizationTestSupport.DiagnosticsGroups));
+        var allowedClient = allowedHost.GetTestClient();
+
+        var createdResponse = await allowedClient.PostAsJsonAsync(
+            "/workable/profiling/capture-rules",
+            new { definitionName = "http.route.case" });
+        createdResponse.EnsureSuccessStatusCode();
+        var created = await createdResponse.Content.ReadFromJsonAsync<WorkableHttpProfilingCaptureRule>()
+            ?? throw new InvalidOperationException("Expected a profile capture rule.");
+        var delete = await allowedClient.DeleteAsync($"/workable/profiling/capture-rules/{created.Id}");
+
+        Assert.Equal(HttpStatusCode.NoContent, delete.StatusCode);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task MappedHttpWorkerProfilesRequireDiagnosticsAccess(bool canViewDiagnostics)
+    {
+        const string definitionName = "http.profile-authorization";
+        var groups = canViewDiagnostics
+            ? TransportAuthorizationTestSupport.WorkAdministratorGroups
+                .Concat(TransportAuthorizationTestSupport.DiagnosticsGroups)
+            : TransportAuthorizationTestSupport.WorkAdministratorGroups;
+        using var host = await CreateHttpHost(
+            builder => builder.AddAuthorizedTransportWork(
+                WorkDefinition.Create(
+                    definitionName,
+                    defaultOptions: new WorkerOptions(ProfilingEnabled: true)),
+                (context, _, _) =>
+                {
+                    context.Profile.AddInfo("Sensitive profile node", new { Secret = "profile-secret" });
+                    return Task.FromResult(WorkExecutionResult.Success());
+                }),
+            groups: groups);
+        var client = host.GetTestClient();
+
+        var queueResponse = await client.PostAsJsonAsync(
+            $"/workable/work/{definitionName}",
+            new { completion = "waitForCompletion" });
+        queueResponse.EnsureSuccessStatusCode();
+        var queueJson = JsonNode.Parse(await queueResponse.Content.ReadAsStringAsync())
+            ?? throw new InvalidOperationException("Expected queue response JSON.");
+        var workerId = Guid.Parse(
+            queueJson["workerId"]?["value"]?.GetValue<string>()
+                ?? throw new InvalidOperationException("Expected worker id."));
+        var completionProfile = queueJson["completion"]?["worker"]?["profile"];
+
+        var workerResponse = await client.GetAsync($"/workable/workers/{workerId:D}");
+        workerResponse.EnsureSuccessStatusCode();
+        var workerText = await workerResponse.Content.ReadAsStringAsync();
+        var workerJson = JsonNode.Parse(workerText)
+            ?? throw new InvalidOperationException("Expected worker response JSON.");
+
+        var iterationResponse = await client.GetAsync($"/workable/workers/{workerId:D}/iterations/1");
+        iterationResponse.EnsureSuccessStatusCode();
+        var iterationText = await iterationResponse.Content.ReadAsStringAsync();
+        var iterationJson = JsonNode.Parse(iterationText)
+            ?? throw new InvalidOperationException("Expected iteration response JSON.");
+
+        Assert.Equal(canViewDiagnostics, completionProfile is JsonObject);
+        Assert.Equal(canViewDiagnostics, workerJson["profile"] is JsonObject);
+        Assert.Equal(canViewDiagnostics, workerJson["iterations"]?[0]?["profile"] is JsonObject);
+        Assert.Equal(canViewDiagnostics, iterationJson["profile"] is JsonObject);
+        Assert.Equal(canViewDiagnostics, workerText.Contains("profile-secret", StringComparison.Ordinal));
+        Assert.Equal(canViewDiagnostics, iterationText.Contains("profile-secret", StringComparison.Ordinal));
+
+        if (canViewDiagnostics)
+        {
+            var authoritative = await Direct(host.Services.GetRequiredService<IWorkSystemRegistry>().Default)
+                .Query.Worker(new WorkerId(workerId));
+            Assert.NotNull(authoritative?.Profile);
+            Assert.NotNull(Assert.Single(authoritative!.Iterations).Profile);
+        }
+
+        var actionResponse = await client.PostAsJsonAsync(
+            $"/workable/workers/{workerId:D}/actions/cancel",
+            new
+            {
+                revision = workerJson["revision"]?.GetValue<long>()
+                    ?? throw new InvalidOperationException("Expected worker revision."),
+            });
+        var actionText = await actionResponse.Content.ReadAsStringAsync();
+        var actionJson = JsonNode.Parse(actionText)
+            ?? throw new InvalidOperationException("Expected worker action response JSON.");
+        Assert.NotNull(actionJson["worker"]);
+        Assert.Equal(canViewDiagnostics, actionJson["worker"]?["profile"] is JsonObject);
+        Assert.Equal(canViewDiagnostics, actionText.Contains("profile-secret", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public async Task HttpApiRejectsWorkWhenChannelIsNotAllowed()
     {
         var definition = WorkDefinition.Create(
@@ -1644,6 +1888,41 @@ public sealed class WorkableHttpApiTests
         Assert.True(updated.DefaultOptions.ProfilingEnabled);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task MappedHttpFullProfileCaptureDefinitionDefaultsRequireDiagnosticsAccess(
+        bool canViewDiagnostics)
+    {
+        var groups = canViewDiagnostics
+            ? TransportAuthorizationTestSupport.WorkAdministratorGroups
+                .Concat(TransportAuthorizationTestSupport.DiagnosticsGroups)
+            : TransportAuthorizationTestSupport.WorkAdministratorGroups;
+        using var host = await CreateHttpHost(groups: groups);
+        var client = host.GetTestClient();
+        var system = host.Services.GetRequiredService<IWorkSystemRegistry>().Default;
+        var definition = Direct(system).Catalog.Definitions.Single(definition => definition.Name == "http.route.case");
+
+        var response = await client.PostAsJsonAsync(
+            $"/workable/definitions/{definition.Name}/reconfigure",
+            new WorkableHttpDefinitionReconfigurationRequest(
+                definition.Revision,
+                new WorkDefinitionReconfiguration(
+                    DefaultOptions: WorkerOptions.Default with
+                    {
+                        ProfilingEnabled = true,
+                        ProfilingCaptureMode = WorkProfileCaptureMode.Full,
+                    })));
+
+        Assert.Equal(
+            canViewDiagnostics ? HttpStatusCode.OK : HttpStatusCode.Forbidden,
+            response.StatusCode);
+        Assert.True(Direct(system).Catalog.TryGet(definition.Name, out var current));
+        Assert.Equal(
+            canViewDiagnostics ? WorkProfileCaptureMode.Full : WorkProfileCaptureMode.Bounded,
+            current.DefaultOptions.ProfilingCaptureMode);
+    }
+
     [Fact]
     public async Task MappedHttpRouteReturnsConflictForStaleDefinitionRevision()
     {
@@ -2409,6 +2688,28 @@ public sealed class WorkableHttpApiTests
             isDefault.GetValue<bool>() &&
             candidate["capabilities"]?["sqlProfilingAvailable"] is JsonValue sqlProfilingAvailable &&
             sqlProfilingAvailable.GetValue<bool>());
+    }
+
+    [Fact]
+    public async Task MappedHttpRouteListsHttpClientProfilingCapabilityWhenRegistered()
+    {
+        using var host = await CreateHttpHost(
+            configureServices: services => services.AddWorkableHttpClientProfiling());
+        var client = host.GetTestClient();
+
+        var response = await client.GetAsync("/workable/host");
+        response.EnsureSuccessStatusCode();
+        var json = JsonNode.Parse(await response.Content.ReadAsStringAsync())
+            ?? throw new InvalidOperationException("Expected JSON response.");
+        var systems = json["systems"]?.AsArray()
+            ?? throw new InvalidOperationException("Expected systems array.");
+
+        Assert.Contains(systems, system =>
+            system is JsonObject candidate &&
+            candidate["isDefault"] is JsonValue isDefault &&
+            isDefault.GetValue<bool>() &&
+            candidate["capabilities"]?["httpClientProfilingAvailable"] is JsonValue httpClientProfilingAvailable &&
+            httpClientProfilingAvailable.GetValue<bool>());
     }
 
     [Fact]
@@ -3490,6 +3791,9 @@ public sealed class WorkableHttpApiTests
             (HttpMethod.Post, "/work-iteration-keys/query"),
             (HttpMethod.Get, "/work-iteration-keys/types"),
             (HttpMethod.Post, "/work-iteration-keys/types/query"),
+            (HttpMethod.Get, "/profiling/capture-rules"),
+            (HttpMethod.Post, "/profiling/capture-rules"),
+            (HttpMethod.Delete, "/profiling/capture-rules/11111111-2222-3333-4444-555555555555"),
             (HttpMethod.Post, "/workers/actions/pause"),
             (HttpMethod.Post, $"/workers/{workerId}/actions/pause"),
             (HttpMethod.Post, $"/workers/{workerId}/reconfigure"),

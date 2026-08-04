@@ -27,6 +27,20 @@ Example response:
 }
 ```
 
+## Targeted Full Profile Capture
+
+The admin UI can temporarily bypass the bounded automatic SQL, HTTP, and extension instrumentation limit for selected future workers:
+
+- To match a work type, select a system, open **Catalog**, select the definition, and use the **Full profile capture** card.
+- To match a user, select a system, open **Workers**, open a retained worker created by that actor, expand **Worker controls**, and use **Capture by user**.
+- From the same worker card, use **Capture this user + work type** to require both the actor id and definition to match.
+
+Choose how many matching workers to capture and how soon the rule expires. One rule supports 1–1,000 matches and a 1–1,440 minute lifetime; one system can hold at most 1,000 active rules. Rules affect future accepted workers only. Opening an existing worker supplies its stable actor id as a selector; the existing worker is not changed or reprofiled.
+
+A matching rule enables profiling and sets the worker's capture mode to `Full`. This bypasses only the automatic instrumentation node-count limit. It does not bypass queue authorization, invocation-channel restrictions, HTTP privacy exclusions, SQL parameter redaction, or worker/iteration retention.
+
+The UI needs access to the built-in Workable HTTP surface and diagnostics access to list, create, or delete the rules. A system administrator has diagnostics permission by default but still cannot queue work unless separately authorized for that work definition. Rule creation and queueing are intentionally separate operations.
+
 ## Admin UI Security Defaults
 
 The admin UI is default-deny. The page and `/api/workable/*` proxy require authentication unless you explicitly opt into anonymous local use. The proxy does not implement its own operation-level role map; the hosted Workable API remains the authority for whether the current caller may read, operate, configure, run lifecycle actions, or inspect diagnostics.

@@ -348,17 +348,35 @@ export type WorkerVersion = {
 
 export type WorkerOptions = {
   profilingEnabled?: boolean;
+  profilingCaptureMode?: "Bounded" | "Full";
   configuration?: WorkConfiguration | null;
 };
 
 export type WorkableHttpWorkerConfiguration = {
   profilingEnabled: boolean;
+  profilingCaptureMode: "Bounded" | "Full";
   configuration: WorkConfiguration;
   input?: WorkData | null;
   subjectId?: WorkTypedValue | null;
   concurrencyKey?: WorkTypedValue | null;
   definitionInfo?: WorkInfo | null;
   queueRequestSchema: QueueRequestSchemaDescriptor;
+};
+
+export type WorkableProfilingCaptureRule = {
+  id: string;
+  definitionName?: string | null;
+  actorId?: string | null;
+  maximumMatches: number;
+  remainingMatches: number;
+  createdAt: string;
+  expiresAt: string;
+  createdBy: WorkableRealtimeOriginActor;
+};
+
+export type WorkableProfilingCaptureState = {
+  maximumAutomaticInstrumentationNodes: number;
+  rules: WorkableProfilingCaptureRule[];
 };
 
 export type WorkConfiguration = {
