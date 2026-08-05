@@ -126,7 +126,7 @@ test("workflow run screen renders structure nodes and drills into workers from t
     result.getByText("fan-out");
     assert.equal(result.container.querySelectorAll('[aria-label="Executing"]').length >= 1, true);
     result.getByText("Completed");
-    assert.equal(result.queryByText(/^Messages \(/), null);
+    assert.equal(result.container.textContent?.includes("Messages ("), false);
     await result.waitFor(() => {
       assert.equal(
         scrolledNodeSnapshots.some((snapshot) => snapshot.includes("fan-out")),

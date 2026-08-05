@@ -117,13 +117,13 @@ test("page realtime provider forwards connection instance keys into the resolved
   const originalConfigureLogging = HubConnectionBuilder.prototype.configureLogging;
   const originalBuild = HubConnectionBuilder.prototype.build;
 
-  HubConnectionBuilder.prototype.withUrl = function withUrl() {
+  HubConnectionBuilder.prototype.withUrl = function withUrl(this: HubConnectionBuilder) {
     return this;
   } as typeof HubConnectionBuilder.prototype.withUrl;
-  HubConnectionBuilder.prototype.withAutomaticReconnect = function withAutomaticReconnect() {
+  HubConnectionBuilder.prototype.withAutomaticReconnect = function withAutomaticReconnect(this: HubConnectionBuilder) {
     return this;
   } as typeof HubConnectionBuilder.prototype.withAutomaticReconnect;
-  HubConnectionBuilder.prototype.configureLogging = function configureLogging() {
+  HubConnectionBuilder.prototype.configureLogging = function configureLogging(this: HubConnectionBuilder) {
     return this;
   } as typeof HubConnectionBuilder.prototype.configureLogging;
   HubConnectionBuilder.prototype.build = function build() {

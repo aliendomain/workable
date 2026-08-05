@@ -103,6 +103,7 @@ function navigationEntry(overrides: Partial<NavigationEntry> = {}): NavigationEn
     workerDefinitionFilter: "",
     workerId: null,
     workflowRunId: null,
+    workflowRunUiState: null,
     workerStateFilter: [],
     workerUiState: null,
     ...overrides,
@@ -363,7 +364,10 @@ test("dismissed shutdown notifications reappear after that shutdown warning clea
     {
       apiUrl: "https://workable.test",
       displayName: "Default @ Workable",
+      hostId: "host-1",
+      hostName: "Workable",
       id: "target-default",
+      realtimeHubPath: "/hub",
       systemName: "Default",
     }
   );

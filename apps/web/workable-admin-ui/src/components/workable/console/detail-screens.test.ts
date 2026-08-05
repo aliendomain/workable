@@ -575,6 +575,7 @@ test("worker configuration request helpers diff values and clone queue state wit
   configuration.logging.level = "Debug";
   const workerConfiguration = {
     configuration,
+    profilingCaptureMode: "Bounded" as const,
     profilingEnabled: true,
     queueRequestSchema: descriptor(),
   };
@@ -1000,6 +1001,7 @@ function iterationOverviewComponent(): WorkWorkerIterationOverviewComponent {
       concurrencyKey: { type: "Tenant", value: "northwind" },
       definitionName: "DemoProfilingLabWork",
       identifiers: [{ type: "SectionBatch", value: "3" }],
+      profilingEnabled: false,
       subjectId: { type: "Order", value: "42" },
       workerId: { value: "worker-1" },
     },
