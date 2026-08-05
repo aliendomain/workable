@@ -414,7 +414,6 @@ function hostDescriptor(access: WorkSystemAccessSummary): WorkableHttpHostDescri
           persistentCoordinationAvailable: true,
           sqlProfilingAvailable: false,
         },
-        id: { value: "server-ops" },
         isDefault: false,
         name: "Ops",
         state: "Started",

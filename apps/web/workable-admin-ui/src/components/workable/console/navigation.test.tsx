@@ -101,7 +101,6 @@ test("reconcile stored host updates realtime metadata, preserves matched ids, an
       {
         access,
         capabilities: { httpClientProfilingAvailable: false, persistentCoordinationAvailable: true, sqlProfilingAvailable: false },
-        id: { value: "server-default" },
         isDefault: true,
         name: null,
         state: "Started",
@@ -109,7 +108,6 @@ test("reconcile stored host updates realtime metadata, preserves matched ids, an
       {
         access,
         capabilities: { httpClientProfilingAvailable: false, persistentCoordinationAvailable: false, sqlProfilingAvailable: false },
-        id: { value: "server-ops" },
         isDefault: false,
         name: "Ops",
         state: "Stopped",
@@ -654,7 +652,6 @@ test("navigation system helpers cover access badges, names, lifecycle, and state
   const defaultSystem: WorkableHttpSystemDescriptor = {
     access,
     capabilities: { httpClientProfilingAvailable: false, persistentCoordinationAvailable: true, sqlProfilingAvailable: false },
-    id: { value: "server-default" },
     isDefault: true,
     name: null,
     state: "Started",
@@ -722,7 +719,6 @@ function discoveredHost(options?: {
       {
         access,
         capabilities: { httpClientProfilingAvailable: false, persistentCoordinationAvailable: true, sqlProfilingAvailable: false },
-        id: { value: "default-server-id" },
         isDefault: true,
         name: null,
         state: "Started",
@@ -730,7 +726,6 @@ function discoveredHost(options?: {
       {
         access,
         capabilities: { httpClientProfilingAvailable: false, persistentCoordinationAvailable: false, sqlProfilingAvailable: false },
-        id: { value: "ops-server-id" },
         isDefault: false,
         name: "Ops",
         state: "Stopped",
@@ -746,7 +741,6 @@ function discoveredSystem(
   return {
     access,
     capabilities: { httpClientProfilingAvailable: false, persistentCoordinationAvailable: false, sqlProfilingAvailable: false },
-    id: { value: `${name ?? "default"}-server-id` },
     isDefault: name === null,
     name,
     state: "Started",
